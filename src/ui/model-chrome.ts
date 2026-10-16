@@ -9,8 +9,8 @@ import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type 
 import type { PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import type { EditPanel } from "../model-edit";
-import { clampTilt, splitNote, type FacePlane, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
-import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, workplaneNote, workplaneOnBed, workplaneOnFace, type Workplane, type WorkplaneSource } from "../workplane";
+import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
+import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
 import { lastFace, selectedEdges } from "../model-blend";
 import { SCREWS, screwOf } from "../model-hole";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
@@ -53,8 +53,8 @@ interface ModelChromeHooks {
   workplane(): Workplane;
   /** The workplane changed, in model space. One drag, or a typed number once it rests, is one step. */
   workplaneMoved(plane: Workplane, phase: PlacePhase): void;
-  /** The last picked face in model space, or why it cannot be a workplane. */
-  faceForWorkplane(): FacePlane | "curved" | null;
+  /** The frame on the last picked face, in model space, or why that face cannot take one. */
+  faceWorkplane(): Workplane | "curved" | null;
   /** Whether the plate already prints the part with W up, so Print with W up would change nothing. */
   printsWUp(): boolean;
   /** Print with W up: the part turns on the plate, one undoable step. */
@@ -1125,11 +1125,11 @@ function setWpSource(source: WorkplaneSource) {
 /** Face is chosen: the frame goes on the last picked face, or waits for one. */
 function applyWpFace() {
   seatedWpFace = lastFace(picks);
-  const face = hooks?.faceForWorkplane() ?? null;
+  const face = hooks?.faceWorkplane() ?? null;
   if (face && face !== "curved") {
     wpProblem = null;
     wpAwaitsFace = false;
-    putPlane(workplaneOnFace(face));
+    putPlane(face);
     return;
   }
   wpAwaitsFace = true;

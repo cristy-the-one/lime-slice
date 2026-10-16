@@ -1,62 +1,58 @@
 # Local workplane
 
-A Creo-style U-V-W frame for Model mode. The local UV plane is the face you are working on. W points along its normal. Sketch-like placement — a hole, a box, a cylinder, a split, a boolean — is typed in that frame, with the origin at local (0, 0). W is the extrusion or the cut direction.
+A Creo-style U, V, W frame for Model mode. The UV plane is the face or plane you are working on, and W is its normal. Hole, Boolean and Split are typed in that frame, from its origin, and W is the way a hole drills and a box grows. The math is `src/workplane.ts`; the panel and the dock gizmo are the Workplane tool (toolbar, Shift+U).
 
-This note is the contract. The math is `src/workplane.ts`. The panel and the dock gizmo are the Workplane tool in Model. Nothing here changes the slicer. A part with no workplane, and the global frame the tool starts on, keep today's plate pose and today's G-code.
+A workplane is a frame for typing numbers. Like every Model tool it follows the model-space rule in `docs/step-modeler.md`: nothing done with it changes the plate, the mesh, or the slice. The one exception is a button, Print with W up, that the user presses ("On the plate").
 
-## What Model already has
+## The frame
 
-Model is the fourth workspace tab (`docs/step-modeler.md`). It is not selected when the app opens. The open solid is a history tree: the client owns node ids and labels, and the Open CASCADE bridge keeps the solids. Tools are New solid, Boolean, Split, Fillet, Chamfer, Hole, Scale, Measure, and Place. Every number is both a field and a dock or feature handle (`src/model-drag.ts`). A dry-run checks a fillet, chamfer, hole, or boolean before Apply, and the note says why in plain words.
+A workplane is an origin and a turn (degrees about X, then Y, then Z, the order a primitive and Place use). The turn's columns are U, V and W. It is not a kernel op and not a history node: a plate object keeps it, as `workplane`.
 
-**Model space** (`src/model-space.ts`) is the one frame the view draws every object in. Each plate object has `modelPose`, a rigid pose from its own CAD frame into that space. Absent is identity. Tools take model-space numbers. `toSolidOp` turns a boolean, a hole, or a split into the solid's own frame before the engine sees it. Stored ops, replay, and `.lime` trees stay in the solid's frame, so moving a part in model space never renames a step and never changes a cut already made.
-
-**The plate** is a different frame. `orient`, scale, and the bed offset place the mesh for slicing (`docs/part-frame.md`, `docs/plate-placement.md`). The engine slices in the part frame and adds the bed offset when it writes G-code. Place in Model does not touch that pose. A move on the plate in X or Y does not re-slice.
-
-**A primitive** is an origin and a turn (degrees about X, then Y, then Z) in the frame the op is stored in. A box grows from its origin along +X, +Y, +Z. A cylinder's origin is the bottom centre and its height is +Z. A hole is an origin and an axis; with no face picked it drills straight down, −Z. A split is a pivot and a normal. Face mode uses the area-weighted middle of a flat face and refuses a curved one ("Pick a flat face. This one is curved.").
-
-**STEP assemblies.** `load_step` (`crates/lime-slice-core/src/step.rs`) reads each instance's placement and transforms it into the root frame, then merges every closed solid into one mesh. The placement is applied on load. It is not kept as a second body. Model's per-object `modelPose` is the placement the plate object keeps after that. This feature does not split an assembly apart, and it does not change that mesh, so an unedited STEP slices as it does today.
-
-## What the workplane adds
-
-A workplane is a rigid frame in model space, on the plate object, not a kernel op and not a history node:
-
-- **Origin**, the local (0, 0, 0), in model space.
-- **Turn**, degrees about X, then Y, then Z, the same order a primitive uses. The columns of that rotation are U, V, and W.
-- **Source**: Global, Bed, or Face. The source is how the frame was set. The numbers are what later tools read.
+**It belongs to its part.** The object keeps the frame in its own frame, the frame its solid and its `modelPose` start from, so the frame moves with the part: Place, Reset in the Position row, a duplicate (which takes the copy's pose), and a split piece (which takes its parent's pose and frame). Tools see it in model space (`workplaneIn`). Separate shells drops it, since its pieces are meshes Model does not open. Datum planes in Creo, Onshape and Fusion belong to their part the same way.
 
 | Source | Frame |
 | --- | --- |
-| Global | U = X, V = Y, W = Z, origin at the model origin. This is the frame when the object has no workplane stored. |
-| Bed | The same axes, origin at the middle of the part's footprint on the bed plane. The bed is the plane already drawn under the part, at its lowest point. W points up. |
-| Face | Origin at the area-weighted middle of a picked flat face. W is the outward normal. U and V are the in-plane axes a split already uses (`inPlaneAxes` in `src/model-plane.ts`). A curved face is refused with the same sentence Split uses, and the frame stays where it was. |
+| Global | Model space: U = X, V = Y, W = Z at the model origin. A part with no frame stored has this one, and every number is what it was before workplanes. |
+| Bed | The same axes, the origin at the middle of the part's footprint on its lowest point in model space. W points up. |
+| Face | The origin at the area-weighted middle of a picked flat face, W its outward normal. U and V are the face's in-plane axes as Split works them out (`inPlaneAxes` in `src/model-plane.ts`), from the face in the part's own frame, so they run along the part's own axes however it is turned. A curved face is refused with Split's sentence, "Pick a flat face. This one is curved.", and the frame stays where it was. |
 
-The Workplane tool edits the origin and the turn. The fields and the dock gizmo write the same numbers: the U arrow moves the origin along U, and the three origin fields show where it landed; a turn ring and its field are one angle. Shift and Ctrl snap as they do on Place. The tool has no Apply. It moves as it goes, and its button reads Done. One drag, or a typed number once it rests, is one Prepare step.
+The source says how the frame was set. A typed number keeps the source; the numbers are what tools read.
 
-The frame is drawn as a wire rectangle in the UV plane, lifted a fraction of a millimetre along W so it does not sit in the surface, and a short triad at the origin. The arrows and rings that move it sit on the dock, clear of the solid, in the axis colours Prepare already uses. While the tool is open, a picked face is tinted teal rather than the accent, so it is not the ordinary face selection.
+## The Workplane tool
 
-## Where it plugs in
+- **The panel** has Global, Bed and Face, then the origin (X, Y, Z) and the turn (Turn X, Y, Z) in model space, the fields Place has, and Print with W up beside Done. It has no Apply: it moves as it goes.
+- **Face** turns Face picking on. With no flat face picked, the button stays on and the note says "Click a flat face to put the frame on it."; the next flat face picked takes the frame, and so does each face picked after it while Face is on.
+- **The dock** has three arrows that slide the origin along U, V and W, and three rings that turn it about X, Y and Z, as Place's do. A field or a handle changes only its own numbers: the others keep the frame's exact values, not the rounded ones shown, so a slide never nudges the turn. Shift and Ctrl slow and snap as on every handle.
+- **Steps.** A drag until the pointer lets go, a typed or scrubbed number once it rests 400 ms, a source button, and Print with W up are each one step. While the tool is open, Undo and Redo (the buttons, Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y) step them, and the solid's history waits until it closes, as for Place. Each is also a Prepare step, folded into the visit like an edit.
+- **The view.** The frame is drawn as a square in the UV plane, the size of the solid, lifted a hair along W off the face it sits on and faint where the solid hides it, and a U, V, W triad in the axis colours drawn over everything, so it reads inside a part too. It shows while the tool is open and whenever the part has a frame, also under Hole, Boolean and Split, and not while a step is edited. While the tool is open, a picked face is tinted teal rather than the accent. The lines are drawn once per solid size and theme and moved by a matrix, so moving the frame or the part rebuilds nothing.
+
+## What reads it
 
 ```
-fields (local U, V, W) → model space → toSolidOp → solid frame → engine
+fields (U, V, W) → model space (the workplane) → solid frame (toSolidOp) → engine
 ```
 
-The second arrow is the one this feature adds (`modelPoint`, `placePrimitive`). The third is unchanged. With the global frame the second arrow is the identity, value for value, so a boolean, a hole, and a split send the op they send today.
+The first arrow is this feature; with the global frame it is the identity, value for value, so every op is the one sent before workplanes. The second is unchanged.
 
-- **Hole, box, cylinder, and the other primitives.** The origin fields are local U, V, W. The turn is about the workplane axes, then the frame's own turn. W is the primitive's +Z: a cylinder stands along W, a box's height is W. A hole with no face picked drills along −W. A picked face still drills into that face. On the global frame −W is −Z, which is the hole Model already cuts.
-- **Split.** X, Y, and Z stay those axes on the global frame. On any other frame they are U, V, and W: the number is the coordinate along that axis from the workplane origin, and the normal is that axis. Face mode is unchanged. The op stored is still only a pivot and a normal in the solid's frame.
-- **Boolean with another object, fillet, chamfer, scale, measure, Place.** Unchanged. A join's tool is another object, placed by Place. A blend has no origin. Scale is about the solid's centre.
+- **Hole.** The origin fields are U, V, W, named so. With no face picked the hole drills along −W ("Along −W; click a face to drill into it."), and a hole opened on a workplane whose typed point is off the part starts at the frame's origin. A picked face still drills into that face. Through all and the counterbore follow the drill axis, whichever it is, as before.
+- **Boolean with a primitive.** The origin and the turn are U, V, W. The primitive turns about its own centre (`turnCentre`), so its centre goes through the frame and its turn takes the frame's turn (`planePrimitive`, through `fromSolidOp`, as `toSolidOp` takes an op into a solid's frame): a box grows from its origin along U, V, W, so one typed at 0, 0, 0 on a face stands on it. The dock's arrows, knobs and rings follow U, V, W.
+- **Split.** X, Y and Z are U, V and W, named so on the buttons and in the field: the number is where the plane crosses that axis from the frame's origin, and the plane's pivot is on that axis. Face mode and the tilts are unchanged. The op stored is still only a pivot and a normal.
+- **Unchanged:** Boolean with an object (Place moves its tool), New solid (it places itself), fillet, chamfer, scale, measure and Place.
 
-Moving or rotating the workplane carries those placements because they are stored as local numbers until Apply. The same U, V, W then resolve somewhere else in model space, and the ghost follows. Apply bakes the resolved op into the solid's frame, as every Model step already does, so a replay does not depend on the frame and a later move of the frame does not rewrite a step that has already been cut. The feature you are placing, and any tool whose numbers are still the ones you typed, moves with the frame.
+Apply bakes the op into the solid's own frame, as every Model step does. A frame moved later moves only what is still typed in it, never a step already cut.
 
-**On the plate.** When the turn is not zero, leaving the gesture sets the object's `orient` so W points up: the mesh rotation is the inverse of the workplane turn, composed with `modelPose` when the part has been turned in model space. The placer already drops the mesh onto Z = 0 and centres it on the bed, so the origin of the placed part sits near the bottom centre of its box. Returning the turn to zero restores the orient from before that tilt, in the same Prepare step. That remembered orient lasts for the visit only. Undoing back onto a tilt remembers the orient being left, so the next return to zero can restore it. Opening a file whose frame is already tilted does not remember one, so choosing Global then leaves the part as it sits, and the panel says so. A global or bed frame, and a face whose normal is already +Z, do not write `orient`. A slice that never had a tilted workplane keeps its pose and its G-code bytes.
+**Edit step.** While a step is edited, its tool's fields are the op's own numbers in model space (X, Y, Z), as `fromSolidOp` opens them, and the frame is not drawn. The step was baked in the solid's frame at Apply, and the frame may have moved since, so the frame the numbers were typed in is gone; the op's own numbers are the ones that are exact: an untouched field sends its stored number, and with no pose the panel is the op number for number. Closing the edit brings the frame back.
 
-**Each body.** The workplane is stored on the plate object, omitted when it is the untouched global frame, so an older file and a version 1 file stay as they are. A duplicate takes the frame, shifted by the same model-space move as the copy. A split piece takes the parent's frame and the parent's `modelPose`, so each piece keeps the local frame and the placement it was cut with. A `.lime` file with a workplane is version 2; an older app ignores the key and drops it on the next save, and the mesh still slices.
+## On the plate
 
-## Staged plan
+A workplane never changes the plate pose (`orient`), the mesh, or the slice. Turning the frame, putting it on a side face, or undoing it moves no part on the bed. The owner decided this on 2026-10-16, to keep with how Model works so far: CAD sketch planes in Creo, Onshape and Fusion do not move print placement either.
 
-1. **Frame math.** Global, bed, and face. Local point and direction to model space. A primitive's origin and turn. The plate rotation that stands W up. No view, no engine.
-2. **The tool.** Panel, dock gizmo, datum, face and bed and global, numeric fields kept in step with the drag. Teal pick while it is open. Prepare undo.
-3. **Placement.** Hole, primitive boolean, and split read the frame. The global frame leaves their ops unchanged.
-4. **The plate.** A tilted frame sets `orient` once per gesture. Save and reopen. Duplicate and split keep the frame.
+**Print with W up** is the explicit way. It sets the object's `orient` so W points up and U runs along +X: the plate mesh is the part's own frame lowered, so the orient is the inverse of the frame's turn as the part keeps it (`printOrient`), whatever the part's model-space pose. The placer then drops the part onto the bed as for any turn. With the global frame it is the file's own way up. It is off while the plate already prints W up. It is one step, like Prepare's Lay flat: Undo in the Workplane tool takes it back, and so does Prepare undo.
 
-The kernel, the slice request, and the G-code writer are not modified. Default G-code stays the bytes of a part that has no tilted workplane.
+## Saved
+
+`.lime` keeps `workplane: {source, origin, turn}` on each object, in its own frame, and leaves it out for the untouched global frame, so an older file opens as it did. A frame with an unknown source or a number that is not finite is a damaged file. One object with a workplane is written as version 2; an older app ignores the key, drops it on the next save, and the part still slices as it did.
+
+## Cost
+
+Nothing here asks the engine. The model-space frame is composed from the stored one and the pose when a tool reads it, a few multiplications. The datum is drawn once per solid size and theme. The split plane's cache key includes the frame, so a frame change works the plane out once.

@@ -101,7 +101,7 @@ import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
 import { state } from "./state";
-import { axesOf, drillDown, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOwn, type Workplane } from "../workplane";
+import { axesOf, drillDown, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 
 type Body = Record<string, unknown>;
 
@@ -292,7 +292,7 @@ export function bindModelView() {
     placeMoved,
     workplane: workplaneOfOpen,
     workplaneMoved,
-    faceForWorkplane,
+    faceWorkplane,
     printsWUp() {
       const obj = openObject();
       return !obj || sameMat(state.orient, printOrient(obj.workplane));
@@ -2053,16 +2053,22 @@ function workplaneOfOpen(): Workplane {
   return workplaneIn(obj?.workplane, modelPoseOf(obj ?? {}));
 }
 
-/** The last picked face in model space. Curved faces are refused; no face is null. */
-function faceForWorkplane(): FacePlane | "curved" | null {
+/**
+ * The frame on the last picked face, in model space. Its U and V are worked out from the face in the part's own frame,
+ * so they run along the part's own axes however the part is turned. A curved face is refused; no face is null.
+ */
+function faceWorkplane(): Workplane | "curved" | null {
   const face = lastFace(picks);
   const at = open;
   if (!at || face == null) return null;
   const own = flatFace(at.solid, face);
-  if (!own) return "curved";
+  return own ? workplaneIn(workplaneOnFace(own), openPose()) : "curved";
+}
+
+/** A flat face of the open solid, from its own frame into model space. */
+function posedFace(own: FacePlane | null): FacePlane | null {
   const pose = openPose();
-  if (isIdentity(pose)) return own;
-  return { point: applyPose(pose, own.point), normal: turnDir(pose, own.normal) };
+  return own && !isIdentity(pose) ? { point: applyPose(pose, own.point), normal: turnDir(pose, own.normal) } : own;
 }
 
 function sameMat(a: readonly number[], b: readonly number[]): boolean {
@@ -2270,7 +2276,7 @@ function splitState(): SplitState {
     state = { why: facePicking ? "Pick a flat face to cut from." : "Switch to Face picking, then pick a flat face to cut from.", wait: true };
   } else {
     const own = picked == null ? null : flatFace(at.solid, picked);
-    const face = own && !isIdentity(pose) ? { point: applyPose(pose, own.point), normal: turnDir(pose, own.normal) } : own;
+    const face = posedFace(own);
     const center: Vec3 = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
     let base = splitBase(mode, center, face);
     // X, Y, and Z stay those axes on the global frame. Any other frame reads them as U, V, and W from its origin.
