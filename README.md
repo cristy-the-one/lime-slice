@@ -373,6 +373,7 @@ Cube score is back to the unrecovered 3D number (11577 vs 11572) and prints in 2
 - `src-tauri` — Tauri 2 shell over the same core
 - `src` — TypeScript preview UI (2D layer canvas plus a Three.js 3D slice view)
 - `samples` — checked-in meshes
+- `docs/mcp-server.md` — design for an MCP server that slices and edits through the existing engine
 
 ## Strategies
 
