@@ -352,9 +352,11 @@ export function setModelLocked(why: string | null) {
  * and the blend's own stand-ins give way to it; a boolean keeps its tool's outline, and the handles stay.
  */
 export function setModelPreview(next: ModelSolid | null) {
+  const was = previewFresh();
+  // The view draws a shape it already shows once, and draws it again after a new solid cleared it.
   preview = tool ? next : null;
   fx.model?.setPreview(preview);
-  refreshGhost();
+  if (previewFresh() !== was) refreshGhost();
 }
 
 /** The modeler is busy with an edit or a jump: Apply is off until it is done. */
@@ -366,11 +368,12 @@ export function setModelWaiting(next: boolean) {
 
 /** The latest kernel dry-run for the open tool. Null clears it. */
 export function setModelProbe(next: ProbeView) {
+  const was = previewFresh();
   probe = next;
   refreshApply();
   refreshNote();
   // A stand-in the checked shape hid comes back while new numbers are checked.
-  refreshGhost();
+  if (previewFresh() !== was) refreshGhost();
 }
 
 /** Open `next`, or close it when it is open. Opening another tool ends an edit, which takes the view back. */
