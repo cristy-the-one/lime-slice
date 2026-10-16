@@ -126,7 +126,7 @@ test("X cuts square to the view's X: the request's normal is X, the plane starts
   expect(op.origin).toEqual([6, 10, 5]);
   await expect(labels(page)).toHaveText(["plate.step", "Split at X 6"]);
 
-  await page.locator("#modelToolSplit").click();
+  // Apply ended Split; opened again, it starts square to its base.
   await page.locator("#modelToolSplit").click();
   await page.locator("#modelSplitY").click();
   await expect(page.locator("#modelPlaneLabel")).toHaveText("Plane Y");
@@ -240,10 +240,11 @@ test("a saved project labels its splits the same after a reopen: an old Z split 
   await page.locator("#modelToolSplit").click();
   await setField(page, "modelPlane", "4");
   await applySplit(page, tree);
+  await page.locator("#modelToolSplit").click();
   await page.locator("#modelSplitX").click();
   await setField(page, "modelPlane", "10");
   await applySplit(page, tree);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await expect(labels(page)).toHaveText(["plate.step", "Split at Z 4", "Split at X 10"]);
 
   await page.locator("#tabPrepare").click();

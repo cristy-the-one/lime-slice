@@ -72,9 +72,9 @@ async function openModel(page: Page, slices: unknown[], autoOn: boolean) {
 }
 
 async function applyThreeAndUndo(page: Page) {
-  await page.locator("#modelToolBoolean").click();
   for (const volume of [6000, 8000, 10000]) {
-    // The numbers just applied leave Apply off, so each edit uses its own.
+    // Apply ends the tool, and the numbers just applied leave Apply off, so each edit opens it with its own.
+    await page.locator("#modelToolBoolean").click();
     await page.locator("#modelDx").fill(String(volume / 1000));
     await expect(page.locator("#modelApply")).toBeEnabled();
     await page.locator("#modelApply").click();

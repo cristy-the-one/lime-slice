@@ -365,7 +365,7 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   edit.setAttribute("aria-label", `Edit step: ${row.label}`);
   el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate, :scope > .mh-tool").forEach((node) => node.remove());
   label.before(railSvg(row, lanes));
-  if (row.toolStart && row.tool != null) {
+  if (row.toolStart && row.tool != null && row.tool !== row.label) {
     // The lane's first row names whose steps these are, so the merge reads at a glance.
     const chip = document.createElement("span");
     chip.className = "mh-tool";

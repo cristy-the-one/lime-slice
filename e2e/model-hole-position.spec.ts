@@ -135,7 +135,11 @@ test("Through all turns Depth and its knob off, sends a flag rather than a lengt
   expect(op).toMatchObject({ kind: "hole", radius: 2, depth: 12, through: true });
   expect(op, "no counterbore is sent while its box is off").not.toHaveProperty("counterboreRadius");
   await expect(rows(page).nth(1)).toContainText("Hole ⌀4 through");
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
 
+  // Opened again, Hole starts from the numbers applied last.
+  await page.locator("#modelToolHole").click();
+  await expect(page.locator("#modelThrough")).toBeChecked();
   await page.locator("#modelThrough").uncheck();
   await expect(page.locator("#modelHoleD")).toBeEnabled();
   await page.locator("#modelCancel").click();
@@ -178,7 +182,7 @@ test("a counterbore has its fields and knobs, a screw fills them, and Edit step 
   const sent = tree.of("apply").at(-1)!.op;
   expect(sent).toMatchObject({ kind: "hole", radius: 1.7, through: true, counterboreRadius: 3.25, counterboreDepth: 3.4 });
   await expect(rows(page).nth(1)).toContainText("Hole ⌀3.4 through, counterbore ⌀6.5 × 3.4");
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
 
   // Edit step: every new field comes back as the step has it.
   await page.keyboard.press("Shift+E");
@@ -234,7 +238,7 @@ test("the Position row shows the pose, opens Place, and Reset is one undoable st
   await openHole(page);
   await apply(page).click();
   await expect(rows(page)).toHaveCount(2);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   const calls = tree.calls.length;
 
   // Clicking the row opens Place.
