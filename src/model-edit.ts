@@ -9,7 +9,7 @@ import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
-import { ROOT, childWithOp, childrenOf, opLabel, pathTo, toolUser, type BooleanKind, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { ROOT, type JoinOp, childWithOp, childrenOf, opLabel, pathTo, toolUser, type BooleanKind, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 
 /**
  * The steps that replay under an edit of `node`, oldest first: the shown branch below it. That is the path down to the
@@ -120,8 +120,6 @@ export function builtBranch(tree: ModelTree, parent: NodeId, op: ModelOp, replay
   }
   return at;
 }
-
-type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
 /** A join on the way to a tool's step: step `id` of `tree`, which takes its tool from the next tree down. */
 export interface ToolLink {

@@ -5,7 +5,8 @@
  */
 import { formatMm } from "./model-plane.ts";
 import type { PlaceFields } from "./model-space.ts";
-import { ROOT, childrenOf, pathTo, subtree, toolUser, type ModelNode, type ModelOp, type ModelTree, type NodeId } from "./model-tree.ts";
+import type { ToolLink } from "./model-edit.ts";
+import { ROOT, childrenOf, pathTo, subtree, toolUser, type JoinOp, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
 
 /** Where a row sits against the shown step: before it in its history, it, after it on the branch Redo follows, or elsewhere. */
 export type RowState = "past" | "current" | "redo" | "other";
@@ -101,8 +102,6 @@ function redoChain(tree: ModelTree): Set<NodeId> {
   return chain;
 }
 
-type JoinOp = Extract<ModelOp, { kind: "join" }>;
-
 /** The tool a join of tree `key` takes, at the step it names, while that tree has the step; null otherwise. */
 function toolOf(trees: ReadonlyMap<string, ModelTree>, node: ModelNode | undefined, seen: ReadonlySet<string>): { tree: ModelTree; op: JoinOp } | null {
   const op = node?.op;
@@ -125,11 +124,11 @@ function historyOf(trees: ReadonlyMap<string, ModelTree>, tree: ModelTree, via: 
 }
 
 /** The step a row names, in the tree it is in: through `via`'s joins from `tree`. Null when one of them is gone. */
-export function rowStep(trees: ReadonlyMap<string, ModelTree>, tree: ModelTree, key: RowKey): { tree: ModelTree; id: NodeId; joins: { tree: ModelTree; id: NodeId; op: JoinOp }[] } | null {
+export function rowStep(trees: ReadonlyMap<string, ModelTree>, tree: ModelTree, key: RowKey): { tree: ModelTree; id: NodeId; joins: ToolLink[] } | null {
   const row = readRow(key);
   if (!row) return null;
   let at = tree;
-  const joins: { tree: ModelTree; id: NodeId; op: JoinOp }[] = [];
+  const joins: ToolLink[] = [];
   for (const join of row.via) {
     const tool = toolOf(trees, at.nodes.get(join), new Set(joins.map((link) => link.tree.key)));
     if (!tool) return null;

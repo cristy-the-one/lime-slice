@@ -194,6 +194,7 @@ test("a tool's step that no longer builds is kept broken, and so is the join it 
   await page.locator('#modelPrim [data-kind="box"]').click();
   for (const id of ["modelDx", "modelDy", "modelDz"]) await page.locator(`#${id}`).fill("10");
   await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Box 1. Volume 1000 mm³");
   await page.keyboard.press("Shift+G");
   await page.locator("#modelObjects [data-object]").first().click();
   await page.locator("#modelCut").click();

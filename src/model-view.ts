@@ -1053,6 +1053,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       renderer.setClearColor(hexToThree(colors.stage), 1);
       paintFaces();
       paintLines();
+      if (preview) showPreview(preview.shape);
       drawDatum();
       rebuildGhost();
       kick();

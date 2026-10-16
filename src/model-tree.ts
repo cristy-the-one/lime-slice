@@ -35,6 +35,9 @@ export interface JoinTool {
 
 export type BooleanKind = "fuse" | "cut" | "common";
 
+/** A join between two objects' trees: this tree's solid with `tool`'s step, placed by `relative`. */
+export type JoinOp = Extract<ModelOp, { kind: "join" }>;
+
 /** One edit, in the solid's own frame. A fresh fillet or chamfer names edges by index. */
 export type ModelOp =
   | ({ kind: "boolean"; op: BooleanKind } & PrimitiveSpec)

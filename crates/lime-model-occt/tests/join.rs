@@ -417,6 +417,24 @@ fn edits_across_trees() {
         json!([5])
     );
 
+    // A join that does not build, on a tool step that did, keeps nothing either: the tool's new step goes too.
+    let far = json!({ "m": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], "t": [500.0, 0.0, 0.0] });
+    let apart = edit(
+        json!([{ "key": "rod", "parent": 1, "node": 5, "op": { "kind": "scale", "factor": 1.1 }, "replay": [] }]),
+        join("common", "rod", 5, far),
+        5,
+        json!([]),
+    );
+    assert_eq!(apart["error"], "The solids do not overlap", "{apart}");
+    assert_eq!(
+        call(json!({ "call": "goto", "key": "rod", "node": 5 }))["missing"],
+        json!([5])
+    );
+    assert_eq!(
+        call(json!({ "call": "goto", "key": "tb", "node": 5 }))["missing"],
+        json!([5])
+    );
+
     // A tool step that no longer builds is kept broken, as in any replay, and so is the join it fed, with the target's
     // steps unbuilt under it; the target shows the last step that built, the join's parent.
     let lost_edge = json!({ "kind": "fillet", "edges": [{ "index": 0, "mid": [99.0, 99.0, 99.0], "lengthMm": 1.0 }], "size": 0.5 });

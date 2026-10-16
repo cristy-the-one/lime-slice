@@ -116,6 +116,12 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       for (const [doc, ids] of kept) for (const id of ids) doc.delete(id);
       return answer;
     };
+    // As the engine checks before it builds: each tree once, and each tool part feeding the join above it.
+    if (new Set(levels.map((level) => level.key)).size !== levels.length) return { error: "One edit changes each tree once" };
+    const tip = (level: Level) => level.replay?.at(-1)?.id ?? level.node;
+    if (levels.some((level, at) => at > 0 && !(toolOf(level.op)?.key === levels[at - 1]!.key && toolOf(level.op)?.node === tip(levels[at - 1]!)))) {
+      return { error: "Each tool tree's edit must feed the join above it" };
+    }
     const solidOf = (made: Built) => ("error" in made ? made : "kept" in made ? made.kept : made);
     const parts: Body[] = [];
     let below: { tip: number } | { error: string } | null = null;

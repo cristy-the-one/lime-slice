@@ -436,10 +436,11 @@ function scheduleProbe(wait: number) {
   }
   const key = probeName(treeKey, node, op);
   const known = answers.get(key);
+  const shape = previewOf(key);
   // A check that worked shows its shape; one whose shape left the few kept asks again, since the shape is what is shown.
-  if (known && !(shaped.has(key) && !previews.has(key))) {
+  if (known && !(shaped.has(key) && !shape)) {
     setModelProbe(known);
-    setModelPreview(previews.get(key) ?? null);
+    setModelPreview(shape);
     return;
   }
   setModelProbe({ phase: "checking" });
@@ -562,10 +563,23 @@ const previews = new Map<string, ParsedSolid>();
 const shaped = new Set<string>();
 const PREVIEWS = 4;
 
+/** A shape is meshed at a chord: kept by the answer's name and the chord it was asked at. */
+function previewName(key: string): string {
+  return `${key}@${state.stepTolerance}`;
+}
+
 function keepPreview(key: string, shape: ParsedSolid) {
-  previews.delete(key);
-  previews.set(key, shape);
+  const name = previewName(key);
+  previews.delete(name);
+  previews.set(name, shape);
   while (previews.size > PREVIEWS) previews.delete(previews.keys().next().value!);
+}
+
+/** The shape kept for an answer, the newest kept now; null when none is. */
+function previewOf(key: string): ParsedSolid | null {
+  const shape = previews.get(previewName(key));
+  if (shape) keepPreview(key, shape);
+  return shape ?? null;
 }
 
 function remember(key: string, view: ProbeView) {
@@ -916,6 +930,7 @@ export function forgetModelTrees() {
   previews.clear();
   shaped.clear();
   lens = null;
+  setModelLocked(null);
   stepKnown.clear();
   writing.clear();
   dropEdit();
@@ -948,6 +963,7 @@ export function showModel() {
   dropEdit();
   editBack = null;
   lens = null;
+  setModelLocked(null);
   const mine = ++ticket;
   picks = [];
   busy = false;
@@ -1254,6 +1270,8 @@ async function peekTool(row: RowKey) {
 /** Show step `step.id` of a tool's tree in place of the open solid, from the recent solids or the engine. The newest jump wins. */
 async function showLens(mine: number, row: RowKey, step: { tree: ModelTree; id: NodeId; joins: ToolLink[] }, message: (solid: ParsedSolid) => string): Promise<boolean> {
   const key = step.tree.key;
+  // A jump still on its way gives way to this one, even when this one needs no engine call.
+  const serial = ++jumpSerial;
   if (brokenOnPath(step.tree, step.id)) {
     readout(BROKEN);
     return false;
@@ -1263,7 +1281,6 @@ async function showLens(mine: number, row: RowKey, step: { tree: ModelTree; id: 
   const seed = seeds.get(key);
   if (solid && readSolids.has(solid) && !(seed?.live && !seed.whole)) solid = null;
   if (!solid) {
-    const serial = ++jumpSerial;
     jumping = true;
     jumpTarget = null;
     syncUndo();
@@ -1281,6 +1298,7 @@ async function showLens(mine: number, row: RowKey, step: { tree: ModelTree; id: 
     solid = decoded;
   }
   if (!open || state.stage !== "model") return false;
+  jumping = false;
   present(solid, message(solid), { row, key, node: step.id, joins: step.joins, pose: toolPose(objectPose(), step.joins), solid });
   return true;
 }
@@ -1325,8 +1343,11 @@ function dropBranch(row: RowKey): boolean {
   for (const id of subtree(tree, node)) {
     for (const name of solids.keys()) if (name.startsWith(`${nodeName(at.key, id)}@`)) solids.delete(name);
   }
+  const looked = lens && !next.nodes.has(lens.joins[0]!.id);
   modelTrees.set(at.key, next);
   void dropInEngine(at.key, node);
+  // The tool's step looked at went with its join: the part comes back.
+  if (looked) present(at.solid, about(at.solid));
   syncUndo();
   readout(about(viewed() ?? at.solid));
   return true;
@@ -1672,11 +1693,18 @@ function cancelEdit() {
   syncUndo();
   const at = open;
   const tree = treeOf(at);
-  if (!at || at.key !== run.target || !tree?.nodes.has(run.from)) return;
-  if (at.solid.id === run.from) {
-    // A tool's step was on screen: the open solid's own step comes back, which never left.
+  if (!at || at.key !== run.target) return;
+  // A tool's step was on screen: the open solid's own step comes back, which never left.
+  if (lens && at.solid.id === run.from) {
+    present(at.solid, about(at.solid));
+    return;
+  }
+  if (!tree?.nodes.has(run.from)) {
     if (lens) present(at.solid, about(at.solid));
-    else readout(about(at.solid));
+    return;
+  }
+  if (at.solid.id === run.from) {
+    readout(about(at.solid));
     return;
   }
   void showNode(ticket, at.objectId, at.key, run.from, about);
@@ -1912,7 +1940,6 @@ async function runToolEdit(run: Editing, op: ModelOp) {
   editing = null;
   editBack = { key: at.key, tip: parsed.id, back: run.from, undone: false };
   closeModelTool();
-  if (op.kind === "join" && !op.keepTool) takeOffPlate(op.tool.object);
   // Each tool level's name, deepest first: the name the join above it gives it.
   const nameOf = (i: number) => run.joins[run.joins.length - 1 - i]!.op.tool.name;
   const label = (key: string, id: NodeId) => stepLabel(modelTrees.get(key)!.nodes.get(id)!);
@@ -2836,8 +2863,15 @@ async function wholeTools(key: string, node: NodeId, request: Body): Promise<str
   const joinsTo = (tree: ModelTree | undefined, at: NodeId) =>
     tree ? pathTo(tree, at).flatMap((id) => { const op = tree.nodes.get(id)?.op; return op?.kind === "join" ? [op.tool] : []; }) : [];
   // The op sent, and an edit's replayed ops, can each be a join.
-  const sent = [request.op, ...(Array.isArray(request.replay) ? (request.replay as { op?: unknown }[]).map((step) => step.op) : [])];
-  const queue = [...joinsTo(modelTrees.get(key), node), ...sent.flatMap((op) => (isOp(op) && op.kind === "join" ? [op.tool] : []))];
+  const ops = (body: Body) => [body.op, ...(Array.isArray(body.replay) ? (body.replay as { op?: unknown }[]).map((step) => step.op) : [])];
+  // An edit across trees sends each tool tree's part too: its path, its op and its replay can name a tool as well.
+  const parts = Array.isArray(request.tools) ? (request.tools as Body[]) : [];
+  const sent = [request, ...parts].flatMap(ops);
+  const queue = [
+    ...joinsTo(modelTrees.get(key), node),
+    ...parts.flatMap((part) => (typeof part.key === "string" && typeof part.parent === "number" ? joinsTo(modelTrees.get(part.key), part.parent) : [])),
+    ...sent.flatMap((op) => (isOp(op) && op.kind === "join" ? [op.tool] : [])),
+  ];
   const seen = new Set<string>();
   for (let tool = queue.pop(); tool !== undefined; tool = queue.pop()) {
     if (seen.has(`${tool.key}#${tool.node}`)) continue;
