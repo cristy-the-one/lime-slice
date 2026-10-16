@@ -22,6 +22,7 @@ import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
 import { adoptSavedTrees, captureOpenSolid, historyToSave } from "./model.ts";
 import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
+import { copyWorkplane } from "../workplane.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
 import { session, state } from "./state.ts";
@@ -198,7 +199,7 @@ function fileObjects({ trees, tools }: Awaited<ReturnType<typeof historyToSave>>
     if (reinforce.length > 0) row.reinforcement = reinforce.map((reg) => structuredClone(reg));
     if (obj.brep) row.brep = record(stepFileName(obj.fileName), obj.brep);
     if (obj.modelPose) row.modelPose = { m: [...obj.modelPose.m], t: [...obj.modelPose.t] };
-    if (obj.workplane) row.workplane = { source: obj.workplane.source, origin: [...obj.workplane.origin], turn: [...obj.workplane.turn] };
+    if (obj.workplane) row.workplane = copyWorkplane(obj.workplane);
     const seat = meshSeat(obj.bytes);
     if (seat !== undefined) row.meshSeatMm = seat;
     const saved = trees.get(obj.id);

@@ -1,23 +1,26 @@
-import { rotX, type Mat3 } from "./mesh-place.ts";
-import { clearOrientBase, orientBaseOf, syncOrientBase } from "./workplane-orient.ts";
-import type { PrimitiveSpec } from "./model-primitive.ts";
+import { eulerOrient, type Mat3 } from "./mesh-place.ts";
+import { turnCentre, type PrimitiveSpec } from "./model-primitive.ts";
+import { IDENTITY_POSE, applyPose, inversePose, toSolidOp, type Affine } from "./model-space.ts";
 import {
   CURVED_FACE,
   GLOBAL_WORKPLANE,
   axesOf,
+  drillDown,
+  isGlobalFrame,
   isIdentityFrame,
-  isUntilted,
-  modelDir,
-  modelPoint,
-  modelToLocal,
-  placePrimitive,
+  localPoint,
+  planePoint,
+  planePrimitive,
   printOrient,
   readWorkplane,
   sameWorkplane,
-  shiftWorkplane,
+  workplaneIn,
   workplaneNote,
   workplaneOnBed,
   workplaneOnFace,
+  workplaneOwn,
+  type Vec3,
+  type Workplane,
 } from "./workplane.ts";
 
 let failed = 0;
@@ -28,127 +31,120 @@ function eq(name: string, got: unknown, want: unknown) {
   failed += 1;
   console.error(`FAIL ${name}\n  got  ${left}\n  want ${right}`);
 }
-function check(name: string, ok: boolean) {
+function check(name: string, ok: boolean, detail = "") {
   if (ok) return;
   failed += 1;
-  console.error(`FAIL ${name}`);
+  console.error(`FAIL ${name} ${detail}`);
 }
-function near(a: number, b: number, tol = 1e-6) {
-  return Math.abs(a - b) < tol;
+const near = (a: number, b: number, tol = 1e-9) => Math.abs(a - b) < tol;
+const nearVec = (a: readonly number[], b: readonly number[], tol = 1e-9) => a.length === b.length && a.every((value, i) => near(value, b[i]!, tol));
+const nearSet = (a: readonly Vec3[], b: readonly Vec3[]) => a.length === b.length && a.every((p) => b.some((q) => nearVec(p, q, 1e-9)));
+
+const box: PrimitiveSpec = { primitive: "box", origin: [0, 0, 0], size: [4, 5, 6], radius: 0, height: 0, turn: [0, 0, 0] };
+const cylinder: PrimitiveSpec = { primitive: "cylinder", origin: [1, 2, 0], size: [0, 0, 0], radius: 3, height: 8, turn: [0, 0, 0] };
+
+/** The corners of a box primitive where the kernel builds it: grown from its origin, then turned about its centre. */
+function boxCorners(spec: PrimitiveSpec): Vec3[] {
+  const half = turnCentre(spec);
+  const m = eulerOrient(spec.turn[0], spec.turn[1], spec.turn[2]);
+  const centre = [spec.origin[0] + half[0], spec.origin[1] + half[1], spec.origin[2] + half[2]];
+  const out: Vec3[] = [];
+  for (let c = 0; c < 8; c += 1) {
+    const d = [(c & 1 ? spec.size[0] : 0) - half[0], (c & 2 ? spec.size[1] : 0) - half[1], (c & 4 ? spec.size[2] : 0) - half[2]];
+    out.push(applyPose({ m, t: centre as Vec3 }, d));
+  }
+  return out;
 }
-function nearVec(a: readonly number[], b: readonly number[], tol = 1e-6) {
-  return a.length === b.length && a.every((value, i) => near(value, b[i]!, tol));
-}
 
-const box: PrimitiveSpec = {
-  primitive: "box",
-  origin: [10, 0, 0],
-  size: [4, 5, 6],
-  radius: 0,
-  height: 0,
-  turn: [0, 0, 0],
-};
+// The global frame is model space, number for number.
+check("the global frame is the identity, and not stored", isIdentityFrame(GLOBAL_WORKPLANE) && isGlobalFrame(GLOBAL_WORKPLANE));
+eq("its axes are X, Y, Z", axesOf(GLOBAL_WORKPLANE), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+eq("a point keeps its numbers", planePoint(GLOBAL_WORKPLANE, [10, 2, 3]), [10, 2, 3]);
+eq("a hole drills straight down", drillDown(GLOBAL_WORKPLANE), [0, 0, -1]);
+check("a primitive is sent as typed", planePrimitive(box, GLOBAL_WORKPLANE) === box);
+check("a bed frame at the origin is not the untouched global frame", !isGlobalFrame({ source: "bed", origin: [0, 0, 0], turn: [0, 0, 0] }));
 
-check("the global frame is the identity", isIdentityFrame(GLOBAL_WORKPLANE) && isUntilted(GLOBAL_WORKPLANE));
-eq("the global axes are X, Y, Z", axesOf(GLOBAL_WORKPLANE), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
-eq("an identity frame keeps a point's numbers", modelPoint(GLOBAL_WORKPLANE, [10, 2, 3]), [10, 2, 3]);
-eq("an identity frame keeps a direction", modelDir(GLOBAL_WORKPLANE, [0, 0, -1]), [0, 0, -1]);
-check("an identity frame returns the primitive itself", placePrimitive(box, GLOBAL_WORKPLANE) === box);
-eq("an untilted frame does not rotate the plate", printOrient(GLOBAL_WORKPLANE, [1, 0, 0, 0, 1, 0, 0, 0, 1]), null);
-
-const shifted = { ...GLOBAL_WORKPLANE, origin: [5, 6, 7] as [number, number, number] };
-eq("a moved frame carries a local point", modelPoint(shifted, [10, 0, 0]), [15, 6, 7]);
-eq("the point comes back", modelToLocal(shifted, [15, 6, 7]), [10, 0, 0]);
-const moved = placePrimitive(box, shifted);
-eq("a moved frame carries a box and keeps its turn", [moved.origin, moved.turn, moved.size], [[15, 6, 7], [0, 0, 0], [4, 5, 6]]);
-check("the original spec is untouched", box.origin[0] === 10);
-
+// A moved, untilted frame moves the numbers exactly and keeps the turn.
 const bed = workplaneOnBed({ min: [0, 0, 0], max: [20, 10, 8] });
 eq("the bed frame sits under the middle, on the floor", bed, { source: "bed", origin: [10, 5, 0], turn: [0, 0, 0] });
-check("the bed frame does not tilt the plate", isUntilted(bed) && printOrient(bed, [1, 0, 0, 0, 1, 0, 0, 0, 1]) === null);
+eq("a local point on it is the footprint's middle plus the numbers", planePoint(bed, [1, 2, 3]), [11, 7, 3]);
+eq("and comes back", localPoint(bed, [11, 7, 3]), [1, 2, 3]);
+eq("it still drills straight down", drillDown(bed), [0, 0, -1]);
+eq("a box on it moves and keeps its turn", planePrimitive({ ...box, turn: [0, 30, 0] }, bed).origin, [10, 5, 0]);
+eq("exactly", planePrimitive({ ...box, turn: [0, 30, 0] }, bed).turn, [0, 30, 0]);
 
-const top = workplaneOnFace({ point: [10, 5, 8], normal: [0, 0, 1] });
-eq("a top face is U X, V Y, W Z at the face", [top.source, top.origin, top.turn], ["face", [10, 5, 8], [0, 0, 0]]);
-eq("a hole at the local origin starts on that face", modelPoint(top, [0, 0, 0]), [10, 5, 8]);
-eq("and drills along -W, which is straight down", modelDir(top, [0, 0, -1]), [0, 0, -1]);
-
+// A side face: W is its outward normal, so a box grows out of the face and a hole drills into it.
 const side = workplaneOnFace({ point: [20, 5, 4], normal: [1, 0, 0] });
 const [u, v, w] = axesOf(side);
-check("a side face has W along its normal", nearVec(w, [1, 0, 0]));
-check("U and V lie in the face", near(dot(u, w), 0) && near(dot(v, w), 0) && near(dot(u, v), 0));
-check("the frame stays right-handed", nearVec(cross(u, v), w));
-const stepped = modelPoint(side, [3, 0, 4]);
-check("the step is 3 along U and 4 along W from the face", nearVec(stepped, add(side.origin, add(scale(u, 3), scale(w, 4)))));
-eq("drilling -W goes into the material", modelDir(side, [0, 0, -1]).map(round6), scale(w, -1).map(round6));
-const stood = placePrimitive({ ...box, origin: [0, 0, 0], turn: [0, 0, 0] }, side);
-check("a box on the side face turns so its height follows W", nearVec(axesOf({ ...side, origin: [0, 0, 0], turn: stood.turn })[2], w));
+check("W is the face's normal", nearVec(w, [1, 0, 0]));
+check("U and V lie in the face, right-handed", near(dot(u, w), 0) && near(dot(v, w), 0) && near(dot(u, v), 0) && nearVec(cross(u, v), w));
+check("the step is 3 along U and 4 along W from the face", nearVec(planePoint(side, [3, 0, 4]), add(side.origin, add(scale(u, 3), scale(w, 4)))));
+check("and comes back", nearVec(localPoint(side, planePoint(side, [3, -2, 4])), [3, -2, 4]));
+check("a hole drills along −W, into the material", nearVec(drillDown(side), [-1, 0, 0]));
+// The box typed at U, V, W 0 grows over [0, 4] × [0, 5] × [0, 6] of the frame: its corners are the frame's corners.
+const want = boxCorners({ ...box }).map((p) => planePoint(side, p));
+check("a box typed on the face sits on the face and grows along U, V, W", nearSet(boxCorners(planePrimitive(box, side)), want), JSON.stringify(boxCorners(planePrimitive(box, side))));
+const turned = { ...box, origin: [-2, 1, 0] as Vec3, turn: [0, 0, 30] as Vec3 };
+check("a box with a turn of its own turns about its centre in the frame", nearSet(boxCorners(planePrimitive(turned, side)), boxCorners(turned).map((p) => planePoint(side, p))));
+const stood = planePrimitive(cylinder, side);
+const stoodAxis = axesOf({ ...side, turn: stood.turn })[2];
+// The kernel turns it about the middle of its axis, so its bottom centre is that middle less half its height along the axis.
+const bottom = add(add(stood.origin, [0, 0, cylinder.height / 2]), scale(stoodAxis, -cylinder.height / 2));
+check("a cylinder stands along W, its bottom centre where it was typed", nearVec(stoodAxis, w) && nearVec(bottom, planePoint(side, cylinder.origin)));
+const ball = planePrimitive({ ...box, primitive: "sphere", radius: 2, origin: [1, 1, 1] }, side);
+check("a sphere only moves", nearVec(ball.origin, planePoint(side, [1, 1, 1])) && ball.turn.every((value) => value === 0));
 
-const tilt = { source: "face" as const, origin: [0, 0, 0] as [number, number, number], turn: [90, 0, 0] as [number, number, number] };
-check("a quarter turn about X lays W along -Y", nearVec(axesOf(tilt)[2], [0, -1, 0]));
-const orient = printOrient(tilt, [1, 0, 0, 0, 1, 0, 0, 0, 1]);
-check("print orient maps W to +Z", orient != null && nearVec(mulDir(orient, axesOf(tilt)[2]), [0, 0, 1]));
-check("and U to +X", orient != null && nearVec(mulDir(orient, axesOf(tilt)[0]), [1, 0, 0]));
-const posed = printOrient(tilt, rotX(90));
-const meshW = mulDir(transpose(rotX(90)), axesOf(tilt)[2]);
-check("a part already turned in model space still prints W up", posed != null && nearVec(mulDir(posed, meshW), [0, 0, 1]));
+// A turned frame, then the solid's pose: the op the engine builds is where the frame put it.
+const tilted: Workplane = { source: "global", origin: [5, -3, 2], turn: [30, -20, 75] };
+const pose: Affine = { m: eulerOrient(10, 40, -60), t: [12, 7, -4] };
+const solidOp = toSolidOp({ kind: "boolean", op: "cut", ...planePrimitive(box, tilted) }, pose) as Extract<ReturnType<typeof toSolidOp>, { kind: "boolean" }>;
+const back = inversePose(pose);
+check("through the solid's pose, the box's corners are the frame's", nearSet(boxCorners(solidOp), boxCorners(box).map((p) => applyPose(back, planePoint(tilted, p)))));
 
-const copy = shiftWorkplane(side, [30, 0, 0]);
-eq("a copy's frame moves with the part", [copy.origin[0] - side.origin[0], copy.turn], [30, side.turn]);
-check("two equal frames compare equal", sameWorkplane(top, { ...top }));
+// A part keeps its frame in its own frame: Place moves the frame with the part.
+const own = workplaneOwn(side, pose);
+check("own and model space round-trip", nearVec(workplaneIn(own, pose).origin, side.origin) && nearVec(axesOf(workplaneIn(own, pose)).flat(), axesOf(side).flat()));
+const moved: Affine = { m: pose.m, t: [pose.t[0] + 30, pose.t[1], pose.t[2]] };
+check("a move of the part moves its frame by the same", nearVec(workplaneIn(own, moved).origin, add(side.origin, [30, 0, 0])) && nearVec(axesOf(workplaneIn(own, moved)).flat(), axesOf(side).flat()));
+const spun: Affine = { m: eulerOrient(0, 0, 90), t: [0, 0, 0] };
+check("a turn of the part turns its frame with it", nearVec(axesOf(workplaneIn(side, spun))[2], [0, 1, 0]));
+check("an identity pose keeps the stored frame itself", workplaneIn(side, IDENTITY_POSE) === side && workplaneOwn(side, IDENTITY_POSE) === side);
+eq("no frame stored is the global frame at any pose", workplaneIn(undefined, pose), GLOBAL_WORKPLANE);
 
-eq("the global note names the axes", workplaneNote(GLOBAL_WORKPLANE, null).text.startsWith("U is X"), true);
-eq("a tilted note says the part sits up", workplaneNote(tilt, null).text.includes("W points up"), true);
-eq("a curved face is refused in plain words", workplaneNote(GLOBAL_WORKPLANE, CURVED_FACE), { text: CURVED_FACE, bad: true });
-check("the refusal does not name a kernel", !CURVED_FACE.includes("OCCT") && !CURVED_FACE.includes("BRep"));
+// Print with W up, from the frame as the part keeps it: the plate mesh is the part's own frame, lowered.
+eq("the global frame prints the file's own way up", printOrient(undefined), [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+const up = printOrient(own);
+check("W, in the part's own frame, prints up", nearVec(mulDir(up, axesOf(own)[2]), [0, 0, 1]));
+check("and U along X", nearVec(mulDir(up, axesOf(own)[0]), [1, 0, 0]));
+check("two equal frames compare equal, and a moved one does not", sameWorkplane(side, { ...side }) && !sameWorkplane(side, { ...side, origin: [21, 5, 4] }));
 
-eq("a saved frame round-trips", readWorkplane({ source: "bed", origin: [1, 2, 3], turn: [0, 0, 0] }), { source: "bed", origin: [1, 2, 3], turn: [0, 0, 0] });
-eq("a damaged frame is refused", readWorkplane({ source: "face", origin: [1, 2], turn: [0, 0, 0] }), null);
-eq("an unknown source is refused", readWorkplane({ source: "sketch", origin: [0, 0, 0], turn: [0, 0, 0] }), null);
-
-// A local turn survives a frame whose own turn is zero, number for number.
-const spun = placePrimitive({ ...box, turn: [0, 30, 0] }, shifted);
-eq("an untilted frame keeps the typed turn", spun.turn, [0, 30, 0]);
-
-const flat: Mat3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-const spunOrient: Mat3 = [0, -1, 0, 1, 0, 0, 0, 0, 1];
-syncOrientBase("step-tilt", true, false, flat);
-eq("a tilt from an untilted frame remembers the orient being left", orientBaseOf("step-tilt"), flat);
-syncOrientBase("step-tilt", false, false, spunOrient);
-eq("a later tilt keeps the first remembered orient", orientBaseOf("step-tilt"), flat);
-syncOrientBase("step-tilt", false, true, spunOrient);
-eq("an untilted arrival drops the remembered orient", orientBaseOf("step-tilt"), undefined);
-syncOrientBase("step-none", true, false, null);
-eq("a tilt with no leaving orient remembers nothing", orientBaseOf("step-none"), undefined);
-clearOrientBase("step-tilt");
+// The note and the saved form.
+eq("the global note names the axes", workplaneNote(GLOBAL_WORKPLANE, null), { text: "U, V, W are X, Y, Z. Pick Bed or Face, or type a frame.", bad: false });
+eq("the face note says where W points", workplaneNote(side, null).text, "On the picked face, W out of it. Hole, Boolean, and Split use this frame.");
+eq("a problem is said instead", workplaneNote(side, CURVED_FACE), { text: CURVED_FACE, bad: true });
+eq("a saved frame reads", readWorkplane({ source: "bed", origin: [1, 2, 3], turn: [0, 0, 0] }), { source: "bed", origin: [1, 2, 3], turn: [0, 0, 0] });
+eq("a short origin is damaged", readWorkplane({ source: "face", origin: [1, 2], turn: [0, 0, 0] }), null);
+eq("an unknown source is damaged", readWorkplane({ source: "sketch", origin: [0, 0, 0], turn: [0, 0, 0] }), null);
+eq("a number that is not finite is damaged", readWorkplane({ source: "face", origin: [0, 0, 0], turn: [0, Infinity, 0] }), null);
 
 if (failed > 0) {
   console.error(`${failed} failed`);
   throw new Error(`workplane: ${failed} failed`);
 }
-console.log("workplane: frame, placement, and plate orient ok");
+console.log("workplane: frames, placement, own frame, and print orient ok");
 
-function round6(value: number) {
-  return Math.round(value * 1e6) / 1e6;
-}
 function dot(a: readonly number[], b: readonly number[]) {
   return a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
 }
-function cross(a: readonly number[], b: readonly number[]): [number, number, number] {
+function cross(a: readonly number[], b: readonly number[]): Vec3 {
   return [a[1]! * b[2]! - a[2]! * b[1]!, a[2]! * b[0]! - a[0]! * b[2]!, a[0]! * b[1]! - a[1]! * b[0]!];
 }
-function scale(a: readonly number[], k: number): [number, number, number] {
+function scale(a: readonly number[], k: number): Vec3 {
   return [a[0]! * k, a[1]! * k, a[2]! * k];
 }
-function add(a: readonly number[], b: readonly number[]): [number, number, number] {
+function add(a: readonly number[], b: readonly number[]): Vec3 {
   return [a[0]! + b[0]!, a[1]! + b[1]!, a[2]! + b[2]!];
 }
-function mulDir(m: Mat3, d: readonly number[]): [number, number, number] {
-  return [
-    m[0] * d[0]! + m[1] * d[1]! + m[2] * d[2]!,
-    m[3] * d[0]! + m[4] * d[1]! + m[5] * d[2]!,
-    m[6] * d[0]! + m[7] * d[1]! + m[8] * d[2]!,
-  ];
-}
-function transpose(m: Mat3): Mat3 {
-  return [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
+function mulDir(m: Mat3, d: readonly number[]): Vec3 {
+  return [m[0] * d[0]! + m[1] * d[1]! + m[2] * d[2]!, m[3] * d[0]! + m[4] * d[1]! + m[5] * d[2]!, m[6] * d[0]! + m[7] * d[1]! + m[8] * d[2]!];
 }

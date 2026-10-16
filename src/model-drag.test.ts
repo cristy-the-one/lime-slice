@@ -235,25 +235,36 @@ eq("a point label", dragLabel({ label: "A", unit: "mm" }, [1, 2, 3]), "A 1, 2, 3
 const a: Vec3 = [0, 0, 0];
 eq("the measure note", measureNote(a, [3, 4, 0]), "Distance 5 mm. ΔX 3, ΔY 4, ΔZ 0 mm.");
 
-const wp = handlesFor("plane", context("box"));
+const wp = handlesFor("workplane", context("box"));
 eq("the workplane drags from the dock", wp.map(docked), [true, true, true, true, true, true]);
-eq("its origin arrows slide the point along X, Y, Z", wp.filter((handle) => handle.id.startsWith("wp-")).map((handle) => [handle.fields, handle.dir]), [
-  [["modelWpU", "modelWpV", "modelWpW"], [1, 0, 0]],
-  [["modelWpU", "modelWpV", "modelWpW"], [0, 1, 0]],
-  [["modelWpU", "modelWpV", "modelWpW"], [0, 0, 1]],
+eq("on the global frame its arrows slide the origin along X, Y, Z", wp.filter((handle) => handle.kind === "axis").map((handle) => [handle.fields, handle.dir, handle.label]), [
+  [["modelWpX", "modelWpY", "modelWpZ"], [1, 0, 0], "Move U"],
+  [["modelWpX", "modelWpY", "modelWpZ"], [0, 1, 0], "Move V"],
+  [["modelWpX", "modelWpY", "modelWpZ"], [0, 0, 1], "Move W"],
 ]);
-eq("its rings turn U, V, W", wp.filter((handle) => handle.kind === "ring").map((handle) => handle.fields[0]), ["modelWpRu", "modelWpRv", "modelWpRw"]);
-const idAxes = axesOf(GLOBAL_WORKPLANE);
-eq("identity axes keep the box move on world X", handlesFor("boolean", context("box", { frame: idAxes, frameOrigin: [0, 0, 0] })).find((handle) => handle.id === "move-x")!.dir, [1, 0, 0]);
-const idHole = handlesFor("hole", context("box", { frame: idAxes, frameOrigin: [0, 0, 0] })).filter((handle) => handle.id.startsWith("hole-move-"));
-eq("an identity frame still slides a hole on three fields along +X and +Y", [idHole.map((handle) => handle.fields[0] === undefined ? handle.fields.length : handle.fields.length), idHole.map((handle) => handle.dir)], [[3, 3], [[1, 0, 0], [0, 1, 0]]]);
-const shiftedHole = handlesFor("hole", context("box", { frame: idAxes, frameOrigin: [10, 0, 0] })).find((handle) => handle.id === "hole-origin")!;
-eq("a moved frame puts the hole dot on the model-space point", originOf(shiftedHole), [12, 3, 10]);
-const sideAxes = axesOf(workplaneOnFace({ point: [20, 5, 4], normal: [1, 0, 0] }));
-const sideMoves = handlesFor("boolean", context("box", { frame: sideAxes })).filter((handle) => handle.id.startsWith("move-"));
-eq("a turned frame moves a box along U, V, W", sideMoves.map((handle) => [handle.fields[0], handle.dir]), [["modelX", sideAxes[0]], ["modelY", sideAxes[1]], ["modelZ", sideAxes[2]]]);
-const sideSlides = handlesFor("hole", context("box", { frame: sideAxes, frameOrigin: [20, 5, 4] })).filter((handle) => handle.id.startsWith("hole-move-"));
+eq("its rings turn it about model X, Y, Z, as Place's do", wp.filter((handle) => handle.kind === "ring").map((handle) => [handle.fields[0], handle.label]), [["modelWpRx", "Turn X"], ["modelWpRy", "Turn Y"], ["modelWpRz", "Turn Z"]]);
+const sideFace = workplaneOnFace({ point: [20, 5, 4], normal: [1, 0, 0] });
+const sideAxes = axesOf(sideFace);
+const sideWp = handlesFor("workplane", context("box", { frame: sideFace })).filter((handle) => handle.kind === "axis");
+eq("on a side face its arrows slide the origin along U, V, W", sideWp.map((handle) => handle.dir), sideAxes);
+
+eq("the global frame keeps the box's arrows on X", handlesFor("boolean", context("box", { frame: GLOBAL_WORKPLANE })).filter((handle) => handle.id.startsWith("move-")).map((handle) => [handle.dir, handle.label]), [[[1, 0, 0], "Move X"], [[0, 1, 0], "Move Y"], [[0, 0, 1], "Move Z"]]);
+const globalHole = handlesFor("hole", context("box", { frame: GLOBAL_WORKPLANE }));
+eq("and the hole's slides on three fields, as before workplanes", globalHole.filter((handle) => handle.id.startsWith("hole-move-")).map((handle) => [handle.fields.length, handle.dir]), [[3, [1, 0, 0]], [3, [0, 1, 0]]]);
+check("and the hole's dot writes model space", globalHole.find((handle) => handle.id === "hole-origin")!.frame === undefined);
+
+const bed = { source: "bed" as const, origin: [10, 0, 0] as Vec3, turn: [0, 0, 0] as Vec3 };
+const bedHole = handlesFor("hole", context("box", { frame: bed }));
+eq("a moved frame puts the hole dot on the model-space point", originOf(bedHole.find((handle) => handle.id === "hole-origin")!), [12, 3, 10]);
+check("and the dot writes the frame's U, V, W", bedHole.find((handle) => handle.id === "hole-origin")!.frame === bed);
+eq("a moved frame names its arrows U and V", bedHole.filter((handle) => handle.id.startsWith("hole-move-")).map((handle) => [handle.fields, handle.label]), [[["modelX"], "Move U"], [["modelY"], "Move V"]]);
+const sideMoves = handlesFor("boolean", context("box", { frame: sideFace })).filter((handle) => handle.id.startsWith("move-"));
+eq("a turned frame moves a box along U, V, W", sideMoves.map((handle) => [handle.fields[0], handle.dir, handle.label]), [["modelX", sideAxes[0], "Move U"], ["modelY", sideAxes[1], "Move V"], ["modelZ", sideAxes[2], "Move W"]]);
+const sideKnob = handlesFor("boolean", context("box", { frame: sideFace })).find((handle) => handle.fields[0] === "modelDz")!;
+check("and its height knob runs along W", nearVec(sideKnob.dir, sideAxes[2]));
+const sideSlides = handlesFor("hole", context("box", { frame: sideFace })).filter((handle) => handle.id.startsWith("hole-move-"));
 eq("a turned frame slides a hole along U and V, one field each", sideSlides.map((handle) => [handle.fields, handle.dir]), [[["modelX"], sideAxes[0]], [["modelY"], sideAxes[1]]]);
+eq("a split on a workplane names its arrow by U, V, W", handlesFor("split", context("box", { frame: sideFace })).find((handle) => handle.id === "plane")!.label, "Plane W");
 
 if (failed) {
   console.error(`model-drag: ${failed} failed`);

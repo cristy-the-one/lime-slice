@@ -5,9 +5,6 @@ import { KLIPPER_NUMBERS, saveProfile } from "../profiles";
 import { restoreFan, snapFan, withFan } from "../fan";
 import { emptyOverrides } from "../overrides";
 import { emptyPlate, pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate } from "../plate";
-import type { Mat3 } from "../mesh-place.ts";
-import { isUntilted } from "../workplane";
-import { syncOrientBase } from "../workplane-orient";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
 import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setActiveFirmwareArcs, setAdvance, setFan, setNozzleTemp, setRetract } from "../ui/machine-library";
@@ -155,15 +152,8 @@ function applySnap(snap: EditSnap) {
   if (snap.plate && snap.plate.objects.length > 0) {
     const revived = revivePlate(snap.plate);
     if (revived) {
-      const live = state.plate.objects;
-      for (const obj of revived.objects) {
-        const was = live.find((item) => item.id === obj.id);
-        const leaving = was && (!was.workplane || isUntilted(was.workplane));
-        syncOrientBase(obj.id, leaving === true, !obj.workplane || isUntilted(obj.workplane), was ? ([...was.orient] as Mat3) : null);
-      }
       state.plate = revived;
       applySelectedToState(revived);
-      fx.syncModelFrame?.();
     }
   } else if (snap.meshless) {
     // Before Model's New solid on an empty plate: the plate is empty again. A file still being read has its mesh
