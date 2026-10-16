@@ -592,6 +592,21 @@ export function addedSolid(plate: PlateState, mesh: IncomingMesh, id: string, mo
   return { objects: [...plate.objects, placed], selectedId: placed.id };
 }
 
+/**
+ * The plate after a live-bridge mirror: `objects` in order, each held for undo as an added one is.
+ * The selection stays when it is still on the plate.
+ */
+export function mirroredPlate(objects: PlateObject[], selectedId: string | null): PlateState {
+  for (const obj of objects) hold(obj);
+  const keep = selectedId && objects.some((obj) => obj.id === selectedId) ? selectedId : objects[0]?.id ?? null;
+  return { objects, selectedId: keep };
+}
+
+/** A mirrored object the desktop did not have: its mesh as the server read it, at the server's pose. */
+export function bridgedObject(id: string, name: string, mesh: IncomingMesh): PlateObject {
+  return freshObject(id, name, mesh);
+}
+
 /** An object as a mesh arrives: unturned, unscaled, unpainted. */
 function freshObject(id: string, name: string, mesh: IncomingMesh): PlateObject {
   return {

@@ -1,14 +1,12 @@
 /**
- * Live bridge: plate snapshots and a commit as a mesh hash plus a STEP file.
+ * Live bridge: plate snapshots, each mesh sent once, and a commit as a new mesh.
  * The Tauri listener is not started here.
  */
-import { readFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { BRIDGE_RELOAD, mirrorPlate, type BridgeMessage, type MirrorObject } from "../src/bridge.ts";
-import { fnv1aHex } from "../src/slice-action.ts";
+import { mirrorPlate, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../src/bridge.ts";
 
 import { fakeEngine } from "./engine.ts";
 import { Session } from "./session.ts";
@@ -30,32 +28,34 @@ function check(name: string, ok: boolean, detail = "") {
 const session = new Session(fakeEngine());
 const call = (name: string, args: unknown = {}) => session.call(name, args);
 
-let desktop: MirrorObject[] = [];
-let seen = 0;
-const history = { steps: ["desktop"] };
+/** The desktop keeps the last mesh each object was sent, as the app does. */
+type Held = { source: Float32Array; fileName: string };
+let desktop: MirrorObject<Held>[] = [];
+let seen: BridgeSeen = { session: "", seq: 0 };
+let owned = new Set<string>();
 
 async function take(name: string, args: unknown = {}) {
   const value = await call(name, args);
   const message = session.bridgeSnapshot() as BridgeMessage | null;
-  const mirrored = message
-    ? mirrorPlate(desktop, message, seen, (path) => {
-        try {
-          return new Uint8Array(readFileSync(path));
-        } catch {
-          return null;
-        }
-      })
-    : null;
+  const mirrored = message ? mirrorPlate(desktop, message, seen, owned) : null;
   if (mirrored?.applied) {
-    desktop = mirrored.plate.map((obj) => (obj.history ? obj : { ...obj, history }));
-    seen = mirrored.seenSeq;
+    desktop = mirrored.plate.map((obj) => (obj.mesh ? { ...obj, extra: { source: obj.mesh.source, fileName: obj.mesh.fileName } } : obj));
+    seen = mirrored.seen;
+    owned = mirrored.owned;
   }
   return { value, message, mirrored };
 }
 
 const made = await take("solid_new", { dx: 20, dy: 20, dz: 20 });
 const object = String(made.value.object);
-check("a new solid is on the mirrored plate", made.mirrored?.applied === true && desktop.length === 1 && desktop[0]?.id === object, JSON.stringify(made.message?.plate));
+check("a new solid is not on the plate before its first commit", made.mirrored?.applied === true && desktop.length === 0 && made.message?.plate?.length === 0, JSON.stringify(made.message?.plate));
+const first = await take("model_commit", { object });
+const firstMesh = first.message?.meshes?.[String(first.message?.commit?.meshHash)];
+check(
+  "its first commit sends the mesh the server slices",
+  first.value.ok === true && desktop.length === 1 && desktop[0]?.id === object && (desktop[0].extra?.source.length ?? 0) >= 9 && firstMesh?.fileName.endsWith(".step") === true,
+  JSON.stringify({ plate: first.message?.plate, meshes: Object.keys(first.message?.meshes ?? {}) }),
+);
 
 const plane = await take("workplane_set", { object, source: "face", origin: [0, 0, 20], turn: [0, 90, 0] });
 check("setting a workplane does not commit a mesh", plane.value.ok === true && plane.message?.commit === undefined && desktop.length === 1);
@@ -72,30 +72,32 @@ const gone = await take("object_remove", { object });
 check("remove clears the mirrored plate", gone.value.ok === true && desktop.length === 0, JSON.stringify(gone.message?.plate));
 
 const back = await take("plate_undo");
-check("undo puts the object back", back.value.ok === true && desktop.length === 1 && desktop[0]?.id === object);
+check("undo puts the object back and sends the mesh the desktop dropped", back.value.ok === true && desktop.length === 1 && desktop[0]?.id === object && back.message?.meshes !== undefined);
+const listedAgain = await take("plate_list", {});
+check("a step that keeps the plate sends no mesh", listedAgain.message?.meshes === undefined);
 const listed = await take("plate_list", {});
 const listedIds = Array.isArray(listed.value.objects) ? (listed.value.objects as { object?: string }[]).map((row) => row.object) : [];
 check("the mirrored plate matches plate_list", listedIds.length === desktop.length && listedIds[0] === desktop[0]?.id, JSON.stringify({ listedIds, desktop: desktop.map((row) => row.id) }));
 
-const skipped = mirrorPlate(desktop, { tool: "plate_undo", seq: seen + 4, ok: true, plate: [] }, seen);
-check("a gap asks to reload and leaves the plate", skipped.reload === BRIDGE_RELOAD && skipped.plate.length === 1 && skipped.plate[0]?.history === history);
+const skipped = mirrorPlate(desktop, { tool: "plate_undo", session: seen.session, seq: seen.seq + 4, ok: true, plate: [] }, seen, owned);
+check("a gap still applies the snapshot", skipped.applied && skipped.plate.length === 0);
 
 const probed = await take("model_probe", { object, op: { kind: "hole", diameterMm: 4, depth: 5, origin: [10, 10, 20], axis: [0, 0, -1] } });
 const applied = await take("model_apply", { object, op: { kind: "hole", diameterMm: 4, depth: 5, origin: [10, 10, 20], axis: [0, 0, -1] } });
 check("an apply is not a commit", probed.value.ok === true && applied.value.ok === true && applied.message?.commit === undefined && !("op" in (applied.message ?? {})));
 
+const before = desktop[0]?.extra?.source;
 const committed = await take("model_commit", { object });
 const commit = committed.message?.commit;
-const fileBytes = commit ? new Uint8Array(readFileSync(commit.file)) : new Uint8Array();
 check(
-  "a commit names the mesh hash and the STEP file",
-  committed.value.ok === true && commit?.object === object && commit.meshHash === fnv1aHex(fileBytes) && fileBytes.byteLength > 0 && !("op" in (committed.message ?? {})),
+  "a commit names the new mesh and carries it",
+  committed.value.ok === true && commit?.object === object && commit.meshHash !== first.message?.commit?.meshHash && committed.message?.meshes?.[commit.meshHash] !== undefined && !("op" in (committed.message ?? {})),
   JSON.stringify(commit),
 );
 check(
-  "the desktop reloads that mesh and keeps its history",
-  committed.mirrored?.applied === true && desktop[0]?.meshHash === commit?.meshHash && (desktop[0]?.source?.length ?? 0) >= 9 && desktop[0]?.history === history,
-  JSON.stringify({ hash: desktop[0]?.meshHash, triangles: (desktop[0]?.source?.length ?? 0) / 9 }),
+  "the desktop takes the committed mesh",
+  committed.mirrored?.applied === true && desktop[0]?.meshHash === commit?.meshHash && (desktop[0]?.extra?.source.length ?? 0) >= 9 && desktop[0]?.extra?.source !== before,
+  JSON.stringify({ hash: desktop[0]?.meshHash, triangles: (desktop[0]?.extra?.source.length ?? 0) / 9 }),
 );
 
 const tuned = await call("settings_set", { values: { ironingSpeed: 15 } });

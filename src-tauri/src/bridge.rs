@@ -6,17 +6,46 @@
 //! A matching POST body is emitted as the `lime-bridge` event after any token
 //! field is removed. This module does not start a process and does not open a
 //! console window.
+//!
+//! An authorised answer names this window's instance in `X-Lime-Bridge-Instance`.
+//! It changes when the app starts and each time the page calls `bridge_ready`,
+//! so the server knows a page that has none of the meshes it sent before.
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 const DEFAULT_PORT: u16 = 43119;
 const MAX_HEADER: usize = 16 * 1024;
-const MAX_BODY: usize = 1024 * 1024;
+/// A plate message carries its meshes: room for a few large parts.
+const MAX_BODY: usize = 256 * 1024 * 1024;
+
+/// Bumped by the page each time it mounts, so a reloaded page reads as a new desktop.
+static PAGE_EPOCH: AtomicU64 = AtomicU64::new(0);
+static START: OnceLock<String> = OnceLock::new();
+
+/// This process and page, as the server sees them.
+fn instance() -> String {
+    let start = START.get_or_init(|| {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|time| time.as_nanos())
+            .unwrap_or(0);
+        format!("{nanos:x}")
+    });
+    format!("{start}-{}", PAGE_EPOCH.load(Ordering::SeqCst))
+}
+
+/// The page mounted, or it missed a mesh: the server's next message sends every mesh again.
+#[tauri::command]
+pub fn bridge_ready() {
+    PAGE_EPOCH.fetch_add(1, Ordering::SeqCst);
+}
 
 pub fn start(app: AppHandle) {
     if !flag_on("LIME_BRIDGE") {
@@ -62,19 +91,19 @@ fn serve(listener: TcpListener, token: String, app: AppHandle) {
         let Ok(mut stream) = incoming else {
             continue;
         };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
         match read_request(&mut stream) {
             Ok(request) => {
                 let (status, event) = decide(&request, &token);
-                let _ = write_status(&mut stream, status);
+                let _ = write_status(&mut stream, status, &instance());
                 if let Some(mut value) = event {
                     strip_secrets(&mut value);
                     let _ = app.emit("lime-bridge", value);
                 }
             }
             Err(()) => {
-                let _ = write_status(&mut stream, 400);
+                let _ = write_status(&mut stream, 400, "");
             }
         }
     }
@@ -89,7 +118,7 @@ struct Incoming {
 
 fn read_request(stream: &mut TcpStream) -> Result<Incoming, ()> {
     let mut buf = Vec::new();
-    let mut tmp = [0u8; 1024];
+    let mut tmp = vec![0u8; 64 * 1024];
     let header_at = loop {
         if buf.len() > MAX_HEADER {
             return Err(());
@@ -125,6 +154,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Incoming, ()> {
         return Err(());
     }
     let mut body = buf[header_at + 4..].to_vec();
+    body.reserve(length.saturating_sub(body.len()));
     while body.len() < length {
         let read = stream.read(&mut tmp).map_err(|_| ())?;
         if read == 0 {
@@ -191,7 +221,7 @@ fn strip_secrets(value: &mut Value) {
     map.remove("LIME_BRIDGE_TOKEN");
 }
 
-fn write_status(stream: &mut TcpStream, status: u16) -> std::io::Result<()> {
+fn write_status(stream: &mut TcpStream, status: u16, instance: &str) -> std::io::Result<()> {
     let (code, body) = match status {
         200 => ("200 OK", "ok"),
         204 => ("204 No Content", ""),
@@ -199,9 +229,15 @@ fn write_status(stream: &mut TcpStream, status: u16) -> std::io::Result<()> {
         405 => ("405 Method Not Allowed", ""),
         _ => ("400 Bad Request", ""),
     };
+    // Only an authorised answer names the instance.
+    let named = if status == 200 || status == 204 {
+        format!("X-Lime-Bridge-Instance: {instance}\r\n")
+    } else {
+        String::new()
+    };
     write!(
         stream,
-        "HTTP/1.1 {code}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {code}\r\nContent-Length: {}\r\n{named}Connection: close\r\n\r\n{body}",
         body.len()
     )
 }
@@ -250,5 +286,15 @@ mod tests {
         strip_secrets(&mut value);
         assert!(value.get("token").is_none());
         assert_eq!(value["tool"], "object_place");
+    }
+
+    #[test]
+    fn a_new_page_is_a_new_instance() {
+        let before = instance();
+        assert_eq!(before, instance());
+        bridge_ready();
+        let after = instance();
+        assert_ne!(before, after);
+        assert_eq!(before.split('-').next(), after.split('-').next());
     }
 }

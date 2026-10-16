@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { applyBridge, emptyBridgeView, type BridgePlacement } from "../src/bridge.ts";
+import { mirrorPlate, type BridgeMessage } from "../src/bridge.ts";
 import { placeMesh } from "../src/mesh-place.ts";
 import { builtinLibrary, fileFromSelection, heatFor, serializeMachineFile } from "../src/ui/machine-library.ts";
 
@@ -46,22 +46,15 @@ check("plate_list notes the overlap", crowdedRows.length === 2 && crowdedRows.ev
 const cubePlace = await call("object_place", { object: first.object, centreX: 50, centreY: 60 });
 const cubeCentre = cubePlace.centreMm as number[];
 check("the cube centre is 50, 60", Math.abs(cubeCentre[0]! - 50) < 0.01 && Math.abs(cubeCentre[1]! - 60) < 0.01, JSON.stringify(cubeCentre));
-const mirror = session.bridgeSnapshot();
-const mirrored = mirror?.placement as BridgePlacement | undefined;
+const mirror = session.bridgeSnapshot() as BridgeMessage | null;
 const preview = JSON.parse(String(await engine.meshPreview(JSON.stringify({ filename: "cube.stl", dataB64: "" })))) as { positionsB64?: string };
 const raw = Buffer.from(preview.positionsB64 ?? "", "base64");
 const positions = new Float32Array(Uint8Array.from(raw).buffer);
-const patch = mirrored
-  ? applyBridge(emptyBridgeView(String(mirror?.objectName ?? "")), {
-      tool: "object_place",
-      objectId: String(mirror?.objectId ?? ""),
-      objectName: String(mirror?.objectName ?? ""),
-      ok: true,
-      placement: mirrored,
-    })
-  : null;
-const desktop = patch?.offset && patch.orient
-  ? placeMesh(positions, patch.orient, patch.partScale ?? 1, 220, 220, patch.centered === true, patch.offset)
+// The desktop already holds the cube from its import, at the pose it had then: only the new pose is mirrored.
+const held = (mirror?.plate ?? []).map((row) => ({ ...row, id: row.object, meshHash: row.meshHash ?? "", offset: { x: 0, y: 0, z: 0 }, extra: null }));
+const patch = mirror ? mirrorPlate(held, mirror, { session: "", seq: 0 }).plate.find((row) => row.id === mirror.objectId) : undefined;
+const desktop = patch
+  ? placeMesh(positions, patch.orient, patch.scalePercent / 100, 220, 220, patch.centered, patch.offset)
   : null;
 const desktopX = desktop ? (desktop.bounds.min[0] + desktop.bounds.max[0]) / 2 : 0;
 const desktopY = desktop ? (desktop.bounds.min[1] + desktop.bounds.max[1]) / 2 : 0;

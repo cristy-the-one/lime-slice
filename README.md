@@ -127,7 +127,9 @@ The live desktop bridge is off unless you opt in. The app listens on `127.0.0.1`
 LIME_BRIDGE=1 LIME_BRIDGE_TOKEN=choose-a-token npm run tauri dev
 ```
 
-Point the MCP process at that listener with `LIME_MCP_BRIDGE=http://127.0.0.1:43119/` and the same `LIME_MCP_BRIDGE_TOKEN`. Port 43119 is `LIME_BRIDGE_PORT`. Each mirror is a sequence number and the whole plate. A commit adds the mesh hash and the STEP file written in the workspace, not the list of edits. The desktop applies the next sequence only. A gap asks to reload. A mirror that cannot connect does not fail the tool. Closing the app leaves the headless session as it was. The listener inside the window was not exercised by the automated tests.
+Point the MCP process at that listener with `LIME_MCP_BRIDGE=http://127.0.0.1:43119/` and the same `LIME_MCP_BRIDGE_TOKEN`. Port 43119 is `LIME_BRIDGE_PORT`. Both sides must be running this version: an older app or server does not speak the mesh-carrying message.
+
+Each mirror is the whole plate after the tool, with the server's session id and a sequence number, so a missed message is repaired by the next one. A mesh the desktop does not have rides along once: the file bytes and the triangles the server read from them. A commit therefore shows the Open CASCADE triangles the server slices, not a fresh read of the STEP. A new solid appears at its first commit. The desktop adds, moves, and removes the objects the server sent; parts you opened yourself stay. A committed mesh drops that object's own Model history in the window, since the history no longer builds it. Each answer names the window's instance; a restarted app or a reloaded page gets every mesh again on the next tool. A mirror that cannot connect does not fail the tool, and closing the app leaves the headless session as it was.
 
 `docs/mcp-server.md` lists the tools and what is deferred. `docs/mcp-server-review-2.md` records the resolution of each review finding.
 

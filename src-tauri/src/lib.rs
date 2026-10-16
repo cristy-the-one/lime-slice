@@ -328,7 +328,8 @@ pub fn run() {
             pareto_model,
             preview_mesh,
             model_tree,
-            prusa_link_http
+            prusa_link_http,
+            bridge::bridge_ready
         ])
         .run(tauri::generate_context!())
         .expect("Lime Slice window failed to start");
