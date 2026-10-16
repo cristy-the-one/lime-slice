@@ -4,7 +4,7 @@ Reviewed head: `82cd79c` ("Add an in-process MCP server for plate and Model edit
 
 ## Summary and verdict
 
-**Verdict: not ready to merge.** Seven blockers, fourteen high, and the rest medium or low.
+**Verdict: not ready to merge.** Of 37 findings, four are blockers (F-1, F-3, F-4, F-6), fourteen high, fifteen medium, and four low. The seven problems below are the ones that matter most to a user; they map to the blockers and the worst of the high findings.
 
 What works, verified by running it. The in-process engine addon builds and loads. A slice of the calibration cube, the overhang ledge, and the dragon returns time, grams, and plain warnings in under a second. The six golden configs are byte-identical to `lime-slice slice`. One-slice-at-a-time, per-job cancel, and `cancelRunning` behave as designed. The 256 MB read limit holds. Feasibility refusals are ordinary `ok: false` results. `model_apply` refuses an edit that was not probed. There is no printer tool. No engine crate changed, and the new crate's dependency tree has no GPL licence.
 
@@ -295,7 +295,7 @@ Evidence:
 - **Blocking calls.** `meshPreview`, `modelTree`, and the body build (`stlBytes`, base64, `JSON.stringify`) are synchronous N-API calls on the event loop. The 100 MB STL import took 5.6 s and `slice_start` 4.1 s, and no other request is answered meanwhile. One OCCT fillet blocks everything for its whole duration.
 - **No progress.** `Session.onProgress` is never assigned (`mcp/server.ts`), so `notifications/progress` is never sent: zero were received with a `progressToken`.
 - **No cancel.** `notifications/cancelled` is ignored. The server still ran and answered the cancelled `slice_wait`.
-- **Waits past client timeouts.** `slice_wait` blocks up to 30 minutes (`mcp/session.ts:573`). The SDK's default request timeout is 60 s, and without progress the client cannot extend it. The synthetic 100 MB sheet was still slicing after more than 90 s of CPU at about 1.4 GB RSS.
+- **Waits past client timeouts.** `slice_wait` blocks up to 30 minutes (`mcp/session.ts:573`). The SDK's default request timeout is 60 s, and without progress the client cannot extend it. The synthetic 100 MB sheet had not finished after 900 s. It held one core at 100 % and about 1.7 GB RSS, `slice_wait` gave no answer in that time, and the run was killed by its timeout.
 
 Fix:
 - Run the engine calls on a worker thread, or as N-API async work.
@@ -543,4 +543,6 @@ Top five, if only five things are done: F-1 (connectable at all), F-3 with F-4 (
 
 ## Run notes
 
-The `cargo test -j1 -p lime-mcp-engine` and the 100 MB slice were still running when this was written. Their outcome is appended below when they finish.
+- `cargo test -j1 -p lime-mcp-engine` passed: 1 test, `preview_reads_a_cube_without_touching_the_slicer_binary`. It is the crate's only test. None of the crate's slice, cancel, or job code is exercised from Rust.
+- The 100 MB slice: the 2 000 000-triangle STL is a 140 × 143 × 0.1 mm sheet. The import took 5.6 s (483 MB RSS) and `slice_start` returned after 4.1 s. `slice_wait` then gave no answer for 900 s, with one core at 100 % and about 1.7 GB RSS, and the run was killed by its timeout (exit 124). Whether the engine would finish on this input was not established. The point for F-20 is that a single call can stay silent far past any client timeout, with no progress and no cancellation from the client.
+- OCCT and the desktop crate were not built (see Method). Every finding that depends on the real OCCT kernel or on `src-tauri` comes from code reading or from the fake engine, and says so.
