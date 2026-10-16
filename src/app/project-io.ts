@@ -25,6 +25,7 @@ import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.t
 import { copyWorkplane } from "../workplane.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
+import { customGcodeNotice } from "../layer-actions.ts";
 import { session, state } from "./state.ts";
 
 export async function saveCurrentProject() {
@@ -159,6 +160,8 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     if (unread.length > 0) {
       pushToast(`The Model history of ${unread.join(", ")} could not be read, so it starts again from the saved part.`, "info");
     }
+    const custom = customGcodeNotice(state.layerActions);
+    if (custom) pushToast(custom, "info");
     return true;
   } finally {
     session.projectRestoring = false;

@@ -68,6 +68,24 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: MCP server against real Open CASCADE
+        timeout-minutes: 25
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          cargo build -p lime-mcp-engine -p lime-model-occt --locked
+          export LIME_OCCT_BRIDGE="$PWD/target/debug/liblime_model_occt.so"
+          export LD_LIBRARY_PATH="${OCCT_ROOT}/lib:${LD_LIBRARY_PATH:-}"
+          node --experimental-strip-types mcp/occt.test.ts
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -120,6 +138,114 @@ jobs:
 
       - name: Playwright smoke
         run: npm run test:smoke
+
+  mcp:
+    name: MCP server
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the C++ toolchain Clipper2 links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Release CLI and in-process engine
+        run: cargo build -p lime-slice -p lime-mcp-engine --release --locked
+
+      - name: New engine dependencies stay MIT or Apache-2.0
+        run: |
+          set -euo pipefail
+          cargo tree -p lime-mcp-engine --prefix none -e normal --format '{p} {l}' > /tmp/mcp-licences.txt
+          if grep -Ei 'GPL|AGPL|SSPL' /tmp/mcp-licences.txt; then
+            echo "a GPL-family licence is not allowed"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Typecheck the server
+        run: npx tsc -p mcp
+
+      - name: Schema, scenarios, export, and golden G-code
+        run: |
+          node --experimental-strip-types mcp/schema.test.ts
+          node --experimental-strip-types mcp/scenario.test.ts
+          node --experimental-strip-types mcp/model.test.ts
+          node --experimental-strip-types mcp/request.test.ts
+          node --experimental-strip-types mcp/numbers.test.ts
+          node --experimental-strip-types mcp/render.test.ts
+          node --experimental-strip-types mcp/export.test.ts
+          LIME_MCP_GOLDEN=1 node --experimental-strip-types mcp/golden.test.ts
+          node --experimental-strip-types mcp/native-load.test.ts
+          node --experimental-strip-types mcp/stdio.test.ts
+          node --experimental-strip-types mcp/part-a.test.ts
+          node --experimental-strip-types mcp/batch1.test.ts
+          node --experimental-strip-types mcp/batch2.test.ts
+          node --experimental-strip-types src/paint-region.test.ts
+          node --experimental-strip-types mcp/batch3.test.ts
+          node --experimental-strip-types mcp/batch4.test.ts
+
+  mcp-windows:
+    name: MCP server (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Release in-process engine
+        run: cargo build -p lime-mcp-engine --release --locked
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm run test:unit
+
+  mcp-macos:
+    name: MCP server (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Release in-process engine
+        run: cargo build -p lime-mcp-engine --release --locked
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Load the addon and run the scenarios
+        run: |
+          node --experimental-strip-types mcp/native-load.test.ts
+          node --experimental-strip-types mcp/scenario.test.ts
+          node --experimental-strip-types mcp/stdio.test.ts
 
   bench:
     name: release bench smoke

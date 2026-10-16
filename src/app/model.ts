@@ -28,7 +28,7 @@ import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-ble
 import { throughLength } from "../model-hole";
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
-import { PROBE_WAIT_MS, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
+import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { boxExtentAlong, extentAlong, extentMemo, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
@@ -426,6 +426,15 @@ function scheduleProbe(wait: number) {
     setModelProbe(null);
     setModelPreview(null);
     return;
+  }
+  if (op.kind === "boolean") {
+    const solid = viewed();
+    const missed = solid ? disjointBoolean(boundsOf(solid.positions), op, op.op) : null;
+    if (missed) {
+      setModelProbe({ phase: "done", ok: false, error: missed });
+      setModelPreview(null);
+      return;
+    }
   }
   // The dry-run builds on the step on screen: a tool's, while one of its steps is edited.
   const [treeKey, node] = lens ? [lens.key, lens.node] : [at.key, tree.current];

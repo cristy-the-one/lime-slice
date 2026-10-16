@@ -1,0 +1,18 @@
+[package]
+name = "lime-mcp-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "In-process slicer engine for the Lime Slice MCP server"
+
+[lib]
+name = "lime_mcp_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+base64 = "0.22"
+lime-model-load = { path = "../lime-model-load" }
+lime-slice-core = { path = "../lime-slice-core" }
+serde_json = "1"

@@ -57,8 +57,9 @@ async function openModel(page: Page, solid = ROOT, goto?: (request: Body) => Bod
 const readout = (page: Page) => page.locator("#modelReadout");
 
 /** Cut with the box tool at Size X `dx`, and wait for the new volume. */
-async function cut(page: Page, dx: number) {
+async function cut(page: Page, dx: number, atX?: number) {
   if ((await page.locator("#modelToolBoolean").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolBoolean").click();
+  if (atX !== undefined) await page.locator("#modelX").fill(String(atX));
   await page.locator("#modelDx").fill(String(dx));
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
@@ -275,7 +276,7 @@ test("Duplicate in Model opens the copy, and a Slice in Model slices the step on
   expect(tree.of("export").map((request) => request.node), "rooted in the STEP of the step it copies").toEqual([1]);
   expect(tree.of("open")[1]!.dataB64).toBe(Buffer.from("EDITED-STEP-1").toString("base64"));
   await expect(readout(page)).toContainText("Pick a face or an edge.");
-  await cut(page, 3);
+  await cut(page, 3, 30);
   expect(tree.of("apply").at(-1)!.key, "the edit goes to the copy's tree").toBe(tree.of("open")[1]!.key);
 });
 

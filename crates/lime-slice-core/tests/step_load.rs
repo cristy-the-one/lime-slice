@@ -329,3 +329,26 @@ fn the_same_step_file_tessellates_to_the_same_triangles_twice() {
         }
     }
 }
+
+/// Open CASCADE writes every edge as a SURFACE_CURVE whose master is the pcurve.
+/// Truck never finished dividing those edges on this counterbored box, so the
+/// load runs on its own thread and a hang fails instead of stopping the suite.
+#[test]
+fn an_open_cascade_counterbore_loads_from_its_3d_edges() {
+    let bytes = fixture("occt_counterbore.step");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(load_mesh("occt_counterbore.step", &bytes));
+    });
+    let mesh = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the STEP load did not finish in 20 s")
+        .unwrap_or_else(|err| panic!("occt_counterbore.step: {err}"));
+    expect_box(&mesh, [-5.0, -5.0, 0.0], [5.0, 5.0, 10.0], 1e-3);
+    // The hole sits on a corner of the 10 mm box, so it removes a quarter of a
+    // 3 mm hole 6 mm deep below a 6 mm counterbore 2 mm deep. Open CASCADE
+    // reports 975.26 mm³ for the solid.
+    let vol = volume(&mesh);
+    assert!((vol - 975.26).abs() < 1.0, "volume {vol}");
+    assert_eq!(boundary_edges(&mesh), 0);
+}

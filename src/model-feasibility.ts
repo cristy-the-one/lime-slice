@@ -4,6 +4,8 @@
  */
 import { plainModelError } from "./app/model-error.ts";
 import { formatMm } from "./model-plane.ts";
+import { primitiveBounds, turnCentre, type PrimitiveSpec } from "./model-primitive.ts";
+import { eulerOrient } from "./mesh-place.ts";
 import { lastEdge, type ModelPickRef } from "./model-select.ts";
 
 /**
@@ -79,6 +81,58 @@ export function probeNote(tool: ProbedTool, probe: ProbeView): { text: string; b
     return { text: `${sentence}${max}`, bad: true };
   }
   return null;
+}
+
+export const DISJOINT_CUT = "The tool does not touch the part.";
+export const DISJOINT_FUSE = "This would add a separate body; place it touching the part.";
+
+type Box = { min: [number, number, number]; max: [number, number, number] };
+
+function boxesTouch(part: Box, tool: Box): boolean {
+  const eps = 0.05;
+  for (let axis = 0; axis < 3; axis += 1) {
+    if (part.max[axis] < tool.min[axis] - eps || tool.max[axis] < part.min[axis] - eps) return false;
+  }
+  return true;
+}
+
+/** The primitive's box after its turn, in the same frame as `part`. */
+export function turnedPrimitiveBox(spec: PrimitiveSpec): Box {
+  const local = primitiveBounds(spec);
+  const centre = turnCentre(spec);
+  const origin = spec.origin;
+  const pivot: [number, number, number] = [origin[0] + centre[0], origin[1] + centre[1], origin[2] + centre[2]];
+  const rot = eulerOrient(spec.turn[0], spec.turn[1], spec.turn[2]);
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (const x of [local.min[0], local.max[0]]) {
+    for (const y of [local.min[1], local.max[1]]) {
+      for (const z of [local.min[2], local.max[2]]) {
+        const dx = x - pivot[0];
+        const dy = y - pivot[1];
+        const dz = z - pivot[2];
+        const p: [number, number, number] = [
+          pivot[0] + rot[0] * dx + rot[1] * dy + rot[2] * dz,
+          pivot[1] + rot[3] * dx + rot[4] * dy + rot[5] * dz,
+          pivot[2] + rot[6] * dx + rot[7] * dy + rot[8] * dz,
+        ];
+        for (let axis = 0; axis < 3; axis += 1) {
+          if (p[axis] < min[axis]) min[axis] = p[axis];
+          if (p[axis] > max[axis]) max[axis] = p[axis];
+        }
+      }
+    }
+  }
+  return { min, max };
+}
+
+/**
+ * A cut or common that misses the part does nothing. A fuse that misses it
+ * adds a second body. Empty when the boxes touch, including along one face.
+ */
+export function disjointBoolean(part: Box, spec: PrimitiveSpec, op: "cut" | "fuse" | "common"): string | null {
+  if (boxesTouch(part, turnedPrimitiveBox(spec))) return null;
+  return op === "fuse" ? DISJOINT_FUSE : DISJOINT_CUT;
 }
 
 /** Apply stays off until the dry-run says the edit works. */

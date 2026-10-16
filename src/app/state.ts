@@ -14,6 +14,7 @@ import type { ReinforceRegion } from "../reinforcement";
 import type { SeamDisk } from "../seam-paint";
 import type { PaintDisk, PaintTally } from "../support-paint";
 import { loadAutoSlice } from "../auto-slice-pref";
+import type { LayerAction } from "../layer-actions";
 
 export type { CoverageGap, EditOutcome, SupportSkeleton };
 
@@ -226,7 +227,7 @@ export const state = {
   bridgeFlowRatio: 0,
   bridgeSpeedMmS: 0,
   bridgeFanPercent: 0,
-  layerActions: [] as { zMm: number; kind: "pause" | "filamentChange"; note?: string }[],
+  layerActions: [] as LayerAction[],
   seam: "blend" as "blend" | "nearest" | "aligned" | "rear",
   ironing: false,
   ironingFlow: 0.1,

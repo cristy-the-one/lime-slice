@@ -99,6 +99,7 @@ pub fn load_step_timed(bytes: &[u8], tolerance_mm: f64) -> Result<(Mesh, StepTim
     if !text.to_ascii_uppercase().contains("ISO-10303-21") {
         return Err("STEP file is missing an ISO-10303-21 header".into());
     }
+    let text = prefer_curve_3d(&text);
     let parse = Instant::now();
     let exchange = parser::parse(&text)
         .map_err(|err| format!("STEP file could not be parsed: {}", brief(&err.to_string())))?;
@@ -184,6 +185,113 @@ fn step_text(bytes: &[u8]) -> Result<String, String> {
             }
         }
     }
+}
+
+/// Point every surface curve at its 3D curve.
+///
+/// Open CASCADE writes each edge as a `SURFACE_CURVE` whose master
+/// representation is `.PCURVE_S1.`, so truck builds the edge from the 2D curve
+/// on the first face. Dividing those curve-on-surface edges never finishes on
+/// a box with a counterbore: the worker grows without bound. The 3D curve is a
+/// mandatory attribute and is the exact line or circle, so it is used instead.
+/// A record whose 3D curve is unset (`$`) keeps its pcurve.
+fn prefer_curve_3d(text: &str) -> std::borrow::Cow<'_, str> {
+    const KINDS: [&str; 3] = ["SURFACE_CURVE(", "SEAM_CURVE(", "INTERSECTION_CURVE("];
+    let bytes = text.as_bytes();
+    let mut edits: Vec<(usize, usize)> = Vec::new();
+    for kind in KINDS {
+        let mut from = 0;
+        while let Some(found) = text[from..].find(kind) {
+            let start = from + found;
+            from = start + kind.len();
+            let word = start > 0 && matches!(bytes[start - 1], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_');
+            if word {
+                continue;
+            }
+            let Some(close) = record_close(bytes, from) else { continue };
+            let body = &text[from..close];
+            if curve_3d_unset(body) {
+                continue;
+            }
+            for master in [".PCURVE_S1.", ".PCURVE_S2."] {
+                if let Some(at) = body.rfind(master) {
+                    edits.push((from + at, master.len()));
+                    break;
+                }
+            }
+        }
+    }
+    if edits.is_empty() {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    edits.sort_unstable();
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for (start, len) in edits {
+        out.push_str(&text[at..start]);
+        out.push_str(".CURVE_3D.");
+        at = start + len;
+    }
+    out.push_str(&text[at..]);
+    std::borrow::Cow::Owned(out)
+}
+
+/// The `)` that closes the record whose arguments start at `from`. Quoted labels may hold parentheses.
+fn record_close(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quoted = false;
+    let mut i = from;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if quoted {
+            if byte == b'\'' {
+                if bytes.get(i + 1) == Some(&b'\'') {
+                    i += 1;
+                } else {
+                    quoted = false;
+                }
+            }
+        } else {
+            match byte {
+                b'\'' => quoted = true,
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                b';' => return None,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// True when the second argument, the 3D curve, is `$`.
+fn curve_3d_unset(body: &str) -> bool {
+    let rest = body.trim_start();
+    let after_label = match rest.strip_prefix('\'') {
+        Some(label) => {
+            let bytes = label.as_bytes();
+            let mut i = 0;
+            loop {
+                match bytes.get(i) {
+                    None => return false,
+                    Some(b'\'') if bytes.get(i + 1) == Some(&b'\'') => i += 2,
+                    Some(b'\'') => break &label[i + 1..],
+                    Some(_) => i += 1,
+                }
+            }
+        }
+        None => rest,
+    };
+    after_label
+        .trim_start()
+        .strip_prefix(',')
+        .is_some_and(|curve| curve.trim_start().starts_with('$'))
 }
 
 fn brief(text: &str) -> String {
@@ -1507,5 +1615,20 @@ mod tests {
                 "v {v}: got ({a}, {b}), {miss} mm from the point"
             );
         }
+    }
+
+    #[test]
+    fn surface_curves_use_their_3d_curve() {
+        let text = "#1 = SURFACE_CURVE('',#2,(#3,#4),.PCURVE_S1.);\n#5 = SEAM_CURVE('a (b) ''c''',#6,(#7,#8),.PCURVE_S2.);\n";
+        assert_eq!(
+            prefer_curve_3d(text),
+            "#1 = SURFACE_CURVE('',#2,(#3,#4),.CURVE_3D.);\n#5 = SEAM_CURVE('a (b) ''c''',#6,(#7,#8),.CURVE_3D.);\n"
+        );
+    }
+
+    #[test]
+    fn a_surface_curve_without_a_3d_curve_keeps_its_pcurve() {
+        let text = "#1 = SURFACE_CURVE('',$,(#3,#4),.PCURVE_S1.);\n#9 = BOUNDED_SURFACE_CURVE('',#2,(#3),.PCURVE_S1.);\n";
+        assert!(matches!(prefer_curve_3d(text), std::borrow::Cow::Borrowed(_)));
     }
 }

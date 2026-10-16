@@ -1,6 +1,51 @@
 # An MCP server for Lime Slice
 
-Design only. This note is written against `origin/main` at 1.8.0 (`478f1bc`, workspace version in `Cargo.toml`, `package.json`, and `src-tauri/tauri.conf.json`). It proposes a Model Context Protocol server. It does not add a crate, a command, a protocol field, or a version bump.
+The design below was written against `origin/main` at 1.8.0. The implementation on `feature/mcp-server` follows it except where the decisions in **Implementation status** override a recommendation. The workspace version stays 1.8.0.
+
+## Implementation status
+
+### Decisions
+
+These override the architecture recommendation in section 3 and the open questions in section 8.
+
+1. **In-process engine.** The server calls `slice_payload_watched` and `lime_model_load::tree` in-process. It does not spawn `lime-slice serve`. The engine crates are unchanged, so `tools/golden_ab.sh` still checks that the slicer binary did not move.
+
+   The server is TypeScript (`mcp/`) because that is the least risky way to reuse the app's request builders, feasibility checks, and G-code post-processing (`settingsRules`, the adhesion, seam, flow, and layer-action helpers, `toSolidOp`, `withPrintMeta`, `withMachineGcode`, `withFooterGrams`). A Rust `rmcp` server would have been a second copy of that UI. The engine sits behind the small `Engine` interface in `mcp/engine.ts` (`sliceStart`, `slicePoll`, `sliceCancel`, `meshPreview`, `modelTree`). The first implementation is `crates/lime-mcp-engine`, a cdylib that Node loads with `process.dlopen`. N-API symbols come from the host process, so the library is not linked against Node and the server process adds no runtime npm dependency. Replacing that one module is how a later build could put the engine in another process without changing the tools.
+
+2. **Save may overwrite.** `project_save` overwrites a `.lime` file of the same name inside `LIME_MCP_WORKSPACE`, including the project that was opened. It does not write outside that directory. The tool description says so.
+
+3. **No send-to-printer.** `printer_send` is not a tool.
+
+4. **Live desktop bridge, off by default.** With `LIME_BRIDGE=1` and a non-empty `LIME_BRIDGE_TOKEN`, the desktop app listens on `127.0.0.1` only (`LIME_BRIDGE_PORT`, default 43119) and emits `lime-bridge`. The MCP process mirrors each tool result only when `LIME_MCP_BRIDGE` is a loopback URL and `LIME_MCP_BRIDGE_TOKEN` is set. A mirror that fails is logged and does not change the tool result. The message is a sequence number and the whole plate. A commit adds the mesh hash and the STEP file in the workspace, not the list of edits. The desktop applies the next sequence only. A gap asks "The MCP session changed the plate; reload from it?". The bridge is a mirror, not a second undo stack, and a gesture already in progress waits. The headless session stays correct when the app is closed.
+
+### What shipped
+
+Open and import, list and place, arrange, duplicate, separate shells, and plate undo and redo. `slice_start` slices the selected object or the whole plate. The plate body matches the app's builder, including per-object settings, overrides, modifiers, paint, support edits, reinforcement, and print order. A session slice uses the built-in machine library and the same field helpers as the app, so a Lime 220 / PLA slice carries that printer's fan and Klipper firmware.
+
+Settings: `settings_schema` lists keys and ranges, and `settings_set` writes many keys at once, including per-object keys. A value outside the panel's range is refused in one sentence. Profiles and the machine can be read, edited, and saved.
+
+Model edits (hole, counterbore, screw, fillet, chamfer, split, scale, a sized boolean, the extra primitives, and join) run only after a feasibility check that returns a plain-language refusal before the solid changes. Face and edge selectors return centres. The workplane can be a face, the bed, or a typed origin and turn. A committed edit replaces the plate mesh, so the next slice, the 3MF, the preview, and the saved `.lime` see it. Commit and STEP export read `bytesBase64` from the modeler. History undo and redo stay on the model tree. A version 2 save keeps that mesh and that history. A lost tree is an error, and the modeler restarts after a time budget. Start the edit again.
+
+Slice, estimates, and warnings. `slice_wait` reports progress and can return while the slice is still running. Cancelling the wait does not cancel the slice. The slice itself is cancelled with that job's watch. G-code and 3MF export, a paged G-code read, mesh stats, and a measurement between two faces or two points. `layer_summary` is the count and the times. `layer_detail`, `layer_paths`, and `layer_image` read the latest slice. `render_view` writes a shaded PNG of the mesh (top, front, or iso). It does not draw sliced layers and it does not capture the desktop window.
+
+Paint for supports and seams, reinforcement, and support prune and regrow are on the session. Calibration towers (pressure advance, flow, temperature, retract) and the Pareto blend call the public builders through the MCP addon only. The slicer crates are unchanged.
+
+Guides at `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate` carry the worked call sequences. Transport is newline-delimited JSON on stdio. One slice runs at a time. There is no send-to-printer tool.
+
+The golden check is separate: it sends the CLI's request through the same `sliceStart` and requires byte-identical G-code to `lime-slice slice` for the six `tools/golden.sh` configs on `samples/calibration_cube_20mm.stl`.
+
+The server needs Node 22.6 or later. Node prints an `ExperimentalWarning` on startup. Model edits find Open CASCADE next to `node`, or at `LIME_OCCT_BRIDGE`. See the README.
+
+### Deferred
+
+- `printer_send`.
+- Tool lanes across two objects' histories.
+- The Tauri listener that would reload a committed STEP inside the desktop window. The headless mirror is tested. The window was not opened.
+- A real-engine check of paint coverage, a support blocker, Pareto, and calibration towers. The request bodies and the stand-in are tested. The N-API exports call the public builders and do not change the slicer crates.
+
+### Licences
+
+The server process adds no runtime npm dependency. Tests use `@modelcontextprotocol/sdk` and `@types/node`, both MIT. `crates/lime-mcp-engine` depends on `base64` 0.22 and `serde_json` (both MIT OR Apache-2.0) and on the existing `lime-slice-core` and `lime-model-load` crates. Open CASCADE stays a `dlopen` under the LGPL-2.1 exception noted in `third_party/occt/NOTICE.md`. No GPL dependency was added.
 
 The server would let an LLM do the things the desktop app already does with numbers: open a project, place parts, run a Model edit that has already passed a feasibility check, slice, and write G-code. The mouse path stays in the app. The MCP path is the programmatic equivalent of the typed fields.
 
@@ -215,6 +260,8 @@ Gaps:
 | Second copy of request building | Easy to drift if written in Rust | Avoided by importing `src/` | None | Avoided |
 
 ### Recommendation
+
+The recommendation below was a private `lime-slice serve` child. The implementation uses the TypeScript session and the same `src/` imports, and links the engine in-process instead of that child. See **Implementation status** for why.
 
 Build (d), and build it as (b) first. The MCP server is a TypeScript process. It spawns `lime-slice serve` on `127.0.0.1` and an ephemeral port, with a random bearer token, and talks only to that child. It imports the modules that already define the wire and the export:
 

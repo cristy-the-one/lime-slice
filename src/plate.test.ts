@@ -157,6 +157,7 @@ check("no mesh bytes ride in the request yet", sent.every((o) => !("dataB64" in 
 check("one object with no settings stays version 1", !plateFileIsVersion2([{ settings: {} }]) && !plateFileIsVersion2([{}]));
 check("two objects are version 2", plateFileIsVersion2([{ settings: {} }, { settings: {} }]));
 check("one object with settings is version 2", plateFileIsVersion2([{ settings: { supports: true } }]));
+check("a renamed object stays version 2", plateFileIsVersion2([{ name: "Bracket", mesh: { name: "bracket.stl" } }]) && !plateFileIsVersion2([{ name: "bracket.stl", mesh: { name: "bracket.stl" } }]));
 
 // By region is one plane across the plate, so its extent is every object, not the selected one.
 const apart = [object(20, "a", false, { x: 26.9, y: 10, z: 0 }), object(20, "b", false, { x: 51.4, y: 30, z: 0 })];

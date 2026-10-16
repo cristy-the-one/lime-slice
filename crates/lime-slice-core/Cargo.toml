@@ -10,6 +10,7 @@ description = "FDM mesh slicing core for Lime Slice"
 [dependencies]
 base64 = "0.22"
 clipper2 = "0.6"
+libm = "0.2"
 quick-xml = "0.37"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
