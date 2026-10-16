@@ -18,7 +18,7 @@ import {
   type Affine,
   type PlaceFields,
 } from "../model-space";
-import { builtBranch, crossEdit, crossTwin, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditLevel, type EditPanel, type ForkStep, type ToolLink } from "../model-edit";
+import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditLevel, type EditPanel, type ForkStep, type ToolLink } from "../model-edit";
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../model-primitive";
 import { markProjectDirty } from "../project-dirty";
 import { unionBox } from "../measure";
@@ -1876,18 +1876,19 @@ async function runToolEdit(run: Editing, op: ModelOp) {
     readout("This step is no longer in the history.");
     return;
   }
-  const twin = crossTwin(step.tree, step.joins, run.node, op, run.replay);
-  if (twin != null) {
+  const plan = crossPlan(step.tree, step.joins, run.node, op, run.replay);
+  if ("twin" in plan) {
     // These numbers already built these branches, in an earlier edit: show the open solid's rather than build them again.
     editing = null;
     closeModelTool();
-    const shown = await showNode(ticket, at.objectId, at.key, twin, (solid) => `These numbers built this branch before. ${about(solid)}`);
+    const shown = await showNode(ticket, at.objectId, at.key, plan.twin, (solid) => `These numbers built this branch before. ${about(solid)}`);
     if (!shown) return;
-    editBack = { key: at.key, tip: twin, back: run.from, undone: false };
+    editBack = { key: at.key, tip: plan.twin, back: run.from, undone: false };
     syncUndo();
     return;
   }
-  const levels = crossEdit(step.tree, step.joins, run.node, op, run.replay, (key, count) => {
+  const { from, reused } = plan;
+  const levels = crossEdit(from.tool, from.joins, from.node, from.op, run.replay, (key, count) => {
     let reserved = modelTrees.get(key)!;
     const ids: NodeId[] = [];
     while (ids.length < count) {
@@ -1940,10 +1941,10 @@ async function runToolEdit(run: Editing, op: ModelOp) {
   editing = null;
   editBack = { key: at.key, tip: parsed.id, back: run.from, undone: false };
   closeModelTool();
-  // Each tool level's name, deepest first: the name the join above it gives it.
-  const nameOf = (i: number) => run.joins[run.joins.length - 1 - i]!.op.tool.name;
+  // Each built tool level's name, deepest first: the name the join above it gives it.
+  const nameOf = (i: number) => from.joins[from.joins.length - 1 - i]!.op.tool.name;
   const label = (key: string, id: NodeId) => stepLabel(modelTrees.get(key)!.nodes.get(id)!);
-  const rebuilt = built.size + tools.reduce((sum, part) => sum + part.built.size, 0) - 1;
+  const rebuilt = built.size + tools.reduce((sum, part) => sum + part.built.size, 0) - (reused == null ? 1 : 0);
   const after = rebuilt === 0 ? "" : rebuilt === 1 ? " and rebuilt the step after it" : ` and rebuilt ${rebuilt} steps after it`;
   const deepest = tools.findIndex((part) => part.broken);
   const where = (key: string, id: NodeId) => pathTo(modelTrees.get(key)!, id).length - 1;
@@ -1958,7 +1959,7 @@ async function runToolEdit(run: Editing, op: ModelOp) {
   });
   const notes = editNotes(modelTrees, latest, own.old, (key) => state.plate.objects.find((obj) => obj.modelTree === key)?.name ?? null);
   const plate = leavingNotes([op, ...own.replay.map((replayed) => replayed.op)].some((made) => made.kind === "scale"));
-  present(parsed, [`Updated “${label(levels[0]!.key, levels[0]!.node)}” of ${nameOf(0)}${after}. ${about(parsed)}${failure}${plate}`, ...kept, ...notes].join(" "));
+  present(parsed, [`Updated “${label(step.tree.key, reused ?? levels[0]!.node)}” of ${step.joins.at(-1)!.op.tool.name}${after}. ${about(parsed)}${failure}${plate}`, ...kept, ...notes].join(" "));
 }
 
 function sentence(text: string): string {

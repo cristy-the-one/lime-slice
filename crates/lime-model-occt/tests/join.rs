@@ -496,12 +496,35 @@ fn edits_across_trees() {
         "replay": [],
         "tools": [
             { "key": "rod", "parent": 2, "node": 10, "op": { "kind": "scale", "factor": 1.25 }, "replay": [] },
-            { "key": "tb", "parent": 0, "node": 11, "op": join("cut", "rod", 10, placed.clone()), "replay": [{ "id": 12, "op": corner }] },
+            { "key": "tb", "parent": 0, "node": 11, "op": join("cut", "rod", 10, placed.clone()), "replay": [{ "id": 12, "op": corner.clone() }] },
         ],
     }));
     assert!(deep.get("error").is_none(), "{deep}");
     near(volume(&deep), 4000.0 - PI * 3.75 * 3.75 * 10.0);
     assert_eq!(deep["tools"].as_array().map(Vec::len), Some(2));
+
+    // With the branches of tb2 and tb deleted, the same edit starts mid-chain: its deepest part is tb's join on the
+    // rod's step 10 that the edit before built, so the rod builds nothing and gains no twin of step 10.
+    ok(json!({ "call": "drop", "key": "tb2", "node": 2 }));
+    ok(json!({ "call": "drop", "key": "tb", "node": 11 }));
+    let before = builds();
+    let again = call(json!({
+        "call": "edit", "key": "tb2", "parent": 0, "node": 3,
+        "op": join("common", "tb", 14, json!({ "m": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], "t": [0.0, 0.0, 0.0] })),
+        "replay": [],
+        "tools": [
+            { "key": "tb", "parent": 0, "node": 13, "op": join("cut", "rod", 10, placed.clone()), "replay": [{ "id": 14, "op": corner }] },
+        ],
+    }));
+    assert!(again.get("error").is_none(), "{again}");
+    near(volume(&again), 4000.0 - PI * 3.75 * 3.75 * 10.0);
+    assert_eq!(builds(), before + 3, "tb's join and corner, and tb2's join");
+    assert_eq!(again["tools"][0]["key"], "tb");
+    assert_eq!(
+        call(json!({ "call": "goto", "key": "rod", "node": 11 }))["missing"],
+        json!([11]),
+        "the rod has no step past those it had"
+    );
 }
 
 /// A probe asked for a preview answers the built shape's reply, and an Apply that takes the probe meshes nothing again.

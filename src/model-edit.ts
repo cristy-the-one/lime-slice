@@ -9,7 +9,7 @@ import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
-import { ROOT, type JoinOp, childWithOp, childrenOf, opLabel, pathTo, toolUser, type BooleanKind, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { ROOT, type JoinOp, childrenOf, childrenWithOp, opLabel, pathTo, toolUser, type BooleanKind, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 
 /**
  * The steps that replay under an edit of `node`, oldest first: the shown branch below it. That is the path down to the
@@ -110,15 +110,20 @@ export function editHead(tree: ModelTree, id: NodeId): string {
 
 /**
  * The tip of a branch an edit already built: under `parent`, a step with `op`, then a step with each of `replay` in
- * turn, none broken. An Update with the same numbers shows it rather than build it again. Null when there is none.
+ * turn, none broken. An Update with the same numbers shows it rather than build it again. Null when there is none. Every
+ * sibling with the same op is searched, so a whole branch is found beside one cut short by Delete branch.
  */
 export function builtBranch(tree: ModelTree, parent: NodeId, op: ModelOp, replay: readonly ModelOp[]): NodeId | null {
-  let at = childWithOp(tree, parent, op);
-  for (const next of replay) {
-    if (at == null) return null;
-    at = childWithOp(tree, at, next);
+  return builtPath(tree, parent, op, replay)?.at(-1) ?? null;
+}
+
+/** The steps of the branch `builtBranch` finds, its first step first. */
+function builtPath(tree: ModelTree, parent: NodeId, op: ModelOp, replay: readonly ModelOp[]): NodeId[] | null {
+  for (const at of childrenWithOp(tree, parent, op)) {
+    const rest = replay.length === 0 ? [] : builtPath(tree, at, replay[0]!, replay.slice(1));
+    if (rest) return [at, ...rest];
   }
-  return at;
+  return null;
 }
 
 /** A join on the way to a tool's step: step `id` of `tree`, which takes its tool from the next tree down. */
@@ -149,10 +154,10 @@ function pathBelow(tree: ModelTree, node: NodeId, tip: NodeId): NodeId[] {
  * Each tree's part of an edit of step `node` of `tool`, the tree `joins` reach (the open tree's join first), deepest
  * first, the open tree last. The tool's tree forks at the step and replays down to the step the join above takes; each
  * join above is built again on the tip below, as `next` gives it, and its tree replays down to the step the next join
- * takes; the open tree replays `replay`, as an edit of its own step does. `next` gets each level and answers its tip,
- * or null to stop.
+ * takes; the open tree replays `replay`, as an edit of its own step does. `next` gets each level, with the number of
+ * joins above it, and answers its tip, or null to stop.
  */
-function eachLevel(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op: ModelOp, replay: readonly NodeId[], next: (tree: ModelTree, edited: NodeId, op: ModelOp, below: NodeId[]) => NodeId | null): boolean {
+function eachLevel(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op: ModelOp, replay: readonly NodeId[], next: (tree: ModelTree, edited: NodeId, op: ModelOp, below: NodeId[], above: number) => NodeId | null): boolean {
   let tip: NodeId | null = null;
   for (let i = joins.length; i >= 0; i -= 1) {
     const own = i === joins.length;
@@ -160,7 +165,7 @@ function eachLevel(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op
     const edited = own ? node : joins[i]!.id;
     const stepOp: ModelOp = own ? op : { ...joins[i]!.op, tool: { ...joins[i]!.op.tool, node: tip! } };
     const below = i === 0 ? [...replay] : pathBelow(tree, edited, joins[i - 1]!.op.tool.node);
-    tip = next(tree, edited, stepOp, below);
+    tip = next(tree, edited, stepOp, below, i);
     if (tip == null) return false;
   }
   return true;
@@ -177,14 +182,35 @@ export function crossEdit(tool: ModelTree, joins: readonly ToolLink[], node: Nod
   return levels;
 }
 
-/** The open tree's tip of a branch an earlier edit across trees built with the same numbers, at every level; else null. */
-export function crossTwin(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op: ModelOp, replay: readonly NodeId[]): NodeId | null {
-  let twin: NodeId | null = null;
-  const found = eachLevel(tool, joins, node, op, replay, (tree, edited, stepOp, below) => {
-    twin = builtBranch(tree, tree.nodes.get(edited)?.parent ?? ROOT, stepOp, below.map((id) => tree.nodes.get(id)!.op!));
-    return twin;
+/** An edit across trees as `crossEdit` takes it: the edited step `node` of `tool`, reached through `joins`. */
+export interface CrossFrom {
+  tool: ModelTree;
+  joins: ToolLink[];
+  node: NodeId;
+  op: ModelOp;
+}
+
+/** What an edit across trees still has to build (see `crossPlan`). */
+export type CrossPlan = { twin: NodeId } | { from: CrossFrom; reused: NodeId | null };
+
+/**
+ * What an edit across trees still has to build, after the branches an earlier edit with the same numbers built: those
+ * are found deepest first, as each join above names the tip below. `twin` when every tree has its branch, the open
+ * tree's tip. Else `from` is the edit that builds the rest, starting at the first tree without one, its op the join on
+ * the tip the tree below already has; `reused` is the step that stands for the edited one in the tool's tree, when an
+ * earlier edit built it, or null when this edit builds it. So an edit whose part branch was deleted takes the tool
+ * branch it built before rather than build a twin of it.
+ */
+export function crossPlan(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op: ModelOp, replay: readonly NodeId[]): CrossPlan {
+  const found: { twin: NodeId | null; reused: NodeId | null; from?: CrossFrom } = { twin: null, reused: null };
+  eachLevel(tool, joins, node, op, replay, (tree, edited, stepOp, below, above) => {
+    const path = builtPath(tree, tree.nodes.get(edited)?.parent ?? ROOT, stepOp, below.map((id) => tree.nodes.get(id)!.op!));
+    found.twin = path?.at(-1) ?? null;
+    if (!path) found.from = { tool: tree, joins: joins.slice(0, above), node: edited, op: stepOp };
+    else if (above === joins.length) found.reused = path[0]!;
+    return found.twin;
   });
-  return found ? twin : null;
+  return found.from ? { from: found.from, reused: found.reused } : { twin: found.twin! };
 }
 
 /** Why step `id` of a tool's tree, reached through `joins`, cannot be edited from the open tree's history, or null. */
