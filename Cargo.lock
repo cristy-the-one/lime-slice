@@ -2120,6 +2120,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lime-mcp-engine"
+version = "1.8.0"
+dependencies = [
+ "base64 0.22.1",
+ "lime-model-load",
+ "lime-slice-core",
+ "serde_json",
+]
+
+[[package]]
 name = "lime-model"
 version = "1.8.0"
 dependencies = [

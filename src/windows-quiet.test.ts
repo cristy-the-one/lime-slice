@@ -9,10 +9,14 @@ function check(name: string, ok: boolean) {
 
 const main = readFileSync(new URL("../src-tauri/src/main.rs", import.meta.url), "utf8");
 const quiet = readFileSync(new URL("../src-tauri/src/quiet_process.rs", import.meta.url), "utf8");
+const bridge = readFileSync(new URL("../src-tauri/src/bridge.rs", import.meta.url), "utf8");
+const engine = readFileSync(new URL("../crates/lime-mcp-engine/src/lib.rs", import.meta.url), "utf8");
 const kernel = readFileSync(new URL("../crates/lime-model-occt/cpp/kernel.cpp", import.meta.url), "utf8");
 
 check("the release desktop binary does not open a console", main.includes('windows_subsystem = "windows"') && main.includes("not(debug_assertions)"));
 check("a helper process is started with CREATE_NO_WINDOW", quiet.includes("CREATE_NO_WINDOW") && quiet.includes("0x0800_0000"));
+check("the live bridge does not spawn a process or a console", !bridge.includes("std::process") && !bridge.includes("CREATE_NEW_CONSOLE") && bridge.includes("Ipv4Addr::LOCALHOST") && !bridge.includes("0.0.0.0"));
+check("the in-process engine does not spawn a console", !engine.includes("std::process") && !engine.includes("CREATE_NEW_CONSOLE"));
 check("Open CASCADE's console printer is replaced by a log file", kernel.includes("RemovePrinters") && kernel.includes("Message_PrinterOStream") && kernel.includes("lime-slice/occt.log"));
 
 if (failed) {

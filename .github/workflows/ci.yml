@@ -121,6 +121,48 @@ jobs:
       - name: Playwright smoke
         run: npm run test:smoke
 
+  mcp:
+    name: MCP server
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the C++ toolchain Clipper2 links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Release CLI and in-process engine
+        run: cargo build -p lime-slice -p lime-mcp-engine --release --locked
+
+      - name: New engine dependencies stay MIT or Apache-2.0
+        run: |
+          set -euo pipefail
+          cargo tree -p lime-mcp-engine --prefix none -e normal --format '{p} {l}' > /tmp/mcp-licences.txt
+          if grep -Ei 'GPL|AGPL|SSPL' /tmp/mcp-licences.txt; then
+            echo "a GPL-family licence is not allowed"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Schema, scenarios, export, and golden G-code
+        run: |
+          node --experimental-strip-types mcp/schema.test.ts
+          node --experimental-strip-types mcp/scenario.test.ts
+          node --experimental-strip-types mcp/export.test.ts
+          LIME_MCP_GOLDEN=1 node --experimental-strip-types mcp/golden.test.ts
+
   bench:
     name: release bench smoke
     runs-on: ubuntu-24.04

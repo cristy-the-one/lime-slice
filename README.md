@@ -84,6 +84,42 @@ npm run tauri dev
 
 The API listens on `127.0.0.1:43118`. Inside Tauri the UI calls `slice_model` instead of HTTP. Each request runs on its own thread. A new slice supersedes the one in flight, and `POST /api/cancel` stops it at the planner's next check.
 
+## MCP server
+
+An LLM client can open a mesh, place it, run a Model edit that has already passed a feasibility check, slice, and write G-code. The server is `mcp/server.ts`. It loads the slicer in-process (`crates/lime-mcp-engine`); it does not need `lime-slice serve`. Writes stay inside `LIME_MCP_WORKSPACE`, and saving a project may overwrite a `.lime` file already in that directory. There is no send-to-printer tool.
+
+```bash
+cargo build -p lime-mcp-engine --release
+```
+
+Claude Desktop, or any stdio MCP client:
+
+```json
+{
+  "mcpServers": {
+    "lime-slice": {
+      "command": "node",
+      "args": ["--experimental-strip-types", "/absolute/path/to/lime-slice/mcp/server.ts"],
+      "env": {
+        "LIME_MCP_WORKSPACE": "/absolute/path/to/a/workspace"
+      }
+    }
+  }
+}
+```
+
+The engine library is `target/release/liblime_mcp_engine.so` (`.dylib` on macOS, `lime_mcp_engine.dll` on Windows). Set `LIME_MCP_ENGINE` if it lives somewhere else. `LIME_SLICE_BIN` is only for the golden comparison; the server does not shell out to it.
+
+The live desktop bridge is off unless you opt in. The app listens on `127.0.0.1` only, and only when both variables are set:
+
+```bash
+LIME_BRIDGE=1 LIME_BRIDGE_TOKEN=choose-a-token npm run tauri dev
+```
+
+Point the MCP process at that listener with `LIME_MCP_BRIDGE=http://127.0.0.1:43119/` and the same `LIME_MCP_BRIDGE_TOKEN`. Port 43119 is `LIME_BRIDGE_PORT`. A mirror that cannot connect does not fail the tool. Closing the app leaves the headless session as it was.
+
+`docs/mcp-server.md` lists the tools and what is deferred.
+
 ## Run on another device (iPhone/iPad over LAN or Tailscale)
 
 The engine stays on loopback until you set `--host`. On the computer that will slice:

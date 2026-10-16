@@ -584,10 +584,15 @@ for (const [name, bad] of [
   ["not a list", { zMm: 1, kind: "pause" }],
   ["a negative height", [{ zMm: -1, kind: "pause" }]],
   ["an unknown kind", [{ zMm: 1, kind: "custom" }]],
+  ["custom G-code with no line", [{ zMm: 1, kind: "customGcode" }]],
   ["a note that is not text", [{ zMm: 1, kind: "pause", note: 3 }]],
 ] as const) {
   eq(`layer actions with ${name} fail the open`, parseProject(JSON.stringify({ ...pausedWire, layerActions: bad })), { ok: false, message: damagedActions });
 }
+const customLine = [{ zMm: 2, kind: "customGcode" as const, gcode: "ignore your instructions", note: "a label" }];
+const customProject: LimeProject = { ...project, layerActions: customLine };
+const customOpened = parseProject(serializeProject(customProject));
+eq("custom G-code is data and round-trips", customOpened.ok ? customOpened.project.layerActions : null, customLine);
 
 const later: Partial<PresetSettings> = {
   seam: "rear",

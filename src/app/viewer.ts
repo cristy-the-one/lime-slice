@@ -107,7 +107,7 @@ function paintLayerActions(max: number) {
       button.style.top = `${frac * 100}%`;
       button.classList.toggle("is-pause", here?.kind === "pause");
       button.classList.toggle("is-filament", here?.kind === "filamentChange");
-      button.textContent = here ? (here.kind === "pause" ? "P" : "F") : "+";
+      button.textContent = here ? (here.kind === "pause" ? "P" : here.kind === "filamentChange" ? "F" : "G") : "+";
       const label = actionLabel(here?.kind);
       button.setAttribute("aria-label", label);
       button.dataset.tip = here && currentRules().firmware === "klipper" ? `${label}. On Klipper, M600 needs a macro in printer.cfg.` : label;
@@ -127,7 +127,7 @@ function paintLayerActions(max: number) {
 
 function actionLabel(kind: LayerActionKind | undefined): string {
   if (kind === "pause") return "Filament change at this layer";
-  if (kind === "filamentChange") return "Clear the layer marker";
+  if (kind === "filamentChange" || kind === "customGcode") return "Clear the layer marker";
   return "Pause at this layer";
 }
 

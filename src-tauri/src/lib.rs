@@ -15,6 +15,7 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
+mod bridge;
 mod prusa_http;
 mod quiet_process;
 use prusa_http::prusa_link_http;
@@ -311,6 +312,7 @@ pub fn run() {
                 let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))?;
                 window.set_icon(icon)?;
             }
+            bridge::start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

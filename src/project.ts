@@ -658,8 +658,13 @@ function readLayerActions(value: unknown): LayerAction[] | string {
     if (!item || typeof item !== "object" || Array.isArray(item)) return damaged;
     const row = item as Record<string, unknown>;
     if (!finite(row.zMm) || row.zMm < 0) return damaged;
-    if (row.kind !== "pause" && row.kind !== "filamentChange") return damaged;
     if (row.note !== undefined && typeof row.note !== "string") return damaged;
+    if (row.kind === "customGcode") {
+      if (typeof row.gcode !== "string" || row.gcode.trim() === "") return damaged;
+      out.push({ zMm: row.zMm, kind: "customGcode", gcode: row.gcode, ...(row.note ? { note: row.note } : {}) });
+      continue;
+    }
+    if (row.kind !== "pause" && row.kind !== "filamentChange") return damaged;
     out.push({ zMm: row.zMm, kind: row.kind, ...(row.note ? { note: row.note } : {}) });
   }
   return out;
