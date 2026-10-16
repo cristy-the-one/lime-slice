@@ -2,7 +2,8 @@
  * The six golden configs, through the same in-process slice the tools call,
  * against `lime-slice slice` on one cube. This is the CLI request, not a
  * centred Lime 220 slice: the app's library printer changes the file.
- * Set LIME_MCP_GOLDEN=1. Without it, this file exits 0.
+ * Set LIME_MCP_GOLDEN=1. Without it, this file prints golden: SKIPPED and
+ * exits 0, unless CI is set, in which case a skip fails the job.
  */
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,8 +17,8 @@ import { loadNativeEngine } from "./engine.ts";
 import { cliSliceRequest, type GoldenConfig } from "./request.ts";
 
 if (process.env.LIME_MCP_GOLDEN !== "1") {
-  console.log("golden: skipped (set LIME_MCP_GOLDEN=1)");
-  process.exit(0);
+  console.error("golden: SKIPPED");
+  process.exit(process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true" ? 1 : 0);
 }
 
 const root = fileURLToPath(new URL("..", import.meta.url));

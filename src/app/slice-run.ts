@@ -7,13 +7,8 @@ import { adoptPatch, previewBase } from "./viewer";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
 import { replyOffset, type SlicedBed } from "../bed-offset";
-import { sliceOverrideFields } from "../overrides";
-import { sliceFuzzyFields } from "../fuzzy-skin";
-import { adhesionSliceFields } from "../adhesion";
-import { surfaceSliceField } from "../surface-pattern";
-import { xySliceFields } from "../xy-comp";
-import { ironingSpacingMax, sliceIroningFields } from "../ironing";
-import { seamSliceField } from "../seam";
+import { emptyOverrides } from "../overrides";
+import { sliceRequest } from "../slice-request";
 import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type PlateRequestObject } from "../plate";
 import { normalInfillDensity, reinforcementRequestFields } from "../reinforcement";
 import { seamRequestFields } from "../seam-paint";
@@ -21,16 +16,10 @@ import { paintRequestFields } from "../support-paint";
 import { noteTally } from "./paint-actions";
 import { activeHeat, loadMachineLibrary } from "./machine-library";
 import { beltStamp } from "../ui/machine-library";
-import { beltRunTooLong, beltSliceField } from "../belt";
+import { beltRunTooLong } from "../belt";
 import { humanEngineError } from "../engine-wording";
 import { currentRules } from "./rules";
 import { orderFields, sequentialClearance, tallestLast } from "../settings-rules";
-import { flowSliceField } from "../flow";
-import { avoidanceSliceField } from "../support-avoidance";
-import { bridgeSliceFields } from "../bridge-tune";
-import { layerActionFields } from "../layer-actions";
-import { supportSliceFields } from "../support-interface";
-import { supportSourceSliceField } from "../support-source";
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { topLayerIndex } from "../ui/preview-ux";
 import { openResultsAfterSlice } from "../ui/splitters";
@@ -212,91 +201,21 @@ export function payload() {
         ...(objects.some((obj) => objectTree(obj)) ? { includeSkeleton: true } : {}),
       }
     : {};
-  return rules.coerce({
-    ...one,
+  return rules.coerce(sliceRequest({
+    one,
+    plate,
+    order: orderFields(rules, order),
+    settings: state,
     stepToleranceMm: state.stepTolerance,
-    layerHeight: state.layerHeight,
-    ...adhesionSliceFields(
-      { adhesion: state.adhesion, brimWidthMm: state.brimWidthMm, brimGapMm: state.brimGapMm, skirtLoops: state.skirtLoops },
-      beltStamp(library) !== null,
-    ),
-    ...surfaceSliceField(state.topSurfacePattern, state.blendKind, state.strategy),
-    ...xySliceFields({
-      xyHoleCompensationMm: state.xyHoleCompensationMm,
-      xyContourCompensationMm: state.xyContourCompensationMm,
-      elephantsFootCompensationMm: state.elephantsFootCompensationMm,
-    }),
     lineWidth: lineWidth(),
     blend: blend(),
-    adaptive: state.adaptive,
-    adaptiveMin: state.adaptiveMin,
-    adaptiveMax: state.adaptiveMax,
-    supports: state.supports,
-    supportAngle: state.supportAngle,
-    supportStyle: state.supportStyle,
-    branchAngle: state.branchAngle,
-    tipDiameter: state.tipDiameter,
-    trunkDiameter: state.trunkDiameter,
-    supportHeightMult: state.supportHeightMult,
-    ...avoidanceSliceField(state.supports && state.supportStyle === "tree" && state.supportAvoidance),
-    ...supportSliceFields({
-      supports: state.supports,
-      supportStyle: state.supportStyle,
-      supportZGapMm: state.supportZGapMm,
-      supportXyGapMm: state.supportXyGapMm,
-      supportInterfaceLayers: state.supportInterfaceLayers,
-      supportTreeBrimMm: state.supportTreeBrimMm,
-    }),
-    // Only Painted only is sent, so Automatic and Off keep their recipe key and their bytes.
-    ...supportSourceSliceField(state.supports, state.supportSource),
-    infillCombine: state.infillCombine,
-    combing: state.combing,
-    featureSpeeds: state.featureSpeeds,
     printer: printer(),
-    // Omitted at 1, so a filament that does not scale extrusion keeps its recipe key.
-    ...flowSliceField(state.flow),
-    ...retractSliceFields(),
-    // Always sent: the engine reads a missing field as no minimum, and 0 as off.
-    minLayerTimeS: Math.min(600, Math.max(0, state.minLayerTimeS)),
-    minLayerSpeedMmS: Math.min(300, Math.max(1, state.minLayerSpeedMmS)),
-    // Beside `printer`, and omitted for a cartesian machine, so that recipe stays the same bytes.
-    ...beltSliceField(beltStamp(library), state.supports),
-    variableWidth: state.variableWidth,
-    arcFit: state.arcFit,
-    travelOpt: state.travelOpt,
-    overhangControl: state.overhangControl,
-    ...bridgeSliceFields({
-      overhangControl: state.overhangControl,
-      bridgeFlowRatio: state.bridgeFlowRatio,
-      bridgeSpeedMmS: state.bridgeSpeedMmS,
-      bridgeFanPercent: state.bridgeFanPercent,
-    }),
-    ...layerActionFields(state.layerActions),
-    // Blend is left out, so a default slice keeps its bytes and its recipe key.
-    ...seamSliceField(state.seam),
-    // Off is left out, so a slice that does not iron keeps its bytes and its recipe key.
-    ...sliceIroningFields({ on: state.ironing, flow: state.ironingFlow, speed: state.ironingSpeed, spacing: Math.min(state.ironingSpacing, ironingSpacingMax(lineWidth())) }),
-    // Off is left out, so a slice that does not ask for fuzzy skin keeps its bytes and its recipe key.
-    ...sliceFuzzyFields({ on: state.fuzzySkin, thickness: state.fuzzyThickness, pointDistance: state.fuzzyPointDistance }),
-    scarfSeam: state.scarfSeam,
-    scarfLength: state.scarfLength,
-    scarfSteps: state.scarfSteps,
-    scarfStartHeight: 0.15,
-    scarfStartFlow: 0.55,
-    gyroid3d: state.gyroid3d,
-    zHop: state.zHop,
-    zHopHeight: state.zHopHeight,
-    zHopMinTravel: state.zHopMinTravel,
-    baseline: false,
-    compare: false,
-    includeGcode: false,
+    onBelt: beltStamp(library) !== null,
+    belt: beltStamp(library),
+    layerActions: state.layerActions,
+    overrides: state.overrides ?? emptyOverrides(),
     includePreview: true,
-    simplify: state.simplify,
-    simplifyErrorMm: state.simplifyError,
-    ...sliceOverrideFields(state.overrides),
-    ...plate,
-    ...orderFields(rules, order),
-  });
+  }));
 }
 
 /** The loaded mesh as a request names it on its own: the object the pose tools hold, which is the selected one on a plate. */
@@ -330,16 +249,6 @@ function objectTree(obj: PlateObject): boolean {
  * out: they change no toolpath, and the UI turns the reply's filament length
  * into grams and cost itself, so editing them never makes a slice stale.
  */
-function retractSliceFields(): { retractLength?: number; retractSpeed?: number } {
-  if (!state.retractOn) return {};
-  const length = Math.min(5, Math.max(0, Math.round(state.retractLength * 1000) / 1000));
-  const out: { retractLength: number; retractSpeed?: number } = { retractLength: length };
-  if (Number.isFinite(state.retractSpeed) && Math.abs(state.retractSpeed - 30) > 1e-6) {
-    out.retractSpeed = Math.min(80, Math.max(5, Math.round(state.retractSpeed)));
-  }
-  return out;
-}
-
 export function printer() {
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = state.profile;
   const heat = activeHeat();

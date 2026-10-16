@@ -5,10 +5,11 @@ import { meshKeyHex } from "../slice-action";
 import { bytesToBase64 } from "../base64";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
 import { withFooterGrams } from "../estimate";
-import { legacyStockEnd, legacyStockStart, spliceText, withMachineGcode } from "../machine-gcode";
+import { legacyStockEnd, legacyStockStart, spliceText } from "../machine-gcode";
 import { withPrintMeta } from "../print-meta";
+import { stampedPrinterGcode } from "../print-file";
 import { activeHeat, loadMachineLibrary } from "./machine-library";
-import { heatNotes, selection } from "../ui/machine-library";
+import { selection } from "../ui/machine-library";
 import type { SliceResponse } from "./state";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
@@ -398,23 +399,25 @@ interface RunMeta {
 export function withPrinterGcode(gcode: string, run?: RunMeta) {
   const library = loadMachineLibrary();
   const picked = selection(library);
-  const stamped = withPrintMeta(gcode, {
+  const meta = {
     now: new Date(),
     version: APP_VERSION,
     layerSeconds: run?.layerSeconds ?? [],
     layerHeight: run?.layerHeight,
     nozzleDiameter: picked ? library.nozzleMm : undefined,
     filamentType: picked && picked.filament.material !== "Saved" ? picked.filament.material : undefined,
-  });
-  if (!picked) return stamped;
+  };
+  if (!picked) return withPrintMeta(gcode, meta);
   // The engine was sent the capped temperatures, so the file already carries them.
   const heat = activeHeat(library);
-  return withMachineGcode(
-    stamped,
-    spliceText(picked.printer.startGcode, legacyStockStart(picked.printer.name)),
-    spliceText(picked.printer.endGcode, legacyStockEnd(picked.printer.name)),
-    { startOwnsHoming: picked.printer.startOwnsHoming, heat, notes: heatNotes(heat) },
-  );
+  return stampedPrinterGcode({
+    gcode,
+    ...meta,
+    startGcode: spliceText(picked.printer.startGcode, legacyStockStart(picked.printer.name)),
+    endGcode: spliceText(picked.printer.endGcode, legacyStockEnd(picked.printer.name)),
+    startOwnsHoming: picked.printer.startOwnsHoming,
+    heat,
+  });
 }
 
 /** Save the G-code. A missing or stale slice is made first, so Export needs only a mesh. */

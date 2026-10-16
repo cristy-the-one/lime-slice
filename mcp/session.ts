@@ -14,7 +14,7 @@ import { humanEngineError } from "../src/engine-wording.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../src/foreign-3mf.ts";
 import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
-import { encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Mat3 } from "../src/mesh-place.ts";
+import { centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Mat3 } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
 import { probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, forked, replayChain, type ToolLink } from "../src/model-edit.ts";
@@ -30,7 +30,7 @@ import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
 import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnFace, type Workplane } from "../src/workplane.ts";
-import { eulerOrient } from "../src/mesh-place.ts";
+import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
 import { plateFileIsVersion2 } from "../src/plate.ts";
 import { builtinLibrary, adoptProfile, enginePrinter, heatFor, parseMachineFile, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
 import { parseSettingsProfile } from "../src/ui/settings-profiles.ts";
@@ -44,6 +44,7 @@ import { reviewGcode } from "./review.ts";
 import { validateTool } from "./schema.ts";
 import { resolveRead, resolveWrite } from "./workspace.ts";
 
+const OVERLAP = "These parts overlap. Move one before slicing.";
 const CHORD = 0.05;
 const STEP = 0.05;
 const SLICE_WAIT_DEFAULT_S = 20;
@@ -556,19 +557,37 @@ export class Session {
       ...(note ? { note } : {}),
     });
     const placed = this.placed(obj);
+    const overlap = this.overlaps(obj) ? OVERLAP : "";
+    const combined = [note, overlap].filter((line) => line).join(" ");
     return {
       ok: true,
       object: obj.id,
       name: obj.name,
       triangles: obj.triangles,
       bboxMm: { min: placed.bounds.min, max: placed.bounds.max },
-      ...(note ? { note } : {}),
+      ...(combined ? { note: combined } : {}),
     };
   }
 
   private placed(obj: PlateObject) {
     const printer = this.printer();
     return placeMesh(obj.source, obj.orient, obj.scale, printer.bedX, printer.bedY, obj.centered, obj.offset);
+  }
+
+  private overlaps(obj: PlateObject): boolean {
+    const a = this.placed(obj).bounds;
+    return this.objects.some((other) => {
+      if (other.id === obj.id) return false;
+      const b = this.placed(other).bounds;
+      return a.min[0] < b.max[0] - 0.05 && b.min[0] < a.max[0] - 0.05 && a.min[1] < b.max[1] - 0.05 && b.min[1] < a.max[1] - 0.05;
+    });
+  }
+
+  private plateNotes(obj: PlateObject, bounds: { min: number[]; max: number[] }): string[] {
+    const printer = this.printer();
+    const notes = offBed(bounds, printer.bedX, printer.bedY, printer.bedZ, printer.kind === "belt");
+    if (this.overlaps(obj)) notes.push(OVERLAP);
+    return notes;
   }
 
   private find(id: string): PlateObject | null {
@@ -590,7 +609,7 @@ export class Session {
         bboxMm: { min: placed.bounds.min, max: placed.bounds.max },
         centreMm: centre,
         scalePercent: obj.scale * 100,
-        notes: offBed(placed.bounds, printer.bedX, printer.bedY, printer.bedZ, printer.kind === "belt"),
+        notes: this.plateNotes(obj, placed.bounds),
       };
     });
     const listed = page(rows, input.cursor, input.limit);
@@ -627,15 +646,17 @@ export class Session {
       obj.offset = { x: 0, y: 0, z: 0 };
     }
     if (typeof input.centreX === "number" || typeof input.centreY === "number") {
-      const before = this.placed({ ...obj, centered: true, offset: { x: 0, y: 0, z: 0 } });
-      const cx = (before.bounds.min[0] + before.bounds.max[0]) / 2;
-      const cy = (before.bounds.min[1] + before.bounds.max[1]) / 2;
-      obj.centered = false;
-      obj.offset = {
-        x: typeof input.centreX === "number" ? input.centreX - cx : obj.offset.x,
-        y: typeof input.centreY === "number" ? input.centreY - cy : obj.offset.y,
-        z: obj.offset.z,
-      };
+      const current = this.placed(obj);
+      const cx = (current.bounds.min[0] + current.bounds.max[0]) / 2;
+      const cy = (current.bounds.min[1] + current.bounds.max[1]) / 2;
+      if (obj.centered) {
+        const printer = this.printer();
+        obj.offset = centeringShift(obj.source, obj.orient, obj.scale, printer.bedX, printer.bedY);
+        obj.centered = false;
+      }
+      const dx = typeof input.centreX === "number" ? input.centreX - cx : 0;
+      const dy = typeof input.centreY === "number" ? input.centreY - cy : 0;
+      obj.offset = { x: obj.offset.x + dx, y: obj.offset.y + dy, z: obj.offset.z };
     }
     const placed = this.placed(obj);
     return {
@@ -704,6 +725,9 @@ export class Session {
   }
 
   private settingsApply(input: Record<string, unknown>): Record<string, unknown> {
+    if (typeof input.layerHeight === "number" && (input.layerHeight < 0.08 || input.layerHeight > 0.4)) {
+      return { ok: false, reason: "Layer height must be from 0.08–0.4 mm.", changed: [] };
+    }
     if (typeof input.path === "string") {
       const parsed = parseSettingsProfile(readFileSync(resolveRead(input.path, "profile"), "utf8"));
       if (!parsed.ok) return { ok: false, reason: parsed.message, changed: [] };
@@ -733,6 +757,8 @@ export class Session {
       nozzleMm: this.library.nozzleMm,
       actions: this.actions,
       objects: 1,
+      bounds: placed.bounds,
+      stepToleranceMm: obj.stepTolerance,
     });
   }
 
@@ -754,7 +780,7 @@ export class Session {
     const job: Job = { handle: `job_${this.jobs.length + 1}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(obj), status: "running" };
     this.jobs.push(job);
     this.running = job;
-    return { ok: true, job: job.handle, status: "running" };
+    return { ok: true, job: job.handle, status: "running", object: obj.id, name: obj.name };
   }
 
   private sliceStamp(obj: PlateObject): string {
@@ -814,8 +840,9 @@ export class Session {
     if (meta?.signal?.aborted && job.status === "running") {
       return { ok: false, job: job.handle, status: "cancelled", reason: "The wait was cancelled." };
     }
+    const named = this.find(job.objectId);
     if (job.status === "running") {
-      return { ok: true, job: job.handle, status: "running", fraction, stage };
+      return { ok: true, job: job.handle, status: "running", fraction, stage, ...(named ? { object: named.id, name: named.name } : {}) };
     }
     if (this.running?.handle === job.handle && job.status !== "running") this.running = null;
     if (job.status === "done") this.latest = job;
@@ -829,6 +856,8 @@ export class Session {
       ok: true,
       job: job.handle,
       status: "done",
+      object: named?.id,
+      name: named?.name,
       seconds: summary.seconds,
       grams: summary.grams,
       filamentMm: summary.filamentMm,
@@ -863,7 +892,9 @@ export class Session {
     const filamentMm = estimate.filamentMm ?? 0;
     const grams = filamentGrams(filamentMm, spec);
     const features = groupFeatures(estimate.byFeature ?? [], spec);
-    const layers = Array.isArray(wire.layers) ? wire.layers as { z?: number; seconds?: number }[] : [];
+    const raw = Array.isArray(wire.layers) ? wire.layers as { z?: number; seconds?: number }[] : [];
+    const layers = raw.filter((layer) => typeof layer.z === "number").map((layer) => ({ z: layer.z as number, seconds: layer.seconds }));
+    const known = layers.length > 0 && layers.every((layer) => typeof layer.seconds === "number");
     return {
       seconds: estimate.seconds ?? 0,
       grams,
@@ -871,8 +902,8 @@ export class Session {
       cost: mass(filamentMm, spec).cost,
       warnings: this.warnings(wire),
       features,
-      layerSeconds: layers.map((layer) => layer.seconds).filter((value): value is number => typeof value === "number"),
-      layers: layers.filter((layer) => typeof layer.z === "number").map((layer) => ({ z: layer.z as number, ...(typeof layer.seconds === "number" ? { seconds: layer.seconds } : {}) })),
+      layerSeconds: known ? layers.map((layer) => layer.seconds as number) : [],
+      layers: layers.map((layer) => ({ z: layer.z, ...(typeof layer.seconds === "number" ? { seconds: layer.seconds } : {}) })),
     };
   }
 
@@ -910,7 +941,7 @@ export class Session {
     const stale = this.staleReason(job);
     if (stale) return { ok: false, reason: stale };
     const summary = this.summarize(job);
-    const review = reviewGcode(job.gcode);
+    const review = reviewGcode(this.fileText(job, new Date(Date.UTC(2020, 0, 2, 3, 4, 5))));
     return {
       ok: true,
       seconds: summary.seconds,
@@ -931,24 +962,7 @@ export class Session {
     if (stale) return { ok: false, reason: stale };
     const now = typeof input.now === "string" ? new Date(input.now) : new Date();
     if (Number.isNaN(now.getTime())) return { ok: false, reason: "That clock is not a time." };
-    const summary = this.summarize(job);
-    const printer = this.printer();
-    const filament = this.filament();
-    const heat = heatFor(printer, filament.nozzleTemp, filament.bedTemp);
-    const text = exportGcode({
-      gcode: job.gcode,
-      grams: summary.grams,
-      now,
-      layerSeconds: summary.layerSeconds,
-      layerHeight: this.settings.layerHeight,
-      nozzleDiameter: this.library.nozzleMm,
-      filamentType: filament.material === "Saved" ? undefined : filament.material,
-      printerName: printer.name,
-      startGcode: printer.startGcode,
-      endGcode: printer.endGcode,
-      startOwnsHoming: printer.startOwnsHoming,
-      heat,
-    });
+    const text = this.fileText(job, now);
     const path = resolveWrite(String(input.name), ".gcode");
     writeFileSync(path, text);
     return { ok: true, path, bytes: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") };
@@ -974,14 +988,13 @@ export class Session {
       placed.bounds.max[1] - placed.bounds.min[1],
       placed.bounds.max[2] - placed.bounds.min[2],
     ];
-    const printer = this.printer();
     return {
       ok: true,
       object: obj.id,
       triangles: obj.triangles,
       bboxMm: { min: placed.bounds.min, max: placed.bounds.max },
       sizeMm: size,
-      notes: offBed(placed.bounds, printer.bedX, printer.bedY, printer.bedZ, printer.kind === "belt"),
+      notes: this.plateNotes(obj, placed.bounds),
     };
   }
 
@@ -1181,11 +1194,13 @@ export class Session {
     const x = typeof input.x === "number" ? input.x : obj.modelPose.t[0];
     const y = typeof input.y === "number" ? input.y : obj.modelPose.t[1];
     const z = typeof input.z === "number" ? input.z : obj.modelPose.t[2];
-    const turnX = typeof input.turnX === "number" ? input.turnX : 0;
-    const turnY = typeof input.turnY === "number" ? input.turnY : 0;
-    const turnZ = typeof input.turnZ === "number" ? input.turnZ : 0;
+    const current = orientEuler(obj.modelPose.m);
+    const turnX = typeof input.turnX === "number" ? input.turnX : current.rx;
+    const turnY = typeof input.turnY === "number" ? input.turnY : current.ry;
+    const turnZ = typeof input.turnZ === "number" ? input.turnZ : current.rz;
     obj.modelPose = { m: eulerOrient(turnX, turnY, turnZ), t: [x, y, z] };
-    return { ok: true };
+    const turn = orientEuler(obj.modelPose.m);
+    return { ok: true, x, y, z, turnX: turn.rx, turnY: turn.ry, turnZ: turn.rz };
   }
 
   private bake(obj: PlateObject, raw: unknown): { op: ModelOp; typed: Record<string, unknown> } | { reason: string } {
@@ -1542,16 +1557,63 @@ export class Session {
     return { ok: true, path, bytes: Buffer.byteLength(step) };
   }
 
-  private measure(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
-    const a = input.a as number[];
-    const b = input.b as number[];
+  private async measure(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (typeof input.faceA === "number" || typeof input.faceB === "number") {
+      if (typeof input.faceA !== "number" || typeof input.faceB !== "number") return { ok: false, reason: "Name both faces." };
+      const tree = await this.opened(obj);
+      if ("reason" in tree) return { ok: false, reason: tree.reason };
+      const solid = obj.solid;
+      if (!solid) return { ok: false, reason: "This solid could not be read." };
+      const left = this.faceCentre(solid, input.faceA);
+      const right = this.faceCentre(solid, input.faceB);
+      if (!left || !right) return { ok: false, reason: "That face is not on this solid." };
+      return this.span(left, right, "model");
+    }
+    const a = input.a;
+    const b = input.b;
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length < 3 || b.length < 3) {
+      return { ok: false, reason: "Name two points, or two faces from the solid." };
+    }
     const frame = input.frame === "workplane" ? "workplane" : "model";
-    const left = frame === "workplane" ? localPoint(obj.workplane, a) : a as [number, number, number];
-    const right = frame === "workplane" ? localPoint(obj.workplane, b) : b as [number, number, number];
+    const left = frame === "workplane" ? localPoint(obj.workplane, a as [number, number, number]) : a as [number, number, number];
+    const right = frame === "workplane" ? localPoint(obj.workplane, b as [number, number, number]) : b as [number, number, number];
+    return this.span(left, right, frame);
+  }
+
+  private faceCentre(solid: NonNullable<PlateObject["solid"]>, index: number): [number, number, number] | null {
+    const face = solid.faces[index];
+    if (!face?.normal) return null;
+    const plane = facePlane(solid.positions, solid.triangles, index, face.normal);
+    return plane ? plane.point : null;
+  }
+
+  private span(left: [number, number, number], right: [number, number, number], frame: string): Record<string, unknown> {
     const dx = right[0] - left[0];
     const dy = right[1] - left[1];
     const dz = right[2] - left[2];
     return { ok: true, distanceMm: Math.hypot(dx, dy, dz), dx, dy, dz, frame };
+  }
+
+  /** The file Export writes, so the review sees the printer's start and end text. */
+  private fileText(job: Job, now: Date): string {
+    const summary = this.summarize(job);
+    const printer = this.printer();
+    const filament = this.filament();
+    const heat = heatFor(printer, filament.nozzleTemp, filament.bedTemp);
+    return exportGcode({
+      gcode: job.gcode ?? "",
+      grams: summary.grams,
+      now,
+      layerSeconds: summary.layerSeconds,
+      layerHeight: this.settings.layerHeight,
+      nozzleDiameter: this.library.nozzleMm,
+      filamentType: filament.material === "Saved" ? undefined : filament.material,
+      printerName: printer.name,
+      startGcode: printer.startGcode,
+      endGcode: printer.endGcode,
+      startOwnsHoming: printer.startOwnsHoming,
+      heat,
+    });
   }
 }
 

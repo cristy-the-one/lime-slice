@@ -15,24 +15,15 @@
  * actions) and the built-in machine library. That request is not the CLI's:
  * the app centres a posed mesh and sends the library printer, fan, and firmware.
  */
-import { adhesionSliceFields } from "../src/adhesion.ts";
 import { bytesToBase64 } from "../src/base64.ts";
-import { beltSliceField } from "../src/belt.ts";
-import { bridgeSliceFields } from "../src/bridge-tune.ts";
-import { flowSliceField } from "../src/flow.ts";
-import { sliceFuzzyFields } from "../src/fuzzy-skin.ts";
-import { sliceIroningFields } from "../src/ironing.ts";
-import { layerActionFields, type LayerAction } from "../src/layer-actions.ts";
-import { encodeStl, scaledCanonical, type Mat3, type RigidPose } from "../src/mesh-place.ts";
+import { encodeStl, type Mat3, type RigidPose } from "../src/mesh-place.ts";
+import { emptyOverrides } from "../src/overrides.ts";
 import type { PresetSettings } from "../src/presets.ts";
-import { seamSliceField } from "../src/seam.ts";
 import { settingsRules } from "../src/settings-rules.ts";
-import { supportSourceSliceField } from "../src/support-source.ts";
-import { avoidanceSliceField } from "../src/support-avoidance.ts";
-import { supportSliceFields } from "../src/support-interface.ts";
-import { surfaceSliceField } from "../src/surface-pattern.ts";
+import { sliceRequest } from "../src/slice-request.ts";
+import { nextSplitAt, type AxisBounds } from "../src/split-at.ts";
+import type { LayerAction } from "../src/layer-actions.ts";
 import { enginePrinter, heatFor, type FilamentRecord, type PrinterRecord } from "../src/ui/machine-library.ts";
-import { xySliceFields } from "../src/xy-comp.ts";
 
 export type GoldenConfig = "speed" | "tough" | "region" | "grid" | "tree" | "adaptive";
 
@@ -79,6 +70,8 @@ export function sessionSliceRequest(input: {
   nozzleMm: number;
   actions: readonly LayerAction[];
   objects: number;
+  bounds: AxisBounds | null;
+  stepToleranceMm: number;
 }): Record<string, unknown> {
   const rules = settingsRules({
     kind: input.printer.kind,
@@ -92,49 +85,23 @@ export function sessionSliceRequest(input: {
   const heat = heatFor(input.printer, input.filament.nozzleTemp, input.filament.bedTemp);
   const { filamentDensityGCm3: _density, filamentCostPerKg: _cost, ...profile } = built;
   const lineWidth = Math.min(1.2, Math.max(0.2, input.nozzleMm * 1.125));
-  const settings = input.settings;
+  const settings = { ...input.settings };
+  if (settings.blendKind === "byRegion" && input.bounds) {
+    settings.atMm = nextSplitAt("open", settings.atMm, input.bounds, settings.axis === "y" ? "y" : "x", false);
+  }
   const libraryBelt = input.printer.kind === "belt" ? input.printer.belt : null;
-  return rules.coerce({
-    filename: input.filename,
-    dataB64: bytesToBase64(input.bytes),
-    ...(input.pose ? { pose: input.pose } : {}),
-    stepToleranceMm: 0.05,
-    layerHeight: settings.layerHeight,
+  return rules.coerce(sliceRequest({
+    one: {
+      filename: input.filename,
+      dataB64: bytesToBase64(input.bytes),
+      ...(input.pose ? { pose: input.pose } : {}),
+    },
+    plate: {},
+    order: {},
+    settings,
+    stepToleranceMm: input.stepToleranceMm,
     lineWidth,
     blend: blendOf(settings),
-    ...adhesionSliceFields(
-      { adhesion: settings.adhesion, brimWidthMm: settings.brimWidthMm, brimGapMm: settings.brimGapMm, skirtLoops: settings.skirtLoops },
-      libraryBelt !== null,
-    ),
-    ...surfaceSliceField(settings.topSurfacePattern, settings.blendKind, settings.strategy),
-    ...xySliceFields({
-      xyHoleCompensationMm: settings.xyHoleCompensationMm,
-      xyContourCompensationMm: settings.xyContourCompensationMm,
-      elephantsFootCompensationMm: settings.elephantsFootCompensationMm,
-    }),
-    adaptive: settings.adaptive,
-    adaptiveMin: settings.adaptiveMin,
-    adaptiveMax: settings.adaptiveMax,
-    supports: settings.supports,
-    supportAngle: settings.supportAngle,
-    supportStyle: settings.supportStyle,
-    branchAngle: settings.branchAngle,
-    tipDiameter: settings.tipDiameter,
-    trunkDiameter: settings.trunkDiameter,
-    supportHeightMult: settings.supportHeightMult,
-    ...avoidanceSliceField(settings.supports && settings.supportStyle === "tree" && settings.supportAvoidance),
-    ...supportSliceFields({
-      supports: settings.supports,
-      supportStyle: settings.supportStyle,
-      supportZGapMm: settings.supportZGapMm,
-      supportXyGapMm: settings.supportXyGapMm,
-      supportInterfaceLayers: settings.supportInterfaceLayers,
-      supportTreeBrimMm: settings.supportTreeBrimMm,
-    }),
-    ...supportSourceSliceField(settings.supports, settings.supportSource),
-    infillCombine: settings.infillCombine,
-    combing: settings.combing,
-    featureSpeeds: settings.featureSpeeds,
     printer: {
       ...profile,
       nozzleTemp: heat.nozzleC,
@@ -144,46 +111,12 @@ export function sessionSliceRequest(input: {
       firmware: rules.firmware,
       firmwareArcs: rules.firmwareArcs,
     },
-    ...flowSliceField(settings.flow),
-    ...(settings.retractOn ? { retractLength: settings.retractLength } : {}),
-    minLayerTimeS: Math.min(600, Math.max(0, settings.minLayerTimeS)),
-    minLayerSpeedMmS: Math.min(300, Math.max(1, settings.minLayerSpeedMmS)),
-    ...beltSliceField(libraryBelt, settings.supports),
-    variableWidth: settings.variableWidth,
-    arcFit: settings.arcFit,
-    travelOpt: settings.travelOpt,
-    overhangControl: settings.overhangControl,
-    ...bridgeSliceFields({
-      overhangControl: settings.overhangControl,
-      bridgeFlowRatio: settings.bridgeFlowRatio,
-      bridgeSpeedMmS: settings.bridgeSpeedMmS,
-      bridgeFanPercent: settings.bridgeFanPercent,
-    }),
-    ...layerActionFields(input.actions),
-    ...seamSliceField(settings.seam),
-    ...sliceIroningFields({
-      on: settings.ironing,
-      flow: settings.ironingFlow,
-      speed: settings.ironingSpeed,
-      spacing: settings.ironingSpacing,
-    }),
-    ...sliceFuzzyFields({ on: settings.fuzzySkin, thickness: settings.fuzzyThickness, pointDistance: settings.fuzzyPointDistance }),
-    scarfSeam: settings.scarfSeam,
-    scarfLength: settings.scarfLength,
-    scarfSteps: settings.scarfSteps,
-    scarfStartHeight: 0.15,
-    scarfStartFlow: 0.55,
-    gyroid3d: settings.gyroid3d,
-    zHop: settings.zHop,
-    zHopHeight: settings.zHopHeight,
-    zHopMinTravel: settings.zHopMinTravel,
-    baseline: false,
-    compare: false,
-    includeGcode: false,
-    includePreview: false,
-    simplify: settings.simplify,
-    simplifyErrorMm: settings.simplifyError,
-  });
+    onBelt: libraryBelt !== null,
+    belt: libraryBelt,
+    layerActions: input.actions,
+    overrides: emptyOverrides(),
+    includePreview: true,
+  }));
 }
 
 export function blendOf(settings: PresetSettings): Record<string, unknown> {

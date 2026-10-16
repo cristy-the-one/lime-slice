@@ -255,12 +255,12 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "slice_start",
-    description: "Slice the plate with the selected machine and settings. A second slice is refused while one is running unless cancelRunning is true. Nothing is sent to a printer.",
+    description: "Slices the selected object only, with the selected machine and settings. The result names that object. A second slice is refused while one is running unless cancelRunning is true. Nothing is sent to a printer.",
     inputSchema: { type: "object", additionalProperties: false, properties: { cancelRunning: { type: "boolean" } } },
   },
   {
     name: "slice_wait",
-    description: "Wait for a slice. By default this returns within about 20 seconds. If the slice is still running, the result has status running plus fraction and stage; call slice_wait again with the same job. Pass timeoutS, up to 120, to wait longer. A progress token on the request receives notifications/progress.",
+    description: "Wait for a slice of the selected object. The result names that object. By default this returns within about 20 seconds. If the slice is still running, the result has status running plus fraction and stage; call slice_wait again with the same job. Pass timeoutS, up to 120, to wait longer. A progress token on the request receives notifications/progress.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -418,12 +418,19 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "measure",
-    description: "Distance between two points, in millimetres, in the model frame or the workplane frame.",
+    description: "Distance in millimetres. Pass two points, or two faces from model_describe. Opposite faces of a solid return the distance between those faces.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      required: ["object", "a", "b"],
-      properties: { object: handle, a: vec3, b: vec3, frame: { enum: ["model", "workplane"] } },
+      required: ["object"],
+      properties: {
+        object: handle,
+        a: vec3,
+        b: vec3,
+        faceA: { type: "integer", minimum: 0 },
+        faceB: { type: "integer", minimum: 0 },
+        frame: { enum: ["model", "workplane"] },
+      },
     },
   },
   {

@@ -45,7 +45,7 @@ const waited = await call("slice_wait", { job: started.job });
 check("the slice reports time and grams", waited.ok === true && typeof waited.seconds === "number" && typeof waited.grams === "number", JSON.stringify(waited));
 const body = JSON.parse(engine.lastSlice) as { printer?: { name?: string; firmware?: string; fanPercent?: number }; includePreview?: boolean };
 check("the session slice uses the library printer", body.printer?.name === "Lime 220" && body.printer.firmware === "klipper" && body.printer.fanPercent === 100);
-check("a tool slice leaves the preview out", body.includePreview === false);
+check("a tool slice asks for layer heights", body.includePreview === true);
 
 const exported = await call("gcode_export", { name: "cube.gcode", now: "2020-01-02T03:04:05.000Z" });
 check("export writes inside the workspace", exported.ok === true && String(exported.path).startsWith(workspace));

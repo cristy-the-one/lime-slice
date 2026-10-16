@@ -1,7 +1,7 @@
-import { withFooterGrams, filamentGrams } from "../src/estimate.ts";
-import { legacyStockEnd, legacyStockStart, spliceText, withMachineGcode } from "../src/machine-gcode.ts";
-import { withPrintMeta } from "../src/print-meta.ts";
-import { builtinLibrary, heatFor, heatNotes } from "../src/ui/machine-library.ts";
+import { filamentGrams } from "../src/estimate.ts";
+import { legacyStockEnd, legacyStockStart, spliceText } from "../src/machine-gcode.ts";
+import { printerGcode } from "../src/print-file.ts";
+import { builtinLibrary, heatFor } from "../src/ui/machine-library.ts";
 
 import { appVersion, exportGcode } from "./export-gcode.ts";
 
@@ -37,22 +37,21 @@ const now = new Date(2020, 0, 2, 3, 4, 5);
 const plaGrams = filamentGrams(100, { filamentDiameter: pla.diameterMm, filamentDensityGCm3: pla.densityGCm3, filamentCostPerKg: pla.costPerKg });
 const petgGrams = filamentGrams(100, { filamentDiameter: petg.diameterMm, filamentDensityGCm3: petg.densityGCm3, filamentCostPerKg: petg.costPerKg });
 
-function direct(grams: number, printer: typeof lime, filament: typeof pla): string {
-  const heat = heatFor(printer, filament.nozzleTemp, filament.bedTemp);
-  const stamped = withPrintMeta(withFooterGrams(gcode, grams), {
+function appFile(grams: number, printer: typeof lime, filament: typeof pla): string {
+  return printerGcode({
+    gcode,
+    grams,
     now,
     version: appVersion(),
     layerSeconds: [1],
     layerHeight: 0.2,
     nozzleDiameter: 0.4,
     filamentType: filament.material,
+    startGcode: spliceText(printer.startGcode, legacyStockStart(printer.name)),
+    endGcode: spliceText(printer.endGcode, legacyStockEnd(printer.name)),
+    startOwnsHoming: printer.startOwnsHoming,
+    heat: heatFor(printer, filament.nozzleTemp, filament.bedTemp),
   });
-  return withMachineGcode(
-    stamped,
-    spliceText(printer.startGcode, legacyStockStart(printer.name)),
-    spliceText(printer.endGcode, legacyStockEnd(printer.name)),
-    { startOwnsHoming: printer.startOwnsHoming, heat: { bedC: heat.bedC, nozzleC: heat.nozzleC }, notes: heatNotes(heat) },
-  );
 }
 
 const plaFile = exportGcode({
@@ -69,7 +68,7 @@ const plaFile = exportGcode({
   startOwnsHoming: lime.startOwnsHoming,
   heat: heatFor(lime, pla.nozzleTemp, pla.bedTemp),
 });
-check("lime 220 PLA matches the app's export functions", plaFile === direct(plaGrams, lime, pla));
+check("lime 220 PLA matches the app's export function", plaFile === appFile(plaGrams, lime, pla));
 check("the footer grams are the filament's, not 1.24 from a different density", plaFile.includes(`FILAMENT_G:${plaGrams.toFixed(3)}`) && pla.densityGCm3 === 1.24);
 
 const petgFile = exportGcode({
@@ -86,7 +85,7 @@ const petgFile = exportGcode({
   startOwnsHoming: lime.startOwnsHoming,
   heat: heatFor(lime, petg.nozzleTemp, petg.bedTemp),
 });
-check("PETG uses 1.27 and matches the app functions", petg.densityGCm3 === 1.27 && petgFile === direct(petgGrams, lime, petg) && petgFile.includes(`FILAMENT_G:${petgGrams.toFixed(3)}`) && !petgFile.includes("FILAMENT_G:0.300"));
+check("PETG uses 1.27 and matches the app function", petg.densityGCm3 === 1.27 && petgFile === appFile(petgGrams, lime, petg) && petgFile.includes(`FILAMENT_G:${petgGrams.toFixed(3)}`) && !petgFile.includes("FILAMENT_G:0.300"));
 
 const ir3File = exportGcode({
   gcode,
@@ -102,7 +101,8 @@ const ir3File = exportGcode({
   startOwnsHoming: ir3.startOwnsHoming,
   heat: heatFor(ir3, pla.nozzleTemp, pla.bedTemp),
 });
-check("the IR3 V2 start G-code is in the export", ir3.startOwnsHoming && ir3File.includes("PRINT_START") && ir3File === direct(plaGrams, ir3, pla));
+check("the IR3 V2 start G-code is in the export", ir3.startOwnsHoming && ir3File.includes("PRINT_START") && ir3File === appFile(plaGrams, ir3, pla));
+check("M73 lines come from the shared printer file", plaFile.includes("M73 ") && appFile(plaGrams, lime, pla).split("\n").filter((line) => line.startsWith("M73 ")).join("\n") === plaFile.split("\n").filter((line) => line.startsWith("M73 ")).join("\n"));
 check("the pinned clock is in the generated-by line", plaFile.includes("2020-01-02") && plaFile.includes(appVersion()));
 
 if (failed) {

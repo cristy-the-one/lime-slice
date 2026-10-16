@@ -6,10 +6,10 @@
  */
 import { readFileSync } from "node:fs";
 
-import { filamentCost, filamentGrams, withFooterGrams, type Filament } from "../src/estimate.ts";
-import { legacyStockEnd, legacyStockStart, spliceText, withMachineGcode } from "../src/machine-gcode.ts";
-import { withPrintMeta } from "../src/print-meta.ts";
-import { heatNotes, type Heat } from "../src/ui/machine-library.ts";
+import { filamentCost, filamentGrams, type Filament } from "../src/estimate.ts";
+import { legacyStockEnd, legacyStockStart, spliceText } from "../src/machine-gcode.ts";
+import { printerGcode } from "../src/print-file.ts";
+import { type Heat } from "../src/ui/machine-library.ts";
 
 export function appVersion(): string {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
@@ -32,20 +32,20 @@ export interface ExportInput {
 }
 
 export function exportGcode(input: ExportInput): string {
-  const stamped = withPrintMeta(withFooterGrams(input.gcode, input.grams), {
+  return printerGcode({
+    gcode: input.gcode,
+    grams: input.grams,
     now: input.now,
     version: appVersion(),
     layerSeconds: input.layerSeconds,
     layerHeight: input.layerHeight,
     nozzleDiameter: input.nozzleDiameter,
     filamentType: input.filamentType,
+    startGcode: spliceText(input.startGcode, legacyStockStart(input.printerName)),
+    endGcode: spliceText(input.endGcode, legacyStockEnd(input.printerName)),
+    startOwnsHoming: input.startOwnsHoming,
+    heat: input.heat,
   });
-  return withMachineGcode(
-    stamped,
-    spliceText(input.startGcode, legacyStockStart(input.printerName)),
-    spliceText(input.endGcode, legacyStockEnd(input.printerName)),
-    { startOwnsHoming: input.startOwnsHoming, heat: { bedC: input.heat.bedC, nozzleC: input.heat.nozzleC }, notes: heatNotes(input.heat) },
-  );
 }
 
 export function mass(mm: number, filament: Filament): { grams: number; cost: number } {
