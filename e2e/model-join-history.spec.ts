@@ -88,6 +88,7 @@ test("a join is a merge: its tool's steps come in on a lane of their own, and a 
   await joinScene(page);
   await expect(objects(page), "the tool left the plate").toHaveCount(1);
   await expect(rows(page)).toHaveCount(5);
+  await expect(page.locator("#modelHistoryToggle"), "the header counts the tool's rows too").toHaveText("History · 5");
   expect(await rows(page).evaluateAll((els) => els.map((el) => [(el as HTMLElement).dataset.row, el.querySelector(".mh-label")?.textContent, el.getAttribute("aria-level")]))).toEqual([
     ["0", "Box 10×10×10", "1"],
     ["1/0", "plate.step", "2"],
@@ -179,6 +180,43 @@ test("a tool's step edited from the part's History: the tool forks, the join is 
   await expect(row(page, "3/2")).toContainText("Scale 60 %");
   await row(page, "3/2").click();
   await expect(readout(page), "after a reopen the tool's step opens from its tree").toHaveText("“Scale 60 %” of plate.step, as “Cut plate.step” takes it. Volume 864 mm³. Edit step changes it.");
+});
+
+test("the same tool edit after the part's branch was deleted builds the join on the tool's branch from before, not a twin of it", async ({ page }) => {
+  const tree = await joinScene(page);
+  const edit = async (factor: string) => {
+    await row(page, "1/1").click();
+    await page.keyboard.press("Shift+E");
+    await expect(head(page)).toHaveText("Editing plate.step, step 1: Scale 50 %");
+    await page.locator("#modelFactor").fill(factor);
+    await page.locator("#modelApply").click();
+  };
+  await edit("0.6");
+  await expect(readout(page)).toHaveText("Updated “Scale 60 %” of plate.step and rebuilt 2 steps after it. Volume 713.60 mm³.");
+  const keys = () => rows(page).evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.row));
+  expect(await keys()).toEqual(["0", "1/0", "1/1", "1", "2", "3/0", "3/2", "3", "4"]);
+
+  // The part's branch goes; the tool's new step stays, as the tool's own tree keeps every branch.
+  await row(page, "2").click();
+  await expect(readout(page)).toContainText("Volume 750 mm³");
+  await row(page, "3").click({ button: "right" });
+  await page.getByRole("menuitem", { name: /Delete branch/ }).click();
+  expect(await keys()).toEqual(["0", "1/0", "1/1", "1", "2"]);
+  await expect(page.locator("#modelHistoryToggle")).toHaveText("History · 5");
+
+  await edit("0.6");
+  await expect(readout(page), "the tool's step was built before: only the join and the hole are").toHaveText("Updated “Scale 60 %” of plate.step and rebuilt 2 steps after it. Volume 713.60 mm³.");
+  const sent = tree.of("edit");
+  expect(sent).toHaveLength(2);
+  expect(sent[1]!.tools, "the tool's tree is not asked to build anything").toBeUndefined();
+  expect((sent[1]!.op as { tool: { node: number } }).tool.node, "the join takes the tool's step from the first edit").toBe(2);
+  expect(await keys()).toEqual(["0", "1/0", "1/1", "1", "2", "5/0", "5/2", "5", "6"]);
+  await expect(page.locator("#modelHistoryToggle")).toHaveText("History · 9");
+
+  await page.locator("#tabPrepare").click();
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const doc = JSON.parse((await readFile((await download.path())!)).toString("utf8")) as { modelTools: { modelTree: { nodes: { id: number; parent: number | null; op: Body | null }[] } }[] };
+  expect(doc.modelTools[0]!.modelTree.nodes.map((node) => [node.id, node.parent, (node.op as { factor?: number } | null)?.factor ?? null]), "one branch in the tool's tree for the one edit").toEqual([[0, null, null], [1, 0, 0.5], [2, 0, 0.6]]);
 });
 
 test("a tool's step that no longer builds is kept broken, and so is the join it fed, with the part's later steps under it", async ({ page }) => {

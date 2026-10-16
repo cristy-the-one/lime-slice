@@ -1,5 +1,5 @@
 import { eulerOrient } from "./mesh-place.ts";
-import { builtBranch, crossEdit, crossTwin, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditPanel } from "./model-edit.ts";
+import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditPanel } from "./model-edit.ts";
 import { historyLayout } from "./model-history.ts";
 import { planeFor, splitBase } from "./model-plane.ts";
 import { primitiveSpec, type PrimitiveSpec } from "./model-primitive.ts";
@@ -214,8 +214,16 @@ const rodForked = forked(rodTree, 0, [{ id: 3, op: wider, fingerprint: fp(400) }
 eq("the tool's own tree keeps its shown step and where Redo goes from the parent", [rodForked.current, rodForked.lastChild.get(0) ?? null, childrenOf(rodForked, 0)], [rodTree.current, rodTree.lastChild.get(0) ?? null, [1, 3]]);
 const boxForked = forked(boxTree, 1, [{ id: 4, op: takeRod(3), fingerprint: fp(7000) }, { id: 5, op: corner, fingerprint: fp(6875) }], 5);
 const both = [{ tree: boxForked, id: 2, op: takeRod(1) }];
-eq("the same numbers find the branch built before, in every tree", crossTwin(rodForked, both, 1, wider, [3]), 5);
-eq("other numbers find none", crossTwin(rodForked, both, 1, { kind: "scale", factor: 1.1 }, [3]), null);
+eq("the same numbers find the branch built before, in every tree", crossPlan(rodForked, both, 1, wider, [3]), { twin: 5 });
+const narrower: ModelOp = { kind: "scale", factor: 1.1 };
+const fresh = crossPlan(rodForked, both, 1, narrower, [3]);
+eq("other numbers build every tree", "from" in fresh && [fresh.from.tool.key, fresh.from.joins, fresh.from.node, fresh.from.op, fresh.reused], ["rod#1", both, 1, narrower, null]);
+// The box's branch of that edit deleted: the rod's still stands, so the edit builds the join on it, and no twin of it.
+const boxOnly = crossPlan(rodForked, links, 1, wider, [3]);
+eq("with the part's branch deleted, the tool's branch built before is taken, and the edit starts at the join", "from" in boxOnly && [boxOnly.from.tool.key, boxOnly.from.joins, boxOnly.from.node, boxOnly.from.op, boxOnly.reused], ["box#1", [], 2, takeRod(3), 3]);
+eq("so only the part's tree is built again", "from" in boxOnly && crossEdit(boxOnly.from.tool, boxOnly.from.joins, boxOnly.from.node, boxOnly.from.op, [3], () => [6, 7]), [
+  { key: "box#1", parent: 1, node: 6, op: takeRod(3), replay: [{ id: 7, op: corner }], old: [2, 3] },
+]);
 
 // Nested: a plate takes the box's step 2, which took the rod's step 1. An edit of the rod reaches the plate.
 const plateTree = apply(newTree("plate#1", { kind: "step", name: "plate.step", bytes: new ArrayBuffer(4) }, "plate.step", fp(9000)), { kind: "join", op: "common", tool: { object: "box", key: "box#1", node: 2, name: "Box 1" }, relative: { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [1, 2, 3] }, keepTool: false }, 6000);
@@ -226,6 +234,10 @@ eq("three trees, deepest first: the box replays nothing past the step the plate 
   ["box#1", 1, 40, 0, 30],
   ["plate#1", 0, 50, 0, 40],
 ]);
+const plateOnly = crossPlan(rodForked, [deepLinks[0]!, { tree: boxForked, id: 2, op: takeRod(1) }], 1, wider, []);
+eq("nested, with the rod's and the box's branches still there, the edit starts at the plate, on the box's tip", "from" in plateOnly && [plateOnly.from.tool.key, plateOnly.from.joins, plateOnly.from.node, (plateOnly.from.op as Extract<ModelOp, { kind: "join" }>).tool.node, plateOnly.reused], ["plate#1", [], 1, 4, 3]);
+const boxAndPlate = crossPlan(rodForked, deepLinks, 1, wider, []);
+eq("with only the rod's there, it starts at the box, under the plate's join", "from" in boxAndPlate && [boxAndPlate.from.tool.key, boxAndPlate.from.joins.map((join) => join.tree.key), boxAndPlate.from.node, (boxAndPlate.from.op as Extract<ModelOp, { kind: "join" }>).tool.node, boxAndPlate.reused], ["box#1", ["plate#1"], 2, 3, 3]);
 eq("the rod sits where both joins put it", toolPose({ m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [100, 0, 0] }, deepLinks).t, [111, 12, -12]);
 eq("a tool's step can be edited from the part's history", toolEditRefusal(rodTree, links, 1), null);
 const stepTool = apply(newTree("bar#1", { kind: "step", name: "bar.step", bytes: new ArrayBuffer(4) }, "bar.step", fp(10)), cut, 9);

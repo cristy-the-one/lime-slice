@@ -177,14 +177,30 @@ export function crossEdit(tool: ModelTree, joins: readonly ToolLink[], node: Nod
   return levels;
 }
 
-/** The open tree's tip of a branch an earlier edit across trees built with the same numbers, at every level; else null. */
-export function crossTwin(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op: ModelOp, replay: readonly NodeId[]): NodeId | null {
-  let twin: NodeId | null = null;
-  const found = eachLevel(tool, joins, node, op, replay, (tree, edited, stepOp, below) => {
-    twin = builtBranch(tree, tree.nodes.get(edited)?.parent ?? ROOT, stepOp, below.map((id) => tree.nodes.get(id)!.op!));
-    return twin;
+/**
+ * What an edit across trees still has to build, after the branches an earlier edit with the same numbers built: those
+ * are found deepest first, as each join above names the tip below. `twin` when every tree has its branch, the open
+ * tree's tip. Else `from` is the edit that builds the rest, starting at the first tree without one, its op the join on
+ * the tip the tree below already has; `reused` is the step that stands for the edited one in the tool's tree, when an
+ * earlier edit built it, or null when this edit builds it. So an edit whose part branch was deleted takes the tool
+ * branch it built before rather than build a twin of it.
+ */
+export type CrossPlan =
+  | { twin: NodeId }
+  | { from: { tool: ModelTree; joins: ToolLink[]; node: NodeId; op: ModelOp }; reused: NodeId | null };
+
+export function crossPlan(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op: ModelOp, replay: readonly NodeId[]): CrossPlan {
+  const found: { twin: NodeId | null; reused: NodeId | null; from?: Extract<CrossPlan, { from: unknown }>["from"] } = { twin: null, reused: null };
+  let depth = joins.length;
+  eachLevel(tool, joins, node, op, replay, (tree, edited, stepOp, below) => {
+    const parent = tree.nodes.get(edited)?.parent ?? ROOT;
+    found.twin = builtBranch(tree, parent, stepOp, below.map((id) => tree.nodes.get(id)!.op!));
+    if (found.twin == null) found.from = { tool: tree, joins: joins.slice(0, depth), node: edited, op: stepOp };
+    else if (depth === joins.length) found.reused = childWithOp(tree, parent, stepOp);
+    depth -= 1;
+    return found.twin;
   });
-  return found ? twin : null;
+  return found.from ? { from: found.from, reused: found.reused } : { twin: found.twin! };
 }
 
 /** Why step `id` of a tool's tree, reached through `joins`, cannot be edited from the open tree's history, or null. */
