@@ -443,7 +443,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     resets: 0,
     previewResets: 0,
     hung: false,
-    version: () => "1.8.0",
+    version: () => "2.0.0",
     occt: () => true,
     meshPreview: async (body: string, bytes?: Uint8Array) => {
       const block = Number(process.env.LIME_MCP_FAKE_BLOCK_MS ?? 0);
