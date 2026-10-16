@@ -91,9 +91,11 @@ test("Apply asks no second check, undo and redo ask the engine nothing, and a ty
 
   await apply.click();
   await expect(readout).toContainText("Volume 2000 mm³");
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await page.waitForTimeout(700);
   expect(calls.probes, "Apply asks nothing afterwards").toBe(1);
-  await expect(apply, "the numbers just applied cannot change the cut solid").toBeDisabled();
+  await page.locator("#modelToolBoolean").click();
+  await expect(apply, "opened again on the numbers just applied, which cannot change the cut solid").toBeDisabled();
   await expect(page.locator("#modelNote")).not.toContainText("Checking");
 
   await page.locator("#modelUndo").click();
@@ -120,6 +122,7 @@ test("Apply writes no STEP; leaving Model writes the edited solid once, and save
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 2000 mm³");
+  await page.locator("#modelToolBoolean").click();
   await page.locator("#modelDz").fill("4");
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
@@ -180,7 +183,8 @@ test("the piece a split adds opens as a solid of its own and splits again", asyn
   await expect(page.locator("#modelEmpty"), "the piece is no mesh").toBeHidden();
   expect(calls.opens, "the piece is a tree of its own already, with no STEP read").toHaveLength(1);
 
-  await expect(page.locator("#modelToolSplit"), "Split stays open on the piece").toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#modelPanel"), "Apply ended Split").toBeHidden();
+  await page.locator("#modelToolSplit").click();
   await page.locator("#modelPlane").fill("7");
   await page.locator("#modelApply").click();
   await expect(page.locator("#objectList .obj")).toHaveCount(3);

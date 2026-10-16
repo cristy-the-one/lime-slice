@@ -84,7 +84,7 @@ async function split(page: Page, z: number) {
   await page.locator("#modelPlane").fill(String(z));
   await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText(`Split. ${volume(z)}`);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
 }
 
 /** Pick one edge of the shown solid by scanning the canvas in Edge mode. */
@@ -127,7 +127,7 @@ async function holdWholeOpens(page: Page) {
 async function reopenedChain(page: Page, more: Parameters<typeof openModel>[2] = {}) {
   const tree = await openModel(page, true, more);
   for (const dx of [8, 6, 4]) await cut(page, dx);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await saveAndReopen(page);
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText(volume(4));
@@ -153,7 +153,7 @@ test("a saved project brings back its Model history: the same steps and names, a
   await page.locator("#modelUndo").click();
   await expect(readout(page)).toContainText(`${volume(8)}. Edit undone.`);
   await cut(page, 4);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await row(page, "Cut box 6").locator(".mh-label").dblclick();
   await page.getByRole("textbox", { name: "Step name" }).fill("Pocket");
   await page.keyboard.press("Enter");
@@ -213,7 +213,7 @@ test("calls made while a reopened tree opens whole wait for it, and two jumps sh
     await route.fallback();
   });
   for (const dx of [8, 6, 4]) await cut(page, dx);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await saveAndReopen(page);
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText(volume(4));

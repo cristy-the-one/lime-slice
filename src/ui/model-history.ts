@@ -5,24 +5,25 @@
  * and only while the panel can be seen. Nothing here asks the engine anything.
  */
 import { ChevronDown, Ellipsis, History, Move3d, Pencil, RotateCcw, TriangleAlert, createElement, type IconNode } from "lucide";
-import { historyKey, historyLayout, positionText, type HistoryLayout, type HistoryRow } from "../model-history";
+import { historyKey, historyLayout, positionText, rowKey, type HistoryLayout, type HistoryRow, type RowKey } from "../model-history";
 import type { PlaceFields } from "../model-space";
-import type { ModelTree, NodeId } from "../model-tree";
+import { toolKeys, type ModelTree } from "../model-tree";
 import { isMobileLayout } from "../platform";
 import { state } from "../app/state";
 
+/** Rows are named by `RowKey`: an open solid's step, or a step of a tool one of its joins takes ("Booleans between objects"). */
 interface ModelHistoryHooks {
-  /** Show this step. A newer jump supersedes an older one still on its way. */
-  jump(node: NodeId): void;
-  rename(node: NodeId, name: string): void;
+  /** Show this step; a tool's step shows read-only. A newer jump supersedes an older one still on its way. */
+  jump(row: RowKey): void;
+  rename(row: RowKey, name: string): void;
   /** Why this branch cannot be deleted, or null. */
-  dropRefusal(node: NodeId): string | null;
-  /** Delete the branch from `node` down. False when it was refused; the readout says why. */
-  drop(node: NodeId): boolean;
+  dropRefusal(row: RowKey): string | null;
+  /** Delete the branch from the row's step down. False when it was refused; the readout says why. */
+  drop(row: RowKey): boolean;
   /** Why this step cannot be edited, or null. */
-  editRefusal(node: NodeId): string | null;
+  editRefusal(row: RowKey): string | null;
   /** Open this step's tool with its numbers, to change them; null is the step shown. A refusal goes to the readout. */
-  edit(node: NodeId | null): void;
+  edit(row: RowKey | null): void;
   /** The Position row was clicked: Place opens. */
   openPlace(): void;
   /** The Position row's Reset: the open object goes back to where its file put it, as one Place step. */
@@ -38,22 +39,24 @@ let hooks: ModelHistoryHooks | null = null;
 let panel: HTMLElement | null = null;
 let list: HTMLElement | null = null;
 let menu: HTMLElement | null = null;
-/** The tree to show; `drawn` is the one the rows were built from. */
+/** The tree to show, the trees its joins take tools from, and the row on screen. `drawn` is what the rows were built from. */
 let tree: ModelTree | null = null;
-let drawn: ModelTree | null = null;
+let trees: ReadonlyMap<string, ModelTree> = new Map();
+let shown: RowKey | null = null;
+let drawn: readonly unknown[] | null = null;
 let layout: HistoryLayout | null = null;
-let focusId: NodeId | null = null;
+let focusId: RowKey | null = null;
 let jumpTimer = 0;
 let collapsed = readCollapsed();
 let sheetOpen = false;
-let renaming: NodeId | null = null;
+let renaming: RowKey | null = null;
 /** Where Shift+H came from, so leaving the panel goes back there. */
 let returnFocus: HTMLElement | null = null;
 let note: HTMLElement | null = null;
 /** The pointer is over the panel. With focus in it, that freezes the rows' order (historyLayout's `keep`). */
 let pointerIn = false;
-const rowEls = new Map<NodeId, HTMLElement>();
-const rowSigs = new Map<NodeId, string>();
+const rowEls = new Map<RowKey, HTMLElement>();
+const rowSigs = new Map<RowKey, string>();
 
 function readCollapsed(): boolean {
   try {
@@ -135,8 +138,11 @@ export function mountModelHistory(next: ModelHistoryHooks) {
   sync();
 }
 
-/** The open solid's tree changed, or there is none. Cheap when nothing changed. */
-export function syncModelHistory(next: ModelTree | null) {
+/**
+ * The open solid's tree changed, or there is none, or the trees its joins take tools from, or the row on screen (`row`,
+ * null for the tree's current step). Cheap when nothing changed.
+ */
+export function syncModelHistory(next: ModelTree | null, all: ReadonlyMap<string, ModelTree> = new Map(), row: RowKey | null = null) {
   if (next?.key !== tree?.key) {
     focusId = null;
     layout = null;
@@ -148,7 +154,35 @@ export function syncModelHistory(next: ModelTree | null) {
     if (!next) setSheet(false, false);
   }
   tree = next;
+  trees = all;
+  shown = row;
   sync();
+}
+
+/** The row on screen. */
+function shownKey(): RowKey {
+  return shown ?? rowKey([], tree?.current ?? 0);
+}
+
+/** What the rows are built from: the tree, the row on screen, and every tree its joins reach, at any depth. Rows are built again only when one of them changes. */
+function inputs(): unknown[] {
+  if (!tree) return [];
+  const used: ModelTree[] = [];
+  const seen = new Set([tree.key]);
+  for (const queue = [...toolKeys(tree)]; queue.length > 0; ) {
+    const key = queue.pop()!;
+    const tool = trees.get(key);
+    if (!tool || seen.has(key)) continue;
+    seen.add(key);
+    used.push(tool);
+    queue.push(...toolKeys(tool));
+  }
+  return [tree, shownKey(), ...used];
+}
+
+function changed(): boolean {
+  const now = inputs();
+  return !drawn || drawn.length !== now.length || now.some((value, i) => drawn![i] !== value);
 }
 
 /**
@@ -182,7 +216,7 @@ export function toggleModelHistoryFocus() {
   returnFocus = from instanceof HTMLElement && from !== document.body && !panel.contains(from) ? from : null;
   if (isMobileLayout()) setSheet(true, true);
   else if (collapsed) setCollapsed(false);
-  focusRow(focusId ?? tree.current);
+  focusRow(focusId ?? shownKey());
 }
 
 /** Someone is pointing or typing in the panel: rows must not move under them. */
@@ -193,8 +227,8 @@ function working(focused: EventTarget | null): boolean {
 /** Once nobody is working in the panel, the shown step's path moves onto the main rail. */
 function relayout(focused: EventTarget | null) {
   if (!visible() || working(focused) || !layout || !tree) return;
-  const fresh = historyLayout(tree);
-  if (fresh.rows.every((row, i) => layout!.rows[i]?.id === row.id && layout!.rows[i]?.lane === row.lane)) return;
+  const fresh = historyLayout(tree, undefined, trees, shownKey());
+  if (fresh.rows.every((row, i) => layout!.rows[i]?.key === row.key && layout!.rows[i]?.lane === row.lane)) return;
   drawn = null;
   sync();
 }
@@ -216,7 +250,7 @@ function sync() {
   list.hidden = collapsed && !isMobileLayout();
   if (state.stage !== "model") closeMenu(false);
   if (!visible()) cancelJump();
-  else if (tree !== drawn) render();
+  else if (changed()) render();
 }
 
 function setCollapsed(on: boolean) {
@@ -234,7 +268,7 @@ function setSheet(on: boolean, moveFocus: boolean) {
   closeMenu(false);
   sync();
   if (!moveFocus) return;
-  if (on && tree) focusRow(focusId ?? tree.current);
+  if (on && tree) focusRow(focusId ?? shownKey());
   else if (!on) document.querySelector<HTMLElement>("#modelHistoryOpen")?.focus();
 }
 
@@ -242,9 +276,9 @@ function setSheet(on: boolean, moveFocus: boolean) {
 function render() {
   if (!list || !tree) return;
   const hadFocus = list.contains(document.activeElement) && !document.activeElement?.closest(".mh-rename");
-  drawn = tree;
-  layout = historyLayout(tree, layout && working(document.activeElement) ? layout.main : undefined);
-  const ids = new Set(layout.rows.map((row) => row.id));
+  drawn = inputs();
+  layout = historyLayout(tree, layout && working(document.activeElement) ? layout.main : undefined, trees, shownKey());
+  const ids = new Set(layout.rows.map((row) => row.key));
   for (const id of [...rowEls.keys()]) {
     if (ids.has(id)) continue;
     rowEls.get(id)!.remove();
@@ -253,28 +287,30 @@ function render() {
   }
   if (focusId != null && !ids.has(focusId)) focusId = null;
   const els = layout.rows.map((row) => {
-    let el = rowEls.get(row.id);
+    let el = rowEls.get(row.key);
     if (!el) {
       el = document.createElement("div");
       el.setAttribute("role", "treeitem");
       el.className = "mh-row";
+      el.dataset.row = row.key;
       el.dataset.id = String(row.id);
-      rowEls.set(row.id, el);
+      el.id = rowElementId(row.key);
+      rowEls.set(row.key, el);
     }
     const sig = JSON.stringify([row, layout!.lanes]);
     // A row being renamed keeps its field; it is painted when the name is done.
-    if (row.id !== renaming && rowSigs.get(row.id) !== sig) {
+    if (row.key !== renaming && rowSigs.get(row.key) !== sig) {
       paintRow(el, row, layout!.lanes);
-      rowSigs.set(row.id, sig);
+      rowSigs.set(row.key, sig);
     }
     return el;
   });
   const order = [...list.children];
   if (order.length !== els.length || els.some((el, i) => order[i] !== el)) list.replaceChildren(...els);
   applyTabIndex();
-  const shown = rowEls.get(hadFocus ? focusId ?? tree.current : tree.current);
-  if (hadFocus) shown?.focus({ preventScroll: true });
-  if (shown) reveal(shown);
+  const onScreen = rowEls.get(hadFocus ? focusId ?? shownKey() : shownKey());
+  if (hadFocus) onScreen?.focus({ preventScroll: true });
+  if (onScreen) reveal(onScreen);
 }
 
 function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
@@ -283,13 +319,18 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   el.toggleAttribute("data-blocked", row.blocked);
   el.setAttribute("aria-level", String(row.level));
   el.setAttribute("aria-selected", row.state === "current" ? "true" : "false");
-  if (row.fork) el.setAttribute("aria-expanded", "true");
+  // A fork, and a join with its tool's lane, are parents in the tree: the lane's rows are drawn above the join but belong to it.
+  if (row.fork || row.owns.length > 0) el.setAttribute("aria-expanded", "true");
   else el.removeAttribute("aria-expanded");
+  if (row.owns.length > 0) el.setAttribute("aria-owns", row.owns.map(rowElementId).join(" "));
+  else el.removeAttribute("aria-owns");
+  el.toggleAttribute("data-tool", row.tool != null);
   const notes = [row.broken ? "cannot be rebuilt" : "", row.blocked ? "after a step that cannot be rebuilt" : "", row.plate ? "on the plate" : ""].filter(Boolean);
-  el.setAttribute("aria-label", [row.label, ...notes].join(", "));
+  el.setAttribute("aria-label", [row.tool != null ? `${row.tool}: ${row.label}` : row.label, ...notes].join(", "));
   // A label can be longer than the row, which ellipsizes it: the tip has it whole. The description adds
-  // only what the name does not say: a renamed step's op and why a step is broken.
-  const extra = [row.opLabel, row.broken].filter(Boolean).join(". ");
+  // only what the name does not say: a renamed step's op, why a step is broken, and whose step a tool's is.
+  const whose = row.tool != null ? `A step of ${row.tool}, as this part's join takes it. Click to look at it; Edit step changes it here` : "";
+  const extra = [row.opLabel, row.broken, whose].filter(Boolean).join(". ");
   el.dataset.tip = [row.label, extra].filter(Boolean).join(". ");
   if (extra) el.setAttribute("aria-description", extra);
   else el.removeAttribute("aria-description");
@@ -320,10 +361,18 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   }
   label.textContent = row.label;
   // A step that cannot be edited (the opened file, a step under a broken one) shows no pencil; its menu says why.
-  edit.hidden = !!hooks?.editRefusal(row.id);
+  edit.hidden = !!hooks?.editRefusal(row.key);
   edit.setAttribute("aria-label", `Edit step: ${row.label}`);
-  el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate").forEach((node) => node.remove());
+  el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate, :scope > .mh-tool").forEach((node) => node.remove());
   label.before(railSvg(row, lanes));
+  if (row.toolStart && row.tool != null && row.tool !== row.label) {
+    // The lane's first row names whose steps these are, so the merge reads at a glance.
+    const chip = document.createElement("span");
+    chip.className = "mh-tool";
+    chip.textContent = row.tool;
+    chip.setAttribute("aria-hidden", "true");
+    label.before(chip);
+  }
   if (row.broken) {
     const warn = document.createElement("span");
     warn.className = "mh-warn";
@@ -358,6 +407,7 @@ function railSvg(row: HistoryRow, lanes: number): SVGSVGElement {
   if (row.up) line(x(row.lane), "0", x(row.lane), "50%", row.up.hot);
   if (row.down) line(x(row.lane), "50%", x(row.lane), "100%", row.down.hot);
   for (const fork of row.forks) line(x(row.lane), "50%", x(fork.lane), "100%", fork.hot);
+  for (const merge of row.merges) line(x(merge.lane), "0", x(row.lane), "50%", merge.hot);
   const dot = document.createElementNS(SVG, "circle");
   dot.setAttribute("cx", x(row.lane));
   dot.setAttribute("cy", "50%");
@@ -366,25 +416,29 @@ function railSvg(row: HistoryRow, lanes: number): SVGSVGElement {
   return svg;
 }
 
+/** A row's element id, for the join that owns it. */
+function rowElementId(key: RowKey): string {
+  return `mhRow-${key.replaceAll("/", "-")}`;
+}
+
 function applyTabIndex() {
-  const target = focusId ?? tree?.current ?? null;
-  for (const [id, el] of rowEls) el.tabIndex = id === target ? 0 : -1;
+  const target = focusId ?? (tree ? shownKey() : null);
+  for (const [key, el] of rowEls) el.tabIndex = key === target ? 0 : -1;
 }
 
-function rowOf(target: EventTarget | null): NodeId | null {
+function rowOf(target: EventTarget | null): RowKey | null {
   const el = target instanceof Element ? target.closest<HTMLElement>(".mh-row") : null;
-  const id = el ? Number(el.dataset.id) : Number.NaN;
-  return Number.isFinite(id) ? id : null;
+  return el?.dataset.row ?? null;
 }
 
-function setFocus(id: NodeId, move: boolean) {
+function setFocus(id: RowKey, move: boolean) {
   focusId = id;
   applyTabIndex();
   if (move) focusRow(id);
 }
 
-function focusRow(id: NodeId) {
-  if (visible() && tree !== drawn) render();
+function focusRow(id: RowKey) {
+  if (visible() && changed()) render();
   const el = rowEls.get(id);
   if (!el) return;
   focusId = id;
@@ -402,13 +456,13 @@ function reveal(el: HTMLElement) {
   else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
 }
 
-function jumpNow(id: NodeId) {
+function jumpNow(id: RowKey) {
   cancelJump();
   hooks?.jump(id);
 }
 
 /** The tree is `aria-busy` while a step waits out the typing pause. */
-function jumpSoon(id: NodeId) {
+function jumpSoon(id: RowKey) {
   cancelJump();
   list?.setAttribute("aria-busy", "true");
   jumpTimer = window.setTimeout(() => {
@@ -464,7 +518,7 @@ function onContextMenu(ev: MouseEvent) {
 
 function onKey(ev: KeyboardEvent) {
   if (!tree || !layout || (ev.target as Element).closest(".mh-rename")) return;
-  const focused = rowOf(ev.target) ?? focusId ?? tree.current;
+  const focused = rowOf(ev.target) ?? focusId ?? shownKey();
   const action = historyKey(ev, tree, layout, focused);
   if (!action) {
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key) && !ev.ctrlKey && !ev.metaKey && !ev.altKey) ev.preventDefault();
@@ -498,7 +552,7 @@ function onKey(ev: KeyboardEvent) {
 
 function leave() {
   cancelJump();
-  if (focusId != null && tree && focusId !== tree.current) hooks?.jump(focusId);
+  if (focusId != null && tree && focusId !== shownKey()) hooks?.jump(focusId);
   const back = returnFocus?.isConnected ? returnFocus : document.querySelector<HTMLElement>("#model");
   returnFocus = null;
   if (isMobileLayout()) {
@@ -511,21 +565,23 @@ function leave() {
 /** Shift+E: edit the step focused in the panel, else the step shown. */
 export function editModelStep() {
   if (!tree) return;
-  if (list?.contains(document.activeElement)) editStep(focusId ?? tree.current);
+  if (list?.contains(document.activeElement)) editStep(focusId ?? shownKey());
   else hooks?.edit(null);
 }
 
 /** Edit `id`: its tool opens in the panel above, prefilled; a refusal is said in the readout, and in the sheet at phone width. */
-function editStep(id: NodeId) {
+function editStep(id: RowKey) {
   const refusal = hooks?.editRefusal(id) ?? null;
   if (refusal) showNote(refusal);
   else if (isMobileLayout()) setSheet(false, false);
   hooks?.edit(id);
 }
 
-function dropBranch(id: NodeId) {
+function dropBranch(id: RowKey) {
   if (!tree || !hooks) return;
-  const parent = tree.nodes.get(id)?.parent ?? null;
+  const own = layout?.rows.find((row) => row.key === id);
+  const up = own && own.via.length === 0 ? tree.nodes.get(own.id)?.parent ?? null : null;
+  const parent = up == null ? null : rowKey([], up);
   const hadFocus = !!panel?.contains(document.activeElement);
   if (!hooks.drop(id)) {
     showNote(hooks.dropRefusal(id) ?? "");
@@ -534,9 +590,10 @@ function dropBranch(id: NodeId) {
   if (hadFocus && parent != null) focusRow(parent);
 }
 
-function startRename(id: NodeId) {
+function startRename(id: RowKey) {
   const el = rowEls.get(id);
-  const node = tree?.nodes.get(id);
+  const row = layout?.rows.find((item) => item.key === id);
+  const node = row ? (row.tree === tree?.key ? tree : trees.get(row.tree))?.nodes.get(row.id) : undefined;
   const label = el?.querySelector<HTMLElement>(".mh-label");
   if (!el || !node || !label) return;
   closeMenu(false);
@@ -556,7 +613,7 @@ function startRename(id: NodeId) {
     const value = input.value.trim();
     if (save) hooks?.rename(id, value === node.label ? "" : value);
     // An unchanged name leaves the tree as it was: the row is painted again to drop the field.
-    if (tree === drawn) {
+    if (!changed()) {
       drawn = null;
       sync();
     }
@@ -592,8 +649,8 @@ function buildMenu(): HTMLElement {
     <button type="button" role="menuitem" data-act="drop"><span>Delete branch</span><kbd>Del</kbd><small class="mh-why"></small></button>`;
   root.addEventListener("click", (ev) => {
     const item = (ev.target as Element).closest<HTMLButtonElement>("[role=menuitem]");
-    const id = Number(root.dataset.id);
-    if (!item || !Number.isFinite(id)) return;
+    const id = root.dataset.row;
+    if (!item || id == null) return;
     if (item.getAttribute("aria-disabled") === "true") return;
     closeMenu(false);
     if (item.dataset.act === "edit") editStep(id);
@@ -623,10 +680,10 @@ function buildMenu(): HTMLElement {
   return root;
 }
 
-function openMenu(id: NodeId, at?: { x: number; y: number }) {
+function openMenu(id: RowKey, at?: { x: number; y: number }) {
   const el = rowEls.get(id);
   if (!menu || !el || !hooks) return;
-  menu.dataset.id = String(id);
+  menu.dataset.row = id;
   for (const [act, refusal] of [["edit", hooks.editRefusal(id)], ["drop", hooks.dropRefusal(id)]] as const) {
     const item = menu.querySelector<HTMLElement>(`[data-act="${act}"]`)!;
     item.setAttribute("aria-disabled", refusal ? "true" : "false");
@@ -646,7 +703,8 @@ function openMenu(id: NodeId, at?: { x: number; y: number }) {
 function closeMenu(refocus: boolean) {
   if (!menu || menu.hidden) return;
   menu.hidden = true;
-  const id = Number(menu.dataset.id);
+  const id = menu.dataset.row;
+  if (id == null) return;
   rowEls.get(id)?.querySelector(".mh-more")?.setAttribute("aria-expanded", "false");
-  if (refocus && Number.isFinite(id)) focusRow(id);
+  if (refocus) focusRow(id);
 }

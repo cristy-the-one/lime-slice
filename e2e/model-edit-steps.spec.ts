@@ -109,13 +109,13 @@ async function pickEdge(page: Page) {
 /** Plate → Cut box 8 → Fillet r 1, the fillet shown. */
 async function cutThenFillet(page: Page) {
   await cut(page, 8);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await pickEdge(page);
   await page.locator("#modelToolFillet").click();
   await expect(apply(page)).toBeEnabled();
   await apply(page).click();
   await expect(readout(page)).toContainText("Fillet. Volume 3190 mm³");
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
 }
 
 test("Edit step from the row menu opens the step's tool on its parent, prefilled, and Update forks and replays", async ({ page }) => {
@@ -168,7 +168,7 @@ test("the pencil and Shift+E open an edit; Cancel and Esc put the view back wher
   const tree = await openModel(page);
   await cut(page, 8);
   await cut(page, 6);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
 
   const pencil = row(page, "Cut box 8").locator(".mh-edit");
   await expect(pencil).toHaveAttribute("aria-label", "Edit step: Cut box 8×10×10");
@@ -208,7 +208,7 @@ test("a step under the edit that no longer builds is kept broken with the engine
   await page.locator("#modelToolScale").click();
   await apply(page).click();
   await expect(readout(page)).toContainText("Volume 25520 mm³");
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await row(page, "Cut box 8").locator(".mh-edit").click();
   await page.locator("#modelDx").fill("4");
   await expect(apply(page)).toBeEnabled();
@@ -244,7 +244,7 @@ test("Model Undo takes an edit back to the old branch, and Redo brings it back",
   await openModel(page);
   await cut(page, 8);
   await cut(page, 6);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await row(page, "Cut box 8").locator(".mh-edit").click();
   await page.locator("#modelDx").fill("9");
   await expect(apply(page)).toBeEnabled();
@@ -270,7 +270,7 @@ test("Update shows how many steps it rebuilds, and Cancel while they rebuild goe
   await cut(page, 8);
   await cut(page, 7);
   await cut(page, 6);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   let release = () => {};
   const held = new Promise<void>((resolve) => (release = resolve));
   await page.route("**/api/model/tree", async (route) => {
@@ -294,7 +294,7 @@ test("Update shows how many steps it rebuilds, and Cancel while they rebuild goe
 test("the opened file cannot be edited, says why, and shows no pencil; a new solid's root can", async ({ page }) => {
   const tree = await openModel(page);
   await cut(page, 8);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await expect(row(page, "plate.step").locator(".mh-edit")).toBeHidden();
   await row(page, "plate.step").focus();
   await page.keyboard.press("Shift+F10");
@@ -312,7 +312,7 @@ test("the opened file cannot be edited, says why, and shows no pencil; a new sol
   await apply(page).click();
   await expect(readout(page)).toContainText("Box 1. Volume 8000 mm³");
   await cut(page, 5);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await row(page, "Box 20×20×20").locator(".mh-edit").click();
   await expect(head(page)).toHaveText("Editing the new solid: Box 20×20×20");
   await expect(page.locator("#modelToolNew")).toHaveAttribute("aria-pressed", "true");

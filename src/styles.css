@@ -907,6 +907,24 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
 .mh-row[data-state="past"] .mh-rail circle { fill: var(--accent); }
 .mh-row[data-state="current"] .mh-rail circle { fill: var(--accent); stroke: var(--panel); stroke-width: 1.5; }
 .mh-row[data-broken] .mh-rail circle { fill: var(--warn); }
+/* A tool's steps, on the lane that merges into its join: hollow dots, and the tool's name where the lane starts. */
+.mh-row[data-tool] .mh-rail circle { fill: var(--panel); stroke: var(--text-faint); stroke-width: 1.5; }
+.mh-row[data-tool][data-state="past"] .mh-rail circle { stroke: var(--accent); }
+.mh-row[data-tool][data-state="current"] .mh-rail circle { fill: var(--accent); stroke: var(--accent); }
+.mh-row[data-tool][data-broken] .mh-rail circle { stroke: var(--warn); }
+.mh-tool {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--text-dim);
+  font: 500 10px / 1 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .mh-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .mh-warn { display: inline-flex; flex: 0 0 auto; color: var(--warn); }
 .mh-plate {

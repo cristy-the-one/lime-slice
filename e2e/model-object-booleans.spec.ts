@@ -149,8 +149,11 @@ test("Keep off: Apply takes the tool off the plate in the same Prepare step, and
   await page.locator("#modelApply").click();
   await expect(readout(page)).toHaveText("Cut plate.step. Volume 500 mm³. plate.step left the plate.");
   await expect(objects(page)).toHaveCount(1);
-  await expect(rows(page)).toHaveCount(2);
-  await expect(rows(page).nth(1)).toContainText("Cut plate.step");
+  // The box's root, the tool's own step on its lane, and the join it merges into.
+  await expect(rows(page)).toHaveCount(3);
+  await expect(rows(page).nth(1), "the tool's step comes in on a lane of its own").toHaveAttribute("data-row", "1/0");
+  await expect(rows(page).nth(2)).toContainText("Cut plate.step");
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await expect(choices(page), "the tool has left the list too").toHaveCount(0);
   expect(tree.of("apply").at(-1)!.op).toMatchObject({ kind: "join", op: "cut", keepTool: false, tool: { name: "plate.step" } });
 
@@ -160,7 +163,7 @@ test("Keep off: Apply takes the tool off the plate in the same Prepare step, and
   await expect(objects(page)).toContainText(["plate.step", "Box 1"]);
   await page.locator("#tabModel").click();
   await expect(readout(page), "and the box is as it was").toContainText("Volume 1000 mm³");
-  await expect(rows(page), "its history keeps the join").toHaveCount(2);
+  await expect(rows(page), "its history keeps the join, and its tool's lane").toHaveCount(3);
   expect(await greyBoxes(page), "the tool is back where it sat in model space").toEqual(before);
 
   // The same join applied again shows the step it built, and takes the tool off again.
@@ -265,8 +268,8 @@ test("a join saves its removed tool's tree, reopens, and takes an edit after the
   await expect(objects(page)).toHaveCount(1);
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText("Volume 500 mm³");
-  await expect(rows(page)).toHaveCount(2);
-  await expect(rows(page).nth(1)).toContainText("Cut plate.step");
+  await expect(rows(page)).toHaveCount(3);
+  await expect(rows(page).nth(2)).toContainText("Cut plate.step");
   await page.locator("#modelToolHole").click();
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();

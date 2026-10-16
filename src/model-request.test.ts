@@ -1,4 +1,4 @@
-import { applyRequest, editRequest, joinOp, newSolidRequest, openRequest, wholeTreeRequest } from "./model-request.ts";
+import { applyRequest, crossEditRequest, editRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "./model-request.ts";
 import { newTree, withChild, type ModelOp } from "./model-tree.ts";
 import type { PrimitiveSpec } from "./model-primitive.ts";
 
@@ -59,6 +59,26 @@ eq("an edit sends the new op on the parent and each replayed step with its new i
   replay: [{ id: 6, op: joined }],
   chordMm: 0.1,
 });
+
+const scale: ModelOp = { kind: "scale", factor: 1.25 };
+eq("an edit across trees sends the tool trees' parts first, deepest first, and the open tree's as an edit", crossEditRequest([
+  { key: "rod", parent: 0, node: 3, op: scale, replay: [], old: [1] },
+  { key: "k", parent: 1, node: 4, op: joined, replay: [{ id: 5, op: wider }], old: [2, 3] },
+], 0.1), {
+  call: "edit",
+  key: "k",
+  parent: 1,
+  node: 4,
+  op: joined,
+  replay: [{ id: 5, op: wider }],
+  chordMm: 0.1,
+  tools: [{ key: "rod", parent: 0, node: 3, op: scale, replay: [] }],
+});
+eq("with one tree it is a plain edit", crossEditRequest([{ key: "k", parent: 0, node: 5, op: wider, replay: [], old: [1] }], 0.1), editRequest("k", 0, 5, wider, [], 0.1));
+eq("a dry-run asks for its shape only with a chord", [probeRequest("k", 2, wider), probeRequest("k", 2, wider, 0.05)], [
+  { call: "probe", key: "k", node: 2, op: wider },
+  { call: "probe", key: "k", node: 2, op: wider, preview: true, chordMm: 0.05 },
+]);
 
 if (failed) {
   console.error(`model-request: ${failed} failed`);

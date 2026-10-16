@@ -1,5 +1,6 @@
-import { dropRefusal, historyKey, historyLayout, siblingBranch, stepLabel, type HistoryRow } from "./model-history.ts";
+import { dropRefusal, historyKey, historyLayout, readRow, rowStep, siblingBranch, stepLabel, type HistoryRow } from "./model-history.ts";
 import { dropped, jumped, newTree, opLabel, reserveId, withChild, withNode, type ModelOp, type ModelTree } from "./model-tree.ts";
+import type { Affine } from "./model-space.ts";
 
 let failed = 0;
 
@@ -129,21 +130,101 @@ eq("from the shorter branch, now on the rail, Right reaches the same depth on th
 
 // Keys -----------------------------------------------------------------------------------------------------------
 
-const key = (k: string, focused: number, extra = {}) => historyKey({ key: k, ...extra }, forked, layout, focused);
-eq("Up and Down move through the rows in order", [key("ArrowDown", 1), key("ArrowUp", 3)], [{ kind: "move", to: 2 }, { kind: "move", to: 2 }]);
+const key = (k: string, focused: number, extra = {}) => historyKey({ key: k, ...extra }, forked, layout, String(focused));
+eq("Up and Down move through the rows in order", [key("ArrowDown", 1), key("ArrowUp", 3)], [{ kind: "move", to: "2" }, { kind: "move", to: "2" }]);
 eq("no row past the ends", [key("ArrowUp", 0), key("ArrowDown", 4)], [null, null]);
-eq("Home and End", [key("Home", 3), key("End", 1)], [{ kind: "move", to: 0 }, { kind: "move", to: 4 }]);
-eq("Left and Right switch branches", [key("ArrowRight", 4), key("ArrowLeft", 2)], [{ kind: "move", to: 2 }, { kind: "move", to: 3 }]);
-eq("Enter and Space jump now", [key("Enter", 2), key(" ", 2)], [{ kind: "jump", to: 2 }, { kind: "jump", to: 2 }]);
+eq("Home and End", [key("Home", 3), key("End", 1)], [{ kind: "move", to: "0" }, { kind: "move", to: "4" }]);
+eq("Left and Right switch branches", [key("ArrowRight", 4), key("ArrowLeft", 2)], [{ kind: "move", to: "2" }, { kind: "move", to: "3" }]);
+eq("Enter and Space jump now", [key("Enter", 2), key(" ", 2)], [{ kind: "jump", to: "2" }, { kind: "jump", to: "2" }]);
 eq("F2 renames, Delete drops, Shift+F10 and the menu key open the menu", [key("F2", 2), key("Delete", 2), key("F10", 2, { shiftKey: true }), key("ContextMenu", 2), key("F10", 2)], [
-  { kind: "rename", id: 2 },
-  { kind: "drop", id: 2 },
-  { kind: "menu", id: 2 },
-  { kind: "menu", id: 2 },
+  { kind: "rename", id: "2" },
+  { kind: "drop", id: "2" },
+  { kind: "menu", id: "2" },
+  { kind: "menu", id: "2" },
   null,
 ]);
 eq("Escape leaves", key("Escape", 2), { kind: "leave" });
 eq("chords stay with the app", [key("ArrowDown", 1, { ctrlKey: true }), key("z", 1, { ctrlKey: true })], [null, null]);
+
+// Merges ---------------------------------------------------------------------------------------------------------
+
+const IDENTITY: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+const joinOf = (key: string, node: number, name: string): ModelOp => ({ kind: "join", op: "cut", tool: { object: key.split("#")[0]!, key, node, name }, relative: IDENTITY, keepTool: false });
+const cylinder = { primitive: "cylinder" as const, origin: [0, 0, 0] as [number, number, number], size: [0, 0, 0] as [number, number, number], radius: 2, height: 40, turn: [0, 0, 0] as [number, number, number] };
+// A rod: its primitive, a scale (the step the joins take), then a hole made after that.
+const rod = apply(apply(newTree("rod#1", { kind: "primitive", solid: cylinder }, "Cylinder ⌀4 h 40", null), { kind: "scale", factor: 1.5 }), { kind: "hole", origin: [0, 0, 0], axis: [0, 0, -1], radius: 1, depth: 2 });
+const bored = apply(apply(apply(root, box(8)), joinOf("rod#1", 1, "Rod 1")), box(4));
+const withRod = new Map([[rod.key, rod], [bored.key, bored]]);
+const merged = historyLayout(bored, undefined, withRod);
+const mergeRail = (row: HistoryRow) => ({ key: row.key, lane: row.lane, up: row.up?.hot ?? null, down: row.down?.hot ?? null, merges: row.merges.map((m) => [m.lane, m.hot]), through: row.through.map((t) => [t.lane, t.hot]), level: row.level, state: row.state });
+eq("a join's tool comes in on a lane of its own, root to the step the join takes, and merges at the join", merged.rows.map(mergeRail), [
+  { key: "0", lane: 0, up: null, down: true, merges: [], through: [], level: 1, state: "past" },
+  { key: "1", lane: 0, up: true, down: true, merges: [], through: [], level: 1, state: "past" },
+  { key: "2/0", lane: 1, up: null, down: true, merges: [], through: [[0, true]], level: 2, state: "past" },
+  { key: "2/1", lane: 1, up: true, down: true, merges: [], through: [[0, true]], level: 2, state: "past" },
+  { key: "2", lane: 0, up: true, down: true, merges: [[1, true]], through: [], level: 1, state: "past" },
+  { key: "3", lane: 0, up: true, down: null, merges: [], through: [], level: 1, state: "current" },
+]);
+eq("two columns for the merge", merged.lanes, 2);
+eq("the lane's rows are the tool's steps, in the tool's tree, named by it at its start", merged.rows.filter((row) => row.via.length > 0).map((row) => [row.id, row.tree, row.label, row.tool, row.toolStart]), [
+  [0, "rod#1", "Cylinder ⌀4 h 40", "Rod 1", true],
+  [1, "rod#1", "Scale 150 %", "Rod 1", false],
+]);
+eq("the join owns its lane's rows", merged.rows.find((row) => row.key === "2")!.owns, ["2/0", "2/1"]);
+const peek = historyLayout(bored, undefined, withRod, "2/0");
+eq("a tool's step on screen is current, its own history past, and the rest other", peek.rows.map((row) => [row.key, row.state, row.down?.hot ?? null]), [
+  ["0", "other", false],
+  ["1", "other", false],
+  ["2/0", "current", false],
+  ["2/1", "other", false],
+  ["2", "other", false],
+  ["3", "other", null],
+]);
+eq("with a tool's step on screen, the plate's step is marked", peek.rows.filter((row) => row.plate).map((row) => row.key), ["0"]);
+eq("a join off the shown history draws its lane cold", historyLayout(jumped(bored, 1), undefined, withRod).rows.map((row) => [row.key, row.state]), [
+  ["0", "past"],
+  ["1", "current"],
+  ["2/0", "other"],
+  ["2/1", "other"],
+  ["2", "redo"],
+  ["3", "redo"],
+]);
+eq("a tool tree that is not here draws no lane", historyLayout(bored).rows.map((row) => row.key), ["0", "1", "2", "3"]);
+const brokenRod = withNode(rod, 0, { broken: "rebuilt differently" });
+eq("a tool's broken step shows, and the steps after it are blocked", historyLayout(bored, undefined, new Map([[rod.key, brokenRod]])).rows.filter((row) => row.via.length > 0).map((row) => [row.key, row.broken, row.blocked]), [
+  ["2/0", "rebuilt differently", false],
+  ["2/1", null, true],
+]);
+
+// A bar that takes the rod's step 1 at its step 1; a plate that takes the bar's step 1. The lanes nest.
+const bar = apply(newTree("bar#1", { kind: "step", name: "bar.step", bytes: new ArrayBuffer(1) }, "bar.step", null), joinOf("rod#1", 1, "Rod 1"));
+const plate = apply(newTree("plate#1", { kind: "step", name: "plate.step", bytes: new ArrayBuffer(1) }, "plate.step", null), joinOf("bar#1", 1, "Bar"));
+const nest = new Map([[rod.key, rod], [bar.key, bar], [plate.key, plate]]);
+const nested = historyLayout(plate, undefined, nest);
+eq("a tool with a join of its own nests a lane in its lane", nested.rows.map((row) => [row.key, row.lane, row.level, row.merges.map((m) => m.lane), row.through.map((t) => t.lane)]), [
+  ["0", 0, 1, [], []],
+  ["1/0", 1, 2, [], [0]],
+  ["1/1/0", 2, 3, [], [0, 1]],
+  ["1/1/1", 2, 3, [], [0, 1]],
+  ["1/1", 1, 2, [2], [0]],
+  ["1", 0, 1, [1], []],
+]);
+eq("three columns", nested.lanes, 3);
+eq("every row of both lanes is the shown step's history", nested.rows.map((row) => row.state), ["past", "past", "past", "past", "past", "current"]);
+eq("each join owns its own lane", nested.rows.map((row) => row.owns), [[], [], [], [], ["1/1/0", "1/1/1"], ["1/0", "1/1"]]);
+const deepStep = rowStep(nest, plate, "1/1/1");
+eq("a row's key finds its step through the joins", deepStep && [deepStep.tree.key, deepStep.id, deepStep.joins.map((join) => [join.tree.key, join.id])], ["rod#1", 1, [["plate#1", 1], ["bar#1", 1]]]);
+eq("a key through a step that is no join finds nothing", rowStep(nest, plate, "0/1"), null);
+eq("keys read back", [readRow("1/1/0"), readRow("4"), readRow("x")], [{ via: [1, 1], id: 0 }, { via: [], id: 4 }, null]);
+
+const mkey = (k: string, focused: string) => historyKey({ key: k }, bored, merged, focused);
+eq("Down walks into the lane, Right from the join reaches its tool's step, Left comes back", [mkey("ArrowDown", "1"), mkey("ArrowRight", "2"), mkey("ArrowLeft", "2/0"), mkey("ArrowLeft", "2/1")], [
+  { kind: "move", to: "2/0" },
+  { kind: "move", to: "2/1" },
+  { kind: "move", to: "2" },
+  { kind: "move", to: "2" },
+]);
+eq("in a nested lane, Left goes to the join it merges at", historyKey({ key: "ArrowLeft" }, plate, nested, "1/1/0"), { kind: "move", to: "1/1" });
 
 // Delete branch --------------------------------------------------------------------------------------------------
 

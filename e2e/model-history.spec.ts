@@ -81,7 +81,7 @@ async function fork(page: Page) {
   await page.locator("#modelUndo").click();
   await expect(readout(page)).toContainText(`${volume(8)}. Edit undone.`);
   await cut(page, 4);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
 }
 
 test("clicking a row shows that step, and the rows follow the history oldest first", async ({ page }) => {
@@ -108,7 +108,7 @@ test("clicking a row shows that step, and the rows follow the history oldest fir
 test("Up and Down move and show; fast presses show only the last target, and a late reply for an older one is dropped", async ({ page }) => {
   const tree = await openModel(page);
   for (const dx of [9, 8, 7, 6, 5]) await cut(page, dx);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await row(page, "Cut box 5").focus();
 
   await page.keyboard.press("ArrowUp");
@@ -317,7 +317,7 @@ test("a branch the plate held stays, so Prepare undo can still find its step and
 test("a step already on its way is not asked for again, and Apply and STEP wait for it", async ({ page }) => {
   const tree = await openModel(page);
   for (const dx of [9, 8, 7, 6, 5]) await cut(page, dx);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await page.locator("#modelToolBoolean").click();
   await page.locator("#modelDx").fill("3");
   await expect(page.locator("#modelApply")).toBeEnabled();
@@ -338,7 +338,7 @@ test("an arrow press just before leaving Model does not move the step the plate 
   await openModel(page);
   await cut(page, 8);
   await cut(page, 6);
-  await page.locator("#modelCancel").click();
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   await row(page, "Cut box 6").focus();
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("1");
@@ -386,8 +386,9 @@ async function openBig(page: Page, url = "/") {
 
 /** Three cuts and a refusal: four rows, a warning in the chip, and a long readout. */
 async function longStack(page: Page) {
-  await page.locator("#modelToolBoolean").click();
   for (const dx of [3, 4, 5, 9]) {
+    // Apply ends the tool; the refused last one leaves it open.
+    await page.locator("#modelToolBoolean").click();
     await page.locator("#modelDx").fill(String(dx));
     await expect(page.locator("#modelApply")).toBeEnabled();
     await page.locator("#modelApply").click();
@@ -447,7 +448,7 @@ test.describe("phone", () => {
     await expect(page.locator("html")).toHaveClass(/layout-compact/);
     await cut(page, 8);
     await cut(page, 6);
-    await page.locator("#modelCancel").click();
+    await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
     const open = page.locator("#modelHistoryOpen");
     await expect(open).toBeVisible();
     await expect(page.locator("#modelHistory")).toBeHidden();

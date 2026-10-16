@@ -3,6 +3,8 @@
 //!
 //! The store is process-wide, so everything runs in one test, in order.
 
+use std::f64::consts::PI;
+
 use serde_json::{json, Value};
 
 fn require() -> bool {
@@ -315,5 +317,212 @@ fn joins_between_trees() {
     assert_eq!(
         asked,
         json!({ "error": "The tool object's history is not open in the modeler", "missingTool": { "key": "gone", "node": 0 } })
+    );
+
+    edits_across_trees();
+    probe_preview();
+}
+
+fn ids(reply: &Value) -> Vec<u64> {
+    reply["built"]
+        .as_array()
+        .expect("built")
+        .iter()
+        .map(|step| step["id"].as_u64().expect("id"))
+        .collect()
+}
+
+fn rod_root(radius: f64) -> Value {
+    json!({ "kind": "root", "primitive": "cylinder", "origin": [0.0, 0.0, 0.0], "radius": radius, "height": 40.0 })
+}
+
+fn stats(key: &str) -> i64 {
+    let stats: Value = serde_json::from_str(&lime_model_occt::stats()).expect("stats");
+    stats[key].as_i64().unwrap_or_else(|| panic!("{key}"))
+}
+
+/// A tool step edited from the target's history: the tool's tree forks, the join is built again on the new tool step,
+/// and the target's later steps replay, in one call. The old branches keep their solids.
+fn edits_across_trees() {
+    // A rod r2 h40 standing on its origin, scaled 1.5 about its middle (z 20): r3, z −10..50.
+    ok(
+        json!({ "call": "open", "key": "rod", "primitive": { "primitive": "cylinder", "origin": [0.0, 0.0, 0.0], "radius": 2.0, "height": 40.0 } }),
+    );
+    let scaled = apply("rod", 0, 1, json!({ "kind": "scale", "factor": 1.5 }));
+    near(volume(&scaled), PI * 9.0 * 60.0);
+    // Moved 15 mm down into a 20 mm box at (10, 10), it bores right through: π·3²·20.
+    let placed =
+        json!({ "m": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], "t": [10.0, 10.0, -15.0] });
+    ok(json!({ "call": "open", "key": "tb", "box": [20.0, 20.0, 20.0] }));
+    let bored = apply("tb", 0, 1, join("cut", "rod", 1, placed.clone()));
+    near(volume(&bored), 8000.0 - PI * 9.0 * 20.0);
+    let corner = json!({ "kind": "boolean", "op": "cut", "primitive": "box", "origin": [0.0, 0.0, 15.0], "size": [5.0, 5.0, 5.0] });
+    let notched = apply("tb", 1, 2, corner.clone());
+    near(volume(&notched), 8000.0 - PI * 9.0 * 20.0 - 125.0);
+
+    // The rod's radius to 3: a root step under its root, its scale replayed, so r4.5, then the join and the notch again.
+    let edit = |tools: Value, op: Value, node: u64, replay: Value| {
+        call(
+            json!({ "call": "edit", "key": "tb", "parent": 0, "node": node, "op": op, "replay": replay, "tools": tools }),
+        )
+    };
+    let wider = edit(
+        json!([{ "key": "rod", "parent": 0, "node": 2, "op": rod_root(3.0), "replay": [{ "id": 3, "op": { "kind": "scale", "factor": 1.5 } }] }]),
+        join("cut", "rod", 3, placed.clone()),
+        3,
+        json!([{ "id": 4, "op": corner.clone() }]),
+    );
+    assert!(wider.get("error").is_none(), "{wider}");
+    near(volume(&wider), 8000.0 - PI * 4.5 * 4.5 * 20.0 - 125.0);
+    assert_eq!(wider["id"], 4);
+    assert_eq!(ids(&wider), vec![3, 4]);
+    assert_eq!(wider["tools"][0]["key"], "rod");
+    assert_eq!(
+        wider["tools"][0]["built"]
+            .as_array()
+            .expect("built")
+            .iter()
+            .map(|step| step["id"].as_u64().expect("id"))
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert_eq!(
+        wider["built"][0]["op"]["tool"]["node"], 3,
+        "the join names the new tool step"
+    );
+    // The old branches are as they were, in both trees.
+    near(
+        volume(&ok(json!({ "call": "goto", "key": "tb", "node": 2 }))),
+        8000.0 - PI * 9.0 * 20.0 - 125.0,
+    );
+    near(
+        volume(&ok(json!({ "call": "goto", "key": "rod", "node": 1 }))),
+        PI * 9.0 * 60.0,
+    );
+
+    // A tool edit that does not build keeps nothing in either tree, and says why.
+    let flat = edit(
+        json!([{ "key": "rod", "parent": 0, "node": 5, "op": rod_root(0.0), "replay": [] }]),
+        join("cut", "rod", 5, placed.clone()),
+        5,
+        json!([]),
+    );
+    assert!(flat["error"].is_string(), "{flat}");
+    assert_eq!(
+        call(json!({ "call": "goto", "key": "rod", "node": 5 }))["missing"],
+        json!([5])
+    );
+    assert_eq!(
+        call(json!({ "call": "goto", "key": "tb", "node": 5 }))["missing"],
+        json!([5])
+    );
+
+    // A join that does not build, on a tool step that did, keeps nothing either: the tool's new step goes too.
+    let far = json!({ "m": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], "t": [500.0, 0.0, 0.0] });
+    let apart = edit(
+        json!([{ "key": "rod", "parent": 1, "node": 5, "op": { "kind": "scale", "factor": 1.1 }, "replay": [] }]),
+        join("common", "rod", 5, far),
+        5,
+        json!([]),
+    );
+    assert_eq!(apart["error"], "The solids do not overlap", "{apart}");
+    assert_eq!(
+        call(json!({ "call": "goto", "key": "rod", "node": 5 }))["missing"],
+        json!([5])
+    );
+    assert_eq!(
+        call(json!({ "call": "goto", "key": "tb", "node": 5 }))["missing"],
+        json!([5])
+    );
+
+    // A tool step that no longer builds is kept broken, as in any replay, and so is the join it fed, with the target's
+    // steps unbuilt under it; the target shows the last step that built, the join's parent.
+    let lost_edge = json!({ "kind": "fillet", "edges": [{ "index": 0, "mid": [99.0, 99.0, 99.0], "lengthMm": 1.0 }], "size": 0.5 });
+    let broken = edit(
+        json!([{ "key": "rod", "parent": 0, "node": 6, "op": rod_root(2.5), "replay": [{ "id": 7, "op": lost_edge }] }]),
+        join("cut", "rod", 7, placed.clone()),
+        8,
+        json!([{ "id": 9, "op": corner.clone() }]),
+    );
+    assert!(broken.get("error").is_none(), "{broken}");
+    assert_eq!(broken["id"], 0);
+    assert_eq!(broken["tools"][0]["broken"]["id"], 7);
+    assert_eq!(broken["broken"]["id"], 8);
+    let why = broken["broken"]["error"].as_str().expect("error");
+    assert!(
+        why.starts_with("The tool object's step could not be rebuilt: "),
+        "{why}"
+    );
+    assert_eq!(ids(&broken), Vec::<u64>::new());
+
+    // Each tool edit feeds the join above it, and a tool tree the engine lacks is asked for first.
+    assert_eq!(
+        edit(
+            json!([{ "key": "rod", "parent": 0, "node": 10, "op": rod_root(2.5), "replay": [] }]),
+            join("cut", "rod", 1, placed.clone()),
+            10,
+            json!([]),
+        )["error"],
+        "Each tool tree's edit must feed the join above it"
+    );
+    assert_eq!(
+        edit(
+            json!([{ "key": "nope", "parent": 0, "node": 1, "op": rod_root(2.5), "replay": [] }]),
+            join("cut", "nope", 1, placed.clone()),
+            10,
+            json!([]),
+        ),
+        json!({ "error": "The tool object's history is not open in the modeler", "missingTool": { "key": "nope", "node": 0 } })
+    );
+
+    // Two levels: tb2 takes tb's new step 4, which took rod's step 3. The rod's scale to 1.25 rebuilds all three.
+    ok(json!({ "call": "open", "key": "tb2", "box": [30.0, 30.0, 10.0] }));
+    let outer = apply(
+        "tb2",
+        0,
+        1,
+        join(
+            "common",
+            "tb",
+            4,
+            json!({ "m": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], "t": [0.0, 0.0, 0.0] }),
+        ),
+    );
+    // tb's step 4 inside z 0..10: 20×20×10 less the bore r4.5 for 10 mm.
+    near(volume(&outer), 4000.0 - PI * 4.5 * 4.5 * 10.0);
+    let deep = call(json!({
+        "call": "edit", "key": "tb2", "parent": 0, "node": 2,
+        "op": join("common", "tb", 12, json!({ "m": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], "t": [0.0, 0.0, 0.0] })),
+        "replay": [],
+        "tools": [
+            { "key": "rod", "parent": 2, "node": 10, "op": { "kind": "scale", "factor": 1.25 }, "replay": [] },
+            { "key": "tb", "parent": 0, "node": 11, "op": join("cut", "rod", 10, placed.clone()), "replay": [{ "id": 12, "op": corner }] },
+        ],
+    }));
+    assert!(deep.get("error").is_none(), "{deep}");
+    near(volume(&deep), 4000.0 - PI * 3.75 * 3.75 * 10.0);
+    assert_eq!(deep["tools"].as_array().map(Vec::len), Some(2));
+}
+
+/// A probe asked for a preview answers the built shape's reply, and an Apply that takes the probe meshes nothing again.
+fn probe_preview() {
+    ok(json!({ "call": "open", "key": "pv", "box": [10.0, 10.0, 10.0] }));
+    let hole = json!({ "kind": "hole", "origin": [5.0, 5.0, 10.0], "axis": [0.0, 0.0, -1.0], "radius": 1.0, "depth": 4.0 });
+    let plain = call(json!({ "call": "probe", "key": "pv", "node": 0, "op": hole.clone() }));
+    assert_eq!(plain, json!({ "ok": true }), "no preview unless asked");
+    let probe = call(
+        json!({ "call": "probe", "key": "pv", "node": 0, "op": hole.clone(), "preview": true, "chordMm": 0.1 }),
+    );
+    assert_eq!(probe["ok"], true, "{probe}");
+    assert_eq!(probe["preview"]["format"], "lime-solid-2");
+    near(volume(&probe["preview"]), 1000.0 - PI * 4.0);
+    let meshes = stats("meshes");
+    let applied = apply("pv", 0, 1, hole);
+    near(volume(&applied), 1000.0 - PI * 4.0);
+    assert_eq!(applied["fingerprint"], probe["preview"]["fingerprint"]);
+    assert_eq!(
+        stats("meshes"),
+        meshes,
+        "Apply meshes nothing the preview meshed"
     );
 }

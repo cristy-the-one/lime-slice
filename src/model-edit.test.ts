@@ -1,5 +1,5 @@
 import { eulerOrient } from "./mesh-place.ts";
-import { builtBranch, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, type EditPanel } from "./model-edit.ts";
+import { builtBranch, crossEdit, crossTwin, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditPanel } from "./model-edit.ts";
 import { historyLayout } from "./model-history.ts";
 import { planeFor, splitBase } from "./model-plane.ts";
 import { primitiveSpec, type PrimitiveSpec } from "./model-primitive.ts";
@@ -182,6 +182,56 @@ eq("a piece whose split is on its part's plate step has no note", olderSplitNote
 const resplit = { ...forked(cutUp, 0, [{ id: 9, op: split, fingerprint: fp(4100) }], 9), committed: 9 };
 eq("once the plate takes an edit of that split, it says so", olderSplitNote(new Map([[cutUp.key, resplit]]), piece), "This piece was cut by a split that its part's steps on the plate no longer have.");
 eq("a piece no longer on the plate, and no join, say nothing",editNotes(new Map([[cutUp.key, cutUp]]), cutUp, [1, 2], () => null), []);
+
+// Editing a tool's step from the history of the part its join cut. A rod: its cylinder, a scale (the step the join
+// takes), and a hole after it. The box: a cut, the join (2), and a corner cut after it, shown.
+const placed: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [10, 10, -15] };
+const rodSpec: PrimitiveSpec = { primitive: "cylinder", origin: [0, 0, 0], size: [0, 0, 0], radius: 2, height: 40, turn: [0, 0, 0] };
+const rodTree = [{ kind: "scale", factor: 1.5 } as ModelOp, hole(1)].reduce((tree, op, i) => apply(tree, op, 500 - i), newTree("rod#1", { kind: "primitive", solid: rodSpec }, "Cylinder ⌀4 h 40", fp(502)));
+const takeRod = (node: number): Extract<ModelOp, { kind: "join" }> => ({ kind: "join", op: "cut", tool: { object: "rod", key: "rod#1", node, name: "Rod 1" }, relative: placed, keepTool: false });
+const corner: ModelOp = { kind: "boolean", op: "cut", primitive: "box", origin: [0, 0, 15], size: [5, 5, 5], radius: 0, height: 0, turn: [0, 0, 0] };
+const boxTree = [cut, takeRod(1), corner].reduce((tree, op, i) => apply(tree, op, 8000 - i), start);
+const handed = new Map<string, number>([[rodTree.key, rodTree.nextId], [boxTree.key, boxTree.nextId]]);
+const reserve = (key: string, count: number) => {
+  const first = handed.get(key)!;
+  handed.set(key, first + count);
+  return Array.from({ length: count }, (_, i) => first + i);
+};
+const links = [{ tree: boxTree, id: 2, op: takeRod(1) }];
+const wider: ModelOp = { kind: "scale", factor: 1.25 };
+const levels = crossEdit(rodTree, links, 1, wider, replayChain(boxTree, 2, boxTree.current), reserve);
+eq("the tool's tree forks at its step, down to the step the join takes; the join is built again on the new tip, and the box's later steps replay", levels, [
+  { key: "rod#1", parent: 0, node: 3, op: wider, replay: [], old: [1] },
+  { key: "box#1", parent: 1, node: 4, op: takeRod(3), replay: [{ id: 5, op: corner }], old: [2, 3] },
+]);
+const rootLevels = crossEdit(rodTree, links, 0, { kind: "root", ...rodSpec, radius: 3 }, [3], (key, count) => Array.from({ length: count }, (_, i) => (key === "rod#1" ? 10 : 20) + i));
+eq("the tool's primitive edits as a root step under its root, its scale replayed but not the hole after the join's step", rootLevels.map((level) => [level.key, level.parent, level.node, level.replay.map((step) => [step.id, step.op.kind])]), [
+  ["rod#1", 0, 10, [[11, "scale"]]],
+  ["box#1", 1, 20, [[21, "boolean"]]],
+]);
+eq("and the join names the new tip", (rootLevels[1]!.op as Extract<ModelOp, { kind: "join" }>).tool.node, 11);
+const rodForked = forked(rodTree, 0, [{ id: 3, op: wider, fingerprint: fp(400) }], rodTree.current, false);
+eq("the tool's own tree keeps its shown step and where Redo goes from the parent", [rodForked.current, rodForked.lastChild.get(0) ?? null, childrenOf(rodForked, 0)], [rodTree.current, rodTree.lastChild.get(0) ?? null, [1, 3]]);
+const boxForked = forked(boxTree, 1, [{ id: 4, op: takeRod(3), fingerprint: fp(7000) }, { id: 5, op: corner, fingerprint: fp(6875) }], 5);
+const both = [{ tree: boxForked, id: 2, op: takeRod(1) }];
+eq("the same numbers find the branch built before, in every tree", crossTwin(rodForked, both, 1, wider, [3]), 5);
+eq("other numbers find none", crossTwin(rodForked, both, 1, { kind: "scale", factor: 1.1 }, [3]), null);
+
+// Nested: a plate takes the box's step 2, which took the rod's step 1. An edit of the rod reaches the plate.
+const plateTree = apply(newTree("plate#1", { kind: "step", name: "plate.step", bytes: new ArrayBuffer(4) }, "plate.step", fp(9000)), { kind: "join", op: "common", tool: { object: "box", key: "box#1", node: 2, name: "Box 1" }, relative: { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [1, 2, 3] }, keepTool: false }, 6000);
+const deepLinks = [{ tree: plateTree, id: 1, op: plateTree.nodes.get(1)!.op as Extract<ModelOp, { kind: "join" }> }, { tree: boxTree, id: 2, op: takeRod(1) }];
+const deep = crossEdit(rodTree, deepLinks, 1, wider, [], (key, count) => Array.from({ length: count }, (_, i) => ({ "rod#1": 30, "box#1": 40, "plate#1": 50 })[key]! + i));
+eq("three trees, deepest first: the box replays nothing past the step the plate takes", deep.map((level) => [level.key, level.parent, level.node, level.replay.length, level.op.kind === "join" ? level.op.tool.node : null]), [
+  ["rod#1", 0, 30, 0, null],
+  ["box#1", 1, 40, 0, 30],
+  ["plate#1", 0, 50, 0, 40],
+]);
+eq("the rod sits where both joins put it", toolPose({ m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [100, 0, 0] }, deepLinks).t, [111, 12, -12]);
+eq("a tool's step can be edited from the part's history", toolEditRefusal(rodTree, links, 1), null);
+const stepTool = apply(newTree("bar#1", { kind: "step", name: "bar.step", bytes: new ArrayBuffer(4) }, "bar.step", fp(10)), cut, 9);
+eq("not a tool's opened file", toolEditRefusal(stepTool, links, 0), "The opened file starts the history. Its steps can be edited, not the file.");
+eq("nor through a join under a broken step", toolEditRefusal(rodTree, [{ tree: withNode(boxTree, 1, { broken: "gone" }), id: 2, op: takeRod(1) }], 1), "A step above this one cannot be rebuilt. Edit or delete that step first.");
+eq("the header names the tool", [toolEditHead(rodTree, 1, "Rod 1"), toolEditHead(rodTree, 0, "Rod 1")], ["Editing Rod 1, step 1: Scale 150 %", "Editing Rod 1's primitive: Cylinder ⌀4 h 40"]);
 
 if (failed) {
   console.error(`${failed} failed`);
