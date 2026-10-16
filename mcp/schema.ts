@@ -53,6 +53,38 @@ export interface ToolSpec {
   inputSchema: Record<string, unknown>;
 }
 
+const READ_ONLY = new Set([
+  "session_info",
+  "plate_list",
+  "machine_list",
+  "mesh_stats",
+  "model_describe",
+  "model_history",
+  "gcode_summary",
+  "layer_summary",
+  "measure",
+]);
+
+const DESTRUCTIVE = new Set([
+  "project_save",
+  "gcode_export",
+  "export_3mf",
+  "model_export_step",
+  "object_remove",
+  "model_drop",
+]);
+
+/** Hints a client uses to tell a read from a write. Every tool has one. */
+export function annotationsFor(name: string): { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean } {
+  const readOnly = READ_ONLY.has(name);
+  return {
+    readOnlyHint: readOnly,
+    destructiveHint: DESTRUCTIVE.has(name),
+    idempotentHint: readOnly,
+    openWorldHint: false,
+  };
+}
+
 export const TOOLS: ToolSpec[] = [
   {
     name: "session_info",
@@ -167,8 +199,13 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "slice_wait",
-    description: "Wait until a slice finishes. Returns time, grams, and plain-language warnings.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["job"], properties: { job: handle } },
+    description: "Wait for a slice. By default this returns within about 20 seconds. If the slice is still running, the result has status running plus fraction and stage; call slice_wait again with the same job. Pass timeoutS, up to 120, to wait longer. A progress token on the request receives notifications/progress.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["job"],
+      properties: { job: handle, timeoutS: { type: "number", exclusiveMinimum: 0, maximum: 120 } },
+    },
   },
   {
     name: "slice_cancel",

@@ -5,6 +5,7 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 
 export class ProtocolError extends Error {
   constructor(message: string) {
@@ -14,13 +15,13 @@ export class ProtocolError extends Error {
 }
 
 export interface Engine {
-  version(): string;
-  occt(): boolean;
-  meshPreview(body: string): string;
-  modelTree(body: string): string;
-  sliceStart(body: string): string;
-  slicePoll(id: string): string;
-  sliceCancel(id: string): string;
+  version(): string | Promise<string>;
+  occt(): boolean | Promise<boolean>;
+  meshPreview(body: string): string | Promise<string>;
+  modelTree(body: string): string | Promise<string>;
+  sliceStart(body: string): string | Promise<string>;
+  slicePoll(id: string): string | Promise<string>;
+  sliceCancel(id: string): string | Promise<string>;
 }
 
 type NativeExports = {
@@ -67,6 +68,46 @@ export function loadNativeEngine(root: string): Engine {
   };
 }
 
+/**
+ * The same addon, called from a worker thread so a long preview or slice
+ * poll does not stop the stdio loop answering ping.
+ */
+export function loadEngineWorker(root: string): Engine {
+  const worker = new Worker(new URL("./engine-worker.ts", import.meta.url), {
+    workerData: { root },
+    execArgv: ["--experimental-strip-types"],
+  });
+  let seq = 0;
+  const pending = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void }>();
+  const fail = (err: Error) => {
+    for (const slot of pending.values()) slot.reject(err);
+    pending.clear();
+  };
+  worker.on("message", (msg: { id: number; ok: boolean; result?: unknown; error?: string }) => {
+    const slot = pending.get(msg.id);
+    if (!slot) return;
+    pending.delete(msg.id);
+    if (msg.ok) slot.resolve(msg.result);
+    else slot.reject(new ProtocolError(msg.error || "The engine call failed."));
+  });
+  worker.on("error", fail);
+  const call = (method: string, arg = ""): Promise<unknown> => new Promise((resolve, reject) => {
+    const id = seq;
+    seq += 1;
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ id, method, arg });
+  });
+  return {
+    version: () => call("version") as Promise<string>,
+    occt: () => call("occt").then((value) => value === true) as Promise<boolean>,
+    meshPreview: (body) => call("meshPreview", body) as Promise<string>,
+    modelTree: (body) => call("modelTree", body) as Promise<string>,
+    sliceStart: (body) => call("sliceStart", body) as Promise<string>,
+    slicePoll: (id) => call("slicePoll", id) as Promise<string>,
+    sliceCancel: (id) => call("sliceCancel", id) as Promise<string>,
+  };
+}
+
 function fakeSolid(): Record<string, unknown> {
   return {
     format: "lime-solid-2",
@@ -102,7 +143,9 @@ export function fakeEngine(): Engine & { lastSlice: string } {
     lastSlice: "",
     version: () => "1.8.0",
     occt: () => true,
-    meshPreview: (body: string) => {
+    meshPreview: async (body: string) => {
+      const block = Number(process.env.LIME_MCP_FAKE_BLOCK_MS ?? 0);
+      if (block > 0) await new Promise((resolve) => setTimeout(resolve, block));
       const asked = JSON.parse(body) as { filename?: string };
       const positions = new Float32Array([
         0, 0, 0, 20, 0, 0, 20, 20, 0,
@@ -140,7 +183,9 @@ export function fakeEngine(): Engine & { lastSlice: string } {
       const job = jobs.get(Number(id));
       if (!job) return JSON.stringify({ error: "That slice job is not in this session." });
       job.polls += 1;
-      if (job.status === "running" && job.polls >= 1) job.status = "done";
+      const need = Number(process.env.LIME_MCP_POLLS_UNTIL_DONE ?? 1);
+      const untilDone = Number.isFinite(need) && need > 0 ? need : 1;
+      if (job.status === "running" && job.polls >= untilDone) job.status = "done";
       const request = JSON.parse(job.body) as { layerActions?: { kind?: string; gcode?: string }[] };
       const extra = (request.layerActions ?? [])
         .filter((action) => action.kind === "customGcode" && action.gcode)

@@ -146,6 +146,14 @@ fn cancel_slice(id: usize) -> String {
 }
 
 fn mesh_preview_json(body: &str) -> String {
+    // A test holds the worker thread so the stdio loop can still answer ping.
+    if let Ok(text) = std::env::var("LIME_MCP_PREVIEW_DELAY_MS") {
+        if let Ok(ms) = text.parse::<u64>() {
+            if ms > 0 {
+                std::thread::sleep(Duration::from_millis(ms));
+            }
+        }
+    }
     let value: Value = match serde_json::from_str(body) {
         Ok(value) => value,
         Err(err) => return json!({ "error": format!("The mesh request is not JSON. {err}") }).to_string(),

@@ -4,6 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 
 import { base64ToBytes, bytesToBase64 } from "../src/base64.ts";
 import { coverageWarning, fnv1aHex, inAirWarning } from "../src/slice-action.ts";
@@ -41,6 +42,14 @@ import { resolveRead, resolveWrite } from "./workspace.ts";
 
 const CHORD = 0.05;
 const STEP = 0.05;
+const SLICE_WAIT_DEFAULT_S = 20;
+const SLICE_WAIT_MAX_S = 120;
+
+/** Carried with one tools/call: a progress token, and cancel for that request. */
+export interface CallMeta {
+  progressToken?: string | number;
+  signal?: AbortSignal;
+}
 
 export interface PlateObject {
   id: string;
@@ -149,20 +158,41 @@ export class Session {
   latest: Job | null = null;
   private seq = 0;
   private readonly engine: Engine;
-  onProgress: ((job: string, fraction: number, stage: string) => void) | null = null;
+  onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
 
   constructor(engine: Engine) {
     this.engine = engine;
   }
 
-  call(name: string, args: unknown): Promise<Record<string, unknown>> | Record<string, unknown> {
+  call(name: string, args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
     const problem = validateTool(name, args ?? {});
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
-    const result = this.dispatch(name, input);
+    const result = this.dispatch(name, input, meta);
     return Promise.resolve(result).then((value) => {
       void mirror({ tool: name, objectName: this.objectName(input.object), args: input, ok: value.ok === true });
       return value;
+    });
+  }
+
+  private async ask<T>(value: T | Promise<T>): Promise<T> {
+    return await value;
+  }
+
+  private pause(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      if (signal?.aborted) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(finish, ms);
+      const stop = () => finish();
+      function finish() {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", stop);
+        resolve();
+      }
+      signal?.addEventListener("abort", stop, { once: true });
     });
   }
 
@@ -171,7 +201,7 @@ export class Session {
     return this.objects.find((obj) => obj.id === handle)?.name;
   }
 
-  private dispatch(name: string, input: Record<string, unknown>): Record<string, unknown> | Promise<Record<string, unknown>> {
+  private dispatch(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {
     switch (name) {
       case "session_info": return this.sessionInfo();
       case "project_open": return this.projectOpen(String(input.path));
@@ -187,7 +217,7 @@ export class Session {
       case "machine_load": return this.machineLoad(String(input.path));
       case "settings_apply": return this.settingsApply(input);
       case "slice_start": return this.sliceStart(input.cancelRunning === true);
-      case "slice_wait": return this.sliceWait(String(input.job));
+      case "slice_wait": return this.sliceWait(String(input.job), meta, typeof input.timeoutS === "number" ? input.timeoutS : undefined);
       case "slice_cancel": return this.sliceCancel(String(input.job));
       case "gcode_summary": return this.gcodeSummary(typeof input.job === "string" ? input.job : undefined);
       case "gcode_export": return this.gcodeExport(input);
@@ -199,12 +229,12 @@ export class Session {
     }
   }
 
-  private sessionInfo(): Record<string, unknown> {
+  private async sessionInfo(): Promise<Record<string, unknown>> {
     let engine = "unknown";
     let occt = false;
     try {
-      engine = this.engine.version();
-      occt = this.engine.occt();
+      engine = await this.ask(this.engine.version());
+      occt = await this.ask(this.engine.occt());
     } catch (err) {
       engine = err instanceof Error ? err.message : "The engine did not answer.";
     }
@@ -242,12 +272,12 @@ export class Session {
     return obj;
   }
 
-  private preview(filename: string, bytes: Uint8Array, tolerance: number): { triangles: number; source: Float32Array; seatMm: number } {
-    const reply = JSON.parse(this.engine.meshPreview(JSON.stringify({
+  private async preview(filename: string, bytes: Uint8Array, tolerance: number): Promise<{ triangles: number; source: Float32Array; seatMm: number }> {
+    const reply = JSON.parse(await this.ask(this.engine.meshPreview(JSON.stringify({
       filename,
       dataB64: bytesToBase64(bytes),
       stepToleranceMm: tolerance,
-    }))) as { error?: string; triangles?: number; positionsB64?: string; seatMm?: number };
+    })))) as { error?: string; triangles?: number; positionsB64?: string; seatMm?: number };
     if (reply.error || !reply.positionsB64) throw new ProtocolError(reply.error ?? "The mesh could not be read.");
     return {
       triangles: reply.triangles ?? 0,
@@ -264,9 +294,9 @@ export class Session {
     return { ok: true, project: "project" };
   }
 
-  private projectOpen(path: string): Record<string, unknown> {
+  private async projectOpen(path: string): Promise<Record<string, unknown>> {
     const full = resolveRead(path, "lime");
-    const parsed = parseProject(readFileSync(full, "utf8"));
+    const parsed = parseProject(await readFile(full, "utf8"));
     if (!parsed.ok) return { ok: false, reason: parsed.message };
     this.objects.length = 0;
     this.settings = { ...parsed.project.settings };
@@ -277,7 +307,7 @@ export class Session {
     const objects: { object: string; name: string }[] = [];
     for (const row of rows) {
       if (!row.bytes) return { ok: false, reason: "The mesh in this project is damaged." };
-      const preview = this.preview(row.file, row.bytes, row.placement.stepTolerance || STEP);
+      const preview = await this.preview(row.file, row.bytes, row.placement.stepTolerance || STEP);
       const obj = this.addObject({
         name: row.name,
         fileName: row.file,
@@ -341,16 +371,17 @@ export class Session {
     return { ok: true, path, bytes: Buffer.byteLength(text) };
   }
 
-  private meshImport(path: string, tolerance: number): Record<string, unknown> {
+  private async meshImport(path: string, tolerance: number): Promise<Record<string, unknown>> {
+    await new Promise((resolve) => setImmediate(resolve));
     const full = resolveRead(path, "mesh");
-    const bytes = new Uint8Array(readFileSync(full));
+    const bytes = new Uint8Array(await readFile(full));
     const fileName = full.split(/[\\/]/).pop() ?? "mesh.stl";
     let note: string | undefined;
     if (fileName.toLowerCase().endsWith(".3mf")) {
       const vendor = foreignSlicer3mf(bytes);
       if (vendor) note = foreign3mfMessage(vendor);
     }
-    const preview = this.preview(fileName, bytes, tolerance);
+    const preview = await this.preview(fileName, bytes, tolerance);
     const obj = this.addObject({
       name: fileName,
       fileName,
@@ -544,18 +575,18 @@ export class Session {
     });
   }
 
-  private sliceStart(cancelRunning: boolean): Record<string, unknown> {
+  private async sliceStart(cancelRunning: boolean): Promise<Record<string, unknown>> {
     if (this.running && this.running.status === "running") {
       if (!cancelRunning) {
         return { ok: false, reason: `A slice is already running (${this.running.handle}). Cancel it or pass cancelRunning.` };
       }
-      this.engine.sliceCancel(String(this.running.engineId));
+      await this.ask(this.engine.sliceCancel(String(this.running.engineId)));
       this.running.status = "cancelled";
       this.running = null;
     }
     const obj = this.selectedObject();
     if (!obj) return { ok: false, reason: "Load a mesh first." };
-    const started = JSON.parse(this.engine.sliceStart(JSON.stringify(this.sliceBody(obj)))) as { id?: number; error?: string };
+    const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(this.sliceBody(obj))))) as { id?: number; error?: string };
     if (typeof started.id !== "number") return { ok: false, reason: humanEngineError(started.error ?? "The slice did not start.") };
     const job: Job = { handle: `job_${this.jobs.length + 1}`, engineId: started.id, status: "running" };
     this.jobs.push(job);
@@ -567,13 +598,23 @@ export class Session {
     return this.jobs.find((job) => job.handle === handle) ?? null;
   }
 
-  private async sliceWait(handle: string): Promise<Record<string, unknown>> {
+  private async sliceWait(handle: string, meta?: CallMeta, timeoutS?: number): Promise<Record<string, unknown>> {
     const job = this.jobOf(handle);
     if (!job) return { ok: false, job: handle, reason: "That slice job is not in this session." };
-    const deadline = Date.now() + 30 * 60 * 1000;
+    const limitS = typeof timeoutS === "number" && Number.isFinite(timeoutS)
+      ? Math.min(SLICE_WAIT_MAX_S, Math.max(0.05, timeoutS))
+      : SLICE_WAIT_DEFAULT_S;
+    const deadline = Date.now() + limitS * 1000;
+    let fraction = 0;
+    let stage = "";
     while (job.status === "running" && Date.now() < deadline) {
-      const poll = JSON.parse(this.engine.slicePoll(String(job.engineId))) as { status?: string; stage?: string; fraction?: number; result?: string; error?: string };
-      if (typeof poll.fraction === "number") this.onProgress?.(job.handle, poll.fraction, poll.stage ?? "");
+      if (meta?.signal?.aborted) return { ok: false, job: job.handle, status: "cancelled", reason: "The wait was cancelled." };
+      const poll = JSON.parse(await this.ask(this.engine.slicePoll(String(job.engineId)))) as { status?: string; stage?: string; fraction?: number; result?: string; error?: string };
+      if (typeof poll.fraction === "number") {
+        fraction = poll.fraction;
+        stage = poll.stage ?? "";
+        this.onProgress?.(job.handle, fraction, stage, meta?.progressToken);
+      }
       if (poll.status === "done" && poll.result) {
         job.status = "done";
         job.wire = JSON.parse(poll.result) as Record<string, unknown>;
@@ -584,8 +625,14 @@ export class Session {
         job.status = "error";
         job.error = typeof poll.error === "string" ? poll.error : JSON.stringify(poll.error ?? "The slice failed.");
       } else {
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await this.pause(20, meta?.signal);
       }
+    }
+    if (meta?.signal?.aborted && job.status === "running") {
+      return { ok: false, job: job.handle, status: "cancelled", reason: "The wait was cancelled." };
+    }
+    if (job.status === "running") {
+      return { ok: true, job: job.handle, status: "running", fraction, stage };
     }
     if (this.running?.handle === job.handle && job.status !== "running") this.running = null;
     if (job.status === "done") this.latest = job;
@@ -616,10 +663,10 @@ export class Session {
     return error;
   }
 
-  private sliceCancel(handle: string): Record<string, unknown> {
+  private async sliceCancel(handle: string): Promise<Record<string, unknown>> {
     const job = this.jobOf(handle);
     if (!job) return { ok: false, reason: "That slice job is not in this session." };
-    this.engine.sliceCancel(String(job.engineId));
+    await this.ask(this.engine.sliceCancel(String(job.engineId)));
     if (job.status === "running") job.status = "cancelled";
     if (this.running?.handle === job.handle) this.running = null;
     return { ok: true, status: job.status === "done" ? "done" : "cancelled" };
@@ -773,7 +820,7 @@ export class Session {
     return { ok: true, path, camera, width: drawn.width, height: drawn.height };
   }
 
-  resource(uri: string): Record<string, unknown> {
+  resource(uri: string): Record<string, unknown> | Promise<Record<string, unknown>> {
     if (uri === "lime://session") {
       return { workspace: process.env.LIME_MCP_WORKSPACE ?? "", selected: this.selected, objects: this.objects.map((obj) => obj.id), printer: this.library.printerId, filament: this.library.filamentId, running: this.running?.handle ?? null };
     }
@@ -819,10 +866,10 @@ export class Session {
     }
   }
 
-  private treeCall(body: Record<string, unknown>): Record<string, unknown> {
+  private async treeCall(body: Record<string, unknown>): Promise<Record<string, unknown>> {
     let text = "";
     try {
-      text = this.engine.modelTree(JSON.stringify(body));
+      text = await this.ask(this.engine.modelTree(JSON.stringify(body)));
     } catch (err) {
       throw new ProtocolError(err instanceof Error ? err.message : "The modeler did not answer.");
     }
@@ -839,11 +886,11 @@ export class Session {
     return reply;
   }
 
-  private ensureTree(obj: PlateObject): ModelTree {
+  private async ensureTree(obj: PlateObject): Promise<ModelTree> {
     if (obj.tree) return obj.tree;
     const key = `mcp-${obj.id}`;
     const root = { kind: "step" as const, name: obj.fileName, bytes: obj.bytes.buffer as ArrayBuffer };
-    const reply = this.treeCall(openRequest(key, root, CHORD));
+    const reply = await this.treeCall(openRequest(key, root, CHORD));
     const error = typeof reply.error === "string" ? reply.error : "";
     if (error) throw new ProtocolError(plainModelError(error));
     obj.tree = newTree(key, root, obj.name, null);
@@ -851,7 +898,7 @@ export class Session {
     return obj.tree;
   }
 
-  private solidNew(input: Record<string, unknown>): Record<string, unknown> {
+  private async solidNew(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const kind = input.primitive === "cylinder" || input.primitive === "sphere" ? input.primitive : "box";
     const dx = typeof input.dx === "number" ? input.dx : 20;
     const dy = typeof input.dy === "number" ? input.dy : 20;
@@ -861,7 +908,7 @@ export class Session {
     this.seq += 1;
     const id = `obj_${this.seq}`;
     const key = `mcp-${id}`;
-    const reply = this.treeCall(newSolidRequest(key, typed, CHORD));
+    const reply = await this.treeCall(newSolidRequest(key, typed, CHORD));
     const error = typeof reply.error === "string" ? reply.error : "";
     if (error) return { ok: false, reason: plainModelError(error, "create") };
     const obj: PlateObject = {
@@ -887,8 +934,8 @@ export class Session {
     return { ok: true, object: obj.id, fingerprint: obj.solid?.fingerprint ?? null };
   }
 
-  private describe(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
-    this.ensureTree(obj);
+  private async describe(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    await this.ensureTree(obj);
     const solid = obj.solid;
     if (!solid) return { ok: false, reason: "This solid could not be read." };
     const faces = page(solid.faces.map((face, index) => ({ index, areaMm2: face.areaMm2, ...(face.normal ? { normal: face.normal } : {}) })), input.cursor, input.limit);
@@ -904,8 +951,8 @@ export class Session {
     };
   }
 
-  private workplaneSet(obj: PlateObject, faceIndex: number): Record<string, unknown> {
-    this.ensureTree(obj);
+  private async workplaneSet(obj: PlateObject, faceIndex: number): Promise<Record<string, unknown>> {
+    await this.ensureTree(obj);
     const face = obj.solid?.faces[faceIndex];
     if (!face) return { ok: false, reason: "That face is not on this solid." };
     if (!face.normal) return { ok: false, reason: CURVED_FACE };
@@ -1010,8 +1057,8 @@ export class Session {
     return splitNote({ plan });
   }
 
-  private probe(obj: PlateObject, raw: unknown): Record<string, unknown> {
-    const tree = this.ensureTree(obj);
+  private async probe(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
+    const tree = await this.ensureTree(obj);
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
     if (baked.op.kind === "scale") {
@@ -1025,7 +1072,7 @@ export class Session {
       return { ok: true, reason: note.text, stored: baked.op, typed: baked.typed };
     }
     const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
-    const reply = this.treeCall(probeRequest(tree.key, tree.current, baked.op));
+    const reply = await this.treeCall(probeRequest(tree.key, tree.current, baked.op));
     const view = probeFromBody(reply);
     const note = probeNote(tool, view);
     if (!note || note.bad) return { ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}), stored: baked.op, typed: baked.typed };
@@ -1033,15 +1080,15 @@ export class Session {
     return { ok: true, reason: note.text, stored: baked.op, typed: baked.typed };
   }
 
-  private apply(obj: PlateObject, raw: unknown, edit: boolean): Record<string, unknown> {
-    const tree = this.ensureTree(obj);
+  private async apply(obj: PlateObject, raw: unknown, edit: boolean): Promise<Record<string, unknown>> {
+    const tree = await this.ensureTree(obj);
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
     const key = probeKey(String(tree.current), baked.op);
     if (!obj.probes.has(key)) return { ok: false, reason: "Probe this edit first. It was not applied." };
     const [reserved, node] = reserveId(tree);
     obj.tree = reserved;
-    const reply = this.treeCall(applyRequest(tree.key, tree.current, node, baked.op, CHORD));
+    const reply = await this.treeCall(applyRequest(tree.key, tree.current, node, baked.op, CHORD));
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, baked.op.kind) };
     obj.tree = withChild(obj.tree, tree.current, { id: node, op: baked.op, label: opLabel(baked.op), fingerprint: null });
     const solid = rememberSolid(reply);
@@ -1050,8 +1097,8 @@ export class Session {
     return { ok: true, node: nodeHandle(node), ...(edit ? {} : {}), stored: baked.op, typed: baked.typed };
   }
 
-  private history(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
-    const tree = obj.tree ?? this.ensureTree(obj);
+  private async history(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const tree = obj.tree ?? await this.ensureTree(obj);
     const rows = [...tree.nodes.values()].sort((a, b) => a.id - b.id).map((node) => ({
       id: nodeHandle(node.id),
       parent: node.parent === null ? null : nodeHandle(node.parent),
@@ -1064,10 +1111,10 @@ export class Session {
     return { ok: true, nodes: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
   }
 
-  private gotoNode(obj: PlateObject, node: number | null): Record<string, unknown> {
-    const tree = this.ensureTree(obj);
+  private async gotoNode(obj: PlateObject, node: number | null): Promise<Record<string, unknown>> {
+    const tree = await this.ensureTree(obj);
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
-    const reply = this.treeCall(gotoRequest(tree.key, node, CHORD));
+    const reply = await this.treeCall(gotoRequest(tree.key, node, CHORD));
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
     obj.tree = jumped(tree, node);
     const solid = rememberSolid(reply);
@@ -1075,15 +1122,15 @@ export class Session {
     return { ok: true, node: nodeHandle(node) };
   }
 
-  private step(obj: PlateObject, direction: "undo" | "redo"): Record<string, unknown> {
-    const tree = this.ensureTree(obj);
+  private async step(obj: PlateObject, direction: "undo" | "redo"): Promise<Record<string, unknown>> {
+    const tree = await this.ensureTree(obj);
     const target = direction === "undo" ? undoTarget(tree) : redoTarget(tree);
     if (target === null) return { ok: false, reason: direction === "undo" ? "This is the start of the history." : "There is nothing to redo." };
     return this.gotoNode(obj, target);
   }
 
-  private edit(obj: PlateObject, node: number | null, raw: unknown): Record<string, unknown> {
-    const tree = this.ensureTree(obj);
+  private async edit(obj: PlateObject, node: number | null, raw: unknown): Promise<Record<string, unknown>> {
+    const tree = await this.ensureTree(obj);
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
     const parent = tree.nodes.get(node)?.parent;
     if (parent === null || parent === undefined) return { ok: false, reason: "The opened file starts the history and stays." };
@@ -1093,7 +1140,7 @@ export class Session {
     if (!obj.probes.has(key)) return { ok: false, reason: "Probe this edit first. It was not applied." };
     const [reserved, id] = reserveId(tree);
     obj.tree = reserved;
-    const reply = this.treeCall(editRequest(tree.key, parent, id, baked.op, [], CHORD));
+    const reply = await this.treeCall(editRequest(tree.key, parent, id, baked.op, [], CHORD));
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
     obj.tree = withChild(obj.tree, parent, { id, op: baked.op, label: opLabel(baked.op), fingerprint: null });
     return { ok: true, node: nodeHandle(id), built: true, broken: typeof reply.broken === "boolean" ? reply.broken : false };
@@ -1110,8 +1157,8 @@ export class Session {
     return { ok: true };
   }
 
-  private commit(obj: PlateObject): Record<string, unknown> {
-    const tree = this.ensureTree(obj);
+  private async commit(obj: PlateObject): Promise<Record<string, unknown>> {
+    const tree = await this.ensureTree(obj);
     let scaled = false;
     for (let at: number | null = tree.current; at !== null; at = tree.nodes.get(at)?.parent ?? null) {
       if (tree.nodes.get(at)?.op?.kind === "scale") scaled = true;
@@ -1121,9 +1168,9 @@ export class Session {
     return { ok: true, scalePercent: obj.scale * 100 };
   }
 
-  private exportStep(obj: PlateObject, name: string): Record<string, unknown> {
-    const tree = this.ensureTree(obj);
-    const reply = this.treeCall(exportRequest(tree.key, tree.current));
+  private async exportStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
+    const tree = await this.ensureTree(obj);
+    const reply = await this.treeCall(exportRequest(tree.key, tree.current));
     const step = typeof reply.step === "string" ? reply.step : typeof reply.data === "string" ? reply.data : "";
     if (!step) return { ok: false, reason: typeof reply.error === "string" ? plainModelError(reply.error) : "The solid was not exported." };
     const path = resolveWrite(name, ".step");
