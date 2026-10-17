@@ -1,6 +1,7 @@
 /** Tool input schemas. They are the contract the handlers validate against. */
 
-const handle = { type: "string", minLength: 1, maxLength: 64, description: "Plate handle." };
+const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from solid_new, mesh_import, or plate_list. Default: the selected object." };
+const step = { type: "string", minLength: 1, maxLength: 80, description: "History step: node_N from model_history, or a step or batch label." };
 const cursor = { type: "string", minLength: 1, description: "Page start." };
 const vec3 = { type: "array", description: "3 numbers.", minItems: 3, maxItems: 3, items: { type: "number" } };
 const page = {
@@ -37,8 +38,167 @@ const edgeList = {
   ],
 };
 
+const label = { type: "string", maxLength: 80, description: "Step name." };
+const primitiveKind = { enum: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." };
+const booleanKind = { enum: ["fuse", "cut", "common"], description: "cut, fuse, common." };
+
+/** The fields every primitive takes, as solid_new names them. */
+const primitiveFields = {
+  primitive: primitiveKind,
+  dx: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Box X." },
+  dy: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Box Y." },
+  dz: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Box Z." },
+  radius: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Round kinds." },
+  height: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Along local Z." },
+  topRadius: { type: "number", minimum: 0, maximum: 500, description: "Cone top." },
+  tubeRadius: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Torus tube." },
+  innerRadius: { type: "number", minimum: 0, maximum: 500, description: "Tube hole." },
+  topX: { type: "number", minimum: 0, maximum: 1000, description: "Wedge top X." },
+  sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon sides." },
+  across: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Polygon width." },
+  flats: { type: "boolean", description: "Across flats." },
+  origin: { ...vec3, description: "Box min corner, or round base centre." },
+  centre: { ...vec3, description: "Turn point: box middle, mid-axis." },
+  turn: { ...vec3, description: "Degrees X, then Y, then Z." },
+};
+
+const booleanOp = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "op", "primitive"],
+  properties: { kind: { const: "boolean" }, op: booleanKind, ...primitiveFields, label },
+};
+
+const uv = {
+  type: "object",
+  additionalProperties: false,
+  required: ["u", "v"],
+  properties: {
+    u: { type: "number", description: "Level, mm." },
+    v: { type: "number", description: "Up, mm." },
+  },
+};
+
+const faceIndex = { type: "integer", minimum: 0, description: "From faces_find. Else the workplane." };
+
+const pocketOp = (kind: "pocket" | "boss") => ({
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "depth"],
+  properties: {
+    kind: { const: kind },
+    faceIndex,
+    shape: { enum: ["rect", "circle", "arch"], description: "rect, circle, arch." },
+    at: { ...uv, description: "Centre on the face." },
+    width: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "U size." },
+    height: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "V size." },
+    diameter: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Circle." },
+    depth: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: kind === "pocket" ? "Into the face." : "Out of the face." },
+    ...(kind === "pocket"
+      ? {
+          bars: {
+            type: "object",
+            additionalProperties: false,
+            description: "Flush bars left across it.",
+            properties: {
+              vertical: { type: "integer", minimum: 0, maximum: 20, description: "Count." },
+              horizontal: { type: "integer", minimum: 0, maximum: 20, description: "Count." },
+              width: { type: "number", exclusiveMinimum: 0, maximum: 50, description: "Default 1." },
+            },
+          },
+        }
+      : {}),
+    label,
+  },
+});
+
+const textureOp = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "pitch"],
+  properties: {
+    kind: { const: "texture" },
+    faceIndex,
+    pattern: { enum: ["lines", "grid", "brick", "shingle"], description: "brick and shingle stagger rows." },
+    pitch: { type: "array", minItems: 2, maxItems: 2, items: { type: "number", exclusiveMinimum: 0 }, description: "[U, V] tile size." },
+    grooveWidth: { type: "number", exclusiveMinimum: 0, maximum: 20, description: "Default 0.8." },
+    depth: { type: "number", exclusiveMinimum: 0, maximum: 50, description: "Default 0.6." },
+    region: {
+      type: "object",
+      additionalProperties: false,
+      description: "Default: the face.",
+      properties: {
+        u: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "Range." },
+        v: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "Range." },
+      },
+    },
+    label,
+  },
+};
+
+const repeatFields = (inner: Record<string, unknown>) => ({
+  pattern: {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "op"],
+    properties: {
+      kind: { const: "pattern" },
+      op: inner,
+      linear: {
+        type: "object",
+        additionalProperties: false,
+        required: ["step", "count"],
+        description: "step2, count2 make a grid.",
+        properties: {
+          step: { ...vec3, description: "Offset." },
+          count: { type: "integer", minimum: 1, maximum: 200, description: "With the original." },
+          step2: { ...vec3, description: "Grid offset." },
+          count2: { type: "integer", minimum: 1, maximum: 200, description: "Grid count." },
+        },
+      },
+      polar: {
+        type: "object",
+        additionalProperties: false,
+        required: ["count"],
+        description: "About an axis.",
+        properties: {
+          centre: { ...vec3, description: "Axis point." },
+          axis: { ...vec3, description: "Default Z." },
+          count: { type: "integer", minimum: 1, maximum: 200, description: "With the original." },
+          angleDeg: { type: "number", description: "Default 360." },
+        },
+      },
+      label,
+    },
+  },
+  mirror: {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "op"],
+    properties: {
+      kind: { const: "mirror" },
+      op: inner,
+      plane: { enum: ["x", "y", "z"], description: "Normal axis." },
+      normal: { ...vec3, description: "Or a normal." },
+      origin: { ...vec3, description: "Plane point." },
+      keepOriginal: { type: "boolean", description: "Default true." },
+      label,
+    },
+  },
+});
+
+/** The op a pattern or mirror repeats, listed by name; validateTool checks it against the op branches. */
+const outerRepeat = repeatFields({ type: "object", description: "Op to repeat." });
+
+export const OP_HELP = [
+  "One edit, by kind; mm and degrees on the workplane, else the part frame.",
+  "pocket, boss, texture, pattern, and mirror are composite: checked step by step, one undo.",
+  "Numbers may be text using model_params names. guide {topic:\"ops\"} has examples.",
+].join(" ");
+
 const op = {
-  description: "Edit.",
+  type: "object",
+  description: OP_HELP,
   oneOf: [
     {
       type: "object",
@@ -56,6 +216,7 @@ const op = {
         counterboreDiameterMm: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
         counterboreDepth: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
         screw: { enum: ["M2", "M2.5", "M3", "M4", "M5", "M6", "M8"], description: "Clearance hole and counterbore." },
+        label,
       },
     },
     {
@@ -66,6 +227,7 @@ const op = {
         kind: { const: "fillet" },
         edges: edgeList,
         size: { type: "number", exclusiveMinimum: 0, maximum: 100 },
+        label,
       },
     },
     {
@@ -76,6 +238,7 @@ const op = {
         kind: { const: "chamfer" },
         edges: edgeList,
         size: { type: "number", exclusiveMinimum: 0, maximum: 100 },
+        label,
       },
     },
     {
@@ -87,6 +250,7 @@ const op = {
         origin: vec3,
         normal: vec3,
         keep: { enum: ["both", "above", "below"], description: "Which half stays on the plate. both adds the other half as a new object." },
+        label,
       },
     },
     {
@@ -96,29 +260,15 @@ const op = {
       properties: {
         kind: { const: "scale" },
         factor: { type: "number", minimum: 0.1, maximum: 20 },
+        label,
       },
     },
+    booleanOp,
     {
       type: "object",
-      required: ["kind"],
-      properties: {
-        kind: { const: "boolean" },
-        op: { enum: ["fuse", "cut", "common"], description: "cut, fuse, common." },
-        primitive: { enum: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"] },
-        dx: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-        dy: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-        dz: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-        origin: vec3,
-        turn: vec3,
-      },
-    },
-    {
-      type: "object",
+      additionalProperties: false,
       required: ["kind", "primitive"],
-      properties: {
-        kind: { const: "root" },
-        primitive: { enum: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." },
-      },
+      properties: { kind: { const: "root" }, primitive: primitiveKind, dx: primitiveFields.dx, dy: primitiveFields.dy, dz: primitiveFields.dz, radius: primitiveFields.radius, height: primitiveFields.height },
     },
     {
       type: "object",
@@ -126,12 +276,63 @@ const op = {
       required: ["kind", "toolObject"],
       properties: {
         kind: { const: "join" },
-        op: { enum: ["fuse", "cut", "common"], description: "cut, fuse, common." },
+        op: booleanKind,
         toolObject: handle,
         keepTool: { type: "boolean" },
+        label,
       },
     },
+    pocketOp("pocket"),
+    pocketOp("boss"),
+    textureOp,
+    outerRepeat.pattern,
+    outerRepeat.mirror,
   ],
+};
+
+const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror"]);
+const REPEATABLE = new Set(["boolean", "pocket", "boss", "texture", "pattern", "mirror"]);
+
+/** The op schema model_apply lists. Other Model tools name it and are checked against it here. */
+export const OP_SCHEMA = op;
+
+const opPointer = (what: string) => ({ type: "object", description: `${what} Same shape as model_apply's op (see its schema, or guide {topic:"ops"}).` });
+
+/** An op and every op nested in it, against the op branches. `plain` refuses the composite kinds. */
+function checkOp(value: unknown, path: string, plain: boolean, depth = 0): string | null {
+  const kind = value && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined;
+  if (plain && typeof kind === "string" && COMPOSITE.has(kind)) return `${path}.kind ${kind} is several steps. Use model_apply or model_apply_batch.`;
+  const problem = validate(op, value, path);
+  if (problem) return problem;
+  if ((kind === "pattern" || kind === "mirror") && depth < 4) {
+    const inner = (value as { op?: unknown }).op;
+    const innerKind = inner && typeof inner === "object" ? (inner as { kind?: unknown }).kind : undefined;
+    if (typeof innerKind !== "string" || !REPEATABLE.has(innerKind)) return `${path}.op.kind must be one of ${[...REPEATABLE].join(", ")}.`;
+    return checkOp(inner, `${path}.op`, false, depth + 1);
+  }
+  return null;
+}
+
+/** A wrong field name with the right one, for the refusal. */
+export const FIELD_HINTS: Record<string, string> = {
+  size: "Use dx, dy, dz for a box, or radius and height for a round kind.",
+  sizes: "Use dx, dy, dz.",
+  width: "Use dx (box X) on a boolean, or width on a pocket or boss.",
+  length: "Use dx, dy, or dz.",
+  depthMm: "Use depth.",
+  center: "Use centre.",
+  position: "Use origin (corner or base centre) or centre.",
+  pos: "Use origin or centre.",
+  rotation: "Use turn: degrees about X, then Y, then Z.",
+  rotate: "Use turn: degrees about X, then Y, then Z.",
+  angle: "Use turn: degrees about X, then Y, then Z.",
+  diameter: "Use diameterMm on a hole, or radius on a primitive.",
+  r: "Use radius.",
+  h: "Use height.",
+  type: "Use kind for the edit and primitive for the shape.",
+  shape: "Use primitive on a boolean.",
+  operation: "Use op: cut, fuse, or common.",
+  name: "Use label.",
 };
 
 export interface ToolSpec {
@@ -141,6 +342,7 @@ export interface ToolSpec {
 }
 
 const READ_ONLY = new Set([
+  "guide",
   "session_info",
   "plate_list",
   "machine_list",
@@ -182,8 +384,17 @@ export function annotationsFor(name: string): { readOnlyHint: boolean; destructi
 export const TOOLS: ToolSpec[] = [
   {
     name: "session_info",
-    description: "Server version, engine, and whether Open CASCADE loaded. Nothing is sent to a printer.",
+    description: "Server version, engine, whether Open CASCADE loaded, and the Model ops, primitives, and guides on offer. Nothing is sent to a printer.",
     inputSchema: empty,
+  },
+  {
+    name: "guide",
+    description: "Worked call sequences. No topic lists them.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { topic: { type: "string", minLength: 1, maxLength: 40, description: "Guide name, e.g. ops." } },
+    },
   },
   {
     name: "project_open",
@@ -197,8 +408,16 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "project_save",
-    description: "Write a .lime file in the workspace. This overwrites the same name.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 } } },
+    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name"],
+      properties: {
+        name: { type: "string", minLength: 1 },
+        ifExists: { enum: ["replace", "refuse"], description: "replace (default) or refuse." },
+      },
+    },
   },
   {
     name: "mesh_import",
@@ -638,13 +857,83 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_probe",
-    description: "After faces_find or edges_find. A refusal changes nothing. Then model_apply the same op.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op, node: handle } },
+    description: "Check one plain edit; the solid does not change. Then model_apply the same op.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step } },
   },
   {
     name: "model_apply",
-    description: "After model_probe returned ok for the same op. Then model_commit before slicing.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op } },
+    description: "Apply one edit. A plain op needs model_probe first, or probe: true. A composite op is checked step by step, rolled back on a refusal, and undone as one step. Then model_commit.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["op"],
+      properties: {
+        object: handle,
+        op,
+        probe: { type: "boolean", description: "Check first; apply only if it passes." },
+      },
+    },
+  },
+  {
+    name: "model_apply_batch",
+    description: "Apply edits in order, each checked first. A refusal stops the batch and rolls it back unless onError is stop. One undo step. Then model_commit.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["ops"],
+      properties: {
+        object: handle,
+        ops: { type: "array", minItems: 1, maxItems: 200, items: opPointer("One edit."), description: "Edits, in order." },
+        label: { type: "string", minLength: 1, maxLength: 80, description: "Batch name; node fields take it." },
+        onError: { enum: ["rollback", "stop"], description: "rollback (default) or stop." },
+        params: { type: "object", description: "This call only, on top of model_params." },
+      },
+    },
+  },
+  {
+    name: "model_build",
+    description: "New solid, a batch of edits, and a commit, in one call. Returns the object and its bounds.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["base"],
+      properties: {
+        base: {
+          type: "object",
+          additionalProperties: false,
+          required: ["primitive"],
+          description: "As solid_new takes it.",
+          properties: {
+            primitive: primitiveKind,
+            dx: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+            dy: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+            dz: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
+            radius: { type: "number", exclusiveMinimum: 0, maximum: 500 },
+            height: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Round height." },
+            sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon sides." },
+            turn: vec3,
+          },
+        },
+        ops: { type: "array", maxItems: 200, items: opPointer("One edit."), description: "Edits, in order." },
+        params: { type: "object", description: "This call only, e.g. {\"wallH\": 35}." },
+        name: { type: "string", minLength: 1, maxLength: 120, description: "Object name." },
+        label: { type: "string", minLength: 1, maxLength: 80, description: "Name for the batch." },
+        onError: { enum: ["rollback", "stop"], description: "rollback (default) or stop." },
+        commit: { type: "boolean", description: "Put the result on the plate (default true)." },
+      },
+    },
+  },
+  {
+    name: "model_params",
+    description: "Named numbers ops may use as text, e.g. dx: \"wallW / 2\". Session only.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        set: { type: "object", description: "Name to number or expression; later names may use earlier ones." },
+        clear: { type: "boolean", description: "Forget every name first." },
+      },
+    },
   },
   {
     name: "model_history",
@@ -658,11 +947,11 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_goto",
     description: "Show another history step. The plate mesh changes only after model_commit.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["node"], properties: { object: handle, node: handle } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["node"], properties: { object: handle, node: step } },
   },
   {
     name: "model_undo",
-    description: "Move to the parent step. At the root, nothing changes.",
+    description: "Move to the parent step, or back over a whole batch or composite edit. At the root, nothing changes.",
     inputSchema: { type: "object", additionalProperties: false, properties: { object: handle } },
   },
   {
@@ -673,7 +962,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_edit",
     description: "Replace a probed step and replay the steps under it.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["node", "op"], properties: { object: handle, node: handle, op } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["node", "op"], properties: { object: handle, node: step, op: opPointer("The replacement plain edit.") } },
   },
   {
     name: "model_rename",
@@ -682,13 +971,13 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       required: ["node", "label"],
-      properties: { object: handle, node: handle, label: { type: "string", minLength: 1, maxLength: 80, description: "Step name." } },
+      properties: { object: handle, node: step, label: { type: "string", minLength: 1, maxLength: 80, description: "Step name." } },
     },
   },
   {
     name: "model_drop",
     description: "Delete a history branch. The root and the plated step are refused.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["node"], properties: { object: handle, node: handle } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["node"], properties: { object: handle, node: step } },
   },
   {
     name: "model_commit",
@@ -1073,7 +1362,7 @@ export function validate(schema: Record<string, unknown>, value: unknown, path =
     const properties = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(record)) {
-        if (!(key in properties)) return `${path}.${key} is not a field of this tool.`;
+        if (!(key in properties)) return `${path}.${key} is not a field of this tool.${FIELD_HINTS[key] ? ` ${FIELD_HINTS[key]}` : ""}`;
       }
     }
     const required = Array.isArray(schema.required) ? schema.required as string[] : [];
@@ -1126,5 +1415,16 @@ export function validate(schema: Record<string, unknown>, value: unknown, path =
 export function validateTool(name: string, input: unknown): string | null {
   const tool = toolByName(name);
   if (!tool) return `There is no tool named ${name}.`;
-  return validate(tool.inputSchema, input ?? {});
+  const problem = validate(tool.inputSchema, input ?? {});
+  if (problem) return problem;
+  const record = (input ?? {}) as { op?: unknown; ops?: unknown[] };
+  if (name === "model_probe" || name === "model_edit") return checkOp(record.op, "op", true);
+  if (name === "model_apply") return checkOp(record.op, "op", false);
+  if ((name === "model_apply_batch" || name === "model_build") && Array.isArray(record.ops)) {
+    for (let i = 0; i < record.ops.length; i += 1) {
+      const found = checkOp(record.ops[i], `ops[${i}]`, false);
+      if (found) return found;
+    }
+  }
+  return null;
 }

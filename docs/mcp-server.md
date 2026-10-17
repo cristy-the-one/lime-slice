@@ -437,6 +437,34 @@ Join takes `toolObject` and `keepTool`. `relative` is computed with `joinOp` in 
 
 Scale in this table is the Model op. The Prepare percentage stays on `object_place`. Applying a Model scale sets the plate scale back to 100% when the plate commits, so the part is not scaled twice (`docs/step-modeler.md`).
 
+#### Composite edits, batches, labels, parameters
+
+These are server-side. The engine still sees one Boolean step at a time, each probed before it is applied.
+
+| Tool or op | What it does |
+| --- | --- |
+| `model_apply {op, probe: true}` | Probes the op, then applies it only when the probe passes. One call where two were. Without `probe` the old rule stands: a passing `model_probe` first. |
+| `pocket`, `boss` | On a face (`faceIndex`) or the workplane: `shape` rect, circle, or arch, centred at `at: {u, v}`, `width` × `height` or `diameter`, `depth`. A pocket may keep `bars: {vertical, horizontal, width}`, flush with the face. On a side face U is level and V runs up (`workplaneOnFace`). |
+| `texture` | Grooves on a face: `pattern` lines, grid, brick, or shingle (rows staggered by half a pitch), `pitch: [u, v]`, `grooveWidth`, `depth`, `region` (default the face's own U, V extent). |
+| `pattern` | `op` repeated by `linear: {step, count, step2, count2}` or `polar: {count, axis, centre, angleDeg}`. `count` includes the original. |
+| `mirror` | `op` reflected in `plane` x, y, or z (or a `normal`) through `origin`, keeping the original unless `keepOriginal` is false. Wedges are refused: the reflection is a turn of the same primitive (`LOCAL_FLIP` in `mcp/compose.ts`). |
+| `model_apply_batch {ops, label, onError}` | Edits in order. The first refusal stops the batch and names it by index. `onError: "rollback"` (default) goes back to the start step and drops the branch; `"stop"` keeps what applied. |
+| `model_build {base, ops, params, name, commit}` | `solid_new`, then the batch, then `model_commit`, in one call. A refusal leaves the base solid on the plate and says so. |
+| `model_params {set, clear}` | Named numbers. Any number in a Model op may be text such as `"wallH / 2"` or `"sqrt(2) * 24"` (`mcp/expr.ts`: + − × ÷ ^, brackets, `sqrt`, `abs`, `floor`, `ceil`, `round`, and `sin`, `cos`, `tan` in degrees). Session only; not saved in the `.lime`. A batch or build may carry its own `params`. |
+| `label` | Any op takes one. It names the step, or each step of a composite as `label k/n`. `model_goto`, `model_edit`, `model_drop`, `model_rename`, and `model_probe`'s `node` take a step label or a batch label in place of `node_N`. |
+
+A composite op or batch of more than one step is an undo group: `model_undo` at its last step goes back to the step before it, and `model_redo` straight after brings the whole run back. Groups live in the session and are not saved. A step that misses the solid inside a composite (a texture groove past the face's edge, a pattern copy off the part) is left out and counted as `skipped`. A plain op that misses is a refusal. One composite or batch may make at most 400 steps.
+
+Composite ops expand in `mcp/compose.ts`, with no engine call: each becomes `{op, spec}` pieces in the part's frame, and a pattern or mirror moves each piece by turning its centre and composing its turn (`movedSpec`). `primitiveFrom` there takes `centre` as well as `origin`. The centre is the point the primitive turns about (`turnCentre`): a box's middle, halfway up a round kind's axis. A turned shape is easiest placed that way.
+
+#### The op schema a client sees
+
+`op` on `model_apply` lists every kind as a typed branch with `type: "object"` at the top. A client that drops a bare `oneOf` showed `op` as an empty object, so a caller had to read the source to learn the fields. Every branch is `additionalProperties: false`. An unknown field is refused with the right name where the server knows it: `op.size is not a field of this tool. Use dx, dy, dz for a box, or radius and height for a round kind.` (`FIELD_HINTS`). Before this, a Boolean dropped `size` silently and built a 20 mm cube. `model_probe`, `model_edit`, and the items of `model_apply_batch` and `model_build` point at `model_apply`'s op, so the list is not four copies long. `validateTool` checks them, and every nested `op` of a pattern or mirror, against the same branches (`checkOp`). The tool list is held under 58 KB (`mcp/schema.test.ts`).
+
+An echoed op (`stored`, `typed`) keeps the fields its primitive reads (`cleanOp`). A box no longer comes back with `radius: 30`.
+
+`solid_new` returns `bounds` in the part frame. `session_info` returns `model`: the op kinds, composite kinds, primitives, step limit, and guide topics. `guide {topic}` returns the guides as a tool, for clients that do not read resources; `ops` is the op reference with worked examples and `compose` is the few-call flow. `project_save {ifExists: "refuse"}` leaves a file of that name alone.
+
 ### Slicing
 
 | Tool | Maps to | Returns |

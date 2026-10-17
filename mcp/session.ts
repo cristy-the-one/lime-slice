@@ -3,7 +3,7 @@
  * Feasibility refusals are `{ok:false, reason}` and are decided before apply.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
 import { base64ToBytes, bytesToBase64 } from "../src/base64.ts";
@@ -21,7 +21,7 @@ import { builtBranch, crossEdit, editRefusal, forked, replayChain, type ToolLink
 import { dropRefusal } from "../src/model-history.ts";
 import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
-import { isPrimitiveKind, primitiveSpec, rootSpec, type PrimitiveFields, type PrimitiveKind, type PrimitiveSpec } from "../src/model-primitive.ts";
+import { rootSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
 import { applyRequest, crossEditRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../src/model-request.ts";
 import { IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
@@ -57,12 +57,14 @@ import { renderMesh, type Camera } from "./render.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
 import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { reviewGcode } from "./review.ts";
-import { guideByUri } from "./guides.ts";
+import { GUIDES, guideByUri } from "./guides.ts";
 import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
 import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { validateTool } from "./schema.ts";
+import { cleanOp, COMPOSITE_KINDS, expand, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
+import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWrite } from "./workspace.ts";
 
 const OVERLAP = "These parts overlap. Move one before slicing.";
@@ -74,6 +76,8 @@ const STALE_SLICE = "The printer, filament, settings, or placement changed after
 const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a mesh.";
 const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the current handles.";
 const NAME_LIMIT = 120;
+/** Tools whose op fields may be text expressions. */
+const EXPRESSION_TOOLS = new Set(["model_probe", "model_apply", "model_apply_batch", "model_edit", "model_build"]);
 
 /** Carried with one tools/call: a progress token, and cancel for that request. */
 export interface CallMeta {
@@ -107,6 +111,10 @@ export interface PlateObject {
   objectSettings: PlateObjectSettings;
   /** The history node whose STEP is `bytes`. Null until a commit writes it. */
   platedNode: number | null;
+  /** Runs of steps one composite edit or batch made: undo takes the whole run back. */
+  groups?: { start: number; end: number; label: string }[];
+  /** The run undo last took back, so redo can bring it all again. */
+  undoneGroup?: { start: number; end: number; label: string };
 }
 
 interface Job {
@@ -277,43 +285,8 @@ function parseNode(handle: unknown): number | null {
   return match ? Number(match[1]) : null;
 }
 
-function readVec3(value: unknown, fallback: [number, number, number]): [number, number, number] {
-  if (!Array.isArray(value) || value.length < 3) return fallback;
-  const xyz = value.slice(0, 3);
-  if (!xyz.every((item) => typeof item === "number" && Number.isFinite(item))) return fallback;
-  return [xyz[0] as number, xyz[1] as number, xyz[2] as number];
-}
-
 function isObject(value: PlateObject | { ok: false; reason: string }): value is PlateObject {
   return !("reason" in value);
-}
-
-function numOr(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-/** A primitive from tool fields. `rootSpec` and `planePrimitive` place it. */
-function primitiveFrom(input: Record<string, unknown>, fallback: PrimitiveKind = "box"): PrimitiveSpec | { reason: string } {
-  const kind = isPrimitiveKind(input.primitive) ? input.primitive : fallback;
-  const dx = numOr(input.dx, 20);
-  const dy = numOr(input.dy, dx);
-  const dz = numOr(input.dz, kind === "sphere" ? dx : 20);
-  const fields: PrimitiveFields = {
-    size: [dx, dy, dz],
-    radius: numOr(input.radius, dx / 2),
-    height: numOr(input.height, dz),
-    topRadius: numOr(input.topRadius, 0),
-    tubeRadius: numOr(input.tubeRadius, Math.max(0.2, dx / 4)),
-    innerRadius: numOr(input.innerRadius, 0),
-    topX: numOr(input.topX, dx / 2),
-    sides: Math.round(numOr(input.sides, 6)),
-    across: numOr(input.across, dx),
-    flats: input.flats === true,
-  };
-  if (kind === "polygon" && (fields.sides < 3 || fields.sides > 64)) return { reason: "A polygon has from 3 to 64 sides." };
-  if (kind === "tube" && fields.innerRadius >= fields.radius) return { reason: "The tube's hole must be smaller than its outside." };
-  if (kind === "cone" && fields.topRadius > fields.radius) return { reason: "The cone's top must be no wider than its base." };
-  return primitiveSpec(kind, fields, readVec3(input.origin, [0, 0, 0]), readVec3(input.turn, [0, 0, 0]));
 }
 
 function xyGap(a: Bounds, b: Bounds): number {
@@ -356,12 +329,17 @@ export class Session {
   clearanceMm = 0;
   gantryMm = 0;
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
+  /** Names model ops may use in place of numbers. Set with model_params; not saved in the project. */
+  params: Record<string, number> = {};
 
   constructor(engine: Engine) {
     this.engine = engine;
   }
 
   call(name: string, args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
+    const numbered = this.withNumbers(name, args);
+    if ("reason" in numbered) return Promise.resolve({ ok: false, reason: numbered.reason });
+    args = numbered.args;
     const problem = validateTool(name, args ?? {});
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
@@ -378,6 +356,30 @@ export class Session {
       }
       throw err;
     });
+  }
+
+  /**
+   * Model tools take text such as "wallH / 2" where a number goes. Each one becomes its number before the schema
+   * check, from the session's parameters and the call's own `params`.
+   */
+  private withNumbers(name: string, args: unknown): { args: unknown } | { reason: string } {
+    if (!EXPRESSION_TOOLS.has(name) || !args || typeof args !== "object") return { args };
+    const input = { ...(args as Record<string, unknown>) };
+    let params = this.params;
+    if (input.params && typeof input.params === "object") {
+      const merged = this.mergeParams(input.params as Record<string, unknown>);
+      if ("reason" in merged && typeof merged.reason === "string") return { reason: merged.reason };
+      params = merged as Record<string, number>;
+    }
+    try {
+      for (const key of ["op", "ops", "base"]) {
+        if (input[key] !== undefined) input[key] = resolveNumbers(input[key], params, key);
+      }
+    } catch (err) {
+      if (err instanceof ExprError) return { reason: err.message };
+      throw err;
+    }
+    return { args: input };
   }
 
   /** The last mirror sent to the desktop, including a place or settings result. */
@@ -487,7 +489,7 @@ export class Session {
       case "session_info": return this.sessionInfo();
       case "project_open": return this.projectOpen(String(input.path));
       case "project_create": return this.projectCreate();
-      case "project_save": return this.projectSave(String(input.name));
+      case "project_save": return this.projectSave(String(input.name), input.ifExists === "refuse");
       case "mesh_import": return this.meshImport(String(input.path), typeof input.stepToleranceMm === "number" ? input.stepToleranceMm : STEP);
       case "plate_list": return this.plateList(input);
       case "plate_undo": return this.plateUndo();
@@ -540,6 +542,7 @@ export class Session {
       case "calibration_apply": return this.calibrationApply(input);
       case "blend_compare": return this.blendCompare(input);
       case "blend_apply": return this.blendApply(input);
+      case "guide": return this.guide(input);
       default: return this.model(name, input);
     }
   }
@@ -564,7 +567,24 @@ export class Session {
       printer: this.printer().name,
       filament: this.filament().name,
       printerSend: false,
+      model: {
+        ops: ["boolean", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
+        composite: [...COMPOSITE_KINDS],
+        primitives: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"],
+        maxSteps: MAX_PIECES,
+        expressions: true,
+        guides: GUIDES.map((row) => row.uri.replace("lime://guide/", "")),
+      },
     };
+  }
+
+  /** The worked guides as a tool, for clients that do not read resources. */
+  private guide(input: Record<string, unknown>): Record<string, unknown> {
+    const topic = typeof input.topic === "string" ? input.topic.trim().toLowerCase() : "";
+    if (!topic) return { ok: true, topics: GUIDES.map((row) => ({ topic: row.uri.replace("lime://guide/", ""), name: row.name, tools: row.tools })) };
+    const found = guideByUri(`lime://guide/${topic}`);
+    if (!found) return { ok: false, reason: `There is no guide named ${topic}. Topics: ${GUIDES.map((row) => row.uri.replace("lime://guide/", "")).join(", ")}.` };
+    return { ok: true, topic, name: found.name, tools: found.tools, text: found.text };
   }
 
   private printer(): PrinterRecord {
@@ -1041,11 +1061,12 @@ export class Session {
     return `Saving over this project would drop ${missing.join(", ")}. Save it under a new name.`;
   }
 
-  private async projectSave(name: string): Promise<Record<string, unknown>> {
+  private async projectSave(name: string, refuseExisting = false): Promise<Record<string, unknown>> {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
+    const path = resolveWrite(name, ".lime");
+    if (refuseExisting && existsSync(path)) return { ok: false, reason: "A project with that name is already in the workspace. Pick another name, or leave ifExists out to replace it." };
     const committed = await this.commitAll();
     if (committed) return { ok: false, reason: committed };
-    const path = resolveWrite(name, ".lime");
     if (this.sourcePath && path === this.sourcePath && this.sourceHash) {
       let now = "";
       try {
@@ -2289,6 +2310,8 @@ export class Session {
 
   private model(name: string, input: Record<string, unknown>): Record<string, unknown> | Promise<Record<string, unknown>> {
     if (name === "solid_new") return this.solidNew(input);
+    if (name === "model_build") return this.build(input);
+    if (name === "model_params") return this.paramsTool(input);
     const requested = typeof input.object === "string" ? input.object : "";
     const obj = this.find(requested !== "" ? requested : this.selected);
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
@@ -2300,14 +2323,15 @@ export class Session {
       case "workplane_print_up": return this.printUp(obj);
       case "model_place": return this.modelPlace(obj, input);
       case "model_probe": return this.probe(obj, input.op, input.node);
-      case "model_apply": return this.apply(obj, input.op);
+      case "model_apply": return this.applyTool(obj, input);
+      case "model_apply_batch": return this.applyBatch(obj, input);
       case "model_history": return this.history(obj, input);
-      case "model_goto": return this.gotoNode(obj, parseNode(input.node));
+      case "model_goto": return this.gotoNode(obj, this.nodeOf(obj, input.node));
       case "model_undo": return this.step(obj, "undo");
       case "model_redo": return this.step(obj, "redo");
-      case "model_edit": return this.edit(obj, parseNode(input.node), input.op);
-      case "model_drop": return this.drop(obj, parseNode(input.node));
-      case "model_rename": return this.rename(obj, parseNode(input.node), String(input.label ?? ""));
+      case "model_edit": return this.edit(obj, this.nodeOf(obj, input.node), input.op);
+      case "model_drop": return this.drop(obj, this.nodeOf(obj, input.node));
+      case "model_rename": return this.rename(obj, this.nodeOf(obj, input.node), String(input.label ?? ""));
       case "model_commit": return this.commit(obj);
       case "model_export_step": return this.exportStep(obj, String(input.name));
       case "measure": return this.measure(obj, input);
@@ -2466,7 +2490,7 @@ export class Session {
     };
     this.objects.push(obj);
     this.selected = obj.id;
-    return { ok: true, object: obj.id, fingerprint: obj.solid?.fingerprint ?? null };
+    return { ok: true, object: obj.id, fingerprint: obj.solid?.fingerprint ?? null, bounds: obj.solid?.bounds ?? null, frame: "part" };
   }
 
   /** A mesh has no solid to edit. A STEP file and a new solid do. */
@@ -2612,6 +2636,7 @@ export class Session {
     if (!raw || typeof raw !== "object") return { reason: "The edit needs an op." };
     const spec = raw as Record<string, unknown>;
     const kind = spec.kind;
+    if (isComposite(kind)) return { reason: `A ${kind} is several steps. Apply it with model_apply or model_apply_batch.` };
     if (kind === "scale") {
       const factor = spec.factor;
       if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 0.1 || factor > 20) return { reason: "Scale is a factor from 0.1 to 20." };
@@ -2738,17 +2763,25 @@ export class Session {
   }
 
   private async probe(obj: PlateObject, raw: unknown, nodeHandleValue?: unknown): Promise<Record<string, unknown>> {
+    if (raw && typeof raw === "object" && isComposite((raw as { kind?: unknown }).kind)) {
+      return { ok: false, reason: "model_probe checks one step. Apply a pattern, mirror, pocket, boss, or texture with model_apply; it checks each step as it goes." };
+    }
     const toolReason = await this.openJoinTool(raw);
     if (toolReason) return { ok: false, reason: toolReason };
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
-    const asked = parseNode(nodeHandleValue);
+    const asked = this.nodeOf(obj, nodeHandleValue);
     const at = asked ?? tree.current;
     if (asked !== null && !tree.nodes.has(asked)) return { ok: false, reason: "That step is not in the history." };
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
+    return this.probeBaked(obj, tree, at, baked);
+  }
+
+  /** The check before an apply, for an op already in the solid's frame. A probe that passes is remembered for `at`. */
+  private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown> }): Promise<Record<string, unknown>> {
     const picked = baked.op.kind === "fillet" || baked.op.kind === "chamfer" ? { edges: baked.typed.edges } : {};
-    const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: baked.op, typed: baked.typed });
+    const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) });
     if (baked.op.kind === "scale") {
       obj.probes.set(probeKey(String(at), baked.op), true);
       return answer({ ok: true, reason: "This scale fits." });
@@ -2765,7 +2798,7 @@ export class Session {
     }
     if (baked.op.kind === "boolean" && obj.solid) {
       const missed = disjointBoolean(obj.solid.bounds, baked.op, baked.op.op);
-      if (missed) return answer({ ok: false, reason: missed });
+      if (missed) return answer({ ok: false, reason: missed, missed: true });
     }
     const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
     const preview = (baked.op.kind === "fillet" || baked.op.kind === "chamfer") && baked.op.edges.length > 1 ? (obj.stepTolerance || CHORD) : undefined;
@@ -2784,6 +2817,20 @@ export class Session {
     return answer({ ok: true, reason: note.text });
   }
 
+  /**
+   * model_apply. A plain op needs a passed probe, or `probe: true` to check it here first. A composite op (pattern,
+   * mirror, pocket, boss, texture) always checks each step as it goes and is one undo step.
+   */
+  private async applyTool(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const raw = input.op as Record<string, unknown>;
+    if (isComposite(raw?.kind)) return this.applyMany(obj, [raw], { label: typeof raw.label === "string" ? raw.label : undefined, rollback: true });
+    if (input.probe === true) {
+      const probed = await this.probe(obj, raw);
+      if (probed.ok !== true) return { ...probed, applied: false };
+    }
+    return this.apply(obj, raw);
+  }
+
   private async apply(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
     const toolReason = await this.openJoinTool(raw);
     if (toolReason) return { ok: false, reason: toolReason };
@@ -2791,12 +2838,23 @@ export class Session {
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
+    const done = await this.applyBaked(obj, tree, baked, raw);
+    const label = raw && typeof raw === "object" ? (raw as { label?: unknown }).label : undefined;
+    if (done.ok === true && typeof label === "string" && label.trim()) {
+      const node = parseNode(done.node);
+      if (node !== null) this.rename(obj, node, label);
+      return { ...done, label: label.trim().slice(0, 80) };
+    }
+    return done;
+  }
+
+  private async applyBaked(obj: PlateObject, tree: ModelTree, baked: { op: ModelOp; typed: Record<string, unknown> }, raw: unknown): Promise<Record<string, unknown>> {
     if (baked.op.kind === "split") {
       const note = this.splitCheck(obj, baked.op);
       if (note.bad) return { ok: false, reason: note.text };
     }
     const key = probeKey(String(tree.current), baked.op);
-    if (!obj.probes.has(key)) return { ok: false, reason: "Probe this edit first. It was not applied." };
+    if (!obj.probes.has(key)) return { ok: false, reason: "Probe this edit first, or pass probe: true. It was not applied." };
     const [reserved, node] = reserveId(tree);
     obj.tree = reserved;
     const keep = baked.op.kind === "split" ? this.splitKeep(raw) : "both";
@@ -2816,7 +2874,173 @@ export class Session {
     obj.probes.clear();
     const other = otherKey ? this.keepOtherHalf(obj, otherKey, reply.other, node) : undefined;
     const kept = baked.op.kind === "split" ? (keep === "both" ? "both" : this.keptSide(obj, baked.op)) : undefined;
-    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), stored: baked.op, typed: baked.typed };
+    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) };
+  }
+
+  /** What composite ops need to expand: the object's workplane, and any flat face's frame and U, V extent. */
+  private expandContext(obj: PlateObject): ExpandContext {
+    return {
+      plane: obj.workplane,
+      face: (index: number) => {
+        const face = obj.solid?.faces[index];
+        if (!face || !obj.solid) return { reason: "That face is not on this solid." };
+        if (!face.normal) return { reason: CURVED_FACE };
+        const plane = facePlane(obj.solid.positions, obj.solid.triangles, index, face.normal);
+        if (!plane) return { reason: CURVED_FACE };
+        const frame = workplaneOnFace(plane);
+        const extent: FaceExtent = { u: [Infinity, -Infinity], v: [Infinity, -Infinity] };
+        const { positions, triangles } = obj.solid;
+        for (let tri = 0; tri < triangles.length; tri += 1) {
+          if (triangles[tri] !== index) continue;
+          for (let corner = 0; corner < 3; corner += 1) {
+            const at = tri * 9 + corner * 3;
+            const [u, v] = localPoint(frame, [positions[at]!, positions[at + 1]!, positions[at + 2]!]);
+            extent.u = [Math.min(extent.u[0], u), Math.max(extent.u[1], u)];
+            extent.v = [Math.min(extent.v[0], v), Math.max(extent.v[1], v)];
+          }
+        }
+        return { plane: frame, extent };
+      },
+    };
+  }
+
+  /** A plain Boolean op typed in the object's workplane, as a part-frame piece. */
+  private pieceOf(obj: PlateObject, raw: Record<string, unknown>): Piece | { reason: string } {
+    const local = primitiveFrom(raw, "box");
+    if ("reason" in local) return local;
+    const op = raw.op === "fuse" || raw.op === "common" ? raw.op : "cut";
+    return { op, spec: planePrimitive(local, obj.workplane) };
+  }
+
+  /**
+   * Several edits as one: each composite op expands to Boolean steps, and every step is probed, then applied, in
+   * order. The first refusal stops the run; with `rollback` the solid goes back to where it started. A run of more
+   * than one step is one undo step.
+   */
+  private async applyMany(obj: PlateObject, raws: Record<string, unknown>[], options: { label?: string; rollback: boolean }): Promise<Record<string, unknown>> {
+    const opened = await this.opened(obj);
+    if ("reason" in opened) return { ok: false, reason: opened.reason };
+    const start = opened.current;
+    const ctx = this.expandContext(obj);
+    type Step = { index: number; raw?: Record<string, unknown>; piece?: Piece; label?: string };
+    const steps: Step[] = [];
+    for (let index = 0; index < raws.length; index += 1) {
+      const raw = raws[index]!;
+      const label = typeof raw.label === "string" && raw.label.trim() ? raw.label.trim() : undefined;
+      if (isComposite(raw.kind)) {
+        const pieces = expand(raw, ctx, (op) => this.pieceOf(obj, op));
+        if ("reason" in pieces) return { ok: false, applied: 0, failed: { index, reason: pieces.reason } };
+        pieces.forEach((piece, k) => steps.push({ index, piece, label: label ? `${label} ${k + 1}/${pieces.length}` : undefined }));
+      } else {
+        steps.push({ index, raw, label });
+      }
+      if (steps.length > MAX_PIECES) return { ok: false, applied: 0, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` };
+    }
+    const nodes: number[] = [];
+    let skipped = 0;
+    for (const step of steps) {
+      const tree = await this.opened(obj);
+      if ("reason" in tree) return { ok: false, reason: tree.reason };
+      let result: Record<string, unknown>;
+      if (step.piece) {
+        const op = toSolidOp({ kind: "boolean", op: step.piece.op, ...step.piece.spec }, obj.modelPose);
+        const baked = { op, typed: { kind: "boolean", op: step.piece.op, ...step.piece.spec } as Record<string, unknown> };
+        const probed = await this.probeBaked(obj, tree, tree.current, baked);
+        if (probed.ok !== true && probed.missed === true) {
+          skipped += 1;
+          continue;
+        }
+        result = probed.ok === true ? await this.applyBaked(obj, tree, baked, {}) : probed;
+        const made = parseNode(result.node);
+        if (result.ok === true && step.label && made !== null) this.rename(obj, made, step.label);
+      } else {
+        const probed = await this.probe(obj, step.raw);
+        result = probed.ok === true ? await this.apply(obj, step.raw) : probed;
+      }
+      if (result.ok !== true) {
+        const failed = { index: step.index, reason: String(result.reason ?? "This edit did not apply."), ...(step.piece ? { piece: cleanOp({ kind: "boolean", op: step.piece.op, ...step.piece.spec }) } : {}) };
+        if (options.rollback && nodes.length > 0) {
+          await this.gotoNode(obj, start);
+          if (obj.tree) this.drop(obj, nodes[0]!);
+          return { ok: false, applied: 0, rolledBack: true, failed, node: nodeHandle(start) };
+        }
+        return { ok: false, applied: nodes.length, failed, ...(nodes.length ? { node: nodeHandle(nodes[nodes.length - 1]!) } : {}) };
+      }
+      const node = parseNode(result.node);
+      if (node !== null) nodes.push(node);
+    }
+    if (nodes.length > 1) {
+      obj.groups = [...(obj.groups ?? []), { start, end: nodes[nodes.length - 1]!, label: options.label ?? `${nodes.length} steps` }];
+    }
+    return {
+      ok: true,
+      applied: nodes.length,
+      ...(skipped ? { skipped, note: `${skipped} step${skipped === 1 ? "" : "s"} missed the solid and were left out.` } : {}),
+      ...(nodes.length ? { first: nodeHandle(nodes[0]!), node: nodeHandle(nodes[nodes.length - 1]!) } : {}),
+      ...(options.label ? { label: options.label } : {}),
+      fingerprint: obj.solid?.fingerprint ?? null,
+      bounds: obj.solid?.bounds ?? null,
+    };
+  }
+
+  private async applyBatch(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
+    if (ops.length === 0) return { ok: false, reason: "The batch needs at least one op." };
+    return this.applyMany(obj, ops, { label: typeof input.label === "string" ? input.label : undefined, rollback: input.onError !== "stop" });
+  }
+
+  /** A new solid, a batch of edits on it, and a commit, in one call. */
+  private async build(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const base = (input.base ?? {}) as Record<string, unknown>;
+    const made = await this.solidNew(base);
+    if (made.ok !== true) return made;
+    const obj = this.find(String(made.object));
+    if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+    if (typeof input.name === "string" && input.name.trim()) obj.name = input.name.trim().slice(0, NAME_LIMIT);
+    const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
+    const ran = ops.length ? await this.applyMany(obj, ops, { label: typeof input.label === "string" ? input.label : obj.name, rollback: input.onError !== "stop" }) : { ok: true, applied: 0 };
+    if (ran.ok !== true) return { ...ran, object: obj.id, note: "The solid is on the plate without the batch. Fix the op and call model_apply_batch." };
+    if (input.commit !== false) {
+      const reason = await this.commitObject(obj);
+      if (reason) return { ok: false, object: obj.id, reason };
+    }
+    return { ...ran, object: obj.id, committed: input.commit !== false, bounds: obj.solid?.bounds ?? null };
+  }
+
+  /** Session parameters: names model ops may use in place of numbers, as text such as "wallH + 2". */
+  private paramsTool(input: Record<string, unknown>): Record<string, unknown> {
+    if (input.clear === true) this.params = {};
+    const set = (input.set ?? {}) as Record<string, unknown>;
+    const merged = this.mergeParams(set);
+    if ("reason" in merged) return { ok: false, reason: merged.reason };
+    this.params = merged;
+    return { ok: true, params: { ...this.params } };
+  }
+
+  /** `set` evaluated in order on top of the session's parameters: a later name may use an earlier one. */
+  private mergeParams(set: Record<string, unknown>): Record<string, number> | { reason: string } {
+    const out: Record<string, number> = { ...this.params };
+    for (const [name, value] of Object.entries(set)) {
+      if (!PARAM_NAME.test(name)) return { reason: `"${name}" is not a parameter name. Use letters, digits, and underscores.` };
+      try {
+        out[name] = typeof value === "number" ? value : evaluate(String(value), out);
+      } catch (err) {
+        return { reason: `${name}: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      if (!Number.isFinite(out[name])) return { reason: `${name} is not a finite number.` };
+    }
+    return out;
+  }
+
+  /** A history step from a handle (node_3), its label, or a composite edit's label (its last step). */
+  private nodeOf(obj: PlateObject, value: unknown): number | null {
+    const parsed = parseNode(value);
+    if (parsed !== null || typeof value !== "string" || !obj.tree) return parsed;
+    const wanted = value.trim().toLowerCase();
+    const rows = [...obj.tree.nodes.values()].filter((node) => node.label.toLowerCase() === wanted);
+    if (rows.length > 0) return rows[rows.length - 1]!.id;
+    const group = [...(obj.groups ?? [])].reverse().find((row) => row.label.toLowerCase() === wanted && obj.tree!.nodes.has(row.end));
+    return group ? group.end : null;
   }
 
   private splitKeep(raw: unknown): "both" | "above" | "below" {
@@ -2899,8 +3123,17 @@ export class Session {
   private async step(obj: PlateObject, direction: "undo" | "redo"): Promise<Record<string, unknown>> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
+    const group = direction === "undo"
+      ? obj.groups?.find((row) => row.end === tree.current && tree.nodes.has(row.start))
+      : obj.undoneGroup && obj.undoneGroup.start === tree.current && tree.nodes.has(obj.undoneGroup.end) ? obj.undoneGroup : undefined;
+    if (group) {
+      const moved = await this.gotoNode(obj, direction === "undo" ? group.start : group.end);
+      obj.undoneGroup = direction === "undo" && moved.ok === true ? group : undefined;
+      return moved.ok === true ? { ...moved, group: group.label } : moved;
+    }
     const target = direction === "undo" ? undoTarget(tree) : redoTarget(tree);
     if (target === null) return { ok: false, reason: direction === "undo" ? "This is the start of the history." : "There is nothing to redo." };
+    obj.undoneGroup = undefined;
     return this.gotoNode(obj, target);
   }
 

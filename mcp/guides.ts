@@ -69,6 +69,48 @@ export const GUIDES: Guide[] = [
   },
 ];
 
+GUIDES.push(
+  {
+    uri: "lime://guide/ops",
+    name: "Model ops",
+    tools: ["solid_new", "faces_find", "model_apply", "model_history", "model_commit"],
+    text: [
+      "Every Model edit, by kind. Numbers are mm and degrees, in the part frame unless workplane_set set a frame.",
+      "solid_new {primitive:\"box\", dx:60, dy:40, dz:35} stands the solid centred on X and Y on Z = 0 and returns its bounds.",
+      "boolean: {kind:\"boolean\", op:\"cut\"|\"fuse\"|\"common\", primitive, ...sizes, origin | centre, turn}.",
+      "  box: dx, dy, dz; origin is its min corner before turning. cylinder, cone, tube: radius, height along local Z; origin is the base centre.",
+      "  centre is the point it turns about (a box's middle, halfway up an axis), so a turned shape is easiest placed by centre.",
+      "  turn is degrees about X, then Y, then Z. A cylinder lying along Y: turn [90, 0, 0]. A 45 degree roof prism along X: box turn [45, 0, 0].",
+      "  Example roof: {kind:\"boolean\", op:\"fuse\", primitive:\"box\", centre:[0, 0, 35], dx:60, dy:33.94, dz:33.94, turn:[45, 0, 0]}.",
+      "hole: {kind:\"hole\", diameterMm, through:true | depth, at:{u, v}} on the workplane, or screw:\"M3\".",
+      "fillet, chamfer: {edges:[index] | {select:{direction, onFace, convex}}, size}. split: {origin, normal, keep}. scale: {factor}.",
+      "pocket: {kind:\"pocket\", faceIndex, shape:\"rect\"|\"circle\"|\"arch\", at:{u, v}, width, height | diameter, depth, bars:{vertical, horizontal, width}}.",
+      "  On a side face U is level and V runs up. A window: {kind:\"pocket\", faceIndex:2, at:{u:18, v:2.5}, width:10, height:10, depth:1.5, bars:{vertical:1, horizontal:1}}.",
+      "boss: like pocket, raised by depth. A sill: {kind:\"boss\", faceIndex:2, at:{u:18, v:-3.25}, width:12, height:1.5, depth:2}.",
+      "texture: {kind:\"texture\", faceIndex, pattern:\"lines\"|\"grid\"|\"brick\"|\"shingle\", pitch:[7.5, 5.7], grooveWidth:0.8, depth:0.6}. Roof tiles are one texture per slope.",
+      "pattern: {kind:\"pattern\", op:{...}, linear:{step:[x, y, z], count, step2, count2} | polar:{count, axis, centre, angleDeg}}. count includes the original.",
+      "mirror: {kind:\"mirror\", op:{...}, plane:\"x\"|\"y\"|\"z\", origin}. It keeps the original unless keepOriginal is false.",
+      "Any op takes label. model_goto, model_edit, model_drop, and model_rename take a label in place of node_N.",
+      "Composite ops (pocket, boss, texture, pattern, mirror) are checked step by step by model_apply, rolled back on a refusal, and undone as one step.",
+      "A plain op needs model_probe first, or model_apply {op, probe:true}. Then model_history to read the steps, and model_commit to put the solid on the plate.",
+    ].join("\n"),
+  },
+  {
+    uri: "lime://guide/compose",
+    name: "Compose",
+    tools: ["model_params", "model_build", "model_apply_batch", "model_undo", "render_view", "project_save"],
+    text: [
+      "A whole part in a few calls.",
+      "1. model_params {set:{wallW:60, wallD:40, wallH:35}}. A value may be text using earlier names: {roof:\"wallD / sqrt(2) + 4\"}.",
+      "2. model_build {base:{primitive:\"box\", dx:\"wallW\", dy:\"wallD\", dz:\"wallH\"}, ops:[...], name}. Every op is checked, then applied, in order.",
+      "   A refusal names the op by index and puts the solid back. onError:\"stop\" keeps what applied instead. It commits unless commit is false.",
+      "3. model_apply_batch {object, ops:[...], label} adds more. The batch is one undo step: model_undo takes it all back.",
+      "4. render_view to look, then project_save {name, ifExists:\"refuse\"} so an existing file is not replaced.",
+      "Numbers may be text wherever an op takes a number, e.g. origin:[0, 0, \"wallH\"]. model_params values stay for the session only.",
+    ].join("\n"),
+  },
+);
+
 export function guideByUri(uri: string): Guide | undefined {
   return GUIDES.find((guide) => guide.uri === uri);
 }
