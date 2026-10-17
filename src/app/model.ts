@@ -119,6 +119,8 @@ interface Opened {
 const VIEW_ONLY = "Surfaces only. This file can be measured but not edited.";
 const BROKEN = "This step could not be rebuilt, so it and the steps after it are unavailable.";
 const ROOT_BROKEN = "This solid's primitive builds differently in this modeler, so its history cannot be rebuilt.";
+/** Ops that name edges or faces by the solid's own numbering: they build only on a step the history built. */
+const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell"]);
 /** A history longer than this many steps rebuilds a few steps per call, with a count in the readout. */
 const COUNTED_REBUILD = 20;
 /** Parsed solids of recently shown nodes, so a jump back to one needs no engine call. */
@@ -1465,11 +1467,11 @@ async function applyOp(op: ModelOp, working: string) {
     if (shown && op.kind === "join" && !op.keepTool) takeOffPlate(op.tool.object);
     return;
   }
-  // A new step on the plate's step builds on its STEP-read solid at once, as the plate holds it: rebuilding a long
-  // history first took minutes (326 steps on the 2.6.1 back cover). The read solid can sit a little apart from the one
-  // the history builds (on Telo, a hole removed 483 mm³ more), so a later rebuild of the history checks each step's
-  // fingerprint and marks a step that builds differently.
-  const onSeed = seeds.get(at.key)?.held.has(parent) === true;
+  // A new step placed by its numbers builds on the plate's STEP-read solid at once: rebuilding a long history first took
+  // minutes (326 steps on the 2.6.1 back cover). A step that names edges or faces by the solid's numbering (a fillet, a
+  // chamfer, a shell) still waits for the rebuilt step, since the read solid can number them apart and the step would
+  // then build differently when the history is rebuilt.
+  const onSeed = seeds.get(at.key)?.held.has(parent) === true && !NAMES_TOPOLOGY.has(op.kind);
   if (!onSeed && (seeds.has(at.key) || readSolids.has(at.solid))) {
     // A step the engine does not hold yet: the whole tree opens, and the step is shown as rebuilt.
     const mine = ticket;
@@ -2939,7 +2941,8 @@ async function seededCall(key: string, node: NodeId, request: Body): Promise<Bod
     let seed = seeds.get(key);
     for (; seed?.whole || seed?.reading; seed = seeds.get(key)) await (seed.whole ?? seed.reading);
     // A step the engine holds takes calls and new steps on it; an earlier step, or an edit of one, needs the history.
-    if (seed && (!seed.held.has(node) || request.call === "edit")) {
+    const named = request.call === "apply" && NAMES_TOPOLOGY.has(String((request.op as { kind?: unknown } | undefined)?.kind));
+    if (seed && (!seed.held.has(node) || request.call === "edit" || named)) {
       const problem = await openWhole(key, node);
       if (problem) return { error: problem };
       continue;

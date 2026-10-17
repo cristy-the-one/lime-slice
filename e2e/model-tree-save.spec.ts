@@ -284,15 +284,28 @@ test("a jump back to the plate's step while the whole tree opens shows the step 
   expect(tree.of("apply").at(-1), "the fillet builds on the rebuilt step at once").toMatchObject({ parent: 3, node: 4, op: { kind: "fillet" } });
 });
 
-test("a fillet on a reopened step builds on the step read from its STEP at once, with the edges picked on it", async ({ page }) => {
+test("a fillet on a reopened step rebuilds the step first and asks for its edges again", async ({ page }) => {
+  // A fillet names edges by the solid's numbering, which the STEP-read step may number apart from the rebuilt one.
   const tree = await reopenedChain(page);
   const applies = tree.of("apply").length;
   await pickEdge(page);
   await filletPicked(page);
+  await expect(readout(page)).toContainText("The step was rebuilt from its history: pick the edges again.");
+  expect(tree.of("open").at(-1)?.nodes, "the whole tree opened").toHaveLength(3);
+  expect(tree.of("apply"), "and nothing was built on edges the read solid numbered").toHaveLength(applies);
+  await expect(page.locator("#modelApply")).toBeDisabled();
+  // Picked again on the rebuilt step, the fillet builds there, and a jump away and back finds it whole.
+  // The fillet tool stays open, waiting for edges on the rebuilt step.
+  await pickEdge(page);
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText("Volume 1590 mm³");
-  expect(tree.of("open").filter((request) => request.nodes), "no history was rebuilt").toHaveLength(0);
-  expect(tree.of("apply").slice(applies), "one fillet, on the read step, the engine's root").toHaveLength(1);
-  expect(tree.of("apply").at(-1)).toMatchObject({ parent: 0, node: 4, op: { kind: "fillet" } });
+  expect(tree.of("apply").at(-1), "the fillet builds on the rebuilt step").toMatchObject({ parent: 3, node: 4, op: { kind: "fillet" } });
+  await row(page, "Cut box 8").click();
+  await expect(readout(page)).toContainText(volume(8));
+  await rows(page).last().click();
+  await expect(readout(page)).toContainText("Volume 1590 mm³");
+  await expect(rows(page).last()).not.toHaveAttribute("data-broken", "");
 });
 
 test("an edit on a reopened step builds at once, even where its history would rebuild differently", async ({ page }) => {
