@@ -1079,7 +1079,8 @@ export class Session {
 
   private async projectOpen(path: string): Promise<Record<string, unknown>> {
     const full = resolveRead(path, "lime");
-    const parsed = parseProject(await readFile(full, "utf8"));
+    const text = await readFile(full, "utf8");
+    const parsed = parseProject(text);
     if (!parsed.ok) return { ok: false, reason: parsed.message };
     this.remember("Open project");
     await this.forgetObjects();
@@ -1170,7 +1171,8 @@ export class Session {
     return {
       ok: true,
       project: "project",
-      version: parsed.project.version,
+      // The file's own number: the layout read from it says 2 for any plate.
+      version: (JSON.parse(text) as { version?: unknown }).version,
       handles: "new",
       label: "Open project",
       printer: this.printer().name,

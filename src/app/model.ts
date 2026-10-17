@@ -3035,20 +3035,19 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
     if (!tree || tree.root.kind === "piece") return "This solid is no longer open.";
     // A step's own solid, saved in the binary format, stands in for the steps above it: the history builds from there.
     const solid = seedSolid(tree, node);
-    const path = pathTo(tree, node);
-    const from = solid ? Math.max(0, path.indexOf(solid.node)) : 0;
-    // A short rebuild opens in one call; a long one opens where it starts, then builds toward `node` a few steps per
-    // call, so the readout can count them and a minute of rebuilding is never a silent wait.
-    const counted = path.length - from > COUNTED_REBUILD;
+    // A short history opens at `node` in one call. With a seed, or a long history, it opens at its root, and the steps
+    // still to build toward `node` are built a few per call when there are many (`countedReach`), so the readout can
+    // count them and a minute of rebuilding is never a silent wait, even when the engine refuses the seed.
+    const start = solid || pathTo(tree, node).length > COUNTED_REBUILD ? ROOT : node;
     // Quiet: the call that needed the tree asks for its step next, so the open meshes and sends nothing.
-    let body = await post(wholeTreeRequest(tree, tree.root, counted ? path[from]! : node, state.stepTolerance, { seed: solid, quiet: true }));
+    let body = await post(wholeTreeRequest(tree, tree.root, start, state.stepTolerance, { seed: solid, quiet: true }));
     noteHeld(key, body);
     if (solid && typeof body.seedRefused === "string") {
       refusedSolids.add(solid.bytes);
       // Said with the step once it is shown, which can come after the rebuild's own count in the readout.
       seedNotes.set(key, `The saved solid did not open (${body.seedRefused}), so its history was rebuilt.`);
     }
-    if (counted && !text(body.error) && typeof body.broken !== "number") body = await countedBuild(key, path.slice(from));
+    if (!text(body.error) && typeof body.broken !== "number") body = await countedReach(key, node);
     if (seed) seed.whole = null;
     if (!modelTrees.has(key)) return closeLate(key);
     // A primitive root that builds differently opens nothing: the whole tree is broken from its root.
@@ -3119,8 +3118,9 @@ async function countedBuild(key: string, path: readonly NodeId[]): Promise<Body>
     // A probe builds its step without meshing it; a scale by 1 asks nothing else of the kernel.
     const built = await post(probeRequest(key, path[at]!, { kind: "scale", factor: 1 }));
     body = typeof built.broken === "number" || text(built.error).includes("not open") ? built : {};
-    // A probe's answer lists no solids: the step it built is held now, so the call after this one counts from it.
-    if (!text(built.error)) engineHeld.get(key)?.add(path[at]!);
+    // A probe's answer lists no solids: the step it built is held now, so the call after this one counts from it. The
+    // scale by 1 itself is refused, after its step was built.
+    if (typeof built.broken !== "number" && missingOf(built) === null && !text(built.error).includes("not open")) engineHeld.get(key)?.add(path[at]!);
   }
   return body;
 }
@@ -3129,15 +3129,15 @@ async function countedBuild(key: string, path: readonly NodeId[]): Promise<Body>
  * Before a call on `node` of a whole tree: when the engine would replay more than `COUNTED_REBUILD` steps to reach it
  * (a jump far below a reopened project's plate step, or past solids it let go), they are built counted first.
  */
-async function countedReach(key: string, node: NodeId): Promise<void> {
+async function countedReach(key: string, node: NodeId): Promise<Body> {
   const held = engineHeld.get(key);
   const tree = modelTrees.get(key);
-  if (!held || !tree?.nodes.has(node)) return;
+  if (!held || !tree?.nodes.has(node)) return {};
   const path = pathTo(tree, node);
   let from = path.length - 1;
   while (from > 0 && !held.has(path[from]!)) from -= 1;
-  if (path.length - 1 - from <= COUNTED_REBUILD) return;
-  await countedBuild(key, path.slice(from));
+  if (path.length - 1 - from <= COUNTED_REBUILD) return {};
+  return countedBuild(key, path.slice(from));
 }
 
 /** An open that lands for a tree released or forgotten meanwhile: the engine lets it go too. */

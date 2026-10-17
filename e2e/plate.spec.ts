@@ -104,7 +104,7 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
     objects?: { id: string; placement: { scale: number } }[];
     printOrder?: unknown;
   };
-  expect(plateDoc.version).toBe(2);
+  expect(plateDoc.version).toBe(3);
   expect(plateDoc.mesh).toBeUndefined();
   expect(plateDoc.objects?.[0]?.id).toBe("part");
   expect(plateDoc.objects?.[1]?.id).toMatch(/^obj-/);

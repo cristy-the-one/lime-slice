@@ -249,7 +249,8 @@ test("a project saves the plate's step as the engine's binary solid, and reopens
   expect(since[0]!.dataB64, "of the whole tree, from its root STEP").toBe(FILE.toString("base64"));
   expect((since[0]!.nodes as unknown[]).length, "with every step").toBe(3);
   expect(since[0]!.seed, "and the plate's step from its saved solid").toEqual({ node: 3, dataB64: object.brep.bytesBase64 });
-  expect(since[0]!.current).toBe(3);
+  expect([since[0]!.current, since[0]!.quiet], "quietly, at its root: the step is asked for next").toEqual([0, true]);
+  expect(tree.of("goto").at(-1)).toMatchObject({ key: since[0]!.key, node: 3 });
 
   // The saved solid is the step exactly, so a fillet takes its edges at once: nothing is rebuilt, nothing asked again.
   const applies = tree.of("apply").length;
