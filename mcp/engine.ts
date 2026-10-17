@@ -3,7 +3,7 @@
  * The first implementation loads `lime-mcp-engine` in-process.
  * A later transport can replace the loader without changing the tool schemas.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type ChildProcess, fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -19,10 +19,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /** The bundle is plain JavaScript. The checkout runs the TypeScript with type stripping. */
 const BUNDLED = import.meta.url.endsWith(".mjs");
 
+export function occtLibraryName(): string {
+  return process.platform === "win32" ? "lime_model_occt.dll" : process.platform === "darwin" ? "liblime_model_occt.dylib" : "liblime_model_occt.so";
+}
+
 /** The Open CASCADE bridge an installed app carries, or null in a checkout. */
 export function installedOcctBridge(): string | null {
-  const name = process.platform === "win32" ? "lime_model_occt.dll" : process.platform === "darwin" ? "liblime_model_occt.dylib" : "liblime_model_occt.so";
-  const path = join(HERE, "..", "occt", "lib", name);
+  const path = join(HERE, "..", "occt", "lib", occtLibraryName());
   return existsSync(path) ? path : null;
 }
 
@@ -54,6 +57,8 @@ export interface Engine {
   calibrate(body: string): string | Promise<string>;
   /** Blend estimates for one slice body. No G-code. */
   pareto(body: string): string | Promise<string>;
+  /** Which library answers, and whether it is the installed app's, for session_info. */
+  where?(): { path: string; installed: boolean } | Promise<{ path: string; installed: boolean }>;
   /** Drop a stuck modeler and start another. Slicing keeps its own worker. */
   resetModeler(): void | Promise<void>;
   /** Drop a stuck mesh preview. Open model trees and the slicer are kept. */
@@ -86,10 +91,76 @@ export function engineCandidates(root: string): string[] {
   return [join(HERE, name), join(root, "target", "release", name), join(root, "target", "debug", name)];
 }
 
-export function loadNativeEngine(root: string): Engine {
-  const path = engineCandidates(root).find((candidate) => existsSync(candidate));
+/**
+ * Where an installed Lime Slice keeps its MCP folder: the engine and server.mjs, with Open CASCADE in `../occt/lib`.
+ * Null when this platform has no known install place.
+ */
+export function installedMcpDir(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (platform === "win32") return env.LOCALAPPDATA ? join(env.LOCALAPPDATA, "Lime Slice", "mcp") : null;
+  if (platform === "darwin") return "/Applications/Lime Slice.app/Contents/Resources/mcp";
+  return "/usr/lib/Lime Slice/mcp";
+}
+
+/**
+ * The installed app's engine, for a checkout that has not built its own. Only a checkout falls back to it, and only
+ * when LIME_MCP_ENGINE is unset; the worker then loads it only if its version is the server's own.
+ */
+export function installedEngineFallback(): string | null {
+  if (BUNDLED || process.env.LIME_MCP_ENGINE) return null;
+  const dir = installedMcpDir();
+  if (!dir) return null;
+  const path = join(dir, engineLibraryName());
+  return existsSync(path) ? path : null;
+}
+
+/** What to do when no engine was found: the installed server, a build, or LIME_MCP_ENGINE. */
+export function engineNotFound(searched: readonly string[], platform: NodeJS.Platform = process.platform): string {
+  const installed = platform === "win32"
+    ? "%LOCALAPPDATA%\\Lime Slice\\mcp\\server.mjs"
+    : platform === "darwin"
+      ? "/Applications/Lime Slice.app/Contents/Resources/mcp/server.mjs"
+      : "the server.mjs in the installed app's mcp folder";
+  return [
+    `The Lime Slice engine (${engineLibraryName()}) was not found. Looked in: ${searched.join(", ")}.`,
+    `If Lime Slice is installed, point the MCP client's node at the installed server, ${installed}, which finds its engine and Open CASCADE itself.`,
+    "From a checkout, build the engine with cargo build -p lime-mcp-engine --release, or set LIME_MCP_ENGINE to the library's full path.",
+    "The next call looks again; the client does not need to reconnect.",
+  ].join(" ");
+}
+
+/** The release a bundled server.mjs in `dir` was built for, read from its text; null when it cannot be read. */
+export function bundledVersion(dir: string): string | null {
+  try {
+    const text = readFileSync(join(dir, "server.mjs"), "utf8");
+    return /function appVersion\(\)\s*\{\s*if \(true\) return "([^"]+)"/.exec(text)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The installed engine is used only when it is the same release as this server, so its replies match these tools. */
+export function installedVersionRefusal(path: string, engine: string, server: string): string | null {
+  if (engine === server) return null;
+  return `The installed engine at ${path} is ${engine}, but this server is ${server}. Build the engine from this checkout with cargo build -p lime-mcp-engine --release, or point the MCP client at the installed server.mjs.`;
+}
+
+export function loadNativeEngine(root: string, expectVersion?: string): Engine & { path: string; installed: boolean } {
+  const searched = engineCandidates(root);
+  let path = searched.find((candidate) => existsSync(candidate));
+  let installed = false;
   if (!path) {
-    throw new ProtocolError("The in-process engine was not found. Build it with cargo build -p lime-mcp-engine --release.");
+    const fallback = installedEngineFallback();
+    const dir = BUNDLED || process.env.LIME_MCP_ENGINE ? null : installedMcpDir();
+    if (!fallback) throw new ProtocolError(engineNotFound([...searched, ...(dir ? [join(dir, engineLibraryName())] : [])]));
+    // The installed server beside the engine names its release: another release is refused before its library is
+    // loaded, so it is neither run nor held open.
+    const theirs = bundledVersion(dirname(fallback));
+    if (expectVersion && theirs) {
+      const refusal = installedVersionRefusal(fallback, theirs, expectVersion);
+      if (refusal) throw new ProtocolError(refusal);
+    }
+    path = fallback;
+    installed = true;
   }
   const mod = { exports: {} as NativeExports };
   process.dlopen(mod, path);
@@ -97,7 +168,16 @@ export function loadNativeEngine(root: string): Engine {
   if (typeof native.sliceStart !== "function") {
     throw new ProtocolError("The in-process engine loaded, but it did not export the slicer.");
   }
+  if (installed && expectVersion) {
+    const refusal = installedVersionRefusal(path, native.version(), expectVersion);
+    if (refusal) throw new ProtocolError(refusal);
+    // The installed engine brings the installed Open CASCADE, unless the client chose another.
+    const bridge = join(dirname(path), "..", "occt", "lib", occtLibraryName());
+    if (!process.env.LIME_OCCT_BRIDGE && existsSync(bridge)) process.env.LIME_OCCT_BRIDGE = bridge;
+  }
   return {
+    path,
+    installed,
     version: () => native.version(),
     occt: () => native.occt() === "true",
     meshPreview: (body, bytes) => native.meshPreview(withMesh(body, bytes)),
@@ -139,8 +219,9 @@ function reapOnExit(): void {
 /**
  * One addon in a child process. A native call cannot be stopped inside a
  * thread, so a call that runs past its budget is stopped by killing the
- * process; its memory goes with it. A load failure is remembered, so later
- * calls fail at once instead of waiting on a process that has already exited.
+ * process; its memory goes with it. A load failure fails the calls waiting on
+ * it, and the next call starts a fresh process, so an engine built or installed
+ * later is found without reconnecting the client.
  * `role` is "slice", "model" or "preview": a stuck one is replaced without dropping the others.
  * The child's stdout goes to this process's stderr, because stdout is the protocol.
  */
@@ -199,7 +280,7 @@ class EngineWorker {
     child.on("exit", (code) => {
       children.delete(child);
       if (generation !== this.generation || this.failed) return;
-      fail(new ProtocolError(`The engine stopped (code ${code}). Build it with cargo build -p lime-mcp-engine --release.`));
+      fail(new ProtocolError(`The engine stopped (code ${code}). The next call starts it again.`));
     });
     // An idle engine does not keep the server alive; the stdio loop does.
     child.unref();
@@ -208,7 +289,8 @@ class EngineWorker {
   }
 
   call(method: string, arg = "", bytes?: Uint8Array): Promise<unknown> {
-    if (this.failed) return Promise.reject(this.failed);
+    // A load failure is not kept: the engine may have been built or installed since, so each call starts a fresh process.
+    if (this.failed) this.respawn();
     return new Promise((resolve, reject) => {
       const id = this.seq;
       this.seq += 1;
@@ -229,6 +311,14 @@ class EngineWorker {
 
   private settled(): void {
     if (this.pending.size === 0) this.child.channel?.unref();
+  }
+
+  private respawn(): void {
+    this.generation += 1;
+    this.failed = null;
+    children.delete(this.child);
+    this.child.kill("SIGKILL");
+    this.child = this.spawn();
   }
 
   /** Kill a runaway engine process. The next call loads a fresh one. Pending calls are rejected. */
@@ -258,6 +348,7 @@ export function loadEngineWorker(root: string): Engine {
   return {
     version: () => slice.call("version") as Promise<string>,
     occt: () => slice.call("occt").then((value) => value === true) as Promise<boolean>,
+    where: () => slice.call("enginePath").then((value) => JSON.parse(String(value)) as { path: string; installed: boolean }),
     meshPreview: (body, bytes) => preview.call("meshPreview", body, bytes) as Promise<string>,
     modelTree: (body) => model.call("modelTree", body) as Promise<string>,
     sliceStart: (body, bytes) => slice.call("sliceStart", body, bytes) as Promise<string>,
@@ -427,13 +518,17 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
     next.volume *= factor ** 3;
   } else if (op?.kind === "hole") {
     next.volume = Math.max(1, next.volume - 100);
-    const extra = new Float32Array(next.positions.length + 9);
+    const extra = new Float32Array(next.positions.length + 36);
     extra.set(next.positions);
     const z = (next.max[2] ?? 0) + 0.2;
     const x0 = next.min[0] ?? 0;
     const y0 = next.min[1] ?? 0;
-    // One corner is the part's own, so the mark stays one piece with it.
-    extra.set([x0, y0, z - 0.2, x0, y0 + 6, z, x0 + 6, y0, z], next.positions.length);
+    // A closed tetrahedron whose one corner is the part's own, so the mark stays one piece with it and the mesh closes.
+    const a = [x0, y0, z - 0.2];
+    const b = [x0, y0 + 6, z];
+    const c = [x0 + 6, y0, z];
+    const d = [x0 + 2, y0 + 2, z + 0.4];
+    extra.set([...a, ...b, ...c, ...a, ...d, ...b, ...b, ...d, ...c, ...c, ...d, ...a], next.positions.length);
     next.positions = extra;
   } else if (op?.kind === "boolean" && op.op === "cut" && op.primitive === "box" && op.origin && op.size) {
     const [ox, oy, oz] = op.origin as [number, number, number];
@@ -452,7 +547,7 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
 }
 
 /** A stand-in for scripted tests. It does not slice. A committed STEP round-trips its mesh. */
-export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number } {
+export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; opens: Record<string, unknown>[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number } {
   const jobs = new Map<number, { status: string; body: string; polls: number }>();
   const kept = new Map<string, KeptSolid>();
   let next = 0;
@@ -504,6 +599,10 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
   const engine = {
     lastSlice: "",
     calls: [] as string[],
+    /** Every open's request, so a test can tell a whole-history rebuild (it carries `nodes`) from a first open. */
+    opens: [] as Record<string, unknown>[],
+    /** Trees a reset dropped: a call on one fails until it is opened again, as the real modeler's do. */
+    lost: new Set<string>(),
     lastProbe: null as unknown,
     lastProbeBody: null as unknown,
     resets: 0,
@@ -526,7 +625,20 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
         filename: asked.filename ?? "mesh.stl",
       });
     },
-    modelTree: (body: string) => {
+    slowing: false,
+    modelTree: (body: string): string | Promise<string> => {
+      // A slow kernel for long-call tests: each probe and apply waits this long first.
+      const slow = Number(process.env.LIME_MCP_FAKE_MODEL_MS ?? 0);
+      if (slow > 0 && !engine.slowing && /"call":"(apply|probe)"/.test(body)) {
+        return new Promise((resolve) => setTimeout(resolve, slow)).then(() => {
+          engine.slowing = true;
+          try {
+            return engine.modelTree(body);
+          } finally {
+            engine.slowing = false;
+          }
+        });
+      }
       const req = JSON.parse(body) as {
         call?: string;
         key?: string;
@@ -543,6 +655,12 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
       };
       engine.calls.push(req.call ?? "open");
       const key = req.key ?? "solid";
+      if (!req.call || req.call === "open") {
+        engine.opens.push(JSON.parse(body) as Record<string, unknown>);
+        engine.lost.delete(key);
+      } else if (engine.lost.has(key)) {
+        return JSON.stringify({ error: "unknown", missing: [0] });
+      }
       if (req.call === "probe") {
         engine.lastProbe = req.op ?? null;
         engine.lastProbeBody = req;
@@ -573,6 +691,30 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
         const prior = kept.get(key) ?? { volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] };
         const nextSolid = applied(prior, req.op);
         if (req.op?.kind === "split") nextSolid.volume = Math.max(1, prior.volume / 2);
+        const fuse = req.op?.kind === "boolean" && (req.op as { op?: string }).op === "fuse";
+        // Kernel failures the session must catch: a fuse that hands back only its tool, or a box that meets the part
+        // only along an edge.
+        if (fuse && process.env.LIME_MCP_FAKE_LOSE_FUSE === "1") nextSolid.volume = 307;
+        // A mesher crack too wide to mend: one loose triangle beside the part.
+        if (process.env.LIME_MCP_FAKE_OPEN === "1") {
+          const [x, y, z] = [prior.max[0] ?? 20, prior.max[1] ?? 20, prior.max[2] ?? 20];
+          const open = new Float32Array(nextSolid.positions.length + 9);
+          open.set(nextSolid.positions, 0);
+          open.set([x + 5, y, z, x + 6, y, z, x + 5, y + 1, z], nextSolid.positions.length);
+          nextSolid.positions = open;
+        }
+        if (fuse && process.env.LIME_MCP_FAKE_TOUCH === "1") {
+          // Outside the part's vertical edge nearest the tool, sharing that edge.
+          const at = (req.op as { origin?: number[] }).origin ?? [0, 0, 0];
+          const pick = (i: number): [number, number] => (Math.abs((at[i] ?? 0) - (prior.min[i] ?? 0)) < Math.abs((at[i] ?? 0) - (prior.max[i] ?? 0)) ? [prior.min[i] ?? 0, -5] : [prior.max[i] ?? 0, 5]);
+          const [x1, dx] = pick(0);
+          const [y1, dy] = pick(1);
+          const touching = boxSolid([Math.min(x1, x1 + dx), Math.min(y1, y1 + dy), prior.min[2] ?? 0], [Math.max(x1, x1 + dx), Math.max(y1, y1 + dy), prior.max[2] ?? 20], 1).positions;
+          const both = new Float32Array(nextSolid.positions.length + touching.length);
+          both.set(nextSolid.positions, 0);
+          both.set(touching, nextSolid.positions.length);
+          nextSolid.positions = both;
+        }
         const wire = remember(key, nextSolid);
         wire.id = req.node ?? 1;
         if (req.op?.kind === "split" && req.otherKey) {
@@ -668,6 +810,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     resetModeler: () => {
       engine.resets += 1;
       engine.hung = false;
+      for (const key of kept.keys()) if (!key.includes("#")) engine.lost.add(key);
     },
     resetPreview: () => {
       engine.previewResets += 1;

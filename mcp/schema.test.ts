@@ -1,5 +1,5 @@
 import { occtHint } from "./engine.ts";
-import { annotationsFor, TOOLS, validateTool } from "./schema.ts";
+import { advertisedTools, annotationsFor, TOOLS, validateTool } from "./schema.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean) {
@@ -54,7 +54,7 @@ const undescribed: string[] = [];
 for (const tool of TOOLS) missingDescriptions(tool.inputSchema, undescribed);
 check("every property has a description", undescribed.length === 0);
 const listed = JSON.stringify({
-  tools: TOOLS.map((tool) => ({
+  tools: advertisedTools().map((tool) => ({
     name: tool.name,
     description: tool.description,
     inputSchema: tool.inputSchema,
@@ -65,6 +65,7 @@ const listed = JSON.stringify({
 // mirror) are listed once, on model_apply; the other Model tools point at it. surface_at, model_check, and the kernel's
 // extrude, revolve, and shell, the surface array and ribs, loft and sweep, and text, path patterns, model_define,
 // model_anchors, and render_view's looks, add the rest.
+console.log(`tools/list is ${Buffer.byteLength(listed)} bytes`);
 check("tools/list stays under 78 KB", Buffer.byteLength(listed) < 78 * 1024);
 
 const accepted: [string, unknown][] = [

@@ -148,7 +148,7 @@ export function edgesMatching(
   if (input.convex !== undefined && typeof input.convex !== "boolean") return { reason: "convex must be true or false." };
   let on: FaceRow | undefined;
   if (input.onFace !== undefined) {
-    if (typeof input.onFace !== "number" || !Number.isInteger(input.onFace)) return { reason: "onFace is a face index." };
+    if (typeof input.onFace !== "number" || !Number.isInteger(input.onFace)) return { reason: "onFace is a face index, or a flat face selector {normal, withinDeg, nearPoint}." };
     on = faces.find((face) => face.index === input.onFace);
     if (!on) return { reason: "That face is not on this solid." };
   }

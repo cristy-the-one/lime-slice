@@ -42,7 +42,7 @@ const edgeList = {
       type: "object",
       additionalProperties: false,
       required: ["select"],
-      properties: { select: { type: "object", description: "direction, withinDeg, onFace, lengthMinMm, convex." } },
+      properties: { select: { type: "object", description: "direction, withinDeg, onFace (index or {normal, nearPoint}), lengthMinMm, convex." } },
     },
   ],
 };
@@ -70,6 +70,12 @@ const primitiveFields = {
   centre: { ...vec3, description: "Turn point: box middle, mid-axis." },
   turn: { ...vec3, description: "Degrees X, then Y, then Z." },
 };
+
+/** What solid_new and model_build's base take: a primitive's kind and sizes, stood centred on Z = 0. */
+const solidFields = (() => {
+  const { origin: _origin, centre: _centre, ...rest } = primitiveFields;
+  return rest;
+})();
 
 const booleanOp = {
   type: "object",
@@ -1014,21 +1020,11 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "solid_new",
-    description: "Add a box, cylinder, or sphere. Needs Open CASCADE.",
+    description: "Add a primitive solid (box, cylinder, sphere, ellipsoid, cone, torus, wedge, polygon, tube), centred on X and Y on Z = 0. Needs Open CASCADE.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      properties: {
-        primitive: primitiveKind,
-        dx: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-        dy: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-        dz: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-        topRadius: { type: "number", minimum: 0, maximum: 1000, description: "Cone top, mm." },
-        tubeRadius: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Torus tube, mm." },
-        innerRadius: { type: "number", minimum: 0, maximum: 1000, description: "Tube hole, mm." },
-        sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon sides." },
-        turn: vec3,
-      },
+      properties: solidFields,
     },
   },
   {
@@ -1074,7 +1070,7 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         direction: { type: "array", description: "Edge direction, part frame.", minItems: 3, maxItems: 3, items: { type: "number" } },
         withinDeg: { type: "number", minimum: 0, maximum: 180, description: "Degrees. Default 5." },
-        onFace: { type: "integer", minimum: 0, description: "Face index." },
+        onFace: { description: "Face index, or a flat face selector {normal, withinDeg, nearPoint}." },
         lengthMinMm: { type: "number", minimum: 0, description: "Minimum length, mm." },
         convex: { type: "boolean", description: "Convex edges only." },
         cursor,
@@ -1141,7 +1137,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_check",
-    description: "Before slicing, the solid as it stands on the bed: overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume, and walls thinner than two nozzle widths, each with where it is.",
+    description: "Before slicing, the solid as it stands on the bed: overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume, walls thinner than two nozzle widths, and open or touching mesh edges, each with where it is.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1194,16 +1190,7 @@ export const TOOLS: ToolSpec[] = [
           additionalProperties: false,
           required: ["primitive"],
           description: "As solid_new takes it.",
-          properties: {
-            primitive: primitiveKind,
-            dx: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-            dy: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-            dz: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
-            radius: { type: "number", exclusiveMinimum: 0, maximum: 500 },
-            height: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Round height." },
-            sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon sides." },
-            turn: vec3,
-          },
+          properties: solidFields,
         },
         ops: { type: "array", maxItems: 1000, items: opPointer("One edit."), description: "Edits, in order; each and use expand first." },
         params: { type: "object", description: "This call only, e.g. {\"wallH\": 35}." },
@@ -1646,6 +1633,42 @@ function annotate(node: Record<string, unknown>): void {
 }
 
 for (const tool of TOOLS) annotate(tool.inputSchema);
+
+/** Model tools whose op, ops, and base take text such as "wallH / 2" where a number goes. */
+export const EXPRESSION_TOOLS: ReadonlySet<string> = new Set(["model_probe", "model_apply", "model_apply_batch", "model_edit", "model_build", "model_define", "render_view"]);
+
+/**
+ * A schema as a client sees it: a number may also be text (an expression the server reads before checking), and a
+ * point [x, y, z] may also be an anchor object. Dropping `type` says both in fewer bytes than a type list. The server
+ * checks the numbers it reads against the full schema itself.
+ */
+function textNumbers(node: unknown): unknown {
+  if (!node || typeof node !== "object") return node;
+  if (Array.isArray(node)) return node.map(textNumbers);
+  const row = node as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(row)) {
+    out[key] = key === "properties" && child && typeof child === "object"
+      ? Object.fromEntries(Object.entries(child as Record<string, unknown>).map(([name, value]) => [name, textNumbers(value)]))
+      : key === "items" || key === "oneOf" || key === "anyOf" ? textNumbers(child) : child;
+  }
+  // No type: minimum, maximum, and items bind only a number or a list, so text and an anchor object pass through.
+  if (row.type === "number" || row.type === "integer" || (row.type === "array" && row.minItems === 3 && row.maxItems === 3)) delete out.type;
+  return out;
+}
+
+let advertisedCache: ToolSpec[] | null = null;
+
+/** TOOLS as tools/list sends them: the Model tools' op, ops, and base take text numbers and anchors. */
+export function advertisedTools(): ToolSpec[] {
+  advertisedCache ??= TOOLS.map((tool) => {
+    if (!EXPRESSION_TOOLS.has(tool.name)) return tool;
+    const props = (tool.inputSchema.properties ?? {}) as Record<string, unknown>;
+    const next = Object.fromEntries(Object.entries(props).map(([name, value]) => [name, name === "op" || name === "ops" || name === "base" ? textNumbers(value) : value]));
+    return { ...tool, inputSchema: { ...tool.inputSchema, properties: next } };
+  });
+  return advertisedCache;
+}
 
 export function toolByName(name: string): ToolSpec | undefined {
   return TOOLS.find((tool) => tool.name === name);

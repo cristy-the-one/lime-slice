@@ -274,8 +274,9 @@ test("a join saves its removed tool's tree, reopens, and takes an edit after the
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText("Hole. Volume 400 mm³");
+  // The hole builds on the plate's step read from its STEP: neither the box's history nor the tool's is rebuilt for it.
   const opened = tree.calls.slice(before).filter((call) => call.call === "open");
-  expect(opened.some((call) => call.filename === "plate.step" && Array.isArray(call.nodes)), "the tool's tree opened again, whole, for the join to build").toBe(true);
+  expect(opened.filter((call) => Array.isArray(call.nodes)), "no whole tree opens").toHaveLength(0);
 });
 
 test("the open object, a mesh, and surfaces are never offered as the tool", async ({ page }) => {

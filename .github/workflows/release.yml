@@ -230,7 +230,11 @@ jobs:
       - name: Stage the Visual C++ runtime (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
-        run: ./tools/windows/stage_crt.ps1 -Dest src-tauri/resources/crt
+        # The MCP engine links the same runtime and is loaded by the user's node, which looks beside the
+        # engine (mcp\), not beside the app's exe; the Open CASCADE DLLs then find the runtime already loaded.
+        run: |
+          ./tools/windows/stage_crt.ps1 -Dest src-tauri/resources/crt
+          ./tools/windows/stage_crt.ps1 -Dest src-tauri/resources/mcp
 
       - name: Build unsigned installers and upload them to the draft release
         uses: tauri-apps/tauri-action@v1

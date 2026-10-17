@@ -90,37 +90,97 @@ The API listens on `127.0.0.1:43118`. Inside Tauri the UI calls `slice_model` in
 
 ## MCP server
 
-An LLM client can open a mesh, place it, change the settings the panel exposes, paint supports and seams, run a Model edit that has already passed a feasibility check, slice the plate, and write G-code. Since 2.1.0 a whole part can be built in a few calls: `model_build` makes a solid, runs a batch of edits each checked before it is applied, and commits it. The ops include extrude, revolve, and shell from the kernel, and pocket, boss, texture, pattern, and mirror, which the server expands into checked Boolean steps. Ops take labels and named parameters (`model_params`). `render_view` returns its images inline, and `model_check` reports overhangs, islands, and fit before slicing. `guide {topic: "ops"}` lists every op with an example. Since 2.2.0, `array` and `ribs` repeat a primitive over a face and keep it to the face's outline (tiles, studs, vents, reinforcement ribs, battens, grooves), and `render_view` draws lit, edge-lined images. Since 2.3.0, `loft` and `sweep` build smooth organic shapes (tubes, bodies, horns, tails) from cross-sections or along a path, profiles take spline edges (`smooth`, `corners`), a refused `model_build` called again reuses every op before the fix, `onError: "skip"` reports every refusal at once, and a refusal for a loose piece or a sealed hollow says where it is and how far to move. Since 2.4.0, ops place themselves against labelled steps (`{anchor: "bowl", point: "top"}`), op lists loop (`each`) and place named parts (`model_define`, `use`), a build reruns from its saved recipe with new parameters, `text` letters a face, a pattern can follow a path, `render_view` colours, highlights, sections, and turns the part, and `model_check` measures thin walls with where they are. Since 2.5.0, an `ellipsoid` primitive, round and pointed sweep `caps`, colours that take whole faces, renders without seam lines, and `guide {topic: "organic"}` with a worked rubber duck make creatures and soft forms easier. Since 2.6.0, `app_open` shows the work in the desktop app: it saves the plate as a `.lime` in the workspace (or takes a workspace file you name) and opens it in the running app over the live bridge, or starts the installed app with the file. The server is `mcp/server.ts`. It speaks newline-delimited JSON on stdin and stdout, and it loads the slicer in-process (`crates/lime-mcp-engine`). It does not need `lime-slice serve`.
+An LLM client such as Claude can drive Lime Slice over MCP. It can import or build a part, edit it in Model, place it, change settings, slice, and write G-code. There is no send-to-printer tool.
 
-A typical slice is `machine_list`, `machine_select`, `mesh_import`, `slice_start`, `slice_wait`, `gcode_summary`. A hole is `faces_find`, `workplane_set`, `model_probe`, `model_apply`, `model_commit`, then `slice_start`. The same sequences are the guides `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate`. There is no send-to-printer tool.
+### Set up on Windows (installed app)
 
-It needs Node 22.6 or later on the machine. The desktop installer carries the server and its engine, so an installed app needs nothing else: point the client's `node` at the bundled `mcp/server.mjs`, and it finds the engine beside it and the app's own Open CASCADE in `../occt/lib`. On Windows that is `%LOCALAPPDATA%\Lime Slice\mcp\server.mjs`; on macOS, `Lime Slice.app/Contents/Resources/mcp/server.mjs`.
+The installer puts the server in `%LOCALAPPDATA%\Lime Slice\mcp\`, with its engine beside it and Open CASCADE in `%LOCALAPPDATA%\Lime Slice\occt\lib\`. You need nothing else from the repository.
 
-```json
-{
-  "mcpServers": {
-    "lime-slice": {
-      "command": "node",
-      "args": ["C:\\Users\\you\\AppData\\Local\\Lime Slice\\mcp\\server.mjs"],
-      "env": {
-        "LIME_MCP_WORKSPACE": "C:\\absolute\\path\\to\\a\\workspace"
-      }
-    }
-  }
-}
-```
+1. Install Node 22.6 or later. The installer does not include Node. Check the version in a terminal:
 
-From a checkout, the server runs as TypeScript with type stripping, and Node prints an `ExperimentalWarning` on every start. That warning is expected. `npm run build:mcp` writes the same bundle the installer ships to `src-tauri/resources/mcp`.
+   ```powershell
+   node --version
+   ```
 
-Writes stay inside `LIME_MCP_WORKSPACE`. A path can be absolute, or relative to that workspace. Saving a project may overwrite a `.lime` file already in that directory. `app_open` starts the installed Lime Slice, a window the user sees, when no running app answers the bridge; it sends only workspace paths. There is no send-to-printer tool.
+   It must print `v22.6.0` or higher.
 
-Model edits need the Open CASCADE bridge. The installed server uses the app's own. From a checkout, the server looks next to the `node` program, not next to the desktop app. Set `LIME_OCCT_BRIDGE` to the bridge library when it lives somewhere else. In a checkout that has built the desktop bridge, that file is `target/release/liblime_model_occt.so` (`.dylib` on macOS, `lime_model_occt.dll` on Windows). An installed copy can use the same bridge the desktop installer places beside the app, and point `LIME_OCCT_BRIDGE` at that file.
+2. Make a folder for the files the server writes, for example `C:\Users\you\lime-workspace`. The server saves projects, STEP files, and G-code only inside this folder.
+
+3. Add the server to your client.
+
+   **Claude Desktop.** Open `%APPDATA%\Claude\claude_desktop_config.json` (Settings > Developer > Edit Config opens it). Add this block, with your user name in both paths. Write every backslash twice.
+
+   ```json
+   {
+     "mcpServers": {
+       "lime-slice": {
+         "command": "node",
+         "args": ["C:\\Users\\you\\AppData\\Local\\Lime Slice\\mcp\\server.mjs"],
+         "env": {
+           "LIME_MCP_WORKSPACE": "C:\\Users\\you\\lime-workspace"
+         }
+       }
+     }
+   }
+   ```
+
+   If the file already has an `mcpServers` object, add only the `"lime-slice"` entry to it.
+
+   **Claude Code.** Run this once in PowerShell. `--scope user` makes the server available in every project:
+
+   ```powershell
+   claude mcp add lime-slice --scope user -e LIME_MCP_WORKSPACE=C:\Users\you\lime-workspace -- node "C:\Users\you\AppData\Local\Lime Slice\mcp\server.mjs"
+   ```
+
+   For one project only, put the same JSON block as above in a file named `.mcp.json` in that project's folder.
+
+4. Restart Claude Desktop, or run `/mcp` in Claude Code and reconnect `lime-slice`. A client reads its config only when it starts.
+
+5. Check that it works. Ask the client to call `session_info`. The reply must show `"occt": true` and an `engine` version that equals `serverVersion`. If `occt` is false, Model edits will not work: reinstall the app.
+
+Point the client at `server.mjs` in the installed app. Do not point it at `mcp\server.ts` from a checkout unless you build the engine yourself (see "From a checkout").
+
+After you install a new version of the app, restart the client too, so it runs the new server.
+
+### macOS and Linux
+
+The setup is the same. Only the paths differ:
+
+- macOS: `/Applications/Lime Slice.app/Contents/Resources/mcp/server.mjs`. Claude Desktop's config is `~/Library/Application Support/Claude/claude_desktop_config.json`.
+- Linux (`.deb`): `/usr/lib/Lime Slice/mcp/server.mjs`. Claude Desktop's config is `~/.config/Claude/claude_desktop_config.json`.
+
+Paths use forward slashes. Set `LIME_MCP_WORKSPACE` the same way.
+
+### What it does
+
+A typical slice is `machine_list`, `machine_select`, `mesh_import`, `slice_start`, `slice_wait`, `gcode_summary`. A hole is `faces_find`, `workplane_set`, `model_probe`, `model_apply`, `model_commit`, then `slice_start`. The guides `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate` hold the same sequences. `guide {topic: "ops"}` lists every Model op with an example.
+
+`model_build` makes a solid, runs a batch of edits, and commits it in one call. Each edit is checked before it is applied. A step that Open CASCADE reports as done but that loses the part, or leaves pieces that meet only along an edge, is taken back and refused. A commit refuses a mesh that does not close, and `model_check` lists open and touching edges with where they are.
+
+A long call sends progress notifications, so a client that restarts its timeout on progress keeps waiting. A cancelled batch is taken back whole. The server autosaves the plate, with every object's Model history, to `autosave-<process id>.lime` in the workspace. Each server writes its own file, so Claude Desktop and Claude Code can share a workspace. If the client restarts the server, the new server moves the newest file of a server that has ended to `autosave-previous.lime` and names it in `session_info` and `plate_list`. Call `project_open` on it to carry on.
+
+Writes stay inside `LIME_MCP_WORKSPACE`. A path can be absolute, or relative to that workspace. Saving a project may overwrite a `.lime` file already in that folder. `app_open` saves the plate in the workspace and opens it in the desktop app. If no running app answers the live bridge, it starts the installed app with the file.
+
+Release notes:
+
+- 2.1.0: `model_build`, extrude, revolve, shell, pocket, boss, texture, pattern, mirror, labels, `model_params`, `render_view`, `model_check`.
+- 2.2.0: `array` and `ribs` over a face; lit, edge-lined renders.
+- 2.3.0: `loft` and `sweep`, spline profiles, resumable builds, `onError: "skip"`, located refusals.
+- 2.4.0: anchors, `each` loops, `model_define` parts, recipe reruns, `text`, path patterns, colours and sections in renders, thin-wall checks.
+- 2.5.0: `ellipsoid`, sweep caps, face colours, the organic guide.
+- 2.6.0: `app_open`.
+
+### From a checkout
+
+For development. The server is `mcp/server.ts`. It speaks newline-delimited JSON on stdin and stdout, and loads the slicer in-process from `crates/lime-mcp-engine`. It does not need `lime-slice serve`.
+
+Build the engine first:
 
 ```bash
 cargo build -p lime-mcp-engine --release
 ```
 
-Claude Desktop, or any stdio MCP client, from a checkout:
+The engine library is `target/release/liblime_mcp_engine.so` (`.dylib` on macOS, `lime_mcp_engine.dll` on Windows). Set `LIME_MCP_ENGINE` if it is somewhere else. If a checkout has no engine built, the server uses the installed app's engine and Open CASCADE, but only when their version equals the checkout's. `session_info` then names that engine's path. While that server runs, it holds the installed engine open, so close the client before you install a new version. A different version is refused before it is loaded, with a message that says what to do. An engine that was missing is looked for again on the next call, so you do not need to reconnect after a build.
 
 ```json
 {
@@ -137,9 +197,11 @@ Claude Desktop, or any stdio MCP client, from a checkout:
 }
 ```
 
-The engine library is `target/release/liblime_mcp_engine.so` (`.dylib` on macOS, `lime_mcp_engine.dll` on Windows). Set `LIME_MCP_ENGINE` if it lives somewhere else. `LIME_SLICE_BIN` is only for the golden comparison; the server does not shell out to it.
+Node prints an `ExperimentalWarning` on every start of the TypeScript server. That warning is expected. `npm run build:mcp` writes the bundle the installer ships to `src-tauri/resources/mcp`.
 
-The installer does not carry Node itself; the client's `node` runs the bundle. `LIME_MCP_ENGINE` and `LIME_OCCT_BRIDGE` still override the library the server finds.
+Model edits need the Open CASCADE bridge. From a checkout, the server looks next to the `node` program, not next to the desktop app. Set `LIME_OCCT_BRIDGE` to the bridge library. `LIME_MCP_ENGINE` and `LIME_OCCT_BRIDGE` also override what the installed server finds. `LIME_SLICE_BIN` is only for the golden comparison; the server does not run it.
+
+### Live desktop bridge
 
 The live desktop bridge is off unless you opt in. The app listens on `127.0.0.1` only, and only when both variables are set:
 
@@ -153,7 +215,7 @@ The variables must be set in the environment the app starts from; an app that is
 $env:LIME_BRIDGE = "1"; $env:LIME_BRIDGE_TOKEN = "choose-a-token"; & "$env:LOCALAPPDATA\Lime Slice\lime-slice-desktop.exe"
 ```
 
-Point the MCP process at that listener with `LIME_MCP_BRIDGE=http://127.0.0.1:43119/` and the same `LIME_MCP_BRIDGE_TOKEN`. Port 43119 is `LIME_BRIDGE_PORT`. Both sides must be running this version: an older app or server does not speak the mesh-carrying message. `app_open` asks the window to open a file with `{"open": "<path>"}`, only when the window's answers name `open` in `X-Lime-Bridge-Features`; an older window is started again with the file instead.
+Point the MCP process at that listener with `LIME_MCP_BRIDGE=http://127.0.0.1:43119/` and the same `LIME_MCP_BRIDGE_TOKEN`. Port 43119 is `LIME_BRIDGE_PORT`. Both sides must run this version: an older app or server does not speak the mesh-carrying message. `app_open` asks the window to open a file with `{"open": "<path>"}`, only when the window's answers name `open` in `X-Lime-Bridge-Features`; an older window is started again with the file instead.
 
 Each mirror is the whole plate after the tool, with the server's session id and a sequence number, so a missed message is repaired by the next one. A mesh the desktop does not have rides along once: the file bytes and the triangles the server read from them. A commit therefore shows the Open CASCADE triangles the server slices, not a fresh read of the STEP. A new solid appears at its first commit, and the window switches to Prepare to show it. The desktop adds, moves, and removes the objects the server sent; parts you opened yourself stay. A committed mesh drops that object's own Model history in the window, since the history no longer builds it. Each answer names the window's instance; a restarted app or a reloaded page gets every mesh again on the next tool. A mirror that cannot connect does not fail the tool, and closing the app leaves the headless session as it was.
 

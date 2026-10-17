@@ -181,28 +181,52 @@ test("a saved project brings back its Model history: the same steps and names, a
   expect(seed.nodes).toBeUndefined();
   expect(tree.of("goto").slice(gotos).map((request) => request.node), "asked for, then asked again as the engine's root once its STEP is open").toEqual([3, 0]);
 
-  // An edit builds on the history: the whole tree opens first, and the step is shown as rebuilt.
-  const gotosBefore = tree.of("goto").length;
+  // A new step builds on the plate's step as read from its STEP, at once: no history is rebuilt for it.
   await cut(page, 2);
-  expect(tree.of("open").slice(opens), "one more open, for the whole tree").toHaveLength(2);
-  const whole = tree.of("open").at(-1)!;
-  expect(whole.dataB64, "from the root STEP").toBe(FILE.toString("base64"));
-  expect((whole.nodes as { id: number; parent: number }[]).map((node) => [node.id, node.parent]), "with every step").toEqual([[1, 0], [2, 1], [3, 1]]);
-  expect(whole.current).toBe(3);
-  expect(tree.of("goto").slice(gotosBefore).map((request) => request.node), "the step is shown as the whole tree rebuilds it").toEqual([3]);
-  expect(tree.of("apply").at(-1), "and the edit builds on that step").toMatchObject({ key: seed.key, parent: 3, node: 4 });
-  expect(tree.of("apply").filter((request) => request.key === seed.key && request.parent === 0), "never on the read solid").toHaveLength(0);
+  expect(tree.of("open").slice(opens), "no open for the whole tree").toHaveLength(1);
+  expect(tree.of("apply").at(-1), "the edit builds on the read step, the engine's root, as step 4").toMatchObject({ key: seed.key, parent: 0, node: 4 });
   await page.locator("#modelUndo").click();
   await expect(readout(page)).toContainText(`${volume(4)}. Edit undone.`);
   await page.locator("#modelRedo").click();
   await expect(readout(page)).toContainText(`${volume(2)}. Edit redone.`);
+  expect(tree.of("open").slice(opens), "undo and redo stay on the steps the engine holds").toHaveLength(1);
+  // A jump to an earlier step rebuilds the history, with the new step in it.
   await row(page, "Cut box 8").click();
   await expect(readout(page)).toContainText(volume(8));
-  expect(tree.of("open").slice(opens), "and nothing is opened again").toHaveLength(2);
+  expect(tree.of("open").slice(opens), "one more open, for the whole tree").toHaveLength(2);
+  const whole = tree.of("open").at(-1)!;
+  expect(whole.dataB64, "from the root STEP").toBe(FILE.toString("base64"));
+  expect((whole.nodes as { id: number; parent: number }[]).map((node) => [node.id, node.parent]), "with every step").toEqual([[1, 0], [2, 1], [3, 1], [4, 3]]);
   await row(page, "Pocket").click();
   await expect(readout(page)).toContainText(volume(6));
   await cut(page, 3);
   expect(tree.of("apply").at(-1), "an edit after that numbers steps as saved").toMatchObject({ key: seed.key, parent: 2, node: 5 });
+});
+
+test("a project whose history starts from a primitive opens Model from the plate's STEP, with no step rebuilt", async ({ page }) => {
+  // As the MCP server saves a model_build part: a primitive root, a brep, and the plate on the last step.
+  const tree = await openModel(page);
+  for (const dx of [8, 6, 4]) await cut(page, dx);
+  await expect(page.locator("#modelPanel")).toBeHidden();
+  await page.locator("#tabPrepare").click();
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const { readFile } = await import("node:fs/promises");
+  const doc = JSON.parse((await readFile((await download.path())!)).toString("utf8")) as { objects: { brep?: { bytesBase64?: string }; modelTree: Record<string, unknown> }[] };
+  const saved = doc.objects[0]!.modelTree;
+  delete saved.rootStep;
+  saved.rootPrimitive = { primitive: "box", origin: [0, 0, 0], size: [20, 20, 10], radius: 0, height: 0, turn: [0, 0, 0] };
+  await page.reload();
+  const opens = tree.of("open").length;
+  await page.locator("#projectFile").setInputFiles({ name: "built.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(doc)) });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(readout(page), "Model opens on the plate's step").toContainText(volume(4));
+  const since = tree.of("open").slice(opens);
+  expect(since, "one open").toHaveLength(1);
+  expect(since[0]!.nodes, "of the plate's step alone").toBeUndefined();
+  expect(since[0]!.dataB64, "read from the plate's STEP").toBe(doc.objects[0]!.brep?.bytesBase64);
+  await cut(page, 2);
+  expect(tree.of("open").slice(opens), "an edit builds on it with nothing rebuilt").toHaveLength(1);
 });
 
 test("calls made while a reopened tree opens whole wait for it, and two jumps share one open", async ({ page }) => {
@@ -261,6 +285,7 @@ test("a jump back to the plate's step while the whole tree opens shows the step 
 });
 
 test("a fillet on a reopened step rebuilds the step first and asks for its edges again", async ({ page }) => {
+  // A fillet names edges by the solid's numbering, which the STEP-read step may number apart from the rebuilt one.
   const tree = await reopenedChain(page);
   const applies = tree.of("apply").length;
   await pickEdge(page);
@@ -269,9 +294,21 @@ test("a fillet on a reopened step rebuilds the step first and asks for its edges
   expect(tree.of("open").at(-1)?.nodes, "the whole tree opened").toHaveLength(3);
   expect(tree.of("apply"), "and nothing was built on edges the read solid numbered").toHaveLength(applies);
   await expect(page.locator("#modelApply")).toBeDisabled();
+  // Picked again on the rebuilt step, the fillet builds there, and a jump away and back finds it whole.
+  // The fillet tool stays open, waiting for edges on the rebuilt step.
+  await pickEdge(page);
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Volume 1590 mm³");
+  expect(tree.of("apply").at(-1), "the fillet builds on the rebuilt step").toMatchObject({ parent: 3, node: 4, op: { kind: "fillet" } });
+  await row(page, "Cut box 8").click();
+  await expect(readout(page)).toContainText(volume(8));
+  await rows(page).last().click();
+  await expect(readout(page)).toContainText("Volume 1590 mm³");
+  await expect(rows(page).last()).not.toHaveAttribute("data-broken", "");
 });
 
-test("an edit on a reopened step whose rebuild breaks builds nothing and shows the last step that rebuilds", async ({ page }) => {
+test("an edit on a reopened step builds at once, even where its history would rebuild differently", async ({ page }) => {
   const why = "This step rebuilt differently: 1 mm³, 6 faces, 12 edges instead of 1600 mm³, 6 faces, 12 edges";
   let reopened = false;
   const tree = await reopenedChain(page, { goto: (request) => (reopened && request.node === 3 ? { error: why, broken: 3 } : null) });
@@ -281,10 +318,10 @@ test("an edit on a reopened step whose rebuild breaks builds nothing and shows t
   await page.locator("#modelDx").fill("2");
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
-  await expect(readout(page)).toContainText("This step could not be rebuilt");
-  await expect(readout(page), "the last step that rebuilds is shown").toContainText(volume(6));
-  expect(tree.of("apply"), "nothing is built").toHaveLength(applies);
-  await expect(row(page, "Cut box 4")).toHaveAttribute("data-broken", "");
+  await expect(readout(page)).toContainText(volume(2));
+  expect(tree.of("apply").slice(applies), "the cut builds on the read step").toHaveLength(1);
+  expect(tree.of("open").filter((request) => request.nodes), "and no history is rebuilt for it").toHaveLength(0);
+  await expect(row(page, "Cut box 4")).not.toHaveAttribute("data-broken", "");
 });
 
 test("a check sent before the whole tree opened, answered after, is asked again under the step's own number", async ({ page }) => {
