@@ -80,6 +80,7 @@ const uv = {
 };
 
 const faceIndex = { type: "integer", minimum: 0, description: "From faces_find. Else the workplane." };
+const faceSelector = { type: "object", description: "Or pick the flat face: {normal, withinDeg, nearPoint}; nearest, else largest." };
 
 const pocketOp = (kind: "pocket" | "boss") => ({
   type: "object",
@@ -88,6 +89,7 @@ const pocketOp = (kind: "pocket" | "boss") => ({
   properties: {
     kind: { const: kind },
     faceIndex,
+    face: faceSelector,
     shape: { enum: ["rect", "circle", "arch"], description: "rect, circle, arch." },
     at: { ...uv, description: "Centre on the face." },
     width: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "U size." },
@@ -119,6 +121,7 @@ const textureOp = {
   properties: {
     kind: { const: "texture" },
     faceIndex,
+    face: faceSelector,
     pattern: { enum: ["lines", "grid", "brick", "shingle"], description: "brick and shingle stagger rows." },
     pitch: { type: "array", minItems: 2, maxItems: 2, items: { type: "number", exclusiveMinimum: 0 }, description: "[U, V] tile size." },
     grooveWidth: { type: "number", exclusiveMinimum: 0, maximum: 20, description: "Default 0.8." },

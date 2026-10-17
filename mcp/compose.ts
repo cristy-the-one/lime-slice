@@ -234,6 +234,8 @@ export interface FaceExtent {
 export interface ExpandContext {
   plane: Workplane;
   face(index: number): { plane: Workplane; extent: FaceExtent } | { reason: string };
+  /** The flat face a selector names: {normal, withinDeg, nearPoint}. Read when the op expands, so faces earlier steps made count. */
+  faceBy(selector: Record<string, unknown>): number | { reason: string };
 }
 
 function boxIn(plane: Workplane, origin: Vec3, size: Vec3): PrimitiveSpec {
@@ -245,6 +247,11 @@ function cylinderIn(plane: Workplane, base: Vec3, radius: number, height: number
 }
 
 function faceFrame(spec: Record<string, unknown>, ctx: ExpandContext): { plane: Workplane; extent: FaceExtent | null } | { reason: string } {
+  if (spec.face !== undefined && spec.faceIndex !== undefined) return { reason: "Give face or faceIndex, not both." };
+  if (spec.face !== undefined) {
+    const index = ctx.faceBy((spec.face ?? {}) as Record<string, unknown>);
+    return typeof index === "number" ? ctx.face(index) : index;
+  }
   if (spec.faceIndex === undefined) return { plane: ctx.plane, extent: null };
   return ctx.face(Math.round(numOr(spec.faceIndex, -1)));
 }

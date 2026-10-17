@@ -2990,6 +2990,17 @@ export class Session {
         }
         return { plane: frame, extent };
       },
+      faceBy: (selector: Record<string, unknown>) => {
+        if (!obj.solid) return { reason: "This solid could not be read." };
+        const unknown = Object.keys(selector).find((key) => key !== "normal" && key !== "withinDeg" && key !== "nearPoint");
+        if (unknown) return { reason: `face.${unknown} is not a selector field. Use normal, withinDeg, and nearPoint.` };
+        const matched = facesMatching(obj.solid.faces, { kind: "plane", ...(selector.normal !== undefined ? { normal: selector.normal } : {}), ...(selector.withinDeg !== undefined ? { withinDeg: selector.withinDeg } : {}) });
+        if ("reason" in matched) return matched;
+        if (matched.length === 0) return { reason: "No flat face matches that selector." };
+        const near = readVec3(selector.nearPoint, [NaN, NaN, NaN]);
+        const score = (face: (typeof matched)[number]) => Number.isNaN(near[0]) ? -face.areaMm2 : Math.hypot(face.centre[0] - near[0], face.centre[1] - near[1], face.centre[2] - near[2]);
+        return [...matched].sort((a, b) => score(a) - score(b))[0]!.index;
+      },
     };
   }
 

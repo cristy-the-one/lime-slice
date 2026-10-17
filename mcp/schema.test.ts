@@ -60,8 +60,8 @@ const listed = JSON.stringify({
   })),
 });
 // 51 KB held while model_apply listed eight op kinds. The typed composite kinds (pocket, boss, texture, pattern,
-// mirror) are listed once, on model_apply; the other Model tools point at it.
-check("tools/list stays under 58 KB", Buffer.byteLength(listed) < 58 * 1024);
+// mirror) are listed once, on model_apply; the other Model tools point at it. surface_at and model_check add the rest.
+check("tools/list stays under 60 KB", Buffer.byteLength(listed) < 60 * 1024);
 
 const accepted: [string, unknown][] = [
   ["session_info", {}],

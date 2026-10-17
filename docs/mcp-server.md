@@ -465,7 +465,8 @@ These are server-side. The engine still sees one Boolean step at a time, each pr
 | Tool or op | What it does |
 | --- | --- |
 | `model_apply {op, probe: true}` | Probes the op, then applies it only when the probe passes. One call where two were. Without `probe` the old rule stands: a passing `model_probe` first. |
-| `pocket`, `boss` | On a face (`faceIndex`) or the workplane: `shape` rect, circle, or arch, centred at `at: {u, v}`, `width` × `height` or `diameter`, `depth`. A pocket may keep `bars: {vertical, horizontal, width}`, flush with the face. On a side face U is level and V runs up (`workplaneOnFace`). |
+| `face` | On `pocket`, `boss`, and `texture`, in place of `faceIndex`: `{normal, withinDeg, nearPoint}`. The flat face whose normal matches, nearest `nearPoint` by its centre, else the largest. It is read when the op expands, so a face an earlier step of the same batch made counts; `model_build` cannot know indexes in advance. |
+| `pocket`, `boss` | On a face (`faceIndex` or `face`) or the workplane: `shape` rect, circle, or arch, centred at `at: {u, v}`, `width` × `height` or `diameter`, `depth`. A pocket may keep `bars: {vertical, horizontal, width}`, flush with the face. On a side face U is level and V runs up (`workplaneOnFace`). |
 | `texture` | Grooves on a face: `pattern` lines, grid, brick, or shingle (rows staggered by half a pitch), `pitch: [u, v]`, `grooveWidth`, `depth`, `region` (default the face's own U, V extent). |
 | `pattern` | `op` repeated by `linear: {step, count, step2, count2}` or `polar: {count, axis, centre, angleDeg}`. `count` includes the original. |
 | `mirror` | `op` reflected in `plane` x, y, or z (or a `normal`) through `origin`, keeping the original unless `keepOriginal` is false. Wedges are refused: the reflection is a turn of the same primitive (`LOCAL_FLIP` in `mcp/compose.ts`). |

@@ -63,7 +63,7 @@ check("a mirrored groove faces out of the other slope", nearAll(grooveNormal.map
 const wedge = primitiveFrom({ primitive: "wedge", dx: 4, dy: 4, dz: 4 }) as PrimitiveSpec;
 check("a wedge mirror is refused", "reason" in movedSpec(wedge, { m: [-1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], reflect: true }));
 
-const globalCtx: ExpandContext = { plane: GLOBAL_WORKPLANE, face: () => ({ reason: "no faces" }) };
+const globalCtx: ExpandContext = { plane: GLOBAL_WORKPLANE, face: () => ({ reason: "no faces" }), faceBy: () => ({ reason: "no faces" }) };
 const toPart = (op: Record<string, unknown>): Piece | { reason: string } => {
   const spec = primitiveFrom(op);
   return "reason" in spec ? spec : { op: op.op === "fuse" ? "fuse" : "cut", spec };
@@ -80,7 +80,11 @@ check("a mirror of a pattern makes both rows", nested.length === 6);
 
 // Pocket, boss, texture on a face: the -Y wall of a 60 x 40 x 35 house body.
 const front = workplaneOnFace({ point: [0, -20, 17.5], normal: [0, -1, 0] });
-const faceCtx: ExpandContext = { plane: GLOBAL_WORKPLANE, face: (index) => index === 5 ? { plane: front, extent: { u: [-30, 30], v: [-17.5, 17.5] } } : { reason: "That face is not on this solid." } };
+const faceCtx: ExpandContext = {
+  plane: GLOBAL_WORKPLANE,
+  face: (index) => index === 5 ? { plane: front, extent: { u: [-30, 30], v: [-17.5, 17.5] } } : { reason: "That face is not on this solid." },
+  faceBy: (selector) => JSON.stringify(selector.normal) === "[0,-1,0]" ? 5 : { reason: "No flat face matches that selector." },
+};
 const window = expand({ kind: "pocket", faceIndex: 5, at: { u: 18, v: 2.5 }, width: 10, height: 10, depth: 1.5, bars: { vertical: 1, horizontal: 1, width: 1 } }, faceCtx, toPart) as Piece[];
 check("a barred window is one cut and two bars", window.length === 3 && window[0]!.op === "cut" && window[1]!.op === "fuse" && window[2]!.op === "fuse");
 const cutBox = window[0]!.spec;
@@ -95,6 +99,9 @@ const tiles = expand({ kind: "texture", faceIndex: 5, pattern: "brick", pitch: [
 const lines = tiles.filter((piece) => Math.max(...piece.spec.size) >= 59);
 check("a brick texture has row grooves and staggered joints", lines.length === 4 && tiles.length > lines.length, `${tiles.length} ${lines.length}`);
 check("a texture without a face or region is refused", "reason" in (expand({ kind: "texture", pitch: [5, 5] }, globalCtx, toPart) as object));
+const picked = expand({ kind: "pocket", face: { normal: [0, -1, 0] }, at: { u: 18, v: 2.5 }, width: 10, height: 10, depth: 1.5 }, faceCtx, toPart) as Piece[];
+check("a face selector picks the face", Array.isArray(picked) && JSON.stringify(picked[0]!.spec) === JSON.stringify(window[0]!.spec));
+check("face and faceIndex together are refused", "reason" in (expand({ kind: "pocket", face: { normal: [0, -1, 0] }, faceIndex: 5, width: 1, height: 1, depth: 1 }, faceCtx, toPart) as object));
 check("a missing face is refused", "reason" in (expand({ kind: "pocket", faceIndex: 9, width: 1, height: 1, depth: 1 }, faceCtx, toPart) as object));
 
 // Schema refusals name the right field.
@@ -166,6 +173,10 @@ const kept = await call("model_apply_batch", {
 });
 check("onError stop keeps what applied", kept.ok === false && kept.applied === 1 && kept.rolledBack === undefined, JSON.stringify(kept));
 
+const bySelector = await call("model_apply", { object, op: { kind: "pocket", face: { normal: [0, -1, 0] }, at: { u: 0, v: 0 }, width: 8, height: 8, depth: 1 } });
+check("the session resolves a face selector", bySelector.ok === true && bySelector.applied === 1, JSON.stringify(bySelector));
+const noFace = await call("model_apply", { object, op: { kind: "pocket", face: { normal: [0, -1, 0], nearby: [0, 0, 0] }, width: 8, height: 8, depth: 1 } });
+check("an unknown selector field is refused", noFace.ok === false && JSON.stringify(noFace).includes("nearby"), JSON.stringify(noFace));
 const params = await call("model_params", { set: { wallW: 60, half: "wallW / 2" } });
 check("model_params evaluates in order", (params.params as Record<string, number>).half === 30, JSON.stringify(params));
 const badParam = await call("model_params", { set: { "2bad": 1 } });
