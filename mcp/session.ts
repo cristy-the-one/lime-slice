@@ -347,7 +347,7 @@ function stlFileName(name: string): string {
   return `${stem || "solid"}.stl`;
 }
 
-/** A STEP file's name for a solid's file: the app's `stepFileName`. */
+/** A STEP file's name for a solid's file, as the app's `stepFileName` names it. */
 function stepFileName(name: string): string {
   const stem = name.replace(/\.(step|stp|stl|3mf|brep)$/i, "");
   return `${stem || "solid"}.step`;
@@ -1161,24 +1161,27 @@ export class Session {
       if (row.brep) obj.brep = row.brep;
       objects.push({ object: obj.id, name: shownName(obj.name) });
     }
+    const historyNotes: string[] = [];
     for (const row of rows) {
       if (!row.modelTree || !row.id) continue;
       const obj = this.find(row.id);
-      if (obj) await this.adoptHistory(obj, row.modelTree);
+      const note = obj ? await this.adoptHistory(obj, row.modelTree) : null;
+      if (note) historyNotes.push(note);
     }
     this.adoptMcpModel(parsed.project.mcpModel);
     const skipped = this.notSliced();
     return {
       ok: true,
       project: "project",
-      // The file's own number: the layout read from it says 2 for any plate.
-      version: (JSON.parse(text) as { version?: unknown }).version,
+      // The file's own number: the layout read from it says 2 for any plate. A saved file writes it first.
+      version: Number(/^\s*\{\s*"version"\s*:\s*(\d+)/.exec(text.slice(0, 64))?.[1] ?? parsed.project.version),
       handles: "new",
       label: "Open project",
       printer: this.printer().name,
       filament: this.filament().name,
       objects,
       ...(parsed.project.unreadHistory?.length ? { unreadHistory: parsed.project.unreadHistory } : {}),
+      ...(historyNotes.length ? { historyNotes } : {}),
       ...(skipped.length ? { notSliced: skipped, note: `This project has ${skipped.join(", ")} that this server does not slice yet. The G-code will differ from the app's.` } : {}),
     };
   }
@@ -1245,16 +1248,17 @@ export class Session {
     return { ...body, rootStep: meshRecord(tree.root.name, bytes) };
   }
 
-  private async adoptHistory(obj: PlateObject, saved: NonNullable<NonNullable<LimeProject["objects"]>[number]["modelTree"]>): Promise<void> {
+  /** The object's saved history, opened at its committed step. A sentence when its saved solid was refused, else null. */
+  private async adoptHistory(obj: PlateObject, saved: NonNullable<NonNullable<LimeProject["objects"]>[number]["modelTree"]>): Promise<string | null> {
     const key = `mcp-${obj.id}`;
     const root = saved.rootPrimitive
       ? { kind: "primitive" as const, solid: saved.rootPrimitive }
       : saved.rootStep?.bytesBase64
         ? { kind: "step" as const, name: saved.rootStep.name, bytes: this.bufferOf(saved.rootStep.bytesBase64) }
         : null;
-    if (!root || (root.kind === "step" && !root.bytes)) return;
+    if (!root || (root.kind === "step" && !root.bytes)) return null;
     const stepRoot = root.kind === "step" && root.bytes ? { kind: "step" as const, name: root.name, bytes: root.bytes } : root.kind === "primitive" ? root : null;
-    if (!stepRoot) return;
+    if (!stepRoot) return null;
     const objectKey = (id: string) => this.objects.find((row) => row.id === id)?.tree?.key ?? (this.find(id) ? `mcp-${id}` : undefined);
     obj.tree = loadedTree(saved, key, stepRoot, obj.name, null, objectKey);
     obj.platedNode = obj.tree.committed;
@@ -1263,9 +1267,13 @@ export class Session {
     // step, as a commit gives it, and the STEP moves to brep.
     const stepPlate = !obj.brep && /\.(step|stp)$/i.test(obj.fileName);
     const tree = obj.tree;
+    let note: string | null = null;
     try {
       const at = stepPlate ? tree.committed : tree.current;
-      const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD, { seed: this.seedOf(obj, tree) }), "open");
+      // A refused seed means the history replays in full: the budget covers every step, as after a restart.
+      const budget = Math.max(this.modelTimeoutMs(), tree.nodes.size * 2000);
+      const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD, { seed: this.seedOf(obj, tree) }), "open", budget);
+      if (typeof reply.seedRefused === "string") note = `${shownName(obj.name)}: the saved solid did not open (${reply.seedRefused}), so its history was rebuilt.`;
       const solid = rememberSolid(reply);
       if (solid) obj.solid = solid;
       if (stepPlate && solid && solid.positions.length >= 9) {
@@ -1279,9 +1287,10 @@ export class Session {
       }
       if (at !== tree.current) await this.gotoNode(obj, tree.current);
     } catch (err) {
-      if (err instanceof ModelRunaway) return;
+      if (err instanceof ModelRunaway) return note;
       throw err;
     }
+    return note;
   }
 
   private bufferOf(encoded: string): ArrayBuffer | null {
@@ -4446,7 +4455,9 @@ export class Session {
    */
   private async brepRoot(obj: PlateObject, tree: ModelTree): Promise<void> {
     const root = tree.root;
-    if (root.kind !== "step" || isBrep(root.bytes) || /\.(step|stp)$/i.test(obj.fileName) || this.triedRoots.has(root.bytes)) return;
+    if (root.kind !== "step" || isBrep(root.bytes) || this.triedRoots.has(root.bytes)) return;
+    const bytes = new Uint8Array(root.bytes);
+    if (this.objects.some((other) => other.bytes.byteLength === bytes.byteLength && meshKeyHex(other.bytes) === meshKeyHex(bytes))) return;
     this.triedRoots.add(root.bytes);
     const reply = await this.treeCall(exportRequest(tree.key, 0, "brep"), "export").catch(() => ({}));
     const solid = this.stepBytes(reply);

@@ -106,7 +106,7 @@ test("a new cone takes a Hole like any solid: History has the cone and the hole"
   await expect(rows(page).nth(0)).toContainText("Cone ⌀20 to ⌀8 h 30");
 });
 
-test("a saved new solid reopens on its plate step from the saved STEP, and keeps the primitive for its history", async ({ page }) => {
+test("a saved new solid reopens on its plate step from its saved solid, and keeps the primitive for its history", async ({ page }) => {
   const tree = await start(page);
   await create(page, "box", { modelDx: 20, modelDy: 20, modelDz: 20 });
   await expect(readout(page)).toContainText("Volume 8000 mm³");

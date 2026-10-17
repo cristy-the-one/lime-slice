@@ -36,6 +36,8 @@ interface Handlers {
   preview?(request: Body, on: MockSolid, tool?: MockSolid): MockSolid | null;
   /** An answer of its own for a jump, such as a step that no longer rebuilds. Null answers as usual. */
   goto?(request: Body): Body | null;
+  /** Answer each step with `held`, the steps of its tree the mock holds, as the engine does. Off, the app sees none. */
+  held?: boolean;
   /** Why the engine refuses an open's saved solid (`request.seed`), as its `seedRefused`; null takes it. */
   seedRefused?(request: Body): string | null;
   distanceMm?: number;
@@ -278,7 +280,11 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
   await page.route("**/api/model/tree", async (route: Route) => {
     const request = route.request().postDataJSON() as Body;
     calls.push(request);
-    await route.fulfill({ json: await answer(request) });
+    const body = await answer(request);
+    // As the engine: a step's answer lists the steps of its tree that hold a solid; the mock holds them all.
+    const doc = docs.get(String(request.key));
+    const step = typeof body.id === "number" && typeof body.error !== "string";
+    await route.fulfill({ json: handlers.held && step && doc ? { ...body, held: [...doc.keys()].sort((a, b) => a - b) } : body });
   });
   return {
     calls,

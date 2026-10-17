@@ -714,6 +714,8 @@ enum Failure {
         key: String,
         step: NodeId,
     },
+    /// An `open` whose seed was refused and that then failed: both are said, so the client does not send the seed again.
+    SeedRefused(Box<Failure>, String),
 }
 
 const TOOL_MISSING: &str = "The tool object's history is not open in the modeler";
@@ -733,6 +735,12 @@ impl Failure {
                 if let Some(node) = node {
                     reply["broken"] = json!(node);
                 }
+                reply.to_string()
+            }
+            Failure::SeedRefused(failure, why) => {
+                let mut reply: serde_json::Value =
+                    serde_json::from_str(&failure.json()).expect("a failure is JSON");
+                reply["seedRefused"] = json!(why);
                 reply.to_string()
             }
         }
@@ -931,6 +939,7 @@ impl Doc {
         for node in &under {
             if let Some(node) = self.nodes.get_mut(node) {
                 node.shape = None;
+                node.seeded = false;
             }
         }
         if let Some(node) = self.nodes.get_mut(&id) {
@@ -1171,6 +1180,8 @@ impl Store {
                     step: tool.node,
                 })
             }
+            // Only an open says why it refused a seed; a replay never does.
+            Err(failure @ Failure::SeedRefused(..)) => return Err(failure),
         }
         let shape = self.docs[&tool.key].nodes[&tool.node]
             .shape
@@ -1454,27 +1465,39 @@ impl Store {
         self.replies.retain(|reply| reply.key != key);
         self.docs.insert(key.clone(), doc);
         // Without a chord the step is built and kept, not meshed: the caller asks for it next.
-        let mut answer = match chord {
-            Some(chord) => self.goto(key, current, chord)?,
-            None => {
-                doc_in(&mut self.docs, &key)?.broken_above(current)?;
-                let replayed = self.ensure(&key, current)?;
-                let doc = doc_in(&mut self.docs, &key)?;
-                doc.current = current;
-                let fingerprint = doc.node(current)?.fingerprint;
-                Answer::Held {
-                    key,
-                    text: Arc::new(
-                        json!({ "id": current, "fingerprint": fingerprint }).to_string(),
-                    ),
-                    fields: vec![("replayed", Part::Json(replayed.to_string()))],
-                }
-            }
+        let answer = match chord {
+            Some(chord) => self.goto(key, current, chord),
+            None => self.reach(key, current),
         };
-        if let (Some(message), Answer::Held { fields, .. }) = (refused, &mut answer) {
-            fields.push(("seedRefused", Part::Json(json!(message).to_string())));
+        match (answer, refused) {
+            (
+                Ok(Answer::Held {
+                    key,
+                    text,
+                    mut fields,
+                }),
+                Some(why),
+            ) => {
+                fields.push(("seedRefused", Part::Json(json!(why).to_string())));
+                Ok(Answer::Held { key, text, fields })
+            }
+            (Err(failure), Some(why)) => Err(Failure::SeedRefused(Box::new(failure), why)),
+            (answer, _) => answer,
         }
-        Ok(answer)
+    }
+
+    /// Build `id` and keep it as the current step, answering only `{id, fingerprint}` and how many steps it replayed.
+    fn reach(&mut self, key: String, id: NodeId) -> Result<Answer, Failure> {
+        doc_in(&mut self.docs, &key)?.broken_above(id)?;
+        let replayed = self.ensure(&key, id)?;
+        let doc = doc_in(&mut self.docs, &key)?;
+        doc.current = id;
+        let fingerprint = doc.node(id)?.fingerprint;
+        Ok(Answer::Held {
+            key,
+            text: Arc::new(json!({ "id": id, "fingerprint": fingerprint }).to_string()),
+            fields: vec![("replayed", Part::Json(replayed.to_string()))],
+        })
     }
 
     fn goto(&mut self, key: String, id: NodeId, chord: f64) -> Result<Answer, Failure> {
@@ -2098,12 +2121,15 @@ fn seed_node(doc: &mut Doc, seed: SeedSolid, used: u64) -> Result<(), String> {
     if !bytes.starts_with(BREP_MAGIC) {
         return Err("Only a solid saved in Open CASCADE's binary format seeds a step".into());
     }
-    let shape = Shape::read_brep(&bytes)?;
+    let expected = node.fingerprint;
+    let shape = Shape::read_brep(&bytes, true)?;
     let got = shape.fingerprint();
-    if let Some(expected) = node.fingerprint {
-        if !expected.matches(&got) {
-            return Err(rebuilt_differently(&got, &expected));
-        }
+    // A step saved without a fingerprint (the MCP server saves none) takes its own saved solid unchecked.
+    if let Some(expected) = expected.filter(|expected| !expected.matches(&got)) {
+        return Err(format!(
+            "The saved solid is not this step: {:.3} mm³, {} faces, {} edges instead of {:.3} mm³, {} faces, {} edges",
+            got.volume_mm3, got.faces, got.edges, expected.volume_mm3, expected.faces, expected.edges
+        ));
     }
     let node = doc.nodes.get_mut(&seed.node).expect("checked above");
     node.fingerprint = Some(got);
@@ -2146,7 +2172,7 @@ fn root_shape(
                 .decode(data.trim())
                 .map_err(|err| Failure::Message(err.to_string()))?;
             if bytes.starts_with(BREP_MAGIC) {
-                return Shape::read_brep(&bytes).map_err(Failure::Message);
+                return Shape::read_brep(&bytes, false).map_err(Failure::Message);
             }
             let path = temp_step("open");
             std::fs::write(&path, bytes).map_err(|err| Failure::Message(err.to_string()))?;
@@ -2949,8 +2975,9 @@ impl Shape {
     }
 
     /// A solid `brep_bytes` wrote: the same faces and edges, in the same order, as the step it was saved from.
-    /// Bytes another Open CASCADE wrote are read as well; BinTools reads every older format.
-    fn read_brep(bytes: &[u8]) -> Result<Shape, String> {
+    /// Bytes another Open CASCADE wrote are read as well; BinTools reads every older format. As a `step` it keeps the
+    /// edges its step made, for a blend that picks them; as a root it made every edge it has.
+    fn read_brep(bytes: &[u8], step: bool) -> Result<Shape, String> {
         let damaged = || "This saved solid is damaged".to_string();
         let end = bytes.iter().position(|&b| b == b'\n').ok_or_else(damaged)?;
         let header = std::str::from_utf8(&bytes[..end]).map_err(|_| damaged())?;
@@ -2974,9 +3001,10 @@ impl Shape {
                     .collect::<Result<_, _>>()?,
             ),
         };
-        let (made, count) = created.as_ref().map_or((std::ptr::null(), -1), |list| {
-            (list.as_ptr(), list.len() as c_int)
-        });
+        let (made, count) = match created.as_ref().filter(|_| step) {
+            Some(list) => (list.as_ptr(), list.len() as c_int),
+            None => (std::ptr::null(), -1),
+        };
         let data = &bytes[end + 1..];
         Shape::made(|error| unsafe {
             lime_tree_read_brep(data.as_ptr(), data.len(), volume, made, count, error)

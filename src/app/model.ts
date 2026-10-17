@@ -105,6 +105,7 @@ import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
 import { state } from "./state";
 import { closeCracks } from "../mesh-check";
+import { meshKeyHex } from "../slice-action";
 import { axesOf, drillDown, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 
 type Body = Record<string, unknown>;
@@ -818,7 +819,7 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
     // needs the root reads that in a fraction of the STEP's time. A root that is still a plate object's file stays, as
     // the file keeps those bytes once for both.
     const rootBytes = tree.root.kind === "step" ? tree.root.bytes : null;
-    if (rootBytes && !isBrep(rootBytes) && engineHeld.get(key)?.has(ROOT) && !state.plate.objects.some((obj) => obj.bytes === rootBytes)) await brepRoot(key);
+    if (rootBytes && !isBrep(rootBytes) && engineHeld.get(key)?.has(ROOT) && !state.plate.objects.some((obj) => sameBytes(obj.bytes, rootBytes))) await brepRoot(key);
     const saved = modelTrees.has(key) ? savedRootOf(treeOfKey(key)) : null;
     if (saved) roots.set(id, saved);
     else unsaved.push(name);
@@ -2211,6 +2212,11 @@ function writeStep(token: string, key: string, node: NodeId): Promise<ArrayBuffe
   return pending;
 }
 
+/** The same bytes, in one buffer or two: a reopened file gives a root and a mesh with the same bytes buffers of their own. */
+function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
+  return a === b || (a.byteLength === b.byteLength && meshKeyHex(new Uint8Array(a)) === meshKeyHex(new Uint8Array(b)));
+}
+
 /** Tree `key`'s STEP root, replaced by the engine's binary solid of it. Left as it is when the engine cannot write it. */
 async function brepRoot(key: string) {
   const solid = await exportSolid(key, ROOT, "brep");
@@ -2263,7 +2269,7 @@ function setBrep(objectId: string, bytes: ArrayBuffer | undefined) {
 }
 
 function stepFileName(name: string) {
-  const stem = name.replace(/\.(step|stp|stl|3mf)$/i, "");
+  const stem = name.replace(/\.(step|stp|stl|3mf|brep)$/i, "");
   return `${stem || "solid"}.step`;
 }
 
@@ -2897,7 +2903,7 @@ async function treeCall(key: string, node: NodeId, request: Body): Promise<Body>
     if (problem) return { error: problem };
     body = await seededCall(key, node, request);
   }
-  return missingOf(body) ? { error: "The modeler no longer has this solid. Open Model again to reload it." } : body;
+  return missingOf(body) ? { error: GONE } : body;
 }
 
 /** Open tree `key` whole, toward `node`, sharing an open already on its way. */
@@ -3071,6 +3077,12 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
   return run;
 }
 
+/** What a call says when the engine lost the tree again while it was being restored. */
+const GONE = "The modeler no longer has this solid. Open Model again to reload it.";
+
+/** The engine's refusal of a scale by 1, which it answers after building the step the probe names (`countedBuild`). */
+const SCALE_BY_ONE = "Scale needs a factor other than 1";
+
 /** Trees from a project that the engine has not been sent yet: the first call opens them, rather than ask and be told. */
 const unopened = new Set<string>();
 
@@ -3116,11 +3128,18 @@ async function countedBuild(key: string, path: readonly NodeId[]): Promise<Body>
     if (!modelTrees.has(key)) break;
     if (shownHere()) readout(`Rebuilding the history: step ${at} of ${steps}…`);
     // A probe builds its step without meshing it; a scale by 1 asks nothing else of the kernel.
-    const built = await post(probeRequest(key, path[at]!, { kind: "scale", factor: 1 }));
+    let built = await post(probeRequest(key, path[at]!, { kind: "scale", factor: 1 }));
+    // A join on the way whose tool tree the engine does not hold: that tree opens, and the step is asked again.
+    for (let tools = 0, tool = missingToolOf(built); tool && tools < TOOL_ROUNDS; tools += 1, tool = missingToolOf(built)) {
+      const problem = await restoreTool(tool.key, tool.node);
+      if (problem) return { error: problem };
+      built = await post(probeRequest(key, path[at]!, { kind: "scale", factor: 1 }));
+    }
     body = typeof built.broken === "number" || text(built.error).includes("not open") ? built : {};
-    // A probe's answer lists no solids: the step it built is held now, so the call after this one counts from it. The
-    // scale by 1 itself is refused, after its step was built.
-    if (typeof built.broken !== "number" && missingOf(built) === null && !text(built.error).includes("not open")) engineHeld.get(key)?.add(path[at]!);
+    // A probe's answer lists no solids. The scale by 1 is refused once its step is built, so that refusal (or a check that
+    // passed) means the step is held now, and the call after this one counts from it; any other answer built nothing.
+    if (built.ok === true || text(built.error) === SCALE_BY_ONE) engineHeld.get(key)?.add(path[at]!);
+    else if (typeof built.broken !== "number") return { error: missingOf(built) ? GONE : text(built.error) || "The history could not be rebuilt." };
   }
   return body;
 }

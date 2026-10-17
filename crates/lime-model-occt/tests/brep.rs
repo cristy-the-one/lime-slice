@@ -30,6 +30,34 @@ fn bytes(reply: &Value) -> Vec<u8> {
         .expect("base64")
 }
 
+/// The tree's cache limits for as long as it lives, then the defaults again, even when an assertion fails.
+struct Limits;
+
+impl Limits {
+    fn set(shapes: usize, replies: usize) -> Limits {
+        lime_model_occt::set_tree_limits(shapes, replies);
+        Limits
+    }
+}
+
+impl Drop for Limits {
+    fn drop(&mut self) {
+        lime_model_occt::set_tree_limits(24, 8);
+    }
+}
+
+/// A saved solid's header line, split at its spaces.
+fn header_of(solid: &[u8]) -> Vec<String> {
+    let end = solid
+        .iter()
+        .position(|&b| b == b'\n')
+        .expect("a header line");
+    String::from_utf8_lossy(&solid[..end])
+        .split(' ')
+        .map(str::to_string)
+        .collect()
+}
+
 fn hole() -> Value {
     json!({ "kind": "hole", "origin": [10.0, 10.0, 20.0], "axis": [0.0, 0.0, -1.0], "radius": 3.0, "depth": 8.0 })
 }
@@ -122,13 +150,12 @@ fn a_saved_solid_reopens_as_its_step() {
         built["fingerprint"], on_read["fingerprint"],
         "the same edges by the same numbers"
     );
-    assert_eq!(
-        bytes(&ok(
-            json!({ "call": "export", "key": "b", "node": 0, "format": "brep" })
-        ))
-        .len(),
-        solid.len()
-    );
+    // Read as a root, the solid made every edge it has, as any root did: a blend picking the root's edges takes them all.
+    let as_root = bytes(&ok(
+        json!({ "call": "export", "key": "b", "node": 0, "format": "brep" }),
+    ));
+    assert_eq!(header_of(&as_root)[4], "*");
+    assert_eq!(header_of(&as_root)[..4], header_of(&solid)[..4]);
 
     // As a seed: the whole tree opens with step 2 from the saved solid, nothing above it replayed.
     let nodes = saved_nodes(&[
@@ -177,7 +204,7 @@ fn a_saved_solid_reopens_as_its_step() {
     assert_eq!(up["replayed"], 1);
 
     // The seed stays however many other solids come and go: building it again would replay every step above it.
-    lime_model_occt::set_tree_limits(0, 0);
+    let limits = Limits::set(0, 0);
     for node in 5..8 {
         ok(
             json!({ "call": "apply", "key": "c", "parent": node - 1, "node": node, "op": { "kind": "scale", "factor": 1.01 }, "chordMm": 0.1 }),
@@ -185,7 +212,7 @@ fn a_saved_solid_reopens_as_its_step() {
     }
     let held = ok(json!({ "call": "goto", "key": "c", "node": 2, "chordMm": 0.1 }));
     assert_eq!(held["replayed"], 0, "{held}");
-    lime_model_occt::set_tree_limits(24, 8);
+    drop(limits);
 
     // A seed that is not the step it names, a STEP, or damaged bytes is refused, and the step is replayed instead.
     let wrong = ok(
@@ -195,7 +222,7 @@ fn a_saved_solid_reopens_as_its_step() {
         wrong["seedRefused"]
             .as_str()
             .unwrap()
-            .starts_with("This step rebuilt differently"),
+            .starts_with("The saved solid is not this step"),
         "{wrong}"
     );
     assert_eq!(wrong["fingerprint"], one["fingerprint"]);
@@ -215,6 +242,24 @@ fn a_saved_solid_reopens_as_its_step() {
     );
     assert!(damaged["seedRefused"].is_string(), "{damaged}");
     assert_eq!(damaged["fingerprint"], two["fingerprint"]);
+    // A seed refused, then a step above it that no longer rebuilds: the failure says both.
+    let mut tampered = nodes.clone();
+    tampered[0]["fingerprint"]["volumeMm3"] = json!(1.0);
+    let both = call(
+        json!({ "call": "open", "key": "d", "primitive": root, "chordMm": 0.1, "nodes": tampered, "current": 2, "seed": { "node": 2, "dataB64": b64(&cut_short) } }),
+    );
+    assert_eq!(both["broken"], 1, "{both}");
+    assert!(both["seedRefused"].is_string(), "{both}");
+    // A step saved without a fingerprint (the MCP server saves none) takes its saved solid unchecked, and keeps its
+    // fingerprint from then on.
+    let mut unchecked = nodes.clone();
+    unchecked[1].as_object_mut().unwrap().remove("fingerprint");
+    let blind = ok(
+        json!({ "call": "open", "key": "d", "primitive": root, "chordMm": 0.1, "nodes": unchecked, "current": 2, "seed": { "node": 2, "dataB64": b64(&solid) } }),
+    );
+    assert!(blind.get("seedRefused").is_none(), "{blind}");
+    assert_eq!(blind["replayed"], 0);
+    assert_eq!(blind["fingerprint"], two["fingerprint"]);
     let root_damaged =
         call(json!({ "call": "open", "key": "e", "dataB64": b64(&cut_short), "chordMm": 0.1 }));
     assert!(root_damaged["error"].is_string(), "{root_damaged}");

@@ -5,9 +5,10 @@
  * support paint is written back as version 1 and omits `objects`. Support paint is
  * an optional field on each plate object, so a plate file without it still opens.
  * `brep` is that same kind of field: the object's solid, present only after Model has a session.
- * Version 3 is the version 2 plate whose `brep` is the solid in Open CASCADE's binary format as the
- * engine writes it (`isBrep`), not STEP; `migrations[2]` takes a version 2 file as it is, its `brep`
- * still STEP, which the engine reads too. An app before version 3 refuses a version 3 file.
+ * Version 3 is the version 2 plate whose `brep` this app writes in Open CASCADE's binary format, as the
+ * engine writes it, not STEP. A `brep` is told by its first bytes (`isBrep`), not by the version: a
+ * version 3 file can still carry a STEP `brep` not yet written again. `migrations[2]` takes a version 2
+ * file as it is. An app before version 3 refuses a version 3 file.
  * `modelTree` is another: the object's Model history. A damaged one is left out and the part opens.
  * `modelTools` keeps the trees of tools that left the plate while a saved join names them.
  * `modelPose` and `meshSeatMm` place the object in Model's shared space; without them it sits where its file put it.

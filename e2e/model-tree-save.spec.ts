@@ -49,7 +49,7 @@ function built(request: Body): Built {
 }
 
 /** The engine is mocked once for the page, so it outlives a reload as `serve` does. */
-async function openModel(page: Page, model = true, more: Pick<Parameters<typeof mockModelTree>[1], "goto" | "probe" | "seedRefused"> = {}): Promise<TreeMock> {
+async function openModel(page: Page, model = true, more: Pick<Parameters<typeof mockModelTree>[1], "goto" | "probe" | "seedRefused" | "held"> = {}): Promise<TreeMock> {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: ROOT.positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
@@ -264,6 +264,26 @@ test("a project saves the plate's step as the engine's binary solid, and reopens
   await expect(readout(page)).toContainText(volume(8));
   expect(tree.of("open").slice(opens), "no second open").toHaveLength(1);
   expect(tree.of("goto").at(-1)).toMatchObject({ key: since[0]!.key, node: 1 });
+});
+
+test("an imported STEP root is saved once as the engine's binary solid of it, under the file's name", async ({ page }) => {
+  const tree = await openModel(page, true, { held: true });
+  await cut(page, 8);
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
+  const doc = await saveAndReopen(page);
+  const root = (doc.objects as { modelTree: { rootStep: { name: string; bytesBase64: string } } }[])[0]!.modelTree.rootStep;
+  expect(root.name, "History still names the root by its file").toBe("plate.step");
+  expect(Buffer.from(root.bytesBase64, "base64").toString().startsWith("LIMEBREP "), "the root as the engine holds it").toBe(true);
+  expect(tree.of("export").filter((request) => request.node === 0), "written once, in the binary format").toEqual([expect.objectContaining({ format: "brep" })]);
+
+  const opens = tree.of("open").length;
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText(volume(8));
+  expect(tree.of("open").slice(opens).map((request) => request.dataB64), "the history opens from that root").toEqual([root.bytesBase64]);
+  await page.locator("#tabPrepare").click();
+  const exports = tree.of("export").length;
+  await saveAndReopen(page);
+  expect(tree.of("export").slice(exports).filter((request) => request.node === 0), "a root already in the binary format is not written again").toHaveLength(0);
 });
 
 test("a saved solid the engine refuses is said, and the history is rebuilt instead", async ({ page }) => {

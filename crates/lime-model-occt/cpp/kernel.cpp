@@ -1437,7 +1437,8 @@ TopoDS_Shape read_brep(const char* data, size_t size, std::string& error) {
     std::istream in(&buffer);
     TopoDS_Shape shape;
     BinTools::Read(shape, in);
-    if (shape.IsNull() || in.bad()) {
+    // A cut-short stream fails an extraction (failbit) rather than the stream (badbit).
+    if (shape.IsNull() || in.fail()) {
         error = "Open CASCADE could not read this solid";
         return {};
     }
