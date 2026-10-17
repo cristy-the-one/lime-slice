@@ -10,8 +10,59 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The installer jobs start together. When each one looked for the draft and
+  # created it if missing, two of them could both create one, and v2.0.1's
+  # installers were split across two drafts. This job creates the draft once.
+  draft:
+    name: draft release
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    outputs:
+      id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag push names the tag. A manual run uses v<version> from tauri.conf.json.
+      - name: Create or find the draft release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$REF_TAG" ]; then
+            tag="$REF_TAG"
+          else
+            tag="v$(jq -r .version src-tauri/tauri.conf.json)"
+          fi
+          # The tags endpoint does not return drafts, so search the list.
+          id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)"
+          if [ -z "$id" ]; then
+            cat > "$RUNNER_TEMP/body.md" <<'BODY'
+          Unsigned desktop builds. macOS Gatekeeper and Windows SmartScreen will warn because these artifacts are not signed or notarized.
+          Linux ships a .deb and an .AppImage. macOS ships one .dmg for Apple silicon and one for Intel. Windows ships an NSIS installer.
+          Code signing, notarization, and the updater plugin are not configured.
+          BODY
+            id="$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$tag" \
+              -f target_commitish="$GITHUB_SHA" \
+              -f name="Lime Slice $tag" \
+              -F body=@"$RUNNER_TEMP/body.md" \
+              -F draft=true \
+              -F prerelease=false \
+              --jq .id)"
+            echo "Created draft release $id for $tag"
+          else
+            echo "Using existing release $id for $tag"
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   installers:
     name: unsigned desktop installers (${{ matrix.label }})
+    needs: draft
     permissions:
       contents: write
     runs-on: ${{ matrix.platform }}
@@ -181,19 +232,13 @@ jobs:
         shell: pwsh
         run: ./tools/windows/stage_crt.ps1 -Dest src-tauri/resources/crt
 
-      - name: Build unsigned installers and upload the draft release
+      - name: Build unsigned installers and upload them to the draft release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
-          releaseName: Lime Slice ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
-          releaseBody: |
-            Unsigned desktop builds. macOS Gatekeeper and Windows SmartScreen will warn because these artifacts are not signed or notarized.
-            Linux ships a .deb and an .AppImage. macOS ships one .dmg for Apple silicon and one for Intel. Windows ships an NSIS installer.
-            Code signing, notarization, and the updater plugin are not configured.
-          releaseDraft: true
-          prerelease: false
+          # The draft job created the release, so this job only uploads to it.
+          releaseId: ${{ needs.draft.outputs.id }}
           uploadUpdaterJson: false
           uploadUpdaterSignatures: false
           retryAttempts: 3
