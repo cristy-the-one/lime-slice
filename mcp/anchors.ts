@@ -5,6 +5,7 @@
 import { eulerOrient } from "../src/mesh-place.ts";
 import { primitiveBox } from "../src/model-feasibility.ts";
 import type { ModelOp } from "../src/model-tree.ts";
+import { splinePoints } from "./sweep.ts";
 
 type V3 = [number, number, number];
 export interface Box {
@@ -48,6 +49,30 @@ function circleBox(box: Box | null, centre: readonly number[], normal: V3, radiu
   return grow(grow(box, centre.map((c, i) => c - reach[i]!)), centre.map((c, i) => c + reach[i]!));
 }
 
+/**
+ * A profile's outline as points: its own points, or for a smooth one points along the splines the kernel draws
+ * through them (closed, or broken at its corners), so a box of them holds the curve where it bulges past its points.
+ */
+function reach(profile: readonly (readonly number[])[], smooth: boolean | undefined, corners: readonly number[] = []): [number, number][] {
+  const points = profile.map(([u, v]) => [u!, v!, 0] as [number, number, number]);
+  if (!smooth || points.length < 3) return points.map(([u, v]) => [u, v]);
+  const runs: [number, number, number][][] = [];
+  const sharp = [...new Set(corners)].filter((c) => c >= 0 && c < points.length).sort((a, b) => a - b);
+  if (sharp.length === 0) runs.push([...points, points[0]!]);
+  else {
+    sharp.forEach((from, k) => {
+      const to = sharp[(k + 1) % sharp.length]!;
+      const run = [points[from]!];
+      for (let i = from; i !== to; ) {
+        i = (i + 1) % points.length;
+        run.push(points[i]!);
+      }
+      runs.push(run);
+    });
+  }
+  return runs.flatMap((run) => (run.length > 2 ? splinePoints(run, 12) : run)).map(([u, v]) => [u, v]);
+}
+
 /** The box of the tool a stored op applies, in the solid's frame, or null for an op with no tool of its own. */
 export function opBox(op: ModelOp): Box | null {
   switch (op.kind) {
@@ -58,7 +83,7 @@ export function opBox(op: ModelOp): Box | null {
       const length = Math.abs(op.depth);
       const start = op.symmetric ? -length / 2 : Math.min(op.depth, 0);
       let box: Box | null = null;
-      for (const [pu, pv] of op.profile) for (const pw of [start, start + length]) box = grow(box, along(op.origin, [[u, pu], [v, pv], [w, pw]]));
+      for (const [pu, pv] of reach(op.profile, op.smooth, op.corners)) for (const pw of [start, start + length]) box = grow(box, along(op.origin, [[u, pu], [v, pv], [w, pw]]));
       return box;
     }
     case "revolve": {
@@ -69,7 +94,7 @@ export function opBox(op: ModelOp): Box | null {
       const dir: V3 = [0, 1, 2].map((i) => (u[i]! * du + v[i]! * dv) / dl) as V3;
       const base = along(op.origin, [[u, au], [v, av]]);
       let box: Box | null = null;
-      for (const [pu, pv] of op.profile) {
+      for (const [pu, pv] of reach(op.profile, op.smooth, op.corners)) {
         const p = along(op.origin, [[u, pu], [v, pv]]);
         const rel = [p[0] - base[0], p[1] - base[1], p[2] - base[2]];
         const t = rel[0]! * dir[0] + rel[1]! * dir[1] + rel[2]! * dir[2];
@@ -84,7 +109,7 @@ export function opBox(op: ModelOp): Box | null {
       for (const section of op.sections) {
         const [u, v, w] = axes(section.turn);
         if (section.radius !== undefined) box = circleBox(box, section.origin, w, Math.max(section.radius, section.radiusV ?? 0));
-        else for (const [pu, pv] of section.profile ?? []) box = grow(box, along(section.origin, [[u, pu], [v, pv]]));
+        else for (const [pu, pv] of reach(section.profile ?? [], section.smooth, section.corners)) box = grow(box, along(section.origin, [[u, pu], [v, pv]]));
       }
       return box;
     }

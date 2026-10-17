@@ -25,9 +25,10 @@ import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
 import { applyRequest, crossEditRequest, exportRequest, extrudeOp, gotoRequest, joinOp, loftOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
 import { sweepSections, type SweepSpec } from "./sweep.ts";
+import { thinWalls } from "./thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "./anchors.ts";
 import { expandOps, type PartDef } from "./macro.ts";
-import { applyPose, IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
+import { applyPose, IDENTITY_POSE, inversePose, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
 import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type EdgePick, type Fingerprint, type LoftSection, type ModelOp, type ModelTree, type NodeId, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
@@ -56,7 +57,7 @@ import { mirror, type BridgeLink } from "./bridge-client.ts";
 import { occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { layerPaths, pathsPng, pathsSvg } from "./layer-out.ts";
-import { renderMesh, readCamera, type Camera, type CameraSpec } from "./render.ts";
+import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { pngImage, withImages, type InlineImage } from "./inline.ts";
 import { printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
@@ -2454,8 +2455,14 @@ export class Session {
     if (!obj) return { ok: false, reason: "Load a mesh first." };
     const committed = await this.commitObject(obj);
     if (committed) return { ok: false, reason: committed };
-    const many = Array.isArray(input.views);
-    const asked = many ? input.views as unknown[] : [{ camera: input.camera, direction: input.direction, up: input.up }];
+    const turntable = typeof input.turntable === "number" ? Math.round(input.turntable) : 0;
+    const many = Array.isArray(input.views) || turntable > 1;
+    // A turntable: views all round the part, a little from above, the first from the front.
+    const around = Array.from({ length: turntable }, (_, k) => {
+      const a = (k / turntable) * 2 * Math.PI;
+      return { direction: [Math.round(-Math.sin(a) * 1e4) / 1e4, Math.round(-Math.cos(a) * 1e4) / 1e4, 0.45] };
+    });
+    const asked = turntable > 1 ? around : many ? input.views as unknown[] : [{ camera: input.camera, direction: input.direction, up: input.up }];
     const cameras: { label: string; camera: Camera | CameraSpec }[] = [];
     for (const raw of asked) {
       const read = readCamera(raw);
@@ -2468,22 +2475,66 @@ export class Session {
       if ("reason" in made) return { ok: false, reason: made.reason };
       ghost = made;
     }
-    const mesh = obj.solid && obj.solid.positions.length >= 9 ? obj.solid.positions : this.placed(obj).positions;
+    const solidMesh = !!obj.solid && obj.solid.positions.length >= 9;
+    const mesh = solidMesh ? obj.solid!.positions : this.placed(obj).positions;
+    const looks = this.renderLooks(obj, input, solidMesh);
+    if ("reason" in looks) return { ok: false, reason: looks.reason };
     const stem = typeof input.name === "string" ? input.name.replace(/\.png$/i, "") : obj.name;
     const edge = typeof input.longEdge === "number" ? input.longEdge : 768;
     const views: { camera: string; path: string; width: number; height: number }[] = [];
     const pictures: InlineImage[] = [];
     cameras.forEach(({ label, camera }, index) => {
-      const drawn = renderMesh(mesh, camera, edge, ghost?.mesh);
+      const drawn = renderMesh(mesh, camera, edge, ghost?.mesh, looks.options);
       const file = many ? `${stem}-${label}${cameras.filter((row) => row.label === label).length > 1 ? `-${index + 1}` : ""}.png` : typeof input.name === "string" ? input.name : `${obj.name}-${label}.png`;
       const path = resolveWrite(file, ".png");
       writeFileSync(path, drawn.png);
       views.push({ camera: label, path, width: drawn.width, height: drawn.height });
       pictures.push(pngImage(drawn.png));
     });
-    const note = ghost ? { ghost: { colour: "orange", touchesSolid: ghost.touches } } : {};
+    const note = { ...(ghost ? { ghost: { colour: "orange", touchesSolid: ghost.touches } } : {}), ...(looks.legend.length ? { colours: looks.legend } : {}) };
     const body = many ? { ok: true, views, ...note } : { ok: true, ...views[0]!, ...note };
     return input.inline === false ? body : withImages(body, pictures);
+  }
+
+  /**
+   * render_view's highlight, colours, section, and smooth, as the renderer takes them: label boxes and the section
+   * plane in the solid's frame, where its mesh is.
+   */
+  private renderLooks(obj: PlateObject, input: Record<string, unknown>, solidMesh: boolean): { options: RenderOptions; legend: Record<string, unknown>[] } | { reason: string } {
+    const options: RenderOptions = { smooth: input.smooth !== false };
+    const legend: Record<string, unknown>[] = [];
+    const wanted: { label: string; rgb: [number, number, number] }[] = [];
+    const highlight = typeof input.highlight === "string" ? [input.highlight] : Array.isArray(input.highlight) ? input.highlight.map(String) : [];
+    for (const label of highlight) wanted.push({ label, rgb: [255, 135, 30] });
+    for (const [label, hex] of Object.entries((input.colours ?? {}) as Record<string, unknown>)) {
+      const match = /^#?([0-9a-f]{6})$/i.exec(String(hex));
+      if (!match) return { reason: `colours.${label} is a colour like "#c86450".` };
+      const n = parseInt(match[1]!, 16);
+      wanted.push({ label, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] });
+    }
+    if ((wanted.length || input.section !== undefined) && !solidMesh) return { reason: "highlight, colours, and section need a Model solid. Open the Model history first (solid_new or model_build)." };
+    if (wanted.length) {
+      options.tints = [];
+      for (const { label, rgb } of wanted) {
+        const box = this.labelBox(obj, label, true);
+        if (!box) return { reason: `No step is labelled "${label}" with a tool to measure. model_anchors lists the labels.` };
+        options.tints.push({ min: box.min, max: box.max, rgb });
+        legend.push({ label, rgb: `#${rgb.map((v) => v.toString(16).padStart(2, "0")).join("")}` });
+      }
+    }
+    if (input.section !== undefined) {
+      const spec = input.section as { normal?: unknown; point?: unknown };
+      const back = inversePose(obj.modelPose);
+      const bounds = obj.solid!.bounds;
+      const centre = [0, 1, 2].map((i) => (bounds.min[i]! + bounds.max[i]!) / 2) as [number, number, number];
+      const normal = readVec3(spec.normal, [0, -1, 0]);
+      if (Math.hypot(...normal) < 1e-9) return { reason: "section.normal needs a direction." };
+      options.section = {
+        point: spec.point === undefined ? centre : applyPose(back, readVec3(spec.point, [0, 0, 0])),
+        normal: turnDir(back, normal),
+      };
+    }
+    return { options, legend };
   }
 
   /** The tool shape of a boolean op, for a preview: it is drawn, never applied. */
@@ -2512,7 +2563,25 @@ export class Session {
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid || obj.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };
     const printer = this.printer();
-    return { ...printCheck({ positions: obj.solid.positions, overhangDeg: typeof input.overhangDeg === "number" ? input.overhangDeg : 45, buildMm: [printer.bedX, printer.bedY, printer.bedZ] }), printer: printer.name };
+    const checked = printCheck({ positions: obj.solid.positions, overhangDeg: typeof input.overhangDeg === "number" ? input.overhangDeg : 45, buildMm: [printer.bedX, printer.bedY, printer.bedZ] });
+    // Two lines of the nozzle's width is the thinnest wall a slicer fills; thinner prints as one line or not at all.
+    const nozzle = this.library.nozzleMm || 0.4;
+    const minWallMm = typeof input.minWallMm === "number" ? input.minWallMm : Math.round(nozzle * 2 * 100) / 100;
+    const thin = thinWalls(obj.solid.positions, minWallMm);
+    // In the solid's frame, as the overhang regions are.
+    const regions = thin.regions;
+    const warnings = [...(checked.warnings as string[])];
+    if (regions.length) {
+      const worst = regions.reduce((a, b) => (b.thinnestMm < a.thinnestMm ? b : a));
+      warnings.push(`Walls thinner than ${minWallMm} mm cover ${thin.areaMm2} mm², thinnest ${worst.thinnestMm} mm at (${worst.centre.join(", ")})${worst.thinnestMm < nozzle ? ": thinner than the nozzle, so it will not print" : ""}.`);
+    }
+    return {
+      ...checked,
+      thinWalls: { minWallMm, nozzleMm: nozzle, areaMm2: thin.areaMm2, regions, sampledPoints: thin.sampled },
+      warnings,
+      notChecked: [],
+      printer: printer.name,
+    };
   }
 
   /** A probe, and what the edit would do to the solid when the modeler sent the result back. */
@@ -3544,13 +3613,14 @@ export class Session {
   }
 
   /**
-   * The box, in the frame ops are typed in, of the tools the steps a label names applied: a step's own label, each
-   * step of a composite labelled "label k/n", or a batch's label, on the path to the current step. "part" is the solid.
+   * The box, in the frame ops are typed in, of the tools the steps a label names applied: a step's own label, every
+   * step named under it ("label k/n" of a composite, "label body" of a placed part), or a batch's label, on the path to
+   * the current step. "part" is the solid.
    */
-  private labelBox(obj: PlateObject, label: string): Box | null {
+  private labelBox(obj: PlateObject, label: string, solidFrame = false): Box | null {
     const tree = obj.tree;
     if (!tree) return null;
-    const toTyped = (p: [number, number, number]) => this.typedPoint(obj, applyPose(obj.modelPose, p));
+    const toTyped = solidFrame ? (p: [number, number, number]) => p : (p: [number, number, number]) => this.typedPoint(obj, applyPose(obj.modelPose, p));
     if (label.trim().toLowerCase() === "part") return obj.solid ? movedBox(obj.solid.bounds as Box, toTyped) : null;
     const wanted = label.trim().toLowerCase();
     const path: number[] = [];
@@ -3566,7 +3636,8 @@ export class Session {
       const row = tree.nodes.get(node);
       if (!row?.op) continue;
       const name = row.label.toLowerCase();
-      const piece = name.startsWith(`${wanted} `) && /^\d+\/\d+$/.test(name.slice(wanted.length + 1));
+      // "fish 0" names "fish 0 body" and "fish 0 tail", the steps a use placed under it, and a composite's "label k/n".
+      const piece = name.startsWith(`${wanted} `);
       if (name !== wanted && !piece && !grouped.has(node)) continue;
       const own = opBox(row.op);
       if (own) box = unionBox(box, movedBox(own, toTyped));

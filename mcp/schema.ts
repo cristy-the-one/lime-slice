@@ -181,6 +181,18 @@ const repeatFields = (inner: Record<string, unknown>) => ({
           angleDeg: { type: "number", description: "Default 360." },
         },
       },
+      path: {
+        type: "object",
+        additionalProperties: false,
+        required: ["points", "count"],
+        description: "Along a smooth curve; the op is typed at the first point.",
+        properties: {
+          points: { type: "array", minItems: 2, maxItems: 100, items: vec3, description: "[x, y, z]." },
+          count: { type: "integer", minimum: 1, maximum: 200, description: "Evenly spaced, ends included." },
+          align: { type: "boolean", description: "Turn with the curve (default true)." },
+          closed: { type: "boolean", description: "Back round to the first point." },
+        },
+      },
       label,
     },
   },
@@ -205,7 +217,7 @@ const outerRepeat = repeatFields({ type: "object", description: "Op to repeat." 
 
 export const OP_HELP = [
   "One edit, by kind; mm and degrees on the workplane, else the part frame.",
-  "pocket, boss, texture, array, ribs, pattern, and mirror are composite: checked step by step, one undo.",
+  "pocket, boss, texture, array, ribs, text, pattern, and mirror are composite: checked step by step, one undo.",
   "loft and sweep make organic shapes: tubes, bodies, horns, leaves.",
   "Any [x, y, z] may be {anchor:\"label\", point:\"top\", offset:[0, 0, 1]}: a point of that step's box (model_anchors).",
   "In op lists, {kind:\"each\", var:\"i\", count | values | from, to, step, ops} repeats ops; {kind:\"use\", part, with} places a model_define part.",
@@ -306,8 +318,8 @@ const op = {
   ],
 };
 
-const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror", "array", "ribs"]);
-const REPEATABLE = new Set(["boolean", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror"]);
+const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror", "array", "ribs", "text"]);
+const REPEATABLE = new Set(["boolean", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror", "text"]);
 
 /** The op schema model_apply lists. Other Model tools name it and are checked against it here. */
 export const OP_SCHEMA = op;
@@ -475,6 +487,27 @@ const surfaceCommon = {
 };
 /** Primitives repeated over a face, kept to its outline: tiles, studs, ribs, grooves. */
 const surfaceOps = [
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "text", "height", "depth"],
+    properties: {
+      kind: { const: "text" },
+      text: { type: "string", minLength: 1, maxLength: 80, description: "A-Z, 0-9, space, -+.,:!?/'&." },
+      height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Capitals, mm." },
+      strokeWidth: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Default height × 0.15." },
+      spacing: { type: "number", minimum: 0, maximum: 100, description: "Default height / 3." },
+      align: { enum: ["centre", "left"], description: "at is the middle or start." },
+      at: { type: "object", description: "{u, v} on the face." },
+      faceIndex,
+      face: faceSelector,
+      from: surfaceCommon.from,
+      op: surfaceCommon.op,
+      depth: surfaceCommon.depth,
+      angleDeg: surfaceCommon.angleDeg,
+      label,
+    },
+  },
   {
     type: "object",
     additionalProperties: false,
@@ -1094,13 +1127,14 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_check",
-    description: "Before slicing, the solid as it stands on the bed: overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume. Thin walls are not checked.",
+    description: "Before slicing, the solid as it stands on the bed: overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume, and walls thinner than two nozzle widths, each with where it is.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         object: handle,
         overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical. Default 45." },
+        minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
       },
     },
   },
@@ -1175,7 +1209,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        name: { type: "string", minLength: 1, maxLength: 60 },
+        name: { type: "string", minLength: 1, maxLength: 60, description: "Part name." },
         params: { type: "object", description: "Defaults, numbers or expressions." },
         ops: { type: "array", maxItems: 400, items: { type: "object" }, description: "The part's ops, as model_build takes them." },
         clear: { type: "boolean", description: "Forget every part first." },
@@ -1293,7 +1327,12 @@ export const TOOLS: ToolSpec[] = [
         direction: { ...vec3, description: "Part toward camera." },
         up: { ...vec3, description: "Picture up. Default Z." },
         views: { type: "array", minItems: 1, maxItems: 6, description: "Names or {direction, up}.", items: {} },
+        turntable: { type: "integer", minimum: 2, maximum: 12, description: "That many views all round, in place of views." },
         op: { type: "object", description: "Boolean op. Drawn only." },
+        highlight: { description: "A label, or a list: those steps in orange." },
+        colours: { type: "object", description: "Label to colour, e.g. {\"fish\": \"#b08040\"}." },
+        section: { type: "object", additionalProperties: false, description: "Cut away the side normal points to; the inside shows red.", properties: { normal: vec3, point: { ...vec3, description: "Default: the part's centre." } } },
+        smooth: { type: "boolean", description: "Smooth shading on curves (default true)." },
         inline: { type: "boolean", description: "Default true." },
         name: { type: "string", minLength: 1 },
         longEdge: { type: "integer", minimum: 32, maximum: 1024 },

@@ -213,7 +213,7 @@ check("a refused probe has no metrics", refused.ok === false && refused.metrics 
 // model_check.
 const cubeCheck = await call("model_check", { object });
 check("a cube on the bed has contact and no overhang", cubeCheck.ok === true && (cubeCheck.bedContact as { areaMm2: number }).areaMm2 > 100 && (cubeCheck.overhang as { areaMm2: number }).areaMm2 === 0 && (cubeCheck.islands as unknown[]).length === 0, JSON.stringify(cubeCheck));
-check("model_check says what it did not check", (cubeCheck.notChecked as string[]).includes("thin walls"));
+check("a cube has no thin walls", (cubeCheck.thinWalls as { regions: unknown[]; sampledPoints: number }).regions.length === 0 && (cubeCheck.thinWalls as { sampledPoints: number }).sampledPoints > 0, JSON.stringify(cubeCheck.thinWalls));
 check("the cube fits the bed", (cubeCheck.fit as { fits: boolean }).fits === true && typeof cubeCheck.printer === "string");
 
 const build: [number, number, number] = [220, 220, 250];

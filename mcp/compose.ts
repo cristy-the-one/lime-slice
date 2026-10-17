@@ -6,6 +6,8 @@
 import { eulerOrient, matMul, orientEuler, type Mat3 } from "../src/mesh-place.ts";
 import { isPrimitiveKind, primitiveSpec, turnCentre, type PrimitiveFields, type PrimitiveKind, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { framePose, planePrimitive, planePoint, type Workplane } from "../src/workplane.ts";
+import { pathSamples } from "./sweep.ts";
+import { textStrokes } from "./text.ts";
 
 type Vec3 = [number, number, number];
 export type BooleanKind = "cut" | "fuse" | "common";
@@ -17,7 +19,7 @@ export interface Piece {
 }
 
 /** The kinds that expand. A plain `boolean` is a piece of one. */
-export const COMPOSITE_KINDS = ["pattern", "mirror", "pocket", "boss", "texture", "array", "ribs"] as const;
+export const COMPOSITE_KINDS = ["pattern", "mirror", "pocket", "boss", "texture", "array", "ribs", "text"] as const;
 export type CompositeKind = (typeof COMPOSITE_KINDS)[number];
 
 export function isComposite(kind: unknown): kind is CompositeKind {
@@ -175,7 +177,9 @@ function patternMotions(spec: Record<string, unknown>, plane: Workplane): Motion
   const still: Motion = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], reflect: false };
   const linear = spec.linear as Record<string, unknown> | undefined;
   const polar = spec.polar as Record<string, unknown> | undefined;
-  if (!!linear === !!polar) return { reason: "A pattern needs linear or polar, one of them." };
+  const path = spec.path as Record<string, unknown> | undefined;
+  if ([linear, polar, path].filter(Boolean).length !== 1) return { reason: "A pattern needs one of linear, polar, or path." };
+  if (path) return pathMotions(path, plane);
   if (linear) {
     const count = Math.round(numOr(linear.count, 0));
     const count2 = Math.round(numOr(linear.count2, 1));
@@ -190,9 +194,10 @@ function patternMotions(spec: Record<string, unknown>, plane: Workplane): Motion
     }
     return out;
   }
-  const count = Math.round(numOr(polar!.count, 0));
+  if (!polar) return { reason: "A pattern needs linear, polar, or path." };
+  const count = Math.round(numOr(polar.count, 0));
   if (count < 1) return { reason: "A pattern count is at least 1." };
-  const axis = unit(planeVector(plane, readVec3(polar!.axis, [0, 0, 1])));
+  const axis = unit(planeVector(plane, readVec3(polar.axis, [0, 0, 1])));
   if (!axis) return { reason: "The polar axis needs a direction." };
   const centre = planePoint(plane, readVec3(polar!.centre, [0, 0, 0]));
   const total = numOr(polar!.angleDeg, 360);
@@ -204,6 +209,71 @@ function patternMotions(spec: Record<string, unknown>, plane: Workplane): Motion
     out.push({ m, t: [centre[0] - turned[0], centre[1] - turned[1], centre[2] - turned[2]], reflect: false });
   }
   return out;
+}
+
+/**
+ * Copies along a smooth curve through `points`, evenly spaced, `count` of them. The op is typed at the first point;
+ * with `align` (default true) each copy also turns as the curve does, so a scale or a fin follows a body.
+ */
+function pathMotions(path: Record<string, unknown>, plane: Workplane): Motion[] | { reason: string } {
+  const points = (Array.isArray(path.points) ? path.points : []).map((p) => planePoint(plane, readVec3(p, [NaN, NaN, NaN])));
+  const count = Math.round(numOr(path.count, 0));
+  const samples = pathSamples(points as Vec3[], count, path.closed === true);
+  if ("reason" in samples) return samples;
+  const first = samples[0]!;
+  const align = path.align !== false;
+  return samples.map(({ point, tangent }) => {
+    const m = align ? turnBetween(first.tangent, tangent) : ([1, 0, 0, 0, 1, 0, 0, 0, 1] as Mat3);
+    const turned = mulVec(m, first.point);
+    return { m, t: [point[0] - turned[0], point[1] - turned[1], point[2] - turned[2]] as Vec3, reflect: false };
+  });
+}
+
+/** The smallest turn taking unit vector a onto unit vector b. */
+function turnBetween(a: Vec3, b: Vec3): Mat3 {
+  const c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const axis = unit([a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]);
+  if (!axis) {
+    if (c > 0) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const side = unit(Math.abs(a[0]) < 0.9 ? [0, -a[2], a[1]] : [-a[2], 0, a[0]])!;
+    return axisTurn(side, 180);
+  }
+  return axisTurn(axis, (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI);
+}
+
+/**
+ * Lettering on a face: `text` at cap `height`, strokes `strokeWidth` wide (default 0.15 of the height), centred at
+ * `at` {u, v} from where `from` puts U, V = 0, reading along U. Raised `depth` (op fuse, the default) or cut.
+ */
+function textPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] | { reason: string } {
+  const frame = faceFrame(spec, ctx);
+  if ("reason" in frame) return frame;
+  const text = typeof spec.text === "string" ? spec.text : "";
+  if (!text.trim()) return { reason: "Text needs text." };
+  if ([...text].length > 80) return { reason: "Text takes at most 80 characters a step; use several." };
+  const height = numOr(spec.height, 0);
+  const depth = numOr(spec.depth, 0);
+  if (!(height > 0) || !(depth > 0)) return { reason: "Text needs a height (the capitals') and a depth, in millimetres." };
+  const width = numOr(spec.strokeWidth, height * 0.15);
+  if (!(width > 0) || width > height / 2) return { reason: "strokeWidth is above 0 and at most half the height." };
+  const strokes = textStrokes(text, height, width, typeof spec.spacing === "number" ? spec.spacing : undefined, spec.align === "left" ? "left" : "centre");
+  if ("reason" in strokes) return strokes;
+  const shift = anchorOf(spec.from, frame.extent);
+  if ("reason" in shift) return shift;
+  const at = (spec.at ?? {}) as { u?: unknown; v?: unknown };
+  const u0 = numOr(at.u, 0) + shift[0];
+  const v0 = numOr(at.v, 0) + shift[1];
+  const turn = numOr(spec.angleDeg, 0);
+  const op: BooleanKind = spec.op === "cut" ? "cut" : "fuse";
+  const { low, tall } = cellSpan(op, depth);
+  const pieces: Piece[] = strokes.map((stroke) => {
+    const c = turnUV(stroke.centre, turn);
+    return {
+      op,
+      spec: planePrimitive({ primitive: "box", origin: [u0 + c[0] - stroke.length / 2, v0 + c[1] - width / 2, low], size: [stroke.length, width, tall], radius: 0, height: 0, turn: [0, 0, stroke.angleDeg + turn] }, frame.plane),
+    };
+  });
+  return pieces.length > MAX_PIECES ? { reason: `This text makes more than ${MAX_PIECES} strokes. Split it.` } : pieces;
 }
 
 /** The reflection a mirror makes: a plane through `origin` with `normal`, or "x", "y", "z" for the frame's planes. */
@@ -625,6 +695,7 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
   if (kind === "texture") return texturePieces(raw, ctx);
   if (kind === "array") return arrayPieces(raw, ctx);
   if (kind === "ribs") return ribPieces(raw, ctx);
+  if (kind === "text") return textPieces(raw, ctx);
   if (kind === "pattern" || kind === "mirror") {
     const inner = raw.op;
     if (!inner || typeof inner !== "object") return { reason: `A ${kind} needs the op it repeats.` };
