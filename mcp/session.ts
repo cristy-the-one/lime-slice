@@ -87,6 +87,8 @@ const SLICE_WAIT_MAX_S = 120;
 const STALE_SLICE = "The printer, filament, settings, or placement changed after this slice. Slice again.";
 const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a mesh.";
 const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the current handles.";
+/** Calls that can outlast a client's request timeout: the autosave is written before they start. */
+const LONG_CALLS = new Set(["model_apply_batch", "model_build", "model_edit", "project_open", "mesh_import"]);
 const NAME_LIMIT = 120;
 /** Tools whose op fields may be text expressions. */
 
@@ -533,8 +535,9 @@ export class Session {
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
     const changes = !annotationsFor(name).readOnlyHint;
-    // The plate as it stood before this call is on disk before the call can run long.
-    if (changes && this.inflight === 0) this.flushAutosave();
+    // The plate as it stood before a call that can run long is on disk before it starts; others rely on the save after.
+    const long = LONG_CALLS.has(name) || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
+    if (changes && this.inflight === 0 && long) this.flushAutosave();
     this.inflight += 1;
     let result: ReturnType<Session["dispatch"]>;
     try {
