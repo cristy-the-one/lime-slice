@@ -137,7 +137,7 @@ eq("the first box is Box 1", primitiveName([], "box"), "Box 1");
 eq("the next box is Box 2", primitiveName(["Box 1", "Cone 1", "bracket.step"], "box"), "Box 2");
 eq("a gap is filled first", primitiveName(["Cone 1", "Cone 3"], "cone"), "Cone 2");
 eq("each kind counts its own", primitiveName(["Box 1", "Box 2"], "torus"), "Torus 1");
-eq("every kind has a name", PRIMITIVES.map((entry) => primitiveName([], entry.kind)), ["Box 1", "Cylinder 1", "Sphere 1", "Cone 1", "Torus 1", "Wedge 1", "Polygon 1", "Tube 1"]);
+eq("every kind has a name", PRIMITIVES.map((entry) => primitiveName([], entry.kind)), ["Box 1", "Cylinder 1", "Sphere 1", "Ellipsoid 1", "Cone 1", "Torus 1", "Wedge 1", "Polygon 1", "Tube 1"]);
 
 if (failed) {
   console.error(`model-primitive: ${failed} failed`);
