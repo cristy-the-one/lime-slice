@@ -11,7 +11,11 @@ import { legacyStockEnd, legacyStockStart, spliceText } from "../src/machine-gco
 import { printerGcode } from "../src/print-file.ts";
 import { type Heat } from "../src/ui/machine-library.ts";
 
+/** Set by `tools/mcp/bundle.mjs`. A checkout runs the TypeScript and reads package.json instead. */
+declare const __LIME_MCP_VERSION__: string | undefined;
+
 export function appVersion(): string {
+  if (typeof __LIME_MCP_VERSION__ === "string") return __LIME_MCP_VERSION__;
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
   return pkg.version;
 }

@@ -23,23 +23,27 @@ jobs:
             platform: ubuntu-24.04
             target: ""
             bridge: liblime_model_occt.so
+            engine: liblime_mcp_engine.so
             # deb is the local Linux default; the release also builds an AppImage.
             args: --bundles deb,appimage --config src-tauri/tauri.occt.json
           - label: macos-arm
             platform: macos-latest
             target: aarch64-apple-darwin
             bridge: liblime_model_occt.dylib
+            engine: liblime_mcp_engine.dylib
             args: --target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
           - label: macos-intel
             platform: macos-latest
             target: x86_64-apple-darwin
             bridge: liblime_model_occt.dylib
+            engine: liblime_mcp_engine.dylib
             # Cross-compiled on the Apple Silicon runner. Two dmgs, not one universal binary.
             args: --target x86_64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
           - label: windows
             platform: windows-latest
             target: ""
             bridge: lime_model_occt.dll
+            engine: lime_mcp_engine.dll
             # tauri.crt.json ships the Visual C++ runtime beside the exe.
             args: --bundles nsis --config src-tauri/tauri.occt.json --config src-tauri/tauri.crt.json
     env:
@@ -147,6 +151,10 @@ jobs:
           cargo build -p lime-model-occt "${args[@]}"
           mkdir -p src-tauri/resources/occt/lib
           cp "$target_dir/${{ matrix.bridge }}" src-tauri/resources/occt/lib/
+          # The MCP server's engine ships beside its bundle, in resources/mcp.
+          cargo build -p lime-mcp-engine "${args[@]}"
+          mkdir -p src-tauri/resources/mcp
+          cp "$target_dir/${{ matrix.engine }}" src-tauri/resources/mcp/
 
       - name: Build the Open CASCADE bridge (Windows)
         if: matrix.platform == 'windows-latest'
@@ -156,6 +164,15 @@ jobs:
           cargo build -p lime-model-occt --release
           New-Item -ItemType Directory -Force -Path src-tauri/resources/occt/lib | Out-Null
           Copy-Item target\release\lime_model_occt.dll src-tauri/resources/occt/lib/
+          # The MCP server's engine ships beside its bundle, in resources/mcp.
+          cargo build -p lime-mcp-engine --release
+          New-Item -ItemType Directory -Force -Path src-tauri/resources/mcp | Out-Null
+          Copy-Item target\release\lime_mcp_engine.dll src-tauri/resources/mcp/
+
+      # The installer carries the MCP server as plain JavaScript for the user's own
+      # Node 22.6+, so Claude's config can point at the install instead of a checkout.
+      - name: Bundle the MCP server
+        run: npm run build:mcp
 
       # Without these a Windows install that lacks the VC++ Redistributable
       # stops at start with "MSVCP140.dll was not found".

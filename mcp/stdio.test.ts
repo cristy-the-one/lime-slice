@@ -15,7 +15,9 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { engineCandidates } from "./engine.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const server = fileURLToPath(new URL("./server.ts", import.meta.url));
+// LIME_MCP_SERVER runs the same checks against another server file, such as the installer's bundle.
+const server = process.env.LIME_MCP_SERVER || fileURLToPath(new URL("./server.ts", import.meta.url));
+const serverArgs = server.endsWith(".mjs") ? [server] : ["--experimental-strip-types", server];
 const cube = fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url));
 
 let failed = 0;
@@ -50,7 +52,7 @@ function childEnv(extra: Record<string, string>, fake = true): Record<string, st
 }
 
 function startRaw(extra: Record<string, string> = {}, fake = true) {
-  const child = spawn(process.execPath, ["--experimental-strip-types", server], {
+  const child = spawn(process.execPath, serverArgs, {
     cwd: root,
     env: childEnv(extra, fake),
     stdio: ["pipe", "pipe", "pipe"],
@@ -98,7 +100,7 @@ function startRaw(extra: Record<string, string> = {}, fake = true) {
 
 const sdk = new StdioClientTransport({
   command: process.execPath,
-  args: ["--experimental-strip-types", server],
+  args: serverArgs,
   cwd: root,
   env: childEnv({ LIME_MCP_POLLS_UNTIL_DONE: "100000" }),
   stderr: "pipe",

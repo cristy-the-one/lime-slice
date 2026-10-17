@@ -189,6 +189,10 @@ jobs:
           LIME_MCP_GOLDEN=1 node --experimental-strip-types mcp/golden.test.ts
           node --experimental-strip-types mcp/native-load.test.ts
           node --experimental-strip-types mcp/stdio.test.ts
+          # The installer's bundle: plain JavaScript with the engine beside it, as an install lays it out.
+          npm run build:mcp
+          cp target/release/liblime_mcp_engine.so src-tauri/resources/mcp/
+          LIME_MCP_SERVER=src-tauri/resources/mcp/server.mjs node --experimental-strip-types mcp/stdio.test.ts
           node --experimental-strip-types mcp/part-a.test.ts
           node --experimental-strip-types mcp/batch1.test.ts
           node --experimental-strip-types mcp/batch2.test.ts

@@ -92,17 +92,33 @@ An LLM client can open a mesh, place it, change the settings the panel exposes, 
 
 A typical slice is `machine_list`, `machine_select`, `mesh_import`, `slice_start`, `slice_wait`, `gcode_summary`. A hole is `faces_find`, `workplane_set`, `model_probe`, `model_apply`, `model_commit`, then `slice_start`. The same sequences are the guides `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate`. There is no send-to-printer tool.
 
-It needs Node 22.6 or later, because it uses type stripping. Node prints an `ExperimentalWarning` on every start. That warning is expected.
+It needs Node 22.6 or later on the machine. The desktop installer carries the server and its engine, so an installed app needs nothing else: point the client's `node` at the bundled `mcp/server.mjs`, and it finds the engine beside it and the app's own Open CASCADE in `../occt/lib`. On Windows that is `%LOCALAPPDATA%\Lime Slice\mcp\server.mjs`; on macOS, `Lime Slice.app/Contents/Resources/mcp/server.mjs`.
+
+```json
+{
+  "mcpServers": {
+    "lime-slice": {
+      "command": "node",
+      "args": ["C:\\Users\\you\\AppData\\Local\\Lime Slice\\mcp\\server.mjs"],
+      "env": {
+        "LIME_MCP_WORKSPACE": "C:\\absolute\\path\\to\\a\\workspace"
+      }
+    }
+  }
+}
+```
+
+From a checkout, the server runs as TypeScript with type stripping, and Node prints an `ExperimentalWarning` on every start. That warning is expected. `npm run build:mcp` writes the same bundle the installer ships to `src-tauri/resources/mcp`.
 
 Writes stay inside `LIME_MCP_WORKSPACE`. A path can be absolute, or relative to that workspace. Saving a project may overwrite a `.lime` file already in that directory. There is no send-to-printer tool.
 
-Model edits need the Open CASCADE bridge. The server looks next to the `node` program, not next to the desktop app. Set `LIME_OCCT_BRIDGE` to the bridge library when it lives somewhere else. In a checkout that has built the desktop bridge, that file is `target/release/liblime_model_occt.so` (`.dylib` on macOS, `lime_model_occt.dll` on Windows). An installed copy can use the same bridge the desktop installer places beside the app, and point `LIME_OCCT_BRIDGE` at that file.
+Model edits need the Open CASCADE bridge. The installed server uses the app's own. From a checkout, the server looks next to the `node` program, not next to the desktop app. Set `LIME_OCCT_BRIDGE` to the bridge library when it lives somewhere else. In a checkout that has built the desktop bridge, that file is `target/release/liblime_model_occt.so` (`.dylib` on macOS, `lime_model_occt.dll` on Windows). An installed copy can use the same bridge the desktop installer places beside the app, and point `LIME_OCCT_BRIDGE` at that file.
 
 ```bash
 cargo build -p lime-mcp-engine --release
 ```
 
-Claude Desktop, or any stdio MCP client:
+Claude Desktop, or any stdio MCP client, from a checkout:
 
 ```json
 {
@@ -121,7 +137,7 @@ Claude Desktop, or any stdio MCP client:
 
 The engine library is `target/release/liblime_mcp_engine.so` (`.dylib` on macOS, `lime_mcp_engine.dll` on Windows). Set `LIME_MCP_ENGINE` if it lives somewhere else. `LIME_SLICE_BIN` is only for the golden comparison; the server does not shell out to it.
 
-Shipping the server without a checkout means bundling Node, either as a single executable or as the Node the installer already carries, plus the release engine library. Open CASCADE is the large piece, and it is the same bridge the desktop installer already carries.
+The installer does not carry Node itself; the client's `node` runs the bundle. `LIME_MCP_ENGINE` and `LIME_OCCT_BRIDGE` still override the library the server finds.
 
 The live desktop bridge is off unless you opt in. The app listens on `127.0.0.1` only, and only when both variables are set:
 

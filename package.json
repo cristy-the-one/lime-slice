@@ -11,7 +11,8 @@
     "test:engine": "playwright test --workers=1 e2e/ironing-real.spec.ts e2e/mesh-refs.spec.ts e2e/overrides-engine.spec.ts e2e/part-frame.spec.ts e2e/plate-real.spec.ts e2e/plate-distinct-real.spec.ts e2e/support-edits.spec.ts e2e/support-paint.spec.ts e2e/belt-handedness.spec.ts",
     "preview": "vite preview --port 43117",
     "shots": "playwright test",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:mcp": "node tools/mcp/bundle.mjs"
   },
   "dependencies": {
     "@floating-ui/dom": "^1.8.0",
@@ -25,6 +26,7 @@
     "@tauri-apps/cli": "^2",
     "@types/node": "^22.20.5",
     "@types/three": "^0.180.0",
+    "esbuild": "0.25.12",
     "typescript": "^5.6",
     "vite": "^6"
   }
