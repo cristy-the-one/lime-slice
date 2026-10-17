@@ -70,6 +70,7 @@ pub enum Primitive {
     Wedge,
     Polygon,
     Tube,
+    Ellipsoid,
 }
 
 impl Primitive {
@@ -83,6 +84,7 @@ impl Primitive {
             Primitive::Wedge => c"wedge",
             Primitive::Polygon => c"polygon",
             Primitive::Tube => c"tube",
+            Primitive::Ellipsoid => c"ellipsoid",
         }
     }
 }

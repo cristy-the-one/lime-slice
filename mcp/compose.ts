@@ -53,7 +53,7 @@ export function primitiveFrom(input: Record<string, unknown>, fallback: Primitiv
   const kind = isPrimitiveKind(input.primitive) ? input.primitive : fallback;
   const dx = numOr(input.dx, 20);
   const dy = numOr(input.dy, dx);
-  const dz = numOr(input.dz, kind === "sphere" ? dx : 20);
+  const dz = numOr(input.dz, kind === "sphere" || kind === "ellipsoid" ? dx : 20);
   const fields: PrimitiveFields = {
     size: [dx, dy, dz],
     radius: numOr(input.radius, dx / 2),
@@ -85,6 +85,7 @@ const READS: Record<PrimitiveKind, readonly string[]> = {
   cone: ["radius", "height", "topRadius"],
   tube: ["radius", "height", "innerRadius"],
   sphere: ["radius"],
+  ellipsoid: ["size"],
   torus: ["radius", "tubeRadius"],
   polygon: ["height", "sides", "across", "flats"],
 };
@@ -138,6 +139,7 @@ const LOCAL_FLIP: Partial<Record<PrimitiveKind, Mat3>> = {
   cone: [-1, 0, 0, 0, 1, 0, 0, 0, 1],
   tube: [-1, 0, 0, 0, 1, 0, 0, 0, 1],
   sphere: [-1, 0, 0, 0, 1, 0, 0, 0, 1],
+  ellipsoid: [-1, 0, 0, 0, 1, 0, 0, 0, 1],
   torus: [-1, 0, 0, 0, 1, 0, 0, 0, 1],
   polygon: [-1, 0, 0, 0, 1, 0, 0, 0, 1],
 };
@@ -153,7 +155,7 @@ export function movedSpec(spec: PrimitiveSpec, motion: Motion): PrimitiveSpec | 
     let r = matMul(motion.m, eulerOrient(spec.turn[0], spec.turn[1], spec.turn[2]));
     if (motion.reflect) {
       const flip = LOCAL_FLIP[spec.primitive];
-      if (!flip) return { reason: `A ${spec.primitive} cannot be mirrored. Mirror works on box, cylinder, cone, tube, sphere, torus, and polygon.` };
+      if (!flip) return { reason: `A ${spec.primitive} cannot be mirrored. Mirror works on box, cylinder, cone, tube, sphere, ellipsoid, torus, and polygon.` };
       r = matMul(r, flip);
     }
     const euler = orientEuler(r);

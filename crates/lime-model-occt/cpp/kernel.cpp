@@ -33,7 +33,9 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <gp_GTrsf.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -596,6 +598,25 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
         BRepPrimAPI_MakeSphere sphere(gp_Pnt(p.x, p.y, p.z), p.radius);
         return built(sphere, "sphere", error);
     }
+    if (which == "ellipsoid") {
+        // A unit sphere stretched along each axis: dx, dy, dz are the full widths, centred on x, y, z.
+        if (!positive(p.dx) || !positive(p.dy) || !positive(p.dz)) {
+            error = "An ellipsoid needs a positive width along each axis";
+            return {};
+        }
+        BRepPrimAPI_MakeSphere unit(gp_Pnt(0, 0, 0), 1.0);
+        const TopoDS_Shape ball = built(unit, "ellipsoid", error);
+        if (ball.IsNull()) {
+            return {};
+        }
+        gp_GTrsf stretch;
+        stretch.SetValue(1, 1, p.dx / 2.0);
+        stretch.SetValue(2, 2, p.dy / 2.0);
+        stretch.SetValue(3, 3, p.dz / 2.0);
+        stretch.SetTranslationPart(gp_XYZ(p.x, p.y, p.z));
+        BRepBuilderAPI_GTransform shaped(ball, stretch, Standard_True);
+        return built(shaped, "ellipsoid", error);
+    }
     if (which == "cone") {
         if (!positive(p.height)) {
             error = "A cone needs a height above 0";
@@ -724,7 +745,7 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
         BRepPrimAPI_MakeRevol tube(face.Face(), gp_Ax1(gp_Pnt(p.x, p.y, p.z), gp_Dir(0, 0, 1)), 2.0 * kPi);
         return built(tube, "tube", error);
     }
-    error = "The primitive is box, cylinder, sphere, cone, torus, wedge, polygon, or tube";
+    error = "The primitive is box, cylinder, sphere, ellipsoid, cone, torus, wedge, polygon, or tube";
     return {};
 }
 
@@ -733,7 +754,7 @@ gp_Pnt turn_centre(const PrimitiveSpec& p) {
     if (p.kind == "box" || p.kind == "wedge") {
         return gp_Pnt(p.x + p.dx / 2.0, p.y + p.dy / 2.0, p.z + p.dz / 2.0);
     }
-    if (p.kind == "torus") {
+    if (p.kind == "torus" || p.kind == "ellipsoid") {
         return gp_Pnt(p.x, p.y, p.z);
     }
     return gp_Pnt(p.x, p.y, p.z + p.height / 2.0);
@@ -1803,8 +1824,9 @@ struct BoxRow {
 };
 
 bool box_row(const TopoDS_Shape& shape, BoxRow& out) {
+    // The tight box: a spline surface's quick box spans its control points, well past the surface.
     Bnd_Box box;
-    BRepBndLib::Add(shape, box, Standard_False);
+    BRepBndLib::AddOptimal(shape, box, Standard_False, Standard_False);
     if (box.IsVoid()) {
         return false;
     }
