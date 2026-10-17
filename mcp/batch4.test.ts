@@ -53,7 +53,7 @@ const first = await take("model_commit", { object });
 const firstMesh = first.message?.meshes?.[String(first.message?.commit?.meshHash)];
 check(
   "its first commit sends the mesh the server slices",
-  first.value.ok === true && desktop.length === 1 && desktop[0]?.id === object && (desktop[0].extra?.source.length ?? 0) >= 9 && firstMesh?.fileName.endsWith(".step") === true,
+  first.value.ok === true && desktop.length === 1 && desktop[0]?.id === object && (desktop[0].extra?.source.length ?? 0) >= 9 && firstMesh?.fileName.endsWith(".stl") === true,
   JSON.stringify({ plate: first.message?.plate, meshes: Object.keys(first.message?.meshes ?? {}) }),
 );
 

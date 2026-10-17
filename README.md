@@ -1,6 +1,6 @@
 # Lime Slice
 
-Lime Slice 2.5.0 is a slicer for filament printers. Open an STL, 3MF, or STEP file, set it on the build plate, and slice it to G-code. A Rust planner builds the toolpaths. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
+Lime Slice 2.5.1 is a slicer for filament printers. Open an STL, 3MF, or STEP file, set it on the build plate, and slice it to G-code. A Rust planner builds the toolpaths. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
 
 **Prepare** puts the model on the plate. Move, turn, and scale it, then choose a strategy: speed, efficiency, toughness, or a blend by weight, by layer, or by region. Each strategy is a real set of walls, infill, speed, acceleration, seam, and retraction.
 
@@ -247,7 +247,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (2.5.0). Publishing that draft is a separate step. Draft releases through v1.8.0 are already on the repository.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (2.5.1). Publishing that draft is a separate step. Draft releases through v1.8.0 are already on the repository.
 
 ## Headless slice and bench
 
