@@ -5,7 +5,7 @@
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
 import { isRigid, type Affine } from "./model-space.ts";
-import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type Fingerprint, type JoinTool, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec2, type Vec3 } from "./model-tree.ts";
 
 type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
@@ -241,7 +241,9 @@ function readOp(value: unknown): SavedOp | undefined {
       const turn = value.turn === undefined ? ([0, 0, 0] as Vec3) : vec(value.turn);
       const profile = Array.isArray(value.profile) ? value.profile.map(pair) : null;
       if (!origin || !turn || !profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
-      const plane = { op: value.op as BooleanKind, origin, turn, profile: profile as Vec2[] };
+      const shape = readProfileShape(value, profile.length);
+      if (!shape) return undefined;
+      const plane = { op: value.op as BooleanKind, origin, turn, profile: profile as Vec2[], ...shape };
       if (value.kind === "extrude") {
         if (!finite(value.depth) || (value.symmetric !== undefined && typeof value.symmetric !== "boolean")) return undefined;
         return { kind: "extrude", ...plane, depth: value.depth, ...(value.symmetric === true ? { symmetric: true as const } : {}) };
@@ -256,6 +258,28 @@ function readOp(value: unknown): SavedOp | undefined {
         ...(axisDir ? { axisDir } : {}),
         ...(finite(value.angleDeg) ? { angleDeg: value.angleDeg } : {}),
       };
+    }
+    case "loft": {
+      if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
+      if (!Array.isArray(value.sections) || value.sections.length < 2 || (value.ruled !== undefined && typeof value.ruled !== "boolean")) return undefined;
+      const sections: LoftSection[] = [];
+      for (const raw of value.sections) {
+        if (!isRecord(raw)) return undefined;
+        const at = vec(raw.origin);
+        const turn = raw.turn === undefined ? ([0, 0, 0] as Vec3) : vec(raw.turn);
+        if (!at || !turn) return undefined;
+        if (finite(raw.radius)) {
+          if (raw.radiusV !== undefined && !finite(raw.radiusV)) return undefined;
+          sections.push({ origin: at, turn, radius: raw.radius, ...(finite(raw.radiusV) ? { radiusV: raw.radiusV } : {}) });
+          continue;
+        }
+        const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
+        if (!profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
+        const shape = readProfileShape(raw, profile.length);
+        if (!shape) return undefined;
+        sections.push({ origin: at, turn, profile: profile as Vec2[], ...shape });
+      }
+      return { kind: "loft", op: value.op, sections, ...(value.ruled === true ? { ruled: true as const } : {}) };
     }
     case "shell": {
       if (!finite(value.thickness)) return undefined;
@@ -311,6 +335,14 @@ function readAffine(value: unknown): Affine | null {
   if (!isRecord(value) || !Array.isArray(value.m) || value.m.length !== 9 || !value.m.every(finite)) return null;
   const t = vec(value.t);
   return t ? { m: [...value.m] as Affine["m"], t } : null;
+}
+
+/** A profile's smooth and corners fields, as the engine stores them: absent when off. Null when either is malformed. */
+function readProfileShape(value: Record<string, unknown>, points: number): { smooth?: true; corners?: number[] } | null {
+  if (value.smooth !== undefined && typeof value.smooth !== "boolean") return null;
+  if (value.corners === undefined) return value.smooth === true ? { smooth: true } : {};
+  if (!Array.isArray(value.corners) || !value.corners.every((corner) => isId(corner) && corner < points)) return null;
+  return { ...(value.smooth === true ? { smooth: true as const } : {}), ...(value.corners.length > 0 ? { corners: [...value.corners] as number[] } : {}) };
 }
 
 function pair(value: unknown): Vec2 | null {

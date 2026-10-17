@@ -344,6 +344,11 @@ pub enum Op {
         depth: f64,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         symmetric: bool,
+        /// Splines through the points, sharp at `corners`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        smooth: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        corners: Vec<u32>,
     },
     /// The same outline turned `angleDeg` (360 when absent) about the in-plane axis through `axisOrigin` ([0, 0]
     /// when absent) along `axisDir` (V, [0, 1], when absent), and combined by `op`.
@@ -359,6 +364,17 @@ pub enum Op {
         axis_dir: Option<[f64; 2]>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         angle_deg: Option<f64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        smooth: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        corners: Vec<u32>,
+    },
+    /// A solid through `sections` in order, smooth or `ruled`, combined by `op`.
+    Loft {
+        op: BooleanOp,
+        sections: Vec<LoftSection>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ruled: bool,
     },
     /// The solid hollowed inward to walls `thickness` thick, with `openFaces` removed. None open leaves a closed void.
     Shell {
@@ -366,6 +382,26 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         open_faces: Vec<FacePick>,
     },
+}
+
+/// One cross-section of a loft, on the plane at `origin` turned by `turn`: a profile of `[u, v]` points, or a circle of
+/// `radius` about the origin (an ellipse with `radiusV`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoftSection {
+    pub origin: [f64; 3],
+    #[serde(default)]
+    pub turn: [f64; 3],
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profile: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius_v: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub smooth: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corners: Vec<u32>,
 }
 
 const ROOT_ONLY: &str = "A new solid's primitive can only be built again right under its root";
@@ -2170,13 +2206,25 @@ fn probe_metrics(from: &Shape, built: &Shape) -> String {
         json!({ "volumeMm3": shape.fingerprint().volume_mm3, "solids": solids, "shells": shells })
     };
     let after = measure(built);
-    let text = json!({
+    let before = measure(from);
+    let mut body = json!({
         "volumeMm3": after["volumeMm3"],
         "solids": after["solids"],
         "shells": after["shells"],
-        "before": measure(from),
-    })
-    .to_string();
+        "before": before,
+    });
+    // Only when a step made a hollow or a piece: say where, so the caller can move the step.
+    if after["solids"].as_i64() > before["solids"].as_i64() || after["shells"].as_i64() > before["shells"].as_i64() {
+        let report = take_text(unsafe { lime_tree_pieces(from.raw(), built.raw()) });
+        if let Some(Ok(serde_json::Value::Object(fields))) =
+            report.map(|text| serde_json::from_str::<serde_json::Value>(&format!("{{{text}}}")))
+        {
+            for (key, value) in fields {
+                body[key] = value;
+            }
+        }
+    }
+    let text = body.to_string();
     text[1..text.len() - 1].to_string()
 }
 
@@ -2393,8 +2441,10 @@ fn build(
             profile,
             depth,
             symmetric,
+            smooth,
+            corners,
         } => {
-            let p = [
+            let mut p = vec![
                 origin[0],
                 origin[1],
                 origin[2],
@@ -2404,6 +2454,7 @@ fn build(
                 *depth,
                 f64::from(u8::from(*symmetric)),
             ];
+            push_shape(&mut p, *smooth, corners);
             let points: Vec<f64> = profile.iter().flatten().copied().collect();
             Shape::made(|error| unsafe {
                 lime_tree_extrude(
@@ -2424,10 +2475,12 @@ fn build(
             axis_origin,
             axis_dir,
             angle_deg,
+            smooth,
+            corners,
         } => {
             let [au, av] = axis_origin.unwrap_or([0.0, 0.0]);
             let [du, dv] = axis_dir.unwrap_or([0.0, 1.0]);
-            let p = [
+            let mut p = vec![
                 origin[0],
                 origin[1],
                 origin[2],
@@ -2440,6 +2493,7 @@ fn build(
                 dv,
                 angle_deg.unwrap_or(360.0),
             ];
+            push_shape(&mut p, *smooth, corners);
             let points: Vec<f64> = profile.iter().flatten().copied().collect();
             Shape::made(|error| unsafe {
                 lime_tree_revolve(
@@ -2448,6 +2502,36 @@ fn build(
                     p.as_ptr(),
                     points.as_ptr(),
                     profile.len() as c_int,
+                    error,
+                )
+            })
+        }
+        Op::Loft {
+            op: which,
+            sections,
+            ruled,
+        } => {
+            let mut head = Vec::with_capacity(sections.len() * 11);
+            let mut data = Vec::new();
+            for section in sections {
+                head.extend_from_slice(&section.origin);
+                head.extend_from_slice(&section.turn);
+                head.push(section.radius.unwrap_or(0.0));
+                head.push(section.radius_v.unwrap_or(0.0));
+                head.push(f64::from(u8::from(section.smooth)));
+                head.push(section.profile.len() as f64);
+                head.push(section.corners.len() as f64);
+                data.extend(section.profile.iter().flatten().copied());
+                data.extend(section.corners.iter().map(|&c| f64::from(c)));
+            }
+            Shape::made(|error| unsafe {
+                lime_tree_loft(
+                    from.raw(),
+                    which.name().as_ptr(),
+                    head.as_ptr(),
+                    sections.len() as c_int,
+                    data.as_ptr(),
+                    c_int::from(*ruled),
                     error,
                 )
             })
@@ -2556,6 +2640,16 @@ extern "C" {
         count: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    fn lime_tree_loft(
+        from: *const RawShape,
+        op: *const c_char,
+        head: *const f64,
+        count: c_int,
+        data: *const f64,
+        ruled: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_pieces(from: *const RawShape, built: *const RawShape) -> *mut c_char;
     fn lime_tree_shell(
         from: *const RawShape,
         faces: *const c_int,
@@ -2638,6 +2732,13 @@ impl Drop for Shape {
     fn drop(&mut self) {
         unsafe { lime_tree_free(self.0.as_ptr()) };
     }
+}
+
+/// A profile's smooth flag, its corner count, and its corners, after an op's own numbers.
+fn push_shape(p: &mut Vec<f64>, smooth: bool, corners: &[u32]) {
+    p.push(f64::from(u8::from(smooth)));
+    p.push(corners.len() as f64);
+    p.extend(corners.iter().map(|&c| f64::from(c)));
 }
 
 fn take_text(ptr: *mut c_char) -> Option<String> {

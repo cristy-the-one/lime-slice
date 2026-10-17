@@ -35,6 +35,12 @@ fn refused(reply: &Value, wanted: &str) {
     assert_eq!(reply["error"].as_str(), Some(wanted), "{reply}");
 }
 
+/// A separate body is refused with how far it is from the part.
+fn refused_apart(reply: &Value, gap: &str) {
+    let text = reply["error"].as_str().unwrap_or_default();
+    assert!(text.starts_with(&format!("This would add a separate body {gap} mm from the part")), "{reply}");
+}
+
 /// A profile on the XZ plane through y: U is X, V is Z, and W is −Y (a turn of 90° about X).
 fn extrude(op: &str, y: f64, profile: Value, depth: f64) -> Value {
     json!({ "kind": "extrude", "op": op, "origin": [0.0, y, 0.0], "turn": [90.0, 0.0, 0.0], "profile": profile, "depth": depth })
@@ -130,10 +136,7 @@ fn extrude_a_gable_roof_and_a_window() {
         &apply("x", 0, 90, &extrude("fuse", 30.0, square.clone(), 5.0)),
         "The extrude does not change the part.",
     );
-    refused(
-        &apply("x", 0, 90, &extrude("fuse", -50.0, square.clone(), 5.0)),
-        "This would add a separate body; place it touching the part.",
-    );
+    refused_apart(&apply("x", 0, 90, &extrude("fuse", -50.0, square.clone(), 5.0)), "50.00");
     refused(
         &apply("x", 0, 90, &extrude("common", -50.0, square.clone(), 5.0)),
         "The solids do not overlap",
@@ -227,8 +230,5 @@ fn revolve_a_boss_and_a_groove() {
     );
     let mut far = boss;
     far["origin"] = json!([20.0, 20.0, 30.0]);
-    refused(
-        &apply("r", 0, 90, &far),
-        "This would add a separate body; place it touching the part.",
-    );
+    refused_apart(&apply("r", 0, 90, &far), "20.00");
 }

@@ -27,7 +27,7 @@ check("a scale percent of 9 is rejected", validateTool("object_place", { object:
 check("a fractional edge index is rejected", validateTool("model_probe", { object: "obj_1", op: { kind: "fillet", edges: [1.5], size: 1 } }) !== null);
 check("a hole does not take a fillet size", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", size: 2 } }) !== null);
 check("a counterbore is a hole field", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", diameterMm: 4, through: true, counterboreDiameterMm: 8, counterboreDepth: 3 } }) === null);
-check("an unknown edit names the kinds", validateTool("model_probe", { op: { kind: "twist" } }) === "op.kind must be one of hole, fillet, chamfer, split, scale, extrude, revolve, shell, boolean, root, join, pocket, boss, texture, pattern, mirror, array, ribs.");
+check("an unknown edit names the kinds", validateTool("model_probe", { op: { kind: "twist" } }) === "op.kind must be one of hole, fillet, chamfer, split, scale, extrude, revolve, loft, sweep, shell, boolean, root, join, pocket, boss, texture, pattern, mirror, array, ribs.");
 check("a low scale names the bound", validateTool("object_place", { object: "obj_1", scalePercent: 9 }) === "scalePercent must be at least 10.");
 const layerHeight = (TOOLS.find((tool) => tool.name === "settings_apply")!.inputSchema.properties as { layerHeight: { minimum?: number; maximum?: number } }).layerHeight;
 check("layer height is 0.08 to 0.4", layerHeight.minimum === 0.08 && layerHeight.maximum === 0.4);
@@ -61,8 +61,8 @@ const listed = JSON.stringify({
 });
 // 51 KB held while model_apply listed eight op kinds. The typed composite kinds (pocket, boss, texture, pattern,
 // mirror) are listed once, on model_apply; the other Model tools point at it. surface_at, model_check, and the kernel's
-// extrude, revolve, and shell, and the surface array and ribs, add the rest.
-check("tools/list stays under 68 KB", Buffer.byteLength(listed) < 68 * 1024);
+// extrude, revolve, and shell, the surface array and ribs, and loft and sweep, add the rest.
+check("tools/list stays under 72 KB", Buffer.byteLength(listed) < 72 * 1024);
 
 const accepted: [string, unknown][] = [
   ["session_info", {}],

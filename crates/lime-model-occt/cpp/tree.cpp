@@ -103,14 +103,22 @@ std::unique_ptr<LimeShape> adopt(const TopoDS_Shape& result, double volume, cons
     return out;
 }
 
-/// `p` is the plane's origin and turn, then the op's own numbers. `points` is `count` u, v pairs.
-ProfileSpec profile_of(const double* p, const double* points, int count) {
+/// `p` is the plane's origin and turn, then the op's own numbers. `points` is `count` u, v pairs. `shape` points at
+/// smooth (0 or 1), the number of corners, and the corners' indexes.
+ProfileSpec profile_of(const double* p, const double* points, int count, const double* shape = nullptr) {
     ProfileSpec spec;
     for (int i = 0; i < 3; ++i) {
         spec.origin[i] = p[i];
         spec.turn[i] = p[3 + i];
     }
     spec.points.assign(points, points + 2 * static_cast<size_t>(std::max(count, 0)));
+    if (shape != nullptr) {
+        spec.smooth = shape[0] != 0.0;
+        const int corners = static_cast<int>(shape[1]);
+        for (int i = 0; i < corners; ++i) {
+            spec.corners.push_back(static_cast<int>(shape[2 + i]));
+        }
+    }
     return spec;
 }
 
@@ -366,13 +374,13 @@ LimeShape* lime_tree_scale(const LimeShape* from, double factor, char** error) {
     }
 }
 
-/// `p` is the plane's origin and turn, the depth, and symmetric (0 or 1).
+/// `p` is the plane's origin and turn, the depth, symmetric (0 or 1), then smooth, the corner count, and the corners.
 LimeShape* lime_tree_extrude(const LimeShape* from, const char* op, const double* p, const double* points, int count, char** error) {
     try {
         std::string message;
         double volume = 0.0;
         const TopoDS_Shape result = build_extrude(
-            from->held.shape, from->held.volume, op == nullptr ? "" : op, profile_of(p, points, count), p[6], p[7] != 0.0, volume, message);
+            from->held.shape, from->held.volume, op == nullptr ? "" : op, profile_of(p, points, count, p + 8), p[6], p[7] != 0.0, volume, message);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;
@@ -387,13 +395,14 @@ LimeShape* lime_tree_extrude(const LimeShape* from, const char* op, const double
     }
 }
 
-/// `p` is the plane's origin and turn, the axis's point (u, v) and direction (u, v), and the angle in degrees.
+/// `p` is the plane's origin and turn, the axis's point (u, v) and direction (u, v), the angle in degrees, then smooth,
+/// the corner count, and the corners.
 LimeShape* lime_tree_revolve(const LimeShape* from, const char* op, const double* p, const double* points, int count, char** error) {
     try {
         std::string message;
         double volume = 0.0;
         const TopoDS_Shape result = build_revolve(
-            from->held.shape, from->held.volume, op == nullptr ? "" : op, profile_of(p, points, count), p + 6, p[10], volume, message);
+            from->held.shape, from->held.volume, op == nullptr ? "" : op, profile_of(p, points, count, p + 11), p + 6, p[10], volume, message);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;
@@ -404,6 +413,59 @@ LimeShape* lime_tree_revolve(const LimeShape* from, const char* op, const double
         return nullptr;
     } catch (...) {
         set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `head` is 11 numbers a section: the plane's origin and turn, the radius, the radius along V, smooth, the point
+/// count, and the corner count. `data` is each section's u, v pairs and then its corners, one section after another.
+LimeShape* lime_tree_loft(const LimeShape* from, const char* op, const double* head, int count, const double* data, int ruled, char** error) {
+    try {
+        std::vector<LoftSection> sections;
+        size_t at = 0;
+        for (int s = 0; s < count; ++s) {
+            const double* h = head + 11 * static_cast<size_t>(s);
+            const int points = std::max(static_cast<int>(h[9]), 0);
+            const int corners = std::max(static_cast<int>(h[10]), 0);
+            LoftSection section;
+            for (int i = 0; i < 3; ++i) {
+                section.profile.origin[i] = h[i];
+                section.profile.turn[i] = h[3 + i];
+            }
+            section.radius = h[6];
+            section.radius_v = h[7];
+            section.profile.smooth = h[8] != 0.0;
+            section.profile.points.assign(data + at, data + at + 2 * static_cast<size_t>(points));
+            at += 2 * static_cast<size_t>(points);
+            for (int i = 0; i < corners; ++i) {
+                section.profile.corners.push_back(static_cast<int>(data[at + static_cast<size_t>(i)]));
+            }
+            at += static_cast<size_t>(corners);
+            sections.push_back(std::move(section));
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape result = build_loft(from->held.shape, from->held.volume, op == nullptr ? "" : op, sections, ruled != 0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The loft removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `piece_report` of the two shapes, for the caller to free. Null when there is nothing to report.
+char* lime_tree_pieces(const LimeShape* from, const LimeShape* built) {
+    try {
+        const std::string text = piece_report(from->held.shape, built->held.shape);
+        return text.empty() ? nullptr : alloc(text);
+    } catch (...) {
         return nullptr;
     }
 }

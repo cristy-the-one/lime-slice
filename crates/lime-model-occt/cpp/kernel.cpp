@@ -34,7 +34,19 @@
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepClass3d.hxx>
+#include <BRepOffsetAPI_ThruSections.hxx>
+#include <GC_MakeEllipse.hxx>
+#include <GeomAPI_Interpolate.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_Circle.hxx>
+#include <TColgp_HArray1OfPnt.hxx>
+#include <TopoDS_Wire.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Elips.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
@@ -1446,7 +1458,10 @@ bool segments_meet(const double* a, const double* b, const double* c, const doub
 
 /// The profile's points, counter-clockwise about W, a repeated closing point dropped. Empty, with `error`, when the
 /// profile is not a simple closed outline.
-std::vector<double> profile_points(const ProfileSpec& spec, std::string& error) {
+std::vector<double> profile_points(const ProfileSpec& spec, std::string& error, bool* reversed = nullptr) {
+    if (reversed != nullptr) {
+        *reversed = false;
+    }
     std::vector<double> p = spec.points;
     for (double value : p) {
         if (!std::isfinite(value)) {
@@ -1504,23 +1519,137 @@ std::vector<double> profile_points(const ProfileSpec& spec, std::string& error) 
             turned.push_back(p[2 * i + 1]);
         }
         p = std::move(turned);
+        if (reversed != nullptr) {
+            *reversed = true;
+        }
     }
     return p;
 }
 
-/// The profile as a planar face whose normal is W, `lift` along W from the plane.
-TopoDS_Face profile_face(const ProfileFrame& frame, const std::vector<double>& p, double lift, std::string& error) {
-    BRepBuilderAPI_MakePolygon outline;
-    for (size_t i = 0; i + 1 < p.size(); i += 2) {
-        outline.Add(frame.at(p[i], p[i + 1], lift));
+/// The corners of `spec` as indexes into its points as `profile_points` returned them, sorted, each once.
+std::vector<int> profile_corners(const ProfileSpec& spec, size_t n, bool reversed, std::string& error) {
+    std::vector<int> out;
+    for (int corner : spec.corners) {
+        if (corner < 0 || static_cast<size_t>(corner) >= n) {
+            error = "A corner is not the index of a profile point.";
+            return {};
+        }
+        out.push_back(reversed ? static_cast<int>(n) - 1 - corner : corner);
     }
-    outline.Close();
-    if (!outline.IsDone()) {
-        error = "Open CASCADE did not build the profile";
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+/// A spline edge through `pts` in order, closed into a loop with `periodic`.
+TopoDS_Edge spline_edge(const std::vector<gp_Pnt>& pts, bool periodic, std::string& error) {
+    Handle(TColgp_HArray1OfPnt) array = new TColgp_HArray1OfPnt(1, static_cast<int>(pts.size()));
+    for (size_t i = 0; i < pts.size(); ++i) {
+        array->SetValue(static_cast<int>(i) + 1, pts[i]);
+    }
+    GeomAPI_Interpolate interpolate(array, periodic ? Standard_True : Standard_False, 1e-7);
+    interpolate.Perform();
+    if (!interpolate.IsDone()) {
+        error = "Open CASCADE did not draw a smooth curve through these profile points.";
+        return {};
+    }
+    BRepBuilderAPI_MakeEdge edge(interpolate.Curve());
+    if (!edge.IsDone()) {
+        error = "Open CASCADE did not draw a smooth curve through these profile points.";
+        return {};
+    }
+    return edge.Edge();
+}
+
+/// The closed outline through `p` (u, v pairs, counter-clockwise), `lift` along W: straight edges, or with `smooth`
+/// splines broken at `corners`.
+TopoDS_Wire profile_wire(const ProfileFrame& frame, const std::vector<double>& p, bool smooth, const std::vector<int>& corners, double lift, std::string& error) {
+    const size_t n = p.size() / 2;
+    std::vector<gp_Pnt> pts;
+    pts.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        pts.push_back(frame.at(p[2 * i], p[2 * i + 1], lift));
+    }
+    if (!smooth) {
+        BRepBuilderAPI_MakePolygon outline;
+        for (const gp_Pnt& pt : pts) {
+            outline.Add(pt);
+        }
+        outline.Close();
+        if (!outline.IsDone()) {
+            error = "Open CASCADE did not build the profile";
+            return {};
+        }
+        return outline.Wire();
+    }
+    BRepBuilderAPI_MakeWire wire;
+    if (corners.empty()) {
+        const TopoDS_Edge loop = spline_edge(pts, true, error);
+        if (loop.IsNull()) {
+            return {};
+        }
+        wire.Add(loop);
+    } else {
+        // Each run goes from one corner to the next, round the loop: a straight edge between neighbours, else a spline.
+        for (size_t k = 0; k < corners.size(); ++k) {
+            const size_t from = static_cast<size_t>(corners[k]);
+            const size_t to = static_cast<size_t>(corners[(k + 1) % corners.size()]);
+            std::vector<gp_Pnt> run;
+            size_t i = from;
+            run.push_back(pts[i]);
+            do {
+                i = (i + 1) % n;
+                run.push_back(pts[i]);
+            } while (i != to);
+            TopoDS_Edge edge;
+            if (run.size() == 2) {
+                BRepBuilderAPI_MakeEdge straight(run[0], run[1]);
+                if (straight.IsDone()) {
+                    edge = straight.Edge();
+                }
+            } else {
+                edge = spline_edge(run, false, error);
+            }
+            if (edge.IsNull()) {
+                if (error.empty()) {
+                    error = "Open CASCADE did not build the profile";
+                }
+                return {};
+            }
+            wire.Add(edge);
+        }
+    }
+    if (!wire.IsDone()) {
+        error = "Open CASCADE did not join the profile's curves into one outline.";
+        return {};
+    }
+    return wire.Wire();
+}
+
+/// The profile's points and its outline, checked: the points counter-clockwise, the corners mapped to match.
+TopoDS_Wire checked_wire(const ProfileFrame& frame, const ProfileSpec& spec, double lift, std::vector<double>& points, std::string& error) {
+    bool reversed = false;
+    points = profile_points(spec, error, &reversed);
+    if (points.empty()) {
+        return {};
+    }
+    const std::vector<int> corners = profile_corners(spec, points.size() / 2, reversed, error);
+    if (!error.empty()) {
+        return {};
+    }
+    // A closed run with one corner is one spline from that corner round to itself.
+    return profile_wire(frame, points, spec.smooth, corners, lift, error);
+}
+
+/// The profile as a planar face whose normal is W, `lift` along W from the plane.
+TopoDS_Face profile_face(const ProfileFrame& frame, const ProfileSpec& spec, double lift, std::string& error) {
+    std::vector<double> points;
+    const TopoDS_Wire outline = checked_wire(frame, spec, lift, points, error);
+    if (outline.IsNull()) {
         return {};
     }
     const gp_Pln plane(gp_Ax3(frame.at(0.0, 0.0, lift), frame.w, frame.u));
-    BRepBuilderAPI_MakeFace face(plane, outline.Wire(), Standard_True);
+    BRepBuilderAPI_MakeFace face(plane, outline, Standard_True);
     if (!face.IsDone()) {
         error = "Open CASCADE did not build the profile";
         return {};
@@ -1553,9 +1682,222 @@ TopoDS_Shape combine_profile(
     }
     if (which == "fuse" && count_of(result, TopAbs_SOLID) > bodies) {
         error = "This would add a separate body; place it touching the part.";
+        try {
+            BRepExtrema_DistShapeShape gap(current, tool);
+            if (gap.IsDone() && gap.NbSolution() > 0 && gap.Value() < 0.005) {
+                error = "This would add a body that only touches the part, at a face, an edge, or a point. Push it further in so the two overlap.";
+            } else if (gap.IsDone() && gap.NbSolution() > 0) {
+                std::ostringstream text;
+                text.imbue(std::locale::classic());
+                text.setf(std::ios::fixed);
+                text.precision(2);
+                text << "This would add a separate body " << gap.Value() << " mm from the part. Move it that far toward the part, plus a little overlap.";
+                error = text.str();
+            }
+        } catch (const Standard_Failure&) {
+        }
         return {};
     }
     return result;
+}
+
+TopoDS_Wire section_wire(const LoftSection& section, std::string& error) {
+    const ProfileFrame frame = frame_of(section.profile);
+    if (section.radius > 0.0) {
+        const double a = section.radius;
+        const double b = section.radius_v > 0.0 ? section.radius_v : section.radius;
+        if (!std::isfinite(a) || !std::isfinite(b) || a > 1e5 || b > 1e5) {
+            error = "A loft section's radius is out of range.";
+            return {};
+        }
+        TopoDS_Edge edge;
+        if (std::abs(a - b) <= kTinyMm) {
+            edge = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(frame.origin, frame.w, frame.u), a)).Edge();
+        } else if (a > b) {
+            edge = BRepBuilderAPI_MakeEdge(gp_Elips(gp_Ax2(frame.origin, frame.w, frame.u), a, b)).Edge();
+        } else {
+            // An ellipse's major axis is its X: along V here, the seam still starting on U's side is not needed.
+            edge = BRepBuilderAPI_MakeEdge(gp_Elips(gp_Ax2(frame.origin, frame.w, frame.v), b, a)).Edge();
+        }
+        BRepBuilderAPI_MakeWire wire(edge);
+        if (!wire.IsDone()) {
+            error = "Open CASCADE did not build a loft section";
+            return {};
+        }
+        return wire.Wire();
+    }
+    std::vector<double> points;
+    return checked_wire(frame, section.profile, 0.0, points, error);
+}
+
+TopoDS_Shape build_loft(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const std::vector<LoftSection>& sections,
+    bool ruled,
+    double& volume,
+    std::string& error) {
+    if (sections.size() < 2) {
+        error = "A loft needs at least 2 sections.";
+        return {};
+    }
+    if (sections.size() > 200) {
+        error = "A loft takes at most 200 sections.";
+        return {};
+    }
+    BRepOffsetAPI_ThruSections loft(Standard_True, ruled ? Standard_True : Standard_False, 1e-6);
+    loft.CheckCompatibility(Standard_True);
+    for (size_t i = 0; i < sections.size(); ++i) {
+        const TopoDS_Wire wire = section_wire(sections[i], error);
+        if (wire.IsNull()) {
+            error = "Section " + std::to_string(i) + ": " + (error.empty() ? std::string("it could not be built.") : error);
+            return {};
+        }
+        loft.AddWire(wire);
+    }
+    TopoDS_Shape tool;
+    try {
+        loft.Build();
+        if (!loft.IsDone() || loft.Shape().IsNull()) {
+            error = "Open CASCADE could not loft through these sections. Check that each one is a simple outline and that they do not cross.";
+            return {};
+        }
+        tool = loft.Shape();
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not loft through these sections. Check that each one is a simple outline and that they do not cross.";
+        return {};
+    }
+    if (!has_solid(tool)) {
+        error = "The loft did not close into a solid.";
+        return {};
+    }
+    tool = as_solid(tool);
+    GProp_GProps props;
+    integrate(tool, props);
+    if (std::abs(props.Mass()) <= 1e-6) {
+        error = "The loft has no volume: its sections lie in one plane. Turn them so each section's plane crosses the way between them (W along the path).";
+        return {};
+    }
+    if (props.Mass() < 0.0) {
+        tool.Reverse();
+    }
+    if (!BRepCheck_Analyzer(tool).IsValid()) {
+        ShapeFix_Solid fix;
+        fix.Init(TopoDS::Solid(tool));
+        fix.Perform();
+        tool = fix.Solid();
+        if (!BRepCheck_Analyzer(tool).IsValid()) {
+            error = "The loft twists through itself. Space the sections further apart, or make tight bends gentler.";
+            return {};
+        }
+    }
+    return combine_profile(current, before, which, tool, "loft", volume, error);
+}
+
+namespace {
+
+struct BoxRow {
+    double lo[3];
+    double hi[3];
+};
+
+bool box_row(const TopoDS_Shape& shape, BoxRow& out) {
+    Bnd_Box box;
+    BRepBndLib::Add(shape, box, Standard_False);
+    if (box.IsVoid()) {
+        return false;
+    }
+    box.Get(out.lo[0], out.lo[1], out.lo[2], out.hi[0], out.hi[1], out.hi[2]);
+    return true;
+}
+
+bool same_box(const BoxRow& a, const BoxRow& b) {
+    for (int i = 0; i < 3; ++i) {
+        if (std::abs(a.lo[i] - b.lo[i]) > 1e-3 || std::abs(a.hi[i] - b.hi[i]) > 1e-3) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Every shell inside a solid that is not its outer skin: a sealed hollow.
+std::vector<BoxRow> void_boxes(const TopoDS_Shape& shape) {
+    std::vector<BoxRow> out;
+    for (TopExp_Explorer solids(shape, TopAbs_SOLID); solids.More(); solids.Next()) {
+        const TopoDS_Solid& solid = TopoDS::Solid(solids.Current());
+        const TopoDS_Shell outer = BRepClass3d::OuterShell(solid);
+        for (TopExp_Explorer shells(solid, TopAbs_SHELL); shells.More(); shells.Next()) {
+            if (!outer.IsNull() && shells.Current().IsSame(outer)) {
+                continue;
+            }
+            BoxRow row;
+            if (box_row(shells.Current(), row)) {
+                out.push_back(row);
+            }
+        }
+    }
+    return out;
+}
+
+void box_json(std::ostringstream& out, const BoxRow& row) {
+    out << "\"min\":[" << row.lo[0] << "," << row.lo[1] << "," << row.lo[2] << "],\"max\":[" << row.hi[0] << "," << row.hi[1] << ","
+        << row.hi[2] << "]";
+}
+
+}  // namespace
+
+std::string piece_report(const TopoDS_Shape& from, const TopoDS_Shape& built) {
+    try {
+        std::ostringstream out;
+        out.imbue(std::locale::classic());
+        out.precision(9);
+        const std::vector<BoxRow> had = void_boxes(from);
+        std::vector<BoxRow> voids;
+        for (const BoxRow& row : void_boxes(built)) {
+            if (std::none_of(had.begin(), had.end(), [&row](const BoxRow& old) { return same_box(old, row); })) {
+                voids.push_back(row);
+            }
+        }
+        std::vector<std::pair<double, TopoDS_Shape>> solids;
+        for (TopExp_Explorer it(built, TopAbs_SOLID); it.More(); it.Next()) {
+            solids.emplace_back(volume_of(it.Current()), it.Current());
+        }
+        std::sort(solids.begin(), solids.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        const bool loose = static_cast<int>(solids.size()) > count_of(from, TopAbs_SOLID);
+        bool first = true;
+        if (!voids.empty()) {
+            out << "\"voids\":[";
+            for (size_t i = 0; i < voids.size() && i < 8; ++i) {
+                out << (i ? ",{" : "{");
+                box_json(out, voids[i]);
+                out << "}";
+            }
+            out << "]";
+            first = false;
+        }
+        if (loose && solids.size() > 1) {
+            out << (first ? "" : ",") << "\"pieces\":[";
+            for (size_t i = 1; i < solids.size() && i < 9; ++i) {
+                BoxRow row;
+                if (!box_row(solids[i].second, row)) {
+                    continue;
+                }
+                double gap = -1.0;
+                BRepExtrema_DistShapeShape distance(solids[0].second, solids[i].second);
+                if (distance.IsDone() && distance.NbSolution() > 0) {
+                    gap = distance.Value();
+                }
+                out << (i > 1 ? ",{" : "{");
+                box_json(out, row);
+                out << ",\"volumeMm3\":" << solids[i].first << ",\"gapMm\":" << gap << "}";
+            }
+            out << "]";
+        }
+        return out.str();
+    } catch (const Standard_Failure&) {
+        return {};
+    }
 }
 
 TopoDS_Shape build_extrude(
@@ -1579,7 +1921,7 @@ TopoDS_Shape build_extrude(
     const double length = std::abs(depth);
     // Always swept along +W from its lower end, so the solid comes out the right way round.
     const double start = symmetric ? -length / 2.0 : std::min(depth, 0.0);
-    const TopoDS_Face face = profile_face(frame, points, start, error);
+    const TopoDS_Face face = profile_face(frame, profile, start, error);
     if (face.IsNull()) {
         return {};
     }
@@ -1627,7 +1969,7 @@ TopoDS_Shape build_revolve(
         return {};
     }
     const ProfileFrame frame = frame_of(profile);
-    const TopoDS_Face face = profile_face(frame, points, 0.0, error);
+    const TopoDS_Face face = profile_face(frame, profile, 0.0, error);
     if (face.IsNull()) {
         return {};
     }

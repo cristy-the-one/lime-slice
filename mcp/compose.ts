@@ -662,7 +662,7 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
  */
 export const SEPARATE_PIECE = "This would add a separate piece, or seal off a hollow inside the part. Move or resize it so it overlaps the part without closing a gap.";
 export function addsPiece(op: { kind: string; op?: string }, measure: { shells: number; before: { shells: number } } | undefined): boolean {
-  const adds = (op.kind === "boolean" || op.kind === "join" || op.kind === "extrude" || op.kind === "revolve") && op.op === "fuse";
+  const adds = (op.kind === "boolean" || op.kind === "join" || op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft") && op.op === "fuse";
   return adds && !!measure && measure.shells > measure.before.shells;
 }
 
@@ -674,6 +674,74 @@ export function addsPiece(op: { kind: string; op?: string }, measure: { shells: 
 export const SPLIT_PIECE = "This step would cut a piece off the part. Move it, or make it shallower or narrower.";
 export function cutsOffPiece(op: { kind: string; op?: string }, measure: { solids: number; shells: number; before: { solids: number; shells: number } } | undefined): boolean {
   return op.kind === "boolean" && op.op === "cut" && !!measure && (measure.solids > measure.before.solids || measure.shells > measure.before.shells);
+}
+
+/** Where a refused step's sealed hollows and loose pieces are, in the part's frame: each a centre and a size. */
+export interface PieceReport {
+  voids: { centre: Vec3; size: Vec3 }[];
+  pieces: { centre: Vec3; size: Vec3; volumeMm3: number; gapMm: number }[];
+}
+
+type Box = { min: Vec3; max: Vec3 };
+
+/**
+ * The probe's `voids` and `pieces` (boxes in the solid's frame), moved into the part's frame by `toPart`. Null when the
+ * engine sent neither.
+ */
+export function pieceReport(reply: Record<string, unknown>, toPart: (p: Vec3) => Vec3): PieceReport | null {
+  const boxOf = (row: unknown): (Box & Record<string, unknown>) | null => {
+    if (!row || typeof row !== "object") return null;
+    const { min, max } = row as { min?: unknown; max?: unknown };
+    const ok = (v: unknown): v is Vec3 => Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
+    return ok(min) && ok(max) ? { ...(row as Record<string, unknown>), min, max } : null;
+  };
+  const placed = (box: Box) => {
+    const lo: Vec3 = [Infinity, Infinity, Infinity];
+    const hi: Vec3 = [-Infinity, -Infinity, -Infinity];
+    for (let corner = 0; corner < 8; corner += 1) {
+      const p = toPart([corner & 1 ? box.max[0] : box.min[0], corner & 2 ? box.max[1] : box.min[1], corner & 4 ? box.max[2] : box.min[2]]);
+      for (let i = 0; i < 3; i += 1) {
+        lo[i] = Math.min(lo[i]!, p[i]!);
+        hi[i] = Math.max(hi[i]!, p[i]!);
+      }
+    }
+    const r = (n: number) => Math.round(n * 100) / 100;
+    return { centre: lo.map((v, i) => r((v + hi[i]!) / 2)) as Vec3, size: lo.map((v, i) => r(hi[i]! - v)) as Vec3 };
+  };
+  const voids = (Array.isArray(reply.voids) ? reply.voids : []).map(boxOf).filter((row) => row !== null).map((row) => placed(row));
+  const pieces = (Array.isArray(reply.pieces) ? reply.pieces : []).map(boxOf).filter((row) => row !== null).map((row) => ({
+    ...placed(row),
+    volumeMm3: Math.round(Number(row.volumeMm3) * 1000) / 1000,
+    gapMm: Math.round(Number(row.gapMm) * 1000) / 1000,
+  }));
+  return voids.length || pieces.length ? { voids, pieces } : null;
+}
+
+const at = (p: Vec3) => `(${p.join(", ")})`;
+const across = (s: Vec3) => `${s.join(" × ")} mm`;
+
+/** SEPARATE_PIECE, said with where the piece or the hollow is and how far to move. */
+export function separateReason(report: PieceReport | null): string {
+  const piece = report?.pieces[0];
+  if (piece && piece.gapMm > 0.001) {
+    return `This would add a separate piece ${piece.gapMm} mm from the part, centred at ${at(piece.centre)}, ${across(piece.size)}. Move it at least ${Math.round((piece.gapMm + 0.2) * 100) / 100} mm toward the part so the two overlap.`;
+  }
+  if (piece) return `This would add a piece that only touches the part at an edge or a point, centred at ${at(piece.centre)}, ${across(piece.size)}. Push it further in so it overlaps the part.`;
+  const hollow = report?.voids[0];
+  if (hollow) {
+    const more = report!.voids.length > 1 ? ` (and ${report!.voids.length - 1} more)` : "";
+    return `This would seal off a hollow inside the part at ${at(hollow.centre)}, about ${across(hollow.size)}${more}. Move or resize this step so it overlaps the part without closing that gap, or first fill the gap with a step that overlaps both sides.`;
+  }
+  return SEPARATE_PIECE;
+}
+
+/** SPLIT_PIECE, said with where the severed piece is. */
+export function splitReason(report: PieceReport | null): string {
+  const piece = report?.pieces[0];
+  if (piece) return `This step would cut off a ${across(piece.size)} piece at ${at(piece.centre)}. Move the step, or make it shallower or narrower there.`;
+  const hollow = report?.voids[0];
+  if (hollow) return `This step would leave a sealed hollow at ${at(hollow.centre)}, about ${across(hollow.size)}. Move it, or make it shallower or narrower.`;
+  return SPLIT_PIECE;
 }
 
 function isStill(motion: Motion): boolean {

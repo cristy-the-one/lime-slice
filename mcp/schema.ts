@@ -206,6 +206,7 @@ const outerRepeat = repeatFields({ type: "object", description: "Op to repeat." 
 export const OP_HELP = [
   "One edit, by kind; mm and degrees on the workplane, else the part frame.",
   "pocket, boss, texture, array, ribs, pattern, and mirror are composite: checked step by step, one undo.",
+  "loft and sweep make organic shapes: tubes, bodies, horns, leaves.",
   "Numbers may be text using model_params names. guide {topic:\"ops\"} has examples.",
 ].join(" ");
 
@@ -350,6 +351,12 @@ const profilePlace = {
 };
 const profile = { type: "array", minItems: 3, maxItems: 200, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "Closed outline, [u, v] points, mm." };
 
+const profileShape = {
+  smooth: { type: "boolean", description: "Splines through the points, not straight edges." },
+  corners: { type: "array", maxItems: 200, items: { type: "integer", minimum: 0 }, description: "With smooth: indexes of sharp points; two in a row make a straight edge." },
+};
+const perPoint = (what: string) => ({ description: `${what}: one number, or one per path point.` });
+
 /** Ops the kernel builds from a sketch, and the shell. Added to op's branches below. */
 const sketchOps = [
   {
@@ -362,6 +369,7 @@ const sketchOps = [
       profile,
       depth: { type: "number", minimum: -1000, maximum: 1000, description: "Along W; negative goes into the face." },
       symmetric: { type: "boolean", description: "Centred on the plane." },
+      ...profileShape,
       ...profilePlace,
       label,
     },
@@ -377,7 +385,56 @@ const sketchOps = [
       axisOrigin: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "[u, v]. Default [0, 0]." },
       axisDir: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "In-plane. Default V." },
       angleDeg: { type: "number", minimum: -360, maximum: 360, description: "Default 360." },
+      ...profileShape,
       ...profilePlace,
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "sections"],
+    properties: {
+      kind: { const: "loft" },
+      op: booleanKind,
+      sections: {
+        type: "array",
+        minItems: 2,
+        maxItems: 200,
+        description: "Cross-sections in order, each on its own plane.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["origin"],
+          properties: {
+            origin: { ...vec3, description: "Plane origin; a circle's centre." },
+            turn: { ...vec3, description: "Plane turn, degrees X, Y, Z; W is the plane's normal." },
+            radius: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Circle, or ellipse along U." },
+            radiusV: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Ellipse along V." },
+            profile,
+            ...profileShape,
+          },
+        },
+      },
+      ruled: { type: "boolean", description: "Flat between sections." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "path"],
+    properties: {
+      kind: { const: "sweep" },
+      op: booleanKind,
+      path: { type: "array", minItems: 2, maxItems: 100, items: vec3, description: "[x, y, z] points; a smooth curve runs through them." },
+      radius: perPoint("Circle radius, mm"),
+      radiusV: perPoint("Ellipse radius toward up, mm"),
+      profile: { ...profile, description: "Section outline instead of a circle, [u, v] mm about the path; V toward up." },
+      scale: perPoint("Profile size factor"),
+      ...profileShape,
+      up: { ...vec3, description: "Where V points at the start. Default +Z." },
+      steps: { type: "integer", minimum: 1, maximum: 12, description: "Sections per span (default 3); 1 is only the points." },
       label,
     },
   },
@@ -1069,14 +1126,14 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         ops: { type: "array", minItems: 1, maxItems: 200, items: opPointer("One edit."), description: "Edits, in order." },
         label: { type: "string", minLength: 1, maxLength: 80, description: "Batch name; node fields take it." },
-        onError: { enum: ["rollback", "stop"], description: "rollback (default) or stop." },
+        onError: { enum: ["rollback", "stop", "skip"], description: "rollback (default), stop, or skip: leave refused ops out, report all." },
         params: { type: "object", description: "This call only, on top of model_params." },
       },
     },
   },
   {
     name: "model_build",
-    description: "New solid, a batch of edits, and a commit, in one call. Returns the object and its bounds.",
+    description: "New solid, a batch of edits, and a commit, in one call. Called again after a refusal with the same base, it reuses the ops before the first changed one.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1102,8 +1159,10 @@ export const TOOLS: ToolSpec[] = [
         params: { type: "object", description: "This call only, e.g. {\"wallH\": 35}." },
         name: { type: "string", minLength: 1, maxLength: 120, description: "Object name." },
         label: { type: "string", minLength: 1, maxLength: 80, description: "Name for the batch." },
-        onError: { enum: ["rollback", "stop"], description: "rollback (default) or stop." },
+        onError: { enum: ["rollback", "stop", "skip"], description: "rollback (default), stop, or skip: leave refused ops out, report all." },
         commit: { type: "boolean", description: "Put the result on the plate (default true)." },
+        resume: { type: "boolean", description: "Reuse a refused build with this base (default true)." },
+        object: { type: "string", description: "An earlier build to rebuild in place, reusing its matching ops." },
       },
     },
   },

@@ -91,9 +91,9 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a shell, or a blend that takes an earlier step's edges. */
+/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a shell, or a blend that takes an earlier step's edges. */
 function hasPanel(op: ModelOp): boolean {
-  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "shell") return false;
+  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "shell") return false;
   return !((op.kind === "fillet" || op.kind === "chamfer") && op.edges.some(isEdgeStep));
 }
 
@@ -307,6 +307,7 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
       return { tool: "boolean", fields: {}, boolOp: op.op, join: { name: op.tool.name, keepTool: op.keepTool } };
     case "extrude":
     case "revolve":
+    case "loft":
     case "shell":
       // `editRefusal` turns these away before a panel opens.
       throw new Error(`No edit panel for a ${op.kind} step`);

@@ -182,6 +182,19 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
       const turned = orientEuler(matMul(back.m.map((value) => value / s) as Mat3, eulerOrient(op.turn[0], op.turn[1], op.turn[2])));
       return { ...op, origin: point(op.origin), turn: [turned.rx, turned.ry, turned.rz] };
     }
+    case "loft": {
+      // Each section's plane is a frame, as a profile's is.
+      if (moveOnly(back)) return { ...op, sections: op.sections.map((section) => ({ ...section, origin: point(section.origin) })) };
+      const s = poseScale(back);
+      const turn = back.m.map((value) => value / s) as Mat3;
+      return {
+        ...op,
+        sections: op.sections.map((section) => {
+          const turned = orientEuler(matMul(turn, eulerOrient(section.turn[0], section.turn[1], section.turn[2])));
+          return { ...section, origin: point(section.origin), turn: [turned.rx, turned.ry, turned.rz] };
+        }),
+      };
+    }
     default:
       return op;
   }

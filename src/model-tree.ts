@@ -78,6 +78,7 @@ export type ModelOp =
   | ({ kind: "root" } & PrimitiveSpec)
   | ExtrudeOp
   | RevolveOp
+  | LoftOp
   | ShellOp;
 
 /**
@@ -93,6 +94,9 @@ export interface ExtrudeOp {
   profile: Vec2[];
   depth: number;
   symmetric?: true;
+  /** Splines through the points instead of straight edges, sharp at the points `corners` lists. */
+  smooth?: true;
+  corners?: number[];
 }
 
 /** Turned `angleDeg` (360 when absent) about the line through `axisOrigin` ([0, 0]) along `axisDir` (V, [0, 1]). */
@@ -105,6 +109,30 @@ export interface RevolveOp {
   axisOrigin?: Vec2;
   axisDir?: Vec2;
   angleDeg?: number;
+  smooth?: true;
+  corners?: number[];
+}
+
+/**
+ * One cross-section of a loft, on a plane as a profile's is: a closed outline of `[u, v]` points (smooth, sharp at
+ * `corners`, as a profile's), or a circle of `radius` about the plane's origin, an ellipse with `radiusV` along V.
+ */
+export interface LoftSection {
+  origin: Vec3;
+  turn: Vec3;
+  profile?: Vec2[];
+  radius?: number;
+  radiusV?: number;
+  smooth?: true;
+  corners?: number[];
+}
+
+/** A solid through `sections` in order, smooth or `ruled` (flat between sections), fused, cut, or intersected. */
+export interface LoftOp {
+  kind: "loft";
+  op: BooleanKind;
+  sections: LoftSection[];
+  ruled?: true;
 }
 
 /** The solid hollowed inward to walls `thickness` thick, with `openFaces` removed: indexes when fresh, references once stored. */
@@ -501,6 +529,10 @@ export function opLabel(op: ModelOp): string {
     case "revolve": {
       const verb = op.op === "fuse" ? "Revolve" : `${BOOLEAN_VERB[op.op]} revolve`;
       return `${verb} ${op.profile.length}-point profile ${n(op.angleDeg ?? 360)}°`;
+    }
+    case "loft": {
+      const verb = op.op === "fuse" ? "Loft" : `${BOOLEAN_VERB[op.op]} loft`;
+      return `${verb} through ${op.sections.length} sections${op.ruled ? ", ruled" : ""}`;
     }
     case "shell": {
       const open = op.openFaces?.length ?? 0;
