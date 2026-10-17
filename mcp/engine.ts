@@ -677,6 +677,14 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         // Kernel failures the session must catch: a fuse that hands back only its tool, or a box that meets the part
         // only along an edge.
         if (fuse && process.env.LIME_MCP_FAKE_LOSE_FUSE === "1") nextSolid.volume = 307;
+        // A mesher crack too wide to mend: one loose triangle beside the part.
+        if (process.env.LIME_MCP_FAKE_OPEN === "1") {
+          const [x, y, z] = [prior.max[0] ?? 20, prior.max[1] ?? 20, prior.max[2] ?? 20];
+          const open = new Float32Array(nextSolid.positions.length + 9);
+          open.set(nextSolid.positions, 0);
+          open.set([x + 5, y, z, x + 6, y, z, x + 5, y + 1, z], nextSolid.positions.length);
+          nextSolid.positions = open;
+        }
         if (fuse && process.env.LIME_MCP_FAKE_TOUCH === "1") {
           // Outside the part's vertical edge nearest the tool, sharing that edge.
           const at = (req.op as { origin?: number[] }).origin ?? [0, 0, 0];

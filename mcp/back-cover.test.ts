@@ -69,10 +69,13 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   });
   const floor = { source: "face" as const, origin: [0, 0, 2.5] as [number, number, number], turn: [0, 0, 0] as [number, number, number] };
   const stand = standRegion(Float32Array.from(soup), floor, 8, 0.5);
-  const across = stand.spans(-50, 90).map(([a, b]) => [Math.round(a * 1000) / 1000, Math.round(b * 1000) / 1000]);
+  const across = stand.spans(-50, 90)!.map(([a, b]) => [Math.round(a * 1000) / 1000, Math.round(b * 1000) / 1000]);
   check("a rib across the floor runs through the earlier rib and 0.5 mm into the wall", same(across, [[0, 48.5], [49.5, 50]]), JSON.stringify(across));
-  const taller = standRegion(Float32Array.from(soup), floor, 6, 0.5).spans(-50, 90).map(([a, b]) => [Math.round(a * 1000) / 1000, Math.round(b * 1000) / 1000]);
+  const taller = standRegion(Float32Array.from(soup), floor, 6, 0.5).spans(-50, 90)!.map(([a, b]) => [Math.round(a * 1000) / 1000, Math.round(b * 1000) / 1000]);
   check("a rib lower than the earlier one stops 0.5 mm into it", same(taller, [[0, 20.5], [21.5, 48.5], [49.5, 50]]), JSON.stringify(taller));
+  // One wall alone: a line meets it once, its crossings do not pair, and it reads as null so the face outline decides.
+  const wall = standRegion(Float32Array.from([0, 10, -5, 100, 10, -5, 0, 10, 20, 100, 10, -5, 100, 10, 20, 0, 10, 20]), floor, 8, 0.5);
+  check("a line whose crossings do not pair reads as null", wall.spans(-50, 90) === null);
 }
 
 // Finding 3b: a step the kernel says is done but that loses the part is taken back and refused.
@@ -157,10 +160,28 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   check("the crack shows as three open edges", before.open === 3 && before.nonManifold === 0, JSON.stringify(before));
   check("mending splits the front face at the extra point and closes it", after.open === 0 && after.nonManifold === 0 && after.triangles === 14, JSON.stringify(after));
 
+  // Two copies of one corner a hair apart, on either side of a 1 µm grid line, are one point.
+  const e = 1e-7;
+  const tetra = (d: number[]) => [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, ...d, 0, 1, 0, 1, 0, 0, ...d, 1, 0, 0, 0, 0, 0, ...d];
+  const split = tetra([0.001 - e, 0.001 - e, 1]).slice(0, 18).concat(tetra([0.001 + e, 0.001 + e, 1]).slice(18));
+  const welded = edgeReport(split);
+  check("corners either side of a grid line weld together", welded.open === 0 && welded.nonManifold === 0, JSON.stringify(welded));
+
   const session = new Session(fakeEngine());
   const box = await session.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
   const checked = await session.call("model_check", { object: box.object });
   check("model_check reports a closed box", same(checked.edges, { open: 0, nonManifold: 0 }), JSON.stringify(checked.edges));
+  process.env.LIME_MCP_FAKE_OPEN = "1";
+  await session.call("model_apply", { object: box.object, probe: true, op: { kind: "scale", factor: 1.5 } });
+  delete process.env.LIME_MCP_FAKE_OPEN;
+  const refused = await session.call("model_commit", { object: box.object });
+  check(
+    "a commit whose edits opened the mesh is refused, with where",
+    refused.ok === false && String(refused.reason).startsWith("The solid's mesh does not close: 3 open edges, the first at ("),
+    JSON.stringify(refused),
+  );
+  const openCheck = await session.call("model_check", { object: box.object });
+  check("model_check lists the same open edges", (openCheck.edges as { open?: number }).open === 3, JSON.stringify(openCheck.edges));
 }
 
 if (failed) {

@@ -561,7 +561,9 @@ function surfaceSetup(spec: Record<string, unknown>, ctx: ExpandContext, kind: "
   // A raised piece keeps to where it can stand on the whole plane; a cut keeps to the face's own triangles.
   const stand = op === "fuse" ? frame.extent?.stand?.(depth, kind === "ribs" ? RIB_INTO_WALL : 0) ?? null : null;
   // Kept to: the plane's standing region or the face's own triangles, and the region's box always.
-  const keep = (p: UV) => inTriangles(p, boxTriangles(region)) && (stand ? stand.has(p[0], p[1]) : !frame.extent?.outline || inTriangles(p, frame.extent.outline));
+  const onOutline = (p: UV) => !frame.extent?.outline || inTriangles(p, frame.extent.outline);
+  // Where the solid's line through a point could not be read, the face's own outline decides.
+  const keep = (p: UV) => inTriangles(p, boxTriangles(region)) && (stand ? stand.has(p[0], p[1]) ?? onOutline(p) : onOutline(p));
   return { plane: frame.plane, region, outline: frame.extent?.outline ?? null, depth, op, margin, keep, stand };
 }
 
@@ -673,11 +675,13 @@ function ribPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] |
     // A rib flush with the face's edge is on it: its sides are sampled a hair inside.
     for (const edge of [b - width / 2 + 1e-5, b, b + width / 2 - 1e-5]) {
       // On the plane's standing region a rib runs on to the walls, past the face's own box, unless a region was typed.
-      for (const tris of set.stand ? (spec.region === undefined ? [] : shapes.slice(0, 1)) : shapes) {
+      // A line the solid could not be read along keeps to the face's outline, as without the region.
+      const standing = set.stand?.spans(edge, angle) ?? null;
+      for (const tris of standing ? (spec.region === undefined ? [] : shapes.slice(0, 1)) : shapes) {
         const on = spansOnLine(tris, edge);
         spans = spans ? intersectSpans(spans, on) : on;
       }
-      if (set.stand) spans = spans ? intersectSpans(spans, set.stand.spans(edge, angle)) : set.stand.spans(edge, angle);
+      if (standing) spans = spans ? intersectSpans(spans, standing) : standing;
     }
     for (const [from, to] of spans ?? []) {
       const a0 = from + set.margin;

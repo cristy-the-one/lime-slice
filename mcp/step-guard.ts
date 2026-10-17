@@ -67,9 +67,9 @@ export function touchingReason(at: Vec3 | null): string {
   return `This step would leave pieces that meet only along an edge${where}, which is not a closed solid to print. The step was taken back. Move it so it overlaps the part, or clears it.`;
 }
 
-/** Why a mesh that does not close stays off the plate, with where the first open and touching edges are. */
-export function notClosedReason(report: EdgeReport, toPart: (p: Vec3) => readonly number[]): string {
-  const at = (p: Vec3) => `(${toPart(p).map((v) => Math.round(v * 100) / 100).join(", ")})`;
+/** Why a mesh that does not close stays off the plate, with where the first open and touching edges are: in the solid's frame, as model_check lists them. */
+export function notClosedReason(report: EdgeReport): string {
+  const at = (p: Vec3) => `(${p.join(", ")})`;
   const parts: string[] = [];
   if (report.open > 0) parts.push(`${report.open} open edge${report.open === 1 ? "" : "s"}${report.openAt[0] ? `, the first at ${at(report.openAt[0].at)}` : ""}`);
   if (report.nonManifold > 0) parts.push(`${report.nonManifold} edge${report.nonManifold === 1 ? "" : "s"} where pieces meet only along a line${report.nonManifoldAt[0] ? `, the first at ${at(report.nonManifoldAt[0].at)}` : ""}`);

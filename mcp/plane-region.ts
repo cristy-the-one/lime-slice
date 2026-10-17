@@ -12,10 +12,13 @@ const UNDER = 1.37e-3;
 const OVER = 1.31e-3;
 
 export interface StandRegion {
-  /** Along the line b = `b` in the plane turned `deg` (a runs along it), merged spans of a where a piece stands. */
-  spans(b: number, deg: number): Span[];
-  /** Whether a point (u, v) of the plane is in the region. */
-  has(u: number, v: number): boolean;
+  /**
+   * Along the line b = `b` in the plane turned `deg` (a runs along it), merged spans of a where a piece stands. Null
+   * when the line's crossings do not pair up, where the triangles do not close: the caller keeps to the face outline.
+   */
+  spans(b: number, deg: number): Span[] | null;
+  /** Whether a point (u, v) of the plane is in the region; null where the line through it could not be read. */
+  has(u: number, v: number): boolean | null;
 }
 
 /**
@@ -111,18 +114,17 @@ export function subtractSpans(a: readonly Span[], b: readonly Span[]): Span[] {
 /**
  * Where a piece `depth` tall stands on the plane W = 0 of `frame`: material just under the plane, and none at the
  * piece's top. Where the top runs into a wall, the region reaches `overlap` into it, so a rib's end overlaps the wall
- * instead of touching it face to face. A line whose crossings do not pair up, where the triangles do not close, has no
- * span, so nothing is placed on it.
+ * instead of touching it face to face. A line whose crossings do not pair up even a hair to either side reads as null.
  */
 export function standRegion(positions: Float32Array, frame: Workplane, depth: number, overlap: number): StandRegion {
   const lines = materialLines(positions, frame);
-  const seen = new Map<string, Span[]>();
-  const spans = (b: number, deg: number): Span[] => {
+  const seen = new Map<string, Span[] | null>();
+  const spans = (b: number, deg: number): Span[] | null => {
     const key = `${b}|${deg}`;
     const known = seen.get(key);
-    if (known) return known;
+    if (known !== undefined) return known;
     // A line through a vertex or along an edge counts a crossing twice; one a hair across reads cleanly.
-    let found: Span[] = [];
+    let found: Span[] | null = null;
     for (const nudge of [0, 2.3e-6, -2.9e-6]) {
       const under = lines(-UNDER, b + nudge, deg);
       const top = lines(depth + OVER, b + nudge, deg);
@@ -136,6 +138,9 @@ export function standRegion(positions: Float32Array, frame: Workplane, depth: nu
   };
   return {
     spans,
-    has: (u, v) => spans(v, 0).some(([from, to]) => u >= from - 1e-9 && u <= to + 1e-9),
+    has: (u, v) => {
+      const row = spans(v, 0);
+      return row === null ? null : row.some(([from, to]) => u >= from - 1e-9 && u <= to + 1e-9);
+    },
   };
 }

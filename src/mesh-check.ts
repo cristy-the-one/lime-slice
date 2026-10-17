@@ -35,19 +35,41 @@ interface Welded {
   degenerate: number;
 }
 
+/** A grid cell's number: three cell indexes hashed together. Points in one cell are told apart by distance. */
+function cellKey(i: number, j: number, k: number): number {
+  return (Math.imul(i, 73856093) ^ Math.imul(j, 19349663) ^ Math.imul(k, 83492791)) | 0;
+}
+
+/**
+ * Corners within `tol` of each other become one point, whichever side of a grid line they fall: a point is looked for
+ * in its own cell, then in the 26 around it.
+ */
 function weld(positions: ArrayLike<number>, tol = WELD_MM): Welded {
-  const ids = new Map<string, number>();
+  const cells = new Map<number, number[]>();
   const points: number[] = [];
   const tris: number[] = [];
   let degenerate = 0;
+  const near = (id: number, x: number, y: number, z: number) =>
+    Math.abs(points[id * 3]! - x) <= tol && Math.abs(points[id * 3 + 1]! - y) <= tol && Math.abs(points[id * 3 + 2]! - z) <= tol;
   const idOf = (x: number, y: number, z: number): number => {
-    const key = `${Math.round(x / tol)},${Math.round(y / tol)},${Math.round(z / tol)}`;
-    let id = ids.get(key);
-    if (id === undefined) {
-      id = points.length / 3;
-      ids.set(key, id);
-      points.push(x, y, z);
+    const i = Math.floor(x / tol);
+    const j = Math.floor(y / tol);
+    const k = Math.floor(z / tol);
+    const own = cells.get(cellKey(i, j, k));
+    if (own) for (const id of own) if (near(id, x, y, z)) return id;
+    for (let di = -1; di <= 1; di += 1) {
+      for (let dj = -1; dj <= 1; dj += 1) {
+        for (let dk = -1; dk <= 1; dk += 1) {
+          if (di === 0 && dj === 0 && dk === 0) continue;
+          const row = cells.get(cellKey(i + di, j + dj, k + dk));
+          if (row) for (const id of row) if (near(id, x, y, z)) return id;
+        }
+      }
     }
+    const id = points.length / 3;
+    points.push(x, y, z);
+    if (own) own.push(id);
+    else cells.set(cellKey(i, j, k), [id]);
     return id;
   };
   for (let i = 0; i + 8 < positions.length; i += 9) {
@@ -110,6 +132,8 @@ export function closeCracks(positions: ArrayLike<number>, tolMm = 0.05): Float32
   const welded = weld(positions);
   const { points } = welded;
   let tris = welded.tris;
+  // A mesh that already closes, with nothing degenerate, comes back as it was.
+  if (welded.degenerate === 0 && [...edgeUse(tris).values()].every((count) => count !== 1)) return Float32Array.from(positions);
   for (let round = 0; round < 4; round += 1) {
     const use = edgeUse(tris);
     const openVerts = new Set<number>();

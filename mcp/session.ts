@@ -117,6 +117,8 @@ export interface PlateObject {
   tree: ModelTree | null;
   /** The modeler was restarted under this tree: it is rebuilt from its root and ops at its current step on next use. */
   treeStale?: boolean;
+  /** Why the last commit's mesh does not close, when it committed anyway because the part came in open. */
+  commitWarning?: string;
   solid: ReturnType<typeof rememberSolid> | null;
   probes: Map<string, true>;
   supportEdits: EditEntry[];
@@ -2746,7 +2748,7 @@ export class Session {
     }
     // Edges, as the plate mesh would have them: cracks a commit mends are counted apart from what stays open.
     const raw = edgeReport(obj.solid.positions, 8);
-    const mended = edgeReport(closeCracks(obj.solid.positions), 8);
+    const mended = raw.open === 0 && raw.degenerate === 0 ? raw : edgeReport(closeCracks(obj.solid.positions), 8);
     const closedEdges = {
       open: mended.open,
       nonManifold: mended.nonManifold,
@@ -3604,7 +3606,8 @@ export class Session {
           u: [Infinity, -Infinity],
           v: [Infinity, -Infinity],
           outline,
-          ...(coplanar ? { stand: (depth: number, overlap: number) => standRegion(solidNow.positions, frame, depth, overlap) } : {}),
+          // Read from the mesh with its cracks closed, so a line meets each wall once.
+          ...(coplanar ? { stand: (depth: number, overlap: number) => standRegion(closeCracks(solidNow.positions), frame, depth, overlap) } : {}),
         };
         const { positions, triangles } = obj.solid;
         for (let tri = 0; tri < triangles.length; tri += 1) {
@@ -4336,7 +4339,7 @@ export class Session {
     if (blocked) return { ok: false, reason: blocked };
     const reason = await this.commitObject(obj);
     if (reason) return { ok: false, reason };
-    return { ok: true, scalePercent: obj.scale * 100, triangles: obj.triangles };
+    return { ok: true, scalePercent: obj.scale * 100, triangles: obj.triangles, ...(obj.commitWarning ? { warning: obj.commitWarning } : {}) };
   }
 
   /** The plate mesh becomes the solid on screen. A second commit of the same node does not export again. */
@@ -4354,10 +4357,19 @@ export class Session {
     }
     if (!obj.solid || obj.solid.positions.length < 9) return null;
     if (obj.platedNode === tree.current && obj.bytes.byteLength > 0) return null;
-    // The plate mesh must close: cracks where two faces sample a shared edge apart are mended; what stays open is refused.
+    // The plate mesh should close: cracks where two faces sample a shared edge apart are mended. What stays open is
+    // refused when the edits opened it (the plate's mesh before them closed); a part that came in open, such as a STEP
+    // whose kernel mesh never closed but sliced, still commits, with a warning.
     const mended = closeCracks(obj.solid.positions);
     const closed = edgeReport(mended, 1);
-    if (closed.open > 0 || closed.nonManifold > 0) return notClosedReason(closed, (p) => applyPose(obj.modelPose, p));
+    obj.commitWarning = undefined;
+    if (closed.open > 0 || closed.nonManifold > 0) {
+      const why = notClosedReason(closed);
+      const before = obj.bytes.byteLength > 0 && obj.source.length >= 9 ? edgeReport(closeCracks(obj.source), 0) : null;
+      const cameOpen = before !== null && (before.open > 0 || before.nonManifold > 0);
+      if (!cameOpen) return why;
+      obj.commitWarning = `${why.replace(" It was not put on the plate, because the slicer would have to guess at the gaps.", "")} The part's mesh was open before these edits too, so it was committed as it is.`;
+    }
     const from = obj.platedNode;
     let reply: Record<string, unknown>;
     try {
