@@ -2,6 +2,7 @@
  * MCP over stdio. One JSON-RPC message per line. Logs stay off stdout.
  */
 import { GUIDES } from "./guides.ts";
+import { imagesOf } from "./inline.ts";
 import { annotationsFor, TOOLS } from "./schema.ts";
 import type { CallMeta, Session } from "./session.ts";
 
@@ -118,7 +119,8 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
       const args = params.arguments ?? {};
       try {
         const value = await session.call(name, args, meta);
-        return result(id, { content: [{ type: "text", text: JSON.stringify(value) }], isError: false });
+        const pictures = imagesOf(value).map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }));
+        return result(id, { content: [{ type: "text", text: JSON.stringify(value) }, ...pictures], isError: false });
       } catch (err) {
         const text = err instanceof Error ? err.message : "The tool failed.";
         return result(id, { content: [{ type: "text", text }], isError: true });
