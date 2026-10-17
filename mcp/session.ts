@@ -732,9 +732,11 @@ export class Session {
     let engine: string | null = null;
     let occt = false;
     let reason = "";
+    let where: { path: string; installed: boolean } | null = null;
     try {
       engine = await this.ask(this.engine.version());
       occt = await this.ask(this.engine.occt());
+      where = (await this.ask(this.engine.where?.())) ?? null;
     } catch (err) {
       reason = err instanceof Error ? err.message : "The engine did not answer.";
     }
@@ -742,6 +744,7 @@ export class Session {
       ok: true,
       serverVersion: appVersion(),
       engine,
+      ...(where ? { enginePath: where.path, ...(where.installed ? { engineNote: "This checkout has no engine built, so the installed app's engine of the same version answers." } : {}) } : {}),
       occt,
       ...(reason ? { reason } : {}),
       workspace: process.env.LIME_MCP_WORKSPACE ?? "",

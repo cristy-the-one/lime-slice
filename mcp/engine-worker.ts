@@ -6,6 +6,7 @@
 import { Worker } from "node:worker_threads";
 
 import { type Engine, loadNativeEngine, withMesh } from "./engine.ts";
+import { appVersion } from "./version.ts";
 
 if (!process.send) throw new Error("The engine process needs an IPC channel.");
 const send = (msg: unknown) => process.send?.(msg);
@@ -21,9 +22,9 @@ new Worker(`
 `, { eval: true, workerData: { parent, self: process.pid } }).unref();
 process.on("disconnect", () => process.exit(0));
 
-let engine: Engine;
+let engine: Engine & { path: string; installed: boolean };
 try {
-  engine = loadNativeEngine(String(process.env.LIME_MCP_ENGINE_ROOT ?? ""));
+  engine = loadNativeEngine(String(process.env.LIME_MCP_ENGINE_ROOT ?? ""), appVersion());
 } catch (err) {
   send({ id: -1, ok: false, error: err instanceof Error ? err.message : "The in-process engine did not load." });
   process.exit(1);
@@ -39,6 +40,9 @@ process.on("message", (msg: { id: number; method: string; arg: string; bytes?: U
         break;
       case "occt":
         result = engine.occt() as boolean;
+        break;
+      case "enginePath":
+        result = JSON.stringify({ path: engine.path, installed: engine.installed });
         break;
       case "meshPreview":
         result = engine.meshPreview(mesh) as string;

@@ -19,10 +19,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /** The bundle is plain JavaScript. The checkout runs the TypeScript with type stripping. */
 const BUNDLED = import.meta.url.endsWith(".mjs");
 
+export function occtLibraryName(): string {
+  return process.platform === "win32" ? "lime_model_occt.dll" : process.platform === "darwin" ? "liblime_model_occt.dylib" : "liblime_model_occt.so";
+}
+
 /** The Open CASCADE bridge an installed app carries, or null in a checkout. */
 export function installedOcctBridge(): string | null {
-  const name = process.platform === "win32" ? "lime_model_occt.dll" : process.platform === "darwin" ? "liblime_model_occt.dylib" : "liblime_model_occt.so";
-  const path = join(HERE, "..", "occt", "lib", name);
+  const path = join(HERE, "..", "occt", "lib", occtLibraryName());
   return existsSync(path) ? path : null;
 }
 
@@ -54,6 +57,8 @@ export interface Engine {
   calibrate(body: string): string | Promise<string>;
   /** Blend estimates for one slice body. No G-code. */
   pareto(body: string): string | Promise<string>;
+  /** Which library answers, and whether it is the installed app's, for session_info. */
+  where?(): { path: string; installed: boolean } | Promise<{ path: string; installed: boolean }>;
   /** Drop a stuck modeler and start another. Slicing keeps its own worker. */
   resetModeler(): void | Promise<void>;
   /** Drop a stuck mesh preview. Open model trees and the slicer are kept. */
@@ -86,10 +91,58 @@ export function engineCandidates(root: string): string[] {
   return [join(HERE, name), join(root, "target", "release", name), join(root, "target", "debug", name)];
 }
 
-export function loadNativeEngine(root: string): Engine {
-  const path = engineCandidates(root).find((candidate) => existsSync(candidate));
+/**
+ * Where an installed Lime Slice keeps its MCP folder: the engine and server.mjs, with Open CASCADE in `../occt/lib`.
+ * Null when this platform has no known install place.
+ */
+export function installedMcpDir(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (platform === "win32") return env.LOCALAPPDATA ? join(env.LOCALAPPDATA, "Lime Slice", "mcp") : null;
+  if (platform === "darwin") return "/Applications/Lime Slice.app/Contents/Resources/mcp";
+  return "/usr/lib/Lime Slice/mcp";
+}
+
+/**
+ * The installed app's engine, for a checkout that has not built its own. Only a checkout falls back to it, and only
+ * when LIME_MCP_ENGINE is unset; the worker then loads it only if its version is the server's own.
+ */
+export function installedEngineFallback(): string | null {
+  if (BUNDLED || process.env.LIME_MCP_ENGINE) return null;
+  const dir = installedMcpDir();
+  if (!dir) return null;
+  const path = join(dir, engineLibraryName());
+  return existsSync(path) ? path : null;
+}
+
+/** What to do when no engine was found: the installed server, a build, or LIME_MCP_ENGINE. */
+export function engineNotFound(searched: readonly string[], platform: NodeJS.Platform = process.platform): string {
+  const installed = platform === "win32"
+    ? "%LOCALAPPDATA%\\Lime Slice\\mcp\\server.mjs"
+    : platform === "darwin"
+      ? "/Applications/Lime Slice.app/Contents/Resources/mcp/server.mjs"
+      : "the server.mjs in the installed app's mcp folder";
+  return [
+    `The Lime Slice engine (${engineLibraryName()}) was not found. Looked in: ${searched.join(", ")}.`,
+    `If Lime Slice is installed, point the MCP client's node at the installed server, ${installed}, which finds its engine and Open CASCADE itself.`,
+    "From a checkout, build the engine with cargo build -p lime-mcp-engine --release, or set LIME_MCP_ENGINE to the library's full path.",
+    "The next call looks again; the client does not need to reconnect.",
+  ].join(" ");
+}
+
+/** The installed engine is used only when it is the same release as this server, so its replies match these tools. */
+export function installedVersionRefusal(path: string, engine: string, server: string): string | null {
+  if (engine === server) return null;
+  return `The installed engine at ${path} is ${engine}, but this server is ${server}. Build the engine from this checkout with cargo build -p lime-mcp-engine --release, or point the MCP client at the installed server.mjs.`;
+}
+
+export function loadNativeEngine(root: string, expectVersion?: string): Engine & { path: string; installed: boolean } {
+  const searched = engineCandidates(root);
+  let path = searched.find((candidate) => existsSync(candidate));
+  let installed = false;
   if (!path) {
-    throw new ProtocolError("The in-process engine was not found. Build it with cargo build -p lime-mcp-engine --release.");
+    const fallback = installedEngineFallback();
+    if (!fallback) throw new ProtocolError(engineNotFound([...searched, ...(BUNDLED || process.env.LIME_MCP_ENGINE ? [] : [join(installedMcpDir() ?? "", engineLibraryName())])]));
+    path = fallback;
+    installed = true;
   }
   const mod = { exports: {} as NativeExports };
   process.dlopen(mod, path);
@@ -97,7 +150,16 @@ export function loadNativeEngine(root: string): Engine {
   if (typeof native.sliceStart !== "function") {
     throw new ProtocolError("The in-process engine loaded, but it did not export the slicer.");
   }
+  if (installed && expectVersion) {
+    const refusal = installedVersionRefusal(path, native.version(), expectVersion);
+    if (refusal) throw new ProtocolError(refusal);
+    // The installed engine brings the installed Open CASCADE, unless the client chose another.
+    const bridge = join(dirname(path), "..", "occt", "lib", occtLibraryName());
+    if (!process.env.LIME_OCCT_BRIDGE && existsSync(bridge)) process.env.LIME_OCCT_BRIDGE = bridge;
+  }
   return {
+    path,
+    installed,
     version: () => native.version(),
     occt: () => native.occt() === "true",
     meshPreview: (body, bytes) => native.meshPreview(withMesh(body, bytes)),
@@ -139,8 +201,9 @@ function reapOnExit(): void {
 /**
  * One addon in a child process. A native call cannot be stopped inside a
  * thread, so a call that runs past its budget is stopped by killing the
- * process; its memory goes with it. A load failure is remembered, so later
- * calls fail at once instead of waiting on a process that has already exited.
+ * process; its memory goes with it. A load failure fails the calls waiting on
+ * it, and the next call starts a fresh process, so an engine built or installed
+ * later is found without reconnecting the client.
  * `role` is "slice", "model" or "preview": a stuck one is replaced without dropping the others.
  * The child's stdout goes to this process's stderr, because stdout is the protocol.
  */
@@ -199,7 +262,7 @@ class EngineWorker {
     child.on("exit", (code) => {
       children.delete(child);
       if (generation !== this.generation || this.failed) return;
-      fail(new ProtocolError(`The engine stopped (code ${code}). Build it with cargo build -p lime-mcp-engine --release.`));
+      fail(new ProtocolError(`The engine stopped (code ${code}). The next call starts it again.`));
     });
     // An idle engine does not keep the server alive; the stdio loop does.
     child.unref();
@@ -208,7 +271,8 @@ class EngineWorker {
   }
 
   call(method: string, arg = "", bytes?: Uint8Array): Promise<unknown> {
-    if (this.failed) return Promise.reject(this.failed);
+    // A load failure is not kept: the engine may have been built or installed since, so each call starts a fresh process.
+    if (this.failed) this.respawn();
     return new Promise((resolve, reject) => {
       const id = this.seq;
       this.seq += 1;
@@ -229,6 +293,14 @@ class EngineWorker {
 
   private settled(): void {
     if (this.pending.size === 0) this.child.channel?.unref();
+  }
+
+  private respawn(): void {
+    this.generation += 1;
+    this.failed = null;
+    children.delete(this.child);
+    this.child.kill("SIGKILL");
+    this.child = this.spawn();
   }
 
   /** Kill a runaway engine process. The next call loads a fresh one. Pending calls are rejected. */
@@ -258,6 +330,7 @@ export function loadEngineWorker(root: string): Engine {
   return {
     version: () => slice.call("version") as Promise<string>,
     occt: () => slice.call("occt").then((value) => value === true) as Promise<boolean>,
+    where: () => slice.call("enginePath").then((value) => JSON.parse(String(value)) as { path: string; installed: boolean }),
     meshPreview: (body, bytes) => preview.call("meshPreview", body, bytes) as Promise<string>,
     modelTree: (body) => model.call("modelTree", body) as Promise<string>,
     sliceStart: (body, bytes) => slice.call("sliceStart", body, bytes) as Promise<string>,

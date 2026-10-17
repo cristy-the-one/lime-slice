@@ -5,6 +5,7 @@ import { GUIDES } from "./guides.ts";
 import { imagesOf } from "./inline.ts";
 import { annotationsFor, TOOLS } from "./schema.ts";
 import type { CallMeta, Session } from "./session.ts";
+import { appVersion } from "./version.ts";
 
 const VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18"];
 const MAX_LINE = 8 * 1024 * 1024;
@@ -99,7 +100,7 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
       return result(id, {
         protocolVersion,
         capabilities: { tools: {}, resources: {}, prompts: {} },
-        serverInfo: { name: "lime-slice", version: "2.6.1" },
+        serverInfo: { name: "lime-slice", version: appVersion() },
         instructions: INSTRUCTIONS,
       });
     }
