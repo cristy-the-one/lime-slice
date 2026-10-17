@@ -190,19 +190,39 @@ function progressToken(params: Record<string, unknown>): string | number | undef
   return typeof token === "string" || typeof token === "number" ? token : undefined;
 }
 
+/** How often a call that carries a progress token says it is still working, so a client's timeout starts again. */
+export const HEARTBEAT_MS = Number(process.env.LIME_MCP_HEARTBEAT_MS) > 0 ? Number(process.env.LIME_MCP_HEARTBEAT_MS) : 10_000;
+
+/**
+ * The next progress value for a token: what the work reports when that is higher, else a little more than the last,
+ * since a client may drop a notification that does not move forward. It stays under 1 until the work says 1.
+ */
+export function nextProgress(last: number, reported: number | null): number {
+  if (reported !== null && reported > last) return reported;
+  return last + (1 - last) * 0.02;
+}
+
 export function serve(session: Session, input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WritableStream = process.stdout): void {
   const inflight = new Map<number | string, AbortController>();
   const earlyCancel = new Set<number | string>();
   let buffer = Buffer.alloc(0);
   const send = (message: Record<string, unknown>) => writeMessage(message, output);
-
-  session.onProgress = (_job, fraction, stage, token) => {
-    if (token === undefined) return;
+  /** The last progress sent for each token of a call still running. */
+  const sent = new Map<string | number, { progress: number; message: string }>();
+  const notify = (token: string | number, reported: number | null, message: string) => {
+    const last = sent.get(token);
+    const progress = nextProgress(last?.progress ?? 0, reported);
+    sent.set(token, { progress, message });
     send({
       jsonrpc: "2.0",
       method: "notifications/progress",
-      params: { progressToken: token, progress: fraction, total: 1, ...(stage ? { message: stage } : {}) },
+      params: { progressToken: token, progress, total: 1, ...(message ? { message } : {}) },
     });
+  };
+
+  session.onProgress = (_job, fraction, stage, token) => {
+    if (token === undefined || !sent.has(token)) return;
+    notify(token, fraction, stage);
   };
 
   const accept = (message: RpcMessage) => {
@@ -226,11 +246,24 @@ export function serve(session: Session, input: NodeJS.ReadableStream = process.s
       if (earlyCancel.delete(key)) controller.abort();
     }
     const params = message.params ?? {};
-    void handleRpc(session, message, { progressToken: progressToken(params), signal: controller.signal }).then((reply) => {
+    const token = progressToken(params);
+    // While a tool call runs, a heartbeat every HEARTBEAT_MS, so a client that restarts its timeout on progress waits.
+    let beat: ReturnType<typeof setInterval> | null = null;
+    if (token !== undefined && message.method === "tools/call") {
+      sent.set(token, { progress: 0, message: "" });
+      beat = setInterval(() => notify(token, null, sent.get(token)?.message || "Working."), HEARTBEAT_MS);
+      beat.unref?.();
+    }
+    const done = () => {
       if (key !== null) inflight.delete(key);
+      if (beat) clearInterval(beat);
+      if (token !== undefined) sent.delete(token);
+    };
+    void handleRpc(session, message, { progressToken: token, signal: controller.signal }).then((reply) => {
+      done();
       if (reply) send(reply);
     }).catch((err: unknown) => {
-      if (key !== null) inflight.delete(key);
+      done();
       const text = err instanceof Error ? err.message : "The request failed.";
       send(error(key, -32603, text));
     });

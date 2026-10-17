@@ -603,7 +603,20 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
         filename: asked.filename ?? "mesh.stl",
       });
     },
-    modelTree: (body: string) => {
+    slowing: false,
+    modelTree: (body: string): string | Promise<string> => {
+      // A slow kernel for long-call tests: each probe and apply waits this long first.
+      const slow = Number(process.env.LIME_MCP_FAKE_MODEL_MS ?? 0);
+      if (slow > 0 && !engine.slowing && /"call":"(apply|probe)"/.test(body)) {
+        return new Promise((resolve) => setTimeout(resolve, slow)).then(() => {
+          engine.slowing = true;
+          try {
+            return engine.modelTree(body);
+          } finally {
+            engine.slowing = false;
+          }
+        });
+      }
       const req = JSON.parse(body) as {
         call?: string;
         key?: string;

@@ -2,6 +2,7 @@
  * One stdio connection is one plate. The engine is behind `Engine`.
  * Feasibility refusals are `{ok:false, reason}` and are decided before apply.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -72,7 +73,8 @@ import { lostVolume, notClosedReason, touchingEdges, touchingReason } from "./st
 import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
-import { EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./schema.ts";
+import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./schema.ts";
+import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBox, TOUCH_TRIM, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
@@ -111,6 +113,8 @@ export interface PlateObject {
   modelPose: Affine;
   workplane: Workplane;
   tree: ModelTree | null;
+  /** The modeler was restarted under this tree: it is rebuilt from its root and ops at its current step on next use. */
+  treeStale?: boolean;
   solid: ReturnType<typeof rememberSolid> | null;
   probes: Map<string, true>;
   supportEdits: EditEntry[];
@@ -504,30 +508,101 @@ export class Session {
   /** How app_open reaches the desktop app. Tests replace it. */
   appOpener: AppOpener = systemOpener;
 
+  /** The autosave a previous server left in the workspace, offered until this session has a plate of its own. */
+  previousAutosave: PreviousAutosave | null = null;
+  private startupChecked = false;
+  private autosaveDirty = false;
+  private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private inflight = 0;
+  /** The progress token and cancel signal of the call each piece of work belongs to. */
+  private readonly callContext = new AsyncLocalStorage<CallMeta>();
+
   constructor(engine: Engine) {
     this.engine = engine;
   }
 
   call(name: string, args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
+    if (!this.startupChecked) {
+      this.startupChecked = true;
+      this.previousAutosave = takePreviousAutosave();
+    }
     const numbered = this.withNumbers(name, args);
     if ("reason" in numbered) return Promise.resolve({ ok: false, reason: numbered.reason });
     args = numbered.args;
     const problem = validateTool(name, args ?? {});
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
-    const result = this.dispatch(name, input, meta);
+    const changes = !annotationsFor(name).readOnlyHint;
+    // The plate as it stood before this call is on disk before the call can run long.
+    if (changes && this.inflight === 0) this.flushAutosave();
+    this.inflight += 1;
+    let result: ReturnType<Session["dispatch"]>;
+    try {
+      result = this.callContext.run(meta ?? {}, () => this.dispatch(name, input, meta));
+    } catch (err) {
+      this.inflight -= 1;
+      throw err;
+    }
     return Promise.resolve(result).then((value) => {
       const { payload, carriedAll } = this.bridgePayload(name, input, value);
       this.lastBridge = payload;
       void mirror(payload, this.bridgeLink, carriedAll);
-      return value;
+      return this.withAutosaveHint(value);
     }).catch((err: unknown) => {
       if (err instanceof ProtocolError) {
         const refusal = domainRefusal(err.message);
         if (refusal) return refusal;
       }
       throw err;
+    }).finally(() => {
+      this.inflight -= 1;
+      if (changes) {
+        this.autosaveDirty = true;
+        this.scheduleAutosave();
+      }
     });
+  }
+
+  /** An unknown handle right after a restart: the reply says where the last session's plate is. */
+  private withAutosaveHint(value: Record<string, unknown>): Record<string, unknown> {
+    if (value.ok !== false || value.reason !== UNKNOWN_OBJECT || !this.previousAutosave || this.objects.length > 0) return value;
+    return { ...value, reason: `${UNKNOWN_OBJECT} ${this.previousAutosave.note}`, autosave: this.previousAutosave.path };
+  }
+
+  /** Write the autosave a second after the last change, when no call is running. */
+  private scheduleAutosave(): void {
+    if (this.autosaveTimer) clearTimeout(this.autosaveTimer);
+    this.autosaveTimer = setTimeout(() => {
+      this.autosaveTimer = null;
+      if (this.inflight > 0) this.scheduleAutosave();
+      else this.flushAutosave();
+    }, 1000);
+    this.autosaveTimer.unref?.();
+  }
+
+  /** The plate and its histories to the workspace's autosave.lime, without committing anything. Never throws. */
+  flushAutosave(): void {
+    if (!this.autosaveDirty) return;
+    this.autosaveDirty = false;
+    if (this.objects.length === 0) return;
+    try {
+      const path = autosavePath();
+      if (!path) return;
+      const doc = this.saveDocument();
+      // A solid never committed has no plate mesh yet: its kernel mesh stands in, so the file opens.
+      const unplated = new Map(this.objects.filter((obj) => obj.bytes.byteLength === 0 && obj.solid && obj.solid.positions.length >= 9).map((obj) => [obj.id, obj]));
+      if (unplated.size > 0 && doc.objects) {
+        doc.objects = doc.objects.map((row) => {
+          const obj = row.id ? unplated.get(row.id) : undefined;
+          if (!obj?.solid) return row;
+          const name = stlFileName(obj.fileName);
+          return { ...row, mesh: meshRecord(name, stlBytes(Float32Array.from(obj.solid.positions), name)) };
+        });
+      }
+      writeAutosave(path, serializeProject(doc));
+    } catch {
+      // An autosave that cannot be written is not worth failing a call for.
+    }
   }
 
   /**
@@ -752,6 +827,7 @@ export class Session {
       occt,
       ...(reason ? { reason } : {}),
       workspace: process.env.LIME_MCP_WORKSPACE ?? "",
+      ...(this.previousAutosave ? { autosave: this.previousAutosave } : {}),
       printer: this.printer().name,
       filament: this.filament().name,
       printerSend: false,
@@ -1275,6 +1351,20 @@ export class Session {
     return `Saving over this project would drop ${missing.join(", ")}. Save it under a new name.`;
   }
 
+  /** The project as project_save writes it, from the plate as it stands. */
+  private saveDocument(): LimeProject {
+    const doc = this.projectDocument();
+    const mcpModel = this.mcpModelRecord();
+    if (mcpModel) doc.mcpModel = mcpModel;
+    else delete doc.mcpModel;
+    const tools = this.toolsOffPlate.flatMap((tool) => {
+      const modelTree = this.savedModelTree(tool);
+      return modelTree ? [{ id: tool.id, name: tool.name, modelTree }] : [];
+    });
+    if (tools.length > 0) doc.modelTools = [...(doc.modelTools ?? []).filter((row) => !tools.some((tool) => tool.id === row.id)), ...tools];
+    return doc;
+  }
+
   private async projectSave(name: string, refuseExisting = false): Promise<Record<string, unknown>> {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
     const path = resolveWrite(name, ".lime");
@@ -1292,15 +1382,7 @@ export class Session {
         return { ok: false, reason: "That project changed on disk since it was opened. Save it under a new name." };
       }
     }
-    const doc = this.projectDocument();
-    const mcpModel = this.mcpModelRecord();
-    if (mcpModel) doc.mcpModel = mcpModel;
-    else delete doc.mcpModel;
-    const tools = this.toolsOffPlate.flatMap((tool) => {
-      const modelTree = this.savedModelTree(tool);
-      return modelTree ? [{ id: tool.id, name: tool.name, modelTree }] : [];
-    });
-    if (tools.length > 0) doc.modelTools = [...(doc.modelTools ?? []).filter((row) => !tools.some((tool) => tool.id === row.id)), ...tools];
+    const doc = this.saveDocument();
     if (this.sourcePath && path === this.sourcePath) {
       const loss = this.lossy(doc);
       if (loss) return { ok: false, reason: loss };
@@ -1420,7 +1502,8 @@ export class Session {
       };
     });
     const listed = page(rows, input.cursor, input.limit);
-    return { ok: true, objects: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
+    const offer = rows.length === 0 && this.previousAutosave ? { autosave: this.previousAutosave } : {};
+    return { ok: true, objects: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}), ...offer };
   }
 
   private objectSelect(id: string): Record<string, unknown> {
@@ -2782,8 +2865,8 @@ export class Session {
    * A native call on a worker. The timer runs on this thread, so a blocked call can be cut off.
    * `onRunaway` replaces the stuck worker; by default that is the modeler, which drops the open trees.
    */
-  private async withBudget<T>(kind: string, work: () => T | Promise<T>, onRunaway: () => Promise<void> = () => this.loseTrees()): Promise<T> {
-    const budget = this.modelTimeoutMs();
+  private async withBudget<T>(kind: string, work: () => T | Promise<T>, onRunaway: () => Promise<void> = () => this.loseTrees(), budgetMs?: number): Promise<T> {
+    const budget = budgetMs ?? this.modelTimeoutMs();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let rss: ReturnType<typeof setInterval> | undefined;
     try {
@@ -2828,10 +2911,15 @@ export class Session {
     } catch {
       // The next model call starts a fresh modeler either way.
     }
-    for (const obj of this.objects) {
-      obj.tree = null;
-      obj.solid = null;
+    // Each history stays; its tree is built again from the root and ops when it is next used. A piece's tree, which
+    // starts from another tree's split, reopens from its plate bytes as before.
+    for (const obj of [...this.objects, ...this.toolsOffPlate]) {
       obj.probes = new Map();
+      if (obj.tree && obj.tree.root.kind !== "piece") obj.treeStale = true;
+      else {
+        obj.tree = null;
+        obj.solid = null;
+      }
     }
   }
 
@@ -2840,10 +2928,10 @@ export class Session {
     return { ok: false, reason: err.message, treeLost: true };
   }
 
-  private async treeCall(body: Record<string, unknown>, label = "edit"): Promise<Record<string, unknown>> {
+  private async treeCall(body: Record<string, unknown>, label = "edit", budgetMs?: number): Promise<Record<string, unknown>> {
     const op = body.op && typeof body.op === "object" ? body.op as { kind?: unknown } : null;
     const kind = typeof op?.kind === "string" ? op.kind : label;
-    const text = await this.withBudget(kind, () => this.engine.modelTree(JSON.stringify(body)));
+    const text = await this.withBudget(kind, () => this.engine.modelTree(JSON.stringify(body)), undefined, budgetMs);
     let reply: Record<string, unknown>;
     try {
       reply = JSON.parse(text) as Record<string, unknown>;
@@ -2867,6 +2955,18 @@ export class Session {
   }
 
   private async ensureTree(obj: PlateObject): Promise<ModelTree> {
+    if (obj.tree && obj.treeStale && obj.tree.root.kind !== "piece") {
+      const tree = obj.tree;
+      // The whole history runs again, so it gets a budget for every step in it.
+      const budget = Math.max(this.modelTimeoutMs(), tree.nodes.size * 2000);
+      const reply = await this.treeCall(wholeTreeRequest(tree, tree.root as Exclude<ModelTree["root"], { kind: "piece" }>, tree.current, obj.stepTolerance || CHORD), "open", budget);
+      const error = typeof reply.error === "string" ? reply.error : "";
+      if (error) throw new ProtocolError(plainModelError(error));
+      obj.treeStale = false;
+      const solid = rememberSolid(reply);
+      if (solid) obj.solid = solid;
+      return tree;
+    }
     if (obj.tree) return obj.tree;
     const key = `mcp-${obj.id}`;
     const source = obj.brep ?? obj.bytes;
@@ -3553,7 +3653,23 @@ export class Session {
     let touchingAt: string | undefined;
     let made = 0;
     const result = (body: Record<string, unknown>) => ({ ...body, checkpoints });
+    const meta = this.callContext.getStore();
+    // Progress per step, so a client that resets its timeout on progress keeps waiting for a long batch.
+    const progress = (index: number, step: number, steps: number) => {
+      const fraction = Math.min(0.999, (index + (steps > 0 ? step / steps : 0)) / Math.max(1, raws.length));
+      this.onProgress?.("model", fraction, `op ${index + 1 + offset} of ${raws.length + offset}${steps > 1 ? `, step ${step + 1} of ${steps}` : ""}`, meta?.progressToken);
+    };
+    // A cancelled call, or one the client gave up on, takes the whole run back: the part is as it was before it.
+    const cancelled = async (): Promise<Record<string, unknown>> => {
+      if (obj.treeStale && obj.tree?.nodes.has(start)) obj.tree = jumped(obj.tree, start);
+      if (nodes.length > 0) {
+        await this.gotoNode(obj, start);
+        if (obj.tree?.nodes.has(nodes[0]!)) this.drop(obj, nodes[0]!);
+      }
+      return result({ ok: false, applied: 0, rolledBack: true, cancelled: true, reason: "The call was cancelled, so the whole run was taken back. The part and its history are as they were before it.", node: nodeHandle(start) });
+    };
     const fail = async (failed: Record<string, unknown>): Promise<Record<string, unknown>> => {
+      if (obj.treeStale && obj.tree?.nodes.has(start)) obj.tree = jumped(obj.tree, start);
       if (mode === "rollback" && nodes.length > 0) {
         await this.gotoNode(obj, start);
         if (obj.tree && !options.keep) this.drop(obj, nodes[0]!);
@@ -3562,6 +3678,8 @@ export class Session {
       return result({ ok: false, applied: nodes.length, failed, ...(nodes.length ? { node: nodeHandle(nodes[nodes.length - 1]!) } : {}) });
     };
     for (let index = 0; index < raws.length; index += 1) {
+      if (meta?.signal?.aborted) return cancelled();
+      progress(index, 0, 0);
       const label = typeof raws[index]!.label === "string" && (raws[index]!.label as string).trim() ? (raws[index]!.label as string).trim() : undefined;
       const before = obj.tree?.current ?? start;
       const anchored = this.anchored(obj, raws[index]!);
@@ -3616,6 +3734,8 @@ export class Session {
       if ((made += pieces.length) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
       let refused: Record<string, unknown> | null = null;
       for (let k = 0; k < pieces.length; k += 1) {
+        if (meta?.signal?.aborted) return cancelled();
+        progress(index, k, pieces.length);
         const piece = pieces[k]!;
         const attempt = async (spec: PrimitiveSpec) => {
           const at = await this.opened(obj);
