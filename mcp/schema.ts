@@ -619,6 +619,8 @@ const READ_ONLY = new Set([
 
 const DESTRUCTIVE = new Set([
   "project_save",
+  // Saves the plate (over the project it came from, when that is in the workspace) and starts the desktop app.
+  "app_open",
   "gcode_export",
   "export_3mf",
   "model_export_step",
@@ -670,6 +672,15 @@ export const TOOLS: ToolSpec[] = [
         name: { type: "string", minLength: 1 },
         ifExists: { enum: ["replace", "refuse"], description: "replace (default) or refuse." },
       },
+    },
+  },
+  {
+    name: "app_open",
+    description: "Show the work in the Lime Slice desktop app: the running app over the live bridge, else start the installed app with the file. With no path, saves the plate as a .lime in the workspace first, over the project it came from if that is there.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { path: { type: "string", minLength: 1, description: "A .lime or mesh file inside the workspace. Leave out to save and open the plate." } },
     },
   },
   {

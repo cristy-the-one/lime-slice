@@ -344,9 +344,9 @@ Opening Model reloads `brep` when the object has one, so an edited solid is not 
 ## What this change is not
 
 - No change to `tools/golden_ab.sh`, toolpath planning, or STL/3MF geometry.
-- The slicer core does not link Open CASCADE. Since 2.5.2, desktop, CLI/HTTP, and MCP install a host STEP mesher at startup when `lime-model-load` can load the OCCT bridge. Preview and slicing use the same loader. Without OCCT (including a stub build), truck remains the fallback, with known closed-spline and trim limitations. Once OCCT is selected, import failures are returned; they do not silently retry through truck.
+- The slicer core does not link Open CASCADE. Since 2.6.1, desktop, CLI/HTTP, and MCP install a host STEP mesher at startup when `lime-model-load` can load the OCCT bridge. Preview and slicing use the same loader. Without OCCT (including a stub build), truck remains the fallback, with known closed-spline and trim limitations. Once OCCT is selected, import failures are returned; they do not silently retry through truck.
 
-### STEP import for slicing (2.5.2)
+### STEP import for slicing (2.6.1)
 
 `lime-model-load::step_mesher` supplies a function returning triangle positions in millimetres in the file frame, plus the bridge binary's SHA-256 identity. The host installs it once with `lime_slice_core::set_step_mesher`, before any imports or jobs. The core validates the chord tolerance, uses the supplied triangles, and retains its existing seating and pose rules. Its default truck implementation is unchanged. The disk slice cache includes the mesher identity so a truck result cannot answer an OCCT request, or survive a bridge rebuild.
 

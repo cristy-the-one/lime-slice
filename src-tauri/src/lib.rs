@@ -16,6 +16,7 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 mod bridge;
+mod open_file;
 mod prusa_http;
 mod quiet_process;
 use prusa_http::prusa_link_http;
@@ -301,6 +302,18 @@ fn window_state() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 pub fn run() {
     keep_support_bases(true);
     tauri::Builder::default()
+        // First, so a second launch hands its file to this window before anything else starts.
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            let path = open_file::launch_path(&args, std::path::Path::new(&cwd));
+            if let Some(path) = path {
+                if let Err(reason) = open_file::deliver(app, path) {
+                    eprintln!("lime-slice: {reason}");
+                }
+            } else if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(window_state())
         .setup(|app| {
@@ -314,6 +327,13 @@ pub fn run() {
                 let _ = window.set_decorations(native_window_decorations());
                 let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))?;
                 window.set_icon(icon)?;
+            }
+            let cwd = std::env::current_dir().unwrap_or_default();
+            if let Some(path) = open_file::launch_path(
+                std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()),
+                &cwd,
+            ) {
+                open_file::remember_launch(path);
             }
             bridge::start(app.handle().clone());
             Ok(())
@@ -332,7 +352,8 @@ pub fn run() {
             preview_mesh,
             model_tree,
             prusa_link_http,
-            bridge::bridge_ready
+            bridge::bridge_ready,
+            open_file::take_launch_file
         ])
         .run(tauri::generate_context!())
         .expect("Lime Slice window failed to start");

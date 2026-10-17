@@ -75,3 +75,40 @@ async function send(target: { url: string; token: string }, payload: unknown, li
     instance = "";
   }
 }
+
+/** How a running desktop answered an open: it opened the file, it refused with a reason, or nobody answered. */
+export type BridgeOpen = { opened: true } | { opened: false; reason: string } | null;
+
+const OPEN_TIMEOUT_MS = 10_000;
+
+/**
+ * Ask the desktop to open `path`, after every mirror before it. Null when the mirror is off, the desktop does not
+ * answer, or it is an older one without `open` in `X-Lime-Bridge-Features`, which would take the message for a plate.
+ */
+export function bridgeOpen(path: string): Promise<BridgeOpen> {
+  const target = bridgeTarget();
+  if (!target) return Promise.resolve(null);
+  const asked = queue.then(() => sendOpen(target, path));
+  queue = asked.then(() => undefined);
+  return asked;
+}
+
+async function sendOpen(target: { url: string; token: string }, path: string): Promise<BridgeOpen> {
+  const authorization = `Bearer ${target.token}`;
+  try {
+    const health = await fetch(new URL("/health", target.url), { headers: { authorization }, signal: AbortSignal.timeout(OPEN_TIMEOUT_MS) });
+    const features = (health.headers.get("x-lime-bridge-features") ?? "").split(/[\s,]+/);
+    if (!health.ok || !features.includes("open")) return null;
+    const response = await fetch(target.url, {
+      method: "POST",
+      headers: { authorization, "content-type": "application/json" },
+      body: JSON.stringify({ open: path }),
+      signal: AbortSignal.timeout(OPEN_TIMEOUT_MS),
+    });
+    if (response.ok) return { opened: true };
+    if (response.status === 404) return { opened: false, reason: (await response.text()).trim() || "The app did not open the file." };
+    return null;
+  } catch {
+    return null;
+  }
+}

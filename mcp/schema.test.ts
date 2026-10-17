@@ -14,6 +14,8 @@ function check(name: string, ok: boolean) {
 const names = new Set(TOOLS.map((tool) => tool.name));
 check("the mvp tools are present", ["session_info", "project_open", "project_create", "project_save", "mesh_import", "plate_list", "object_select", "object_place", "object_remove", "machine_list", "machine_select", "settings_apply", "slice_start", "slice_wait", "slice_cancel", "gcode_summary", "gcode_export", "export_3mf"].every((name) => names.has(name)));
 check("printer send is not a tool", !names.has("printer_send"));
+check("app_open starts an app, so it is not a read", !annotationsFor("app_open").readOnlyHint && annotationsFor("app_open").destructiveHint);
+check("app_open takes only a path", validateTool("app_open", { path: "a.lime", app: "calc.exe" }) !== null);
 check("project_save says it may overwrite", TOOLS.find((tool) => tool.name === "project_save")!.description.includes("overwrites"));
 check(
   "a missing bridge names where to put it",
@@ -70,6 +72,8 @@ const accepted: [string, unknown][] = [
   ["project_open", { path: "prints/bracket.lime" }],
   ["project_create", {}],
   ["project_save", { name: "bracket.lime" }],
+  ["app_open", {}],
+  ["app_open", { path: "bracket.lime" }],
   ["mesh_import", { path: "samples/calibration_cube_20mm.stl", stepToleranceMm: 0.05 }],
   ["plate_list", { limit: 20 }],
   ["object_select", { object: "obj_1" }],
