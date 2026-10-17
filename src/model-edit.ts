@@ -9,7 +9,7 @@ import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
-import { ROOT, type JoinOp, childrenOf, childrenWithOp, opLabel, pathTo, toolUser, type BooleanKind, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { ROOT, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 
 /**
  * The steps that replay under an edit of `node`, oldest first: the shown branch below it. That is the path down to the
@@ -87,7 +87,14 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
     return null;
   }
   if (pathTo(tree, node.parent).some((at) => tree.nodes.get(at)?.broken)) return "A step above this one cannot be rebuilt. Edit or delete that step first.";
+  if (node.op && !hasPanel(node.op)) return "This step has no edit panel yet. Delete it and apply it again with new numbers.";
   return null;
+}
+
+/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a shell, or a blend that takes an earlier step's edges. */
+function hasPanel(op: ModelOp): boolean {
+  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "shell") return false;
+  return !((op.kind === "fillet" || op.kind === "chamfer") && op.edges.some(isEdgeStep));
 }
 
 /** The op an edit of `id` starts from: its own, or the primitive a new solid's root is. */
@@ -171,12 +178,18 @@ function eachLevel(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op
   return true;
 }
 
+/** Each step an edit replays, by its old id, to the new id it is built again under: `old` and `ids` in step. */
+export function stepIds(old: readonly NodeId[], ids: readonly NodeId[]): Map<NodeId, NodeId> {
+  return new Map(old.map((id, i) => [id, ids[i]!] as const).filter(([, to]) => to !== undefined));
+}
+
 /** The levels of an edit across trees (see `eachLevel`). `reserve` hands out each tree's fresh ids. */
 export function crossEdit(tool: ModelTree, joins: readonly ToolLink[], node: NodeId, op: ModelOp, replay: readonly NodeId[], reserve: (key: string, count: number) => NodeId[]): EditLevel[] {
   const levels: EditLevel[] = [];
   eachLevel(tool, joins, node, op, replay, (tree, edited, stepOp, below) => {
     const ids = reserve(tree.key, below.length + 1);
-    levels.push({ key: tree.key, parent: tree.nodes.get(edited)?.parent ?? ROOT, node: ids[0]!, op: stepOp, replay: below.map((id, j) => ({ id: ids[j + 1]!, op: tree.nodes.get(id)!.op! })), old: [edited, ...below] });
+    const renamed = stepIds([edited, ...below], ids);
+    levels.push({ key: tree.key, parent: tree.nodes.get(edited)?.parent ?? ROOT, node: ids[0]!, op: stepOp, replay: below.map((id, j) => ({ id: ids[j + 1]!, op: renumberedSteps(tree.nodes.get(id)!.op!, renamed) })), old: [edited, ...below] });
     return ids.at(-1)!;
   });
   return levels;
@@ -287,11 +300,16 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     }
     case "fillet":
     case "chamfer":
-      return { tool: op.kind, fields: { modelBlend: op.size }, edges: op.edges };
+      return { tool: op.kind, fields: { modelBlend: op.size }, edges: op.edges.filter((edge): edge is number | EdgeRef => !isEdgeStep(edge)) };
     case "scale":
       return { tool: "scale", fields: { modelFactor: op.factor } };
     case "join":
       return { tool: "boolean", fields: {}, boolOp: op.op, join: { name: op.tool.name, keepTool: op.keepTool } };
+    case "extrude":
+    case "revolve":
+    case "shell":
+      // `editRefusal` turns these away before a panel opens.
+      throw new Error(`No edit panel for a ${op.kind} step`);
   }
 }
 

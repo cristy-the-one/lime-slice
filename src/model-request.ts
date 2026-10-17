@@ -6,7 +6,7 @@ import { bytesToBase64 } from "./base64.ts";
 import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
-import { savedNodes, type BooleanKind, type Fingerprint, type JoinTool, type ModelOp, type ModelRoot, type ModelTree, type NodeId } from "./model-tree.ts";
+import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type ExtrudeOp, type Fingerprint, type JoinTool, type ModelOp, type ModelRoot, type ModelTree, type NodeId, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
 export type TreeRequest = Record<string, unknown>;
 
@@ -45,6 +45,44 @@ export function applyRequest(key: string, parent: NodeId, node: NodeId, op: Mode
  */
 export function joinOp(op: BooleanKind, toolRef: JoinTool, target: Affine, tool: Affine, keepTool: boolean): Extract<ModelOp, { kind: "join" }> {
   return { kind: "join", op, tool: toolRef, relative: relativePose(target, tool), keepTool };
+}
+
+/** A profile's plane: an origin, and a turn about X, then Y, then Z, whose columns are U, V, and W, as a workplane's. */
+export interface ProfilePlane {
+  origin: Vec3;
+  turn: Vec3;
+}
+
+/**
+ * An extrude of `profile` (`[u, v]` points) on `plane`, in the frame the plane is given in: `toSolidOp` takes it into the
+ * solid's own frame like any tool's op. `symmetric` is sent only when on, as the engine stores it.
+ */
+export function extrudeOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], depth: number, symmetric = false): ExtrudeOp {
+  return { kind: "extrude", op, origin: [...plane.origin], turn: [...plane.turn], profile: profile.map(([u, v]) => [u, v]), depth, ...(symmetric ? { symmetric: true as const } : {}) };
+}
+
+/** A revolve of `profile` on `plane` about an in-plane axis. Each of the axis's fields is sent only when given. */
+export function revolveOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], axis: { origin?: Vec2; dir?: Vec2; angleDeg?: number } = {}): RevolveOp {
+  return {
+    kind: "revolve",
+    op,
+    origin: [...plane.origin],
+    turn: [...plane.turn],
+    profile: profile.map(([u, v]) => [u, v]),
+    ...(axis.origin ? { axisOrigin: [...axis.origin] as Vec2 } : {}),
+    ...(axis.dir ? { axisDir: [...axis.dir] as Vec2 } : {}),
+    ...(axis.angleDeg != null ? { angleDeg: axis.angleDeg } : {}),
+  };
+}
+
+/** A shell to `thickness`, with the faces of the parent's reply `openFaces` names removed. None open is a closed void. */
+export function shellOp(thickness: number, openFaces: readonly number[] = []): ShellOp {
+  return { kind: "shell", thickness, ...(openFaces.length > 0 ? { openFaces: [...openFaces] } : {}) };
+}
+
+/** A blend's pick of the edges step `fromNode` made: all its sharp ones, or only the convex or the concave ones. */
+export function stepEdges(fromNode: NodeId, filter?: EdgeFilter): EdgeStep {
+  return { fromNode, ...(filter && filter !== "all" ? { filter } : {}) };
 }
 
 /**

@@ -7,8 +7,10 @@
 #include <string>
 #include <vector>
 
+#include <TopAbs_ShapeEnum.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 
 namespace lime_occt {
@@ -145,5 +147,47 @@ bool build_split(
     std::string& error);
 /// A uniform scale about the centre. The result's volume is the original's times `factor` cubed.
 TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string& error);
+
+/// A closed outline on a plane. `origin` and `turn` (degrees about X, then Y, then Z) are the plane's frame, as a
+/// workplane's: the turn's columns are U, V, and W. `points` is u, v pairs in that plane.
+struct ProfileSpec {
+    double origin[3] = {0, 0, 0};
+    double turn[3] = {0, 0, 0};
+    std::vector<double> points;
+};
+
+/// The profile pushed `depth` along W (−W when negative), or `depth` centred on the plane with `symmetric`, combined
+/// with `current` by `which`. `before` is the volume of `current`; `volume` gets the result's.
+TopoDS_Shape build_extrude(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const ProfileSpec& profile,
+    double depth,
+    bool symmetric,
+    double& volume,
+    std::string& error);
+/// The profile turned `angle_deg` about the in-plane axis through (`axis_u`, `axis_v`) along (`dir_u`, `dir_v`),
+/// combined with `current` by `which`.
+TopoDS_Shape build_revolve(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const ProfileSpec& profile,
+    const double* axis,
+    double angle_deg,
+    double& volume,
+    std::string& error);
+/// `current` hollowed to walls `thickness` thick, inward, with `open` removed.
+TopoDS_Shape build_shell(
+    const TopoDS_Shape& current,
+    double before,
+    const std::vector<TopoDS_Face>& open,
+    double thickness,
+    double& volume,
+    std::string& error);
+int count_of(const TopoDS_Shape& shape, TopAbs_ShapeEnum kind);
+/// For each edge of `edges`: 1 convex, 2 concave, 0 anything else (smooth, a seam, or on one face).
+std::vector<int> edge_kinds(const TopoDS_Shape& shape, const std::vector<TopoDS_Edge>& edges);
 
 }  // namespace lime_occt

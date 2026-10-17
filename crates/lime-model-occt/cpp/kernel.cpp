@@ -34,7 +34,14 @@
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
+#include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <BRepOffset_Mode.hxx>
+#include <ChFi3d.hxx>
+#include <ChFiDS_TypeOfConcavity.hxx>
+#include <GeomAbs_JoinType.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
@@ -1371,6 +1378,408 @@ TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string
         return {};
     }
     return builder.Shape();
+}
+
+int count_of(const TopoDS_Shape& shape, TopAbs_ShapeEnum kind) {
+    TopTools_IndexedMapOfShape found;
+    TopExp::MapShapes(shape, kind, found);
+    return found.Extent();
+}
+
+/// A profile's plane: its origin and its U, V, W, turned as a primitive and a workplane turn.
+struct ProfileFrame {
+    gp_Pnt origin;
+    gp_Dir u;
+    gp_Dir v;
+    gp_Dir w;
+
+    gp_Pnt at(double pu, double pv, double pw = 0.0) const {
+        return origin.Translated(gp_Vec(u) * pu + gp_Vec(v) * pv + gp_Vec(w) * pw);
+    }
+};
+
+ProfileFrame frame_of(const ProfileSpec& spec) {
+    const double rad = kPi / 180.0;
+    gp_Trsf tx;
+    gp_Trsf ty;
+    gp_Trsf tz;
+    tx.SetRotation(gp::OX(), spec.turn[0] * rad);
+    ty.SetRotation(gp::OY(), spec.turn[1] * rad);
+    tz.SetRotation(gp::OZ(), spec.turn[2] * rad);
+    gp_Trsf total = tz;
+    total.Multiply(ty);
+    total.Multiply(tx);
+    ProfileFrame frame;
+    frame.origin = gp_Pnt(spec.origin[0], spec.origin[1], spec.origin[2]);
+    frame.u = gp::DX().Transformed(total);
+    frame.v = gp::DY().Transformed(total);
+    frame.w = gp::DZ().Transformed(total);
+    return frame;
+}
+
+/// Below this two profile points are one, in millimetres.
+constexpr double kProfileMm = 1e-6;
+
+double cross2(double ax, double ay, double bx, double by) { return ax * by - ay * bx; }
+
+/// Whether the closed segments ab and cd share a point.
+bool segments_meet(const double* a, const double* b, const double* c, const double* d) {
+    const double d1 = cross2(b[0] - a[0], b[1] - a[1], c[0] - a[0], c[1] - a[1]);
+    const double d2 = cross2(b[0] - a[0], b[1] - a[1], d[0] - a[0], d[1] - a[1]);
+    const double d3 = cross2(d[0] - c[0], d[1] - c[1], a[0] - c[0], a[1] - c[1]);
+    const double d4 = cross2(d[0] - c[0], d[1] - c[1], b[0] - c[0], b[1] - c[1]);
+    const double scale = std::max({std::abs(b[0] - a[0]), std::abs(b[1] - a[1]), std::abs(d[0] - c[0]), std::abs(d[1] - c[1]), 1.0});
+    const double eps = kProfileMm * scale;
+    if (((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps))) {
+        return true;
+    }
+    // A point on the other segment, collinear within the tolerance.
+    auto on = [eps](const double* p, const double* q, const double* r, double side) {
+        if (std::abs(side) > eps) {
+            return false;
+        }
+        return std::min(p[0], q[0]) - eps <= r[0] && r[0] <= std::max(p[0], q[0]) + eps &&
+               std::min(p[1], q[1]) - eps <= r[1] && r[1] <= std::max(p[1], q[1]) + eps;
+    };
+    return on(a, b, c, d1) || on(a, b, d, d2) || on(c, d, a, d3) || on(c, d, b, d4);
+}
+
+/// The profile's points, counter-clockwise about W, a repeated closing point dropped. Empty, with `error`, when the
+/// profile is not a simple closed outline.
+std::vector<double> profile_points(const ProfileSpec& spec, std::string& error) {
+    std::vector<double> p = spec.points;
+    for (double value : p) {
+        if (!std::isfinite(value)) {
+            error = "A profile point is not a number.";
+            return {};
+        }
+    }
+    if (p.size() % 2 != 0) {
+        error = "A profile point needs both its u and v.";
+        return {};
+    }
+    auto same = [&p](size_t i, size_t j) {
+        return std::abs(p[2 * i] - p[2 * j]) <= kProfileMm && std::abs(p[2 * i + 1] - p[2 * j + 1]) <= kProfileMm;
+    };
+    if (p.size() >= 8 && same(0, p.size() / 2 - 1)) {
+        p.resize(p.size() - 2);
+    }
+    const size_t n = p.size() / 2;
+    if (n < 3) {
+        error = "A profile needs at least 3 points.";
+        return {};
+    }
+    for (size_t i = 0; i < n; ++i) {
+        if (same(i, (i + 1) % n)) {
+            error = "Two profile points in a row are in the same place.";
+            return {};
+        }
+    }
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = i + 1; j < n; ++j) {
+            // Neighbours share a corner, which is no crossing.
+            if (j == i + 1 || (i == 0 && j == n - 1)) {
+                continue;
+            }
+            if (segments_meet(&p[2 * i], &p[2 * ((i + 1) % n)], &p[2 * j], &p[2 * ((j + 1) % n)])) {
+                error = "The profile crosses itself.";
+                return {};
+            }
+        }
+    }
+    double area = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const size_t j = (i + 1) % n;
+        area += cross2(p[2 * i], p[2 * i + 1], p[2 * j], p[2 * j + 1]);
+    }
+    if (!(std::abs(area) * 0.5 > 1e-6)) {
+        error = "The profile has no area.";
+        return {};
+    }
+    if (area < 0.0) {
+        std::vector<double> turned;
+        turned.reserve(p.size());
+        for (size_t i = n; i-- > 0;) {
+            turned.push_back(p[2 * i]);
+            turned.push_back(p[2 * i + 1]);
+        }
+        p = std::move(turned);
+    }
+    return p;
+}
+
+/// The profile as a planar face whose normal is W, `lift` along W from the plane.
+TopoDS_Face profile_face(const ProfileFrame& frame, const std::vector<double>& p, double lift, std::string& error) {
+    BRepBuilderAPI_MakePolygon outline;
+    for (size_t i = 0; i + 1 < p.size(); i += 2) {
+        outline.Add(frame.at(p[i], p[i + 1], lift));
+    }
+    outline.Close();
+    if (!outline.IsDone()) {
+        error = "Open CASCADE did not build the profile";
+        return {};
+    }
+    const gp_Pln plane(gp_Ax3(frame.at(0.0, 0.0, lift), frame.w, frame.u));
+    BRepBuilderAPI_MakeFace face(plane, outline.Wire(), Standard_True);
+    if (!face.IsDone()) {
+        error = "Open CASCADE did not build the profile";
+        return {};
+    }
+    return face.Face();
+}
+
+/// A swept tool combined with `current`. Beyond `combine`'s refusals, an extrude or revolve that changes nothing, or
+/// a fuse that leaves a body apart from the part, is refused, since the step would do nothing the user meant.
+TopoDS_Shape combine_profile(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const TopoDS_Shape& tool,
+    const char* noun,
+    double& volume,
+    std::string& error) {
+    if (which != "fuse" && which != "cut" && which != "common") {
+        error = "The boolean is fuse, cut, or common";
+        return {};
+    }
+    const int bodies = count_of(current, TopAbs_SOLID);
+    TopoDS_Shape result = combine(current, which, tool, volume, error);
+    if (!error.empty()) {
+        return {};
+    }
+    if (which != "common" && std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
+        error = std::string("The ") + noun + " does not change the part.";
+        return {};
+    }
+    if (which == "fuse" && count_of(result, TopAbs_SOLID) > bodies) {
+        error = "This would add a separate body; place it touching the part.";
+        return {};
+    }
+    return result;
+}
+
+TopoDS_Shape build_extrude(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const ProfileSpec& profile,
+    double depth,
+    bool symmetric,
+    double& volume,
+    std::string& error) {
+    const std::vector<double> points = profile_points(profile, error);
+    if (points.empty()) {
+        return {};
+    }
+    if (!std::isfinite(depth) || !(std::abs(depth) > kTinyMm)) {
+        error = "An extrude needs a depth other than 0.";
+        return {};
+    }
+    const ProfileFrame frame = frame_of(profile);
+    const double length = std::abs(depth);
+    // Always swept along +W from its lower end, so the solid comes out the right way round.
+    const double start = symmetric ? -length / 2.0 : std::min(depth, 0.0);
+    const TopoDS_Face face = profile_face(frame, points, start, error);
+    if (face.IsNull()) {
+        return {};
+    }
+    BRepPrimAPI_MakePrism prism(face, gp_Vec(frame.w) * length);
+    const TopoDS_Shape tool = built(prism, "extrude", error);
+    if (tool.IsNull()) {
+        return {};
+    }
+    return combine_profile(current, before, which, tool, "extrude", volume, error);
+}
+
+TopoDS_Shape build_revolve(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const ProfileSpec& profile,
+    const double* axis,
+    double angle_deg,
+    double& volume,
+    std::string& error) {
+    const std::vector<double> points = profile_points(profile, error);
+    if (points.empty()) {
+        return {};
+    }
+    if (!std::isfinite(angle_deg) || !(angle_deg > 1e-6) || angle_deg > 360.0 + 1e-9) {
+        error = "A revolve needs an angle above 0 and at most 360 degrees.";
+        return {};
+    }
+    const double length = std::hypot(axis[2], axis[3]);
+    if (!std::isfinite(length) || !(length > 1e-9) || !std::isfinite(axis[0]) || !std::isfinite(axis[1])) {
+        error = "The revolve axis needs a direction in the profile's plane.";
+        return {};
+    }
+    const double du = axis[2] / length;
+    const double dv = axis[3] / length;
+    double lo = 0.0;
+    double hi = 0.0;
+    for (size_t i = 0; i + 1 < points.size(); i += 2) {
+        const double side = cross2(du, dv, points[i] - axis[0], points[i + 1] - axis[1]);
+        lo = std::min(lo, side);
+        hi = std::max(hi, side);
+    }
+    if (lo < -kProfileMm && hi > kProfileMm) {
+        error = "The profile crosses the revolve axis. Keep it on one side.";
+        return {};
+    }
+    const ProfileFrame frame = frame_of(profile);
+    const TopoDS_Face face = profile_face(frame, points, 0.0, error);
+    if (face.IsNull()) {
+        return {};
+    }
+    const gp_Vec along = gp_Vec(frame.u) * du + gp_Vec(frame.v) * dv;
+    const gp_Ax1 turn_axis(frame.at(axis[0], axis[1]), gp_Dir(along));
+    const double angle = std::min(angle_deg, 360.0) * kPi / 180.0;
+    BRepPrimAPI_MakeRevol revol(face, turn_axis, angle, Standard_True);
+    TopoDS_Shape tool = built(revol, "revolve", error);
+    if (tool.IsNull()) {
+        return {};
+    }
+    // A profile on the other side of its axis turns the solid inside out.
+    GProp_GProps props;
+    integrate(tool, props);
+    if (props.Mass() < 0.0) {
+        tool.Reverse();
+    }
+    return combine_profile(current, before, which, tool, "revolve", volume, error);
+}
+
+/// Open CASCADE's thick solid, joined at `join`. Null when it fails or the result is not a valid solid.
+TopoDS_Shape thick_solid(const TopoDS_Shape& solid, const TopTools_ListOfShape& open, double thickness, GeomAbs_JoinType join) {
+    try {
+        BRepOffsetAPI_MakeThickSolid maker;
+        maker.MakeThickSolidByJoin(solid, open, -thickness, 1.0e-4, BRepOffset_Skin, Standard_False, Standard_False, join);
+        maker.Build();
+        if (!maker.IsDone() || maker.Shape().IsNull()) {
+            return {};
+        }
+        const TopoDS_Shape out = maker.Shape();
+        if (!has_solid(out) || !BRepCheck_Analyzer(out).IsValid()) {
+            return {};
+        }
+        return out;
+    } catch (const Standard_Failure&) {
+        return {};
+    }
+}
+
+/// A closed part hollowed with no face open: the part's own shell, and the shell offset inward, turned to face the void.
+TopoDS_Shape closed_shell(const TopoDS_Shape& solid, double thickness, GeomAbs_JoinType join) {
+    try {
+        BRepOffsetAPI_MakeOffsetShape offset;
+        offset.PerformByJoin(solid, -thickness, 1.0e-4, BRepOffset_Skin, Standard_False, Standard_False, join);
+        if (!offset.IsDone() || offset.Shape().IsNull()) {
+            return {};
+        }
+        TopoDS_Shape outer;
+        TopoDS_Shape inner;
+        for (TopExp_Explorer it(solid, TopAbs_SHELL); it.More(); it.Next()) {
+            if (!outer.IsNull()) {
+                return {};
+            }
+            outer = it.Current();
+        }
+        for (TopExp_Explorer it(offset.Shape(), TopAbs_SHELL); it.More(); it.Next()) {
+            if (!inner.IsNull()) {
+                return {};
+            }
+            inner = it.Current();
+        }
+        if (outer.IsNull() || inner.IsNull()) {
+            return {};
+        }
+        TopoDS_Solid hollow;
+        BRep_Builder builder;
+        builder.MakeSolid(hollow);
+        builder.Add(hollow, outer);
+        builder.Add(hollow, inner.Reversed());
+        if (!BRepCheck_Analyzer(hollow).IsValid()) {
+            return {};
+        }
+        return hollow;
+    } catch (const Standard_Failure&) {
+        return {};
+    }
+}
+
+TopoDS_Shape build_shell(
+    const TopoDS_Shape& current,
+    double before,
+    const std::vector<TopoDS_Face>& open,
+    double thickness,
+    double& volume,
+    std::string& error) {
+    if (!std::isfinite(thickness) || !(thickness > kTinyMm)) {
+        error = "A shell needs a wall thickness above 0.";
+        return {};
+    }
+    if (count_of(current, TopAbs_SOLID) != 1) {
+        error = "Shell works on a part of one body.";
+        return {};
+    }
+    const TopoDS_Shape solid = as_solid(current);
+    if (count_of(solid, TopAbs_SHELL) != 1) {
+        error = "This part is hollow already.";
+        return {};
+    }
+    if (!open.empty() && static_cast<int>(open.size()) >= count_of(solid, TopAbs_FACE)) {
+        error = "A shell needs at least one face left closed.";
+        return {};
+    }
+    TopTools_ListOfShape faces;
+    for (const TopoDS_Face& face : open) {
+        faces.Append(face);
+    }
+    g_stats.builds += 1;
+    // Sharp inner corners first, as a CAD shell makes them; rounded ones when Open CASCADE cannot intersect the walls.
+    TopoDS_Shape out;
+    for (GeomAbs_JoinType join : {GeomAbs_Intersection, GeomAbs_Arc}) {
+        out = open.empty() ? closed_shell(solid, thickness, join) : thick_solid(solid, faces, thickness, join);
+        if (!out.IsNull()) {
+            out = as_solid(out);
+            volume = volume_of(out);
+            if (volume > 1e-6 && volume < before - 1e-6) {
+                return out;
+            }
+        }
+    }
+    error = "This wall is too thick for the part's smallest feature.";
+    return {};
+}
+
+std::vector<int> edge_kinds(const TopoDS_Shape& shape, const std::vector<TopoDS_Edge>& edges) {
+    std::vector<int> kinds(edges.size(), 0);
+    TopTools_IndexedDataMapOfShapeListOfShape ancestors;
+    TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
+    for (size_t i = 0; i < edges.size(); ++i) {
+        const TopTools_ListOfShape* faces = ancestors.Seek(edges[i]);
+        if (faces == nullptr || BRep_Tool::Degenerated(edges[i])) {
+            continue;
+        }
+        std::vector<TopoDS_Face> unique;
+        for (TopTools_ListIteratorOfListOfShape it(*faces); it.More(); it.Next()) {
+            const TopoDS_Face face = TopoDS::Face(it.Value());
+            if (std::none_of(unique.begin(), unique.end(), [&face](const TopoDS_Face& have) { return face.IsSame(have); })) {
+                unique.push_back(face);
+            }
+        }
+        if (unique.size() != 2) {
+            continue;
+        }
+        try {
+            if (BRep_Tool::Continuity(edges[i], unique[0], unique[1]) >= GeomAbs_G1) {
+                continue;
+            }
+            const ChFiDS_TypeOfConcavity kind = ChFi3d::DefineConnectType(edges[i], unique[0], unique[1], 1.0e-4, Standard_False);
+            kinds[i] = kind == ChFiDS_Convex ? 1 : kind == ChFiDS_Concave ? 2 : 0;
+        } catch (const Standard_Failure&) {
+        }
+    }
+    return kinds;
 }
 
 }  // namespace lime_occt

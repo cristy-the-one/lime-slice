@@ -109,7 +109,7 @@ fn edit_steps() {
     // Edit the hole to ⌀6: a sibling of step 1 under the root, and the fillet replayed under it. The probe the panel
     // ran on the root is the edited step's solid; only the replayed tip is tessellated.
     let probe = ok(json!({ "call": "probe", "key": "e", "node": 0, "op": hole(3.0) }));
-    assert_eq!(probe, json!({ "ok": true }));
+    assert_eq!(probe["ok"], json!(true), "{probe}");
     let before = counts();
     let started = Instant::now();
     let edited = ok(
