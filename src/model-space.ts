@@ -174,6 +174,14 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
       return { ...op, origin: point(op.origin), axis: turnDir(back, op.axis) };
     case "split":
       return { ...op, origin: point(op.origin), normal: turnDir(back, op.normal) };
+    case "extrude":
+    case "revolve": {
+      // The profile's plane is a frame: its origin goes through the pose and its turn takes the pose's turn.
+      if (moveOnly(back)) return { ...op, origin: point(op.origin) };
+      const s = poseScale(back);
+      const turned = orientEuler(matMul(back.m.map((value) => value / s) as Mat3, eulerOrient(op.turn[0], op.turn[1], op.turn[2])));
+      return { ...op, origin: point(op.origin), turn: [turned.rx, turned.ry, turned.rz] };
+    }
     default:
       return op;
   }

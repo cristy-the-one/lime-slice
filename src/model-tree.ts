@@ -14,12 +14,39 @@ import type { PaintDisk } from "./support-paint.ts";
 /** Given by the client, never reused in one tree. The root is 0. */
 export type NodeId = number;
 export type Vec3 = [number, number, number];
+export type Vec2 = [number, number];
 
 /** An edge as the engine stores it, so a rebuild can find it again after its index moves. */
 export interface EdgeRef {
   index: number;
   mid: Vec3;
   lengthMm: number;
+}
+
+/** Which of a step's edges a pick takes. Each is sharp: an edge already smooth, or a seam, cannot be blended. */
+export type EdgeFilter = "all" | "convex" | "concave";
+
+/**
+ * The edges an earlier step made or changed, still on the solid blended: `filter` ("all" when absent) keeps the sharp,
+ * convex, or concave ones. The engine finds them at every build, so an edit above the step finds them again.
+ */
+export interface EdgeStep {
+  fromNode: NodeId;
+  filter?: EdgeFilter;
+}
+
+/** A blend's edge: an index into the parent's reply when fresh, a reference once stored, or an earlier step's edges. */
+export type EdgePick = number | EdgeRef | EdgeStep;
+
+export function isEdgeStep(edge: EdgePick): edge is EdgeStep {
+  return typeof edge === "object" && "fromNode" in edge;
+}
+
+/** A face as the engine stores it: its centre of area and its area, so a rebuild can find it again. */
+export interface FaceRef {
+  index: number;
+  mid: Vec3;
+  areaMm2: number;
 }
 
 /**
@@ -43,12 +70,49 @@ export type ModelOp =
   | ({ kind: "boolean"; op: BooleanKind } & PrimitiveSpec)
   | HoleOp
   | { kind: "split"; origin: Vec3; normal: Vec3 }
-  | { kind: "fillet" | "chamfer"; edges: (number | EdgeRef)[]; size: number }
+  | { kind: "fillet" | "chamfer"; edges: EdgePick[]; size: number }
   | { kind: "scale"; factor: number }
   /** Another object's solid at `tool`, placed by `relative`: its pose in this solid's own frame, worked out once at Apply. */
   | { kind: "join"; op: BooleanKind; tool: JoinTool; relative: Affine; keepTool: boolean }
   /** A new solid's primitive built again from other numbers, in place of the solid above: an edited root, right under the root. */
-  | ({ kind: "root" } & PrimitiveSpec);
+  | ({ kind: "root" } & PrimitiveSpec)
+  | ExtrudeOp
+  | RevolveOp
+  | ShellOp;
+
+/**
+ * A closed outline of `[u, v]` points on a plane, as a workplane is: `origin`, and `turn` about X, then Y, then Z, whose
+ * columns are U, V, and W. An extrude pushes it `depth` along W (−W when negative), or centred on the plane with
+ * `symmetric`; a revolve turns it about an in-plane axis. Either is then fused, cut, or intersected with the solid.
+ */
+export interface ExtrudeOp {
+  kind: "extrude";
+  op: BooleanKind;
+  origin: Vec3;
+  turn: Vec3;
+  profile: Vec2[];
+  depth: number;
+  symmetric?: true;
+}
+
+/** Turned `angleDeg` (360 when absent) about the line through `axisOrigin` ([0, 0]) along `axisDir` (V, [0, 1]). */
+export interface RevolveOp {
+  kind: "revolve";
+  op: BooleanKind;
+  origin: Vec3;
+  turn: Vec3;
+  profile: Vec2[];
+  axisOrigin?: Vec2;
+  axisDir?: Vec2;
+  angleDeg?: number;
+}
+
+/** The solid hollowed inward to walls `thickness` thick, with `openFaces` removed: indexes when fresh, references once stored. */
+export interface ShellOp {
+  kind: "shell";
+  thickness: number;
+  openFaces?: (number | FaceRef)[];
+}
 
 /**
  * A hole into `axis` from `origin`. `through` cuts to wherever the part ends, worked out by the engine from the solid it
@@ -245,10 +309,27 @@ export function childrenWithOp(tree: ModelTree, parent: NodeId, op: ModelOp): No
 }
 
 function canonical(op: ModelOp): string {
-  const plain = op.kind === "fillet" || op.kind === "chamfer" ? { ...op, edges: op.edges.map((edge) => (typeof edge === "number" ? edge : edge.index)) } : op;
+  // A stored reference matches a fresh index pick; an earlier step's edges match as they are.
+  const index = (pick: EdgePick | FaceRef) => (typeof pick === "number" ? pick : "index" in pick ? pick.index : pick);
+  const plain =
+    op.kind === "fillet" || op.kind === "chamfer"
+      ? { ...op, edges: op.edges.map(index) }
+      : op.kind === "shell" && op.openFaces
+        ? { ...op, openFaces: op.openFaces.map(index) }
+        : op;
   return JSON.stringify(plain, (_, value: unknown) =>
     value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value,
   );
+}
+
+/**
+ * `op` with each step its blend takes edges from renamed by `ids`: an edit replays a step under new ids, so a blend
+ * that took edges from a replayed step takes them from its new id. `op` itself when nothing is renamed.
+ */
+export function renumberedSteps(op: ModelOp, ids: ReadonlyMap<NodeId, NodeId>): ModelOp {
+  if (op.kind !== "fillet" && op.kind !== "chamfer") return op;
+  if (!op.edges.some((edge) => isEdgeStep(edge) && ids.has(edge.fromNode))) return op;
+  return { ...op, edges: op.edges.map((edge) => (isEdgeStep(edge) && ids.has(edge.fromNode) ? { ...edge, fromNode: ids.get(edge.fromNode)! } : edge)) };
 }
 
 /** The node whose plate mesh is `token`: how a plate restored by Prepare undo finds its place in the tree. */
@@ -402,7 +483,9 @@ export function opLabel(op: ModelOp): string {
       return splitLabel(op.origin, op.normal);
     case "fillet":
     case "chamfer": {
-      const count = op.edges.length === 1 ? "1 edge" : `${op.edges.length} edges`;
+      const picked = op.edges.filter((edge) => !isEdgeStep(edge)).length;
+      const steps = op.edges.filter(isEdgeStep).map((edge) => `${edge.filter && edge.filter !== "all" ? `${edge.filter} ` : ""}edges of node ${edge.fromNode}`);
+      const count = [...(picked > 0 || steps.length === 0 ? [picked === 1 ? "1 edge" : `${picked} edges`] : []), ...steps].join(" + ");
       return `${op.kind === "fillet" ? "Fillet" : "Chamfer"} ${count} ${op.kind === "fillet" ? "r " : ""}${n(op.size)}`;
     }
     case "scale":
@@ -411,5 +494,17 @@ export function opLabel(op: ModelOp): string {
       return `${BOOLEAN_VERB[op.op]} ${op.tool.name}`;
     case "root":
       return primitiveTitle(op);
+    case "extrude": {
+      const verb = op.op === "fuse" ? "Extrude" : `${BOOLEAN_VERB[op.op]} extrude`;
+      return `${verb} ${op.profile.length}-point profile ${n(Math.abs(op.depth))}${op.symmetric ? " both ways" : ""}`;
+    }
+    case "revolve": {
+      const verb = op.op === "fuse" ? "Revolve" : `${BOOLEAN_VERB[op.op]} revolve`;
+      return `${verb} ${op.profile.length}-point profile ${n(op.angleDeg ?? 360)}°`;
+    }
+    case "shell": {
+      const open = op.openFaces?.length ?? 0;
+      return `Shell ${n(op.thickness)}, ${open === 0 ? "closed" : open === 1 ? "1 face open" : `${open} faces open`}`;
+    }
   }
 }

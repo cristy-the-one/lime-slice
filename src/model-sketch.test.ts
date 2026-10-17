@@ -1,0 +1,135 @@
+/**
+ * Extrude, revolve, shell, and a blend that takes an earlier step's edges, on the client: the ops as sent, their history
+ * labels, a `.lime` round trip, an edit's renumbered steps, the solid frame they are stored in, and the probe's measures.
+ */
+import { eulerOrient } from "./mesh-place.ts";
+import { editRefusal, stepIds } from "./model-edit.ts";
+import { isProbed, probeFromBody, probeNote } from "./model-feasibility.ts";
+import { extrudeOp, probeRequest, revolveOp, shellOp, stepEdges } from "./model-request.ts";
+import { applyPose, toSolidOp, type Affine } from "./model-space.ts";
+import { loadedTree, readSavedTree, savedTree } from "./model-tree-file.ts";
+import { childWithOp, newTree, opLabel, renumberedSteps, withChild, type ModelOp, type Vec2, type Vec3 } from "./model-tree.ts";
+
+let failed = 0;
+function eq(name: string, got: unknown, want: unknown) {
+  const left = JSON.stringify(got);
+  const right = JSON.stringify(want);
+  if (left === right) return;
+  failed += 1;
+  console.error(`FAIL ${name}\n  got  ${left}\n  want ${right}`);
+}
+function near(name: string, got: readonly number[], want: readonly number[]) {
+  if (got.length === want.length && got.every((value, i) => Math.abs(value - want[i]!) < 1e-9)) return;
+  failed += 1;
+  console.error(`FAIL ${name}\n  got  ${JSON.stringify(got)}\n  want ${JSON.stringify(want)}`);
+}
+
+// The ops as the engine reads and stores them: optional fields only when on or given.
+const gable: Vec2[] = [[-5, 50], [105, 50], [50, 80]];
+const front = { origin: [0, 30, 0] as Vec3, turn: [90, 0, 0] as Vec3 };
+const roof = extrudeOp("fuse", front, gable, 70, true);
+eq("an extrude carries its plane, profile, and depth", roof, { kind: "extrude", op: "fuse", origin: [0, 30, 0], turn: [90, 0, 0], profile: gable, depth: 70, symmetric: true });
+eq("symmetric is sent only when on", "symmetric" in extrudeOp("cut", front, gable, -10), false);
+const boss = revolveOp("fuse", front, [[0, 0], [5, 0], [5, 8], [0, 8]]);
+eq("a revolve sends no axis or angle it was not given", Object.keys(boss), ["kind", "op", "origin", "turn", "profile"]);
+eq("and each one it was", revolveOp("cut", front, gable, { origin: [0, 1], dir: [1, 0], angleDeg: 90 }), { kind: "revolve", op: "cut", origin: [0, 30, 0], turn: [90, 0, 0], profile: gable, axisOrigin: [0, 1], axisDir: [1, 0], angleDeg: 90 });
+eq("a shell with no face open sends none", shellOp(2), { kind: "shell", thickness: 2 });
+eq("a step pick sends its filter only when it narrows", [stepEdges(3), stepEdges(3, "all"), stepEdges(3, "convex")], [{ fromNode: 3 }, { fromNode: 3 }, { fromNode: 3, filter: "convex" }]);
+eq("a probe sends the op as built", probeRequest("k", 1, shellOp(1.5, [4])), { call: "probe", key: "k", node: 1, op: { kind: "shell", thickness: 1.5, openFaces: [4] } });
+
+// History labels.
+eq("labels", [
+  opLabel(roof),
+  opLabel(extrudeOp("cut", front, [[0, 0], [1, 0], [1, 1], [0, 1]], -10)),
+  opLabel(boss),
+  opLabel(revolveOp("common", front, gable, { angleDeg: 90 })),
+  opLabel(shellOp(2)),
+  opLabel(shellOp(1.5, [4])),
+  opLabel(shellOp(1, [4, 5])),
+  opLabel({ kind: "fillet", edges: [stepEdges(2, "convex")], size: 1 }),
+  opLabel({ kind: "chamfer", edges: [3, stepEdges(2)], size: 0.5 }),
+], [
+  "Extrude 3-point profile 70 both ways",
+  "Cut extrude 4-point profile 10",
+  "Revolve 4-point profile 360°",
+  "Intersect revolve 3-point profile 90°",
+  "Shell 2, closed",
+  "Shell 1.5, 1 face open",
+  "Shell 1, 2 faces open",
+  "Fillet convex edges of node 2 r 1",
+  "Chamfer 1 edge + edges of node 2 0.5",
+]);
+
+// A `.lime` round trip: the ops come back as stored, each with its label.
+const fp = (volumeMm3: number) => ({ volumeMm3, faces: 6, edges: 12 });
+const root = { kind: "primitive" as const, solid: { primitive: "box" as const, origin: [0, 0, 0] as Vec3, size: [100, 60, 50] as Vec3, radius: 0, height: 0, turn: [0, 0, 0] as Vec3 } };
+const stored: ModelOp[] = [
+  roof,
+  { kind: "revolve", op: "cut", origin: [20, 20, 10], turn: [90, 0, 0], profile: [[5, 0], [7, 0], [7, -2], [5, -2]], axisDir: [0, 1] },
+  { kind: "shell", thickness: 1, openFaces: [{ index: 5, mid: [50, 30, 80], areaMm2: 400 }] },
+  { kind: "fillet", edges: [{ fromNode: 1, filter: "concave" }, { index: 2, mid: [0, 0, 5], lengthMm: 10 }], size: 1 },
+];
+let tree = newTree("k", root, "Box", fp(300_000));
+stored.forEach((op, i) => (tree = withChild(tree, i, { id: i + 1, op, label: opLabel(op), fingerprint: fp(1000 + i) })));
+const json = JSON.parse(JSON.stringify({ ...savedTree(tree, 4, () => undefined), rootPrimitive: root.solid }));
+const read = readSavedTree(json);
+eq("a saved tree with the new ops reads", read?.nodes.map((node) => node.op), [null, ...stored]);
+const loaded = read && loadedTree(read, "k2", root, "Box", null, () => undefined);
+eq("and opens with each step labelled", loaded && [1, 2, 3, 4].map((id) => loaded.nodes.get(id)?.label), stored.map(opLabel));
+const damaged = (patch: (op: Record<string, unknown>) => void, at = 1) => {
+  const copy = JSON.parse(JSON.stringify(json));
+  patch(copy.nodes[at].op);
+  return readSavedTree(copy);
+};
+eq("a damaged op is a damaged tree", [
+  damaged((op) => (op.profile = [[0, 0], [1, 0]])),
+  damaged((op) => (op.profile = [[0, 0], [1, 0], [1]])),
+  damaged((op) => (op.depth = "deep")),
+  damaged((op) => (op.symmetric = 1)),
+  damaged((op) => (op.op = "glue")),
+  damaged((op) => (op.axisDir = [0, 1, 0]), 2),
+  damaged((op) => (op.openFaces = [{ index: 5 }]), 3),
+  damaged((op) => ((op.edges as unknown[])[0] = { fromNode: 1, filter: "round" }), 4),
+], [null, null, null, null, null, null, null, null]);
+
+// A shell stored with references is the same op as a fresh pick of the same face, as a blend's edges are.
+const shellTree = withChild(newTree("s", root, "Box", fp(1)), 0, { id: 1, op: stored[2]!, label: "", fingerprint: fp(1) });
+eq("a fresh pick finds the shell already built", childWithOp(shellTree, 0, shellOp(1, [5])), 1);
+eq("but not another face", childWithOp(shellTree, 0, shellOp(1, [4])), null);
+
+// An edit replays steps under new ids, and a blend's step pick follows its step.
+const blend: ModelOp = { kind: "fillet", edges: [stepEdges(3, "convex"), 7], size: 1 };
+const ids = stepIds([3, 4], [9, 10]);
+eq("an edit renames each replayed step", [...ids], [[3, 9], [4, 10]]);
+eq("a blend takes edges from its step's new id", renumberedSteps(blend, ids), { kind: "fillet", edges: [{ fromNode: 9, filter: "convex" }, 7], size: 1 });
+eq("a blend of a step not replayed is the same op", renumberedSteps(blend, stepIds([5], [11])) === blend, true);
+
+// The app has no panel for these yet, so their steps are not edited from History.
+for (const id of [1, 2, 3, 4]) eq(`step ${id} has no edit panel`, editRefusal(tree, id), "This step has no edit panel yet. Delete it and apply it again with new numbers.");
+
+// Typed in model space, stored in the solid's own frame: the profile lands in the same place either way.
+const pose: Affine = { m: eulerOrient(0, 0, 90), t: [10, 5, 0] };
+const solid = toSolidOp(roof, pose) as typeof roof;
+const at = (plane: { origin: Vec3; turn: Vec3 }, [u, v]: Vec2) => {
+  const m = eulerOrient(plane.turn[0], plane.turn[1], plane.turn[2]);
+  return [plane.origin[0] + m[0] * u + m[1] * v, plane.origin[1] + m[3] * u + m[4] * v, plane.origin[2] + m[6] * u + m[7] * v];
+};
+for (const point of gable) near(`profile point ${point} keeps its place`, applyPose(pose, at(solid, point)), at(roof, point));
+eq("a pose that only moves keeps the turn", (toSolidOp(roof, { m: eulerOrient(0, 0, 0), t: [1, 2, 3] }) as typeof roof).turn, [90, 0, 0]);
+eq("a shell has no frame to move", toSolidOp(shellOp(1, [2]), pose), shellOp(1, [2]));
+
+// The probe's measures, and its notes.
+eq("a probe that builds reads its measures", probeFromBody({ ok: true, volumeMm3: 1408, solids: 1, shells: 2, before: { volumeMm3: 4000, solids: 1, shells: 1 } }), {
+  phase: "done",
+  ok: true,
+  measure: { volumeMm3: 1408, solids: 1, shells: 2, before: { volumeMm3: 4000, solids: 1, shells: 1 } },
+});
+eq("an older engine's bare ok still reads", probeFromBody({ ok: true }), { phase: "done", ok: true });
+eq("the new tools are checked by the kernel", ["extrude", "revolve", "shell"].map(isProbed), [true, true, true]);
+eq("a refusal reads as it came", probeNote("shell", { phase: "done", ok: false, error: "This wall is too thick for the part's smallest feature." })?.text, "This wall is too thick for the part's smallest feature.");
+
+if (failed) {
+  console.error(`model-sketch: ${failed} failed`);
+  throw new Error(`model-sketch: ${failed} failed`);
+}
+console.log("model-sketch: extrude, revolve, shell, and step edges ok");
