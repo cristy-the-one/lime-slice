@@ -133,6 +133,20 @@ const projectPath = join(workspace, "calibration_cube_20mm.lime");
   check("no refused path reaches the app", asked.bridge.length === 1);
 }
 
+// A committed Model solid is saved as the app reads it: the kernel's STL as the plate mesh, the STEP beside it as brep.
+{
+  const { stand, asked } = opener({ opened: true }, null);
+  const s = await session(stand);
+  const built = await s.call("model_build", { name: "post", base: { primitive: "box", dx: 20, dy: 20, dz: 20 } });
+  check("a Model solid is built and committed", built.ok === true && built.committed === true, JSON.stringify(built));
+  const shown = await s.call("app_open", {});
+  const saved = String(shown.path);
+  const doc = JSON.parse(readFileSync(saved, "utf8")) as { objects?: { mesh: { name: string }; brep?: { name: string }; meshSeatMm?: number; modelTree?: unknown }[] };
+  const row = doc.objects?.[0];
+  check("a solid opens in the app from its saved project", shown.ok === true && shown.opened === "bridge" && asked.bridge[0] === saved && saved.endsWith(".lime"), JSON.stringify(shown));
+  check("the project the app opens carries the STL, the brep, its seat, and the history", !!row && row.mesh.name.endsWith(".stl") && !!row.brep?.name.endsWith(".step") && typeof row.meshSeatMm === "number" && !!row.modelTree, JSON.stringify({ mesh: row?.mesh.name, brep: row?.brep?.name }));
+}
+
 // The bridge: an open goes only to a desktop that names the feature, and its answer is read.
 {
   let features = "";

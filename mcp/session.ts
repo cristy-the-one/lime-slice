@@ -116,8 +116,14 @@ export interface PlateObject {
   seamPaint: SeamDisk[];
   reinforcement: ReinforceRegion[];
   objectSettings: PlateObjectSettings;
-  /** The history node whose STEP is `bytes`. Null until a commit writes it. */
+  /** The history node `bytes` was meshed from. Null until a commit writes it. */
   platedNode: number | null;
+  /**
+   * The committed solid as STEP, beside `bytes`, which is then an STL of the kernel's own mesh of it: the app's
+   * convention (`brep`). The slicer reads STEP with truck, which mis-meshes lofts and some trimmed faces, so a
+   * Model solid's plate mesh never goes through it.
+   */
+  brep?: Uint8Array;
   /** Runs of steps one composite edit or batch made: undo takes the whole run back. */
   groups?: { start: number; end: number; label: string }[];
   /** The run undo last took back, so redo can bring it all again. */
@@ -271,6 +277,7 @@ interface SnapObject {
   reinforcement: ReinforceRegion[];
   objectSettings: PlateObjectSettings;
   platedNode: number | null;
+  brep?: Uint8Array;
 }
 
 interface PlateSnap {
@@ -311,6 +318,18 @@ function parseNode(handle: unknown): number | null {
   if (typeof handle !== "string") return null;
   const match = /^node_(\d+)$/.exec(handle);
   return match ? Number(match[1]) : null;
+}
+
+/** The plate STL's name for a solid's file: the app's `stlName`. */
+function stlFileName(name: string): string {
+  const stem = name.replace(/\.(step|stp|stl|3mf)$/i, "");
+  return `${stem || "solid"}.stl`;
+}
+
+/** The brep's name for a solid's file: the app's `stepFileName`. */
+function stepFileName(name: string): string {
+  const stem = name.replace(/\.(step|stp|stl|3mf)$/i, "");
+  return `${stem || "solid"}.step`;
 }
 
 /** A value as text with its keys sorted, so two ops that ask the same thing have the same key. */
@@ -832,6 +851,7 @@ export class Session {
       reinforcement: obj.reinforcement.map((region) => structuredClone(region)),
       objectSettings: { ...obj.objectSettings },
       platedNode: obj.platedNode,
+      ...(obj.brep ? { brep: obj.brep } : {}),
     };
   }
 
@@ -886,6 +906,7 @@ export class Session {
         kept.reinforcement = row.reinforcement.map((region) => structuredClone(region));
         kept.objectSettings = { ...row.objectSettings };
         kept.platedNode = row.platedNode;
+        kept.brep = row.brep;
         next.push(kept);
       } else {
         next.push(this.revive(row));
@@ -982,6 +1003,8 @@ export class Session {
           modelTree: obj.modelTree,
           modelPose: obj.modelPose,
           workplane: obj.workplane,
+          brep: obj.brep ? base64ToBytes(obj.brep.bytesBase64) ?? undefined : undefined,
+          meshSeatMm: obj.meshSeatMm,
         }))
       : [{
           id: undefined as string | undefined,
@@ -997,6 +1020,8 @@ export class Session {
           modelTree: undefined,
           modelPose: undefined,
           workplane: undefined,
+          brep: undefined as Uint8Array | undefined,
+          meshSeatMm: undefined as number | undefined,
         }];
     const objects: { object: string; name: string }[] = [];
     for (const row of rows) {
@@ -1012,7 +1037,8 @@ export class Session {
         scale: row.placement.scale,
         centered: row.placement.centered,
         offset: { ...row.placement.offset },
-        seatMm: preview.seatMm,
+        // A committed solid's STL was seated when it was written; its seat is saved beside it.
+        seatMm: row.brep && typeof row.meshSeatMm === "number" ? row.meshSeatMm : preview.seatMm,
         stepTolerance: row.placement.stepTolerance > 0 ? row.placement.stepTolerance : STEP,
         supportEdits: row.supportEdits.map((entry) => structuredClone(entry)),
         supportPaint: row.supportPaint.map((disk) => structuredClone(disk)),
@@ -1022,6 +1048,7 @@ export class Session {
       }, row.id);
       if (row.modelPose) obj.modelPose = { m: [...row.modelPose.m] as Affine["m"], t: [...row.modelPose.t] as Affine["t"] };
       if (row.workplane) obj.workplane = { source: row.workplane.source, origin: [...row.workplane.origin] as Workplane["origin"], turn: [...row.workplane.turn] as Workplane["turn"] };
+      if (row.brep) obj.brep = row.brep;
       objects.push({ object: obj.id, name: shownName(obj.name) });
     }
     for (const row of rows) {
@@ -1091,6 +1118,7 @@ export class Session {
       ...(obj.reinforcement.length ? { reinforcement: obj.reinforcement.map((region) => structuredClone(region)) } : {}),
       ...(settingsEmpty(obj.objectSettings) ? {} : { settings: { ...obj.objectSettings } }),
       ...(tree ? { modelTree: tree } : {}),
+      ...(obj.brep ? { brep: meshRecord(stepFileName(obj.fileName), obj.brep), meshSeatMm: obj.seatMm } : {}),
       ...(obj.modelPose.t.some((value) => value !== 0) || obj.modelPose.m.some((value, index) => value !== [1, 0, 0, 0, 1, 0, 0, 0, 1][index]) ? { modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] } } : {}),
       ...(obj.workplane.source === "global" ? {} : { workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] } }),
     };
@@ -1119,10 +1147,26 @@ export class Session {
     const objectKey = (id: string) => this.objects.find((row) => row.id === id)?.tree?.key ?? (this.find(id) ? `mcp-${id}` : undefined);
     obj.tree = loadedTree(saved, key, stepRoot, obj.name, null, objectKey);
     obj.platedNode = obj.tree.committed;
+    // A file this server saved before 2.5.1 kept a Model solid's STEP as its plate mesh, which the slicer meshed with
+    // truck: a loft could come back as a sheet a metre across. Such a plate takes the kernel's mesh of the committed
+    // step, as a commit gives it, and the STEP moves to brep.
+    const stepPlate = !obj.brep && /\.(step|stp)$/i.test(obj.fileName);
+    const tree = obj.tree;
     try {
-      const reply = await this.treeCall(wholeTreeRequest(obj.tree, stepRoot, obj.tree.current, obj.stepTolerance || CHORD), "open");
+      const at = stepPlate ? tree.committed : tree.current;
+      const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD), "open");
       const solid = rememberSolid(reply);
       if (solid) obj.solid = solid;
+      if (stepPlate && solid && solid.positions.length >= 9) {
+        const copy = Float32Array.from(solid.positions);
+        obj.brep = obj.bytes;
+        obj.seatMm = settleBy(copy);
+        obj.source = copy;
+        obj.triangles = copy.length / 9;
+        obj.fileName = stlFileName(obj.fileName);
+        obj.bytes = stlBytes(copy, obj.fileName);
+      }
+      if (at !== tree.current) await this.gotoNode(obj, tree.current);
     } catch (err) {
       if (err instanceof ModelRunaway) return;
       throw err;
@@ -2805,7 +2849,9 @@ export class Session {
   private async ensureTree(obj: PlateObject): Promise<ModelTree> {
     if (obj.tree) return obj.tree;
     const key = `mcp-${obj.id}`;
-    const root = { kind: "step" as const, name: obj.fileName, bytes: obj.bytes.buffer as ArrayBuffer };
+    const source = obj.brep ?? obj.bytes;
+    const bytes = source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength) as ArrayBuffer;
+    const root = { kind: "step" as const, name: obj.brep ? stepFileName(obj.fileName) : obj.fileName, bytes };
     const reply = await this.treeCall(openRequest(key, root, CHORD));
     const error = typeof reply.error === "string" ? reply.error : "";
     if (error) throw new ProtocolError(plainModelError(error));
@@ -2857,7 +2903,7 @@ export class Session {
 
   /** A mesh has no solid to edit. A STEP file and a new solid do. */
   private meshBlock(obj: PlateObject): string | null {
-    if (obj.tree) return null;
+    if (obj.tree || obj.brep) return null;
     const name = obj.fileName.toLowerCase();
     if (name.endsWith(".step") || name.endsWith(".stp")) return null;
     return MESH_EDIT;
@@ -3849,6 +3895,10 @@ export class Session {
       seamPaint: obj.seamPaint.map((disk) => structuredClone(disk)),
       reinforcement: obj.reinforcement.map((region) => structuredClone(region)),
       objectSettings: { ...obj.objectSettings },
+      // The half has no STEP or build of its own until its first commit.
+      brep: undefined,
+      buildLog: undefined,
+      recipe: undefined,
     };
     this.objects.push(half);
     return id;
@@ -4067,8 +4117,9 @@ export class Session {
     obj.seatMm = settleBy(copy);
     obj.source = copy;
     obj.triangles = copy.length / 9;
-    obj.bytes = step;
-    if (/\.(stl|3mf)$/i.test(obj.fileName)) obj.fileName = obj.fileName.replace(/\.(stl|3mf)$/i, ".step");
+    obj.fileName = stlFileName(obj.fileName);
+    obj.bytes = stlBytes(copy, obj.fileName);
+    obj.brep = step;
     if (this.scaleSince(tree, from, tree.current)) obj.scale = 1;
     obj.platedNode = tree.current;
     obj.tree = { ...obj.tree!, committed: tree.current };
