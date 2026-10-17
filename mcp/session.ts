@@ -25,6 +25,8 @@ import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
 import { applyRequest, crossEditRequest, exportRequest, extrudeOp, gotoRequest, joinOp, loftOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
 import { sweepSections, type SweepSpec } from "./sweep.ts";
+import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "./anchors.ts";
+import { expandOps, type PartDef } from "./macro.ts";
 import { applyPose, IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
 import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type EdgePick, type Fingerprint, type LoftSection, type ModelOp, type ModelTree, type NodeId, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
@@ -80,7 +82,7 @@ const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a m
 const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the current handles.";
 const NAME_LIMIT = 120;
 /** Tools whose op fields may be text expressions. */
-const EXPRESSION_TOOLS = new Set(["model_probe", "model_apply", "model_apply_batch", "model_edit", "model_build"]);
+const EXPRESSION_TOOLS = new Set(["model_probe", "model_apply", "model_apply_batch", "model_edit", "model_build", "model_define"]);
 
 /** Carried with one tools/call: a progress token, and cancel for that request. */
 export interface CallMeta {
@@ -124,6 +126,16 @@ export interface PlateObject {
    * matching run of ops.
    */
   buildLog?: { base: string; start: number; steps: { key: string; node: number | null; first: number | null }[]; refused: boolean };
+  /** The model_build call this object came from, before expansion: rerun it with new parameters, and saved with the project. */
+  recipe?: Recipe;
+}
+
+/** A model_build's base, ops, parameters, and name, as typed. */
+export interface Recipe {
+  base: unknown;
+  ops: unknown;
+  params: Record<string, unknown>;
+  name?: string;
 }
 
 interface Ghost {
@@ -452,13 +464,17 @@ export class Session {
   clearanceMm = 0;
   gantryMm = 0;
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
-  /** Names model ops may use in place of numbers. Set with model_params; not saved in the project. */
+  /** Names model ops may use in place of numbers. Set with model_params; saved with the project's recipes. */
   params: Record<string, number> = {};
+  /** Parts model_define stored, which an op list places with {kind: "use"}. */
+  parts = new Map<string, PartDef>();
   /**
    * Tools a join took off the plate, as the desktop does: not printed, not listed, but their trees stay open, since
    * an edit that replays the join builds the tool again, and a save keeps them as the project's modelTools.
    */
   private toolsOffPlate: PlateObject[] = [];
+  /** The recipe of the model_build being called, kept from before its ops were expanded. */
+  private pendingRecipe: Recipe | null = null;
 
   constructor(engine: Engine) {
     this.engine = engine;
@@ -493,6 +509,17 @@ export class Session {
   private withNumbers(name: string, args: unknown): { args: unknown } | { reason: string } {
     if (!EXPRESSION_TOOLS.has(name) || !args || typeof args !== "object") return { args };
     const input = { ...(args as Record<string, unknown>) };
+    if (name === "model_define") return { args: input };
+    // model_build {object, params} with no ops reruns the recipe that object was built from, with those parameters.
+    if (name === "model_build" && typeof input.object === "string" && input.ops === undefined && input.base === undefined) {
+      const recipe = this.find(input.object)?.recipe;
+      if (!recipe) return { reason: "That object has no recipe to rerun. Pass base and ops." };
+      input.base = structuredClone(recipe.base);
+      input.ops = structuredClone(recipe.ops);
+      input.params = { ...recipe.params, ...((input.params as Record<string, unknown> | undefined) ?? {}) };
+      if (input.name === undefined && recipe.name) input.name = recipe.name;
+    }
+    if (name === "model_build") this.pendingRecipe = { base: structuredClone(input.base), ops: structuredClone(input.ops ?? []), params: structuredClone((input.params as Record<string, unknown>) ?? {}), name: typeof input.name === "string" ? input.name : undefined };
     let params = this.params;
     if (input.params && typeof input.params === "object") {
       const merged = this.mergeParams(input.params as Record<string, unknown>);
@@ -500,9 +527,10 @@ export class Session {
       params = merged as Record<string, number>;
     }
     try {
-      for (const key of ["op", "ops", "base"]) {
+      for (const key of ["op", "base"]) {
         if (input[key] !== undefined) input[key] = resolveNumbers(input[key], params, key, OP_WORDS);
       }
+      if (Array.isArray(input.ops)) input.ops = expandOps(input.ops, params, this.parts, OP_WORDS);
     } catch (err) {
       if (err instanceof ExprError) return { reason: err.message };
       throw err;
@@ -995,6 +1023,7 @@ export class Session {
       const obj = this.find(row.id);
       if (obj) await this.adoptHistory(obj, row.modelTree);
     }
+    this.adoptMcpModel(parsed.project.mcpModel);
     const skipped = this.notSliced();
     return {
       ok: true,
@@ -1207,6 +1236,9 @@ export class Session {
       }
     }
     const doc = this.projectDocument();
+    const mcpModel = this.mcpModelRecord();
+    if (mcpModel) doc.mcpModel = mcpModel;
+    else delete doc.mcpModel;
     const tools = this.toolsOffPlate.flatMap((tool) => {
       const modelTree = this.savedModelTree(tool);
       return modelTree ? [{ id: tool.id, name: tool.name, modelTree }] : [];
@@ -2534,6 +2566,7 @@ export class Session {
     if (name === "solid_new") return this.solidNew(input);
     if (name === "model_build") return this.build(input);
     if (name === "model_params") return this.paramsTool(input);
+    if (name === "model_define") return this.defineTool(input);
     const requested = typeof input.object === "string" ? input.object : "";
     const obj = this.find(requested !== "" ? requested : this.selected);
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
@@ -2544,12 +2577,16 @@ export class Session {
       case "workplane_set": return this.workplaneSet(obj, input);
       case "workplane_print_up": return this.printUp(obj);
       case "model_place": return this.modelPlace(obj, input);
-      case "model_probe": return this.probeMeasured(obj, input);
+      case "model_probe": {
+        const anchored = this.anchored(obj, input.op as Record<string, unknown>);
+        return "reason" in anchored ? { ok: false, reason: anchored.reason } : this.probeMeasured(obj, { ...input, op: anchored.op });
+      }
       case "surface_at": return this.surfaceAt(obj, input);
       case "model_check": return this.modelCheck(obj, input);
       case "model_apply": return this.applyTool(obj, input);
       case "model_apply_batch": return this.applyBatch(obj, input);
       case "model_history": return this.history(obj, input);
+      case "model_anchors": return this.anchorsTool(obj, input);
       case "model_goto": return this.gotoNode(obj, this.nodeOf(obj, input.node));
       case "model_undo": return this.step(obj, "undo");
       case "model_redo": return this.step(obj, "redo");
@@ -3133,7 +3170,9 @@ export class Session {
    * mirror, pocket, boss, texture) always checks each step as it goes and is one undo step.
    */
   private async applyTool(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const raw = input.op as Record<string, unknown>;
+    const anchored = this.anchored(obj, input.op as Record<string, unknown>);
+    if ("reason" in anchored) return { ok: false, reason: anchored.reason };
+    const raw = anchored.op;
     if (isComposite(raw?.kind)) {
       const { checkpoints: _checkpoints, ...ran } = await this.applyMany(obj, [raw], { label: typeof raw.label === "string" ? raw.label : undefined });
       return ran;
@@ -3306,9 +3345,17 @@ export class Session {
       return result({ ok: false, applied: nodes.length, failed, ...(nodes.length ? { node: nodeHandle(nodes[nodes.length - 1]!) } : {}) });
     };
     for (let index = 0; index < raws.length; index += 1) {
-      const raw = raws[index]!;
-      const label = typeof raw.label === "string" && raw.label.trim() ? raw.label.trim() : undefined;
+      const label = typeof raws[index]!.label === "string" && (raws[index]!.label as string).trim() ? (raws[index]!.label as string).trim() : undefined;
       const before = obj.tree?.current ?? start;
+      const anchored = this.anchored(obj, raws[index]!);
+      if ("reason" in anchored) {
+        const row = { index: index + offset, ...(label ? { label } : {}), reason: anchored.reason };
+        if (mode !== "skip") return fail(row);
+        failures.push(row);
+        checkpoints.push(null);
+        continue;
+      }
+      const raw = anchored.op;
       const ownNodes: number[] = [];
       // One op's refusal: the run ends, or with skip the op's own steps go and the run carries on.
       const refuse = async (failed: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
@@ -3408,6 +3455,9 @@ export class Session {
    * names an earlier build to rebuild in place the same way, refused or not.
    */
   private async build(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const recipe = this.pendingRecipe;
+    this.pendingRecipe = null;
+    if (input.base === undefined) return { ok: false, reason: "model_build needs a base, or an object whose recipe to rerun." };
     const base = (input.base ?? {}) as Record<string, unknown>;
     const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
     const baseKey = stableKey(base);
@@ -3449,6 +3499,7 @@ export class Session {
       from = null;
     }
     if (name) obj.name = name;
+    if (recipe) obj.recipe = recipe;
     const log = obj.buildLog!;
     const firsts = log.steps.slice(0, reused);
     const rest = ops.slice(reused);
@@ -3479,6 +3530,140 @@ export class Session {
       if (reason) return { ok: false, object: obj.id, reason };
     }
     return { ...body, ...resumed, applied: reused + Number(body.applied ?? 0), object: obj.id, committed: input.commit !== false, bounds: obj.solid?.bounds ?? null };
+  }
+
+  /** The op with every anchor replaced by the point it names on this object, as the solid stands now. */
+  private anchored(obj: PlateObject, raw: Record<string, unknown>): { op: Record<string, unknown> } | { reason: string } {
+    if (!hasAnchor(raw)) return { op: raw };
+    try {
+      return { op: resolveAnchors(raw, (label) => this.labelBox(obj, label)) as Record<string, unknown> };
+    } catch (err) {
+      if (err instanceof AnchorError) return { reason: err.message };
+      throw err;
+    }
+  }
+
+  /**
+   * The box, in the frame ops are typed in, of the tools the steps a label names applied: a step's own label, each
+   * step of a composite labelled "label k/n", or a batch's label, on the path to the current step. "part" is the solid.
+   */
+  private labelBox(obj: PlateObject, label: string): Box | null {
+    const tree = obj.tree;
+    if (!tree) return null;
+    const toTyped = (p: [number, number, number]) => this.typedPoint(obj, applyPose(obj.modelPose, p));
+    if (label.trim().toLowerCase() === "part") return obj.solid ? movedBox(obj.solid.bounds as Box, toTyped) : null;
+    const wanted = label.trim().toLowerCase();
+    const path: number[] = [];
+    for (let node: number | null = tree.current; node !== null; node = tree.nodes.get(node)?.parent ?? null) path.push(node);
+    const onPath = new Set(path);
+    const grouped = new Set<number>();
+    for (const group of obj.groups ?? []) {
+      if (group.label.toLowerCase() !== wanted || !onPath.has(group.end) || !onPath.has(group.start)) continue;
+      for (let node: number | null = group.end; node !== null && node !== group.start; node = tree.nodes.get(node)?.parent ?? null) grouped.add(node);
+    }
+    let box: Box | null = null;
+    for (const node of path) {
+      const row = tree.nodes.get(node);
+      if (!row?.op) continue;
+      const name = row.label.toLowerCase();
+      const piece = name.startsWith(`${wanted} `) && /^\d+\/\d+$/.test(name.slice(wanted.length + 1));
+      if (name !== wanted && !piece && !grouped.has(node)) continue;
+      const own = opBox(row.op);
+      if (own) box = unionBox(box, movedBox(own, toTyped));
+    }
+    return box;
+  }
+
+  /** A part-frame point in the object's workplane, the frame its ops are typed in. */
+  private typedPoint(obj: PlateObject, p: [number, number, number]): [number, number, number] {
+    const plane = obj.workplane;
+    if (isGlobalFrame(plane)) return p;
+    const m = eulerOrient(plane.turn[0], plane.turn[1], plane.turn[2]);
+    const d = [p[0] - plane.origin[0], p[1] - plane.origin[1], p[2] - plane.origin[2]];
+    return [0, 1, 2].map((c) => m[c]! * d[0]! + m[3 + c]! * d[1]! + m[6 + c]! * d[2]!) as [number, number, number];
+  }
+
+  /** model_anchors: every label on the path to the current step with its box, or one label's. */
+  private anchorsTool(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+    if (!obj.tree) return { ok: false, reason: "This object has no Model history yet." };
+    if (typeof input.label === "string") {
+      const box = this.labelBox(obj, input.label);
+      return box ? { ok: true, ...anchorRow(input.label, box) } : { ok: false, reason: `No step is labelled "${input.label}" with a tool to measure.` };
+    }
+    const names = new Set<string>();
+    for (let node: number | null = obj.tree.current; node !== null; node = obj.tree.nodes.get(node)?.parent ?? null) {
+      const row = obj.tree.nodes.get(node);
+      if (!row?.op) continue;
+      names.add(row.label.replace(/ \d+\/\d+$/, ""));
+    }
+    for (const group of obj.groups ?? []) if (obj.tree.nodes.has(group.end)) names.add(group.label);
+    const rows = [...names].reverse().flatMap((name) => {
+      const box = this.labelBox(obj, name);
+      return box ? [anchorRow(name, box)] : [];
+    });
+    const part = this.labelBox(obj, "part");
+    return { ok: true, labels: rows.slice(0, 200), ...(part ? { part: anchorRow("part", part) } : {}) };
+  }
+
+  /** The parameters, parts, and each build's recipe and log, as the project keeps them. Null when there are none. */
+  private mcpModelRecord(): Record<string, unknown> | null {
+    const recipes: Record<string, unknown> = {};
+    for (const obj of this.objects) if (obj.recipe) recipes[obj.id] = { recipe: obj.recipe, ...(obj.buildLog ? { buildLog: obj.buildLog } : {}) };
+    const record = {
+      ...(Object.keys(this.params).length ? { params: { ...this.params } } : {}),
+      ...(this.parts.size ? { parts: Object.fromEntries(this.parts) } : {}),
+      ...(Object.keys(recipes).length ? { recipes } : {}),
+    };
+    return Object.keys(record).length ? structuredClone(record) : null;
+  }
+
+  /** A project's MCP record back into the session: what it does not understand it leaves out. */
+  private adoptMcpModel(value: Record<string, unknown> | undefined): void {
+    this.parts.clear();
+    if (!value) return;
+    const params = value.params;
+    if (params && typeof params === "object") {
+      for (const [key, n] of Object.entries(params)) if (PARAM_NAME.test(key) && typeof n === "number" && Number.isFinite(n)) this.params[key] = n;
+    }
+    const parts = value.parts;
+    if (parts && typeof parts === "object") {
+      for (const [name, part] of Object.entries(parts)) {
+        const row = part as Partial<PartDef> | null;
+        if (row && Array.isArray(row.ops) && row.params && typeof row.params === "object") this.parts.set(name, { params: row.params, ops: row.ops });
+      }
+    }
+    const recipes = value.recipes;
+    if (recipes && typeof recipes === "object") {
+      for (const [id, saved] of Object.entries(recipes)) {
+        const obj = this.find(id);
+        const row = saved as { recipe?: Recipe; buildLog?: PlateObject["buildLog"] } | null;
+        if (!obj || !row?.recipe || typeof row.recipe !== "object") continue;
+        obj.recipe = row.recipe;
+        if (row.buildLog && Array.isArray(row.buildLog.steps) && typeof row.buildLog.base === "string") obj.buildLog = row.buildLog;
+      }
+    }
+  }
+
+  /** model_define: a named part, its default parameters and its ops, which {kind: "use", part, with} places. */
+  private defineTool(input: Record<string, unknown>): Record<string, unknown> {
+    if (input.clear === true) this.parts.clear();
+    if (typeof input.name === "string") {
+      const name = input.name.trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_ -]*$/.test(name)) return { ok: false, reason: "A part name is letters, digits, spaces, dashes, and underscores." };
+      if (!Array.isArray(input.ops) || input.ops.length === 0) return { ok: false, reason: "A part needs ops." };
+      const params = (input.params ?? {}) as Record<string, unknown>;
+      try {
+        // Expanded once with its defaults, so a mistake shows now rather than at the first use.
+        const defaults: Record<string, number> = { ...this.params };
+        for (const [key, value] of Object.entries(params)) defaults[key] = Number(resolveNumbers(value, defaults, `params.${key}`));
+        expandOps(input.ops, defaults, this.parts, OP_WORDS);
+      } catch (err) {
+        if (err instanceof ExprError) return { ok: false, reason: err.message };
+        throw err;
+      }
+      this.parts.set(name, { params: structuredClone(params), ops: structuredClone(input.ops) });
+    }
+    return { ok: true, parts: [...this.parts.entries()].map(([name, part]) => ({ name, params: part.params, ops: part.ops.length })) };
   }
 
   /** Session parameters: names model ops may use in place of numbers, as text such as "wallH + 2". */
