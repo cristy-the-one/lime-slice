@@ -135,6 +135,44 @@ check(
   JSON.stringify({ cornerProbe, cornerCut, cornerSaved, cornerOpened, cornerSeconds, volume: cornerBack.volumeMm3 }),
 );
 
+// The 2.6.1 back cover: a filleted, shelled box with a cut through the floor, then two crossing sets of ribs. The
+// second set used to resolve to strips between the first, end edge to edge against it, and one fuse came back as only
+// its tool (307 mm³). With equal widths, the crossing was refused as a piece touching at an edge.
+async function backCover(equal: boolean, oneBatch: boolean): Promise<{ object: string; volume: number; runs: Record<string, unknown>[] }> {
+  const made = await call("solid_new", { primitive: "box", dx: 680, dy: 150, dz: 45 });
+  const id = String(made.object);
+  await call("model_apply", { object: id, probe: true, op: { kind: "fillet", edges: { select: { direction: [0, 0, 1] } }, size: 18 } });
+  await call("model_apply", { object: id, probe: true, op: { kind: "fillet", edges: { select: { onFace: { normal: [0, 0, -1] } } }, size: 8 } });
+  await call("model_apply", { object: id, probe: true, op: { kind: "shell", thickness: 2.5, openFaces: [{ normal: [0, 0, 1] }] } });
+  await call("model_apply", { object: id, probe: true, op: { kind: "boolean", op: "cut", primitive: "box", centre: [25, -5, 1], dx: 14, dy: 14, dz: 6 } });
+  const a = { kind: "ribs", face: { normal: [0, 0, 1], nearPoint: [0, 0, 2.5] }, along: "u", angleDeg: 36.87, width: 1.6, pitch: 24, depth: 8 };
+  const b = { ...a, angleDeg: -36.87, width: equal ? 1.6 : 1.62, depth: equal ? 8 : 8.1 };
+  const runs = oneBatch
+    ? [await call("model_apply_batch", { object: id, ops: [a, b] })]
+    : [await call("model_apply_batch", { object: id, ops: [a] }), await call("model_apply_batch", { object: id, ops: [b] })];
+  const after = await call("model_describe", { object: id, limit: 1 });
+  return { object: id, volume: Number(after.volumeMm3), runs };
+}
+
+const cover = await backCover(false, false);
+check(
+  "a second set of ribs in its own call keeps the part (more than 500,000 mm³) and misses nothing",
+  cover.runs.every((run) => run.ok === true && run.skipped === undefined) && cover.volume > 500000 && cover.volume < 530000,
+  JSON.stringify({ volume: cover.volume, runs: cover.runs.map(({ checkpoints: _c, ...rest }) => rest) }),
+);
+const coverChecked = await call("model_check", { object: cover.object });
+check("the ribbed cover's mesh closes", JSON.stringify(coverChecked.edges) === JSON.stringify({ open: 0, nonManifold: 0 }), JSON.stringify(coverChecked.edges));
+const coverCommit = await call("model_commit", { object: cover.object });
+check("the ribbed cover commits", coverCommit.ok === true, JSON.stringify(coverCommit));
+const crossing = await backCover(true, true);
+check(
+  "crossing ribs of equal width in one batch apply",
+  crossing.runs[0]!.ok === true && crossing.volume > 500000 && crossing.volume < 530000,
+  JSON.stringify({ volume: crossing.volume, run: crossing.runs.map(({ checkpoints: _c, ...rest }) => rest) }),
+);
+const crossingCommit = await call("model_commit", { object: crossing.object });
+check("the equal-width cover commits with a closed mesh", crossingCommit.ok === true, JSON.stringify(crossingCommit));
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

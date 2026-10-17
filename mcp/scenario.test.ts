@@ -80,7 +80,8 @@ const exported = await call("gcode_export", { name: "cube.gcode", now: "2020-01-
 check("export writes inside the workspace", exported.ok === true && realInside(workspace, String(exported.path)), JSON.stringify(exported));
 const aliasParent = mkdtempSync(join(tmpdir(), "lime-alias-"));
 const alias = join(aliasParent, "ws");
-symlinkSync(workspace, alias);
+// A junction needs no admin right on Windows; elsewhere it is a plain directory link.
+symlinkSync(workspace, alias, process.platform === "win32" ? "junction" : "dir");
 let viaAlias: { ok?: boolean; path?: string } = { ok: false };
 try {
   process.env.LIME_MCP_WORKSPACE = alias;

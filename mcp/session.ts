@@ -66,11 +66,14 @@ import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { reviewGcode } from "./review.ts";
 import { GUIDES, guideByUri } from "./guides.ts";
 import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
+import { standRegion } from "./plane-region.ts";
+import { closeCracks, edgeReport } from "./mesh-check.ts";
+import { lostVolume, notClosedReason, touchingEdges, touchingReason } from "./step-guard.ts";
 import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./schema.ts";
-import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
+import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBox, TOUCH_TRIM, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
 
@@ -171,6 +174,8 @@ interface SliceSummary {
   layerSeconds: number[];
   layers: { z: number; seconds?: number }[];
 }
+
+type SolidView = NonNullable<ReturnType<typeof rememberSolid>>;
 
 function rememberSolid(body: Record<string, unknown>) {
   const solid = decodeSolid(body);
@@ -2653,8 +2658,21 @@ export class Session {
       const worst = regions.reduce((a, b) => (b.thinnestMm < a.thinnestMm ? b : a));
       warnings.push(`Walls thinner than ${minWallMm} mm cover ${thin.areaMm2} mm², thinnest ${worst.thinnestMm} mm at (${worst.centre.join(", ")})${worst.thinnestMm < nozzle ? ": thinner than the nozzle, so it will not print" : ""}.`);
     }
+    // Edges, as the plate mesh would have them: cracks a commit mends are counted apart from what stays open.
+    const raw = edgeReport(obj.solid.positions, 8);
+    const mended = edgeReport(closeCracks(obj.solid.positions), 8);
+    const closedEdges = {
+      open: mended.open,
+      nonManifold: mended.nonManifold,
+      ...(mended.openAt.length ? { openAt: mended.openAt } : {}),
+      ...(mended.nonManifoldAt.length ? { nonManifoldAt: mended.nonManifoldAt } : {}),
+      ...(raw.open > mended.open ? { crackEdgesMended: raw.open - mended.open } : {}),
+    };
+    if (mended.open > 0) warnings.push(`The mesh has ${mended.open} open edges, the first at (${mended.openAt[0]!.at.join(", ")}). model_commit refuses it until they close.`);
+    if (mended.nonManifold > 0) warnings.push(`${mended.nonManifold} edges are where pieces meet only along a line, the first at (${mended.nonManifoldAt[0]!.at.join(", ")}). model_commit refuses it until they overlap or part.`);
     return {
       ...checked,
+      edges: closedEdges,
       thinWalls: { minWallMm, nozzleMm: nozzle, areaMm2: thin.areaMm2, regions, sampledPoints: thin.sampled },
       warnings,
       notChecked: [],
@@ -2966,7 +2984,7 @@ export class Session {
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
     const filter = this.onFaceIndex(obj, input);
-    if ("reason" in filter) return { ok: false, reason: filter.reason };
+    if (typeof filter === "string") return { ok: false, reason: filter };
     const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter);
     if ("reason" in matched) return { ok: false, reason: matched.reason };
     const listed = page(matched, input.cursor, input.limit);
@@ -2974,11 +2992,11 @@ export class Session {
   }
 
   /** An edge filter whose onFace is a face selector {normal, withinDeg, nearPoint}, with that face's index in its place. */
-  private onFaceIndex(obj: PlateObject, filter: Record<string, unknown>): Record<string, unknown> | { reason: string } {
+  private onFaceIndex(obj: PlateObject, filter: Record<string, unknown>): Record<string, unknown> | string {
     const on = filter.onFace;
     if (!on || typeof on !== "object" || Array.isArray(on)) return filter;
     const index = this.expandContext(obj).faceBy(on as Record<string, unknown>);
-    if (typeof index !== "number") return { reason: `onFace: ${index.reason}` };
+    if (typeof index !== "number") return `onFace: ${index.reason}`;
     return { ...filter, onFace: index };
   }
 
@@ -3003,7 +3021,7 @@ export class Session {
       if (!select || typeof select !== "object" || Array.isArray(select)) return { reason: "edges.select is a filter." };
       if (!obj.solid) return { reason: "Describe the solid before picking edges." };
       const filter = this.onFaceIndex(obj, select as Record<string, unknown>);
-      if ("reason" in filter) return filter;
+      if (typeof filter === "string") return { reason: filter };
       const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter);
       if ("reason" in matched) return matched;
       if (matched.length === 0) return { reason: "No edge matches that filter." };
@@ -3384,14 +3402,43 @@ export class Session {
     }
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, baked.op.kind) };
     obj.tree = withChild(obj.tree, tree.current, { id: node, op: baked.op, label: opLabel(baked.op), fingerprint: null });
-    const leftPlate = baked.op.kind === "join" && !baked.op.keepTool ? baked.op.tool.object : undefined;
-    if (leftPlate) this.takeOffPlate(leftPlate);
+    const prior = obj.solid;
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     obj.probes.clear();
+    const guarded = this.stepGuard(obj, baked.op, prior, obj.solid);
+    if (guarded) {
+      await this.takeBack(obj, tree.current, node);
+      return { ok: false, ...guarded };
+    }
+    const leftPlate = baked.op.kind === "join" && !baked.op.keepTool ? baked.op.tool.object : undefined;
+    if (leftPlate) this.takeOffPlate(leftPlate);
     const other = otherKey ? this.keepOtherHalf(obj, otherKey, reply.other, node) : undefined;
     const kept = baked.op.kind === "split" ? (keep === "both" ? "both" : this.keptSide(obj, baked.op)) : undefined;
     return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(leftPlate ? { toolLeftPlate: leftPlate } : {}), stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) };
+  }
+
+  /**
+   * A step the kernel applied but that is not what it meant: a fuse that lost the part, a cut that took more than its
+   * tool, a step that lost most of the volume, or a Boolean that left pieces meeting along an edge.
+   */
+  private stepGuard(obj: PlateObject, op: ModelOp, prior: SolidView | null, after: SolidView | null): { reason: string; touching?: true } | null {
+    if (!prior || !after) return null;
+    const box = op.kind === "boolean" ? primitiveBox(op) : null;
+    const lost = lostVolume(op as { kind: string; op?: string }, prior.volumeMm3, after.volumeMm3, box);
+    if (lost) return { reason: lost };
+    if (box) {
+      const was = touchingEdges(prior.positions, box);
+      const now = touchingEdges(after.positions, box);
+      if (now.count > was.count) return { reason: touchingReason(now.at ? applyPose(obj.modelPose, now.at).map((v) => Math.round(v * 100) / 100) as [number, number, number] : null), touching: true };
+    }
+    return null;
+  }
+
+  /** Back to `to`, and `node` out of the history: a step the guard refused leaves no trace. */
+  private async takeBack(obj: PlateObject, to: number, node: number): Promise<void> {
+    await this.gotoNode(obj, to);
+    if (obj.tree?.nodes.has(node)) this.drop(obj, node);
   }
 
   /** What composite ops need to expand: the object's workplane, and any flat face's frame and U, V extent. */
@@ -3418,7 +3465,13 @@ export class Session {
           });
         }
         const outline: number[] = [];
-        const extent: FaceExtent = { u: [Infinity, -Infinity], v: [Infinity, -Infinity], outline };
+        const solidNow = obj.solid;
+        const extent: FaceExtent = {
+          u: [Infinity, -Infinity],
+          v: [Infinity, -Infinity],
+          outline,
+          ...(coplanar ? { stand: (depth: number, overlap: number) => standRegion(solidNow.positions, frame, depth, overlap) } : {}),
+        };
         const { positions, triangles } = obj.solid;
         for (let tri = 0; tri < triangles.length; tri += 1) {
           if (!members.has(triangles[tri]!)) continue;
@@ -3496,6 +3549,8 @@ export class Session {
     const checkpoints: (number | null)[] = [];
     const failures: Record<string, unknown>[] = [];
     let skipped = 0;
+    let touching = 0;
+    let touchingAt: string | undefined;
     let made = 0;
     const result = (body: Record<string, unknown>) => ({ ...body, checkpoints });
     const fail = async (failed: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -3562,16 +3617,30 @@ export class Session {
       let refused: Record<string, unknown> | null = null;
       for (let k = 0; k < pieces.length; k += 1) {
         const piece = pieces[k]!;
-        const tree = await this.opened(obj);
-        if ("reason" in tree) return result({ ok: false, reason: tree.reason });
-        const typed = { kind: "boolean", op: piece.op, ...piece.spec } as Record<string, unknown>;
-        const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...piece.spec }, obj.modelPose), typed };
-        const probed = await this.probeBaked(obj, tree, tree.current, baked, false, true);
+        const attempt = async (spec: PrimitiveSpec) => {
+          const at = await this.opened(obj);
+          if ("reason" in at) return { probed: { ok: false, reason: at.reason }, done: { ok: false, reason: at.reason }, typed: {} };
+          const typed = { kind: "boolean", op: piece.op, ...spec } as Record<string, unknown>;
+          const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...spec }, obj.modelPose), typed };
+          const probed = await this.probeBaked(obj, at, at.current, baked, false, true);
+          const done = probed.ok === true ? await this.applyBaked(obj, at, baked, {}) : probed;
+          return { probed, done, typed };
+        };
+        let { probed, done, typed } = await attempt(piece.spec);
         if (probed.ok !== true && probed.missed === true) {
           skipped += 1;
           continue;
         }
-        const done = probed.ok === true ? await this.applyBaked(obj, tree, baked, {}) : probed;
+        // A step that leaves pieces meeting along an edge is tried once a little shorter, then left out.
+        if (done.ok !== true && done.touching === true) {
+          const shorter = shortenedBox(piece.spec, TOUCH_TRIM);
+          if (shorter) ({ probed, done, typed } = await attempt(shorter));
+          if (done.ok !== true && (done.touching === true || probed.missed === true)) {
+            touching += 1;
+            touchingAt ??= String(done.reason ?? "");
+            continue;
+          }
+        }
         if (done.ok !== true) {
           refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(typed), step: k + 1, of: pieces.length, ...(done.where ? { where: done.where } : {}) };
           break;
@@ -3597,6 +3666,7 @@ export class Session {
       applied: nodes.length,
       ...(failures.length ? { failures, note: `${failures.length} op${failures.length === 1 ? " was" : "s were"} refused and left out; the rest applied. Fix them and call model_build again: it reuses every op before the first one changed.` } : {}),
       ...(skipped ? { skipped, missedNote: `${skipped} step${skipped === 1 ? "" : "s"} missed the solid and were left out.` } : {}),
+      ...(touching ? { leftOut: touching, leftOutNote: `${touching} step${touching === 1 ? "" : "s"} would have left pieces meeting only along an edge, even ${TOUCH_TRIM} mm shorter at each end, and ${touching === 1 ? "was" : "were"} left out. The first: ${touchingAt}` } : {}),
       ...(nodes.length ? { first: nodeHandle(nodes[0]!), node: nodeHandle(nodes[nodes.length - 1]!) } : {}),
       ...(options.label ? { label: options.label } : {}),
       fingerprint: obj.solid?.fingerprint ?? null,
@@ -4118,6 +4188,10 @@ export class Session {
     const tree = obj.tree;
     if (!tree || !obj.solid || obj.solid.positions.length < 9) return null;
     if (obj.platedNode === tree.current && obj.bytes.byteLength > 0) return null;
+    // The plate mesh must close: cracks where two faces sample a shared edge apart are mended; what stays open is refused.
+    const mended = closeCracks(obj.solid.positions);
+    const closed = edgeReport(mended, 1);
+    if (closed.open > 0 || closed.nonManifold > 0) return notClosedReason(closed, (p) => applyPose(obj.modelPose, p));
     const from = obj.platedNode;
     let reply: Record<string, unknown>;
     try {
@@ -4128,7 +4202,7 @@ export class Session {
     }
     const step = this.stepBytes(reply);
     if (!step) return typeof reply.error === "string" ? plainModelError(reply.error) : "The solid was not exported.";
-    const copy = Float32Array.from(obj.solid.positions);
+    const copy = mended;
     obj.seatMm = settleBy(copy);
     obj.source = copy;
     obj.triangles = copy.length / 9;

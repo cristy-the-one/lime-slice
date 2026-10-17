@@ -500,13 +500,17 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
     next.volume *= factor ** 3;
   } else if (op?.kind === "hole") {
     next.volume = Math.max(1, next.volume - 100);
-    const extra = new Float32Array(next.positions.length + 9);
+    const extra = new Float32Array(next.positions.length + 36);
     extra.set(next.positions);
     const z = (next.max[2] ?? 0) + 0.2;
     const x0 = next.min[0] ?? 0;
     const y0 = next.min[1] ?? 0;
-    // One corner is the part's own, so the mark stays one piece with it.
-    extra.set([x0, y0, z - 0.2, x0, y0 + 6, z, x0 + 6, y0, z], next.positions.length);
+    // A closed tetrahedron whose one corner is the part's own, so the mark stays one piece with it and the mesh closes.
+    const a = [x0, y0, z - 0.2];
+    const b = [x0, y0 + 6, z];
+    const c = [x0 + 6, y0, z];
+    const d = [x0 + 2, y0 + 2, z + 0.4];
+    extra.set([...a, ...b, ...c, ...a, ...d, ...b, ...b, ...d, ...c, ...c, ...d, ...a], next.positions.length);
     next.positions = extra;
   } else if (op?.kind === "boolean" && op.op === "cut" && op.primitive === "box" && op.origin && op.size) {
     const [ox, oy, oz] = op.origin as [number, number, number];
@@ -646,6 +650,22 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
         const prior = kept.get(key) ?? { volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] };
         const nextSolid = applied(prior, req.op);
         if (req.op?.kind === "split") nextSolid.volume = Math.max(1, prior.volume / 2);
+        const fuse = req.op?.kind === "boolean" && (req.op as { op?: string }).op === "fuse";
+        // Kernel failures the session must catch: a fuse that hands back only its tool, or a box that meets the part
+        // only along an edge.
+        if (fuse && process.env.LIME_MCP_FAKE_LOSE_FUSE === "1") nextSolid.volume = 307;
+        if (fuse && process.env.LIME_MCP_FAKE_TOUCH === "1") {
+          // Outside the part's vertical edge nearest the tool, sharing that edge.
+          const at = (req.op as { origin?: number[] }).origin ?? [0, 0, 0];
+          const pick = (i: number): [number, number] => (Math.abs((at[i] ?? 0) - (prior.min[i] ?? 0)) < Math.abs((at[i] ?? 0) - (prior.max[i] ?? 0)) ? [prior.min[i] ?? 0, -5] : [prior.max[i] ?? 0, 5]);
+          const [x1, dx] = pick(0);
+          const [y1, dy] = pick(1);
+          const touching = boxSolid([Math.min(x1, x1 + dx), Math.min(y1, y1 + dy), prior.min[2] ?? 0], [Math.max(x1, x1 + dx), Math.max(y1, y1 + dy), prior.max[2] ?? 20], 1).positions;
+          const both = new Float32Array(nextSolid.positions.length + touching.length);
+          both.set(nextSolid.positions, 0);
+          both.set(touching, nextSolid.positions.length);
+          nextSolid.positions = both;
+        }
         const wire = remember(key, nextSolid);
         wire.id = req.node ?? 1;
         if (req.op?.kind === "split" && req.otherKey) {

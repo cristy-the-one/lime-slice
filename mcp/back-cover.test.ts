@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { fakeEngine } from "./engine.ts";
+import { closeCracks, edgeReport } from "./mesh-check.ts";
+import { standRegion } from "./plane-region.ts";
 import { advertisedTools } from "./schema.ts";
 import { Session } from "./session.ts";
 
@@ -53,6 +55,83 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   check("a fillet picks edges on a face selector", fillet2.ok === true && same(fillet2.edges, [4, 5, 6, 7]), JSON.stringify(fillet2));
   const wrong = await session.call("model_probe", { object: box.object, op: { kind: "fillet", edges: { select: { onFace: { normal: [1, 1, 1], withinDeg: 1 } } }, size: 1 } });
   check("a face selector that matches nothing says so", wrong.ok === false && wrong.reason === "onFace: No flat face matches that selector.", JSON.stringify(wrong));
+}
+
+// Finding 3a and 4: a second set of ribs stands on the whole floor plane, through the first set, and runs into walls.
+{
+  // A floor along X with a wall at y 48..50 (20 tall) and an earlier rib at y 20..22 (8 tall), as side faces only: a
+  // line across X never meets the ends.
+  const profile: [number, number][] = [[0, 0], [50, 0], [50, 20], [48, 20], [48, 2.5], [22, 2.5], [22, 10.5], [20, 10.5], [20, 2.5], [0, 2.5]];
+  const soup: number[] = [];
+  profile.forEach((p, i) => {
+    const q = profile[(i + 1) % profile.length]!;
+    soup.push(0, p[0], p[1], 100, p[0], p[1], 100, q[0], q[1], 0, p[0], p[1], 100, q[0], q[1], 0, q[0], q[1]);
+  });
+  const floor = { source: "face" as const, origin: [0, 0, 2.5] as [number, number, number], turn: [0, 0, 0] as [number, number, number] };
+  const stand = standRegion(Float32Array.from(soup), floor, 8, 0.5);
+  const across = stand.spans(-50, 90).map(([a, b]) => [Math.round(a * 1000) / 1000, Math.round(b * 1000) / 1000]);
+  check("a rib across the floor runs through the earlier rib and 0.5 mm into the wall", same(across, [[0, 48.5], [49.5, 50]]), JSON.stringify(across));
+  const taller = standRegion(Float32Array.from(soup), floor, 6, 0.5).spans(-50, 90).map(([a, b]) => [Math.round(a * 1000) / 1000, Math.round(b * 1000) / 1000]);
+  check("a rib lower than the earlier one stops 0.5 mm into it", same(taller, [[0, 20.5], [21.5, 48.5], [49.5, 50]]), JSON.stringify(taller));
+}
+
+// Finding 3b: a step the kernel says is done but that loses the part is taken back and refused.
+{
+  const session = new Session(fakeEngine());
+  const box = await session.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
+  process.env.LIME_MCP_FAKE_LOSE_FUSE = "1";
+  const lost = await session.call("model_apply", { object: box.object, probe: true, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [5, -2, 18], dx: 4, dy: 4, dz: 4 } });
+  delete process.env.LIME_MCP_FAKE_LOSE_FUSE;
+  check(
+    "a fuse that returns only its tool is refused",
+    lost.ok === false && lost.reason === "Open CASCADE returned 307 mm³ for a fuse on a 8000 mm³ part, so the part would be lost. The step was taken back. Move or resize it so it overlaps the part more clearly, or split the edit into smaller steps.",
+    JSON.stringify(lost),
+  );
+  const described = await session.call("model_describe", { object: box.object, limit: 1 });
+  const history = await session.call("model_history", { object: box.object });
+  check("the part and its history are as before", described.volumeMm3 === 8000 && (history.nodes as unknown[]).length === 1, JSON.stringify({ volume: described.volumeMm3, history }));
+
+  // A fresh part: the stand-in rebuilds a 20 mm cube at 0..20 when it goes back a step.
+  const fresh = await session.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
+  const second = await session.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
+  process.env.LIME_MCP_FAKE_TOUCH = "1";
+  const touching = await session.call("model_apply", { object: fresh.object, probe: true, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [8, 8, 18], dx: 4, dy: 4, dz: 4 } });
+  const boss = await session.call("model_apply", { object: second.object, op: { kind: "boss", faceIndex: 0, at: { u: -8, v: -8 }, width: 4, height: 4, depth: 2 } });
+  delete process.env.LIME_MCP_FAKE_TOUCH;
+  check(
+    "a fuse that leaves pieces meeting along an edge is refused with where",
+    touching.ok === false && touching.reason === "This step would leave pieces that meet only along an edge at (10, 10, 10), which is not a closed solid to print. The step was taken back. Move it so it overlaps the part, or clears it.",
+    JSON.stringify(touching),
+  );
+  check("a composite step that touches along an edge is left out and reported", boss.leftOut === 1 && String(boss.leftOutNote).startsWith("1 step would have left pieces meeting only along an edge, even 0.3 mm shorter at each end, and was left out."), JSON.stringify(boss));
+}
+
+// Finding 6: cracks where two faces sample a shared edge apart are mended; edges are counted.
+{
+  // A unit cube whose top has an extra point mid-way along its front edge, which the front face does not have.
+  const c = (x: number, y: number, z: number) => [x, y, z];
+  const quad = (a: number[], b: number[], d: number[], e: number[]) => [...a, ...b, ...d, ...a, ...d, ...e];
+  const m = c(0.5, 0, 1);
+  const soup = [
+    ...quad(c(0, 0, 0), c(0, 1, 0), c(1, 1, 0), c(1, 0, 0)),
+    ...quad(c(0, 0, 0), c(1, 0, 0), c(1, 0, 1), c(0, 0, 1)),
+    ...quad(c(1, 0, 0), c(1, 1, 0), c(1, 1, 1), c(1, 0, 1)),
+    ...quad(c(1, 1, 0), c(0, 1, 0), c(0, 1, 1), c(1, 1, 1)),
+    ...quad(c(0, 1, 0), c(0, 0, 0), c(0, 0, 1), c(0, 1, 1)),
+    ...c(0, 0, 1), ...m, ...c(0, 1, 1),
+    ...m, ...c(1, 0, 1), ...c(1, 1, 1),
+    ...m, ...c(1, 1, 1), ...c(0, 1, 1),
+  ];
+  const before = edgeReport(soup);
+  const mended = closeCracks(soup);
+  const after = edgeReport(mended);
+  check("the crack shows as three open edges", before.open === 3 && before.nonManifold === 0, JSON.stringify(before));
+  check("mending splits the front face at the extra point and closes it", after.open === 0 && after.nonManifold === 0 && after.triangles === 14, JSON.stringify(after));
+
+  const session = new Session(fakeEngine());
+  const box = await session.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
+  const checked = await session.call("model_check", { object: box.object });
+  check("model_check reports a closed box", same(checked.edges, { open: 0, nonManifold: 0 }), JSON.stringify(checked.edges));
 }
 
 if (failed) {

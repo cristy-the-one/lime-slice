@@ -6,6 +6,7 @@
 import { eulerOrient, matMul, orientEuler, type Mat3 } from "../src/mesh-place.ts";
 import { isPrimitiveKind, primitiveSpec, turnCentre, type PrimitiveFields, type PrimitiveKind, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { framePose, planePrimitive, planePoint, type Workplane } from "../src/workplane.ts";
+import type { StandRegion } from "./plane-region.ts";
 import { pathSamples } from "./sweep.ts";
 import { textStrokes } from "./text.ts";
 
@@ -302,6 +303,12 @@ export interface FaceExtent {
   v: [number, number];
   /** The face's own triangles in U, V, six numbers each, so an array or ribs keep to its outline. */
   outline?: number[];
+  /**
+   * Where a raised piece `depth` tall stands on the face's whole plane, read from the solid (mcp/plane-region.ts):
+   * ribs and arrays that fuse keep to this instead of the outline, so they cross earlier ribs. Null when the solid's
+   * triangles do not close.
+   */
+  stand?: (depth: number, overlap: number) => StandRegion | null;
 }
 
 /** What expanding needs from the session: the plane an op is typed in, and a face's frame and extent by index. */
@@ -536,6 +543,9 @@ function cellSpan(op: BooleanKind, depth: number): { low: number; tall: number }
   return op === "fuse" ? { low: -BOSS_SINK, tall: depth + BOSS_SINK } : { low: -depth, tall: depth + CUT_PAST };
 }
 
+/** How far a fused rib's end reaches into a wall it meets, so the two overlap instead of touching face to face. */
+const RIB_INTO_WALL = 0.5;
+
 /** What `array` and `ribs` share: the face frame, the outline kept to, the layout's turn, and the op and depth. */
 function surfaceSetup(spec: Record<string, unknown>, ctx: ExpandContext, kind: "array" | "ribs") {
   // The whole plane the face lies in: a floor that ribs split into strips is still one floor.
@@ -548,9 +558,11 @@ function surfaceSetup(spec: Record<string, unknown>, ctx: ExpandContext, kind: "
   if (!(depth > 0)) return { reason: `${kind === "array" ? "An array" : "Ribs"} need a depth: how far out of the face, or into it for a cut.` };
   const op: BooleanKind = spec.op === "cut" ? "cut" : "fuse";
   const margin = Math.max(0, numOr(spec.margin, 0));
-  // Kept to: the face's own triangles when there is a face, and the region's box always.
-  const keep = (p: UV) => inTriangles(p, boxTriangles(region)) && (!frame.extent?.outline || inTriangles(p, frame.extent.outline));
-  return { plane: frame.plane, region, outline: frame.extent?.outline ?? null, depth, op, margin, keep };
+  // A raised piece keeps to where it can stand on the whole plane; a cut keeps to the face's own triangles.
+  const stand = op === "fuse" ? frame.extent?.stand?.(depth, kind === "ribs" ? RIB_INTO_WALL : 0) ?? null : null;
+  // Kept to: the plane's standing region or the face's own triangles, and the region's box always.
+  const keep = (p: UV) => inTriangles(p, boxTriangles(region)) && (stand ? stand.has(p[0], p[1]) : !frame.extent?.outline || inTriangles(p, frame.extent.outline));
+  return { plane: frame.plane, region, outline: frame.extent?.outline ?? null, depth, op, margin, keep, stand };
 }
 
 /**
@@ -660,10 +672,12 @@ function ribPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] |
     let spans: [number, number][] | null = null;
     // A rib flush with the face's edge is on it: its sides are sampled a hair inside.
     for (const edge of [b - width / 2 + 1e-5, b, b + width / 2 - 1e-5]) {
-      for (const tris of shapes) {
+      // On the plane's standing region a rib runs on to the walls, past the face's own box, unless a region was typed.
+      for (const tris of set.stand ? (spec.region === undefined ? [] : shapes.slice(0, 1)) : shapes) {
         const on = spansOnLine(tris, edge);
         spans = spans ? intersectSpans(spans, on) : on;
       }
+      if (set.stand) spans = spans ? intersectSpans(spans, set.stand.spans(edge, angle)) : set.stand.spans(edge, angle);
     }
     for (const [from, to] of spans ?? []) {
       const a0 = from + set.margin;
@@ -680,6 +694,16 @@ function ribPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] |
   }
   if (pieces.length === 0) return { reason: "No rib fits on that face. Use a smaller margin or a narrower rib." };
   return pieces;
+}
+
+/** How much a composite's box step is shortened at each end when it would meet the part only along an edge. */
+export const TOUCH_TRIM = 0.3;
+
+/** A box `trim` shorter at each end of its local X, about the same middle; null for another primitive or a short box. */
+export function shortenedBox(spec: PrimitiveSpec, trim: number): PrimitiveSpec | null {
+  if (spec.primitive !== "box" || !(spec.size[0] > 4 * trim)) return null;
+  // A box turns about its middle, so moving the min corner by trim along local X and the size by twice that keeps it.
+  return { ...spec, origin: [spec.origin[0] + trim, spec.origin[1], spec.origin[2]], size: [spec.size[0] - 2 * trim, spec.size[1], spec.size[2]] };
 }
 
 /**
