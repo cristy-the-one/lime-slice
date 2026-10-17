@@ -4,11 +4,27 @@
  * A later transport can replace the loader without changing the tool schemas.
  */
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type ChildProcess, fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { encodePaths } from "../src/preview-wire.ts";
+
+/**
+ * This file's folder. In a checkout that is `mcp/`; in an installed app it is the
+ * `mcp` folder the installer wrote, with the engine library beside the bundled server
+ * and Open CASCADE in `../occt/lib`.
+ */
+const HERE = dirname(fileURLToPath(import.meta.url));
+/** The bundle is plain JavaScript. The checkout runs the TypeScript with type stripping. */
+const BUNDLED = import.meta.url.endsWith(".mjs");
+
+/** The Open CASCADE bridge an installed app carries, or null in a checkout. */
+export function installedOcctBridge(): string | null {
+  const name = process.platform === "win32" ? "lime_model_occt.dll" : process.platform === "darwin" ? "liblime_model_occt.dylib" : "liblime_model_occt.so";
+  const path = join(HERE, "..", "occt", "lib", name);
+  return existsSync(path) ? path : null;
+}
 
 /** The bridge search is next to the running program. For this server, that program is node. */
 export function occtHint(error: string): string {
@@ -66,7 +82,8 @@ export function engineCandidates(root: string): string[] {
   const name = engineLibraryName();
   // A set path is the library. A missing file fails here instead of falling through to another build.
   if (process.env.LIME_MCP_ENGINE) return [process.env.LIME_MCP_ENGINE];
-  return [join(root, "target", "release", name), join(root, "target", "debug", name)];
+  // An installed app ships the library beside the bundled server; a checkout builds it under target.
+  return [join(HERE, name), join(root, "target", "release", name), join(root, "target", "debug", name)];
 }
 
 export function loadNativeEngine(root: string): Engine {
@@ -145,9 +162,16 @@ class EngineWorker {
 
   private spawn(): ChildProcess {
     const generation = this.generation;
-    const child = fork(fileURLToPath(new URL("./engine-worker.ts", import.meta.url)), [], {
-      execArgv: ["--experimental-strip-types", "--disable-warning=ExperimentalWarning"],
-      env: { ...process.env, LIME_MCP_ENGINE_ROOT: this.root, LIME_MCP_ENGINE_ROLE: this.role },
+    const occt = process.env.LIME_OCCT_BRIDGE ? null : installedOcctBridge();
+    const child = fork(join(HERE, BUNDLED ? "engine-worker.mjs" : "engine-worker.ts"), [], {
+      execArgv: BUNDLED ? [] : ["--experimental-strip-types", "--disable-warning=ExperimentalWarning"],
+      env: {
+        ...process.env,
+        LIME_MCP_ENGINE_ROOT: this.root,
+        LIME_MCP_ENGINE_ROLE: this.role,
+        // An installed app's own Open CASCADE, unless the client chose another.
+        ...(occt ? { LIME_OCCT_BRIDGE: occt } : {}),
+      },
       serialization: "advanced",
       stdio: ["ignore", "pipe", "inherit", "ipc"],
     });
@@ -443,7 +467,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     resets: 0,
     previewResets: 0,
     hung: false,
-    version: () => "2.0.0",
+    version: () => "2.0.1",
     occt: () => true,
     meshPreview: async (body: string, bytes?: Uint8Array) => {
       const block = Number(process.env.LIME_MCP_FAKE_BLOCK_MS ?? 0);

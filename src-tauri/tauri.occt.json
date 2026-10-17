@@ -1,7 +1,8 @@
 {
   "bundle": {
     "resources": {
-      "resources/occt/": "occt/"
+      "resources/occt/": "occt/",
+      "resources/mcp/": "mcp/"
     }
   }
 }
