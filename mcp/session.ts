@@ -69,7 +69,7 @@ import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, setting
 import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
-import { OP_WORDS, validateTool } from "./schema.ts";
+import { EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./schema.ts";
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
@@ -84,7 +84,6 @@ const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a m
 const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the current handles.";
 const NAME_LIMIT = 120;
 /** Tools whose op fields may be text expressions. */
-const EXPRESSION_TOOLS = new Set(["model_probe", "model_apply", "model_apply_batch", "model_edit", "model_build", "model_define"]);
 
 /** Carried with one tools/call: a progress token, and cancel for that request. */
 export interface CallMeta {
@@ -2966,10 +2965,21 @@ export class Session {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
-    const matched = edgesMatching(obj.solid.edges, obj.solid.faces, input);
+    const filter = this.onFaceIndex(obj, input);
+    if ("reason" in filter) return { ok: false, reason: filter.reason };
+    const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter);
     if ("reason" in matched) return { ok: false, reason: matched.reason };
     const listed = page(matched, input.cursor, input.limit);
     return { ok: true, total: matched.length, frame: "part", edges: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
+  }
+
+  /** An edge filter whose onFace is a face selector {normal, withinDeg, nearPoint}, with that face's index in its place. */
+  private onFaceIndex(obj: PlateObject, filter: Record<string, unknown>): Record<string, unknown> | { reason: string } {
+    const on = filter.onFace;
+    if (!on || typeof on !== "object" || Array.isArray(on)) return filter;
+    const index = this.expandContext(obj).faceBy(on as Record<string, unknown>);
+    if (typeof index !== "number") return { reason: `onFace: ${index.reason}` };
+    return { ...filter, onFace: index };
   }
 
   /** Indexes from a list, or from the same filter `edges_find` uses. */
@@ -2992,7 +3002,9 @@ export class Session {
       const select = (raw as { select?: unknown }).select;
       if (!select || typeof select !== "object" || Array.isArray(select)) return { reason: "edges.select is a filter." };
       if (!obj.solid) return { reason: "Describe the solid before picking edges." };
-      const matched = edgesMatching(obj.solid.edges, obj.solid.faces, select as Record<string, unknown>);
+      const filter = this.onFaceIndex(obj, select as Record<string, unknown>);
+      if ("reason" in filter) return filter;
+      const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter);
       if ("reason" in matched) return matched;
       if (matched.length === 0) return { reason: "No edge matches that filter." };
       return matched.map((edge) => edge.index);

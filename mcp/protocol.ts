@@ -3,7 +3,7 @@
  */
 import { GUIDES } from "./guides.ts";
 import { imagesOf } from "./inline.ts";
-import { annotationsFor, TOOLS } from "./schema.ts";
+import { advertisedTools, annotationsFor } from "./schema.ts";
 import type { CallMeta, Session } from "./session.ts";
 import { appVersion } from "./version.ts";
 
@@ -107,7 +107,7 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
     if (method === "ping") return result(id, {});
     if (method === "tools/list") {
       return result(id, {
-        tools: TOOLS.map((tool) => ({
+        tools: advertisedTools().map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema,
