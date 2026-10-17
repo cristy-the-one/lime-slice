@@ -205,7 +205,7 @@ const outerRepeat = repeatFields({ type: "object", description: "Op to repeat." 
 
 export const OP_HELP = [
   "One edit, by kind; mm and degrees on the workplane, else the part frame.",
-  "pocket, boss, texture, pattern, and mirror are composite: checked step by step, one undo.",
+  "pocket, boss, texture, array, ribs, pattern, and mirror are composite: checked step by step, one undo.",
   "Numbers may be text using model_params names. guide {topic:\"ops\"} has examples.",
 ].join(" ");
 
@@ -303,11 +303,26 @@ const op = {
   ],
 };
 
-const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror"]);
-const REPEATABLE = new Set(["boolean", "pocket", "boss", "texture", "pattern", "mirror"]);
+const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror", "array", "ribs"]);
+const REPEATABLE = new Set(["boolean", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror"]);
 
 /** The op schema model_apply lists. Other Model tools name it and are checked against it here. */
 export const OP_SCHEMA = op;
+
+/** Every enum value in the op schema: text an op field may hold, never an expression. */
+export const OP_WORDS: ReadonlySet<string> = (() => {
+  const words = new Set<string>();
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) return node.forEach(walk);
+    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+      if (key === "enum" && Array.isArray(child)) child.forEach((word) => typeof word === "string" && words.add(word));
+      else walk(child);
+    }
+  };
+  walk(op);
+  return words;
+})();
 
 const opPointer = (what: string) => ({ type: "object", description: `${what} Same shape as model_apply's op (see its schema, or guide {topic:"ops"}).` });
 
@@ -379,6 +394,78 @@ const sketchOps = [
   },
 ];
 (op.oneOf as unknown[]).splice(5, 0, ...sketchOps);
+const regionField = {
+  type: "object",
+  additionalProperties: false,
+  description: "U and V ranges. Default: the face.",
+  properties: {
+    u: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "Range." },
+    v: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "Range." },
+  },
+};
+const surfaceCommon = {
+  faceIndex,
+  face: faceSelector,
+  op: { enum: ["fuse", "cut"], description: "fuse raises (default); cut recesses." },
+  depth: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Out of the face, or into it." },
+  margin: { type: "number", minimum: 0, maximum: 100, description: "Kept from the face's edges." },
+  angleDeg: { type: "number", minimum: -360, maximum: 360, description: "Turns the layout in the face." },
+  region: regionField,
+  label,
+};
+/** Primitives repeated over a face, kept to its outline: tiles, studs, ribs, grooves. */
+const surfaceOps = [
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "cell", "pitch", "depth"],
+    properties: {
+      kind: { const: "array" },
+      cell: {
+        type: "object",
+        additionalProperties: false,
+        description: "One cell, in the face.",
+        properties: {
+          shape: { enum: ["rect", "circle", "polygon"], description: "Default rect." },
+          width: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "U size." },
+          height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "V size." },
+          diameter: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Circle." },
+          sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon." },
+          across: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Polygon corners." },
+          turnDeg: { type: "number", minimum: -360, maximum: 360, description: "Cell turn." },
+        },
+      },
+      pitch: { type: "array", minItems: 2, maxItems: 2, items: { type: "number", exclusiveMinimum: 0 }, description: "[U, V] cell spacing." },
+      stagger: { type: "boolean", description: "Every other row half a pitch over." },
+      fit: { enum: ["inside", "centre"], description: "Whole cell on the face (default), or its centre." },
+      ...surfaceCommon,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "width", "depth"],
+    properties: {
+      kind: { const: "ribs" },
+      along: { enum: ["u", "v"], description: "u is level (default)." },
+      width: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Rib width." },
+      pitch: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Centre spacing." },
+      count: { type: "integer", minimum: 1, maximum: 200, description: "Or this many, evenly." },
+      ...surfaceCommon,
+    },
+  },
+];
+(op.oneOf as unknown[]).push(...surfaceOps);
+
+
+/** A wrong field name inside an array's cell, with the right one. */
+const CELL_HINTS: Record<string, string> = {
+  size: "Use width and height for a rect, diameter for a circle, or sides and across for a polygon.",
+  radius: "Use diameter.",
+  dx: "Use width.",
+  dy: "Use height.",
+  depth: "Give depth on the array, not the cell.",
+};
 
 /** A wrong field name with the right one, for the refusal. */
 export const FIELD_HINTS: Record<string, string> = {
@@ -1464,7 +1551,10 @@ export function validate(schema: Record<string, unknown>, value: unknown, path =
     const properties = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(record)) {
-        if (!(key in properties)) return `${path}.${key} is not a field of this tool.${FIELD_HINTS[key] ? ` ${FIELD_HINTS[key]}` : ""}`;
+        if (!(key in properties)) {
+          const hint = (path.endsWith(".cell") ? CELL_HINTS[key] : undefined) ?? FIELD_HINTS[key];
+          return `${path}.${key} is not a field of this tool.${hint ? ` ${hint}` : ""}`;
+        }
       }
     }
     const required = Array.isArray(schema.required) ? schema.required as string[] : [];

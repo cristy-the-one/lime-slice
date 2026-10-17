@@ -110,16 +110,20 @@ export function evaluate(text: string, params: Params): number {
   return value;
 }
 
-/** Fields that hold text on purpose. Every other string in an op is read as a number. */
+/**
+ * Fields that hold text on purpose. Every other string in an op is read as a number, unless it is one of the enum
+ * words the caller passes (every enum value in the op schema), so a new text field does not need listing here.
+ */
 const TEXT_FIELDS = new Set([
-  "kind", "op", "primitive", "label", "keep", "screw", "toolObject", "shape", "pattern", "plane", "onError", "filter", "object", "name", "from", "fromNode",
+  "kind", "op", "primitive", "label", "keep", "screw", "toolObject", "shape", "pattern", "plane", "onError", "filter", "object", "name", "from", "fromNode", "along", "fit",
 ]);
 
 /**
  * `value` with every numeric string replaced by its number: op fields, vector entries, nested ops. Text fields such
  * as `kind` and `label` stay text. Throws ExprError naming the field.
  */
-export function resolveNumbers(value: unknown, params: Params, path = "op"): unknown {
+export function resolveNumbers(value: unknown, params: Params, path = "op", words: ReadonlySet<string> = new Set()): unknown {
+  if (typeof value === "string" && words.has(value) && !Object.hasOwn(params, value)) return value;
   if (typeof value === "string") {
     try {
       return evaluate(value, params);
@@ -127,11 +131,11 @@ export function resolveNumbers(value: unknown, params: Params, path = "op"): unk
       throw new ExprError(`${path}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  if (Array.isArray(value)) return value.map((item, i) => resolveNumbers(item, params, `${path}[${i}]`));
+  if (Array.isArray(value)) return value.map((item, i) => resolveNumbers(item, params, `${path}[${i}]`, words));
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = TEXT_FIELDS.has(key) && typeof child === "string" ? child : resolveNumbers(child, params, `${path}.${key}`);
+      out[key] = TEXT_FIELDS.has(key) && typeof child === "string" ? child : resolveNumbers(child, params, `${path}.${key}`, words);
     }
     return out;
   }

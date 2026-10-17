@@ -64,7 +64,7 @@ import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, setting
 import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
-import { validateTool } from "./schema.ts";
+import { OP_WORDS, validateTool } from "./schema.ts";
 import { cleanOp, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWrite } from "./workspace.ts";
@@ -318,6 +318,37 @@ function levelFrame(plane: { point: [number, number, number]; normal: [number, n
   return { source: "face", origin: [...plane.point], turn: [turn.rx, turn.ry, turn.rz] };
 }
 
+/** The distance from `p` to the triangle a, b, c: to its closest point, inside or on an edge or a corner. */
+function pointTriangleDistance(p: readonly number[], a: readonly number[], b: readonly number[], c: readonly number[]): number {
+  const sub = (x: readonly number[], y: readonly number[]) => [x[0]! - y[0]!, x[1]! - y[1]!, x[2]! - y[2]!];
+  const dot = (x: readonly number[], y: readonly number[]) => x[0]! * y[0]! + x[1]! * y[1]! + x[2]! * y[2]!;
+  const ab = sub(b, a);
+  const ac = sub(c, a);
+  const ap = sub(p, a);
+  const d1 = dot(ab, ap);
+  const d2 = dot(ac, ap);
+  let q: number[];
+  if (d1 <= 0 && d2 <= 0) q = [...a];
+  else {
+    const bp = sub(p, b);
+    const d3 = dot(ab, bp);
+    const d4 = dot(ac, bp);
+    const cp = sub(p, c);
+    const d5 = dot(ab, cp);
+    const d6 = dot(ac, cp);
+    const vc = d1 * d4 - d3 * d2;
+    const vb = d5 * d2 - d1 * d6;
+    const va = d3 * d6 - d5 * d4;
+    if (d3 >= 0 && d4 <= d3) q = [...b];
+    else if (d6 >= 0 && d5 <= d6) q = [...c];
+    else if (vc <= 0 && d1 >= 0 && d3 <= 0) { const t = d1 / (d1 - d3); q = [a[0]! + t * ab[0]!, a[1]! + t * ab[1]!, a[2]! + t * ab[2]!]; }
+    else if (vb <= 0 && d2 >= 0 && d6 <= 0) { const t = d2 / (d2 - d6); q = [a[0]! + t * ac[0]!, a[1]! + t * ac[1]!, a[2]! + t * ac[2]!]; }
+    else if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) { const t = (d4 - d3) / (d4 - d3 + (d5 - d6)); q = [b[0]! + t * (c[0]! - b[0]!), b[1]! + t * (c[1]! - b[1]!), b[2]! + t * (c[2]! - b[2]!)]; }
+    else { const den = 1 / (va + vb + vc); const v = vb * den; const w = vc * den; q = [a[0]! + ab[0]! * v + ac[0]! * w, a[1]! + ab[1]! * v + ac[1]! * w, a[2]! + ab[2]! * v + ac[2]! * w]; }
+  }
+  return Math.hypot(p[0]! - q[0]!, p[1]! - q[1]!, p[2]! - q[2]!);
+}
+
 function isObject(value: PlateObject | { ok: false; reason: string }): value is PlateObject {
   return !("reason" in value);
 }
@@ -407,7 +438,7 @@ export class Session {
     }
     try {
       for (const key of ["op", "ops", "base"]) {
-        if (input[key] !== undefined) input[key] = resolveNumbers(input[key], params, key);
+        if (input[key] !== undefined) input[key] = resolveNumbers(input[key], params, key, OP_WORDS);
       }
     } catch (err) {
       if (err instanceof ExprError) return { reason: err.message };
@@ -3042,20 +3073,34 @@ export class Session {
   private expandContext(obj: PlateObject): ExpandContext {
     return {
       plane: obj.workplane,
-      face: (index: number) => {
+      face: (index: number, coplanar = false) => {
         const face = obj.solid?.faces[index];
         if (!face || !obj.solid) return { reason: "That face is not on this solid." };
         if (!face.normal) return { reason: CURVED_FACE };
         const plane = facePlane(obj.solid.positions, obj.solid.triangles, index, face.normal);
         if (!plane) return { reason: CURVED_FACE };
         const frame = levelFrame(plane);
-        const extent: FaceExtent = { u: [Infinity, -Infinity], v: [Infinity, -Infinity] };
+        // With coplanar, every flat face in the same plane joins: a floor that earlier ribs split into strips is one floor.
+        const members = new Set([index]);
+        if (coplanar) {
+          obj.solid.faces.forEach((other, i) => {
+            if (i === index || !other.normal) return;
+            const n = other.normal;
+            const len = Math.hypot(n[0], n[1], n[2]) || 1;
+            const same = (n[0] * plane.normal[0] + n[1] * plane.normal[1] + n[2] * plane.normal[2]) / len > 0.9999;
+            const offset = (other.centre[0] - plane.point[0]) * plane.normal[0] + (other.centre[1] - plane.point[1]) * plane.normal[1] + (other.centre[2] - plane.point[2]) * plane.normal[2];
+            if (same && Math.abs(offset) < 0.01) members.add(i);
+          });
+        }
+        const outline: number[] = [];
+        const extent: FaceExtent = { u: [Infinity, -Infinity], v: [Infinity, -Infinity], outline };
         const { positions, triangles } = obj.solid;
         for (let tri = 0; tri < triangles.length; tri += 1) {
-          if (triangles[tri] !== index) continue;
+          if (!members.has(triangles[tri]!)) continue;
           for (let corner = 0; corner < 3; corner += 1) {
             const at = tri * 9 + corner * 3;
             const [u, v] = localPoint(frame, [positions[at]!, positions[at + 1]!, positions[at + 2]!]);
+            outline.push(u, v);
             extent.u = [Math.min(extent.u[0], u), Math.max(extent.u[1], u)];
             extent.v = [Math.min(extent.v[0], v), Math.max(extent.v[1], v)];
           }
@@ -3070,8 +3115,18 @@ export class Session {
         if ("reason" in matched) return matched;
         if (matched.length === 0) return { reason: "No flat face matches that selector." };
         const near = readVec3(selector.nearPoint, [NaN, NaN, NaN]);
-        const score = (face: (typeof matched)[number]) => Number.isNaN(near[0]) ? -face.areaMm2 : Math.hypot(face.centre[0] - near[0], face.centre[1] - near[1], face.centre[2] - near[2]);
-        return [...matched].sort((a, b) => score(a) - score(b))[0]!.index;
+        if (Number.isNaN(near[0])) return [...matched].sort((x, y) => y.areaMm2 - x.areaMm2)[0]!.index;
+        // Nearest by the face itself, not its centre: a long thin rib top's centre can sit nearer than the floor beside it.
+        const { positions, triangles } = obj.solid;
+        const gap = new Map<number, number>();
+        for (let tri = 0; tri < triangles.length; tri += 1) {
+          const index = triangles[tri]!;
+          if (!matched.some((row) => row.index === index)) continue;
+          const at = tri * 9;
+          const d = pointTriangleDistance(near, [positions[at]!, positions[at + 1]!, positions[at + 2]!], [positions[at + 3]!, positions[at + 4]!, positions[at + 5]!], [positions[at + 6]!, positions[at + 7]!, positions[at + 8]!]);
+          gap.set(index, Math.min(gap.get(index) ?? Infinity, d));
+        }
+        return [...matched].sort((x, y) => (gap.get(x.index) ?? Infinity) - (gap.get(y.index) ?? Infinity) || y.areaMm2 - x.areaMm2)[0]!.index;
       },
     };
   }

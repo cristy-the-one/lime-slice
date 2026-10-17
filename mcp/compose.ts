@@ -17,7 +17,7 @@ export interface Piece {
 }
 
 /** The kinds that expand. A plain `boolean` is a piece of one. */
-export const COMPOSITE_KINDS = ["pattern", "mirror", "pocket", "boss", "texture"] as const;
+export const COMPOSITE_KINDS = ["pattern", "mirror", "pocket", "boss", "texture", "array", "ribs"] as const;
 export type CompositeKind = (typeof COMPOSITE_KINDS)[number];
 
 export function isComposite(kind: unknown): kind is CompositeKind {
@@ -228,12 +228,15 @@ function mirrorMotion(spec: Record<string, unknown>, plane: Workplane): Motion |
 export interface FaceExtent {
   u: [number, number];
   v: [number, number];
+  /** The face's own triangles in U, V, six numbers each, so an array or ribs keep to its outline. */
+  outline?: number[];
 }
 
 /** What expanding needs from the session: the plane an op is typed in, and a face's frame and extent by index. */
 export interface ExpandContext {
   plane: Workplane;
-  face(index: number): { plane: Workplane; extent: FaceExtent } | { reason: string };
+  /** A face's frame and extent; with `coplanar`, the extent and outline cover every flat face in its plane. */
+  face(index: number, coplanar?: boolean): { plane: Workplane; extent: FaceExtent } | { reason: string };
   /** The flat face a selector names: {normal, withinDeg, nearPoint}. Read when the op expands, so faces earlier steps made count. */
   faceBy(selector: Record<string, unknown>): number | { reason: string };
 }
@@ -246,14 +249,14 @@ function cylinderIn(plane: Workplane, base: Vec3, radius: number, height: number
   return planePrimitive({ primitive: "cylinder", origin: base, size: [0, 0, 0], radius, height, turn: [0, 0, 0] }, plane);
 }
 
-export function faceFrame(spec: Record<string, unknown>, ctx: ExpandContext): { plane: Workplane; extent: FaceExtent | null } | { reason: string } {
+export function faceFrame(spec: Record<string, unknown>, ctx: ExpandContext, coplanar = false): { plane: Workplane; extent: FaceExtent | null } | { reason: string } {
   if (spec.face !== undefined && spec.faceIndex !== undefined) return { reason: "Give face or faceIndex, not both." };
   if (spec.face !== undefined) {
     const index = ctx.faceBy((spec.face ?? {}) as Record<string, unknown>);
-    return typeof index === "number" ? ctx.face(index) : index;
+    return typeof index === "number" ? ctx.face(index, coplanar) : index;
   }
   if (spec.faceIndex === undefined) return { plane: ctx.plane, extent: null };
-  return ctx.face(Math.round(numOr(spec.faceIndex, -1)));
+  return ctx.face(Math.round(numOr(spec.faceIndex, -1)), coplanar);
 }
 
 /**
@@ -322,7 +325,7 @@ function pocketPieces(spec: Record<string, unknown>, ctx: ExpandContext, raised:
  * on every other row). `pitch` is [along U, along V]; `region` defaults to the face's own extent.
  */
 function texturePieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] | { reason: string } {
-  const frame = faceFrame(spec, ctx);
+  const frame = faceFrame(spec, ctx, true);
   if ("reason" in frame) return frame;
   const plane = frame.plane;
   const region = spec.region as { u?: unknown; v?: unknown } | undefined;
@@ -362,6 +365,237 @@ function readPitch(value: unknown): [number, number] | null {
   return u > 0 && v > 0 ? [u, v] : null;
 }
 
+type UV = [number, number];
+
+function turnUV(p: UV, deg: number): UV {
+  if (deg === 0) return p;
+  const a = (deg * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return [p[0] * c - p[1] * s, p[0] * s + p[1] * c];
+}
+
+/** A U, V box on the face: the region typed, else the face's extent. */
+function regionOf(spec: Record<string, unknown>, extent: FaceExtent | null): { u: [number, number]; v: [number, number] } | null {
+  const region = spec.region as { u?: unknown; v?: unknown } | undefined;
+  const ru = Array.isArray(region?.u) ? region.u as number[] : extent?.u;
+  const rv = Array.isArray(region?.v) ? region.v as number[] : extent?.v;
+  if (!ru || !rv) return null;
+  return { u: [Math.min(ru[0]!, ru[1]!), Math.max(ru[0]!, ru[1]!)], v: [Math.min(rv[0]!, rv[1]!), Math.max(rv[0]!, rv[1]!)] };
+}
+
+/** Triangles, six numbers each, of the region box. */
+function boxTriangles(r: { u: [number, number]; v: [number, number] }): number[] {
+  const [u0, u1] = r.u;
+  const [v0, v1] = r.v;
+  return [u0, v0, u1, v0, u1, v1, u0, v0, u1, v1, u0, v1];
+}
+
+function inTriangles(p: UV, tris: readonly number[]): boolean {
+  const eps = 1e-6;
+  for (let i = 0; i + 5 < tris.length; i += 6) {
+    const [ax, ay, bx, by, cx, cy] = [tris[i]!, tris[i + 1]!, tris[i + 2]!, tris[i + 3]!, tris[i + 4]!, tris[i + 5]!];
+    const d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(d) < 1e-12) continue;
+    const l1 = ((by - cy) * (p[0] - cx) + (cx - bx) * (p[1] - cy)) / d;
+    const l2 = ((cy - ay) * (p[0] - cx) + (ax - cx) * (p[1] - cy)) / d;
+    if (l1 >= -eps && l2 >= -eps && 1 - l1 - l2 >= -eps) return true;
+  }
+  return false;
+}
+
+/** Triangles turned by `deg` about the frame's origin, for a layout drawn at an angle. */
+function turnTriangles(tris: readonly number[], deg: number): number[] {
+  if (deg === 0) return [...tris];
+  const out: number[] = [];
+  for (let i = 0; i + 1 < tris.length; i += 2) out.push(...turnUV([tris[i]!, tris[i + 1]!], deg));
+  return out;
+}
+
+/** Where the line b = `at` runs inside the triangles, as merged [from, to] spans of a. */
+function spansOnLine(tris: readonly number[], at: number): [number, number][] {
+  const b = at + 1e-7;
+  const spans: [number, number][] = [];
+  for (let i = 0; i + 5 < tris.length; i += 6) {
+    const hits: number[] = [];
+    for (let k = 0; k < 3; k += 1) {
+      const [pa, pb] = [tris[i + 2 * k]!, tris[i + 2 * k + 1]!];
+      const n = (k + 1) % 3;
+      const [qa, qb] = [tris[i + 2 * n]!, tris[i + 2 * n + 1]!];
+      if ((pb - b) * (qb - b) < 0) hits.push(pa + ((b - pb) / (qb - pb)) * (qa - pa));
+    }
+    if (hits.length === 2) spans.push([Math.min(hits[0]!, hits[1]!), Math.max(hits[0]!, hits[1]!)]);
+  }
+  spans.sort((x, y) => x[0] - y[0]);
+  const merged: [number, number][] = [];
+  for (const span of spans) {
+    const last = merged[merged.length - 1];
+    if (last && span[0] <= last[1] + 1e-4) last[1] = Math.max(last[1], span[1]);
+    else merged.push([span[0], span[1]]);
+  }
+  return merged;
+}
+
+function intersectSpans(a: [number, number][], b: [number, number][]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const x of a) for (const y of b) {
+    const from = Math.max(x[0], y[0]);
+    const to = Math.min(x[1], y[1]);
+    if (to > from) out.push([from, to]);
+  }
+  return out.sort((x, y) => x[0] - y[0]);
+}
+
+/** The heights a raised or cut cell spans along W: a fuse sinks in a little so it joins; a cut leaves the face cleanly. */
+function cellSpan(op: BooleanKind, depth: number): { low: number; tall: number } {
+  return op === "fuse" ? { low: -BOSS_SINK, tall: depth + BOSS_SINK } : { low: -depth, tall: depth + CUT_PAST };
+}
+
+/** What `array` and `ribs` share: the face frame, the outline kept to, the layout's turn, and the op and depth. */
+function surfaceSetup(spec: Record<string, unknown>, ctx: ExpandContext, kind: "array" | "ribs") {
+  // The whole plane the face lies in: a floor that ribs split into strips is still one floor.
+  const frame = faceFrame(spec, ctx, true);
+  if ("reason" in frame) return frame;
+  const region = regionOf(spec, frame.extent);
+  if (!region) return { reason: `${kind === "array" ? "An array" : "Ribs"} need face, faceIndex, or a region {u, v} on the workplane.` };
+  const depth = numOr(spec.depth, 0);
+  if (!(depth > 0)) return { reason: `${kind === "array" ? "An array" : "Ribs"} need a depth: how far out of the face, or into it for a cut.` };
+  const op: BooleanKind = spec.op === "cut" ? "cut" : "fuse";
+  const margin = Math.max(0, numOr(spec.margin, 0));
+  // Kept to: the face's own triangles when there is a face, and the region's box always.
+  const keep = (p: UV) => inTriangles(p, boxTriangles(region)) && (!frame.extent?.outline || inTriangles(p, frame.extent.outline));
+  return { plane: frame.plane, region, outline: frame.extent?.outline ?? null, depth, op, margin, keep };
+}
+
+/**
+ * A primitive repeated over a face: `cell` (rect `width` × `height`, circle `diameter`, or polygon `sides` and
+ * `across`, turned `turnDeg` in the face) laid on a grid of `pitch` [u, v], every other row moved half a pitch with
+ * `stagger`, the whole grid turned `angleDeg`. A cell is placed only where it lies on the face and in the region,
+ * `margin` in from their edges (`fit: "centre"` checks its centre only). Raised by `depth`, or cut `depth` deep.
+ */
+function arrayPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] | { reason: string } {
+  const set = surfaceSetup(spec, ctx, "array");
+  if ("reason" in set) return set;
+  const cell = (spec.cell ?? {}) as Record<string, unknown>;
+  const shape = cell.shape === "circle" || cell.shape === "polygon" ? cell.shape : "rect";
+  const pitch = readPitch(spec.pitch);
+  if (!pitch) return { reason: "An array needs a pitch [u, v] in millimetres, each above 0." };
+  const angle = numOr(spec.angleDeg, 0);
+  const spin = numOr(cell.turnDeg, 0);
+  const m = set.margin;
+  let outline: UV[] = [];
+  let primitive: (u: number, v: number) => PrimitiveSpec;
+  const { low, tall } = cellSpan(set.op, set.depth);
+  if (shape === "circle") {
+    const r = numOr(cell.diameter, 0) / 2;
+    if (!(r > 0)) return { reason: "A circle cell needs a diameter." };
+    outline = Array.from({ length: 12 }, (_, i) => [(r + m) * Math.cos((i * Math.PI) / 6), (r + m) * Math.sin((i * Math.PI) / 6)] as UV);
+    primitive = (u, v) => cylinderIn(set.plane, [u, v, low], r, tall);
+  } else if (shape === "polygon") {
+    const sides = Math.round(numOr(cell.sides, 6));
+    const across = numOr(cell.across, 0);
+    if (sides < 3 || sides > 64 || !(across > 0)) return { reason: "A polygon cell needs 3 to 64 sides and an across in millimetres." };
+    const reach = across / 2 + m;
+    outline = Array.from({ length: sides }, (_, i) => {
+      const a = -Math.PI / 2 - Math.PI / sides + (2 * Math.PI * i) / sides;
+      return turnUV([reach * Math.cos(a), reach * Math.sin(a)], spin);
+    });
+    primitive = (u, v) => planePrimitive({ primitive: "polygon", origin: [u, v, low], size: [0, 0, 0], radius: 0, height: tall, turn: [0, 0, angle + spin], sides, across, flats: false }, set.plane);
+  } else {
+    const w = numOr(cell.width, 0);
+    const h = numOr(cell.height, 0);
+    if (!(w > 0) || !(h > 0)) return { reason: "A rect cell needs a width and a height." };
+    outline = ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as UV[]).map(([su, sv]) => turnUV([su * (w / 2 + m), sv * (h / 2 + m)], spin));
+    primitive = (u, v) => planePrimitive({ primitive: "box", origin: [u - w / 2, v - h / 2, low], size: [w, h, tall], radius: 0, height: 0, turn: [0, 0, angle + spin] }, set.plane);
+  }
+  // The grid is drawn in a frame turned by angleDeg about the region's middle, centred there, and reaches one pitch past the region's corners.
+  const mid: UV = [(set.region.u[0] + set.region.u[1]) / 2, (set.region.v[0] + set.region.v[1]) / 2];
+  const reach = Math.hypot(set.region.u[1] - set.region.u[0], set.region.v[1] - set.region.v[0]) / 2 + Math.max(pitch[0], pitch[1]);
+  const rows = Math.ceil(reach / pitch[1]);
+  const cols = Math.ceil(reach / pitch[0]) + 1;
+  const fitCentre = spec.fit === "centre";
+  const pieces: Piece[] = [];
+  for (let j = -rows; j <= rows; j += 1) {
+    const shift = spec.stagger === true && Math.abs(j) % 2 === 1 ? pitch[0] / 2 : 0;
+    for (let i = -cols; i <= cols; i += 1) {
+      const local = turnUV([i * pitch[0] + shift, j * pitch[1]], angle);
+      const at: UV = [mid[0] + local[0], mid[1] + local[1]];
+      const fits = fitCentre ? set.keep(at) : outline.every((corner) => {
+        const p = turnUV(corner, angle);
+        return set.keep([at[0] + p[0], at[1] + p[1]]);
+      });
+      if (!fits) continue;
+      pieces.push({ op: set.op, spec: primitive(at[0], at[1]) });
+      if (pieces.length > MAX_PIECES) return { reason: `This array makes more than ${MAX_PIECES} cells. Use a larger pitch or a smaller region.` };
+    }
+  }
+  if (pieces.length === 0) return { reason: "No cell fits on that face. Use a smaller cell, a smaller margin, or a finer pitch." };
+  return pieces;
+}
+
+/**
+ * Strips across a face: raised ribs, or grooves with op "cut". They run along U (level on a wall or a slope) or V,
+ * turned `angleDeg` more, `pitch` apart or `count` of them spread evenly, `width` wide and `depth` high. Each rib is
+ * cut to where it lies on the face and in the region, `margin` in from the ends, so a rib across a gable is shorter
+ * toward the ridge.
+ */
+function ribPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] | { reason: string } {
+  const set = surfaceSetup(spec, ctx, "ribs");
+  if ("reason" in set) return set;
+  const width = numOr(spec.width, 0);
+  if (!(width > 0)) return { reason: "Ribs need a width in millimetres." };
+  const angle = numOr(spec.angleDeg, 0) + (spec.along === "v" ? 90 : 0);
+  const pitch = numOr(spec.pitch, 0);
+  const count = Math.round(numOr(spec.count, 0));
+  if (!(pitch > 0) && count < 1) return { reason: "Ribs need a pitch in millimetres or a count." };
+  // In the turned frame ribs run along a; b steps across them. Shape and region both turn with it.
+  const shapes = [turnTriangles(boxTriangles(set.region), -angle), ...(set.outline ? [turnTriangles(set.outline, -angle)] : [])];
+  const all = shapes.flat();
+  let b0 = Infinity;
+  let b1 = -Infinity;
+  for (let i = 1; i < all.length; i += 2) {
+    b0 = Math.min(b0, all[i]!);
+    b1 = Math.max(b1, all[i]!);
+  }
+  const lo = b0 + set.margin + width / 2;
+  const hi = b1 - set.margin - width / 2;
+  if (!(hi >= lo)) return { reason: "The face is narrower than one rib and its margin." };
+  const lines: number[] = [];
+  if (count >= 1) {
+    for (let k = 0; k < count; k += 1) lines.push(count === 1 ? (lo + hi) / 2 : lo + ((hi - lo) * k) / (count - 1));
+  } else {
+    const n = Math.floor((hi - lo) / pitch) + 1;
+    const start = (lo + hi) / 2 - ((n - 1) * pitch) / 2;
+    for (let k = 0; k < n; k += 1) lines.push(start + k * pitch);
+  }
+  const { low, tall } = cellSpan(set.op, set.depth);
+  const pieces: Piece[] = [];
+  for (const b of lines) {
+    let spans: [number, number][] | null = null;
+    // A rib flush with the face's edge is on it: its sides are sampled a hair inside.
+    for (const edge of [b - width / 2 + 1e-5, b, b + width / 2 - 1e-5]) {
+      for (const tris of shapes) {
+        const on = spansOnLine(tris, edge);
+        spans = spans ? intersectSpans(spans, on) : on;
+      }
+    }
+    for (const [from, to] of spans ?? []) {
+      const a0 = from + set.margin;
+      const a1 = to - set.margin;
+      if (a1 - a0 < Math.max(width, 0.5)) continue;
+      const centre = turnUV([(a0 + a1) / 2, b], angle);
+      const length = a1 - a0;
+      pieces.push({
+        op: set.op,
+        spec: planePrimitive({ primitive: "box", origin: [centre[0] - length / 2, centre[1] - width / 2, low], size: [length, width, tall], radius: 0, height: 0, turn: [0, 0, angle] }, set.plane),
+      });
+      if (pieces.length > MAX_PIECES) return { reason: `This makes more than ${MAX_PIECES} ribs. Use a larger pitch.` };
+    }
+  }
+  if (pieces.length === 0) return { reason: "No rib fits on that face. Use a smaller margin or a narrower rib." };
+  return pieces;
+}
+
 /**
  * The plain Boolean pieces an op becomes. `toPart` turns a plain boolean op (typed in the session's workplane) into
  * its part-frame primitive; composite kinds call back into this for the op they wrap.
@@ -375,6 +609,8 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
   }
   if (kind === "pocket" || kind === "boss") return pocketPieces(raw, ctx, kind === "boss");
   if (kind === "texture") return texturePieces(raw, ctx);
+  if (kind === "array") return arrayPieces(raw, ctx);
+  if (kind === "ribs") return ribPieces(raw, ctx);
   if (kind === "pattern" || kind === "mirror") {
     const inner = raw.op;
     if (!inner || typeof inner !== "object") return { reason: `A ${kind} needs the op it repeats.` };
