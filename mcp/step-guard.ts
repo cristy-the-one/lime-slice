@@ -3,7 +3,7 @@
  * the step meant: a fuse that hands back only the tool, a cut that takes more than its tool, a fillet that loses most
  * of the part, or a piece that meets the part only along an edge. The session takes such a step back and refuses it.
  */
-import { edgeReport, type EdgeReport, type Vec3 } from "./mesh-check.ts";
+import { edgeReport, type EdgeReport, type Vec3 } from "../src/mesh-check.ts";
 
 type Box = { min: Vec3 | number[]; max: Vec3 | number[] };
 

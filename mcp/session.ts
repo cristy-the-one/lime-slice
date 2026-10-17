@@ -68,7 +68,7 @@ import { reviewGcode } from "./review.ts";
 import { GUIDES, guideByUri } from "./guides.ts";
 import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
 import { standRegion } from "./plane-region.ts";
-import { closeCracks, edgeReport } from "./mesh-check.ts";
+import { closeCracks, edgeReport } from "../src/mesh-check.ts";
 import { lostVolume, notClosedReason, touchingEdges, touchingReason } from "./step-guard.ts";
 import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";

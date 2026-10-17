@@ -104,6 +104,7 @@ import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
 import { state } from "./state";
+import { closeCracks } from "../mesh-check";
 import { axesOf, drillDown, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 
 type Body = Record<string, unknown>;
@@ -118,6 +119,8 @@ interface Opened {
 const VIEW_ONLY = "Surfaces only. This file can be measured but not edited.";
 const BROKEN = "This step could not be rebuilt, so it and the steps after it are unavailable.";
 const ROOT_BROKEN = "This solid's primitive builds differently in this modeler, so its history cannot be rebuilt.";
+/** A history longer than this many steps rebuilds a few steps per call, with a count in the readout. */
+const COUNTED_REBUILD = 20;
 /** Parsed solids of recently shown nodes, so a jump back to one needs no engine call. */
 const SOLID_CACHE = 4;
 
@@ -155,6 +158,8 @@ const restoring = new Map<string, Promise<string | null>>();
  */
 interface Seed {
   node: NodeId;
+  /** The steps the engine holds while the seed is live: the plate's step, and the steps applied on it since. */
+  held: Set<NodeId>;
   live: boolean;
   whole: Promise<string | null> | null;
   reading: Promise<void> | null;
@@ -725,7 +730,9 @@ function liveKeep(): PrepareKeep {
 }
 
 function meshOf(solid: ParsedSolid): PlateMesh {
-  const positions = new Float32Array(solid.positions);
+  // The kernel meshes faces apart; where two sample a shared curved edge at different points, the plate mesh would
+  // have a crack the slicer guesses across ("The mesh has gaps on 2333 layers"). Those cracks are closed here.
+  const positions = closeCracks(solid.positions);
   const seat = settleBy(positions);
   const name = stlName(state.mesh?.name ?? "solid");
   const bytes = encodeStl(positions, name);
@@ -864,8 +871,9 @@ export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: str
     const loaded = loadedTree(tree, key, root, obj.name, mesh, (other) => keys.get(other));
     modelTrees.set(key, loaded);
     if (obj.brep || (loaded.committed === ROOT && isStepName(obj.fileName))) stepKnown.add(token);
-    // A primitive root is a few numbers, so its tree opens whole from them and no STEP is read; the first edit would rebuild it anyway.
-    if (obj.brep && loaded.committed !== ROOT && root.kind === "step") seeds.set(key, { node: loaded.committed, live: false, whole: null, reading: null });
+    // The plate's step opens from its own STEP, one read, whatever the root is: a history of hundreds of steps from a
+    // primitive would otherwise run again in full before Model showed anything. Earlier steps rebuild when asked for.
+    if (obj.brep && loaded.committed !== ROOT) seeds.set(key, { node: loaded.committed, held: new Set([loaded.committed]), live: false, whole: null, reading: null });
   }
   state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (keys.has(obj.id) ? { ...obj, modelTree: keys.get(obj.id) } : obj)) };
 }
@@ -1457,10 +1465,13 @@ async function applyOp(op: ModelOp, working: string) {
     if (shown && op.kind === "join" && !op.keepTool) takeOffPlate(op.tool.object);
     return;
   }
-  if (seeds.has(at.key) || readSolids.has(at.solid)) {
-    // A reopened project's step was read from its STEP, which can sit apart from the step its history
-    // builds: on Telo, a hole on the read solid removed 483 mm³ more than the same hole after a rebuild.
-    // So an edit builds on the history: the whole tree opens, and the step is shown as rebuilt.
+  // A new step on the plate's step builds on its STEP-read solid at once, as the plate holds it: rebuilding a long
+  // history first took minutes (326 steps on the 2.6.1 back cover). The read solid can sit a little apart from the one
+  // the history builds (on Telo, a hole removed 483 mm³ more), so a later rebuild of the history checks each step's
+  // fingerprint and marks a step that builds differently.
+  const onSeed = seeds.get(at.key)?.held.has(parent) === true;
+  if (!onSeed && (seeds.has(at.key) || readSolids.has(at.solid))) {
+    // A step the engine does not hold yet: the whole tree opens, and the step is shown as rebuilt.
     const mine = ticket;
     busy = true;
     syncUndo();
@@ -2927,7 +2938,8 @@ async function seededCall(key: string, node: NodeId, request: Body): Promise<Bod
   for (;;) {
     let seed = seeds.get(key);
     for (; seed?.whole || seed?.reading; seed = seeds.get(key)) await (seed.whole ?? seed.reading);
-    if (seed && (node !== seed.node || request.call === "apply" || request.call === "edit")) {
+    // A step the engine holds takes calls and new steps on it; an earlier step, or an edit of one, needs the history.
+    if (seed && (!seed.held.has(node) || request.call === "edit")) {
       const problem = await openWhole(key, node);
       if (problem) return { error: problem };
       continue;
@@ -2937,6 +2949,7 @@ async function seededCall(key: string, node: NodeId, request: Body): Promise<Bod
     // The engine does not run calls in the order they were sent: an open that started after this one
     // may have run first, and then its node 0 is the root. Such an answer is asked for again.
     if (seeds.get(key) !== seed || seed.whole || seed.reading || !seed.live) continue;
+    if (request.call === "apply" && typeof request.node === "number" && !text(body.error)) seed.held.add(request.node);
     // `seeded`: the answer is about the STEP-read step.
     return { ...body, seeded: true, ...(body.id === ROOT ? { id: seed.node } : {}), ...(body.broken === ROOT ? { broken: seed.node } : {}) };
   }
@@ -2948,10 +2961,16 @@ function engineNumbered(seed: Seed, request: Body): Body {
   return { ...request, node: local(request.node), ...("parent" in request ? { parent: local(request.parent) } : {}) };
 }
 
-/** Drop the branch from `node` in the engine, once it has one: a seeded tree's engine holds no branch. */
+/** Drop the branch from `node` in the engine, once it has one: a seeded tree's engine holds only the steps built on its seed. */
 async function dropInEngine(key: string, node: NodeId) {
   for (let seed = seeds.get(key); seed; seed = seeds.get(key)) {
-    if (!seed.whole) return;
+    if (!seed.whole) {
+      if (!seed.held.has(node) || node === seed.node) return;
+      await post({ call: "drop", key, node });
+      const tree = modelTrees.get(key);
+      for (const id of [...seed.held]) if (id !== seed.node && !tree?.nodes.has(id)) seed.held.delete(id);
+      return;
+    }
     await seed.whole;
   }
   await post({ call: "drop", key, node });
@@ -2970,7 +2989,21 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
     if (seed?.reading) await seed.reading;
     const tree = modelTrees.get(key);
     if (!tree || tree.root.kind === "piece") return "This solid is no longer open.";
-    const body = await post(wholeTreeRequest(tree, tree.root, node, state.stepTolerance));
+    // The history opens at its root, then builds toward `node` a few steps per call, so the readout can count them.
+    const path = pathTo(tree, node);
+    // A short history opens in one call; a long one is counted, so a minute of rebuilding is never a silent wait.
+    const counted = path.length > COUNTED_REBUILD;
+    let body = await post(wholeTreeRequest(tree, tree.root, counted ? ROOT : node, state.stepTolerance));
+    const steps = path.length - 1;
+    const stride = Math.max(1, Math.round(steps / 50));
+    const shownHere = () => state.stage === "model" && open?.key === key;
+    for (let at = stride; counted && at <= steps && !text(body.error) && typeof body.broken !== "number"; at = at === steps ? steps + 1 : Math.min(steps, at + stride)) {
+      if (!modelTrees.has(key)) break;
+      if (shownHere()) readout(`Rebuilding the history: step ${at} of ${steps}…`);
+      // A probe builds its step without meshing it; a scale by 1 asks nothing else of the kernel.
+      const built = await post(probeRequest(key, path[at]!, { kind: "scale", factor: 1 }));
+      body = typeof built.broken === "number" || text(built.error).includes("not open") ? built : {};
+    }
     if (seed) seed.whole = null;
     if (!modelTrees.has(key)) return closeLate(key);
     // A primitive root that builds differently opens nothing: the whole tree is broken from its root.

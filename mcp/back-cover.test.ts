@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { fakeEngine } from "./engine.ts";
-import { closeCracks, edgeReport } from "./mesh-check.ts";
+import { closeCracks, edgeReport } from "../src/mesh-check.ts";
 import { standRegion } from "./plane-region.ts";
 import { advertisedTools } from "./schema.ts";
 import { Session } from "./session.ts";
