@@ -1,6 +1,6 @@
 # Lime Slice
 
-Lime Slice 1.5.0 is a slicer for filament printers. Open an STL, 3MF, or STEP file, set it on the build plate, and slice it to G-code. A Rust planner builds the toolpaths. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
+Lime Slice 2.0.0 is a slicer for filament printers. Open an STL, 3MF, or STEP file, set it on the build plate, and slice it to G-code. A Rust planner builds the toolpaths. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
 
 **Prepare** puts the model on the plate. Move, turn, and scale it, then choose a strategy: speed, efficiency, toughness, or a blend by weight, by layer, or by region. Each strategy is a real set of walls, infill, speed, acceleration, seam, and retraction.
 
@@ -8,7 +8,7 @@ Lime Slice 1.5.0 is a slicer for filament printers. Open an STL, 3MF, or STEP fi
 
 **Reinforce** paints a patch on the surface, or places a box or a cylinder, so that part of the model prints denser infill, up to solid. The rest of the part keeps the strategy.
 
-**Model** edits a STEP solid, or starts one from a box, cylinder, sphere, cone, torus, wedge, polygon, or tube. Fuse, cut, or intersect the solid with one of those shapes. Split it on a plane. Fillet or chamfer the picked edges, drill a hole, scale it, or measure between two points. Undo and redo step through those edits. The History tree of the steps is saved in the `.lime` project, so the same solid opens again. The desktop release includes the Open CASCADE libraries that do this work. A build without them still slices an unedited STEP file, and Model stays off. An unedited STEP is tessellated on load with the pure-Rust [truck](https://github.com/ricosjp/truck) kernel: planes, cylinders, cones, spheres, tori, and NURBS, with file units converted to millimetres. Assemblies and multi-body parts become one mesh; each instance keeps its placement. The chord tolerance defaults to 0.1 mm (0.01–2 mm) via the Prepare field or `slice --step-tolerance`. Faceted brep and AP242 tessellated solids are rejected with an error.
+**Model** edits a STEP solid, or starts one from a box, cylinder, sphere, cone, torus, wedge, polygon, or tube. Fuse, cut, or intersect the solid with one of those shapes. Split it on a plane. Fillet or chamfer the picked edges, drill a hole, scale it, or measure between two points. Undo and redo step through those edits. The History tree of the steps is saved in the `.lime` project, so the same solid opens again. The desktop release includes the Open CASCADE libraries that do this work. A build without them still slices an unedited STEP file, and Model stays off. An unedited STEP is tessellated on load with the pure-Rust [truck](https://github.com/ricosjp/truck) kernel: planes, cylinders, cones, spheres, tori, and NURBS, with file units converted to millimetres. Assemblies and multi-body parts become one mesh; each instance keeps its placement. The chord tolerance defaults to 0.05 mm (0.01–2 mm) via the Prepare field or `slice --step-tolerance`. Faceted brep and AP242 tessellated solids are rejected with an error.
 
 **Belt printers.** A generic 45° belt and the Ideaformer IR3 V2 slice on the belt. The belt carries the part along its length.
 
@@ -25,6 +25,8 @@ Lime Slice 1.5.0 is a slicer for filament printers. Open an STL, 3MF, or STEP fi
 **Send to printer.** Send uploads the current G-code to a Prusa Link, Moonraker, or OctoPrint host stored on the printer. You can ask the printer to start the job after the upload.
 
 **Settings search.** The box at the top of the settings panel filters every setting. `/` or Ctrl+F focuses it. `and` and `&` match the same word.
+
+**MCP server.** An LLM client such as Claude can drive the slicer: import or build a part, edit it in Model, place it, change settings, slice, and write G-code. With the live bridge on, the open window shows the same plate as the session changes it. See [MCP server](#mcp-server).
 
 ## Screenshots
 
@@ -127,7 +129,15 @@ The live desktop bridge is off unless you opt in. The app listens on `127.0.0.1`
 LIME_BRIDGE=1 LIME_BRIDGE_TOKEN=choose-a-token npm run tauri dev
 ```
 
-Point the MCP process at that listener with `LIME_MCP_BRIDGE=http://127.0.0.1:43119/` and the same `LIME_MCP_BRIDGE_TOKEN`. Port 43119 is `LIME_BRIDGE_PORT`. Each mirror is a sequence number and the whole plate. A commit adds the mesh hash and the STEP file written in the workspace, not the list of edits. The desktop applies the next sequence only. A gap asks to reload. A mirror that cannot connect does not fail the tool. Closing the app leaves the headless session as it was. The listener inside the window was not exercised by the automated tests.
+The variables must be set in the environment the app starts from; an app that is already open does not read them. For an installed app on Windows, from PowerShell:
+
+```powershell
+$env:LIME_BRIDGE = "1"; $env:LIME_BRIDGE_TOKEN = "choose-a-token"; & "$env:LOCALAPPDATA\Lime Slice\lime-slice-desktop.exe"
+```
+
+Point the MCP process at that listener with `LIME_MCP_BRIDGE=http://127.0.0.1:43119/` and the same `LIME_MCP_BRIDGE_TOKEN`. Port 43119 is `LIME_BRIDGE_PORT`. Both sides must be running this version: an older app or server does not speak the mesh-carrying message.
+
+Each mirror is the whole plate after the tool, with the server's session id and a sequence number, so a missed message is repaired by the next one. A mesh the desktop does not have rides along once: the file bytes and the triangles the server read from them. A commit therefore shows the Open CASCADE triangles the server slices, not a fresh read of the STEP. A new solid appears at its first commit, and the window switches to Prepare to show it. The desktop adds, moves, and removes the objects the server sent; parts you opened yourself stay. A committed mesh drops that object's own Model history in the window, since the history no longer builds it. Each answer names the window's instance; a restarted app or a reloaded page gets every mesh again on the next tool. A mirror that cannot connect does not fail the tool, and closing the app leaves the headless session as it was.
 
 `docs/mcp-server.md` lists the tools and what is deferred. `docs/mcp-server-review-2.md` records the resolution of each review finding.
 
@@ -221,7 +231,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (1.5.0). Publishing that draft is a separate step. Draft releases through v1.5.0 are already on the repository.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (2.0.0). Publishing that draft is a separate step. Draft releases through v1.8.0 are already on the repository.
 
 ## Headless slice and bench
 
@@ -417,10 +427,13 @@ Cube score is back to the unrecovered 3D number (11577 vs 11572) and prints in 2
 
 - `crates/lime-slice-core` — mesh load, contour slice, strategy blend, toolpaths, G-code
 - `crates/lime-slice` — `slice`, `bench`, `serve`, `calibrate pa`
-- `src-tauri` — Tauri 2 shell over the same core
+- `crates/lime-model`, `crates/lime-model-occt`, `crates/lime-model-load` — Model mode's Open CASCADE bridge and the loader that finds it at run time
+- `crates/lime-mcp-engine` — the slicer loaded in-process by the MCP server
+- `src-tauri` — Tauri 2 shell over the same core, including the live-bridge listener
 - `src` — TypeScript preview UI (2D layer canvas plus a Three.js 3D slice view)
+- `mcp` — the MCP server (`mcp/server.ts`) and its tests
 - `samples` — checked-in meshes
-- `docs/mcp-server.md` — design for an MCP server that slices and edits through the existing engine
+- `docs/mcp-server.md` — the MCP server's design, its tools, and what is deferred
 
 ## Strategies
 
@@ -443,7 +456,10 @@ Printer profile: generic Marlin, 0.4 mm nozzle, 1.75 mm PLA at 1.24 g/cm³, 200 
 cargo test -p lime-slice-core
 cargo run -p lime-slice --release -- bench samples/calibration_cube_20mm.stl
 npx tsc --noEmit
+npm run test:unit
 ```
+
+`npm run test:unit` runs the TypeScript unit tests and the MCP server tests. The native-load test needs `cargo build -p lime-mcp-engine --release` first. The Model edits against real Open CASCADE are a separate run, `node --experimental-strip-types mcp/occt.test.ts`, with `LIME_OCCT_BRIDGE` pointing at the bridge; it skips without it.
 
 ## Not in this slice
 

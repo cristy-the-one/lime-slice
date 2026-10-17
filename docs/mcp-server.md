@@ -16,7 +16,7 @@ These override the architecture recommendation in section 3 and the open questio
 
 3. **No send-to-printer.** `printer_send` is not a tool.
 
-4. **Live desktop bridge, off by default.** With `LIME_BRIDGE=1` and a non-empty `LIME_BRIDGE_TOKEN`, the desktop app listens on `127.0.0.1` only (`LIME_BRIDGE_PORT`, default 43119) and emits `lime-bridge`. The MCP process mirrors each tool result only when `LIME_MCP_BRIDGE` is a loopback URL and `LIME_MCP_BRIDGE_TOKEN` is set. A mirror that fails is logged and does not change the tool result. The message is a sequence number and the whole plate. A commit adds the mesh hash and the STEP file in the workspace, not the list of edits. The desktop applies the next sequence only. A gap asks "The MCP session changed the plate; reload from it?". The bridge is a mirror, not a second undo stack, and a gesture already in progress waits. The headless session stays correct when the app is closed.
+4. **Live desktop bridge, off by default.** With `LIME_BRIDGE=1` and a non-empty `LIME_BRIDGE_TOKEN`, the desktop app listens on `127.0.0.1` only (`LIME_BRIDGE_PORT`, default 43119) and emits `lime-bridge`. The MCP process mirrors each tool result only when `LIME_MCP_BRIDGE` is a loopback URL and `LIME_MCP_BRIDGE_TOKEN` is set. A mirror that fails is logged and does not change the tool result. The message is the whole plate after the tool, a session id, and a sequence number. A mesh the desktop has not been sent rides along once, as its file bytes and the triangles the server read (`meshes`, keyed by `fnv1aHex`). A commit names the new mesh hash, not the list of edits. The desktop applies any newer sequence, so a gap is repaired by the next snapshot; it removes only objects the server sent. Authorised answers carry `X-Lime-Bridge-Instance`, which changes when the app starts and when the page calls `bridge_ready`; the server then sends every mesh again (`plate_sync`). The bridge is a mirror, not a second undo stack, and a gesture already in progress waits. The headless session stays correct when the app is closed.
 
 ### What shipped
 
@@ -40,7 +40,7 @@ The server needs Node 22.6 or later. Node prints an `ExperimentalWarning` on sta
 
 - `printer_send`.
 - Tool lanes across two objects' histories.
-- The Tauri listener that would reload a committed STEP inside the desktop window. The headless mirror is tested. The window was not opened.
+- Mirroring the Model history into the window. A commit sends the mesh; the window's History panel does not show the server's steps.
 - A real-engine check of paint coverage, a support blocker, Pareto, and calibration towers. The request bodies and the stand-in are tested. The N-API exports call the public builders and do not change the slicer crates.
 
 ### Licences
@@ -696,6 +696,8 @@ Risk: a tessellation reply is large and the server must drop the buffers before 
 An optional local socket, bound to `127.0.0.1`, that the desktop app dials. The app applies the same session operations to its `state` so the window matches. This is the first `src-tauri` change: one listener, no slicer change. `render_view` either grabs the view or draws with Three.js.
 
 Risk: two writers. The bridge should be a mirror the app can disconnect, not a second undo stack. If the app is mid-gesture, the mirror waits. The headless server remains correct with the app closed.
+
+Shipped: the app listens (the server dials it), plate snapshots carry their meshes once per desktop, and the window adds, places, replaces, and removes the server's objects through `src/bridge.ts` (`mirrorPlate`), the same function the headless test drives. `render_view` draws with the server's own renderer, not the window.
 
 `printer_send` is not a phase of its own. It waits on an explicit decision to expose `prusa_link_http` outside the window.
 

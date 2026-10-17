@@ -2,7 +2,7 @@
  * One stdio connection is one plate. The engine is behind `Engine`.
  * Feasibility refusals are `{ok:false, reason}` and are decided before apply.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 
@@ -49,7 +49,7 @@ import { plateFileIsVersion2 } from "../src/plate.ts";
 import { advanceFor, builtinLibrary, adoptProfile, enginePrinter, fileFromSelection, heatFor, parseMachineFile, serializeMachineFile, setAdvance, setFlow, setGcode, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
 import { parseSettingsProfile, profileFileName, serializeSettingsProfile } from "../src/ui/settings-profiles.ts";
 
-import { mirror } from "./bridge-client.ts";
+import { mirror, type BridgeLink } from "./bridge-client.ts";
 import { occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { layerPaths, pathsPng, pathsSvg } from "./layer-out.ts";
@@ -344,6 +344,10 @@ export class Session {
   private undoStack: PlateSnap[] = [];
   private redoStack: PlateSnap[] = [];
   private bridgeSeq = 0;
+  /** This process on the bridge. The desktop starts its sequence again when it changes. */
+  private readonly bridgeSession = randomUUID();
+  private readonly bridgeLink: BridgeLink = { known: new Set(), resync: () => this.resyncBridge() };
+  private readonly meshHashes = new WeakMap<Uint8Array, string>();
   private generation = 0;
   private lastProgressAt = 0;
   overrides: OverrideDocument = emptyOverrides();
@@ -363,8 +367,9 @@ export class Session {
     const input = (args ?? {}) as Record<string, unknown>;
     const result = this.dispatch(name, input, meta);
     return Promise.resolve(result).then((value) => {
-      this.lastBridge = this.bridgePayload(name, input, value);
-      void mirror(this.lastBridge);
+      const { payload, carriedAll } = this.bridgePayload(name, input, value);
+      this.lastBridge = payload;
+      void mirror(payload, this.bridgeLink, carriedAll);
       return value;
     }).catch((err: unknown) => {
       if (err instanceof ProtocolError) {
@@ -401,12 +406,13 @@ export class Session {
     });
   }
 
-  private bridgePayload(name: string, input: Record<string, unknown>, value: Record<string, unknown>): Record<string, unknown> {
+  /**
+   * The plate after `name`, for the desktop. A mesh the desktop has not been sent rides along once.
+   * A new solid that was never committed has no file yet, so it is not on the desktop's plate.
+   */
+  private bridgePayload(name: string, input: Record<string, unknown>, value: Record<string, unknown>): { payload: Record<string, unknown>; carriedAll: boolean } {
     const objectId = typeof input.object === "string" ? input.object : "";
     const obj = objectId ? this.find(objectId) : null;
-    const placement = name === "object_place" && value.ok === true && obj
-      ? { orient: [...obj.orient], scale: obj.scale, centered: obj.centered, offset: { ...obj.offset } }
-      : undefined;
     const settings = (name === "settings_apply" || name === "settings_set") && value.ok === true && value.dryRun !== true
       ? {
           layerHeight: this.settings.layerHeight,
@@ -417,39 +423,63 @@ export class Session {
           ...(name === "settings_set" && Array.isArray(value.changed) ? { values: changedValues(value.changed) } : {}),
         }
       : undefined;
-    const commit = name === "model_commit" && value.ok === true && obj ? this.commitMirror(obj) : null;
+    const shown = this.objects.filter((row) => row.bytes.byteLength > 0);
+    const known = this.bridgeLink.known;
+    const carriedAll = known.size === 0;
+    const meshes: Record<string, unknown> = {};
+    for (const row of shown) {
+      const hash = this.meshHashOf(row.bytes);
+      if (known.has(hash) || hash in meshes) continue;
+      meshes[hash] = {
+        fileName: row.fileName,
+        bytesB64: bytesToBase64(row.bytes),
+        positionsB64: bytesToBase64(new Uint8Array(row.source.buffer, row.source.byteOffset, row.source.byteLength)),
+        seatMm: row.seatMm,
+      };
+    }
+    // The desktop keeps a mesh only while an object on its plate uses it, so an undone remove sends it again.
+    known.clear();
+    for (const row of shown) known.add(this.meshHashOf(row.bytes));
+    const commit = name === "model_commit" && value.ok === true && obj && obj.bytes.byteLength > 0
+      ? { object: obj.id, meshHash: this.meshHashOf(obj.bytes) }
+      : null;
     this.bridgeSeq += 1;
-    return {
+    const payload = {
       tool: name,
+      session: this.bridgeSession,
       seq: this.bridgeSeq,
-      plate: this.objects.map((row) => ({
+      plate: shown.map((row) => ({
         object: row.id,
         name: shownName(row.name),
         scalePercent: row.scale * 100,
         centered: row.centered,
         offset: { ...row.offset },
         orient: [...row.orient],
-        meshHash: fnv1aHex(row.bytes),
-        ...(commit && commit.object === row.id ? { file: commit.file } : {}),
+        meshHash: this.meshHashOf(row.bytes),
       })),
+      ...(Object.keys(meshes).length > 0 ? { meshes } : {}),
       ...(obj ? { objectId: obj.id, objectName: obj.name } : {}),
       ok: value.ok === true,
-      ...(placement ? { placement } : {}),
       ...(settings ? { settings } : {}),
       ...(commit ? { commit } : {}),
     };
+    return { payload, carriedAll };
   }
 
-  /** The committed STEP in the workspace. The message carries the hash and the path, not the edits. */
-  private commitMirror(obj: PlateObject): { object: string; meshHash: string; file: string } | null {
-    if (obj.bytes.byteLength === 0) return null;
-    try {
-      const path = resolveWrite(`commit-${obj.id}.step`, ".step");
-      writeFileSync(path, obj.bytes);
-      return { object: obj.id, meshHash: fnv1aHex(obj.bytes), file: path };
-    } catch {
-      return null;
+  /** A new desktop answered: send it the whole plate with every mesh. */
+  private resyncBridge(): void {
+    this.bridgeLink.known.clear();
+    const { payload } = this.bridgePayload("plate_sync", {}, { ok: true });
+    void mirror(payload, this.bridgeLink, true);
+  }
+
+  private meshHashOf(bytes: Uint8Array): string {
+    let hash = this.meshHashes.get(bytes);
+    if (!hash) {
+      hash = fnv1aHex(bytes);
+      this.meshHashes.set(bytes, hash);
     }
+    return hash;
   }
 
   private dispatch(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {

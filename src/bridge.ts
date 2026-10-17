@@ -1,38 +1,17 @@
 /**
  * A live-bridge message applied to the plate the desktop is showing.
- * The headless server stays right if this never runs. A gesture in progress
- * (`poseHud`) waits; the mirror does not interrupt it.
+ * Every message carries the whole plate after its tool, so a missed message
+ * is repaired by the next one. A mesh travels once per desktop: the message
+ * names it by hash, and carries its bytes and triangles only while the
+ * desktop has not been sent them. The headless server stays right if this
+ * never runs. A gesture in progress (`poseHud`) waits; the mirror does not
+ * interrupt it.
  */
 import { base64ToBytes } from "./base64.ts";
-import { ID_MATRIX, type Mat3 } from "./mesh-place.ts";
+import type { Mat3 } from "./mesh-place.ts";
 
-/** Shown when a mirror skipped a sequence, or the mesh file cannot be read here. */
-export const BRIDGE_RELOAD = "The MCP session changed the plate; reload from it?";
-
-/** The stand-in STEP embeds the mesh after this mark. A real STEP file has no mark. */
-const SOLID_MARK = "lime-mcp-solid ";
-
-export interface BridgeView {
-  meshName: string;
-  poseHud: string;
-  orient: Mat3;
-  partScale: number;
-  centered: boolean;
-  offset: { x: number; y: number; z: number };
-  layerHeight: number;
-  supports: boolean;
-  blendKind: string;
-  strategy: string;
-  toughness: number;
-  source: Float32Array | null;
-}
-
-export interface BridgePlacement {
-  orient: Mat3;
-  scale: number;
-  centered: boolean;
-  offset: { x: number; y: number; z: number };
-}
+/** Shown when a message names a mesh this window was never sent. The server sends it again on its next tool. */
+export const BRIDGE_RESEND = "The MCP session changed a part this window has not received yet. It arrives with the session's next step.";
 
 export interface BridgeSettings {
   layerHeight?: number;
@@ -50,65 +29,56 @@ export interface BridgePlateRow {
   centered: boolean;
   offset: { x: number; y: number; z: number };
   orient: Mat3;
+  /** `fnv1aHex` of the object's file bytes. A key of `meshes`. */
   meshHash?: string;
-  file?: string;
 }
 
-/** A commit replaced the plate mesh. The desktop reloads `file` and does not replay edits. */
+/** A mesh as the server slices it: its file, and the triangles it read from that file. */
+export interface BridgeMesh {
+  fileName: string;
+  bytesB64: string;
+  /** Float32 xyz triangles, little-endian, in the object's source frame. */
+  positionsB64: string;
+  /** How far the reader lowered the triangles onto Z = 0. */
+  seatMm?: number;
+}
+
+/** A commit replaced the plate mesh. The mesh itself is in `meshes`; edits are not replayed. */
 export interface BridgeCommit {
   object: string;
   meshHash: string;
-  file: string;
 }
 
 export interface BridgeMessage {
   tool?: string;
+  /** One MCP server process. A new one starts its sequence again. */
+  session?: string;
   seq?: number;
   objectId?: string;
   objectName?: string;
   ok?: boolean;
-  /** The placement after the tool, not the arguments that produced it. */
-  placement?: BridgePlacement;
   /** The settings after the tool. */
   settings?: BridgeSettings;
   /** Every object on the plate after the tool. */
   plate?: BridgePlateRow[];
+  /** Meshes this desktop has not been sent, by hash. */
+  meshes?: Record<string, BridgeMesh>;
   /** Set only for `model_commit`. Absent for a probe or an apply. */
   commit?: BridgeCommit;
 }
 
-export interface BridgePatch {
-  wait: boolean;
-  place: boolean;
-  stale?: boolean;
-  /** The desktop's own sequence does not match this message. */
-  reload?: string;
-  /** The sequence this patch consumed. Absent when the message carried none. */
-  seq?: number;
-  /** Remember this id so a later mirror for another object is not applied here. */
-  bindId?: string;
-  /** The bound object is no longer the one on screen. */
-  unbind?: boolean;
-  orient?: Mat3;
-  partScale?: number;
-  centered?: boolean;
-  offset?: { x: number; y: number; z: number };
-  layerHeight?: number;
-  supports?: boolean;
-  blendKind?: string;
-  strategy?: string;
-  toughness?: number;
-  /** The plate after the tool, when this tool changes the plate. */
-  plate?: BridgePlateRow[];
-  /** The bound object is no longer on the plate. */
-  removed?: boolean;
-  /** A commit. Model history is not in this patch. */
-  commit?: BridgeCommit;
-  historyKept?: boolean;
+/** Where this window is in the server's sequence. */
+export interface BridgeSeen {
+  session: string;
+  seq: number;
 }
 
-/** The headless stand-in for the plate the desktop is showing. */
-export interface MirrorObject {
+/**
+ * One object on the desktop plate, as the mirror sees it. `extra` is whatever
+ * the desktop keeps with the object; the mirror carries it over untouched
+ * while the mesh stays the same.
+ */
+export interface MirrorObject<T = unknown> {
   id: string;
   name: string;
   scalePercent: number;
@@ -116,19 +86,26 @@ export interface MirrorObject {
   offset: { x: number; y: number; z: number };
   orient: Mat3;
   meshHash: string;
-  source: Float32Array | null;
-  /** Desktop Model history. A commit keeps this reference. */
-  history: unknown;
+  /** Set when the mesh came from this mirror message. Otherwise the desktop's own mesh stays. */
+  mesh?: { fileName: string; bytes: Uint8Array; source: Float32Array; seatMm?: number };
+  extra: T | null;
 }
 
-export interface MirrorResult {
-  plate: MirrorObject[];
-  seenSeq: number;
-  reload: string | null;
+export interface MirrorResult<T = unknown> {
+  plate: MirrorObject<T>[];
+  seen: BridgeSeen;
+  /** Server objects on this plate after the message. Desktop objects outside it are never removed. */
+  owned: Set<string>;
+  /** Set when a row needs a mesh this window does not have. The plate is left as it was. */
+  missing: string | null;
   applied: boolean;
+  /** The selection the server's tool points at, when it is on the plate. */
+  selectId: string | null;
 }
 
+/** Tools whose result is a new plate. `plate_sync` is the server's full resend. */
 const PLATE_TOOLS = new Set([
+  "plate_sync",
   "mesh_import",
   "solid_new",
   "object_place",
@@ -140,154 +117,109 @@ const PLATE_TOOLS = new Set([
   "plate_redo",
   "workplane_print_up",
   "model_commit",
+  "project_open",
+  "project_create",
 ]);
 
-function sequenceFits(seenSeq: number, next: number): boolean {
-  if (seenSeq === 0) return next === 1;
-  return next === seenSeq + 1;
+/** True when this message is newer than what the window has, or comes from a new server process. */
+export function bridgeIsNew(seen: BridgeSeen, message: BridgeMessage): boolean {
+  if (typeof message.seq !== "number") return true;
+  if ((message.session ?? "") !== seen.session) return true;
+  return message.seq > seen.seq;
 }
 
-function withSeq(patch: BridgePatch, message: BridgeMessage): BridgePatch {
-  return typeof message.seq === "number" ? { ...patch, seq: message.seq } : patch;
+function nextSeen(seen: BridgeSeen, message: BridgeMessage): BridgeSeen {
+  if (typeof message.seq !== "number") return seen;
+  return { session: message.session ?? "", seq: message.seq };
 }
 
-export function applyBridge(view: BridgeView, message: BridgeMessage, boundId = "", seenSeq = 0): BridgePatch {
-  if (view.poseHud) return { wait: true, place: false };
-  if (typeof message.seq === "number" && !sequenceFits(seenSeq, message.seq)) {
-    return { wait: false, place: false, reload: BRIDGE_RELOAD };
-  }
-  if (message.ok === false) return withSeq({ wait: false, place: false }, message);
-  if ((message.tool === "settings_apply" || message.tool === "settings_set") && message.settings) {
-    return withSeq({ wait: false, place: false, stale: true, ...message.settings }, message);
-  }
-  if (message.tool === "model_commit" && message.commit) {
-    const row = message.plate?.find((item) => item.object === message.commit?.object);
-    return withSeq({
-      wait: false,
-      place: Boolean(row),
-      stale: true,
-      historyKept: true,
-      commit: message.commit,
-      ...(message.plate ? { plate: message.plate } : {}),
-      ...(row ? poseOf(row) : {}),
-    }, message);
-  }
-  if (message.tool === "object_place" && message.placement) {
-    const named = message.objectName ? meshStem(message.objectName) === meshStem(view.meshName) : false;
-    if (message.objectId && boundId && message.objectId !== boundId) {
-      return withSeq({ wait: false, place: false, ...(message.plate ? { plate: message.plate } : {}) }, message);
-    }
-    if (boundId && message.objectId === boundId && message.objectName && !named) {
-      // Two objects can share a mesh name. Rebind only when the one on screen is unambiguous.
-      const matches = message.plate?.filter((row) => meshStem(row.name) === meshStem(view.meshName)) ?? [];
-      const current = matches.length === 1 ? matches[0] : undefined;
-      if (!current) {
-        return withSeq({ wait: false, place: false, unbind: true, ...(message.plate ? { plate: message.plate } : {}) }, message);
-      }
-      return withSeq({
-        wait: false,
-        place: true,
-        bindId: current.object,
-        plate: message.plate,
-        ...poseOf(current),
-      }, message);
-    }
-    if (!message.objectId && !named) return withSeq({ wait: false, place: false }, message);
-    if (message.objectId && !boundId && message.objectName && !named) return withSeq({ wait: false, place: false }, message);
-    const placement = message.placement;
-    return withSeq({
-      wait: false,
-      place: true,
-      orient: [...placement.orient] as Mat3,
-      partScale: placement.scale,
-      centered: placement.centered,
-      offset: { ...placement.offset },
-      ...(message.objectId && message.objectId !== boundId ? { bindId: message.objectId } : {}),
-      ...(message.plate ? { plate: message.plate } : {}),
-    }, message);
-  }
-  if (message.plate && message.tool && PLATE_TOOLS.has(message.tool)) {
-    const id = message.objectId || boundId;
-    const row = id ? message.plate.find((item) => item.object === id) : message.plate[0];
-    if (!row) {
-      return withSeq({ wait: false, place: false, stale: true, removed: true, plate: message.plate }, message);
-    }
-    return withSeq({
-      wait: false,
-      place: true,
-      stale: true,
-      plate: message.plate,
-      ...poseOf(row),
-    }, message);
-  }
-  return withSeq({ wait: false, place: false }, message);
-}
-
-function poseOf(row: BridgePlateRow): Pick<BridgePatch, "orient" | "partScale" | "centered" | "offset"> {
-  return {
-    orient: [...row.orient] as Mat3,
-    partScale: row.scalePercent / 100,
-    centered: row.centered,
-    offset: { ...row.offset },
-  };
+/** The settings a message sets, or null. */
+export function bridgeSettings(message: BridgeMessage): BridgeSettings | null {
+  if (message.ok === false) return null;
+  if (message.tool !== "settings_apply" && message.tool !== "settings_set") return null;
+  return message.settings ?? null;
 }
 
 /**
- * Apply one mirror to a plate copy.
- * A commit replaces that object's mesh and keeps its `history` reference.
- * A sequence gap leaves the plate as it was.
+ * Apply one mirror to the desktop plate.
+ * Rows replace the pose of the object with the same id, and its mesh when the hash moved.
+ * A new id is added. An id the server sent before and no longer lists is removed.
+ * Objects the server never named stay where they are.
+ * An older message, a failed tool, or one that does not change the plate leaves the plate alone.
  */
-export function mirrorPlate(
-  current: readonly MirrorObject[],
+export function mirrorPlate<T>(
+  current: readonly MirrorObject<T>[],
   message: BridgeMessage,
-  seenSeq: number,
-  readFile?: (path: string) => Uint8Array | null,
-): MirrorResult {
-  if (typeof message.seq === "number" && !sequenceFits(seenSeq, message.seq)) {
-    return { plate: [...current], seenSeq, reload: BRIDGE_RELOAD, applied: false };
-  }
-  const nextSeq = typeof message.seq === "number" ? message.seq : seenSeq;
+  seen: BridgeSeen,
+  owned: ReadonlySet<string> = new Set(),
+): MirrorResult<T> {
+  const unchanged = (applied: boolean, missing: string | null = null): MirrorResult<T> => ({
+    plate: [...current],
+    seen: applied ? nextSeen(seen, message) : seen,
+    owned: new Set(owned),
+    missing,
+    applied,
+    selectId: null,
+  });
+  if (!bridgeIsNew(seen, message)) return unchanged(false);
+  // A new server process numbers its objects again: what the old one sent is the desktop's now.
+  const stillOwned = (message.session ?? "") === seen.session ? owned : new Set<string>();
   if (message.ok === false || !message.tool || !PLATE_TOOLS.has(message.tool) || !message.plate) {
-    return { plate: [...current], seenSeq: nextSeq, reload: null, applied: message.ok !== false };
+    return { ...unchanged(true), owned: new Set(stillOwned) };
   }
-  let positions: Float32Array | null = null;
-  if (message.commit) {
-    const bytes = readFile?.(message.commit.file) ?? null;
-    positions = bytes ? positionsFromCommittedStep(bytes) : null;
-    if (!positions || positions.length < 9) {
-      return { plate: [...current], seenSeq, reload: BRIDGE_RELOAD, applied: false };
-    }
+  const rows = message.plate;
+  const byId = new Map(current.map((obj) => [obj.id, obj]));
+  const decoded = new Map<string, NonNullable<MirrorObject["mesh"]>>();
+  for (const row of rows) {
+    const old = byId.get(row.object);
+    const hash = row.meshHash ?? "";
+    if (old && old.meshHash === hash) continue;
+    const sent = decoded.get(hash) ?? decodeMesh(message.meshes?.[hash]);
+    if (!sent) return unchanged(false, BRIDGE_RESEND);
+    decoded.set(hash, sent);
   }
-  const previous = new Map(current.map((obj) => [obj.id, obj]));
-  const plate = message.plate.map((row) => {
-    const old = previous.get(row.object);
-    const committed = message.commit?.object === row.object ? positions : null;
-    return {
+  const listed = new Set(rows.map((row) => row.object));
+  const plate: MirrorObject<T>[] = [];
+  for (const obj of current) {
+    if (listed.has(obj.id)) continue;
+    if (stillOwned.has(obj.id)) continue;
+    plate.push(obj);
+  }
+  // Server objects keep the server's order, after the desktop's own.
+  for (const row of rows) {
+    const old = byId.get(row.object);
+    const hash = row.meshHash ?? "";
+    const mesh = old && old.meshHash === hash ? undefined : decoded.get(hash);
+    plate.push({
       id: row.object,
       name: row.name,
       scalePercent: row.scalePercent,
       centered: row.centered,
       offset: { ...row.offset },
       orient: [...row.orient] as Mat3,
-      meshHash: message.commit?.object === row.object ? message.commit.meshHash : (row.meshHash ?? old?.meshHash ?? ""),
-      source: committed ?? old?.source ?? null,
-      history: old ? old.history : null,
-    };
-  });
-  return { plate, seenSeq: nextSeq, reload: null, applied: true };
+      meshHash: hash,
+      ...(mesh ? { mesh } : {}),
+      extra: old ? old.extra : null,
+    });
+  }
+  const selectId = message.objectId && listed.has(message.objectId) ? message.objectId : null;
+  return { plate, seen: nextSeen(seen, message), owned: listed, missing: null, applied: true, selectId };
 }
 
-/** Triangles embedded in a stand-in STEP. A real STEP file returns null. */
-export function positionsFromCommittedStep(bytes: Uint8Array): Float32Array | null {
-  const text = new TextDecoder().decode(bytes);
-  const at = text.indexOf(SOLID_MARK);
-  if (at < 0) return null;
-  const encoded = text.slice(at + SOLID_MARK.length).split(/\s/)[0] ?? "";
-  const raw = base64ToBytes(encoded);
-  if (!raw || raw.byteLength < 36 || raw.byteLength % 4 !== 0) return null;
-  const copy = new Uint8Array(raw.byteLength);
-  copy.set(raw);
-  return new Float32Array(copy.buffer);
+function decodeMesh(mesh: BridgeMesh | undefined): MirrorObject["mesh"] | null {
+  if (!mesh) return null;
+  const bytes = base64ToBytes(mesh.bytesB64);
+  const raw = base64ToBytes(mesh.positionsB64);
+  if (!bytes || bytes.byteLength === 0 || !raw || raw.byteLength < 36 || raw.byteLength % 36 !== 0) return null;
+  // A copy so the floats start on a 4-byte boundary.
+  const aligned = new Uint8Array(raw.byteLength);
+  aligned.set(raw);
+  return {
+    fileName: mesh.fileName,
+    bytes,
+    source: new Float32Array(aligned.buffer),
+    ...(typeof mesh.seatMm === "number" && Number.isFinite(mesh.seatMm) ? { seatMm: mesh.seatMm } : {}),
+  };
 }
 
 /** Keep a mirror until the gesture ends. Nothing is dropped for being old. */
@@ -295,50 +227,8 @@ export function parkBridge(queue: BridgeMessage[], message: BridgeMessage): Brid
   return [...queue, message];
 }
 
-export function releaseBridge(queue: BridgeMessage[], poseHud: string): { ready: BridgeMessage[]; waiting: BridgeMessage[] } {
-  if (poseHud) return { ready: [], waiting: queue };
-  return { ready: queue, waiting: [] };
-}
-
-/** Write a patch through the app: placement goes through `place`, settings mark the slice stale and redraw. */
-export function runBridgePatch(
-  patch: BridgePatch,
-  fx: {
-    assign: (patch: BridgePatch) => void;
-    place: () => void;
-    markStale: () => void;
-    renderChrome: () => void;
-  },
-): void {
-  if (patch.wait) return;
-  if (patch.unbind) fx.assign(patch);
-  if (!patch.place && !patch.stale) return;
-  fx.assign(patch);
-  if (patch.place) fx.place();
-  if (patch.stale) {
-    fx.markStale();
-    fx.renderChrome();
-  }
-}
-
-/** The file name with or without its mesh extension names the same part. */
-function meshStem(name: string): string {
-  return name.replace(/\.(stl|3mf|step|stp)$/i, "");
-}
-
-export function emptyBridgeView(name = ""): BridgeView {
-  return {
-    meshName: name,
-    poseHud: "",
-    orient: [...ID_MATRIX],
-    partScale: 1,
-    centered: true,
-    offset: { x: 0, y: 0, z: 0 },
-    layerHeight: 0.2,
-    supports: false,
-    blendKind: "single",
-    strategy: "speed",
-    toughness: 0.5,
-    source: null,
-  };
+/** New arrays, never `queue` itself: the caller empties its queue in place and must not empty `ready` with it. */
+export function releaseBridge(queue: readonly BridgeMessage[], poseHud: string): { ready: BridgeMessage[]; waiting: BridgeMessage[] } {
+  if (poseHud) return { ready: [], waiting: [...queue] };
+  return { ready: [...queue], waiting: [] };
 }
