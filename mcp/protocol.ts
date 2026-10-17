@@ -99,7 +99,7 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
       return result(id, {
         protocolVersion,
         capabilities: { tools: {}, resources: {}, prompts: {} },
-        serverInfo: { name: "lime-slice", version: "2.2.1" },
+        serverInfo: { name: "lime-slice", version: "2.3.0" },
         instructions: INSTRUCTIONS,
       });
     }

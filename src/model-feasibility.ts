@@ -17,7 +17,7 @@ import { lastEdge, type ModelPickRef } from "./model-select.ts";
 export const PROBE_WAIT_MS = 300;
 
 /** Tools whose result only the kernel can judge. Split and scale are checked from numbers alone. */
-export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean", "extrude", "revolve", "shell"] as const;
+export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean", "extrude", "revolve", "loft", "shell"] as const;
 export type ProbedTool = (typeof PROBED_TOOLS)[number];
 
 /** What a probe that builds measured: the result, and `before`, the solid it was built on. */
@@ -84,6 +84,7 @@ const CHECKING: Record<ProbedTool, string> = {
   boolean: "Checking this boolean…",
   extrude: "Checking this extrude…",
   revolve: "Checking this revolve…",
+  loft: "Checking this loft…",
   shell: "Checking this shell…",
 };
 
@@ -94,6 +95,7 @@ const FITS: Record<ProbedTool, string> = {
   boolean: "This boolean changes the solid.",
   extrude: "This extrude changes the solid.",
   revolve: "This revolve changes the solid.",
+  loft: "This loft changes the solid.",
   shell: "This shell fits.",
 };
 
@@ -157,8 +159,20 @@ export function turnedPrimitiveBox(spec: PrimitiveSpec): Box {
  * adds a second body. Empty when the boxes touch, including along one face.
  */
 export function disjointBoolean(part: Box, spec: PrimitiveSpec, op: "cut" | "fuse" | "common"): string | null {
-  if (boxesTouch(part, turnedPrimitiveBox(spec))) return null;
+  const tool = turnedPrimitiveBox(spec);
+  if (boxesTouch(part, tool)) return null;
   return op === "fuse" ? DISJOINT_FUSE : DISJOINT_CUT;
+}
+
+/** How far apart two boxes are at their nearest, in millimetres: 0 when they touch or overlap. */
+export function boxGap(a: Box, b: Box): number {
+  const axis = (i: 0 | 1 | 2) => Math.max(0, a.min[i] - b.max[i], b.min[i] - a.max[i]);
+  return Math.hypot(axis(0), axis(1), axis(2));
+}
+
+/** The tool's box, turned, as `disjointBoolean` tests it. */
+export function primitiveBox(spec: PrimitiveSpec): Box {
+  return turnedPrimitiveBox(spec);
 }
 
 /** Apply stays off until the dry-run says the edit works. */

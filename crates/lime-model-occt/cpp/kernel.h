@@ -154,6 +154,18 @@ struct ProfileSpec {
     double origin[3] = {0, 0, 0};
     double turn[3] = {0, 0, 0};
     std::vector<double> points;
+    /// Splines through the points instead of straight edges. A point listed in `corners` is a sharp corner: the
+    /// run between two corners is one spline, and two corners side by side are joined by a straight edge.
+    bool smooth = false;
+    std::vector<int> corners;
+};
+
+/// One cross-section of a loft: a profile on its plane, or, with `radius` above 0, a circle about the plane's origin
+/// (an ellipse with `radius_v` above 0, `radius` along U and `radius_v` along V).
+struct LoftSection {
+    ProfileSpec profile;
+    double radius = 0;
+    double radius_v = 0;
 };
 
 /// The profile pushed `depth` along W (−W when negative), or `depth` centred on the plane with `symmetric`, combined
@@ -178,6 +190,19 @@ TopoDS_Shape build_revolve(
     double angle_deg,
     double& volume,
     std::string& error);
+/// A solid through the sections in order, smooth or `ruled` (flat between sections), combined with `current` by
+/// `which`. `before` is the volume of `current`; `volume` gets the result's.
+TopoDS_Shape build_loft(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const std::vector<LoftSection>& sections,
+    bool ruled,
+    double& volume,
+    std::string& error);
+/// The sealed hollows and loose pieces `built` has that `from` did not, as JSON fields without braces: `voids`, each
+/// a box, and `pieces`, each a box with its volume and its gap to the largest body. Empty when there are none.
+std::string piece_report(const TopoDS_Shape& from, const TopoDS_Shape& built);
 /// `current` hollowed to walls `thickness` thick, inward, with `open` removed.
 TopoDS_Shape build_shell(
     const TopoDS_Shape& current,

@@ -6,7 +6,7 @@ import { bytesToBase64 } from "./base64.ts";
 import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
-import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type ExtrudeOp, type Fingerprint, type JoinTool, type ModelOp, type ModelRoot, type ModelTree, type NodeId, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
+import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type ExtrudeOp, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type NodeId, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
 export type TreeRequest = Record<string, unknown>;
 
@@ -57,12 +57,38 @@ export interface ProfilePlane {
  * An extrude of `profile` (`[u, v]` points) on `plane`, in the frame the plane is given in: `toSolidOp` takes it into the
  * solid's own frame like any tool's op. `symmetric` is sent only when on, as the engine stores it.
  */
-export function extrudeOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], depth: number, symmetric = false): ExtrudeOp {
-  return { kind: "extrude", op, origin: [...plane.origin], turn: [...plane.turn], profile: profile.map(([u, v]) => [u, v]), depth, ...(symmetric ? { symmetric: true as const } : {}) };
+export function extrudeOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], depth: number, symmetric = false, shape: ProfileShape = {}): ExtrudeOp {
+  return { kind: "extrude", op, origin: [...plane.origin], turn: [...plane.turn], profile: profile.map(([u, v]) => [u, v]), depth, ...(symmetric ? { symmetric: true as const } : {}), ...shapeFields(shape) };
+}
+
+/** Splines through a profile's points, sharp at `corners`. Each field is sent only when on, as the engine stores it. */
+export interface ProfileShape {
+  smooth?: boolean;
+  corners?: readonly number[];
+}
+
+function shapeFields(shape: ProfileShape): { smooth?: true; corners?: number[] } {
+  return { ...(shape.smooth ? { smooth: true as const } : {}), ...(shape.smooth && shape.corners?.length ? { corners: [...shape.corners] } : {}) };
+}
+
+/** A loft through `sections`, each a profile (with its shape) or a circle or ellipse, on its own plane. */
+export function loftOp(op: BooleanKind, sections: readonly LoftSection[], ruled = false): LoftOp {
+  return {
+    kind: "loft",
+    op,
+    sections: sections.map((section) => ({
+      origin: [...section.origin],
+      turn: [...section.turn],
+      ...(section.radius !== undefined
+        ? { radius: section.radius, ...(section.radiusV !== undefined ? { radiusV: section.radiusV } : {}) }
+        : { profile: (section.profile ?? []).map(([u, v]) => [u, v] as Vec2), ...shapeFields({ smooth: section.smooth, corners: section.corners }) }),
+    })),
+    ...(ruled ? { ruled: true as const } : {}),
+  };
 }
 
 /** A revolve of `profile` on `plane` about an in-plane axis. Each of the axis's fields is sent only when given. */
-export function revolveOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], axis: { origin?: Vec2; dir?: Vec2; angleDeg?: number } = {}): RevolveOp {
+export function revolveOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], axis: { origin?: Vec2; dir?: Vec2; angleDeg?: number } = {}, shape: ProfileShape = {}): RevolveOp {
   return {
     kind: "revolve",
     op,
@@ -72,6 +98,7 @@ export function revolveOp(op: BooleanKind, plane: ProfilePlane, profile: readonl
     ...(axis.origin ? { axisOrigin: [...axis.origin] as Vec2 } : {}),
     ...(axis.dir ? { axisDir: [...axis.dir] as Vec2 } : {}),
     ...(axis.angleDeg != null ? { angleDeg: axis.angleDeg } : {}),
+    ...shapeFields(shape),
   };
 }
 

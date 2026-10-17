@@ -76,7 +76,7 @@ const farCut = await call("model_probe", { object: box, op: { kind: "boolean", o
 const farFuse = await call("model_probe", { object: box, op: { kind: "boolean", op: "fuse", primitive: "box", dx: 2, dy: 2, dz: 2, origin: [300, 300, 300] } });
 const touching = await call("model_probe", { object: box, op: { kind: "boolean", op: "cut", primitive: "box", dx: 4, dy: 4, dz: 4, origin: [3, -2, 2] } });
 check("a cut that misses the part is refused", farCut.ok === false && farCut.reason === "The tool does not touch the part.", JSON.stringify(farCut));
-check("a fuse that misses the part is refused", farFuse.ok === false && farFuse.reason === "This would add a separate body; place it touching the part.", JSON.stringify(farFuse));
+check("a fuse that misses the part is refused", farFuse.ok === false && String(farFuse.reason).startsWith("This would add a separate body; place it touching the part. It is at least "), JSON.stringify(farFuse));
 check("a tool that overlaps one face is still accepted", touching.ok === true, JSON.stringify(touching));
 
 const splitProbe = await call("model_probe", { object: box, op: { kind: "split", origin: [0, 0, 5], normal: [0, 0, 1] } });

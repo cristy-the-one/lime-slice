@@ -16,16 +16,17 @@ import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
 import { align, centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
-import { disjointBoolean, probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
+import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, type ToolLink } from "../src/model-edit.ts";
 import { dropRefusal } from "../src/model-history.ts";
 import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
 import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
-import { applyRequest, crossEditRequest, exportRequest, extrudeOp, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, stepEdges, wholeTreeRequest } from "../src/model-request.ts";
-import { IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type EdgePick, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec2 } from "../src/model-tree.ts";
+import { applyRequest, crossEditRequest, exportRequest, extrudeOp, gotoRequest, joinOp, loftOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
+import { sweepSections, type SweepSpec } from "./sweep.ts";
+import { applyPose, IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
+import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type EdgePick, type Fingerprint, type LoftSection, type ModelOp, type ModelTree, type NodeId, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { savedTree, loadedTree } from "../src/model-tree-file.ts";
@@ -65,7 +66,7 @@ import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { OP_WORDS, validateTool } from "./schema.ts";
-import { addsPiece, anchorOf, cleanOp, cutsOffPiece, SEPARATE_PIECE, SPLIT_PIECE, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
+import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWrite } from "./workspace.ts";
 
@@ -117,6 +118,12 @@ export interface PlateObject {
   groups?: { start: number; end: number; label: string }[];
   /** The run undo last took back, so redo can bring it all again. */
   undoneGroup?: { start: number; end: number; label: string };
+  /**
+   * What model_build ran on this object: its base, the node before the ops, and for each op its key, the node after it
+   * (null when it was left out), and its first node. A later build with the same base resumes from the longest
+   * matching run of ops.
+   */
+  buildLog?: { base: string; start: number; steps: { key: string; node: number | null; first: number | null }[]; refused: boolean };
 }
 
 interface Ghost {
@@ -290,6 +297,57 @@ function parseNode(handle: unknown): number | null {
   if (typeof handle !== "string") return null;
   const match = /^node_(\d+)$/.exec(handle);
   return match ? Number(match[1]) : null;
+}
+
+/** A value as text with its keys sorted, so two ops that ask the same thing have the same key. */
+function stableKey(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableKey).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableKey((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/** The first node on the path from `from` down to `to`: the child of `from` that `to` descends from. */
+function firstAfter(tree: ModelTree, from: number, to: number): number | null {
+  let node: number | null = to;
+  while (node !== null) {
+    const parent: number | null = tree.nodes.get(node)?.parent ?? null;
+    if (parent === from) return node;
+    node = parent;
+  }
+  return null;
+}
+
+/** A profile's smooth and corners fields: corners are indexes into its points, and need smooth. */
+function readShape(spec: Record<string, unknown>, points: number): ProfileShape | { reason: string } {
+  if (spec.smooth !== undefined && typeof spec.smooth !== "boolean") return { reason: "smooth is true or false." };
+  if (spec.corners === undefined) return { smooth: spec.smooth === true };
+  if (spec.smooth !== true) return { reason: "corners mark the sharp points of a smooth profile. Add smooth: true." };
+  if (!Array.isArray(spec.corners) || !spec.corners.every((c) => Number.isInteger(c) && c >= 0 && c < points)) {
+    return { reason: `corners are indexes of profile points, 0 to ${points - 1}.` };
+  }
+  return { smooth: true, corners: [...new Set(spec.corners as number[])] };
+}
+
+/** One loft section: origin and turn as a profile's plane, then a radius (radiusV for an ellipse) or a profile. */
+function readSection(value: unknown): LoftSection | { reason: string } {
+  if (!value || typeof value !== "object") return { reason: "A section is an object with origin and a radius or a profile." };
+  const spec = value as Record<string, unknown>;
+  const origin = readVec3(spec.origin, [NaN, NaN, NaN]);
+  if (origin.some((n) => !Number.isFinite(n))) return { reason: "A section needs an origin [x, y, z]." };
+  const turn = readVec3(spec.turn, [0, 0, 0]);
+  if (spec.radius !== undefined) {
+    if (spec.profile !== undefined) return { reason: "A section takes a radius or a profile, not both." };
+    if (typeof spec.radius !== "number" || !(spec.radius > 0)) return { reason: "A section's radius is above 0." };
+    if (spec.radiusV !== undefined && (typeof spec.radiusV !== "number" || !(spec.radiusV > 0))) return { reason: "radiusV is above 0." };
+    return { origin, turn, radius: spec.radius, ...(typeof spec.radiusV === "number" ? { radiusV: spec.radiusV } : {}) };
+  }
+  const profile = readProfile(spec.profile);
+  if (!profile) return { reason: "A section needs a radius, or a profile of at least three [u, v] points." };
+  const shape = readShape(spec, profile.length);
+  if ("reason" in shape) return shape;
+  return { origin, turn, profile, ...(shape.smooth ? { smooth: true as const } : {}), ...(shape.corners?.length ? { corners: [...shape.corners] } : {}) };
 }
 
 /** A closed outline of at least three [u, v] points, or null. */
@@ -638,7 +696,7 @@ export class Session {
       filament: this.filament().name,
       printerSend: false,
       model: {
-        ops: ["boolean", "extrude", "revolve", "shell", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
+        ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
         composite: [...COMPOSITE_KINDS],
         primitives: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"],
         maxSteps: MAX_PIECES,
@@ -2878,11 +2936,13 @@ export class Session {
       if ("reason" in plane) return plane;
       const profile = readProfile(spec.profile);
       if (!profile) return { reason: "A profile needs at least three [u, v] points." };
+      const shape = readShape(spec, profile.length);
+      if ("reason" in shape) return shape;
       const booleanOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
       if (kind === "extrude") {
         const depth = spec.depth;
         if (typeof depth !== "number" || depth === 0) return { reason: "An extrude needs a depth in millimetres." };
-        const made = extrudeOp(booleanOp, plane, profile, depth, spec.symmetric === true);
+        const made = extrudeOp(booleanOp, plane, profile, depth, spec.symmetric === true, shape);
         return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
       }
       const axisOrigin = readProfile([spec.axisOrigin, [0, 0], [0, 0]])?.[0];
@@ -2891,8 +2951,29 @@ export class Session {
         ...(spec.axisOrigin !== undefined && axisOrigin ? { origin: axisOrigin } : {}),
         ...(spec.axisDir !== undefined && axisDir ? { dir: axisDir } : {}),
         ...(typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {}),
-      });
+      }, shape);
       return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+    }
+    if (kind === "loft" || kind === "sweep") {
+      const booleanOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
+      let sections: LoftSection[];
+      if (kind === "sweep") {
+        const made = sweepSections(spec as unknown as SweepSpec);
+        if ("reason" in made) return made;
+        sections = made;
+      } else {
+        if (!Array.isArray(spec.sections) || spec.sections.length < 2) return { reason: "A loft needs at least 2 sections." };
+        if (spec.sections.length > 200) return { reason: "A loft takes at most 200 sections." };
+        sections = [];
+        for (const [index, value] of (spec.sections as unknown[]).entries()) {
+          const section = readSection(value);
+          if ("reason" in section) return { reason: `sections[${index}]: ${section.reason}` };
+          sections.push(section);
+        }
+      }
+      const made = loftOp(booleanOp, sections, spec.ruled === true);
+      const typed = kind === "sweep" ? { ...cleanOp(spec), op: booleanOp, sections: sections.length } : { ...made };
+      return { op: toSolidOp(made, obj.modelPose), typed };
     }
     if (kind === "shell") {
       const thickness = spec.thickness;
@@ -2927,7 +3008,7 @@ export class Session {
       const op: ModelOp = { kind: "root", ...solid };
       return { op, typed: { kind: "root", ...solid } };
     }
-    return { reason: "That edit is not one of hole, fillet, chamfer, split, scale, boolean, extrude, revolve, shell, join, or root." };
+    return { reason: "That edit is not one of hole, fillet, chamfer, split, scale, boolean, extrude, revolve, loft, sweep, shell, join, or root." };
   }
 
   private splitCheck(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): { text: string; bad: boolean } {
@@ -3013,7 +3094,12 @@ export class Session {
     }
     if (baked.op.kind === "boolean" && obj.solid) {
       const missed = disjointBoolean(obj.solid.bounds, baked.op, baked.op.op);
-      if (missed) return answer({ ok: false, reason: missed, missed: true });
+      if (missed) {
+        // In the solid's frame both boxes; the gap is a lower bound on how far the tool must move.
+        const gap = Math.round(boxGap(obj.solid.bounds, primitiveBox(baked.op)) * 100) / 100;
+        const far = baked.op.op === "fuse" && gap > 0 ? `${missed} It is at least ${gap} mm clear of the part's bounding box.` : missed;
+        return answer({ ok: false, reason: far, missed: true, ...(gap > 0 ? { gapMm: gap } : {}) });
+      }
     }
     const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
     const blend = (baked.op.kind === "fillet" || baked.op.kind === "chamfer") && baked.op.edges.length > 1;
@@ -3030,8 +3116,14 @@ export class Session {
     this.lastPreview = reply.preview && typeof reply.preview === "object" ? rememberSolid(reply.preview as Record<string, unknown>) : null;
     const note = probeNote(tool, view);
     if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}) });
-    if (view?.phase === "done" && addsPiece(baked.op as { kind: string; op?: string }, view.measure)) return answer({ ok: false, reason: SEPARATE_PIECE });
-    if (composite && view?.phase === "done" && cutsOffPiece(baked.op as { kind: string; op?: string }, view.measure)) return answer({ ok: false, reason: SPLIT_PIECE });
+    if (view?.phase === "done" && addsPiece(baked.op as { kind: string; op?: string }, view.measure)) {
+      const where = pieceReport(reply, (p) => applyPose(obj.modelPose, p));
+      return answer({ ok: false, reason: separateReason(where), ...(where ? { where } : {}) });
+    }
+    if (composite && view?.phase === "done" && cutsOffPiece(baked.op as { kind: string; op?: string }, view.measure)) {
+      const where = pieceReport(reply, (p) => applyPose(obj.modelPose, p));
+      return answer({ ok: false, reason: splitReason(where), ...(where ? { where } : {}) });
+    }
     obj.probes.set(probeKey(String(at), baked.op), true);
     return answer({ ok: true, reason: note.text });
   }
@@ -3042,7 +3134,10 @@ export class Session {
    */
   private async applyTool(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const raw = input.op as Record<string, unknown>;
-    if (isComposite(raw?.kind)) return this.applyMany(obj, [raw], { label: typeof raw.label === "string" ? raw.label : undefined, rollback: true });
+    if (isComposite(raw?.kind)) {
+      const { checkpoints: _checkpoints, ...ran } = await this.applyMany(obj, [raw], { label: typeof raw.label === "string" ? raw.label : undefined });
+      return ran;
+    }
     if (input.probe === true) {
       const probed = await this.probe(obj, raw);
       if (probed.ok !== true) return { ...probed, applied: false };
@@ -3184,44 +3279,82 @@ export class Session {
 
   /**
    * Several edits as one: each composite op expands to Boolean steps, and every step is probed, then applied, in
-   * order. The first refusal stops the run; with `rollback` the solid goes back to where it started. A run of more
-   * than one step is one undo step.
+   * order. On a refusal, `rollback` takes the solid back to where it started, `stop` leaves it at the last op that
+   * applied, and `skip` leaves the refused op out and carries on, reporting every refusal. `keep` leaves the steps of
+   * a rolled-back run in the history, so a model_build can resume from them. A run of more than one step is one undo
+   * step. `offset` numbers the ops from there, for a resumed build.
    */
-  private async applyMany(obj: PlateObject, raws: Record<string, unknown>[], options: { label?: string; rollback: boolean }): Promise<Record<string, unknown>> {
+  private async applyMany(obj: PlateObject, raws: Record<string, unknown>[], options: { label?: string; onError?: unknown; keep?: boolean; offset?: number; start?: number }): Promise<Record<string, unknown>> {
     const opened = await this.opened(obj);
     if ("reason" in opened) return { ok: false, reason: opened.reason };
-    const start = opened.current;
+    const mode = options.onError === "stop" || options.onError === "skip" ? options.onError : "rollback";
+    const start = options.start ?? opened.current;
+    const offset = options.offset ?? 0;
     const nodes: number[] = [];
+    /** The node after each op, or null for one left out: what a resumed build reuses. */
+    const checkpoints: (number | null)[] = [];
+    const failures: Record<string, unknown>[] = [];
     let skipped = 0;
     let made = 0;
+    const result = (body: Record<string, unknown>) => ({ ...body, checkpoints });
     const fail = async (failed: Record<string, unknown>): Promise<Record<string, unknown>> => {
-      if (options.rollback && nodes.length > 0) {
+      if (mode === "rollback" && nodes.length > 0) {
         await this.gotoNode(obj, start);
-        if (obj.tree) this.drop(obj, nodes[0]!);
-        return { ok: false, applied: 0, rolledBack: true, failed, node: nodeHandle(start) };
+        if (obj.tree && !options.keep) this.drop(obj, nodes[0]!);
+        return result({ ok: false, applied: 0, rolledBack: true, failed, node: nodeHandle(start) });
       }
-      return { ok: false, applied: nodes.length, failed, ...(nodes.length ? { node: nodeHandle(nodes[nodes.length - 1]!) } : {}) };
+      return result({ ok: false, applied: nodes.length, failed, ...(nodes.length ? { node: nodeHandle(nodes[nodes.length - 1]!) } : {}) });
     };
     for (let index = 0; index < raws.length; index += 1) {
       const raw = raws[index]!;
       const label = typeof raw.label === "string" && raw.label.trim() ? raw.label.trim() : undefined;
+      const before = obj.tree?.current ?? start;
+      const ownNodes: number[] = [];
+      // One op's refusal: the run ends, or with skip the op's own steps go and the run carries on.
+      const refuse = async (failed: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
+        const row = { index: index + offset, ...(label ? { label } : {}), ...failed };
+        if (mode !== "skip") {
+          const ended = await fail(row);
+          // A kept run keeps only whole ops: a composite's partial steps go.
+          if (mode === "rollback" && options.keep && ownNodes.length > 0 && obj.tree?.nodes.has(ownNodes[0]!)) this.drop(obj, ownNodes[0]!);
+          return ended;
+        }
+        if (ownNodes.length > 0) {
+          await this.gotoNode(obj, before);
+          if (obj.tree) this.drop(obj, ownNodes[0]!);
+          nodes.splice(nodes.length - ownNodes.length, ownNodes.length);
+        }
+        failures.push(row);
+        checkpoints.push(null);
+        return null;
+      };
       if (!isComposite(raw.kind)) {
-        if ((made += 1) > MAX_PIECES) return fail({ index, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+        if ((made += 1) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
         const probed = await this.probe(obj, raw);
-        const result = probed.ok === true ? await this.apply(obj, raw) : probed;
-        if (result.ok !== true) return fail({ index, reason: String(result.reason ?? "This edit did not apply.") });
-        const node = parseNode(result.node);
+        const done = probed.ok === true ? await this.apply(obj, raw) : probed;
+        if (done.ok !== true) {
+          const ended = await refuse({ reason: String(done.reason ?? "This edit did not apply."), ...(done.where ? { where: done.where } : {}) });
+          if (ended) return ended;
+          continue;
+        }
+        const node = parseNode(done.node);
         if (node !== null) nodes.push(node);
+        checkpoints.push(obj.tree?.current ?? null);
         continue;
       }
       // Expanded now, on the solid as the steps before it left it, so a face selector sees faces they made.
       const pieces = expand(raw, this.expandContext(obj), (op) => this.pieceOf(obj, op));
-      if ("reason" in pieces) return fail({ index, reason: pieces.reason });
-      if ((made += pieces.length) > MAX_PIECES) return fail({ index, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+      if ("reason" in pieces) {
+        const ended = await refuse({ reason: pieces.reason });
+        if (ended) return ended;
+        continue;
+      }
+      if ((made += pieces.length) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+      let refused: Record<string, unknown> | null = null;
       for (let k = 0; k < pieces.length; k += 1) {
         const piece = pieces[k]!;
         const tree = await this.opened(obj);
-        if ("reason" in tree) return { ok: false, reason: tree.reason };
+        if ("reason" in tree) return result({ ok: false, reason: tree.reason });
         const typed = { kind: "boolean", op: piece.op, ...piece.spec } as Record<string, unknown>;
         const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...piece.spec }, obj.modelPose), typed };
         const probed = await this.probeBaked(obj, tree, tree.current, baked, false, true);
@@ -3229,50 +3362,123 @@ export class Session {
           skipped += 1;
           continue;
         }
-        const result = probed.ok === true ? await this.applyBaked(obj, tree, baked, {}) : probed;
-        if (result.ok !== true) return fail({ index, reason: String(result.reason ?? "This edit did not apply."), piece: cleanOp(typed) });
-        const node = parseNode(result.node);
+        const done = probed.ok === true ? await this.applyBaked(obj, tree, baked, {}) : probed;
+        if (done.ok !== true) {
+          refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(typed), step: k + 1, of: pieces.length, ...(done.where ? { where: done.where } : {}) };
+          break;
+        }
+        const node = parseNode(done.node);
         if (node === null) continue;
         nodes.push(node);
+        ownNodes.push(node);
         if (label) this.rename(obj, node, `${label} ${k + 1}/${pieces.length}`);
       }
+      if (refused) {
+        const ended = await refuse(refused);
+        if (ended) return ended;
+        continue;
+      }
+      checkpoints.push(obj.tree?.current ?? null);
     }
-    if (nodes.length > 1) {
+    if (nodes.length > 1 || (options.start !== undefined && nodes.length > 0)) {
       obj.groups = [...(obj.groups ?? []), { start, end: nodes[nodes.length - 1]!, label: options.label ?? `${nodes.length} steps` }];
     }
-    return {
-      ok: true,
+    return result({
+      ok: failures.length === 0,
       applied: nodes.length,
-      ...(skipped ? { skipped, note: `${skipped} step${skipped === 1 ? "" : "s"} missed the solid and were left out.` } : {}),
+      ...(failures.length ? { failures, note: `${failures.length} op${failures.length === 1 ? " was" : "s were"} refused and left out; the rest applied. Fix them and call model_build again: it reuses every op before the first one changed.` } : {}),
+      ...(skipped ? { skipped, missedNote: `${skipped} step${skipped === 1 ? "" : "s"} missed the solid and were left out.` } : {}),
       ...(nodes.length ? { first: nodeHandle(nodes[0]!), node: nodeHandle(nodes[nodes.length - 1]!) } : {}),
       ...(options.label ? { label: options.label } : {}),
       fingerprint: obj.solid?.fingerprint ?? null,
       bounds: obj.solid?.bounds ?? null,
-    };
+    });
   }
 
   private async applyBatch(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
     if (ops.length === 0) return { ok: false, reason: "The batch needs at least one op." };
-    return this.applyMany(obj, ops, { label: typeof input.label === "string" ? input.label : undefined, rollback: input.onError !== "stop" });
+    const { checkpoints: _checkpoints, ...ran } = await this.applyMany(obj, ops, { label: typeof input.label === "string" ? input.label : undefined, onError: input.onError });
+    return ran;
   }
 
-  /** A new solid, a batch of edits on it, and a commit, in one call. */
+  /**
+   * A new solid, a batch of edits on it, and a commit, in one call. A build that was refused keeps its steps: called
+   * again with the same base, it reuses every op before the first one that changed, and runs only the rest. `object`
+   * names an earlier build to rebuild in place the same way, refused or not.
+   */
   private async build(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const base = (input.base ?? {}) as Record<string, unknown>;
-    const made = await this.solidNew(base);
-    if (made.ok !== true) return made;
-    const obj = this.find(String(made.object));
-    if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
-    if (typeof input.name === "string" && input.name.trim()) obj.name = input.name.trim().slice(0, NAME_LIMIT);
     const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
-    const ran = ops.length ? await this.applyMany(obj, ops, { label: typeof input.label === "string" ? input.label : obj.name, rollback: input.onError !== "stop" }) : { ok: true, applied: 0 };
-    if (ran.ok !== true) return { ...ran, object: obj.id, note: "The solid is on the plate without the batch. Fix the op and call model_apply_batch." };
+    const baseKey = stableKey(base);
+    const keys = ops.map(stableKey);
+    const name = typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, NAME_LIMIT) : undefined;
+    let obj: PlateObject | null | undefined;
+    if (input.object !== undefined) {
+      obj = this.find(String(input.object));
+      if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+      if (!obj.buildLog) return { ok: false, reason: "That object was not made by model_build. Rebuild only works on one that was." };
+      if (obj.buildLog.base !== baseKey) return { ok: false, reason: "The base differs from that object's build. Rebuild keeps the base; start a new model_build for another." };
+    } else if (input.resume !== false) {
+      obj = [...this.objects].reverse().find((row) => row.buildLog?.refused && row.buildLog.base === baseKey && (!name || row.name === name));
+    }
+    let reused = 0;
+    let from: number | null = null;
+    if (obj?.buildLog && obj.tree) {
+      const log = obj.buildLog;
+      while (reused < keys.length && reused < log.steps.length && log.steps[reused]!.key === keys[reused] && log.steps[reused]!.node !== null && obj.tree.nodes.has(log.steps[reused]!.node!)) reused += 1;
+      from = reused > 0 ? log.steps[reused - 1]!.node : log.start;
+      const moved = await this.gotoNode(obj, from);
+      if (moved.ok !== true) {
+        obj = undefined;
+        reused = 0;
+      } else {
+        // The old run past the reused ops is replaced: drop it, so the history holds one path.
+        const stale = log.steps.slice(reused).find((step) => step.first !== null && obj!.tree!.nodes.has(step.first));
+        if (stale?.first != null) this.drop(obj, stale.first);
+      }
+    }
+    if (!obj) {
+      const made = await this.solidNew(base);
+      if (made.ok !== true) return made;
+      obj = this.find(String(made.object));
+      if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+      const tree = await this.opened(obj);
+      if ("reason" in tree) return { ok: false, object: obj.id, reason: tree.reason };
+      obj.buildLog = { base: baseKey, start: tree.current, steps: [], refused: false };
+      from = null;
+    }
+    if (name) obj.name = name;
+    const log = obj.buildLog!;
+    const firsts = log.steps.slice(0, reused);
+    const rest = ops.slice(reused);
+    const beforeRest = obj.tree?.current ?? log.start;
+    const ran = rest.length
+      ? await this.applyMany(obj, rest, { label: typeof input.label === "string" ? input.label : obj.name, onError: input.onError, keep: true, offset: reused, ...(reused > 0 ? { start: log.start } : {}) })
+      : { ok: true, applied: 0, checkpoints: [] };
+    // The log: each op's key, the node after it (null when left out), and its first node, for a later resume to drop.
+    const points = (ran.checkpoints ?? []) as (number | null)[];
+    let previous = beforeRest;
+    const fresh = points.map((node, i) => {
+      const first = node === null || !obj!.tree ? null : firstAfter(obj!.tree, previous, node);
+      if (node !== null) previous = node;
+      return { key: keys[reused + i]!, node, first };
+    });
+    log.steps = [...firsts, ...fresh];
+    log.refused = ran.ok !== true;
+    const { checkpoints: _checkpoints, ...body } = ran as Record<string, unknown>;
+    const resumed = from !== null ? { resumed: { reusedOps: reused, ranOps: rest.length, note: reused > 0 ? `Reused the first ${reused} ops from the earlier build; ran ${rest.length}.` : "Rebuilt on the earlier build's object." } } : {};
+    if (ran.ok !== true) {
+      const note = input.onError === "skip"
+        ? "The solid has every op but the refused ones, uncommitted. Fix those ops and call model_build again with the same base: it reuses every op before the first one changed."
+        : "The solid is on the plate without the batch. Fix the op and call model_build again with the same base and ops: it reuses every op before the refused one.";
+      return { ...body, ...resumed, applied: reused + Number(body.applied ?? 0), object: obj.id, note };
+    }
     if (input.commit !== false) {
       const reason = await this.commitObject(obj);
       if (reason) return { ok: false, object: obj.id, reason };
     }
-    return { ...ran, object: obj.id, committed: input.commit !== false, bounds: obj.solid?.bounds ?? null };
+    return { ...body, ...resumed, applied: reused + Number(body.applied ?? 0), object: obj.id, committed: input.commit !== false, bounds: obj.solid?.bounds ?? null };
   }
 
   /** Session parameters: names model ops may use in place of numbers, as text such as "wallH + 2". */
