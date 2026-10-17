@@ -65,7 +65,7 @@ import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { OP_WORDS, validateTool } from "./schema.ts";
-import { cleanOp, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
+import { addsPiece, anchorOf, cleanOp, SEPARATE_PIECE, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWrite } from "./workspace.ts";
 
@@ -3005,6 +3005,7 @@ export class Session {
     this.lastPreview = reply.preview && typeof reply.preview === "object" ? rememberSolid(reply.preview as Record<string, unknown>) : null;
     const note = probeNote(tool, view);
     if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}) });
+    if (view?.phase === "done" && addsPiece(baked.op as { kind: string; op?: string }, view.measure)) return answer({ ok: false, reason: SEPARATE_PIECE });
     obj.probes.set(probeKey(String(at), baked.op), true);
     return answer({ ok: true, reason: note.text });
   }
@@ -3140,8 +3141,9 @@ export class Session {
     if (spec.face === undefined && spec.faceIndex === undefined) return { origin: [...obj.workplane.origin], turn: [...obj.workplane.turn] };
     const frame = faceFrame(spec, this.expandContext(obj));
     if ("reason" in frame) return frame;
-    if (spec.from !== "corner" || !frame.extent) return { origin: [...frame.plane.origin], turn: [...frame.plane.turn] };
-    return { origin: planePoint(frame.plane, [frame.extent.u[0], frame.extent.v[0], 0]), turn: [...frame.plane.turn] };
+    const shift = anchorOf(spec.from, frame.extent);
+    if ("reason" in shift) return shift;
+    return { origin: planePoint(frame.plane, [shift[0], shift[1], 0]), turn: [...frame.plane.turn] };
   }
 
   /** A plain Boolean op typed in the object's workplane, as a part-frame piece. */

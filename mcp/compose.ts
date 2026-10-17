@@ -269,13 +269,10 @@ function pocketPieces(spec: Record<string, unknown>, ctx: ExpandContext, raised:
   if ("reason" in frame) return frame;
   const plane = frame.plane;
   const at = (spec.at ?? {}) as { u?: unknown; v?: unknown };
-  let u = numOr(at.u, 0);
-  let v = numOr(at.v, 0);
-  if (spec.from === "corner") {
-    if (!frame.extent) return { reason: "from: corner needs face or faceIndex." };
-    u += frame.extent.u[0];
-    v += frame.extent.v[0];
-  }
+  const shift = anchorOf(spec.from, frame.extent);
+  if ("reason" in shift) return shift;
+  const u = numOr(at.u, 0) + shift[0];
+  const v = numOr(at.v, 0) + shift[1];
   const depth = numOr(spec.depth, 0);
   if (!(depth > 0)) return { reason: `A ${raised ? "boss" : "pocket"} needs a depth in millimetres.` };
   const shape = spec.shape === "circle" || spec.shape === "arch" ? spec.shape : "rect";
@@ -375,11 +372,27 @@ function turnUV(p: UV, deg: number): UV {
   return [p[0] * c - p[1] * s, p[0] * s + p[1] * c];
 }
 
-/** A U, V box on the face: the region typed, else the face's extent. */
-function regionOf(spec: Record<string, unknown>, extent: FaceExtent | null): { u: [number, number]; v: [number, number] } | null {
+/**
+ * Where U, V = 0 is for `from`: the face's centre of area (default), its min corner, or the middle of its bottom or
+ * top edge. A wall that rises out of a roof below has its centre moved up; its top edge has not moved.
+ */
+export function anchorOf(from: unknown, extent: FaceExtent | null): [number, number] | { reason: string } {
+  if (from === undefined || from === "centre") return [0, 0];
+  if (!extent) return { reason: `from: ${String(from)} needs face or faceIndex.` };
+  const mid = (extent.u[0] + extent.u[1]) / 2;
+  if (from === "corner") return [extent.u[0], extent.v[0]];
+  if (from === "bottom") return [mid, extent.v[0]];
+  if (from === "top") return [mid, extent.v[1]];
+  return { reason: "from is centre, corner, bottom, or top." };
+}
+
+/** A U, V box on the face: the region typed (from where `from` puts U, V = 0), else the face's extent. */
+function regionOf(spec: Record<string, unknown>, extent: FaceExtent | null): { u: [number, number]; v: [number, number] } | { reason: string } | null {
   const region = spec.region as { u?: unknown; v?: unknown } | undefined;
-  const ru = Array.isArray(region?.u) ? region.u as number[] : extent?.u;
-  const rv = Array.isArray(region?.v) ? region.v as number[] : extent?.v;
+  const shift = anchorOf(spec.from, extent);
+  if ("reason" in shift) return shift;
+  const ru = Array.isArray(region?.u) ? (region.u as number[]).map((u) => u + shift[0]) : extent?.u;
+  const rv = Array.isArray(region?.v) ? (region.v as number[]).map((v) => v + shift[1]) : extent?.v;
   if (!ru || !rv) return null;
   return { u: [Math.min(ru[0]!, ru[1]!), Math.max(ru[0]!, ru[1]!)], v: [Math.min(rv[0]!, rv[1]!), Math.max(rv[0]!, rv[1]!)] };
 }
@@ -457,6 +470,7 @@ function surfaceSetup(spec: Record<string, unknown>, ctx: ExpandContext, kind: "
   const frame = faceFrame(spec, ctx, true);
   if ("reason" in frame) return frame;
   const region = regionOf(spec, frame.extent);
+  if (region && "reason" in region) return region;
   if (!region) return { reason: `${kind === "array" ? "An array" : "Ribs"} need face, faceIndex, or a region {u, v} on the workplane.` };
   const depth = numOr(spec.depth, 0);
   if (!(depth > 0)) return { reason: `${kind === "array" ? "An array" : "Ribs"} need a depth: how far out of the face, or into it for a cut.` };
@@ -638,6 +652,17 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
     return out;
   }
   return { reason: `${String(kind)} is not a composite edit.` };
+}
+
+/**
+ * Whether a probe's measures say a fuse left a separate piece: a closed shell the solid did not have. The kernel
+ * refuses a fuse that adds a solid; a ring around a mast can instead come back as a second shell of the same solid.
+ * A shell op hollows on purpose, so only adding kinds are asked.
+ */
+export const SEPARATE_PIECE = "This would add a separate piece that does not touch the part. Move or resize it so it overlaps.";
+export function addsPiece(op: { kind: string; op?: string }, measure: { shells: number; before: { shells: number } } | undefined): boolean {
+  const adds = (op.kind === "boolean" || op.kind === "join" || op.kind === "extrude" || op.kind === "revolve") && op.op === "fuse";
+  return adds && !!measure && measure.shells > measure.before.shells;
 }
 
 function isStill(motion: Motion): boolean {

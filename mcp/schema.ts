@@ -100,7 +100,7 @@ const pocketOp = (kind: "pocket" | "boss") => ({
     faceIndex,
     face: faceSelector,
     shape: { enum: ["rect", "circle", "arch"], description: "rect, circle, arch." },
-    from: { enum: ["centre", "corner"], description: "at from the face centre, or its min corner." },
+    from: { enum: ["centre", "corner", "bottom", "top"], description: "U, V = 0 at the face centre, min corner, or bottom or top edge middle." },
     at: { ...uv, description: "Centre on the face." },
     width: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "U size." },
     height: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "V size." },
@@ -344,7 +344,7 @@ function checkOp(value: unknown, path: string, plain: boolean, depth = 0): strin
 const profilePlace = {
   faceIndex,
   face: faceSelector,
-  from: { enum: ["centre", "corner"], description: "U, V = 0 at the face centre, or its min corner." },
+  from: { enum: ["centre", "corner", "bottom", "top"], description: "U, V = 0 at the face centre, min corner, or bottom or top edge middle." },
   origin: { ...vec3, description: "Plane origin, in place of a face." },
   turn: { ...vec3, description: "Plane turn, degrees X, Y, Z." },
 };
@@ -411,6 +411,7 @@ const surfaceCommon = {
   margin: { type: "number", minimum: 0, maximum: 100, description: "Kept from the face's edges." },
   angleDeg: { type: "number", minimum: -360, maximum: 360, description: "Turns the layout in the face." },
   region: regionField,
+  from: { enum: ["centre", "corner", "bottom", "top"], description: "Where region's U, V = 0 is." },
   label,
 };
 /** Primitives repeated over a face, kept to its outline: tiles, studs, ribs, grooves. */

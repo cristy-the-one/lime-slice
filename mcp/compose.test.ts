@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { cleanOp, expand, movedSpec, primitiveFrom, type ExpandContext, type Piece } from "./compose.ts";
+import { addsPiece, cleanOp, expand, movedSpec, primitiveFrom, type ExpandContext, type Piece } from "./compose.ts";
 import { evaluate, resolveNumbers } from "./expr.ts";
 import { fakeEngine } from "./engine.ts";
 import { validateTool } from "./schema.ts";
@@ -152,6 +152,19 @@ check("ribs with op cut are grooves at an angle", grooves.length > 5 && grooves.
 check("ribs without a pitch or count are refused", "reason" in (expand({ kind: "ribs", faceIndex: 5, width: 1, depth: 1 }, gableCtx, toPart) as object));
 const mirroredRibs = expand({ kind: "mirror", plane: "y", op: { kind: "ribs", faceIndex: 5, width: 1, count: 3, depth: 2 } }, gableCtx, toPart) as Piece[];
 check("ribs mirror onto the opposite wall", mirroredRibs.length === 6 && mirroredRibs.slice(3).every((piece) => piece.spec.origin[1] > 0), JSON.stringify(mirroredRibs.slice(3).map((p) => p.spec.origin)));
+
+// from: top and bottom measure from the face's edges, which do not move when a roof below hides the wall's foot.
+const underEave = expand({ kind: "pocket", faceIndex: 5, from: "top", at: { u: 0, v: -5 }, width: 6, height: 4, depth: 1 }, gableCtx, toPart) as Piece[];
+check("a pocket from the top edge sits that far below it", near(uvOf(underEave[0]!.spec)[1], 17.5 - 5, 1e-6), JSON.stringify(uvOf(underEave[0]!.spec)));
+const band = expand({ kind: "array", faceIndex: 5, from: "top", region: { u: [-20, 20], v: [-4, -1] }, cell: { width: 1.5, height: 2 }, pitch: [4, 50], depth: 2 }, gableCtx, toPart) as Piece[];
+check("an array band from the top edge stays in that band", band.length >= 9 && band.every((piece) => { const v = uvOf(piece.spec)[1]; return v >= 17.5 - 4 && v <= 17.5 - 1; }), JSON.stringify(band.map((p) => uvOf(p.spec))));
+const footing = expand({ kind: "pocket", faceIndex: 5, from: "bottom", at: { u: 0, v: 6 }, width: 6, height: 12, depth: 1 }, gableCtx, toPart) as Piece[];
+check("a door from the bottom edge stands on it", near(uvOf(footing[0]!.spec)[1], -17.5 + 6, 1e-6));
+check("an unknown from is a sentence", "reason" in (expand({ kind: "pocket", faceIndex: 5, from: "middle", width: 1, height: 1, depth: 1 }, gableCtx, toPart) as object));
+
+const ringMeasure = { shells: 3, before: { shells: 2 } };
+check("a fuse that adds a closed shell is a separate piece", addsPiece({ kind: "boolean", op: "fuse" }, ringMeasure) && addsPiece({ kind: "join", op: "fuse" }, ringMeasure));
+check("a cut, a shell, or a fuse with no new shell is not", !addsPiece({ kind: "boolean", op: "cut" }, ringMeasure) && !addsPiece({ kind: "shell" }, ringMeasure) && !addsPiece({ kind: "boolean", op: "fuse" }, { shells: 2, before: { shells: 2 } }) && !addsPiece({ kind: "boolean", op: "fuse" }, undefined));
 
 // Schema refusals name the right field.
 check("size on a boolean names dx, dy, dz", (validateTool("model_apply", { op: { kind: "boolean", op: "fuse", primitive: "box", size: [1, 2, 3] } }) ?? "").includes("Use dx, dy, dz"));
