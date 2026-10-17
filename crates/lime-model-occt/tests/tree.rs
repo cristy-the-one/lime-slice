@@ -156,7 +156,7 @@ fn history_tree() {
     assert!(max > 1.0 && max < 6.0, "max fillet {max}");
     let probe = ok(json!({ "call": "probe", "key": "main", "node": 1,
         "op": { "kind": "fillet", "edges": [edge], "size": 1.0 } }));
-    assert_eq!(probe, json!({ "ok": true }));
+    assert_eq!(probe["ok"], json!(true), "{probe}");
     let (fillet, spent) = cost(|| {
         ok(
             json!({ "call": "apply", "key": "main", "parent": 1, "node": 2,

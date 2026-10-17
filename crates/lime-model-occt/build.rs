@@ -18,6 +18,7 @@ const LIBS: &[&str] = &[
     "TKShHealing",
     "TKBO",
     "TKFillet",
+    "TKOffset",
 ];
 
 const STEP_LIBS: &[&str] = &[

@@ -165,11 +165,50 @@ pub struct EdgeRef {
     pub length_mm: f64,
 }
 
-/// A fresh pick is an index into the parent's reply. A stored op carries the full reference.
+/// Which of a step's edges a pick takes. Every one is sharp: an edge already smooth, or a seam, cannot be blended.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EdgeFilter {
+    #[default]
+    All,
+    Convex,
+    Concave,
+}
+
+/// The edges an earlier step made or changed, still on the solid blended, worked out at every build from that step's
+/// solid and the one it was built from, so a replay after an edit above finds them again.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeStep {
+    pub from_node: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<EdgeFilter>,
+}
+
+/// A fresh pick is an index into the parent's reply. A stored op carries the full reference, or the step it takes
+/// edges from as it was sent.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EdgePick {
     Ref(EdgeRef),
+    Step(EdgeStep),
+    Index(i32),
+}
+
+/// A face as the kernel numbered it, with its centre of area and its area, so a rebuild can find it again.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceRef {
+    pub index: i32,
+    pub mid: [f64; 3],
+    pub area_mm2: f64,
+}
+
+/// A fresh pick is an index into the parent's reply. A stored op carries the full reference.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FacePick {
+    Ref(FaceRef),
     Index(i32),
 }
 
@@ -293,6 +332,39 @@ pub enum Op {
     Root {
         #[serde(flatten)]
         solid: Solid,
+    },
+    /// A closed outline of `[u, v]` points on the plane at `origin`, turned by `turn` as a workplane is, pushed
+    /// `depth` along W (−W when negative), or centred on the plane with `symmetric`, and combined by `op`.
+    Extrude {
+        op: BooleanOp,
+        origin: [f64; 3],
+        #[serde(default)]
+        turn: [f64; 3],
+        profile: Vec<[f64; 2]>,
+        depth: f64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        symmetric: bool,
+    },
+    /// The same outline turned `angleDeg` (360 when absent) about the in-plane axis through `axisOrigin` ([0, 0]
+    /// when absent) along `axisDir` (V, [0, 1], when absent), and combined by `op`.
+    Revolve {
+        op: BooleanOp,
+        origin: [f64; 3],
+        #[serde(default)]
+        turn: [f64; 3],
+        profile: Vec<[f64; 2]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        axis_origin: Option<[f64; 2]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        axis_dir: Option<[f64; 2]>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        angle_deg: Option<f64>,
+    },
+    /// The solid hollowed inward to walls `thickness` thick, with `openFaces` removed. None open leaves a closed void.
+    Shell {
+        thickness: f64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        open_faces: Vec<FacePick>,
     },
 }
 
@@ -628,6 +700,8 @@ struct Node {
     broken: Option<String>,
     /// A split's `otherKey`, so a retried apply can be told from a different one.
     piece: Option<String>,
+    /// The edges this step made or changed, read once from its solid when a later blend first picks them.
+    created: Option<Vec<EdgeRef>>,
     depth: u32,
     used: u64,
 }
@@ -674,6 +748,7 @@ impl Doc {
                 fingerprint: Some(fingerprint),
                 broken: None,
                 piece: None,
+                created: None,
                 depth: 0,
                 used,
             },
@@ -699,6 +774,7 @@ impl Doc {
             fingerprint: None,
             broken: None,
             piece: None,
+            created: None,
             depth,
             used: 0,
         });
@@ -714,6 +790,18 @@ impl Doc {
             .collect();
         held.sort_unstable();
         held
+    }
+
+    /// Whether `node` is `id` or a step above it.
+    fn above(&self, id: NodeId, node: NodeId) -> bool {
+        let mut at = Some(id);
+        while let Some(step) = at {
+            if step == node {
+                return true;
+            }
+            at = self.nodes.get(&step).and_then(|found| found.parent);
+        }
+        false
     }
 
     /// The root, the current node, and every eighth node on the path between them.
@@ -808,13 +896,15 @@ impl Doc {
     }
 
     /// Give `id` a solid, replaying from the nearest ancestor that has one. `tools` holds the
-    /// solid each join step on the way takes from its tool tree (`Store::ensure`).
+    /// solid each join step on the way takes from its tool tree, and `steps` the edges each blend
+    /// on the way takes from an earlier step (`Store::ensure`).
     /// Returns how many steps were replayed. Only solids are built here, never replies.
     fn ensure_shape(
         &mut self,
         id: NodeId,
         clock: &mut u64,
         tools: &HashMap<NodeId, ToolSolid>,
+        steps: &HashMap<NodeId, Steps>,
     ) -> Result<usize, Failure> {
         let chain = self.unbuilt(id)?;
         let replayed = chain.len();
@@ -833,7 +923,8 @@ impl Doc {
                     .get_mut(&parent)
                     .and_then(|node| node.shape.as_mut())
                     .expect("the parent was built first");
-                resolve(from, &op).and_then(|op| {
+                let none = Steps::new();
+                resolve(from, &op, steps.get(&step).unwrap_or(&none)).and_then(|op| {
                     build(from, op, false, tools.get(&step).copied())
                         .map_err(|(message, _)| message)
                 })
@@ -884,6 +975,29 @@ impl Store {
         id: NodeId,
         visiting: &mut Vec<String>,
     ) -> Result<usize, Failure> {
+        // A blend's step picks first: reading a step's edges may build that step, and so part of this replay.
+        let doc = doc_in(&mut self.docs, key)?;
+        let picking: Vec<(NodeId, NodeId, Op)> = doc
+            .unbuilt(id)?
+            .into_iter()
+            .filter_map(|step| {
+                let node = &doc.nodes[&step];
+                let op = node.op.as_ref()?;
+                picks_steps(op).then(|| (step, node.parent.expect("only the root has no parent"), op.clone()))
+            })
+            .collect();
+        let mut steps = HashMap::new();
+        for (step, parent, op) in picking {
+            match self.step_edges(key, parent, &op) {
+                Ok(found) => {
+                    steps.insert(step, found);
+                }
+                Err(Failure::Message(message)) => {
+                    return Err(doc_in(&mut self.docs, key)?.mark_broken(step, message));
+                }
+                Err(failure) => return Err(failure),
+            }
+        }
         let doc = doc_in(&mut self.docs, key)?;
         let joins: Vec<(NodeId, ToolRef)> = doc
             .unbuilt(id)?
@@ -916,7 +1030,7 @@ impl Store {
                 Err(failure) => return Err(failure),
             }
         }
-        doc_in(&mut self.docs, key)?.ensure_shape(id, &mut self.clock, &tools)
+        doc_in(&mut self.docs, key)?.ensure_shape(id, &mut self.clock, &tools, &steps)
     }
 
     /// The solid a join on tree `key` takes from `tool`, built if it must be. A tool tree or step this
@@ -981,6 +1095,48 @@ impl Store {
             )
         })?;
         Ok(ToolSolid(shape.raw()))
+    }
+
+    /// The edges each step that `op`, built on `parent`, takes edges from made: read once from that step's solid,
+    /// which is built first if it must be. A step that is not `parent` or above it is refused.
+    fn step_edges(&mut self, key: &str, parent: NodeId, op: &Op) -> Result<Steps, Failure> {
+        let wanted: Vec<NodeId> = match op {
+            Op::Fillet { edges, .. } | Op::Chamfer { edges, .. } => edges
+                .iter()
+                .filter_map(|pick| match pick {
+                    EdgePick::Step(step) => Some(step.from_node),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut steps = Steps::new();
+        for node in wanted {
+            if steps.contains_key(&node) {
+                continue;
+            }
+            if !doc_in(&mut self.docs, key)?.above(parent, node) {
+                return Err(Failure::Message(NOT_ABOVE.into()));
+            }
+            let kept = doc_in(&mut self.docs, key)?
+                .node(node)?
+                .created
+                .clone();
+            let made = match kept {
+                Some(made) => made,
+                None => {
+                    self.ensure(key, node)?;
+                    let doc = doc_in(&mut self.docs, key)?;
+                    let made = doc.shape(node).created_edges();
+                    if let Some(at) = doc.nodes.get_mut(&node) {
+                        at.created = Some(made.clone());
+                    }
+                    made
+                }
+            };
+            steps.insert(node, made);
+        }
+        Ok(steps)
     }
 
     /// Whether tree `from`, or any tree its joins take a tool from, takes one from tree `key`.
@@ -1271,14 +1427,15 @@ impl Store {
         root_placement(parent, &op).map_err(Failure::Message)?;
         self.join_refusal(&key, &op)?;
         let replayed = self.ensure(&key, parent)?;
+        let steps = self.step_edges(&key, parent, &op)?;
         let (op, reused) = {
             let doc = doc_in(&mut self.docs, &key)?;
             let probed = doc.probe.take();
             let from = doc.shape(parent);
             from.editable().map_err(Failure::Message)?;
-            let op = resolve(from, &op).map_err(Failure::Message)?;
+            let op = resolve(from, &op, &steps).map_err(Failure::Message)?;
             match probed {
-                Some(probed) if probed.parent == parent && same_build(&probed.op, &op) => {
+                Some(probed) if probed.parent == parent && same_build(&probed.op, &op.op) => {
                     (op, Some(probed.built))
                 }
                 _ => (op, None),
@@ -1286,9 +1443,9 @@ impl Store {
         };
         let mut built = match reused {
             // The op stored is the one applied: a join's `keepTool` and its tool's name build nothing.
-            Some(reused) => Built { op, ..reused },
+            Some(reused) => Built { op: op.op, ..reused },
             None => {
-                let tool = self.join_tool(&key, &op)?;
+                let tool = self.join_tool(&key, &op.op)?;
                 let from = doc_in(&mut self.docs, &key)?.shape(parent);
                 build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))?
             }
@@ -1358,25 +1515,32 @@ impl Store {
             Err(Failure::Message(message)) => Err(message),
             Err(failure) => return Err(failure),
         };
+        let steps = match self.step_edges(key, id, &op) {
+            Ok(steps) => Ok(steps),
+            Err(Failure::Message(message)) => Err(message),
+            Err(failure) => return Err(failure),
+        };
         let doc = doc_in(&mut self.docs, key)?;
         let from = doc.shape(id);
         let result = tool
-            .and_then(|tool| from.editable().map(|()| tool))
-            .and_then(|tool| resolve(from, &op).map(|op| (op, tool)))
+            .and_then(|tool| steps.map(|steps| (tool, steps)))
+            .and_then(|(tool, steps)| from.editable().map(|()| (tool, steps)))
+            .and_then(|(tool, steps)| resolve(from, &op, &steps).map(|op| (op, tool)))
             .map_err(|message| (message, None))
             .and_then(|(op, tool)| build(from, op, true, tool));
         match result {
             Ok(mut built) => {
                 // The shape keeps what its reply measured and meshed, so an Apply that takes it meshes nothing again.
                 let shown = preview.and_then(|chord| built.kept.reply(id, chord).ok());
+                let metrics = probe_metrics(from, &built.kept);
                 doc.probe = Some(Probed {
                     parent: id,
                     op: built.op.clone(),
                     built,
                 });
                 Ok(Answer::Plain(match shown {
-                    Some(text) => format!("{{\"ok\":true,\"preview\":{text}}}"),
-                    None => json!({ "ok": true }).to_string(),
+                    Some(text) => format!("{{\"ok\":true,{metrics},\"preview\":{text}}}"),
+                    None => format!("{{\"ok\":true,{metrics}}}"),
                 }))
             }
             Err((message, max_mm)) => {
@@ -1570,23 +1734,24 @@ impl Store {
 
     /// The edited op built on `parent`, which holds its solid: a kept probe of it if there is one, as Apply takes it.
     fn edited(&mut self, key: &str, parent: NodeId, op: &Op) -> Result<Built, Failure> {
+        let steps = self.step_edges(key, parent, op)?;
         let (op, reused) = {
             let doc = doc_in(&mut self.docs, key)?;
             let probed = doc.probe.take();
             let from = doc.shape(parent);
             from.editable().map_err(Failure::Message)?;
-            let op = resolve(from, op).map_err(Failure::Message)?;
+            let op = resolve(from, op, &steps).map_err(Failure::Message)?;
             match probed {
-                Some(probed) if probed.parent == parent && same_build(&probed.op, &op) => {
+                Some(probed) if probed.parent == parent && same_build(&probed.op, &op.op) => {
                     (op, Some(probed.built))
                 }
                 _ => (op, None),
             }
         };
         match reused {
-            Some(reused) => Ok(Built { op, ..reused }),
+            Some(reused) => Ok(Built { op: op.op, ..reused }),
             None => {
-                let tool = self.join_tool(key, &op)?;
+                let tool = self.join_tool(key, &op.op)?;
                 let from = doc_in(&mut self.docs, key)?.shape(parent);
                 build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))
             }
@@ -1644,8 +1809,9 @@ impl Store {
     /// tool tree this engine lacks stays `ToolMissing`, so the client opens it and the whole edit is asked again.
     fn replay_step(&mut self, key: &str, from: NodeId, op: &Op) -> Result<Built, Failure> {
         let tool = self.join_tool(key, op)?;
+        let steps = self.step_edges(key, from, op)?;
         let from = doc_in(&mut self.docs, key)?.shape(from);
-        let op = resolve(from, op).map_err(Failure::Message)?;
+        let op = resolve(from, op, &steps).map_err(Failure::Message)?;
         build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))
     }
 
@@ -1834,16 +2000,54 @@ fn temp_step(tag: &str) -> std::path::PathBuf {
     ))
 }
 
-/// Turn every edge pick into a reference on `from`: the index when its midpoint and length still
-/// agree, else the one edge that matches them. Other ops pass through.
-fn resolve(from: &mut Shape, op: &Op) -> Result<Op, String> {
-    let (edges, size, chamfer) = match op {
-        Op::Fillet { edges, size } => (edges, *size, false),
-        Op::Chamfer { edges, size } => (edges, *size, true),
-        _ => return Ok(op.clone()),
-    };
+/// The edges each step a blend takes edges from made, by that step's id.
+type Steps = HashMap<NodeId, Vec<EdgeRef>>;
+
+const NOT_ABOVE: &str = "A blend can only take edges from this step's parent or a step above it.";
+
+/// Whether `op` takes edges from an earlier step, which must be read before it builds.
+fn picks_steps(op: &Op) -> bool {
+    matches!(op, Op::Fillet { edges, .. } | Op::Chamfer { edges, .. }
+        if edges.iter().any(|pick| matches!(pick, EdgePick::Step(_))))
+}
+
+/// An op as the tree stores it, and the kernel indexes it is built with: a blend's edges or a shell's open faces,
+/// on the solid it is built from.
+struct Resolved {
+    op: Op,
+    picks: Vec<c_int>,
+}
+
+/// Turn every edge or face pick into a reference on `from`: the index when its midpoint and size still
+/// agree, else the one that matches them. A step's edges are found on `from` by midpoint and length and
+/// kept by `filter`; the op keeps the step pick as sent. Other ops pass through.
+fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolved, String> {
+    match op {
+        Op::Fillet { edges, size } => resolve_blend(from, edges, *size, false, steps),
+        Op::Chamfer { edges, size } => resolve_blend(from, edges, *size, true, steps),
+        Op::Shell {
+            thickness,
+            open_faces,
+        } => resolve_shell(from, open_faces, *thickness),
+        _ => Ok(Resolved {
+            op: op.clone(),
+            picks: Vec::new(),
+        }),
+    }
+}
+
+fn resolve_blend(
+    from: &mut Shape,
+    edges: &[EdgePick],
+    size: f64,
+    chamfer: bool,
+    steps: &Steps,
+) -> Result<Resolved, String> {
     let verb = if chamfer { "chamfer" } else { "fillet" };
     let mut refs: Vec<EdgePick> = Vec::with_capacity(edges.len());
+    let mut picks: Vec<c_int> = Vec::new();
+    // Every edge of `from`, read once, the first time a step pick needs to look for one.
+    let mut every: Option<Vec<EdgeRef>> = None;
     for pick in edges {
         let found = match *pick {
             EdgePick::Index(index) if index < 0 && edges.len() == 1 => {
@@ -1854,6 +2058,56 @@ fn resolve(from: &mut Shape, op: &Op) -> Result<Op, String> {
                 Some(have) if same_edge(&have, &want) => Some(have),
                 _ => from.find_edge(&want)?,
             },
+            EdgePick::Step(step) => {
+                let made = steps.get(&step.from_node).ok_or(NOT_ABOVE)?;
+                let every = every.get_or_insert_with(|| from.all_edges());
+                let mut found: Vec<c_int> = Vec::new();
+                for want in made {
+                    let at = usize::try_from(want.index).ok();
+                    match at.and_then(|at| every.get(at)) {
+                        Some(have) if same_edge(have, want) => found.push(have.index),
+                        _ => found.extend(
+                            every
+                                .iter()
+                                .filter(|have| same_edge(have, want))
+                                .map(|have| have.index),
+                        ),
+                    }
+                }
+                found.sort_unstable();
+                found.dedup();
+                let kinds = from.edge_kinds(&found)?;
+                let filter = step.filter.unwrap_or_default();
+                let mut any = false;
+                for (index, kind) in found.into_iter().zip(kinds) {
+                    let keep = match filter {
+                        EdgeFilter::All => kind != 0,
+                        EdgeFilter::Convex => kind == 1,
+                        EdgeFilter::Concave => kind == 2,
+                    };
+                    if keep {
+                        any = true;
+                        if !picks.contains(&index) {
+                            picks.push(index);
+                        }
+                    }
+                }
+                if !any {
+                    let which = match filter {
+                        EdgeFilter::All => "sharp",
+                        EdgeFilter::Convex => "convex",
+                        EdgeFilter::Concave => "concave",
+                    };
+                    return Err(format!(
+                        "Step {} left no {which} edges on this solid to {verb}.",
+                        step.from_node
+                    ));
+                }
+                if !refs.contains(pick) {
+                    refs.push(*pick);
+                }
+                continue;
+            }
         };
         let found = found.ok_or_else(|| "That edge is not on this solid".to_string())?;
         if !found.mid.iter().all(|value| value.is_finite()) || !found.length_mm.is_finite() {
@@ -1865,15 +2119,65 @@ fn resolve(from: &mut Shape, op: &Op) -> Result<Op, String> {
         {
             refs.push(EdgePick::Ref(found));
         }
+        if !picks.contains(&found.index) {
+            picks.push(found.index);
+        }
     }
-    if refs.is_empty() {
+    if picks.is_empty() {
         return Err(format!("Pick an edge to {verb}."));
     }
-    Ok(if chamfer {
+    let op = if chamfer {
         Op::Chamfer { edges: refs, size }
     } else {
         Op::Fillet { edges: refs, size }
+    };
+    Ok(Resolved { op, picks })
+}
+
+fn resolve_shell(from: &mut Shape, faces: &[FacePick], thickness: f64) -> Result<Resolved, String> {
+    let mut refs: Vec<FacePick> = Vec::with_capacity(faces.len());
+    let mut picks: Vec<c_int> = Vec::new();
+    for pick in faces {
+        let found = match *pick {
+            FacePick::Index(index) => from.face(index),
+            FacePick::Ref(want) => match from.face(want.index) {
+                Some(have) if same_face(&have, &want) => Some(have),
+                _ => from.find_face(&want)?,
+            },
+        };
+        let found = found.ok_or_else(|| "That face is not on this solid.".to_string())?;
+        if !found.mid.iter().all(|value| value.is_finite()) || !found.area_mm2.is_finite() {
+            return Err("Open CASCADE could not measure that face".into());
+        }
+        if !picks.contains(&found.index) {
+            picks.push(found.index);
+            refs.push(FacePick::Ref(found));
+        }
+    }
+    Ok(Resolved {
+        op: Op::Shell {
+            thickness,
+            open_faces: refs,
+        },
+        picks,
     })
+}
+
+/// The probe's measures of what it built, and of the solid it was built on, as JSON fields without braces.
+fn probe_metrics(from: &Shape, built: &Shape) -> String {
+    let measure = |shape: &Shape| {
+        let (solids, shells) = shape.counts();
+        json!({ "volumeMm3": shape.fingerprint().volume_mm3, "solids": solids, "shells": shells })
+    };
+    let after = measure(built);
+    let text = json!({
+        "volumeMm3": after["volumeMm3"],
+        "solids": after["solids"],
+        "shells": after["shells"],
+        "before": measure(from),
+    })
+    .to_string();
+    text[1..text.len() - 1].to_string()
 }
 
 /// Whether `incoming` asks for the op `stored` already is. A stored edge matches an index pick by
@@ -1887,6 +2191,24 @@ fn same_request(stored: &Op, incoming: &Op) -> bool {
             (a, b)
         }
         (Op::Fillet { .. } | Op::Chamfer { .. }, _) => return false,
+        (
+            Op::Shell {
+                thickness: x,
+                open_faces: a,
+            },
+            Op::Shell {
+                thickness: y,
+                open_faces: b,
+            },
+        ) => {
+            return x == y
+                && a.len() == b.len()
+                && a.iter().zip(b).all(|pair| match pair {
+                    (FacePick::Ref(have), FacePick::Index(index)) => have.index == *index,
+                    (FacePick::Ref(have), FacePick::Ref(want)) => same_face(have, want),
+                    (have, want) => have == want,
+                })
+        }
         _ => return stored == incoming,
     };
     stored_edges
@@ -1921,6 +2243,14 @@ fn same_build(a: &Op, b: &Op) -> bool {
     }
 }
 
+fn same_face(a: &FaceRef, b: &FaceRef) -> bool {
+    let d = (0..3)
+        .map(|i| (a.mid[i] - b.mid[i]).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    d <= EDGE_MATCH_MM && (a.area_mm2 - b.area_mm2).abs() <= EDGE_MATCH_MM * a.area_mm2.abs().max(1.0)
+}
+
 fn same_edge(a: &EdgeRef, b: &EdgeRef) -> bool {
     let d = (0..3)
         .map(|i| (a.mid[i] - b.mid[i]).powi(2))
@@ -1946,10 +2276,11 @@ struct ToolSolid(*const RawShape);
 /// the largest size that does. A join takes its tool's solid in `tool`.
 fn build(
     from: &Shape,
-    op: Op,
+    resolved: Resolved,
     probe: bool,
     tool: Option<ToolSolid>,
 ) -> Result<Built, (String, Option<f64>)> {
+    let Resolved { op, picks } = resolved;
     let mut other = None;
     let kept = match &op {
         Op::Join {
@@ -2022,15 +2353,9 @@ fn build(
             other = NonNull::new(piece).map(Shape);
             kept
         }
-        Op::Fillet { edges, size } | Op::Chamfer { edges, size } => {
+        Op::Fillet { size, .. } | Op::Chamfer { size, .. } => {
             let chamfer = matches!(op, Op::Chamfer { .. });
-            let indexes: Vec<c_int> = edges
-                .iter()
-                .map(|pick| match pick {
-                    EdgePick::Ref(edge) => edge.index,
-                    EdgePick::Index(index) => *index,
-                })
-                .collect();
+            let indexes = &picks;
             let mut max_mm = 0.0;
             let max_ptr: *mut f64 = if probe {
                 &mut max_mm
@@ -2061,6 +2386,81 @@ fn build(
             Shape::made(|error| unsafe { lime_tree_scale(from.raw(), *factor, error) })
         }
         Op::Root { solid } => Shape::primitive(solid),
+        Op::Extrude {
+            op: which,
+            origin,
+            turn,
+            profile,
+            depth,
+            symmetric,
+        } => {
+            let p = [
+                origin[0],
+                origin[1],
+                origin[2],
+                turn[0],
+                turn[1],
+                turn[2],
+                *depth,
+                f64::from(u8::from(*symmetric)),
+            ];
+            let points: Vec<f64> = profile.iter().flatten().copied().collect();
+            Shape::made(|error| unsafe {
+                lime_tree_extrude(
+                    from.raw(),
+                    which.name().as_ptr(),
+                    p.as_ptr(),
+                    points.as_ptr(),
+                    profile.len() as c_int,
+                    error,
+                )
+            })
+        }
+        Op::Revolve {
+            op: which,
+            origin,
+            turn,
+            profile,
+            axis_origin,
+            axis_dir,
+            angle_deg,
+        } => {
+            let [au, av] = axis_origin.unwrap_or([0.0, 0.0]);
+            let [du, dv] = axis_dir.unwrap_or([0.0, 1.0]);
+            let p = [
+                origin[0],
+                origin[1],
+                origin[2],
+                turn[0],
+                turn[1],
+                turn[2],
+                au,
+                av,
+                du,
+                dv,
+                angle_deg.unwrap_or(360.0),
+            ];
+            let points: Vec<f64> = profile.iter().flatten().copied().collect();
+            Shape::made(|error| unsafe {
+                lime_tree_revolve(
+                    from.raw(),
+                    which.name().as_ptr(),
+                    p.as_ptr(),
+                    points.as_ptr(),
+                    profile.len() as c_int,
+                    error,
+                )
+            })
+        }
+        Op::Shell { thickness, .. } => Shape::made(|error| unsafe {
+            lime_tree_shell(
+                from.raw(),
+                picks.as_ptr(),
+                picks.len() as c_int,
+                *thickness,
+                error,
+            )
+        }),
     };
     match kept {
         Ok(kept) => Ok(Built { op, kept, other }),
@@ -2140,6 +2540,39 @@ extern "C" {
         factor: f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    fn lime_tree_extrude(
+        from: *const RawShape,
+        op: *const c_char,
+        p: *const f64,
+        points: *const f64,
+        count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_revolve(
+        from: *const RawShape,
+        op: *const c_char,
+        p: *const f64,
+        points: *const f64,
+        count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_shell(
+        from: *const RawShape,
+        faces: *const c_int,
+        count: c_int,
+        thickness: f64,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_created(shape: *const RawShape, out: *mut *const c_int) -> c_int;
+    fn lime_tree_edge_kinds(
+        shape: *const RawShape,
+        edges: *const c_int,
+        count: c_int,
+        out: *mut c_int,
+    ) -> c_int;
+    fn lime_tree_counts(shape: *const RawShape, solids: *mut c_int, shells: *mut c_int);
+    fn lime_tree_face(shape: *mut RawShape, index: c_int, mid: *mut f64, area: *mut f64)
+        -> c_int;
     fn lime_tree_editable(shape: *const RawShape, error: *mut *mut c_char) -> c_int;
     fn lime_tree_fingerprint(
         shape: *const RawShape,
@@ -2280,6 +2713,84 @@ impl Shape {
             mid,
             length_mm: length,
         })
+    }
+
+    /// Every edge, as the kernel numbers them.
+    fn all_edges(&mut self) -> Vec<EdgeRef> {
+        let count = self.fingerprint().edges;
+        (0..count).filter_map(|index| self.edge(index)).collect()
+    }
+
+    /// The edges the op that built this solid made or changed, those it could measure.
+    fn created_edges(&mut self) -> Vec<EdgeRef> {
+        let mut ptr: *const c_int = std::ptr::null();
+        let count = unsafe { lime_tree_created(self.raw(), &mut ptr) };
+        let indexes: Vec<i32> = if count <= 0 || ptr.is_null() {
+            Vec::new()
+        } else {
+            // SAFETY: the kernel keeps `count` ints there for as long as the shape lives; they are copied here.
+            unsafe { std::slice::from_raw_parts(ptr, count as usize) }.to_vec()
+        };
+        indexes
+            .into_iter()
+            .filter_map(|index| self.edge(index))
+            .filter(|edge| edge.mid.iter().all(|v| v.is_finite()) && edge.length_mm.is_finite())
+            .collect()
+    }
+
+    /// Each edge as convex (1), concave (2), or neither (0): smooth, a seam, or on one face.
+    fn edge_kinds(&self, edges: &[c_int]) -> Result<Vec<c_int>, String> {
+        let mut out = vec![0; edges.len()];
+        let ok = unsafe {
+            lime_tree_edge_kinds(
+                self.raw(),
+                edges.as_ptr(),
+                edges.len() as c_int,
+                out.as_mut_ptr(),
+            )
+        };
+        if ok == 0 {
+            return Err("Open CASCADE could not read those edges".into());
+        }
+        Ok(out)
+    }
+
+    /// Separate solids and closed shells.
+    fn counts(&self) -> (i32, i32) {
+        let mut solids = 0;
+        let mut shells = 0;
+        unsafe { lime_tree_counts(self.raw(), &mut solids, &mut shells) };
+        (solids, shells)
+    }
+
+    fn face(&mut self, index: i32) -> Option<FaceRef> {
+        let mut mid = [0.0; 3];
+        let mut area = 0.0;
+        let found =
+            unsafe { lime_tree_face(self.0.as_ptr(), index, mid.as_mut_ptr(), &mut area) };
+        (found != 0).then_some(FaceRef {
+            index,
+            mid,
+            area_mm2: area,
+        })
+    }
+
+    /// The one face whose centre and area match `want`. None when no face does; an error when several do.
+    fn find_face(&mut self, want: &FaceRef) -> Result<Option<FaceRef>, String> {
+        let count = self.fingerprint().faces;
+        let mut found = None;
+        for index in 0..count {
+            let Some(have) = self.face(index) else {
+                continue;
+            };
+            if same_face(&have, want) {
+                if found.is_some() {
+                    return Err("Two faces match the one this step opens".into());
+                }
+                found = Some(have);
+            }
+        }
+        Ok(found)
     }
 
     /// The one edge whose midpoint and length match `want`. None when no edge does; an error when several do.
