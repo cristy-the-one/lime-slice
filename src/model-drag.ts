@@ -181,10 +181,12 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
   const height = knob("height", "modelHeight", axes[2], "z", "Height");
   switch (ctx.primitive) {
     case "box":
-    case "wedge": {
+    case "wedge":
+    case "ellipsoid": {
       const sizes = (["modelDx", "modelDy", "modelDz"] as const).map((field, i) =>
         knob(`size-${i}`, field, axes[i]!, (["x", "y", "z"] as const)[i]!, `Size ${"XYZ"[i]}`),
       );
+      if (ctx.primitive === "ellipsoid") return sizes;
       // The wedge's top runs along X at the top: its knob leans up from the Size X one.
       return ctx.primitive === "box" ? sizes : [...sizes, knob("top-x", "modelTopX", normalize(add(axes[0], axes[2])), "accent", "Top X", { min: 0 })];
     }

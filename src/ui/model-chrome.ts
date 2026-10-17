@@ -2,7 +2,7 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
+import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Egg, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
@@ -113,6 +113,7 @@ const PRIMITIVE_ICONS: Record<PrimitiveKind, IconNode> = {
   box: Box,
   cylinder: Cylinder,
   sphere: Globe,
+  ellipsoid: Egg,
   cone: Cone,
   torus: Torus,
   wedge: TriangleRight,

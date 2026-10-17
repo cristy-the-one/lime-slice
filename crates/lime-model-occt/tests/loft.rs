@@ -136,3 +136,20 @@ fn a_probe_says_where_a_hollow_or_a_piece_is() {
     let fine = call(json!({ "call": "probe", "key": "p", "node": 0, "op": pocket }));
     assert!(fine.get("voids").is_none() && fine.get("pieces").is_none(), "{fine}");
 }
+
+#[test]
+fn an_ellipsoid_is_a_stretched_sphere() {
+    if block("e").is_none() {
+        return;
+    }
+    // 12 × 8 × 6 wide, centred on the block's top: 4/3 π a b c, half of it above the block.
+    let egg = json!({ "kind": "boolean", "op": "fuse", "primitive": "ellipsoid", "origin": [20.0, 20.0, 10.0], "size": [12.0, 8.0, 6.0], "turn": [0.0, 0.0, 0.0] });
+    let whole = 4.0 / 3.0 * PI * 6.0 * 4.0 * 3.0;
+    near(volume(&apply("e", 0, 1, &egg)) - 16_000.0, whole / 2.0, whole * 0.005);
+    // Turned 90° about Z it is 8 wide along X: the same volume.
+    let mut turned = egg.clone();
+    turned["turn"] = json!([0.0, 0.0, 90.0]);
+    near(volume(&apply("e", 0, 2, &turned)) - 16_000.0, whole / 2.0, whole * 0.005);
+    let flat = apply("e", 0, 3, &json!({ "kind": "boolean", "op": "fuse", "primitive": "ellipsoid", "origin": [20.0, 20.0, 10.0], "size": [12.0, 0.0, 6.0], "turn": [0.0, 0.0, 0.0] }));
+    assert_eq!(flat["error"].as_str(), Some("An ellipsoid needs a positive width along each axis"), "{flat}");
+}

@@ -7,13 +7,14 @@ import { formatMm } from "./model-plane.ts";
 
 type Vec3 = [number, number, number];
 
-export type PrimitiveKind = "box" | "cylinder" | "sphere" | "cone" | "torus" | "wedge" | "polygon" | "tube";
+export type PrimitiveKind = "box" | "cylinder" | "sphere" | "ellipsoid" | "cone" | "torus" | "wedge" | "polygon" | "tube";
 
 /** Every primitive, in the order the picker lists them, with its name for a new object. */
 export const PRIMITIVES: readonly { kind: PrimitiveKind; label: string }[] = [
   { kind: "box", label: "Box" },
   { kind: "cylinder", label: "Cylinder" },
   { kind: "sphere", label: "Sphere" },
+  { kind: "ellipsoid", label: "Ellipsoid" },
   { kind: "cone", label: "Cone" },
   { kind: "torus", label: "Torus" },
   { kind: "wedge", label: "Wedge" },
@@ -96,6 +97,7 @@ const READS: Record<PrimitiveKind, { size: boolean; radius: boolean; height: boo
   box: { size: true, radius: false, height: false },
   cylinder: { size: false, radius: true, height: true },
   sphere: { size: false, radius: true, height: false },
+  ellipsoid: { size: true, radius: false, height: false },
   cone: { size: false, radius: true, height: true },
   torus: { size: false, radius: true, height: false },
   wedge: { size: true, radius: false, height: false },
@@ -109,7 +111,7 @@ const READS: Record<PrimitiveKind, { size: boolean; radius: boolean; height: boo
  * not read are 0 rather than whatever the panel held.
  */
 export function rootSpec(spec: PrimitiveSpec): PrimitiveSpec {
-  const lift = spec.primitive === "sphere" ? spec.radius : spec.primitive === "torus" ? spec.tubeRadius ?? 0 : 0;
+  const lift = spec.primitive === "sphere" ? spec.radius : spec.primitive === "torus" ? spec.tubeRadius ?? 0 : spec.primitive === "ellipsoid" ? spec.size[2] / 2 : 0;
   const corner = spec.primitive === "box" || spec.primitive === "wedge";
   const origin: Vec3 = corner ? [-spec.size[0] / 2, -spec.size[1] / 2, 0] : [0, 0, lift];
   const reads = READS[spec.primitive];
@@ -139,6 +141,8 @@ export function primitiveBounds(spec: PrimitiveSpec): { min: Vec3; max: Vec3 } {
       return round(Math.max(spec.radius, spec.topRadius ?? 0), spec.height);
     case "sphere":
       return at([-spec.radius, -spec.radius, -spec.radius], [spec.radius, spec.radius, spec.radius]);
+    case "ellipsoid":
+      return at([-spec.size[0] / 2, -spec.size[1] / 2, -spec.size[2] / 2], [spec.size[0] / 2, spec.size[1] / 2, spec.size[2] / 2]);
     case "torus": {
       const tube = spec.tubeRadius ?? 0;
       const reach = spec.radius + tube;
@@ -164,10 +168,10 @@ function polygonCorners(sides: number, across: number, flats: boolean): [number,
   });
 }
 
-/** Where the primitive turns, from its origin: a box's or a wedge's middle, a torus's or a sphere's centre, else halfway up its axis. */
+/** Where the primitive turns, from its origin: a box's or a wedge's middle, a torus's, sphere's, or ellipsoid's centre, else halfway up its axis. */
 export function turnCentre(spec: PrimitiveSpec): Vec3 {
   if (spec.primitive === "box" || spec.primitive === "wedge") return [spec.size[0] / 2, spec.size[1] / 2, spec.size[2] / 2];
-  if (spec.primitive === "torus" || spec.primitive === "sphere") return [0, 0, 0];
+  if (spec.primitive === "torus" || spec.primitive === "sphere" || spec.primitive === "ellipsoid") return [0, 0, 0];
   return [0, 0, spec.height / 2];
 }
 
@@ -183,6 +187,8 @@ export function primitiveLabel(spec: PrimitiveSpec): string {
       return `cylinder ⌀${n(spec.radius * 2)} h ${n(spec.height)}`;
     case "sphere":
       return `sphere ⌀${n(spec.radius * 2)}`;
+    case "ellipsoid":
+      return `ellipsoid ${n(spec.size[0])}×${n(spec.size[1])}×${n(spec.size[2])}`;
     case "cone":
       return `cone ⌀${n(spec.radius * 2)} to ⌀${n((spec.topRadius ?? 0) * 2)} h ${n(spec.height)}`;
     case "torus":
@@ -264,6 +270,14 @@ export function primitiveMesh(spec: PrimitiveSpec): Float32Array {
         return [spec.radius * Math.cos(lat) * Math.cos(u), spec.radius * Math.cos(lat) * Math.sin(u), spec.radius * Math.sin(lat)];
       });
       break;
+    case "ellipsoid": {
+      const [a, b, c] = spec.size.map((v) => v / 2) as Vec3;
+      if (ok(a, b, c)) ring(quad, ROUND, ROUND / 2, (u, v) => {
+        const lat = -Math.PI / 2 + v * Math.PI;
+        return [a * Math.cos(lat) * Math.cos(u), b * Math.cos(lat) * Math.sin(u), c * Math.sin(lat)];
+      });
+      break;
+    }
     case "torus": {
       const tube = spec.tubeRadius ?? 0;
       if (ok(spec.radius, tube) && tube < spec.radius) ring(quad, ROUND, ROUND / 2, (u, v) => {
