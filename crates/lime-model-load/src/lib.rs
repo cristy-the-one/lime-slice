@@ -20,6 +20,7 @@ struct Bridge {
     _lib: Library,
     tree: Tree,
     free: FreeStr,
+    identity: String,
 }
 
 static BRIDGE: Mutex<Option<Bridge>> = Mutex::new(None);
@@ -60,6 +61,10 @@ fn load() -> Result<(Tree, FreeStr), String> {
     if slot.is_none() {
         let path = find_bridge()?;
         let lib = open_library(&path)?;
+        use sha2::Digest;
+        let bytes =
+            std::fs::read(&path).map_err(|err| format!("Could not read bridge identity: {err}"))?;
+        let identity = format!("occt:{:x}", sha2::Sha256::digest(bytes));
         let bridge = unsafe {
             Bridge {
                 tree: *lib.get::<Tree>(b"lime_occt_tree\0").map_err(|_| {
@@ -70,6 +75,7 @@ fn load() -> Result<(Tree, FreeStr), String> {
                     .get::<FreeStr>(b"lime_occt_string_free\0")
                     .map_err(|err| format!("bridge is missing lime_occt_string_free: {err}"))?,
                 _lib: lib,
+                identity,
             }
         };
         *slot = Some(bridge);
@@ -198,5 +204,111 @@ fn bridge_file_name() -> &'static str {
         "liblime_model_occt.dylib"
     } else {
         "liblime_model_occt.so"
+    }
+}
+
+/// A STEP mesher for the host to install before serving imports or slices.
+/// A missing/unloadable bridge (including the no-OCCT stub) leaves truck available.
+/// Once selected, import errors are returned rather than silently remeshed by truck.
+/// The identity includes the bridge build, for persistent slice caches.
+pub fn step_mesher() -> Option<(StepMesher, String)> {
+    let reply: serde_json::Value =
+        serde_json::from_str(&tree(r#"{"call":"capabilities"}"#).ok()?).ok()?;
+    if reply["stepMeshing"] == false
+        || reply["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("OCCT_ROOT is not set"))
+    {
+        return None;
+    }
+    // An older loaded bridge must fail explicitly, not silently use truck for
+    // geometry that was supposed to be meshed by OCCT.
+    let identity = BRIDGE.lock().ok()?.as_ref()?.identity.clone();
+    Some((mesh_step, identity))
+}
+
+pub type StepMesher = fn(&[u8], f64) -> Result<Vec<[[f64; 3]; 3]>, String>;
+
+fn mesh_step(bytes: &[u8], tolerance: f64) -> Result<Vec<[[f64; 3]; 3]>, String> {
+    use base64::Engine;
+    let request = serde_json::json!({
+        "call": "meshStep",
+        "dataB64": base64::engine::general_purpose::STANDARD.encode(bytes),
+        "chordMm": tolerance,
+    });
+    decode_step_mesh(&tree(&request.to_string())?)
+}
+
+fn decode_step_mesh(reply: &str) -> Result<Vec<[[f64; 3]; 3]>, String> {
+    use base64::Engine;
+    let value: serde_json::Value = serde_json::from_str(reply).map_err(|err| err.to_string())?;
+    if let Some(error) = value["error"].as_str() {
+        return Err(error.to_owned());
+    }
+    let damaged = || "Open CASCADE returned a damaged STEP mesh".to_string();
+    if value["format"] != "lime-solid-2" {
+        return Err(damaged());
+    }
+    let array = |key: &str| -> Result<Vec<u8>, String> {
+        base64::engine::general_purpose::STANDARD
+            .decode(value[key].as_str().ok_or_else(damaged)?)
+            .map_err(|_| damaged())
+    };
+    let positions = array("positions")?;
+    // `positions` is triangle soup; `triangles` contains face IDs, not vertex indices.
+    let faces = array("triangles")?;
+    if value["solid"] != true {
+        return Err("STEP file has no closed solid to slice".into());
+    }
+    if positions.is_empty() || positions.len() % 36 != 0 || faces.len() != positions.len() / 9 {
+        return Err(damaged());
+    }
+    positions
+        .chunks_exact(36)
+        .map(|tri| {
+            let out = [0, 1, 2].map(|v| {
+                [0, 1, 2].map(|axis| {
+                    let offset = (v * 3 + axis) * 4;
+                    f32::from_le_bytes(tri[offset..offset + 4].try_into().unwrap()) as f64
+                })
+            });
+            if out.iter().flatten().any(|v| !v.is_finite()) {
+                return Err(damaged());
+            }
+            Ok(out)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod mesh_tests {
+    use super::decode_step_mesh;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde_json::json;
+
+    #[test]
+    fn positions_are_triangle_soup_and_face_ids_are_not_indices() {
+        let coordinates = [0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let mut reply = json!({"format":"lime-solid-2", "solid":true,
+            "positions": STANDARD.encode(coordinates.into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>()),
+            "triangles": STANDARD.encode(17_u32.to_le_bytes())});
+        let mesh = decode_step_mesh(&reply.to_string()).unwrap();
+        assert_eq!(
+            mesh,
+            vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]
+        );
+        reply["solid"] = json!(false);
+        assert!(decode_step_mesh(&reply.to_string())
+            .unwrap_err()
+            .contains("no closed solid"));
+        reply["solid"] = json!(true);
+        reply["triangles"] = json!("");
+        assert!(decode_step_mesh(&reply.to_string()).is_err());
+        reply["positions"] = json!(STANDARD.encode(f32::NAN.to_le_bytes()));
+        assert!(decode_step_mesh(&reply.to_string()).is_err());
+        assert_eq!(
+            decode_step_mesh(r#"{"error":"bad STEP"}"#).unwrap_err(),
+            "bad STEP"
+        );
     }
 }

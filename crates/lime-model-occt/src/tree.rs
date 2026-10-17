@@ -455,8 +455,11 @@ pub fn call(request: &str) -> String {
         Err(err) => return Failure::Message(format!("Bad tree request: {err}")).json(),
     };
     let mut store = lock();
+    let transient = matches!(&request, Request::MeshStep { .. } | Request::Capabilities);
     let answer = store.handle(request);
-    store.evict();
+    if !transient {
+        store.evict();
+    }
     match answer {
         Ok(Answer::Plain(text)) => text,
         Ok(Answer::Held {
@@ -486,6 +489,13 @@ fn lock() -> std::sync::MutexGuard<'static, Store> {
     rename_all_fields = "camelCase"
 )]
 enum Request {
+    /// Stateless import for slicing; it owns no history and cannot evict a document.
+    MeshStep {
+        data_b64: String,
+        chord_mm: f64,
+    },
+    Capabilities,
+
     /// Open a tree from its root: a STEP, or a primitive built from its numbers. With `nodes`,
     /// register the saved ops (parents first) without building them, then jump to `current`.
     /// `fingerprint` is the root's as saved: a root that builds to another is broken.
@@ -1237,6 +1247,18 @@ impl Store {
 
     fn handle(&mut self, request: Request) -> Result<Answer, Failure> {
         match request {
+            Request::Capabilities => Ok(Answer::Plain(
+                json!({"stepMeshing": cfg!(lime_occt_step)}).to_string(),
+            )),
+            Request::MeshStep { data_b64, chord_mm } => {
+                if !chord_mm.is_finite() || !(0.01..=2.0).contains(&chord_mm) {
+                    return Err(Failure::Message(
+                        "STEP chord tolerance must be from 0.01 to 2 mm".into(),
+                    ));
+                }
+                let mut shape = root_shape(Some(data_b64), None, None, None)?;
+                Ok(Answer::Plain(shape.reply(ROOT, chord_mm)?))
+            }
             Request::Open {
                 key,
                 data_b64,

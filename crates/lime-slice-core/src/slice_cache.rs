@@ -421,6 +421,7 @@ fn request_keys(request: &mut Value) -> Option<Keys> {
     let objects = fields.remove("objects");
     let mut rest = Sha256::new();
     rest.update(engine.as_bytes());
+    rest.update(crate::step::mesher_identity().as_bytes());
     feed(&mut rest, request);
     let key = |in_frame: bool| {
         let mut hash = rest.clone();

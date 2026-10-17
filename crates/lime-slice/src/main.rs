@@ -312,6 +312,9 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    if let Some((mesher, identity)) = lime_model_load::step_mesher() {
+        lime_slice_core::set_step_mesher(mesher, identity);
+    }
     match Cli::parse().cmd {
         Cmd::Slice {
             input,

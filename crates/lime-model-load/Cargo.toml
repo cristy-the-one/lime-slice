@@ -5,7 +5,13 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "Loads the Open CASCADE bridge when Model mode asks. Does not link Open CASCADE."
+description = "Loads the optional Open CASCADE bridge for STEP imports and Model mode. Does not link Open CASCADE."
 
 [dependencies]
 libloading = "0.8"
+base64 = "0.22"
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+lime-slice-core = { path = "../lime-slice-core" }
