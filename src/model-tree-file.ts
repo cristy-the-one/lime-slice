@@ -5,7 +5,7 @@
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
 import { isRigid, type Affine } from "./model-space.ts";
-import { jumped, opLabel, rootLabel, type EdgeRef, type Fingerprint, type JoinTool, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type Fingerprint, type JoinTool, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec2, type Vec3 } from "./model-tree.ts";
 
 type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
@@ -202,11 +202,17 @@ function readOp(value: unknown): SavedOp | undefined {
     case "fillet":
     case "chamfer": {
       if (!Array.isArray(value.edges) || value.edges.length === 0 || !finite(value.size)) return undefined;
-      // The engine stores each edge as a reference; an op it did not echo back keeps the picked indices.
-      const edges: (number | EdgeRef)[] = [];
+      // The engine stores each edge as a reference; an op it did not echo back keeps the picked indices. A pick of an
+      // earlier step's edges is kept as sent; the engine refuses one that names no step above this one.
+      const edges: EdgePick[] = [];
       for (const raw of value.edges) {
         if (isId(raw)) {
           edges.push(raw);
+          continue;
+        }
+        if (isRecord(raw) && raw.fromNode !== undefined) {
+          if (!isId(raw.fromNode) || (raw.filter !== undefined && raw.filter !== "all" && raw.filter !== "convex" && raw.filter !== "concave")) return undefined;
+          edges.push({ fromNode: raw.fromNode, ...(raw.filter !== undefined ? { filter: raw.filter } : {}) });
           continue;
         }
         const mid = isRecord(raw) ? vec(raw.mid) : null;
@@ -228,6 +234,45 @@ function readOp(value: unknown): SavedOp | undefined {
     case "root": {
       const solid = readPrimitive(value);
       return solid && primitiveMesh(solid).length > 0 ? { kind: "root", ...solid } : undefined;
+    }
+    case "extrude":
+    case "revolve": {
+      if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
+      const turn = value.turn === undefined ? ([0, 0, 0] as Vec3) : vec(value.turn);
+      const profile = Array.isArray(value.profile) ? value.profile.map(pair) : null;
+      if (!origin || !turn || !profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
+      const plane = { op: value.op as BooleanKind, origin, turn, profile: profile as Vec2[] };
+      if (value.kind === "extrude") {
+        if (!finite(value.depth) || (value.symmetric !== undefined && typeof value.symmetric !== "boolean")) return undefined;
+        return { kind: "extrude", ...plane, depth: value.depth, ...(value.symmetric === true ? { symmetric: true as const } : {}) };
+      }
+      const axisOrigin = value.axisOrigin === undefined ? undefined : pair(value.axisOrigin);
+      const axisDir = value.axisDir === undefined ? undefined : pair(value.axisDir);
+      if (axisOrigin === null || axisDir === null || (value.angleDeg !== undefined && !finite(value.angleDeg))) return undefined;
+      return {
+        kind: "revolve",
+        ...plane,
+        ...(axisOrigin ? { axisOrigin } : {}),
+        ...(axisDir ? { axisDir } : {}),
+        ...(finite(value.angleDeg) ? { angleDeg: value.angleDeg } : {}),
+      };
+    }
+    case "shell": {
+      if (!finite(value.thickness)) return undefined;
+      if (value.openFaces === undefined) return { kind: "shell", thickness: value.thickness };
+      if (!Array.isArray(value.openFaces)) return undefined;
+      // The engine stores each open face as a reference, as it does a blend's edges.
+      const openFaces: (number | FaceRef)[] = [];
+      for (const raw of value.openFaces) {
+        if (isId(raw)) {
+          openFaces.push(raw);
+          continue;
+        }
+        const mid = isRecord(raw) ? vec(raw.mid) : null;
+        if (!isRecord(raw) || !isId(raw.index) || !mid || !finite(raw.areaMm2)) return undefined;
+        openFaces.push({ index: raw.index, mid, areaMm2: raw.areaMm2 });
+      }
+      return { kind: "shell", thickness: value.thickness, ...(openFaces.length > 0 ? { openFaces } : {}) };
     }
     default:
       return undefined;
@@ -266,6 +311,11 @@ function readAffine(value: unknown): Affine | null {
   if (!isRecord(value) || !Array.isArray(value.m) || value.m.length !== 9 || !value.m.every(finite)) return null;
   const t = vec(value.t);
   return t ? { m: [...value.m] as Affine["m"], t } : null;
+}
+
+function pair(value: unknown): Vec2 | null {
+  if (!Array.isArray(value) || value.length !== 2 || !value.every(finite)) return null;
+  return [value[0], value[1]];
 }
 
 function vec(value: unknown): Vec3 | null {

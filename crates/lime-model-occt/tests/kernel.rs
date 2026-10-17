@@ -473,7 +473,7 @@ fn booleans_and_split() {
 
     let beside = cube("fuse", [10.0, 0.0, 0.0], [10.0; 3]);
     let (probed, probing) = cost(|| probe("bool", beside.clone()));
-    assert_eq!(probed, json!({ "ok": true }));
+    assert_eq!(probed["ok"], json!(true));
     assert_eq!(probing, work(1, 1, 0), "a probe builds once and integrates its result once");
     let (fused, applying) = cost(|| apply("bool", 1, beside.clone()));
     near(volume(&fused), 2000.0);
@@ -592,7 +592,7 @@ fn planes_off_axis() {
     let diagonal = [0.5_f64.sqrt(), 0.0, 0.5_f64.sqrt()];
     let at =
         |d: f64| json!({ "kind": "split", "origin": diagonal.map(|n| n * d), "normal": diagonal });
-    assert_eq!(probe("planes", at(margin + 0.001)), json!({ "ok": true }));
+    assert_eq!(probe("planes", at(margin + 0.001))["ok"], json!(true));
     assert_eq!(
         probe("planes", at(margin - 0.001)),
         json!({ "ok": false, "error": "The plane is too close to a face. Move it into the part." })
@@ -621,7 +621,7 @@ fn blends_holes_and_scale() {
     assert!(max > 1.0 && max < 11.0, "max fillet {max}");
 
     let removed = 10.0 * 4.0 * (1.0 - PI / 4.0);
-    assert_eq!(probe("edit", blend("fillet", json!([0]), 2.0)), json!({ "ok": true }));
+    assert_eq!(probe("edit", blend("fillet", json!([0]), 2.0))["ok"], json!(true));
     let (filleted, filleting) = cost(|| apply("edit", 1, blend("fillet", json!([0]), 2.0)));
     near(volume(&filleted), 1000.0 - removed);
     assert_eq!(filleting, work(0, 0, 1), "the apply took the probe's solid");
@@ -640,7 +640,7 @@ fn blends_holes_and_scale() {
     near(volume(&chamfered), 980.0);
     assert_eq!(other_kind, work(1, 1, 1), "a fillet probe is not a chamfer");
 
-    assert_eq!(probe("edit", blend("fillet", json!([0, 1]), 1.0)), json!({ "ok": true }));
+    assert_eq!(probe("edit", blend("fillet", json!([0, 1]), 1.0))["ok"], json!(true));
     let two = volume(&apply("edit", 4, blend("fillet", json!([0, 1]), 1.0)));
     let one_mm = 10.0 * (1.0 - PI / 4.0);
     assert!(two < 1000.0 - one_mm - 0.5, "two edges should remove more than one: {two}");

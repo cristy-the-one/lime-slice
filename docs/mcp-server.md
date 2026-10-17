@@ -414,7 +414,7 @@ The numeric path, which is the one MCP can express:
 | `workplane_set` | none, as today | `face` requires a face index whose normal is present. Curved faces return "Pick a flat face. This one is curved." |
 | `workplane_print_up` | none | sets `orient` so W is up, the same as "Print with W up" |
 | `model_place` | none | writes `modelPose`. No Apply. Fields are X, Y, Z and Turn X, Y, Z in degrees, the Place panel |
-| `model_probe` | `probe`, or the local split/scale check | `{ok, reason, maxMm?}` |
+| `model_probe` | `probe` with `preview`, or the local split/scale check | `{ok, reason, maxMm?, metrics}`. See Probe metrics |
 | `model_apply` | `apply` | refused unless this session has a passing probe for this node and this op. Split and scale use the numeric check in place of `probe` |
 | `model_history` | session tree | paged nodes: id, parent, label from `opLabel`, `current`, `committed`, `broken` |
 | `model_goto` | `goto` | moves `current`. Does not move the plate until commit |
@@ -424,10 +424,31 @@ The numeric path, which is the one MCP can express:
 | `model_commit` | the UI's lazy commit | plate mesh becomes the shown node, `partScale` reset when the path crossed a `scale` |
 | `model_export_step` | `export` | writes a `.step` in the workspace and returns the path and `byteLength` |
 | `measure` | `distance`, or two points | `{distanceMm, dx, dy, dz}` in the frame the caller names: `model` or `workplane` |
+| `surface_at` | none. A ray on the stored tessellation | `{hit, point, normal, distanceMm, faceIndex?}`. See Looking at the solid |
+| `model_check` | none. The stored tessellation and the selected machine | printability before slicing. See Looking at the solid |
 
 `model_apply` takes one `op` object, the `ModelOp` union. The server bakes workplane fields into the solid frame with `toSolidOp` before `probe` and `apply`, and stores the baked op, which is what the engine echoes. The tool result shows both the numbers the caller typed and the stored op, so a later edit is not a surprise.
 
 Hole convenience fields, accepted only by `model_probe` and `model_apply` when `kind` is `hole`: `diameterMm` (sent as `radius = diameterMm / 2`), `through` (boolean; the engine stores `through: true` or omits it), and `at: {u, v}` meaning the workplane origin. A missing workplane uses model X and Y and drills along −Z, which is the no-face behaviour in `docs/step-modeler.md`. The server does not invent a face from a click. The caller passes `faceIndex` from `model_describe`.
+
+### Probe metrics
+
+The engine's probe answers `{ok: true}` and, with `preview`, the built shape's solid reply. The server asks for the preview on every probe, so an ok result carries `metrics`: `before` and `after` as `{volumeMm3, bbox: {min, max}, shellCount}`, and `delta` (volume, bbox corners, shell count). A scale is worked out locally. When the engine sent no mesh, `metrics` holds `before`, `unavailable` (the fields it could not measure), and a `note`, and nothing is guessed. A split probe is in that case. When `shellCount` goes up, `reason` ends with "This leaves 2 separate pieces." and `warning` carries the same sentence. The probe is still ok. A probe at another step (`node`) has no metrics. A refusal has none.
+
+### Looking at the solid
+
+`surface_at` casts a ray on the current solid's mesh in the part frame, the frame of `faces_find`. Give `point` and `direction`, or `x` and `y` for a ray straight down from 1 mm above the part ("roof height at this XY"). It returns the first hit as `point`, `normal` (outward), `distanceMm` from the ray's start, and `faceIndex` as `faces_find` lists it. `fromInside: true` marks a ray that starts inside the solid. A miss is ok with `hit: false`. The chord tolerance is 0.05 mm, so a height is good to about that.
+
+`model_check` reads the same mesh with the lowest point on the bed and Z up, the way the part would print now. Turn it first with `workplane_print_up` to check another way up. It returns:
+
+- `overhang`: area past `overhangDeg` (default 45, from vertical), its share of the surface, and up to six `regions` (10 mm cells, area, centre, box).
+- `ceilings`: flat faces that point down above the bed, by Z, with area and centre.
+- `bedContact`: the area of faces flat on the bed.
+- `islands`: shells that do not touch the bed, with how far they float.
+- `fit`: the size against the selected machine's build volume, and which axes are over.
+- `warnings` as sentences, and `notChecked`.
+
+Thin walls are not checked. A mesh gives no reliable wall thickness from the tessellation alone, and a wrong number is worse than none. `notChecked` says so in every result.
 
 Fillet and chamfer take `edges` as indexes into `model_describe`. The server sends those indexes. The stored op comes back as `{index, mid, lengthMm}`.
 
@@ -436,6 +457,39 @@ Join takes `toolObject` and `keepTool`. `relative` is computed with `joinOp` in 
 `model_apply` on a surface STEP (no closed solid) returns the engine refusal unchanged: "This STEP file has surfaces but no closed solid, so it can be measured but not edited."
 
 Scale in this table is the Model op. The Prepare percentage stays on `object_place`. Applying a Model scale sets the plate scale back to 100% when the plate commits, so the part is not scaled twice (`docs/step-modeler.md`).
+
+#### Composite edits, batches, labels, parameters
+
+These are server-side. The engine still sees one Boolean step at a time, each probed before it is applied.
+
+| Tool or op | What it does |
+| --- | --- |
+| `model_apply {op, probe: true}` | Probes the op, then applies it only when the probe passes. One call where two were. Without `probe` the old rule stands: a passing `model_probe` first. |
+| `face` | On `pocket`, `boss`, `texture`, `extrude`, and `revolve`, in place of `faceIndex`: `{normal, withinDeg, nearPoint}`. The flat face whose normal matches, nearest `nearPoint` by its centre, else the largest. It is read when that op's turn comes, so a face an earlier step of the same batch made counts; `model_build` cannot know indexes in advance. |
+| `pocket`, `boss` | On a face (`faceIndex` or `face`) or the workplane: `shape` rect, circle, or arch, centred at `at: {u, v}`, `width` × `height` or `diameter`, `depth`. A pocket may keep `bars: {vertical, horizontal, width}`, flush with the face. On any face that does not look straight up or down, U is level and V runs up the face, a roof slope as a wall (`levelFrame` in `mcp/session.ts`). |
+| `texture` | Grooves on a face: `pattern` lines, grid, brick, or shingle (rows staggered by half a pitch), `pitch: [u, v]`, `grooveWidth`, `depth`, `region` (default the face's own U, V extent). |
+| `pattern` | `op` repeated by `linear: {step, count, step2, count2}` or `polar: {count, axis, centre, angleDeg}`. `count` includes the original. |
+| `mirror` | `op` reflected in `plane` x, y, or z (or a `normal`) through `origin`, keeping the original unless `keepOriginal` is false. Wedges are refused: the reflection is a turn of the same primitive (`LOCAL_FLIP` in `mcp/compose.ts`). |
+| `model_apply_batch {ops, label, onError}` | Edits in order. The first refusal stops the batch and names it by index. `onError: "rollback"` (default) goes back to the start step and drops the branch; `"stop"` keeps what applied. |
+| `model_build {base, ops, params, name, commit}` | `solid_new`, then the batch, then `model_commit`, in one call. A refusal leaves the base solid on the plate and says so. |
+| `model_params {set, clear}` | Named numbers. Any number in a Model op may be text such as `"wallH / 2"` or `"sqrt(2) * 24"` (`mcp/expr.ts`: + − × ÷ ^, brackets, `sqrt`, `abs`, `floor`, `ceil`, `round`, and `sin`, `cos`, `tan` in degrees). Session only; not saved in the `.lime`. A batch or build may carry its own `params`. |
+| `label` | Any op takes one. It names the step, or each step of a composite as `label k/n`. `model_goto`, `model_edit`, `model_drop`, `model_rename`, and `model_probe`'s `node` take a step label or a batch label in place of `node_N`. |
+
+A composite op or batch of more than one step is an undo group: `model_undo` at its last step goes back to the step before it, and `model_redo` straight after brings the whole run back. Groups live in the session and are not saved. A step that misses the solid inside a composite (a texture groove past the face's edge, a pattern copy off the part) is left out and counted as `skipped`. A plain op that misses is a refusal. One composite or batch may make at most 400 steps.
+
+Composite ops expand in `mcp/compose.ts`, with no engine call: each becomes `{op, spec}` pieces in the part's frame, and a pattern or mirror moves each piece by turning its centre and composing its turn (`movedSpec`). `primitiveFrom` there takes `centre` as well as `origin`. The centre is the point the primitive turns about (`turnCentre`): a box's middle, halfway up a round kind's axis. A turned shape is easiest placed that way.
+
+#### Kernel sketch ops and the shell
+
+`extrude`, `revolve`, and `shell` are the engine's own steps (`docs/step-modeler.md`), probed and applied like a Boolean. `extrude` and `revolve` take `profile`, a closed outline of `[u, v]` points, on a plane: `origin` and `turn` as typed, else `face` or `faceIndex` (with `from: "corner"` putting U, V = 0 at the face's min corner, so a profile does not move when the face's centre does), else the object's workplane. `shell` takes `thickness` and `openFaces`, each an index or a `{normal, nearPoint}` selector. A fillet or chamfer's `edges` may be `{fromNode, filter}`: the edges that step made, by `node_N` or label, which the engine finds again at every rebuild. `pocket` and `boss` take `from: "corner"` too.
+
+#### The op schema a client sees
+
+`op` on `model_apply` lists every kind as a typed branch with `type: "object"` at the top. A client that drops a bare `oneOf` showed `op` as an empty object, so a caller had to read the source to learn the fields. Every branch is `additionalProperties: false`. An unknown field is refused with the right name where the server knows it: `op.size is not a field of this tool. Use dx, dy, dz for a box, or radius and height for a round kind.` (`FIELD_HINTS`). Before this, a Boolean dropped `size` silently and built a 20 mm cube. `model_probe`, `model_edit`, and the items of `model_apply_batch` and `model_build` point at `model_apply`'s op, so the list is not four copies long. `validateTool` checks them, and every nested `op` of a pattern or mirror, against the same branches (`checkOp`). The tool list is held under 64 KB (`mcp/schema.test.ts`).
+
+An echoed op (`stored`, `typed`) keeps the fields its primitive reads (`cleanOp`). A box no longer comes back with `radius: 30`.
+
+`solid_new` returns `bounds` in the part frame. `session_info` returns `model`: the op kinds, composite kinds, primitives, step limit, and guide topics. `guide {topic}` returns the guides as a tool, for clients that do not read resources; `ops` is the op reference with worked examples and `compose` is the few-call flow. `project_save {ifExists: "refuse"}` leaves a file of that name alone.
 
 ### Slicing
 
@@ -474,9 +528,13 @@ Warnings included in `slice_wait` and `gcode_summary`, using the existing senten
 | `model_describe` | phase 2 | faces and edges, paged |
 | `measure` | phase 2 | one distance |
 | `layer_summary` | after a slice that was asked for `includePreview: true` on a follow-up, or from counts on the reply | layer count, Z of first and last, per-layer seconds if present. Not the polylines |
-| `render_view` | phase 3 | a PNG path in the workspace |
+| `render_view` | any time | the PNG inline, and its path in the workspace |
 
-`render_view` has no engine support. Two implementations are possible later, and neither is a slicer change: capture the desktop webview once the live bridge exists, or render the stored tessellation with the Three.js already in `package.json`. The image is a file. The tool result is the path, the camera name (`top`, `front`, `iso`), and the pixel size. A default long edge of 768 px is enough for a model to see a hole. It is not a mesh.
+`render_view` has no engine support. It draws the stored tessellation with the server's own renderer. The tool result is the path, the camera name, and the pixel size, and the same PNG comes back as an MCP image content block (`type: "image"`, base64, `image/png`) after the text block. `inline: false` returns the path alone. `layer_image` does the same. A default long edge of 768 px is enough for a model to see a hole. It is not a mesh.
+
+Cameras sit on the part's own axes, orthographic, Z up. `front` is a camera on −Y looking toward +Y, so it shows the −Y face with +X to the right. `back` is the +Y face. `left` is from −X and `right` from +X. `top` has +X right and +Y up, `bottom` is from −Z, and `iso` is from −Y, +X, and above. `direction: [x, y, z]` runs from the part to the camera, and `up` (default Z) turns the picture. `views` takes up to six camera names or `{direction, up}` objects and returns one image each, in the order asked, with one file each. It does not tile.
+
+`op` takes a boolean op as `model_probe` does and draws its tool shape in orange over the solid, through it where the part is in front. It is built from the sizes alone with `primitiveMesh`, placed by the object's workplane and pose as `model_probe` bakes it, and never sent to the engine. The result adds `ghost: {colour, touchesSolid}`. A hole, fillet, or split is refused: "A preview needs a boolean op."
 
 Layer polylines stay off the default slice (`includePreview: false`). A later `layer_page` can return one layer's path lengths by feature. Returning the polyline coordinates is a debug file, same as the mesh.
 

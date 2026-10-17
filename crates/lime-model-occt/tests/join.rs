@@ -532,7 +532,8 @@ fn probe_preview() {
     ok(json!({ "call": "open", "key": "pv", "box": [10.0, 10.0, 10.0] }));
     let hole = json!({ "kind": "hole", "origin": [5.0, 5.0, 10.0], "axis": [0.0, 0.0, -1.0], "radius": 1.0, "depth": 4.0 });
     let plain = call(json!({ "call": "probe", "key": "pv", "node": 0, "op": hole.clone() }));
-    assert_eq!(plain, json!({ "ok": true }), "no preview unless asked");
+    assert_eq!(plain["ok"], json!(true));
+    assert!(plain.get("preview").is_none(), "no preview unless asked");
     let probe = call(
         json!({ "call": "probe", "key": "pv", "node": 0, "op": hole.clone(), "preview": true, "chordMm": 0.1 }),
     );

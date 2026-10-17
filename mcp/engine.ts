@@ -409,6 +409,41 @@ interface KeptSolid {
   max: number[];
 }
 
+/** What the stand-in makes of an op: a scale, a hole's mark, or a box cut that cleaves the part in two. */
+function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: string; primitive?: string; origin?: number[]; size?: number[] } | undefined): KeptSolid {
+  const next: KeptSolid = { volume: prior.volume, positions: new Float32Array(prior.positions), min: [...prior.min], max: [...prior.max] };
+  if (op?.kind === "scale" && typeof op.factor === "number") {
+    const factor = op.factor;
+    for (let i = 0; i < next.positions.length; i += 1) next.positions[i] = (next.positions[i] ?? 0) * factor;
+    next.min = next.min.map((value) => value * factor);
+    next.max = next.max.map((value) => value * factor);
+    next.volume *= factor ** 3;
+  } else if (op?.kind === "hole") {
+    next.volume = Math.max(1, next.volume - 100);
+    const extra = new Float32Array(next.positions.length + 9);
+    extra.set(next.positions);
+    const z = (next.max[2] ?? 0) + 0.2;
+    const x0 = next.min[0] ?? 0;
+    const y0 = next.min[1] ?? 0;
+    // One corner is the part's own, so the mark stays one piece with it.
+    extra.set([x0, y0, z - 0.2, x0, y0 + 6, z, x0 + 6, y0, z], next.positions.length);
+    next.positions = extra;
+  } else if (op?.kind === "boolean" && op.op === "cut" && op.primitive === "box" && op.origin && op.size) {
+    const [ox, oy, oz] = op.origin as [number, number, number];
+    const [sx, sy, sz] = op.size as [number, number, number];
+    const spans = oy <= next.min[1]! && oy + sy >= next.max[1]! && oz <= next.min[2]! && oz + sz >= next.max[2]!;
+    if (spans && ox > next.min[0]! && ox + sx < next.max[0]!) {
+      const left = boxSolid(next.min as [number, number, number], [ox, next.max[1]!, next.max[2]!], 1).positions;
+      const right = boxSolid([ox + sx, next.min[1]!, next.min[2]!], next.max as [number, number, number], 1).positions;
+      next.positions = new Float32Array(left.length + right.length);
+      next.positions.set(left, 0);
+      next.positions.set(right, left.length);
+      next.volume = Math.max(1, next.volume - sx * (next.max[1]! - next.min[1]!) * (next.max[2]! - next.min[2]!));
+    }
+  }
+  return next;
+}
+
 /** A stand-in for scripted tests. It does not slice. A committed STEP round-trips its mesh. */
 export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number } {
   const jobs = new Map<number, { status: string; body: string; polls: number }>();
@@ -467,7 +502,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     resets: 0,
     previewResets: 0,
     hung: false,
-    version: () => "2.0.1",
+    version: () => "2.1.0",
     occt: () => true,
     meshPreview: async (body: string, bytes?: Uint8Array) => {
       const block = Number(process.env.LIME_MCP_FAKE_BLOCK_MS ?? 0);
@@ -512,7 +547,10 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
       if (req.call === "probe") {
         const radius = req.op?.radius ?? 0;
         if (req.op?.kind === "hole" && radius > 8) return JSON.stringify({ ok: false, error: "The hole misses the solid." });
-        return JSON.stringify({ ok: true });
+        if (!req.preview) return JSON.stringify({ ok: true });
+        const prior = kept.get(key) ?? { volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] };
+        const shown = remember(`${key}#preview`, applied(prior, req.op), 0);
+        return JSON.stringify({ ok: true, preview: shown });
       }
       if (req.call === "distance") {
         const solid = kept.get(key);
@@ -526,23 +564,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
       }
       if (req.call === "apply") {
         const prior = kept.get(key) ?? { volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] };
-        const nextSolid: KeptSolid = { volume: prior.volume, positions: new Float32Array(prior.positions), min: [...prior.min], max: [...prior.max] };
-        if (req.op?.kind === "scale" && typeof req.op.factor === "number") {
-          const factor = req.op.factor;
-          for (let i = 0; i < nextSolid.positions.length; i += 1) nextSolid.positions[i] = (nextSolid.positions[i] ?? 0) * factor;
-          nextSolid.min = nextSolid.min.map((value) => value * factor);
-          nextSolid.max = nextSolid.max.map((value) => value * factor);
-          nextSolid.volume *= factor ** 3;
-        } else if (req.op?.kind === "hole") {
-          nextSolid.volume = Math.max(1, nextSolid.volume - 100);
-          const extra = new Float32Array(nextSolid.positions.length + 9);
-          extra.set(nextSolid.positions);
-          const z = (nextSolid.max[2] ?? 0) + 0.2;
-          const x0 = (nextSolid.min[0] ?? 0) + 4;
-          const y0 = (nextSolid.min[1] ?? 0) + 4;
-          extra.set([x0, y0, z, x0, y0 + 6, z, x0 + 6, y0, z], nextSolid.positions.length);
-          nextSolid.positions = extra;
-        }
+        const nextSolid = applied(prior, req.op);
         if (req.op?.kind === "split") nextSolid.volume = Math.max(1, prior.volume / 2);
         const wire = remember(key, nextSolid);
         wire.id = req.node ?? 1;

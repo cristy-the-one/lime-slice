@@ -18,7 +18,7 @@ import {
   type Affine,
   type PlaceFields,
 } from "../model-space";
-import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditLevel, type EditPanel, type ForkStep, type ToolLink } from "../model-edit";
+import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, stepIds, toolEditHead, toolEditRefusal, toolPose, type EditLevel, type EditPanel, type ForkStep, type ToolLink } from "../model-edit";
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../model-primitive";
 import { markProjectDirty } from "../project-dirty";
 import { unionBox } from "../measure";
@@ -42,6 +42,7 @@ import {
   pathTo,
   reachableTrees,
   redoTarget,
+  renumberedSteps,
   reserveId,
   rootLabel,
   subtree,
@@ -1779,7 +1780,9 @@ async function runEdit(run: Editing) {
     ids.push(id);
   }
   modelTrees.set(at.key, reserved);
-  const replay = replayOps.map((step, i) => ({ id: ids[i + 1]!, op: step }));
+  // A blend that takes edges from a replayed step takes them from that step's new id.
+  const renamed = stepIds([run.node, ...run.replay], ids);
+  const replay = replayOps.map((step, i) => ({ id: ids[i + 1]!, op: renumberedSteps(step, renamed) }));
   const chord = state.stepTolerance;
   const mine = ticket;
   busy = true;

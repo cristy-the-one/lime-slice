@@ -17,15 +17,24 @@ import { lastEdge, type ModelPickRef } from "./model-select.ts";
 export const PROBE_WAIT_MS = 300;
 
 /** Tools whose result only the kernel can judge. Split and scale are checked from numbers alone. */
-export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean"] as const;
+export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean", "extrude", "revolve", "shell"] as const;
 export type ProbedTool = (typeof PROBED_TOOLS)[number];
+
+/** What a probe that builds measured: the result, and `before`, the solid it was built on. */
+export interface ProbeMeasure {
+  volumeMm3: number;
+  /** Separate bodies. */
+  solids: number;
+  /** Closed shells: a hollow body is one solid of two. */
+  shells: number;
+}
 
 /** `applied`: these numbers were just applied to this solid, so applying them again would change nothing. */
 export type ProbeView =
   | null
   | { phase: "checking" }
   | { phase: "applied" }
-  | { phase: "done"; ok: boolean; error?: string; maxMm?: number };
+  | { phase: "done"; ok: boolean; error?: string; maxMm?: number; measure?: ProbeMeasure & { before: ProbeMeasure } };
 
 /** What a kernel answer depends on: the tree node it ran on, whose shape never changes, and the op's numbers. */
 export function probeKey(node: string, op: object): string {
@@ -50,8 +59,19 @@ export function toolBlockedTip(tool: string, picks: readonly ModelPickRef[], spl
   return tool === "fillet" ? "Pick an edge to fillet. Switch to Edge, then click the edges." : "Pick an edge to chamfer. Switch to Edge, then click the edges.";
 }
 
-export function probeFromBody(body: { ok?: unknown; error?: unknown; maxMm?: unknown }): ProbeView {
-  if (body.ok === true) return { phase: "done", ok: true };
+function readMeasure(value: unknown): ProbeMeasure | null {
+  if (!value || typeof value !== "object") return null;
+  const { volumeMm3, solids, shells } = value as Record<string, unknown>;
+  if (typeof volumeMm3 !== "number" || !Number.isFinite(volumeMm3) || !Number.isInteger(solids) || !Number.isInteger(shells)) return null;
+  return { volumeMm3, solids: solids as number, shells: shells as number };
+}
+
+export function probeFromBody(body: { ok?: unknown; error?: unknown; maxMm?: unknown; volumeMm3?: unknown; solids?: unknown; shells?: unknown; before?: unknown }): ProbeView {
+  if (body.ok === true) {
+    const after = readMeasure(body);
+    const before = readMeasure(body.before);
+    return after && before ? { phase: "done", ok: true, measure: { ...after, before } } : { phase: "done", ok: true };
+  }
   const error = typeof body.error === "string" && body.error.length > 0 ? body.error : "This does not fit.";
   const maxMm = typeof body.maxMm === "number" && Number.isFinite(body.maxMm) && body.maxMm > 0 ? body.maxMm : undefined;
   return { phase: "done", ok: false, error, maxMm };
@@ -62,6 +82,9 @@ const CHECKING: Record<ProbedTool, string> = {
   chamfer: "Checking this chamfer…",
   hole: "Checking this hole…",
   boolean: "Checking this boolean…",
+  extrude: "Checking this extrude…",
+  revolve: "Checking this revolve…",
+  shell: "Checking this shell…",
 };
 
 const FITS: Record<ProbedTool, string> = {
@@ -69,6 +92,9 @@ const FITS: Record<ProbedTool, string> = {
   chamfer: "This chamfer fits.",
   hole: "This hole cuts the solid.",
   boolean: "This boolean changes the solid.",
+  extrude: "This extrude changes the solid.",
+  revolve: "This revolve changes the solid.",
+  shell: "This shell fits.",
 };
 
 export function probeNote(tool: ProbedTool, probe: ProbeView): { text: string; bad: boolean } | null {

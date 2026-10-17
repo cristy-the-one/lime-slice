@@ -148,8 +148,8 @@ fn through_all_and_counterbore() {
     // A dry-run of a through counterbore is kept: its Apply builds nothing more.
     let side = counterbored(through([0.0, 10.0, 5.0], [1.0, 0.0, 0.0], 1.0), 2.0, 2.0);
     assert_eq!(
-        ok(json!({ "call": "probe", "key": "h", "node": 0, "op": side })),
-        json!({ "ok": true })
+        ok(json!({ "call": "probe", "key": "h", "node": 0, "op": side }))["ok"],
+        json!(true)
     );
     let (kept, work) = cost(|| apply("h", 0, 6, side.clone()));
     near(volume(&kept), 4000.0 - rod(2.0, 2.0) - rod(1.0, 18.0));
