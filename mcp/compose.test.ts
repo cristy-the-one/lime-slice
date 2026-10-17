@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { addsPiece, cleanOp, expand, movedSpec, primitiveFrom, type ExpandContext, type Piece } from "./compose.ts";
+import { addsPiece, cleanOp, cutsOffPiece, expand, movedSpec, primitiveFrom, type ExpandContext, type Piece } from "./compose.ts";
 import { evaluate, resolveNumbers } from "./expr.ts";
 import { fakeEngine } from "./engine.ts";
 import { validateTool } from "./schema.ts";
@@ -165,6 +165,10 @@ check("an unknown from is a sentence", "reason" in (expand({ kind: "pocket", fac
 const ringMeasure = { shells: 3, before: { shells: 2 } };
 check("a fuse that adds a closed shell is a separate piece", addsPiece({ kind: "boolean", op: "fuse" }, ringMeasure) && addsPiece({ kind: "join", op: "fuse" }, ringMeasure));
 check("a cut, a shell, or a fuse with no new shell is not", !addsPiece({ kind: "boolean", op: "cut" }, ringMeasure) && !addsPiece({ kind: "shell" }, ringMeasure) && !addsPiece({ kind: "boolean", op: "fuse" }, { shells: 2, before: { shells: 2 } }) && !addsPiece({ kind: "boolean", op: "fuse" }, undefined));
+
+const sliver = { solids: 2, shells: 2, before: { solids: 1, shells: 1 } };
+check("a composite cut that splits off a piece is caught", cutsOffPiece({ kind: "boolean", op: "cut" }, sliver) && cutsOffPiece({ kind: "boolean", op: "cut" }, { solids: 1, shells: 2, before: { solids: 1, shells: 1 } }));
+check("a fuse, or a cut that keeps one piece, is not", !cutsOffPiece({ kind: "boolean", op: "fuse" }, sliver) && !cutsOffPiece({ kind: "boolean", op: "cut" }, { solids: 1, shells: 1, before: { solids: 1, shells: 1 } }) && !cutsOffPiece({ kind: "boolean", op: "cut" }, undefined));
 
 // Schema refusals name the right field.
 check("size on a boolean names dx, dy, dz", (validateTool("model_apply", { op: { kind: "boolean", op: "fuse", primitive: "box", size: [1, 2, 3] } }) ?? "").includes("Use dx, dy, dz"));
