@@ -1,6 +1,6 @@
 # Lime Slice
 
-Lime Slice 2.1.0 is a slicer for filament printers. Open an STL, 3MF, or STEP file, set it on the build plate, and slice it to G-code. A Rust planner builds the toolpaths. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
+Lime Slice 2.2.0 is a slicer for filament printers. Open an STL, 3MF, or STEP file, set it on the build plate, and slice it to G-code. A Rust planner builds the toolpaths. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
 
 **Prepare** puts the model on the plate. Move, turn, and scale it, then choose a strategy: speed, efficiency, toughness, or a blend by weight, by layer, or by region. Each strategy is a real set of walls, infill, speed, acceleration, seam, and retraction.
 
@@ -88,7 +88,7 @@ The API listens on `127.0.0.1:43118`. Inside Tauri the UI calls `slice_model` in
 
 ## MCP server
 
-An LLM client can open a mesh, place it, change the settings the panel exposes, paint supports and seams, run a Model edit that has already passed a feasibility check, slice the plate, and write G-code. Since 2.1.0 a whole part can be built in a few calls: `model_build` makes a solid, runs a batch of edits each checked before it is applied, and commits it. The ops include extrude, revolve, and shell from the kernel, and pocket, boss, texture, pattern, and mirror, which the server expands into checked Boolean steps. Ops take labels and named parameters (`model_params`). `render_view` returns its images inline, and `model_check` reports overhangs, islands, and fit before slicing. `guide {topic: "ops"}` lists every op with an example. The server is `mcp/server.ts`. It speaks newline-delimited JSON on stdin and stdout, and it loads the slicer in-process (`crates/lime-mcp-engine`). It does not need `lime-slice serve`.
+An LLM client can open a mesh, place it, change the settings the panel exposes, paint supports and seams, run a Model edit that has already passed a feasibility check, slice the plate, and write G-code. Since 2.1.0 a whole part can be built in a few calls: `model_build` makes a solid, runs a batch of edits each checked before it is applied, and commits it. The ops include extrude, revolve, and shell from the kernel, and pocket, boss, texture, pattern, and mirror, which the server expands into checked Boolean steps. Ops take labels and named parameters (`model_params`). `render_view` returns its images inline, and `model_check` reports overhangs, islands, and fit before slicing. `guide {topic: "ops"}` lists every op with an example. Since 2.2.0, `array` and `ribs` repeat a primitive over a face and keep it to the face's outline (tiles, studs, vents, reinforcement ribs, battens, grooves), and `render_view` draws lit, edge-lined images. The server is `mcp/server.ts`. It speaks newline-delimited JSON on stdin and stdout, and it loads the slicer in-process (`crates/lime-mcp-engine`). It does not need `lime-slice serve`.
 
 A typical slice is `machine_list`, `machine_select`, `mesh_import`, `slice_start`, `slice_wait`, `gcode_summary`. A hole is `faces_find`, `workplane_set`, `model_probe`, `model_apply`, `model_commit`, then `slice_start`. The same sequences are the guides `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate`. There is no send-to-printer tool.
 
@@ -247,7 +247,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (2.1.0). Publishing that draft is a separate step. Draft releases through v1.8.0 are already on the repository.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (2.2.0). Publishing that draft is a separate step. Draft releases through v1.8.0 are already on the repository.
 
 ## Headless slice and bench
 
