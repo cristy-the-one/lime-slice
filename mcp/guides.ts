@@ -90,7 +90,7 @@ GUIDES.push(
       "fillet, chamfer: {edges:[index] | {select:{direction, onFace, convex}} | {fromNode:\"roof\", filter:\"convex\"}, size}. fromNode takes the edges a step made, found again after edits.",
       "split: {origin, normal, keep}. scale: {factor}.",
       "pocket: {kind:\"pocket\", faceIndex, shape:\"rect\"|\"circle\"|\"arch\", at:{u, v}, width, height | diameter, depth, bars:{vertical, horizontal, width}}.",
-      "  On a side face U is level and V runs up. A window: {kind:\"pocket\", faceIndex:2, at:{u:18, v:2.5}, width:10, height:10, depth:1.5, bars:{vertical:1, horizontal:1}}.",
+      "  On a wall or a roof slope U is level and V runs up the face. A window: {kind:\"pocket\", faceIndex:2, at:{u:18, v:2.5}, width:10, height:10, depth:1.5, bars:{vertical:1, horizontal:1}}.",
       "  face:{normal, nearPoint} picks the flat face instead of faceIndex: the nearest match, else the largest. Use it in model_build, where indexes are not known yet.",
       "boss: like pocket, raised by depth. A sill: {kind:\"boss\", faceIndex:2, at:{u:18, v:-3.25}, width:12, height:1.5, depth:2}.",
       "texture: {kind:\"texture\", faceIndex, pattern:\"lines\"|\"grid\"|\"brick\"|\"shingle\", pitch:[7.5, 5.7], grooveWidth:0.8, depth:0.6}. Roof tiles are one texture per slope.",

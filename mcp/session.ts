@@ -303,6 +303,21 @@ function readProfile(value: unknown): Vec2[] | null {
   return out;
 }
 
+/**
+ * A face's frame for composite ops: V runs up the face and U is level, on a wall as on a roof slope, so texture rows
+ * and pocket sizes follow the slope. A face that looks straight up or down keeps the workplane's own axes.
+ */
+function levelFrame(plane: { point: [number, number, number]; normal: [number, number, number] }): Workplane {
+  const w = plane.normal;
+  if (Math.abs(w[2]) > 0.999) return workplaneOnFace(plane);
+  const up: [number, number, number] = [-w[2] * w[0], -w[2] * w[1], 1 - w[2] * w[2]];
+  const len = Math.hypot(up[0], up[1], up[2]);
+  const v: [number, number, number] = [up[0] / len, up[1] / len, up[2] / len];
+  const u: [number, number, number] = [v[1] * w[2] - v[2] * w[1], v[2] * w[0] - v[0] * w[2], v[0] * w[1] - v[1] * w[0]];
+  const turn = orientEuler([u[0], v[0], w[0], u[1], v[1], w[1], u[2], v[2], w[2]]);
+  return { source: "face", origin: [...plane.point], turn: [turn.rx, turn.ry, turn.rz] };
+}
+
 function isObject(value: PlateObject | { ok: false; reason: string }): value is PlateObject {
   return !("reason" in value);
 }
@@ -3033,7 +3048,7 @@ export class Session {
         if (!face.normal) return { reason: CURVED_FACE };
         const plane = facePlane(obj.solid.positions, obj.solid.triangles, index, face.normal);
         if (!plane) return { reason: CURVED_FACE };
-        const frame = workplaneOnFace(plane);
+        const frame = levelFrame(plane);
         const extent: FaceExtent = { u: [Infinity, -Infinity], v: [Infinity, -Infinity] };
         const { positions, triangles } = obj.solid;
         for (let tri = 0; tri < triangles.length; tri += 1) {
@@ -3091,53 +3106,51 @@ export class Session {
     const opened = await this.opened(obj);
     if ("reason" in opened) return { ok: false, reason: opened.reason };
     const start = opened.current;
-    const ctx = this.expandContext(obj);
-    type Step = { index: number; raw?: Record<string, unknown>; piece?: Piece; label?: string };
-    const steps: Step[] = [];
+    const nodes: number[] = [];
+    let skipped = 0;
+    let made = 0;
+    const fail = async (failed: Record<string, unknown>): Promise<Record<string, unknown>> => {
+      if (options.rollback && nodes.length > 0) {
+        await this.gotoNode(obj, start);
+        if (obj.tree) this.drop(obj, nodes[0]!);
+        return { ok: false, applied: 0, rolledBack: true, failed, node: nodeHandle(start) };
+      }
+      return { ok: false, applied: nodes.length, failed, ...(nodes.length ? { node: nodeHandle(nodes[nodes.length - 1]!) } : {}) };
+    };
     for (let index = 0; index < raws.length; index += 1) {
       const raw = raws[index]!;
       const label = typeof raw.label === "string" && raw.label.trim() ? raw.label.trim() : undefined;
-      if (isComposite(raw.kind)) {
-        const pieces = expand(raw, ctx, (op) => this.pieceOf(obj, op));
-        if ("reason" in pieces) return { ok: false, applied: 0, failed: { index, reason: pieces.reason } };
-        pieces.forEach((piece, k) => steps.push({ index, piece, label: label ? `${label} ${k + 1}/${pieces.length}` : undefined }));
-      } else {
-        steps.push({ index, raw, label });
+      if (!isComposite(raw.kind)) {
+        if ((made += 1) > MAX_PIECES) return fail({ index, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+        const probed = await this.probe(obj, raw);
+        const result = probed.ok === true ? await this.apply(obj, raw) : probed;
+        if (result.ok !== true) return fail({ index, reason: String(result.reason ?? "This edit did not apply.") });
+        const node = parseNode(result.node);
+        if (node !== null) nodes.push(node);
+        continue;
       }
-      if (steps.length > MAX_PIECES) return { ok: false, applied: 0, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` };
-    }
-    const nodes: number[] = [];
-    let skipped = 0;
-    for (const step of steps) {
-      const tree = await this.opened(obj);
-      if ("reason" in tree) return { ok: false, reason: tree.reason };
-      let result: Record<string, unknown>;
-      if (step.piece) {
-        const op = toSolidOp({ kind: "boolean", op: step.piece.op, ...step.piece.spec }, obj.modelPose);
-        const baked = { op, typed: { kind: "boolean", op: step.piece.op, ...step.piece.spec } as Record<string, unknown> };
+      // Expanded now, on the solid as the steps before it left it, so a face selector sees faces they made.
+      const pieces = expand(raw, this.expandContext(obj), (op) => this.pieceOf(obj, op));
+      if ("reason" in pieces) return fail({ index, reason: pieces.reason });
+      if ((made += pieces.length) > MAX_PIECES) return fail({ index, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+      for (let k = 0; k < pieces.length; k += 1) {
+        const piece = pieces[k]!;
+        const tree = await this.opened(obj);
+        if ("reason" in tree) return { ok: false, reason: tree.reason };
+        const typed = { kind: "boolean", op: piece.op, ...piece.spec } as Record<string, unknown>;
+        const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...piece.spec }, obj.modelPose), typed };
         const probed = await this.probeBaked(obj, tree, tree.current, baked);
         if (probed.ok !== true && probed.missed === true) {
           skipped += 1;
           continue;
         }
-        result = probed.ok === true ? await this.applyBaked(obj, tree, baked, {}) : probed;
-        const made = parseNode(result.node);
-        if (result.ok === true && step.label && made !== null) this.rename(obj, made, step.label);
-      } else {
-        const probed = await this.probe(obj, step.raw);
-        result = probed.ok === true ? await this.apply(obj, step.raw) : probed;
+        const result = probed.ok === true ? await this.applyBaked(obj, tree, baked, {}) : probed;
+        if (result.ok !== true) return fail({ index, reason: String(result.reason ?? "This edit did not apply."), piece: cleanOp(typed) });
+        const node = parseNode(result.node);
+        if (node === null) continue;
+        nodes.push(node);
+        if (label) this.rename(obj, node, `${label} ${k + 1}/${pieces.length}`);
       }
-      if (result.ok !== true) {
-        const failed = { index: step.index, reason: String(result.reason ?? "This edit did not apply."), ...(step.piece ? { piece: cleanOp({ kind: "boolean", op: step.piece.op, ...step.piece.spec }) } : {}) };
-        if (options.rollback && nodes.length > 0) {
-          await this.gotoNode(obj, start);
-          if (obj.tree) this.drop(obj, nodes[0]!);
-          return { ok: false, applied: 0, rolledBack: true, failed, node: nodeHandle(start) };
-        }
-        return { ok: false, applied: nodes.length, failed, ...(nodes.length ? { node: nodeHandle(nodes[nodes.length - 1]!) } : {}) };
-      }
-      const node = parseNode(result.node);
-      if (node !== null) nodes.push(node);
     }
     if (nodes.length > 1) {
       obj.groups = [...(obj.groups ?? []), { start, end: nodes[nodes.length - 1]!, label: options.label ?? `${nodes.length} steps` }];
