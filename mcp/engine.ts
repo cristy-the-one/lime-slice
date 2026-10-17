@@ -741,7 +741,9 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
       if (req.call === "export") {
         const solid = kept.get(key);
         const encoded = solid ? Buffer.from(solid.positions.buffer, solid.positions.byteOffset, solid.positions.byteLength).toString("base64") : "";
-        const step = `ISO-10303-21;\n/* ${SOLID_MARK}${encoded} */\nENDSEC;\n`;
+        // A `brep` export starts as the real engine's binary solid does; the mark still carries the mesh.
+        const head = (req as { format?: string }).format === "brep" ? "LIMEBREP 1 fake 0 *\n" : "ISO-10303-21;\n";
+        const step = `${head}/* ${SOLID_MARK}${encoded} */\nENDSEC;\n`;
         const bytes = Buffer.from(step, "utf8");
         return JSON.stringify({ bytesBase64: bytes.toString("base64"), byteLength: bytes.length });
       }

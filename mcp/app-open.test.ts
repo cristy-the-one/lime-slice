@@ -144,7 +144,7 @@ const projectPath = join(workspace, "calibration_cube_20mm.lime");
   const doc = JSON.parse(readFileSync(saved, "utf8")) as { objects?: { mesh: { name: string }; brep?: { name: string }; meshSeatMm?: number; modelTree?: unknown }[] };
   const row = doc.objects?.[0];
   check("a solid opens in the app from its saved project", shown.ok === true && shown.opened === "bridge" && asked.bridge[0] === saved && saved.endsWith(".lime"), JSON.stringify(shown));
-  check("the project the app opens carries the STL, the brep, its seat, and the history", !!row && row.mesh.name.endsWith(".stl") && !!row.brep?.name.endsWith(".step") && typeof row.meshSeatMm === "number" && !!row.modelTree, JSON.stringify({ mesh: row?.mesh.name, brep: row?.brep?.name }));
+  check("the project the app opens carries the STL, the brep, its seat, and the history", !!row && row.mesh.name.endsWith(".stl") && !!row.brep?.name.endsWith(".brep") && typeof row.meshSeatMm === "number" && !!row.modelTree, JSON.stringify({ mesh: row?.mesh.name, brep: row?.brep?.name }));
 }
 
 // The bridge: an open goes only to a desktop that names the feature, and its answer is read.

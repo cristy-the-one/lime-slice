@@ -274,7 +274,7 @@ test("Duplicate in Model opens the copy, and a Slice in Model slices the step on
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   await expect.poll(() => tree.of("open").length, { message: "the copy is a tree of its own" }).toBe(2);
   expect(tree.of("export").map((request) => request.node), "rooted in the STEP of the step it copies").toEqual([1]);
-  expect(tree.of("open")[1]!.dataB64).toBe(Buffer.from("EDITED-STEP-1").toString("base64"));
+  expect(tree.of("open")[1]!.dataB64).toBe(Buffer.from("LIMEBREP 1 mock 0 *\nEDITED-1").toString("base64"));
   await expect(readout(page)).toContainText("Pick a face or an edge.");
   await cut(page, 3, 30);
   expect(tree.of("apply").at(-1)!.key, "the edit goes to the copy's tree").toBe(tree.of("open")[1]!.key);

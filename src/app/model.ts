@@ -62,7 +62,7 @@ import {
   type Vec3,
 } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
-import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
+import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
 import {
   closeModelTool,
   editedPanel,
@@ -142,9 +142,9 @@ let shownFor: string | null = null;
 /** A tree resumed above its broken committed step: the plate keeps that step's mesh until the user moves. */
 let parked: string | null = null;
 const solids = new Map<string, ParsedSolid>();
-/** Mesh tokens whose plate objects already carry that shape's STEP, or whose mesh is the STEP file itself. */
+/** Mesh tokens whose plate objects already carry that shape's solid (`brep`), or whose mesh is the STEP file itself. */
 const stepKnown = new Set<string>();
-/** STEP exports on their way, by mesh token, so a save during the write after leaving Model waits for it. */
+/** Solid exports on their way, by mesh token, so a save during the write after leaving Model waits for it. */
 const writing = new Map<string, Promise<ArrayBuffer | string>>();
 /** Kernel answers by `probeKey`. */
 const answers = new Map<string, ProbeView>();
@@ -152,8 +152,8 @@ const answers = new Map<string, ProbeView>();
 const restoring = new Map<string, Promise<string | null>>();
 
 /**
- * A tree from a saved project, until the engine has the whole of it. Once `live`, the engine holds
- * the plate's step (`node`), read from that step's STEP, as its root: enough to look and measure.
+ * A tree from a project saved before version 3, whose `brep` is STEP, until the engine has the whole of it. Once `live`,
+ * the engine holds the plate's step (`node`), read from that step's STEP, as its root: enough to look and measure.
  * An edit, or a call on any other step, first opens the whole tree from its root STEP and ops
  * (`whole`, while that is on its way). Every call waits for that, and for a read of the step's STEP
  * (`reading`) after an engine restart.
@@ -873,9 +873,12 @@ export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: str
     const loaded = loadedTree(tree, key, root, obj.name, mesh, (other) => keys.get(other));
     modelTrees.set(key, loaded);
     if (obj.brep || (loaded.committed === ROOT && isStepName(obj.fileName))) stepKnown.add(token);
-    // The plate's step opens from its own STEP, one read, whatever the root is: a history of hundreds of steps from a
+    // The plate's step opens from its own solid, one read, whatever the root is: a history of hundreds of steps from a
     // primitive would otherwise run again in full before Model showed anything. Earlier steps rebuild when asked for.
-    if (obj.brep && loaded.committed !== ROOT) seeds.set(key, { node: loaded.committed, held: new Set([loaded.committed]), live: false, whole: null, reading: null });
+    // A solid saved in the binary format is the step exactly, so the whole tree opens at once with it as the step's
+    // solid (`openWhole`). An older file's STEP can sit apart from the step, so the step stands alone until an edit.
+    if (obj.brep && loaded.committed !== ROOT && !isBrep(obj.brep)) seeds.set(key, { node: loaded.committed, held: new Set([loaded.committed]), live: false, whole: null, reading: null });
+    else unopened.add(key);
   }
   state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (keys.has(obj.id) ? { ...obj, modelTree: keys.get(obj.id) } : obj)) };
 }
@@ -893,6 +896,9 @@ export function releaseModelTrees() {
   for (const key of gone) {
     modelTrees.delete(key);
     seeds.delete(key);
+    unopened.delete(key);
+    seedNotes.delete(key);
+    engineHeld.delete(key);
     forgetShown(key);
   }
   void closeInEngine(gone);
@@ -925,7 +931,7 @@ function forgetShown(key: string) {
   for (const name of previews.keys()) if (name.startsWith(`${key}#`)) previews.delete(name);
 }
 
-/** Leaving Model: the plate takes the shown node, the visit is one Prepare step, and the STEP is written off the UI's path. */
+/** Leaving Model: the plate takes the shown node, the visit is one Prepare step, and its solid is written off the UI's path. */
 export function leaveModel() {
   forgetPlaceSteps();
   forgetWorkplaneSteps();
@@ -945,6 +951,9 @@ export function forgetModelTrees() {
   ghosted = null;
   joinSaid = "";
   seeds.clear();
+  unopened.clear();
+  seedNotes.clear();
+  engineHeld.clear();
   solids.clear();
   answers.clear();
   previews.clear();
@@ -1053,9 +1062,9 @@ function rootSource(of: { fileName: string; bytes: ArrayBuffer; sourcePos: Float
   return source ? { copies: { key: source.key, node: nodeWithMesh(source, token)! }, mesh } : null;
 }
 
-/** A copy's root: the STEP of the step it copies, written now and given to every object with that mesh. */
+/** A copy's root: the solid of the step it copies, written now and given to every object with that mesh. */
 async function stepOfCopy({ copies, mesh }: { copies: { key: string; node: NodeId }; mesh: PlateMesh }): Promise<OpenFrom | string> {
-  const step = await exportStep(copies.key, copies.node);
+  const step = await exportSolid(copies.key, copies.node, "brep");
   if (typeof step === "string") return step;
   putStep(mesh.token, step);
   return { from: { kind: "step", name: stepFileName(mesh.name), bytes: step }, mesh: { ...mesh, step } };
@@ -1217,7 +1226,9 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
   if (!latest) return false;
   modelTrees.set(key, jumped(latest, node));
   open = { objectId, key, solid };
-  present(solid, message(solid));
+  const note = seedNotes.get(key);
+  seedNotes.delete(key);
+  present(solid, note ? `${message(solid)} ${note}` : message(solid));
   return true;
 }
 
@@ -2150,7 +2161,7 @@ async function runExport() {
   syncUndo();
   readout("Writing STEP…");
   const mine = ticket;
-  const step = await exportStep(at.key, node);
+  const step = await exportSolid(at.key, node, "step");
   if (mine === ticket) busy = false;
   syncUndo();
   if (mine !== ticket || state.stage !== "model" || !open) return;
@@ -2158,14 +2169,12 @@ async function runExport() {
     readout(step);
     return;
   }
-  const mesh = tree.nodes.get(node)?.mesh;
-  if (mesh) putStep(mesh.token, step);
   await saveStepFile(step, stepFileName(state.mesh.name));
   readout(`Saved STEP. ${about(at.solid)}`);
 }
 
 /**
- * Write the STEP of each plate object's solid that has none yet, and give it to every plate object
+ * Write the solid (`brep`) of each plate object's step that has none yet, and give it to every plate object
  * and Prepare step with that mesh. Returns the mesh tokens the engine could not write.
  */
 async function writeSteps(): Promise<string[]> {
@@ -2182,11 +2191,11 @@ async function writeSteps(): Promise<string[]> {
   return failedTokens;
 }
 
-/** The STEP of the node whose plate mesh is `token`, given wherever that mesh is. One export per token at a time. */
+/** The solid of the node whose plate mesh is `token`, given wherever that mesh is. One export per token at a time. */
 function writeStep(token: string, key: string, node: NodeId): Promise<ArrayBuffer | string> {
   let pending = writing.get(token);
   if (!pending) {
-    pending = exportStep(key, node).then((step) => {
+    pending = exportSolid(key, node, "brep").then((step) => {
       writing.delete(token);
       if (typeof step !== "string") putStep(token, step);
       return step;
@@ -2196,8 +2205,9 @@ function writeStep(token: string, key: string, node: NodeId): Promise<ArrayBuffe
   return pending;
 }
 
-async function exportStep(key: string, node: NodeId): Promise<ArrayBuffer | string> {
-  const body = await treeCall(key, node, exportRequest(key, node));
+/** The node's solid as `format`: `brep`, which the plate object keeps and a project saves, or `step` for the STEP button. */
+async function exportSolid(key: string, node: NodeId, format: "step" | "brep"): Promise<ArrayBuffer | string> {
+  const body = await treeCall(key, node, exportRequest(key, node, format));
   const problem = text(body.error);
   if (problem) return problem;
   if (typeof body.bytesBase64 !== "string") return "Open CASCADE did not write this solid.";
@@ -2208,7 +2218,7 @@ async function exportStep(key: string, node: NodeId): Promise<ArrayBuffer | stri
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-/** `step` is the solid whose plate mesh is `token`: it goes wherever that mesh is. Undefined removes it. */
+/** `step` is the solid (`brep`) whose plate mesh is `token`: it goes wherever that mesh is. Undefined removes it. */
 function putStep(token: string, step: ArrayBuffer | undefined) {
   state.plate = withBrepFor(state.plate, token, step);
   patchEditBrep(token, step);
@@ -2848,7 +2858,7 @@ function missingOf(body: Body): NodeId[] | null {
  * runs one of its own.
  */
 async function treeCall(key: string, node: NodeId, request: Body): Promise<Body> {
-  const problem = await wholeTools(key, node, request);
+  const problem = (unopened.has(key) ? await restoreShared(key, node) : null) ?? (await wholeTools(key, node, request));
   if (problem) return { error: problem };
   let body = await seededCall(key, node, request);
   // A join's tool tree the engine lacks (a restarted engine, or a tree opened from a project) opens, and the call goes again.
@@ -2874,6 +2884,17 @@ async function treeCall(key: string, node: NodeId, request: Body): Promise<Body>
     body = await seededCall(key, node, request);
   }
   return missingOf(body) ? { error: "The modeler no longer has this solid. Open Model again to reload it." } : body;
+}
+
+/** Open tree `key` whole, toward `node`, sharing an open already on its way. */
+function restoreShared(key: string, node: NodeId): Promise<string | null> {
+  const running = restoring.get(key);
+  if (running) return running;
+  const restored: Promise<string | null> = restore(key, node, [ROOT]).finally(() => {
+    if (restoring.get(key) === restored) restoring.delete(key);
+  });
+  restoring.set(key, restored);
+  return restored;
 }
 
 /** How many tool trees one call may open again: one per tree in the deepest chain of joins anyone builds. */
@@ -2947,7 +2968,13 @@ async function seededCall(key: string, node: NodeId, request: Body): Promise<Bod
       if (problem) return { error: problem };
       continue;
     }
-    if (!seed?.live) return post(request);
+    if (!seed) {
+      await countedReach(key, node);
+      const body = await post(request);
+      noteHeld(key, body);
+      return body;
+    }
+    if (!seed.live) return post(request);
     const body = await post(engineNumbered(seed, request));
     // The engine does not run calls in the order they were sent: an open that started after this one
     // may have run first, and then its node 0 is the root. Such an answer is asked for again.
@@ -2992,21 +3019,22 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
     if (seed?.reading) await seed.reading;
     const tree = modelTrees.get(key);
     if (!tree || tree.root.kind === "piece") return "This solid is no longer open.";
-    // The history opens at its root, then builds toward `node` a few steps per call, so the readout can count them.
+    // A step's own solid, saved in the binary format, stands in for the steps above it: the history builds from there.
+    const solid = seedSolid(tree, node);
     const path = pathTo(tree, node);
-    // A short history opens in one call; a long one is counted, so a minute of rebuilding is never a silent wait.
-    const counted = path.length > COUNTED_REBUILD;
-    let body = await post(wholeTreeRequest(tree, tree.root, counted ? ROOT : node, state.stepTolerance));
-    const steps = path.length - 1;
-    const stride = Math.max(1, Math.round(steps / 50));
-    const shownHere = () => state.stage === "model" && open?.key === key;
-    for (let at = stride; counted && at <= steps && !text(body.error) && typeof body.broken !== "number"; at = at === steps ? steps + 1 : Math.min(steps, at + stride)) {
-      if (!modelTrees.has(key)) break;
-      if (shownHere()) readout(`Rebuilding the history: step ${at} of ${steps}…`);
-      // A probe builds its step without meshing it; a scale by 1 asks nothing else of the kernel.
-      const built = await post(probeRequest(key, path[at]!, { kind: "scale", factor: 1 }));
-      body = typeof built.broken === "number" || text(built.error).includes("not open") ? built : {};
+    const from = solid ? Math.max(0, path.indexOf(solid.node)) : 0;
+    // A short rebuild opens in one call; a long one opens where it starts, then builds toward `node` a few steps per
+    // call, so the readout can count them and a minute of rebuilding is never a silent wait.
+    const counted = path.length - from > COUNTED_REBUILD;
+    // Quiet: the call that needed the tree asks for its step next, so the open meshes and sends nothing.
+    let body = await post(wholeTreeRequest(tree, tree.root, counted ? path[from]! : node, state.stepTolerance, { seed: solid, quiet: true }));
+    noteHeld(key, body);
+    if (solid && typeof body.seedRefused === "string") {
+      refusedSolids.add(solid.bytes);
+      // Said with the step once it is shown, which can come after the rebuild's own count in the readout.
+      seedNotes.set(key, `The saved solid did not open (${body.seedRefused}), so its history was rebuilt.`);
     }
+    if (counted && !text(body.error) && typeof body.broken !== "number") body = await countedBuild(key, path.slice(from));
     if (seed) seed.whole = null;
     if (!modelTrees.has(key)) return closeLate(key);
     // A primitive root that builds differently opens nothing: the whole tree is broken from its root.
@@ -3016,12 +3044,86 @@ function openWhole(key: string, node: NodeId): Promise<string | null> {
     }
     const problem = typeof body.broken === "number" ? "" : text(body.error);
     if (problem) return problem;
-    if (seed) forgetShown(key);
+    unopened.delete(key);
+    if (seed) {
+      forgetShown(key);
+      // The older file's STEP was a read of the step; the step is rebuilt now, and the next save writes its solid exactly.
+      const token = tree.nodes.get(seed.node)?.mesh?.token;
+      if (token) stepKnown.delete(token);
+    }
     seeds.delete(key);
     return null;
   })();
   if (seed) seed.whole = run;
   return run;
+}
+
+/** Trees from a project that the engine has not been sent yet: the first call opens them, rather than ask and be told. */
+const unopened = new Set<string>();
+
+/** What the readout says with a tree's step when it next shows one: why its saved solid was refused. */
+const seedNotes = new Map<string, string>();
+
+/** Solids the engine refused as a seed (another modeler's, or not the step): the history is rebuilt instead. */
+const refusedSolids = new WeakSet<ArrayBuffer>();
+
+/**
+ * The saved solid to open `node`'s history with: the nearest step on the way to `node` whose plate mesh carries its solid
+ * in the binary format, else the plate's step's, which serves a later jump below it. Null when no step has one.
+ */
+function seedSolid(tree: ModelTree, node: NodeId): { node: NodeId; bytes: ArrayBuffer } | null {
+  const usable = (id: NodeId) => {
+    const bytes = id === ROOT ? undefined : tree.nodes.get(id)?.mesh?.step;
+    return bytes && isBrep(bytes) && !refusedSolids.has(bytes) ? { node: id, bytes } : null;
+  };
+  for (const id of pathTo(tree, node).reverse()) {
+    const found = usable(id);
+    if (found) return found;
+  }
+  return usable(tree.committed);
+}
+
+/** The steps of each whole tree the engine said it holds a solid for, from its last answer with `held`. */
+const engineHeld = new Map<string, Set<NodeId>>();
+
+function noteHeld(key: string, body: Body) {
+  if (Array.isArray(body.held)) engineHeld.set(key, new Set(body.held.filter((id): id is number => typeof id === "number")));
+}
+
+/**
+ * Build `path` (from a step the engine holds down to the step wanted) a few steps per call, counting them in the
+ * readout. Answers the step that broke, or an error, else nothing.
+ */
+async function countedBuild(key: string, path: readonly NodeId[]): Promise<Body> {
+  const steps = path.length - 1;
+  const stride = Math.max(1, Math.round(steps / 50));
+  const shownHere = () => state.stage === "model" && open?.key === key;
+  let body: Body = {};
+  for (let at = stride; at <= steps && !text(body.error) && typeof body.broken !== "number"; at = at === steps ? steps + 1 : Math.min(steps, at + stride)) {
+    if (!modelTrees.has(key)) break;
+    if (shownHere()) readout(`Rebuilding the history: step ${at} of ${steps}…`);
+    // A probe builds its step without meshing it; a scale by 1 asks nothing else of the kernel.
+    const built = await post(probeRequest(key, path[at]!, { kind: "scale", factor: 1 }));
+    body = typeof built.broken === "number" || text(built.error).includes("not open") ? built : {};
+    // A probe's answer lists no solids: the step it built is held now, so the call after this one counts from it.
+    if (!text(built.error)) engineHeld.get(key)?.add(path[at]!);
+  }
+  return body;
+}
+
+/**
+ * Before a call on `node` of a whole tree: when the engine would replay more than `COUNTED_REBUILD` steps to reach it
+ * (a jump far below a reopened project's plate step, or past solids it let go), they are built counted first.
+ */
+async function countedReach(key: string, node: NodeId): Promise<void> {
+  const held = engineHeld.get(key);
+  const tree = modelTrees.get(key);
+  if (!held || !tree?.nodes.has(node)) return;
+  const path = pathTo(tree, node);
+  let from = path.length - 1;
+  while (from > 0 && !held.has(path[from]!)) from -= 1;
+  if (path.length - 1 - from <= COUNTED_REBUILD) return;
+  await countedBuild(key, path.slice(from));
 }
 
 /** An open that lands for a tree released or forgotten meanwhile: the engine lets it go too. */

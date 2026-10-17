@@ -132,10 +132,11 @@ test("a saved new solid reopens on its plate step from the saved STEP, and keeps
   await expect(readout(page)).toContainText("Volume 7900 mm³");
   await expect(rows(page)).toHaveCount(2);
   const reopened = tree.calls.slice(before).filter((call) => call.call === "open");
-  // The plate's step opens from its own STEP, one read, rather than rebuilding every step from the primitive.
+  // The plate's step opens from its own saved solid, one read, rather than rebuilding every step from the primitive.
   expect(reopened, "one open").toHaveLength(1);
-  expect(reopened[0]!.dataB64, "of the plate's STEP").toBe((doc.objects[0] as { brep?: { bytesBase64?: string } }).brep?.bytesBase64);
-  expect(reopened[0]!.nodes, "with no steps to rebuild").toBeUndefined();
+  expect(reopened[0]!.primitive, "of the whole history, from its primitive").toBeTruthy();
+  expect(reopened[0]!.nodes, "with its step").toHaveLength(1);
+  expect(reopened[0]!.seed, "and the plate's step from its saved solid").toEqual({ node: 1, dataB64: (doc.objects[0] as { brep?: { bytesBase64?: string } }).brep?.bytesBase64 });
 });
 
 test("New solid beside an open solid lands past it in model space, and the old one turns grey", async ({ page }) => {

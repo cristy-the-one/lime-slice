@@ -1,4 +1,4 @@
-import { applyRequest, crossEditRequest, editRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "./model-request.ts";
+import { applyRequest, crossEditRequest, editRequest, exportRequest, isBrep, joinOp, newSolidRequest, openRequest, probeRequest, solidFileName, wholeTreeRequest } from "./model-request.ts";
 import { newTree, withChild, type ModelOp } from "./model-tree.ts";
 import type { PrimitiveSpec } from "./model-primitive.ts";
 
@@ -34,6 +34,13 @@ eq("a whole primitive tree sends the root's fingerprint and every op", wholeTree
   nodes: [{ id: 1, parent: 0, op: hole, fingerprint: fp(794) }],
   current: 1,
 });
+const saved = new TextEncoder().encode("LIMEBREP 1 7.9.2 794 *\nbody");
+eq("a whole tree can send one step's saved solid, which that step and its children build from", wholeTreeRequest(grown, root, 1, 0.1, { seed: { node: 1, bytes: saved.buffer } }).seed, { node: 1, dataB64: "TElNRUJSRVAgMSA3LjkuMiA3OTQgKgpib2R5" });
+eq("without one, a whole tree sends no seed", "seed" in wholeTreeRequest(grown, root, 1, 0.1, { seed: null }), false);
+eq("a quiet open says so, and only then", [wholeTreeRequest(grown, root, 1, 0.1, { quiet: true }).quiet, "quiet" in wholeTreeRequest(grown, root, 1, 0.1)], [true, false]);
+eq("an export names its format", [exportRequest("k", 3, "brep"), exportRequest("k", 3, "step").format], [{ call: "export", key: "k", node: 3, format: "brep" }, "step"]);
+eq("the engine's binary solid is told from STEP by its first bytes", [isBrep(saved), isBrep(saved.buffer), isBrep(new TextEncoder().encode("ISO-10303-21;")), isBrep(new TextEncoder().encode("LIMEBREP ")), isBrep(undefined)], [true, true, false, false, false]);
+eq("a project names a solid by its format", [solidFileName("bracket.step", saved), solidFileName("bracket.stl", step), solidFileName(".brep", saved)], ["bracket.brep", "bracket.step", "solid.brep"]);
 eq("an apply names the split piece's key only when there is one", [applyRequest("k", 0, 1, hole, 0.1), applyRequest("k", 0, 2, hole, 0.1, "piece#1").otherKey], [{ call: "apply", key: "k", parent: 0, node: 1, op: hole, chordMm: 0.1 }, "piece#1"]);
 
 const tool = { object: "obj-2", key: "obj-2#a.3", node: 4, name: "telo split" };

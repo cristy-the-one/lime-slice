@@ -29,9 +29,21 @@ export function newSolidRequest(key: string, typed: PrimitiveSpec, chordMm: numb
   return { call: "open", key, primitive: rootSpec(typed), chordMm };
 }
 
-/** Open the whole tree from its root and every saved op, showing `current`. */
-export function wholeTreeRequest(tree: ModelTree, root: Exclude<ModelRoot, { kind: "piece" }>, current: NodeId, chordMm: number): TreeRequest {
-  return { call: "open", key: tree.key, ...rootFields(root, tree.nodes.get(0)?.fingerprint ?? null), chordMm, nodes: savedNodes(tree), current };
+/**
+ * Open the whole tree from its root and every saved op, showing `current`. `seed` is one step's solid as `export` wrote it
+ * in `brep` (`isBrep`): that step and the steps after it build from it, not from the root. `quiet` builds `current`
+ * without meshing it or sending it, for a caller that asks for the step next.
+ */
+export function wholeTreeRequest(
+  tree: ModelTree,
+  root: Exclude<ModelRoot, { kind: "piece" }>,
+  current: NodeId,
+  chordMm: number,
+  extra: { seed?: { node: NodeId; bytes: ArrayBuffer | Uint8Array } | null; quiet?: boolean } = {},
+): TreeRequest {
+  const { seed, quiet } = extra;
+  const seedField = seed ? { seed: { node: seed.node, dataB64: bytesToBase64(seed.bytes instanceof Uint8Array ? seed.bytes : new Uint8Array(seed.bytes)) } } : {};
+  return { call: "open", key: tree.key, ...rootFields(root, tree.nodes.get(0)?.fingerprint ?? null), chordMm, nodes: savedNodes(tree), current, ...seedField, ...(quiet ? { quiet: true } : {}) };
 }
 
 /** Build `op` on `parent` as `node`. `otherKey` starts the tree of a split's other piece. */
@@ -139,6 +151,29 @@ export function gotoRequest(key: string, node: NodeId, chordMm: number): TreeReq
   return { call: "goto", key, node, chordMm };
 }
 
-export function exportRequest(key: string, node: NodeId): TreeRequest {
-  return { call: "export", key, node };
+/**
+ * The step's solid as a file: `step` to hand on (the STEP button, `model_export_step`), or `brep`, the binary a project
+ * keeps (`isBrep`), which reads back as the same solid, face and edge numbers included.
+ */
+export function exportRequest(key: string, node: NodeId, format: "step" | "brep"): TreeRequest {
+  return { call: "export", key, node, format };
+}
+
+/** The first bytes of a solid the engine wrote in `brep`. A STEP file starts with `ISO-10303-21`. */
+const BREP_MAGIC = [0x4c, 0x49, 0x4d, 0x45, 0x42, 0x52, 0x45, 0x50, 0x20]; // "LIMEBREP "
+
+/**
+ * Whether `bytes` are a solid the engine wrote in Open CASCADE's binary format, rather than a STEP file: such a solid
+ * reads back as the step it was written from exactly, so an edit can build on it at once.
+ */
+export function isBrep(bytes: ArrayBuffer | Uint8Array | undefined | null): boolean {
+  if (!bytes) return false;
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  return view.byteLength > BREP_MAGIC.length && BREP_MAGIC.every((byte, i) => view[i] === byte);
+}
+
+/** The name a project gives an object's solid: its file's stem, `.brep` for the binary format, else `.step`. */
+export function solidFileName(name: string, bytes: ArrayBuffer | Uint8Array): string {
+  const stem = name.replace(/\.(step|stp|stl|3mf|brep)$/i, "");
+  return `${stem || "solid"}.${isBrep(bytes) ? "brep" : "step"}`;
 }

@@ -24,7 +24,7 @@ import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
 import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
-import { applyRequest, crossEditRequest, exportRequest, extrudeOp, gotoRequest, joinOp, loftOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
+import { applyRequest, crossEditRequest, exportRequest, extrudeOp, gotoRequest, isBrep, joinOp, loftOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, solidFileName, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
 import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { thinWalls } from "./thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "./anchors.ts";
@@ -138,9 +138,9 @@ export interface PlateObject {
   /** The history node `bytes` was meshed from. Null until a commit writes it. */
   platedNode: number | null;
   /**
-   * The committed solid as STEP, beside `bytes`, which is then an STL of the kernel's own mesh of it: the app's
-   * convention (`brep`). The slicer reads STEP with truck, which mis-meshes lofts and some trimmed faces, so a
-   * Model solid's plate mesh never goes through it.
+   * The committed solid (`platedNode`) as the engine writes it in `brep`, beside `bytes`, which is then an STL of the
+   * kernel's own mesh of it: the app's convention. A project saved before version 3 holds STEP here, which still opens.
+   * The slicer never reads it: a Model solid's plate mesh is the kernel's mesh, not a re-read of a file.
    */
   brep?: Uint8Array;
   /** Runs of steps one composite edit or batch made: undo takes the whole run back. */
@@ -347,9 +347,9 @@ function stlFileName(name: string): string {
   return `${stem || "solid"}.stl`;
 }
 
-/** The brep's name for a solid's file: the app's `stepFileName`. */
+/** A STEP file's name for a solid's file: the app's `stepFileName`. */
 function stepFileName(name: string): string {
-  const stem = name.replace(/\.(step|stp|stl|3mf)$/i, "");
+  const stem = name.replace(/\.(step|stp|stl|3mf|brep)$/i, "");
   return `${stem || "solid"}.step`;
 }
 
@@ -498,6 +498,8 @@ export class Session {
   private readonly bridgeSession = randomUUID();
   private readonly bridgeLink: BridgeLink = { known: new Set(), resync: () => this.resyncBridge() };
   private readonly meshHashes = new WeakMap<Uint8Array, string>();
+  /** STEP solids from projects saved before version 3 that a commit already tried to write again in the binary format. */
+  private readonly legacySolids = new WeakSet<Uint8Array>();
   private generation = 0;
   private lastProgressAt = 0;
   overrides: OverrideDocument = emptyOverrides();
@@ -1223,7 +1225,7 @@ export class Session {
       ...(obj.reinforcement.length ? { reinforcement: obj.reinforcement.map((region) => structuredClone(region)) } : {}),
       ...(settingsEmpty(obj.objectSettings) ? {} : { settings: { ...obj.objectSettings } }),
       ...(tree ? { modelTree: tree } : {}),
-      ...(obj.brep ? { brep: meshRecord(stepFileName(obj.fileName), obj.brep), meshSeatMm: obj.seatMm } : {}),
+      ...(obj.brep ? { brep: meshRecord(solidFileName(obj.fileName, obj.brep), obj.brep), meshSeatMm: obj.seatMm } : {}),
       ...(obj.modelPose.t.some((value) => value !== 0) || obj.modelPose.m.some((value, index) => value !== [1, 0, 0, 0, 1, 0, 0, 0, 1][index]) ? { modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] } } : {}),
       ...(obj.workplane.source === "global" ? {} : { workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] } }),
     };
@@ -1259,7 +1261,7 @@ export class Session {
     const tree = obj.tree;
     try {
       const at = stepPlate ? tree.committed : tree.current;
-      const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD), "open");
+      const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD, { seed: this.seedOf(obj, tree) }), "open");
       const solid = rememberSolid(reply);
       if (solid) obj.solid = solid;
       if (stepPlate && solid && solid.positions.length >= 9) {
@@ -2967,6 +2969,16 @@ export class Session {
     return reply;
   }
 
+  /**
+   * The plate's step's saved solid, for a whole tree to build from instead of replaying every step above it: only one in
+   * the binary format, which is that step exactly. The engine refuses one that is not the step, and replays instead.
+   */
+  private seedOf(obj: PlateObject, tree: ModelTree): { node: NodeId; bytes: Uint8Array } | null {
+    const node = obj.platedNode;
+    if (!obj.brep || !isBrep(obj.brep) || node === null || node === 0 || !tree.nodes.has(node)) return null;
+    return { node, bytes: obj.brep };
+  }
+
   /** STEP bytes the bridge returns. A missing `bytesBase64` is a failed export. */
   private stepBytes(reply: Record<string, unknown>): Uint8Array | null {
     if (typeof reply.bytesBase64 !== "string" || reply.bytesBase64 === "") return null;
@@ -3021,7 +3033,7 @@ export class Session {
     const budget = Math.max(this.modelTimeoutMs(), tree.nodes.size * 2000);
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(wholeTreeRequest(tree, tree.root, tree.current, obj.stepTolerance || CHORD), "open", budget);
+      reply = await this.treeCall(wholeTreeRequest(tree, tree.root, tree.current, obj.stepTolerance || CHORD, { seed: this.seedOf(obj, tree) }), "open", budget);
     } catch (err) {
       if (err instanceof ModelRunaway) return null;
       throw err;
@@ -4375,7 +4387,18 @@ export class Session {
       throw err;
     }
     if (!obj.solid || obj.solid.positions.length < 9) return null;
-    if (obj.platedNode === tree.current && obj.bytes.byteLength > 0) return null;
+    if (obj.platedNode === tree.current && obj.bytes.byteLength > 0) {
+      // A project saved before version 3 keeps the plate's step as STEP: the step is written again as the engine's own
+      // solid, which the next open builds from at once. A step that will not write keeps its STEP.
+      // Once per solid: an engine that cannot write the binary format keeps the STEP, and is not asked again.
+      if (obj.brep && !isBrep(obj.brep) && !this.legacySolids.has(obj.brep)) {
+        this.legacySolids.add(obj.brep);
+        const reply = await this.treeCall(exportRequest(tree.key, tree.current, "brep"), "export").catch(() => ({}));
+        const solid = this.stepBytes(reply);
+        if (solid && isBrep(solid)) obj.brep = solid;
+      }
+      return null;
+    }
     // The plate mesh should close: cracks where two faces sample a shared edge apart are mended. What stays open is
     // refused when the edits opened it (the plate's mesh before them closed); a part that came in open, such as a STEP
     // whose kernel mesh never closed but sliced, still commits, with a warning.
@@ -4392,7 +4415,7 @@ export class Session {
     const from = obj.platedNode;
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(exportRequest(tree.key, tree.current), "export");
+      reply = await this.treeCall(exportRequest(tree.key, tree.current, "brep"), "export");
     } catch (err) {
       if (err instanceof ModelRunaway) return err.message;
       throw err;
@@ -4433,7 +4456,7 @@ export class Session {
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(exportRequest(tree.key, tree.current), "export");
+      reply = await this.treeCall(exportRequest(tree.key, tree.current, "step"), "export");
     } catch (err) {
       const lost = this.lostReply(err);
       if (lost) return lost;
