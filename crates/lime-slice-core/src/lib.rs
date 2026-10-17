@@ -55,7 +55,7 @@ pub use slice::{
 };
 pub use slice_cache::{slice_payload, slice_payload_watched, SliceCache};
 pub use step::{
-    load_step, load_step_timed, resolve_step_tolerance, StepTimings, STEP_TOLERANCE_DEFAULT_MM,
+    load_step, load_step_timed, resolve_step_tolerance, set_step_mesher, StepMesher, StepTimings, STEP_TOLERANCE_DEFAULT_MM,
     STEP_TOLERANCE_MAX_MM, STEP_TOLERANCE_MIN_MM,
 };
 pub use strategy::{

@@ -1,6 +1,7 @@
 //! STEP AP203/AP214 boundary-representation import.
 //!
-//! Tessellation is [truck](https://github.com/ricosjp/truck) (`truck-stepio` 0.3 and
+//! Hosts may install a STEP mesher before loading files. The core never links a CAD kernel.
+//! Without a host mesher, tessellation is [truck](https://github.com/ricosjp/truck) (`truck-stepio` 0.3 and
 //! `truck-meshalgo` 0.4): pure Rust, no Open CASCADE install. Truck reads planes,
 //! cylinders, cones, spheres, tori, and NURBS, and returns coordinates in file units.
 //! Units and assembly placements are applied here.
@@ -35,6 +36,25 @@ use truck_topology::compress::{
 };
 
 use crate::mesh::Mesh;
+
+/// Host-supplied STEP tessellator. Coordinates are millimetres in the file frame,
+/// triangle winding is outward, and tolerance has already been validated.
+pub type StepMesher = fn(&[u8], f64) -> Result<Vec<[[f64; 3]; 3]>, String>;
+
+static MESHER: std::sync::OnceLock<(StepMesher, String)> = std::sync::OnceLock::new();
+
+/// Install once, before loading meshes or starting jobs. The core has no kernel
+/// dependency. `identity` must change when the external mesher build changes.
+/// Without registration, STEP uses truck. Backend errors never retry with truck.
+pub fn set_step_mesher(mesher: StepMesher, identity: String) {
+    MESHER
+        .set((mesher, identity))
+        .unwrap_or_else(|_| panic!("STEP mesher already installed"));
+}
+
+pub(crate) fn mesher_identity() -> &'static str {
+    MESHER.get().map_or("truck", |(_, identity)| identity.as_str())
+}
 
 pub const STEP_TOLERANCE_DEFAULT_MM: f64 = 0.05;
 pub const STEP_TOLERANCE_MIN_MM: f64 = 0.01;
@@ -96,6 +116,16 @@ pub fn load_step_timed(bytes: &[u8], tolerance_mm: f64) -> Result<(Mesh, StepTim
     let total = Instant::now();
     let mut timings = StepTimings::default();
     let tol_mm = resolve_step_tolerance(tolerance_mm)?;
+    if let Some((mesher, _)) = MESHER.get() {
+        let triangles = mesher(bytes, tol_mm)?;
+        if triangles.is_empty() || triangles.iter().flatten().flatten().any(|v| !v.is_finite()) {
+            return Err("STEP mesher returned an empty or non-finite mesh".into());
+        }
+        timings.triangles = triangles.len();
+        timings.total_ms = ms_since(total);
+        timings.tessellate_ms = timings.total_ms;
+        return Ok((Mesh { triangles }, timings));
+    }
     let read = Instant::now();
     let text = step_text(bytes)?;
     timings.read_ms = ms_since(read);

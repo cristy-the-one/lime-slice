@@ -343,8 +343,30 @@ Opening Model reloads `brep` when the object has one, so an edited solid is not 
 
 ## What this change is not
 
-- No change to `tools/golden_ab.sh` or to slicer output.
-- The slicer core does not link Open CASCADE. Truck still reads an unedited STEP file for slicing.
+- No change to `tools/golden_ab.sh`, toolpath planning, or STL/3MF geometry.
+- The slicer core does not link Open CASCADE. Since 2.5.2, desktop, CLI/HTTP, and MCP install a host STEP mesher at startup when `lime-model-load` can load the OCCT bridge. Preview and slicing use the same loader. Without OCCT (including a stub build), truck remains the fallback, with known closed-spline and trim limitations. Once OCCT is selected, import failures are returned; they do not silently retry through truck.
+
+### STEP import for slicing (2.5.2)
+
+`lime-model-load::step_mesher` supplies a function returning triangle positions in millimetres in the file frame, plus the bridge binary's SHA-256 identity. The host installs it once with `lime_slice_core::set_step_mesher`, before any imports or jobs. The core validates the chord tolerance, uses the supplied triangles, and retains its existing seating and pose rules. Its default truck implementation is unchanged. The disk slice cache includes the mesher identity so a truck result cannot answer an OCCT request, or survive a bridge rebuild.
+
+The bridge's `capabilities` call returns `{stepMeshing: true}` when its STEP reader is linked. `meshStep` accepts `{call: "meshStep", dataB64, chordMm}` and returns the existing `lime-solid-2` mesh reply. It reads and meshes a temporary shape under the kernel lock, then releases it without creating or evicting history documents. `positions` contains nine f32 coordinates per triangle; `triangles` contains face IDs, not vertex indices. The loader rejects surfaces without solids, empty meshes, and non-finite coordinates. An older loaded bridge must be upgraded alongside the host; an unsupported call is an error, not a truck fallback.
+
+OCCT handles units and placements. For legacy assemblies with bare representation relationships and no context-dependent product occurrences, the reader traverses those relationships, using OCCT to transfer leaves and compute transforms. Cycles and mixed geometry/assembly containers are refused instead of losing components.
+
+The regression fixture `crates/lime-slice-core/tests/fixtures/duck-plate.step` is the original 17-face modeler export (about 500 KB), including closed spline wings and trimmed sphere/loft faces. OCCT's reference solid has volume 32645.87 mm³ and area 6100.4 mm². At the default 0.05 mm chord, the test requires both mesh measurements within 0.5%, checks bounds and preview/load agreement, and exercises inch units and assembly instances. Run:
+
+```powershell
+$env:OCCT_ROOT = "D:/occt-7.9.2"
+cargo build -p lime-model-occt
+# Point at a bundle containing the bridge and its OCCT DLLs.
+$env:LIME_OCCT_BRIDGE = "<bundle>/lime_model_occt.dll"
+$env:LIME_REQUIRE_OCCT = "1"
+cargo test -p lime-model-load --test step_import -- --nocapture
+cargo test -p lime-slice-core --test step_load --test step_backend --test pipeline_profile
+```
+
+`LIME_REQUIRE_OCCT=1` makes a missing bridge fail the regression instead of skipping it. The Windows OCCT CI job runs this check against the bundled bridge.
 
 ## Review questions
 

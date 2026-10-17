@@ -66,7 +66,10 @@ jobs:
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - name: Test
-        run: cargo test --workspace --locked
+        run: |
+          cargo build -p lime-model-occt --locked
+          export LIME_OCCT_BRIDGE="$PWD/target/debug/liblime_model_occt.so"
+          cargo test --workspace --locked
 
       - uses: actions/setup-node@v4
         with:
@@ -400,6 +403,15 @@ jobs:
           if (-not $dll) { throw "bridge dll missing under $root" }
           $env:LIME_OCCT_BRIDGE_DLL = (Resolve-Path -LiteralPath $dll).Path
           cargo test -p lime-model-load --test bundled_layout --locked -- --nocapture
+
+      - name: STEP import regression through the loaded bridge
+        run: |
+          $bundle = Join-Path $PWD "target/step-occt"
+          New-Item -ItemType Directory -Force $bundle | Out-Null
+          Copy-Item -LiteralPath "target/debug/lime_model_occt.dll" -Destination (Join-Path $bundle "lime_model_occt.dll")
+          Get-ChildItem "$env:OCCT_ROOT/bin/*.dll", "$env:OCCT_ROOT/lib/*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination $bundle
+          $env:LIME_OCCT_BRIDGE = Join-Path $bundle "lime_model_occt.dll"
+          cargo test -p lime-model-load --test step_import --locked -- --nocapture
 
   occt-macos:
     name: OCCT dynamic link (macOS)

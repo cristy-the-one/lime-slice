@@ -8,7 +8,7 @@ The design below was written against `origin/main` at 1.8.0. The implementation 
 
 These override the architecture recommendation in section 3 and the open questions in section 8.
 
-1. **In-process engine.** The server calls `slice_payload_watched` and `lime_model_load::tree` in-process. It does not spawn `lime-slice serve`. The engine crates are unchanged, so `tools/golden_ab.sh` still checks that the slicer binary did not move.
+1. **In-process engine.** The server calls `slice_payload_watched` and `lime_model_load::tree` in-process. It does not spawn `lime-slice serve`. The original server left the engine crates unchanged. Version 2.5.2 adds only an optional STEP import callback in the core so OCCT can supply triangles; toolpath planning remains unchanged. `tools/golden_ab.sh` remains the STL slicing equivalence check.
 
    The server is TypeScript (`mcp/`) because that is the least risky way to reuse the app's request builders, feasibility checks, and G-code post-processing (`settingsRules`, the adhesion, seam, flow, and layer-action helpers, `toSolidOp`, `withPrintMeta`, `withMachineGcode`, `withFooterGrams`). A Rust `rmcp` server would have been a second copy of that UI. The engine sits behind the small `Engine` interface in `mcp/engine.ts` (`sliceStart`, `slicePoll`, `sliceCancel`, `meshPreview`, `modelTree`). The first implementation is `crates/lime-mcp-engine`, a cdylib that Node loads with `process.dlopen`. N-API symbols come from the host process, so the library is not linked against Node and the server process adds no runtime npm dependency. Replacing that one module is how a later build could put the engine in another process without changing the tools.
 
@@ -163,7 +163,7 @@ Placement on the bed is `docs/plate-placement.md` and `src/mesh-place.ts`. X and
 
 ### Model history
 
-`lime-model-load` does not link Open CASCADE. It `dlopen`s `lime_model_occt` (`liblime_model_occt.so`, `.dylib`, or `.dll`) from `LIME_OCCT_BRIDGE`, next to the executable, or from the installer's `occt/lib` (`crates/lime-model-load/src/lib.rs`). If the bridge is missing, Model stays off and the slicer still starts. The slicer core reads an unedited STEP with truck (`docs/step-modeler.md`, "What this change is not"). OCCT is LGPL-2.1 plus the Open CASCADE exception (`third_party/occt/NOTICE.md`).
+`lime-model-load` does not link Open CASCADE. It `dlopen`s `lime_model_occt` (`liblime_model_occt.so`, `.dylib`, or `.dll`) from `LIME_OCCT_BRIDGE`, next to the executable, or from the installer's `occt/lib` (`crates/lime-model-load/src/lib.rs`). If the bridge is missing, Model stays off and the slicer still starts. Since 2.5.2, the MCP addon registers the loader’s optional OCCT STEP mesher before serving requests. Preview and slicing both use it, including direct STEP imports and old STEP plate meshes. The core stays OCCT-free; truck remains the fallback when OCCT is absent. Import errors from a selected OCCT backend are returned rather than remeshed with truck. See `docs/step-modeler.md`, "STEP import for slicing". OCCT is LGPL-2.1 plus the Open CASCADE exception (`third_party/occt/NOTICE.md`).
 
 Every Model call is one JSON object through `lime_occt_tree`. `call` is `open`, `apply`, `probe`, `edit`, `goto`, `drop`, `close`, `distance`, or `export`. The table in `docs/step-modeler.md` ("History tree (engine)") is the contract. `src/model-request.ts` is the client that builds those objects, and the tests pin them.
 

@@ -502,7 +502,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     resets: 0,
     previewResets: 0,
     hung: false,
-    version: () => "2.5.0",
+    version: () => "2.5.2",
     occt: () => true,
     meshPreview: async (body: string, bytes?: Uint8Array) => {
       const block = Number(process.env.LIME_MCP_FAKE_BLOCK_MS ?? 0);

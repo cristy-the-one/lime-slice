@@ -112,6 +112,18 @@
 #include <IFSelect_ReturnStatus.hxx>
 #include <Interface_Static.hxx>
 #include <STEPControl_Reader.hxx>
+#include <STEPControl_ActorRead.hxx>
+#include <StepData_StepModel.hxx>
+#include <StepRepr_RepresentationRelationshipWithTransformation.hxx>
+#include <StepShape_ContextDependentShapeRepresentation.hxx>
+#include <StepShape_ShapeRepresentation.hxx>
+#include <StepGeom_Axis2Placement3d.hxx>
+#include <XSControl_WorkSession.hxx>
+#include <XSControl_TransferReader.hxx>
+#include <Transfer_TransientProcess.hxx>
+#include <functional>
+#include <map>
+#include <set>
 #include <STEPControl_StepModelType.hxx>
 #include <STEPControl_Writer.hxx>
 #endif
@@ -1198,6 +1210,83 @@ std::mutex& step_mutex() {
     return mu;
 }
 
+#ifdef LIME_OCCT_STEP
+// Some legacy exports describe instances only by representation relationships,
+// without CONTEXT_DEPENDENT_SHAPE_REPRESENTATION / product occurrences. OCCT's
+// product reader ignores these placements. Keep the representation graph, but
+// let OCCT transfer each leaf and compute every transform (including units).
+TopoDS_Shape representation_assembly(STEPControl_Reader& reader) {
+    const auto model = reader.StepModel();
+    using Link = Handle(StepRepr_RepresentationRelationshipWithTransformation);
+    std::map<int, std::vector<Link>> children;
+    std::set<int> components;
+    for (int i = 1; i <= model->NbEntities(); ++i) {
+        const auto entity = model->Value(i);
+        if (!Handle(StepShape_ContextDependentShapeRepresentation)::DownCast(entity).IsNull()) {
+            return {}; // Normal product assemblies belong to the standard reader.
+        }
+        const auto link = Link::DownCast(entity);
+        if (!link.IsNull()) {
+            children[model->Number(link->Rep2())].push_back(link);
+            components.insert(model->Number(link->Rep1()));
+        }
+    }
+    if (children.empty()) return {};
+    const auto process = reader.WS()->TransferReader()->TransientProcess();
+    STEPControl_ActorRead actor(model);
+    BRep_Builder builder;
+    std::set<int> visiting;
+    std::set<int> completed;
+    std::function<TopoDS_Shape(int)> build = [&](int id) -> TopoDS_Shape {
+        if (!visiting.insert(id).second) {
+            throw Standard_Failure("STEP assembly contains a cycle");
+        }
+        const auto rep = Handle(StepShape_ShapeRepresentation)::DownCast(model->Value(id));
+        if (rep.IsNull()) throw Standard_Failure("STEP assembly has an unsupported representation");
+        TopoDS_Compound result;
+        builder.MakeCompound(result);
+        const auto links = children.find(id);
+        if (links == children.end()) {
+            if (!reader.TransferEntity(rep)) throw Standard_Failure("STEP assembly component could not be read");
+            const auto part = reader.WS()->TransferReader()->ShapeResult(rep);
+            if (part.IsNull()) throw Standard_Failure("STEP assembly component is empty");
+            builder.Add(result, part);
+        } else {
+            // Assembly containers normally contain only their coordinate frame.
+            // Refuse mixed geometry here rather than silently dropping it.
+            for (int item = 1; item <= rep->NbItems(); ++item) {
+                if (!rep->ItemsValue(item)->IsKind(STANDARD_TYPE(StepGeom_Axis2Placement3d))) {
+                    throw Standard_Failure("STEP assembly mixes geometry and bare representation links");
+                }
+            }
+            for (const auto& link : links->second) {
+                gp_Trsf transform;
+                actor.ComputeSRRWT(link, process, transform);
+                const auto part = build(model->Number(link->Rep1()));
+                builder.Add(result, part.Moved(TopLoc_Location(transform)));
+            }
+        }
+        visiting.erase(id);
+        completed.insert(id);
+        return result;
+    };
+    TopoDS_Compound result;
+    builder.MakeCompound(result);
+    bool any = false;
+    for (int i = 1; i <= model->NbEntities(); ++i) {
+        if (!components.count(i) && !Handle(StepShape_ShapeRepresentation)::DownCast(model->Value(i)).IsNull()) {
+            builder.Add(result, build(i));
+            any = true;
+        }
+    }
+    if (!any) throw Standard_Failure("STEP assembly contains no root");
+    for (int component : components) {
+        if (!completed.count(component)) throw Standard_Failure("STEP assembly has an unreachable component");
+    }
+    return result;
+}
+#endif
+
 TopoDS_Shape read_step(const char* path, std::string& error) {
 #ifndef LIME_OCCT_STEP
     (void)path;
@@ -1219,7 +1308,8 @@ TopoDS_Shape read_step(const char* path, std::string& error) {
         error = "This STEP file has no solid to measure";
         return {};
     }
-    TopoDS_Shape shape = reader.OneShape();
+    TopoDS_Shape shape = representation_assembly(reader);
+    if (shape.IsNull()) shape = reader.OneShape();
     if (shape.IsNull()) {
         error = "This STEP file has no solid to measure";
         return {};

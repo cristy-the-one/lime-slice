@@ -607,6 +607,13 @@ unsafe fn export_fn(env: NapiEnv, exports: NapiValue, name: &str, cb: NapiCallba
 /// Node's addon entry. The process that loads this file provides the N-API symbols.
 #[no_mangle]
 pub unsafe extern "C" fn napi_register_module_v1(env: NapiEnv, exports: NapiValue) -> NapiValue {
+    static STEP_MESHER: std::sync::Once = std::sync::Once::new();
+    STEP_MESHER.call_once(|| {
+        if let Some((mesher, identity)) = lime_model_load::step_mesher() {
+            lime_slice_core::set_step_mesher(mesher, identity);
+        }
+    });
+
     export_fn(env, exports, "version", version_cb);
     export_fn(env, exports, "sliceStart", slice_start_cb);
     export_fn(env, exports, "slicePoll", slice_poll_cb);

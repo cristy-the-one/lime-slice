@@ -307,6 +307,9 @@ pub fn run() {
             if let Ok(dir) = app.path().resource_dir() {
                 lime_model_load::add_search_dir(dir.join("occt").join("lib"));
             }
+            if let Some((mesher, identity)) = lime_model_load::step_mesher() {
+                lime_slice_core::set_step_mesher(mesher, identity);
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_decorations(native_window_decorations());
                 let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))?;
