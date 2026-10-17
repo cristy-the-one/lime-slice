@@ -4,7 +4,7 @@
  * progress keeps a client that restarts its timeout waiting; a cancelled batch is taken back whole; and a server
  * started again in the same workspace offers the last autosave, which opens with its history.
  */
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+import { takePreviousAutosave } from "./autosave.ts";
 import { nextProgress } from "./protocol.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -31,6 +32,21 @@ function check(name: string, ok: boolean, detail = "") {
 
 check("progress that does not move forward still grows", nextProgress(0.5, 0.4) === 0.51 && nextProgress(0.5, null) === 0.51);
 check("progress the work reports is sent as it is", nextProgress(0.2, 0.6) === 0.6);
+
+{
+  // Two servers on one workspace: a running one's autosave is left alone; an ended one's is offered.
+  const shared = mkdtempSync(join(tmpdir(), "lime-autosave-"));
+  const before = process.env.LIME_MCP_WORKSPACE;
+  process.env.LIME_MCP_WORKSPACE = shared;
+  writeFileSync(join(shared, `autosave-${process.ppid}.lime`), JSON.stringify({ objects: [{}] }));
+  const live = takePreviousAutosave();
+  check("a running server's autosave is not taken", live === null && existsSync(join(shared, `autosave-${process.ppid}.lime`)));
+  writeFileSync(join(shared, "autosave-2147483646.lime"), JSON.stringify({ objects: [{}, {}] }));
+  const ended = takePreviousAutosave();
+  check("an ended server's autosave is offered as the previous plate", ended?.objects === 2 && ended.path === join(shared, "autosave-previous.lime") && !existsSync(join(shared, "autosave-2147483646.lime")), JSON.stringify(ended));
+  if (before === undefined) delete process.env.LIME_MCP_WORKSPACE;
+  else process.env.LIME_MCP_WORKSPACE = before;
+}
 
 async function connect(): Promise<{ client: Client; call: (name: string, args: unknown) => Promise<Record<string, unknown>> }> {
   const env: Record<string, string> = {};
@@ -84,8 +100,12 @@ try {
   timedOut = true;
 }
 check("a client without progress resets times out", timedOut);
-await new Promise((resolve) => setTimeout(resolve, 600));
-const afterCancel = await first.call("model_history", { object, limit: 100 });
+// The server takes the batch back once the step in flight ends: wait for the history to settle, up to 10 s.
+let afterCancel = await first.call("model_history", { object, limit: 100 });
+for (let waited = 0; (afterCancel.nodes as unknown[]).length !== kept && waited < 10_000; waited += 200) {
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  afterCancel = await first.call("model_history", { object, limit: 100 });
+}
 check("the cancelled batch left no steps behind", (afterCancel.nodes as unknown[]).length === kept, JSON.stringify(afterCancel));
 await new Promise((resolve) => setTimeout(resolve, 1300));
 await first.client.close();

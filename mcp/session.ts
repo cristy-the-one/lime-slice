@@ -75,7 +75,7 @@ import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
-import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBox, TOUCH_TRIM, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
+import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
 
@@ -87,6 +87,15 @@ const SLICE_WAIT_MAX_S = 120;
 const STALE_SLICE = "The printer, filament, settings, or placement changed after this slice. Slice again.";
 const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a mesh.";
 const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the current handles.";
+/**
+ * Whether a tool can change what the autosave holds: the plate, its objects, their histories and paint. Settings,
+ * slices, exports, and machines are not in it, so they never cost a save.
+ */
+function changesPlate(name: string): boolean {
+  if (name === "model_export_step" || name === "model_check" || name === "model_params" || name === "model_define") return false;
+  return /^(model_|object_|plate_|paint_|workplane_|support_edit|reinforce_|modifier_|range_|override_)/.test(name) || name === "solid_new" || name === "mesh_import" || name === "project_open" || name === "project_create";
+}
+
 /** Calls that can outlast a client's request timeout: the autosave is written before they start. */
 const LONG_CALLS = new Set(["model_apply_batch", "model_build", "model_edit", "project_open", "mesh_import"]);
 const NAME_LIMIT = 120;
@@ -517,6 +526,7 @@ export class Session {
   private startupChecked = false;
   private autosaveDirty = false;
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private autosaveWriting: Promise<void> = Promise.resolve();
   private inflight = 0;
   /** The progress token and cancel signal of the call each piece of work belongs to. */
   private readonly callContext = new AsyncLocalStorage<CallMeta>();
@@ -536,7 +546,7 @@ export class Session {
     const problem = validateTool(name, args ?? {});
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
-    const changes = !annotationsFor(name).readOnlyHint;
+    const changes = !annotationsFor(name).readOnlyHint && changesPlate(name);
     // The plate as it stood before a call that can run long is on disk before it starts; others rely on the save after.
     const long = LONG_CALLS.has(name) || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
     if (changes && this.inflight === 0 && long) this.flushAutosave();
@@ -585,7 +595,7 @@ export class Session {
     this.autosaveTimer.unref?.();
   }
 
-  /** The plate and its histories to the workspace's autosave.lime, without committing anything. Never throws. */
+  /** The plate and its histories to this server's autosave in the workspace, without committing anything. Never throws. */
   flushAutosave(): void {
     if (!this.autosaveDirty) return;
     this.autosaveDirty = false;
@@ -604,10 +614,17 @@ export class Session {
           return { ...row, mesh: meshRecord(name, stlBytes(Float32Array.from(obj.solid.positions), name)) };
         });
       }
-      writeAutosave(path, serializeProject(doc));
+      const text = serializeProject(doc);
+      // One write at a time, off the call's path; a failed write is not worth failing a call for.
+      this.autosaveWriting = this.autosaveWriting.then(() => writeAutosave(path, text)).catch(() => undefined);
     } catch {
-      // An autosave that cannot be written is not worth failing a call for.
+      // An autosave that cannot be built is not worth failing a call for either.
     }
+  }
+
+  /** The autosave being written, for a test or a shutdown that wants it on disk. */
+  autosaveSettled(): Promise<void> {
+    return this.autosaveWriting;
   }
 
   /**
@@ -3790,8 +3807,10 @@ export class Session {
         }
         // A step that leaves pieces meeting along an edge is tried once a little shorter, then left out.
         if (done.ok !== true && done.touching === true) {
-          const shorter = shortenedBox(piece.spec, TOUCH_TRIM);
-          if (shorter) ({ probed, done, typed } = await attempt(shorter));
+          for (const shorter of shortenedBoxes(piece.spec, TOUCH_TRIM)) {
+            ({ probed, done, typed } = await attempt(shorter));
+            if (done.ok === true || (done.touching !== true && probed.missed !== true)) break;
+          }
           if (done.ok !== true && (done.touching === true || probed.missed === true)) {
             touching += 1;
             touchingAt ??= String(done.reason ?? "");

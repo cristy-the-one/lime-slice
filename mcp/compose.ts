@@ -703,11 +703,22 @@ function ribPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] |
 /** How much a composite's box step is shortened at each end when it would meet the part only along an edge. */
 export const TOUCH_TRIM = 0.3;
 
-/** A box `trim` shorter at each end of its local X, about the same middle; null for another primitive or a short box. */
-export function shortenedBox(spec: PrimitiveSpec, trim: number): PrimitiveSpec | null {
-  if (spec.primitive !== "box" || !(spec.size[0] > 4 * trim)) return null;
-  // A box turns about its middle, so moving the min corner by trim along local X and the size by twice that keeps it.
-  return { ...spec, origin: [spec.origin[0] + trim, spec.origin[1], spec.origin[2]], size: [spec.size[0] - 2 * trim, spec.size[1], spec.size[2]] };
+/**
+ * A box `trim` shorter at each end, about the same middle: along its local X first (a rib's length), then along Y (a
+ * cell's other side). Empty for another primitive; a side shorter than four trims is left alone.
+ */
+export function shortenedBoxes(spec: PrimitiveSpec, trim: number): PrimitiveSpec[] {
+  if (spec.primitive !== "box") return [];
+  // A box turns about its middle, so moving the min corner by trim along an axis and the size by twice that keeps it.
+  const along = (axis: 0 | 1): PrimitiveSpec[] => {
+    if (!(spec.size[axis] > 4 * trim)) return [];
+    const origin: Vec3 = [...spec.origin];
+    const size: Vec3 = [...spec.size];
+    origin[axis] += trim;
+    size[axis] -= 2 * trim;
+    return [{ ...spec, origin, size }];
+  };
+  return [...along(0), ...along(1)];
 }
 
 /**

@@ -157,7 +157,7 @@ A typical slice is `machine_list`, `machine_select`, `mesh_import`, `slice_start
 
 `model_build` makes a solid, runs a batch of edits, and commits it in one call. Each edit is checked before it is applied. A step that Open CASCADE reports as done but that loses the part, or leaves pieces that meet only along an edge, is taken back and refused. A commit refuses a mesh that does not close, and `model_check` lists open and touching edges with where they are.
 
-A long call sends progress notifications, so a client that restarts its timeout on progress keeps waiting. A cancelled batch is taken back whole. The server autosaves the plate, with every object's Model history, to `autosave.lime` in the workspace. If the client restarts the server, the new server moves that file to `autosave-previous.lime` and names it in `session_info` and `plate_list`. Call `project_open` on it to carry on.
+A long call sends progress notifications, so a client that restarts its timeout on progress keeps waiting. A cancelled batch is taken back whole. The server autosaves the plate, with every object's Model history, to `autosave-<process id>.lime` in the workspace. Each server writes its own file, so Claude Desktop and Claude Code can share a workspace. If the client restarts the server, the new server moves the newest file of a server that has ended to `autosave-previous.lime` and names it in `session_info` and `plate_list`. Call `project_open` on it to carry on.
 
 Writes stay inside `LIME_MCP_WORKSPACE`. A path can be absolute, or relative to that workspace. Saving a project may overwrite a `.lime` file already in that folder. `app_open` saves the plate in the workspace and opens it in the desktop app. If no running app answers the live bridge, it starts the installed app with the file.
 
@@ -180,7 +180,7 @@ Build the engine first:
 cargo build -p lime-mcp-engine --release
 ```
 
-The engine library is `target/release/liblime_mcp_engine.so` (`.dylib` on macOS, `lime_mcp_engine.dll` on Windows). Set `LIME_MCP_ENGINE` if it is somewhere else. If a checkout has no engine built, the server uses the installed app's engine and Open CASCADE, but only when their version equals the checkout's. `session_info` then names that engine's path. A different version is refused, with a message that says what to do. An engine that was missing is looked for again on the next call, so you do not need to reconnect after a build.
+The engine library is `target/release/liblime_mcp_engine.so` (`.dylib` on macOS, `lime_mcp_engine.dll` on Windows). Set `LIME_MCP_ENGINE` if it is somewhere else. If a checkout has no engine built, the server uses the installed app's engine and Open CASCADE, but only when their version equals the checkout's. `session_info` then names that engine's path. While that server runs, it holds the installed engine open, so close the client before you install a new version. A different version is refused before it is loaded, with a message that says what to do. An engine that was missing is looked for again on the next call, so you do not need to reconnect after a build.
 
 ```json
 {

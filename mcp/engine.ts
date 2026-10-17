@@ -3,7 +3,7 @@
  * The first implementation loads `lime-mcp-engine` in-process.
  * A later transport can replace the loader without changing the tool schemas.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type ChildProcess, fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -128,6 +128,16 @@ export function engineNotFound(searched: readonly string[], platform: NodeJS.Pla
   ].join(" ");
 }
 
+/** The release a bundled server.mjs in `dir` was built for, read from its text; null when it cannot be read. */
+export function bundledVersion(dir: string): string | null {
+  try {
+    const text = readFileSync(join(dir, "server.mjs"), "utf8");
+    return /function appVersion\(\)\s*\{\s*if \(true\) return "([^"]+)"/.exec(text)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** The installed engine is used only when it is the same release as this server, so its replies match these tools. */
 export function installedVersionRefusal(path: string, engine: string, server: string): string | null {
   if (engine === server) return null;
@@ -140,7 +150,15 @@ export function loadNativeEngine(root: string, expectVersion?: string): Engine &
   let installed = false;
   if (!path) {
     const fallback = installedEngineFallback();
-    if (!fallback) throw new ProtocolError(engineNotFound([...searched, ...(BUNDLED || process.env.LIME_MCP_ENGINE ? [] : [join(installedMcpDir() ?? "", engineLibraryName())])]));
+    const dir = BUNDLED || process.env.LIME_MCP_ENGINE ? null : installedMcpDir();
+    if (!fallback) throw new ProtocolError(engineNotFound([...searched, ...(dir ? [join(dir, engineLibraryName())] : [])]));
+    // The installed server beside the engine names its release: another release is refused before its library is
+    // loaded, so it is neither run nor held open.
+    const theirs = bundledVersion(dirname(fallback));
+    if (expectVersion && theirs) {
+      const refusal = installedVersionRefusal(fallback, theirs, expectVersion);
+      if (refusal) throw new ProtocolError(refusal);
+    }
     path = fallback;
     installed = true;
   }
