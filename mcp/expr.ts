@@ -115,7 +115,7 @@ export function evaluate(text: string, params: Params): number {
  * words the caller passes (every enum value in the op schema), so a new text field does not need listing here.
  */
 const TEXT_FIELDS = new Set([
-  "kind", "op", "primitive", "label", "keep", "screw", "toolObject", "shape", "pattern", "plane", "onError", "filter", "object", "name", "from", "fromNode", "along", "fit", "anchor", "point", "part", "var", "text", "align",
+  "kind", "op", "primitive", "label", "keep", "screw", "toolObject", "shape", "pattern", "plane", "onError", "filter", "object", "name", "from", "fromNode", "along", "fit", "anchor", "point", "part", "var", "text", "align", "caps", "capStart", "capEnd",
 ]);
 
 /**

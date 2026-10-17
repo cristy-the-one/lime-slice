@@ -34,6 +34,49 @@ export interface SweepSpec {
   up?: V3;
   /** Sections between two path points, through a smooth curve: 1 keeps only the points themselves. */
   steps?: number;
+  /** How the ends close: flat (the end section), round (a dome), or point (a short taper to a tip). */
+  caps?: Cap;
+  capStart?: Cap;
+  capEnd?: Cap;
+}
+
+export type Cap = "flat" | "round" | "point";
+const CAPS: readonly Cap[] = ["flat", "round", "point"];
+
+/** A section shrunk by `k` about its centre: its radii, or its profile. */
+function shrunk(section: LoftSection, k: number): LoftSection {
+  const out: LoftSection = { origin: section.origin, turn: section.turn };
+  if (section.radius !== undefined) {
+    out.radius = round(Math.max(section.radius * k, 1e-3));
+    if (section.radiusV !== undefined) out.radiusV = round(Math.max(section.radiusV * k, 1e-3));
+  } else {
+    out.profile = (section.profile ?? []).map(([pu, pv]) => [round(pu * k), round(pv * k)]);
+    if (section.smooth) out.smooth = true;
+    if (section.corners?.length) out.corners = [...section.corners];
+  }
+  return out;
+}
+
+/** How far a section reaches from its centre, on average across its two directions. */
+function sectionSize(section: LoftSection): number {
+  if (section.radius !== undefined) return (section.radius + (section.radiusV ?? section.radius)) / 2;
+  return sectionReach(section.profile ?? []);
+}
+
+/**
+ * The sections that close one end: a round cap as four sections shrinking along a quarter ellipse as deep as the end
+ * is wide, a point as one tiny section a little past the end. `out` is the direction away from the sweep.
+ */
+function capSections(end: LoftSection, out: V3, cap: Cap): LoftSection[] {
+  if (cap === "flat") return [];
+  const size = sectionSize(end);
+  const at = (d: number): V3 => end.origin.map((c, i) => round(c + out[i]! * d)) as V3;
+  if (cap === "point") return [{ ...shrunk(end, 0.05), origin: at(size * 0.9) }];
+  return [1, 2, 3, 4].map((j) => {
+    const angle = (j / 4) * (Math.PI / 2);
+    // The last section stays a sixth of the end's size: smaller pinches the loft's tip into a dimple.
+    return { ...shrunk(end, Math.max(Math.cos(angle), 0.15)), origin: at(size * Math.sin(angle) * (j === 4 ? 0.97 : 1)) };
+  });
 }
 
 /** A value for each path point: one number for all, or a list as long as the path. */
@@ -103,6 +146,11 @@ export function sweepSections(spec: SweepSpec): LoftSection[] | { reason: string
   for (const list of [radius, radiusV, scale]) if (list && "reason" in list) return list;
   const lists = [radius, radiusV, scale] as (number[] | undefined)[];
   if (lists.some((list) => list && list.some((v) => !(v > 0)))) return { reason: "Each radius and scale is above 0." };
+  for (const key of ["caps", "capStart", "capEnd"] as const) {
+    if (spec[key] !== undefined && !CAPS.includes(spec[key]!)) return { reason: `${key} is flat, round, or point.` };
+  }
+  const capStart = spec.capStart ?? spec.caps ?? "flat";
+  const capEnd = spec.capEnd ?? spec.caps ?? "flat";
   const steps = spec.steps === undefined ? 3 : Math.round(spec.steps);
   if (!(steps >= 1 && steps <= 12)) return { reason: "steps is 1 to 12 sections a span." };
   const carried = lists.map((list) => list ?? Array.from({ length: n }, () => 0));
@@ -140,6 +188,14 @@ export function sweepSections(spec: SweepSpec): LoftSection[] | { reason: string
     }
     sections.push(section);
   }
+  // Ends closed past the path's ends, along its direction there, so the path's own length is kept.
+  const startCap = capSections(sections[0]!, mul(tangent(0), -1), capStart).reverse();
+  const endCap = capSections(sections[sections.length - 1]!, tangent(pts.length - 1), capEnd);
+  if (sections.length + startCap.length + endCap.length > MAX_SECTIONS) {
+    return { reason: `This sweep and its caps make more than ${MAX_SECTIONS} sections. Use fewer path points or a lower steps.` };
+  }
+  sections.unshift(...startCap);
+  sections.push(...endCap);
   // A bend tighter than the section is wide folds the loft through itself.
   for (let i = 1; i < pts.length - 1; i += 1) {
     const a = sub(pts[i]!, pts[i - 1]!);

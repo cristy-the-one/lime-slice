@@ -319,6 +319,7 @@ function sizeFields(spec: PrimitiveSpec): Record<string, number> {
   const box = { modelDx: spec.size[0], modelDy: spec.size[1], modelDz: spec.size[2] };
   switch (spec.primitive) {
     case "box":
+    case "ellipsoid":
       return box;
     case "wedge":
       return { ...box, modelTopX: spec.topX ?? 0 };

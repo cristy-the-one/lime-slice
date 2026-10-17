@@ -97,6 +97,8 @@ export interface RenderOptions {
   /** Shading blended across a curved surface's facets (default true); creases stay sharp. */
   smooth?: boolean;
   tints?: Tint[];
+  /** Each triangle's face, as the solid's reply numbers them: a tint then takes whole faces, mostly inside its box. */
+  faces?: ArrayLike<number>;
   /** Only the side of the plane the normal points away from is drawn; the inside shows where it is cut, in red. */
   section?: { point: Vec; normal: Vec };
 }
@@ -212,7 +214,28 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   // so a sweep or a sphere reads round and a box's edge stays sharp.
   const corners = options.smooth === false ? null : cornerNormals(positions);
   const tints = options.tints ?? [];
-  const pads = tints.map((box) => Math.max(0.3, 0.12 * Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2])));
+  const pads = tints.map((box) => Math.max(0.3, 0.06 * Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2])));
+  const inBox = (i: number, b: number) => [0, 3, 6].every((o) => [0, 1, 2].every((k) => positions[i + o + k]! >= tints[b]!.min[k]! - pads[b]! && positions[i + o + k]! <= tints[b]!.max[k]! + pads[b]!));
+  // With faces, a face takes the first tint whose box holds most of its area: a step's own faces lie in its box, and
+  // a big face it only touches, a head beside a bill or a floor round a plinth, keeps its grey.
+  const faceTint = new Map<number, number>();
+  if (tints.length && options.faces) {
+    const area = new Map<number, number[]>();
+    for (let i = 0; i + 8 < positions.length; i += 9) {
+      const face = options.faces[i / 9]!;
+      const row = area.get(face) ?? new Array(tints.length + 1).fill(0);
+      const e1 = [positions[i + 3]! - positions[i]!, positions[i + 4]! - positions[i + 1]!, positions[i + 5]! - positions[i + 2]!];
+      const e2 = [positions[i + 6]! - positions[i]!, positions[i + 7]! - positions[i + 1]!, positions[i + 8]! - positions[i + 2]!];
+      const a = Math.hypot(e1[1]! * e2[2]! - e1[2]! * e2[1]!, e1[2]! * e2[0]! - e1[0]! * e2[2]!, e1[0]! * e2[1]! - e1[1]! * e2[0]!);
+      row[tints.length] += a;
+      tints.forEach((_, b) => { if (inBox(i, b)) row[b] += a; });
+      area.set(face, row);
+    }
+    for (const [face, row] of area) {
+      const hit = tints.findIndex((_, b) => row[b]! >= 0.6 * row[tints.length]!);
+      if (hit >= 0) faceTint.set(face, Math.min(hit + 1, 254));
+    }
+  }
   const section = options.section ? { point: options.section.point, normal: unit(options.section.normal) ?? ([0, 0, 1] as Vec) } : null;
   for (let i = 0; i + 8 < positions.length; i += 9) {
     const own = normalAt(positions, i);
@@ -221,8 +244,11 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
     if (tints.length) {
       // All three corners inside, a little padded: a long sliver of a floor that only crosses the box stays as it is,
       // and a smooth curve that bulges past its points' box still takes the colour.
-      const hit = tints.findIndex((box, b) => [0, 3, 6].every((o) => [0, 1, 2].every((k) => positions[i + o + k]! >= box.min[k]! - pads[b]! && positions[i + o + k]! <= box.max[k]! + pads[b]!)));
-      if (hit >= 0) tint = Math.min(hit + 1, 254);
+      if (options.faces) tint = faceTint.get(options.faces[i / 9]!) ?? 0;
+      else {
+        const hit = tints.findIndex((_, b) => inBox(i, b));
+        if (hit >= 0) tint = Math.min(hit + 1, 254);
+      }
     }
     let side: Vec | undefined;
     if (section) {
@@ -365,10 +391,12 @@ function edgeInk(
     }
   }
   const crease = Math.cos((CREASE_DEG * Math.PI) / 180);
+  const smoothSeams = seamPartners(mesh, edges, crease);
   // A line is hidden only behind something clearly nearer than it, more than a couple of pixels' depth.
   const bias = 2.5 / fit;
-  for (const { a, b, normals } of edges.values()) {
+  for (const [key, { a, b, normals }] of edges) {
     let strength = 0;
+    if (normals.length === 1 && smoothSeams.has(key)) continue;
     if (normals.length !== 2) strength = 230;
     else {
       const [n1, n2] = normals as [Vec, Vec];
@@ -395,6 +423,64 @@ function edgeInk(
     }
   }
   return ink;
+}
+
+/**
+ * The one-sided edges that are really a smooth join: two kernel faces tessellated apart meet along an edge whose points
+ * do not match, so each side's edge has no partner by position. An edge is a smooth seam when an edge of another
+ * triangle lies along it (parallel, on the same line, overlapping) and the two triangles meet at less than the crease.
+ */
+function seamPartners(mesh: Float32Array, edges: Map<string, { a: number; b: number; normals: Vec[] }>, crease: number): Set<string> {
+  const open: { key: string; p: Vec; q: Vec; n: Vec }[] = [];
+  for (const [key, row] of edges) {
+    if (row.normals.length !== 1) continue;
+    open.push({ key, p: [mesh[row.a]!, mesh[row.a + 1]!, mesh[row.a + 2]!], q: [mesh[row.b]!, mesh[row.b + 1]!, mesh[row.b + 2]!], n: row.normals[0]! });
+  }
+  const smooth = new Set<string>();
+  if (open.length < 2) return smooth;
+  let longest = 0;
+  for (const e of open) longest = Math.max(longest, Math.hypot(e.q[0] - e.p[0], e.q[1] - e.p[1], e.q[2] - e.p[2]));
+  const cell = Math.max(longest, 1e-3);
+  const keyOf = (v: Vec) => `${Math.floor(v[0] / cell)},${Math.floor(v[1] / cell)},${Math.floor(v[2] / cell)}`;
+  const grid = new Map<string, number[]>();
+  open.forEach((e, i) => {
+    const mid: Vec = [(e.p[0] + e.q[0]) / 2, (e.p[1] + e.q[1]) / 2, (e.p[2] + e.q[2]) / 2];
+    const k = keyOf(mid);
+    const row = grid.get(k);
+    if (row) row.push(i);
+    else grid.set(k, [i]);
+  });
+  const off = (x: Vec, p: Vec, d: Vec, len: number) => {
+    const t = ((x[0] - p[0]) * d[0] + (x[1] - p[1]) * d[1] + (x[2] - p[2]) * d[2]) / len;
+    const c: Vec = [p[0] + d[0] * t / len, p[1] + d[1] * t / len, p[2] + d[2] * t / len];
+    return { t, gap: Math.hypot(x[0] - c[0], x[1] - c[1], x[2] - c[2]) };
+  };
+  open.forEach((e, i) => {
+    if (smooth.has(e.key)) return;
+    const d: Vec = [e.q[0] - e.p[0], e.q[1] - e.p[1], e.q[2] - e.p[2]];
+    const len = Math.hypot(d[0], d[1], d[2]);
+    if (!(len > 1e-9)) return;
+    const mid: Vec = [(e.p[0] + e.q[0]) / 2, (e.p[1] + e.q[1]) / 2, (e.p[2] + e.q[2]) / 2];
+    const [cx, cy, cz] = keyOf(mid).split(",").map(Number) as [number, number, number];
+    const tol = Math.max(1e-3, len * 0.02);
+    for (let x = cx - 1; x <= cx + 1; x += 1) for (let y = cy - 1; y <= cy + 1; y += 1) for (let z = cz - 1; z <= cz + 1; z += 1) {
+      for (const j of grid.get(`${x},${y},${z}`) ?? []) {
+        if (j === i) continue;
+        const o = open[j]!;
+        const sp = off(o.p, e.p, d, len);
+        const sq = off(o.q, e.p, d, len);
+        // On the same line, and overlapping this edge by more than a sliver.
+        if (sp.gap > tol || sq.gap > tol) continue;
+        const lo = Math.max(0, Math.min(sp.t, sq.t));
+        const hi = Math.min(len, Math.max(sp.t, sq.t));
+        if (hi - lo < len * 0.2) continue;
+        if (dot(e.n, o.n) < crease) continue;
+        smooth.add(e.key);
+        smooth.add(o.key);
+      }
+    }
+  });
+  return smooth;
 }
 
 function triple(value: unknown): Vec | null {

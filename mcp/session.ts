@@ -732,7 +732,7 @@ export class Session {
       model: {
         ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
         composite: [...COMPOSITE_KINDS],
-        primitives: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"],
+        primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"],
         maxSteps: MAX_PIECES,
         expressions: true,
         guides: GUIDES.map((row) => row.uri.replace("lime://guide/", "")),
@@ -2546,6 +2546,7 @@ export class Session {
     if ((wanted.length || input.section !== undefined) && !solidMesh) return { reason: "highlight, colours, and section need a Model solid. Open the Model history first (solid_new or model_build)." };
     if (wanted.length) {
       options.tints = [];
+      options.faces = obj.solid!.triangles;
       for (const { label, rgb } of wanted) {
         const box = this.labelBox(obj, label, true);
         if (!box) return { reason: `No step is labelled "${label}" with a tool to measure. model_anchors lists the labels.` };

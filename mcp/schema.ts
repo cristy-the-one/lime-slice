@@ -48,7 +48,7 @@ const edgeList = {
 };
 
 const label = { type: "string", maxLength: 80, description: "Step name." };
-const primitiveKind = { enum: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." };
+const primitiveKind = { enum: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive. An ellipsoid is dx, dy, dz wide, placed by centre." };
 const booleanKind = { enum: ["fuse", "cut", "common"], description: "cut, fuse, common." };
 
 /** The fields every primitive takes, as solid_new names them. */
@@ -449,6 +449,9 @@ const sketchOps = [
       ...profileShape,
       up: { ...vec3, description: "Where V points at the start. Default +Z." },
       steps: { type: "integer", minimum: 1, maximum: 12, description: "Sections per span (default 3); 1 is only the points." },
+      caps: { enum: ["flat", "round", "point"], description: "Ends: flat (default), round dome, or point, past the path's ends." },
+      capStart: { enum: ["flat", "round", "point"], description: "Start end only." },
+      capEnd: { enum: ["flat", "round", "point"], description: "Far end only." },
       label,
     },
   },
@@ -1016,7 +1019,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        primitive: { enum: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." },
+        primitive: primitiveKind,
         dx: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
         dy: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
         dz: { type: "number", exclusiveMinimum: 0, maximum: 1000 },
