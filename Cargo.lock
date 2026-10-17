@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "lime-mcp-engine"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "base64 0.22.1",
  "lime-model-load",
@@ -2137,21 +2137,21 @@ dependencies = [
 
 [[package]]
 name = "lime-model"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "lime-model-load"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "libloading 0.8.9",
 ]
 
 [[package]]
 name = "lime-model-occt"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "base64 0.22.1",
  "cc",
@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -2174,7 +2174,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-core"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "base64 0.22.1",
  "clipper2",
@@ -2193,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-desktop"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "base64 0.22.1",
  "lime-model-load",
