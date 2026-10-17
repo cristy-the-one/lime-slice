@@ -55,6 +55,24 @@ export function resolveRead(path: string, kind: "mesh" | "lime" | "profile" | "m
   return full;
 }
 
+/** A project or mesh already in the workspace, for the desktop app to open. A path that leaves it is refused. */
+export function resolveWorkspaceFile(path: string): string {
+  const root = requireWorkspace();
+  if (!path || path.includes("\0")) throw new ProtocolError("That path is not a file this server can read.");
+  const full = isAbsolute(path) ? resolve(path) : resolve(root, path);
+  let real = "";
+  try {
+    real = realpathSync(full);
+  } catch {
+    throw new ProtocolError(`That file was not found: ${full}`);
+  }
+  if (!inside(root, real)) throw new ProtocolError("app_open opens files inside LIME_MCP_WORKSPACE only.");
+  if (!statSync(real).isFile()) throw new ProtocolError("That path is not a regular file.");
+  const ext = extensionOf(real);
+  if (ext !== ".lime" && !MESH_EXT.has(ext)) throw new ProtocolError("That file is not a .lime, .stl, .3mf, .step, or .stp file, so the app does not open it.");
+  return real;
+}
+
 function inside(root: string, target: string): boolean {
   const rel = relative(root, target);
   return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));

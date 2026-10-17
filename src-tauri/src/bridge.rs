@@ -4,15 +4,19 @@
 //! is non-empty. The listener is `127.0.0.1` only (`LIME_BRIDGE_PORT`, default
 //! 43119). Every request, including health, must send `Authorization: Bearer`.
 //! A matching POST body is emitted as the `lime-bridge` event after any token
-//! field is removed. This module does not start a process and does not open a
-//! console window.
+//! field is removed. A body `{"open": "<path>"}` is not mirrored: the window
+//! opens that `.lime`, `.stl`, `.3mf`, or `.step` file the way File > Open does,
+//! and answers 204, or 404 with the reason when the file cannot be opened. This
+//! module does not start a process and does not open a console window.
 //!
-//! An authorised answer names this window's instance in `X-Lime-Bridge-Instance`.
+//! An authorised answer names this window's instance in `X-Lime-Bridge-Instance`,
+//! and what it does beyond the mirror in `X-Lime-Bridge-Features` (`open`).
 //! It changes when the app starts and each time the page calls `bridge_ready`,
 //! so the server knows a page that has none of the meshes it sent before.
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,10 +24,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
+use crate::open_file;
+
 const DEFAULT_PORT: u16 = 43119;
 const MAX_HEADER: usize = 16 * 1024;
 /// A plate message carries its meshes: room for a few large parts.
 const MAX_BODY: usize = 256 * 1024 * 1024;
+
+/// What this window does beyond the mirror, named on every authorised answer, so a server
+/// sends an open message only to a window that will not take it for a plate.
+const FEATURES: &str = "open";
 
 /// Bumped by the page each time it mounts, so a reloaded page reads as a new desktop.
 static PAGE_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -94,14 +104,27 @@ fn serve(listener: TcpListener, token: String, app: AppHandle) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
         match read_request(&mut stream) {
-            Ok(request) => {
-                let (status, event) = decide(&request, &token);
-                let _ = write_status(&mut stream, status, &instance());
-                if let Some(mut value) = event {
+            Ok(request) => match decide(&request, &token) {
+                (status, Some(Event::Mirror(mut value))) => {
+                    let _ = write_status(&mut stream, status, &instance());
                     strip_secrets(&mut value);
                     let _ = app.emit("lime-bridge", value);
                 }
-            }
+                (_, Some(Event::Open(path))) => {
+                    // The server says what happened from this answer, so it comes after the file was read.
+                    match open_file::deliver(&app, path) {
+                        Ok(()) => {
+                            let _ = write_status(&mut stream, 204, &instance());
+                        }
+                        Err(reason) => {
+                            let _ = write_not_found(&mut stream, &reason);
+                        }
+                    }
+                }
+                (status, None) => {
+                    let _ = write_status(&mut stream, status, &instance());
+                }
+            },
             Err(()) => {
                 let _ = write_status(&mut stream, 400, "");
             }
@@ -171,7 +194,16 @@ fn read_request(stream: &mut TcpStream) -> Result<Incoming, ()> {
     })
 }
 
-fn decide(request: &Incoming, token: &str) -> (u16, Option<Value>) {
+/// What an accepted POST asks of the window.
+#[derive(Debug, PartialEq)]
+enum Event {
+    /// A plate message for the page's mirror.
+    Mirror(Value),
+    /// A file for the window to open.
+    Open(PathBuf),
+}
+
+fn decide(request: &Incoming, token: &str) -> (u16, Option<Event>) {
     if !tokens_match(bearer(&request.authorization), token) {
         return (401, None);
     }
@@ -183,7 +215,13 @@ fn decide(request: &Incoming, token: &str) -> (u16, Option<Value>) {
         return (405, None);
     }
     match serde_json::from_slice::<Value>(&request.body) {
-        Ok(Value::Object(map)) => (204, Some(Value::Object(map))),
+        Ok(Value::Object(map)) => match map.get("open") {
+            None => (204, Some(Event::Mirror(Value::Object(map)))),
+            Some(Value::String(path)) if !path.is_empty() => {
+                (204, Some(Event::Open(PathBuf::from(path))))
+            }
+            Some(_) => (400, None),
+        },
         _ => (400, None),
     }
 }
@@ -231,7 +269,7 @@ fn write_status(stream: &mut TcpStream, status: u16, instance: &str) -> std::io:
     };
     // Only an authorised answer names the instance.
     let named = if status == 200 || status == 204 {
-        format!("X-Lime-Bridge-Instance: {instance}\r\n")
+        format!("X-Lime-Bridge-Instance: {instance}\r\nX-Lime-Bridge-Features: {FEATURES}\r\n")
     } else {
         String::new()
     };
@@ -239,6 +277,15 @@ fn write_status(stream: &mut TcpStream, status: u16, instance: &str) -> std::io:
         stream,
         "HTTP/1.1 {code}\r\nContent-Length: {}\r\n{named}Connection: close\r\n\r\n{body}",
         body.len()
+    )
+}
+
+/// An open the window refused, with the reason as the body for the server to pass on.
+fn write_not_found(stream: &mut TcpStream, reason: &str) -> std::io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reason}",
+        reason.len()
     )
 }
 
@@ -282,7 +329,9 @@ mod tests {
             "secret",
         );
         assert_eq!(status, 204);
-        let mut value = event.expect("event");
+        let Some(Event::Mirror(mut value)) = event else {
+            panic!("a plate message is mirrored: {event:?}");
+        };
         strip_secrets(&mut value);
         assert!(value.get("token").is_none());
         assert_eq!(value["tool"], "object_place");
@@ -296,5 +345,27 @@ mod tests {
         let after = instance();
         assert_ne!(before, after);
         assert_eq!(before.split('-').next(), after.split('-').next());
+    }
+
+    #[test]
+    fn an_open_message_names_a_file_and_is_not_mirrored() {
+        let (status, event) = decide(
+            &request("POST", "/", "secret", r#"{"open":"C:\\work\\duck.lime"}"#),
+            "secret",
+        );
+        assert_eq!(status, 204);
+        assert_eq!(
+            event,
+            Some(Event::Open(PathBuf::from(r"C:\work\duck.lime")))
+        );
+        let empty = decide(&request("POST", "/", "secret", r#"{"open":""}"#), "secret");
+        assert_eq!(empty, (400, None));
+        let wrong = decide(&request("POST", "/", "secret", r#"{"open":3}"#), "secret");
+        assert_eq!(wrong, (400, None));
+        let denied = decide(
+            &request("POST", "/", "nope", r#"{"open":"a.lime"}"#),
+            "secret",
+        );
+        assert_eq!(denied, (401, None));
     }
 }

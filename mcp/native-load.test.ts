@@ -50,7 +50,7 @@ if (!built) {
 } else {
   const engine = loadNativeEngine(root);
   const version = await engine.version();
-  check("the loaded addon reports engine 2.4.0", version === "2.4.0", String(version));
+  check("the loaded addon reports engine 2.5.0", version === "2.5.0", String(version));
 
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -69,7 +69,7 @@ if (!built) {
   const info = await client.callTool({ name: "session_info", arguments: {} });
   const text = toolText(info.content);
   const body = JSON.parse(text) as { ok?: boolean; engine?: string };
-  check("session_info on the real addon returns engine 2.4.0", body.ok === true && body.engine === "2.4.0", text);
+  check("session_info on the real addon returns engine 2.5.0", body.ok === true && body.engine === "2.5.0", text);
   await client.close();
 
   // A native call cannot be interrupted inside a thread. The engine's preview

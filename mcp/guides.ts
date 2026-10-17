@@ -119,7 +119,7 @@ GUIDES.push(
   {
     uri: "lime://guide/compose",
     name: "Compose",
-    tools: ["model_params", "model_build", "model_apply_batch", "model_undo", "render_view", "project_save"],
+    tools: ["model_params", "model_build", "model_apply_batch", "model_undo", "render_view", "project_save", "app_open"],
     text: [
       "A whole part in a few calls.",
       "1. model_params {set:{wallW:60, wallD:40, wallH:35}}. A value may be text using earlier names: {roof:\"wallD / sqrt(2) + 4\"}.",
@@ -129,7 +129,7 @@ GUIDES.push(
       "   onError:\"skip\" leaves each refused op out, applies the rest, and lists every refusal at once. object:\"obj_N\" rebuilds an earlier build in place the same way.",
       "   A refusal that would leave a loose piece or seal a hollow says where it is, its size, and how far to move: where:{voids, pieces}.",
       "3. model_apply_batch {object, ops:[...], label} adds more. The batch is one undo step: model_undo takes it all back.",
-      "4. render_view to look, then project_save {name, ifExists:\"refuse\"} so an existing file is not replaced.",
+      "4. render_view to look, then project_save {name, ifExists:\"refuse\"} so an existing file is not replaced. app_open shows it in the desktop app when the user asks to see it there.",
       "Numbers may be text wherever an op takes a number, e.g. origin:[0, 0, \"wallH\"]. model_params values are saved with the project.",
       "Loops: {kind:\"each\", var:\"k\", count:\"n\" | values:[...] | from, to, step, ops:[...]} repeats ops; expressions in them use k, and {k} in a label becomes its value.",
       "Parts: model_define {name:\"fish\", params:{a:0, R:30}, ops:[...]} once; then {kind:\"use\", part:\"fish\", with:{a:\"k * 90\"}, label:\"fish {k}\"} in any op list. Labels inside take the use's label in front.",

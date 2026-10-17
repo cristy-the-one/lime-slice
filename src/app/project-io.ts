@@ -87,6 +87,15 @@ export async function openProjectFile(file: File) {
   await restoreProject(parsed.project);
 }
 
+/** A file from File > Open, a launch argument, or the MCP bridge: a project, or a mesh that replaces the plate. */
+export async function openPickedFile(file: File) {
+  if (/\.lime$/i.test(file.name)) {
+    await openProjectFile(file);
+    return;
+  }
+  await adoptBytes(file.name, await file.arrayBuffer());
+}
+
 export function mountProjectFiles() {
   document.querySelector("#projectFile")?.addEventListener("change", (ev) => {
     const input = ev.target as HTMLInputElement;

@@ -9,6 +9,7 @@ import { mountCompact } from "./ui/compact/mount";
 import { mountConnection } from "./ui/connection";
 import { mountPlatform } from "./platform";
 import { mountBridge } from "./app/bridge-mount";
+import { mountOpenFile } from "./app/open-file";
 import { mountToasts } from "./ui/toasts";
 import { session, state } from "./app/state";
 import { activeSection, draw, fitNarrow, model, mountViews, paintGizmoReadout, prepare, previewCenter, resize, selectedObjectIndex, setHelp, setStage, setView, view3d } from "./app/viewer";
@@ -202,6 +203,7 @@ mountConnection(() => {
 });
 mountPlatform();
 mountBridge();
+mountOpenFile();
 mountCompact();
 mountToasts();
 mountPalette();

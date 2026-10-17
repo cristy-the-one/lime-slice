@@ -10,7 +10,7 @@ import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
 import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
-import { mountProjectFiles, openProjectFile, saveCurrentProject } from "./project-io";
+import { mountProjectFiles, openPickedFile, saveCurrentProject } from "./project-io";
 import { pickModelFile } from "../platform";
 import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
@@ -336,11 +336,7 @@ export function wireApp() {
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
-    if (/\.lime$/i.test(file.name)) {
-      void openProjectFile(file);
-      return;
-    }
-    file.arrayBuffer().then((bytes) => adoptBytes(file.name, bytes)).catch(fail);
+    openPickedFile(file).catch(fail);
   });
   document.querySelector("#plateAddFile")!.addEventListener("change", (ev) => {
     const input = ev.target as HTMLInputElement;
