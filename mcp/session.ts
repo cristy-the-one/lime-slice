@@ -65,7 +65,7 @@ import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { OP_WORDS, validateTool } from "./schema.ts";
-import { addsPiece, anchorOf, cleanOp, SEPARATE_PIECE, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
+import { addsPiece, anchorOf, cleanOp, cutsOffPiece, SEPARATE_PIECE, SPLIT_PIECE, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWrite } from "./workspace.ts";
 
@@ -2994,7 +2994,7 @@ export class Session {
    * The check before an apply, for an op already in the solid's frame. A probe that passes is remembered for `at`.
    * `measure` asks the modeler for the built shape too, for model_probe's metrics; a batch step does not need it.
    */
-  private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown> }, measure = false): Promise<Record<string, unknown>> {
+  private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown> }, measure = false, composite = false): Promise<Record<string, unknown>> {
     const picked = baked.op.kind === "fillet" || baked.op.kind === "chamfer" ? { edges: baked.typed.edges } : {};
     const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) });
     if (baked.op.kind === "scale") {
@@ -3031,6 +3031,7 @@ export class Session {
     const note = probeNote(tool, view);
     if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}) });
     if (view?.phase === "done" && addsPiece(baked.op as { kind: string; op?: string }, view.measure)) return answer({ ok: false, reason: SEPARATE_PIECE });
+    if (composite && view?.phase === "done" && cutsOffPiece(baked.op as { kind: string; op?: string }, view.measure)) return answer({ ok: false, reason: SPLIT_PIECE });
     obj.probes.set(probeKey(String(at), baked.op), true);
     return answer({ ok: true, reason: note.text });
   }
@@ -3223,7 +3224,7 @@ export class Session {
         if ("reason" in tree) return { ok: false, reason: tree.reason };
         const typed = { kind: "boolean", op: piece.op, ...piece.spec } as Record<string, unknown>;
         const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...piece.spec }, obj.modelPose), typed };
-        const probed = await this.probeBaked(obj, tree, tree.current, baked);
+        const probed = await this.probeBaked(obj, tree, tree.current, baked, false, true);
         if (probed.ok !== true && probed.missed === true) {
           skipped += 1;
           continue;

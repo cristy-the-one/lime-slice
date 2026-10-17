@@ -655,14 +655,25 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
 }
 
 /**
- * Whether a probe's measures say a fuse left a separate piece: a closed shell the solid did not have. The kernel
- * refuses a fuse that adds a solid; a ring around a mast can instead come back as a second shell of the same solid.
+ * Whether a probe's measures say a fuse left a separate piece or a sealed hollow: a closed shell the solid did not have.
+ * The kernel refuses a fuse that adds a solid; a ring around a mast can instead come back as a second shell of the same
+ * solid, and a belt laid just above a lip can close a ring of air under it.
  * A shell op hollows on purpose, so only adding kinds are asked.
  */
-export const SEPARATE_PIECE = "This would add a separate piece that does not touch the part. Move or resize it so it overlaps.";
+export const SEPARATE_PIECE = "This would add a separate piece, or seal off a hollow inside the part. Move or resize it so it overlaps the part without closing a gap.";
 export function addsPiece(op: { kind: string; op?: string }, measure: { shells: number; before: { shells: number } } | undefined): boolean {
   const adds = (op.kind === "boolean" || op.kind === "join" || op.kind === "extrude" || op.kind === "revolve") && op.op === "fuse";
   return adds && !!measure && measure.shells > measure.before.shells;
+}
+
+/**
+ * Whether a cut that is one step of a composite edit split a piece off: a groove or a pocket that severs a sliver, as a
+ * quilting groove can where a thigh plate comes close to the surface. A plain cut may split a part on purpose; a
+ * composite's steps never should.
+ */
+export const SPLIT_PIECE = "This step would cut a piece off the part. Move it, or make it shallower or narrower.";
+export function cutsOffPiece(op: { kind: string; op?: string }, measure: { solids: number; shells: number; before: { solids: number; shells: number } } | undefined): boolean {
+  return op.kind === "boolean" && op.op === "cut" && !!measure && (measure.solids > measure.before.solids || measure.shells > measure.before.shells);
 }
 
 function isStill(motion: Motion): boolean {
