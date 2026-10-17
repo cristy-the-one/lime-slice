@@ -106,14 +106,16 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   check("a composite step that touches along an edge is left out and reported", boss.leftOut === 1 && String(boss.leftOutNote).startsWith("1 step would have left pieces meeting only along an edge, even 0.3 mm shorter at each end, and was left out."), JSON.stringify(boss));
 }
 
-// Finding 2b: a step that runs past the kernel's budget restarts the modeler, but every history stays.
+// Finding 2b: a step that runs past the kernel's budget restarts the modeler, but every history stays and builds again.
 {
   const engine = fakeEngine();
   const session = new Session(engine);
   const box = await session.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
   const other = await session.call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
+  const tool = await session.call("solid_new", { primitive: "box", dx: 4, dy: 4, dz: 4 });
   await session.call("model_apply", { object: box.object, probe: true, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [-2, -2, 19], dx: 4, dy: 4, dz: 3 } });
-  await session.call("model_apply", { object: other.object, probe: true, op: { kind: "scale", factor: 2 } });
+  await session.call("model_apply", { object: tool.object, probe: true, op: { kind: "scale", factor: 2 } });
+  const joined = await session.call("model_apply", { object: other.object, probe: true, op: { kind: "join", op: "fuse", toolObject: tool.object, keepTool: true } });
   process.env.LIME_MCP_HANG_MODEL = "1";
   process.env.LIME_MCP_MODEL_TIMEOUT_S = "0.3";
   const hung = await session.call("model_apply", { object: box.object, probe: true, op: { kind: "fillet", edges: [0], size: 1 } });
@@ -121,11 +123,16 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   delete process.env.LIME_MCP_MODEL_TIMEOUT_S;
   const mine = await session.call("model_history", { object: box.object });
   const theirs = await session.call("model_history", { object: other.object });
-  check("a runaway step is refused and the modeler restarted", hung.ok === false && engine.resets === 1, JSON.stringify(hung));
-  check("both objects keep their histories", (mine.nodes as unknown[]).length === 2 && (theirs.nodes as unknown[]).length === 2, JSON.stringify({ mine, theirs }));
+  check("a runaway step is refused and the modeler restarted", joined.ok === true && hung.ok === false && engine.resets === 1, JSON.stringify({ joined, hung }));
+  check("every object keeps its history", (mine.nodes as unknown[]).length === 2 && (theirs.nodes as unknown[]).length === 2, JSON.stringify({ mine, theirs }));
+  const opens = engine.opens.length;
   const again = await session.call("model_apply", { object: box.object, probe: true, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [-2, -2, 19], dx: 2, dy: 2, dz: 3 } });
   const after = await session.call("model_history", { object: box.object });
-  check("the next edit rebuilds the tree and lands after the kept steps", again.ok === true && (after.nodes as unknown[]).length === 3 && engine.calls.includes("open"), JSON.stringify({ again, after }));
+  const rebuilt = engine.opens.slice(opens);
+  check("the next edit rebuilds that history whole, then lands after its steps", again.ok === true && (after.nodes as unknown[]).length === 3 && rebuilt.length === 1 && Array.isArray(rebuilt[0]!.nodes) && (rebuilt[0]!.nodes as unknown[]).length === 1, JSON.stringify({ again, after, rebuilt: rebuilt.map((row) => ({ key: row.key, nodes: row.nodes })) }));
+  const committed = await session.call("model_commit", { object: other.object });
+  const keys = engine.opens.slice(opens + 1).map((row) => row.key);
+  check("a commit after the restart rebuilds the join's tool first, then the part, and commits", committed.ok === true && JSON.stringify(keys) === JSON.stringify([`mcp-${tool.object}`, `mcp-${other.object}`]), JSON.stringify({ committed, keys }));
 }
 
 // Finding 6: cracks where two faces sample a shared edge apart are mended; edges are counted.

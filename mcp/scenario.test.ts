@@ -94,15 +94,25 @@ check("a symlinked workspace exports inside the real directory", viaAlias.ok ===
 const outside = mkdtempSync(join(tmpdir(), "lime-outside-"));
 const victim = join(outside, "victim.gcode");
 writeFileSync(victim, "untouched");
-symlinkSync(victim, join(workspace, "link.gcode"));
-let symlinkExport: { ok: boolean; reason: string } = { ok: true, reason: "" };
+// A file symlink needs admin rights or developer mode on Windows; without them this check is skipped there.
+let linked = true;
 try {
-  symlinkExport = await call("gcode_export", { name: "link.gcode", now: "2020-01-02T03:04:05.000Z" }) as { ok: boolean; reason: string };
+  symlinkSync(victim, join(workspace, "link.gcode"));
 } catch (err) {
-  symlinkExport = { ok: false, reason: err instanceof Error ? err.message : "" };
+  if (process.platform !== "win32" || (err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+  linked = false;
+  console.log("skip: a file symlink needs admin rights on this Windows account");
 }
-check("a symlink export is refused", symlinkExport.ok === false, JSON.stringify(symlinkExport));
-check("the outside file is unchanged", readFileSync(victim, "utf8") === "untouched");
+if (linked) {
+  let symlinkExport: { ok: boolean; reason: string } = { ok: true, reason: "" };
+  try {
+    symlinkExport = await call("gcode_export", { name: "link.gcode", now: "2020-01-02T03:04:05.000Z" }) as { ok: boolean; reason: string };
+  } catch (err) {
+    symlinkExport = { ok: false, reason: err instanceof Error ? err.message : "" };
+  }
+  check("a symlink export is refused", symlinkExport.ok === false, JSON.stringify(symlinkExport));
+  check("the outside file is unchanged", readFileSync(victim, "utf8") === "untouched");
+}
 let outsideExport: { ok: boolean; reason: string } = { ok: true, reason: "" };
 try {
   outsideExport = await call("export_3mf", { name: join(outside, "made", "by", "mcp", "x.3mf") }) as { ok: boolean; reason: string };

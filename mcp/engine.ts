@@ -529,7 +529,7 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
 }
 
 /** A stand-in for scripted tests. It does not slice. A committed STEP round-trips its mesh. */
-export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number } {
+export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; opens: Record<string, unknown>[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number } {
   const jobs = new Map<number, { status: string; body: string; polls: number }>();
   const kept = new Map<string, KeptSolid>();
   let next = 0;
@@ -581,6 +581,10 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
   const engine = {
     lastSlice: "",
     calls: [] as string[],
+    /** Every open's request, so a test can tell a whole-history rebuild (it carries `nodes`) from a first open. */
+    opens: [] as Record<string, unknown>[],
+    /** Trees a reset dropped: a call on one fails until it is opened again, as the real modeler's do. */
+    lost: new Set<string>(),
     lastProbe: null as unknown,
     lastProbeBody: null as unknown,
     resets: 0,
@@ -633,6 +637,12 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
       };
       engine.calls.push(req.call ?? "open");
       const key = req.key ?? "solid";
+      if (!req.call || req.call === "open") {
+        engine.opens.push(JSON.parse(body) as Record<string, unknown>);
+        engine.lost.delete(key);
+      } else if (engine.lost.has(key)) {
+        return JSON.stringify({ error: "unknown", missing: [0] });
+      }
       if (req.call === "probe") {
         engine.lastProbe = req.op ?? null;
         engine.lastProbeBody = req;
@@ -774,6 +784,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     resetModeler: () => {
       engine.resets += 1;
       engine.hung = false;
+      for (const key of kept.keys()) if (!key.includes("#")) engine.lost.add(key);
     },
     resetPreview: () => {
       engine.previewResets += 1;

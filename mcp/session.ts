@@ -2957,18 +2957,16 @@ export class Session {
     return bytes;
   }
 
-  private async ensureTree(obj: PlateObject): Promise<ModelTree> {
-    if (obj.tree && obj.treeStale && obj.tree.root.kind !== "piece") {
-      const tree = obj.tree;
-      // The whole history runs again, so it gets a budget for every step in it.
-      const budget = Math.max(this.modelTimeoutMs(), tree.nodes.size * 2000);
-      const reply = await this.treeCall(wholeTreeRequest(tree, tree.root as Exclude<ModelTree["root"], { kind: "piece" }>, tree.current, obj.stepTolerance || CHORD), "open", budget);
-      const error = typeof reply.error === "string" ? reply.error : "";
-      if (error) throw new ProtocolError(plainModelError(error));
+  private async ensureTree(obj: PlateObject, depth = 0): Promise<ModelTree> {
+    if (obj.tree && obj.treeStale) {
+      const rebuilt = await this.rebuildStale(obj, depth);
+      if (rebuilt) return rebuilt;
+      // A history that will not build again falls back to what it did before a restart kept histories: the plate's
+      // STEP or mesh, opened as a new root.
+      obj.tree = null;
+      obj.solid = null;
       obj.treeStale = false;
-      const solid = rememberSolid(reply);
-      if (solid) obj.solid = solid;
-      return tree;
+      if (obj.bytes.byteLength === 0 && !obj.brep) throw new ProtocolError("The modeler was restarted and this solid's history did not build again. It was never committed, so nothing is left to open.");
     }
     if (obj.tree) return obj.tree;
     const key = `mcp-${obj.id}`;
@@ -2981,6 +2979,39 @@ export class Session {
     obj.tree = newTree(key, root, obj.name, null);
     obj.solid = rememberSolid(reply);
     return obj.tree;
+  }
+
+  /**
+   * A history the restarted modeler lost, built again at its current step: the tools its joins name first, then the
+   * whole tree, with a budget for every step in it. Null when it does not build.
+   */
+  private async rebuildStale(obj: PlateObject, depth: number): Promise<ModelTree | null> {
+    const tree = obj.tree;
+    if (!tree || tree.root.kind === "piece" || depth > 8) return null;
+    for (const node of tree.nodes.values()) {
+      if (node.op?.kind !== "join") continue;
+      const tool = this.byTreeKey(node.op.tool.key);
+      if (tool && tool !== obj && tool.treeStale) {
+        try {
+          await this.ensureTree(tool, depth + 1);
+        } catch {
+          return null;
+        }
+      }
+    }
+    const budget = Math.max(this.modelTimeoutMs(), tree.nodes.size * 2000);
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(wholeTreeRequest(tree, tree.root, tree.current, obj.stepTolerance || CHORD), "open", budget);
+    } catch (err) {
+      if (err instanceof ModelRunaway) return null;
+      throw err;
+    }
+    if (typeof reply.error === "string" && reply.error) return null;
+    obj.treeStale = false;
+    const solid = rememberSolid(reply);
+    if (solid) obj.solid = solid;
+    return tree;
   }
 
   private async solidNew(input: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -3370,7 +3401,7 @@ export class Session {
     if (spec.kind !== "join") return null;
     const tool = this.find(typeof spec.toolObject === "string" ? spec.toolObject : "");
     if (!tool) return UNKNOWN_OBJECT;
-    if (tool.tree) return null;
+    if (tool.tree && !tool.treeStale) return null;
     const opened = await this.opened(tool);
     return "reason" in opened ? opened.reason : null;
   }
@@ -3672,8 +3703,8 @@ export class Session {
       return result({ ok: false, applied: 0, rolledBack: true, cancelled: true, reason: "The call was cancelled, so the whole run was taken back. The part and its history are as they were before it.", node: nodeHandle(start) });
     };
     const fail = async (failed: Record<string, unknown>): Promise<Record<string, unknown>> => {
-      if (obj.treeStale && obj.tree?.nodes.has(start)) obj.tree = jumped(obj.tree, start);
       if (mode === "rollback" && nodes.length > 0) {
+        if (obj.treeStale && obj.tree?.nodes.has(start)) obj.tree = jumped(obj.tree, start);
         await this.gotoNode(obj, start);
         if (obj.tree && !options.keep) this.drop(obj, nodes[0]!);
         return result({ ok: false, applied: 0, rolledBack: true, failed, node: nodeHandle(start) });
@@ -3781,6 +3812,8 @@ export class Session {
       }
       checkpoints.push(obj.tree?.current ?? null);
     }
+    // A cancel that came while the last step ran takes the run back too.
+    if (meta?.signal?.aborted) return cancelled();
     if (nodes.length > 1 || (options.start !== undefined && nodes.length > 0)) {
       obj.groups = [...(obj.groups ?? []), { start, end: nodes[nodes.length - 1]!, label: options.label ?? `${nodes.length} steps` }];
     }
@@ -4308,8 +4341,18 @@ export class Session {
 
   /** The plate mesh becomes the solid on screen. A second commit of the same node does not export again. */
   private async commitObject(obj: PlateObject): Promise<string | null> {
-    const tree = obj.tree;
-    if (!tree || !obj.solid || obj.solid.positions.length < 9) return null;
+    if (!obj.tree) return null;
+    // A history the modeler lost in a restart is built again before its export.
+    let tree: ModelTree;
+    try {
+      const opened = await this.opened(obj);
+      if ("reason" in opened) return opened.reason;
+      tree = opened;
+    } catch (err) {
+      if (err instanceof ProtocolError || err instanceof ModelRunaway) return err.message;
+      throw err;
+    }
+    if (!obj.solid || obj.solid.positions.length < 9) return null;
     if (obj.platedNode === tree.current && obj.bytes.byteLength > 0) return null;
     // The plate mesh must close: cracks where two faces sample a shared edge apart are mended; what stays open is refused.
     const mended = closeCracks(obj.solid.positions);
