@@ -60,7 +60,7 @@ const secondSave = await saved.call("project_save", { name: "once.lime" });
 const version2 = JSON.parse(readFileSync(String(secondSave.path), "utf8")) as { version?: number; objects?: { settings?: { walls?: number } }[] };
 check(
   "a version-1 project keeps new object settings",
-  firstSave.ok === true && version1.version === 1 && version1.objects === undefined && changed.ok === true && secondSave.ok === true && version2.version === 2 && version2.objects?.[0]?.settings?.walls === 7,
+  firstSave.ok === true && version1.version === 1 && version1.objects === undefined && changed.ok === true && secondSave.ok === true && version2.version === 3 && version2.objects?.[0]?.settings?.walls === 7,
   JSON.stringify({ version1: version1.version, version2: version2.version, settings: version2.objects?.[0]?.settings }),
 );
 

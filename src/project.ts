@@ -3,8 +3,12 @@
  * Version 2 is a plate of objects. `migrations[1]` wraps a version 1 document into
  * that plate. A plate that is still one object with no per-object settings and no
  * support paint is written back as version 1 and omits `objects`. Support paint is
- * an optional field on each version 2 object, so a version 2 file without it still opens.
- * `brep` is that same kind of field: base64 STEP, present only after Model has a session.
+ * an optional field on each plate object, so a plate file without it still opens.
+ * `brep` is that same kind of field: the object's solid, present only after Model has a session.
+ * Version 3 is the version 2 plate whose `brep` this app writes in Open CASCADE's binary format, as the
+ * engine writes it, not STEP. A `brep` is told by its first bytes (`isBrep`), not by the version: a
+ * version 3 file can still carry a STEP `brep` not yet written again. `migrations[2]` takes a version 2
+ * file as it is. An app before version 3 refuses a version 3 file.
  * `modelTree` is another: the object's Model history. A damaged one is left out and the part opens.
  * `modelTools` keeps the trees of tools that left the plate while a saved join names them.
  * `modelPose` and `meshSeatMm` place the object in Model's shared space; without them it sits where its file put it.
@@ -30,7 +34,7 @@ import { readSeamPaint } from "./seam-paint.ts";
 import { readPaint } from "./support-paint.ts";
 import type { SiteSpec } from "./support-edits.ts";
 
-export const PROJECT_VERSION = 2;
+export const PROJECT_VERSION = 3;
 
 export type SettingsLevel = "simple" | "advanced" | "expert";
 
@@ -55,8 +59,8 @@ export interface ProjectPlacement {
 export type ProjectProfile = Omit<PrinterProfile, keyof FanSettings> & Partial<FanSettings>;
 
 /**
- * What the app holds after a project opens.
- * Version 1 is one mesh. Version 2 keeps that mesh as the first object and adds `objects`.
+ * What the app holds after a project opens. `version` is its layout, not the file's number:
+ * 1 is one mesh. 2 keeps that mesh as the first object and adds `objects`, and is written as `PROJECT_VERSION`.
  * Support edits keep birth sites, not walk ids.
  */
 export interface LimeProject {
@@ -112,9 +116,11 @@ export type Migration = (doc: Record<string, unknown>) => Record<string, unknown
 /**
  * Index 0 would migrate a version-0 file, which was never written.
  * Index 1 wraps a version 1 file into one object, id `part`.
+ * Index 2 takes a version 2 plate as it is: only what `brep` holds changed.
  */
 const migrationSteps: Migration[] = [];
 migrationSteps[1] = migrateVersion1;
+migrationSteps[2] = (doc) => ({ ...doc, version: 3 });
 export const migrations: readonly Migration[] = migrationSteps;
 
 export function meshRecord(name: string, bytes: Uint8Array): ProjectMesh {
@@ -127,7 +133,7 @@ export function serializeProject(project: LimeProject): string {
     const objects = project.objects.map(stripEmptySettings);
     const shared = shareRootSteps([...objects, ...(project.modelTools ?? [])]);
     const wire: Record<string, unknown> = {
-      version: 2,
+      version: PROJECT_VERSION,
       settings: project.settings,
       preset: project.preset,
       profile: project.profile,
@@ -283,7 +289,7 @@ export function parseProject(text: string, steps: readonly Migration[] = migrati
 }
 
 function readProject(doc: Record<string, unknown>): ProjectResult {
-  if (doc.version === 2) return readVersion2(doc);
+  if (doc.version === PROJECT_VERSION) return readPlate(doc);
   if (doc.version !== 1) {
     return { ok: false, message: "This project could not be updated to the current format." };
   }
@@ -319,7 +325,7 @@ function readVersion1(doc: Record<string, unknown>): ProjectResult {
   return { ok: true, project };
 }
 
-function readVersion2(doc: Record<string, unknown>): ProjectResult {
+function readPlate(doc: Record<string, unknown>): ProjectResult {
   const settings = readSettings(doc.settings);
   if (typeof settings === "string") return { ok: false, message: settings };
   const profile = readProfile(doc.profile);

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
-import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
+import { mockModelTree, olderFile, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 
 type V = [number, number, number];
 
@@ -49,7 +49,7 @@ function built(request: Body): Built {
 }
 
 /** The engine is mocked once for the page, so it outlives a reload as `serve` does. */
-async function openModel(page: Page, model = true, more: Pick<Parameters<typeof mockModelTree>[1], "goto" | "probe"> = {}): Promise<TreeMock> {
+async function openModel(page: Page, model = true, more: Pick<Parameters<typeof mockModelTree>[1], "goto" | "probe" | "seedRefused" | "held"> = {}): Promise<TreeMock> {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: ROOT.positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
@@ -124,30 +124,31 @@ async function holdWholeOpens(page: Page) {
   return seen;
 }
 
-/** Cut 8, 6, 4 in a row, save, reopen, and open Model on the plate's step, read from its STEP. */
+/** Cut 8, 6, 4 in a row, save as an app before version 3 did, reopen, and open Model on the plate's step, read from its STEP. */
 async function reopenedChain(page: Page, more: Parameters<typeof openModel>[2] = {}) {
   const tree = await openModel(page, true, more);
   for (const dx of [8, 6, 4]) await cut(page, dx);
   await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
-  await saveAndReopen(page);
+  await saveAndReopen(page, true);
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText(volume(4));
   return tree;
 }
 
-/** Save from Prepare, open a fresh page, and open the saved file there. */
-async function saveAndReopen(page: Page): Promise<Record<string, unknown>> {
+/** Save from Prepare, open a fresh page, and open the saved file there; with `older`, as an app before version 3 saved it. */
+async function saveAndReopen(page: Page, older = false): Promise<Record<string, unknown>> {
   await page.locator("#tabPrepare").click();
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const { readFile } = await import("node:fs/promises");
-  const saved = await readFile((await download.path())!);
+  const written = await readFile((await download.path())!);
+  const saved = older ? olderFile(written) : written;
   await page.reload();
   await page.locator("#projectFile").setInputFiles({ name: "plate.lime", mimeType: "application/json", buffer: saved });
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   return JSON.parse(saved.toString("utf8")) as Record<string, unknown>;
 }
 
-test("a saved project brings back its Model history: the same steps and names, and a jump rebuilds a step from the root", async ({ page }) => {
+test("a project an older app saved brings back its Model history: the same steps and names, and a jump rebuilds a step from the root", async ({ page }) => {
   const tree = await openModel(page);
   await cut(page, 8);
   await cut(page, 6);
@@ -164,7 +165,7 @@ test("a saved project brings back its Model history: the same steps and names, a
   expect(before).toEqual(["plate.step", "Cut box 8×10×10", "Pocket", "Cut box 4×10×10"]);
   const firstKey = String(tree.of("open")[0]!.key);
 
-  const doc = await saveAndReopen(page);
+  const doc = await saveAndReopen(page, true);
   const saved = (doc.objects as { modelTree: { nodes: { id: number; name?: string }[]; committed: number; rootStep: { bytesBase64?: string } } }[])[0]!.modelTree;
   expect(saved.nodes.map((node) => [node.id, node.name ?? null]), "the file keeps every step and the name").toEqual([[0, null], [1, null], [2, "Pocket"], [3, null]]);
   expect(saved.committed).toBe(3);
@@ -204,7 +205,7 @@ test("a saved project brings back its Model history: the same steps and names, a
 });
 
 test("a project whose history starts from a primitive opens Model from the plate's STEP, with no step rebuilt", async ({ page }) => {
-  // As the MCP server saves a model_build part: a primitive root, a brep, and the plate on the last step.
+  // As the MCP server saved a model_build part before version 3: a primitive root, a STEP brep, and the plate on the last step.
   const tree = await openModel(page);
   for (const dx of [8, 6, 4]) await cut(page, dx);
   await expect(page.locator("#modelPanel")).toBeHidden();
@@ -217,16 +218,82 @@ test("a project whose history starts from a primitive opens Model from the plate
   saved.rootPrimitive = { primitive: "box", origin: [0, 0, 0], size: [20, 20, 10], radius: 0, height: 0, turn: [0, 0, 0] };
   await page.reload();
   const opens = tree.of("open").length;
-  await page.locator("#projectFile").setInputFiles({ name: "built.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(doc)) });
+  const older = JSON.parse(olderFile(Buffer.from(JSON.stringify(doc))).toString("utf8")) as typeof doc;
+  await page.locator("#projectFile").setInputFiles({ name: "built.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(older)) });
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#tabModel").click();
   await expect(readout(page), "Model opens on the plate's step").toContainText(volume(4));
   const since = tree.of("open").slice(opens);
   expect(since, "one open").toHaveLength(1);
   expect(since[0]!.nodes, "of the plate's step alone").toBeUndefined();
-  expect(since[0]!.dataB64, "read from the plate's STEP").toBe(doc.objects[0]!.brep?.bytesBase64);
+  expect(since[0]!.dataB64, "read from the plate's STEP").toBe(older.objects[0]!.brep?.bytesBase64);
   await cut(page, 2);
   expect(tree.of("open").slice(opens), "an edit builds on it with nothing rebuilt").toHaveLength(1);
+});
+
+test("a project saves the plate's step as the engine's binary solid, and reopens whole from it: a fillet builds at once, a jump rebuilds from the root", async ({ page }) => {
+  const tree = await openModel(page);
+  for (const dx of [8, 6, 4]) await cut(page, dx);
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
+  const doc = await saveAndReopen(page);
+  const object = (doc.objects as { brep: { name: string; bytesBase64: string } }[])[0]!;
+  expect(doc.version, "a file with the binary solid is version 3").toBe(3);
+  expect(object.brep.name).toBe("plate.brep");
+  expect(Buffer.from(object.brep.bytesBase64, "base64").toString().startsWith("LIMEBREP "), "the solid as the engine wrote it").toBe(true);
+
+  const opens = tree.of("open").length;
+  await page.locator("#tabModel").click();
+  await expect(readout(page), "Model opens on the plate's step").toContainText(volume(4));
+  const since = tree.of("open").slice(opens);
+  expect(since, "one open").toHaveLength(1);
+  expect(since[0]!.dataB64, "of the whole tree, from its root STEP").toBe(FILE.toString("base64"));
+  expect((since[0]!.nodes as unknown[]).length, "with every step").toBe(3);
+  expect(since[0]!.seed, "and the plate's step from its saved solid").toEqual({ node: 3, dataB64: object.brep.bytesBase64 });
+  expect([since[0]!.current, since[0]!.quiet], "quietly, at its root: the step is asked for next").toEqual([0, true]);
+  expect(tree.of("goto").at(-1)).toMatchObject({ key: since[0]!.key, node: 3 });
+
+  // The saved solid is the step exactly, so a fillet takes its edges at once: nothing is rebuilt, nothing asked again.
+  const applies = tree.of("apply").length;
+  await pickEdge(page);
+  await filletPicked(page);
+  await expect(readout(page)).toContainText("Volume 1590 mm³");
+  expect(tree.of("apply").slice(applies), "the fillet builds on the plate's step").toHaveLength(1);
+  expect(tree.of("apply").at(-1)).toMatchObject({ key: since[0]!.key, parent: 3, node: 4, op: { kind: "fillet" } });
+  // A jump to an earlier step asks the tree already open; the engine builds it from the root.
+  await row(page, "Cut box 8").click();
+  await expect(readout(page)).toContainText(volume(8));
+  expect(tree.of("open").slice(opens), "no second open").toHaveLength(1);
+  expect(tree.of("goto").at(-1)).toMatchObject({ key: since[0]!.key, node: 1 });
+});
+
+test("an imported STEP root is saved once as the engine's binary solid of it, under the file's name", async ({ page }) => {
+  const tree = await openModel(page, true, { held: true });
+  await cut(page, 8);
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
+  const doc = await saveAndReopen(page);
+  const root = (doc.objects as { modelTree: { rootStep: { name: string; bytesBase64: string } } }[])[0]!.modelTree.rootStep;
+  expect(root.name, "History still names the root by its file").toBe("plate.step");
+  expect(Buffer.from(root.bytesBase64, "base64").toString().startsWith("LIMEBREP "), "the root as the engine holds it").toBe(true);
+  expect(tree.of("export").filter((request) => request.node === 0), "written once, in the binary format").toEqual([expect.objectContaining({ format: "brep" })]);
+
+  const opens = tree.of("open").length;
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText(volume(8));
+  expect(tree.of("open").slice(opens).map((request) => request.dataB64), "the history opens from that root").toEqual([root.bytesBase64]);
+  await page.locator("#tabPrepare").click();
+  const exports = tree.of("export").length;
+  await saveAndReopen(page);
+  expect(tree.of("export").slice(exports).filter((request) => request.node === 0), "a root already in the binary format is not written again").toHaveLength(0);
+});
+
+test("a saved solid the engine refuses is said, and the history is rebuilt instead", async ({ page }) => {
+  const tree = await openModel(page, true, { seedRefused: () => "saved by Open CASCADE 7.8.0, this modeler has 7.9.2" });
+  for (const dx of [8, 6]) await cut(page, dx);
+  await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
+  await saveAndReopen(page);
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("The saved solid did not open (saved by Open CASCADE 7.8.0, this modeler has 7.9.2), so its history was rebuilt.");
+  expect(tree.of("open").at(-1)!.seed).toBeTruthy();
 });
 
 test("calls made while a reopened tree opens whole wait for it, and two jumps share one open", async ({ page }) => {
@@ -239,7 +306,7 @@ test("calls made while a reopened tree opens whole wait for it, and two jumps sh
   });
   for (const dx of [8, 6, 4]) await cut(page, dx);
   await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
-  await saveAndReopen(page);
+  await saveAndReopen(page, true);
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText(volume(4));
 

@@ -94,7 +94,7 @@ test("add a different STL, then undo, save, and export both parts", async ({ pag
     version: number;
     objects?: { name: string; mesh: { name: string; bytesBase64: string } }[];
   };
-  expect(doc.version).toBe(2);
+  expect(doc.version).toBe(3);
   expect(doc.objects?.map((obj) => obj.mesh.name)).toEqual(["calibration_cube_20mm.stl", "overhang_ledge.stl"]);
   expect(doc.objects![0]!.mesh.bytesBase64).not.toBe(doc.objects![1]!.mesh.bytesBase64);
 

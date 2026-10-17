@@ -1,5 +1,6 @@
 import type { Page, Route } from "@playwright/test";
 import { encodeSolid } from "../src/model-reply";
+import { fnv1aHex } from "../src/slice-action";
 
 /** A solid with plain number arrays. The mock sends it in the engine's binary reply format. */
 export interface MockSolid {
@@ -35,6 +36,10 @@ interface Handlers {
   preview?(request: Body, on: MockSolid, tool?: MockSolid): MockSolid | null;
   /** An answer of its own for a jump, such as a step that no longer rebuilds. Null answers as usual. */
   goto?(request: Body): Body | null;
+  /** Answer each step with `held`, the steps of its tree the mock holds, as the engine does. Off, the app sees none. */
+  held?: boolean;
+  /** Why the engine refuses an open's saved solid (`request.seed`), as its `seedRefused`; null takes it. */
+  seedRefused?(request: Body): string | null;
   distanceMm?: number;
   /** How long an export takes, so a test can act while one is still on its way. */
   exportMs?: number;
@@ -189,12 +194,21 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
         const built = handlers.apply?.({ ...request, call: "apply", op: saved.op, parent: saved.parent, node: saved.id }, nodes.get(saved.parent)!.solid, toolSolid(saved.op));
         if (built && !("error" in built)) nodes.set(saved.id, { solid: "kept" in built ? built.kept : built, parent: saved.parent, step: JSON.stringify([saved.op, null]), op: saved.op });
       }
+      // As the engine: a step seeded from a solid this mock wrote holds that solid, and nothing above it is built for it.
+      const seed = request.seed as { node: number; dataB64: string } | undefined;
+      const seedSolid = seed ? exported.get(Buffer.from(seed.dataB64, "base64").toString()) : undefined;
+      const seedStep = seed ? ((request.nodes ?? []) as { id: number; parent: number; op: Body }[]).find((saved) => saved.id === seed.node) : undefined;
+      if (seedSolid && seedStep && !handlers.seedRefused?.(request)) {
+        nodes.set(seedStep.id, { solid: seedSolid, parent: seedStep.parent, step: JSON.stringify([seedStep.op, null]), op: seedStep.op });
+        later.delete(seedStep.id);
+      }
       docs.set(key, nodes);
       waiting.set(key, later);
       const current = Number(request.current ?? 0);
       const wait = materialize(key, nodes, current);
       if (wait) return wait;
-      return reply(nodes.get(current)!.solid, current);
+      const refused = request.seed ? handlers.seedRefused?.(request) : null;
+      return { ...reply(nodes.get(current)!.solid, current), ...(refused ? { seedRefused: refused } : {}) };
     }
     if (request.call === "close") {
       const used = [...docs].some(([other, nodes]) => other !== key && [...nodes.values()].some((node) => toolOf(node.op)?.key === key));
@@ -229,8 +243,11 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       }
       case "export": {
         exports += 1;
-        const bytes = Buffer.from(`EDITED-STEP-${exports}`);
+        // A `brep` export starts as the engine's binary solid does, so the app takes it as that step exactly.
+        const bytes = Buffer.from(request.format === "brep" ? `LIMEBREP 1 mock 0 *\nEDITED-${exports}` : `EDITED-STEP-${exports}`);
         exported.set(bytes.toString(), base.solid);
+        // The STEP an older app would have written for the same export opens as the same solid (`olderFile`).
+        exported.set(`EDITED-STEP-${exports}`, base.solid);
         if (handlers.exportMs) await new Promise((resolve) => setTimeout(resolve, handlers.exportMs));
         return { bytesBase64: bytes.toString("base64"), byteLength: bytes.length };
       }
@@ -263,7 +280,11 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
   await page.route("**/api/model/tree", async (route: Route) => {
     const request = route.request().postDataJSON() as Body;
     calls.push(request);
-    await route.fulfill({ json: await answer(request) });
+    const body = await answer(request);
+    // As the engine: a step's answer lists the steps of its tree that hold a solid; the mock holds them all.
+    const doc = docs.get(String(request.key));
+    const step = typeof body.id === "number" && typeof body.error !== "string";
+    await route.fulfill({ json: handlers.held && step && doc ? { ...body, held: [...doc.keys()].sort((a, b) => a - b) } : body });
   });
   return {
     calls,
@@ -273,4 +294,20 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       waiting.clear();
     },
   };
+}
+
+/**
+ * A saved project as an app before version 3 wrote it: version 2, each solid (`brep`) the STEP the mock would have
+ * written in its place, which the mock opens as the same solid.
+ */
+export function olderFile(saved: Buffer): Buffer {
+  const doc = JSON.parse(saved.toString("utf8")) as { version: number; objects?: { brep?: { name: string; bytesBase64: string; byteLength: number; hash: string } }[] };
+  doc.version = 2;
+  for (const obj of doc.objects ?? []) {
+    if (!obj.brep) continue;
+    const text = Buffer.from(obj.brep.bytesBase64, "base64").toString();
+    const step = Buffer.from(text.replace(/^LIMEBREP 1 mock 0 \*\nEDITED-/, "EDITED-STEP-"));
+    obj.brep = { name: obj.brep.name.replace(/\.brep$/, ".step"), bytesBase64: step.toString("base64"), byteLength: step.length, hash: fnv1aHex(step) };
+  }
+  return Buffer.from(JSON.stringify(doc));
 }

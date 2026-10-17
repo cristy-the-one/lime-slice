@@ -113,10 +113,15 @@ const staleExport = await call("gcode_export", { name: "after.gcode", now: "2020
 check("a commit makes the old G-code stale", beforeEdit.ok === true && staleExport.ok === false && staleExport.reason === STALE, JSON.stringify(staleExport));
 
 const saved = await call("project_save", { name: "holed.lime" });
-const file = JSON.parse(readFileSync(String(saved.path), "utf8")) as { version?: number; objects?: { modelTree?: { nodes?: unknown[] }; mesh?: { hash?: string } }[] };
+const file = JSON.parse(readFileSync(String(saved.path), "utf8")) as { version?: number; objects?: { modelTree?: { nodes?: unknown[] }; mesh?: { hash?: string }; brep?: { name?: string; bytesBase64?: string } }[] };
 const savedObject = file.objects?.[0];
 const historyNodes = savedObject?.modelTree?.nodes;
-check("a committed solid saves its mesh and its history", saved.ok === true && file.version === 2 && Array.isArray(historyNodes) && historyNodes.length > 1 && typeof savedObject?.mesh?.hash === "string", JSON.stringify(file).slice(0, 400));
+check(
+  "a committed solid is saved as the engine's binary solid, beside its mesh",
+  savedObject?.brep?.name?.endsWith(".brep") === true && Buffer.from(savedObject.brep.bytesBase64 ?? "", "base64").toString().startsWith("LIMEBREP "),
+  JSON.stringify(savedObject?.brep?.name),
+);
+check("a committed solid saves its mesh and its history", saved.ok === true && file.version === 3 && Array.isArray(historyNodes) && historyNodes.length > 1 && typeof savedObject?.mesh?.hash === "string", JSON.stringify(file).slice(0, 400));
 const again = new Session(engine);
 const reopened = await again.call("project_open", { path: String(saved.path) });
 const reopenedId = (reopened.objects as { object: string }[])[0]?.object;

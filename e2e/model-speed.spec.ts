@@ -133,7 +133,7 @@ test("Apply writes no STEP; leaving Model writes the edited solid once, and save
   await expect.poll(() => calls.tree.of("export").length, { message: "leaving Model writes the solid" }).toBe(1);
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const saved = fs.readFileSync((await download.path())!);
-  const written = Buffer.from("EDITED-STEP-1").toString("base64");
+  const written = Buffer.from("LIMEBREP 1 mock 0 *\nEDITED-1").toString("base64");
   expect(saved.toString("utf8"), "the project keeps the edited solid").toContain(written);
   expect(calls.tree.of("export"), "a save after leaving writes nothing new").toHaveLength(1);
 
@@ -150,7 +150,7 @@ test("Apply writes no STEP; leaving Model writes the edited solid once, and save
   await expect(page.locator("#modelReadout")).toContainText("Volume");
   const reopened = calls.opens.at(-1)!;
   expect(reopened.filename).toMatch(/\.step$/);
-  expect(reopened.dataB64, "Model reopens the edited solid, not the file's").toBe(written);
+  expect((reopened.seed as Body | undefined)?.dataB64, "Model reopens the edited solid, not the file's").toBe(written);
 });
 
 test("a save while the STEP from leaving Model is on its way waits for it instead of exporting again", async ({ page }) => {
@@ -165,7 +165,7 @@ test("a save while the STEP from leaving Model is on its way waits for it instea
   await expect.poll(() => calls.tree.of("export").length).toBe(1);
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const saved = fs.readFileSync((await download.path())!).toString("utf8");
-  expect(saved, "the save carries the STEP leaving Model wrote").toContain(Buffer.from("EDITED-STEP-1").toString("base64"));
+  expect(saved, "the save carries the solid leaving Model wrote").toContain(Buffer.from("LIMEBREP 1 mock 0 *\nEDITED-1").toString("base64"));
   expect(calls.tree.of("export"), "one export for one solid").toHaveLength(1);
 });
 

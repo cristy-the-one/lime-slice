@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -15,6 +16,7 @@
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
+#include <Standard_VersionInfo.hxx>
 #include <TopoDS.hxx>
 
 #include "kernel.h"
@@ -93,6 +95,7 @@ std::unique_ptr<LimeShape> adopt(const TopoDS_Shape& result, double volume, cons
     }
     std::unique_ptr<LimeShape> out = hold(solid, volume);
     if (from != nullptr) {
+        inherit_about(out->held, from->held);
         out->created.clear();
         for (int index = 1; index <= out->held.edges.Extent(); ++index) {
             if (!from->held.edges.Contains(out->held.edges(index))) {
@@ -199,6 +202,62 @@ LimeShape* lime_tree_read_step(const char* path, char** error) {
         return nullptr;
     }
 }
+
+/// A solid `lime_tree_write_brep` wrote. `volume` is the one its step integrated, kept with the bytes; 0 integrates it.
+/// `created` is the edges its step made, `count` of them; a negative count leaves every edge, as for a root.
+LimeShape* lime_tree_read_brep(const char* data, size_t size, double volume, const int* created, int count, char** error) {
+    try {
+        std::string message;
+        const TopoDS_Shape shape = read_brep(data, size, message);
+        if (shape.IsNull()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        std::unique_ptr<LimeShape> out = hold(shape, volume > 0.0 ? volume : volume_of(shape));
+        if (count >= 0) {
+            out->created.clear();
+            for (int i = 0; i < count; ++i) {
+                if (created[i] < 0 || static_cast<size_t>(created[i]) >= out->edges.size()) {
+                    set_error(error, "This saved solid is damaged");
+                    return nullptr;
+                }
+                out->created.push_back(created[i]);
+            }
+        }
+        return out.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE could not read this solid");
+        return nullptr;
+    }
+}
+
+/// The solid in Open CASCADE's binary format, for the caller to free with lime_model_occt_string_free.
+/// Null, and `error` set, when Open CASCADE fails.
+char* lime_tree_write_brep(const LimeShape* shape, size_t* size, char** error) {
+    try {
+        const std::string bytes = write_brep(shape->held.shape);
+        char* out = static_cast<char*>(std::malloc(bytes.empty() ? 1 : bytes.size()));
+        if (out == nullptr) {
+            set_error(error, "Out of memory writing this solid");
+            return nullptr;
+        }
+        std::memcpy(out, bytes.data(), bytes.size());
+        *size = bytes.size();
+        return out;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE did not write this solid");
+        return nullptr;
+    }
+}
+
+/// The linked Open CASCADE version, as `lime_model_occt_stats` reports it. Static: never freed.
+const char* lime_tree_occt_version() { return OCCT_Version_String_Complete(); }
 
 LimeShape* lime_tree_boolean(const LimeShape* from, const char* op, const char* primitive, const double* p, char** error) {
     try {

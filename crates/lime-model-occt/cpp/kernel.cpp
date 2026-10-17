@@ -22,6 +22,8 @@
 #include <Message_PrinterOStream.hxx>
 #include <TCollection_AsciiString.hxx>
 
+#include <BinTools.hxx>
+#include <OSD_Parallel.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Check.hxx>
@@ -437,7 +439,8 @@ Mesh tessellate(Held& held, double chord) {
     // since is what meshing again would leave too.
     if (held.meshed != chord) {
         g_stats.meshes += 1;
-        BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_False);
+        // In parallel: faces mesh apart, after their shared edges, so the mesh is the same as one thread's.
+        BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_True);
         mesher.Perform();
         held.meshed = chord;
     }
@@ -502,34 +505,74 @@ Mesh tessellate(Held& held, double chord) {
     return out;
 }
 
-std::string describe(const Held& held) {
+std::string describe(Held& held) {
     g_stats.descriptions += 1;
+    const int faces = held.faces.Extent();
+    const int edges = held.edges.Extent();
+    held.face_about.resize(static_cast<size_t>(faces));
+    held.edge_about.resize(static_cast<size_t>(edges));
+    // Each face and edge is measured alone, into its own slot, so the threads share nothing they write.
+    OSD_Parallel::For(0, faces, [&held](int i) {
+        std::string& text = held.face_about[static_cast<size_t>(i)];
+        if (!text.empty()) {
+            return;
+        }
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(held.faces(i + 1), props);
+        text = "{\"areaMm2\":";
+        append_num(text, props.Mass());
+        append_face_normal(text, TopoDS::Face(held.faces(i + 1)));
+        text += '}';
+    });
+    OSD_Parallel::For(0, edges, [&held](int i) {
+        std::string& text = held.edge_about[static_cast<size_t>(i)];
+        if (!text.empty()) {
+            return;
+        }
+        GProp_GProps props;
+        BRepGProp::LinearProperties(held.edges(i + 1), props);
+        append_num(text, props.Mass());
+    });
     std::string out = "{\"volumeMm3\":";
     append_num(out, held.volume);
     out += has_solid(held.shape) ? ",\"solid\":true" : ",\"solid\":false";
     out += ",\"faces\":[";
-    for (int face_index = 1; face_index <= held.faces.Extent(); ++face_index) {
-        if (face_index > 1) {
+    for (int i = 0; i < faces; ++i) {
+        if (i > 0) {
             out += ',';
         }
-        GProp_GProps props;
-        BRepGProp::SurfaceProperties(held.faces(face_index), props);
-        out += "{\"areaMm2\":";
-        append_num(out, props.Mass());
-        append_face_normal(out, TopoDS::Face(held.faces(face_index)));
-        out += '}';
+        out += held.face_about[static_cast<size_t>(i)];
     }
     out += "],\"edgeLengths\":[";
-    for (int edge_index = 1; edge_index <= held.edges.Extent(); ++edge_index) {
-        if (edge_index > 1) {
+    for (int i = 0; i < edges; ++i) {
+        if (i > 0) {
             out += ',';
         }
-        GProp_GProps props;
-        BRepGProp::LinearProperties(held.edges(edge_index), props);
-        append_num(out, props.Mass());
+        out += held.edge_about[static_cast<size_t>(i)];
     }
     out += "]}";
     return out;
+}
+
+void inherit_about(Held& held, const Held& from) {
+    if (from.face_about.empty() && from.edge_about.empty()) {
+        return;
+    }
+    held.face_about.resize(static_cast<size_t>(held.faces.Extent()));
+    held.edge_about.resize(static_cast<size_t>(held.edges.Extent()));
+    for (int i = 1; i <= held.faces.Extent() && !from.face_about.empty(); ++i) {
+        const int at = from.faces.FindIndex(held.faces(i));
+        // The same face turned over has the other normal: it is measured again.
+        if (at > 0 && from.faces(at).Orientation() == held.faces(i).Orientation()) {
+            held.face_about[static_cast<size_t>(i - 1)] = from.face_about[static_cast<size_t>(at - 1)];
+        }
+    }
+    for (int i = 1; i <= held.edges.Extent() && !from.edge_about.empty(); ++i) {
+        const int at = from.edges.FindIndex(held.edges(i));
+        if (at > 0) {
+            held.edge_about[static_cast<size_t>(i - 1)] = from.edge_about[static_cast<size_t>(at - 1)];
+        }
+    }
 }
 
 bool pick(const Held& held, const char* kind, int index, TopoDS_Shape& out) {
@@ -805,6 +848,7 @@ TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const 
         BRepAlgoAPI_Fuse algo(solid, tool);
         algo.SetFuzzyValue(1.0e-7);
         algo.SetNonDestructive(Standard_True);
+        algo.SetRunParallel(Standard_True);
         algo.Build();
         if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
             error = "Open CASCADE did not complete the boolean";
@@ -816,6 +860,7 @@ TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const 
         BRepAlgoAPI_Cut algo(solid, tool);
         algo.SetFuzzyValue(1.0e-7);
         algo.SetNonDestructive(Standard_True);
+        algo.SetRunParallel(Standard_True);
         algo.Build();
         if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
             error = "Open CASCADE did not complete the boolean";
@@ -827,6 +872,7 @@ TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const 
         BRepAlgoAPI_Common algo(solid, tool);
         algo.SetFuzzyValue(1.0e-7);
         algo.SetNonDestructive(Standard_True);
+        algo.SetRunParallel(Standard_True);
         algo.Build();
         if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
             error = "Open CASCADE did not complete the boolean";
@@ -1352,6 +1398,51 @@ bool write_step(const TopoDS_Shape& shape, const char* path, std::string& error)
     }
     return true;
 #endif
+}
+
+namespace {
+
+/// Reads bytes in place, with the seeks BinTools uses to follow shared sub-shapes.
+struct MemoryBuffer : std::streambuf {
+    MemoryBuffer(const char* data, size_t size) {
+        char* start = const_cast<char*>(data);
+        setg(start, start, start + size);
+    }
+
+    pos_type seekoff(off_type offset, std::ios_base::seekdir dir, std::ios_base::openmode) override {
+        char* base = dir == std::ios_base::beg ? eback() : dir == std::ios_base::cur ? gptr() : egptr();
+        if (offset < eback() - base || offset > egptr() - base) {
+            return pos_type(off_type(-1));
+        }
+        char* to = base + offset;
+        setg(eback(), to, egptr());
+        return pos_type(to - eback());
+    }
+
+    pos_type seekpos(pos_type pos, std::ios_base::openmode mode) override {
+        return seekoff(off_type(pos), std::ios_base::beg, mode);
+    }
+};
+
+}  // namespace
+
+std::string write_brep(const TopoDS_Shape& shape) {
+    std::ostringstream out(std::ios::out | std::ios::binary);
+    BinTools::Write(shape, out, Standard_False, Standard_False, BinTools_FormatVersion_CURRENT);
+    return out.str();
+}
+
+TopoDS_Shape read_brep(const char* data, size_t size, std::string& error) {
+    MemoryBuffer buffer(data, size);
+    std::istream in(&buffer);
+    TopoDS_Shape shape;
+    BinTools::Read(shape, in);
+    // A cut-short stream fails an extraction (failbit) rather than the stream (badbit).
+    if (shape.IsNull() || in.fail()) {
+        error = "Open CASCADE could not read this solid";
+        return {};
+    }
+    return shape;
 }
 
 bool build_split(

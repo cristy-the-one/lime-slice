@@ -23,6 +23,7 @@ import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from 
 import { adoptSavedTrees, captureOpenSolid, historyToSave } from "./model.ts";
 import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
 import { copyWorkplane } from "../workplane.ts";
+import { solidFileName } from "../model-request.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
 import { customGcodeNotice } from "../layer-actions.ts";
@@ -209,7 +210,7 @@ function fileObjects({ trees, tools }: Awaited<ReturnType<typeof historyToSave>>
     if (obj.seamPaint.length > 0) row.seamPaint = obj.seamPaint.map((disk) => structuredClone(disk));
     const reinforce = dropEmptyReinforce(obj.reinforcement ?? []);
     if (reinforce.length > 0) row.reinforcement = reinforce.map((reg) => structuredClone(reg));
-    if (obj.brep) row.brep = record(stepFileName(obj.fileName), obj.brep);
+    if (obj.brep) row.brep = record(solidFileName(obj.fileName, obj.brep), obj.brep);
     if (obj.modelPose) row.modelPose = { m: [...obj.modelPose.m], t: [...obj.modelPose.t] };
     if (obj.workplane) row.workplane = copyWorkplane(obj.workplane);
     const seat = meshSeat(obj.bytes);
@@ -219,11 +220,6 @@ function fileObjects({ trees, tools }: Awaited<ReturnType<typeof historyToSave>>
     return row;
   });
   return { objects, tools: tools.map(({ id, name, tree }) => ({ id, name, modelTree: fileTree(tree) })) };
-}
-
-function stepFileName(name: string) {
-  const stem = name.replace(/\.(step|stp|stl|3mf)$/i, "");
-  return `${stem || "solid"}.step`;
 }
 
 async function loadPlateObjects(objects: PlateFileObject[], tools: readonly ToolTree[]) {
