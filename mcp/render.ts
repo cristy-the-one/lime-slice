@@ -86,7 +86,27 @@ export function cameraBasis(camera: Camera | CameraSpec): { eye: Vec; right: Vec
 /** Orange, so a tool shape reads against the grey part. */
 const GHOST: Vec = [255, 120, 20];
 
-export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec, longEdge = 768, ghost?: Float32Array): { png: Uint8Array; width: number; height: number } {
+/** A box drawn in a colour: a highlighted or coloured label. A triangle whose centre is inside takes the colour. */
+export interface Tint {
+  min: Vec;
+  max: Vec;
+  rgb: Vec;
+}
+
+export interface RenderOptions {
+  /** Shading blended across a curved surface's facets (default true); creases stay sharp. */
+  smooth?: boolean;
+  tints?: Tint[];
+  /** Only the side of the plane the normal points away from is drawn; the inside shows where it is cut, in red. */
+  section?: { point: Vec; normal: Vec };
+}
+
+/** The colour the inside of a part shows where a section cuts it. */
+const CUT: Vec = [205, 70, 60];
+/** Facets that meet at less than this many degrees share their shading. */
+const SMOOTH_DEG = 35;
+
+export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec, longEdge = 768, ghost?: Float32Array, options: RenderOptions = {}): { png: Uint8Array; width: number; height: number } {
   const basis = cameraBasis(camera);
   if ("reason" in basis) throw new Error(basis.reason);
   const { eye, right, up } = basis;
@@ -96,6 +116,8 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   const depth = new Float32Array(width * height);
   depth.fill(-Infinity);
   const color = new Uint8Array(width * height);
+  /** 0, or 1 + the tint index; 255 for the inside of a cut. */
+  const tintAt = new Uint8Array(width * height);
   const ghostDepth = new Float32Array(width * height);
   ghostDepth.fill(-Infinity);
   const ghostShade = new Uint8Array(width * height);
@@ -128,7 +150,8 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
     height / 2 - (point[1] - midY) * fit,
     point[2],
   ];
-  const paint = (a: Vec, b: Vec, c: Vec, shade: number, zbuf: Float32Array, out: Uint8Array) => {
+  const paint = (a: Vec, b: Vec, c: Vec, shade: number | Vec, zbuf: Float32Array, out: Uint8Array, tint = 0, side?: Vec) => {
+    const shades: Vec = typeof shade === "number" ? [shade, shade, shade] : shade;
     const [x0, y0, z0] = toPixel(a);
     const [x1, y1, z1] = toPixel(b);
     const [x2, y2, z2] = toPixel(c);
@@ -148,9 +171,11 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
         if (w0 < -0.01 || w1 < -0.01 || w2 < -0.01) continue;
         const z = w0 * z0 + w1 * z1 + w2 * z2;
         const at = y * width + x;
+        if (side && w0 * side[0] + w1 * side[1] + w2 * side[2] > 0) continue;
         if (z > zbuf[at]!) {
           zbuf[at] = z;
-          out[at] = shade;
+          out[at] = Math.max(1, Math.round(w0 * shades[0] + w1 * shades[1] + w2 * shades[2]));
+          if (out === color) tintAt[at] = tint;
         }
       }
     }
@@ -183,9 +208,33 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
       paint(project(mesh[i]!, mesh[i + 1]!, mesh[i + 2]!), project(mesh[i + 3]!, mesh[i + 4]!, mesh[i + 5]!), project(mesh[i + 6]!, mesh[i + 7]!, mesh[i + 8]!), shade, zbuf, out);
     }
   };
-  draw(positions, depth, color);
+  // The part: each corner shaded by the normals of the facets round it that bend less than SMOOTH_DEG from its own,
+  // so a sweep or a sphere reads round and a box's edge stays sharp.
+  const corners = options.smooth === false ? null : cornerNormals(positions);
+  const tints = options.tints ?? [];
+  const pads = tints.map((box) => Math.max(0.3, 0.12 * Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2])));
+  const section = options.section ? { point: options.section.point, normal: unit(options.section.normal) ?? ([0, 0, 1] as Vec) } : null;
+  for (let i = 0; i + 8 < positions.length; i += 9) {
+    const own = normalAt(positions, i);
+    const shades = (corners ? [0, 1, 2].map((k) => shadeOf(corners[i / 3 + k]!)) : [shadeOf(own), shadeOf(own), shadeOf(own)]) as Vec;
+    let tint = 0;
+    if (tints.length) {
+      // All three corners inside, a little padded: a long sliver of a floor that only crosses the box stays as it is,
+      // and a smooth curve that bulges past its points' box still takes the colour.
+      const hit = tints.findIndex((box, b) => [0, 3, 6].every((o) => [0, 1, 2].every((k) => positions[i + o + k]! >= box.min[k]! - pads[b]! && positions[i + o + k]! <= box.max[k]! + pads[b]!)));
+      if (hit >= 0) tint = Math.min(hit + 1, 254);
+    }
+    let side: Vec | undefined;
+    if (section) {
+      side = [0, 1, 2].map((k) => (positions[i + 3 * k]! - section.point[0]) * section.normal[0] + (positions[i + 3 * k + 1]! - section.point[1]) * section.normal[1] + (positions[i + 3 * k + 2]! - section.point[2]) * section.normal[2]) as Vec;
+      if (side.every((d) => d > 0)) continue;
+      // A facet facing away from the camera is the part's inside, seen through the cut.
+      if (dot(own, eye) < 0) tint = 255;
+    }
+    paint(project(positions[i]!, positions[i + 1]!, positions[i + 2]!), project(positions[i + 3]!, positions[i + 4]!, positions[i + 5]!), project(positions[i + 6]!, positions[i + 7]!, positions[i + 8]!), shades, depth, color, tint, side);
+  }
   if (ghost) draw(ghost, ghostDepth, ghostShade);
-  const ink = edgeInk(positions, project, toPixel, depth, width, height, fit, eye);
+  const ink = edgeInk(positions, project, toPixel, depth, width, height, fit, eye, section);
   const raw = new Uint8Array((width * 3 + 1) * height);
   for (let y = 0; y < height; y += 1) {
     const row = y * (width * 3 + 1);
@@ -196,6 +245,12 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
       const shade = color[pixel]! || 248;
       const dark = 1 - 0.78 * ink[pixel]! / 255;
       let rgb: Vec = [Math.round(shade * dark), Math.round(shade * dark), Math.round(Math.min(255, shade + 8) * dark)];
+      const tinted = color[pixel] ? tintAt[pixel]! : 0;
+      if (tinted) {
+        const hue = tinted === 255 ? CUT : tints[tinted - 1]!.rgb;
+        const lit = tinted === 255 ? 0.85 : Math.min(1.15, shade / 200);
+        rgb = [0, 1, 2].map((k) => Math.round(Math.min(255, hue[k]! * lit) * dark)) as Vec;
+      }
       const tint = ghostShade[pixel]!;
       if (tint) {
         // The tool shape shows through the part, fainter where the part is in front of it.
@@ -226,6 +281,45 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   return { png, width, height };
 }
 
+/** Each triangle corner's normal: the mean of the facets at that point within SMOOTH_DEG of the corner's own facet. */
+function cornerNormals(mesh: Float32Array): Vec[] {
+  const count = Math.floor(mesh.length / 9);
+  const facet: Vec[] = [];
+  for (let t = 0; t < count; t += 1) {
+    const i = t * 9;
+    const u = [mesh[i + 3]! - mesh[i]!, mesh[i + 4]! - mesh[i + 1]!, mesh[i + 5]! - mesh[i + 2]!];
+    const v = [mesh[i + 6]! - mesh[i]!, mesh[i + 7]! - mesh[i + 1]!, mesh[i + 8]! - mesh[i + 2]!];
+    facet.push(unit([u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!]) ?? [0, 0, 1]);
+  }
+  const at = new Map<string, number[]>();
+  const keyOf = (i: number) => `${Math.round(mesh[i]! * 1000)},${Math.round(mesh[i + 1]! * 1000)},${Math.round(mesh[i + 2]! * 1000)}`;
+  for (let t = 0; t < count; t += 1) {
+    for (let k = 0; k < 3; k += 1) {
+      const key = keyOf(t * 9 + k * 3);
+      const row = at.get(key);
+      if (row) row.push(t);
+      else at.set(key, [t]);
+    }
+  }
+  const limit = Math.cos((SMOOTH_DEG * Math.PI) / 180);
+  const out: Vec[] = new Array(count * 3);
+  for (let t = 0; t < count; t += 1) {
+    const own = facet[t]!;
+    for (let k = 0; k < 3; k += 1) {
+      const sum: Vec = [0, 0, 0];
+      for (const other of at.get(keyOf(t * 9 + k * 3)) ?? [t]) {
+        const n = facet[other]!;
+        if (dot(n, own) < limit) continue;
+        sum[0] += n[0];
+        sum[1] += n[1];
+        sum[2] += n[2];
+      }
+      out[t * 3 + k] = unit(sum) ?? own;
+    }
+  }
+  return out;
+}
+
 /** Faces that meet at more than this many degrees draw their edge. A tessellated curve's facets meet at less. */
 const CREASE_DEG = 25;
 
@@ -243,7 +337,9 @@ function edgeInk(
   height: number,
   fit: number,
   eye: Vec,
+  section: { point: Vec; normal: Vec } | null = null,
 ): Uint8Array {
+  const away = (x: number, y: number, z: number) => !!section && (x - section.point[0]) * section.normal[0] + (y - section.point[1]) * section.normal[1] + (z - section.point[2]) * section.normal[2] > 0;
   const ink = new Uint8Array(width * height);
   const keyOf = (i: number) => `${Math.round(mesh[i]! * 1000)},${Math.round(mesh[i + 1]! * 1000)},${Math.round(mesh[i + 2]! * 1000)}`;
   const edges = new Map<string, { a: number; b: number; normals: Vec[] }>();
@@ -282,6 +378,8 @@ function edgeInk(
       else if (dot(n1, n2) < crease && (f1 > 0 || f2 > 0)) strength = 170;
     }
     if (!strength) continue;
+    // A section's cut-away side draws no lines.
+    if (away(mesh[a]!, mesh[a + 1]!, mesh[a + 2]!) || away(mesh[b]!, mesh[b + 1]!, mesh[b + 2]!)) continue;
     const p = toPixel(project(mesh[a]!, mesh[a + 1]!, mesh[a + 2]!));
     const q = toPixel(project(mesh[b]!, mesh[b + 1]!, mesh[b + 2]!));
     const steps = Math.max(1, Math.ceil(Math.max(Math.abs(q[0] - p[0]), Math.abs(q[1] - p[1])) * 1.5));

@@ -181,6 +181,18 @@ const repeatFields = (inner: Record<string, unknown>) => ({
           angleDeg: { type: "number", description: "Default 360." },
         },
       },
+      path: {
+        type: "object",
+        additionalProperties: false,
+        required: ["points", "count"],
+        description: "Along a smooth curve; the op is typed at the first point.",
+        properties: {
+          points: { type: "array", minItems: 2, maxItems: 100, items: vec3, description: "[x, y, z]." },
+          count: { type: "integer", minimum: 1, maximum: 200, description: "Evenly spaced, ends included." },
+          align: { type: "boolean", description: "Turn with the curve (default true)." },
+          closed: { type: "boolean", description: "Back round to the first point." },
+        },
+      },
       label,
     },
   },
@@ -205,8 +217,10 @@ const outerRepeat = repeatFields({ type: "object", description: "Op to repeat." 
 
 export const OP_HELP = [
   "One edit, by kind; mm and degrees on the workplane, else the part frame.",
-  "pocket, boss, texture, array, ribs, pattern, and mirror are composite: checked step by step, one undo.",
+  "pocket, boss, texture, array, ribs, text, pattern, and mirror are composite: checked step by step, one undo.",
   "loft and sweep make organic shapes: tubes, bodies, horns, leaves.",
+  "Any [x, y, z] may be {anchor:\"label\", point:\"top\", offset:[0, 0, 1]}: a point of that step's box (model_anchors).",
+  "In op lists, {kind:\"each\", var:\"i\", count | values | from, to, step, ops} repeats ops; {kind:\"use\", part, with} places a model_define part.",
   "Numbers may be text using model_params names. guide {topic:\"ops\"} has examples.",
 ].join(" ");
 
@@ -304,8 +318,8 @@ const op = {
   ],
 };
 
-const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror", "array", "ribs"]);
-const REPEATABLE = new Set(["boolean", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror"]);
+const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror", "array", "ribs", "text"]);
+const REPEATABLE = new Set(["boolean", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror", "text"]);
 
 /** The op schema model_apply lists. Other Model tools name it and are checked against it here. */
 export const OP_SCHEMA = op;
@@ -476,6 +490,27 @@ const surfaceOps = [
   {
     type: "object",
     additionalProperties: false,
+    required: ["kind", "text", "height", "depth"],
+    properties: {
+      kind: { const: "text" },
+      text: { type: "string", minLength: 1, maxLength: 80, description: "A-Z, 0-9, space, -+.,:!?/'&." },
+      height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Capitals, mm." },
+      strokeWidth: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Default height × 0.15." },
+      spacing: { type: "number", minimum: 0, maximum: 100, description: "Default height / 3." },
+      align: { enum: ["centre", "left"], description: "at is the middle or start." },
+      at: { type: "object", description: "{u, v} on the face." },
+      faceIndex,
+      face: faceSelector,
+      from: surfaceCommon.from,
+      op: surfaceCommon.op,
+      depth: surfaceCommon.depth,
+      angleDeg: surfaceCommon.angleDeg,
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
     required: ["kind", "cell", "pitch", "depth"],
     properties: {
       kind: { const: "array" },
@@ -555,6 +590,7 @@ export interface ToolSpec {
 
 const READ_ONLY = new Set([
   "guide",
+  "model_anchors",
   "session_info",
   "plate_list",
   "machine_list",
@@ -1091,13 +1127,14 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_check",
-    description: "Before slicing, the solid as it stands on the bed: overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume. Thin walls are not checked.",
+    description: "Before slicing, the solid as it stands on the bed: overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume, and walls thinner than two nozzle widths, each with where it is.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         object: handle,
         overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical. Default 45." },
+        minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
       },
     },
   },
@@ -1124,7 +1161,7 @@ export const TOOLS: ToolSpec[] = [
       required: ["ops"],
       properties: {
         object: handle,
-        ops: { type: "array", minItems: 1, maxItems: 200, items: opPointer("One edit."), description: "Edits, in order." },
+        ops: { type: "array", minItems: 1, maxItems: 1000, items: opPointer("One edit."), description: "Edits, in order; each and use expand first." },
         label: { type: "string", minLength: 1, maxLength: 80, description: "Batch name; node fields take it." },
         onError: { enum: ["rollback", "stop", "skip"], description: "rollback (default), stop, or skip: leave refused ops out, report all." },
         params: { type: "object", description: "This call only, on top of model_params." },
@@ -1137,7 +1174,6 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      required: ["base"],
       properties: {
         base: {
           type: "object",
@@ -1155,14 +1191,40 @@ export const TOOLS: ToolSpec[] = [
             turn: vec3,
           },
         },
-        ops: { type: "array", maxItems: 200, items: opPointer("One edit."), description: "Edits, in order." },
+        ops: { type: "array", maxItems: 1000, items: opPointer("One edit."), description: "Edits, in order; each and use expand first." },
         params: { type: "object", description: "This call only, e.g. {\"wallH\": 35}." },
         name: { type: "string", minLength: 1, maxLength: 120, description: "Object name." },
         label: { type: "string", minLength: 1, maxLength: 80, description: "Name for the batch." },
         onError: { enum: ["rollback", "stop", "skip"], description: "rollback (default), stop, or skip: leave refused ops out, report all." },
         commit: { type: "boolean", description: "Put the result on the plate (default true)." },
         resume: { type: "boolean", description: "Reuse a refused build with this base (default true)." },
-        object: { type: "string", description: "An earlier build to rebuild in place, reusing its matching ops." },
+        object: { type: "string", description: "An earlier build to rebuild in place, reusing its matching ops. Alone with params: rerun its recipe." },
+      },
+    },
+  },
+  {
+    name: "model_define",
+    description: "Store a named part: default params and ops. {kind:\"use\", part, with:{...}, label} in any op list places it. Session and project.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        name: { type: "string", minLength: 1, maxLength: 60, description: "Part name." },
+        params: { type: "object", description: "Defaults, numbers or expressions." },
+        ops: { type: "array", maxItems: 400, items: { type: "object" }, description: "The part's ops, as model_build takes them." },
+        clear: { type: "boolean", description: "Forget every part first." },
+      },
+    },
+  },
+  {
+    name: "model_anchors",
+    description: "Labelled steps with the box of what each applied, as anchors read them: min, max, centre, size.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: handle,
+        label: { type: "string", minLength: 1, maxLength: 80, description: "One label; default all." },
       },
     },
   },
@@ -1265,7 +1327,12 @@ export const TOOLS: ToolSpec[] = [
         direction: { ...vec3, description: "Part toward camera." },
         up: { ...vec3, description: "Picture up. Default Z." },
         views: { type: "array", minItems: 1, maxItems: 6, description: "Names or {direction, up}.", items: {} },
+        turntable: { type: "integer", minimum: 2, maximum: 12, description: "That many views all round, in place of views." },
         op: { type: "object", description: "Boolean op. Drawn only." },
+        highlight: { description: "A label, or a list: those steps in orange." },
+        colours: { type: "object", description: "Label to colour, e.g. {\"fish\": \"#b08040\"}." },
+        section: { type: "object", additionalProperties: false, description: "Cut away the side normal points to; the inside shows red.", properties: { normal: vec3, point: { ...vec3, description: "Default: the part's centre." } } },
+        smooth: { type: "boolean", description: "Smooth shading on curves (default true)." },
         inline: { type: "boolean", description: "Default true." },
         name: { type: "string", minLength: 1 },
         longEdge: { type: "integer", minimum: 32, maximum: 1024 },
@@ -1630,6 +1697,8 @@ export function validate(schema: Record<string, unknown>, value: unknown, path =
     return null;
   }
   if (type === "array") {
+    // A point may be an anchor, read when its op's turn comes (mcp/anchors.ts).
+    if (schema.maxItems === 3 && value && typeof value === "object" && !Array.isArray(value) && typeof (value as { anchor?: unknown }).anchor === "string") return null;
     if (!Array.isArray(value)) return `${path} must be a list.`;
     if (typeof schema.minItems === "number" && value.length < schema.minItems) return `${path} is too short.`;
     if (typeof schema.maxItems === "number" && value.length > schema.maxItems) return `${path} is too long.`;

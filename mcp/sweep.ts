@@ -155,6 +155,39 @@ export function sweepSections(spec: SweepSpec): LoftSection[] | { reason: string
   return sections;
 }
 
+/**
+ * `count` points spaced evenly along the smooth curve through `points`, each with the curve's direction there: the
+ * first at the start, the last at the end (or, with `closed`, the curve back to the start, the last a step short).
+ */
+export function pathSamples(points: V3[], count: number, closed = false): { point: V3; tangent: V3 }[] | { reason: string } {
+  if (!Array.isArray(points) || points.length < 2) return { reason: "A path needs at least 2 [x, y, z] points." };
+  if (points.some((p) => !Array.isArray(p) || p.length !== 3 || !p.every((n) => typeof n === "number" && Number.isFinite(n)))) return { reason: "Each path point is [x, y, z] in millimetres." };
+  if (!(count >= 1)) return { reason: "A path pattern's count is at least 1." };
+  const loop = closed ? [...points, points[0]!] : points;
+  const dense = densify(loop, [], 16).points;
+  const lengths = [0];
+  for (let i = 1; i < dense.length; i += 1) lengths.push(lengths[i - 1]! + length(sub(dense[i]!, dense[i - 1]!)));
+  const total = lengths[lengths.length - 1]!;
+  if (!(total > 1e-6)) return { reason: "The path has no length." };
+  const out: { point: V3; tangent: V3 }[] = [];
+  for (let k = 0; k < count; k += 1) {
+    const s = count === 1 ? 0 : closed ? (total * k) / count : (total * k) / (count - 1);
+    let i = 1;
+    while (i < lengths.length - 1 && lengths[i]! < s) i += 1;
+    const span = lengths[i]! - lengths[i - 1]! || 1;
+    const f = Math.min(1, Math.max(0, (s - lengths[i - 1]!) / span));
+    const a = dense[i - 1]!;
+    const b = dense[i]!;
+    out.push({ point: add(a, mul(sub(b, a), f)).map(round) as V3, tangent: unit(sub(b, a)) });
+  }
+  return out;
+}
+
+/** Points along the smooth curve through `points`, `steps` to each span. */
+export function splinePoints(points: V3[], steps: number): V3[] {
+  return densify(points, [], steps).points;
+}
+
 /** How far a profile reaches from its origin. */
 function sectionReach(profile: [number, number][]): number {
   return Math.max(...profile.map(([u, v]) => Math.hypot(u, v)));

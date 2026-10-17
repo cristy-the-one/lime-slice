@@ -88,6 +88,11 @@ export interface LimeProject {
    * tool by `id`. Omitted when there are none.
    */
   modelTools?: ToolTree[];
+  /**
+   * What the MCP server builds from, kept as it wrote it: its named parameters, its stored parts, and each object's
+   * model_build recipe. The app keeps it as it is and reads nothing in it. Omitted when there is none.
+   */
+  mcpModel?: Record<string, unknown>;
   /** Read only: the names of objects whose Model history was damaged and left out. */
   unreadHistory?: string[];
 }
@@ -130,6 +135,7 @@ export function serializeProject(project: LimeProject): string {
       objects: shared.slice(0, objects.length),
     };
     if (project.modelTools?.length) wire.modelTools = shared.slice(objects.length);
+    if (project.mcpModel) wire.mcpModel = project.mcpModel;
     if (overrides) wire.overrides = overrides;
     if (project.layerActions?.length) wire.layerActions = project.layerActions;
     if (project.printOrder === "sequential") {
@@ -342,6 +348,7 @@ function readVersion2(doc: Record<string, unknown>): ProjectResult {
   if (project.version === 2) project.objects = objects;
   if (modelTools.length > 0) project.modelTools = modelTools;
   if (unreadHistory.length > 0) project.unreadHistory = unreadHistory;
+  if (doc.mcpModel && typeof doc.mcpModel === "object" && !Array.isArray(doc.mcpModel)) project.mcpModel = doc.mcpModel as Record<string, unknown>;
   if (doc.overrides !== undefined) {
     const overrides = parseOverrides(doc.overrides);
     if (!overrides.ok) return overrides;
