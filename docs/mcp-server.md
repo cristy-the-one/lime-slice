@@ -421,7 +421,7 @@ The numeric path, which is the one MCP can express:
 | `model_undo` / `model_redo` | `goto` to `undoTarget` / `redoTarget` | no-op with a reason at the root or when redo is empty |
 | `model_edit` | `edit` | the same probe rule on the parent. Forks. Returns `built` and `broken` |
 | `model_drop` | `drop` | the refusals the history panel already has: root, the plate step, a split piece that is its own part |
-| `model_commit` | the UI's lazy commit | plate mesh becomes the shown node, `partScale` reset when the path crossed a `scale` |
+| `model_commit` | the UI's lazy commit | plate mesh becomes the shown node, `partScale` reset when the path crossed a `scale`; the plate mesh is an STL of the kernel's own mesh, and the STEP is kept beside it as `brep`, as the app keeps them |
 | `model_export_step` | `export` | writes a `.step` in the workspace and returns the path and `byteLength` |
 | `measure` | `distance`, or two points | `{distanceMm, dx, dy, dz}` in the frame the caller names: `model` or `workplane` |
 | `surface_at` | none. A ray on the stored tessellation | `{hit, point, normal, distanceMm, faceIndex?}`. See Looking at the solid |
@@ -430,6 +430,8 @@ The numeric path, which is the one MCP can express:
 `model_apply` takes one `op` object, the `ModelOp` union. The server bakes workplane fields into the solid frame with `toSolidOp` before `probe` and `apply`, and stores the baked op, which is what the engine echoes. The tool result shows both the numbers the caller typed and the stored op, so a later edit is not a surprise.
 
 Hole convenience fields, accepted only by `model_probe` and `model_apply` when `kind` is `hole`: `diameterMm` (sent as `radius = diameterMm / 2`), `through` (boolean; the engine stores `through: true` or omits it), and `at: {u, v}` meaning the workplane origin. A missing workplane uses model X and Y and drills along −Z, which is the no-face behaviour in `docs/step-modeler.md`. The server does not invent a face from a click. The caller passes `faceIndex` from `model_describe`.
+
+A committed Model solid's plate mesh is the kernel's own tessellation, written as an STL, and its STEP rides beside it as `brep` with the mesh's `meshSeatMm`, which is how the app saves its own Model solids. Before 2.4.1 the server kept the STEP as the plate mesh itself, so whatever reopened the project meshed it with the slicer's STEP reader (truck), which turns a loft through closed sections, a sweep, into a sheet hundreds of millimetres across and ignores the trim of some faces: a 57 mm duck opened as a 1.7 m wedge, in the app's view and in what it would slice. Model opens from `brep`. A project saved the old way, a Model solid whose plate mesh is a STEP, takes the kernel's mesh of its committed step when the server opens it and is saved the new way; open and save such a file once through the server to mend it for the app.
 
 ### Probe metrics
 

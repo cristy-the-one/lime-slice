@@ -342,6 +342,13 @@ function positionsFromPreview(body: string): Float32Array {
     }
     if (asked.dataB64) {
       const raw = Buffer.from(asked.dataB64, "base64");
+      // A binary STL reads as it is: a committed solid's plate mesh is one.
+      if (raw.length >= 84 && raw.length === 84 + raw.readUInt32LE(80) * 50) {
+        const count = raw.readUInt32LE(80);
+        const out = new Float32Array(count * 9);
+        for (let t = 0; t < count; t += 1) for (let k = 0; k < 9; k += 1) out[t * 9 + k] = raw.readFloatLE(84 + t * 50 + 12 + k * 4);
+        return out;
+      }
       const text = raw.toString("utf8");
       const at = text.indexOf(SOLID_MARK);
       if (at >= 0) {
@@ -502,7 +509,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; las
     resets: 0,
     previewResets: 0,
     hung: false,
-    version: () => "2.4.0",
+    version: () => "2.4.1",
     occt: () => true,
     meshPreview: async (body: string, bytes?: Uint8Array) => {
       const block = Number(process.env.LIME_MCP_FAKE_BLOCK_MS ?? 0);
