@@ -53,6 +53,7 @@ import { plateFileIsVersion2 } from "../src/plate.ts";
 import { advanceFor, builtinLibrary, adoptProfile, enginePrinter, fileFromSelection, heatFor, parseMachineFile, serializeMachineFile, setAdvance, setFlow, setGcode, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
 import { parseSettingsProfile, profileFileName, serializeSettingsProfile } from "../src/ui/settings-profiles.ts";
 
+import { openInApp, systemOpener, type AppOpener } from "./app-open.ts";
 import { mirror, type BridgeLink } from "./bridge-client.ts";
 import { occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
@@ -71,7 +72,7 @@ import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { OP_WORDS, validateTool } from "./schema.ts";
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
-import { resolveRead, resolveWrite } from "./workspace.ts";
+import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
 
 const OVERLAP = "These parts overlap. Move one before slicing.";
 const CHORD = 0.05;
@@ -496,6 +497,9 @@ export class Session {
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
   private pendingRecipe: Recipe | null = null;
 
+  /** How app_open reaches the desktop app. Tests replace it. */
+  appOpener: AppOpener = systemOpener;
+
   constructor(engine: Engine) {
     this.engine = engine;
   }
@@ -666,6 +670,7 @@ export class Session {
       case "project_open": return this.projectOpen(String(input.path));
       case "project_create": return this.projectCreate();
       case "project_save": return this.projectSave(String(input.name), input.ifExists === "refuse");
+      case "app_open": return this.appOpen(typeof input.path === "string" ? input.path : undefined);
       case "mesh_import": return this.meshImport(String(input.path), typeof input.stepToleranceMm === "number" ? input.stepToleranceMm : STEP);
       case "plate_list": return this.plateList(input);
       case "plate_undo": return this.plateUndo();
@@ -1299,6 +1304,32 @@ export class Session {
     this.sourceHash = createHash("sha256").update(text).digest("hex");
     this.sourcePath = path;
     return { ok: true, path, bytes: Buffer.byteLength(text) };
+  }
+
+  /**
+   * Show the work in the desktop app. With no path the plate is saved first: over the project it came from when that
+   * is in the workspace, otherwise under a free name from its first object, so no other file is replaced.
+   */
+  private async appOpen(path?: string): Promise<Record<string, unknown>> {
+    if (path !== undefined) return openInApp(resolveWorkspaceFile(path), this.appOpener, false);
+    if (this.objects.length === 0) return { ok: false, reason: "The plate is empty. Build or import a part first, or pass a workspace file as path." };
+    let name = "";
+    try {
+      if (this.sourcePath) name = resolveWrite(this.sourcePath, ".lime");
+    } catch {
+      name = "";
+    }
+    if (!name) {
+      const stem = (this.objects[0]!.name.replace(/\.(lime|stl|3mf|step|stp)$/i, "").replace(/[^\w .-]+/g, "-").replace(/^[\s.-]+|[\s.-]+$/g, "") || "lime-project").slice(0, 60);
+      for (let n = 1; n < 100 && !name; n += 1) {
+        const candidate = resolveWrite(n === 1 ? stem : `${stem}-${n}`, ".lime");
+        if (!existsSync(candidate)) name = candidate;
+      }
+      if (!name) return { ok: false, reason: "No free project name was found in the workspace. Save it with project_save and pass that file as path." };
+    }
+    const saved = await this.projectSave(name);
+    if (saved.ok !== true) return saved;
+    return openInApp(String(saved.path), this.appOpener, true);
   }
 
   private async meshImport(path: string, tolerance: number): Promise<Record<string, unknown>> {
