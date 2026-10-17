@@ -59,7 +59,7 @@ const listed = JSON.stringify({
     annotations: annotationsFor(tool.name),
   })),
 });
-check("tools/list stays under 51 KB", Buffer.byteLength(listed) < 51 * 1024);
+check("tools/list stays under 54 KB", Buffer.byteLength(listed) < 54 * 1024);
 
 const accepted: [string, unknown][] = [
   ["session_info", {}],

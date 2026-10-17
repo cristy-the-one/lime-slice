@@ -53,7 +53,9 @@ import { mirror, type BridgeLink } from "./bridge-client.ts";
 import { occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { layerPaths, pathsPng, pathsSvg } from "./layer-out.ts";
-import { renderMesh, type Camera } from "./render.ts";
+import { renderMesh, readCamera, type Camera, type CameraSpec } from "./render.ts";
+import { pngImage, withImages, type InlineImage } from "./inline.ts";
+import { printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
 import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { reviewGcode } from "./review.ts";
@@ -107,6 +109,11 @@ export interface PlateObject {
   objectSettings: PlateObjectSettings;
   /** The history node whose STEP is `bytes`. Null until a commit writes it. */
   platedNode: number | null;
+}
+
+interface Ghost {
+  mesh: Float32Array;
+  touches: boolean;
 }
 
 interface Job {
@@ -341,6 +348,7 @@ export class Session {
   private sourcePath = "";
   private profileTouched = false;
   private lastBridge: Record<string, unknown> | null = null;
+  private lastPreview: ReturnType<typeof rememberSolid> | null = null;
   private undoStack: PlateSnap[] = [];
   private redoStack: PlateSnap[] = [];
   private bridgeSeq = 0;
@@ -2253,12 +2261,86 @@ export class Session {
     if (!obj) return { ok: false, reason: "Load a mesh first." };
     const committed = await this.commitObject(obj);
     if (committed) return { ok: false, reason: committed };
-    const camera = (input.camera === "front" || input.camera === "iso" ? input.camera : "top") as Camera;
+    const many = Array.isArray(input.views);
+    const asked = many ? input.views as unknown[] : [{ camera: input.camera, direction: input.direction, up: input.up }];
+    const cameras: { label: string; camera: Camera | CameraSpec }[] = [];
+    for (const raw of asked) {
+      const read = readCamera(raw);
+      if ("reason" in read) return { ok: false, reason: read.reason };
+      cameras.push(read);
+    }
+    let ghost: Ghost | null = null;
+    if (input.op !== undefined) {
+      const made = await this.ghostMesh(obj, input.op);
+      if ("reason" in made) return { ok: false, reason: made.reason };
+      ghost = made;
+    }
     const mesh = obj.solid && obj.solid.positions.length >= 9 ? obj.solid.positions : this.placed(obj).positions;
-    const drawn = renderMesh(mesh, camera, typeof input.longEdge === "number" ? input.longEdge : 768);
-    const path = resolveWrite(typeof input.name === "string" ? input.name : `${obj.name}-${camera}.png`, ".png");
-    writeFileSync(path, drawn.png);
-    return { ok: true, path, camera, width: drawn.width, height: drawn.height };
+    const stem = typeof input.name === "string" ? input.name.replace(/\.png$/i, "") : obj.name;
+    const edge = typeof input.longEdge === "number" ? input.longEdge : 768;
+    const views: { camera: string; path: string; width: number; height: number }[] = [];
+    const pictures: InlineImage[] = [];
+    cameras.forEach(({ label, camera }, index) => {
+      const drawn = renderMesh(mesh, camera, edge, ghost?.mesh);
+      const file = many ? `${stem}-${label}${cameras.filter((row) => row.label === label).length > 1 ? `-${index + 1}` : ""}.png` : typeof input.name === "string" ? input.name : `${obj.name}-${label}.png`;
+      const path = resolveWrite(file, ".png");
+      writeFileSync(path, drawn.png);
+      views.push({ camera: label, path, width: drawn.width, height: drawn.height });
+      pictures.push(pngImage(drawn.png));
+    });
+    const note = ghost ? { ghost: { colour: "orange", touchesSolid: ghost.touches } } : {};
+    const body = many ? { ok: true, views, ...note } : { ok: true, ...views[0]!, ...note };
+    return input.inline === false ? body : withImages(body, pictures);
+  }
+
+  /** The tool shape of a boolean op, for a preview: it is drawn, never applied. */
+  private async ghostMesh(obj: PlateObject, raw: unknown): Promise<Ghost | { reason: string }> {
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { reason: tree.reason };
+    if (!obj.solid) return { reason: "This solid could not be read." };
+    const baked = this.bake(obj, raw);
+    if ("reason" in baked) return { reason: baked.reason };
+    if (baked.op.kind !== "boolean") return { reason: "A preview needs a boolean op." };
+    const spec = baked.op as unknown as PrimitiveSpec;
+    const mesh = toolMesh(spec);
+    if (mesh.length < 9) return { reason: "That tool shape has no size." };
+    return { mesh, touches: disjointBoolean(obj.solid.bounds, spec, baked.op.op) === null };
+  }
+
+  private async surfaceAt(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
+    if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
+    return surfaceAtSolid(obj.solid, input);
+  }
+
+  private async modelCheck(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
+    if (!obj.solid || obj.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };
+    const printer = this.printer();
+    return { ...printCheck({ positions: obj.solid.positions, overhangDeg: typeof input.overhangDeg === "number" ? input.overhangDeg : 45, buildMm: [printer.bedX, printer.bedY, printer.bedZ] }), printer: printer.name };
+  }
+
+  /** A probe, and what the edit would do to the solid when the modeler sent the result back. */
+  private async probeMeasured(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    this.lastPreview = null;
+    const out = await this.probe(obj, input.op, input.node);
+    if (out.ok !== true || !obj.solid) return out;
+    const op = out.stored as ModelOp | undefined;
+    const before = solidMetrics(obj.solid);
+    const lastPreview = this.lastPreview;
+    let after: SolidMetrics | null = null;
+    if (op?.kind === "scale") {
+      const f = op.factor;
+      const box = obj.solid.bounds;
+      after = { volumeMm3: before.volumeMm3 * f ** 3, bbox: { min: box.min.map((v) => v * f) as [number, number, number], max: box.max.map((v) => v * f) as [number, number, number] }, shellCount: before.shellCount };
+    } else if (lastPreview) {
+      after = solidMetrics(lastPreview);
+    }
+    if (input.node !== undefined && parseNode(input.node) !== obj.tree?.current) return out;
+    const measured = probeMetrics(before, after);
+    return { ...out, ...(measured.warning ? { reason: `${String(out.reason)} ${measured.warning}`, warning: measured.warning } : {}), metrics: measured.metrics };
   }
 
   resource(uri: string): Record<string, unknown> | Promise<Record<string, unknown>> {
@@ -2299,7 +2381,9 @@ export class Session {
       case "workplane_set": return this.workplaneSet(obj, input);
       case "workplane_print_up": return this.printUp(obj);
       case "model_place": return this.modelPlace(obj, input);
-      case "model_probe": return this.probe(obj, input.op, input.node);
+      case "model_probe": return this.probeMeasured(obj, input);
+      case "surface_at": return this.surfaceAt(obj, input);
+      case "model_check": return this.modelCheck(obj, input);
       case "model_apply": return this.apply(obj, input.op);
       case "model_history": return this.history(obj, input);
       case "model_goto": return this.gotoNode(obj, parseNode(input.node));
@@ -2768,7 +2852,7 @@ export class Session {
       if (missed) return answer({ ok: false, reason: missed });
     }
     const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
-    const preview = (baked.op.kind === "fillet" || baked.op.kind === "chamfer") && baked.op.edges.length > 1 ? (obj.stepTolerance || CHORD) : undefined;
+    const preview = obj.stepTolerance || CHORD;
     let reply: Record<string, unknown>;
     try {
       reply = await this.treeCall(probeRequest(tree.key, at, baked.op, preview), baked.op.kind);
@@ -2778,6 +2862,7 @@ export class Session {
       throw err;
     }
     const view = probeFromBody(reply);
+    this.lastPreview = reply.preview && typeof reply.preview === "object" ? rememberSolid(reply.preview as Record<string, unknown>) : null;
     const note = probeNote(tool, view);
     if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}) });
     obj.probes.set(probeKey(String(at), baked.op), true);
@@ -3519,7 +3604,8 @@ export class Session {
     const png = pathsPng(paths, typeof input.longEdge === "number" ? input.longEdge : 256, colourBy);
     const path = resolveWrite(typeof input.name === "string" ? input.name : `layer-${layer.index}.png`, ".png");
     writeFileSync(path, png);
-    return { ok: true, path, bytes: png.byteLength, sha256: createHash("sha256").update(png).digest("hex") };
+    const body = { ok: true, path, bytes: png.byteLength, sha256: createHash("sha256").update(png).digest("hex") };
+    return input.inline === false ? body : withImages(body, [pngImage(png)]);
   }
 
   private gcodeRead(input: Record<string, unknown>): Record<string, unknown> {

@@ -156,6 +156,8 @@ const READ_ONLY = new Set([
   "gcode_summary",
   "layer_summary",
   "measure",
+  "surface_at",
+  "model_check",
   "paint_list",
   "support_trees",
   "layer_detail",
@@ -638,8 +640,35 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_probe",
-    description: "After faces_find or edges_find. A refusal changes nothing. Then model_apply the same op.",
+    description: "After faces_find or edges_find. A refusal changes nothing. Ok adds metrics: volume, bbox, shells before and after; warns on separate pieces. Then model_apply the same op.",
     inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op, node: handle } },
+  },
+  {
+    name: "surface_at",
+    description: "First hit of a ray on the solid, part frame, mm: point, normal, distanceMm, faceIndex. Give point and direction, or x and y for a ray down from above. Mesh, 0.05 mm.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: handle,
+        point: { ...vec3, description: "Ray start." },
+        direction: { ...vec3, description: "Ray direction. Default down with x, y." },
+        x: { type: "number", description: "With y: ray down." },
+        y: { type: "number", description: "With x." },
+      },
+    },
+  },
+  {
+    name: "model_check",
+    description: "Before slicing, the solid as it stands on the bed: overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume. Thin walls are not checked.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: handle,
+        overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical. Default 45." },
+      },
+    },
   },
   {
     name: "model_apply",
@@ -723,13 +752,18 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "render_view",
-    description: "Write a PNG in the workspace. Cameras: top, front, iso.",
+    description: "PNG inline and in the workspace. Cameras on the part's axes: front shows the −Y face, back, left (−X), right, top, bottom, iso; or direction and up. views: several cameras, one image each. op: a boolean's tool in orange, not applied.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         object: handle,
-        camera: { enum: ["top", "front", "iso"] },
+        camera: { enum: ["front", "back", "left", "right", "top", "bottom", "iso"] },
+        direction: { ...vec3, description: "Part toward camera." },
+        up: { ...vec3, description: "Picture up. Default Z." },
+        views: { type: "array", minItems: 1, maxItems: 6, description: "Names or {direction, up}.", items: {} },
+        op: { type: "object", description: "Boolean op. Drawn only." },
+        inline: { type: "boolean", description: "Default true." },
         name: { type: "string", minLength: 1 },
         longEdge: { type: "integer", minimum: 32, maximum: 1024 },
       },
@@ -873,12 +907,13 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "layer_image",
-    description: "Write a PNG of one layer.",
+    description: "PNG of one layer, inline and in the workspace.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         job: handle,
+        inline: { type: "boolean", description: "Default true." },
         layer: { type: "integer", minimum: 0, description: "Layer index." },
         colourBy: { enum: ["feature", "speed", "weight"], description: "feature, speed, or weight." },
         longEdge: { type: "integer", minimum: 32, maximum: 1024, description: "Pixels, 32–1024." },
