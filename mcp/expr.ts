@@ -112,7 +112,7 @@ export function evaluate(text: string, params: Params): number {
 
 /** Fields that hold text on purpose. Every other string in an op is read as a number. */
 const TEXT_FIELDS = new Set([
-  "kind", "op", "primitive", "label", "keep", "screw", "toolObject", "shape", "pattern", "plane", "onError", "filter", "object", "name",
+  "kind", "op", "primitive", "label", "keep", "screw", "toolObject", "shape", "pattern", "plane", "onError", "filter", "object", "name", "from", "fromNode",
 ]);
 
 /**

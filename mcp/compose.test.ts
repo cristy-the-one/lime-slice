@@ -177,6 +177,20 @@ const bySelector = await call("model_apply", { object, op: { kind: "pocket", fac
 check("the session resolves a face selector", bySelector.ok === true && bySelector.applied === 1, JSON.stringify(bySelector));
 const noFace = await call("model_apply", { object, op: { kind: "pocket", face: { normal: [0, -1, 0], nearby: [0, 0, 0] }, width: 8, height: 8, depth: 1 } });
 check("an unknown selector field is refused", noFace.ok === false && JSON.stringify(noFace).includes("nearby"), JSON.stringify(noFace));
+// Kernel ops through the MCP: a sketch on a face from its corner, a revolve, a shell by selector, and step edges.
+const gable = await call("model_apply", { object, probe: true, op: { kind: "extrude", op: "fuse", face: { normal: [0, -1, 0] }, from: "corner", profile: [[0, 0], [20, 0], [10, 8]], depth: 2, label: "gable" } });
+const gableOp = gable.stored as { kind?: string; origin?: number[]; profile?: number[][]; depth?: number };
+check("an extrude on a face from its corner applies", gable.ok === true && gableOp.kind === "extrude" && gableOp.profile?.length === 3 && gableOp.depth === 2, JSON.stringify(gable));
+check("from: corner puts the profile origin at the face's min corner", nearAll(gableOp.origin ?? [], [0, 0, 0], 1e-6), JSON.stringify(gableOp.origin));
+const knob = await call("model_apply", { object, probe: true, op: { kind: "revolve", op: "fuse", profile: [[0, 0], [2, 0], [2, 3], [0, 3]], angleDeg: 360 } });
+check("a revolve applies", knob.ok === true && (knob.stored as { kind?: string }).kind === "revolve", JSON.stringify(knob));
+const hollow = await call("model_apply", { object, probe: true, op: { kind: "shell", thickness: 2, openFaces: [{ normal: [0, 0, -1] }] } });
+check("a shell takes a face selector for its open face", hollow.ok === true && JSON.stringify((hollow.stored as { openFaces?: number[] }).openFaces) === "[1]", JSON.stringify(hollow));
+const rounded = await call("model_apply", { object, probe: true, op: { kind: "fillet", edges: { fromNode: "gable", filter: "convex" }, size: 0.5 } });
+const roundedEdges = (rounded.stored as { edges?: { fromNode?: number; filter?: string }[] }).edges ?? [];
+check("a fillet takes the edges a labelled step made", rounded.ok === true && roundedEdges[0]?.fromNode === Number(String(gable.node).slice(5)) && roundedEdges[0]?.filter === "convex", JSON.stringify(rounded));
+const shortProfile = await call("model_apply", { object, probe: true, op: { kind: "extrude", profile: [[0, 0], [1, 0], [1, 1]], depth: 0 } });
+check("an extrude with no depth is a sentence", shortProfile.ok === false && String(shortProfile.reason).includes("depth"), JSON.stringify(shortProfile));
 const params = await call("model_params", { set: { wallW: 60, half: "wallW / 2" } });
 check("model_params evaluates in order", (params.params as Record<string, number>).half === 30, JSON.stringify(params));
 const badParam = await call("model_params", { set: { "2bad": 1 } });

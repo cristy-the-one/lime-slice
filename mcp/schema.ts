@@ -26,9 +26,18 @@ const at = {
 };
 
 const edgeList = {
-  description: "Indexes, or {select} with the edges_find filters.",
+  description: "Indexes, {select} with the edges_find filters, or {fromNode, filter}: the edges a step made.",
   oneOf: [
     { type: "array", items: { type: "integer", minimum: 0 } },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["fromNode"],
+      properties: {
+        fromNode: { type: "string", minLength: 1, maxLength: 80, description: "node_N or a step label." },
+        filter: { enum: ["all", "convex", "concave"], description: "Default all." },
+      },
+    },
     {
       type: "object",
       additionalProperties: false,
@@ -91,6 +100,7 @@ const pocketOp = (kind: "pocket" | "boss") => ({
     faceIndex,
     face: faceSelector,
     shape: { enum: ["rect", "circle", "arch"], description: "rect, circle, arch." },
+    from: { enum: ["centre", "corner"], description: "at from the face centre, or its min corner." },
     at: { ...uv, description: "Centre on the face." },
     width: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "U size." },
     height: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "V size." },
@@ -315,6 +325,60 @@ function checkOp(value: unknown, path: string, plain: boolean, depth = 0): strin
   }
   return null;
 }
+
+const profilePlace = {
+  faceIndex,
+  face: faceSelector,
+  from: { enum: ["centre", "corner"], description: "U, V = 0 at the face centre, or its min corner." },
+  origin: { ...vec3, description: "Plane origin, in place of a face." },
+  turn: { ...vec3, description: "Plane turn, degrees X, Y, Z." },
+};
+const profile = { type: "array", minItems: 3, maxItems: 200, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "Closed outline, [u, v] points, mm." };
+
+/** Ops the kernel builds from a sketch, and the shell. Added to op's branches below. */
+const sketchOps = [
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "profile", "depth"],
+    properties: {
+      kind: { const: "extrude" },
+      op: booleanKind,
+      profile,
+      depth: { type: "number", minimum: -1000, maximum: 1000, description: "Along W; negative goes into the face." },
+      symmetric: { type: "boolean", description: "Centred on the plane." },
+      ...profilePlace,
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "profile"],
+    properties: {
+      kind: { const: "revolve" },
+      op: booleanKind,
+      profile,
+      axisOrigin: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "[u, v]. Default [0, 0]." },
+      axisDir: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "In-plane. Default V." },
+      angleDeg: { type: "number", minimum: -360, maximum: 360, description: "Default 360." },
+      ...profilePlace,
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "thickness"],
+    properties: {
+      kind: { const: "shell" },
+      thickness: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Wall, mm." },
+      openFaces: { type: "array", maxItems: 50, description: "Faces to remove: indexes, or {normal, nearPoint} selectors.", items: { description: "Index or selector." } },
+      label,
+    },
+  },
+];
+(op.oneOf as unknown[]).splice(5, 0, ...sketchOps);
 
 /** A wrong field name with the right one, for the refusal. */
 export const FIELD_HINTS: Record<string, string> = {

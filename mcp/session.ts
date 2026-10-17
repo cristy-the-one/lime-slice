@@ -23,9 +23,9 @@ import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
 import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
-import { applyRequest, crossEditRequest, exportRequest, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../src/model-request.ts";
+import { applyRequest, crossEditRequest, exportRequest, extrudeOp, gotoRequest, joinOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, stepEdges, wholeTreeRequest } from "../src/model-request.ts";
 import { IDENTITY_POSE, toSolidOp, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type Fingerprint, type ModelOp, type ModelTree, type NodeId } from "../src/model-tree.ts";
+import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type EdgePick, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { savedTree, loadedTree } from "../src/model-tree-file.ts";
@@ -65,7 +65,7 @@ import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { validateTool } from "./schema.ts";
-import { cleanOp, COMPOSITE_KINDS, expand, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
+import { cleanOp, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, readVec3, type ExpandContext, type FaceExtent, type Piece } from "./compose.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWrite } from "./workspace.ts";
 
@@ -290,6 +290,17 @@ function parseNode(handle: unknown): number | null {
   if (typeof handle !== "string") return null;
   const match = /^node_(\d+)$/.exec(handle);
   return match ? Number(match[1]) : null;
+}
+
+/** A closed outline of at least three [u, v] points, or null. */
+function readProfile(value: unknown): Vec2[] | null {
+  if (!Array.isArray(value) || value.length < 3 || value.length > 200) return null;
+  const out: Vec2[] = [];
+  for (const point of value) {
+    if (!Array.isArray(point) || point.length !== 2 || !point.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+    out.push([point[0] as number, point[1] as number]);
+  }
+  return out;
 }
 
 function isObject(value: PlateObject | { ok: false; reason: string }): value is PlateObject {
@@ -576,7 +587,7 @@ export class Session {
       filament: this.filament().name,
       printerSend: false,
       model: {
-        ops: ["boolean", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
+        ops: ["boolean", "extrude", "revolve", "shell", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
         composite: [...COMPOSITE_KINDS],
         primitives: ["box", "cylinder", "sphere", "cone", "torus", "wedge", "polygon", "tube"],
         maxSteps: MAX_PIECES,
@@ -2646,9 +2657,16 @@ export class Session {
   }
 
   /** Indexes from a list, or from the same filter `edges_find` uses. */
-  private resolveEdges(obj: PlateObject, spec: Record<string, unknown>): number[] | { reason: string } {
+  private resolveEdges(obj: PlateObject, spec: Record<string, unknown>): EdgePick[] | { reason: string } {
     const raw = spec.edges;
     const empty = spec.kind === "chamfer" ? "Pick an edge to chamfer." : "Pick an edge to fillet.";
+    if (raw && typeof raw === "object" && "fromNode" in raw) {
+      const { fromNode, filter } = raw as { fromNode?: unknown; filter?: unknown };
+      const node = this.nodeOf(obj, fromNode);
+      if (node === null || !obj.tree?.nodes.has(node)) return { reason: "That step is not in the history." };
+      if (node === 0) return { reason: "Pick a step after the first solid. Its edges are not a step's own." };
+      return [stepEdges(node, filter === "convex" || filter === "concave" ? filter : "all")];
+    }
     if (Array.isArray(raw)) {
       if (raw.length === 0) return { reason: empty };
       if (!raw.every((edge) => Number.isInteger(edge))) return { reason: "Edge indexes are whole numbers." };
@@ -2784,6 +2802,45 @@ export class Session {
       const op = joinOp((spec.op === "fuse" || spec.op === "common" ? spec.op : "cut"), { object: tool.id, key: tool.tree.key, node: tool.tree.current, name: tool.name }, obj.modelPose, tool.modelPose, spec.keepTool === true);
       return { op, typed: { kind: "join", toolObject: tool.id, keepTool: spec.keepTool === true } };
     }
+    if (kind === "extrude" || kind === "revolve") {
+      const plane = this.profilePlane(obj, spec);
+      if ("reason" in plane) return plane;
+      const profile = readProfile(spec.profile);
+      if (!profile) return { reason: "A profile needs at least three [u, v] points." };
+      const booleanOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
+      if (kind === "extrude") {
+        const depth = spec.depth;
+        if (typeof depth !== "number" || depth === 0) return { reason: "An extrude needs a depth in millimetres." };
+        const made = extrudeOp(booleanOp, plane, profile, depth, spec.symmetric === true);
+        return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+      }
+      const axisOrigin = readProfile([spec.axisOrigin, [0, 0], [0, 0]])?.[0];
+      const axisDir = readProfile([spec.axisDir, [0, 0], [0, 0]])?.[0];
+      const made = revolveOp(booleanOp, plane, profile, {
+        ...(spec.axisOrigin !== undefined && axisOrigin ? { origin: axisOrigin } : {}),
+        ...(spec.axisDir !== undefined && axisDir ? { dir: axisDir } : {}),
+        ...(typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {}),
+      });
+      return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+    }
+    if (kind === "shell") {
+      const thickness = spec.thickness;
+      if (typeof thickness !== "number" || !(thickness > 0)) return { reason: "A shell needs a wall thickness in millimetres." };
+      const faces: number[] = [];
+      const ctx = this.expandContext(obj);
+      for (const pick of Array.isArray(spec.openFaces) ? spec.openFaces : []) {
+        if (Number.isInteger(pick)) {
+          if (!obj.solid?.faces[pick as number]) return { reason: "That face is not on this solid." };
+          faces.push(pick as number);
+          continue;
+        }
+        const found = ctx.faceBy((pick ?? {}) as Record<string, unknown>);
+        if (typeof found !== "number") return found;
+        faces.push(found);
+      }
+      const made = shellOp(thickness, [...new Set(faces)]);
+      return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+    }
     if (kind === "boolean") {
       const booleanOp = spec.op === "fuse" || spec.op === "common" ? spec.op : "cut";
       const local = primitiveFrom(spec, "box");
@@ -2799,7 +2856,7 @@ export class Session {
       const op: ModelOp = { kind: "root", ...solid };
       return { op, typed: { kind: "root", ...solid } };
     }
-    return { reason: "That edit is not one of hole, fillet, chamfer, split, scale, boolean, join, or root." };
+    return { reason: "That edit is not one of hole, fillet, chamfer, split, scale, boolean, extrude, revolve, shell, join, or root." };
   }
 
   private splitCheck(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): { text: string; bad: boolean } {
@@ -3002,6 +3059,19 @@ export class Session {
         return [...matched].sort((a, b) => score(a) - score(b))[0]!.index;
       },
     };
+  }
+
+  /**
+   * The plane a profile is drawn on: origin and turn as given, else a face (face or faceIndex, with from: corner putting
+   * U, V = 0 at the face's min corner), else the object's workplane.
+   */
+  private profilePlane(obj: PlateObject, spec: Record<string, unknown>): { origin: [number, number, number]; turn: [number, number, number] } | { reason: string } {
+    if (spec.origin !== undefined || spec.turn !== undefined) return { origin: readVec3(spec.origin, [0, 0, 0]), turn: readVec3(spec.turn, [0, 0, 0]) };
+    if (spec.face === undefined && spec.faceIndex === undefined) return { origin: [...obj.workplane.origin], turn: [...obj.workplane.turn] };
+    const frame = faceFrame(spec, this.expandContext(obj));
+    if ("reason" in frame) return frame;
+    if (spec.from !== "corner" || !frame.extent) return { origin: [...frame.plane.origin], turn: [...frame.plane.turn] };
+    return { origin: planePoint(frame.plane, [frame.extent.u[0], frame.extent.v[0], 0]), turn: [...frame.plane.turn] };
   }
 
   /** A plain Boolean op typed in the object's workplane, as a part-frame piece. */

@@ -246,7 +246,7 @@ function cylinderIn(plane: Workplane, base: Vec3, radius: number, height: number
   return planePrimitive({ primitive: "cylinder", origin: base, size: [0, 0, 0], radius, height, turn: [0, 0, 0] }, plane);
 }
 
-function faceFrame(spec: Record<string, unknown>, ctx: ExpandContext): { plane: Workplane; extent: FaceExtent | null } | { reason: string } {
+export function faceFrame(spec: Record<string, unknown>, ctx: ExpandContext): { plane: Workplane; extent: FaceExtent | null } | { reason: string } {
   if (spec.face !== undefined && spec.faceIndex !== undefined) return { reason: "Give face or faceIndex, not both." };
   if (spec.face !== undefined) {
     const index = ctx.faceBy((spec.face ?? {}) as Record<string, unknown>);
@@ -266,8 +266,13 @@ function pocketPieces(spec: Record<string, unknown>, ctx: ExpandContext, raised:
   if ("reason" in frame) return frame;
   const plane = frame.plane;
   const at = (spec.at ?? {}) as { u?: unknown; v?: unknown };
-  const u = numOr(at.u, 0);
-  const v = numOr(at.v, 0);
+  let u = numOr(at.u, 0);
+  let v = numOr(at.v, 0);
+  if (spec.from === "corner") {
+    if (!frame.extent) return { reason: "from: corner needs face or faceIndex." };
+    u += frame.extent.u[0];
+    v += frame.extent.v[0];
+  }
   const depth = numOr(spec.depth, 0);
   if (!(depth > 0)) return { reason: `A ${raised ? "boss" : "pocket"} needs a depth in millimetres.` };
   const shape = spec.shape === "circle" || spec.shape === "arch" ? spec.shape : "rect";
