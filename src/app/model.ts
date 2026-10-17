@@ -814,6 +814,11 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
     if (tree.nodes.size === 1 && !tree.nodes.get(ROOT)?.name && !named.has(key) && tree.root.kind !== "primitive") continue;
     const root = tree.nodes.get(ROOT)?.mesh;
     if (!savedRootOf(tree) && tree.root.kind === "piece" && root) await writeStep(root.token, key, ROOT);
+    // An imported STEP root is saved as the engine's own solid of it, once, while the engine holds it: a reopen that
+    // needs the root reads that in a fraction of the STEP's time. A root that is still a plate object's file stays, as
+    // the file keeps those bytes once for both.
+    const rootBytes = tree.root.kind === "step" ? tree.root.bytes : null;
+    if (rootBytes && !isBrep(rootBytes) && engineHeld.get(key)?.has(ROOT) && !state.plate.objects.some((obj) => obj.bytes === rootBytes)) await brepRoot(key);
     const saved = modelTrees.has(key) ? savedRootOf(treeOfKey(key)) : null;
     if (saved) roots.set(id, saved);
     else unsaved.push(name);
@@ -1170,6 +1175,7 @@ async function startTree(objectId: string, label: string, from: Exclude<ModelRoo
     return typeof parsed === "string" ? parsed : "This solid is no longer open.";
   }
   modelTrees.set(key, withNode(newTree(key, from, rootLabel(from, label), parsed.fingerprint), ROOT, { mesh: root }));
+  noteHeld(key, body);
   if (from.kind === "step" || root.step) stepKnown.add(root.token);
   if (!parsed.editable) surfacesOnly.add(root.token);
   setTreeKey(objectId, key);
@@ -2203,6 +2209,14 @@ function writeStep(token: string, key: string, node: NodeId): Promise<ArrayBuffe
     writing.set(token, pending);
   }
   return pending;
+}
+
+/** Tree `key`'s STEP root, replaced by the engine's binary solid of it. Left as it is when the engine cannot write it. */
+async function brepRoot(key: string) {
+  const solid = await exportSolid(key, ROOT, "brep");
+  const tree = modelTrees.get(key);
+  if (typeof solid === "string" || !isBrep(solid) || tree?.root.kind !== "step") return;
+  modelTrees.set(key, { ...tree, root: { ...tree.root, bytes: solid } });
 }
 
 /** The node's solid as `format`: `brep`, which the plate object keeps and a project saves, or `step` for the STEP button. */

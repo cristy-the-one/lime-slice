@@ -500,6 +500,8 @@ export class Session {
   private readonly meshHashes = new WeakMap<Uint8Array, string>();
   /** STEP solids from projects saved before version 3 that a commit already tried to write again in the binary format. */
   private readonly legacySolids = new WeakSet<Uint8Array>();
+  /** STEP roots a commit already tried to write as the engine's binary solid, so an engine that cannot is asked once. */
+  private readonly triedRoots = new WeakSet<ArrayBuffer>();
   private generation = 0;
   private lastProgressAt = 0;
   overrides: OverrideDocument = emptyOverrides();
@@ -4387,6 +4389,7 @@ export class Session {
       throw err;
     }
     if (!obj.solid || obj.solid.positions.length < 9) return null;
+    await this.brepRoot(obj, tree);
     if (obj.platedNode === tree.current && obj.bytes.byteLength > 0) {
       // A project saved before version 3 keeps the plate's step as STEP: the step is written again as the engine's own
       // solid, which the next open builds from at once. A step that will not write keeps its STEP.
@@ -4433,6 +4436,20 @@ export class Session {
     obj.platedNode = tree.current;
     obj.tree = { ...obj.tree!, committed: tree.current };
     return null;
+  }
+
+  /**
+   * An imported STEP root, written once as the engine's own solid of it, as the app saves it: a reopen that needs the root
+   * reads that in a fraction of the STEP's time. A root that is still the plate's file stays STEP, kept once for both.
+   */
+  private async brepRoot(obj: PlateObject, tree: ModelTree): Promise<void> {
+    const root = tree.root;
+    if (root.kind !== "step" || isBrep(root.bytes) || /\.(step|stp)$/i.test(obj.fileName) || this.triedRoots.has(root.bytes)) return;
+    this.triedRoots.add(root.bytes);
+    const reply = await this.treeCall(exportRequest(tree.key, 0, "brep"), "export").catch(() => ({}));
+    const solid = this.stepBytes(reply);
+    if (!solid || !isBrep(solid) || obj.tree !== tree) return;
+    obj.tree = { ...tree, root: { ...root, bytes: solid.buffer.slice(solid.byteOffset, solid.byteOffset + solid.byteLength) as ArrayBuffer } };
   }
 
   /** True when a scale step sits strictly after `from` on the way to `to`. */
