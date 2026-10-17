@@ -26,6 +26,11 @@ struct Held {
     double meshed = 0;
     /// `describe`'s JSON, written by the first reply.
     std::string about;
+    /// Each face's `{"areaMm2":…,"normal":[…]}` and each edge's length, as the reply writes them, by index, once
+    /// worked out. Empty text is not worked out yet. A solid built from another takes those of the faces and edges
+    /// the two share (`inherit_about`), so a step measures only what it changed.
+    std::vector<std::string> face_about;
+    std::vector<std::string> edge_about;
 };
 
 /// One tessellation as the reply sends it, as binary arrays.
@@ -53,7 +58,9 @@ double volume_of(const TopoDS_Shape& shape);
 Mesh tessellate(Held& held, double chord);
 /// What a reply says of the shape whatever the chord, as a JSON object: `volumeMm3`, `solid`,
 /// `faces` (area and outward normal), and `edgeLengths`.
-std::string describe(const Held& held);
+std::string describe(Held& held);
+/// Give `held` the face and edge measures `from` has worked out for the faces and edges the two share.
+void inherit_about(Held& held, const Held& from);
 bool measure_distance(
     const Held& held,
     const char* a_kind,
@@ -65,6 +72,11 @@ bool measure_distance(
 
 TopoDS_Shape read_step(const char* path, std::string& error);
 bool write_step(const TopoDS_Shape& shape, const char* path, std::string& error);
+/// The shape in Open CASCADE's own binary format (BinTools), without triangulation: every number as the
+/// kernel holds it, and sub-shapes in the order it numbers them, so a read gives back the same faces and edges.
+std::string write_brep(const TopoDS_Shape& shape);
+/// A shape `write_brep` wrote. Null, with `error`, when the bytes do not read.
+TopoDS_Shape read_brep(const char* data, size_t size, std::string& error);
 
 /// A primitive solid in millimetres, turned by `rx`, then `ry`, then `rz` degrees about its centre.
 /// Each kind reads its own fields; docs/step-modeler.md lists them.

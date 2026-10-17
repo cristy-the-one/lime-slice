@@ -37,6 +37,11 @@ const PATH_PIN_EVERY: u32 = 8;
 /// (`src/model-reply.ts`), so an engine and an app that do not match fail plainly.
 const SOLID_FORMAT: &str = "lime-solid-2";
 
+/// The first word of a solid saved in Open CASCADE's binary format (`Shape::brep_bytes`). Its header line is
+/// `LIMEBREP 1 <Open CASCADE version> <volume>`, then the BinTools bytes. A STEP file never starts with it.
+const BREP_MAGIC: &[u8] = b"LIMEBREP ";
+const BREP_FORMAT: &str = "1";
+
 // A reply sends the kernel's f32 and u32 arrays byte for byte, and the format says little-endian.
 const _: () = assert!(cfg!(target_endian = "little"));
 
@@ -513,6 +518,12 @@ enum Request {
         nodes: Vec<SavedNode>,
         #[serde(default)]
         current: NodeId,
+        /// One saved step's solid as `export` wrote it in `brep`, so that step and the steps after it build
+        /// without replaying the steps above it.
+        seed: Option<SeedSolid>,
+        /// Build `current` but answer only `{id, fingerprint}`, for a caller that asks for the step next anyway.
+        #[serde(default)]
+        quiet: bool,
     },
     Apply {
         key: String,
@@ -572,10 +583,28 @@ enum Request {
         b_kind: String,
         b_index: i32,
     },
+    /// `format` is `step` (the default, for a file to hand on) or `brep` (the binary a project keeps).
     Export {
         key: String,
         node: NodeId,
+        #[serde(default)]
+        format: ExportFormat,
     },
+}
+
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ExportFormat {
+    #[default]
+    Step,
+    Brep,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SeedSolid {
+    node: NodeId,
+    data_b64: String,
 }
 
 #[derive(Deserialize)]
@@ -750,6 +779,9 @@ struct Node {
     piece: Option<String>,
     /// The edges this step made or changed, read once from its solid when a later blend first picks them.
     created: Option<Vec<EdgeRef>>,
+    /// Its solid came from a saved copy (`open`'s `seed`), not from a replay. It is never evicted, since
+    /// building it again means replaying every step above it.
+    seeded: bool,
     depth: u32,
     used: u64,
 }
@@ -797,6 +829,7 @@ impl Doc {
                 broken: None,
                 piece: None,
                 created: None,
+                seeded: false,
                 depth: 0,
                 used,
             },
@@ -823,6 +856,7 @@ impl Doc {
             broken: None,
             piece: None,
             created: None,
+            seeded: false,
             depth,
             used: 0,
         });
@@ -852,9 +886,15 @@ impl Doc {
         false
     }
 
-    /// The root, the current node, and every eighth node on the path between them.
+    /// The root, the current node, every eighth node on the path between them, and every seeded node.
     fn pinned(&self) -> HashSet<NodeId> {
         let mut pinned = HashSet::from([ROOT, self.current]);
+        pinned.extend(
+            self.nodes
+                .iter()
+                .filter(|(_, node)| node.seeded)
+                .map(|(id, _)| *id),
+        );
         let mut at = Some(self.current);
         while let Some(id) = at {
             let Some(node) = self.nodes.get(&id) else {
@@ -1269,6 +1309,8 @@ impl Store {
                 chord_mm,
                 nodes,
                 current,
+                seed,
+                quiet,
             } => {
                 let root = root_shape(data_b64, step_path, box_mm, primitive)?;
                 if let Some(saved) = fingerprint {
@@ -1280,7 +1322,14 @@ impl Store {
                         });
                     }
                 }
-                self.open(key, root, nodes, current, chord_mm)
+                self.open(
+                    key,
+                    root,
+                    nodes,
+                    current,
+                    seed,
+                    (!quiet).then_some(chord_mm),
+                )
             }
             Request::Apply {
                 key,
@@ -1350,15 +1399,21 @@ impl Store {
                     json!({ "id": node, "distanceMm": distance }).to_string(),
                 ))
             }
-            Request::Export { key, node } => {
+            Request::Export { key, node, format } => {
                 self.ensure(&key, node)?;
-                let bytes = doc_in(&mut self.docs, &key)?
-                    .shape(node)
-                    .step_bytes()
-                    .map_err(Failure::Message)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let bytes = match format {
+                    ExportFormat::Step => shape.step_bytes(),
+                    ExportFormat::Brep => shape.brep_bytes(),
+                }
+                .map_err(Failure::Message)?;
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let format = match format {
+                    ExportFormat::Step => "step",
+                    ExportFormat::Brep => "brep",
+                };
                 Ok(Answer::Plain(format!(
-                    "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{}}}",
+                    "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{},\"format\":\"{format}\"}}",
                     bytes.len()
                 )))
             }
@@ -1371,7 +1426,8 @@ impl Store {
         root: Shape,
         saved: Vec<SavedNode>,
         current: NodeId,
-        chord: f64,
+        seed: Option<SeedSolid>,
+        chord: Option<f64>,
     ) -> Result<Answer, Failure> {
         self.clock += 1;
         let mut doc = Doc::new(root, self.clock);
@@ -1390,9 +1446,35 @@ impl Store {
             }
             doc.insert(node.id, node.parent, node.op)?.fingerprint = node.fingerprint;
         }
+        // A seed that does not read, or is not the step it names, is left out: the step is replayed instead.
+        let refused = seed.and_then(|seed| {
+            let used = self.clock;
+            seed_node(&mut doc, seed, used).err()
+        });
         self.replies.retain(|reply| reply.key != key);
         self.docs.insert(key.clone(), doc);
-        self.goto(key, current, chord)
+        // Without a chord the step is built and kept, not meshed: the caller asks for it next.
+        let mut answer = match chord {
+            Some(chord) => self.goto(key, current, chord)?,
+            None => {
+                doc_in(&mut self.docs, &key)?.broken_above(current)?;
+                let replayed = self.ensure(&key, current)?;
+                let doc = doc_in(&mut self.docs, &key)?;
+                doc.current = current;
+                let fingerprint = doc.node(current)?.fingerprint;
+                Answer::Held {
+                    key,
+                    text: Arc::new(
+                        json!({ "id": current, "fingerprint": fingerprint }).to_string(),
+                    ),
+                    fields: vec![("replayed", Part::Json(replayed.to_string()))],
+                }
+            }
+        };
+        if let (Some(message), Answer::Held { fields, .. }) = (refused, &mut answer) {
+            fields.push(("seedRefused", Part::Json(json!(message).to_string())));
+        }
+        Ok(answer)
     }
 
     fn goto(&mut self, key: String, id: NodeId, chord: f64) -> Result<Answer, Failure> {
@@ -1999,6 +2081,38 @@ fn root_placement(parent: NodeId, op: &Op) -> Result<(), String> {
     Ok(())
 }
 
+/// Give saved step `seed.node` the solid saved with it. Only a solid in the binary format is taken: it is the step
+/// exactly, face and edge numbering included, where a STEP read can sit apart from it. It must match the step's
+/// fingerprint as saved.
+fn seed_node(doc: &mut Doc, seed: SeedSolid, used: u64) -> Result<(), String> {
+    let node = doc
+        .nodes
+        .get(&seed.node)
+        .ok_or_else(|| format!("Step {} is not in this history", seed.node))?;
+    if seed.node == ROOT {
+        return Err("The root opens from its own source".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(seed.data_b64.trim())
+        .map_err(|err| err.to_string())?;
+    if !bytes.starts_with(BREP_MAGIC) {
+        return Err("Only a solid saved in Open CASCADE's binary format seeds a step".into());
+    }
+    let shape = Shape::read_brep(&bytes)?;
+    let got = shape.fingerprint();
+    if let Some(expected) = node.fingerprint {
+        if !expected.matches(&got) {
+            return Err(rebuilt_differently(&got, &expected));
+        }
+    }
+    let node = doc.nodes.get_mut(&seed.node).expect("checked above");
+    node.fingerprint = Some(got);
+    node.shape = Some(shape);
+    node.seeded = true;
+    node.used = used;
+    Ok(())
+}
+
 /// An unknown tree reads as a missing root: the client resends the root and the ops.
 fn doc_in<'a>(docs: &'a mut HashMap<String, Doc>, key: &str) -> Result<&'a mut Doc, Failure> {
     docs.get_mut(key).ok_or(Failure::Missing(vec![ROOT]))
@@ -2031,6 +2145,9 @@ fn root_shape(
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(data.trim())
                 .map_err(|err| Failure::Message(err.to_string()))?;
+            if bytes.starts_with(BREP_MAGIC) {
+                return Shape::read_brep(&bytes).map_err(Failure::Message);
+            }
             let path = temp_step("open");
             std::fs::write(&path, bytes).map_err(|err| Failure::Message(err.to_string()))?;
             let shape = Shape::read_step(&path);
@@ -2047,6 +2164,17 @@ fn root_shape(
 
 fn one_root() -> Failure {
     Failure::Message("Open a tree from exactly one of dataB64, stepPath, box, or primitive".into())
+}
+
+/// The linked Open CASCADE version, as a saved solid's header names it.
+fn occt_version() -> String {
+    let ptr = unsafe { lime_tree_occt_version() };
+    if ptr.is_null() {
+        return "unknown".into();
+    }
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .replace(char::is_whitespace, "_")
 }
 
 fn temp_step(tag: &str) -> std::path::PathBuf {
@@ -2609,6 +2737,20 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     fn lime_tree_read_step(path: *const c_char, error: *mut *mut c_char) -> *mut RawShape;
+    fn lime_tree_read_brep(
+        data: *const u8,
+        size: usize,
+        volume: f64,
+        created: *const c_int,
+        count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_write_brep(
+        shape: *const RawShape,
+        size: *mut usize,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
+    fn lime_tree_occt_version() -> *const c_char;
     fn lime_tree_boolean(
         from: *const RawShape,
         op: *const c_char,
@@ -2806,6 +2948,92 @@ impl Shape {
         Shape::made(|error| unsafe { lime_tree_read_step(path.as_ptr(), error) })
     }
 
+    /// A solid `brep_bytes` wrote: the same faces and edges, in the same order, as the step it was saved from.
+    /// Bytes another Open CASCADE wrote are read as well; BinTools reads every older format.
+    fn read_brep(bytes: &[u8]) -> Result<Shape, String> {
+        let damaged = || "This saved solid is damaged".to_string();
+        let end = bytes.iter().position(|&b| b == b'\n').ok_or_else(damaged)?;
+        let header = std::str::from_utf8(&bytes[..end]).map_err(|_| damaged())?;
+        let fields: Vec<&str> = header.split(' ').collect();
+        let [_, format, occt, volume, created] = fields[..] else {
+            return Err(damaged());
+        };
+        if format != BREP_FORMAT {
+            return Err(format!(
+                "This solid was saved in format {format}, which this modeler does not read"
+            ));
+        }
+        let volume: f64 = volume.parse().map_err(|_| damaged())?;
+        // `*` is every edge (a root, or a solid read from a file); else the edges its step made, by index.
+        let created: Option<Vec<c_int>> = match created {
+            "*" => None,
+            "" | "-" => Some(Vec::new()),
+            list => Some(
+                list.split(',')
+                    .map(|index| index.parse().map_err(|_| damaged()))
+                    .collect::<Result<_, _>>()?,
+            ),
+        };
+        let (made, count) = created.as_ref().map_or((std::ptr::null(), -1), |list| {
+            (list.as_ptr(), list.len() as c_int)
+        });
+        let data = &bytes[end + 1..];
+        Shape::made(|error| unsafe {
+            lime_tree_read_brep(data.as_ptr(), data.len(), volume, made, count, error)
+        })
+        .map_err(|message| {
+            let ours = occt_version();
+            if occt == ours {
+                message
+            } else {
+                format!("{message} (saved by Open CASCADE {occt}, this modeler has {ours})")
+            }
+        })
+    }
+
+    /// The solid as a project keeps it: a header line with the volume its step integrated, so a read
+    /// integrates nothing and its fingerprint is the step's, then Open CASCADE's binary format.
+    fn brep_bytes(&self) -> Result<Vec<u8>, String> {
+        let mut size = 0usize;
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let raw = unsafe { lime_tree_write_brep(self.raw(), &mut size, &mut error) };
+        let message = take_text(error);
+        let Some(raw) = NonNull::new(raw) else {
+            return Err(message.unwrap_or_else(|| "Open CASCADE did not write this solid".into()));
+        };
+        let created = self.created_indexes();
+        let created = if created.len() == self.fingerprint().edges as usize
+            && created
+                .iter()
+                .enumerate()
+                .all(|(i, &index)| i as c_int == index)
+        {
+            "*".to_string()
+        } else if created.is_empty() {
+            "-".to_string()
+        } else {
+            created
+                .iter()
+                .map(c_int::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let header = format!(
+            "{}{BREP_FORMAT} {} {} {created}\n",
+            std::str::from_utf8(BREP_MAGIC).expect("ASCII"),
+            occt_version(),
+            self.fingerprint().volume_mm3
+        );
+        let mut out = Vec::with_capacity(header.len() + size);
+        out.extend_from_slice(header.as_bytes());
+        // SAFETY: the kernel wrote `size` bytes there; they are copied before the buffer is freed.
+        out.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(raw.as_ptr().cast::<u8>(), size)
+        });
+        unsafe { lime_model_occt_string_free(raw.as_ptr()) };
+        Ok(out)
+    }
+
     fn editable(&self) -> Result<(), String> {
         let mut error: *mut c_char = std::ptr::null_mut();
         let ok = unsafe { lime_tree_editable(self.raw(), &mut error) };
@@ -2846,17 +3074,20 @@ impl Shape {
         (0..count).filter_map(|index| self.edge(index)).collect()
     }
 
-    /// The edges the op that built this solid made or changed, those it could measure.
-    fn created_edges(&mut self) -> Vec<EdgeRef> {
+    /// The indexes of the edges the op that built this solid made or changed.
+    fn created_indexes(&self) -> Vec<c_int> {
         let mut ptr: *const c_int = std::ptr::null();
         let count = unsafe { lime_tree_created(self.raw(), &mut ptr) };
-        let indexes: Vec<i32> = if count <= 0 || ptr.is_null() {
-            Vec::new()
-        } else {
-            // SAFETY: the kernel keeps `count` ints there for as long as the shape lives; they are copied here.
-            unsafe { std::slice::from_raw_parts(ptr, count as usize) }.to_vec()
-        };
-        indexes
+        if count <= 0 || ptr.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: the kernel keeps `count` ints there for as long as the shape lives; they are copied here.
+        unsafe { std::slice::from_raw_parts(ptr, count as usize) }.to_vec()
+    }
+
+    /// The edges the op that built this solid made or changed, those it could measure.
+    fn created_edges(&mut self) -> Vec<EdgeRef> {
+        self.created_indexes()
             .into_iter()
             .filter_map(|index| self.edge(index))
             .filter(|edge| edge.mid.iter().all(|v| v.is_finite()) && edge.length_mm.is_finite())
