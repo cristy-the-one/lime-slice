@@ -155,34 +155,37 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
       }
     }
   };
+  // Light from the upper left and a little in front, a weaker fill from the right, and a sky term: faces that look
+  // the same way to the camera still read apart, a top from a side and one slope from the next.
+  const toWorld = (r: number, u: number, e: number): Vec => unit([
+    right[0] * r + up[0] * u + eye[0] * e,
+    right[1] * r + up[1] * u + eye[1] * e,
+    right[2] * r + up[2] * u + eye[2] * e,
+  ])!;
+  const key = toWorld(-0.5, 0.65, 0.6);
+  const fill = toWorld(0.7, -0.1, 0.7);
+  const shadeOf = (n: Vec) => {
+    const lit = 0.22 + 0.55 * Math.max(0, dot(n, key)) + 0.18 * Math.max(0, dot(n, fill)) + 0.12 * (0.5 + 0.5 * n[2]);
+    return 50 + Math.round(190 * Math.min(1, lit));
+  };
+  const normalAt = (mesh: Float32Array, i: number): Vec => {
+    const ux = mesh[i + 3]! - mesh[i]!;
+    const uy = mesh[i + 4]! - mesh[i + 1]!;
+    const uz = mesh[i + 5]! - mesh[i + 2]!;
+    const vx = mesh[i + 6]! - mesh[i]!;
+    const vy = mesh[i + 7]! - mesh[i + 1]!;
+    const vz = mesh[i + 8]! - mesh[i + 2]!;
+    return unit([uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx]) ?? [0, 0, 1];
+  };
   const draw = (mesh: Float32Array, zbuf: Float32Array, out: Uint8Array) => {
     for (let i = 0; i + 8 < mesh.length; i += 9) {
-      const ax = mesh[i]!;
-      const ay = mesh[i + 1]!;
-      const az = mesh[i + 2]!;
-      const bx = mesh[i + 3]!;
-      const by = mesh[i + 4]!;
-      const bz = mesh[i + 5]!;
-      const cx = mesh[i + 6]!;
-      const cy = mesh[i + 7]!;
-      const cz = mesh[i + 8]!;
-      const ux = bx - ax;
-      const uy = by - ay;
-      const uz = bz - az;
-      const vx = cx - ax;
-      const vy = cy - ay;
-      const vz = cz - az;
-      const nx = uy * vz - uz * vy;
-      const ny = uz * vx - ux * vz;
-      const nz = ux * vy - uy * vx;
-      const length = Math.hypot(nx, ny, nz) || 1;
-      const facing = Math.max(0, (nx * eye[0] + ny * eye[1] + nz * eye[2]) / length);
-      const shade = 40 + Math.round(180 * (0.25 + 0.75 * facing));
-      paint(project(ax, ay, az), project(bx, by, bz), project(cx, cy, cz), shade, zbuf, out);
+      const shade = shadeOf(normalAt(mesh, i));
+      paint(project(mesh[i]!, mesh[i + 1]!, mesh[i + 2]!), project(mesh[i + 3]!, mesh[i + 4]!, mesh[i + 5]!), project(mesh[i + 6]!, mesh[i + 7]!, mesh[i + 8]!), shade, zbuf, out);
     }
   };
   draw(positions, depth, color);
   if (ghost) draw(ghost, ghostDepth, ghostShade);
+  const ink = edgeInk(positions, project, toPixel, depth, width, height, fit, eye);
   const raw = new Uint8Array((width * 3 + 1) * height);
   for (let y = 0; y < height; y += 1) {
     const row = y * (width * 3 + 1);
@@ -191,7 +194,8 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
       const at = row + 1 + x * 3;
       const pixel = y * width + x;
       const shade = color[pixel]! || 248;
-      let rgb: Vec = [shade, shade, Math.min(255, shade + 8)];
+      const dark = 1 - 0.78 * ink[pixel]! / 255;
+      let rgb: Vec = [Math.round(shade * dark), Math.round(shade * dark), Math.round(Math.min(255, shade + 8) * dark)];
       const tint = ghostShade[pixel]!;
       if (tint) {
         // The tool shape shows through the part, fainter where the part is in front of it.
@@ -220,6 +224,79 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
     offset += part.length;
   }
   return { png, width, height };
+}
+
+/** Faces that meet at more than this many degrees draw their edge. A tessellated curve's facets meet at less. */
+const CREASE_DEG = 25;
+
+/**
+ * How dark each pixel's edge line is, 0 to 255: a CAD drawing's lines over the shading. Edges come from the mesh: an
+ * open boundary, a crease sharper than CREASE_DEG, or a silhouette, where one face looks at the camera and the other
+ * away. Each is drawn only where nothing nearer covers it, against the depth buffer the faces left.
+ */
+function edgeInk(
+  mesh: Float32Array,
+  project: (x: number, y: number, z: number) => Vec,
+  toPixel: (point: Vec) => Vec,
+  depth: Float32Array,
+  width: number,
+  height: number,
+  fit: number,
+  eye: Vec,
+): Uint8Array {
+  const ink = new Uint8Array(width * height);
+  const keyOf = (i: number) => `${Math.round(mesh[i]! * 1000)},${Math.round(mesh[i + 1]! * 1000)},${Math.round(mesh[i + 2]! * 1000)}`;
+  const edges = new Map<string, { a: number; b: number; normals: Vec[] }>();
+  for (let t = 0; t + 8 < mesh.length; t += 9) {
+    const ux = mesh[t + 3]! - mesh[t]!;
+    const uy = mesh[t + 4]! - mesh[t + 1]!;
+    const uz = mesh[t + 5]! - mesh[t + 2]!;
+    const vx = mesh[t + 6]! - mesh[t]!;
+    const vy = mesh[t + 7]! - mesh[t + 1]!;
+    const vz = mesh[t + 8]! - mesh[t + 2]!;
+    const n = unit([uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx]);
+    if (!n) continue;
+    const corners = [t, t + 3, t + 6];
+    for (let k = 0; k < 3; k += 1) {
+      const a = corners[k]!;
+      const b = corners[(k + 1) % 3]!;
+      const ka = keyOf(a);
+      const kb = keyOf(b);
+      const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const row = edges.get(key);
+      if (row) row.normals.push(n);
+      else edges.set(key, { a, b, normals: [n] });
+    }
+  }
+  const crease = Math.cos((CREASE_DEG * Math.PI) / 180);
+  // A line is hidden only behind something clearly nearer than it, more than a couple of pixels' depth.
+  const bias = 2.5 / fit;
+  for (const { a, b, normals } of edges.values()) {
+    let strength = 0;
+    if (normals.length !== 2) strength = 230;
+    else {
+      const [n1, n2] = normals as [Vec, Vec];
+      const f1 = dot(n1, eye);
+      const f2 = dot(n2, eye);
+      if (f1 * f2 < 0) strength = 230;
+      else if (dot(n1, n2) < crease && (f1 > 0 || f2 > 0)) strength = 170;
+    }
+    if (!strength) continue;
+    const p = toPixel(project(mesh[a]!, mesh[a + 1]!, mesh[a + 2]!));
+    const q = toPixel(project(mesh[b]!, mesh[b + 1]!, mesh[b + 2]!));
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(q[0] - p[0]), Math.abs(q[1] - p[1])) * 1.5));
+    for (let s = 0; s <= steps; s += 1) {
+      const t = s / steps;
+      const x = Math.round(p[0] + (q[0] - p[0]) * t);
+      const y = Math.round(p[1] + (q[1] - p[1]) * t);
+      if (x < 0 || y < 0 || x >= width || y >= height) continue;
+      const z = p[2] + (q[2] - p[2]) * t;
+      const at = y * width + x;
+      if (z + bias < depth[at]!) continue;
+      if (strength > ink[at]!) ink[at] = strength;
+    }
+  }
+  return ink;
 }
 
 function triple(value: unknown): Vec | null {

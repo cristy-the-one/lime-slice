@@ -396,6 +396,11 @@ export class Session {
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
   /** Names model ops may use in place of numbers. Set with model_params; not saved in the project. */
   params: Record<string, number> = {};
+  /**
+   * Tools a join took off the plate, as the desktop does: not printed, not listed, but their trees stay open, since
+   * an edit that replays the join builds the tool again, and a save keeps them as the project's modelTools.
+   */
+  private toolsOffPlate: PlateObject[] = [];
 
   constructor(engine: Engine) {
     this.engine = engine;
@@ -1001,7 +1006,7 @@ export class Session {
   private savedModelTree(obj: PlateObject): NonNullable<LimeProject["objects"]>[number]["modelTree"] | undefined {
     const tree = obj.tree;
     if (!tree || tree.root.kind === "piece") return undefined;
-    const owner = (key: string) => this.objects.find((row) => row.tree?.key === key)?.id;
+    const owner = (key: string) => this.byTreeKey(key)?.id;
     const body = savedTree(tree, tree.committed, owner);
     if (tree.root.kind === "primitive") return { ...body, rootPrimitive: tree.root.solid };
     const bytes = new Uint8Array(tree.root.bytes);
@@ -1144,6 +1149,11 @@ export class Session {
       }
     }
     const doc = this.projectDocument();
+    const tools = this.toolsOffPlate.flatMap((tool) => {
+      const modelTree = this.savedModelTree(tool);
+      return modelTree ? [{ id: tool.id, name: tool.name, modelTree }] : [];
+    });
+    if (tools.length > 0) doc.modelTools = [...(doc.modelTools ?? []).filter((row) => !tools.some((tool) => tool.id === row.id)), ...tools];
     if (this.sourcePath && path === this.sourcePath) {
       const loss = this.lossy(doc);
       if (loss) return { ok: false, reason: loss };
@@ -1349,7 +1359,22 @@ export class Session {
   }
 
   private async forgetObjects(): Promise<void> {
-    for (const obj of [...this.objects]) await this.closeTree(obj);
+    for (const obj of [...this.objects, ...this.toolsOffPlate]) await this.closeTree(obj);
+    this.toolsOffPlate = [];
+  }
+
+  /** The object, on the plate or taken off it by a join, whose tree has this engine key. */
+  private byTreeKey(key: string): PlateObject | undefined {
+    return this.objects.find((row) => row.tree?.key === key) ?? this.toolsOffPlate.find((row) => row.tree?.key === key);
+  }
+
+  /** A join without keepTool takes its tool off the plate, as the desktop does; its tree stays for replays and the save. */
+  private takeOffPlate(id: string): void {
+    const tool = this.objects.find((row) => row.id === id);
+    if (!tool) return;
+    this.objects.splice(this.objects.indexOf(tool), 1);
+    this.toolsOffPlate.push(tool);
+    if (this.selected === id) this.selected = this.objects[0]?.id ?? "";
   }
 
   private async closeTree(obj: PlateObject): Promise<void> {
@@ -3062,12 +3087,14 @@ export class Session {
     }
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, baked.op.kind) };
     obj.tree = withChild(obj.tree, tree.current, { id: node, op: baked.op, label: opLabel(baked.op), fingerprint: null });
+    const leftPlate = baked.op.kind === "join" && !baked.op.keepTool ? baked.op.tool.object : undefined;
+    if (leftPlate) this.takeOffPlate(leftPlate);
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     obj.probes.clear();
     const other = otherKey ? this.keepOtherHalf(obj, otherKey, reply.other, node) : undefined;
     const kept = baked.op.kind === "split" ? (keep === "both" ? "both" : this.keptSide(obj, baked.op)) : undefined;
-    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) };
+    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(leftPlate ? { toolLeftPlate: leftPlate } : {}), stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) };
   }
 
   /** What composite ops need to expand: the object's workplane, and any flat face's frame and U, V extent. */
@@ -3462,7 +3489,7 @@ export class Session {
 
   /** Fresh ids on the tree `key` names. An edit spends them even when the engine keeps only some. */
   private reserveOn(key: string, need: number): NodeId[] {
-    const host = this.objects.find((row) => row.tree?.key === key);
+    const host = this.byTreeKey(key);
     if (!host?.tree) return [];
     let reserved = host.tree;
     const ids: NodeId[] = [];
@@ -3480,7 +3507,7 @@ export class Session {
     for (const id of ids) {
       const op = tree.nodes.get(id)?.op;
       if (op?.kind !== "join") continue;
-      const tool = this.objects.find((row) => row.tree?.key === op.tool.key);
+      const tool = this.byTreeKey(op.tool.key);
       if (!tool?.tree) continue;
       links.push({ tree: tool.tree, id: op.tool.node, op });
     }
@@ -3491,7 +3518,7 @@ export class Session {
   private forkTools(levels: { key: string; parent: NodeId; node: NodeId; op: ModelOp; replay: { id: NodeId; op: ModelOp }[] }[], tools: unknown): void {
     const parts = Array.isArray(tools) ? tools as { built?: unknown; broken?: unknown }[] : [];
     levels.forEach((level, index) => {
-      const host = this.objects.find((row) => row.tree?.key === level.key);
+      const host = this.byTreeKey(level.key);
       if (!host?.tree) return;
       const made = readBuilt(parts[index]?.built);
       const broken = readBroken(parts[index]?.broken);

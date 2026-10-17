@@ -103,9 +103,17 @@ const marked = new Float32Array(holed.length + 9);
 marked.set(holed);
 marked.set([6, 6, 20.2, 6, 12, 20.2, 12, 6, 20.2], holed.length);
 const after = shades(renderMesh(marked, "top", 96).png, 96, 96);
-const darkBefore = topShades.filter((shade) => shade < 100).length;
-const darkAfter = after.filter((shade) => shade < 100).length;
+// The part's outline is drawn dark now; inside it, the top face itself has no dark pixels until the hole is marked.
+const inside = (shadesRow: number[]) => shadesRow.filter((shade, index) => {
+  const x = index % 96;
+  const y = Math.floor(index / 96);
+  return x > minX + 3 && x < maxX - 3 && y > minX + 3 && y < maxX - 3 && shade < 100;
+}).length;
+const darkBefore = inside(topShades);
+const darkAfter = inside(after);
 check("a hole on the top face is darker than the top", darkBefore === 0 && darkAfter > 8, `${darkBefore} ${darkAfter}`);
+const outline = topShades.filter((shade) => shade < 100).length;
+check("the part's outline is drawn", outline > 40, String(outline));
 
 const engine = fakeEngine();
 const session = new Session(engine);
@@ -119,13 +127,15 @@ const beforeBytes = beforeFile.ok === true ? readFileSync(String(beforeFile.path
 const afterBytes = afterFile.ok === true ? readFileSync(String(afterFile.path)) : Buffer.alloc(0);
 let beforeDark = 0;
 let afterDark = 0;
+let decodedPixels = 0;
 try {
+  decodedPixels = shades(beforeBytes, 64, 64).length;
   beforeDark = shades(beforeBytes, 64, 64).filter((shade) => shade < 100).length;
   afterDark = shades(afterBytes, 64, 64).filter((shade) => shade < 100).length;
 } catch (err) {
   check("render_view writes a PNG a decoder can open", false, err instanceof Error ? err.message : "");
 }
-check("render_view writes a PNG a decoder can open", beforeDark === 0);
+check("render_view writes a PNG a decoder can open", decodedPixels === 64 * 64);
 check("the top view shows the hole", afterDark > beforeDark, `${beforeDark} ${afterDark}`);
 
 const handles: string[] = [];

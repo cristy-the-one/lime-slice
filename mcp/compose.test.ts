@@ -2,7 +2,7 @@
  * Composite Model edits, batches, labels, parameters, and the op schema's refusals, against the stand-in engine.
  * The real Open CASCADE kernel is not built in this run, so shapes are checked as the ops sent, not as solids.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -279,6 +279,20 @@ const built = await call("model_build", {
   ],
 });
 check("model_build makes, edits, and commits in one call", built.ok === true && built.committed === true && typeof built.object === "string" && (built.applied as number) > 2, JSON.stringify(built));
+
+// A join without keepTool takes the tool off the plate, as the desktop does, and the save keeps its tree.
+const host = await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
+const roofTool = await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
+const keptTool = await call("solid_new", { primitive: "box", dx: 6, dy: 6, dz: 6 });
+const joinedRoof = await call("model_apply", { object: host.object, probe: true, op: { kind: "join", op: "fuse", toolObject: roofTool.object } });
+const listed = ((await call("plate_list", {})).objects as { object?: string; id?: string }[]).map((row) => row.object ?? row.id);
+check("a join takes its tool off the plate", joinedRoof.ok === true && joinedRoof.toolLeftPlate === roofTool.object && !listed.includes(String(roofTool.object)) && listed.includes(String(host.object)), JSON.stringify({ joinedRoof, listed }));
+const keepJoin = await call("model_apply", { object: host.object, probe: true, op: { kind: "join", op: "fuse", toolObject: keptTool.object, keepTool: true } });
+const listedAfter = ((await call("plate_list", {})).objects as { object?: string; id?: string }[]).map((row) => row.object ?? row.id);
+check("keepTool leaves the tool on the plate", keepJoin.ok === true && keepJoin.toolLeftPlate === undefined && listedAfter.includes(String(keptTool.object)), JSON.stringify(keepJoin));
+const joinSave = await call("project_save", { name: "joined.lime" });
+const joinedDoc = joinSave.ok === true ? JSON.parse(readFileSync(join(workspace, "joined.lime"), "utf8")) as { modelTools?: { id: string }[]; objects?: { id: string }[] } : {};
+check("the save keeps the tool's tree as a model tool, not a plate object", (joinedDoc.modelTools ?? []).some((tool) => tool.id === roofTool.object) && !(joinedDoc.objects ?? []).some((row) => row.id === roofTool.object), JSON.stringify({ tools: joinedDoc.modelTools?.map((t) => t.id), objects: joinedDoc.objects?.map((o) => o.id) }));
 
 writeFileSync(join(workspace, "taken.lime"), "{}");
 const refusedSave = await call("project_save", { name: "taken.lime", ifExists: "refuse" });
