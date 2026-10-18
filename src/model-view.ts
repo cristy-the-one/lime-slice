@@ -133,6 +133,8 @@ export interface ModelView {
   setAlign(ends: [Vec3, Vec3] | null): void;
   /** P1. The distance under the pointer, for tests. Null clears it. */
   setPull(distance: number | null): void;
+  // --- A2 shell: picked faces that the shell will remove, drawn in the danger colour with a dashed outline. ---
+  setRemovedFaces(on: boolean): void;
 }
 
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
@@ -219,6 +221,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let datumDrawn = "";
   const datumLines: LineMaterial[] = [];
   let datumPick = false;
+  /** Picked faces a shell will open: danger tint and a dashed outline, over the dry-run. */
+  let removedFaces = false;
   let pickCb: (pick: ModelPick | null, shift: boolean) => void = () => {};
   let down: { x: number; y: number } | null = null;
   let running = false;
@@ -387,7 +391,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const attribute = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const array = attribute.array as Float32Array;
     solid.triangles.forEach((face, triangle) => {
-      const hex = faceColor(face, selected.has(face), hoverFace === face, datumPick ? hexToThree(colors.teal) : accent);
+      const tint = removedFaces ? hexToThree(colors.danger) : datumPick ? hexToThree(colors.teal) : accent;
+      const hex = faceColor(face, selected.has(face), hoverFace === face, tint);
       const offset = triangle * 9;
       for (let vertex = 0; vertex < 3; vertex += 1) writeColor(hex, array, offset + vertex * 3);
     });
@@ -431,13 +436,43 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const selectedFaces = picks.filter((pick) => pick.kind === "face").map((pick) => pick.index);
     const outline: number[] = [];
     for (const face of selectedFaces) outline.push(...(boundaries.get(face) ?? []));
-    faceOutline = replaceLine(faceOutline, outline, 2.5, 1, datumPick ? hexToThree(colors.teal) : accent);
+    const removed = removedFaces && selectedFaces.length > 0;
+    const outlineColor = removed ? hexToThree(colors.danger) : datumPick ? hexToThree(colors.teal) : accent;
+    faceOutline = replaceLine(faceOutline, removed ? dashSegments(outline) : outline, 2.5, 1, outlineColor);
 
     const wanted = new Set(picks.filter((pick) => pick.kind === "edge").map((pick) => pick.index));
     selectedEdges = replaceLine(selectedEdges, edgePositions(wanted), 4, 1);
 
     const hoverEdge = mode === "edge" && hover?.kind === "edge" && !wanted.has(hover.index) ? hover.index : null;
     hoverEdges = replaceLine(hoverEdges, hoverEdge == null ? [] : edgePositions(new Set([hoverEdge])), 2, 0.8);
+  }
+
+  /** A solid outline broken into short dashes, in millimetres along each segment, so it reads as removed. */
+  function dashSegments(positions: number[]): number[] {
+    const dash = 1.8;
+    const gap = 1.1;
+    const period = dash + gap;
+    const out: number[] = [];
+    for (let i = 0; i + 5 < positions.length; i += 6) {
+      const ax = positions[i]!;
+      const ay = positions[i + 1]!;
+      const az = positions[i + 2]!;
+      const bx = positions[i + 3]!;
+      const by = positions[i + 4]!;
+      const bz = positions[i + 5]!;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const dz = bz - az;
+      const length = Math.hypot(dx, dy, dz);
+      if (!(length > 1e-6)) continue;
+      for (let t = 0; t < length - 1e-6; t += period) {
+        const end = Math.min(t + dash, length);
+        const u0 = t / length;
+        const u1 = end / length;
+        out.push(ax + dx * u0, ay + dy * u0, az + dz * u0, ax + dx * u1, ay + dy * u1, az + dz * u1);
+      }
+    }
+    return out;
   }
 
   function edgePositions(ids: Set<number>): number[] {
@@ -1304,6 +1339,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setPull(distance) {
       if (distance == null || !Number.isFinite(distance)) delete canvas.dataset.pull;
       else canvas.dataset.pull = String(Math.round(distance * 10000) / 10000);
+    },
+    // --- A2 shell ---
+    setRemovedFaces(on) {
+      if (removedFaces === on && canvas.dataset.removedFaces === (on ? "1" : "0")) return;
+      removedFaces = on;
+      canvas.dataset.removedFaces = on ? "1" : "0";
+      paintFaces();
+      paintLines();
+      kick();
     },
   };
 

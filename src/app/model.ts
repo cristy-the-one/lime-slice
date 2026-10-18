@@ -18,18 +18,18 @@ import {
   type Affine,
   type PlaceFields,
 } from "../model-space";
-import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, FEATURE_ROOT_EDIT, forked, matchEdges, olderSplitNote, replayChain, stepIds, toolEditHead, toolEditRefusal, toolPose, type EditLevel, type EditPanel, type ForkStep, type ToolLink } from "../model-edit";
+import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, FEATURE_ROOT_EDIT, forked, matchEdges, matchFaces, olderSplitNote, replayChain, stepIds, toolEditHead, toolEditRefusal, toolPose, type EditLevel, type EditPanel, type ForkStep, type ToolLink } from "../model-edit";
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../model-primitive";
 import { markProjectDirty } from "../project-dirty";
 import { unionBox } from "../measure";
 import type { ModelPick } from "../model-view";
 import { DAMAGED, decodeSolid, readFingerprint, type ParsedSolid } from "../model-reply";
-import { holeAxis, lastFace, outwardFromMesh, selectedEdges } from "../model-blend";
+import { holeAxis, lastFace, outwardFromMesh, selectedEdges, selectedFaces } from "../model-blend";
 import { throughLength } from "../model-hole";
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
-import { boxExtentAlong, extentAlong, extentMemo, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
+import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
   childWithOp,
@@ -64,7 +64,7 @@ import {
   type Vec3,
 } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
-import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
+import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, wholeTreeRequest } from "../model-request";
 import { mountPull, pullFieldText, type PullMade } from "../push-pull-ui";
 import {
   closeModelTool,
@@ -89,6 +89,7 @@ import {
   setAllowPullPreview,
   setPullLive,
   modelPreviewFresh,
+  shellClosed,
   syncModelChrome,
   splitMode,
   syncModelSolid,
@@ -379,6 +380,10 @@ export function bindModelView() {
     editClosed: cancelEdit,
     editJoinGhost,
     editUnchanged: editUntouched,
+    // --- A2 shell ---
+    shellSeat() {
+      return shellSeat();
+    },
   });
   // --- P1: face push/pull. The default when no other model tool is open. ---
   if (fx.model) {
@@ -768,6 +773,9 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
         ...(counterbore ? { counterboreRadius: num("#modelBoreR"), counterboreDepth: num("#modelBoreD") } : {}),
       };
     }
+    // --- A2 shell ---
+    case "shell":
+      return shellOp(num("#modelShell"), shellClosed() ? [] : selectedFaces(picks));
     case "boolean":
       return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...planePrimitive(fieldPrimitive(), toolFrame()) };
     case "split": {
@@ -1589,6 +1597,7 @@ async function applyTool() {
     fillet: `Filleting ${count}…`,
     chamfer: `Chamfering ${count}…`,
     hole: "Cutting the hole…",
+    shell: "Hollowing the solid…",
     scale: "Scaling the solid…",
     // --- P1 ---
     faceExtrude: "Pulling the face…",
@@ -1641,9 +1650,10 @@ async function applyOp(op: ModelOp, working: string) {
       if (mine === ticket && state.stage === "model") await resume(mine, at.objectId, at.key, parent);
       return;
     }
-    // Edge numbers of the read solid may not be the rebuilt one's.
-    if (op.kind === "fillet" || op.kind === "chamfer") {
-      readout(`${about(open!.solid)} The step was rebuilt from its history: pick the edges again.`);
+    // Edge and face numbers of the read solid may not be the rebuilt one's. A closed shell names no face, so it can build.
+    if (op.kind === "fillet" || op.kind === "chamfer" || (op.kind === "shell" && (op.openFaces?.length ?? 0) > 0)) {
+      const what = op.kind === "shell" ? "faces" : "edges";
+      readout(`${about(open!.solid)} The step was rebuilt from its history: pick the ${what} again.`);
       return;
     }
     await applyOp(op, working);
@@ -1735,6 +1745,7 @@ function appliedMessage(op: ModelOp, solid: ParsedSolid) {
   if (op.kind === "fillet") return `Fillet. ${volume}${notes}`;
   if (op.kind === "chamfer") return `Chamfer. ${volume}${notes}`;
   if (op.kind === "hole") return `Hole. ${volume}${notes}`;
+  if (op.kind === "shell") return `Shell. ${volume}${notes}`;
   if (op.kind === "join") return `${opLabel(op)}. ${volume}${op.keepTool ? "" : ` ${op.tool.name} left the plate.`}${notes}`;
   return `${volume}${notes}`;
 }
@@ -1870,6 +1881,18 @@ function openEditPanel(run: Editing, head: string) {
     picks = picked.map((index) => ({ kind: "edge", index }));
     fx.model?.highlight(picks);
     if (missing > 0) said = `${about(solid)} ${missing === panel.edges.length ? "This step's edges are" : `${missing} of this step's edges are`} not on this solid any more: pick them again.`;
+  }
+  // --- A2 shell: stored face refs are picked again before the opened snapshot, so Update stays off. ---
+  if (panel.faces) {
+    if (panel.shellClosed || panel.faces.length === 0) {
+      picks = [];
+      fx.model?.highlight([]);
+    } else {
+      const { picked, missing } = matchFaces(faceRows(solid), panel.faces, state.stepTolerance);
+      picks = picked.map((index) => ({ kind: "face", index }));
+      fx.model?.highlight(picks);
+      if (missing > 0) said = `${about(solid)} ${missing === panel.faces.length ? "This step's faces are" : `${missing} of this step's faces are`} not on this solid any more: pick them again.`;
+    }
   }
   run.opened = JSON.stringify(editOp(run));
   syncModelChrome(picks);
@@ -3023,6 +3046,30 @@ function drillAxis(): Vec3 {
   const axis = holeAxis(stored ?? outwardFromMesh(solid.positions, solid.triangles, face));
   const pose = openPose();
   return isIdentity(pose) ? axis : turnDir(pose, axis);
+}
+
+// --- A2 shell ---
+/** The first picked face's middle and inward normal, in model space. The thickness knob sits there. */
+function shellSeat(): { point: Vec3; inward: Vec3 } | null {
+  const face = selectedFaces(picks)[0];
+  const solid = viewed();
+  if (face == null || !solid) return null;
+  const stored = solid.faces.find((item) => item.id === face)?.normal;
+  const outward = stored ?? outwardFromMesh(solid.positions, solid.triangles, face);
+  const centre = faceCentre(solid.positions, solid.triangles, face);
+  if (!outward || !centre) return null;
+  const inward = holeAxis(outward);
+  const pose = openPose();
+  return isIdentity(pose) ? { point: centre, inward } : { point: applyPose(pose, centre), inward: turnDir(pose, inward) };
+}
+
+/** Each shown face as the shell matcher wants it: its reply area, and the mesh's area-weighted middle. */
+function faceRows(solid: ParsedSolid): { id: number; areaMm2: number; mid: Vec3 }[] {
+  return solid.faces.map((face) => ({
+    id: face.id,
+    areaMm2: face.areaMm2,
+    mid: faceCentre(solid.positions, solid.triangles, face.id) ?? [Number.NaN, Number.NaN, Number.NaN],
+  }));
 }
 
 function num(id: string) {

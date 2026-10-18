@@ -140,6 +140,8 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Round every selected edge in one step">Fillet</button>
                   <button class="model-tool" id="modelToolChamfer" type="button" data-tool="chamfer" aria-pressed="false" data-tip="Chamfer every selected edge in one step">Chamfer</button>
                   <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Cut a cylinder into the picked face, or straight down">Hole</button>
+                  <!-- A2 shell -->
+                  <button class="model-tool" id="modelToolShell" type="button" data-tool="shell" aria-pressed="false" data-tip="Hollow the solid to a wall thickness, with picked faces open">Shell</button>
                   <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
                   <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" aria-pressed="false" data-tip="Drag two points on the solid and read the distance">Measure</button>
                   <button class="model-tool" id="modelToolPlace" type="button" data-tool="place" aria-pressed="false" data-tip="Move and turn this object among the others. The plate stays as it is">Place</button>
@@ -210,6 +212,8 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="hole"><span class="scrub-label">Screw</span><select id="modelScrew" aria-label="Screw size: a clearance hole through, counterbored for a socket head" data-tip="A clearance hole through, counterbored for a socket head cap screw"><option value="" disabled>Custom</option>${SCREWS.map((screw) => `<option value="${screw.name}">${screw.name}</option>`).join("")}</select></label>
                   <label data-for="hole" data-bore data-snap="1"><span class="scrub-label" data-scrub>Bore radius</span><input id="modelBoreR" type="number" step="0.1" min="0" value="4" aria-label="Counterbore radius"></label>
                   <label data-for="hole" data-bore data-snap="1"><span class="scrub-label" data-scrub>Bore depth</span><input id="modelBoreD" type="number" step="0.1" min="0" value="3" aria-label="Counterbore depth"></label>
+                  <!-- A2 shell -->
+                  <label data-for="shell" data-snap="1"><span class="scrub-label" data-scrub>Thickness</span><input id="modelShell" type="number" step="0.1" min="0.05" value="1" aria-label="Wall thickness"></label>
                   <label data-for="scale" data-snap="0.5"><span class="scrub-label" data-scrub>Factor</span><input id="modelFactor" type="number" step="0.1" min="0.1" max="20" value="2" aria-label="Uniform scale"></label>
                   <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A X</span><input id="modelAx" type="number" step="0.1" value="0" aria-label="Point A x"></label>
                   <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A Y</span><input id="modelAy" type="number" step="0.1" value="0" aria-label="Point A y"></label>
@@ -244,6 +248,9 @@ export function mountMarkup(root: HTMLElement) {
                   <label class="model-keep"><input id="modelThrough" type="checkbox"> Through all</label>
                   <label class="model-keep"><input id="modelCounterbore" type="checkbox"> Counterbore</label>
                 </div>
+                <!-- A2 shell -->
+                <p class="model-note" id="modelShellFaces" data-for="shell"></p>
+                <label class="model-keep" data-for="shell"><input id="modelShellClosed" type="checkbox"> Keep it closed (hollow inside)</label>
                 <p class="model-note" id="modelNote" hidden></p>
                 <div class="model-actions">
                   <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>
