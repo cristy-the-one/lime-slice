@@ -270,3 +270,68 @@ fn refused_requests_name_the_field() {
         "objects[0].settings.colour is not a setting"
     );
 }
+
+/// A binary STL of a `size`-wide cube on the origin.
+fn cube_stl(size: f32) -> Vec<u8> {
+    let v = |x: u8, y: u8, z: u8| [f32::from(x) * size, f32::from(y) * size, f32::from(z) * size];
+    let quads = [
+        [v(0, 0, 0), v(0, 1, 0), v(1, 1, 0), v(1, 0, 0)],
+        [v(0, 0, 1), v(1, 0, 1), v(1, 1, 1), v(0, 1, 1)],
+        [v(0, 0, 0), v(1, 0, 0), v(1, 0, 1), v(0, 0, 1)],
+        [v(0, 1, 0), v(0, 1, 1), v(1, 1, 1), v(1, 1, 0)],
+        [v(0, 0, 0), v(0, 0, 1), v(0, 1, 1), v(0, 1, 0)],
+        [v(1, 0, 0), v(1, 1, 0), v(1, 1, 1), v(1, 0, 1)],
+    ];
+    let mut out = vec![0u8; 80];
+    out.extend_from_slice(&12u32.to_le_bytes());
+    for [a, b, c, d] in quads {
+        for tri in [[a, b, c], [a, c, d]] {
+            out.extend_from_slice(&[0u8; 12]);
+            for p in tri {
+                for k in p {
+                    out.extend_from_slice(&k.to_le_bytes());
+                }
+            }
+            out.extend_from_slice(&[0u8; 2]);
+        }
+    }
+    out
+}
+
+#[test]
+fn a_plate_of_hundreds_of_parts_slices() {
+    // A building made of its parts, each its own object: 300 small blocks in a 20 by 15 grid.
+    let data = base64::engine::general_purpose::STANDARD.encode(cube_stl(4.0));
+    let objects: Vec<Value> = (0..300)
+        .map(|i| {
+            let (col, row) = (i % 20, i / 20);
+            json!({
+                "id": format!("block{i}"),
+                "filename": "block.stl",
+                "dataB64": data,
+                "pose": {
+                    "rotation": [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                    "pivot": [2.0, 2.0, 2.0],
+                    "translation": [20.0 + f64::from(col) * 9.0, 20.0 + f64::from(row) * 9.0, 2.0],
+                },
+            })
+        })
+        .collect();
+    let req = json!({
+        "blend": {"mode": "single", "strategy": "toughness"},
+        "includeGcode": true,
+        "baseline": false,
+        "objects": objects,
+    });
+    let reply = slice(&req).expect("a 300-object plate slices");
+    let gcode = reply["gcode"].as_str().expect("gcode");
+    let first: BTreeSet<String> = labels_on(gcode, 0).into_iter().collect();
+    assert_eq!(first.len(), 300, "every block prints on the first layer");
+
+    // A request far past any building is still refused, by name.
+    let mut many = req.clone();
+    let one = many["objects"][0].clone();
+    many["objects"] = Value::Array(vec![one; 4097]);
+    let refused = slice(&many).unwrap_err();
+    assert_eq!(refused, "objects has 4097 entries, at most 4096 are allowed");
+}
