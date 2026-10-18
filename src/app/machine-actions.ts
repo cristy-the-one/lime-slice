@@ -5,6 +5,7 @@ import { markProjectDirty } from "../project-dirty.ts";
 import { fx } from "./fx.ts";
 import { currentRules } from "./rules.ts";
 import { saveProfile, defaultProfile, type PrinterProfile } from "../profiles.ts";
+import { loadSettingsLevel, type SettingsLevel } from "../ui/settings-panel.ts";
 import { state } from "./state.ts";
 import { supportModeState, type SupportMode } from "../support-source.ts";
 import { pushToast } from "../ui/toasts.ts";
@@ -65,6 +66,24 @@ export function bootMachines() {
   library = adoptLegacyLink(library, takeLegacyPrusa());
   storeMachineLibrary(library);
   writeState(library);
+  noteLaunchSettings();
+}
+
+let launchLevel: SettingsLevel | null = null;
+
+/** The settings level from this launch, before a project file replaces it. */
+export function noteLaunchSettings() {
+  if (launchLevel !== null) return;
+  launchLevel = loadSettingsLevel();
+}
+
+export function launchSettingsLevel(): SettingsLevel {
+  return launchLevel ?? loadSettingsLevel();
+}
+
+/** The printer selected in the library, which is what a fresh window shows. */
+export function applyActivePrinter() {
+  writeState(loadMachineLibrary());
 }
 
 export function chooseMachine(printerId: string, filamentId: string, nozzleMm: number) {

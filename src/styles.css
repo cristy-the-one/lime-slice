@@ -527,6 +527,10 @@ canvas { width: 100%; height: 100%; display: block; touch-action: none; }
   box-shadow: var(--shadow-modal);
 }
 .sheet-card h2 { margin: 0 0 var(--space-3); font-size: var(--fs-4); letter-spacing: 0; text-transform: none; color: var(--text); }
+.unsaved-card { width: min(420px, calc(100% - 32px)); }
+.unsaved-card p { margin: 0 0 var(--space-4); color: var(--text-dim); }
+.unsaved-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
+.project-title { font-size: var(--fs-2); color: var(--muted); max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .help-body { columns: 2 300px; column-gap: var(--space-5); margin-bottom: var(--space-3); }
 .help-group { break-inside: avoid; margin-bottom: 14px; }
 .help-group h3 { margin: 0 0 var(--space-1); font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }

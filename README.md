@@ -30,6 +30,10 @@ Lime Slice 2.7.0 is a slicer for filament printers. Open an STL, 3MF, or STEP fi
 
 **Opening files.** The desktop app opens a `.lime`, `.stl`, `.3mf`, or `.step` file named on its command line (`lime-slice-desktop.exe duck.lime`). The installer registers `.lime`, so a double-click opens the project. Starting the app again while it is open hands the file to the open window instead of starting a second one, and the window asks before dropping unsaved changes, as File > Open does.
 
+**New project.** File > New project, Ctrl+N, or the same entry in the compact menu starts a blank document without restarting. The plate, the slice, Model, undo, and the file name are cleared. Settings and the printer go back to what a fresh window shows. If the open project has unsaved changes, the same dirty flag as Open asks Save, Don't save, or Cancel. The title bar says Untitled until a file is opened or saved.
+
+**Explorer preview.** A saved `.lime` can carry a small PNG and a one-line summary, still as version 3 JSON. Windows Explorer can show that picture. See [docs/lime-explorer-preview.md](docs/lime-explorer-preview.md).
+
 ## Screenshots
 
 Dark theme. These are the web UI against the local engine, at 1440×900 except the phone frame. The part is `samples/overhang_ledge.stl` on the Lime 220 bed, sliced with the speed strategy and organic tree supports. That slice finished at 8 min 19 s and 3.67 g.

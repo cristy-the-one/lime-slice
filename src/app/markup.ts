@@ -7,9 +7,11 @@ export function mountMarkup(root: HTMLElement) {
   <div class="app">
     <header class="top">
       <div class="brand">Lime <span>Slice</span></div>
+      <div class="project-title" id="projectTitle">Untitled</div>
       <details class="menu" id="fileMenu">
         <summary class="btn ghost" aria-label="File menu">File<span class="caret" aria-hidden="true"></span></summary>
         <nav>
+          <button type="button" data-file-action="new" data-key="Ctrl N">New project</button>
           <button type="button" data-file-action="open" data-key="Ctrl O">Open…</button>
           <button type="button" data-file-action="save" data-key="Ctrl S">Save project</button>
           <details class="menu submenu" id="samples">
@@ -319,6 +321,17 @@ export function mountMarkup(root: HTMLElement) {
     <div class="sheet-card cal-card">
       <div class="sheet-head"><h2 id="calibrateTitle">Calibrate</h2><button class="btn" id="calibrateClose" type="button">Close</button></div>
       <div id="calibrateBody" class="cal-grid"></div>
+    </div>
+  </div>
+  <div id="unsaved" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="unsavedTitle">
+    <div class="sheet-card unsaved-card">
+      <h2 id="unsavedTitle">Save this project?</h2>
+      <p>This project has unsaved changes.</p>
+      <div class="unsaved-actions">
+        <button class="btn primary" type="button" data-unsaved="save">Save</button>
+        <button class="btn" type="button" data-unsaved="discard">Don't save</button>
+        <button class="btn" type="button" data-unsaved="cancel">Cancel</button>
+      </div>
     </div>
   </div>
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">

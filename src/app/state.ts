@@ -377,6 +377,10 @@ export const session = {
   lastToastAt: 0,
   /** True after a mesh, pose, setting, or support edit that is not in the saved project. */
   projectDirty: false,
+  /** File name in the title bar. Null is an untitled project. */
+  projectTitle: null as string | null,
+  /** Bumped when New replaces the document, so an open still in flight does not write the old file back. */
+  docEpoch: 0,
   /** Set while a project file is being applied, so those writes do not count as new edits. */
   projectRestoring: false,
   playTimer: 0,

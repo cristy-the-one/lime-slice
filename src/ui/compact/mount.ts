@@ -1,5 +1,6 @@
 import { Box, createElement, Layers, MoreHorizontal, Printer, Ruler, Search, SlidersHorizontal, type IconNode } from "lucide";
 import { syncSendButtons, uploadToPrusaLink } from "../../app/prusa-actions";
+import { newProject } from "../../app/new-project";
 import { saveCurrentProject } from "../../app/project-io";
 import { engineMode, pickModelFile, pickProjectFile, saveGcode, saveLayoutChoice, type LayoutChoice } from "../../platform";
 import { currentApiTarget } from "../api-base";
@@ -99,6 +100,7 @@ function topBar() {
   for (const [label, run] of [
     ["20 mm cube", () => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click()],
     ["60 mm hull", () => document.querySelector<HTMLButtonElement>('[data-sample="lime_hull.stl"]')?.click()],
+    ["New project", () => void newProject()],
     ["Open mesh", () => pickModelFile()],
     ["Open project", () => pickProjectFile()],
     ["Save project", () => void saveCurrentProject()],

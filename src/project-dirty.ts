@@ -10,7 +10,10 @@ export function markProjectClean() {
   session.projectDirty = false;
 }
 
-/** `true` when the user is willing to drop unsaved work, including when there is none. */
+/**
+ * `true` when the user is willing to drop unsaved work, including when there is none.
+ * New project uses this same `session.projectDirty` flag, with Save / Don't save / Cancel.
+ */
 export function confirmDiscard(): boolean {
   if (!session.projectDirty) return true;
   return window.confirm("This project has unsaved changes. Discard them?");

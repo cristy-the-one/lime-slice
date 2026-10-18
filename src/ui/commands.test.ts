@@ -124,6 +124,17 @@ eq("Ctrl+K opens the palette, even from a field", [press("Ctrl+K"), press("Ctrl+
 eq("undo and redo work in a field", [press("Ctrl+Z", { typing: true }), press("Ctrl+Shift+Z", { typing: true })], ["undo", "redo"]);
 eq("Ctrl+Y redoes and Y is still the front view", [press("Ctrl+Y"), press("Y"), press("Ctrl+Y", { typing: true })], ["redo", "view-front", "redo"]);
 eq("Ctrl+O and Ctrl+S work in a field", [press("Ctrl+O", { typing: true }), press("Ctrl+S", { typing: true })], ["open", "save-project"]);
+eq(
+  "Ctrl+N is New project after a slice, in Model, and from a field",
+  [
+    press("Ctrl+N"),
+    press("Ctrl+N", { typing: true }),
+    press("Ctrl+N", { stage: "model" }),
+    press("Ctrl+N", { stage: "preview", hasResult: true }),
+    press("Ctrl+N", { running: true }),
+  ],
+  ["new-project", "new-project", "new-project", "new-project", "new-project"],
+);
 eq("/ and Ctrl+F search, but not from a field", [press("/"), press("Ctrl+F"), press("/", { typing: true }), press("Ctrl+F", { typing: true })], ["search", "search", null, null]);
 eq("Ctrl+F stays the browser's in the G-code pane", press("Ctrl+F", { stage: "gcode", inGcode: true }), null);
 eq("a letter does nothing in a field", ["M", "R", "S", "F", "C", "E", "B", "K", "T", "Y", "I", "A", "V", "1"].map((chord) => press(chord, { typing: true })), Array(14).fill(null));

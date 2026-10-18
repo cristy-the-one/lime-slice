@@ -41,6 +41,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "panel-right", label: "Toggle results panel", group: "Window", keys: ["Ctrl+Alt+B"], keywords: "right collapse estimate" },
   { id: "printer-pick", label: "Printer, filament and nozzle", group: "File", keywords: "machine chip change" },
   { id: "printer-edit", label: "Printers and filaments", group: "File", keywords: "machine library edit bed flow advance" },
+  { id: "new-project", label: "New project", group: "File", keys: ["Ctrl+N"], typing: true, keywords: "untitled blank document" },
   { id: "open", label: "Open mesh or project", group: "File", keys: ["Ctrl+O"], typing: true, keywords: "lime file stl 3mf step" },
   { id: "save-project", label: "Save project", group: "File", keys: ["Ctrl+S"], typing: true, keywords: "lime file" },
   { id: "samples", label: "Samples", group: "File", keywords: "cube hull example" },

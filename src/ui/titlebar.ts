@@ -1,4 +1,5 @@
 import { createElement, Minus, Settings, Square, X, type IconNode } from "lucide";
+import { paintProjectTitle } from "../app/project-title";
 import { isDesktopShell, isTauri } from "../platform";
 import "./topbar.css";
 
@@ -18,6 +19,7 @@ export function mountTitlebar() {
   const top = document.querySelector<HTMLElement>(".top");
   if (!top || top.dataset.ready === "1") return;
   top.dataset.ready = "1";
+  paintProjectTitle();
   top.classList.add("titlebar");
   top.setAttribute("data-tauri-drag-region", "");
   document.documentElement.dataset.chrome = "native";

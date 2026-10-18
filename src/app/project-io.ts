@@ -29,6 +29,7 @@ import { solidFileName } from "../model-request.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome, stale } from "./settings.ts";
 import { customGcodeNotice } from "../layer-actions.ts";
+import { setProjectTitle } from "./project-title.ts";
 import { session, state } from "./state.ts";
 
 /** A picture opened with the file. Kept when a later save cannot draw and the geometry is unchanged. */
@@ -86,6 +87,7 @@ export async function saveCurrentProject() {
   const name = `${state.mesh.name.replace(/\.(stl|3mf|step|stp|lime)$/i, "")}.lime`;
   const wrote = await saveProjectText(serializeProject(project), name);
   if (!wrote) return;
+  setProjectTitle(name);
   markProjectClean();
   if (history.unsaved.length > 0) {
     pushToast(`The Model history of ${history.unsaved.join(", ")} could not be saved, so the part is saved without it.`, "info");
@@ -99,7 +101,11 @@ export async function openProjectFile(file: File) {
     pushToast(parsed.message, "error", { label: "Retry", run: openProjectPicker });
     return;
   }
-  await restoreProject(parsed.project);
+  if (await restoreProject(parsed.project)) setProjectTitle(file.name);
+}
+
+export function forgetSavedThumbnail() {
+  keptThumb = undefined;
 }
 
 /** A file from File > Open, a launch argument, or the MCP bridge: a project, or a mesh that replaces the plate. */
@@ -143,9 +149,11 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   }
   session.projectRestoring = true;
   const unread = [...(project.unreadHistory ?? [])];
+  const doc = session.docEpoch;
   try {
     const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     await adoptBytes(project.mesh.name, copy);
+    if (session.docEpoch !== doc) return false;
     state.orient = project.placement.orient;
     state.partScale = project.placement.scale;
     state.centered = project.placement.centered;
@@ -168,6 +176,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
         pushToast(loaded, "error", { label: "Retry", run: openProjectPicker });
         return false;
       }
+      if (session.docEpoch !== doc) return false;
       state.plate = loaded.plate;
       applySelectedToState(loaded.plate);
       adoptSavedTrees(loaded.trees, project.modelTools ?? []);

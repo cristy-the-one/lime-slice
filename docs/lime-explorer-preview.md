@@ -352,7 +352,9 @@ Windows, for Marius, because this VM is Linux:
 - Files this app saves: still `"version": 3`. 2.7.0 opens them and, on a later save, writes them back without `thumbnail` or `summary`. No geometry is lost. The picture comes back the next time this app saves.
 - An app from before version 3: still refuses the file. That refusal is the version check, and this work does not touch it.
 - Slicer output, G-code, and golden hashes: unchanged. The thumbnail is not an input to the engine.
-- No tag, no release, no `workflow_dispatch`, no version bump.
+- No tag, no release, and no `workflow_dispatch`. File version stays 3. A later commit bumps the app version only.
+
+File > New project (Ctrl+N) clears the open document. It does not change `.lime`. The dirty check is the same flag Open uses.
 
 ## Open questions
 

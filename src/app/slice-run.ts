@@ -540,6 +540,12 @@ export function parseInWorker(id: number, text: string) {
   });
 }
 
+/** Forget the mesh the slice worker kept from the previous project. */
+export function dropWorkerMesh() {
+  workerMesh = "";
+  worker.postMessage({ id: 0, dropMesh: true });
+}
+
 export function cancelSlice() {
   const http = activeHttp && activeHttp.uiId === session.job ? activeHttp : null;
   http?.stop();
