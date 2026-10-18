@@ -217,6 +217,13 @@ jobs:
       - name: Release in-process engine
         run: cargo build -p lime-mcp-engine --release --locked
 
+      - name: Explorer thumbnail handler
+        run: |
+          cargo test -p lime-preview --locked
+          cargo test -p lime-shell --locked
+          cargo build -p lime-shell --release --locked
+          cargo build -p lime-shell --release --locked --example self-test
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

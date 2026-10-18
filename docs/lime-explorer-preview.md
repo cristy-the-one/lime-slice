@@ -292,14 +292,14 @@ The Details pane reads the property handler. If Windows ignores a per-user prope
 | Field types, read, write, hash, stale drop | `src/project.ts` and a small helper next to it | No. TypeScript only. |
 | App capture | `src/app/project-io.ts`, using the existing 3D view | No. |
 | MCP capture | `mcp/session.ts` on `project_save`, renderer in `mcp/render.ts` | No engine change. |
-| Streaming reader | `crates/lime-preview`, no dependencies | No. Workspace member so `cargo test` runs it. Not a dependency of `lime-slice`, `lime-slice-core`, `lime-model`, or the desktop crate. |
+| Streaming reader | `crates/lime-preview`. The only dependency is `ryu`, which formats numbers the way `JSON.stringify` does. | No. Workspace member so `cargo test` runs it. Not a dependency of `lime-slice`, `lime-slice-core`, `lime-model`, or the desktop crate. |
 | COM DLL | `crates/lime-shell`, crate type `cdylib`, `windows` crate 0.61 (already in the lockfile, MIT or Apache-2.0). `#[cfg(windows)]` for COM. Linux builds a stub so clippy and `cargo test --workspace` stay green. | No. |
 | Self-test | A Windows-only example that `LoadLibrary`s the DLL, calls `DllGetClassObject`, and asks `IThumbnailProvider` for a sample file. Console subsystem, run by hand. | The installer does not start it. |
 | Installer | NSIS hook only. `tauri.windows.conf.json` already selects NSIS. WiX is not a bundle target; the same registry table is what a WiX component would write if one is added later. | The app version is not changed. |
 
 COM entry points (`DllGetClassObject`, `DllCanUnloadNow`, `DllRegisterServer`, `DllUnregisterServer`) catch panics and return a failure `HRESULT`. The DLL does not call `AllocConsole`, does not spawn a process, and does not use `println!` on the COM path. Registration from `DllRegisterServer` writes HKCU when the process is not elevated, so a hand registration also avoids an administrator. The NSIS hook does not run `regsvr32`.
 
-Licence: no GPL and no Open CASCADE in the shell. The `windows` crate is MIT or Apache-2.0. `lime-preview` has no crate dependencies. PNG bytes are checked structurally in `lime-preview` and decoded with Windows Imaging Component on Windows, which is part of the OS.
+Licence: no GPL and no Open CASCADE in the shell. The `windows` crate is MIT or Apache-2.0. `lime-preview` depends only on `ryu` (Apache-2.0 or the Boost Software License) for the number text. PNG bytes are checked structurally in `lime-preview` and decoded with Windows Imaging Component on Windows, which is part of the OS.
 
 ## Installer
 
