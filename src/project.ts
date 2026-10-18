@@ -438,10 +438,12 @@ function readPlateObjects(value: unknown, tools: unknown): { objects: PlateFileO
     const root = raw && typeof raw === "object" ? readRootStep((raw as Record<string, unknown>).rootStep) : null;
     if (root?.bytesBase64 !== undefined && !pool.has(recordId(root))) pool.set(recordId(root), root.bytesBase64);
     const tree = raw == null ? null : readSavedTree(raw);
-    return tree && (root || tree.rootPrimitive) ? { tree, root } : null;
+    return tree && (root || tree.rootPrimitive || tree.rootFeature) ? { tree, root } : null;
   });
   const read = holders.map(({ raw }, i): PlateFileObject["modelTree"] | null => {
     const saved = trees[i];
+    // A sketch-started solid's root is its feature: there are no bytes to find.
+    if (saved?.tree.rootFeature) return { ...treeBody(saved.tree), rootFeature: saved.tree.rootFeature };
     // A new solid's root is its primitive: there are no bytes to find.
     if (saved?.tree.rootPrimitive) return { ...treeBody(saved.tree), rootPrimitive: saved.tree.rootPrimitive };
     const bytesBase64 = saved?.root ? saved.root.bytesBase64 ?? pool.get(recordId(saved.root)) : undefined;

@@ -526,6 +526,125 @@ LimeShape* lime_tree_revolve(const LimeShape* from, const char* op, const double
     }
 }
 
+// --- K2 feature root. An extrude, revolve, or loft built against no solid. The tool is the solid. ---
+
+/// `p` is the plane's origin and turn, the depth, symmetric (0 or 1), then smooth, the corner count, and the corners.
+LimeShape* lime_tree_feature_extrude(const char* op, const double* p, const double* points, int count, char** error) {
+    try {
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape none;
+        const TopoDS_Shape result = build_extrude(
+            none, 0.0, op == nullptr ? "" : op, profile_of(p, points, count, p + 8), p[6], p[7] != 0.0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The extrude did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+// K3 on a feature root. `p` matches lime_tree_feature_extrude. There is no solid, so a face to stop at is not on one.
+LimeShape* lime_tree_feature_extrude_extent(
+    const char* op, const double* p, const double* points, int count, double depth2, double draft_deg, int flags, char** error) {
+    try {
+        std::string message;
+        double volume = 0.0;
+        ExtrudeExtent extent;
+        extent.has_depth2 = (flags & 1) != 0;
+        extent.depth2 = depth2;
+        extent.has_draft = (flags & 2) != 0;
+        extent.draft_deg = draft_deg;
+        extent.has_up_to = (flags & 4) != 0;
+        const TopoDS_Shape none;
+        const TopoDS_Shape result = build_extrude_extent(
+            none, 0.0, op == nullptr ? "" : op, profile_of(p, points, count, p + 8), p[6], p[7] != 0.0, extent, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The extrude did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `p` is the plane's origin and turn, the axis's point (u, v) and direction (u, v), the angle in degrees, then smooth,
+/// the corner count, and the corners.
+LimeShape* lime_tree_feature_revolve(const char* op, const double* p, const double* points, int count, char** error) {
+    try {
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape none;
+        const TopoDS_Shape result = build_revolve(
+            none, 0.0, op == nullptr ? "" : op, profile_of(p, points, count, p + 11), p + 6, p[10], volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The revolve did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `head` is 11 numbers a section, as `lime_tree_loft`. `data` is each section's points and corners.
+LimeShape* lime_tree_feature_loft(const char* op, const double* head, int count, const double* data, int ruled, char** error) {
+    try {
+        std::vector<LoftSection> sections;
+        size_t at = 0;
+        for (int s = 0; s < count; ++s) {
+            const double* h = head + 11 * static_cast<size_t>(s);
+            const int points = std::max(static_cast<int>(h[9]), 0);
+            const int corners = std::max(static_cast<int>(h[10]), 0);
+            LoftSection section;
+            for (int i = 0; i < 3; ++i) {
+                section.profile.origin[i] = h[i];
+                section.profile.turn[i] = h[3 + i];
+            }
+            section.radius = h[6];
+            section.radius_v = h[7];
+            section.profile.smooth = h[8] != 0.0;
+            section.profile.points.assign(data + at, data + at + 2 * static_cast<size_t>(points));
+            at += 2 * static_cast<size_t>(points);
+            for (int i = 0; i < corners; ++i) {
+                section.profile.corners.push_back(static_cast<int>(data[at + static_cast<size_t>(i)]));
+            }
+            at += static_cast<size_t>(corners);
+            sections.push_back(std::move(section));
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape none;
+        const TopoDS_Shape result = build_loft(none, 0.0, op == nullptr ? "" : op, sections, ruled != 0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The loft did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// `head` is 11 numbers a section: the plane's origin and turn, the radius, the radius along V, smooth, the point
 /// count, and the corner count. `data` is each section's u, v pairs and then its corners, one section after another.
 LimeShape* lime_tree_loft(const LimeShape* from, const char* op, const double* head, int count, const double* data, int ruled, char** error) {
@@ -758,6 +877,110 @@ int lime_tree_distance(
     } catch (...) {
         set_error(error, "Open CASCADE failed");
         return 0;
+    }
+}
+
+// --- K4: faceExtrude, moveFaces, faceLoops. Keep this block together. ---
+
+/// `up_to` below 0 is no stop face. Every index is a face of `from`; the Rust side resolves picks first.
+LimeShape* lime_tree_face_extrude(
+    const LimeShape* from,
+    int face,
+    double distance,
+    double draft_deg,
+    int up_to,
+    char** error) {
+    try {
+        if (face < 0 || face >= from->held.faces.Extent()) {
+            set_error(error, "That face is not on this solid.");
+            return nullptr;
+        }
+        const TopoDS_Face picked = TopoDS::Face(from->held.faces(face + 1));
+        TopoDS_Face until_face;
+        const TopoDS_Face* until = nullptr;
+        if (up_to >= 0) {
+            if (up_to >= from->held.faces.Extent()) {
+                set_error(error, "That face is not on this solid.");
+                return nullptr;
+            }
+            until_face = TopoDS::Face(from->held.faces(up_to + 1));
+            until = &until_face;
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape result = build_face_extrude(
+            from->held.shape, from->held.volume, picked, distance, draft_deg, until, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "Open CASCADE could not extrude this face.", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `indexes` and `distances` are `count` faces of `from` and how far each moves along its outward normal.
+LimeShape* lime_tree_move_faces(
+    const LimeShape* from,
+    const int* indexes,
+    const double* distances,
+    int count,
+    char** error) {
+    try {
+        std::vector<FaceOffset> rows;
+        rows.reserve(static_cast<size_t>(std::max(count, 0)));
+        for (int i = 0; i < count; ++i) {
+            if (indexes[i] < 0 || indexes[i] >= from->held.faces.Extent()) {
+                set_error(error, "That face is not on this solid.");
+                return nullptr;
+            }
+            FaceOffset row;
+            row.face = TopoDS::Face(from->held.faces(indexes[i] + 1));
+            row.distance = distances[i];
+            rows.push_back(row);
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape result = build_move_faces(from->held.shape, from->held.volume, rows, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "This face cannot move with its neighbours here. Push or pull adds material instead: hold Alt.", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// The face's outline in its plane, as JSON `{origin, turn, loops}`, for the caller to free.
+char* lime_tree_face_loops(const LimeShape* shape, int face, char** error) {
+    try {
+        if (face < 0 || face >= shape->held.faces.Extent()) {
+            set_error(error, "That face is not on this solid.");
+            return nullptr;
+        }
+        std::string message;
+        const std::string text = face_loops_json(TopoDS::Face(shape->held.faces(face + 1)), message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return alloc(text);
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
     }
 }
 
