@@ -229,9 +229,12 @@ test("a belt hides elephant's foot and the tree brim, and a flat printer sends t
   await expect(page.locator("#efoot")).toHaveValue("0.3");
   await expect(page.locator("#stbrim")).toHaveValue("4");
   await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(3);
-  expect(bodies[2].elephantsFootCompensationMm).toBe(0.3);
-  expect(bodies[2].supportTreeBrimMm).toBe(4);
+  // Back on the first recipe, a quiet refresh may land before the click and send its own request.
+  await expect.poll(() => bodies.length).toBeGreaterThanOrEqual(3);
+  const flat = bodies[bodies.length - 1];
+  expect(flat.belt).toBeFalsy();
+  expect(flat.elephantsFootCompensationMm).toBe(0.3);
+  expect(flat.supportTreeBrimMm).toBe(4);
 });
 
 test("Max length shows only for a capped belt", async ({ page }) => {
