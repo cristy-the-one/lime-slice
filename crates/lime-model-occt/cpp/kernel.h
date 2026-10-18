@@ -176,13 +176,38 @@ struct ProfileSpec {
     std::vector<int> corners;
 };
 
+// --- K1 profile v2 (loops, arcs, holes). Distinct from ProfileSpec so other packages can edit that struct. ---
+
+/// One edge of a loop, from the previous end (the loop's start, for the first) to `to`.
+enum class ProfileSegKind { Line, Arc, Spline };
+
+struct ProfileSeg {
+    ProfileSegKind kind = ProfileSegKind::Line;
+    double to[2] = {0, 0};
+    /// u, v pairs. One pair for an arc, one or more for a spline, none for a line.
+    std::vector<double> through;
+};
+
+/// A closed loop on the profile plane. The last segment's `to` meets `start`.
+struct ProfileLoop {
+    double start[2] = {0, 0};
+    std::vector<ProfileSeg> segments;
+};
+
 /// One cross-section of a loft: a profile on its plane, or, with `radius` above 0, a circle about the plane's origin
-/// (an ellipse with `radius_v` above 0, `radius` along U and `radius_v` along V).
+/// (an ellipse with `radius_v` above 0, `radius` along U and `radius_v` along V). `loops`, when set, replaces the profile.
 struct LoftSection {
     ProfileSpec profile;
     double radius = 0;
     double radius_v = 0;
+    /// K1: closed loops instead of `profile`. Empty when the section uses a radius or a profile.
+    std::vector<ProfileLoop> loops;
 };
+
+/// K1. Read one loop blob from `data`. `used` is how many doubles it consumed. The blob is `encode_loops` in tree.rs:
+/// loop count, then each loop as start u, start v, segment count, then each segment as kind (0 line, 1 arc, 2 spline),
+/// to u, to v, through count, and the through points.
+bool decode_profile_loops(const double* data, int count, std::vector<ProfileLoop>& loops, int& used, std::string& error);
 
 /// The profile pushed `depth` along W (−W when negative), or `depth` centred on the plane with `symmetric`, combined
 /// with `current` by `which`. `before` is the volume of `current`; `volume` gets the result's.
@@ -237,6 +262,39 @@ TopoDS_Shape build_revolve(
 /// A solid through the sections in order, smooth or `ruled` (flat between sections), combined with `current` by
 /// `which`. `before` is the volume of `current`; `volume` gets the result's.
 TopoDS_Shape build_loft(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const std::vector<LoftSection>& sections,
+    bool ruled,
+    double& volume,
+    std::string& error);
+
+// --- K1 profile v2 builders. The point-list builders above are unchanged. ---
+
+TopoDS_Shape build_extrude_loops(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const double origin[3],
+    const double turn[3],
+    const std::vector<ProfileLoop>& loops,
+    double depth,
+    bool symmetric,
+    double& volume,
+    std::string& error);
+TopoDS_Shape build_revolve_loops(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const double origin[3],
+    const double turn[3],
+    const std::vector<ProfileLoop>& loops,
+    const double* axis,
+    double angle_deg,
+    double& volume,
+    std::string& error);
+TopoDS_Shape build_loft_loops(
     const TopoDS_Shape& current,
     double before,
     const std::string& which,

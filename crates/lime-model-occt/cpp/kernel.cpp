@@ -2,6 +2,7 @@
 // It calls the LGPL library; the notice is third_party/occt/NOTICE.md.
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -45,8 +46,13 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
+#include <GC_MakeArcOfCircle.hxx>
 #include <GC_MakeEllipse.hxx>
 #include <GeomAPI_Interpolate.hxx>
+#include <Geom_TrimmedCurve.hxx>
+#include <BRepClass_FaceClassifier.hxx>
+#include <ShapeFix_Face.hxx>
+#include <ShapeFix_Wire.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_Circle.hxx>
 #include <TColgp_HArray1OfPnt.hxx>
@@ -2694,6 +2700,816 @@ TopoDS_Shape build_revolve(
         tool.Reverse();
     }
     return combine_profile(current, before, which, tool, "revolve", volume, error);
+}
+
+// =============================================================================
+// K1 profile v2: loops, arcs, and holes.
+// The first loop is the outline; the rest are holes. Lines, three-point arcs, and splines.
+// The point-list profile path above does not call into this block.
+// =============================================================================
+
+namespace {
+
+struct Circle2 {
+    double c[2] = {0, 0};
+    double r = 0;
+    bool ok = false;
+};
+
+bool finite2(const double* p) { return std::isfinite(p[0]) && std::isfinite(p[1]); }
+
+bool same_point(const double* a, const double* b) {
+    return std::abs(a[0] - b[0]) <= kProfileMm && std::abs(a[1] - b[1]) <= kProfileMm;
+}
+
+Circle2 circle_of(const double* a, const double* b, const double* c) {
+    Circle2 out;
+    const double d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+    if (!(std::abs(d) > 1e-12)) {
+        return out;
+    }
+    const double a2 = a[0] * a[0] + a[1] * a[1];
+    const double b2 = b[0] * b[0] + b[1] * b[1];
+    const double c2 = c[0] * c[0] + c[1] * c[1];
+    out.c[0] = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d;
+    out.c[1] = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d;
+    out.r = std::hypot(a[0] - out.c[0], a[1] - out.c[1]);
+    out.ok = std::isfinite(out.r) && out.r > kProfileMm;
+    return out;
+}
+
+double ccw_delta(double from, double to) {
+    double d = to - from;
+    const double turn = 2.0 * kPi;
+    while (d < 0.0) {
+        d += turn;
+    }
+    while (d >= turn) {
+        d -= turn;
+    }
+    return d;
+}
+
+/// Signed sweep of the arc a → b passing through m, CCW positive, in (−2π, 2π).
+double arc_sweep(const Circle2& circle, const double* a, const double* m, const double* b) {
+    const auto ang = [&circle](const double* p) { return std::atan2(p[1] - circle.c[1], p[0] - circle.c[0]); };
+    const double a0 = ang(a);
+    const double through = ccw_delta(a0, ang(m));
+    const double end = ccw_delta(a0, ang(b));
+    return through <= end ? end : end - 2.0 * kPi;
+}
+
+void reverse_pairs(std::vector<double>& through) {
+    std::vector<double> rev;
+    rev.reserve(through.size());
+    for (size_t i = through.size(); i >= 2;) {
+        i -= 2;
+        rev.push_back(through[i]);
+        rev.push_back(through[i + 1]);
+        if (i == 0) {
+            break;
+        }
+    }
+    through.swap(rev);
+}
+
+/// Walk the loop backwards. An arc's through point stays, so the arc is the same curve.
+void reverse_loop(ProfileLoop& loop) {
+    if (loop.segments.empty()) {
+        return;
+    }
+    std::vector<std::array<double, 2>> pts;
+    pts.push_back({loop.start[0], loop.start[1]});
+    for (const ProfileSeg& seg : loop.segments) {
+        pts.push_back({seg.to[0], seg.to[1]});
+    }
+    std::vector<ProfileSeg> rev;
+    rev.reserve(loop.segments.size());
+    for (size_t i = loop.segments.size(); i-- > 0;) {
+        ProfileSeg seg = loop.segments[i];
+        seg.to[0] = pts[i][0];
+        seg.to[1] = pts[i][1];
+        if (seg.kind == ProfileSegKind::Spline) {
+            reverse_pairs(seg.through);
+        }
+        rev.push_back(std::move(seg));
+    }
+    loop.segments = std::move(rev);
+}
+
+double spline_area2(const double* from, const ProfileSeg& seg) {
+    std::vector<gp_Pnt> pts;
+    pts.emplace_back(from[0], from[1], 0.0);
+    for (size_t i = 0; i + 1 < seg.through.size(); i += 2) {
+        pts.emplace_back(seg.through[i], seg.through[i + 1], 0.0);
+    }
+    pts.emplace_back(seg.to[0], seg.to[1], 0.0);
+    std::string ignored;
+    const TopoDS_Edge edge = spline_edge(pts, false, ignored);
+    if (edge.IsNull()) {
+        return cross2(from[0], from[1], seg.to[0], seg.to[1]);
+    }
+    BRepAdaptor_Curve curve(edge);
+    GCPnts_QuasiUniformDeflection sampler(curve, 0.05);
+    if (!sampler.IsDone() || sampler.NbPoints() < 2) {
+        return cross2(from[0], from[1], seg.to[0], seg.to[1]);
+    }
+    double area2 = 0.0;
+    gp_Pnt prev = sampler.Value(1);
+    for (int i = 2; i <= sampler.NbPoints(); ++i) {
+        const gp_Pnt p = sampler.Value(i);
+        area2 += cross2(prev.X(), prev.Y(), p.X(), p.Y());
+        prev = p;
+    }
+    return area2;
+}
+
+double signed_area(const ProfileLoop& loop) {
+    double area2 = 0.0;
+    double from[2] = {loop.start[0], loop.start[1]};
+    for (const ProfileSeg& seg : loop.segments) {
+        if (seg.kind == ProfileSegKind::Arc && seg.through.size() >= 2) {
+            const Circle2 circle = circle_of(from, seg.through.data(), seg.to);
+            area2 += cross2(from[0], from[1], seg.to[0], seg.to[1]);
+            if (circle.ok) {
+                const double theta = arc_sweep(circle, from, seg.through.data(), seg.to);
+                area2 += circle.r * circle.r * (theta - std::sin(theta));
+            }
+        } else if (seg.kind == ProfileSegKind::Spline) {
+            area2 += spline_area2(from, seg);
+        } else {
+            area2 += cross2(from[0], from[1], seg.to[0], seg.to[1]);
+        }
+        from[0] = seg.to[0];
+        from[1] = seg.to[1];
+    }
+    return area2 * 0.5;
+}
+
+/// Closed, no zero-length segment, arcs not collinear. Snaps a closing point that is within tolerance.
+bool loops_readable(std::vector<ProfileLoop>& loops, std::string& error) {
+    if (loops.empty()) {
+        error = "A profile needs a loop.";
+        return false;
+    }
+    if (loops.size() > 32) {
+        error = "A profile takes at most 32 loops.";
+        return false;
+    }
+    for (ProfileLoop& loop : loops) {
+        if (loop.segments.empty()) {
+            error = "A loop needs a segment.";
+            return false;
+        }
+        if (loop.segments.size() > 200) {
+            error = "A loop takes at most 200 segments.";
+            return false;
+        }
+        if (!finite2(loop.start)) {
+            error = "A loop point is not a number.";
+            return false;
+        }
+        double from[2] = {loop.start[0], loop.start[1]};
+        for (ProfileSeg& seg : loop.segments) {
+            if (!finite2(seg.to)) {
+                error = "A loop point is not a number.";
+                return false;
+            }
+            for (size_t i = 0; i + 1 < seg.through.size(); i += 2) {
+                if (!std::isfinite(seg.through[i]) || !std::isfinite(seg.through[i + 1])) {
+                    error = "A loop point is not a number.";
+                    return false;
+                }
+            }
+            if (same_point(from, seg.to)) {
+                error = "A loop segment ends where it starts. Give it some length.";
+                return false;
+            }
+            if (seg.kind == ProfileSegKind::Arc) {
+                if (seg.through.size() != 2) {
+                    error = "An arc needs one point between its ends.";
+                    return false;
+                }
+                if (same_point(from, seg.through.data()) || same_point(seg.to, seg.through.data())) {
+                    error = "An arc's three points are in a straight line. Move the middle point off that line.";
+                    return false;
+                }
+                const double span = std::max({std::hypot(seg.through[0] - from[0], seg.through[1] - from[1]),
+                                               std::hypot(seg.to[0] - from[0], seg.to[1] - from[1]), 1.0});
+                const double turn = cross2(seg.through[0] - from[0], seg.through[1] - from[1], seg.to[0] - from[0], seg.to[1] - from[1]);
+                if (std::abs(turn) <= kProfileMm * span) {
+                    error = "An arc's three points are in a straight line. Move the middle point off that line.";
+                    return false;
+                }
+            } else if (seg.kind == ProfileSegKind::Spline && seg.through.size() < 2) {
+                error = "A spline needs a point between its ends.";
+                return false;
+            }
+            from[0] = seg.to[0];
+            from[1] = seg.to[1];
+        }
+        ProfileSeg& last = loop.segments.back();
+        if (same_point(last.to, loop.start)) {
+            last.to[0] = loop.start[0];
+            last.to[1] = loop.start[1];
+        } else {
+            error = "A loop is open. Its end must meet its start.";
+            return false;
+        }
+        const double area = signed_area(loop);
+        if (!(std::abs(area) > 1e-6)) {
+            error = &loop == &loops.front() ? "The outline has no area." : "A hole has no area.";
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Outline counter-clockwise about W, holes clockwise, so a face's holes cut.
+void orient_loops(std::vector<ProfileLoop>& loops) {
+    for (size_t i = 0; i < loops.size(); ++i) {
+        const double area = signed_area(loops[i]);
+        const bool ccw = area > 0.0;
+        const bool want_ccw = i == 0;
+        if (ccw != want_ccw) {
+            reverse_loop(loops[i]);
+        }
+    }
+}
+
+TopoDS_Edge loop_edge(const ProfileFrame& frame, const double* from, const ProfileSeg& seg, double lift, std::string& error) {
+    const gp_Pnt a = frame.at(from[0], from[1], lift);
+    const gp_Pnt b = frame.at(seg.to[0], seg.to[1], lift);
+    if (seg.kind == ProfileSegKind::Line) {
+        BRepBuilderAPI_MakeEdge edge(a, b);
+        if (!edge.IsDone()) {
+            error = "Open CASCADE did not build the profile";
+            return {};
+        }
+        return edge.Edge();
+    }
+    if (seg.kind == ProfileSegKind::Arc) {
+        const gp_Pnt mid = frame.at(seg.through[0], seg.through[1], lift);
+        GC_MakeArcOfCircle arc(a, mid, b);
+        if (!arc.IsDone()) {
+            error = "Open CASCADE did not draw this arc.";
+            return {};
+        }
+        BRepBuilderAPI_MakeEdge edge(arc.Value());
+        if (!edge.IsDone()) {
+            error = "Open CASCADE did not draw this arc.";
+            return {};
+        }
+        return edge.Edge();
+    }
+    std::vector<gp_Pnt> pts;
+    pts.push_back(a);
+    for (size_t i = 0; i + 1 < seg.through.size(); i += 2) {
+        pts.push_back(frame.at(seg.through[i], seg.through[i + 1], lift));
+    }
+    pts.push_back(b);
+    return spline_edge(pts, false, error);
+}
+
+TopoDS_Wire wire_of(const std::vector<TopoDS_Edge>& edges, std::string& error) {
+    BRepBuilderAPI_MakeWire maker;
+    for (const TopoDS_Edge& edge : edges) {
+        maker.Add(edge);
+    }
+    if (maker.IsDone()) {
+        return maker.Wire();
+    }
+    // An arc's end and the next edge's start are the same point but two vertices. Join those.
+    BRep_Builder builder;
+    TopoDS_Wire wire;
+    builder.MakeWire(wire);
+    for (const TopoDS_Edge& edge : edges) {
+        builder.Add(wire, edge);
+    }
+    ShapeFix_Wire fixer;
+    fixer.Load(wire);
+    fixer.SetPrecision(1e-5);
+    fixer.ClosedWireMode() = Standard_True;
+    fixer.FixReorder();
+    fixer.FixConnected(1e-5);
+    fixer.FixClosed(1e-5);
+    if (fixer.Wire().IsNull()) {
+        error = "Open CASCADE did not join the loop into one outline.";
+        return {};
+    }
+    return fixer.Wire();
+}
+
+bool edges_cross(const std::vector<std::vector<TopoDS_Edge>>& groups, std::string& error) {
+    struct Item {
+        TopoDS_Edge edge;
+        int loop = 0;
+        int index = 0;
+        int count = 0;
+    };
+    std::vector<Item> all;
+    for (int loop = 0; loop < static_cast<int>(groups.size()); ++loop) {
+        const int count = static_cast<int>(groups[loop].size());
+        for (int index = 0; index < count; ++index) {
+            all.push_back(Item{groups[static_cast<size_t>(loop)][static_cast<size_t>(index)], loop, index, count});
+        }
+    }
+    for (size_t i = 0; i < all.size(); ++i) {
+        for (size_t j = i + 1; j < all.size(); ++j) {
+            if (all[i].loop == all[j].loop) {
+                const int apart = std::abs(all[i].index - all[j].index);
+                if (apart == 1 || apart == all[i].count - 1) {
+                    continue;
+                }
+            }
+            BRepExtrema_DistShapeShape dist(all[i].edge, all[j].edge);
+            if (dist.IsDone() && dist.Value() <= 1e-5) {
+                error = "These loops cross.";
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// `loops` is oriented here: the outline turns counter-clockwise about W, holes the other way.
+TopoDS_Face profile_loops_face(const ProfileFrame& frame, std::vector<ProfileLoop> loops, double lift, std::string& error) {
+    if (!loops_readable(loops, error)) {
+        return {};
+    }
+    orient_loops(loops);
+    std::vector<std::vector<TopoDS_Edge>> groups;
+    groups.reserve(loops.size());
+    for (const ProfileLoop& loop : loops) {
+        std::vector<TopoDS_Edge> edges;
+        double from[2] = {loop.start[0], loop.start[1]};
+        for (const ProfileSeg& seg : loop.segments) {
+            TopoDS_Edge edge = loop_edge(frame, from, seg, lift, error);
+            if (edge.IsNull()) {
+                if (error.empty()) {
+                    error = "Open CASCADE did not build the profile";
+                }
+                return {};
+            }
+            edges.push_back(edge);
+            from[0] = seg.to[0];
+            from[1] = seg.to[1];
+        }
+        groups.push_back(std::move(edges));
+    }
+    if (edges_cross(groups, error)) {
+        return {};
+    }
+    std::vector<TopoDS_Wire> wires;
+    for (const std::vector<TopoDS_Edge>& edges : groups) {
+        TopoDS_Wire wire = wire_of(edges, error);
+        if (wire.IsNull()) {
+            if (error.empty()) {
+                error = "Open CASCADE did not join the loop into one outline.";
+            }
+            return {};
+        }
+        wires.push_back(wire);
+    }
+    const gp_Pln plane(gp_Ax3(frame.at(0.0, 0.0, lift), frame.w, frame.u));
+    BRepBuilderAPI_MakeFace maker(plane, wires.front(), Standard_True);
+    if (!maker.IsDone()) {
+        error = "Open CASCADE did not build the profile";
+        return {};
+    }
+    TopoDS_Face outer = maker.Face();
+    for (size_t h = 1; h < loops.size(); ++h) {
+        const gp_Pnt at = frame.at(loops[h].start[0], loops[h].start[1], lift);
+        BRepClass_FaceClassifier inside(outer, at, 1e-7);
+        if (inside.State() != TopAbs_IN) {
+            error = "A hole lies outside the outline. Keep each hole inside.";
+            return {};
+        }
+    }
+    for (size_t i = 1; i < wires.size(); ++i) {
+        const TopoDS_Wire interior = TopoDS::Wire(wires[i].Reversed());
+        BRepBuilderAPI_MakeFace hole_face(plane, interior, Standard_True);
+        if (!hole_face.IsDone()) {
+            continue;
+        }
+        for (size_t j = 1; j < loops.size(); ++j) {
+            if (j == i) {
+                continue;
+            }
+            const gp_Pnt at = frame.at(loops[j].start[0], loops[j].start[1], lift);
+            BRepClass_FaceClassifier inside(hole_face.Face(), at, 1e-7);
+            if (inside.State() == TopAbs_IN) {
+                error = "A hole lies inside another hole. Keep each hole inside the outline only.";
+                return {};
+            }
+        }
+    }
+    for (size_t h = 1; h < wires.size(); ++h) {
+        maker.Add(wires[h]);
+    }
+    TopoDS_Face face = maker.Face();
+    if (face.IsNull()) {
+        error = "Open CASCADE did not build the profile";
+        return {};
+    }
+    try {
+        ShapeFix_Face fixer(face);
+        fixer.SetPrecision(1e-6);
+        fixer.FixOrientationMode() = 1;
+        if (fixer.Perform() && !fixer.Face().IsNull()) {
+            face = fixer.Face();
+        }
+    } catch (const Standard_Failure&) {
+    }
+    BRepAdaptor_Surface surface(face);
+    if (surface.GetType() == GeomAbs_Plane) {
+        gp_Dir normal = surface.Plane().Axis().Direction();
+        if (face.Orientation() == TopAbs_REVERSED) {
+            normal.Reverse();
+        }
+        if (normal.Dot(frame.w) < 0.0) {
+            face.Reverse();
+        }
+    }
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(face, props);
+    if (!(std::abs(props.Mass()) > 1e-6)) {
+        error = "The outline has no area.";
+        return {};
+    }
+    return face;
+}
+
+ProfileFrame frame_from(const double origin[3], const double turn[3]) {
+    ProfileSpec spec;
+    for (int i = 0; i < 3; ++i) {
+        spec.origin[i] = origin[i];
+        spec.turn[i] = turn[i];
+    }
+    return frame_of(spec);
+}
+
+bool crosses_axis(const ProfileFrame& frame, const TopoDS_Face& face, const double* axis) {
+    const double du = axis[2];
+    const double dv = axis[3];
+    double lo = 0.0;
+    double hi = 0.0;
+    for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+        BRepAdaptor_Curve curve(TopoDS::Edge(it.Current()));
+        GCPnts_QuasiUniformDeflection sampler(curve, 0.01);
+        if (!sampler.IsDone()) {
+            continue;
+        }
+        for (int i = 1; i <= sampler.NbPoints(); ++i) {
+            const gp_Pnt p = sampler.Value(i);
+            const gp_Vec d(frame.origin, p);
+            const double u = d.Dot(gp_Vec(frame.u));
+            const double v = d.Dot(gp_Vec(frame.v));
+            const double side = cross2(du, dv, u - axis[0], v - axis[1]);
+            lo = std::min(lo, side);
+            hi = std::max(hi, side);
+        }
+    }
+    return lo < -kProfileMm && hi > kProfileMm;
+}
+
+/// The solid through `wires` in order, before it is combined with the part. Shared by an outline and each hole.
+TopoDS_Shape loft_wires(const std::vector<TopoDS_Wire>& wires, bool ruled, std::string& error) {
+    BRepOffsetAPI_ThruSections loft(Standard_True, ruled ? Standard_True : Standard_False, 1e-6);
+    loft.CheckCompatibility(Standard_True);
+    for (const TopoDS_Wire& wire : wires) {
+        loft.AddWire(wire);
+    }
+    TopoDS_Shape tool;
+    try {
+        loft.Build();
+        if (!loft.IsDone() || loft.Shape().IsNull()) {
+            error = "Open CASCADE could not loft through these sections. Check that each one is a simple outline and that they do not cross.";
+            return {};
+        }
+        tool = loft.Shape();
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not loft through these sections. Check that each one is a simple outline and that they do not cross.";
+        return {};
+    }
+    if (!has_solid(tool)) {
+        error = "The loft did not close into a solid.";
+        return {};
+    }
+    tool = as_solid(tool);
+    GProp_GProps props;
+    integrate(tool, props);
+    if (std::abs(props.Mass()) <= 1e-6) {
+        error = "The loft has no volume: its sections lie in one plane. Turn them so each section's plane crosses the way between them (W along the path).";
+        return {};
+    }
+    if (props.Mass() < 0.0) {
+        tool.Reverse();
+    }
+    if (!BRepCheck_Analyzer(tool).IsValid()) {
+        ShapeFix_Solid fix;
+        fix.Init(TopoDS::Solid(tool));
+        fix.Perform();
+        tool = fix.Solid();
+        if (!BRepCheck_Analyzer(tool).IsValid()) {
+            error = "The loft twists through itself. Space the sections further apart, or make tight bends gentler.";
+            return {};
+        }
+    }
+    return tool;
+}
+
+}  // namespace
+
+bool decode_profile_loops(const double* data, int count, std::vector<ProfileLoop>& loops, int& used, std::string& error) {
+    used = 0;
+    loops.clear();
+    if (data == nullptr || count < 1) {
+        error = "A profile needs a loop.";
+        return false;
+    }
+    size_t at = 0;
+    auto take = [&](size_t n) { return at + n <= static_cast<size_t>(count); };
+    if (!take(1) || !std::isfinite(data[0])) {
+        error = "A profile needs a loop.";
+        return false;
+    }
+    const int nloops = static_cast<int>(std::llround(data[at++]));
+    if (nloops < 1 || nloops > 32) {
+        error = nloops < 1 ? "A profile needs a loop." : "A profile takes at most 32 loops.";
+        return false;
+    }
+    for (int i = 0; i < nloops; ++i) {
+        if (!take(3)) {
+            error = "A loop is incomplete.";
+            return false;
+        }
+        ProfileLoop loop;
+        loop.start[0] = data[at++];
+        loop.start[1] = data[at++];
+        const int nseg = static_cast<int>(std::llround(data[at++]));
+        if (nseg < 1 || nseg > 200) {
+            error = nseg < 1 ? "A loop needs a segment." : "A loop takes at most 200 segments.";
+            return false;
+        }
+        for (int s = 0; s < nseg; ++s) {
+            if (!take(4)) {
+                error = "A loop segment is incomplete.";
+                return false;
+            }
+            const int kind = static_cast<int>(std::llround(data[at++]));
+            ProfileSeg seg;
+            seg.to[0] = data[at++];
+            seg.to[1] = data[at++];
+            const int nthrough = static_cast<int>(std::llround(data[at++]));
+            if (kind < 0 || kind > 2) {
+                error = "A segment kind is line, arc, or spline.";
+                return false;
+            }
+            if (nthrough < 0 || nthrough > 200 || !take(static_cast<size_t>(nthrough) * 2)) {
+                error = "A loop segment is incomplete.";
+                return false;
+            }
+            seg.kind = static_cast<ProfileSegKind>(kind);
+            for (int t = 0; t < nthrough; ++t) {
+                seg.through.push_back(data[at++]);
+                seg.through.push_back(data[at++]);
+            }
+            if (seg.kind == ProfileSegKind::Line && nthrough != 0) {
+                error = "A line has no point between its ends.";
+                return false;
+            }
+            if (seg.kind == ProfileSegKind::Arc && nthrough != 1) {
+                error = "An arc needs one point between its ends.";
+                return false;
+            }
+            if (seg.kind == ProfileSegKind::Spline && nthrough < 1) {
+                error = "A spline needs a point between its ends.";
+                return false;
+            }
+            loop.segments.push_back(std::move(seg));
+        }
+        loops.push_back(std::move(loop));
+    }
+    used = static_cast<int>(at);
+    return true;
+}
+
+TopoDS_Shape build_extrude_loops(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const double origin[3],
+    const double turn[3],
+    const std::vector<ProfileLoop>& loops,
+    double depth,
+    bool symmetric,
+    double& volume,
+    std::string& error) {
+    const ProfileFrame frame = frame_from(origin, turn);
+    const TopoDS_Face check = profile_loops_face(frame, loops, 0.0, error);
+    if (check.IsNull()) {
+        return {};
+    }
+    if (!std::isfinite(depth) || !(std::abs(depth) > kTinyMm)) {
+        error = "An extrude needs a depth other than 0.";
+        return {};
+    }
+    const double length = std::abs(depth);
+    const double start = symmetric ? -length / 2.0 : std::min(depth, 0.0);
+    TopoDS_Face face = check;
+    if (std::abs(start) > 1e-15) {
+        face = profile_loops_face(frame, loops, start, error);
+        if (face.IsNull()) {
+            return {};
+        }
+    }
+    BRepPrimAPI_MakePrism prism(face, gp_Vec(frame.w) * length);
+    const TopoDS_Shape tool = built(prism, "extrude", error);
+    if (tool.IsNull()) {
+        return {};
+    }
+    return combine_profile(current, before, which, tool, "extrude", volume, error);
+}
+
+TopoDS_Shape build_revolve_loops(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const double origin[3],
+    const double turn[3],
+    const std::vector<ProfileLoop>& loops,
+    const double* axis,
+    double angle_deg,
+    double& volume,
+    std::string& error) {
+    const ProfileFrame frame = frame_from(origin, turn);
+    const TopoDS_Face face = profile_loops_face(frame, loops, 0.0, error);
+    if (face.IsNull()) {
+        return {};
+    }
+    if (!std::isfinite(angle_deg) || !(angle_deg > 1e-6) || angle_deg > 360.0 + 1e-9) {
+        error = "A revolve needs an angle above 0 and at most 360 degrees.";
+        return {};
+    }
+    const double length = std::hypot(axis[2], axis[3]);
+    if (!std::isfinite(length) || !(length > 1e-9) || !std::isfinite(axis[0]) || !std::isfinite(axis[1])) {
+        error = "The revolve axis needs a direction in the profile's plane.";
+        return {};
+    }
+    double unit[4] = {axis[0], axis[1], axis[2] / length, axis[3] / length};
+    if (crosses_axis(frame, face, unit)) {
+        error = "The profile crosses the revolve axis. Keep it on one side.";
+        return {};
+    }
+    const gp_Vec along = gp_Vec(frame.u) * unit[2] + gp_Vec(frame.v) * unit[3];
+    const gp_Ax1 turn_axis(frame.at(axis[0], axis[1]), gp_Dir(along));
+    const double angle = std::min(angle_deg, 360.0) * kPi / 180.0;
+    BRepPrimAPI_MakeRevol revol(face, turn_axis, angle, Standard_True);
+    TopoDS_Shape tool = built(revol, "revolve", error);
+    if (tool.IsNull()) {
+        return {};
+    }
+    GProp_GProps props;
+    integrate(tool, props);
+    if (props.Mass() < 0.0) {
+        tool.Reverse();
+    }
+    return combine_profile(current, before, which, tool, "revolve", volume, error);
+}
+
+TopoDS_Shape build_loft_loops(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const std::vector<LoftSection>& sections,
+    bool ruled,
+    double& volume,
+    std::string& error) {
+    if (sections.size() < 2) {
+        error = "A loft needs at least 2 sections.";
+        return {};
+    }
+    if (sections.size() > 200) {
+        error = "A loft takes at most 200 sections.";
+        return {};
+    }
+    struct Wires {
+        TopoDS_Wire outer;
+        std::vector<TopoDS_Wire> holes;
+    };
+    std::vector<Wires> built_sections;
+    for (size_t i = 0; i < sections.size(); ++i) {
+        const LoftSection& section = sections[i];
+        const std::string prefix = "Section " + std::to_string(i) + ": ";
+        Wires wires;
+        if (!section.loops.empty()) {
+            if (section.radius > 0.0 || !section.profile.points.empty()) {
+                error = prefix + "A section takes a radius, a profile, or loops, not more than one.";
+                return {};
+            }
+            const ProfileFrame frame = frame_of(section.profile);
+            std::vector<ProfileLoop> loops = section.loops;
+            if (!loops_readable(loops, error)) {
+                error = prefix + error;
+                return {};
+            }
+            orient_loops(loops);
+            std::vector<std::vector<TopoDS_Edge>> groups;
+            for (const ProfileLoop& loop : loops) {
+                std::vector<TopoDS_Edge> edges;
+                double from[2] = {loop.start[0], loop.start[1]};
+                for (const ProfileSeg& seg : loop.segments) {
+                    TopoDS_Edge edge = loop_edge(frame, from, seg, 0.0, error);
+                    if (edge.IsNull()) {
+                        error = prefix + (error.empty() ? "Open CASCADE did not build the profile" : error);
+                        return {};
+                    }
+                    edges.push_back(edge);
+                    from[0] = seg.to[0];
+                    from[1] = seg.to[1];
+                }
+                groups.push_back(std::move(edges));
+            }
+            if (edges_cross(groups, error)) {
+                error = prefix + error;
+                return {};
+            }
+            for (size_t w = 0; w < groups.size(); ++w) {
+                TopoDS_Wire wire = wire_of(groups[w], error);
+                if (wire.IsNull()) {
+                    error = prefix + (error.empty() ? "Open CASCADE did not join the loop into one outline." : error);
+                    return {};
+                }
+                if (w == 0) {
+                    wires.outer = wire;
+                } else {
+                    wires.holes.push_back(wire);
+                }
+            }
+            const gp_Pln plane(gp_Ax3(frame.origin, frame.w, frame.u));
+            BRepBuilderAPI_MakeFace outer_face(plane, wires.outer, Standard_True);
+            if (!outer_face.IsDone()) {
+                error = prefix + "Open CASCADE did not build the profile";
+                return {};
+            }
+            for (size_t h = 0; h < wires.holes.size(); ++h) {
+                const gp_Pnt at = frame.at(loops[h + 1].start[0], loops[h + 1].start[1]);
+                BRepClass_FaceClassifier inside(outer_face.Face(), at, 1e-7);
+                if (inside.State() != TopAbs_IN) {
+                    error = prefix + "A hole lies outside the outline. Keep each hole inside.";
+                    return {};
+                }
+            }
+        } else {
+            wires.outer = section_wire(section, error);
+            if (wires.outer.IsNull()) {
+                error = prefix + (error.empty() ? "it could not be built." : error);
+                return {};
+            }
+        }
+        built_sections.push_back(std::move(wires));
+    }
+    const size_t holes = built_sections.front().holes.size();
+    for (const Wires& wires : built_sections) {
+        if (wires.holes.size() != holes) {
+            error = "Each loft section needs the same number of holes.";
+            return {};
+        }
+    }
+    std::vector<TopoDS_Wire> outers;
+    for (const Wires& wires : built_sections) {
+        outers.push_back(wires.outer);
+    }
+    TopoDS_Shape tool = loft_wires(outers, ruled, error);
+    if (tool.IsNull()) {
+        return {};
+    }
+    for (size_t h = 0; h < holes; ++h) {
+        std::vector<TopoDS_Wire> channel;
+        for (const Wires& wires : built_sections) {
+            channel.push_back(wires.holes[h]);
+        }
+        std::string hole_error;
+        const TopoDS_Shape hole = loft_wires(channel, ruled, hole_error);
+        if (hole.IsNull()) {
+            error = hole_error.empty() ? "A hole could not be lofted through these sections." : "A hole could not be lofted. " + hole_error;
+            return {};
+        }
+        tool = boolean_op("cut", tool, hole, error);
+        if (!error.empty() || tool.IsNull()) {
+            if (error.empty()) {
+                error = "A lofted hole did not cut the outline.";
+            }
+            return {};
+        }
+        if (!has_solid(tool)) {
+            error = "A lofted hole did not leave a solid.";
+            return {};
+        }
+        tool = as_solid(tool);
+    }
+    return combine_profile(current, before, which, tool, "loft", volume, error);
 }
 
 /// Open CASCADE's thick solid, joined at `join`. Null when it fails or the result is not a valid solid.

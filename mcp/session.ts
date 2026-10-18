@@ -30,7 +30,7 @@ import { thinWalls } from "./thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "./anchors.ts";
 import { expandOps, type PartDef } from "./macro.ts";
 import { applyPose, IDENTITY_POSE, inversePose, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, type EdgePick, type Fingerprint, type LoftSection, type ModelOp, type ModelTree, type NodeId, type Vec2 } from "../src/model-tree.ts";
+import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, type EdgePick, type Fingerprint, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
@@ -374,6 +374,60 @@ function firstAfter(tree: ModelTree, from: number, to: number): number | null {
   return null;
 }
 
+const LOOP_SHAPE = "smooth and corners are for a point profile. A loop uses arc and spline segments.";
+
+/**
+ * K1 loops, when the field is present. Absent means the op uses a point profile. A bad loop is a sentence.
+ */
+function readLoopsField(value: unknown): { loops?: ProfileLoop[] } | { reason: string } {
+  if (value === undefined) return {};
+  if (!Array.isArray(value) || value.length < 1) return { reason: "A profile needs a loop." };
+  if (value.length > 32) return { reason: "A profile takes at most 32 loops." };
+  const loops: ProfileLoop[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || !Array.isArray((raw as { segments?: unknown }).segments)) return { reason: "A loop needs a start and its segments." };
+    const spec = raw as Record<string, unknown>;
+    const start = pairOf(spec.start);
+    if (!start) return { reason: "A loop starts at [u, v]." };
+    const pieces = spec.segments as unknown[];
+    if (pieces.length < 1) return { reason: "A loop needs a segment." };
+    if (pieces.length > 200) return { reason: "A loop takes at most 200 segments." };
+    const segments: ProfileSegment[] = [];
+    for (const seg of pieces) {
+      if (!seg || typeof seg !== "object") return { reason: "A loop segment is incomplete." };
+      const piece = seg as Record<string, unknown>;
+      const to = pairOf(piece.to);
+      if (!to) return { reason: "A loop segment ends at [u, v]." };
+      if (piece.kind === "line") {
+        if (piece.through !== undefined) return { reason: "A line has no point between its ends." };
+        segments.push({ kind: "line", to });
+      } else if (piece.kind === "arc") {
+        const through = pairOf(piece.through);
+        if (!through) return { reason: "An arc needs one point between its ends." };
+        segments.push({ kind: "arc", through, to });
+      } else if (piece.kind === "spline") {
+        if (!Array.isArray(piece.through) || piece.through.length < 1) return { reason: "A spline needs a point between its ends." };
+        const through: Vec2[] = [];
+        for (const point of piece.through) {
+          const at = pairOf(point);
+          if (!at) return { reason: "A spline's points are [u, v]." };
+          through.push(at);
+        }
+        segments.push({ kind: "spline", through, to });
+      } else {
+        return { reason: "A segment kind is line, arc, or spline." };
+      }
+    }
+    loops.push({ start, segments });
+  }
+  return { loops };
+}
+
+function pairOf(value: unknown): Vec2 | null {
+  if (!Array.isArray(value) || value.length !== 2 || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+  return [value[0] as number, value[1] as number];
+}
+
 /** A profile's smooth and corners fields: corners are indexes into its points, and need smooth. */
 function readShape(spec: Record<string, unknown>, points: number): ProfileShape | { reason: string } {
   if (spec.smooth !== undefined && typeof spec.smooth !== "boolean") return { reason: "smooth is true or false." };
@@ -392,6 +446,13 @@ function readSection(value: unknown): LoftSection | { reason: string } {
   const origin = readVec3(spec.origin, [NaN, NaN, NaN]);
   if (origin.some((n) => !Number.isFinite(n))) return { reason: "A section needs an origin [x, y, z]." };
   const turn = readVec3(spec.turn, [0, 0, 0]);
+  const loops = readLoopsField(spec.loops);
+  if ("reason" in loops) return loops;
+  if (loops.loops) {
+    if (spec.radius !== undefined || spec.profile !== undefined) return { reason: "A section takes a radius, a profile, or loops, not more than one." };
+    if (spec.smooth !== undefined || spec.corners !== undefined) return { reason: LOOP_SHAPE };
+    return { origin, turn, loops: loops.loops };
+  }
   if (spec.radius !== undefined) {
     if (spec.profile !== undefined) return { reason: "A section takes a radius or a profile, not both." };
     if (typeof spec.radius !== "number" || !(spec.radius > 0)) return { reason: "A section's radius is above 0." };
@@ -3388,11 +3449,34 @@ export class Session {
     if (kind === "extrude" || kind === "revolve") {
       const plane = this.profilePlane(obj, spec);
       if ("reason" in plane) return plane;
+      const loops = readLoopsField(spec.loops);
+      if ("reason" in loops) return loops;
+      if (loops.loops && spec.profile !== undefined) return { reason: "Give a profile or loops, not both." };
+      if (loops.loops && (spec.smooth !== undefined || spec.corners !== undefined)) return { reason: LOOP_SHAPE };
+      const booleanOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
+      if (loops.loops) {
+        if (kind === "extrude") {
+          if (spec.depth2 !== undefined || (spec.draftDeg !== undefined && spec.draftDeg !== 0) || spec.upTo !== undefined) {
+            return { reason: "A second depth, a draft, or a face to stop at is for a point profile." };
+          }
+          const depth = spec.depth;
+          if (typeof depth !== "number" || depth === 0) return { reason: "An extrude needs a depth in millimetres." };
+          const made = extrudeOp(booleanOp, plane, [], depth, spec.symmetric === true, {}, loops.loops);
+          return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+        }
+        const axisOrigin = readProfile([spec.axisOrigin, [0, 0], [0, 0]])?.[0];
+        const axisDir = readProfile([spec.axisDir, [0, 0], [0, 0]])?.[0];
+        const made = revolveOp(booleanOp, plane, [], {
+          ...(spec.axisOrigin !== undefined && axisOrigin ? { origin: axisOrigin } : {}),
+          ...(spec.axisDir !== undefined && axisDir ? { dir: axisDir } : {}),
+          ...(typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {}),
+        }, {}, loops.loops);
+        return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+      }
       const profile = readProfile(spec.profile);
       if (!profile) return { reason: "A profile needs at least three [u, v] points." };
       const shape = readShape(spec, profile.length);
       if ("reason" in shape) return shape;
-      const booleanOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
       if (kind === "extrude") {
         const depth = spec.depth;
         if (typeof depth !== "number" || !Number.isFinite(depth)) return { reason: "An extrude needs a depth in millimetres." };
