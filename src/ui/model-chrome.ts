@@ -249,9 +249,12 @@ export function mountModelChrome(next: ModelChromeHooks) {
     keepNewSolidInView();
     // A typed tilt past the limit shows the limit the plane already uses.
     const input = ev.target instanceof HTMLInputElement && (ev.target.id === "modelTiltA" || ev.target.id === "modelTiltB") ? ev.target : null;
-    if (!input || clampTilt(Number(input.value)) === Number(input.value)) return;
-    input.value = String(clampTilt(Number(input.value)));
-    input.dispatchEvent(new Event("input", { bubbles: true }));
+    if (input && clampTilt(Number(input.value)) !== Number(input.value)) {
+      input.value = String(clampTilt(Number(input.value)));
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    // A number settled (Tab, or leaving the field): its check goes now, not after the pause kept for typing.
+    hooks?.probeNow();
   });
   document.querySelector("#modelPanel")?.addEventListener("input", (ev) => {
     // A box or the screw list changes on `change`, all at once.

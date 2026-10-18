@@ -136,7 +136,9 @@ let jumpSerial = 0;
 let jumpTarget: NodeId | null = null;
 let probeSerial = 0;
 let probeTimer = 0;
-let pendingProbe: (() => void) | null = null;
+let pendingProbe: (() => Promise<void>) | null = null;
+/** A check the engine is running. The engine runs one call at a time, so a newer check waits for it, and only the newest. */
+let probing = false;
 let open: Opened | null = null;
 /** The plate object Model last opened, so a selection change elsewhere can tell it moved. */
 let shownFor: string | null = null;
@@ -462,7 +464,7 @@ function scheduleProbe(wait: number) {
     return;
   }
   setModelProbe({ phase: "checking" });
-  pendingProbe = () => void sendProbe(serial, key, treeKey, node, op);
+  pendingProbe = () => sendProbe(serial, key, treeKey, node, op);
   if (wait > 0) probeTimer = window.setTimeout(sendPending, wait);
   else sendPending();
 }
@@ -554,10 +556,20 @@ function sayJoin() {
   readout(said);
 }
 
+/**
+ * Send the newest check, unless one is still running: then it goes when that one answers, and a check made stale
+ * meanwhile is never sent. Numbers typed field after field each asked the engine for a whole edit, one after another,
+ * all but the last answered for nothing.
+ */
 function sendPending() {
   const send = pendingProbe;
+  if (!send || probing) return;
   pendingProbe = null;
-  send?.();
+  probing = true;
+  void send().finally(() => {
+    probing = false;
+    sendPending();
+  });
 }
 
 async function sendProbe(serial: number, key: string, tree: string, node: NodeId, op: ModelOp) {
