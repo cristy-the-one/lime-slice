@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -26,6 +27,7 @@
 #include <OSD_Parallel.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAlgoAPI_BooleanOperation.hxx>
 #include <BRepAlgoAPI_Check.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -271,9 +273,30 @@ struct Stats {
     std::atomic<long> tessellations{0};
     std::atomic<long> meshes{0};
     std::atomic<long> descriptions{0};
+    /// Microseconds spent in each kind of work, for timing tests and benches.
+    std::atomic<long long> boolean_us{0};
+    std::atomic<long long> volume_us{0};
+    std::atomic<long long> mesh_us{0};
+    std::atomic<long long> readout_us{0};
+    std::atomic<long long> describe_us{0};
 };
 
 Stats g_stats;
+
+/// Adds the time from its making to its end to `total`.
+class Timed {
+public:
+    explicit Timed(std::atomic<long long>& total) : total_(total), start_(std::chrono::steady_clock::now()) {}
+    ~Timed() {
+        total_ += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_).count();
+    }
+    Timed(const Timed&) = delete;
+    Timed& operator=(const Timed&) = delete;
+
+private:
+    std::atomic<long long>& total_;
+    std::chrono::steady_clock::time_point start_;
+};
 
 char* alloc(const std::string& text) {
     char* out = static_cast<char*>(std::malloc(text.size() + 1));
@@ -355,6 +378,7 @@ TopoDS_Shape as_solid(const TopoDS_Shape& shape) {
 
 void integrate(const TopoDS_Shape& shape, GProp_GProps& props) {
     g_stats.volumes += 1;
+    const Timed timed(g_stats.volume_us);
     BRepGProp::VolumeProperties(shape, props);
 }
 
@@ -439,11 +463,13 @@ Mesh tessellate(Held& held, double chord) {
     // since is what meshing again would leave too.
     if (held.meshed != chord) {
         g_stats.meshes += 1;
+        const Timed timed(g_stats.mesh_us);
         // In parallel: faces mesh apart, after their shared edges, so the mesh is the same as one thread's.
         BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_True);
         mesher.Perform();
         held.meshed = chord;
     }
+    const Timed timed(g_stats.readout_us);
 
     struct Piece {
         Handle(Poly_Triangulation) tri;
@@ -507,6 +533,7 @@ Mesh tessellate(Held& held, double chord) {
 
 std::string describe(Held& held) {
     g_stats.descriptions += 1;
+    const Timed timed(g_stats.describe_us);
     const int faces = held.faces.Extent();
     const int edges = held.edges.Extent();
     held.face_about.resize(static_cast<size_t>(faces));
@@ -842,46 +869,41 @@ TopoDS_Shape make_solid(const PrimitiveSpec& given, std::string& error) {
     return builder.Shape();
 }
 
+/// One boolean, built once. The two-shape constructors of `BRepAlgoAPI_Fuse`, `_Cut` and `_Common` build at once, with the
+/// default options, so setting options on one and calling `Build` again ran every boolean twice, the first time
+/// destructively, which could change the input's tolerances. Nothing reads the algorithm's history, so it is not filled.
 TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const TopoDS_Shape& tool, std::string& error) {
-    g_stats.builds += 1;
+    BOPAlgo_Operation operation = BOPAlgo_UNKNOWN;
     if (op == "fuse") {
-        BRepAlgoAPI_Fuse algo(solid, tool);
-        algo.SetFuzzyValue(1.0e-7);
-        algo.SetNonDestructive(Standard_True);
-        algo.SetRunParallel(Standard_True);
-        algo.Build();
-        if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
-            error = "Open CASCADE did not complete the boolean";
-            return {};
-        }
-        return algo.Shape();
+        operation = BOPAlgo_FUSE;
+    } else if (op == "cut") {
+        operation = BOPAlgo_CUT;
+    } else if (op == "common") {
+        operation = BOPAlgo_COMMON;
+    } else {
+        error = "The boolean is fuse, cut, or common";
+        return {};
     }
-    if (op == "cut") {
-        BRepAlgoAPI_Cut algo(solid, tool);
-        algo.SetFuzzyValue(1.0e-7);
-        algo.SetNonDestructive(Standard_True);
-        algo.SetRunParallel(Standard_True);
-        algo.Build();
-        if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
-            error = "Open CASCADE did not complete the boolean";
-            return {};
-        }
-        return algo.Shape();
+    g_stats.builds += 1;
+    const Timed timed(g_stats.boolean_us);
+    TopTools_ListOfShape objects;
+    objects.Append(solid);
+    TopTools_ListOfShape tools;
+    tools.Append(tool);
+    BRepAlgoAPI_BooleanOperation algo;
+    algo.SetArguments(objects);
+    algo.SetTools(tools);
+    algo.SetOperation(operation);
+    algo.SetFuzzyValue(1.0e-7);
+    algo.SetNonDestructive(Standard_True);
+    algo.SetRunParallel(Standard_True);
+    algo.SetToFillHistory(Standard_False);
+    algo.Build();
+    if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
+        error = "Open CASCADE did not complete the boolean";
+        return {};
     }
-    if (op == "common") {
-        BRepAlgoAPI_Common algo(solid, tool);
-        algo.SetFuzzyValue(1.0e-7);
-        algo.SetNonDestructive(Standard_True);
-        algo.SetRunParallel(Standard_True);
-        algo.Build();
-        if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
-            error = "Open CASCADE did not complete the boolean";
-            return {};
-        }
-        return algo.Shape();
-    }
-    error = "The boolean is fuse, cut, or common";
-    return {};
+    return algo.Shape();
 }
 
 bool accepted_result(const TopoDS_Shape& shape, double& volume, std::string& error) {
@@ -1532,7 +1554,16 @@ bool build_split(
         }
         TopoDS_Shape acc = pieces.front();
         for (size_t index = 1; index < pieces.size(); ++index) {
-            BRepAlgoAPI_Fuse fuse(acc, pieces[index]);
+            // Built once: the two-shape constructor would build it a first time, destructively.
+            TopTools_ListOfShape objects;
+            objects.Append(acc);
+            TopTools_ListOfShape tools;
+            tools.Append(pieces[index]);
+            BRepAlgoAPI_Fuse fuse;
+            fuse.SetArguments(objects);
+            fuse.SetTools(tools);
+            fuse.SetNonDestructive(Standard_True);
+            fuse.SetToFillHistory(Standard_False);
             fuse.Build();
             if (!fuse.IsDone() || fuse.HasErrors() || fuse.Shape().IsNull()) {
                 join_error = "Open CASCADE did not join the split pieces";
@@ -2345,6 +2376,19 @@ extern "C" char* lime_model_occt_stats() {
     out += std::to_string(g_stats.meshes.load());
     out += ",\"descriptions\":";
     out += std::to_string(g_stats.descriptions.load());
+    const std::pair<const char*, const std::atomic<long long>*> timings[] = {
+        {"booleanUs", &g_stats.boolean_us},
+        {"volumeUs", &g_stats.volume_us},
+        {"meshUs", &g_stats.mesh_us},
+        {"readoutUs", &g_stats.readout_us},
+        {"describeUs", &g_stats.describe_us},
+    };
+    for (const auto& [name, total] : timings) {
+        out += ",\"";
+        out += name;
+        out += "\":";
+        out += std::to_string(total->load());
+    }
     out += '}';
     return alloc(out);
 }
