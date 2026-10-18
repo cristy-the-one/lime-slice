@@ -30,8 +30,9 @@ fn cylinder(op: &str, origin: [f64; 3], radius: f64, height: f64) -> Value {
     json!({ "kind": "boolean", "op": op, "primitive": "cylinder", "origin": origin, "size": [0.0, 0.0, 0.0], "radius": radius, "height": height, "turn": [0.0, 0.0, 0.0] })
 }
 
-/// Steps of every kind, each on the one before. A step that does not build must not build either way.
-fn steps() -> Vec<Value> {
+/// Steps of every kind, each on the one before. A step that does not build must not build either way. `tool` is the key
+/// of a tree whose root a join cuts away.
+fn steps(tool: &str) -> Vec<Value> {
     vec![
         json!({ "kind": "fillet", "edges": [0, 2], "size": 2.0 }),
         json!({ "kind": "shell", "thickness": 1.5, "openFaces": [] }),
@@ -43,6 +44,7 @@ fn steps() -> Vec<Value> {
         json!({ "kind": "chamfer", "edges": [3], "size": 1.0 }),
         json!({ "kind": "boolean", "op": "fuse", "primitive": "sphere", "origin": [8.0, 32.0, 20.0], "radius": 4.0 }),
         cylinder("cut", [5.0, 5.0, -1.0], 1.5, 30.0),
+        json!({ "kind": "join", "op": "cut", "tool": { "key": tool, "node": 0 }, "relative": { "m": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], "t": [38.0, 26.0, -5.0] } }),
         json!({ "kind": "split", "origin": [57.0, 0.0, 0.0], "normal": [1.0, 0.0, 0.0] }),
         json!({ "kind": "boolean", "op": "common", "primitive": "sphere", "origin": [30.0, 20.0, 10.0], "radius": 45.0 }),
         json!({ "kind": "scale", "factor": 1.5 }),
@@ -53,9 +55,13 @@ fn steps() -> Vec<Value> {
 fn build(key: &str) -> Vec<Value> {
     let open = call(&json!({ "call": "open", "key": key, "box": [60.0, 40.0, 20.0], "chordMm": 0.1 }));
     assert!(open.get("error").is_none(), "{open}");
+    // One name for both trees, closed after each, so the joins the two store read the same.
+    let tool = "local-mesh-tool";
+    let opened = call(&json!({ "call": "open", "key": tool, "box": [4.0, 4.0, 40.0], "chordMm": 0.1 }));
+    assert!(opened.get("error").is_none(), "{opened}");
     let mut replies = vec![shown(open)];
     let mut parent = 0;
-    for (at, op) in steps().into_iter().enumerate() {
+    for (at, op) in steps(tool).into_iter().enumerate() {
         let node = at as i64 + 1;
         let reply = call(&json!({ "call": "apply", "key": key, "parent": parent, "node": node, "op": op, "chordMm": 0.1 }));
         if reply.get("error").is_none() {
@@ -68,6 +74,7 @@ fn build(key: &str) -> Vec<Value> {
     replies.push(shown(call(&json!({ "call": "goto", "key": key, "node": parent, "chordMm": 0.05 }))));
     replies.push(shown(call(&json!({ "call": "goto", "key": key, "node": 3, "chordMm": 0.05 }))));
     call(&json!({ "call": "close", "key": key }));
+    call(&json!({ "call": "close", "key": tool }));
     replies
 }
 
@@ -96,7 +103,7 @@ fn meshing_around_a_step_answers_what_meshing_the_whole_solid_does() {
     assert_eq!(local_meshes, full_meshes, "the two trees meshed as often");
     assert!(local_whole < local_meshes / 2, "most steps meshed only around what they made: {local_whole} of {local_meshes} whole");
     let built = local.iter().filter(|reply| reply.get("positions").is_some() || reply.get("preview").is_some()).count();
-    assert!(built >= 12, "most steps built: {built} of {}", local.len());
+    assert!(built >= 13, "most steps built: {built} of {}", local.len());
     assert_eq!(local.len(), full.len());
     for (at, (a, b)) in local.iter().zip(&full).enumerate() {
         assert!(a == b, "reply {at} differs: {} vs {}", &a.to_string()[..a.to_string().len().min(300)], &b.to_string()[..b.to_string().len().min(300)]);
