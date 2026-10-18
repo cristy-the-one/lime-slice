@@ -2009,6 +2009,7 @@ TopoDS_Face profile_face(const ProfileFrame& frame, const ProfileSpec& spec, dou
 
 /// A swept tool combined with `current`. Beyond `combine`'s refusals, an extrude or revolve that changes nothing, or
 /// a fuse that leaves a body apart from the part, is refused, since the step would do nothing the user meant.
+/// A null `current` is a feature root (K2): the tool is the solid, after the same kind and volume checks.
 TopoDS_Shape combine_profile(
     const TopoDS_Shape& current,
     double before,
@@ -2017,6 +2018,28 @@ TopoDS_Shape combine_profile(
     const char* noun,
     double& volume,
     std::string& error) {
+    // --- K2 feature root. No solid under the tool: the tool is the new solid. ---
+    if (current.IsNull()) {
+        if (which != "fuse" && which != "cut" && which != "common") {
+            error = "The boolean is fuse, cut, or common";
+            return {};
+        }
+        if (which != "fuse") {
+            error = std::string("A new solid is the ") + noun + " itself. Cut and intersect need a part that is already there.";
+            return {};
+        }
+        TopoDS_Shape solid = tool;
+        volume = volume_of(solid);
+        if (volume < 0.0) {
+            solid.Reverse();
+            volume = -volume;
+        }
+        if (!(volume > 1e-6)) {
+            error = std::string("The ") + noun + " has no volume.";
+            return {};
+        }
+        return solid;
+    }
     if (which != "fuse" && which != "cut" && which != "common") {
         error = "The boolean is fuse, cut, or common";
         return {};

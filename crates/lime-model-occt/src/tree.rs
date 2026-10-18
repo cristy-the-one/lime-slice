@@ -501,7 +501,8 @@ enum Request {
     },
     Capabilities,
 
-    /// Open a tree from its root: a STEP, or a primitive built from its numbers. With `nodes`,
+    /// Open a tree from its root: a STEP, a primitive built from its numbers, or a feature (an extrude, a
+    /// revolve, or a loft) built against nothing. With `nodes`,
     /// register the saved ops (parents first) without building them, then jump to `current`.
     /// `fingerprint` is the root's as saved: a root that builds to another is broken.
     Open {
@@ -511,6 +512,10 @@ enum Request {
         #[serde(rename = "box")]
         box_mm: Option<[f64; 3]>,
         primitive: Option<Solid>,
+        /// K2: a feature root. An extrude, revolve, or loft built against nothing. Exactly one root source.
+        /// Boxed so `Open` stays no larger than the other calls.
+        #[serde(default)]
+        feature: Option<Box<Op>>,
         fingerprint: Option<Fingerprint>,
         #[serde(default = "default_chord", alias = "stepToleranceMm")]
         chord_mm: f64,
@@ -1307,7 +1312,7 @@ impl Store {
                         "STEP chord tolerance must be from 0.01 to 2 mm".into(),
                     ));
                 }
-                let mut shape = root_shape(Some(data_b64), None, None, None)?;
+                let mut shape = root_shape(Some(data_b64), None, None, None, None)?;
                 Ok(Answer::Plain(shape.reply(ROOT, chord_mm)?))
             }
             Request::Open {
@@ -1316,6 +1321,7 @@ impl Store {
                 step_path,
                 box_mm,
                 primitive,
+                feature,
                 fingerprint,
                 chord_mm,
                 nodes,
@@ -1323,7 +1329,7 @@ impl Store {
                 seed,
                 quiet,
             } => {
-                let root = root_shape(data_b64, step_path, box_mm, primitive)?;
+                let root = root_shape(data_b64, step_path, box_mm, primitive, feature.map(|op| *op))?;
                 if let Some(saved) = fingerprint {
                     let got = root.fingerprint();
                     if !saved.matches(&got) {
@@ -2156,6 +2162,7 @@ fn root_shape(
     step_path: Option<String>,
     box_mm: Option<[f64; 3]>,
     primitive: Option<Solid>,
+    feature: Option<Op>,
 ) -> Result<Shape, Failure> {
     // `box` is a primitive box from the origin, kept for the tests and tools that open one.
     let primitive = match (box_mm, primitive) {
@@ -2166,8 +2173,9 @@ fn root_shape(
         (None, primitive) => primitive,
         (Some(_), Some(_)) => return Err(one_root()),
     };
-    match (data_b64, step_path, primitive) {
-        (Some(data), None, None) => {
+    let feature_sent = feature.is_some();
+    match (data_b64, step_path, primitive, feature) {
+        (Some(data), None, None, None) => {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(data.trim())
                 .map_err(|err| Failure::Message(err.to_string()))?;
@@ -2180,11 +2188,19 @@ fn root_shape(
             let _ = std::fs::remove_file(&path);
             shape.map_err(Failure::Message)
         }
-        (None, Some(path), None) => {
+        (None, Some(path), None, None) => {
             Shape::read_step(std::path::Path::new(&path)).map_err(Failure::Message)
         }
-        (None, None, Some(solid)) => Shape::primitive(&solid).map_err(Failure::Message),
-        _ => Err(one_root()),
+        (None, None, Some(solid), None) => Shape::primitive(&solid).map_err(Failure::Message),
+        // --- K2 feature root. The op is built against nothing. ---
+        (None, None, None, Some(op)) => Shape::feature(&op).map_err(Failure::Message),
+        _ => Err(if feature_sent {
+            Failure::Message(
+                "Open a tree from exactly one of dataB64, stepPath, box, primitive, or feature".into(),
+            )
+        } else {
+            one_root()
+        }),
     }
 }
 
@@ -2841,6 +2857,29 @@ extern "C" {
         ruled: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    // --- K2 feature root. The same ops, built against no solid. ---
+    fn lime_tree_feature_extrude(
+        op: *const c_char,
+        p: *const f64,
+        points: *const f64,
+        count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_feature_revolve(
+        op: *const c_char,
+        p: *const f64,
+        points: *const f64,
+        count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_feature_loft(
+        op: *const c_char,
+        head: *const f64,
+        count: c_int,
+        data: *const f64,
+        ruled: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     fn lime_tree_pieces(from: *const RawShape, built: *const RawShape) -> *mut c_char;
     fn lime_tree_shell(
         from: *const RawShape,
@@ -2967,6 +3006,112 @@ impl Shape {
         Shape::made(|error| unsafe {
             lime_tree_primitive(solid.primitive.name().as_ptr(), p.as_ptr(), error)
         })
+    }
+
+    /// K2: an extrude, revolve, or loft with no solid under it. The tool is the solid.
+    fn feature(op: &Op) -> Result<Shape, String> {
+        match op {
+            Op::Extrude {
+                op: which,
+                origin,
+                turn,
+                profile,
+                depth,
+                symmetric,
+                smooth,
+                corners,
+            } => {
+                let mut p = vec![
+                    origin[0],
+                    origin[1],
+                    origin[2],
+                    turn[0],
+                    turn[1],
+                    turn[2],
+                    *depth,
+                    f64::from(u8::from(*symmetric)),
+                ];
+                push_shape(&mut p, *smooth, corners);
+                let points: Vec<f64> = profile.iter().flatten().copied().collect();
+                Shape::made(|error| unsafe {
+                    lime_tree_feature_extrude(
+                        which.name().as_ptr(),
+                        p.as_ptr(),
+                        points.as_ptr(),
+                        profile.len() as c_int,
+                        error,
+                    )
+                })
+            }
+            Op::Revolve {
+                op: which,
+                origin,
+                turn,
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_deg,
+                smooth,
+                corners,
+            } => {
+                let [au, av] = axis_origin.unwrap_or([0.0, 0.0]);
+                let [du, dv] = axis_dir.unwrap_or([0.0, 1.0]);
+                let mut p = vec![
+                    origin[0],
+                    origin[1],
+                    origin[2],
+                    turn[0],
+                    turn[1],
+                    turn[2],
+                    au,
+                    av,
+                    du,
+                    dv,
+                    angle_deg.unwrap_or(360.0),
+                ];
+                push_shape(&mut p, *smooth, corners);
+                let points: Vec<f64> = profile.iter().flatten().copied().collect();
+                Shape::made(|error| unsafe {
+                    lime_tree_feature_revolve(
+                        which.name().as_ptr(),
+                        p.as_ptr(),
+                        points.as_ptr(),
+                        profile.len() as c_int,
+                        error,
+                    )
+                })
+            }
+            Op::Loft {
+                op: which,
+                sections,
+                ruled,
+            } => {
+                let mut head = Vec::with_capacity(sections.len() * 11);
+                let mut data = Vec::new();
+                for section in sections {
+                    head.extend_from_slice(&section.origin);
+                    head.extend_from_slice(&section.turn);
+                    head.push(section.radius.unwrap_or(0.0));
+                    head.push(section.radius_v.unwrap_or(0.0));
+                    head.push(f64::from(u8::from(section.smooth)));
+                    head.push(section.profile.len() as f64);
+                    head.push(section.corners.len() as f64);
+                    data.extend(section.profile.iter().flatten().copied());
+                    data.extend(section.corners.iter().map(|&c| f64::from(c)));
+                }
+                Shape::made(|error| unsafe {
+                    lime_tree_feature_loft(
+                        which.name().as_ptr(),
+                        head.as_ptr(),
+                        sections.len() as c_int,
+                        data.as_ptr(),
+                        c_int::from(*ruled),
+                        error,
+                    )
+                })
+            }
+            _ => Err("A new solid starts from an extrude, a revolve, or a loft.".into()),
+        }
     }
 
     fn read_step(path: &std::path::Path) -> Result<Shape, String> {

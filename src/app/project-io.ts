@@ -213,8 +213,11 @@ function fileObjects({ trees, tools }: Awaited<ReturnType<typeof historyToSave>>
     }
     return { ...made, name };
   };
-  const fileTree = (saved: SavedTree<{ name: string; bytes: ArrayBuffer }>): NonNullable<PlateFileObject["modelTree"]> =>
-    saved.rootPrimitive ? { ...treeBody(saved), rootPrimitive: saved.rootPrimitive } : { ...treeBody(saved), rootStep: record(saved.rootStep.name, saved.rootStep.bytes) };
+  const fileTree = (saved: SavedTree<{ name: string; bytes: ArrayBuffer }>): NonNullable<PlateFileObject["modelTree"]> => {
+    if (saved.rootFeature) return { ...treeBody(saved), rootFeature: saved.rootFeature };
+    if (saved.rootPrimitive) return { ...treeBody(saved), rootPrimitive: saved.rootPrimitive };
+    return { ...treeBody(saved), rootStep: record(saved.rootStep.name, saved.rootStep.bytes) };
+  };
   const objects = state.plate.objects.map((obj) => {
     const row: PlateFileObject = {
       id: obj.id,
@@ -265,6 +268,10 @@ async function loadPlateObjects(objects: PlateFileObject[], tools: readonly Tool
   /** A plate object's or a kept tool's tree into `trees`, with its root STEP's bytes. False when it has one that does not read. */
   const adopt = ({ id, modelTree }: { id: string; modelTree?: PlateFileObject["modelTree"] }) => {
     if (!modelTree) return true;
+    if (modelTree.rootFeature) {
+      trees.set(id, { ...treeBody(modelTree), rootFeature: modelTree.rootFeature });
+      return true;
+    }
     if (modelTree.rootPrimitive) {
       trees.set(id, { ...treeBody(modelTree), rootPrimitive: modelTree.rootPrimitive });
       return true;

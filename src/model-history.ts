@@ -315,7 +315,11 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
 export function dropRefusal(tree: ModelTree, id: NodeId, trees: ReadonlyMap<string, ModelTree> = new Map()): string | null {
   const node = tree.nodes.get(id);
   if (!node) return "This step is no longer in the history.";
-  if (node.parent === null) return tree.root.kind === "primitive" ? "The primitive this solid started as begins the history and stays." : "The opened file starts the history and stays.";
+  if (node.parent === null) {
+    if (tree.root.kind === "primitive") return "The primitive this solid started as begins the history and stays.";
+    if (tree.root.kind === "feature") return "The sketch this solid started as begins the history and stays.";
+    return "The opened file starts the history and stays.";
+  }
   const gone = subtree(tree, id);
   if (gone.has(tree.current)) return "The step on screen is on this branch. Go to another branch first.";
   if (gone.has(tree.committed)) return "The plate still holds a step on this branch.";
