@@ -482,6 +482,96 @@ LimeShape* lime_tree_revolve(const LimeShape* from, const char* op, const double
     }
 }
 
+// --- K2 feature root. An extrude, revolve, or loft built against no solid. The tool is the solid. ---
+
+/// `p` is the plane's origin and turn, the depth, symmetric (0 or 1), then smooth, the corner count, and the corners.
+LimeShape* lime_tree_feature_extrude(const char* op, const double* p, const double* points, int count, char** error) {
+    try {
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape none;
+        const TopoDS_Shape result = build_extrude(
+            none, 0.0, op == nullptr ? "" : op, profile_of(p, points, count, p + 8), p[6], p[7] != 0.0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The extrude did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `p` is the plane's origin and turn, the axis's point (u, v) and direction (u, v), the angle in degrees, then smooth,
+/// the corner count, and the corners.
+LimeShape* lime_tree_feature_revolve(const char* op, const double* p, const double* points, int count, char** error) {
+    try {
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape none;
+        const TopoDS_Shape result = build_revolve(
+            none, 0.0, op == nullptr ? "" : op, profile_of(p, points, count, p + 11), p + 6, p[10], volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The revolve did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `head` is 11 numbers a section, as `lime_tree_loft`. `data` is each section's points and corners.
+LimeShape* lime_tree_feature_loft(const char* op, const double* head, int count, const double* data, int ruled, char** error) {
+    try {
+        std::vector<LoftSection> sections;
+        size_t at = 0;
+        for (int s = 0; s < count; ++s) {
+            const double* h = head + 11 * static_cast<size_t>(s);
+            const int points = std::max(static_cast<int>(h[9]), 0);
+            const int corners = std::max(static_cast<int>(h[10]), 0);
+            LoftSection section;
+            for (int i = 0; i < 3; ++i) {
+                section.profile.origin[i] = h[i];
+                section.profile.turn[i] = h[3 + i];
+            }
+            section.radius = h[6];
+            section.radius_v = h[7];
+            section.profile.smooth = h[8] != 0.0;
+            section.profile.points.assign(data + at, data + at + 2 * static_cast<size_t>(points));
+            at += 2 * static_cast<size_t>(points);
+            for (int i = 0; i < corners; ++i) {
+                section.profile.corners.push_back(static_cast<int>(data[at + static_cast<size_t>(i)]));
+            }
+            at += static_cast<size_t>(corners);
+            sections.push_back(std::move(section));
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape none;
+        const TopoDS_Shape result = build_loft(none, 0.0, op == nullptr ? "" : op, sections, ruled != 0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The loft did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// `head` is 11 numbers a section: the plane's origin and turn, the radius, the radius along V, smooth, the point
 /// count, and the corner count. `data` is each section's u, v pairs and then its corners, one section after another.
 LimeShape* lime_tree_loft(const LimeShape* from, const char* op, const double* head, int count, const double* data, int ruled, char** error) {

@@ -5,7 +5,7 @@
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
 import { isRigid, type Affine } from "./model-space.ts";
-import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec2, type Vec3 } from "./model-tree.ts";
 
 type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
@@ -26,10 +26,15 @@ interface SavedNode {
 }
 
 /**
- * The root is a STEP, `rootStep` (bytes in the app, a base64 record in the file), or a primitive,
- * `rootPrimitive`: a new solid's few numbers, built again on open. Exactly one is there.
+ * The root is exactly one of a STEP, `rootStep` (bytes in the app, a base64 record in the file), a primitive,
+ * `rootPrimitive` (a new solid's few numbers, built again on open), or a feature, `rootFeature` (an extrude, a
+ * revolve, or a loft built against nothing). Old files have no `rootFeature`.
  */
-export type SavedTree<Step> = SavedTreeBody & ({ rootStep: Step; rootPrimitive?: undefined } | { rootPrimitive: PrimitiveSpec; rootStep?: undefined });
+export type SavedTree<Step> = SavedTreeBody & (
+  | { rootStep: Step; rootPrimitive?: undefined; rootFeature?: undefined }
+  | { rootPrimitive: PrimitiveSpec; rootStep?: undefined; rootFeature?: undefined }
+  | { rootFeature: FeatureOp; rootStep?: undefined; rootPrimitive?: undefined }
+);
 
 export interface SavedTreeBody {
   nodes: SavedNode[];
@@ -136,6 +141,14 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   const { current, committed, nextId } = value;
   if (!ids.has(0) || !isId(current) || !ids.has(current) || !isId(committed) || !ids.has(committed) || !isId(nextId)) return null;
   const body = { nodes, current, committed, nextId: Math.max(nextId, Math.max(...ids) + 1) };
+  // --- K2 feature root. Exactly one of rootStep, rootPrimitive, rootFeature. A cut or intersect is kept so the file
+  // round-trips; the engine refuses it on open. ---
+  if (value.rootFeature != null) {
+    if (value.rootPrimitive != null || value.rootStep !== undefined) return null;
+    const op = readOp(value.rootFeature);
+    if (!op || (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft")) return null;
+    return { ...body, rootFeature: op };
+  }
   if (value.rootPrimitive != null) {
     // A primitive the app would not build is as damaged as a missing STEP: the part opens from its mesh.
     const solid = value.rootStep === undefined ? readPrimitive(value.rootPrimitive) : undefined;

@@ -30,7 +30,7 @@ import { thinWalls } from "./thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "./anchors.ts";
 import { expandOps, type PartDef } from "./macro.ts";
 import { applyPose, IDENTITY_POSE, inversePose, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type EdgePick, type Fingerprint, type LoftSection, type ModelOp, type ModelTree, type NodeId, type Vec2 } from "../src/model-tree.ts";
+import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, type EdgePick, type Fingerprint, type LoftSection, type ModelOp, type ModelTree, type NodeId, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
@@ -1246,6 +1246,8 @@ export class Session {
     const owner = (key: string) => this.byTreeKey(key)?.id;
     const body = savedTree(tree, tree.committed, owner);
     if (tree.root.kind === "primitive") return { ...body, rootPrimitive: tree.root.solid };
+    // --- K2 feature root. The op as stored, no STEP. ---
+    if (tree.root.kind === "feature") return { ...body, rootFeature: tree.root.op };
     const bytes = new Uint8Array(tree.root.bytes);
     return { ...body, rootStep: meshRecord(tree.root.name, bytes) };
   }
@@ -1253,13 +1255,15 @@ export class Session {
   /** The object's saved history, opened at its committed step. A sentence when its saved solid was refused, else null. */
   private async adoptHistory(obj: PlateObject, saved: NonNullable<NonNullable<LimeProject["objects"]>[number]["modelTree"]>): Promise<string | null> {
     const key = `mcp-${obj.id}`;
-    const root = saved.rootPrimitive
-      ? { kind: "primitive" as const, solid: saved.rootPrimitive }
-      : saved.rootStep?.bytesBase64
-        ? { kind: "step" as const, name: saved.rootStep.name, bytes: this.bufferOf(saved.rootStep.bytesBase64) }
-        : null;
+    const root = saved.rootFeature
+      ? { kind: "feature" as const, op: saved.rootFeature }
+      : saved.rootPrimitive
+        ? { kind: "primitive" as const, solid: saved.rootPrimitive }
+        : saved.rootStep?.bytesBase64
+          ? { kind: "step" as const, name: saved.rootStep.name, bytes: this.bufferOf(saved.rootStep.bytesBase64) }
+          : null;
     if (!root || (root.kind === "step" && !root.bytes)) return null;
-    const stepRoot = root.kind === "step" && root.bytes ? { kind: "step" as const, name: root.name, bytes: root.bytes } : root.kind === "primitive" ? root : null;
+    const stepRoot = root.kind === "step" && root.bytes ? { kind: "step" as const, name: root.name, bytes: root.bytes } : root.kind === "primitive" || root.kind === "feature" ? root : null;
     if (!stepRoot) return null;
     const objectKey = (id: string) => this.objects.find((row) => row.id === id)?.tree?.key ?? (this.find(id) ? `mcp-${id}` : undefined);
     obj.tree = loadedTree(saved, key, stepRoot, obj.name, null, objectKey);
@@ -4349,6 +4353,28 @@ export class Session {
     if (refusal) return { ok: false, reason: refusal };
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
+    // --- K2 feature root. Reopen from the baked extrude, revolve, or loft. A probe on the solid is not a preview of replacing it, so the engine's open is the check. ---
+    if (tree.root.kind === "feature") {
+      const op = baked.op;
+      if (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft") {
+        return { ok: false, reason: "This solid started from a sketch. Replace it with an extrude, a revolve, or a loft." };
+      }
+      if (op.op !== "fuse") {
+        const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
+        return { ok: false, reason: `A new solid is the ${noun} itself. Cut and intersect need a part that is already there.` };
+      }
+      const root = { kind: "feature" as const, op };
+      const reply = await this.treeCall(openRequest(tree.key, root, CHORD), "root");
+      if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, "create") };
+      const next = rememberSolid(reply);
+      const nodes = new Map(tree.nodes);
+      const row = nodes.get(0);
+      if (row) nodes.set(0, { ...row, label: rootLabel(root, row.label), ...(next ? { fingerprint: next.fingerprint } : {}) });
+      obj.tree = { ...tree, root, nodes };
+      if (next) obj.solid = next;
+      obj.probes.clear();
+      return { ok: true, node: nodeHandle(node), stored: op, typed: baked.typed };
+    }
     if (baked.op.kind !== "root" || tree.root.kind !== "primitive") return { ok: false, reason: "The new solid's first step takes a root edit." };
     if (!obj.probes.has(probeKey(String(node), baked.op))) return { ok: false, reason: "Probe this edit first. It was not applied." };
     const { kind: _kind, ...solid } = baked.op;

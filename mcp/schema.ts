@@ -1775,7 +1775,7 @@ export function validate(schema: Record<string, unknown>, value: unknown, path =
     return null;
   }
   if (type === "array") {
-    // A point may be an anchor, read when its op's turn comes (mcp/anchors.ts).
+    // A point may be an anchor, read when its op's turn comes (src/modeling/anchors.ts).
     if (schema.maxItems === 3 && value && typeof value === "object" && !Array.isArray(value) && typeof (value as { anchor?: unknown }).anchor === "string") return null;
     if (!Array.isArray(value)) return `${path} must be a list.`;
     if (typeof schema.minItems === "number" && value.length < schema.minItems) return `${path} is too short.`;

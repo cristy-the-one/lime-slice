@@ -519,6 +519,37 @@ eq("a tree with both a STEP and a primitive root is damaged", (() => {
   return read.ok ? read.project.unreadHistory : null;
 })(), ["Cone 1"]);
 
+// A solid that started from a sketch keeps the extrude, revolve, or loft, and no STEP.
+const extrudeRoot = { kind: "extrude" as const, op: "fuse" as const, origin: [0, 0, 0] as [number, number, number], turn: [0, 0, 0] as [number, number, number], profile: [[0, 0], [10, 0], [10, 10], [0, 10]] as [number, number][], depth: 10 };
+let extruded = newTree("obj-10#run1.6", { kind: "feature", op: extrudeRoot }, opLabel(extrudeRoot), fpOf(1000));
+extruded = { ...withChild(extruded, 0, { id: 1, op: cutOp(2), label: opLabel(cutOp(2)), fingerprint: fpOf(992) }), committed: 1 };
+const withExtrude: LimeProject = {
+  ...historied,
+  objects: [historied.objects![0]!, { id: "obj-10", name: "Extrude 1", mesh: project.mesh, placement: secondPlacement, supportEdits: [], modelTree: { ...savedTree(extruded, 1, () => undefined), rootFeature: extrudeRoot } }],
+};
+const extrudeWire = JSON.parse(serializeProject(withExtrude)) as { objects: { modelTree: Record<string, unknown> }[] };
+eq("a feature root is written as its op, with no root STEP or primitive", [extrudeWire.objects[1]!.modelTree.rootFeature, extrudeWire.objects[1]!.modelTree.rootStep, extrudeWire.objects[1]!.modelTree.rootPrimitive], [extrudeRoot, undefined, undefined]);
+const extrudeOpened = parseProject(JSON.stringify(extrudeWire));
+eq(
+  "and reads back whole, beside a STEP-rooted tree that still loads",
+  extrudeOpened.ok ? [extrudeOpened.project.objects?.map((obj) => obj.modelTree), extrudeOpened.project.unreadHistory] : null,
+  [withExtrude.objects!.map((obj) => obj.modelTree), undefined],
+);
+const extrudeAgain = extrudeOpened.ok ? loadedTree(extrudeOpened.project.objects![1]!.modelTree!, "obj-10#run2.1", { kind: "feature", op: extrudeRoot }, "Extrude 1", plateMesh("m-ex"), () => undefined) : null;
+eq("its root reads as the extrude, and the plate holds its step", extrudeAgain ? [extrudeAgain.root, extrudeAgain.nodes.get(0)?.label, extrudeAgain.committed, extrudeAgain.nodes.get(1)?.op] : null, [{ kind: "feature", op: extrudeRoot }, opLabel(extrudeRoot), 1, cutOp(2)]);
+{
+  const wire = structuredClone(extrudeWire);
+  (wire.objects[1]!.modelTree.rootFeature as { profile: number[][] }).profile = [[0, 0], [1, 0]];
+  const read = parseProject(JSON.stringify(wire));
+  eq("a damaged feature leaves only that tree out, with a notice", read.ok ? [read.project.objects?.map((obj) => obj.modelTree === undefined), read.project.unreadHistory] : null, [[false, true], ["Extrude 1"]]);
+}
+const featureAndStep = structuredClone(extrudeWire);
+featureAndStep.objects[1]!.modelTree.rootStep = { name: "x.step", byteLength: 1, hash: "h", bytesBase64: "AA==" };
+eq("a tree with both a feature and a STEP root is damaged", (() => {
+  const read = parseProject(JSON.stringify(featureAndStep));
+  return read.ok ? read.project.unreadHistory : null;
+})(), ["Extrude 1"]);
+
 // A join: the target's tree names its tool by object and step, and the tool's tree, its object off the plate, is kept.
 const rodRoot = new Uint8Array([0x49, 0x53, 0x4f, 4, 4, 4]);
 const turnedZ = { m: [0, -1, 0, 1, 0, 0, 0, 0, 1] as [number, number, number, number, number, number, number, number, number], t: [2, 15, 19] as [number, number, number] };

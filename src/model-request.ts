@@ -11,11 +11,14 @@ import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type Extr
 export type TreeRequest = Record<string, unknown>;
 
 /**
- * What `open` builds the root from: the STEP's bytes, or a new solid's primitive. A primitive root carries its
- * fingerprint, so a root that builds differently is broken like any other step that does.
+ * What `open` builds the root from: the STEP's bytes, a new solid's primitive, or a feature built against nothing.
+ * A primitive or feature root carries its fingerprint, so a root that builds differently is broken like any other
+ * step that does. `feature` is sent only for a feature root, so a STEP or a primitive open stays the same request.
  */
 function rootFields(root: Exclude<ModelRoot, { kind: "piece" }>, fingerprint: Fingerprint | null): TreeRequest {
   if (root.kind === "primitive") return { primitive: root.solid, ...(fingerprint ? { fingerprint } : {}) };
+  // --- K2 feature root. ---
+  if (root.kind === "feature") return { feature: root.op, ...(fingerprint ? { fingerprint } : {}) };
   return { filename: root.name, dataB64: bytesToBase64(new Uint8Array(root.bytes)) };
 }
 
