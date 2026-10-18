@@ -7,6 +7,7 @@ members = [
     "crates/lime-model-occt",
     "crates/lime-model-load",
     "crates/lime-mcp-engine",
+    "crates/lime-preview",
     "src-tauri",
 ]
 

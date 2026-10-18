@@ -1,0 +1,11 @@
+[package]
+name = "lime-preview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Read a .lime thumbnail and summary without loading the mesh"
+
+[dependencies]
+ryu = "1"
