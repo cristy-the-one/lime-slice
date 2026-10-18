@@ -29,6 +29,7 @@ import { throughLength } from "../model-hole";
 import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
+import { locatedBoxes } from "../model-check.ts";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
@@ -41,14 +42,12 @@ import {
   opLabel,
   pathTo,
   reachableTrees,
-  redoTarget,
   renumberedSteps,
   reserveId,
   rootLabel,
   featureObjectName,
   subtree,
   toolKeys,
-  undoTarget,
   usesTree,
   visitStep,
   withChild,
@@ -80,6 +79,7 @@ import {
   refreshJoinChoices,
   resetKeepTool,
   openModelTool,
+  refreshModelCheck,
   refreshModelGhost,
   setModelEditable,
   setModelLocked,
@@ -95,8 +95,8 @@ import {
   toolFrame,
   type PlacePhase,
 } from "../ui/model-chrome";
-import { mountModelHistory, syncModelHistory, syncModelPosition } from "../ui/model-history";
-import { dropRefusal, readRow, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
+import { mountModelHistory, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
+import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
@@ -108,7 +108,7 @@ import { mountEdgeDrag } from "./edge-drag";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
-import { state } from "./state";
+import { session, state } from "./state";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
 import { axesOf, drillDown, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
@@ -326,6 +326,14 @@ export function bindModelView() {
     solidBox() {
       return openBox();
     },
+    // --- A7 model check ---
+    checkSource() {
+      const solid = viewed();
+      if (solid && solid.positions.length >= 9) return { positions: solid.positions, toModel: openPose() };
+      const obj = state.plate.objects.find((item) => item.id === state.plate.selectedId);
+      if (obj && obj.sourcePos.length >= 9) return { positions: obj.sourcePos, toModel: meshToModel(obj) };
+      return null;
+    },
     edgePoints(edge) {
       const points = viewed()?.edges.find((item) => item.id === edge)?.points;
       const pose = openPose();
@@ -478,6 +486,33 @@ function nodeName(key: string, node: NodeId) {
 }
 
 /**
+ * --- A7 model check --- A probe's hollows and loose pieces, drawn in model space.
+ * A check still in flight keeps the boxes already drawn.
+ */
+let locatedNow: Bounds[] | null = null;
+
+function publishProbe(view: ProbeView) {
+  setModelProbe(view);
+  if (view?.phase === "checking") return;
+  if (view?.phase === "done" && view.located && view.located.length > 0) {
+    showLocated(view.located.map((box) => boxUnder(box, openPose())));
+    return;
+  }
+  showLocated(null);
+}
+
+function showLocated(boxes: Bounds[] | null) {
+  locatedNow = boxes && boxes.length > 0 ? boxes : null;
+  fx.model?.setLocated(locatedNow);
+  paintReadout();
+}
+
+function frameLocated() {
+  const box = locatedNow ? unionBox(locatedNow) : null;
+  if (box) fx.model?.frame(box);
+}
+
+/**
  * Fillet, chamfer, hole, and boolean ask the kernel whether the edit works before Apply.
  * A number still being typed waits `wait` ms; a newer edit discards the older answer.
  * An answer already known for this node and numbers is used without asking.
@@ -495,12 +530,12 @@ function scheduleProbe(wait: number) {
   const picked = editable ? joinPick() : null;
   if (at && tree && !op && picked) {
     // A tool Model never opened gets its tree first: the engine builds the join from it.
-    setModelProbe({ phase: "checking" });
+    publishProbe({ phase: "checking" });
     void readyTool(serial, picked);
     return;
   }
   if (!at || !tree || !op) {
-    setModelProbe(null);
+    publishProbe(null);
     // P2. The edge drag draws its own preview. A panel with nothing to check must not clear it.
     if (!edgeDrag?.holding()) setModelPreview(null);
     return;
@@ -509,7 +544,7 @@ function scheduleProbe(wait: number) {
     const solid = viewed();
     const missed = solid ? disjointBoolean(boundsOf(solid.positions), op, op.op) : null;
     if (missed) {
-      setModelProbe({ phase: "done", ok: false, error: missed });
+      publishProbe({ phase: "done", ok: false, error: missed });
       setModelPreview(null);
       return;
     }
@@ -517,7 +552,7 @@ function scheduleProbe(wait: number) {
   // The dry-run builds on the step on screen: a tool's, while one of its steps is edited.
   const [treeKey, node] = lens ? [lens.key, lens.node] : [at.key, tree.current];
   if (op.kind === "join" && usesTree(modelTrees, op.tool.key, treeKey)) {
-    setModelProbe({ phase: "done", ok: false, error: CYCLE });
+    publishProbe({ phase: "done", ok: false, error: CYCLE });
     setModelPreview(null);
     return;
   }
@@ -526,11 +561,11 @@ function scheduleProbe(wait: number) {
   const shape = previewOf(key);
   // A check that worked shows its shape; one whose shape left the few kept asks again, since the shape is what is shown.
   if (known && !(shaped.has(key) && !shape)) {
-    setModelProbe(known);
+    publishProbe(known);
     setModelPreview(shape);
     return;
   }
-  setModelProbe({ phase: "checking" });
+  publishProbe({ phase: "checking" });
   pendingProbe = () => sendProbe(serial, key, treeKey, node, op);
   if (wait > 0) probeTimer = window.setTimeout(sendPending, wait);
   else sendPending();
@@ -550,7 +585,7 @@ async function readyTool(serial: number, id: string) {
     scheduleProbe(0);
     return;
   }
-  setModelProbe({ phase: "done", ok: false, error: typeof ready === "string" ? ready : "That object is no longer on the plate." });
+  publishProbe({ phase: "done", ok: false, error: typeof ready === "string" ? ready : "That object is no longer on the plate." });
   // Surfaces with no closed solid leave the list.
   refreshJoinChoices();
 }
@@ -646,7 +681,7 @@ async function sendProbe(serial: number, key: string, tree: string, node: NodeId
   const known = answers.get(key);
   if (known && !(shaped.has(key) && !previewOf(key))) {
     if (serial !== probeSerial || state.stage !== "model") return;
-    setModelProbe(known);
+    publishProbe(known);
     setModelPreview(previewOf(key));
     return;
   }
@@ -660,7 +695,7 @@ async function sendProbe(serial: number, key: string, tree: string, node: NodeId
     shaped.add(key);
   }
   if (serial !== probeSerial || state.stage !== "model") return;
-  setModelProbe(view);
+  publishProbe(view);
   setModelPreview(shape && typeof shape !== "string" ? shape : null);
 }
 
@@ -1338,18 +1373,18 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
   return true;
 }
 
-/** Where Undo goes: from an edit's tip, back to the step shown before the edit; else the parent. */
+/** Where Undo goes: from an edit's tip, back to the step shown before the edit; from the last step of a folded composite, to the step before it; else the parent. */
 function undoNode(tree: ModelTree): NodeId | null {
   const back = editBack;
   if (back && !back.undone && back.key === tree.key && tree.current === back.tip && tree.nodes.has(back.back)) return back.back;
-  return undoTarget(tree);
+  return foldedUndoTarget(tree, modelTrees);
 }
 
-/** Where Redo goes: from where an undone edit went back to, forward to its tip again; else the child Redo follows. */
+/** Where Redo goes: from where an undone edit went back to, forward to its tip again; through a folded composite, to its last step; else the child Redo follows. */
 function redoNode(tree: ModelTree): NodeId | null {
   const back = editBack;
   if (back?.undone && back.key === tree.key && tree.current === back.back && tree.nodes.has(back.tip)) return back.tip;
-  return redoTarget(tree);
+  return foldedRedoTarget(tree, modelTrees);
 }
 
 /** Undo is the parent, Redo the child last applied or jumped through, but for an edit, which Undo takes back whole. */
@@ -1362,7 +1397,12 @@ async function step(way: "undo" | "redo") {
   const back = editBack;
   const viaEdit = !!back && node === (way === "undo" ? back.back : back.tip) && tree.current === (way === "undo" ? back.tip : back.back) && back.undone === (way === "redo");
   if (!viaEdit) editBack = null;
-  const done = viaEdit ? (way === "undo" ? "Edit of the step undone." : "Edit of the step redone.") : way === "undo" ? "Edit undone." : "Edit redone.";
+  // --- A8. One undo from the last step of a folded composite, and one redo, take the whole run. ---
+  const undone = !viaEdit && way === "undo" ? foldEndingAt(tree, tree.current, modelTrees) : null;
+  const redone = !viaEdit && way === "redo" ? foldRedoFrom(tree, modelTrees) : null;
+  const viaFold = (!!undone && node === undone.before) || (!!redone && node === redone.last);
+  const foldLabel = undone?.label ?? redone?.label;
+  const done = viaEdit ? (way === "undo" ? "Edit of the step undone." : "Edit of the step redone.") : viaFold && foldLabel ? `${foldLabel} ${way === "undo" ? "undone" : "redone"}.` : way === "undo" ? "Edit undone." : "Edit redone.";
   const shown = await showNode(ticket, at.objectId, at.key, node, (solid) => `${about(solid)} ${done}`);
   if (shown && viaEdit && editBack === back) back!.undone = way === "undo";
   if (shown) syncUndo();
@@ -1498,6 +1538,9 @@ function brokenOnPath(tree: ModelTree, node: NodeId) {
 function failed(key: string, body: Body): boolean {
   const error = text(body.error);
   if (!error) return false;
+  // --- A7 model check --- an apply that names where it failed draws those boxes.
+  const where = locatedBoxes(body);
+  if (where.length > 0) showLocated(where.map((box) => boxUnder(box, openPose())));
   const tree = modelTrees.get(key);
   // A tool tree the engine could not get back marks nothing: the step builds once that tree opens.
   if (typeof body.broken === "number" && tree && !missingToolOf(body)) {
@@ -2272,6 +2315,9 @@ function showEmpty(mesh: boolean) {
   framedFor = null;
   const boxes = plateBoxes();
   if (boxes.length > 0) fx.model?.frame(unionBox(boxes)!);
+  // --- A7 model check ---
+  if (checkQueued) openQueuedCheck();
+  else if (openModelTool() === "check") refreshModelCheck();
 }
 
 function hideEmpty() {
@@ -2569,6 +2615,31 @@ function present(parsed: ParsedSolid, message: string, view: Lens | null = null)
   readout(message);
   // P2. The solid or the tool changed: the edge knob follows.
   edgeDrag?.sync();
+  // --- A7 model check --- a queued Check opens after the solid is on screen; one already open measures this solid.
+  if (checkQueued) openQueuedCheck();
+  else if (openModelTool() === "check") refreshModelCheck();
+}
+
+/** Prepare asked to check this object. The tool opens once that solid, or its mesh, is on screen. */
+let checkQueued = false;
+
+export function requestModelCheck(objectId: string) {
+  if (!state.plate.objects.some((obj) => obj.id === objectId)) return;
+  checkQueued = true;
+  const changed = state.plate.selectedId !== objectId;
+  if (changed) fx.selectPlateObject(objectId);
+  if (state.stage !== "model") {
+    document.querySelector<HTMLButtonElement>("#tabModel")?.click();
+    return;
+  }
+  if (!changed) openQueuedCheck();
+}
+
+function openQueuedCheck() {
+  if (!checkQueued) return;
+  checkQueued = false;
+  if (openModelTool() === "check") refreshModelCheck();
+  else document.querySelector<HTMLButtonElement>("#modelToolCheck")?.click();
 }
 
 /** The other plate objects, grey, where they sit in model space, but for a join's tool, which is the ghost. */
@@ -2897,6 +2968,8 @@ function syncUndo() {
   setModelWaiting(busy || jumping);
   syncModelHistory(tree, modelTrees, lens?.row ?? null);
   syncPosition();
+  // --- A8. A recipe saved with this object, read-only under the History header. ---
+  syncModelRecipe(open ? recipeNote(session.mcpModel, open.objectId) : null);
 }
 
 /** The Position row, from the pose the plate object holds and the solid's own box, read once per solid. */
@@ -3130,9 +3203,26 @@ function modelTool(): string | undefined {
   return document.querySelector<HTMLElement>("#modelBar")?.dataset.tool;
 }
 
+let readoutText = "";
+
 function readout(message: string) {
+  readoutText = plainModelError(message, modelTool());
+  paintReadout();
+}
+
+/** The sentence, then Show where while a refusal has boxes. Setting textContent would drop the button. */
+function paintReadout() {
   const node = document.querySelector("#modelReadout");
-  if (node) node.textContent = plainModelError(message, modelTool());
+  if (!node) return;
+  node.textContent = readoutText;
+  if (!locatedNow) return;
+  const button = document.createElement("button");
+  button.id = "modelShowWhere";
+  button.type = "button";
+  button.className = "btn model-show-where";
+  button.textContent = "Show where";
+  button.addEventListener("click", () => frameLocated());
+  node.append(button);
 }
 
 function mm(value: number) {

@@ -194,6 +194,40 @@ test("a step can be renamed, and keeps its op in the tip", async ({ page }) => {
   await expect(row(page, "Cut box 6"), "an unnamed step has its whole label in the tip").toHaveAttribute("data-tip", "Cut box 6×10×10");
 });
 
+test("steps named texture 1/n through n/n fold into one row, and undo skips the run", async ({ page }) => {
+  await openModel(page);
+  await cut(page, 8);
+  await cut(page, 6);
+  await cut(page, 4);
+  for (const [label, name] of [["Cut box 8", "texture 1/3"], ["Cut box 6", "texture 2/3"], ["Cut box 4", "texture 3/3"]] as const) {
+    await row(page, label).locator(".mh-label").dblclick();
+    const field = page.getByRole("textbox", { name: "Step name" });
+    await expect(field).toBeFocused();
+    await field.fill(name);
+    await field.press("Enter");
+  }
+  const folded = row(page, "texture · 3 steps");
+  await expect(folded).toBeVisible();
+  await expect(rows(page)).toHaveCount(2);
+  await expect(folded).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#modelHistoryCount")).toHaveText("· 4");
+
+  await page.locator("#modelUndo").click();
+  await expect(readout(page)).toContainText(`${volume(10)}. texture · 3 steps undone.`);
+  await expect(folded).toHaveAttribute("data-state", "redo");
+  await page.locator("#modelRedo").click();
+  await expect(readout(page)).toContainText(`${volume(4)}. texture · 3 steps redone.`);
+  await expect(folded).toHaveAttribute("aria-selected", "true");
+
+  await folded.locator(".mh-fold").click();
+  await expect(rows(page)).toHaveCount(4);
+  await expect(row(page, "texture 1/3")).toBeVisible();
+  await expect(row(page, "texture 3/3")).toHaveAttribute("aria-selected", "true");
+  await row(page, "texture 1/3").locator(".mh-fold").click();
+  await expect(rows(page)).toHaveCount(2);
+  await expect(folded).toBeVisible();
+});
+
 test("deleting a branch drops it here and in the engine; the shown branch stays with a plain reason", async ({ page }) => {
   const tree = await openModel(page);
   await fork(page);

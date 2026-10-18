@@ -67,6 +67,8 @@ function askUnsaved(): Promise<SaveChoice | null> {
 /** Empty plate, launch settings and printer, no slice, no file name. */
 export function blankProject() {
   session.docEpoch += 1;
+  // --- A8. File > New drops the previous project's MCP record. ---
+  session.mcpModel = undefined;
   const stayInModel = state.stage === "model";
   cancelSlice();
   dropWorkerMesh();
