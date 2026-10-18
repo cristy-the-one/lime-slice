@@ -17,7 +17,7 @@ import { lastEdge, type ModelPickRef } from "./model-select.ts";
 export const PROBE_WAIT_MS = 300;
 
 /** Tools whose result only the kernel can judge. Split and scale are checked from numbers alone. */
-export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean", "extrude", "revolve", "loft", "shell"] as const;
+export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean", "extrude", "revolve", "loft", "shell", "group"] as const;
 export type ProbedTool = (typeof PROBED_TOOLS)[number];
 
 /** What a probe that builds measured: the result, and `before`, the solid it was built on. */
@@ -34,7 +34,17 @@ export type ProbeView =
   | null
   | { phase: "checking" }
   | { phase: "applied" }
-  | { phase: "done"; ok: boolean; error?: string; maxMm?: number; measure?: ProbeMeasure & { before: ProbeMeasure } };
+  | {
+      phase: "done";
+      ok: boolean;
+      error?: string;
+      maxMm?: number;
+      /** Which step of a group failed, counting from 1. */
+      failedStep?: number;
+      /** Steps of a group whose tool missed the solid. */
+      skipped?: number;
+      measure?: ProbeMeasure & { before: ProbeMeasure };
+    };
 
 /** What a kernel answer depends on: the tree node it ran on, whose shape never changes, and the op's numbers. */
 export function probeKey(node: string, op: object): string {
@@ -66,15 +76,18 @@ function readMeasure(value: unknown): ProbeMeasure | null {
   return { volumeMm3, solids: solids as number, shells: shells as number };
 }
 
-export function probeFromBody(body: { ok?: unknown; error?: unknown; maxMm?: unknown; volumeMm3?: unknown; solids?: unknown; shells?: unknown; before?: unknown }): ProbeView {
+export function probeFromBody(body: { ok?: unknown; error?: unknown; maxMm?: unknown; volumeMm3?: unknown; solids?: unknown; shells?: unknown; before?: unknown; failedStep?: unknown; skipped?: unknown }): ProbeView {
+  const failedStep = Number.isInteger(body.failedStep) ? (body.failedStep as number) : undefined;
+  const skipped = Number.isInteger(body.skipped) ? (body.skipped as number) : undefined;
   if (body.ok === true) {
     const after = readMeasure(body);
     const before = readMeasure(body.before);
-    return after && before ? { phase: "done", ok: true, measure: { ...after, before } } : { phase: "done", ok: true };
+    const extra = skipped != null ? { skipped } : {};
+    return after && before ? { phase: "done", ok: true, measure: { ...after, before }, ...extra } : { phase: "done", ok: true, ...extra };
   }
   const error = typeof body.error === "string" && body.error.length > 0 ? body.error : "This does not fit.";
   const maxMm = typeof body.maxMm === "number" && Number.isFinite(body.maxMm) && body.maxMm > 0 ? body.maxMm : undefined;
-  return { phase: "done", ok: false, error, maxMm };
+  return { phase: "done", ok: false, error, maxMm, ...(failedStep != null ? { failedStep } : {}) };
 }
 
 const CHECKING: Record<ProbedTool, string> = {
@@ -86,6 +99,7 @@ const CHECKING: Record<ProbedTool, string> = {
   revolve: "Checking this revolve…",
   loft: "Checking this loft…",
   shell: "Checking this shell…",
+  group: "Checking these steps…",
 };
 
 const FITS: Record<ProbedTool, string> = {
@@ -97,6 +111,7 @@ const FITS: Record<ProbedTool, string> = {
   revolve: "This revolve changes the solid.",
   loft: "This loft changes the solid.",
   shell: "This shell fits.",
+  group: "These steps change the solid.",
 };
 
 export function probeNote(tool: ProbedTool, probe: ProbeView): { text: string; bad: boolean } | null {

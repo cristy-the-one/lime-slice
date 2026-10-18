@@ -46,8 +46,20 @@ eq(
   probeFromBody({ error: "OCCT_ROOT is not set" }),
   { phase: "done", ok: false, error: "OCCT_ROOT is not set" },
 );
+eq(
+  "a group's failed step is kept",
+  probeFromBody({ ok: false, error: "Step 2 of 3: A box needs a positive length on each side", failedStep: 2 }),
+  { phase: "done", ok: false, error: "Step 2 of 3: A box needs a positive length on each side", failedStep: 2 },
+);
+eq(
+  "a group's missed steps are kept",
+  probeFromBody({ ok: true, volumeMm3: 800, solids: 1, shells: 1, before: { volumeMm3: 1000, solids: 1, shells: 1 }, skipped: 1 }),
+  { phase: "done", ok: true, measure: { volumeMm3: 800, solids: 1, shells: 1, before: { volumeMm3: 1000, solids: 1, shells: 1 } }, skipped: 1 },
+);
 
 eq("checking copy", probeNote("fillet", { phase: "checking" }), { text: "Checking this fillet…", bad: false });
+eq("a group is one check", probeNote("group", { phase: "checking" }), { text: "Checking these steps…", bad: false });
+eq("a group that fits", probeNote("group", { phase: "done", ok: true }), { text: "These steps change the solid.", bad: false });
 eq("a fit", probeNote("chamfer", { phase: "done", ok: true }), { text: "This chamfer fits.", bad: false });
 eq(
   "why not, and the largest size",
