@@ -24,6 +24,10 @@ struct Held {
     double volume = 0;
     /// The chord the faces were last meshed at. A reply at that chord meshes nothing again.
     double meshed = 0;
+    /// Built from another solid: the faces it shares with that solid carry that solid's mesh, and `made` lists the
+    /// others, by index from 1. Then a mesh at a chord the shared faces are already meshed at meshes only around `made`.
+    bool built_on = false;
+    std::vector<int> made;
     /// `describe`'s JSON, written by the first reply.
     std::string about;
     /// Each face's `{"areaMm2":…,"normal":[…]}` and each edge's length, as the reply writes them, by index, once

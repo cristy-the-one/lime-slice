@@ -66,6 +66,7 @@
 #include <BRepGProp_Domain.hxx>
 #include <BRepGProp_Face.hxx>
 #include <BRepGProp_Vinert.hxx>
+#include <Poly_TriangulationParameters.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
@@ -276,6 +277,8 @@ struct Stats {
     std::atomic<long> tessellations{0};
     std::atomic<long> meshes{0};
     std::atomic<long> descriptions{0};
+    /// Meshes of the whole shape; the rest meshed only around the faces a step made.
+    std::atomic<long> full_meshes{0};
     /// Microseconds spent in each kind of work, for timing tests and benches.
     std::atomic<long long> boolean_us{0};
     std::atomic<long long> volume_us{0};
@@ -511,6 +514,60 @@ void push_point(std::vector<float>& out, const gp_Pnt& point) {
 
 void append_face_normal(std::string& out, const TopoDS_Face& face);
 
+/// Mesh every face of a solid, never only around what a step made: for tests that compare the two.
+std::atomic<bool> g_whole_meshes{false};
+
+/// Whether meshing at `chord` keeps the face's mesh. Open CASCADE keeps a mesh made at under 1.1 times the face's own
+/// deflection, which is never under the chord (`BRepMesh_ModelPreProcessor`), so this is sure only of a yes.
+bool mesh_kept(const TopoDS_Face& face, double chord) {
+    TopLoc_Location location;
+    const Handle(Poly_Triangulation)& mesh = BRep_Tool::Triangulation(face, location);
+    if (mesh.IsNull() || mesh->NbTriangles() == 0) {
+        return false;
+    }
+    const Handle(Poly_TriangulationParameters)& made = mesh->Parameters();
+    const double deflection = !made.IsNull() && made->HasDeflection() ? made->Deflection() : mesh->Deflection();
+    return deflection < 1.1 * chord;
+}
+
+/// Mesh only the faces a step made and the faces beside them, when every other face keeps the mesh it shares with the
+/// solid the step was built on. Meshing the whole solid would keep those meshes too, and would mesh the made faces against
+/// the same edges of the faces beside them, so the result is the same; it only checks every face first. False when that
+/// does not hold, and nothing is meshed.
+bool mesh_around_made(Held& held, double chord) {
+    const int faces = held.faces.Extent();
+    if (!held.built_on || held.made.empty() || 2 * held.made.size() > static_cast<size_t>(faces)) {
+        return false;
+    }
+    std::vector<char> made(static_cast<size_t>(faces) + 1, 0);
+    for (const int index : held.made) {
+        made[static_cast<size_t>(index)] = 1;
+    }
+    for (int index = 1; index <= faces; ++index) {
+        if (!made[static_cast<size_t>(index)] && !mesh_kept(TopoDS::Face(held.faces(index)), chord)) {
+            return false;
+        }
+    }
+    TopTools_IndexedMapOfShape edges;
+    for (const int index : held.made) {
+        TopExp::MapShapes(held.faces(index), TopAbs_EDGE, edges);
+    }
+    TopoDS_Compound around;
+    BRep_Builder builder;
+    builder.MakeCompound(around);
+    for (int index = 1; index <= faces; ++index) {
+        bool beside = made[static_cast<size_t>(index)] != 0;
+        for (TopExp_Explorer explorer(held.faces(index), TopAbs_EDGE); !beside && explorer.More(); explorer.Next()) {
+            beside = edges.Contains(explorer.Current());
+        }
+        if (beside) {
+            builder.Add(around, held.faces(index));
+        }
+    }
+    const BRepMesh_IncrementalMesh mesher(around, chord, Standard_False, 0.5, Standard_True);
+    return true;
+}
+
 Mesh tessellate(Held& held, double chord) {
     g_stats.tessellations += 1;
     chord = chord_of(chord);
@@ -519,9 +576,12 @@ Mesh tessellate(Held& held, double chord) {
     if (held.meshed != chord) {
         g_stats.meshes += 1;
         const Timed timed(g_stats.mesh_us);
-        // In parallel: faces mesh apart, after their shared edges, so the mesh is the same as one thread's.
-        // The constructor meshes; a second `Perform` only checked every face again.
-        const BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_True);
+        if (g_whole_meshes.load() || !mesh_around_made(held, chord)) {
+            g_stats.full_meshes += 1;
+            // In parallel: faces mesh apart, after their shared edges, so the mesh is the same as one thread's.
+            // The constructor meshes; a second `Perform` only checked every face again.
+            const BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_True);
+        }
         held.meshed = chord;
     }
     const Timed timed(g_stats.readout_us);
@@ -2431,6 +2491,8 @@ extern "C" char* lime_model_occt_stats() {
     out += std::to_string(g_stats.meshes.load());
     out += ",\"descriptions\":";
     out += std::to_string(g_stats.descriptions.load());
+    out += ",\"fullMeshes\":";
+    out += std::to_string(g_stats.full_meshes.load());
     const std::pair<const char*, const std::atomic<long long>*> timings[] = {
         {"booleanUs", &g_stats.boolean_us},
         {"volumeUs", &g_stats.volume_us},
@@ -2449,3 +2511,6 @@ extern "C" char* lime_model_occt_stats() {
 }
 
 extern "C" void lime_model_occt_string_free(char* text) { std::free(text); }
+
+/// Non-zero meshes every face of a solid, as before a step meshed only around the faces it made. For tests.
+extern "C" void lime_model_occt_whole_meshes(int on) { g_whole_meshes = on != 0; }
