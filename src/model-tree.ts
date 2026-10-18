@@ -80,7 +80,9 @@ export type ModelOp =
   | RevolveOp
   | LoftOp
   | ShellOp
-  | GroupOp;
+  | GroupOp
+  | FaceExtrudeOp
+  | MoveFacesOp;
 
 /**
  * One history row for a composite edit. Each step is built on the shape the one before left.
@@ -156,6 +158,29 @@ export interface ShellOp {
   openFaces?: (number | FaceRef)[];
 }
 
+/** A face pulled along its outward normal. Positive distance adds material; negative cuts it away. */
+export interface FaceExtrudeOp {
+  kind: "faceExtrude";
+  face: number | FaceRef;
+  distance: number;
+  /** Degrees. Absent when there is no draft. */
+  draftDeg?: number;
+  /** The face the prism stops at. Absent when the distance sets the length. */
+  upTo?: number | FaceRef;
+}
+
+/** One face of a `moveFaces`, moved `distance` along its outward normal. */
+export interface FaceMove {
+  face: number | FaceRef;
+  distance: number;
+}
+
+/** Faces offset along their outward normals. The neighbours extend or trim. */
+export interface MoveFacesOp {
+  kind: "moveFaces";
+  faces: FaceMove[];
+}
+
 /**
  * A hole into `axis` from `origin`. `through` cuts to wherever the part ends, worked out by the engine from the solid it
  * is cut from, so `depth` stays only for the panel. A counterbore is a wider, shallow bore at the entry: both its fields,
@@ -215,10 +240,18 @@ export interface ModelNode {
   mesh?: PlateMesh;
 }
 
-/** Where the root solid comes from: STEP bytes, a primitive built from its numbers, or the piece a split cut off in another tree. */
+/** An extrude, a revolve, or a loft that can start a solid on its own (K2). */
+export type FeatureOp = ExtrudeOp | RevolveOp | LoftOp;
+
+export function isFeatureOp(op: ModelOp): op is FeatureOp {
+  return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft";
+}
+
+/** Where the root solid comes from: STEP bytes, a primitive built from its numbers, a feature built against nothing, or the piece a split cut off in another tree. */
 export type ModelRoot =
   | { kind: "step"; name: string; bytes: ArrayBuffer }
   | { kind: "primitive"; solid: PrimitiveSpec }
+  | { kind: "feature"; op: FeatureOp }
   | { kind: "piece"; tree: string; node: NodeId };
 
 export interface ModelTree {
@@ -362,6 +395,8 @@ function canonicalValue(op: ModelOp): unknown {
   const index = (pick: EdgePick | FaceRef) => (typeof pick === "number" ? pick : "index" in pick ? pick.index : pick);
   if (op.kind === "fillet" || op.kind === "chamfer") return { ...op, edges: op.edges.map(index) };
   if (op.kind === "shell" && op.openFaces) return { ...op, openFaces: op.openFaces.map(index) };
+  if (op.kind === "faceExtrude") return { ...op, face: index(op.face), ...(op.upTo !== undefined ? { upTo: index(op.upTo) } : {}) };
+  if (op.kind === "moveFaces") return { ...op, faces: op.faces.map((row) => ({ ...row, face: index(row.face) })) };
   if (op.kind === "group") {
     const { source: _source, label: _label, steps, ...rest } = op;
     return { ...rest, steps: steps.map(canonicalValue) };
@@ -511,14 +546,39 @@ export function scaleBetween(tree: ModelTree, a: NodeId, b: NodeId): boolean {
 
 const BOOLEAN_VERB = { fuse: "Fuse", cut: "Cut", common: "Intersect" } as const;
 
-/** The root's name in the history list: the file's, or the primitive a new solid started as ("Box 20×20×20"). */
+/** The root's name in the history list: the file's, the primitive a new solid started as ("Box 20×20×20"), or the feature it started as. */
 export function rootLabel(root: ModelRoot, fileLabel: string): string {
-  return root.kind === "primitive" ? primitiveTitle(root.solid) : fileLabel;
+  if (root.kind === "primitive") return primitiveTitle(root.solid);
+  if (root.kind === "feature") return opLabel(root.op);
+  return fileLabel;
 }
 
 function primitiveTitle(spec: PrimitiveSpec): string {
   const text = primitiveLabel(spec);
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft" } as const;
+
+/** The plate name of a solid that started from a sketch: "Extrude 1", and the first number no object of that kind has yet. */
+export function featureObjectName(names: Iterable<string>, kind: FeatureOp["kind"]): string {
+  const label = FEATURE_NAMES[kind];
+  const taken = new Set(names);
+  let at = 1;
+  while (taken.has(`${label} ${at}`)) at += 1;
+  return `${label} ${at}`;
+}
+
+/**
+ * The same tree, now rooted in `op`. Node 0 keeps its id; its label becomes the feature's. A sketch edit
+ * (E1) calls this when the root feature's numbers change.
+ */
+export function withFeatureRoot(tree: ModelTree, op: FeatureOp): ModelTree {
+  const root = { kind: "feature" as const, op };
+  const nodes = new Map(tree.nodes);
+  const node = nodes.get(ROOT);
+  if (node) nodes.set(ROOT, { ...node, label: rootLabel(root, node.label) });
+  return { ...tree, root, nodes };
 }
 
 /** A short name for the step, for the history list. */
@@ -565,5 +625,18 @@ export function opLabel(op: ModelOp): string {
     // --- A1 group: the row is the composite's name, not a list of its steps. ---
     case "group":
       return op.label;
+    case "faceExtrude": {
+      const verb = op.distance < 0 ? "Push" : "Pull";
+      const draft = op.draftDeg ? `, draft ${n(op.draftDeg)}°` : "";
+      const until = op.upTo !== undefined ? ", up to a face" : "";
+      return `${verb} face ${n(Math.abs(op.distance))} mm${draft}${until}`;
+    }
+    case "moveFaces": {
+      const count = op.faces.length;
+      const distance = op.faces[0]?.distance;
+      const shared = distance !== undefined && op.faces.every((row) => row.distance === distance);
+      if (count <= 1 && distance !== undefined) return `${distance < 0 ? "Push" : "Pull"} face ${n(Math.abs(distance))} mm`;
+      return shared ? `Move ${count} faces ${n(distance)} mm` : `Move ${count} faces`;
+    }
   }
 }

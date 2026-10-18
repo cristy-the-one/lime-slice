@@ -19,6 +19,9 @@ const LIBS: &[&str] = &[
     "TKBO",
     "TKFillet",
     "TKOffset",
+    // K4: draft and up-to face extrudes (BRepFeat). TKBool is the boolean toolkit those call.
+    "TKBool",
+    "TKFeat",
 ];
 
 const STEP_LIBS: &[&str] = &[

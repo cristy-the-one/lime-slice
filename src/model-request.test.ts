@@ -82,6 +82,22 @@ eq("an edit across trees sends the tool trees' parts first, deepest first, and t
   tools: [{ key: "rod", parent: 0, node: 3, op: scale, replay: [] }],
 });
 eq("with one tree it is a plain edit", crossEditRequest([{ key: "k", parent: 0, node: 5, op: wider, replay: [], old: [1] }], 0.1), editRequest("k", 0, 5, wider, [], 0.1));
+const extrude = { kind: "extrude" as const, op: "fuse" as const, origin: [0, 0, 0] as [number, number, number], turn: [0, 0, 0] as [number, number, number], profile: [[0, 0], [10, 0], [10, 10], [0, 10]] as [number, number][], depth: 10 };
+const featureRoot = { kind: "feature" as const, op: extrude };
+eq("a feature root sends the op, and no primitive or STEP", openRequest("k", featureRoot, 0.1), { call: "open", key: "k", feature: extrude, chordMm: 0.1 });
+const featured = withChild(newTree("k", featureRoot, "Extrude", fp(1000)), 0, { id: 1, op: hole, label: "Hole", fingerprint: fp(992) });
+eq("a whole feature tree sends the feature and the root's fingerprint", wholeTreeRequest(featured, featureRoot, 1, 0.1), {
+  call: "open",
+  key: "k",
+  feature: extrude,
+  fingerprint: fp(1000),
+  chordMm: 0.1,
+  nodes: [{ id: 1, parent: 0, op: hole, fingerprint: fp(992) }],
+  current: 1,
+});
+eq("a primitive open still sends no feature", "feature" in newSolidRequest("obj-1#a.1", typed, 0.1), false);
+eq("a STEP open still sends no feature", "feature" in openRequest("k", { kind: "step", name: "a.step", bytes: step }, 0.2), false);
+
 eq("a dry-run asks for its shape only with a chord", [probeRequest("k", 2, wider), probeRequest("k", 2, wider, 0.05)], [
   { call: "probe", key: "k", node: 2, op: wider },
   { call: "probe", key: "k", node: 2, op: wider, preview: true, chordMm: 0.05 },

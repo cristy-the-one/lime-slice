@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { bundledVersion, engineCandidates, engineNotFound, installedMcpDir, installedVersionRefusal, loadEngineWorker } from "./engine.ts";
+import { appVersion } from "./version.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -43,7 +44,7 @@ check(
   writeFileSync(join(dir, "server.mjs"), 'import x from "y";\nfunction appVersion() {\n  if (true) return "9.9.9";\n  const pkg = 1;\n}\n');
   check("the bundle's release is read from its text", bundledVersion(dir) === "9.9.9", String(bundledVersion(dir)));
   check("a folder without a bundle has no release", bundledVersion(tmpdir()) === null);
-  if (process.env.LIME_TEST_BUNDLE_DIR) check("the real bundle names its release", bundledVersion(process.env.LIME_TEST_BUNDLE_DIR) === "2.8.0", String(bundledVersion(process.env.LIME_TEST_BUNDLE_DIR)));
+  if (process.env.LIME_TEST_BUNDLE_DIR) check("the real bundle names its release", bundledVersion(process.env.LIME_TEST_BUNDLE_DIR) === appVersion(), String(bundledVersion(process.env.LIME_TEST_BUNDLE_DIR)));
 }
 
 // A missing engine fails the call; the next call loads again and sees a library set since.

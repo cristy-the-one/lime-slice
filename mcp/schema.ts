@@ -474,6 +474,47 @@ const sketchOps = [
   },
 ];
 (op.oneOf as unknown[]).splice(5, 0, ...sketchOps);
+// --- K4: faceExtrude and moveFaces, immediately after shell. ---
+const faceOps = [
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "face", "distance"],
+    properties: {
+      kind: { const: "faceExtrude" },
+      face: { description: "Face to extrude: an index, or {normal, nearPoint}." },
+      distance: { type: "number", minimum: -1000, maximum: 1000, description: "Along the outward normal, mm. Positive adds material on an outer face." },
+      draftDeg: { type: "number", minimum: -89, maximum: 89, description: "Draft angle, degrees. 0, the default, is a straight prism." },
+      upTo: { description: "Face the prism stops at: an index, or {normal, nearPoint}. The distance only picks the direction." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "faces"],
+    properties: {
+      kind: { const: "moveFaces" },
+      faces: {
+        type: "array",
+        minItems: 1,
+        maxItems: 50,
+        description: "Faces to move, each along its own outward normal. Neighbours extend or trim.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["face", "distance"],
+          properties: {
+            face: { description: "Index, or {normal, nearPoint}." },
+            distance: { type: "number", minimum: -1000, maximum: 1000, description: "Along the outward normal, mm." },
+          },
+        },
+      },
+      label,
+    },
+  },
+];
+(op.oneOf as unknown[]).splice(5 + sketchOps.length, 0, ...faceOps);
 const regionField = {
   type: "object",
   additionalProperties: false,
@@ -1734,7 +1775,7 @@ export function validate(schema: Record<string, unknown>, value: unknown, path =
     return null;
   }
   if (type === "array") {
-    // A point may be an anchor, read when its op's turn comes (mcp/anchors.ts).
+    // A point may be an anchor, read when its op's turn comes (src/modeling/anchors.ts).
     if (schema.maxItems === 3 && value && typeof value === "object" && !Array.isArray(value) && typeof (value as { anchor?: unknown }).anchor === "string") return null;
     if (!Array.isArray(value)) return `${path} must be a list.`;
     if (typeof schema.minItems === "number" && value.length < schema.minItems) return `${path} is too short.`;
