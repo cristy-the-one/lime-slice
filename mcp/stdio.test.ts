@@ -51,8 +51,8 @@ function childEnv(extra: Record<string, string>, fake = true): Record<string, st
   return { ...env, ...extra };
 }
 
-function startRaw(extra: Record<string, string> = {}, fake = true) {
-  const child = spawn(process.execPath, serverArgs, {
+function startRaw(extra: Record<string, string> = {}, fake = true, commandArgs: string[] = serverArgs) {
+  const child = spawn(process.execPath, commandArgs, {
     cwd: root,
     env: childEnv(extra, fake),
     stdio: ["pipe", "pipe", "pipe"],
@@ -96,6 +96,114 @@ function startRaw(extra: Record<string, string> = {}, fake = true) {
     },
     next,
   };
+}
+
+type RawClient = ReturnType<typeof startRaw>;
+
+/** The preview worker sleeps this long. Ping has to come back in less than half of it. */
+const NATIVE_PREVIEW_DELAY_MS = 1000;
+const PREVIEW_PING_ATTEMPTS = 3;
+
+/**
+ * True when `elapsedMs` is too short to be a ping that waited out a native hold of `delayMs`.
+ * Half the hold is the line: scheduling noise sits well under it, and a blocked stdio thread does not.
+ */
+function answeredDuringPreview(elapsedMs: number, delayMs: number): boolean {
+  return elapsedMs * 2 < delayMs;
+}
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function rpc(id: number, method: string, params?: Record<string, unknown>): string {
+  const message: Record<string, unknown> = { jsonrpc: "2.0", id, method };
+  if (params) message.params = params;
+  return `${JSON.stringify(message)}\n`;
+}
+
+async function waitForId(io: RawClient, id: number, timeoutMs: number, seen?: Set<number>): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    let line: string;
+    try {
+      line = await io.next(Math.max(1, deadline - Date.now()));
+    } catch {
+      return false;
+    }
+    try {
+      const row = JSON.parse(line) as { id?: number };
+      if (typeof row.id === "number") seen?.add(row.id);
+      if (row.id === id) return true;
+    } catch {
+      // A blank or broken line is not this reply.
+    }
+  }
+  return false;
+}
+
+/**
+ * Ping timed from its own write, after a warmup reply, while mesh_import is in the native hold.
+ * The macOS miss (108 ms against a 100 ms cap) clocked the first reply from before the write.
+ * `during` is the fastest ping that came back before that import did, so the hold was still on.
+ * `any` is the fastest ping of every try. A thread blocked for the whole hold loses on `any`:
+ * each ping is sent with more than half the hold still ahead.
+ */
+async function fastestPingDuringPreview(io: RawClient, delayMs: number): Promise<{ during: number | null; any: number | null } | null> {
+  io.send(rpc(7, "ping"));
+  if (!(await waitForId(io, 7, 15000))) return null;
+  const leadMs = Math.min(200, Math.floor(delayMs / 5));
+  let during: number | null = null;
+  let any: number | null = null;
+  for (let attempt = 0; attempt < PREVIEW_PING_ATTEMPTS; attempt += 1) {
+    const importId = 10 + attempt * 2;
+    const pingId = importId + 1;
+    io.send(rpc(importId, "tools/call", { name: "mesh_import", arguments: { path: cube } }));
+    await pause(leadMs);
+    const sent = Date.now();
+    io.send(rpc(pingId, "ping"));
+    const seen = new Set<number>();
+    const answered = await waitForId(io, pingId, delayMs + 3000, seen);
+    if (!answered) continue;
+    const elapsed = Date.now() - sent;
+    if (any === null || elapsed < any) any = elapsed;
+    const held = !seen.has(importId);
+    if (held && (during === null || elapsed < during)) during = elapsed;
+    if (held && answeredDuringPreview(elapsed, delayMs)) break;
+  }
+  return { during, any };
+}
+
+/** A stdio process that answers ping, and blocks the whole thread for `delayMs` on a tool call. */
+function startBlockedPreview(delayMs: number): RawClient {
+  const source = `
+let buf = "";
+function hold(ms) {
+  try {
+    const gate = new Int32Array(new SharedArrayBuffer(4));
+    Atomics.wait(gate, 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {}
+  }
+}
+process.stdin.on("data", (chunk) => {
+  buf += chunk.toString("utf8");
+  for (;;) {
+    const nl = buf.indexOf("\\n");
+    if (nl < 0) return;
+    const line = buf.slice(0, nl);
+    buf = buf.slice(nl + 1);
+    if (!line.trim()) continue;
+    const msg = JSON.parse(line);
+    if (msg.method === "tools/call") hold(${delayMs});
+    if (msg.id !== undefined && msg.id !== null) {
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\\n");
+    }
+  }
+});
+`;
+  return startRaw({}, true, ["-e", source]);
 }
 
 const sdk = new StdioClientTransport({
@@ -203,27 +311,37 @@ check("ping answers during a slow import", sawPing && pingAt < 100, `${pingAt} m
 slow.child.kill();
 
 if (engineCandidates(root).some((path) => existsSync(path))) {
-  const native = startRaw({ LIME_MCP_PREVIEW_DELAY_MS: "400" }, false);
-  native.send('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}\n');
-  await native.next(15000);
-  const nativeImport = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "mesh_import", arguments: { path: cube } } });
-  const nativePing = JSON.stringify({ jsonrpc: "2.0", id: 3, method: "ping" });
-  const nativeSent = Date.now();
-  native.send(`${nativeImport}\n${nativePing}\n`);
-  let nativePingAt = 0;
-  let sawNativePing = false;
-  for (let i = 0; i < 2; i += 1) {
-    const row = JSON.parse(await native.next(2000)) as { id?: number };
-    if (row.id === 3) {
-      sawNativePing = true;
-      nativePingAt = Date.now() - nativeSent;
-      break;
-    }
+  const native = startRaw({ LIME_MCP_PREVIEW_DELAY_MS: String(NATIVE_PREVIEW_DELAY_MS) }, false);
+  try {
+    native.send(rpc(1, "initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "t", version: "0" },
+    }));
+    const ready = await waitForId(native, 1, 15000);
+    const sample = ready ? await fastestPingDuringPreview(native, NATIVE_PREVIEW_DELAY_MS) : null;
+    check(
+      "ping answers during a delayed native preview",
+      sample !== null && sample.during !== null && answeredDuringPreview(sample.during, NATIVE_PREVIEW_DELAY_MS),
+      `${sample?.during ?? "no"} ms ${native.stderr()}`,
+    );
+  } finally {
+    native.child.kill();
   }
-  check("ping answers during a delayed native preview", sawNativePing && nativePingAt < 100, `${nativePingAt} ms ${native.stderr()}`);
-  native.child.kill();
 } else {
   console.log("native preview delay: skipped (engine addon is not built)");
+}
+
+const blocked = startBlockedPreview(NATIVE_PREVIEW_DELAY_MS);
+try {
+  const blockedSample = await fastestPingDuringPreview(blocked, NATIVE_PREVIEW_DELAY_MS);
+  check(
+    "a ping blocked for the whole native delay still fails",
+    blockedSample !== null && blockedSample.any !== null && !answeredDuringPreview(blockedSample.any, NATIVE_PREVIEW_DELAY_MS),
+    `${blockedSample?.any ?? "no"} ms ${blocked.stderr()}`,
+  );
+} finally {
+  blocked.child.kill();
 }
 
 if (failed) {
