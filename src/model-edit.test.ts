@@ -1,5 +1,6 @@
 import { eulerOrient } from "./mesh-place.ts";
 import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditPanel } from "./model-edit.ts";
+import { stepEdges } from "./model-request.ts";
 import { historyLayout } from "./model-history.ts";
 import { planeFor, splitBase } from "./model-plane.ts";
 import { primitiveSpec, type PrimitiveSpec } from "./model-primitive.ts";
@@ -158,6 +159,13 @@ const shown = [edge(0, 20, [-10, -10, 0, 10, -10, 0]), edge(1, 20, [10, -10, 0, 
 eq("an edge at its index is taken", matchEdges(shown, [{ index: 1, mid: [10, 0, 0], lengthMm: 20 }], 0.1), { picked: [1], missing: 0 });
 eq("an edge renumbered is found by its midpoint and length", matchEdges(shown, [{ index: 2, mid: [0, -10, 0], lengthMm: 20 }], 0.1), { picked: [0], missing: 0 });
 eq("an edge no longer on the solid is missing", matchEdges(shown, [{ index: 0, mid: [0, -12, 0], lengthMm: 24 }, 2], 0.1), { picked: [2], missing: 1 });
+eq("a step fillet opens on that step", editPanel({ kind: "fillet", edges: [stepEdges(2, "convex")], size: 1 }, skew, center), {
+  tool: "fillet",
+  fields: { modelBlend: 1 },
+  edges: [],
+  step: { fromNode: 2, filter: "convex" },
+});
+eq("a picked fillet has no step", editPanel(fillet, skew, center).step, undefined);
 
 // The `.lime` round trip of a tree with an edit fork, a root edit among it.
 const rerooted = forked(edited, 0, [{ id: 9, op: { kind: "root", ...boxSpec, origin: [-15, -15, 0], size: [30, 30, 20] }, fingerprint: fp(18000) }, { id: 10, op: cut, fingerprint: fp(17875) }], 10);
