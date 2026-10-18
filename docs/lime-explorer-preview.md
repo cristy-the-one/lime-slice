@@ -256,7 +256,7 @@ The camera is deliberately outside the hash. A save that can draw writes a new P
 
 | Path | Picture | Summary |
 | --- | --- | --- |
-| App save (`saveCurrentProject`) | Render the current plate camera into an offscreen target, long edge 512, transparent clear. Not `canvas.toDataURL()`: the WebGL drawing buffer is not preserved. If that render is unavailable, call the same software renderer the MCP server uses. If both fail, keep a stored thumbnail whose hash still matches, otherwise omit it. | Always, from the plate. `slicedSeconds` and `grams` only when `state` holds a slice estimate. |
+| App save (`saveCurrentProject`) | Render the current slice-view camera into an offscreen target, long edge 512, transparent clear. Not `canvas.toDataURL()`: the WebGL drawing buffer is not preserved. A fully transparent frame counts as a failed capture. The page does not bundle `mcp/render.ts` (it uses `node:zlib`). If the capture fails, keep a stored thumbnail whose hash still matches, otherwise omit it. | Always, from the plate. `slicedSeconds` and `grams` only when the slice estimate is current (`stale()` is false). |
 | MCP `project_save` | `renderMesh` in `mcp/render.ts`, the `render_view` renderer: whole plate, positions transformed by placement, camera `iso`, long edge 512. No window, no OpenGL, no Open CASCADE. On failure, the same keep-or-drop rule. | Always, from the plate. Time and grams only if this session has a finished slice. |
 | MCP autosave (`flushAutosave`) | Does not render. Keeps a thumbnail already on the document when the hash still matches, and drops it when the geometry changed. Autosave stays cheap and must not throw. | Written from the plate, without time and grams unless the document already had them and the slice is still the current one. |
 | Open, untouched, save | Round-trips. | Round-trips. |
@@ -324,12 +324,12 @@ On the Linux CI VM, and locally:
 | Test | Where |
 | --- | --- |
 | A version 3 file with no new fields parses and serializes as it does today | `src/project.test.ts` |
-| Round-trip: serialize, parse, serialize keeps the PNG and the summary when the geometry matches | `src/project.test.ts` |
-| `thumbnail` is the first key and the text is valid JSON | `src/project.test.ts` |
-| A geometry change drops the thumbnail; a settings change keeps it | `src/project.test.ts` |
-| A bad thumbnail (wrong type, bad base64, oversize, JPEG, mismatched IHDR, missing `meshHash`) does not fail the open and is not written back | `src/project.test.ts` |
-| Version stays 3, including a file that has the new fields | `src/project.test.ts` |
-| MCP `project_save` writes a thumbnail from `renderMesh`; a following geometry edit that cannot render drops it; autosave does not call the renderer | MCP session test |
+| Round-trip: serialize, parse, serialize keeps the PNG and the summary when the geometry matches | `src/project-thumb.test.ts` |
+| `thumbnail` is the first key and the text is valid JSON | `src/project-thumb.test.ts` |
+| A geometry change drops the thumbnail; a settings change keeps it | `src/project-thumb.test.ts` |
+| A bad thumbnail (wrong type, bad base64, oversize, JPEG, mismatched IHDR, missing `meshHash`) does not fail the open and is not written back | `src/project-thumb.test.ts` |
+| Version stays 3, including a file that has the new fields | `src/project-thumb.test.ts` |
+| MCP `project_save` writes a thumbnail from `renderMesh`; a following geometry edit that cannot render drops it; autosave does not call the renderer | `mcp/thumb.test.ts` |
 | Streaming reader: prefix only, hash match, hash mismatch, summary, missing field | `crates/lime-preview` |
 | Hostile input, no panic and no multi-megabyte allocation: truncated JSON, a string hundreds of megabytes long declared and not stored, wrong types, a thumbnail key buried inside a mesh name, a file that never closes | `crates/lime-preview` |
 | Shared hash fixture: the TypeScript preimage and the Rust preimage are the same bytes | both |

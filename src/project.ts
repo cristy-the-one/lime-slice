@@ -15,6 +15,8 @@
  * `workplane` is that object's local U, V, W frame, in its own frame. Without it the frame is the global one.
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
  * into version `n + 1`. `applyMigrations` is that hook.
+ * `thumbnail` and `summary` are optional and do not change the version. They are written first.
+ * A reader that does not know them still opens the file. See `docs/lime-explorer-preview.md`.
  */
 import { KLIPPER_NUMBERS, type PrinterProfile } from "./profiles.ts";
 import type { LayerAction } from "./layer-actions.ts";
@@ -33,6 +35,7 @@ import type { Affine } from "./model-space.ts";
 import { readSeamPaint } from "./seam-paint.ts";
 import { readPaint } from "./support-paint.ts";
 import type { SiteSpec } from "./support-edits.ts";
+import { readSummary, readThumbnail, summaryForWire, thumbnailForWire, type ProjectSummary, type ProjectThumbnail } from "./project-thumb.ts";
 
 export const PROJECT_VERSION = 3;
 
@@ -99,7 +102,16 @@ export interface LimeProject {
   mcpModel?: Record<string, unknown>;
   /** Read only: the names of objects whose Model history was damaged and left out. */
   unreadHistory?: string[];
+  /**
+   * A PNG of the plate, written first in the file so Explorer can lift it out.
+   * Omitted when it is missing, damaged, or drawn from different geometry.
+   */
+  thumbnail?: ProjectThumbnail;
+  /** Name, printer, and a few numbers for the preview card. Omitted when there is nothing to say. */
+  summary?: ProjectSummary;
 }
+
+export type { ProjectSummary, ProjectThumbnail };
 
 /** A tool's tree kept for a join after its object left the plate: the object's id and name, and its tree as an object keeps one. */
 export interface ToolTree {
@@ -153,7 +165,7 @@ export function serializeProject(project: LimeProject): string {
         wire.sequentialGantryMm = project.sequentialGantryMm;
       }
     }
-    return JSON.stringify(wire, null, 2);
+    return JSON.stringify(withPreview(project, wire), null, 2);
   }
   const wire: Record<string, unknown> = {
     version: 1,
@@ -167,7 +179,17 @@ export function serializeProject(project: LimeProject): string {
   };
   if (overrides) wire.overrides = overrides;
   if (project.layerActions?.length) wire.layerActions = project.layerActions;
-  return JSON.stringify(wire, null, 2);
+  return JSON.stringify(withPreview(project, wire), null, 2);
+}
+
+/** `thumbnail`, then `summary`, then the keys the file already had. Absent fields stay absent. */
+function withPreview(project: LimeProject, body: Record<string, unknown>): Record<string, unknown> {
+  const wire: Record<string, unknown> = {};
+  const thumbnail = thumbnailForWire(project);
+  const summary = summaryForWire(project.summary);
+  if (thumbnail) wire.thumbnail = thumbnail;
+  if (summary) wire.summary = summary;
+  return Object.assign(wire, body);
 }
 
 /** Version 1 becomes one object. Plate settings stay on the document. The single mesh fields move onto that object. */
@@ -322,6 +344,7 @@ function readVersion1(doc: Record<string, unknown>): ProjectResult {
   const actions = readLayerActions(doc.layerActions);
   if (typeof actions === "string") return { ok: false, message: actions };
   if (actions.length > 0) project.layerActions = actions;
+  takePreview(doc, project);
   return { ok: true, project };
 }
 
@@ -372,7 +395,15 @@ function readPlate(doc: Record<string, unknown>): ProjectResult {
       project.sequentialGantryMm = doc.sequentialGantryMm as number;
     }
   }
+  takePreview(doc, project);
   return { ok: true, project };
+}
+
+function takePreview(doc: Record<string, unknown>, project: LimeProject) {
+  const thumbnail = readThumbnail(doc.thumbnail);
+  if (thumbnail) project.thumbnail = thumbnail;
+  const summary = readSummary(doc.summary);
+  if (summary) project.summary = summary;
 }
 
 function readPlateObjects(value: unknown, tools: unknown): { objects: PlateFileObject[]; modelTools: ToolTree[]; unreadHistory: string[] } | string {

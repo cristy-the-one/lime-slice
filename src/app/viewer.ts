@@ -4,6 +4,7 @@ import { createPrepareView } from "../prepare-view";
 import { createModelView, type ModelView } from "../model-view";
 import { bindModelView, leaveModel, showModel } from "./model";
 import { createSliceView, type SliceView3d } from "../view3d";
+import { setPlateThumbnailCapture } from "./thumb-capture";
 import { FEATURE_LABEL, FEATURE_COLOR, colorForPath } from "../colors";
 import { legendMarkup } from "../ui/legend";
 import { formatDuration } from "../format";
@@ -1168,6 +1169,7 @@ export function mountViews() {
   const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
   const ctx = canvas.getContext("2d")!;
   view3d = createSliceView(document.querySelector<HTMLCanvasElement>("#view3d")!);
+  setPlateThumbnailCapture(() => view3d.captureThumbnail());
   prepare = createPrepareView(document.querySelector<HTMLCanvasElement>("#prepare")!);
   model = createModelView(document.querySelector<HTMLCanvasElement>("#model")!);
   fx.model = model;

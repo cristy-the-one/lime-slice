@@ -33,6 +33,7 @@ import { applyPose, IDENTITY_POSE, inversePose, toSolidOp, turnDir, type Affine 
 import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, undoTarget, withChild, type EdgePick, type Fingerprint, type LoftSection, type ModelOp, type ModelTree, type NodeId, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
+import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
 import { savedTree, loadedTree } from "../src/model-tree-file.ts";
 import { addRange, addVolume, emptyOverrides, freshOverrideId, removeRange, removeVolume, type OverrideDocument, type SettingOverride } from "../src/overrides.ts";
 import { appendEdit, editRequestFields } from "../src/support-edit-list.ts";
@@ -618,6 +619,7 @@ export class Session {
           return { ...row, mesh: meshRecord(name, stlBytes(Float32Array.from(obj.solid.positions), name)) };
         });
       }
+      this.attachPreview(doc, false);
       const text = serializeProject(doc);
       // One write at a time, off the call's path; a failed write is not worth failing a call for.
       this.autosaveWriting = this.autosaveWriting.then(() => writeAutosave(path, text)).catch(() => undefined);
@@ -1388,6 +1390,58 @@ export class Session {
     return `Saving over this project would drop ${missing.join(", ")}. Save it under a new name.`;
   }
 
+  /**
+   * Summary on every save. A picture on `project_save`, from the software renderer `render_view` uses.
+   * Autosave does not draw: a picture of different geometry is dropped instead of kept.
+   */
+  private attachPreview(doc: LimeProject, render: boolean) {
+    doc.summary = projectSummary(doc, this.freshEstimate());
+    if (render) {
+      const thumb = this.renderThumbnail(doc);
+      if (thumb) doc.thumbnail = thumb;
+    }
+    if (doc.thumbnail && doc.thumbnail.meshHash !== geometryHash(doc)) delete doc.thumbnail;
+  }
+
+  private freshEstimate(): { seconds: number; grams: number } | undefined {
+    const job = this.latest;
+    if (!job || job.status !== "done" || !job.wire || this.staleReason(job)) return undefined;
+    const summary = this.summarize(job);
+    return { seconds: summary.seconds, grams: summary.grams };
+  }
+
+  /** The plate's triangles in bed space, one array, for the thumbnail rasterizer. */
+  private platePositions(): Float32Array | null {
+    if (this.objects.length === 0) return null;
+    const meshes = this.objects.map((obj) => this.placed(obj).positions);
+    let count = 0;
+    for (const mesh of meshes) count += mesh.length;
+    if (count < 9) return null;
+    const positions = new Float32Array(count);
+    let offset = 0;
+    for (const mesh of meshes) {
+      positions.set(mesh, offset);
+      offset += mesh.length;
+    }
+    return positions;
+  }
+
+  private renderThumbnail(doc: LimeProject) {
+    try {
+      const positions = this.platePositions();
+      if (!positions) return undefined;
+      const hash = geometryHash(doc);
+      for (const edge of [512, 256]) {
+        const drawn = renderMesh(positions, "iso", edge, undefined, { transparent: true });
+        const thumb = thumbnailFromPng(drawn.png, hash, `lime-mcp/${appVersion()}`);
+        if (thumb) return thumb;
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+
   /** The project as project_save writes it, from the plate as it stands. */
   private saveDocument(): LimeProject {
     const doc = this.projectDocument();
@@ -1420,6 +1474,7 @@ export class Session {
       }
     }
     const doc = this.saveDocument();
+    this.attachPreview(doc, true);
     if (this.sourcePath && path === this.sourcePath) {
       const loss = this.lossy(doc);
       if (loss) return { ok: false, reason: loss };

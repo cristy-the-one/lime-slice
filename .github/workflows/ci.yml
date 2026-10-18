@@ -188,6 +188,7 @@ jobs:
           node --experimental-strip-types mcp/request.test.ts
           node --experimental-strip-types mcp/numbers.test.ts
           node --experimental-strip-types mcp/render.test.ts
+          node --experimental-strip-types mcp/thumb.test.ts
           node --experimental-strip-types mcp/export.test.ts
           LIME_MCP_GOLDEN=1 node --experimental-strip-types mcp/golden.test.ts
           node --experimental-strip-types mcp/native-load.test.ts

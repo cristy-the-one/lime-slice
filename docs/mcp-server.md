@@ -219,7 +219,7 @@ Reuse without an engine change:
 
 - `slice_payload` and the job, cancel, and progress routes.
 - `lime_model_load::tree` and the nine `call` names.
-- `.lime` read and write (`parseProject`, `serializeProject`).
+- `.lime` read and write (`parseProject`, `serializeProject`). A save may add optional `thumbnail` and `summary` fields, written first. They do not change version 3. `docs/lime-explorer-preview.md` is the rule. `project_save` draws the thumbnail. Autosave does not.
 - The built-in printer and filament tables, and `.limemachine.json` / `.limeprofile.json`.
 - The TypeScript that already builds tree requests, bakes workplanes, words warnings, and post-processes G-code.
 - `tools/golden.sh` as the byte-identity check of the engine file.
