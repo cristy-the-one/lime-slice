@@ -11,10 +11,10 @@ import { axesOf, framePose, isIdentityFrame, planePoint, workplaneOnFace, type W
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure" | "place" | "workplane" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text";
+export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "scale", "measure", "place", "workplane", "pocket", "boss", "texture", "array", "ribs", "text"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "pocket", "boss", "texture", "array", "ribs", "text"];
 
 // --- A3 composite features: one drag entry per feature, behind the single Features button. ---
 const FEATURE_DRAG: readonly ModelTool[] = ["pocket", "boss", "texture", "array", "ribs", "text"];
@@ -35,6 +35,8 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   fillet: ["modelBlend"],
   chamfer: ["modelBlend"],
   hole: ["modelX", "modelY", "modelZ", "modelHoleR", "modelHoleD", "modelBoreR", "modelBoreD"],
+  // --- A2 shell ---
+  shell: ["modelShell"],
   scale: ["modelFactor"],
   measure: ["modelAx", "modelAy", "modelAz", "modelBx", "modelBy", "modelBz"],
   place: ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"],
@@ -99,6 +101,8 @@ export interface DragContext {
   holeAxis?: Vec3;
   /** The hole's Through all and Counterbore boxes. Through all has no depth to drag; a counterbore adds two knobs. */
   hole?: { through: boolean; counterbore: boolean };
+  // --- A2 shell: the first picked face, so the thickness knob sits on it. Null with none. ---
+  shell?: { point: Vec3; inward: Vec3 } | null;
   /**
    * The workplane in model space: Boolean's and Hole's origin fields are its U, V, W, and Split's X, Y, Z are U, V, W.
    * Absent is the global frame. The Workplane tool's own arrows slide its origin along U, V, W.
@@ -134,6 +138,8 @@ function specsFor(tool: ModelTool | null, ctx: DragContext): Spec[] {
   if (tool === "split") return splitHandles(ctx);
   if (tool === "fillet" || tool === "chamfer") return blendHandles(tool, ctx);
   if (tool === "hole") return holeHandles(ctx);
+  // --- A2 shell ---
+  if (tool === "shell") return shellHandles(ctx);
   if (tool === "scale") return scaleHandles(ctx);
   if (tool === "measure") return measureHandles(ctx);
   if (tool === "place") return placeHandles(ctx);
@@ -294,6 +300,15 @@ function blendHandles(tool: "fillet" | "chamfer", ctx: DragContext): Spec[] {
   return [
     axisHandle("blend", "knob", "modelBlend", onFeature(add(ctx.edge.point, scale(ctx.edge.out, size))), ctx.edge.out, "accent", tool === "fillet" ? "Fillet" : "Chamfer", { min: 0.05, step: 0.5 }),
   ];
+}
+
+// --- A2 shell ---
+/** One thickness knob. With a face picked it sits that far in along the face's inward normal; otherwise it docks. */
+function shellHandles(ctx: DragContext): Spec[] {
+  const thickness = ctx.read("modelShell");
+  const face = ctx.shell;
+  if (!face) return [axisHandle("shell", "knob", "modelShell", KNOB, [0, 0, -1], "z", "Thickness", { min: 0.05, step: 0.5 })];
+  return [axisHandle("shell", "knob", "modelShell", onFeature(add(face.point, scale(face.inward, thickness))), face.inward, nearestAxisColor(face.inward), "Thickness", { min: 0.05, step: 0.5 })];
 }
 
 function holeHandles(ctx: DragContext): Spec[] {

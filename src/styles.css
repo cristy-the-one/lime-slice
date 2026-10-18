@@ -561,7 +561,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-tools {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   max-width: 100%;
   padding: 4px;
   overflow-x: auto;
@@ -611,7 +611,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   align-items: center;
   gap: 4px;
   height: 26px;
-  padding: 0 7px;
+  padding: 0 5px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;

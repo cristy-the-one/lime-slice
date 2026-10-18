@@ -261,11 +261,10 @@ export function valueRange(base: SplitBase, normal: Vec3, window: SplitPlaneRang
 }
 
 /**
- * A flat face's plane: the area-weighted middle of its triangles and the outward normal given.
- * Null when a corner of the face is off that plane by more than 0.001 mm: the face is curved.
+ * The area-weighted middle of one face's triangles. Null when the face has no area.
+ * A curved face still has a middle; `facePlane` is what refuses it.
  */
-export function facePlane(positions: ArrayLike<number>, triangles: ArrayLike<number>, face: number, normal: Vec3): FacePlane | null {
-  const n = unit(normal);
+export function faceCentre(positions: ArrayLike<number>, triangles: ArrayLike<number>, face: number): Vec3 | null {
   let area = 0;
   let point: Vec3 = [0, 0, 0];
   for (let tri = 0; tri < triangles.length; tri += 1) {
@@ -279,7 +278,17 @@ export function facePlane(positions: ArrayLike<number>, triangles: ArrayLike<num
     point = add(point, scale(add(add(a, b), c), weight / 3));
   }
   if (!(area > 0)) return null;
-  point = scale(point, 1 / area);
+  return scale(point, 1 / area);
+}
+
+/**
+ * A flat face's plane: the area-weighted middle of its triangles and the outward normal given.
+ * Null when a corner of the face is off that plane by more than 0.001 mm: the face is curved.
+ */
+export function facePlane(positions: ArrayLike<number>, triangles: ArrayLike<number>, face: number, normal: Vec3): FacePlane | null {
+  const point = faceCentre(positions, triangles, face);
+  if (!point) return null;
+  const n = unit(normal);
   for (let tri = 0; tri < triangles.length; tri += 1) {
     if (triangles[tri] !== face) continue;
     for (let corner = 0; corner < 3; corner += 1) {

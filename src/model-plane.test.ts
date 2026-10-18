@@ -2,6 +2,7 @@ import {
   boxExtentAlong,
   extentAlong,
   extentMemo,
+  faceCentre,
   facePlane,
   formatMm,
   inPlaneAxes,
@@ -139,6 +140,8 @@ const leaningFace = planeFor(fromTop, 2, [20, 0], (n) => extentAlong(cube.positi
 eq("a tilted face plane turns about its pivot, 2 mm under the face", r4([leaningFace.origin, leaningFace.normal, leaningFace.inside]), [[5, 5, 8], r4(tiltedNormal(Z, 20, 0)), true]);
 const bent = [0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 0, 0, 10, 10, 0, 0, 10, 3];
 check("a face whose corners leave its plane is curved", facePlane(bent, [0, 0], 0, Z) === null);
+const bentMiddle = faceCentre(bent, [0, 0], 0);
+check("a curved face still has a middle", !!bentMiddle && bentMiddle[2]! > 0 && bentMiddle[2]! < 3);
 
 // An axis base and a tilt about the pivot.
 const onZ = splitBase("z", [5, 5, 5], null)!;

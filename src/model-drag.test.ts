@@ -63,7 +63,7 @@ for (const tool of MODEL_TOOLS) {
 
 const values: Record<string, number> = {
   modelX: 2, modelY: 3, modelZ: 10, modelDx: 4, modelDy: 6, modelDz: 8, modelRadius: 5, modelHeight: 10,
-  modelRx: 0, modelRy: 0, modelRz: 0, modelPlane: 5, modelTiltA: 0, modelTiltB: 0, modelBlend: 1, modelHoleR: 2, modelHoleD: 12, modelFactor: 2,
+  modelRx: 0, modelRy: 0, modelRz: 0, modelPlane: 5, modelTiltA: 0, modelTiltB: 0, modelBlend: 1, modelHoleR: 2, modelHoleD: 12, modelShell: 2, modelFactor: 2,
   modelAx: 0, modelAy: 0, modelAz: 0, modelBx: 10, modelBy: 0, modelBz: 0,
 };
 /** A 10 mm cube's corners as a soup: enough for its extent along any normal. */
@@ -175,6 +175,9 @@ eq("the origin dot, the blend knob, the split plane and the measure dots stay on
 const pocket = handlesFor("pocket", context("box"));
 eq("a pocket's position stays on the face and its depth knob points into it", [pocket.find((handle) => handle.id === "feat-at")!.seat.at, pocket.find((handle) => handle.id === "feat-depth")!.dir], ["feature", [0, 0, -1]]);
 eq("texture pitch knobs are docked", handlesFor("texture", context("box")).filter((handle) => handle.id.startsWith("feat-pitch")).every(docked), true);
+const shelled = handlesFor("shell", context("box", { shell: { point: [5, 5, 10], inward: [0, 0, -1] } }))[0]!;
+eq("the thickness knob sits one thickness in from the first face, along its inward normal", [originOf(shelled), shelled.dir, shelled.fields, shelled.min], [[5, 5, 8], [0, 0, -1], ["modelShell"], 0.05]);
+eq("with no face the thickness knob docks", handlesFor("shell", context("box")).map((handle) => [handle.id, handle.seat.at]), [["shell", "dock"]]);
 
 // A hole slides in its face plane.
 const holeDown = handlesFor("hole", context("box"));

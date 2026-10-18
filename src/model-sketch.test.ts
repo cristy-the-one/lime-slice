@@ -104,8 +104,9 @@ eq("an edit renames each replayed step", [...ids], [[3, 9], [4, 10]]);
 eq("a blend takes edges from its step's new id", renumberedSteps(blend, ids), { kind: "fillet", edges: [{ fromNode: 9, filter: "convex" }, 7], size: 1 });
 eq("a blend of a step not replayed is the same op", renumberedSteps(blend, stepIds([5], [11])) === blend, true);
 
-// The app has no panel for these yet, so their steps are not edited from History.
-for (const id of [1, 2, 3, 4]) eq(`step ${id} has no edit panel`, editRefusal(tree, id), "This step has no edit panel yet. Delete it and apply it again with new numbers.");
+// Extrude, revolve, and a blend of an earlier step have no panel yet. A shell does.
+for (const id of [1, 2, 4]) eq(`step ${id} has no edit panel`, editRefusal(tree, id), "This step has no edit panel yet. Delete it and apply it again with new numbers.");
+eq("a shell step can be edited", editRefusal(tree, 3), null);
 
 // Typed in model space, stored in the solid's own frame: the profile lands in the same place either way.
 const pose: Affine = { m: eulerOrient(0, 0, 90), t: [10, 5, 0] };
