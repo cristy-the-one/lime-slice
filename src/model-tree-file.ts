@@ -57,16 +57,43 @@ export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: strin
     .sort((a, b) => a.id - b.id)
     .map((node) => {
       const piece = node.piece ? owner(node.piece) : undefined;
+      // --- A8. A renamed step keeps its name. An MCP composite writes "prefix k/n" onto the label; that is kept
+      // as the name too, so the app can fold those rows after the file opens. ---
+      const name = savedName(node);
       return {
         id: node.id,
         parent: node.parent,
         op: node.op?.kind === "join" ? savedJoin(node.op, owner) : node.op,
-        ...(node.name ? { name: node.name } : {}),
+        ...(name ? { name } : {}),
         fingerprint: node.fingerprint,
         ...(piece ? { piece } : {}),
       };
     });
   return { nodes, current: tree.current, committed, nextId: tree.nextId };
+}
+
+/** The name to keep: the user's name, or a label the op would not have produced on its own. */
+function savedName(node: ModelNode): string {
+  const named = node.name?.trim() ?? "";
+  if (named) return named.slice(0, 80);
+  if (!node.op) return "";
+  const label = node.label.trim();
+  if (!label || label === opLabel(node.op)) return "";
+  return label.slice(0, 80);
+}
+
+/**
+ * A saved name is what this step is called. The MCP session reads `label`, so after a load the name is copied there
+ * and a composite's "prefix k/n" reads as it did when it was built.
+ */
+export function withSavedNames(tree: ModelTree): ModelTree {
+  let nodes: Map<NodeId, ModelNode> | null = null;
+  for (const node of tree.nodes.values()) {
+    if (!node.name || node.name === node.label) continue;
+    nodes ??= new Map(tree.nodes);
+    nodes.set(node.id, { ...node, label: node.name });
+  }
+  return nodes ? { ...tree, nodes } : tree;
 }
 
 function savedJoin({ op, tool, relative, keepTool }: JoinOp, owner: (key: string) => string | undefined): SavedJoin {

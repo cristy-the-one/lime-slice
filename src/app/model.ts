@@ -41,14 +41,12 @@ import {
   opLabel,
   pathTo,
   reachableTrees,
-  redoTarget,
   renumberedSteps,
   reserveId,
   rootLabel,
   featureObjectName,
   subtree,
   toolKeys,
-  undoTarget,
   usesTree,
   visitStep,
   withChild,
@@ -94,8 +92,8 @@ import {
   toolFrame,
   type PlacePhase,
 } from "../ui/model-chrome";
-import { mountModelHistory, syncModelHistory, syncModelPosition } from "../ui/model-history";
-import { dropRefusal, readRow, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
+import { mountModelHistory, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
+import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
@@ -106,7 +104,7 @@ import { modelerFailure, plainModelError } from "./model-error";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
-import { state } from "./state";
+import { session, state } from "./state";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
 import { axesOf, drillDown, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
@@ -1276,18 +1274,18 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
   return true;
 }
 
-/** Where Undo goes: from an edit's tip, back to the step shown before the edit; else the parent. */
+/** Where Undo goes: from an edit's tip, back to the step shown before the edit; from the last step of a folded composite, to the step before it; else the parent. */
 function undoNode(tree: ModelTree): NodeId | null {
   const back = editBack;
   if (back && !back.undone && back.key === tree.key && tree.current === back.tip && tree.nodes.has(back.back)) return back.back;
-  return undoTarget(tree);
+  return foldedUndoTarget(tree, modelTrees);
 }
 
-/** Where Redo goes: from where an undone edit went back to, forward to its tip again; else the child Redo follows. */
+/** Where Redo goes: from where an undone edit went back to, forward to its tip again; through a folded composite, to its last step; else the child Redo follows. */
 function redoNode(tree: ModelTree): NodeId | null {
   const back = editBack;
   if (back?.undone && back.key === tree.key && tree.current === back.back && tree.nodes.has(back.tip)) return back.tip;
-  return redoTarget(tree);
+  return foldedRedoTarget(tree, modelTrees);
 }
 
 /** Undo is the parent, Redo the child last applied or jumped through, but for an edit, which Undo takes back whole. */
@@ -1300,7 +1298,12 @@ async function step(way: "undo" | "redo") {
   const back = editBack;
   const viaEdit = !!back && node === (way === "undo" ? back.back : back.tip) && tree.current === (way === "undo" ? back.tip : back.back) && back.undone === (way === "redo");
   if (!viaEdit) editBack = null;
-  const done = viaEdit ? (way === "undo" ? "Edit of the step undone." : "Edit of the step redone.") : way === "undo" ? "Edit undone." : "Edit redone.";
+  // --- A8. One undo from the last step of a folded composite, and one redo, take the whole run. ---
+  const undone = !viaEdit && way === "undo" ? foldEndingAt(tree, tree.current, modelTrees) : null;
+  const redone = !viaEdit && way === "redo" ? foldRedoFrom(tree, modelTrees) : null;
+  const viaFold = (!!undone && node === undone.before) || (!!redone && node === redone.last);
+  const foldLabel = undone?.label ?? redone?.label;
+  const done = viaEdit ? (way === "undo" ? "Edit of the step undone." : "Edit of the step redone.") : viaFold && foldLabel ? `${foldLabel} ${way === "undo" ? "undone" : "redone"}.` : way === "undo" ? "Edit undone." : "Edit redone.";
   const shown = await showNode(ticket, at.objectId, at.key, node, (solid) => `${about(solid)} ${done}`);
   if (shown && viaEdit && editBack === back) back!.undone = way === "undo";
   if (shown) syncUndo();
@@ -2739,6 +2742,8 @@ function syncUndo() {
   setModelWaiting(busy || jumping);
   syncModelHistory(tree, modelTrees, lens?.row ?? null);
   syncPosition();
+  // --- A8. A recipe saved with this object, read-only under the History header. ---
+  syncModelRecipe(open ? recipeNote(session.mcpModel, open.objectId) : null);
 }
 
 /** The Position row, from the pose the plate object holds and the solid's own box, read once per solid. */

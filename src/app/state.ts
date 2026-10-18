@@ -383,6 +383,11 @@ export const session = {
   docEpoch: 0,
   /** Set while a project file is being applied, so those writes do not count as new edits. */
   projectRestoring: false,
+  /**
+   * --- A8. The MCP record the open project carried (`mcpModel`). History reads a recipe from it, and a save writes
+   * it back. A mesh that replaces the plate, or File > New, clears it.
+   */
+  mcpModel: undefined as Record<string, unknown> | undefined,
   playTimer: 0,
   drag2d: false,
   geomReady: null as { id: number; geom: PreviewGeometry } | null,
