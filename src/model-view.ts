@@ -207,6 +207,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let edgeHoverCb: (edge: number | null, at: { x: number; y: number } | null) => void = () => {};
   let edgeKnobPart: HandlePart | null = null;
   let edgeDrag: { pointerId: number } | null = null;
+  /** Knob pressed, not yet moved. A still release selects the edge; movement starts the fillet. */
+  let edgePress: { pointerId: number; x: number; y: number } | null = null;
   let edgeKnobCb: (ev: EdgeKnobEvent) => void = () => {};
   let ghost: ModelGhost | null = null;
   let datumPlane: Workplane | null = null;
@@ -954,7 +956,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   canvas.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0 || drag || edgeDrag) return;
+    if (ev.button !== 0 || drag || edgeDrag || edgePress) return;
     down = null;
     if (viewHelperHit(viewHelper, canvas, ev)) {
       ev.preventDefault();
@@ -968,11 +970,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       ev.preventDefault();
       controls.enabled = false;
       canvas.setPointerCapture(ev.pointerId);
-      // P2. The edge knob is not a panel field: its drag is a fillet or a chamfer, not a typed number.
+      // P2. The knob sits on the edge. A click still selects that edge; the fillet starts once the pointer moves.
       if (part.handle.id === EDGE_KNOB_ID) {
-        edgeDrag = { pointerId: ev.pointerId };
-        edgeKnobCb(knobEvent(ev, "down"));
-        paintHandles();
+        edgePress = { pointerId: ev.pointerId, x: ev.clientX, y: ev.clientY };
+        down = { x: ev.clientX, y: ev.clientY };
         return;
       }
       beginDrag(part, ev);
@@ -981,6 +982,17 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     down = { x: ev.clientX, y: ev.clientY };
   }, { capture: true });
   canvas.addEventListener("pointermove", (ev) => {
+    if (edgePress && ev.pointerId === edgePress.pointerId) {
+      const moved = (ev.clientX - edgePress.x) ** 2 + (ev.clientY - edgePress.y) ** 2;
+      if (moved <= 16) return;
+      down = null;
+      edgeDrag = { pointerId: ev.pointerId };
+      edgePress = null;
+      edgeKnobCb(knobEvent(ev, "down"));
+      edgeKnobCb(knobEvent(ev, "move"));
+      paintHandles();
+      return;
+    }
     if (edgeDrag) {
       if (ev.pointerId === edgeDrag.pointerId) edgeKnobCb(knobEvent(ev, "move"));
       return;
@@ -1007,6 +1019,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setHover(pickAt(ev));
   });
   const finishDrag = (ev: PointerEvent) => {
+    if (edgePress && ev.pointerId === edgePress.pointerId) {
+      edgePress = null;
+      controls.enabled = true;
+      if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+      // A still release keeps `down`, so the click handler selects the edge under the knob.
+      if (ev.type === "pointercancel") down = null;
+      return;
+    }
     if (edgeDrag && ev.pointerId === edgeDrag.pointerId) {
       edgeDrag = null;
       controls.enabled = true;
@@ -1028,7 +1048,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   canvas.addEventListener("pointercancel", finishDrag, { capture: true });
   canvas.addEventListener("pointerleave", () => {
     setHover(null);
-    if (drag || edgeDrag) return;
+    if (drag || edgeDrag || edgePress) return;
     if (edgeLit != null) {
       edgeLit = null;
       paintLines();

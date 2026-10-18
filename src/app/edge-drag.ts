@@ -263,7 +263,8 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     if (!shown || live) return;
     const edges = edgeDragEdges(shown.edge, host.selectedEdges());
     shown = { ...shown, edges };
-    if (hinting) host.readout(edgeHoverHint(edges.length));
+    // The click already wrote "Edge N" (or the selection count). Putting the hover hint back
+    // would hide that sentence from the scan that looks for it, and from the person who just picked.
     publish();
   }
 
