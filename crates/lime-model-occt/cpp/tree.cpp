@@ -572,6 +572,135 @@ LimeShape* lime_tree_feature_loft(const char* op, const double* head, int count,
     }
 }
 
+// --- K1 loops on a K2 feature root. Built against no solid. The point-profile feature entry points above stay as they are. ---
+
+/// `p` is the plane's origin and turn, the depth, and symmetric (0 or 1). `loops` is one encode_loops blob.
+LimeShape* lime_tree_feature_extrude_loops(const char* op, const double* p, const double* loops, int loops_len, char** error) {
+    try {
+        std::vector<ProfileLoop> decoded;
+        int used = 0;
+        std::string message;
+        if (!decode_profile_loops(loops, loops_len, decoded, used, message) || used != loops_len) {
+            set_error(error, message.empty() ? "A loop is incomplete." : message);
+            return nullptr;
+        }
+        double volume = 0.0;
+        const TopoDS_Shape none;
+        const double origin[3] = {p[0], p[1], p[2]};
+        const double turn[3] = {p[3], p[4], p[5]};
+        const TopoDS_Shape result = build_extrude_loops(
+            none, 0.0, op == nullptr ? "" : op, origin, turn, decoded, p[6], p[7] != 0.0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The extrude did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `p` is the plane's origin and turn, the axis point (u, v) and direction (u, v), and the angle in degrees.
+LimeShape* lime_tree_feature_revolve_loops(const char* op, const double* p, const double* loops, int loops_len, char** error) {
+    try {
+        std::vector<ProfileLoop> decoded;
+        int used = 0;
+        std::string message;
+        if (!decode_profile_loops(loops, loops_len, decoded, used, message) || used != loops_len) {
+            set_error(error, message.empty() ? "A loop is incomplete." : message);
+            return nullptr;
+        }
+        double volume = 0.0;
+        const TopoDS_Shape none;
+        const double origin[3] = {p[0], p[1], p[2]};
+        const double turn[3] = {p[3], p[4], p[5]};
+        const TopoDS_Shape result = build_revolve_loops(
+            none, 0.0, op == nullptr ? "" : op, origin, turn, decoded, p + 6, p[10], volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The revolve did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// Like `lime_tree_loft_loops`, against no solid. `loop_at[s]` is the blob index, or −1 for a radius or a profile.
+LimeShape* lime_tree_feature_loft_loops(
+    const char* op,
+    const double* head,
+    int count,
+    const double* data,
+    int ruled,
+    const int* loop_at,
+    const double* loops,
+    int loops_len,
+    char** error) {
+    try {
+        std::vector<LoftSection> sections;
+        size_t at = 0;
+        for (int s = 0; s < count; ++s) {
+            const double* h = head + 11 * static_cast<size_t>(s);
+            const int points = std::max(static_cast<int>(h[9]), 0);
+            const int corners = std::max(static_cast<int>(h[10]), 0);
+            LoftSection section;
+            for (int i = 0; i < 3; ++i) {
+                section.profile.origin[i] = h[i];
+                section.profile.turn[i] = h[3 + i];
+            }
+            section.radius = h[6];
+            section.radius_v = h[7];
+            section.profile.smooth = h[8] != 0.0;
+            if (data != nullptr && points > 0) {
+                section.profile.points.assign(data + at, data + at + 2 * static_cast<size_t>(points));
+            }
+            at += 2 * static_cast<size_t>(points);
+            for (int i = 0; i < corners; ++i) {
+                section.profile.corners.push_back(static_cast<int>(data[at + static_cast<size_t>(i)]));
+            }
+            at += static_cast<size_t>(corners);
+            if (loop_at != nullptr && loop_at[s] >= 0) {
+                const int start = loop_at[s];
+                if (start >= loops_len) {
+                    set_error(error, "A loop is incomplete.");
+                    return nullptr;
+                }
+                int used = 0;
+                std::string message;
+                if (!decode_profile_loops(loops + start, loops_len - start, section.loops, used, message)) {
+                    set_error(error, message.empty() ? "A loop is incomplete." : message);
+                    return nullptr;
+                }
+            }
+            sections.push_back(std::move(section));
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape none;
+        const TopoDS_Shape result = build_loft_loops(none, 0.0, op == nullptr ? "" : op, sections, ruled != 0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The loft did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// `head` is 11 numbers a section: the plane's origin and turn, the radius, the radius along V, smooth, the point
 /// count, and the corner count. `data` is each section's u, v pairs and then its corners, one section after another.
 LimeShape* lime_tree_loft(const LimeShape* from, const char* op, const double* head, int count, const double* data, int ruled, char** error) {
@@ -601,6 +730,135 @@ LimeShape* lime_tree_loft(const LimeShape* from, const char* op, const double* h
         std::string message;
         double volume = 0.0;
         const TopoDS_Shape result = build_loft(from->held.shape, from->held.volume, op == nullptr ? "" : op, sections, ruled != 0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The loft removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+// --- K1 profile v2. The point-list entry points above are unchanged. ---
+
+/// `p` is the plane's origin and turn, the depth, and symmetric (0 or 1). `loops` is one encode_loops blob.
+LimeShape* lime_tree_extrude_loops(const LimeShape* from, const char* op, const double* p, const double* loops, int loops_len, char** error) {
+    try {
+        std::vector<ProfileLoop> decoded;
+        int used = 0;
+        std::string message;
+        if (!decode_profile_loops(loops, loops_len, decoded, used, message) || used != loops_len) {
+            set_error(error, message.empty() ? "A loop is incomplete." : message);
+            return nullptr;
+        }
+        double volume = 0.0;
+        const double origin[3] = {p[0], p[1], p[2]};
+        const double turn[3] = {p[3], p[4], p[5]};
+        const TopoDS_Shape result = build_extrude_loops(
+            from->held.shape, from->held.volume, op == nullptr ? "" : op, origin, turn, decoded, p[6], p[7] != 0.0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The extrude removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `p` is the plane's origin and turn, the axis point (u, v) and direction (u, v), and the angle in degrees.
+LimeShape* lime_tree_revolve_loops(const LimeShape* from, const char* op, const double* p, const double* loops, int loops_len, char** error) {
+    try {
+        std::vector<ProfileLoop> decoded;
+        int used = 0;
+        std::string message;
+        if (!decode_profile_loops(loops, loops_len, decoded, used, message) || used != loops_len) {
+            set_error(error, message.empty() ? "A loop is incomplete." : message);
+            return nullptr;
+        }
+        double volume = 0.0;
+        const double origin[3] = {p[0], p[1], p[2]};
+        const double turn[3] = {p[3], p[4], p[5]};
+        const TopoDS_Shape result = build_revolve_loops(
+            from->held.shape, from->held.volume, op == nullptr ? "" : op, origin, turn, decoded, p + 6, p[10], volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The revolve removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// Like `lime_tree_loft`. `loop_at[s]` is the index in `loops` where section s's blob starts, or −1 when that section
+/// uses a radius or a profile. Each blob is one encode_loops value.
+LimeShape* lime_tree_loft_loops(
+    const LimeShape* from,
+    const char* op,
+    const double* head,
+    int count,
+    const double* data,
+    int ruled,
+    const int* loop_at,
+    const double* loops,
+    int loops_len,
+    char** error) {
+    try {
+        std::vector<LoftSection> sections;
+        size_t at = 0;
+        for (int s = 0; s < count; ++s) {
+            const double* h = head + 11 * static_cast<size_t>(s);
+            const int points = std::max(static_cast<int>(h[9]), 0);
+            const int corners = std::max(static_cast<int>(h[10]), 0);
+            LoftSection section;
+            for (int i = 0; i < 3; ++i) {
+                section.profile.origin[i] = h[i];
+                section.profile.turn[i] = h[3 + i];
+            }
+            section.radius = h[6];
+            section.radius_v = h[7];
+            section.profile.smooth = h[8] != 0.0;
+            if (data != nullptr && points > 0) {
+                section.profile.points.assign(data + at, data + at + 2 * static_cast<size_t>(points));
+            }
+            at += 2 * static_cast<size_t>(points);
+            for (int i = 0; i < corners; ++i) {
+                section.profile.corners.push_back(static_cast<int>(data[at + static_cast<size_t>(i)]));
+            }
+            at += static_cast<size_t>(corners);
+            if (loop_at != nullptr && loop_at[s] >= 0) {
+                const int start = loop_at[s];
+                if (start >= loops_len) {
+                    set_error(error, "A loop is incomplete.");
+                    return nullptr;
+                }
+                int used = 0;
+                std::string message;
+                if (!decode_profile_loops(loops + start, loops_len - start, section.loops, used, message)) {
+                    set_error(error, message.empty() ? "A loop is incomplete." : message);
+                    return nullptr;
+                }
+            }
+            sections.push_back(std::move(section));
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape result =
+            build_loft_loops(from->held.shape, from->held.volume, op == nullptr ? "" : op, sections, ruled != 0, volume, message);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;

@@ -34,6 +34,15 @@ const extrude = opBox({ kind: "extrude", op: "fuse", origin: [0, 5, 0], turn: [9
 check("an extrude's box follows its plane", !!extrude && nearAll(extrude.min, [0, 1, 0]) && nearAll(extrude.max, [10, 5, 8]), JSON.stringify(extrude));
 const revolve = opBox({ kind: "revolve", op: "fuse", origin: [0, 0, 0], turn: [90, 0, 0], profile: [[0, 0], [6, 0], [6, 2], [0, 4]] });
 check("a revolve's box is round its axis", !!revolve && nearAll(revolve.min, [-6, -6, 0]) && nearAll(revolve.max, [6, 6, 4]), JSON.stringify(revolve));
+const arc = opBox({
+  kind: "extrude",
+  op: "fuse",
+  origin: [0, 0, 0],
+  turn: [0, 0, 0],
+  depth: 1,
+  loops: [{ start: [10, 0], segments: [{ kind: "arc", through: [6, 8], to: [-10, 0] }, { kind: "line", to: [10, 0] }] }],
+});
+check("an arc's box reaches the circle's extreme", !!arc && nearAll(arc.min, [-10, 0, 0]) && nearAll(arc.max, [10, 10, 1], 1e-6), JSON.stringify(arc));
 check("points of a box", JSON.stringify(boxPoint({ min: [0, 0, 0], max: [2, 4, 6] }, "top")) === "[1,2,6]" && JSON.stringify(boxPoint({ min: [0, 0, 0], max: [2, 4, 6] }, "front")) === "[1,0,3]");
 const resolved = resolveAnchors({ kind: "boolean", centre: { anchor: "post", point: "top", offset: [0, 0, 1] }, op: { kind: "boolean", origin: { anchor: "post" } } }, () => ({ min: [0, 0, 0], max: [2, 2, 2] })) as Record<string, unknown>;
 check("anchors resolve anywhere in an op, nested ops too", JSON.stringify(resolved.centre) === "[1,1,3]" && JSON.stringify((resolved.op as Record<string, unknown>).origin) === "[1,1,1]", JSON.stringify(resolved));

@@ -4,7 +4,7 @@
 
 import { eulerOrient } from "../mesh-place.ts";
 import { primitiveBox } from "../model-feasibility.ts";
-import type { ModelOp } from "../model-tree.ts";
+import type { ModelOp, ProfileLoop } from "../model-tree.ts";
 import { splinePoints } from "./sweep.ts";
 
 type V3 = [number, number, number];
@@ -73,6 +73,66 @@ function reach(profile: readonly (readonly number[])[], smooth: boolean | undefi
   return runs.flatMap((run) => (run.length > 2 ? splinePoints(run, 12) : run)).map(([u, v]) => [u, v]);
 }
 
+/** The circle through three points, or null when they are in a straight line. */
+function circleThrough(a: readonly number[], b: readonly number[], c: readonly number[]): { c: [number, number]; r: number } | null {
+  const d = 2 * (a[0]! * (b[1]! - c[1]!) + b[0]! * (c[1]! - a[1]!) + c[0]! * (a[1]! - b[1]!));
+  if (!(Math.abs(d) > 1e-12)) return null;
+  const a2 = a[0]! * a[0]! + a[1]! * a[1]!;
+  const b2 = b[0]! * b[0]! + b[1]! * b[1]!;
+  const c2 = c[0]! * c[0]! + c[1]! * c[1]!;
+  const ux = (a2 * (b[1]! - c[1]!) + b2 * (c[1]! - a[1]!) + c2 * (a[1]! - b[1]!)) / d;
+  const uy = (a2 * (c[0]! - b[0]!) + b2 * (a[0]! - c[0]!) + c2 * (b[0]! - a[0]!)) / d;
+  const r = Math.hypot(a[0]! - ux, a[1]! - uy);
+  return Number.isFinite(r) && r > 1e-9 ? { c: [ux, uy], r } : null;
+}
+
+function ccwDelta(from: number, to: number): number {
+  let d = to - from;
+  const turn = Math.PI * 2;
+  while (d < 0) d += turn;
+  while (d >= turn) d -= turn;
+  return d;
+}
+
+/** Cardinal points of the arc a → c that passes through b, where the circle bulges past the three points. */
+function arcExtremes(a: readonly number[], b: readonly number[], c: readonly number[]): [number, number][] {
+  const circle = circleThrough(a, b, c);
+  if (!circle) return [];
+  const ang = (p: readonly number[]) => Math.atan2(p[1]! - circle.c[1], p[0]! - circle.c[0]);
+  const a0 = ang(a);
+  const through = ccwDelta(a0, ang(b));
+  const end = ccwDelta(a0, ang(c));
+  const sweep = through <= end ? end : end - Math.PI * 2;
+  const out: [number, number][] = [];
+  for (const [du, dv] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    const p: [number, number] = [circle.c[0] + du * circle.r, circle.c[1] + dv * circle.r];
+    const at = ccwDelta(a0, ang(p));
+    const along = sweep >= 0 ? at : at - Math.PI * 2;
+    if (along >= -1e-9 && along <= sweep + 1e-9) out.push(p);
+  }
+  return out;
+}
+
+/** A loop outline's points, plus each arc's extremes, so a box holds the bulge past the typed points. */
+function loopPoints(loops: readonly ProfileLoop[]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const loop of loops) {
+    let cursor: readonly number[] = loop.start;
+    out.push([cursor[0]!, cursor[1]!]);
+    for (const seg of loop.segments) {
+      if (seg.kind === "arc") {
+        out.push([seg.through[0], seg.through[1]]);
+        out.push(...arcExtremes(cursor, seg.through, seg.to));
+      } else if (seg.kind === "spline") {
+        for (const point of seg.through) out.push([point[0], point[1]]);
+      }
+      out.push([seg.to[0], seg.to[1]]);
+      cursor = seg.to;
+    }
+  }
+  return out;
+}
+
 /** The box of the tool a stored op applies, in the solid's frame, or null for an op with no tool of its own. */
 export function opBox(op: ModelOp): Box | null {
   switch (op.kind) {
@@ -83,7 +143,8 @@ export function opBox(op: ModelOp): Box | null {
       const length = Math.abs(op.depth);
       const start = op.symmetric ? -length / 2 : Math.min(op.depth, 0);
       let box: Box | null = null;
-      for (const [pu, pv] of reach(op.profile, op.smooth, op.corners)) for (const pw of [start, start + length]) box = grow(box, along(op.origin, [[u, pu], [v, pv], [w, pw]]));
+      const outline = op.loops?.length ? loopPoints(op.loops) : reach(op.profile ?? [], op.smooth, op.corners);
+      for (const [pu, pv] of outline) for (const pw of [start, start + length]) box = grow(box, along(op.origin, [[u, pu], [v, pv], [w, pw]]));
       return box;
     }
     case "revolve": {
@@ -94,7 +155,8 @@ export function opBox(op: ModelOp): Box | null {
       const dir: V3 = [0, 1, 2].map((i) => (u[i]! * du + v[i]! * dv) / dl) as V3;
       const base = along(op.origin, [[u, au], [v, av]]);
       let box: Box | null = null;
-      for (const [pu, pv] of reach(op.profile, op.smooth, op.corners)) {
+      const outline = op.loops?.length ? loopPoints(op.loops) : reach(op.profile ?? [], op.smooth, op.corners);
+      for (const [pu, pv] of outline) {
         const p = along(op.origin, [[u, pu], [v, pv]]);
         const rel = [p[0] - base[0], p[1] - base[1], p[2] - base[2]];
         const t = rel[0]! * dir[0] + rel[1]! * dir[1] + rel[2]! * dir[2];
@@ -108,7 +170,9 @@ export function opBox(op: ModelOp): Box | null {
       let box: Box | null = null;
       for (const section of op.sections) {
         const [u, v, w] = axes(section.turn);
-        if (section.radius !== undefined) box = circleBox(box, section.origin, w, Math.max(section.radius, section.radiusV ?? 0));
+        if (section.loops?.length) {
+          for (const [pu, pv] of loopPoints(section.loops)) box = grow(box, along(section.origin, [[u, pu], [v, pv]]));
+        } else if (section.radius !== undefined) box = circleBox(box, section.origin, w, Math.max(section.radius, section.radiusV ?? 0));
         else for (const [pu, pv] of reach(section.profile ?? [], section.smooth, section.corners)) box = grow(box, along(section.origin, [[u, pu], [v, pv]]));
       }
       return box;

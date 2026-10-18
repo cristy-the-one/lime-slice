@@ -5,7 +5,7 @@
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
 import { isRigid, type Affine } from "./model-space.ts";
-import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
 
 type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
@@ -252,11 +252,26 @@ function readOp(value: unknown): SavedOp | undefined {
     case "revolve": {
       if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
       const turn = value.turn === undefined ? ([0, 0, 0] as Vec3) : vec(value.turn);
-      const profile = Array.isArray(value.profile) ? value.profile.map(pair) : null;
-      if (!origin || !turn || !profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
-      const shape = readProfileShape(value, profile.length);
-      if (!shape) return undefined;
-      const plane = { op: value.op as BooleanKind, origin, turn, profile: profile as Vec2[], ...shape };
+      if (!origin || !turn) return undefined;
+      // K1: `loops` may stand in for `profile`. A file with neither is the old refusal. Both, when well formed, are
+      // kept so the engine can refuse them rather than the file dropping the tree.
+      const loops = readLoops(value.loops);
+      if (loops === null) return undefined;
+      const profileGiven = value.profile !== undefined;
+      let profile: Vec2[] | undefined;
+      let shape: { smooth?: true; corners?: number[] } | null = {};
+      if (profileGiven) {
+        const parsed = Array.isArray(value.profile) ? value.profile.map(pair) : null;
+        if (!parsed || parsed.length < 3 || parsed.some((point) => !point)) return undefined;
+        shape = readProfileShape(value, parsed.length);
+        if (!shape) return undefined;
+        profile = parsed as Vec2[];
+      } else if (value.smooth !== undefined || value.corners !== undefined) {
+        shape = readProfileShape(value, 200);
+        if (!shape) return undefined;
+      }
+      if (!loops && !profile) return undefined;
+      const plane = { op: value.op as BooleanKind, origin, turn, ...(profile ? { profile } : {}), ...shape, ...(loops ? { loops } : {}) };
       if (value.kind === "extrude") {
         if (!finite(value.depth) || (value.symmetric !== undefined && typeof value.symmetric !== "boolean")) return undefined;
         return { kind: "extrude", ...plane, depth: value.depth, ...(value.symmetric === true ? { symmetric: true as const } : {}) };
@@ -281,16 +296,41 @@ function readOp(value: unknown): SavedOp | undefined {
         const at = vec(raw.origin);
         const turn = raw.turn === undefined ? ([0, 0, 0] as Vec3) : vec(raw.turn);
         if (!at || !turn) return undefined;
-        if (finite(raw.radius)) {
+        const loops = readLoops(raw.loops);
+        if (loops === null) return undefined;
+        if (!loops && finite(raw.radius)) {
           if (raw.radiusV !== undefined && !finite(raw.radiusV)) return undefined;
           sections.push({ origin: at, turn, radius: raw.radius, ...(finite(raw.radiusV) ? { radiusV: raw.radiusV } : {}) });
           continue;
         }
-        const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
-        if (!profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
-        const shape = readProfileShape(raw, profile.length);
-        if (!shape) return undefined;
-        sections.push({ origin: at, turn, profile: profile as Vec2[], ...shape });
+        if (!loops) {
+          const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
+          if (!profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
+          const shape = readProfileShape(raw, profile.length);
+          if (!shape) return undefined;
+          sections.push({ origin: at, turn, profile: profile as Vec2[], ...shape });
+          continue;
+        }
+        const section: LoftSection = { origin: at, turn };
+        if (finite(raw.radius)) {
+          if (raw.radiusV !== undefined && !finite(raw.radiusV)) return undefined;
+          section.radius = raw.radius;
+          if (finite(raw.radiusV)) section.radiusV = raw.radiusV;
+        }
+        if (raw.profile !== undefined) {
+          const profile = Array.isArray(raw.profile) ? raw.profile.map(pair) : null;
+          if (!profile || profile.length < 3 || profile.some((point) => !point)) return undefined;
+          const shape = readProfileShape(raw, profile.length);
+          if (!shape) return undefined;
+          section.profile = profile as Vec2[];
+          Object.assign(section, shape);
+        } else if (raw.smooth !== undefined || raw.corners !== undefined) {
+          const shape = readProfileShape(raw, 200);
+          if (!shape) return undefined;
+          Object.assign(section, shape);
+        }
+        section.loops = loops;
+        sections.push(section);
       }
       return { kind: "loft", op: value.op, sections, ...(value.ruled === true ? { ruled: true as const } : {}) };
     }
@@ -393,6 +433,48 @@ function readProfileShape(value: Record<string, unknown>, points: number): { smo
   if (value.corners === undefined) return value.smooth === true ? { smooth: true } : {};
   if (!Array.isArray(value.corners) || !value.corners.every((corner) => isId(corner) && corner < points)) return null;
   return { ...(value.smooth === true ? { smooth: true as const } : {}), ...(value.corners.length > 0 ? { corners: [...value.corners] as number[] } : {}) };
+}
+
+/**
+ * K1 loops, or null when the field is present and malformed. Undefined when it is absent or empty, so an old file
+ * reads with no `loops` key.
+ */
+function readLoops(value: unknown): ProfileLoop[] | null | undefined {
+  if (value === undefined || (Array.isArray(value) && value.length === 0)) return undefined;
+  if (!Array.isArray(value) || value.length > 32) return null;
+  const loops: ProfileLoop[] = [];
+  for (const raw of value) {
+    if (!isRecord(raw) || !Array.isArray(raw.segments) || raw.segments.length < 1 || raw.segments.length > 200) return null;
+    const start = pair(raw.start);
+    if (!start) return null;
+    const segments: ProfileSegment[] = [];
+    for (const seg of raw.segments) {
+      if (!isRecord(seg)) return null;
+      const to = pair(seg.to);
+      if (!to) return null;
+      if (seg.kind === "line") {
+        if (seg.through !== undefined) return null;
+        segments.push({ kind: "line", to });
+      } else if (seg.kind === "arc") {
+        const through = pair(seg.through);
+        if (!through) return null;
+        segments.push({ kind: "arc", through, to });
+      } else if (seg.kind === "spline") {
+        if (!Array.isArray(seg.through) || seg.through.length < 1 || seg.through.length > 200) return null;
+        const through: Vec2[] = [];
+        for (const point of seg.through) {
+          const at = pair(point);
+          if (!at) return null;
+          through.push(at);
+        }
+        segments.push({ kind: "spline", through, to });
+      } else {
+        return null;
+      }
+    }
+    loops.push({ start, segments });
+  }
+  return loops;
 }
 
 function pair(value: unknown): Vec2 | null {

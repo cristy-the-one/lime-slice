@@ -370,6 +370,38 @@ const profilePlace = {
   turn: { ...vec3, description: "Plane turn, degrees X, Y, Z." },
 };
 const profile = { type: "array", minItems: 3, maxItems: 200, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "Closed outline, [u, v] points, mm." };
+const point2 = { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } };
+/** K1: loops in place of a point profile. The first loop is the outline; the rest are holes. */
+const loopsField = {
+  type: "array",
+  minItems: 1,
+  maxItems: 32,
+  description: "Outer loop, then holes. Replaces profile.",
+  items: {
+    type: "object",
+    additionalProperties: false,
+    required: ["start", "segments"],
+    properties: {
+      start: { ...point2, description: "Start [u, v], mm." },
+      segments: {
+        type: "array",
+        minItems: 1,
+        maxItems: 200,
+        description: "line, arc, or spline, back to the start.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "to"],
+          properties: {
+            kind: { enum: ["line", "arc", "spline"], description: "line, arc, or spline." },
+            to: { ...point2, description: "End [u, v]." },
+            through: { description: "Arc: one [u, v]. Spline: a list of them.", oneOf: [point2, { type: "array", minItems: 1, maxItems: 200, items: point2 }] },
+          },
+        },
+      },
+    },
+  },
+};
 
 const profileShape = {
   smooth: { type: "boolean", description: "Splines through the points, not straight edges." },
@@ -382,11 +414,12 @@ const sketchOps = [
   {
     type: "object",
     additionalProperties: false,
-    required: ["kind", "profile", "depth"],
+    required: ["kind", "depth"],
     properties: {
       kind: { const: "extrude" },
       op: booleanKind,
       profile,
+      loops: loopsField,
       depth: { type: "number", minimum: -1000, maximum: 1000, description: "Along W; negative goes into the face." },
       symmetric: { type: "boolean", description: "Centred on the plane." },
       ...profileShape,
@@ -397,11 +430,12 @@ const sketchOps = [
   {
     type: "object",
     additionalProperties: false,
-    required: ["kind", "profile"],
+    required: ["kind"],
     properties: {
       kind: { const: "revolve" },
       op: booleanKind,
       profile,
+      loops: loopsField,
       axisOrigin: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "[u, v]. Default [0, 0]." },
       axisDir: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "In-plane. Default V." },
       angleDeg: { type: "number", minimum: -360, maximum: 360, description: "Default 360." },
@@ -432,6 +466,7 @@ const sketchOps = [
             radius: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Circle, or ellipse along U." },
             radiusV: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Ellipse along V." },
             profile,
+            loops: loopsField,
             ...profileShape,
           },
         },

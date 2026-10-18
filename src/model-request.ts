@@ -6,7 +6,7 @@ import { bytesToBase64 } from "./base64.ts";
 import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
-import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
+import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
 export type TreeRequest = Record<string, unknown>;
 
@@ -72,8 +72,32 @@ export interface ProfilePlane {
  * An extrude of `profile` (`[u, v]` points) on `plane`, in the frame the plane is given in: `toSolidOp` takes it into the
  * solid's own frame like any tool's op. `symmetric` is sent only when on, as the engine stores it.
  */
-export function extrudeOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], depth: number, symmetric = false, shape: ProfileShape = {}): ExtrudeOp {
-  return { kind: "extrude", op, origin: [...plane.origin], turn: [...plane.turn], profile: profile.map(([u, v]) => [u, v]), depth, ...(symmetric ? { symmetric: true as const } : {}), ...shapeFields(shape) };
+export function extrudeOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], depth: number, symmetric = false, shape: ProfileShape = {}, loops?: readonly ProfileLoop[]): ExtrudeOp {
+  const copied = loops && loops.length > 0 ? copyLoops(loops) : undefined;
+  return {
+    kind: "extrude",
+    op,
+    origin: [...plane.origin],
+    turn: [...plane.turn],
+    ...(copied ? { loops: copied } : { profile: profile.map(([u, v]) => [u, v] as Vec2) }),
+    depth,
+    ...(symmetric ? { symmetric: true as const } : {}),
+    ...(copied ? {} : shapeFields(shape)),
+  };
+}
+
+/** A copy of `loops`, so a caller that keeps the arrays does not share them with the stored op. */
+function copyLoops(loops: readonly ProfileLoop[]): ProfileLoop[] {
+  return loops.map((loop) => ({
+    start: [loop.start[0], loop.start[1]],
+    segments: loop.segments.map((seg) => copySegment(seg)),
+  }));
+}
+
+function copySegment(seg: ProfileSegment): ProfileSegment {
+  if (seg.kind === "line") return { kind: "line", to: [seg.to[0], seg.to[1]] };
+  if (seg.kind === "arc") return { kind: "arc", through: [seg.through[0], seg.through[1]], to: [seg.to[0], seg.to[1]] };
+  return { kind: "spline", through: seg.through.map(([u, v]) => [u, v] as Vec2), to: [seg.to[0], seg.to[1]] };
 }
 
 /** Splines through a profile's points, sharp at `corners`. Each field is sent only when on, as the engine stores it. */
@@ -94,26 +118,29 @@ export function loftOp(op: BooleanKind, sections: readonly LoftSection[], ruled 
     sections: sections.map((section) => ({
       origin: [...section.origin],
       turn: [...section.turn],
-      ...(section.radius !== undefined
-        ? { radius: section.radius, ...(section.radiusV !== undefined ? { radiusV: section.radiusV } : {}) }
-        : { profile: (section.profile ?? []).map(([u, v]) => [u, v] as Vec2), ...shapeFields({ smooth: section.smooth, corners: section.corners }) }),
+      ...(section.loops && section.loops.length > 0
+        ? { loops: copyLoops(section.loops) }
+        : section.radius !== undefined
+          ? { radius: section.radius, ...(section.radiusV !== undefined ? { radiusV: section.radiusV } : {}) }
+          : { profile: (section.profile ?? []).map(([u, v]) => [u, v] as Vec2), ...shapeFields({ smooth: section.smooth, corners: section.corners }) }),
     })),
     ...(ruled ? { ruled: true as const } : {}),
   };
 }
 
 /** A revolve of `profile` on `plane` about an in-plane axis. Each of the axis's fields is sent only when given. */
-export function revolveOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], axis: { origin?: Vec2; dir?: Vec2; angleDeg?: number } = {}, shape: ProfileShape = {}): RevolveOp {
+export function revolveOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], axis: { origin?: Vec2; dir?: Vec2; angleDeg?: number } = {}, shape: ProfileShape = {}, loops?: readonly ProfileLoop[]): RevolveOp {
+  const copied = loops && loops.length > 0 ? copyLoops(loops) : undefined;
   return {
     kind: "revolve",
     op,
     origin: [...plane.origin],
     turn: [...plane.turn],
-    profile: profile.map(([u, v]) => [u, v]),
+    ...(copied ? { loops: copied } : { profile: profile.map(([u, v]) => [u, v] as Vec2) }),
     ...(axis.origin ? { axisOrigin: [...axis.origin] as Vec2 } : {}),
     ...(axis.dir ? { axisDir: [...axis.dir] as Vec2 } : {}),
     ...(axis.angleDeg != null ? { angleDeg: axis.angleDeg } : {}),
-    ...shapeFields(shape),
+    ...(copied ? {} : shapeFields(shape)),
   };
 }
 
