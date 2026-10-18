@@ -63,6 +63,9 @@
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRepGProp_Domain.hxx>
+#include <BRepGProp_Face.hxx>
+#include <BRepGProp_Vinert.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
@@ -382,6 +385,62 @@ void integrate(const TopoDS_Shape& shape, GProp_GProps& props) {
     BRepGProp::VolumeProperties(shape, props);
 }
 
+/// `BRepGProp::VolumeProperties(shape, props).Mass()`, the same number to the last bit, with the faces integrated in
+/// parallel. Open CASCADE integrates each face about one point, the mean of the shape's vertices, and adds the faces'
+/// volumes in the order it explores them; this integrates each face alone, into its own slot, about the same point, and
+/// adds the slots in the same order. A face with no surface, which Open CASCADE measures from its mesh, sends the
+/// whole shape to Open CASCADE's own loop.
+double integrated_volume(const TopoDS_Shape& shape) {
+    g_stats.volumes += 1;
+    const Timed timed(g_stats.volume_us);
+    gp_XYZ middle(0, 0, 0);
+    int vertices = 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_VERTEX); explorer.More(); explorer.Next()) {
+        middle += BRep_Tool::Pnt(TopoDS::Vertex(explorer.Current())).XYZ();
+        vertices += 1;
+    }
+    std::vector<TopoDS_Face> faces;
+    bool plain = vertices > 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More() && plain; explorer.Next()) {
+        const TopoDS_Face& face = TopoDS::Face(explorer.Current());
+        TopLoc_Location location;
+        plain = !BRep_Tool::Surface(face, location).IsNull();
+        faces.push_back(face);
+    }
+    if (!plain) {
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(shape, props);
+        return props.Mass();
+    }
+    middle /= vertices;
+    const gp_Pnt about(middle);
+    std::vector<double> parts(faces.size(), 0.0);
+    OSD_Parallel::For(0, static_cast<int>(faces.size()), [&faces, &parts, &about](int i) {
+        const TopoDS_Face& face = faces[static_cast<size_t>(i)];
+        const TopAbs_Orientation orientation = face.Orientation();
+        if (orientation != TopAbs_FORWARD && orientation != TopAbs_REVERSED) {
+            return;
+        }
+        BRepGProp_Face surface;
+        BRepGProp_Vinert inertia;
+        inertia.SetLocation(about);
+        surface.Load(face);
+        if (face.NbChildren() == 0) {
+            inertia.Perform(surface);
+        } else {
+            BRepGProp_Domain domain;
+            domain.Init(face);
+            inertia.Perform(surface, domain);
+        }
+        parts[static_cast<size_t>(i)] = inertia.Mass();
+    });
+    double total = 0.0;
+    for (const double part : parts) {
+        total = total + part;
+    }
+    return total;
+}
+
 double volume_of(const TopoDS_Shape& shape) {
     if (shape.IsNull()) {
         return 0;
@@ -390,18 +449,14 @@ double volume_of(const TopoDS_Shape& shape) {
         double total = 0;
         int count = 0;
         for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More(); explorer.Next()) {
-            GProp_GProps props;
-            integrate(explorer.Current(), props);
-            total += props.Mass();
+            total += integrated_volume(explorer.Current());
             count += 1;
         }
         if (count > 0) {
             return total;
         }
     }
-    GProp_GProps props;
-    integrate(shape, props);
-    return props.Mass();
+    return integrated_volume(shape);
 }
 
 bool has_solid(const TopoDS_Shape& shape) {
