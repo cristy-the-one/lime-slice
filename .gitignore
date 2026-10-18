@@ -7,6 +7,7 @@
 /src-tauri/resources/occt/
 /src-tauri/resources/crt/
 /src-tauri/resources/mcp/
+/src-tauri/resources/lime_shell.dll
 /test-results
 /playwright-report
 .DS_Store

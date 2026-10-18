@@ -303,7 +303,7 @@ Licence: no GPL and no Open CASCADE in the shell. The `windows` crate is MIT or 
 
 ## Installer
 
-The release workflow's Windows leg already builds NSIS (`--bundles nsis`). This change adds a build of `lime_shell.dll` on that leg and copies it into the bundle resources. It does not bump `tauri.conf.json`, the workspace version, or any crate version. It does not add a `workflow_dispatch` and does not tag.
+The release workflow's Windows leg already builds NSIS (`--bundles nsis`). That leg also builds `lime_shell.dll` and copies it to `src-tauri/resources/lime_shell.dll`. The Windows installer command passes `src-tauri/tauri.shell.json`, which maps that file to `$INSTDIR\lime_shell.dll` and points NSIS at `src-tauri/windows/shell-hooks.nsh`. Linux and macOS do not pass that config, so a desktop build there never looks for the DLL. This step does not bump `tauri.conf.json`, the workspace version, or any crate version. It does not add a `workflow_dispatch` and does not tag.
 
 The NSIS hook (`NSIS_HOOK_POSTINSTALL` / `NSIS_HOOK_POSTUNINSTALL`) writes and deletes, under `SHCTX` so a per-user install stays in HKCU and a per-machine install stays in HKLM:
 

@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/lime_shell.dll": "lime_shell.dll"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/shell-hooks.nsh"
+      }
+    }
+  }
+}
