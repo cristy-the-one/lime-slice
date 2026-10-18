@@ -4,6 +4,7 @@
  * split into strips is still one floor, and a second set of ribs runs through the first instead of stopping at it.
  */
 import { localPoint, type Workplane } from "../src/workplane.ts";
+import type { StandRegion } from "../src/modeling/compose.ts";
 
 type Span = [number, number];
 
@@ -11,15 +12,7 @@ type Span = [number, number];
 const UNDER = 1.37e-3;
 const OVER = 1.31e-3;
 
-export interface StandRegion {
-  /**
-   * Along the line b = `b` in the plane turned `deg` (a runs along it), merged spans of a where a piece stands. Null
-   * when the line's crossings do not pair up, where the triangles do not close: the caller keeps to the face outline.
-   */
-  spans(b: number, deg: number): Span[] | null;
-  /** Whether a point (u, v) of the plane is in the region; null where the line through it could not be read. */
-  has(u: number, v: number): boolean | null;
-}
+export type { StandRegion };
 
 /**
  * The part's material along lines in a plane frame: `inside(w, b, deg)` is the spans of a, on the line at height w
