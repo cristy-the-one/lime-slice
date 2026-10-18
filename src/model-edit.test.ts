@@ -5,7 +5,7 @@ import { planeFor, splitBase } from "./model-plane.ts";
 import { primitiveSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, toSolidOp, type Affine } from "./model-space.ts";
 import { loadedTree, readSavedTree, savedTree } from "./model-tree-file.ts";
-import { childrenOf, jumped, newTree, opLabel, pathTo, redoTarget, reserveId, withChild, withNode, type ModelOp, type ModelTree, type Vec3 } from "./model-tree.ts";
+import { childrenOf, jumped, newTree, opLabel, pathTo, redoTarget, reserveId, rootLabel, withChild, withNode, type ModelOp, type ModelTree, type Vec3 } from "./model-tree.ts";
 
 let failed = 0;
 
@@ -105,6 +105,12 @@ eq("the broken step itself can be edited", editRefusal(broke, 7), null);
 eq("a step under a broken one cannot", editRefusal(broke, 8), "A step above this one cannot be rebuilt. Edit or delete that step first.");
 eq("an edit of the root starts from its primitive", editedOp(line, 0), { kind: "root", ...boxSpec });
 eq("the header names the step and its label", [editHead(line, 2), editHead(line, 0), editHead(edited, 7)], ["Editing step 2: Hole ⌀4 depth 8", "Editing the new solid: Box 20×20×20", "Editing step 3: Round"]);
+const extrudeRoot = { kind: "extrude" as const, op: "fuse" as const, origin: [0, 0, 0] as Vec3, turn: [0, 0, 0] as Vec3, profile: [[0, 0], [10, 0], [10, 10], [0, 10]] as [number, number][], depth: 10 };
+const featureTree = newTree("ex#1", { kind: "feature", op: extrudeRoot }, rootLabel({ kind: "feature", op: extrudeRoot }, "Extrude 1"), fp(1000));
+eq("a sketch-started root can be edited", editRefusal(featureTree, 0), null);
+eq("its edit starts from the feature", editedOp(featureTree, 0), extrudeRoot);
+eq("its header names the extrude", editHead(featureTree, 0), `Editing the new solid: ${opLabel(extrudeRoot)}`);
+eq("a tool's sketch root is named as a sketch", toolEditHead(featureTree, 0, "Extrude 1"), `Editing Extrude 1's sketch: ${opLabel(extrudeRoot)}`);
 
 // The panel opens in model space: under a turned and moved pose, its numbers sent back through `toSolidOp` are the op again.
 const skew: Affine = { m: eulerOrient(30, -50, 115), t: [12.5, 3, -40] };

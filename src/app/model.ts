@@ -18,7 +18,7 @@ import {
   type Affine,
   type PlaceFields,
 } from "../model-space";
-import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, stepIds, toolEditHead, toolEditRefusal, toolPose, type EditLevel, type EditPanel, type ForkStep, type ToolLink } from "../model-edit";
+import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, FEATURE_ROOT_EDIT, forked, matchEdges, olderSplitNote, replayChain, stepIds, toolEditHead, toolEditRefusal, toolPose, type EditLevel, type EditPanel, type ForkStep, type ToolLink } from "../model-edit";
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../model-primitive";
 import { markProjectDirty } from "../project-dirty";
 import { unionBox } from "../measure";
@@ -45,6 +45,7 @@ import {
   renumberedSteps,
   reserveId,
   rootLabel,
+  featureObjectName,
   subtree,
   toolKeys,
   undoTarget,
@@ -52,6 +53,7 @@ import {
   visitStep,
   withChild,
   withNode,
+  type FeatureOp,
   type Fingerprint,
   type ModelOp,
   type ModelRoot,
@@ -775,12 +777,13 @@ export async function captureOpenSolid() {
   for (const token of failed) putStep(token, undefined);
 }
 
-type SavedRoot = { rootStep: { name: string; bytes: ArrayBuffer } } | { rootPrimitive: PrimitiveSpec };
+type SavedRoot = { rootStep: { name: string; bytes: ArrayBuffer } } | { rootPrimitive: PrimitiveSpec } | { rootFeature: FeatureOp };
 
-/** What a saved tree reopens from: its root STEP, or a new solid's primitive. A piece's is its root's STEP, once written. */
+/** What a saved tree reopens from: its root STEP, a new solid's primitive, or a sketch feature. A piece's is its root's STEP, once written. */
 function savedRootOf(tree: ModelTree): SavedRoot | null {
   if (tree.root.kind === "step") return { rootStep: { name: tree.root.name, bytes: tree.root.bytes } };
   if (tree.root.kind === "primitive") return { rootPrimitive: tree.root.solid };
+  if (tree.root.kind === "feature") return { rootFeature: tree.root.op };
   const root = tree.nodes.get(ROOT)?.mesh;
   return root?.step ? { rootStep: { name: stepFileName(root.name), bytes: root.step } } : null;
 }
@@ -789,8 +792,8 @@ type TreeToSave = SavedTree<{ name: string; bytes: ArrayBuffer }>;
 
 /**
  * What `.lime` keeps of each plate object's tree, by object id: the tree Model would resume for the
- * object's mesh, when it has a step, a name, a piece a kept split names, or a primitive root (a new
- * solid has no file to open again). A split piece's tree is kept from the STEP of its own root,
+ * object's mesh, when it has a step, a name, a piece a kept split names, a primitive root, or a
+ * feature root (a new solid has no file to open again). A split piece's tree is kept from the STEP of its own root,
  * written here if Model has not, so it opens without the part it was cut from; `unsaved` names the
  * objects whose root the engine could not write. Trees of objects no longer on the plate are not
  * saved, except a tool's that a saved join names (`tools`), under the object id the join gives, and
@@ -834,7 +837,7 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
     // A root STEP written below can outlast the tree: a new file can replace the plate meanwhile.
     if (!modelTrees.has(key)) continue;
     const tree = treeOfKey(key);
-    if (tree.nodes.size === 1 && !tree.nodes.get(ROOT)?.name && !named.has(key) && tree.root.kind !== "primitive") continue;
+    if (tree.nodes.size === 1 && !tree.nodes.get(ROOT)?.name && !named.has(key) && tree.root.kind !== "primitive" && tree.root.kind !== "feature") continue;
     const root = tree.nodes.get(ROOT)?.mesh;
     if (!savedRootOf(tree) && tree.root.kind === "piece" && root) await writeStep(root.token, key, ROOT);
     // An imported STEP root is saved as the engine's own solid of it, once, while the engine holds it: a reopen that
@@ -889,7 +892,11 @@ export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: str
     const tree = saved.get(id)!;
     const key = keys.get(id)!;
     const obj = state.plate.objects.find((item) => item.id === id);
-    const root: ModelRoot = tree.rootPrimitive ? { kind: "primitive", solid: tree.rootPrimitive } : { kind: "step", ...tree.rootStep };
+    const root: ModelRoot = tree.rootFeature
+      ? { kind: "feature", op: tree.rootFeature }
+      : tree.rootPrimitive
+        ? { kind: "primitive", solid: tree.rootPrimitive }
+        : { kind: "step", ...tree.rootStep };
     if (!obj) {
       // A tool that left the plate: its tree stays for the joins that name it, and opens whole when one is built.
       const name = toolNames.get(id);
@@ -1085,7 +1092,7 @@ function rootSource(of: { fileName: string; bytes: ArrayBuffer; sourcePos: Float
   const token = meshTokenOf(of.bytes);
   const mesh: PlateMesh = { name: of.fileName, bytes: of.bytes, sourcePos: of.sourcePos, token, ...(of.brep ? { step: of.brep } : {}) };
   const source = [...modelTrees.values()].find((tree) => nodeWithMesh(tree, token) != null);
-  if (source?.root.kind === "primitive" && nodeWithMesh(source, token) === ROOT) return { from: source.root, mesh };
+  if ((source?.root.kind === "primitive" || source?.root.kind === "feature") && nodeWithMesh(source, token) === ROOT) return { from: source.root, mesh };
   if (of.brep || isStepName(of.fileName)) return { from: { kind: "step", name: of.brep ? stepFileName(of.fileName) : of.fileName, bytes: of.brep ?? of.bytes }, mesh };
   return source ? { copies: { key: source.key, node: nodeWithMesh(source, token)! }, mesh } : null;
 }
@@ -1632,6 +1639,10 @@ async function startOwnEdit(node: NodeId) {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || state.stage !== "model") return;
+  if (tree.root.kind === "feature" && tree.nodes.get(node)?.parent === null) {
+    readout(FEATURE_ROOT_EDIT);
+    return;
+  }
   const refusal = editRefusal(tree, node) ?? (busy || jumping ? STILL_WORKING : !at.solid.editable ? VIEW_ONLY : null);
   const op = editedOp(tree, node);
   if (refusal || !op) {
@@ -1668,6 +1679,10 @@ async function startToolEdit(row: RowKey) {
   const tree = treeOf(at);
   if (!at || !tree || state.stage !== "model") return;
   const step = rowStep(modelTrees, tree, row);
+  if (step && step.tree.root.kind === "feature" && step.tree.nodes.get(step.id)?.parent === null) {
+    readout(FEATURE_ROOT_EDIT);
+    return;
+  }
   const refusal = !step ? "This step is no longer in the history." : toolEditRefusal(step.tree, step.joins, step.id) ?? (busy || jumping ? STILL_WORKING : !at.solid.editable ? VIEW_ONLY : null);
   const op = step ? editedOp(step.tree, step.id) : null;
   if (refusal || !step || !op) {
@@ -2049,6 +2064,43 @@ async function createSolid() {
   if (busy || jumping || state.stage !== "model") return;
   const typed = fieldPrimitive();
   const root = rootSpec(typed);
+  const from: ModelRoot = { kind: "primitive", solid: root };
+  await finishNewSolid({
+    request: (key, chord) => newSolidRequest(key, typed, chord),
+    name: (names) => primitiveName(names, typed.primitive),
+    root: from,
+    // The primitive's box, from its numbers, as before the mesh is read.
+    bounds: () => primitiveBounds(root),
+  });
+}
+
+/**
+ * A new plate object whose root is an extrude, a revolve, or a loft, with no primitive under it (K2). The sketch
+ * editor (F1) calls this for "New object". Cut and intersect are refused: the feature is the solid.
+ */
+export async function createFeatureSolid(op: FeatureOp) {
+  if (busy || jumping || state.stage !== "model") return;
+  if (op.op !== "fuse") {
+    const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
+    readout(`A new solid is the ${noun} itself. Cut and intersect need a part that is already there.`);
+    return;
+  }
+  const from: ModelRoot = { kind: "feature", op };
+  await finishNewSolid({
+    request: (key, chord) => openRequest(key, from, chord),
+    name: (names) => featureObjectName(names, op.kind),
+    root: from,
+    bounds: (positions) => boundsOf(positions),
+  });
+}
+
+/** A new plate object from an `open` that is its own root: a primitive, or a sketch feature. */
+async function finishNewSolid(made: {
+  request: (key: string, chord: number) => ReturnType<typeof newSolidRequest>;
+  name: (names: Iterable<string>) => string;
+  root: Exclude<ModelRoot, { kind: "piece" }>;
+  bounds: (positions: Float32Array) => Bounds;
+}) {
   const id = freshPlateId();
   const key = freshTreeKey(id);
   const chord = state.stepTolerance;
@@ -2056,7 +2108,7 @@ async function createSolid() {
   busy = true;
   syncUndo();
   readout("Building the solid…");
-  const body = await post(newSolidRequest(key, typed, chord));
+  const body = await post(made.request(key, chord));
   if (mine === ticket) busy = false;
   syncUndo();
   const parsed = decodeSolid(body);
@@ -2075,19 +2127,18 @@ async function createSolid() {
   noteEdit();
   syncPlateFromState();
   const first = state.plate.objects.length === 0;
-  const name = primitiveName(state.plate.objects.map((obj) => obj.name), typed.primitive);
+  const name = made.name(state.plate.objects.map((obj) => obj.name));
   const positions = new Float32Array(parsed.positions);
   const seat = settleBy(positions);
   const fileName = `${name}.stl`;
   const bytes = encodeStl(positions, fileName);
   setMeshSeat(bytes, seat);
   const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
-  const pose = newSolidPose(others, primitiveBounds(root));
+  const pose = newSolidPose(others, made.bounds(positions));
   const { bedX, bedY } = state.profile;
   state.plate = addedSolid(state.plate, { name, fileName, bytes, sourcePos: positions, stepTolerance: chord }, id, key, pose, bedX, bedY);
   applySelectedToState(state.plate);
-  const from: ModelRoot = { kind: "primitive", solid: root };
-  modelTrees.set(key, withNode(newTree(key, from, rootLabel(from, name), parsed.fingerprint), ROOT, { mesh }));
+  modelTrees.set(key, withNode(newTree(key, made.root, rootLabel(made.root, name), parsed.fingerprint), ROOT, { mesh }));
   keepSolid(key, ROOT, chord, parsed);
   place(first ? "load" : "transform");
   flushEdit();
