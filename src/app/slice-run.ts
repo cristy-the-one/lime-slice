@@ -299,6 +299,10 @@ export async function runSlice(force = false) {
   }
   const id = ++session.job;
   const hash = settingsHash();
+  // This slice is the refresh a pending pause was waiting for: without this, a quiet refresh timed
+  // before a Slice click fires after it lands and sends the same request again.
+  window.clearTimeout(session.autoTimer);
+  session.quietTried = hash;
   const sentPose = currentPlacement()?.pose;
   const slicedBed: SlicedBed = {
     translation: [sentPose?.translation[0] ?? 0, sentPose?.translation[1] ?? 0],
