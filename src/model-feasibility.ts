@@ -17,7 +17,7 @@ import { lastEdge, type ModelPickRef } from "./model-select.ts";
 export const PROBE_WAIT_MS = 300;
 
 /** Tools whose result only the kernel can judge. Split and scale are checked from numbers alone. */
-export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean", "extrude", "revolve", "loft", "shell", "group", "faceExtrude", "moveFaces"] as const;
+export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean", "extrude", "revolve", "loft", "shell", "group", "faceExtrude", "moveFaces", "pocket", "boss", "texture", "array", "ribs", "text"] as const;
 export type ProbedTool = (typeof PROBED_TOOLS)[number];
 
 /** What a probe that builds measured: the result, and `before`, the solid it was built on. */
@@ -102,6 +102,14 @@ const CHECKING: Record<ProbedTool, string> = {
   group: "Checking these steps…",
   faceExtrude: "Checking this pull…",
   moveFaces: "Checking this face move…",
+  // --- A3 composite features. The kernel op is the group; the note names the tool. ---
+  pocket: "Checking this pocket…",
+  boss: "Checking this boss…",
+  texture: "Checking this texture…",
+  array: "Checking this array…",
+  ribs: "Checking these ribs…",
+  text: "Checking this text…",
+  // --- end A3 ---
 };
 
 const FITS: Record<ProbedTool, string> = {
@@ -116,6 +124,14 @@ const FITS: Record<ProbedTool, string> = {
   group: "These steps change the solid.",
   faceExtrude: "This pull changes the solid.",
   moveFaces: "This face move changes the solid.",
+  // --- A3 composite features ---
+  pocket: "This pocket changes the solid.",
+  boss: "This boss changes the solid.",
+  texture: "This texture changes the solid.",
+  array: "This array changes the solid.",
+  ribs: "These ribs change the solid.",
+  text: "This text changes the solid.",
+  // --- end A3 ---
 };
 
 export function probeNote(tool: ProbedTool, probe: ProbeView): { text: string; bad: boolean } | null {

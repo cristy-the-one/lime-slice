@@ -573,6 +573,38 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 }
 .model-edit { display: contents; }
 .model-edit[hidden] { display: none !important; }
+/* A3 composite features: the menu is fixed so the toolbar's horizontal scroll does not clip it. */
+.model-feature { display: inline-flex; align-items: center; position: relative; flex: 0 0 auto; }
+.model-feature-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.model-feature-more:hover, .model-feature-more[aria-expanded="true"] { background: var(--hover, color-mix(in srgb, var(--text) 8%, transparent)); color: var(--text); }
+.model-feature-menu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 8.5rem;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 36%, transparent);
+}
+.model-feature-menu[hidden] { display: none; }
+.model-feature-menu .model-tool { justify-content: flex-start; width: 100%; }
+/* end A3 */
 .model-sep { width: 1px; height: 16px; margin: 0 2px; background: var(--border); flex: 0 0 auto; }
 .model-tool {
   display: inline-flex;

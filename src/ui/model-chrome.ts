@@ -14,6 +14,8 @@ import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, localPoi
 import { lastFace, selectedEdges } from "../model-blend";
 import { SCREWS, screwOf } from "../model-hole";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
+import { featureName, isFeatureTool, panelChoices, piecesOutlineOnly, type FeatureChoices, type FeatureTool } from "../model-features";
+import type { Piece } from "../modeling/compose";
 import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
@@ -79,6 +81,10 @@ interface ModelChromeHooks {
   editJoinGhost(): ContextPart | null;
   /** While a step is edited: the panel still says the step as it is, so Update would change nothing. */
   editUnchanged(): boolean;
+  // --- A3 composite features ---
+  /** The open feature, expanded on the solid on screen. Null pieces until one flat face is picked and the spec fits. */
+  featureView(): { note: string | null; pieces: Piece[] | null; frame: Workplane | null; outward: [number, number, number] | null };
+  // --- end A3 ---
 }
 
 interface JoinChoice {
@@ -145,7 +151,7 @@ let waiting = false;
  * The step being edited, while its tool's panel is open: what it opened with, its header, and what Boolean, New solid
  * and Hole's boxes had before, which they get back when the edit closes.
  */
-let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null; hole: { through: boolean; counterbore: boolean } } } | null = null;
+let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null; hole: { through: boolean; counterbore: boolean }; feature: FeatureChoices } } | null = null;
 const VIEW_ONLY_TIP = "This STEP file has surfaces but no closed solid, so it can be measured but not edited.";
 
 type Scrub = {
@@ -217,6 +223,25 @@ export function mountModelChrome(next: ModelChromeHooks) {
 
   document.querySelector("#modelBar")?.addEventListener("click", (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;
+    // --- A3 composite features ---
+    if (target?.closest("#modelFeatureMore")) {
+      toggleFeatureMenu();
+      return;
+    }
+    const featureItem = target?.closest<HTMLButtonElement>("#modelFeatureMenu [data-tool]");
+    if (featureItem?.dataset.tool && isFeatureTool(featureItem.dataset.tool)) {
+      chooseFeature(featureItem.dataset.tool);
+      return;
+    }
+    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextOp [data-op]");
+    if (featureMode) {
+      paintModeGroup(featureMode);
+      syncFields();
+      refreshGhost();
+      hooks?.paramsChanged();
+      return;
+    }
+    // --- end A3 ---
     const toolButton = target?.closest<HTMLButtonElement>(".model-tool[data-tool]");
     if (toolButton?.dataset.tool) {
       toggleTool(toolButton.dataset.tool as ModelTool);
@@ -281,12 +306,26 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (!pickJoinTool(id)) hooks?.notATool(id);
   });
   window.addEventListener("keydown", onEnter, true);
+  // --- A3 composite features ---
+  showFeatureButton(rememberedFeature());
+  document.addEventListener("pointerdown", (ev) => {
+    const target = ev.target instanceof Element ? ev.target : null;
+    if (target?.closest("#modelFeature")) return;
+    closeFeatureMenu();
+  });
+  // --- end A3 ---
   syncFields();
   refreshTools();
 }
 
 /** Esc cancels the open tool first, and clears the selection when no tool is open. */
 export function escapeModel() {
+  // --- A3 composite features: the menu closes before the tool does. ---
+  if (featureMenuOpen()) {
+    closeFeatureMenu();
+    return;
+  }
+  // --- end A3 ---
   if (tool) {
     closeTool();
     return;
@@ -373,11 +412,15 @@ export function setModelWaiting(next: boolean) {
 /** The latest kernel dry-run for the open tool. Null clears it. */
 export function setModelProbe(next: ProbeView) {
   const was = previewFresh();
+  // --- A3 composite features: a failed step of a group recolours that piece, even when no preview was showing. ---
+  const failed = probe?.phase === "done" ? probe.failedStep : undefined;
   probe = next;
+  const failedNow = probe?.phase === "done" ? probe.failedStep : undefined;
   refreshApply();
   refreshNote();
   // A stand-in the checked shape hid comes back while new numbers are checked.
-  if (previewFresh() !== was) refreshGhost();
+  if (previewFresh() !== was || failed !== failedNow) refreshGhost();
+  // --- end A3 ---
 }
 
 /** Open `next`, or close it when it is open. Opening another tool ends an edit, which takes the view back. */
@@ -388,6 +431,13 @@ function toggleTool(next: ModelTool, editing = false) {
   }
   if (edit && !editing) closeTool();
   tool = next;
+  // --- A3 composite features: the button shows the feature just opened, and a click picks a face. ---
+  if (isFeatureTool(next)) {
+    showFeatureButton(next);
+    rememberFeature(next);
+    if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
+  }
+  // --- end A3 ---
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) bar.dataset.tool = next;
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
@@ -444,7 +494,7 @@ function toggleTool(next: ModelTool, editing = false) {
  */
 export function openEditTool(panel: EditPanel, head: string) {
   if (tool) closeTool();
-  edit = { panel, head, before: { primKind, withObject, joinTool, hole: holeBoxes() } };
+  edit = { panel, head, before: { primKind, withObject, joinTool, hole: holeBoxes(), feature: panelChoices(isFeatureTool(tool) ? tool : undefined) } };
   if (panel.primitive) primKind = panel.primitive;
   withObject = !!panel.join;
   joinTool = null;
@@ -463,6 +513,9 @@ function fillEdit() {
     const keep = document.querySelector<HTMLInputElement>("#modelKeepTool");
     if (keep) keep.checked = panel.join.keepTool;
   }
+  // --- A3 composite features ---
+  if (panel.feature) paintFeature(panel.feature);
+  // --- end A3 ---
   writeFields(Object.keys(panel.fields), Object.values(panel.fields));
   for (const [id, value] of Object.entries(panel.fields)) {
     const input = document.querySelector<HTMLInputElement>(`#${id}`);
@@ -490,6 +543,9 @@ function picksObject(): boolean {
 }
 
 function closeTool() {
+  // --- A3 composite features ---
+  closeFeatureMenu();
+  // --- end A3 ---
   const active = document.activeElement;
   if (active instanceof HTMLElement && active.closest("#modelPanel")) active.blur();
   const ended = edit;
@@ -498,6 +554,9 @@ function closeTool() {
   if (ended) {
     ({ primKind, withObject, joinTool } = ended.before);
     setHoleBoxes(ended.before.hole.through, ended.before.hole.counterbore);
+    // --- A3 composite features ---
+    paintFeature(ended.before.feature);
+    // --- end A3 ---
     document.querySelector<HTMLElement>("#modelEditHead")?.toggleAttribute("hidden", true);
     document.querySelector("#modelPanel")?.removeAttribute("aria-labelledby");
     paintPrimRow();
@@ -684,8 +743,27 @@ function syncFields() {
     const editOk = !edit || node.id !== "modelWithObject" || !!edit.panel.join;
     // A counterbore's fields show while its box is ticked.
     const boreOk = node.dataset.bore === undefined || holeBoxes().counterbore;
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk));
+    // --- A3 composite features: a shape or a cell shows only its own sizes. ---
+    const shapeOk = !node.dataset.shape || node.dataset.shape.split(" ").includes(panelChoices().shape);
+    const cellOk = !node.dataset.cell || node.dataset.cell.split(" ").includes(panelChoices().cell);
+    // --- end A3 ---
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk));
   });
+  // --- A3 composite features ---
+  if (isFeatureTool(tool)) {
+    const depthAria: Record<FeatureTool, string> = {
+      pocket: "Into the face",
+      boss: "Out of the face",
+      texture: "Groove depth, default 0.6",
+      array: "Out of the face, or into it",
+      ribs: "Out of the face, or into it",
+      text: "Out of the face, or into it",
+    };
+    document.querySelector("#modelFeatDepth")?.setAttribute("aria-label", depthAria[tool]);
+    const depthMax = tool === "texture" ? "50" : tool === "pocket" || tool === "boss" ? "1000" : "100";
+    document.querySelector<HTMLInputElement>("#modelFeatDepth")?.setAttribute("max", depthMax);
+  }
+  // --- end A3 ---
   // Through all cuts to wherever the part ends: there is no depth to type.
   const depth = document.querySelector<HTMLInputElement>("#modelHoleD");
   if (depth) depth.disabled = holeBoxes().through;
@@ -996,6 +1074,18 @@ function refreshNote() {
     text = state.plate.objects.length === 0 ? "Lands at the origin, on Z 0." : "Lands beside the other objects, as a new object.";
   } else if (picksObject() && !joinTool) {
     text = (hooks?.joinChoices().length ?? 0) > 0 ? "Pick the tool: click a grey object, or one in the list." : "";
+  } else if (isFeatureTool(tool)) {
+    // --- A3 composite features ---
+    const refused = hooks?.featureView().note;
+    if (refused) {
+      text = refused;
+      bad = true;
+    } else {
+      const status = probeNote(tool, probe);
+      text = status?.text ?? "";
+      bad = status?.bad ?? false;
+    }
+    // --- end A3 ---
   } else if (isProbed(tool)) {
     const lead = tool === "hole" ? `${holeLead()} ` : "";
     const status = probeNote(tool, probe);
@@ -1038,6 +1128,9 @@ function dragContext(): DragContext {
     holeAxis: hooks?.holeAxis() ?? [0, 0, -1],
     hole: holeBoxes(),
     frame: tool === "workplane" ? openPlane() : toolFrame(),
+    // --- A3 composite features ---
+    ...(isFeatureTool(tool) ? { feature: featureDrag(tool) } : {}),
+    // --- end A3 ---
   };
 }
 
@@ -1318,6 +1411,19 @@ function ghostFor(current: ModelTool): ModelGhost | null {
   }
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
   if (current === "place" || current === "workplane") return null;
+  // --- A3 composite features: every piece, shaded, or outlines only past the cap. A failed step is named for the view. ---
+  if (isFeatureTool(current)) {
+    const view = hooks?.featureView();
+    if (!view?.pieces?.length) return null;
+    const failed = probe?.phase === "done" && !probe.ok ? probe.failedStep : undefined;
+    return {
+      kind: "pieces",
+      outlines: piecesOutlineOnly(view.pieces.length),
+      ...(failed != null ? { failed } : {}),
+      parts: view.pieces.map((piece) => ({ spec: piece.spec, mesh: featureMesh(piece.spec) })),
+    };
+  }
+  // --- end A3 ---
   const edges = selectedEdges(picks);
   if (edges.length === 0) return null;
   return { kind: "blend", edges, radius: num("#modelBlend") };
@@ -1420,3 +1526,138 @@ function onScrubUp(ev: PointerEvent) {
   window.removeEventListener("pointercancel", onScrubUp);
   if (moved) hooks?.probeNow();
 }
+
+// --- A3 composite features ---
+const FEATURE_KEY = "lime-slice-model-feature";
+const FEATURE_TIPS: Record<FeatureTool, string> = {
+  pocket: "Cut a rect, circle, or arch into the picked face",
+  boss: "Raise a rect, circle, or arch from the picked face",
+  texture: "Cut a line, grid, brick, or shingle groove over the picked face",
+  array: "Repeat a cell over the picked face, raised or cut",
+  ribs: "Raise or cut ribs along the picked face",
+  text: "Raise or engrave text on the picked face",
+};
+
+function rememberedFeature(): FeatureTool {
+  try {
+    const saved = localStorage.getItem(FEATURE_KEY);
+    if (isFeatureTool(saved)) return saved;
+  } catch {
+    // A blocked store only means the last feature is not remembered.
+  }
+  return "pocket";
+}
+
+function rememberFeature(next: FeatureTool) {
+  try {
+    localStorage.setItem(FEATURE_KEY, next);
+  } catch {
+    // The button still shows it for this session.
+  }
+}
+
+function showFeatureButton(next: FeatureTool) {
+  const button = document.querySelector<HTMLButtonElement>("#modelToolFeatures");
+  if (!button) return;
+  button.dataset.tool = next;
+  button.textContent = featureName(next);
+  button.dataset.tip = FEATURE_TIPS[next];
+  button.dataset.tipIdle = FEATURE_TIPS[next];
+}
+
+function chooseFeature(next: FeatureTool) {
+  closeFeatureMenu();
+  showFeatureButton(next);
+  rememberFeature(next);
+  if (tool === next) return;
+  toggleTool(next);
+}
+
+function featureMenuOpen(): boolean {
+  const menu = document.querySelector<HTMLElement>("#modelFeatureMenu");
+  return !!menu && !menu.hidden;
+}
+
+function closeFeatureMenu() {
+  const menu = document.querySelector<HTMLElement>("#modelFeatureMenu");
+  const more = document.querySelector<HTMLButtonElement>("#modelFeatureMore");
+  if (menu) menu.hidden = true;
+  more?.setAttribute("aria-expanded", "false");
+}
+
+function toggleFeatureMenu() {
+  if (featureMenuOpen()) {
+    closeFeatureMenu();
+    return;
+  }
+  const menu = document.querySelector<HTMLElement>("#modelFeatureMenu");
+  const more = document.querySelector<HTMLButtonElement>("#modelFeatureMore");
+  if (!menu || !more) return;
+  const rect = more.getBoundingClientRect();
+  menu.style.top = `${rect.bottom + 4}px`;
+  menu.style.left = `${Math.max(8, rect.left)}px`;
+  menu.hidden = false;
+  more.setAttribute("aria-expanded", "true");
+}
+
+function paintModeGroup(button: HTMLButtonElement) {
+  const group = button.parentElement;
+  group?.querySelectorAll<HTMLButtonElement>("button").forEach((item) => {
+    const on = item === button;
+    item.setAttribute("aria-pressed", on ? "true" : "false");
+    item.classList.toggle("on", on);
+  });
+}
+
+function paintNamed(id: string, attr: string, value: string) {
+  document.querySelectorAll<HTMLButtonElement>(`#${id} [data-${attr}]`).forEach((button) => {
+    const on = button.dataset[attr] === value;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  });
+}
+
+function paintFeature(choices: FeatureChoices) {
+  paintNamed("modelFeatShape", "shape", choices.shape);
+  paintNamed("modelFeatFrom", "from", choices.from);
+  paintNamed("modelTexPattern", "pattern", choices.pattern);
+  paintNamed("modelArrCell", "cell", choices.cell);
+  paintNamed("modelArrFit", "fit", choices.fit);
+  paintNamed("modelRibAlong", "along", choices.along);
+  paintNamed("modelFeatOp", "op", choices.op);
+  paintNamed("modelTextAlign", "align", choices.align);
+  paintNamed("modelTextOp", "op", choices.op);
+  const stagger = document.querySelector<HTMLInputElement>("#modelArrStagger");
+  if (stagger) stagger.checked = choices.stagger;
+  const text = document.querySelector<HTMLInputElement>("#modelFeatText");
+  if (text) text.value = choices.text;
+}
+
+function featureDrag(current: FeatureTool): NonNullable<DragContext["feature"]> {
+  const choices = panelChoices(current);
+  const view = hooks?.featureView();
+  return {
+    shape: choices.shape,
+    cell: choices.cell,
+    along: choices.along,
+    ...(view?.frame ? { frame: view.frame } : {}),
+    ...(view?.outward ? { outward: view.outward } : {}),
+  };
+}
+
+/** One ghost mesh per size. A move only changes where the view puts it. */
+const featureMeshes = new Map<string, Float32Array>();
+
+function featureMesh(spec: PrimitiveSpec): Float32Array {
+  const key = JSON.stringify({ ...spec, origin: null, turn: null });
+  const held = featureMeshes.get(key);
+  if (held) return held;
+  if (featureMeshes.size > 48) {
+    const oldest = featureMeshes.keys().next().value;
+    if (oldest !== undefined) featureMeshes.delete(oldest);
+  }
+  const mesh = primitiveMesh(spec);
+  featureMeshes.set(key, mesh);
+  return mesh;
+}
+// --- end A3 ---

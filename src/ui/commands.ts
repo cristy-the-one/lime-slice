@@ -72,6 +72,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-fillet", label: "Fillet", group: "Model", keys: ["L"], when: "model", target: "#modelToolFillet", keywords: "round edge" },
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
+  { id: "model-features", label: "Features", group: "Model", when: "model", target: "#modelToolFeatures", keywords: "pocket boss texture array ribs text" },
   { id: "model-scale", label: "Scale solid", group: "Model", keys: ["X"], when: "model", target: "#modelToolScale", keywords: "factor" },
   { id: "model-place", label: "Place in model space", group: "Model", keys: ["Shift+P"], when: "model", target: "#modelToolPlace", keywords: "move turn position assembly align" },
   { id: "model-workplane", label: "Workplane", group: "Model", keys: ["Shift+U"], when: "model", target: "#modelToolWorkplane", keywords: "uvw local frame datum face bed origin sketch plane" },

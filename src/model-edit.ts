@@ -5,6 +5,7 @@
  * replay, what the fork looks like, why a step cannot be edited, and what the step's tool panel opens with.
  */
 import type { ModelTool } from "./model-drag.ts";
+import { featurePanel, featureSource, type FeatureChoices } from "./model-features.ts";
 import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
@@ -97,10 +98,12 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a shell, a face extrude, a face move, a group, or a blend that takes an earlier step's edges. */
+/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a shell, a face extrude, a face move, a group that is not a feature, or a blend that takes an earlier step's edges. */
 function hasPanel(op: ModelOp): boolean {
-  // A group reopens from its composite in a later package. Until then it has no panel.
-  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "shell" || op.kind === "faceExtrude" || op.kind === "moveFaces" || op.kind === "group") return false;
+  // --- A3 composite features: a pocket, boss, texture, array, ribs, or text group reopens its panel. ---
+  if (op.kind === "group") return featureSource(op) != null;
+  // --- end A3 ---
+  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "shell" || op.kind === "faceExtrude" || op.kind === "moveFaces") return false;
   return !((op.kind === "fillet" || op.kind === "chamfer") && op.edges.some(isEdgeStep));
 }
 
@@ -279,6 +282,9 @@ export interface EditPanel {
   edges?: readonly (number | EdgeRef)[];
   /** A join: its tool stays as applied; its op and Keep can change. */
   join?: { name: string; keepTool: boolean };
+  // --- A3 composite features: the choices a feature group's panel reopens with, including the face. ---
+  feature?: FeatureChoices;
+  // --- end A3 ---
 }
 
 /**
@@ -322,11 +328,17 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "revolve":
     case "loft":
     case "shell":
-    case "group":
     case "faceExtrude":
     case "moveFaces":
-      // `editRefusal` turns these away before a panel opens. A group's panel comes with the composite tools.
+      // `editRefusal` turns these away before a panel opens.
       throw new Error(`No edit panel for a ${op.kind} step`);
+    case "group": {
+      // --- A3 composite features ---
+      const source = featureSource(op);
+      if (source) return featurePanel(source);
+      // --- end A3 ---
+      throw new Error(`No edit panel for a ${op.kind} step`);
+    }
   }
 }
 

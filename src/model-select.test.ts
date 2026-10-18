@@ -40,6 +40,8 @@ check("a boolean can apply with nothing picked", modelApplyReady("boolean", [], 
 check("a hole waits while the dry-run says it misses", modelApplyReady("hole", [], 1, true, false) === false);
 check("split applies when the plane is inside the part", modelApplyReady("split", [], 1, true));
 check("split waits when the plane would shave a face", modelApplyReady("split", [], 1, false) === false);
+check("a pocket applies when the dry-run says it fits", modelApplyReady("pocket", [], 1));
+check("a pocket waits while the dry-run says it will not fit", modelApplyReady("pocket", [], 1, true, false) === false);
 
 const accent = 0xa3e635;
 eq("a selected face is the accent", faceColor(2, true, true, accent), accent);

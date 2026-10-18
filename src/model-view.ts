@@ -46,7 +46,9 @@ export type ModelGhost =
   | { kind: "blend"; edges: number[]; radius: number }
   | { kind: "measure"; a: Vec3; b: Vec3 }
   /** Another plate object, a join's tool: its plate mesh where it sits in model space, drawn from the grey object's own geometry. */
-  | { kind: "object"; id: string; positions: Float32Array; matrix: Affine };
+  | { kind: "object"; id: string; positions: Float32Array; matrix: Affine }
+  /** A composite feature: every piece, or outlines only past the cap. `failed` (from 1) is the step a probe refused. */
+  | { kind: "pieces"; parts: { spec: PrimitiveSpec; mesh: Float32Array }[]; outlines: boolean; failed?: number };
 
 /** A handle moved. `values` go into the handle's fields in order. */
 export interface HandleDrag {
@@ -216,6 +218,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
    * only moves it. `disposeObject` leaves these two alone; a new mesh frees them.
    */
   let primitiveGeometry: { mesh: Float32Array; shaded: THREE.BufferGeometry; edges: THREE.EdgesGeometry } | null = null;
+  // --- A3 composite features: one geometry per piece mesh, borrowed so a rebuild does not free a mesh still in use. ---
+  const pieceGeometry = new Map<Float32Array, { shaded: THREE.BufferGeometry; edges: THREE.EdgesGeometry }>();
+  /** The failed piece last framed, so a rebuild of the same refusal does not jump the camera. */
+  let framedPiece: string | null = null;
+  // --- end A3 ---
 
   /** Geometry a ghost borrows from the grey objects; `setContext` frees it once no object uses it. */
   const borrowed = new WeakSet<THREE.BufferGeometry>();
@@ -331,6 +338,35 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     primitiveGeometry = { mesh, shaded, edges };
     return primitiveGeometry;
   }
+
+  // --- A3 composite features ---
+  function pieceGeometryFor(mesh: Float32Array) {
+    const held = pieceGeometry.get(mesh);
+    if (held) return held;
+    const soup = new THREE.BufferGeometry();
+    soup.setAttribute("position", new THREE.BufferAttribute(mesh, 3));
+    const shaded = toCreasedNormals(soup, (PRIMITIVE_CREASE_DEG * Math.PI) / 180);
+    soup.dispose();
+    const edges = new THREE.EdgesGeometry(shaded, PRIMITIVE_CREASE_DEG);
+    borrowed.add(shaded);
+    borrowed.add(edges);
+    const next = { shaded, edges };
+    pieceGeometry.set(mesh, next);
+    return next;
+  }
+
+  function failedGhostMaterial() {
+    return new THREE.MeshStandardMaterial({
+      color: 0xd64545,
+      roughness: 0.55,
+      metalness: 0.05,
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+  }
+  // --- end A3 ---
 
   function writeColor(hex: number, into: Float32Array, offset: number) {
     into[offset] = ((hex >> 16) & 255) / 255;
@@ -631,6 +667,57 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       ghosts.add(turned);
       return;
     }
+    // --- A3 composite features ---
+    if (current.kind === "pieces") {
+      const used = new Set<Float32Array>();
+      let failedGroup: THREE.Object3D | null = null;
+      for (let index = 0; index < current.parts.length; index++) {
+        const part = current.parts[index]!;
+        if (part.mesh.length < 9) continue;
+        used.add(part.mesh);
+        const { shaded, edges } = pieceGeometryFor(part.mesh);
+        const centre = turnCentre(part.spec);
+        const [x, y, z] = part.spec.origin;
+        const failed = current.failed === index + 1;
+        const turned = new THREE.Group();
+        turned.position.set(x + centre[0], y + centre[1], z + centre[2]);
+        turned.quaternion.copy(turnQuaternion(part.spec.turn));
+        if (!current.outlines) {
+          const shape = new THREE.Mesh(shaded, failed ? failedGhostMaterial() : ghostMaterial(0.22));
+          shape.position.set(-centre[0], -centre[1], -centre[2]);
+          shape.renderOrder = 2;
+          const outline = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: failed ? 0xd64545 : accent, transparent: true, opacity: 0.95 }));
+          outline.raycast = () => undefined;
+          shape.add(outline);
+          turned.add(shape);
+        } else {
+          const outline = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: failed ? 0xd64545 : accent, transparent: true, opacity: 0.95 }));
+          outline.position.set(-centre[0], -centre[1], -centre[2]);
+          outline.raycast = () => undefined;
+          turned.add(outline);
+        }
+        ghosts.add(turned);
+        if (failed) failedGroup = turned;
+      }
+      for (const [mesh, held] of pieceGeometry) {
+        if (used.has(mesh)) continue;
+        held.shaded.dispose();
+        held.edges.dispose();
+        pieceGeometry.delete(mesh);
+      }
+      if (failedGroup && current.failed != null) {
+        const part = current.parts[current.failed - 1];
+        const key = part ? `${current.failed}:${part.spec.origin.map((value) => value.toFixed(2)).join(",")}` : "";
+        if (key && framedPiece !== key) {
+          framedPiece = key;
+          failedGroup.updateMatrixWorld(true);
+          const box = new THREE.Box3().setFromObject(failedGroup);
+          if (!box.isEmpty()) frameBox({ min: [box.min.x, box.min.y, box.min.z], max: [box.max.x, box.max.y, box.max.z] });
+        }
+      } else framedPiece = null;
+      return;
+    }
+    // --- end A3 ---
     if (current.kind === "object") {
       // The grey object's own buffers, moved by its matrix: nothing is copied.
       const held = contextHeld(current.positions);

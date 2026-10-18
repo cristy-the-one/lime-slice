@@ -7,14 +7,22 @@ import { DOCK_KNOB_REACH } from "./gizmo-math.ts";
 import { SPLIT_TILT_MAX_DEG, type SplitPlan } from "./model-plane.ts";
 import type { PrimitiveKind } from "./model-primitive.ts";
 import { turnDir } from "./model-space.ts";
-import { axesOf, framePose, isIdentityFrame, planePoint, type Workplane } from "./workplane.ts";
+import { axesOf, framePose, isIdentityFrame, planePoint, workplaneOnFace, type Workplane } from "./workplane.ts";
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure" | "place" | "workplane";
+export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure" | "place" | "workplane" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "scale", "measure", "place", "workplane"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "scale", "measure", "place", "workplane", "pocket", "boss", "texture", "array", "ribs", "text"];
+
+// --- A3 composite features: one drag entry per feature, behind the single Features button. ---
+const FEATURE_DRAG: readonly ModelTool[] = ["pocket", "boss", "texture", "array", "ribs", "text"];
+
+function isFeatureDrag(tool: ModelTool | null): tool is "pocket" | "boss" | "texture" | "array" | "ribs" | "text" {
+  return !!tool && (FEATURE_DRAG as readonly string[]).includes(tool);
+}
+// --- end A3 ---
 
 /** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
 const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight"];
@@ -31,6 +39,14 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   measure: ["modelAx", "modelAy", "modelAz", "modelBx", "modelBy", "modelBz"],
   place: ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"],
   workplane: ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"],
+  // --- A3 composite features ---
+  pocket: ["modelFeatW", "modelFeatH", "modelFeatDia", "modelFeatDepth", "modelFeatU", "modelFeatV", "modelFeatBarsV", "modelFeatBarsH", "modelFeatBarW"],
+  boss: ["modelFeatW", "modelFeatH", "modelFeatDia", "modelFeatDepth", "modelFeatU", "modelFeatV"],
+  texture: ["modelFeatDepth", "modelTexPitchU", "modelTexPitchV", "modelTexGroove"],
+  array: ["modelFeatDepth", "modelArrW", "modelArrH", "modelArrDia", "modelArrSides", "modelArrAcross", "modelArrTurn", "modelArrPitchU", "modelArrPitchV", "modelArrAngle", "modelArrMargin"],
+  ribs: ["modelFeatDepth", "modelRibWidth", "modelRibPitch", "modelRibCount", "modelRibAngle", "modelRibMargin"],
+  text: ["modelFeatDepth", "modelFeatU", "modelFeatV", "modelTextHeight", "modelTextStroke", "modelTextSpace", "modelTextAngle"],
+  // --- end A3 ---
 };
 
 /**
@@ -88,6 +104,18 @@ export interface DragContext {
    * Absent is the global frame. The Workplane tool's own arrows slide its origin along U, V, W.
    */
   frame?: Workplane;
+  /**
+   * A feature tool's face. Absent (the drag checklist's plain box) is a rect on the top face, W up.
+   * `shape` and `cell` hide the sizes the panel hides for the other shapes.
+   */
+  feature?: {
+    shape?: "rect" | "circle" | "arch";
+    cell?: "rect" | "circle" | "polygon";
+    frame?: Workplane;
+    outward?: Vec3;
+    /** Ribs run this way; the pitch knob steps across them. Absent is along U, so pitch follows V. */
+    along?: "u" | "v";
+  };
 }
 
 const X: Vec3 = [1, 0, 0];
@@ -110,6 +138,9 @@ function specsFor(tool: ModelTool | null, ctx: DragContext): Spec[] {
   if (tool === "measure") return measureHandles(ctx);
   if (tool === "place") return placeHandles(ctx);
   if (tool === "workplane") return workplaneHandles(ctx);
+  // --- A3 composite features ---
+  if (isFeatureDrag(tool)) return featureHandles(tool, ctx);
+  // --- end A3 ---
   return [];
 }
 
@@ -295,6 +326,125 @@ function holeHandles(ctx: DragContext): Spec[] {
       : []),
   ];
 }
+
+// --- A3 composite features ---
+interface FeatureKnob {
+  id: string;
+  field: string;
+  label: string;
+  dir?: Vec3;
+  extra?: Partial<Spec>;
+}
+
+/** Docked knobs, each on its own direction. A preferred direction that is already taken takes the next free one. */
+function dockKnobs(knobs: readonly FeatureKnob[]): Spec[] {
+  const used = new Set<string>();
+  const key = (dir: Vec3) => dir.map((value) => value.toFixed(3)).join(",");
+  const spare: Vec3[] = [
+    [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1], [-1, 0, 0], [0, -1, 0],
+    [1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0],
+    [0, 1, 1], [1, 0, 1], [0, -1, 1], [-1, 0, 1],
+    [1, 1, 1], [-1, 1, 1],
+  ].map((dir) => {
+    const n = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+    return [dir[0] / n, dir[1] / n, dir[2] / n];
+  });
+  return knobs.map((knob) => {
+    const preferred = knob.dir ? facingUp(knob.dir) : undefined;
+    // Depth is the one direction that must keep its sense: into the face, not flipped toward +Z.
+    const wanted = knob.id === "feat-depth" ? knob.dir : preferred;
+    let dir = wanted && !used.has(key(wanted)) ? wanted : spare.find((item) => !used.has(key(item)));
+    dir ??= spare[0]!;
+    used.add(key(dir));
+    return axisHandle(knob.id, "knob", knob.field, KNOB, dir, nearestAxisColor(dir), knob.label, { step: 0.5, min: 0.1, ...knob.extra });
+  });
+}
+
+/**
+ * Every number of a feature tool. The position sits on the face; depth points into it; pitch follows U and V.
+ * The other sizes are docked knobs, one direction each, so they can be dragged as well as typed.
+ */
+function featureHandles(tool: "pocket" | "boss" | "texture" | "array" | "ribs" | "text", ctx: DragContext): Spec[] {
+  const shape = ctx.feature?.shape ?? "rect";
+  const cell = ctx.feature?.cell ?? "rect";
+  const outward = ctx.feature?.outward ?? Z;
+  const frame = ctx.feature?.frame ?? workplaneOnFace({ point: [ctx.center[0], ctx.center[1], ctx.center[2] + ctx.extent / 2], normal: [0, 0, 1] });
+  const axes = axesOf(frame);
+  const inward: Vec3 = [-outward[0], -outward[1], -outward[2]];
+  const u = ctx.read("modelFeatU");
+  const v = ctx.read("modelFeatV");
+  const at = planePoint(frame, [u, v, 0]);
+  const position: Spec = {
+    id: "feat-at",
+    kind: "surface",
+    look: "dot",
+    fields: ["modelFeatU", "modelFeatV"],
+    seat: onFeature(at),
+    dir: Z,
+    rate: 1,
+    step: 1,
+    color: "accent",
+    label: "Position",
+    unit: "mm",
+    frame,
+  };
+  const depthMax = tool === "texture" ? 50 : tool === "pocket" || tool === "boss" ? 1000 : 100;
+  const depth: FeatureKnob = { id: "feat-depth", field: "modelFeatDepth", label: "Depth", dir: inward, extra: { min: 0.1, max: depthMax, step: 0.5 } };
+  const count = (id: string, field: string, label: string, min: number, max: number): FeatureKnob => ({
+    id, field, label, extra: { min, max, step: 1, rate: 0.25, whole: true, unit: "count" },
+  });
+  const mm = (id: string, field: string, label: string, max: number, min = 0.1): FeatureKnob => ({
+    id, field, label, extra: { min, max, step: 0.5 },
+  });
+  const deg = (id: string, field: string, label: string): FeatureKnob => ({
+    id, field, label, extra: { min: -360, max: 360, step: 1, unit: "°" },
+  });
+  const knobs: FeatureKnob[] = [depth];
+  if (tool === "pocket" || tool === "boss") {
+    if (shape === "circle") knobs.push(mm("feat-dia", "modelFeatDia", "Diameter", 1000));
+    else {
+      knobs.push(mm("feat-w", "modelFeatW", "Width", 1000));
+      knobs.push(mm("feat-h", "modelFeatH", "Height", 1000));
+    }
+    if (tool === "pocket") {
+      knobs.push(count("feat-bars-v", "modelFeatBarsV", "Bars across", 0, 20));
+      knobs.push(count("feat-bars-h", "modelFeatBarsH", "Bars along", 0, 20));
+      knobs.push(mm("feat-bar-w", "modelFeatBarW", "Bar width", 50));
+    }
+  } else if (tool === "texture") {
+    knobs.push({ id: "feat-pitch-u", field: "modelTexPitchU", label: "Pitch U", dir: axes[0], extra: { min: 0.1, max: 1000, step: 0.5 } });
+    knobs.push({ id: "feat-pitch-v", field: "modelTexPitchV", label: "Pitch V", dir: axes[1], extra: { min: 0.1, max: 1000, step: 0.5 } });
+    knobs.push(mm("feat-groove", "modelTexGroove", "Groove", 20));
+  } else if (tool === "array") {
+    if (cell === "circle") knobs.push(mm("feat-cell-dia", "modelArrDia", "Diameter", 500));
+    else if (cell === "polygon") {
+      knobs.push(count("feat-sides", "modelArrSides", "Sides", 3, 64));
+      knobs.push(mm("feat-across", "modelArrAcross", "Across", 500));
+    } else {
+      knobs.push(mm("feat-cell-w", "modelArrW", "Width", 500));
+      knobs.push(mm("feat-cell-h", "modelArrH", "Height", 500));
+    }
+    knobs.push(deg("feat-turn", "modelArrTurn", "Turn"));
+    knobs.push({ id: "feat-pitch-u", field: "modelArrPitchU", label: "Pitch U", dir: axes[0], extra: { min: 0.1, max: 1000, step: 0.5 } });
+    knobs.push({ id: "feat-pitch-v", field: "modelArrPitchV", label: "Pitch V", dir: axes[1], extra: { min: 0.1, max: 1000, step: 0.5 } });
+    knobs.push(deg("feat-angle", "modelArrAngle", "Angle"));
+    knobs.push(mm("feat-margin", "modelArrMargin", "Margin", 100, 0));
+  } else if (tool === "ribs") {
+    knobs.push(mm("feat-rib-w", "modelRibWidth", "Width", 100));
+    knobs.push({ id: "feat-pitch", field: "modelRibPitch", label: "Pitch", dir: ctx.feature?.along === "v" ? axes[0] : axes[1], extra: { min: 0.1, max: 1000, step: 0.5 } });
+    knobs.push(count("feat-count", "modelRibCount", "Count", 0, 200));
+    knobs.push(deg("feat-rib-angle", "modelRibAngle", "Angle"));
+    knobs.push(mm("feat-rib-margin", "modelRibMargin", "Margin", 100, 0));
+  } else {
+    knobs.push(mm("feat-text-h", "modelTextHeight", "Height", 500));
+    knobs.push(mm("feat-stroke", "modelTextStroke", "Stroke", 100));
+    knobs.push(mm("feat-space", "modelTextSpace", "Spacing", 100, 0));
+    knobs.push(deg("feat-text-angle", "modelTextAngle", "Angle"));
+  }
+  const placed = tool === "pocket" || tool === "boss" || tool === "text" ? [position] : [];
+  return [...placed, ...dockKnobs(knobs)];
+}
+// --- end A3 ---
 
 /** Index of the largest component of a direction. */
 function dominantAxis(dir: Vec3): number {
