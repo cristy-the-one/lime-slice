@@ -16,6 +16,23 @@ export function selectedEdges(picks: readonly ModelPickRef[]): number[] {
   return edges;
 }
 
+/** Every selected face, once, in the order it was picked. A shell opens these. */
+export function selectedFaces(picks: readonly ModelPickRef[]): number[] {
+  const faces: number[] = [];
+  for (const pick of picks) {
+    if (pick.kind === "face" && !faces.includes(pick.index)) faces.push(pick.index);
+  }
+  return faces;
+}
+
+/** The first selected face. A shell's thickness knob sits on this one; Apply still uses every face. */
+export function firstFace(picks: readonly ModelPickRef[]): number | null {
+  for (const pick of picks) {
+    if (pick.kind === "face") return pick.index;
+  }
+  return null;
+}
+
 /** The last selected face, when the drill should follow that face. */
 export function lastFace(picks: readonly ModelPickRef[]): number | null {
   for (let i = picks.length - 1; i >= 0; i -= 1) {

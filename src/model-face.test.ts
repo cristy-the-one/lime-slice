@@ -79,6 +79,7 @@ eq(
   "This face cannot move with its neighbours here. Push or pull adds material instead: hold Alt.",
 );
 for (const id of [1, 2]) eq(`step ${id} has no edit panel`, loaded && editRefusal(loaded, id), "This step has no edit panel yet. Delete it and apply it again with new numbers.");
+eq("a shell step can be edited", loaded && editRefusal(loaded, 3), null);
 
 if (failed) {
   console.error(`model-face: ${failed} failed`);
