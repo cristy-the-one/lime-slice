@@ -110,6 +110,7 @@ eq("Q and W pick in Model", [press("Q"), press("Q", { stage: "model" }), press("
 eq("Shift+E edits a Model step, E stays Edit supports", [press("Shift+E"), press("Shift+E", { stage: "model" }), press("E")], [null, "model-edit-step", "edit-supports"]);
 eq("Shift+H is Model history, H stays Hole", [press("Shift+H"), press("Shift+H", { stage: "model" }), press("H", { stage: "model" })], [null, "model-history", "model-hole"]);
 eq("Shift+U is the workplane, and only in Model", [press("Shift+U"), press("Shift+U", { stage: "model" }), press("U", { stage: "model" })], [null, "model-workplane", null]);
+eq("Shift+K checks the solid, and K stays Paint seam", [press("Shift+K"), press("Shift+K", { stage: "model" }), press("K")], [null, "model-check", "paint-seam"]);
 eq("Enter applies a model edit, not from Prepare", [press("Enter"), press("Enter", { stage: "model" })], [null, "model-apply"]);
 eq("a model letter does nothing in a field", press("Q", { stage: "model", typing: true }), null);
 eq("Esc clears a search before it cancels", press("Esc", { running: true, searching: true }), "search-clear");
