@@ -85,24 +85,13 @@ async function zlibDeflate(raw: Uint8Array): Promise<Uint8Array | null> {
   try {
     const stream = new Stream("deflate");
     const writer = stream.writable.getWriter();
-    await writer.write(raw as unknown as BufferSource);
-    await writer.close();
-    const reader = stream.readable.getReader();
-    const parts: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const step = await reader.read();
-      if (step.done) break;
-      parts.push(step.value);
-      total += step.value.length;
-    }
-    const out = new Uint8Array(total);
-    let offset = 0;
-    for (const part of parts) {
-      out.set(part, offset);
-      offset += part.length;
-    }
-    return out;
+    // The readable side has to be pulled while the bytes are written. Waiting
+    // for the write first deadlocks once the frame fills the stream queue.
+    const [buffer] = await Promise.all([
+      new Response(stream.readable).arrayBuffer(),
+      writer.write(raw as unknown as BufferSource).then(() => writer.close()),
+    ]);
+    return new Uint8Array(buffer);
   } catch {
     return null;
   }

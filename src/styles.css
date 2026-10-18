@@ -50,6 +50,8 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
   min-height: 44px;
   max-height: 44px;
   overflow: hidden;
+  /* Keep the bar in its grid cell. min-width: auto would grow it for the project name, and Cancel would move Slice. */
+  min-width: 0;
 }
 .status {
   flex-wrap: nowrap;
