@@ -186,7 +186,7 @@ Pretty-printed with the same two-space `JSON.stringify` as today. When a thumbna
     "height": 384,
     "data": "<base64 of the PNG, no line breaks>",
     "meshHash": "<16 lowercase hex digits>",
-    "generatedBy": "lime-slice/2.7.0",
+    "generatedBy": "lime-slice/2.8.0",
     "createdAt": "2026-10-18T09:00:00.000Z"
   },
   "summary": {
@@ -295,7 +295,7 @@ The Details pane reads the property handler. If Windows ignores a per-user prope
 | Streaming reader | `crates/lime-preview`. The only dependency is `ryu`, which formats numbers the way `JSON.stringify` does. | No. Workspace member so `cargo test` runs it. Not a dependency of `lime-slice`, `lime-slice-core`, `lime-model`, or the desktop crate. |
 | COM DLL | `crates/lime-shell`, crate type `cdylib`, `windows` crate 0.61 (already in the lockfile, MIT or Apache-2.0). `#[cfg(windows)]` for COM. Linux builds a stub so clippy and `cargo test --workspace` stay green. | No. |
 | Self-test | A Windows-only example that `LoadLibrary`s the DLL, calls `DllGetClassObject`, and asks `IThumbnailProvider` for a sample file. Console subsystem, run by hand. | The installer does not start it. |
-| Installer | NSIS hook only. `tauri.windows.conf.json` already selects NSIS. WiX is not a bundle target; the same registry table is what a WiX component would write if one is added later. | The app version is not changed. |
+| Installer | NSIS hook only. `tauri.windows.conf.json` already selects NSIS. WiX is not a bundle target; the same registry table is what a WiX component would write if one is added later. | The file version stays 3. The app is 2.8.0. |
 
 COM entry points (`DllGetClassObject`, `DllCanUnloadNow`, `DllRegisterServer`, `DllUnregisterServer`) catch panics and return a failure `HRESULT`. The DLL does not call `AllocConsole`, does not spawn a process, and does not use `println!` on the COM path. Registration from `DllRegisterServer` writes HKCU when the process is not elevated, so a hand registration also avoids an administrator. The NSIS hook does not run `regsvr32`.
 
@@ -352,7 +352,7 @@ Windows, for Marius, because this VM is Linux:
 - Files this app saves: still `"version": 3`. 2.7.0 opens them and, on a later save, writes them back without `thumbnail` or `summary`. No geometry is lost. The picture comes back the next time this app saves.
 - An app from before version 3: still refuses the file. That refusal is the version check, and this work does not touch it.
 - Slicer output, G-code, and golden hashes: unchanged. The thumbnail is not an input to the engine.
-- No tag, no release, and no `workflow_dispatch`. File version stays 3. A later commit bumps the app version only.
+- No tag, no release, and no `workflow_dispatch`. The app version is 2.8.0. The file version stays 3.
 
 File > New project (Ctrl+N) clears the open document. It does not change `.lime`. The dirty check is the same flag Open uses.
 
