@@ -38,7 +38,11 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   if (!session.projectRestoring && !confirmDiscard()) return;
   session.meshEpoch += 1;
   session.chosenZ = null;
-  if (!session.projectRestoring) setProjectTitle(name);
+  if (!session.projectRestoring) {
+    setProjectTitle(name);
+    // --- A8. A mesh that replaces the plate is not the project whose recipe was showing. ---
+    session.mcpModel = undefined;
+  }
   state.mesh = { name, bytes };
   state.error = "";
   state.orient = ID_MATRIX;

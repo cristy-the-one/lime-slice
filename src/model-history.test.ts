@@ -1,5 +1,6 @@
-import { dropRefusal, historyKey, historyLayout, readRow, rowCount, rowStep, siblingBranch, stepLabel, type HistoryRow } from "./model-history.ts";
+import { dropRefusal, foldEndingAt, foldedRedoTarget, foldedUndoTarget, historyFolds, historyKey, historyLayout, pieceLabel, presentedRows, readRow, recipeNote, rowCount, rowStep, siblingBranch, stepLabel, type HistoryRow } from "./model-history.ts";
 import { dropped, jumped, newTree, opLabel, reserveId, withChild, withNode, type ModelOp, type ModelTree } from "./model-tree.ts";
+import { loadedTree, savedTree, withSavedNames } from "./model-tree-file.ts";
 import type { Affine } from "./model-space.ts";
 
 let failed = 0;
@@ -273,8 +274,78 @@ for (const id of [0, 1, 2, 3, 4]) {
   }
 }
 
+// Folded composites --------------------------------------------------------------------------------------------
+
+eq("a piece name is prefix, index and count", pieceLabel("rim leaves 3/12"), { prefix: "rim leaves", k: 3, n: 12 });
+eq("one step is not a run", pieceLabel("texture 1/1"), null);
+eq("an ordinary step is not a run", pieceLabel("Cut box 8×10×10"), null);
+
+function called(tree: ModelTree, name: string): ModelTree {
+  return withNode(tree, tree.current, { name });
+}
+
+/** `n` steps named "texture 1/n" … "texture n/n" after the root. */
+function texture(n: number): ModelTree {
+  let tree = root;
+  for (let k = 1; k <= n; k += 1) tree = called(apply(tree, box(1)), `texture ${k}/${n}`);
+  return tree;
+}
+
+const forty = texture(40);
+const fortyRows = historyLayout(forty).rows;
+const fortyFolded = presentedRows(fortyRows, new Set());
+eq("texture 1/40 … 40/40 folds into one row", fortyFolded.map((row) => row.label), ["bracket.step", "texture · 40 steps"]);
+eq("the folded row stands for the whole run", fortyFolded[1]?.fold && [fortyFolded[1].fold.expanded, fortyFolded[1].fold.keys.length, fortyFolded[1].state], [false, 40, "current"]);
+eq("undo from the last step lands before the first", foldedUndoTarget(forty), 0);
+eq("redo from before the run lands on its last step", foldedRedoTarget(jumped(forty, 0)), 40);
+eq("undo from a step inside the run moves one step", foldedUndoTarget(jumped(forty, 10)), 9);
+const opened = presentedRows(fortyRows, new Set([fortyFolded[1]!.fold!.id]));
+eq("expanding the run shows every step", opened.map((row) => row.label), ["bracket.step", ...Array.from({ length: 40 }, (_, i) => `texture ${i + 1}/40`)]);
+eq("the open run's first step can fold it", opened[1]?.fold && [opened[1].fold.head, opened[1].fold.expanded], [true, true]);
+
+const gapped = withNode(forty, 5, { name: "gap" });
+eq("a broken run stays as separate rows", historyFolds(historyLayout(gapped).rows).length, 0);
+eq("and undo from its end moves one step", foldedUndoTarget(gapped), 39);
+
+let paired = texture(2);
+paired = called(apply(paired, box(1)), "rim leaves 1/2");
+paired = called(apply(paired, box(1)), "rim leaves 2/2");
+eq("two runs fold into two rows", presentedRows(historyLayout(paired).rows, new Set()).map((row) => row.label), ["bracket.step", "texture · 2 steps", "rim leaves · 2 steps"]);
+eq("undo of the second run stops at the first run", foldedUndoTarget(paired), 2);
+
+let branched = texture(3);
+branched = apply(jumped(branched, 2), box(2));
+branched = jumped(branched, 3);
+eq("a side branch between the steps keeps them unfolded", foldEndingAt(branched, 3), null);
+eq("and the rows stay separate", historyFolds(historyLayout(branched).rows).map((fold) => fold.label), []);
+
+const foldKey = (focused: string, key: string) => historyKey({ key }, forty, { ...historyLayout(forty), rows: fortyFolded }, focused);
+eq("Right expands a folded row and Enter shows its last step", [foldKey(fortyFolded[1]!.key, "ArrowRight"), foldKey(fortyFolded[1]!.key, "Enter")], [
+  { kind: "expand", id: fortyFolded[1]!.fold!.id },
+  { kind: "jump", to: fortyFolded[1]!.fold!.lastKey },
+]);
+eq("Left on the open run's first step folds it", historyKey({ key: "ArrowLeft" }, forty, { ...historyLayout(forty), rows: opened }, opened[1]!.key), { kind: "collapse", id: opened[1]!.fold!.id });
+eq("a folded row does not rename or delete", [foldKey(fortyFolded[1]!.key, "F2"), foldKey(fortyFolded[1]!.key, "Delete")], [null, null]);
+
+// The name survives the file, including a label the MCP wrote without a separate name.
+let carried = withNode(apply(root, box(8)), 1, { label: "rim leaves 1/2" });
+carried = called(apply(carried, box(6)), "rim leaves 2/2");
+const saved = savedTree(carried, carried.committed, () => undefined);
+eq("a composite's labels are kept as step names", saved.nodes.filter((node) => node.id > 0).map((node) => node.name), ["rim leaves 1/2", "rim leaves 2/2"]);
+const loaded = loadedTree(saved, "part#2", carried.root, "bracket.step", null, () => undefined);
+eq("the app shows those names", [1, 2].map((id) => stepLabel(loaded.nodes.get(id)!)), ["rim leaves 1/2", "rim leaves 2/2"]);
+const restored = withSavedNames(loaded);
+eq("the MCP session reads the saved name as the label", [1, 2].map((id) => restored.nodes.get(id)?.label), ["rim leaves 1/2", "rim leaves 2/2"]);
+
+eq("an object with a recipe says so", recipeNote({ recipes: { "obj-1": { recipe: { name: "pegs", params: { count: 3, wall: "n / 2" } } } } }, "obj-1"), {
+  title: "Built by a recipe",
+  detail: "pegs · count = 3 · wall = n / 2",
+});
+eq("another object has no recipe", recipeNote({ recipes: { "obj-1": { recipe: { name: "pegs", params: {} } } } }, "obj-2"), null);
+eq("a recipe with no name still counts", recipeNote({ recipes: { part: { recipe: { params: {} } } } }, "part")?.title, "Built by a recipe");
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
 }
-console.log("model history: labels, rails, branches, keys and drop ok");
+console.log("model history: labels, rails, branches, keys, drop and folded composites ok");

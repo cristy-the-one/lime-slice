@@ -97,7 +97,8 @@ export interface LimeProject {
   modelTools?: ToolTree[];
   /**
    * What the MCP server builds from, kept as it wrote it: its named parameters, its stored parts, and each object's
-   * model_build recipe. The app keeps it as it is and reads nothing in it. Omitted when there is none.
+   * model_build recipe. The app writes it back on save. History reads a recipe to show "Built by a recipe".
+   * Omitted when there is none.
    */
   mcpModel?: Record<string, unknown>;
   /** Read only: the names of objects whose Model history was damaged and left out. */
@@ -153,6 +154,7 @@ export function serializeProject(project: LimeProject): string {
       objects: shared.slice(0, objects.length),
     };
     if (project.modelTools?.length) wire.modelTools = shared.slice(objects.length);
+    // --- A8. The MCP record rides along, including each object's recipe. ---
     if (project.mcpModel) wire.mcpModel = project.mcpModel;
     if (overrides) wire.overrides = overrides;
     if (project.layerActions?.length) wire.layerActions = project.layerActions;
@@ -179,6 +181,8 @@ export function serializeProject(project: LimeProject): string {
   };
   if (overrides) wire.overrides = overrides;
   if (project.layerActions?.length) wire.layerActions = project.layerActions;
+  // --- A8. A one-object file keeps the MCP record too, so a recipe is not dropped on save. ---
+  if (project.mcpModel) wire.mcpModel = project.mcpModel;
   return JSON.stringify(withPreview(project, wire), null, 2);
 }
 
