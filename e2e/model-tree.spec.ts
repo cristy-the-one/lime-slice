@@ -336,9 +336,9 @@ test("a split whose piece the app cannot read drops the step and closes the piec
   await expect(readout(page)).toHaveText(MISMATCHED);
   await expect(page.locator("#objectList .obj"), "no piece joins the plate").toHaveCount(1);
   await expect.poll(() => tree.of("drop").map((request) => request.node)).toEqual([1]);
-  const close = tree.of("close").map((request) => request.key);
-  expect(close, "the piece's tree goes").toHaveLength(1);
-  expect(close[0]).toMatch(/piece/);
+  // Drop and close are both sent without waiting. The drop can be logged first.
+  await expect.poll(() => tree.of("close").map((request) => request.key), { message: "the piece's tree goes" }).toHaveLength(1);
+  expect(tree.of("close").map((request) => request.key)[0]).toMatch(/piece/);
 });
 
 test("a root the app cannot read is refused in plain words, and its tree is closed", async ({ page }) => {
