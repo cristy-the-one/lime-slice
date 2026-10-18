@@ -11,10 +11,10 @@ import { axesOf, framePose, isIdentityFrame, planePoint, workplaneOnFace, type W
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text";
+export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "check" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "pocket", "boss", "texture", "array", "ribs", "text"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "check", "pocket", "boss", "texture", "array", "ribs", "text"];
 
 // --- A3 composite features: one drag entry per feature, behind the single Features button. ---
 const FEATURE_DRAG: readonly ModelTool[] = ["pocket", "boss", "texture", "array", "ribs", "text"];
@@ -41,6 +41,8 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   measure: ["modelAx", "modelAy", "modelAz", "modelBx", "modelBy", "modelBz"],
   place: ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"],
   workplane: ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"],
+  // --- A7 model check ---
+  check: ["modelThin"],
   // --- A3 composite features ---
   pocket: ["modelFeatW", "modelFeatH", "modelFeatDia", "modelFeatDepth", "modelFeatU", "modelFeatV", "modelFeatBarsV", "modelFeatBarsH", "modelFeatBarW"],
   boss: ["modelFeatW", "modelFeatH", "modelFeatDia", "modelFeatDepth", "modelFeatU", "modelFeatV"],
@@ -144,6 +146,8 @@ function specsFor(tool: ModelTool | null, ctx: DragContext): Spec[] {
   if (tool === "measure") return measureHandles(ctx);
   if (tool === "place") return placeHandles(ctx);
   if (tool === "workplane") return workplaneHandles(ctx);
+  // --- A7 model check ---
+  if (tool === "check") return checkHandles();
   // --- A3 composite features ---
   if (isFeatureDrag(tool)) return featureHandles(tool, ctx);
   // --- end A3 ---
@@ -489,6 +493,11 @@ function drillAxis(axis: Vec3 | undefined): Vec3 {
 function drillSide(axis: Vec3): Vec3 {
   if (Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6) return X;
   return normalize(cross(axis, Z));
+}
+
+/** --- A7 model check --- The thin-wall threshold, one knob on the dock. */
+function checkHandles(): Spec[] {
+  return [axisHandle("thin", "knob", "modelThin", KNOB, normalize([1, -1, 1]), "accent", "Thin wall", { rate: 0.05, step: 0.05, min: 0.05, max: 20 })];
 }
 
 function scaleHandles(ctx: DragContext): Spec[] {

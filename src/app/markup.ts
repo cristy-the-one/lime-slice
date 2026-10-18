@@ -165,6 +165,8 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="model-tool" id="modelHistoryOpen" type="button" aria-controls="modelHistory" aria-expanded="false">History</button>
                 </div>
                 <span class="model-sep"></span>
+                <!-- --- A7 model check --- stays outside #modelEdit, so a mesh can be checked too -->
+                <button class="model-tool" id="modelToolCheck" type="button" data-tool="check" aria-pressed="false" data-tip="Overhangs, ceilings, islands, thin walls, and whether it fits the build volume">Check</button>
                 <button class="model-tool is-icon" id="modelBedToggle" type="button" aria-pressed="true" data-tip="Show the bed and build volume for size">Bed</button>
               </div>
               <span class="model-paused" id="modelPaused">Slicing paused while modeling</span>
@@ -243,6 +245,8 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelWpRx" type="number" step="1" value="0" aria-label="Turn the workplane about model x, degrees"></label>
                   <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelWpRy" type="number" step="1" value="0" aria-label="Turn the workplane about model y, degrees"></label>
                   <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelWpRz" type="number" step="1" value="0" aria-label="Turn the workplane about model z, degrees"></label>
+                  <!-- --- A7 model check --- -->
+                  <label data-for="check" data-snap="0.05"><span class="scrub-label" data-scrub>Thin wall</span><input id="modelThin" type="number" step="0.05" min="0.05" max="20" value="0.8" aria-label="Thin wall, mm"></label>
                   <!-- A3 composite features. Each number is one line: the drag checklist reads it that way. -->
                   <label data-for="pocket boss" data-shape="rect arch" data-snap="1" data-tip="U size."><span class="scrub-label" data-scrub>Width</span><input id="modelFeatW" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="U size"></label>
                   <label data-for="pocket boss" data-shape="rect arch" data-snap="1" data-tip="V size."><span class="scrub-label" data-scrub>Height</span><input id="modelFeatH" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="V size"></label>
@@ -277,6 +281,7 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="text" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelTextAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Text angle, degrees"></label>
                   <!-- end A3 -->
                 </div>
+                <div class="model-check-list" id="modelCheckList" data-for="check" role="list" aria-label="Check"></div>
                 <div class="modes" id="modelAcrossModes" data-for="boolean create" data-with="primitive" data-prim="polygon" role="group" aria-label="Width across">
                   <button class="btn mode" id="modelCorners" type="button" aria-pressed="false" data-tip="Size the polygon from corner to corner">Corners</button>
                   <button class="btn mode on" id="modelFlats" type="button" aria-pressed="true" data-tip="Size the polygon from flat to flat, as a nut is sized">Flats</button>
