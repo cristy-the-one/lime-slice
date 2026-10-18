@@ -81,22 +81,37 @@ export type ModelOp =
   | LoftOp
   | ShellOp;
 
+/** One edge of a loop, from the previous end (the loop's start, for the first) to `to`. */
+export type ProfileSegment =
+  | { kind: "line"; to: Vec2 }
+  | { kind: "arc"; through: Vec2; to: Vec2 }
+  | { kind: "spline"; through: Vec2[]; to: Vec2 };
+
+/** A closed loop on a profile's plane. The first of an op's loops is the outline; the rest are holes. */
+export interface ProfileLoop {
+  start: Vec2;
+  segments: ProfileSegment[];
+}
+
 /**
  * A closed outline of `[u, v]` points on a plane, as a workplane is: `origin`, and `turn` about X, then Y, then Z, whose
  * columns are U, V, and W. An extrude pushes it `depth` along W (−W when negative), or centred on the plane with
  * `symmetric`; a revolve turns it about an in-plane axis. Either is then fused, cut, or intersected with the solid.
+ * `loops` replaces `profile`: the first loop is the outline, and the rest are holes.
  */
 export interface ExtrudeOp {
   kind: "extrude";
   op: BooleanKind;
   origin: Vec3;
   turn: Vec3;
-  profile: Vec2[];
+  profile?: Vec2[];
   depth: number;
   symmetric?: true;
   /** Splines through the points instead of straight edges, sharp at the points `corners` lists. */
   smooth?: true;
   corners?: number[];
+  /** K1: closed loops in place of `profile`. Absent for a point profile. */
+  loops?: ProfileLoop[];
 }
 
 /** Turned `angleDeg` (360 when absent) about the line through `axisOrigin` ([0, 0]) along `axisDir` (V, [0, 1]). */
@@ -105,12 +120,14 @@ export interface RevolveOp {
   op: BooleanKind;
   origin: Vec3;
   turn: Vec3;
-  profile: Vec2[];
+  profile?: Vec2[];
   axisOrigin?: Vec2;
   axisDir?: Vec2;
   angleDeg?: number;
   smooth?: true;
   corners?: number[];
+  /** K1: closed loops in place of `profile`. Absent for a point profile. */
+  loops?: ProfileLoop[];
 }
 
 /**
@@ -125,6 +142,8 @@ export interface LoftSection {
   radiusV?: number;
   smooth?: true;
   corners?: number[];
+  /** K1: closed loops in place of `profile` or `radius`. Absent otherwise. */
+  loops?: ProfileLoop[];
 }
 
 /** A solid through `sections` in order, smooth or `ruled` (flat between sections), fused, cut, or intersected. */
@@ -524,11 +543,13 @@ export function opLabel(op: ModelOp): string {
       return primitiveTitle(op);
     case "extrude": {
       const verb = op.op === "fuse" ? "Extrude" : `${BOOLEAN_VERB[op.op]} extrude`;
-      return `${verb} ${op.profile.length}-point profile ${n(Math.abs(op.depth))}${op.symmetric ? " both ways" : ""}`;
+      const outline = op.loops?.length ? `${op.loops.length}-loop profile` : `${op.profile?.length ?? 0}-point profile`;
+      return `${verb} ${outline} ${n(Math.abs(op.depth))}${op.symmetric ? " both ways" : ""}`;
     }
     case "revolve": {
       const verb = op.op === "fuse" ? "Revolve" : `${BOOLEAN_VERB[op.op]} revolve`;
-      return `${verb} ${op.profile.length}-point profile ${n(op.angleDeg ?? 360)}°`;
+      const outline = op.loops?.length ? `${op.loops.length}-loop profile` : `${op.profile?.length ?? 0}-point profile`;
+      return `${verb} ${outline} ${n(op.angleDeg ?? 360)}°`;
     }
     case "loft": {
       const verb = op.op === "fuse" ? "Loft" : `${BOOLEAN_VERB[op.op]} loft`;

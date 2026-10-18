@@ -277,6 +277,25 @@ pub struct ToolRef {
     pub name: Option<String>,
 }
 
+// --- K1 profile v2 (loops, arcs, holes). Other packages add their own ops beside these types. ---
+
+/// One edge of a loop, from the previous end (the loop's `start`, for the first) to `to`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ProfileSegment {
+    Line { to: [f64; 2] },
+    Arc { through: [f64; 2], to: [f64; 2] },
+    Spline { through: Vec<[f64; 2]>, to: [f64; 2] },
+}
+
+/// A closed loop on a profile's plane. The first of an op's loops is the outline; the rest are holes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileLoop {
+    pub start: [f64; 2],
+    pub segments: Vec<ProfileSegment>,
+}
+
 /// One edit. Lengths are millimetres, turns degrees about X, then Y, then Z.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -347,6 +366,8 @@ pub enum Op {
         origin: [f64; 3],
         #[serde(default)]
         turn: [f64; 3],
+        /// Absent when `loops` is set, so a loops-only op does not store an empty profile.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         profile: Vec<[f64; 2]>,
         depth: f64,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -356,6 +377,9 @@ pub enum Op {
         smooth: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         corners: Vec<u32>,
+        /// K1: closed loops in place of `profile`. Empty, and omitted, for a point profile.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        loops: Vec<ProfileLoop>,
     },
     /// The same outline turned `angleDeg` (360 when absent) about the in-plane axis through `axisOrigin` ([0, 0]
     /// when absent) along `axisDir` (V, [0, 1], when absent), and combined by `op`.
@@ -364,6 +388,8 @@ pub enum Op {
         origin: [f64; 3],
         #[serde(default)]
         turn: [f64; 3],
+        /// Absent when `loops` is set, so a loops-only op does not store an empty profile.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         profile: Vec<[f64; 2]>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         axis_origin: Option<[f64; 2]>,
@@ -375,6 +401,9 @@ pub enum Op {
         smooth: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         corners: Vec<u32>,
+        /// K1: closed loops in place of `profile`. Empty, and omitted, for a point profile.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        loops: Vec<ProfileLoop>,
     },
     /// A solid through `sections` in order, smooth or `ruled`, combined by `op`.
     Loft {
@@ -409,6 +438,9 @@ pub struct LoftSection {
     pub smooth: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub corners: Vec<u32>,
+    /// K1: closed loops in place of `profile` or `radius`. Empty, and omitted, otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<ProfileLoop>,
 }
 
 const ROOT_ONLY: &str = "A new solid's primitive can only be built again right under its root";
@@ -2506,6 +2538,10 @@ fn build(
     probe: bool,
     tool: Option<ToolSolid>,
 ) -> Result<Built, (String, Option<f64>)> {
+    // K1: loops build on their own path. An empty `loops` stays on the arms below, unchanged.
+    if k1_has_loops(&resolved.op) {
+        return build_k1_loops(from, resolved);
+    }
     let Resolved { op, picks } = resolved;
     let mut other = None;
     let kept = match &op {
@@ -2621,6 +2657,7 @@ fn build(
             symmetric,
             smooth,
             corners,
+            loops: _,
         } => {
             let mut p = vec![
                 origin[0],
@@ -2655,6 +2692,7 @@ fn build(
             angle_deg,
             smooth,
             corners,
+            loops: _,
         } => {
             let [au, av] = axis_origin.unwrap_or([0.0, 0.0]);
             let [du, dv] = axis_dir.unwrap_or([0.0, 1.0]);
@@ -2841,6 +2879,35 @@ extern "C" {
         ruled: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    // K1 profile v2. The three functions above stay for a point profile.
+    fn lime_tree_extrude_loops(
+        from: *const RawShape,
+        op: *const c_char,
+        p: *const f64,
+        loops: *const f64,
+        loops_len: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_revolve_loops(
+        from: *const RawShape,
+        op: *const c_char,
+        p: *const f64,
+        loops: *const f64,
+        loops_len: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_loft_loops(
+        from: *const RawShape,
+        op: *const c_char,
+        head: *const f64,
+        count: c_int,
+        data: *const f64,
+        ruled: c_int,
+        loop_at: *const c_int,
+        loops: *const f64,
+        loops_len: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     fn lime_tree_pieces(from: *const RawShape, built: *const RawShape) -> *mut c_char;
     fn lime_tree_shell(
         from: *const RawShape,
@@ -2923,6 +2990,197 @@ unsafe impl Send for Shape {}
 impl Drop for Shape {
     fn drop(&mut self) {
         unsafe { lime_tree_free(self.0.as_ptr()) };
+    }
+}
+
+/// K1. True when an extrude, revolve, or any loft section carries loops.
+fn k1_has_loops(op: &Op) -> bool {
+    match op {
+        Op::Extrude { loops, .. } | Op::Revolve { loops, .. } => !loops.is_empty(),
+        Op::Loft { sections, .. } => sections.iter().any(|section| !section.loops.is_empty()),
+        _ => false,
+    }
+}
+
+/// The blob `decode_profile_loops` reads: loop count, then each loop.
+fn encode_loops(loops: &[ProfileLoop], out: &mut Vec<f64>) {
+    out.push(loops.len() as f64);
+    for loop_ in loops {
+        out.push(loop_.start[0]);
+        out.push(loop_.start[1]);
+        out.push(loop_.segments.len() as f64);
+        for seg in &loop_.segments {
+            match seg {
+                ProfileSegment::Line { to } => {
+                    out.extend([0.0, to[0], to[1], 0.0]);
+                }
+                ProfileSegment::Arc { through, to } => {
+                    out.extend([1.0, to[0], to[1], 1.0, through[0], through[1]]);
+                }
+                ProfileSegment::Spline { through, to } => {
+                    out.extend([2.0, to[0], to[1], through.len() as f64]);
+                    for point in through {
+                        out.push(point[0]);
+                        out.push(point[1]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// K1 profile v2. Separate from the point-profile arms so those stay as they are.
+fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, (String, Option<f64>)> {
+    let Resolved { op, .. } = resolved;
+    let shape_note = "smooth and corners are for a point profile. A loop uses arc and spline segments.";
+    let kept = match &op {
+        Op::Extrude {
+            op: which,
+            origin,
+            turn,
+            profile,
+            depth,
+            symmetric,
+            smooth,
+            corners,
+            loops,
+        } => {
+            if !profile.is_empty() {
+                return Err(("Give a profile or loops, not both.".into(), None));
+            }
+            if *smooth || !corners.is_empty() {
+                return Err((shape_note.into(), None));
+            }
+            let p = [
+                origin[0],
+                origin[1],
+                origin[2],
+                turn[0],
+                turn[1],
+                turn[2],
+                *depth,
+                f64::from(u8::from(*symmetric)),
+            ];
+            let mut blob = Vec::new();
+            encode_loops(loops, &mut blob);
+            Shape::made(|error| unsafe {
+                lime_tree_extrude_loops(
+                    from.raw(),
+                    which.name().as_ptr(),
+                    p.as_ptr(),
+                    blob.as_ptr(),
+                    blob.len() as c_int,
+                    error,
+                )
+            })
+        }
+        Op::Revolve {
+            op: which,
+            origin,
+            turn,
+            profile,
+            axis_origin,
+            axis_dir,
+            angle_deg,
+            smooth,
+            corners,
+            loops,
+        } => {
+            if !profile.is_empty() {
+                return Err(("Give a profile or loops, not both.".into(), None));
+            }
+            if *smooth || !corners.is_empty() {
+                return Err((shape_note.into(), None));
+            }
+            let [au, av] = axis_origin.unwrap_or([0.0, 0.0]);
+            let [du, dv] = axis_dir.unwrap_or([0.0, 1.0]);
+            let p = [
+                origin[0],
+                origin[1],
+                origin[2],
+                turn[0],
+                turn[1],
+                turn[2],
+                au,
+                av,
+                du,
+                dv,
+                angle_deg.unwrap_or(360.0),
+            ];
+            let mut blob = Vec::new();
+            encode_loops(loops, &mut blob);
+            Shape::made(|error| unsafe {
+                lime_tree_revolve_loops(
+                    from.raw(),
+                    which.name().as_ptr(),
+                    p.as_ptr(),
+                    blob.as_ptr(),
+                    blob.len() as c_int,
+                    error,
+                )
+            })
+        }
+        Op::Loft {
+            op: which,
+            sections,
+            ruled,
+        } => {
+            let mut head = Vec::with_capacity(sections.len() * 11);
+            let mut data = Vec::new();
+            let mut blob = Vec::new();
+            let mut loop_at = Vec::with_capacity(sections.len());
+            for (index, section) in sections.iter().enumerate() {
+                let has_radius = section.radius.unwrap_or(0.0) > 0.0;
+                let has_profile = !section.profile.is_empty();
+                let has_loops = !section.loops.is_empty();
+                let kinds = usize::from(has_radius) + usize::from(has_profile) + usize::from(has_loops);
+                let prefix = format!("Section {index}: ");
+                if kinds > 1 {
+                    return Err((format!("{prefix}A section takes a radius, a profile, or loops, not more than one."), None));
+                }
+                if kinds == 0 {
+                    return Err((format!("{prefix}A section needs a radius, a profile, or loops."), None));
+                }
+                if has_loops && (section.smooth || !section.corners.is_empty()) {
+                    return Err((format!("{prefix}{shape_note}"), None));
+                }
+                head.extend_from_slice(&section.origin);
+                head.extend_from_slice(&section.turn);
+                head.push(section.radius.unwrap_or(0.0));
+                head.push(section.radius_v.unwrap_or(0.0));
+                head.push(f64::from(u8::from(section.smooth)));
+                head.push(section.profile.len() as f64);
+                head.push(section.corners.len() as f64);
+                data.extend(section.profile.iter().flatten().copied());
+                data.extend(section.corners.iter().map(|&corner| f64::from(corner)));
+                if has_loops {
+                    loop_at.push(blob.len() as c_int);
+                    encode_loops(&section.loops, &mut blob);
+                } else {
+                    loop_at.push(-1);
+                }
+            }
+            let data_ptr = if data.is_empty() { std::ptr::null() } else { data.as_ptr() };
+            Shape::made(|error| unsafe {
+                lime_tree_loft_loops(
+                    from.raw(),
+                    which.name().as_ptr(),
+                    head.as_ptr(),
+                    sections.len() as c_int,
+                    data_ptr,
+                    c_int::from(*ruled),
+                    loop_at.as_ptr(),
+                    blob.as_ptr(),
+                    blob.len() as c_int,
+                    error,
+                )
+            })
+        }
+        _ => return Err(("A profile needs a loop.".into(), None)),
+    };
+    match kept {
+        Ok(kept) => Ok(Built { op, kept, other: None }),
+        Err(message) => Err((message, None)),
     }
 }
 
