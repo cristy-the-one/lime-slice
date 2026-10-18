@@ -513,8 +513,9 @@ enum Request {
         box_mm: Option<[f64; 3]>,
         primitive: Option<Solid>,
         /// K2: a feature root. An extrude, revolve, or loft built against nothing. Exactly one root source.
+        /// Boxed so `Open` stays no larger than the other calls.
         #[serde(default)]
-        feature: Option<Op>,
+        feature: Option<Box<Op>>,
         fingerprint: Option<Fingerprint>,
         #[serde(default = "default_chord", alias = "stepToleranceMm")]
         chord_mm: f64,
@@ -1328,7 +1329,7 @@ impl Store {
                 seed,
                 quiet,
             } => {
-                let root = root_shape(data_b64, step_path, box_mm, primitive, feature)?;
+                let root = root_shape(data_b64, step_path, box_mm, primitive, feature.map(|op| *op))?;
                 if let Some(saved) = fingerprint {
                     let got = root.fingerprint();
                     if !saved.matches(&got) {
