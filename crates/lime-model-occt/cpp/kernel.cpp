@@ -85,6 +85,11 @@
 #include <BRepTools_WireExplorer.hxx>
 #include <gp_Pnt2d.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
+// K3: draft prisms (the LocOpe prism BRepFeat_MakeDPrism::Perform builds) and an extrude that stops on a face.
+// LGPL, linked dynamically with the rest of Open CASCADE.
+#include <BRepBuilderAPI_Copy.hxx>
+#include <BRepFeat_MakePrism.hxx>
+#include <LocOpe_DPrism.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
 #include <BRepPrimAPI_MakeWedge.hxx>
@@ -2315,6 +2320,326 @@ TopoDS_Shape build_extrude(
     BRepPrimAPI_MakePrism prism(face, gp_Vec(frame.w) * length);
     const TopoDS_Shape tool = built(prism, "extrude", error);
     if (tool.IsNull()) {
+        return {};
+    }
+    return combine_profile(current, before, which, tool, "extrude", volume, error);
+}
+
+// --- K3: two-sided depth, draft, and up to a face. `build_extrude` above is the plain prism and is not used
+// when one of these is set. A request with none of them never enters this block. ---
+
+namespace {
+
+/// One solid, turned so its volume is positive. `fail` is the sentence when it is not one solid with volume.
+TopoDS_Shape k3_solid(TopoDS_Shape shape, std::string& error, const char* fail) {
+    if (!shape.IsNull()) {
+        shape = as_solid(shape);
+    }
+    if (shape.IsNull() || !has_solid(shape) || count_of(shape, TopAbs_SOLID) != 1) {
+        error = fail;
+        return {};
+    }
+    const double mass = volume_of(shape);
+    if (!(std::abs(mass) > 1e-6)) {
+        error = fail;
+        return {};
+    }
+    if (mass < 0.0) {
+        shape.Reverse();
+    }
+    return shape;
+}
+
+/// The prism `BRepFeat_MakeDPrism::Perform(Height)` builds before it fuses: the height is divided by cos(angle),
+/// and `LocOpe_DPrism` then puts the far end `Height` along the normal, inset by `Height * tan(angle)`.
+/// Perform's own fuse is not used. It can rewrite the solid it was given, and this extrude still has to fuse, cut,
+/// or intersect with the same checks as a plain one.
+TopoDS_Shape k3_draft_prism(const TopoDS_Face& face, double height, double angle, std::string& error) {
+    if (!(height > kTinyMm) || !std::isfinite(height) || !(std::cos(angle) > 1e-6)) {
+        error = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+        return {};
+    }
+    try {
+        const double along = height / std::cos(angle);
+        LocOpe_DPrism prism(face, along, angle);
+        if (!prism.IsDone()) {
+            error = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+            return {};
+        }
+        return k3_solid(prism.Shape(), error, "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.");
+    } catch (const Standard_Failure&) {
+        error = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+        return {};
+    }
+}
+
+/// The same prism to both sides of the profile. `BRepFeat_MakeDPrism` has no two-height Perform; its two-sided
+/// form (`Perform` from a face to a face) builds this `LocOpe_DPrism`. A positive angle shrinks the +W end and
+/// grows the −W end, so the wall is one plane at that angle to W.
+TopoDS_Shape k3_draft_both(const TopoDS_Face& face, double hi, double lo, double angle, std::string& error) {
+    const double along_hi = hi / std::cos(angle);
+    const double along_lo = (-lo) / std::cos(angle);
+    if (!(along_hi >= 0.0) || !(along_lo >= 0.0) || !std::isfinite(along_hi) || !std::isfinite(along_lo)) {
+        error = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+        return {};
+    }
+    try {
+        LocOpe_DPrism prism(face, along_hi, along_lo, angle);
+        if (!prism.IsDone()) {
+            error = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+            return {};
+        }
+        return k3_solid(prism.Shape(), error, "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.");
+    } catch (const Standard_Failure&) {
+        error = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+        return {};
+    }
+}
+
+/// The plane of `face`, unbounded. `Perform` trims against an infinite plane; a finite face is glued instead,
+/// and that glue only works when the profile is already a face of the solid.
+TopoDS_Face k3_stop_plane(const TopoDS_Face& face, std::string& error) {
+    const char* miss = "The extrude does not reach that face. Move the profile so its direction meets the face.";
+    try {
+        BRepAdaptor_Surface surface(face);
+        if (surface.GetType() != GeomAbs_Plane) {
+            error = "An extrude can stop on a flat face. This face is not flat.";
+            return {};
+        }
+        BRepBuilderAPI_MakeFace made(surface.Plane());
+        if (!made.IsDone()) {
+            error = miss;
+            return {};
+        }
+        TopoDS_Face plane = made.Face();
+        // The adaptor's plane follows the surface, not the face's place in the solid. Match the outward normal.
+        if (face.Orientation() == TopAbs_REVERSED) {
+            plane.Reverse();
+        }
+        return plane;
+    } catch (const Standard_Failure&) {
+        error = miss;
+        return {};
+    }
+}
+
+/// `BRepFeat_MakePrism::Perform(until)`, mode 2: the prism trimmed where it meets `until`, not yet combined.
+/// The basis is a copy, so Perform cannot rewrite the solid this step is built on.
+class K3Prism : public BRepFeat_MakePrism {
+public:
+    using BRepFeat_MakePrism::BRepFeat_MakePrism;
+};
+
+TopoDS_Shape k3_up_to(const TopoDS_Shape& current, const TopoDS_Face& face, const gp_Dir& direction, const TopoDS_Face& until, std::string& error) {
+    const char* miss = "The extrude does not reach that face. Move the profile so its direction meets the face.";
+    const TopoDS_Face plane = k3_stop_plane(until, error);
+    if (plane.IsNull()) {
+        return {};
+    }
+    try {
+        BRepBuilderAPI_Copy copied(current);
+        if (!copied.IsDone()) {
+            error = miss;
+            return {};
+        }
+        // Mode 2 keeps the trimmed prism. Mode 0 and 1 would cut or fuse it into the copy.
+        K3Prism feat(copied.Shape(), face, face, direction, 2, Standard_False);
+        feat.Perform(plane);
+        if (!feat.IsDone() || feat.Shape().IsNull()) {
+            error = miss;
+            return {};
+        }
+        return k3_solid(feat.Shape(), error, miss);
+    } catch (const Standard_Failure&) {
+        error = miss;
+        return {};
+    }
+}
+
+/// Where the prism runs along W. `depth2` is the other side of the plane.
+bool k3_span(double depth, bool symmetric, bool has_depth2, double depth2, double& lo, double& hi, std::string& error) {
+    if (!std::isfinite(depth)) {
+        error = "An extrude needs a depth other than 0.";
+        return false;
+    }
+    if (has_depth2) {
+        if (!std::isfinite(depth2) || !(depth2 > kTinyMm) || depth2 > 1e5) {
+            error = "The second depth is a distance on the other side of the plane, above 0.";
+            return false;
+        }
+        if (symmetric) {
+            error = "An extrude is centred, or it has a second depth, not both.";
+            return false;
+        }
+        if (depth >= 0.0) {
+            lo = -depth2;
+            hi = depth;
+        } else {
+            lo = depth;
+            hi = depth2;
+        }
+    } else if (symmetric) {
+        const double length = std::abs(depth);
+        lo = -length / 2.0;
+        hi = length / 2.0;
+    } else {
+        lo = std::min(depth, 0.0);
+        hi = std::max(depth, 0.0);
+    }
+    if (!(hi - lo > kTinyMm)) {
+        error = "An extrude needs a depth other than 0.";
+        return false;
+    }
+    return true;
+}
+
+/// The narrower end of a draft. The smaller side of the profile's box is what a square or a rectangle closes across.
+bool k3_draft_closes(const std::vector<double>& points, double shrink) {
+    if (!(shrink > 0.0)) {
+        return false;
+    }
+    double min_u = points[0];
+    double max_u = points[0];
+    double min_v = points[1];
+    double max_v = points[1];
+    for (size_t i = 0; i + 1 < points.size(); i += 2) {
+        min_u = std::min(min_u, points[i]);
+        max_u = std::max(max_u, points[i]);
+        min_v = std::min(min_v, points[i + 1]);
+        max_v = std::max(max_v, points[i + 1]);
+    }
+    const double across = std::min(max_u - min_u, max_v - min_v);
+    return shrink * 2.0 >= across - 1e-9;
+}
+
+}  // namespace
+
+TopoDS_Shape build_extrude_extent(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const ProfileSpec& profile,
+    double depth,
+    bool symmetric,
+    const ExtrudeExtent& extent,
+    double& volume,
+    std::string& error) {
+    const std::vector<double> points = profile_points(profile, error);
+    if (points.empty()) {
+        return {};
+    }
+    bool has_draft = extent.has_draft && std::abs(extent.draft_deg) > 1e-9;
+    const bool has_depth2 = extent.has_depth2;
+    const bool has_up_to = extent.has_up_to;
+    if (!has_draft && !has_depth2 && !has_up_to) {
+        return build_extrude(current, before, which, profile, depth, symmetric, volume, error);
+    }
+    if (which != "fuse" && which != "cut" && which != "common") {
+        error = "The boolean is fuse, cut, or common";
+        return {};
+    }
+    if (has_up_to && has_depth2) {
+        error = "An extrude up to a face starts at the profile. Drop the second depth.";
+        return {};
+    }
+    if (has_up_to && symmetric) {
+        error = "An extrude up to a face starts at the profile. Leave centred off.";
+        return {};
+    }
+    if (has_up_to && extent.up_to.IsNull()) {
+        error = "That face is not on this solid.";
+        return {};
+    }
+    if (has_up_to && has_draft) {
+        error = "A draft up to a face is not available yet. Drop the draft, or drop the face and set a depth.";
+        return {};
+    }
+    double draft_rad = 0.0;
+    if (has_draft) {
+        if (!std::isfinite(extent.draft_deg) || std::abs(extent.draft_deg) >= 89.0) {
+            error = "A draft angle must be between -89 and 89 degrees.";
+            return {};
+        }
+        draft_rad = extent.draft_deg * kPi / 180.0;
+    }
+    // Up to a face: depth only says which way to go, and may be 0 (+W).
+    if (!has_up_to && !std::isfinite(depth)) {
+        error = "An extrude needs a depth other than 0.";
+        return {};
+    }
+    double lo = 0.0;
+    double hi = 0.0;
+    if (!has_up_to && !k3_span(depth, symmetric, has_depth2, extent.depth2, lo, hi, error)) {
+        return {};
+    }
+    const ProfileFrame frame = frame_of(profile);
+    if (has_draft && !has_up_to) {
+        const double taper = std::tan(std::abs(draft_rad));
+        double shrink = 0.0;
+        if (has_depth2 || symmetric) {
+            // The wall leans one way: the +W end shrinks when the angle is positive, the −W end when it is negative.
+            shrink = draft_rad >= 0.0 ? hi * taper : (-lo) * taper;
+        } else if (draft_rad > 0.0) {
+            // One side: a positive angle shrinks the far end, whichever way the depth points.
+            shrink = std::abs(depth) * taper;
+        }
+        if (k3_draft_closes(points, shrink)) {
+            error = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+            return {};
+        }
+    }
+    const char* closed = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+
+    if (has_up_to) {
+        TopoDS_Face face = profile_face(frame, profile, 0.0, error);
+        if (face.IsNull()) {
+            return {};
+        }
+        // A negative depth asks for −W. The feature still turns toward the face when that is the other way.
+        gp_Dir direction(frame.w);
+        if (depth < 0.0) {
+            face.Reverse();
+            direction.Reverse();
+        }
+        TopoDS_Shape tool = k3_up_to(current, face, direction, extent.up_to, error);
+        if (tool.IsNull()) {
+            return {};
+        }
+        return combine_profile(current, before, which, tool, "extrude", volume, error);
+    }
+
+    if (!has_draft) {
+        // Two-sided, straight walls: the same prism as a plain extrude, from the lower end along +W.
+        const TopoDS_Face face = profile_face(frame, profile, lo, error);
+        if (face.IsNull()) {
+            return {};
+        }
+        BRepPrimAPI_MakePrism prism(face, gp_Vec(frame.w) * (hi - lo));
+        const TopoDS_Shape tool = built(prism, "extrude", error);
+        if (tool.IsNull()) {
+            return {};
+        }
+        return combine_profile(current, before, which, tool, "extrude", volume, error);
+    }
+
+    TopoDS_Face face = profile_face(frame, profile, 0.0, error);
+    if (face.IsNull()) {
+        return {};
+    }
+    TopoDS_Shape tool;
+    if (has_depth2 || symmetric) {
+        tool = k3_draft_both(face, hi, lo, draft_rad, error);
+    } else if (depth < 0.0) {
+        // The profile stays the section on the plane. The prism runs along −W and a positive angle shrinks that end.
+        face.Reverse();
+        tool = k3_draft_prism(face, std::abs(depth), draft_rad, error);
+    } else {
+        tool = k3_draft_prism(face, depth, draft_rad, error);
+    }
+    if (tool.IsNull()) {
+        if (error.empty()) {
+            error = closed;
+        }
         return {};
     }
     return combine_profile(current, before, which, tool, "extrude", volume, error);

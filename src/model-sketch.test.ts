@@ -156,6 +156,27 @@ eq("a group with a step that will not read is a damaged tree", readSavedTree(JSO
 eq("the new tools are checked by the kernel", ["extrude", "revolve", "shell"].map(isProbed), [true, true, true]);
 eq("a refusal reads as it came", probeNote("shell", { phase: "done", ok: false, error: "This wall is too thick for the part's smallest feature." })?.text, "This wall is too thick for the part's smallest feature.");
 
+// K3. A second depth, a draft, and a face to stop at. Each is absent unless it was set.
+const square: Vec2[] = [[0, 0], [10, 0], [10, 10], [0, 10]];
+const bed = { origin: [0, 0, 10] as Vec3, turn: [0, 0, 0] as Vec3 };
+const tapered = extrudeOp("fuse", bed, square, 10, false, {}, { depth2: 4, draftDeg: 5 });
+eq("a second depth and a draft are sent when set", tapered, { kind: "extrude", op: "fuse", origin: [0, 0, 10], turn: [0, 0, 0], profile: square, depth: 10, depth2: 4, draftDeg: 5 });
+eq("a zero draft is left off", "draftDeg" in extrudeOp("fuse", bed, square, 10, false, {}, { draftDeg: 0 }), false);
+eq("a plain extrude still sends none of them", Object.keys(extrudeOp("fuse", bed, square, 10)), ["kind", "op", "origin", "turn", "profile", "depth"]);
+const stopped = extrudeOp("cut", bed, square, 0, false, {}, { upTo: 3 });
+eq("labels name the second side, the draft, and the face", [opLabel(tapered), opLabel(stopped)], ["Extrude 4-point profile 10 and 4, draft 5°", "Cut extrude 4-point profile up to a face"]);
+const storedStop: ModelOp = { ...stopped, upTo: { index: 3, mid: [5, 5, 20], areaMm2: 100 } };
+const stopTree = withChild(newTree("e", root, "Box", fp(1)), 0, { id: 1, op: storedStop, label: opLabel(storedStop), fingerprint: fp(1) });
+eq("a fresh face index finds the extrude that stops there", childWithOp(stopTree, 0, stopped), 1);
+eq("and another face does not", childWithOp(stopTree, 0, extrudeOp("cut", bed, square, 0, false, {}, { upTo: 4 })), null);
+const extentJson = JSON.parse(JSON.stringify({ ...savedTree(stopTree, 1, () => undefined), rootPrimitive: root.solid }));
+eq("an extrude up to a face round-trips", readSavedTree(extentJson)?.nodes[1]?.op, storedStop);
+eq("a damaged second depth, draft, or face is a damaged tree", [
+  damaged((op) => (op.depth2 = "far"), 1),
+  damaged((op) => (op.draftDeg = "steep"), 1),
+  damaged((op) => (op.upTo = { index: -1 }), 1),
+].map((tree) => tree?.nodes[1]?.op ?? null), [null, null, null]);
+
 if (failed) {
   console.error(`model-sketch: ${failed} failed`);
   throw new Error(`model-sketch: ${failed} failed`);

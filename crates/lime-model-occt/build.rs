@@ -19,6 +19,7 @@ const LIBS: &[&str] = &[
     "TKBO",
     "TKFillet",
     "TKOffset",
+    // K3: BRepFeat_MakePrism and the draft prism (LocOpe_DPrism, the body of BRepFeat_MakeDPrism).
     // K4: draft and up-to face extrudes (BRepFeat). TKBool is the boolean toolkit those call.
     "TKBool",
     "TKFeat",

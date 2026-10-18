@@ -68,12 +68,30 @@ export interface ProfilePlane {
   turn: Vec3;
 }
 
+/** K3. Each field is sent only when set, so a plain extrude is the same object as before. */
+export interface ExtrudeExtent {
+  /** The other side of the plane, above 0. */
+  depth2?: number;
+  /** Draft angle in degrees. Zero is left off. */
+  draftDeg?: number;
+  /** A face of the solid this extrude is built on: an index, or the reference the engine stored. */
+  upTo?: number | FaceRef;
+}
+
 /**
  * An extrude of `profile` (`[u, v]` points) on `plane`, in the frame the plane is given in: `toSolidOp` takes it into the
- * solid's own frame like any tool's op. `symmetric` is sent only when on, as the engine stores it.
+ * solid's own frame like any tool's op. `symmetric` is sent only when on, as the engine stores it. `extent` is the
+ * second side, the draft, and the face to stop at, each only when set.
  */
-export function extrudeOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], depth: number, symmetric = false, shape: ProfileShape = {}, loops?: readonly ProfileLoop[]): ExtrudeOp {
+function isProfileLoops(value: ExtrudeExtent | readonly ProfileLoop[]): value is readonly ProfileLoop[] {
+  return Array.isArray(value);
+}
+
+export function extrudeOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], depth: number, symmetric = false, shape: ProfileShape = {}, extentOrLoops: ExtrudeExtent | readonly ProfileLoop[] = {}): ExtrudeOp {
+  const loops = isProfileLoops(extentOrLoops) ? extentOrLoops : undefined;
+  const extent = isProfileLoops(extentOrLoops) ? {} : extentOrLoops;
   const copied = loops && loops.length > 0 ? copyLoops(loops) : undefined;
+  const upTo = extent.upTo === undefined ? undefined : typeof extent.upTo === "number" ? extent.upTo : { index: extent.upTo.index, mid: [...extent.upTo.mid] as Vec3, areaMm2: extent.upTo.areaMm2 };
   return {
     kind: "extrude",
     op,
@@ -83,6 +101,9 @@ export function extrudeOp(op: BooleanKind, plane: ProfilePlane, profile: readonl
     depth,
     ...(symmetric ? { symmetric: true as const } : {}),
     ...(copied ? {} : shapeFields(shape)),
+    ...(extent.depth2 !== undefined ? { depth2: extent.depth2 } : {}),
+    ...(extent.draftDeg !== undefined && extent.draftDeg !== 0 ? { draftDeg: extent.draftDeg } : {}),
+    ...(upTo !== undefined ? { upTo } : {}),
   };
 }
 

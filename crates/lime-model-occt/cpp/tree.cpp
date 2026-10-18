@@ -460,6 +460,50 @@ LimeShape* lime_tree_extrude(const LimeShape* from, const char* op, const double
     }
 }
 
+// --- K3. A second depth, a draft angle, or a face to stop at. `p` is the same plane, depth, and symmetric
+// a plain extrude reads. `flags` bit 0 is depth2, bit 1 is draft, bit 2 is up to `face` (an index on `from`). ---
+LimeShape* lime_tree_extrude_extent(
+    const LimeShape* from, const char* op, const double* p, const double* points, int count, double depth2, double draft_deg, int face, int flags, char** error) {
+    try {
+        std::string message;
+        double volume = 0.0;
+        ExtrudeExtent extent;
+        extent.has_depth2 = (flags & 1) != 0;
+        extent.depth2 = depth2;
+        extent.has_draft = (flags & 2) != 0;
+        extent.draft_deg = draft_deg;
+        extent.has_up_to = (flags & 4) != 0;
+        if (extent.has_up_to) {
+            if (face < 0 || face >= from->held.faces.Extent()) {
+                set_error(error, "That face is not on this solid.");
+                return nullptr;
+            }
+            extent.up_to = TopoDS::Face(from->held.faces(face + 1));
+        }
+        const TopoDS_Shape result = build_extrude_extent(
+            from->held.shape,
+            from->held.volume,
+            op == nullptr ? "" : op,
+            profile_of(p, points, count, p + 8),
+            p[6],
+            p[7] != 0.0,
+            extent,
+            volume,
+            message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The extrude removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// `p` is the plane's origin and turn, the axis's point (u, v) and direction (u, v), the angle in degrees, then smooth,
 /// the corner count, and the corners.
 LimeShape* lime_tree_revolve(const LimeShape* from, const char* op, const double* p, const double* points, int count, char** error) {
@@ -492,6 +536,35 @@ LimeShape* lime_tree_feature_extrude(const char* op, const double* p, const doub
         const TopoDS_Shape none;
         const TopoDS_Shape result = build_extrude(
             none, 0.0, op == nullptr ? "" : op, profile_of(p, points, count, p + 8), p[6], p[7] != 0.0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The extrude did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+// K3 on a feature root. `p` matches lime_tree_feature_extrude. There is no solid, so a face to stop at is not on one.
+LimeShape* lime_tree_feature_extrude_extent(
+    const char* op, const double* p, const double* points, int count, double depth2, double draft_deg, int flags, char** error) {
+    try {
+        std::string message;
+        double volume = 0.0;
+        ExtrudeExtent extent;
+        extent.has_depth2 = (flags & 1) != 0;
+        extent.depth2 = depth2;
+        extent.has_draft = (flags & 2) != 0;
+        extent.draft_deg = draft_deg;
+        extent.has_up_to = (flags & 4) != 0;
+        const TopoDS_Shape none;
+        const TopoDS_Shape result = build_extrude_extent(
+            none, 0.0, op == nullptr ? "" : op, profile_of(p, points, count, p + 8), p[6], p[7] != 0.0, extent, volume, message);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;

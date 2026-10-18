@@ -376,26 +376,26 @@ const loopsField = {
   type: "array",
   minItems: 1,
   maxItems: 32,
-  description: "Outer loop, then holes. Replaces profile.",
+  description: "Outline, then holes.",
   items: {
     type: "object",
     additionalProperties: false,
     required: ["start", "segments"],
     properties: {
-      start: { ...point2, description: "Start [u, v], mm." },
+      start: { ...point2, description: "Start, mm." },
       segments: {
         type: "array",
         minItems: 1,
         maxItems: 200,
-        description: "line, arc, or spline, back to the start.",
+        description: "Back to the start.",
         items: {
           type: "object",
           additionalProperties: false,
           required: ["kind", "to"],
           properties: {
             kind: { enum: ["line", "arc", "spline"], description: "line, arc, or spline." },
-            to: { ...point2, description: "End [u, v]." },
-            through: { description: "Arc: one [u, v]. Spline: a list of them.", oneOf: [point2, { type: "array", minItems: 1, maxItems: 200, items: point2 }] },
+            to: { ...point2, description: "End." },
+            through: { description: "Arc: one point. Spline: points.", oneOf: [point2, { type: "array", minItems: 1, maxItems: 200, items: point2 }] },
           },
         },
       },
@@ -420,8 +420,15 @@ const sketchOps = [
       op: booleanKind,
       profile,
       loops: loopsField,
-      depth: { type: "number", minimum: -1000, maximum: 1000, description: "Along W; negative goes into the face." },
+      depth: { type: "number", minimum: -1000, maximum: 1000, description: "Along W; negative goes into the face. May be 0 when upTo is set." },
       symmetric: { type: "boolean", description: "Centred on the plane." },
+      // K3. Each one is optional. A plain extrude does not send them.
+      depth2: { type: "number", exclusiveMinimum: 0, maximum: 100000, description: "The other side of the plane, mm. Not with symmetric or upTo." },
+      draftDeg: { type: "number", exclusiveMinimum: -89, exclusiveMaximum: 89, description: "Draft, degrees. Positive shrinks the section as it goes along +W." },
+      upTo: {
+        description: "Stop at a face of this solid: an index, or {normal, nearPoint}. Depth only says which way.",
+        oneOf: [{ type: "integer", minimum: 0 }, faceSelector],
+      },
       ...profileShape,
       ...profilePlace,
       label,

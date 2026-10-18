@@ -220,6 +220,34 @@ TopoDS_Shape build_extrude(
     bool symmetric,
     double& volume,
     std::string& error);
+
+// --- K3: two-sided depth, draft, and up to a face. Absent on a plain extrude, which stays `build_extrude`. ---
+
+/// Optional ends of an extrude. A flag is false when that field was not sent, and the number is then ignored.
+struct ExtrudeExtent {
+    /// A distance on the other side of the plane. The prism runs from −`depth2` to `depth` when `depth` is
+    /// positive, and from `depth` to +`depth2` when `depth` is negative.
+    bool has_depth2 = false;
+    double depth2 = 0;
+    /// Draft angle in degrees. Positive makes the section smaller as W increases.
+    bool has_draft = false;
+    double draft_deg = 0;
+    /// Stop at this face of `current` instead of at `depth`.
+    bool has_up_to = false;
+    TopoDS_Face up_to;
+};
+
+/// `build_extrude` plus `extent`. All three flags false calls `build_extrude`, so a plain request builds as before.
+TopoDS_Shape build_extrude_extent(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const ProfileSpec& profile,
+    double depth,
+    bool symmetric,
+    const ExtrudeExtent& extent,
+    double& volume,
+    std::string& error);
 /// The profile turned `angle_deg` about the in-plane axis through (`axis_u`, `axis_v`) along (`dir_u`, `dir_v`),
 /// combined with `current` by `which`.
 TopoDS_Shape build_revolve(

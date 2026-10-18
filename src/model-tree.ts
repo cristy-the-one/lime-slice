@@ -126,6 +126,12 @@ export interface ExtrudeOp {
   /** Splines through the points instead of straight edges, sharp at the points `corners` lists. */
   smooth?: true;
   corners?: number[];
+  /** K3. The other side of the plane, above 0. Absent on a plain extrude. */
+  depth2?: number;
+  /** K3. Draft angle in degrees. Positive makes the section smaller as W increases. Absent when there is none. */
+  draftDeg?: number;
+  /** K3. Stop at this face. A fresh pick is an index; a stored op names `{index, mid, areaMm2}`. */
+  upTo?: number | FaceRef;
   /** K1: closed loops in place of `profile`. Absent for a point profile. */
   loops?: ProfileLoop[];
 }
@@ -414,6 +420,7 @@ function canonicalValue(op: ModelOp): unknown {
   const index = (pick: EdgePick | FaceRef) => (typeof pick === "number" ? pick : "index" in pick ? pick.index : pick);
   if (op.kind === "fillet" || op.kind === "chamfer") return { ...op, edges: op.edges.map(index) };
   if (op.kind === "shell" && op.openFaces) return { ...op, openFaces: op.openFaces.map(index) };
+  if (op.kind === "extrude" && op.upTo !== undefined) return { ...op, upTo: index(op.upTo) };
   if (op.kind === "faceExtrude") return { ...op, face: index(op.face), ...(op.upTo !== undefined ? { upTo: index(op.upTo) } : {}) };
   if (op.kind === "moveFaces") return { ...op, faces: op.faces.map((row) => ({ ...row, face: index(row.face) })) };
   if (op.kind === "group") {
@@ -628,7 +635,11 @@ export function opLabel(op: ModelOp): string {
     case "extrude": {
       const verb = op.op === "fuse" ? "Extrude" : `${BOOLEAN_VERB[op.op]} extrude`;
       const outline = op.loops?.length ? `${op.loops.length}-loop profile` : `${op.profile?.length ?? 0}-point profile`;
-      return `${verb} ${outline} ${n(Math.abs(op.depth))}${op.symmetric ? " both ways" : ""}`;
+      const reach = op.upTo != null
+        ? "up to a face"
+        : `${n(Math.abs(op.depth))}${op.depth2 != null ? ` and ${n(op.depth2)}` : op.symmetric ? " both ways" : ""}`;
+      const draft = op.draftDeg != null && op.draftDeg !== 0 ? `, draft ${n(op.draftDeg)}°` : "";
+      return `${verb} ${outline} ${reach}${draft}`;
     }
     case "revolve": {
       const verb = op.op === "fuse" ? "Revolve" : `${BOOLEAN_VERB[op.op]} revolve`;

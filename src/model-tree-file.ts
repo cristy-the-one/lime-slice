@@ -274,7 +274,20 @@ function readOp(value: unknown): SavedOp | undefined {
       const plane = { op: value.op as BooleanKind, origin, turn, ...(profile ? { profile } : {}), ...shape, ...(loops ? { loops } : {}) };
       if (value.kind === "extrude") {
         if (!finite(value.depth) || (value.symmetric !== undefined && typeof value.symmetric !== "boolean")) return undefined;
-        return { kind: "extrude", ...plane, depth: value.depth, ...(value.symmetric === true ? { symmetric: true as const } : {}) };
+        // K3. Each new field is optional. A file from before they existed has none of them.
+        if (value.depth2 !== undefined && !finite(value.depth2)) return undefined;
+        if (value.draftDeg !== undefined && !finite(value.draftDeg)) return undefined;
+        const upTo = readUpTo(value.upTo);
+        if (upTo === null) return undefined;
+        return {
+          kind: "extrude",
+          ...plane,
+          depth: value.depth,
+          ...(value.symmetric === true ? { symmetric: true as const } : {}),
+          ...(finite(value.depth2) ? { depth2: value.depth2 } : {}),
+          ...(finite(value.draftDeg) ? { draftDeg: value.draftDeg } : {}),
+          ...(upTo !== undefined ? { upTo } : {}),
+        };
       }
       const axisOrigin = value.axisOrigin === undefined ? undefined : pair(value.axisOrigin);
       const axisDir = value.axisDir === undefined ? undefined : pair(value.axisDir);
@@ -433,6 +446,16 @@ function readProfileShape(value: Record<string, unknown>, points: number): { smo
   if (value.corners === undefined) return value.smooth === true ? { smooth: true } : {};
   if (!Array.isArray(value.corners) || !value.corners.every((corner) => isId(corner) && corner < points)) return null;
   return { ...(value.smooth === true ? { smooth: true as const } : {}), ...(value.corners.length > 0 ? { corners: [...value.corners] as number[] } : {}) };
+}
+
+/** K3. A face an extrude stops at: a fresh index, or the reference the engine stored. Undefined when the field is absent, null when it is malformed. */
+function readUpTo(raw: unknown): number | FaceRef | null | undefined {
+  if (raw === undefined) return undefined;
+  if (isId(raw)) return raw;
+  if (!isRecord(raw) || !isId(raw.index)) return null;
+  const mid = vec(raw.mid);
+  if (!mid || !finite(raw.areaMm2)) return null;
+  return { index: raw.index, mid, areaMm2: raw.areaMm2 };
 }
 
 /**
