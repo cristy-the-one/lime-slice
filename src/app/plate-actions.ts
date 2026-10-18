@@ -66,6 +66,9 @@ function frameSelection() {
   frameBounds(placeObject(selected, state.profile.bedX, state.profile.bedY).bounds);
 }
 
+// --- A7 model check --- model.ts asks for a selection change without importing this module back.
+fx.selectPlateObject = selectPlateObject;
+
 function frameBounds(bounds: Bounds) {
   fx.prepare?.frameBounds?.(bounds);
 }

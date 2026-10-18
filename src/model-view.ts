@@ -133,6 +133,10 @@ export interface ModelView {
   setAlign(ends: [Vec3, Vec3] | null): void;
   /** P1. The distance under the pointer, for tests. Null clears it. */
   setPull(distance: number | null): void;
+  /** --- A7 model check --- Red boxes, in model space, for a probe's hollows and loose pieces. Null clears them. */
+  setLocated(boxes: Bounds[] | null): void;
+  /** --- A7 model check --- The check row's outline, in model space. Null clears it. */
+  setCheckBox(box: Bounds | null): void;
   // --- A2 shell: picked faces that the shell will remove, drawn in the danger colour with a dashed outline. ---
   setRemovedFaces(on: boolean): void;
 }
@@ -193,7 +197,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   alignLine.visible = false;
   alignLine.renderOrder = 4;
   alignLine.raycast = () => undefined;
-  scene.add(alignLine);
+  /** --- A7 model check --- outlines in model space, so a solid's pose and a mesh's pose share one draw. */
+  const marks = new THREE.Group();
+  scene.add(alignLine, marks);
 
   let solid: ModelSolid | null = null;
   /** The open solid's box in model space. */
@@ -210,6 +216,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** A dry-run's shape in the solid's place, and its edges. The solid stays, hidden, for picks. */
   let preview: { shape: ModelSolid; mesh: THREE.Mesh; lines: THREE.LineSegments | null } | null = null;
   let faceOutline: LineSegments2 | null = null;
+  // --- A7 model check ---
+  let locatedLines: LineSegments2 | null = null;
+  let checkLines: LineSegments2 | null = null;
+  let locatedBoxes: Bounds[] = [];
+  let checkBox: Bounds | null = null;
   let selectedEdges: LineSegments2 | null = null;
   let hoverEdges: LineSegments2 | null = null;
   const fatLines: LineMaterial[] = [];
@@ -486,6 +497,49 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       }
     }
     return positions;
+  }
+
+  /** --- A7 model check --- Twelve edges of a box, in model space. */
+  function boxEdges(box: Bounds): number[] {
+    const [x0, y0, z0] = box.min;
+    const [x1, y1, z1] = box.max;
+    const corners = [
+      [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+      [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
+    ];
+    const edges = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+    const positions: number[] = [];
+    for (const [a, b] of edges) positions.push(...corners[a]!, ...corners[b]!);
+    return positions;
+  }
+
+  function drawMark(current: LineSegments2 | null, boxes: Bounds[], color: number): LineSegments2 | null {
+    if (current) {
+      marks.remove(current);
+      const material = current.material as LineMaterial;
+      const index = fatLines.indexOf(material);
+      if (index >= 0) fatLines.splice(index, 1);
+      disposeObject(current);
+    }
+    const positions = boxes.flatMap((box) => boxEdges(box));
+    const next = fatLine(positions, 2.5, 1, color);
+    if (next) marks.add(next);
+    return next;
+  }
+
+  function boxList(boxes: Bounds[]): string {
+    return boxes.map((box) => [...box.min, ...box.max].map((value) => value.toFixed(2)).join(",")).join(" ");
+  }
+
+  function paintMarks() {
+    locatedLines = drawMark(locatedLines, locatedBoxes, hexToThree(colors.danger));
+    checkLines = drawMark(checkLines, checkBox ? [checkBox] : [], accent);
+    const located = boxList(locatedBoxes);
+    if (located) canvas.dataset.located = `red:${located}`;
+    else delete canvas.dataset.located;
+    const outlined = boxList(checkBox ? [checkBox] : []);
+    if (outlined) canvas.dataset.checkBox = outlined;
+    else delete canvas.dataset.checkBox;
   }
 
   function lineResolution() {
@@ -1260,6 +1314,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       if (preview) showPreview(preview.shape);
       drawDatum();
       rebuildGhost();
+      paintMarks();
       kick();
     },
     resize,
@@ -1339,6 +1394,17 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setPull(distance) {
       if (distance == null || !Number.isFinite(distance)) delete canvas.dataset.pull;
       else canvas.dataset.pull = String(Math.round(distance * 10000) / 10000);
+    },
+    // --- A7 model check ---
+    setLocated(boxes) {
+      locatedBoxes = boxes ?? [];
+      paintMarks();
+      kick();
+    },
+    setCheckBox(box) {
+      checkBox = box;
+      paintMarks();
+      kick();
     },
     // --- A2 shell ---
     setRemovedFaces(on) {
