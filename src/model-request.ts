@@ -6,7 +6,7 @@ import { bytesToBase64 } from "./base64.ts";
 import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
-import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type ExtrudeOp, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type NodeId, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
+import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
 export type TreeRequest = Record<string, unknown>;
 
@@ -120,6 +120,39 @@ export function revolveOp(op: BooleanKind, plane: ProfilePlane, profile: readonl
 /** A shell to `thickness`, with the faces of the parent's reply `openFaces` names removed. None open is a closed void. */
 export function shellOp(thickness: number, openFaces: readonly number[] = []): ShellOp {
   return { kind: "shell", thickness, ...(openFaces.length > 0 ? { openFaces: [...openFaces] } : {}) };
+}
+
+/** K4. A face pulled `distance` along its outward normal. `draftDeg` and `upTo` are sent only when set. */
+export function faceExtrudeOp(
+  face: number | FaceRef,
+  distance: number,
+  options: { draftDeg?: number; upTo?: number | FaceRef | null } = {},
+): FaceExtrudeOp {
+  const draft = options.draftDeg;
+  const upTo = options.upTo;
+  return {
+    kind: "faceExtrude",
+    face: typeof face === "number" ? face : { ...face, mid: [...face.mid] },
+    distance,
+    ...(draft != null && draft !== 0 ? { draftDeg: draft } : {}),
+    ...(upTo != null ? { upTo: typeof upTo === "number" ? upTo : { ...upTo, mid: [...upTo.mid] } } : {}),
+  };
+}
+
+/** K4. Faces offset along their outward normals, each by its own distance. */
+export function moveFacesOp(faces: readonly { face: number | FaceRef; distance: number }[]): MoveFacesOp {
+  return {
+    kind: "moveFaces",
+    faces: faces.map((row) => ({
+      face: typeof row.face === "number" ? row.face : { ...row.face, mid: [...row.face.mid] },
+      distance: row.distance,
+    })),
+  };
+}
+
+/** K4. The face's outline in its plane. */
+export function faceLoopsRequest(key: string, node: NodeId, face: number | FaceRef): TreeRequest {
+  return { call: "faceLoops", key, node, face: typeof face === "number" ? face : { ...face, mid: [...face.mid] } };
 }
 
 /** A blend's pick of the edges step `fromNode` made: all its sharp ones, or only the convex or the concave ones. */

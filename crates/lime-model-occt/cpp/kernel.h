@@ -231,4 +231,33 @@ int count_of(const TopoDS_Shape& shape, TopAbs_ShapeEnum kind);
 /// For each edge of `edges`: 1 convex, 2 concave, 0 anything else (smooth, a seam, or on one face).
 std::vector<int> edge_kinds(const TopoDS_Shape& shape, const std::vector<TopoDS_Edge>& edges);
 
+// --- K4: faceExtrude, moveFaces, faceLoops. Keep this block together. ---
+
+/// One face of a `moveFaces`, offset `distance` along the solid's outward normal.
+struct FaceOffset {
+    TopoDS_Face face;
+    double distance = 0;
+};
+
+/// The face extruded along its outward normal. Positive distance is fused on, negative is cut out.
+/// `draft_deg` of 0 and a null `up_to` build a prism; a draft or a stop-face uses a feature prism.
+TopoDS_Shape build_face_extrude(
+    const TopoDS_Shape& current,
+    double before,
+    const TopoDS_Face& face,
+    double distance,
+    double draft_deg,
+    const TopoDS_Face* up_to,
+    double& volume,
+    std::string& error);
+/// The faces offset by `FaceOffset::distance`; every other face stays, and the neighbours extend or trim.
+TopoDS_Shape build_move_faces(
+    const TopoDS_Shape& current,
+    double before,
+    const std::vector<FaceOffset>& faces,
+    double& volume,
+    std::string& error);
+/// `{origin, turn, loops}` for a flat face: D2 loops in the face's plane. Empty, and `error` set, otherwise.
+std::string face_loops_json(const TopoDS_Face& face, std::string& error);
+
 }  // namespace lime_occt

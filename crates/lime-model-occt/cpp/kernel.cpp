@@ -71,6 +71,13 @@
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+// K4: a drafted or stopped face extrude, a per-face offset, and a face's outline.
+#include <BRepFeat_MakeDPrism.hxx>
+#include <BRepFeat_MakePrism.hxx>
+#include <BRepOffset_MakeOffset.hxx>
+#include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <gp_Pnt2d.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
@@ -2496,6 +2503,555 @@ std::vector<int> edge_kinds(const TopoDS_Shape& shape, const std::vector<TopoDS_
         }
     }
     return kinds;
+}
+
+// --- K4: faceExtrude, moveFaces, faceLoops. Keep this block together. ---
+
+/// How far a positive prism is pushed into the solid so the fuse overlaps instead of only touching.
+constexpr double kFaceOverlapMm = 1e-3;
+
+const char* kCannotMove =
+    "This face cannot move with its neighbours here. Push or pull adds material instead: hold Alt.";
+
+/// Outward unit normal at the face midpoint. A reversed face is flipped so the solid's outside stays positive.
+bool outward_normal(const TopoDS_Face& face, gp_Dir& normal) {
+    try {
+        BRepAdaptor_Surface surface(face);
+        const double u0 = surface.FirstUParameter();
+        const double u1 = surface.LastUParameter();
+        const double v0 = surface.FirstVParameter();
+        const double v1 = surface.LastVParameter();
+        if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0) || !std::isfinite(v1)) {
+            return false;
+        }
+        gp_Pnt point;
+        gp_Vec du;
+        gp_Vec dv;
+        surface.D1((u0 + u1) * 0.5, (v0 + v1) * 0.5, point, du, dv);
+        gp_Vec crossed = du.Crossed(dv);
+        if (!(crossed.SquareMagnitude() > 1e-18)) {
+            return false;
+        }
+        if (face.Orientation() == TopAbs_REVERSED) {
+            crossed.Reverse();
+        }
+        crossed.Normalize();
+        normal = gp_Dir(crossed);
+        return true;
+    } catch (const Standard_Failure&) {
+        return false;
+    }
+}
+
+bool face_is_plane(const TopoDS_Face& face) {
+    try {
+        return BRepAdaptor_Surface(face).GetType() == GeomAbs_Plane;
+    } catch (const Standard_Failure&) {
+        return false;
+    }
+}
+
+/// A feature prism's result, or the refusal. `before` is the solid's volume.
+template <typename Maker>
+TopoDS_Shape feature_result(Maker& maker, double before, double& volume, std::string& error) {
+    if (!maker.IsDone() || maker.Shape().IsNull() || !has_solid(maker.Shape())) {
+        error = "Open CASCADE could not extrude this face.";
+        return {};
+    }
+    TopoDS_Shape out = as_solid(maker.Shape());
+    try {
+        if (!BRepCheck_Analyzer(out).IsValid()) {
+            error = "Open CASCADE could not extrude this face.";
+            return {};
+        }
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not extrude this face.";
+        return {};
+    }
+    volume = volume_of(out);
+    if (!(volume > 1e-6) || std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
+        error = "The face extrude does not change the part.";
+        return {};
+    }
+    return out;
+}
+
+TopoDS_Shape build_face_extrude(
+    const TopoDS_Shape& current,
+    double before,
+    const TopoDS_Face& face,
+    double distance,
+    double draft_deg,
+    const TopoDS_Face* up_to,
+    double& volume,
+    std::string& error) {
+    if (!std::isfinite(distance) || !(std::abs(distance) > kTinyMm)) {
+        error = "A face extrude needs a distance other than 0.";
+        return {};
+    }
+    if (!std::isfinite(draft_deg) || draft_deg < -89.0 || draft_deg > 89.0) {
+        error = "The draft angle must be between -89 and 89 degrees.";
+        return {};
+    }
+    if (up_to != nullptr && up_to->IsSame(face)) {
+        error = "A face cannot stop at itself.";
+        return {};
+    }
+    if (count_of(current, TopAbs_SOLID) != 1) {
+        error = "Push or pull works on a part of one body.";
+        return {};
+    }
+    gp_Dir normal;
+    if (!outward_normal(face, normal)) {
+        error = "This face has no direction to extrude along.";
+        return {};
+    }
+    const bool drafted = std::abs(draft_deg) > 1e-9;
+    const TopoDS_Shape base = as_solid(current);
+    gp_Dir direction(normal);
+    if (distance < 0.0) {
+        direction.Reverse();
+    }
+    const int fuse = distance > 0.0 ? 1 : 0;
+    if (drafted || up_to != nullptr) {
+        g_stats.builds += 1;
+        try {
+            if (drafted) {
+                BRepFeat_MakeDPrism maker(base, face, face, draft_deg * kPi / 180.0, fuse, Standard_False);
+                if (up_to != nullptr) {
+                    maker.Perform(*up_to);
+                } else {
+                    maker.Perform(std::abs(distance));
+                }
+                return feature_result(maker, before, volume, error);
+            }
+            BRepFeat_MakePrism maker(base, face, face, direction, fuse, Standard_False);
+            if (up_to != nullptr) {
+                maker.Perform(*up_to);
+            } else {
+                maker.Perform(std::abs(distance));
+            }
+            return feature_result(maker, before, volume, error);
+        } catch (const Standard_Failure&) {
+            error = "Open CASCADE could not extrude this face.";
+            return {};
+        }
+    }
+    // A forward copy, so a reversed face of the solid still sweeps the way its outward normal points.
+    TopoDS_Face profile = face;
+    profile.Orientation(TopAbs_FORWARD);
+    double length = std::abs(distance);
+    if (distance > 0.0 && face_is_plane(face)) {
+        gp_Trsf shift;
+        shift.SetTranslation(gp_Vec(normal) * -kFaceOverlapMm);
+        profile = TopoDS::Face(profile.Moved(TopLoc_Location(shift)));
+        length += kFaceOverlapMm;
+    }
+    const gp_Vec along = gp_Vec(normal) * (distance > 0.0 ? length : -length);
+    try {
+        BRepPrimAPI_MakePrism prism(profile, along);
+        prism.Build();
+        if (!prism.IsDone() || prism.Shape().IsNull()) {
+            error = "Open CASCADE could not extrude this face.";
+            return {};
+        }
+        TopoDS_Shape tool = prism.Shape();
+        GProp_GProps props;
+        integrate(tool, props);
+        if (props.Mass() < 0.0) {
+            tool.Reverse();
+        }
+        return combine_profile(current, before, distance > 0.0 ? "fuse" : "cut", tool, "face extrude", volume, error);
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not extrude this face.";
+        return {};
+    }
+}
+
+TopoDS_Shape build_move_faces(
+    const TopoDS_Shape& current,
+    double before,
+    const std::vector<FaceOffset>& faces,
+    double& volume,
+    std::string& error) {
+    if (faces.empty()) {
+        error = "Pick a face to move.";
+        return {};
+    }
+    for (const FaceOffset& row : faces) {
+        if (!std::isfinite(row.distance) || !(std::abs(row.distance) > kTinyMm)) {
+            error = "A face move needs a distance other than 0.";
+            return {};
+        }
+    }
+    if (count_of(current, TopAbs_SOLID) != 1) {
+        error = "Push or pull works on a part of one body.";
+        return {};
+    }
+    const TopoDS_Shape solid = as_solid(current);
+    g_stats.builds += 1;
+    try {
+        // Offset 0 on every face, then the moved ones. Intersection joins let the neighbours extend or trim.
+        BRepOffset_MakeOffset maker;
+        maker.Initialize(solid, 0.0, 1.0e-4, BRepOffset_Skin, Standard_False, Standard_False, GeomAbs_Intersection);
+        for (const FaceOffset& row : faces) {
+            maker.SetOffsetOnFace(row.face, row.distance);
+        }
+        maker.MakeOffsetShape();
+        if (!maker.IsDone() || maker.Shape().IsNull() || !has_solid(maker.Shape())) {
+            error = kCannotMove;
+            return {};
+        }
+        TopoDS_Shape out = as_solid(maker.Shape());
+        if (!BRepCheck_Analyzer(out).IsValid()) {
+            error = kCannotMove;
+            return {};
+        }
+        volume = volume_of(out);
+        if (!(volume > 1e-6) || std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
+            error = kCannotMove;
+            return {};
+        }
+        return out;
+    } catch (const Standard_Failure&) {
+        error = kCannotMove;
+        return {};
+    }
+}
+
+namespace {
+
+double clean_mm(double value) {
+    return std::isfinite(value) && std::abs(value) >= 1e-9 ? value : 0.0;
+}
+
+/// Degrees into −180..180, with a half turn shown as 180, as `wrapDeg`.
+double wrap_deg(double deg) {
+    if (!std::isfinite(deg)) {
+        return 0.0;
+    }
+    double wrapped = std::fmod(deg + 180.0, 360.0);
+    if (wrapped < 0.0) {
+        wrapped += 360.0;
+    }
+    wrapped -= 180.0;
+    if (wrapped == -180.0) {
+        return 180.0;
+    }
+    return wrapped == 0.0 ? 0.0 : wrapped;
+}
+
+int dominant_axis(const gp_Dir& normal) {
+    const double ax = std::abs(normal.X());
+    const double ay = std::abs(normal.Y());
+    const double az = std::abs(normal.Z());
+    if (ax >= ay && ax >= az) {
+        return 0;
+    }
+    return ay >= az ? 1 : 2;
+}
+
+gp_Vec world_axis(int index) {
+    return index == 0 ? gp_Vec(1, 0, 0) : index == 1 ? gp_Vec(0, 1, 0) : gp_Vec(0, 0, 1);
+}
+
+/// U and V of a face that looks up or down: the world axis after the normal's nearest one, made square to it.
+void in_plane_axes(const gp_Dir& normal, gp_Vec& u, gp_Vec& v) {
+    const gp_Vec n(normal);
+    gp_Vec raw = world_axis((dominant_axis(normal) + 1) % 3);
+    raw -= n * raw.Dot(n);
+    if (!(raw.SquareMagnitude() > 1e-18)) {
+        raw = gp_Vec(1, 0, 0);
+    }
+    raw.Normalize();
+    u = raw;
+    v = n.Crossed(u);
+    if (v.SquareMagnitude() > 1e-18) {
+        v.Normalize();
+    }
+}
+
+/// U and V of a side face: V is world-up made square to W, U = V × W.
+void side_axes(const gp_Dir& w, gp_Vec& u, gp_Vec& v) {
+    gp_Vec raw(-w.X() * w.Z(), -w.Y() * w.Z(), 1.0 - w.Z() * w.Z());
+    if (!(raw.SquareMagnitude() > 1e-18)) {
+        raw = gp_Vec(0, 0, 1);
+    }
+    raw.Normalize();
+    v = raw;
+    u = v.Crossed(gp_Vec(w));
+    if (u.SquareMagnitude() > 1e-18) {
+        u.Normalize();
+    }
+}
+
+/// Rx, Ry, Rz of the columns U, V, W, as `orientEuler` reads that matrix.
+void euler_of(const gp_Vec& u, const gp_Vec& v, const gp_Vec& w, double turn[3]) {
+    const double sy = -u.Z();
+    const double cy = std::hypot(u.X(), u.Y());
+    const double to_deg = 180.0 / kPi;
+    double rx = 0.0;
+    double rz = 0.0;
+    if (cy > 1e-6) {
+        rx = std::atan2(v.Z(), w.Z()) * to_deg;
+        rz = std::atan2(u.Y(), u.X()) * to_deg;
+    } else {
+        rx = std::atan2(-w.Y(), v.Y()) * to_deg;
+    }
+    turn[0] = wrap_deg(rx);
+    turn[1] = wrap_deg(std::atan2(sy, cy) * to_deg);
+    turn[2] = wrap_deg(rz);
+}
+
+struct LoopSeg {
+    /// 0 line, 1 arc, 2 spline.
+    int kind = 0;
+    gp_Pnt2d to;
+    std::vector<gp_Pnt2d> through;
+};
+
+gp_Pnt2d project_point(const gp_Pnt& point, const gp_Pnt& origin, const gp_Vec& u, const gp_Vec& v) {
+    const gp_Vec from(origin, point);
+    return gp_Pnt2d(clean_mm(from.Dot(u)), clean_mm(from.Dot(v)));
+}
+
+double loop_area(const gp_Pnt2d& start, const std::vector<LoopSeg>& segs) {
+    double area = 0.0;
+    gp_Pnt2d prev = start;
+    const auto add = [&](const gp_Pnt2d& point) {
+        area += prev.X() * point.Y() - point.X() * prev.Y();
+        prev = point;
+    };
+    for (const LoopSeg& seg : segs) {
+        for (const gp_Pnt2d& point : seg.through) {
+            add(point);
+        }
+        add(seg.to);
+    }
+    return area * 0.5;
+}
+
+void reverse_loop(gp_Pnt2d& start, std::vector<LoopSeg>& segs) {
+    std::vector<gp_Pnt2d> froms;
+    froms.push_back(start);
+    for (const LoopSeg& seg : segs) {
+        froms.push_back(seg.to);
+    }
+    std::vector<LoopSeg> reversed;
+    reversed.reserve(segs.size());
+    for (int i = static_cast<int>(segs.size()) - 1; i >= 0; --i) {
+        LoopSeg seg = segs[static_cast<size_t>(i)];
+        std::reverse(seg.through.begin(), seg.through.end());
+        seg.to = froms[static_cast<size_t>(i)];
+        reversed.push_back(seg);
+    }
+    start = froms.back();
+    segs = std::move(reversed);
+}
+
+/// The wire's segments in its plane. False when the wire has no usable edge.
+bool wire_segments(
+    const TopoDS_Wire& wire,
+    const TopoDS_Face& face,
+    const gp_Pnt& origin,
+    const gp_Vec& u,
+    const gp_Vec& v,
+    gp_Pnt2d& start,
+    std::vector<LoopSeg>& segs) {
+    const auto project = [&](const gp_Pnt& point) { return project_point(point, origin, u, v); };
+    bool have_start = false;
+    for (BRepTools_WireExplorer explorer(wire, face); explorer.More(); explorer.Next()) {
+        const TopoDS_Edge edge = explorer.Current();
+        if (BRep_Tool::Degenerated(edge)) {
+            continue;
+        }
+        TopoDS_Vertex first;
+        TopoDS_Vertex last;
+        TopExp::Vertices(edge, first, last);
+        if (first.IsNull() || last.IsNull()) {
+            return false;
+        }
+        const gp_Pnt pa = BRep_Tool::Pnt(first);
+        const gp_Pnt pb = BRep_Tool::Pnt(last);
+        BRepAdaptor_Curve curve(edge);
+        const double t0 = curve.FirstParameter();
+        const double t1 = curve.LastParameter();
+        if (!std::isfinite(t0) || !std::isfinite(t1)) {
+            return false;
+        }
+        // Vertices are the curve's ends. A reversed edge is walked from its last vertex.
+        const bool reversed = edge.Orientation() == TopAbs_REVERSED;
+        const gp_Pnt from_pt = reversed ? pb : pa;
+        const gp_Pnt to_pt = reversed ? pa : pb;
+        const double span = t1 - t0;
+        const auto at = [&](double t) { return project(curve.Value(t)); };
+        if (!have_start) {
+            start = project(from_pt);
+            have_start = true;
+        }
+        const bool closed = pa.Distance(pb) <= 1e-4;
+        if (curve.GetType() == GeomAbs_Circle && closed && std::abs(span) > 1.5 * kPi) {
+            const double from = reversed ? t1 : t0;
+            const double step = reversed ? -span : span;
+            LoopSeg first_half;
+            first_half.kind = 1;
+            first_half.through.push_back(at(from + step * 0.25));
+            first_half.to = at(from + step * 0.5);
+            LoopSeg second_half;
+            second_half.kind = 1;
+            second_half.through.push_back(at(from + step * 0.75));
+            second_half.to = at(from + step);
+            segs.push_back(first_half);
+            segs.push_back(second_half);
+            continue;
+        }
+        LoopSeg seg;
+        seg.to = project(to_pt);
+        if (curve.GetType() == GeomAbs_Line || std::abs(span) <= 1e-9) {
+            seg.kind = 0;
+        } else if (curve.GetType() == GeomAbs_Circle) {
+            seg.kind = 1;
+            const double mid = reversed ? t1 - span * 0.5 : t0 + span * 0.5;
+            seg.through.push_back(at(mid));
+        } else {
+            std::vector<gp_Pnt2d> points;
+            GCPnts_QuasiUniformDeflection sampled(curve, 0.05);
+            if (sampled.IsDone() && sampled.NbPoints() >= 2) {
+                points.reserve(static_cast<size_t>(sampled.NbPoints()));
+                for (int i = 1; i <= sampled.NbPoints(); ++i) {
+                    points.push_back(project(sampled.Value(i)));
+                }
+            } else {
+                for (int i = 0; i <= 8; ++i) {
+                    points.push_back(at(t0 + span * (static_cast<double>(i) / 8.0)));
+                }
+            }
+            if (reversed) {
+                std::reverse(points.begin(), points.end());
+            }
+            if (points.size() >= 2) {
+                seg.to = points.back();
+            }
+            if (points.size() > 2) {
+                seg.kind = 2;
+                seg.through.assign(points.begin() + 1, points.end() - 1);
+            }
+        }
+        segs.push_back(seg);
+    }
+    return have_start && !segs.empty();
+}
+
+void write_point(std::ostream& out, const gp_Pnt2d& point) {
+    out << '[' << point.X() << ',' << point.Y() << ']';
+}
+
+}  // namespace
+
+std::string face_loops_json(const TopoDS_Face& face, std::string& error) {
+    if (!face_is_plane(face)) {
+        error = "Face loops are for a flat face.";
+        return {};
+    }
+    gp_Dir normal;
+    if (!outward_normal(face, normal)) {
+        error = "Open CASCADE could not read this face's outline.";
+        return {};
+    }
+    gp_Pnt origin;
+    try {
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(face, props);
+        origin = props.CentreOfMass();
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not read this face's outline.";
+        return {};
+    }
+    gp_Vec u;
+    gp_Vec v;
+    const bool looking_up = std::abs(normal.Z()) >= std::abs(normal.X()) && std::abs(normal.Z()) >= std::abs(normal.Y());
+    if (looking_up) {
+        in_plane_axes(normal, u, v);
+    } else {
+        side_axes(normal, u, v);
+    }
+    double turn[3] = {0, 0, 0};
+    euler_of(u, v, gp_Vec(normal), turn);
+    TopoDS_Wire outer;
+    try {
+        outer = BRepTools::OuterWire(face);
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not read this face's outline.";
+        return {};
+    }
+    if (outer.IsNull()) {
+        error = "Open CASCADE could not read this face's outline.";
+        return {};
+    }
+    std::vector<TopoDS_Wire> wires;
+    wires.push_back(outer);
+    for (TopExp_Explorer it(face, TopAbs_WIRE); it.More(); it.Next()) {
+        const TopoDS_Wire wire = TopoDS::Wire(it.Current());
+        if (!wire.IsSame(outer)) {
+            wires.push_back(wire);
+        }
+    }
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out.precision(9);
+    out << "{\"origin\":[" << clean_mm(origin.X()) << ',' << clean_mm(origin.Y()) << ',' << clean_mm(origin.Z())
+        << "],\"turn\":[" << turn[0] << ',' << turn[1] << ',' << turn[2] << "],\"loops\":[";
+    try {
+        for (size_t i = 0; i < wires.size(); ++i) {
+            gp_Pnt2d start;
+            std::vector<LoopSeg> segs;
+            if (!wire_segments(wires[i], face, origin, u, v, start, segs)) {
+                error = "Open CASCADE could not read this face's outline.";
+                return {};
+            }
+            const double area = loop_area(start, segs);
+            const bool hole = i > 0;
+            if ((hole && area > 0.0) || (!hole && area < 0.0)) {
+                reverse_loop(start, segs);
+            }
+            if (i > 0) {
+                out << ',';
+            }
+            out << "{\"start\":";
+            write_point(out, start);
+            out << ",\"segments\":[";
+            for (size_t s = 0; s < segs.size(); ++s) {
+                const LoopSeg& seg = segs[s];
+                if (s > 0) {
+                    out << ',';
+                }
+                const char* kind = seg.kind == 1 ? "arc" : seg.kind == 2 ? "spline" : "line";
+                out << "{\"kind\":\"" << kind << '"';
+                if (seg.kind == 1 && !seg.through.empty()) {
+                    out << ",\"through\":";
+                    write_point(out, seg.through[0]);
+                } else if (seg.kind == 2 && !seg.through.empty()) {
+                    out << ",\"through\":[";
+                    for (size_t p = 0; p < seg.through.size(); ++p) {
+                        if (p > 0) {
+                            out << ',';
+                        }
+                        write_point(out, seg.through[p]);
+                    }
+                    out << ']';
+                }
+                out << ",\"to\":";
+                write_point(out, seg.to);
+                out << '}';
+            }
+            out << "]}";
+        }
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not read this face's outline.";
+        return {};
+    }
+    out << "]}";
+    return out.str();
 }
 
 }  // namespace lime_occt

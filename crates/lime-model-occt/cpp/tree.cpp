@@ -807,6 +807,110 @@ int lime_tree_distance(
     }
 }
 
+// --- K4: faceExtrude, moveFaces, faceLoops. Keep this block together. ---
+
+/// `up_to` below 0 is no stop face. Every index is a face of `from`; the Rust side resolves picks first.
+LimeShape* lime_tree_face_extrude(
+    const LimeShape* from,
+    int face,
+    double distance,
+    double draft_deg,
+    int up_to,
+    char** error) {
+    try {
+        if (face < 0 || face >= from->held.faces.Extent()) {
+            set_error(error, "That face is not on this solid.");
+            return nullptr;
+        }
+        const TopoDS_Face picked = TopoDS::Face(from->held.faces(face + 1));
+        TopoDS_Face until_face;
+        const TopoDS_Face* until = nullptr;
+        if (up_to >= 0) {
+            if (up_to >= from->held.faces.Extent()) {
+                set_error(error, "That face is not on this solid.");
+                return nullptr;
+            }
+            until_face = TopoDS::Face(from->held.faces(up_to + 1));
+            until = &until_face;
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape result = build_face_extrude(
+            from->held.shape, from->held.volume, picked, distance, draft_deg, until, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "Open CASCADE could not extrude this face.", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `indexes` and `distances` are `count` faces of `from` and how far each moves along its outward normal.
+LimeShape* lime_tree_move_faces(
+    const LimeShape* from,
+    const int* indexes,
+    const double* distances,
+    int count,
+    char** error) {
+    try {
+        std::vector<FaceOffset> rows;
+        rows.reserve(static_cast<size_t>(std::max(count, 0)));
+        for (int i = 0; i < count; ++i) {
+            if (indexes[i] < 0 || indexes[i] >= from->held.faces.Extent()) {
+                set_error(error, "That face is not on this solid.");
+                return nullptr;
+            }
+            FaceOffset row;
+            row.face = TopoDS::Face(from->held.faces(indexes[i] + 1));
+            row.distance = distances[i];
+            rows.push_back(row);
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape result = build_move_faces(from->held.shape, from->held.volume, rows, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "This face cannot move with its neighbours here. Push or pull adds material instead: hold Alt.", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// The face's outline in its plane, as JSON `{origin, turn, loops}`, for the caller to free.
+char* lime_tree_face_loops(const LimeShape* shape, int face, char** error) {
+    try {
+        if (face < 0 || face >= shape->held.faces.Extent()) {
+            set_error(error, "That face is not on this solid.");
+            return nullptr;
+        }
+        std::string message;
+        const std::string text = face_loops_json(TopoDS::Face(shape->held.faces(face + 1)), message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return alloc(text);
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 int lime_tree_write_step(const LimeShape* shape, const char* path, char** error) {
     try {
         std::string message;

@@ -24,7 +24,7 @@ import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
 import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
-import { applyRequest, crossEditRequest, exportRequest, extrudeOp, gotoRequest, isBrep, joinOp, loftOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, solidFileName, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
+import { applyRequest, crossEditRequest, exportRequest, extrudeOp, faceExtrudeOp, gotoRequest, isBrep, joinOp, loftOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, solidFileName, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
 import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { thinWalls } from "./thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "./anchors.ts";
@@ -860,7 +860,7 @@ export class Session {
       filament: this.filament().name,
       printerSend: false,
       model: {
-        ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
+        ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
         composite: [...COMPOSITE_KINDS],
         primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"],
         maxSteps: MAX_PIECES,
@@ -3447,6 +3447,42 @@ export class Session {
       const made = shellOp(thickness, [...new Set(faces)]);
       return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
     }
+    // --- K4: faceExtrude and moveFaces. A face is an index, a stored {index}, or a {normal, nearPoint} selector. ---
+    if (kind === "faceExtrude") {
+      const distance = spec.distance;
+      if (typeof distance !== "number" || !Number.isFinite(distance) || distance === 0) return { reason: "A face extrude needs a distance other than 0." };
+      if (spec.draftDeg !== undefined && (typeof spec.draftDeg !== "number" || !Number.isFinite(spec.draftDeg) || spec.draftDeg < -89 || spec.draftDeg > 89)) {
+        return { reason: "The draft angle must be between -89 and 89 degrees." };
+      }
+      const face = this.bakedFace(obj, spec.face);
+      if (typeof face !== "number") return face;
+      let upTo: number | undefined;
+      if (spec.upTo !== undefined && spec.upTo !== null) {
+        const until = this.bakedFace(obj, spec.upTo);
+        if (typeof until !== "number") return until;
+        if (until === face) return { reason: "A face cannot stop at itself." };
+        upTo = until;
+      }
+      const made = faceExtrudeOp(face, distance, {
+        ...(typeof spec.draftDeg === "number" && spec.draftDeg !== 0 ? { draftDeg: spec.draftDeg } : {}),
+        ...(upTo !== undefined ? { upTo } : {}),
+      });
+      return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+    }
+    if (kind === "moveFaces") {
+      if (!Array.isArray(spec.faces) || spec.faces.length === 0) return { reason: "Pick a face to move." };
+      const rows: { face: number; distance: number }[] = [];
+      for (const raw of spec.faces) {
+        if (!raw || typeof raw !== "object") return { reason: "Pick a face to move." };
+        const row = raw as { face?: unknown; distance?: unknown };
+        if (typeof row.distance !== "number" || !Number.isFinite(row.distance) || row.distance === 0) return { reason: "A face move needs a distance other than 0." };
+        const face = this.bakedFace(obj, row.face);
+        if (typeof face !== "number") return face;
+        rows.push({ face, distance: row.distance });
+      }
+      const made = moveFacesOp(rows);
+      return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+    }
     if (kind === "boolean") {
       const booleanOp = spec.op === "fuse" || spec.op === "common" ? spec.op : "cut";
       const local = primitiveFrom(spec, "box");
@@ -3462,7 +3498,23 @@ export class Session {
       const op: ModelOp = { kind: "root", ...solid };
       return { op, typed: { kind: "root", ...solid } };
     }
-    return { reason: "That edit is not one of hole, fillet, chamfer, split, scale, boolean, extrude, revolve, loft, sweep, shell, join, or root." };
+    return { reason: "That edit is not one of hole, fillet, chamfer, split, scale, boolean, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, join, or root." };
+  }
+
+  /** K4. A face as a shell's open face: an index, a stored `{index}`, or a `{normal, nearPoint}` selector. */
+  private bakedFace(obj: PlateObject, pick: unknown): number | { reason: string } {
+    if (Number.isInteger(pick)) {
+      if (!obj.solid?.faces[pick as number]) return { reason: "That face is not on this solid." };
+      return pick as number;
+    }
+    if (pick && typeof pick === "object" && Number.isInteger((pick as { index?: unknown }).index)) {
+      const index = (pick as { index: number }).index;
+      if (!obj.solid?.faces[index]) return { reason: "That face is not on this solid." };
+      return index;
+    }
+    const found = this.expandContext(obj).faceBy((pick ?? {}) as Record<string, unknown>);
+    if (typeof found !== "number") return found;
+    return found;
   }
 
   private splitCheck(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): { text: string; bad: boolean } {
