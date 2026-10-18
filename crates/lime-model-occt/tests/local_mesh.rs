@@ -1,6 +1,7 @@
 //! A step meshes only the faces it made and the faces beside them, keeping the mesh of every face it shares with the solid
 //! it was built on. That must answer what meshing the whole solid answers, byte for byte: the same triangles, edges,
-//! measures and fingerprints, for every kind of step. `LIME_REQUIRE_OCCT=1` makes a missing kernel a failure.
+//! measures and fingerprints, for booleans of each primitive, a hole, a fillet, a chamfer, a shell, a join, a split, and a
+//! scale, and for steps on a solid shown at another chord. `LIME_REQUIRE_OCCT=1` makes a missing kernel a failure.
 
 use serde_json::{json, Value};
 
@@ -51,7 +52,8 @@ fn steps(tool: &str) -> Vec<Value> {
     ]
 }
 
-/// Every step's Apply reply, then a check with its shape, then the last step again at a finer chord.
+/// Every step's Apply reply, then a check with its shape, then steps shown at a finer chord, and steps built on one of them
+/// at the first chord again, whose faces carry meshes made at the finer one.
 fn build(key: &str) -> Vec<Value> {
     let open =
         call(&json!({ "call": "open", "key": key, "box": [60.0, 40.0, 20.0], "chordMm": 0.1 }));
@@ -81,9 +83,38 @@ fn build(key: &str) -> Vec<Value> {
     replies.push(shown(call(
         &json!({ "call": "goto", "key": key, "node": 3, "chordMm": 0.05 }),
     )));
+    let mut on = 3;
+    for (node, op) in [
+        (100, cylinder("cut", [52.0, 30.0, 10.0], 2.0, 30.0)),
+        (101, cylinder("fuse", [10.0, 20.0, 19.0], 3.0, 5.0)),
+    ] {
+        let reply = call(
+            &json!({ "call": "apply", "key": key, "parent": on, "node": node, "op": op, "chordMm": 0.1 }),
+        );
+        assert!(reply.get("error").is_none(), "{reply}");
+        replies.push(shown(reply));
+        on = node;
+    }
     call(&json!({ "call": "close", "key": key }));
     call(&json!({ "call": "close", "key": tool }));
     replies
+}
+
+/// Every mesh whole for as long as it lives, then meshes around a step's faces again, even when an assertion fails. The
+/// switch is the library's, so this file keeps to one test.
+struct WholeMeshes;
+
+impl WholeMeshes {
+    fn on() -> WholeMeshes {
+        lime_model_occt::set_whole_meshes(true);
+        WholeMeshes
+    }
+}
+
+impl Drop for WholeMeshes {
+    fn drop(&mut self) {
+        lime_model_occt::set_whole_meshes(false);
+    }
 }
 
 #[test]
@@ -106,12 +137,12 @@ fn meshing_around_a_step_answers_what_meshing_the_whole_solid_does() {
     let local_meshes = stat("meshes") - meshes;
     let local_whole = stat("fullMeshes") - whole;
 
-    lime_model_occt::set_whole_meshes(true);
-    let (meshes, whole) = (stat("meshes"), stat("fullMeshes"));
-    let full = build("whole-mesh");
-    let full_meshes = stat("meshes") - meshes;
-    let full_whole = stat("fullMeshes") - whole;
-    lime_model_occt::set_whole_meshes(false);
+    let (full, full_meshes, full_whole) = {
+        let _whole = WholeMeshes::on();
+        let (meshes, whole) = (stat("meshes"), stat("fullMeshes"));
+        let full = build("whole-mesh");
+        (full, stat("meshes") - meshes, stat("fullMeshes") - whole)
+    };
 
     assert_eq!(
         full_meshes, full_whole,

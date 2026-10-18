@@ -66,7 +66,6 @@
 #include <BRepGProp_Domain.hxx>
 #include <BRepGProp_Face.hxx>
 #include <BRepGProp_Vinert.hxx>
-#include <Poly_TriangulationParameters.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
@@ -83,6 +82,7 @@
 #include <GeomAbs_Shape.hxx>
 #include <GProp_GProps.hxx>
 #include <Poly_Triangulation.hxx>
+#include <Poly_TriangulationParameters.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeFix_Solid.hxx>
 #include <Standard_Failure.hxx>
@@ -517,8 +517,11 @@ void append_face_normal(std::string& out, const TopoDS_Face& face);
 /// Mesh every face of a solid, never only around what a step made: for tests that compare the two.
 std::atomic<bool> g_whole_meshes{false};
 
-/// Whether meshing at `chord` keeps the face's mesh. Open CASCADE keeps a mesh made at under 1.1 times the face's own
-/// deflection, which is never under the chord (`BRepMesh_ModelPreProcessor`), so this is sure only of a yes.
+/// Whether the face carries a mesh made by a mesh asked at exactly `chord`, which meshing at `chord` keeps: Open CASCADE
+/// keeps a mesh made at under 1.1 times the face's own deflection, which is never under the chord
+/// (`BRepMesh_ModelPreProcessor`), and records the chord asked with the mesh (`BRepMesh_ModelPostProcessor`). A mesh made
+/// at another chord, even a finer one that would be kept too, answers no: its edges could be cut finer than a mesh of the
+/// whole solid at `chord` would take them from the faces beside it.
 bool mesh_kept(const TopoDS_Face& face, double chord) {
     TopLoc_Location location;
     const Handle(Poly_Triangulation)& mesh = BRep_Tool::Triangulation(face, location);
@@ -526,8 +529,7 @@ bool mesh_kept(const TopoDS_Face& face, double chord) {
         return false;
     }
     const Handle(Poly_TriangulationParameters)& made = mesh->Parameters();
-    const double deflection = !made.IsNull() && made->HasDeflection() ? made->Deflection() : mesh->Deflection();
-    return deflection < 1.1 * chord;
+    return !made.IsNull() && made->HasDeflection() && made->Deflection() == chord;
 }
 
 /// Mesh only the faces a step made and the faces beside them, when every other face keeps the mesh it shares with the

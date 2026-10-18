@@ -802,7 +802,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       renderViewHelper(renderer, viewHelper);
       drawMeasure();
       paintFit();
-      still = moved || viewHelper.animating || drag ? 0 : still + 1;
+      still = moved || viewHelper.animating ? 0 : still + 1;
       if (still > STILL_FRAMES) {
         running = false;
         return;

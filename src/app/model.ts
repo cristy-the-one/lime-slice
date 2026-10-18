@@ -565,6 +565,8 @@ function sendPending() {
   const send = pendingProbe;
   if (!send || probing) return;
   pendingProbe = null;
+  // Left Model while it waited: nothing would show its answer.
+  if (state.stage !== "model") return;
   probing = true;
   void send().finally(() => {
     probing = false;
@@ -573,6 +575,14 @@ function sendPending() {
 }
 
 async function sendProbe(serial: number, key: string, tree: string, node: NodeId, op: ModelOp) {
+  // While it waited, the check before it may have answered these very numbers.
+  const known = answers.get(key);
+  if (known && !(shaped.has(key) && !previewOf(key))) {
+    if (serial !== probeSerial || state.stage !== "model") return;
+    setModelProbe(known);
+    setModelPreview(previewOf(key));
+    return;
+  }
   const body = await treeCall(tree, node, probeRequest(tree, node, op, state.stepTolerance));
   const view = probeFromBody(body);
   if (typeof body.ok === "boolean") remember(key, view);
