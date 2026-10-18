@@ -109,6 +109,9 @@ eq(
 
 const fillet: ModelOp = { kind: "fillet", edges: [3], size: 1 };
 check("a fillet names edges, which no pose moves", toSolidOp(fillet, skew) === fillet);
+const group: ModelOp = { kind: "group", label: "Two cuts", source: { kind: "pocket" }, steps: [box, hole] };
+eq("a turned pose moves each step of a group", toSolidOp(group, skew), { ...group, steps: [toSolidOp(box, skew), toSolidOp(hole, skew)] });
+check("with no pose a group is the op typed", toSolidOp(group, IDENTITY_POSE) === group);
 
 // History labels name the step in the part's own frame, so moving the part later never renames it.
 const raisedTen: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 10] };

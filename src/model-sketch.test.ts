@@ -125,6 +125,34 @@ eq("a probe that builds reads its measures", probeFromBody({ ok: true, volumeMm3
   measure: { volumeMm3: 1408, solids: 1, shells: 2, before: { volumeMm3: 4000, solids: 1, shells: 1 } },
 });
 eq("an older engine's bare ok still reads", probeFromBody({ ok: true }), { phase: "done", ok: true });
+
+// A group is one history row: its label, its steps, and the composite it was typed as.
+const pocket: ModelOp = {
+  kind: "group",
+  label: "Pocket 10 × 10, 2 bars",
+  source: { kind: "pocket", width: 10 },
+  steps: [roof, { kind: "hole", origin: [5, 5, 10], axis: [0, 0, -1], radius: 1, depth: 4 }],
+};
+eq("a group row is its label", opLabel(pocket), "Pocket 10 × 10, 2 bars");
+let grouped = withChild(newTree("g", root, "Box", fp(1)), 0, { id: 1, op: pocket, label: opLabel(pocket), fingerprint: fp(2) });
+const groupFile = JSON.parse(JSON.stringify({ ...savedTree(grouped, 1, () => undefined), rootPrimitive: root.solid }));
+eq("a group round-trips through .lime with its source and steps", readSavedTree(groupFile)?.nodes[1]?.op, pocket);
+const opened = readSavedTree(groupFile);
+const openedTree = opened && loadedTree(opened, "g2", root, "Box", null, () => undefined);
+eq("and opens as one row named by that label", openedTree?.nodes.get(1)?.label, "Pocket 10 × 10, 2 bars");
+const withoutSource = JSON.parse(JSON.stringify(groupFile));
+delete withoutSource.nodes[1].op.source;
+eq("a group saved without source still opens", readSavedTree(withoutSource)?.nodes[1]?.op, { kind: "group", label: pocket.label, steps: pocket.steps });
+eq("the same steps are the group already built, whatever its source or label", childWithOp(grouped, 0, { ...pocket, label: "other", source: { kind: "pocket", width: 99 } }), 1);
+const blendGroup: ModelOp = { kind: "group", label: "Edges", steps: [blend] };
+eq("a group renumbers a blend inside it", renumberedSteps(blendGroup, ids), { kind: "group", label: "Edges", steps: [renumberedSteps(blend, ids)] });
+eq("a group has no edit panel yet", editRefusal(grouped, 1), "This step has no edit panel yet. Delete it and apply it again with new numbers.");
+const turned: Affine = { m: eulerOrient(0, 0, 90), t: [10, 5, 0] };
+const solidGroup = toSolidOp(pocket, turned);
+eq("a turned pose moves each step of a group and keeps the composite", solidGroup, { ...pocket, steps: pocket.steps.map((step) => toSolidOp(step, turned)) });
+const identity: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+eq("identity sends the group exactly as typed", toSolidOp(pocket, identity) === pocket, true);
+eq("a group with a step that will not read is a damaged tree", readSavedTree(JSON.parse(JSON.stringify({ ...groupFile, nodes: groupFile.nodes.map((node: { op: { steps?: unknown[] } }, i: number) => i === 1 ? { ...node, op: { ...node.op, steps: [] } } : node) }))), null);
 eq("the new tools are checked by the kernel", ["extrude", "revolve", "shell"].map(isProbed), [true, true, true]);
 eq("a refusal reads as it came", probeNote("shell", { phase: "done", ok: false, error: "This wall is too thick for the part's smallest feature." })?.text, "This wall is too thick for the part's smallest feature.");
 
