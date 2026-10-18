@@ -10,6 +10,7 @@ import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { onMeasureChange } from "./measure-pref";
+import { EDGE_KNOB_ID } from "./interact/edge-drag";
 import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { contextMaterial } from "./context-look";
 import type { ContextPart } from "./model-context";
@@ -53,6 +54,17 @@ export interface HandleDrag {
   handle: DragHandle;
   values: number[];
   phase: "move" | "end";
+}
+
+/** P2. A press, move, or release on the edge knob. `x` and `y` are client pixels. */
+export interface EdgeKnobEvent {
+  phase: "down" | "move" | "up" | "cancel";
+  x: number;
+  y: number;
+  alt: boolean;
+  ctrl: boolean;
+  meta: boolean;
+  shift: boolean;
 }
 
 const EDGE_PX = 16;
@@ -101,6 +113,17 @@ export interface ModelView {
   onObjectPick(cb: (id: string) => void): void;
   setHandles(handles: DragHandle[]): void;
   onHandleDrag(cb: (drag: HandleDrag) => void): void;
+  /**
+   * P2. While on, an edge under the pointer lights up even in face pick mode, and `onEdgeHover` hears it.
+   * A tool's own handles are left alone: this is the idle push/pull knob, not a panel field.
+   */
+  setEdgeHover(on: boolean): void;
+  onEdgeHover(cb: (edge: number | null, at: { x: number; y: number } | null) => void): void;
+  /** The knob on the hovered edge, or null to take it away. It is drawn with the tool handles and never on the dock. */
+  setEdgeKnob(handle: DragHandle | null): void;
+  onEdgeKnob(cb: (ev: EdgeKnobEvent) => void): void;
+  /** The pointer ray in model space, for a radius measured along the edge's bisector. */
+  pointerRay(x: number, y: number): { origin: Vec3; direction: Vec3 };
   /** The workplane, in model space. Null hides it. */
   setWorkplane(plane: Workplane | null): void;
   /** While on, a picked face is teal, so it is not the ordinary accent selection. */
@@ -176,6 +199,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const fatLines: LineMaterial[] = [];
   let picks: ModelPick[] = [];
   let hover: ModelPick | null = null;
+  /** P2. Edge lighting and the fillet knob, drawn beside whatever tool handles are up. */
+  let edgeHoverOn = false;
+  let edgeLit: number | null = null;
+  let edgeHoverCb: (edge: number | null, at: { x: number; y: number } | null) => void = () => {};
+  let edgeKnobPart: HandlePart | null = null;
+  let edgeDrag: { pointerId: number } | null = null;
+  let edgeKnobCb: (ev: EdgeKnobEvent) => void = () => {};
   let ghost: ModelGhost | null = null;
   let datumPlane: Workplane | null = null;
   /** What the datum's lines were drawn for: its size and the theme. */
@@ -395,7 +425,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     selectedEdges = replaceLine(selectedEdges, edgePositions(wanted), 4, 1);
 
     const hoverEdge = mode === "edge" && hover?.kind === "edge" && !wanted.has(hover.index) ? hover.index : null;
-    hoverEdges = replaceLine(hoverEdges, hoverEdge == null ? [] : edgePositions(new Set([hoverEdge])), 2, 0.8);
+    const lit = edgeLit != null && !wanted.has(edgeLit) ? edgeLit : hoverEdge;
+    hoverEdges = replaceLine(hoverEdges, lit == null ? [] : edgePositions(new Set([lit])), 2, 0.8);
   }
 
   function edgePositions(ids: Set<number>): number[] {
@@ -888,7 +919,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   canvas.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0 || drag) return;
+    if (ev.button !== 0 || drag || edgeDrag) return;
     down = null;
     if (viewHelperHit(viewHelper, canvas, ev)) {
       ev.preventDefault();
@@ -902,28 +933,53 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       ev.preventDefault();
       controls.enabled = false;
       canvas.setPointerCapture(ev.pointerId);
+      // P2. The edge knob is not a panel field: its drag is a fillet or a chamfer, not a typed number.
+      if (part.handle.id === EDGE_KNOB_ID) {
+        edgeDrag = { pointerId: ev.pointerId };
+        edgeKnobCb(knobEvent(ev, "down"));
+        paintHandles();
+        return;
+      }
       beginDrag(part, ev);
       return;
     }
     down = { x: ev.clientX, y: ev.clientY };
   }, { capture: true });
   canvas.addEventListener("pointermove", (ev) => {
+    if (edgeDrag) {
+      if (ev.pointerId === edgeDrag.pointerId) edgeKnobCb(knobEvent(ev, "move"));
+      return;
+    }
     if (drag) {
       if (ev.pointerId === drag.pointerId) moveDrag(ev);
       return;
     }
     if (down) return;
     const over = handleAt(ev.clientX, ev.clientY);
+    if (edgeHoverOn) updateEdgeHover(ev, over);
+    const knob = over?.handle.id === EDGE_KNOB_ID;
     setOverHandle(over?.handle.id ?? null);
-    if (over) {
+    if (over && !knob) {
       setHover(null);
       showTip(ev, over.handle, over.handle.values);
       return;
     }
     tip.hidden = true;
+    if (knob) {
+      setHover(null);
+      return;
+    }
     setHover(pickAt(ev));
   });
   const finishDrag = (ev: PointerEvent) => {
+    if (edgeDrag && ev.pointerId === edgeDrag.pointerId) {
+      edgeDrag = null;
+      controls.enabled = true;
+      if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+      edgeKnobCb(knobEvent(ev, ev.type === "pointercancel" ? "cancel" : "up"));
+      paintHandles();
+      return;
+    }
     if (!drag || ev.pointerId !== drag.pointerId) return;
     const done = drag;
     drag = null;
@@ -937,7 +993,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   canvas.addEventListener("pointercancel", finishDrag, { capture: true });
   canvas.addEventListener("pointerleave", () => {
     setHover(null);
-    if (drag) return;
+    if (drag || edgeDrag) return;
+    if (edgeLit != null) {
+      edgeLit = null;
+      paintLines();
+      edgeHoverCb(null, null);
+    }
     setOverHandle(null);
     tip.hidden = true;
   });
@@ -972,6 +1033,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       solid = next;
       picks = [];
       hover = null;
+      edgeLit = null;
+      clearEdgeKnob();
       boundaries = new Map();
       center.set(0, 0, 0);
       extent = 1;
@@ -1096,6 +1159,40 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     },
     onHandleDrag(cb) {
       handleCb = cb;
+    },
+    setEdgeHover(on) {
+      if (edgeHoverOn === on) return;
+      edgeHoverOn = on;
+      if (!on && edgeLit != null) {
+        edgeLit = null;
+        paintLines();
+        edgeHoverCb(null, null);
+        kick();
+      }
+    },
+    onEdgeHover(cb) {
+      edgeHoverCb = cb;
+    },
+    setEdgeKnob(handle) {
+      clearEdgeKnob();
+      if (!handle) {
+        paintHandles();
+        return;
+      }
+      edgeKnobPart = handlePart(handle);
+      handleGroup.add(edgeKnobPart.root);
+      paintHandles();
+    },
+    onEdgeKnob(cb) {
+      edgeKnobCb = cb;
+    },
+    pointerRay(x, y) {
+      camera.updateMatrixWorld();
+      const ray = rayAt(x, y);
+      return {
+        origin: [ray.origin.x, ray.origin.y, ray.origin.z],
+        direction: [ray.direction.x, ray.direction.y, ray.direction.z],
+      };
     },
     setWorkplane(plane) {
       if (plane === datumPlane || (plane && datumPlane && sameWorkplane(plane, datumPlane))) return;
@@ -1226,15 +1323,50 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return { handle, root, material, picks };
   }
 
+  /** Tool handles plus the edge knob, when one is showing. */
+  function drawnHandles(): HandlePart[] {
+    return edgeKnobPart ? [...handleParts, edgeKnobPart] : handleParts;
+  }
+
   function paintHandles() {
     const hot = hexToThree(colors.gizmoHot);
-    for (const part of handleParts) {
-      const on = drag?.handle.id === part.handle.id || (!drag && overHandle === part.handle.id);
+    for (const part of drawnHandles()) {
+      const on = drag?.handle.id === part.handle.id || (edgeDrag != null && part.handle.id === EDGE_KNOB_ID) || (!drag && !edgeDrag && overHandle === part.handle.id);
       part.material.color.setHex(on ? hot : handleColor(part.handle.color));
     }
-    canvas.style.cursor = drag ? "grabbing" : overHandle ? "grab" : "";
+    canvas.style.cursor = drag || edgeDrag ? "grabbing" : overHandle ? "grab" : "";
     setEmphasis(handleParts.some((part) => part.handle.seat.at === "dock" && part.handle.id === (drag?.handle.id ?? overHandle)));
     kick();
+  }
+
+  function clearEdgeKnob() {
+    if (!edgeKnobPart) return;
+    handleGroup.remove(edgeKnobPart.root);
+    disposeObject(edgeKnobPart.root);
+    edgeKnobPart = null;
+    if (overHandle === EDGE_KNOB_ID) overHandle = null;
+  }
+
+  /** Keep the lit edge while the pointer is on its knob, so reaching for the knob does not dismiss it. */
+  function updateEdgeHover(ev: PointerEvent, over: HandlePart | null) {
+    if (edgeKnobPart && over === edgeKnobPart) {
+      edgeHoverCb(edgeLit, { x: ev.clientX, y: ev.clientY });
+      return;
+    }
+    const index = pickEdge(ev)?.index ?? null;
+    const at = { x: ev.clientX, y: ev.clientY };
+    if (index === edgeLit) {
+      edgeHoverCb(index, at);
+      return;
+    }
+    edgeLit = index;
+    paintLines();
+    kick();
+    edgeHoverCb(index, at);
+  }
+
+  function knobEvent(ev: PointerEvent, phase: EdgeKnobEvent["phase"]): EdgeKnobEvent {
+    return { phase, x: ev.clientX, y: ev.clientY, alt: ev.altKey, ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey };
   }
 
   /** A docked handle edits the tool's object, which is the ghost, so the ghost stands out while the handle is in use. */
@@ -1301,7 +1433,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       delete canvas.dataset.dockPx;
     }
     const grips: string[] = [];
-    for (const part of handleParts) {
+    for (const part of drawnHandles()) {
       const seat = part.handle.seat;
       let size = dockSize;
       if (seat.at === "dock") {
@@ -1342,12 +1474,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function handleAt(x: number, y: number): HandlePart | null {
-    if (handleParts.length === 0) return null;
+    const parts = drawnHandles();
+    if (parts.length === 0) return null;
     sizeHandles();
     handleGroup.updateMatrixWorld(true);
     rayAt(x, y);
     let best: { part: HandlePart; rank: number; distance: number } | null = null;
-    for (const part of handleParts) {
+    for (const part of parts) {
       const hit = raycaster.intersectObjects(part.picks, false)[0];
       if (!hit) continue;
       // Knobs and dots sit on arrows, and arrows inside rings, so the smaller target wins an overlap.
