@@ -53,17 +53,21 @@ fn steps(tool: &str) -> Vec<Value> {
 
 /// Every step's Apply reply, then a check with its shape, then the last step again at a finer chord.
 fn build(key: &str) -> Vec<Value> {
-    let open = call(&json!({ "call": "open", "key": key, "box": [60.0, 40.0, 20.0], "chordMm": 0.1 }));
+    let open =
+        call(&json!({ "call": "open", "key": key, "box": [60.0, 40.0, 20.0], "chordMm": 0.1 }));
     assert!(open.get("error").is_none(), "{open}");
     // One name for both trees, closed after each, so the joins the two store read the same.
     let tool = "local-mesh-tool";
-    let opened = call(&json!({ "call": "open", "key": tool, "box": [4.0, 4.0, 40.0], "chordMm": 0.1 }));
+    let opened =
+        call(&json!({ "call": "open", "key": tool, "box": [4.0, 4.0, 40.0], "chordMm": 0.1 }));
     assert!(opened.get("error").is_none(), "{opened}");
     let mut replies = vec![shown(open)];
     let mut parent = 0;
     for (at, op) in steps(tool).into_iter().enumerate() {
         let node = at as i64 + 1;
-        let reply = call(&json!({ "call": "apply", "key": key, "parent": parent, "node": node, "op": op, "chordMm": 0.1 }));
+        let reply = call(
+            &json!({ "call": "apply", "key": key, "parent": parent, "node": node, "op": op, "chordMm": 0.1 }),
+        );
         if reply.get("error").is_none() {
             parent = node;
         }
@@ -71,8 +75,12 @@ fn build(key: &str) -> Vec<Value> {
     }
     let probe = cylinder("fuse", [30.0, 20.0, 15.0], 3.0, 12.0);
     replies.push(call(&json!({ "call": "probe", "key": key, "node": parent, "op": probe, "preview": true, "chordMm": 0.1 })));
-    replies.push(shown(call(&json!({ "call": "goto", "key": key, "node": parent, "chordMm": 0.05 }))));
-    replies.push(shown(call(&json!({ "call": "goto", "key": key, "node": 3, "chordMm": 0.05 }))));
+    replies.push(shown(call(
+        &json!({ "call": "goto", "key": key, "node": parent, "chordMm": 0.05 }),
+    )));
+    replies.push(shown(call(
+        &json!({ "call": "goto", "key": key, "node": 3, "chordMm": 0.05 }),
+    )));
     call(&json!({ "call": "close", "key": key }));
     call(&json!({ "call": "close", "key": tool }));
     replies
@@ -81,8 +89,14 @@ fn build(key: &str) -> Vec<Value> {
 #[test]
 fn meshing_around_a_step_answers_what_meshing_the_whole_solid_does() {
     let probe = call(&json!({ "call": "open", "key": "local-mesh-probe", "box": [1.0, 1.0, 1.0] }));
-    if probe["error"].as_str().is_some_and(|e| e.contains("OCCT_ROOT")) {
-        assert!(!require(), "LIME_REQUIRE_OCCT is set but the kernel is not linked");
+    if probe["error"]
+        .as_str()
+        .is_some_and(|e| e.contains("OCCT_ROOT"))
+    {
+        assert!(
+            !require(),
+            "LIME_REQUIRE_OCCT is set but the kernel is not linked"
+        );
         return;
     }
     call(&json!({ "call": "close", "key": "local-mesh-probe" }));
@@ -99,13 +113,27 @@ fn meshing_around_a_step_answers_what_meshing_the_whole_solid_does() {
     let full_whole = stat("fullMeshes") - whole;
     lime_model_occt::set_whole_meshes(false);
 
-    assert_eq!(full_meshes, full_whole, "every mesh was whole while asked for");
+    assert_eq!(
+        full_meshes, full_whole,
+        "every mesh was whole while asked for"
+    );
     assert_eq!(local_meshes, full_meshes, "the two trees meshed as often");
-    assert!(local_whole < local_meshes / 2, "most steps meshed only around what they made: {local_whole} of {local_meshes} whole");
-    let built = local.iter().filter(|reply| reply.get("positions").is_some() || reply.get("preview").is_some()).count();
+    assert!(
+        local_whole < local_meshes / 2,
+        "most steps meshed only around what they made: {local_whole} of {local_meshes} whole"
+    );
+    let built = local
+        .iter()
+        .filter(|reply| reply.get("positions").is_some() || reply.get("preview").is_some())
+        .count();
     assert!(built >= 13, "most steps built: {built} of {}", local.len());
     assert_eq!(local.len(), full.len());
     for (at, (a, b)) in local.iter().zip(&full).enumerate() {
-        assert!(a == b, "reply {at} differs: {} vs {}", &a.to_string()[..a.to_string().len().min(300)], &b.to_string()[..b.to_string().len().min(300)]);
+        assert!(
+            a == b,
+            "reply {at} differs: {} vs {}",
+            &a.to_string()[..a.to_string().len().min(300)],
+            &b.to_string()[..b.to_string().len().min(300)]
+        );
     }
 }
