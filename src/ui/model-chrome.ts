@@ -2,7 +2,7 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Egg, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
+import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Egg, Focus, Globe, Grid3x3, Hexagon, Layers, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
@@ -11,12 +11,12 @@ import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, t
 import type { EditPanel } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, localPoint, planePoint, planePrimitive, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
-import { lastFace, selectedEdges } from "../model-blend";
+import { lastFace, selectedEdges, selectedFaces } from "../model-blend";
 import { edgeOfText, isEdgeFilter, type EdgeSource } from "../model-edge-step";
 import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
-import { lastEdge, modelApplyReady, selectionCountLabel, type ModelPickRef } from "../model-select";
+import { lastEdge, modelApplyReady, selectionCountLabel, shellFacesLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
 import { fx } from "../app/fx";
@@ -85,6 +85,8 @@ interface ModelChromeHooks {
   shownNode(): number | null;
   /** Steps this blend can take edges from, the one on screen and the steps above it, root first. */
   edgeSteps(): { id: number; label: string }[];
+  // --- A2 shell: the first picked face, in model space, for the thickness knob. Null with none. ---
+  shellSeat(): { point: Vec3; inward: Vec3 } | null;
 }
 
 interface JoinChoice {
@@ -102,6 +104,8 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "fillet", icon: Spline, label: "Fillet" },
   { id: "chamfer", icon: Triangle, label: "Chamfer" },
   { id: "hole", icon: CircleDot, label: "Hole" },
+  // --- A2 shell ---
+  { id: "shell", icon: Layers, label: "Shell" },
   { id: "scale", icon: Scaling, label: "Scale" },
   { id: "measure", icon: Ruler, label: "Measure" },
   { id: "place", icon: Move3d, label: "Place" },
@@ -158,7 +162,7 @@ let waiting = false;
  * The step being edited, while its tool's panel is open: what it opened with, its header, and what Boolean, New solid
  * and Hole's boxes had before, which they get back when the edit closes.
  */
-let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null; hole: { through: boolean; counterbore: boolean } } } | null = null;
+let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null; hole: { through: boolean; counterbore: boolean }; shellClosed: boolean } } | null = null;
 const VIEW_ONLY_TIP = "This STEP file has surfaces but no closed solid, so it can be measured but not edited.";
 
 type Scrub = {
@@ -270,6 +274,13 @@ export function mountModelChrome(next: ModelChromeHooks) {
       holeChoiceChanged(ev.target.id);
       return;
     }
+    // --- A2 shell: the closed box ignores picks. It changes the op at once, as a hole's boxes do. ---
+    if (ev.target instanceof HTMLElement && ev.target.id === "modelShellClosed") {
+      refreshNote();
+      refreshGhost();
+      hooks?.paramsChanged();
+      return;
+    }
     keepNewSolidInView();
     // A typed tilt past the limit shows the limit the plane already uses.
     const input = ev.target instanceof HTMLInputElement && (ev.target.id === "modelTiltA" || ev.target.id === "modelTiltB") ? ev.target : null;
@@ -282,7 +293,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   });
   document.querySelector("#modelPanel")?.addEventListener("input", (ev) => {
     // A box or the screw list changes on `change`, all at once.
-    if (ev.target instanceof HTMLElement && HOLE_CHOICES.has(ev.target.id)) return;
+    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed")) return;
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
       return;
@@ -433,6 +444,10 @@ function toggleTool(next: ModelTool, editing = false) {
     // The hole drills into the face clicked last, so a click picks faces.
     if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
   }
+  // --- A2 shell: open faces are face picks. ---
+  if (next === "shell" && document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") {
+    document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
+  }
   // Keep the tool object is asked per op: it opens off.
   if (next === "boolean") resetKeepTool();
   if (next === "measure") applyMeasureDefaults();
@@ -472,7 +487,7 @@ function toggleTool(next: ModelTool, editing = false) {
  */
 export function openEditTool(panel: EditPanel, head: string) {
   if (tool) closeTool();
-  edit = { panel, head, before: { primKind, withObject, joinTool, hole: holeBoxes() } };
+  edit = { panel, head, before: { primKind, withObject, joinTool, hole: holeBoxes(), shellClosed: shellClosed() } };
   if (panel.primitive) primKind = panel.primitive;
   withObject = !!panel.join;
   joinTool = null;
@@ -494,6 +509,8 @@ function fillEdit() {
   } else if (panel.tool === "fillet" || panel.tool === "chamfer") {
     setEdgeSource("picked", { quiet: true });
   }
+  // --- A2 shell ---
+  if (panel.shellClosed !== undefined) setShellClosed(panel.shellClosed);
   if (panel.join) {
     const keep = document.querySelector<HTMLInputElement>("#modelKeepTool");
     if (keep) keep.checked = panel.join.keepTool;
@@ -535,6 +552,7 @@ function closeTool() {
   if (ended) {
     ({ primKind, withObject, joinTool } = ended.before);
     setHoleBoxes(ended.before.hole.through, ended.before.hole.counterbore);
+    setShellClosed(ended.before.shellClosed);
     document.querySelector<HTMLElement>("#modelEditHead")?.toggleAttribute("hidden", true);
     document.querySelector("#modelPanel")?.removeAttribute("aria-labelledby");
     paintPrimRow();
@@ -549,6 +567,7 @@ function closeTool() {
   probe = null;
   preview = null;
   fx.model?.setPreview(null);
+  fx.model?.setRemovedFaces(false);
   refreshNote();
   fx.model?.setObjectPicking(false);
   fx.model?.setGhost(null);
@@ -1028,6 +1047,24 @@ function setHoleBoxes(through: boolean, counterbore: boolean) {
   }
 }
 
+// --- A2 shell ---
+/** The Shell panel's closed box: on, the picks are ignored and the void stays inside. */
+export function shellClosed(): boolean {
+  return document.querySelector<HTMLInputElement>("#modelShellClosed")?.checked ?? false;
+}
+
+function setShellClosed(closed: boolean) {
+  const box = document.querySelector<HTMLInputElement>("#modelShellClosed");
+  if (box) box.checked = closed;
+}
+
+/** "2 faces open", or that the shell stays closed. */
+function refreshShellFaces() {
+  const note = document.querySelector("#modelShellFaces");
+  if (!note) return;
+  note.textContent = shellFacesLabel(selectedFaces(picks).length, shellClosed());
+}
+
 /** A box ticked or a screw picked: a screw fills the hole, through, with its counterbore. The fields follow at once. */
 function holeChoiceChanged(id: string) {
   if (id === "modelScrew") {
@@ -1175,7 +1212,7 @@ function refreshNote() {
   let text = "";
   let bad = false;
   if (edit && hooks?.editUnchanged()) {
-    text = tool === "fillet" || tool === "chamfer" ? "Change the size or the edges to update this step." : "Change a number to update this step.";
+    text = tool === "fillet" || tool === "chamfer" ? "Change the size or the edges to update this step." : tool === "shell" ? "Change the thickness or the open faces to update this step." : "Change a number to update this step.";
   } else if (edit && tool === "create") {
     text = "The steps after it are built again on the new solid.";
   } else if (tool === "split") {
@@ -1213,6 +1250,7 @@ function refreshNote() {
   note.textContent = text;
   note.classList.toggle("is-bad", bad);
   note.toggleAttribute("hidden", text.length === 0);
+  refreshShellFaces();
 }
 
 function refreshGhost() {
@@ -1221,12 +1259,15 @@ function refreshGhost() {
   if (state.stage !== "model" || !tool) {
     view.setGhost(null);
     view.setHandles([]);
+    view.setRemovedFaces(false);
     refreshDatum();
     return;
   }
   view.setGhost(ghostFor(tool));
   // The tool object is moved by Place, on its own; nothing here drags it.
   view.setHandles(joinOpen() ? [] : handlesFor(tool, dragContext()));
+  // --- A2 shell: picked faces that will open are drawn as removed. A closed shell ignores them. ---
+  view.setRemovedFaces(tool === "shell" && !shellClosed() && selectedFaces(picks).length > 0);
   refreshDatum();
 }
 
@@ -1246,6 +1287,8 @@ function dragContext(): DragContext {
     edge: points ? edgeAnchor(points, center) : null,
     holeAxis: hooks?.holeAxis() ?? [0, 0, -1],
     hole: holeBoxes(),
+    // --- A2 shell ---
+    shell: hooks?.shellSeat() ?? null,
     frame: tool === "workplane" ? openPlane() : toolFrame(),
   };
 }
@@ -1526,7 +1569,8 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     };
   }
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
-  if (current === "place" || current === "workplane") return null;
+  // --- A2 shell: no stand-in. The dry-run's shape is the hollow, and the open faces are outlined as removed. ---
+  if (current === "place" || current === "workplane" || current === "shell") return null;
   // --- A5. A step's edges stand in for the picks until the dry-run's shape replaces them. ---
   const edges = edgeSource === "step" ? stepEdgeIndexes : selectedEdges(picks);
   if (edges.length === 0) return null;

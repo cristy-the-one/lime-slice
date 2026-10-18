@@ -1,4 +1,4 @@
-import { faceBoundarySegments, faceColor, lastEdge, modelApplyReady, nextModelPicks, selectionCountLabel } from "./model-select.ts";
+import { faceBoundarySegments, faceColor, lastEdge, modelApplyReady, nextModelPicks, selectionCountLabel, shellFacesLabel } from "./model-select.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -40,6 +40,12 @@ check("a boolean can apply with nothing picked", modelApplyReady("boolean", [], 
 check("a hole waits while the dry-run says it misses", modelApplyReady("hole", [], 1, true, false) === false);
 check("split applies when the plane is inside the part", modelApplyReady("split", [], 1, true));
 check("split waits when the plane would shave a face", modelApplyReady("split", [], 1, false) === false);
+check("a shell applies once the dry-run says it fits, with or without a face", modelApplyReady("shell", [], 1) && modelApplyReady("shell", [face(1)], 1));
+check("a shell waits while the dry-run says the wall is too thick", modelApplyReady("shell", [face(1)], 1, true, false) === false);
+eq("a closed shell says so", shellFacesLabel(2, true), "Closed inside.");
+eq("no open face", shellFacesLabel(0, false), "No face open.");
+eq("one open face", shellFacesLabel(1, false), "1 face open");
+eq("two open faces", shellFacesLabel(2, false), "2 faces open");
 
 const accent = 0xa3e635;
 eq("a selected face is the accent", faceColor(2, true, true, accent), accent);

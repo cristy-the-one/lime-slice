@@ -1,4 +1,4 @@
-import { holeAxis, HOLE_DOWN, lastFace, outwardFromMesh, selectedEdges } from "./model-blend.ts";
+import { firstFace, holeAxis, HOLE_DOWN, lastFace, outwardFromMesh, selectedEdges, selectedFaces } from "./model-blend.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -18,6 +18,9 @@ const face = (index: number) => ({ kind: "face" as const, index });
 const edge = (index: number) => ({ kind: "edge" as const, index });
 
 eq("edges stay in pick order", selectedEdges([edge(2), face(0), edge(4), edge(2)]), [2, 4]);
+eq("faces stay in pick order", selectedFaces([face(3), edge(1), face(5), face(3)]), [3, 5]);
+eq("the first face wins", firstFace([edge(2), face(4), face(1)]), 4);
+eq("no first face", firstFace([edge(1)]), null);
 eq("a face is not an edge", selectedEdges([face(1)]), []);
 eq("the last face wins", lastFace([face(1), edge(3), face(6)]), 6);
 eq("no face", lastFace([edge(1)]), null);

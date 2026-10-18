@@ -10,7 +10,7 @@ import { tiltOf } from "./model-plane.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
 import { storedEdgeStep } from "./model-edge-step.ts";
-import { ROOT, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { ROOT, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 
 /**
  * The steps that replay under an edit of `node`, oldest first: the shown branch below it. That is the path down to the
@@ -98,10 +98,10 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a shell, a face extrude, a face move, or a group. A blend that takes an earlier step's edges opens on that step. */
+/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a face extrude, a face move, or a group. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
 function hasPanel(op: ModelOp): boolean {
   // A group reopens from its composite in a later package. Until then it has no panel.
-  return !(op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "shell" || op.kind === "faceExtrude" || op.kind === "moveFaces" || op.kind === "group");
+  return !(op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "faceExtrude" || op.kind === "moveFaces" || op.kind === "group");
 }
 
 /** The op an edit of `id` starts from: its own, the primitive a new solid's root is, or the feature a sketch-started root is. */
@@ -282,6 +282,11 @@ export interface EditPanel {
    * once the row's name is known. Absent when the edges were picked on the solid.
    */
   step?: { fromNode: NodeId; filter: EdgeFilter };
+  // --- A2 shell ---
+  /** A shell's open faces, as stored. Empty while the closed box is on. */
+  faces?: readonly (number | FaceRef)[];
+  /** A shell kept closed, so the open faces are ignored. */
+  shellClosed?: boolean;
   /** A join: its tool stays as applied; its op and Keep can change. */
   join?: { name: string; keepTool: boolean };
 }
@@ -327,6 +332,14 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
         ...(step ? { step } : {}),
       };
     }
+    // --- A2 shell ---
+    case "shell":
+      return {
+        tool: "shell",
+        fields: { modelShell: op.thickness },
+        faces: op.openFaces ?? [],
+        shellClosed: (op.openFaces?.length ?? 0) === 0,
+      };
     case "scale":
       return { tool: "scale", fields: { modelFactor: op.factor } };
     case "join":
@@ -334,7 +347,6 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "extrude":
     case "revolve":
     case "loft":
-    case "shell":
     case "group":
     case "faceExtrude":
     case "moveFaces":
@@ -408,6 +420,39 @@ export function matchEdges(edges: readonly { id: number; lengthMm: number; point
     else if (fits(byId.get(ref.index), ref)) found = ref.index;
     else {
       const all = edges.filter((edge) => fits(edge, ref));
+      found = all.length === 1 ? all[0]!.id : null;
+    }
+    if (found == null) missing += 1;
+    else if (!picked.includes(found)) picked.push(found);
+  }
+  return { picked, missing };
+}
+
+/** Face areas agree within this fraction of the larger area, as the engine matches a shell's open faces. */
+const FACE_AREA = 1e-3;
+
+/**
+ * A shell's stored faces on the shown solid's `faces`: by index while its area and middle still agree, else the one
+ * face that does, as the engine finds them. The middle is the mesh's area-weighted centre, which sits within the chord
+ * of the true face, so `slack` is that chord. `missing` counts the faces no longer on the solid. Two faces that both
+ * fit count as missing, the same way two edges do.
+ */
+export function matchFaces(faces: readonly { id: number; areaMm2: number; mid: Vec3 }[], refs: readonly (number | FaceRef)[], slack: number): { picked: number[]; missing: number } {
+  const picked: number[] = [];
+  let missing = 0;
+  const byId = new Map(faces.map((face) => [face.id, face]));
+  const fits = (face: (typeof faces)[number] | undefined, ref: FaceRef) => {
+    if (!face) return false;
+    const scale = Math.max(Math.abs(ref.areaMm2), 1);
+    const mid = Math.hypot(face.mid[0] - ref.mid[0], face.mid[1] - ref.mid[1], face.mid[2] - ref.mid[2]);
+    return Math.abs(face.areaMm2 - ref.areaMm2) <= FACE_AREA * scale && mid <= slack + FACE_AREA;
+  };
+  for (const ref of refs) {
+    let found: number | null = null;
+    if (typeof ref === "number") found = byId.has(ref) ? ref : null;
+    else if (fits(byId.get(ref.index), ref)) found = ref.index;
+    else {
+      const all = faces.filter((face) => fits(face, ref));
       found = all.length === 1 ? all[0]!.id : null;
     }
     if (found == null) missing += 1;

@@ -1,5 +1,5 @@
 import { eulerOrient } from "./mesh-place.ts";
-import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditPanel } from "./model-edit.ts";
+import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, forked, matchEdges, matchFaces, olderSplitNote, replayChain, toolEditHead, toolEditRefusal, toolPose, type EditPanel } from "./model-edit.ts";
 import { stepEdges } from "./model-request.ts";
 import { historyLayout } from "./model-history.ts";
 import { planeFor, splitBase } from "./model-plane.ts";
@@ -166,6 +166,21 @@ eq("a step fillet opens on that step", editPanel({ kind: "fillet", edges: [stepE
   step: { fromNode: 2, filter: "convex" },
 });
 eq("a picked fillet has no step", editPanel(fillet, skew, center).step, undefined);
+
+// Face matching for a shell's panel, the same rules as the edges above.
+const face = (id: number, areaMm2: number, mid: Vec3) => ({ id, areaMm2, mid });
+const faces = [face(0, 400, [10, 10, 0]), face(1, 400, [10, 10, 10]), face(2, 200, [10, 0, 5])];
+eq("a face at its index is taken", matchFaces(faces, [{ index: 1, mid: [10, 10, 10], areaMm2: 400 }], 0.1), { picked: [1], missing: 0 });
+eq("a face renumbered is found by its middle and area", matchFaces(faces, [{ index: 4, mid: [10, 10, 10], areaMm2: 400 }], 0.1), { picked: [1], missing: 0 });
+eq("a face no longer on the solid is missing", matchFaces(faces, [{ index: 1, mid: [0, 0, 0], areaMm2: 10 }, 2], 0.1), { picked: [2], missing: 1 });
+eq("two faces that both fit count as missing", matchFaces([face(0, 400, [10, 10, 10]), face(1, 400, [10, 10, 10])], [{ index: 9, mid: [10, 10, 10], areaMm2: 400 }], 0.1), { picked: [], missing: 1 });
+eq("a face within the chord slack is taken", matchFaces(faces, [{ index: 9, mid: [10, 10, 10.05], areaMm2: 400 }], 0.1), { picked: [1], missing: 0 });
+const identity = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1] as Affine["m"], t: [0, 0, 0] as Vec3 };
+const openShell = editPanel({ kind: "shell", thickness: 2, openFaces: [{ index: 1, mid: [10, 10, 10], areaMm2: 400 }] }, identity, center);
+eq("an open shell keeps its thickness and its faces", [openShell.tool, openShell.fields, openShell.shellClosed, openShell.faces], ["shell", { modelShell: 2 }, false, [{ index: 1, mid: [10, 10, 10], areaMm2: 400 }]]);
+const closedShell = editPanel({ kind: "shell", thickness: 1.5 }, identity, center);
+eq("a closed shell opens with the box on and no faces", [closedShell.fields, closedShell.shellClosed, closedShell.faces], [{ modelShell: 1.5 }, true, []]);
+eq("a pose does not change a shell's thickness", editPanel({ kind: "shell", thickness: 2, openFaces: [1] }, skew, center).fields.modelShell, 2);
 
 // The `.lime` round trip of a tree with an edit fork, a root edit among it.
 const rerooted = forked(edited, 0, [{ id: 9, op: { kind: "root", ...boxSpec, origin: [-15, -15, 0], size: [30, 30, 20] }, fingerprint: fp(18000) }, { id: 10, op: cut, fingerprint: fp(17875) }], 10);
