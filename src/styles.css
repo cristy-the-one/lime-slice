@@ -952,6 +952,34 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   white-space: nowrap;
 }
 .mh-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A folded MCP composite: the chevron stays visible, unlike the pencil, which is only for one step. */
+.mh-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+}
+.mh-fold[hidden] { display: none; }
+.mh-fold .ico { transition: transform 120ms ease; }
+.mh-row[aria-expanded="true"] > .mh-fold .ico { transform: rotate(90deg); }
+.mh-fold:hover { background: var(--surface-2); color: var(--text); }
+.mh-fold:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* "Built by a recipe", under the header and above Position. Collapsing the tree leaves it showing. */
+.mh-recipe {
+  margin: 0 4px 2px;
+  color: var(--text-dim);
+  font-size: var(--fs-1);
+  line-height: 1.35;
+}
+.mh-recipe[hidden] { display: none; }
+.mh-recipe strong { color: var(--text); font-weight: 600; }
 .mh-warn { display: inline-flex; flex: 0 0 auto; color: var(--warn); }
 .mh-plate {
   flex: 0 0 auto;
