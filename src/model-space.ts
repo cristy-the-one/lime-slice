@@ -195,6 +195,9 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
         }),
       };
     }
+    // --- A1 group: every step goes into the solid's frame, the same way it would alone. ---
+    case "group":
+      return { ...op, steps: op.steps.map((step) => toSolidOp(step, pose)) };
     default:
       return op;
   }

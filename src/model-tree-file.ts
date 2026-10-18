@@ -351,6 +351,17 @@ function readOp(value: unknown): SavedOp | undefined {
       }
       return { kind: "shell", thickness: value.thickness, ...(openFaces.length > 0 ? { openFaces } : {}) };
     }
+    // --- A1 group: each step is an op, and `source` is kept as typed. Absent source stays absent. ---
+    case "group": {
+      if (typeof value.label !== "string" || !Array.isArray(value.steps) || value.steps.length === 0) return undefined;
+      const steps: ModelOp[] = [];
+      for (const raw of value.steps) {
+        const step = readOp(raw);
+        if (!step || step.kind === "join") return undefined;
+        steps.push(step);
+      }
+      return { kind: "group", label: value.label, ...(value.source !== undefined ? { source: value.source } : {}), steps };
+    }
     // --- K4: faceExtrude and moveFaces. Optional fields stay absent when unset. ---
     case "faceExtrude": {
       const face = readFacePick(value.face);

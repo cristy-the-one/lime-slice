@@ -97,9 +97,10 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a shell, a face extrude, a face move, or a blend that takes an earlier step's edges. */
+/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a shell, a face extrude, a face move, a group, or a blend that takes an earlier step's edges. */
 function hasPanel(op: ModelOp): boolean {
-  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "shell" || op.kind === "faceExtrude" || op.kind === "moveFaces") return false;
+  // A group reopens from its composite in a later package. Until then it has no panel.
+  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "shell" || op.kind === "faceExtrude" || op.kind === "moveFaces" || op.kind === "group") return false;
   return !((op.kind === "fillet" || op.kind === "chamfer") && op.edges.some(isEdgeStep));
 }
 
@@ -321,9 +322,10 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "revolve":
     case "loft":
     case "shell":
+    case "group":
     case "faceExtrude":
     case "moveFaces":
-      // `editRefusal` turns these away before a panel opens.
+      // `editRefusal` turns these away before a panel opens. A group's panel comes with the composite tools.
       throw new Error(`No edit panel for a ${op.kind} step`);
   }
 }

@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 pub type NodeId = u32;
 
@@ -430,6 +430,18 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         open_faces: Vec<FacePick>,
     },
+    // --- A1 group (docs/plan-gui-mcp-parity.md D2). Keep this variant, and the match arms marked
+    // the same way, in one block so other kernel ops can rebase beside it. ---
+    /// One history node for a composite edit. Each step is built on the shape the one before left.
+    /// `source` is the composite as typed, kept so an edit can reopen it, and never built.
+    Group {
+        /// The history row's name, e.g. "Pocket 10 × 10, 2 bars".
+        label: String,
+        /// The composite as typed (`{kind: "pocket", ...}`), kept opaque. Read back for an edit; never built.
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        source: Value,
+        steps: Vec<Op>,
+    },
     // --- K4: faceExtrude, moveFaces. Keep this block together. ---
     /// The face pushed along its outward normal: fused when `distance` is positive, cut when negative.
     /// `draftDeg` of 0 and no `upTo` build a prism. A draft or a stop-face uses a feature prism.
@@ -784,6 +796,8 @@ enum Failure {
     },
     /// An `open` whose seed was refused and that then failed: both are said, so the client does not send the seed again.
     SeedRefused(Box<Failure>, String),
+    /// A group's step failed. `failed_step` counts from 1, as the sentence says ("Step 2 of 3").
+    GroupFailed { message: String, failed_step: u32 },
 }
 
 const TOOL_MISSING: &str = "The tool object's history is not open in the modeler";
@@ -811,6 +825,10 @@ impl Failure {
                 reply["seedRefused"] = json!(why);
                 reply.to_string()
             }
+            Failure::GroupFailed {
+                message,
+                failed_step,
+            } => json!({ "error": message, "failedStep": failed_step }).to_string(),
         }
     }
 }
@@ -1089,9 +1107,10 @@ impl Doc {
                     .and_then(|node| node.shape.as_mut())
                     .expect("the parent was built first");
                 let none = Steps::new();
-                resolve(from, &op, steps.get(&step).unwrap_or(&none)).and_then(|op| {
-                    build(from, op, false, tools.get(&step).copied())
-                        .map_err(|(message, _)| message)
+                let found = steps.get(&step).unwrap_or(&none);
+                resolve(from, &op, found).and_then(|op| {
+                    build(from, op, false, tools.get(&step).copied(), found)
+                        .map_err(|fail| fail.message)
                 })
             };
             let built = match built {
@@ -1236,7 +1255,7 @@ impl Store {
                 })
             }
             Err(Failure::Message(message)) => return Err(Failure::Message(message)),
-            Err(Failure::Broken { message, .. }) => {
+            Err(Failure::Broken { message, .. } | Failure::GroupFailed { message, .. }) => {
                 return Err(Failure::Message(format!(
                     "The tool object's step could not be rebuilt: {message}"
                 )))
@@ -1267,16 +1286,9 @@ impl Store {
     /// The edges each step that `op`, built on `parent`, takes edges from made: read once from that step's solid,
     /// which is built first if it must be. A step that is not `parent` or above it is refused.
     fn step_edges(&mut self, key: &str, parent: NodeId, op: &Op) -> Result<Steps, Failure> {
-        let wanted: Vec<NodeId> = match op {
-            Op::Fillet { edges, .. } | Op::Chamfer { edges, .. } => edges
-                .iter()
-                .filter_map(|pick| match pick {
-                    EdgePick::Step(step) => Some(step.from_node),
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
+        let mut wanted = Vec::new();
+        // --- A1 group: a fillet inside the group takes edges from a step above the group. ---
+        blend_step_picks(op, &mut wanted);
         let mut steps = Steps::new();
         for node in wanted {
             if steps.contains_key(&node) {
@@ -1693,7 +1705,7 @@ impl Store {
             None => {
                 let tool = self.join_tool(&key, &op.op)?;
                 let from = doc_in(&mut self.docs, &key)?.shape(parent);
-                build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))?
+                build(from, op, false, tool, &steps).map_err(Failure::from)?
             }
         };
         let doc = doc_in(&mut self.docs, &key)?;
@@ -1769,16 +1781,22 @@ impl Store {
         let doc = doc_in(&mut self.docs, key)?;
         let from = doc.shape(id);
         let result = tool
-            .and_then(|tool| steps.map(|steps| (tool, steps)))
-            .and_then(|(tool, steps)| from.editable().map(|()| (tool, steps)))
-            .and_then(|(tool, steps)| resolve(from, &op, &steps).map(|op| (op, tool)))
-            .map_err(|message| (message, None))
-            .and_then(|(op, tool)| build(from, op, true, tool));
+            .and_then(|tool| steps.map(|found| (tool, found)))
+            .and_then(|(tool, found)| from.editable().map(|()| (tool, found)))
+            .map_err(BuildFail::plain)
+            .and_then(|(tool, found)| {
+                resolve(from, &op, &found)
+                    .map(|resolved| (resolved, tool, found))
+                    .map_err(BuildFail::plain)
+            })
+            .and_then(|(resolved, tool, found)| build(from, resolved, true, tool, &found));
         match result {
             Ok(mut built) => {
                 // The shape keeps what its reply measured and meshed, so an Apply that takes it meshes nothing again.
                 let shown = preview.and_then(|chord| built.kept.reply(id, chord).ok());
-                let metrics = probe_metrics(from, &built.kept);
+                // --- A1 group: the same measures as one op, plus how many steps missed the solid. ---
+                let skipped = matches!(built.op, Op::Group { .. }).then_some(built.skipped);
+                let metrics = probe_metrics(from, &built.kept, skipped);
                 doc.probe = Some(Probed {
                     parent: id,
                     op: built.op.clone(),
@@ -1789,10 +1807,14 @@ impl Store {
                     None => format!("{{\"ok\":true,{metrics}}}"),
                 }))
             }
-            Err((message, max_mm)) => {
-                let mut reply = json!({ "ok": false, "error": message });
-                if let Some(max_mm) = max_mm.filter(|max| max + 1e-6 >= 0.05) {
+            Err(fail) => {
+                let mut reply = json!({ "ok": false, "error": fail.message });
+                if let Some(max_mm) = fail.max_mm.filter(|max| max + 1e-6 >= 0.05) {
                     reply["maxMm"] = json!(max_mm);
+                }
+                // --- A1 group: which step of the group failed, counting from 1. ---
+                if let Some(step) = fail.failed_step {
+                    reply["failedStep"] = json!(step);
                 }
                 Ok(Answer::Plain(reply.to_string()))
             }
@@ -1999,7 +2021,7 @@ impl Store {
             None => {
                 let tool = self.join_tool(key, &op.op)?;
                 let from = doc_in(&mut self.docs, key)?.shape(parent);
-                build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))
+                build(from, op, false, tool, &steps).map_err(Failure::from)
             }
         }
     }
@@ -2038,7 +2060,9 @@ impl Store {
                         tail = step;
                         continue;
                     }
-                    Err(Failure::Message(message)) => broken = Some((step, message)),
+                    Err(Failure::Message(message) | Failure::GroupFailed { message, .. }) => {
+                        broken = Some((step, message))
+                    }
                     Err(failure) => return Err(failure),
                 }
             }
@@ -2058,7 +2082,7 @@ impl Store {
         let steps = self.step_edges(key, from, op)?;
         let from = doc_in(&mut self.docs, key)?.shape(from);
         let op = resolve(from, op, &steps).map_err(Failure::Message)?;
-        build(from, op, false, tool).map_err(|(message, _)| Failure::Message(message))
+        build(from, op, false, tool, &steps).map_err(Failure::from)
     }
 
     /// Keep `built` as node `id` under `parent`, as an apply does: its solid, its fingerprint, and its op as stored.
@@ -2312,8 +2336,28 @@ const NOT_ABOVE: &str = "A blend can only take edges from this step's parent or 
 
 /// Whether `op` takes edges from an earlier step, which must be read before it builds.
 fn picks_steps(op: &Op) -> bool {
-    matches!(op, Op::Fillet { edges, .. } | Op::Chamfer { edges, .. }
-        if edges.iter().any(|pick| matches!(pick, EdgePick::Step(_))))
+    let mut wanted = Vec::new();
+    blend_step_picks(op, &mut wanted);
+    !wanted.is_empty()
+}
+
+/// --- A1 group: the steps a blend, or a blend inside a group, takes edges from. ---
+fn blend_step_picks(op: &Op, out: &mut Vec<NodeId>) {
+    match op {
+        Op::Fillet { edges, .. } | Op::Chamfer { edges, .. } => {
+            for pick in edges {
+                if let EdgePick::Step(step) = pick {
+                    out.push(step.from_node);
+                }
+            }
+        }
+        Op::Group { steps, .. } => {
+            for step in steps {
+                blend_step_picks(step, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// An op as the tree stores it, and the kernel indexes it is built with: a blend's edges or a shell's open faces,
@@ -2563,7 +2607,8 @@ fn resolve_move_faces(from: &mut Shape, faces: &[FaceMove]) -> Result<Resolved, 
 }
 
 /// The probe's measures of what it built, and of the solid it was built on, as JSON fields without braces.
-fn probe_metrics(from: &Shape, built: &Shape) -> String {
+/// `skipped` is set for a group: how many of its steps missed the solid and were left out.
+fn probe_metrics(from: &Shape, built: &Shape, skipped: Option<u32>) -> String {
     let measure = |shape: &Shape| {
         let (solids, shells) = shape.counts();
         json!({ "volumeMm3": shape.fingerprint().volume_mm3, "solids": solids, "shells": shells })
@@ -2576,6 +2621,10 @@ fn probe_metrics(from: &Shape, built: &Shape) -> String {
         "shells": after["shells"],
         "before": before,
     });
+    // --- A1 group: present even when nothing was left out, so a caller can read it. ---
+    if let Some(skipped) = skipped {
+        body["skipped"] = json!(skipped);
+    }
     // Only when a step made a hollow or a piece: say where, so the caller can move the step.
     if after["solids"].as_i64() > before["solids"].as_i64() || after["shells"].as_i64() > before["shells"].as_i64() {
         let report = take_text(unsafe { lime_tree_pieces(from.raw(), built.raw()) });
@@ -2651,6 +2700,11 @@ fn same_request(stored: &Op, incoming: &Op) -> bool {
                     (have, want) => have == want,
                 })
         }
+        // --- A1 group: the steps, recursively. `source` is the composite as typed and is not compared. ---
+        (Op::Group { steps: a, .. }, Op::Group { steps: b, .. }) => {
+            return a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_request(x, y))
+        }
+        (Op::Group { .. }, _) | (_, Op::Group { .. }) => return false,
         _ => return stored == incoming,
     };
     stored_edges
@@ -2681,6 +2735,10 @@ fn same_build(a: &Op, b: &Op) -> bool {
                 ..
             },
         ) => x == y && t.key == u.key && t.node == u.node && r == q,
+        // --- A1 group: the steps, recursively. `source` and the label build nothing. ---
+        (Op::Group { steps: a, .. }, Op::Group { steps: b, .. }) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_build(x, y))
+        }
         _ => a == b,
     }
 }
@@ -2714,6 +2772,37 @@ struct Built {
     op: Op,
     kept: Shape,
     other: Option<Shape>,
+    /// Steps of a group whose tool missed the solid. 0 for any other op.
+    skipped: u32,
+}
+
+/// Why `build` refused. `failed_step` is set for a group, counting from 1.
+struct BuildFail {
+    message: String,
+    max_mm: Option<f64>,
+    failed_step: Option<u32>,
+}
+
+impl BuildFail {
+    fn plain(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            max_mm: None,
+            failed_step: None,
+        }
+    }
+}
+
+impl From<BuildFail> for Failure {
+    fn from(fail: BuildFail) -> Self {
+        match fail.failed_step {
+            Some(failed_step) => Failure::GroupFailed {
+                message: fail.message,
+                failed_step,
+            },
+            None => Failure::Message(fail.message),
+        }
+    }
 }
 
 /// Another tree's solid, for one join, as the kernel takes it. Sound for the call it was taken in:
@@ -2723,19 +2812,147 @@ struct Built {
 #[derive(Clone, Copy)]
 struct ToolSolid(*const RawShape);
 
+/// --- A1 group: why a step inside a group was left out instead of refusing the group. ---
+fn missed_step(message: &str) -> bool {
+    message == "The solids do not overlap"
+        || message == "The hole missed this solid"
+        || message.ends_with("does not change the part.")
+}
+
+/// A boolean the kernel accepts even when the tool never meets the solid: the volume is the one it had.
+fn volume_unchanged(before: &Shape, after: &Shape) -> bool {
+    let from = before.fingerprint().volume_mm3;
+    let tolerance = 1e-6 * from.abs().max(1.0);
+    (from - after.fingerprint().volume_mm3).abs() <= tolerance
+}
+
+fn step_failed(index: usize, count: usize, message: impl Into<String>, max_mm: Option<f64>) -> BuildFail {
+    BuildFail {
+        message: format!("Step {} of {count}: {}", index + 1, message.into()),
+        max_mm,
+        failed_step: Some((index + 1) as u32),
+    }
+}
+
+/// A step a group may build. Anything else is a sentence, with the step that asked, counting from 1.
+fn group_step_refusal(step: &Op) -> Option<&'static str> {
+    match step {
+        Op::Boolean { .. }
+        | Op::Extrude { .. }
+        | Op::Revolve { .. }
+        | Op::Loft { .. }
+        | Op::Hole { .. } => None,
+        Op::Fillet { edges, .. } if edges.iter().any(|pick| matches!(pick, EdgePick::Index(_))) => {
+            Some("A fillet inside a group needs edges named by their place, not by a number.")
+        }
+        Op::Chamfer { edges, .. } if edges.iter().any(|pick| matches!(pick, EdgePick::Index(_))) => {
+            Some("A chamfer inside a group needs edges named by their place, not by a number.")
+        }
+        Op::Fillet { .. } | Op::Chamfer { .. } => None,
+        Op::Split { .. } => Some("A group cannot contain a split."),
+        Op::Join { .. } => Some("A group cannot contain a join."),
+        Op::Scale { .. } => Some("A group cannot contain a scale."),
+        Op::Root { .. } => Some("A group cannot contain a new solid."),
+        Op::Shell { .. } => Some("A group cannot contain a shell."),
+        Op::FaceExtrude { .. } => Some("A group cannot contain a face extrude."),
+        Op::MoveFaces { .. } => Some("A group cannot contain a face move."),
+        Op::Group { .. } => Some("A group cannot contain another group."),
+    }
+}
+
+/// --- A1 group: each step on the shape the one before left. A step whose tool misses the solid is
+/// left out and counted. The first step that fails refuses the group, naming that step. ---
+fn build_group(
+    from: &mut Shape,
+    label: String,
+    source: Value,
+    steps: Vec<Op>,
+    probe: bool,
+    edge_steps: &Steps,
+) -> Result<Built, BuildFail> {
+    let count = steps.len();
+    if count == 0 {
+        return Err(BuildFail::plain("A group needs at least one step."));
+    }
+    for (index, step) in steps.iter().enumerate() {
+        if let Some(message) = group_step_refusal(step) {
+            return Err(step_failed(index, count, message, None));
+        }
+    }
+    let mut current: Option<Shape> = None;
+    let mut skipped = 0u32;
+    let mut stored: Vec<Op> = Vec::with_capacity(count);
+    for (index, step) in steps.iter().enumerate() {
+        let outcome = {
+            let shape = match current.as_mut() {
+                Some(shape) => shape,
+                None => &mut *from,
+            };
+            let resolved = resolve(shape, step, edge_steps)
+                .map_err(|message| step_failed(index, count, message, None))?;
+            build(shape, resolved, probe, None, edge_steps)
+        };
+        match outcome {
+            Ok(built) => {
+                let before = current.as_ref().map_or(&*from, |shape| shape);
+                let silent = matches!(step, Op::Boolean { .. }) && volume_unchanged(before, &built.kept);
+                if silent {
+                    skipped += 1;
+                    stored.push(step.clone());
+                } else {
+                    stored.push(built.op);
+                    current = Some(built.kept);
+                }
+            }
+            Err(fail) if missed_step(&fail.message) => {
+                skipped += 1;
+                stored.push(step.clone());
+            }
+            Err(fail) => return Err(step_failed(index, count, fail.message, fail.max_mm)),
+        }
+    }
+    // Every step missed: the group keeps the solid it started from. A copy, so the parent keeps its own.
+    let kept = match current {
+        Some(kept) => kept,
+        None => {
+            let bytes = from.brep_bytes().map_err(BuildFail::plain)?;
+            Shape::read_brep(&bytes, false).map_err(BuildFail::plain)?
+        }
+    };
+    Ok(Built {
+        op: Op::Group {
+            label,
+            source,
+            steps: stored,
+        },
+        kept,
+        other: None,
+        skipped,
+    })
+}
+
 /// Run a resolved op on `from`. With `probe`, a fillet or chamfer that does not fit also reports
-/// the largest size that does. A join takes its tool's solid in `tool`.
+/// the largest size that does. A join takes its tool's solid in `tool`. `edge_steps` are the edges
+/// a blend, including one inside a group, takes from an earlier step.
 fn build(
-    from: &Shape,
+    from: &mut Shape,
     resolved: Resolved,
     probe: bool,
     tool: Option<ToolSolid>,
-) -> Result<Built, (String, Option<f64>)> {
+    edge_steps: &Steps,
+) -> Result<Built, BuildFail> {
     // K1: loops build on their own path. An empty `loops` stays on the arms below, unchanged.
     if k1_has_loops(&resolved.op) {
         return build_k1_loops(from, resolved);
     }
     let Resolved { op, picks } = resolved;
+    // --- A1 group: built here, so the match below stays the single-op arms. ---
+    if matches!(op, Op::Group { .. }) {
+        let Op::Group { label, source, steps } = op else {
+            unreachable!("matched a group");
+        };
+        return build_group(from, label, source, steps, probe, edge_steps);
+    }
     let mut other = None;
     let kept = match &op {
         Op::Join {
@@ -2744,9 +2961,9 @@ fn build(
             ..
         } => {
             let Some(ToolSolid(solid)) = tool else {
-                return Err(("The tool object's solid is missing".into(), None));
+                return Err(BuildFail::plain("The tool object's solid is missing"));
             };
-            let place = relative.rigid().map_err(|message| (message, None))?;
+            let place = relative.rigid().map_err(BuildFail::plain)?;
             // SAFETY: `solid` is a tool tree's held solid, alive for this call (`ToolSolid`).
             Shape::made(|error| unsafe {
                 lime_tree_join(
@@ -2833,8 +3050,13 @@ fn build(
                     op,
                     kept,
                     other: None,
+                    skipped: 0,
                 }),
-                Err(message) => Err((message, probe.then_some(max_mm))),
+                Err(message) => Err(BuildFail {
+                    message,
+                    max_mm: probe.then_some(max_mm),
+                    failed_step: None,
+                }),
             };
         }
         Op::Scale { factor } => {
@@ -2954,6 +3176,8 @@ fn build(
                 error,
             )
         }),
+        // Returned above, before this match.
+        Op::Group { .. } => unreachable!("a group is built before this match"),
         // K4.
         Op::FaceExtrude {
             distance,
@@ -2985,8 +3209,13 @@ fn build(
         }
     };
     match kept {
-        Ok(kept) => Ok(Built { op, kept, other }),
-        Err(message) => Err((message, None)),
+        Ok(kept) => Ok(Built {
+            op,
+            kept,
+            other,
+            skipped: 0,
+        }),
+        Err(message) => Err(BuildFail::plain(message)),
     }
 }
 
@@ -3322,7 +3551,7 @@ fn encode_loops(loops: &[ProfileLoop], out: &mut Vec<f64>) {
 }
 
 /// K1 profile v2. Separate from the point-profile arms so those stay as they are.
-fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, (String, Option<f64>)> {
+fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, BuildFail> {
     let Resolved { op, .. } = resolved;
     let shape_note = "smooth and corners are for a point profile. A loop uses arc and spline segments.";
     let kept = match &op {
@@ -3338,10 +3567,10 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, (String, Op
             loops,
         } => {
             if !profile.is_empty() {
-                return Err(("Give a profile or loops, not both.".into(), None));
+                return Err(BuildFail::plain("Give a profile or loops, not both."));
             }
             if *smooth || !corners.is_empty() {
-                return Err((shape_note.into(), None));
+                return Err(BuildFail::plain(shape_note));
             }
             let p = [
                 origin[0],
@@ -3379,10 +3608,10 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, (String, Op
             loops,
         } => {
             if !profile.is_empty() {
-                return Err(("Give a profile or loops, not both.".into(), None));
+                return Err(BuildFail::plain("Give a profile or loops, not both."));
             }
             if *smooth || !corners.is_empty() {
-                return Err((shape_note.into(), None));
+                return Err(BuildFail::plain(shape_note));
             }
             let [au, av] = axis_origin.unwrap_or([0.0, 0.0]);
             let [du, dv] = axis_dir.unwrap_or([0.0, 1.0]);
@@ -3428,13 +3657,13 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, (String, Op
                 let kinds = usize::from(has_radius) + usize::from(has_profile) + usize::from(has_loops);
                 let prefix = format!("Section {index}: ");
                 if kinds > 1 {
-                    return Err((format!("{prefix}A section takes a radius, a profile, or loops, not more than one."), None));
+                    return Err(BuildFail::plain(format!("{prefix}A section takes a radius, a profile, or loops, not more than one.")));
                 }
                 if kinds == 0 {
-                    return Err((format!("{prefix}A section needs a radius, a profile, or loops."), None));
+                    return Err(BuildFail::plain(format!("{prefix}A section needs a radius, a profile, or loops.")));
                 }
                 if has_loops && (section.smooth || !section.corners.is_empty()) {
-                    return Err((format!("{prefix}{shape_note}"), None));
+                    return Err(BuildFail::plain(format!("{prefix}{shape_note}")));
                 }
                 head.extend_from_slice(&section.origin);
                 head.extend_from_slice(&section.turn);
@@ -3468,11 +3697,16 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, (String, Op
                 )
             })
         }
-        _ => return Err(("A profile needs a loop.".into(), None)),
+        _ => return Err(BuildFail::plain("A profile needs a loop.")),
     };
     match kept {
-        Ok(kept) => Ok(Built { op, kept, other: None }),
-        Err(message) => Err((message, None)),
+        Ok(kept) => Ok(Built {
+            op,
+            kept,
+            other: None,
+            skipped: 0,
+        }),
+        Err(message) => Err(BuildFail::plain(message)),
     }
 }
 
