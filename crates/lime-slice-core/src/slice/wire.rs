@@ -91,7 +91,10 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("speed", Scope::Object),
 ];
 
-const MAX_OBJECTS: usize = 256;
+/// A guard against a malformed request, not a working limit: a plate built from many parts (a colosseum's 96 piers
+/// and 96 arches, each its own object) is sliced object by object, and the request's size is held by the bridge's
+/// body cap. The preview's scan takes as many.
+const MAX_OBJECTS: usize = 4096;
 
 /// The request each object is sliced with: the plate's request with that
 /// object's settings written over it, and its own mesh, pose, and edits.
