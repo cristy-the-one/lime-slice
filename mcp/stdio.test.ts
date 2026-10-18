@@ -13,6 +13,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { engineCandidates } from "./engine.ts";
+import { appVersion } from "./version.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 // LIME_MCP_SERVER runs the same checks against another server file, such as the installer's bundle.
@@ -222,7 +223,7 @@ check("initialize carries instructions", (client.getInstructions() ?? "").includ
 const info = await client.callTool({ name: "session_info", arguments: {} });
 const infoText = toolText(info.content);
 const infoBody = JSON.parse(infoText) as { ok?: boolean; engine?: string };
-check("tools/call session_info answers", infoBody.ok === true && infoBody.engine === "2.8.2", infoText);
+check("tools/call session_info answers", infoBody.ok === true && infoBody.engine === appVersion(), infoText);
 const prompt = await client.getPrompt({ name: "hole-on-face", arguments: { object: "obj_1" } });
 const promptText = prompt.messages.map((message) => message.content.type === "text" ? message.content.text : "").join("\n");
 const steps = ["faces_find", "workplane_set", "model_probe", "model_apply"];

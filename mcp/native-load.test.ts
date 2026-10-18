@@ -15,6 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { engineCandidates, loadNativeEngine } from "./engine.ts";
+import { appVersion } from "./version.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const server = fileURLToPath(new URL("./server.ts", import.meta.url));
@@ -50,7 +51,7 @@ if (!built) {
 } else {
   const engine = loadNativeEngine(root);
   const version = await engine.version();
-  check("the loaded addon reports engine 2.8.2", version === "2.8.2", String(version));
+  check("the loaded addon reports the app version", version === appVersion(), String(version));
 
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -69,7 +70,7 @@ if (!built) {
   const info = await client.callTool({ name: "session_info", arguments: {} });
   const text = toolText(info.content);
   const body = JSON.parse(text) as { ok?: boolean; engine?: string };
-  check("session_info on the real addon returns engine 2.8.2", body.ok === true && body.engine === "2.8.2", text);
+  check("session_info on the real addon returns the app version", body.ok === true && body.engine === appVersion(), text);
   await client.close();
 
   // A native call cannot be interrupted inside a thread. The engine's preview
