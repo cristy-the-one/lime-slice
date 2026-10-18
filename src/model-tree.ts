@@ -80,8 +80,22 @@ export type ModelOp =
   | RevolveOp
   | LoftOp
   | ShellOp
+  | GroupOp
   | FaceExtrudeOp
   | MoveFacesOp;
+
+/**
+ * One history row for a composite edit. Each step is built on the shape the one before left.
+ * `source` is the composite as typed, kept so an edit can reopen it, and never built.
+ */
+export interface GroupOp {
+  kind: "group";
+  /** The history row's name, e.g. "Pocket 10 × 10, 2 bars". */
+  label: string;
+  /** The composite as typed (`{kind: "pocket", ...}`). Absent on a group that was not typed as one. */
+  source?: unknown;
+  steps: ModelOp[];
+}
 
 /**
  * A closed outline of `[u, v]` points on a plane, as a workplane is: `origin`, and `turn` about X, then Y, then Z, whose
@@ -376,23 +390,25 @@ export function childrenWithOp(tree: ModelTree, parent: NodeId, op: ModelOp): No
 }
 
 function canonical(op: ModelOp): string {
-  // A stored reference matches a fresh index pick; an earlier step's edges match as they are.
-  const index = (pick: EdgePick | FaceRef) => (typeof pick === "number" ? pick : "index" in pick ? pick.index : pick);
-  const plain =
-    op.kind === "fillet" || op.kind === "chamfer"
-      ? { ...op, edges: op.edges.map(index) }
-      : op.kind === "shell" && op.openFaces
-        ? { ...op, openFaces: op.openFaces.map(index) }
-        : op.kind === "extrude" && op.upTo !== undefined
-          ? { ...op, upTo: index(op.upTo) }
-          : op.kind === "faceExtrude"
-            ? { ...op, face: index(op.face), ...(op.upTo !== undefined ? { upTo: index(op.upTo) } : {}) }
-            : op.kind === "moveFaces"
-              ? { ...op, faces: op.faces.map((row) => ({ ...row, face: index(row.face) })) }
-              : op;
-  return JSON.stringify(plain, (_, value: unknown) =>
+  return JSON.stringify(canonicalValue(op), (_, value: unknown) =>
     value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value,
   );
+}
+
+/** The op as `childWithOp` compares it. A group's label and `source` build nothing, as the kernel's `same_request`. */
+function canonicalValue(op: ModelOp): unknown {
+  // A stored reference matches a fresh index pick; an earlier step's edges match as they are.
+  const index = (pick: EdgePick | FaceRef) => (typeof pick === "number" ? pick : "index" in pick ? pick.index : pick);
+  if (op.kind === "fillet" || op.kind === "chamfer") return { ...op, edges: op.edges.map(index) };
+  if (op.kind === "shell" && op.openFaces) return { ...op, openFaces: op.openFaces.map(index) };
+  if (op.kind === "extrude" && op.upTo !== undefined) return { ...op, upTo: index(op.upTo) };
+  if (op.kind === "faceExtrude") return { ...op, face: index(op.face), ...(op.upTo !== undefined ? { upTo: index(op.upTo) } : {}) };
+  if (op.kind === "moveFaces") return { ...op, faces: op.faces.map((row) => ({ ...row, face: index(row.face) })) };
+  if (op.kind === "group") {
+    const { source: _source, label: _label, steps, ...rest } = op;
+    return { ...rest, steps: steps.map(canonicalValue) };
+  }
+  return op;
 }
 
 /**
@@ -400,6 +416,11 @@ function canonical(op: ModelOp): string {
  * that took edges from a replayed step takes them from its new id. `op` itself when nothing is renamed.
  */
 export function renumberedSteps(op: ModelOp, ids: ReadonlyMap<NodeId, NodeId>): ModelOp {
+  // --- A1 group: a blend inside a group takes edges from the replayed step's new id. ---
+  if (op.kind === "group") {
+    const steps = op.steps.map((step) => renumberedSteps(step, ids));
+    return steps.every((step, i) => step === op.steps[i]) ? op : { ...op, steps };
+  }
   if (op.kind !== "fillet" && op.kind !== "chamfer") return op;
   if (!op.edges.some((edge) => isEdgeStep(edge) && ids.has(edge.fromNode))) return op;
   return { ...op, edges: op.edges.map((edge) => (isEdgeStep(edge) && ids.has(edge.fromNode) ? { ...edge, fromNode: ids.get(edge.fromNode)! } : edge)) };
@@ -612,6 +633,9 @@ export function opLabel(op: ModelOp): string {
       const open = op.openFaces?.length ?? 0;
       return `Shell ${n(op.thickness)}, ${open === 0 ? "closed" : open === 1 ? "1 face open" : `${open} faces open`}`;
     }
+    // --- A1 group: the row is the composite's name, not a list of its steps. ---
+    case "group":
+      return op.label;
     case "faceExtrude": {
       const verb = op.distance < 0 ? "Push" : "Pull";
       const draft = op.draftDeg ? `, draft ${n(op.draftDeg)}°` : "";
