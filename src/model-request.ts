@@ -83,9 +83,13 @@ export interface ExtrudeExtent {
  * solid's own frame like any tool's op. `symmetric` is sent only when on, as the engine stores it. `extent` is the
  * second side, the draft, and the face to stop at, each only when set.
  */
+function isProfileLoops(value: ExtrudeExtent | readonly ProfileLoop[]): value is readonly ProfileLoop[] {
+  return Array.isArray(value);
+}
+
 export function extrudeOp(op: BooleanKind, plane: ProfilePlane, profile: readonly Vec2[], depth: number, symmetric = false, shape: ProfileShape = {}, extentOrLoops: ExtrudeExtent | readonly ProfileLoop[] = {}): ExtrudeOp {
-  const loops = Array.isArray(extentOrLoops) ? extentOrLoops : undefined;
-  const extent = Array.isArray(extentOrLoops) ? {} : extentOrLoops;
+  const loops = isProfileLoops(extentOrLoops) ? extentOrLoops : undefined;
+  const extent = isProfileLoops(extentOrLoops) ? {} : extentOrLoops;
   const copied = loops && loops.length > 0 ? copyLoops(loops) : undefined;
   const upTo = extent.upTo === undefined ? undefined : typeof extent.upTo === "number" ? extent.upTo : { index: extent.upTo.index, mid: [...extent.upTo.mid] as Vec3, areaMm2: extent.upTo.areaMm2 };
   return {
