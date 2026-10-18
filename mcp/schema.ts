@@ -474,6 +474,47 @@ const sketchOps = [
   },
 ];
 (op.oneOf as unknown[]).splice(5, 0, ...sketchOps);
+// --- K4: faceExtrude and moveFaces, immediately after shell. ---
+const faceOps = [
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "face", "distance"],
+    properties: {
+      kind: { const: "faceExtrude" },
+      face: { description: "Face to extrude: an index, or {normal, nearPoint}." },
+      distance: { type: "number", minimum: -1000, maximum: 1000, description: "Along the outward normal, mm. Positive adds material on an outer face." },
+      draftDeg: { type: "number", minimum: -89, maximum: 89, description: "Draft angle, degrees. 0, the default, is a straight prism." },
+      upTo: { description: "Face the prism stops at: an index, or {normal, nearPoint}. The distance only picks the direction." },
+      label,
+    },
+  },
+  {
+    type: "object",
+    additionalProperties: false,
+    required: ["kind", "faces"],
+    properties: {
+      kind: { const: "moveFaces" },
+      faces: {
+        type: "array",
+        minItems: 1,
+        maxItems: 50,
+        description: "Faces to move, each along its own outward normal. Neighbours extend or trim.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["face", "distance"],
+          properties: {
+            face: { description: "Index, or {normal, nearPoint}." },
+            distance: { type: "number", minimum: -1000, maximum: 1000, description: "Along the outward normal, mm." },
+          },
+        },
+      },
+      label,
+    },
+  },
+];
+(op.oneOf as unknown[]).splice(5 + sketchOps.length, 0, ...faceOps);
 const regionField = {
   type: "object",
   additionalProperties: false,

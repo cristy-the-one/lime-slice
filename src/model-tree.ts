@@ -79,7 +79,9 @@ export type ModelOp =
   | ExtrudeOp
   | RevolveOp
   | LoftOp
-  | ShellOp;
+  | ShellOp
+  | FaceExtrudeOp
+  | MoveFacesOp;
 
 /**
  * A closed outline of `[u, v]` points on a plane, as a workplane is: `origin`, and `turn` about X, then Y, then Z, whose
@@ -140,6 +142,29 @@ export interface ShellOp {
   kind: "shell";
   thickness: number;
   openFaces?: (number | FaceRef)[];
+}
+
+/** A face pulled along its outward normal. Positive distance adds material; negative cuts it away. */
+export interface FaceExtrudeOp {
+  kind: "faceExtrude";
+  face: number | FaceRef;
+  distance: number;
+  /** Degrees. Absent when there is no draft. */
+  draftDeg?: number;
+  /** The face the prism stops at. Absent when the distance sets the length. */
+  upTo?: number | FaceRef;
+}
+
+/** One face of a `moveFaces`, moved `distance` along its outward normal. */
+export interface FaceMove {
+  face: number | FaceRef;
+  distance: number;
+}
+
+/** Faces offset along their outward normals. The neighbours extend or trim. */
+export interface MoveFacesOp {
+  kind: "moveFaces";
+  faces: FaceMove[];
 }
 
 /**
@@ -344,7 +369,11 @@ function canonical(op: ModelOp): string {
       ? { ...op, edges: op.edges.map(index) }
       : op.kind === "shell" && op.openFaces
         ? { ...op, openFaces: op.openFaces.map(index) }
-        : op;
+        : op.kind === "faceExtrude"
+          ? { ...op, face: index(op.face), ...(op.upTo !== undefined ? { upTo: index(op.upTo) } : {}) }
+          : op.kind === "moveFaces"
+            ? { ...op, faces: op.faces.map((row) => ({ ...row, face: index(row.face) })) }
+            : op;
   return JSON.stringify(plain, (_, value: unknown) =>
     value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value,
   );
@@ -537,6 +566,19 @@ export function opLabel(op: ModelOp): string {
     case "shell": {
       const open = op.openFaces?.length ?? 0;
       return `Shell ${n(op.thickness)}, ${open === 0 ? "closed" : open === 1 ? "1 face open" : `${open} faces open`}`;
+    }
+    case "faceExtrude": {
+      const verb = op.distance < 0 ? "Push" : "Pull";
+      const draft = op.draftDeg ? `, draft ${n(op.draftDeg)}°` : "";
+      const until = op.upTo !== undefined ? ", up to a face" : "";
+      return `${verb} face ${n(Math.abs(op.distance))} mm${draft}${until}`;
+    }
+    case "moveFaces": {
+      const count = op.faces.length;
+      const distance = op.faces[0]?.distance;
+      const shared = distance !== undefined && op.faces.every((row) => row.distance === distance);
+      if (count <= 1 && distance !== undefined) return `${distance < 0 ? "Push" : "Pull"} face ${n(Math.abs(distance))} mm`;
+      return shared ? `Move ${count} faces ${n(distance)} mm` : `Move ${count} faces`;
     }
   }
 }

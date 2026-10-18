@@ -298,6 +298,32 @@ function readOp(value: unknown): SavedOp | undefined {
       }
       return { kind: "shell", thickness: value.thickness, ...(openFaces.length > 0 ? { openFaces } : {}) };
     }
+    // --- K4: faceExtrude and moveFaces. Optional fields stay absent when unset. ---
+    case "faceExtrude": {
+      const face = readFacePick(value.face);
+      if (!face || !finite(value.distance) || value.distance === 0) return undefined;
+      if (value.draftDeg !== undefined && !finite(value.draftDeg)) return undefined;
+      const upTo = value.upTo === undefined ? undefined : readFacePick(value.upTo);
+      if (value.upTo !== undefined && upTo === undefined) return undefined;
+      return {
+        kind: "faceExtrude",
+        face,
+        distance: value.distance,
+        ...(finite(value.draftDeg) && value.draftDeg !== 0 ? { draftDeg: value.draftDeg } : {}),
+        ...(upTo !== undefined ? { upTo } : {}),
+      };
+    }
+    case "moveFaces": {
+      if (!Array.isArray(value.faces) || value.faces.length === 0) return undefined;
+      const faces: { face: number | FaceRef; distance: number }[] = [];
+      for (const raw of value.faces) {
+        if (!isRecord(raw) || !finite(raw.distance) || raw.distance === 0) return undefined;
+        const face = readFacePick(raw.face);
+        if (!face) return undefined;
+        faces.push({ face, distance: raw.distance });
+      }
+      return { kind: "moveFaces", faces };
+    }
     default:
       return undefined;
   }
@@ -348,6 +374,14 @@ function readProfileShape(value: Record<string, unknown>, points: number): { smo
 function pair(value: unknown): Vec2 | null {
   if (!Array.isArray(value) || value.length !== 2 || !value.every(finite)) return null;
   return [value[0], value[1]];
+}
+
+/** K4. A face index, or the reference a stored step keeps. Undefined when the value is damaged. */
+function readFacePick(value: unknown): number | FaceRef | undefined {
+  if (isId(value)) return value;
+  const mid = isRecord(value) ? vec(value.mid) : null;
+  if (!isRecord(value) || !isId(value.index) || !mid || !finite(value.areaMm2)) return undefined;
+  return { index: value.index, mid, areaMm2: value.areaMm2 };
 }
 
 function vec(value: unknown): Vec3 | null {
