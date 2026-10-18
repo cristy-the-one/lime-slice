@@ -96,6 +96,12 @@ std::unique_ptr<LimeShape> adopt(const TopoDS_Shape& result, double volume, cons
     std::unique_ptr<LimeShape> out = hold(solid, volume);
     if (from != nullptr) {
         inherit_about(out->held, from->held);
+        out->held.built_on = true;
+        for (int index = 1; index <= out->held.faces.Extent(); ++index) {
+            if (!from->held.faces.Contains(out->held.faces(index))) {
+                out->held.made.push_back(index);
+            }
+        }
         out->created.clear();
         for (int index = 1; index <= out->held.edges.Extent(); ++index) {
             if (!from->held.edges.Contains(out->held.edges(index))) {

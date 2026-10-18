@@ -9,6 +9,7 @@ import { boundsOf, type Bounds } from "./mesh-place";
 import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
+import { onMeasureChange } from "./measure-pref";
 import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { contextMaterial } from "./context-look";
 import type { ContextPart } from "./model-context";
@@ -66,6 +67,8 @@ const PRIMITIVE_CREASE_DEG = 25;
 const OBJECT_OUTLINE_MAX_TRIANGLES = 150_000;
 /** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
 const EMPHASIS_OPACITY = 0.45;
+/** Frames the view still draws after its last change, for anything that settles a frame late. */
+const STILL_FRAMES = 3;
 
 export interface ModelView {
   /** The open solid, in its own frame, drawn at `pose` in model space. The camera stays where it is. */
@@ -182,6 +185,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let pickCb: (pick: ModelPick | null, shift: boolean) => void = () => {};
   let down: { x: number; y: number } | null = null;
   let running = false;
+  /** Frames drawn with nothing changing; past `STILL_FRAMES` the loop stops until the next `kick`. */
+  let still = 0;
   let handleParts: HandlePart[] = [];
   const dockAt = new THREE.Vector3();
   /** The dock's seat for the canvas size it was worked out for: it changes only when the canvas does. */
@@ -764,7 +769,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (canvas.dataset.camera !== text) canvas.dataset.camera = text;
   }
 
+  /**
+   * Draw from the next frame on, until the view has been still for a few frames. Every change to what the view shows
+   * kicks it, and so do the controls while the camera moves or glides, so a view nobody touches draws nothing: drawing
+   * the same frame over and over took the processor the modeler needed (a check on the back cover ran 0.4 s alone and
+   * 1.2 s beside the view in a browser drawing without a graphics card).
+   */
   function kick() {
+    still = 0;
     if (running) return;
     running = true;
     let lastPaint = performance.now();
@@ -782,7 +794,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         viewHelper.update(dt);
         if (!viewHelper.animating) controls.enabled = true;
       }
-      controls.update();
+      const moved = controls.update();
       publishCamera();
       sizeHandles();
       viewHelper.center.copy(controls.target);
@@ -790,10 +802,19 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       renderViewHelper(renderer, viewHelper);
       drawMeasure();
       paintFit();
+      still = moved || viewHelper.animating ? 0 : still + 1;
+      if (still > STILL_FRAMES) {
+        running = false;
+        return;
+      }
       requestAnimationFrame(frameLoop);
     };
     requestAnimationFrame(frameLoop);
   }
+  controls.addEventListener("change", kick);
+  controls.addEventListener("start", kick);
+  onMeasureChange(kick);
+  new ResizeObserver(() => kick()).observe(canvas);
 
   function resize() {
     const rect = canvas.getBoundingClientRect();

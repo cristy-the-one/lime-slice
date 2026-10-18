@@ -35,13 +35,15 @@ interface Calls {
   tree: TreeMock;
   opens: Body[];
   probes: number;
+  /** Each check's op, in the order the engine got them. */
+  asked: Body[];
   release: (() => void) | null;
   holdProbes: boolean;
 }
 
 /** The modeler, mocked. Each export writes different STEP bytes, so a test can tell which one landed. */
 async function modeler(page: Page, exportMs = 0): Promise<Calls> {
-  const calls: Calls = { tree: null as unknown as TreeMock, opens: [], probes: 0, release: null, holdProbes: false };
+  const calls: Calls = { tree: null as unknown as TreeMock, opens: [], probes: 0, asked: [], release: null, holdProbes: false };
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: SOLID.positions } }));
   calls.tree = await mockModelTree(page, {
@@ -56,8 +58,9 @@ async function modeler(page: Page, exportMs = 0): Promise<Calls> {
       return { kept: boxSolid([20, 20, z]), other: boxSolid([20, 20, 10 - z], z) };
     },
     exportMs,
-    async probe() {
+    async probe(request) {
       calls.probes += 1;
+      calls.asked.push(request.op as Body);
       if (calls.holdProbes) await new Promise<void>((resolve) => (calls.release = resolve));
       return { ok: true };
     },
@@ -113,6 +116,36 @@ test("Apply asks no second check, undo and redo ask the engine nothing, and a ty
   await expect(apply).toBeEnabled();
   await page.waitForTimeout(700);
   expect(calls.probes, "typing 12.5 asks once").toBe(2);
+});
+
+test("numbers settled while a check runs ask only for the newest once it answers, and a settled number asks at once", async ({ page }) => {
+  const calls = await modeler(page);
+  await openModel(page);
+  const apply = page.locator("#modelApply");
+  calls.holdProbes = true;
+  await page.locator("#modelToolBoolean").click();
+  await expect.poll(() => calls.release !== null).toBe(true);
+  for (const [field, value] of [["#modelDx", "11"], ["#modelDy", "12"], ["#modelDz", "13"]] as const) {
+    await page.locator(field).fill(value);
+    await page.locator(field).press("Tab");
+  }
+  await page.waitForTimeout(700);
+  expect(calls.probes, "nothing more is sent while the engine still runs a check").toBe(1);
+  calls.holdProbes = false;
+  calls.release?.();
+  await expect.poll(() => calls.probes).toBe(2);
+  expect((calls.asked[1] as { size: number[] }).size, "the one sent then is the newest").toEqual([11, 12, 13]);
+  await expect(apply).toBeEnabled();
+  await page.waitForTimeout(700);
+  expect(calls.probes, "the numbers in between are never asked").toBe(2);
+
+  // Tab settles a number: the check goes then, not after the pause kept for typing, which a held clock would hold back.
+  await page.clock.install({ time: 0 });
+  await page.clock.pauseAt(1000);
+  await page.locator("#modelDx").fill("14");
+  await page.locator("#modelDx").press("Tab");
+  await expect.poll(() => calls.probes).toBe(3);
+  expect((calls.asked[2] as { size: number[] }).size).toEqual([14, 12, 13]);
 });
 
 test("Apply writes no STEP; leaving Model writes the edited solid once, and save and reopen keep it", async ({ page }) => {

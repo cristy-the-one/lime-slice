@@ -40,8 +40,11 @@ pub fn set_tree_limits(shapes: usize, replies: usize) {
 
 /// The linked Open CASCADE `version`, and kernel work since the library loaded: `builds`
 /// (booleans, cuts, blends, splits), `volumes` (volume integrations), `tessellations` (replies
-/// built rather than reused), `meshes` (shapes meshed), and `descriptions` (shapes whose faces and
-/// edges were measured for a reply). For tests.
+/// built rather than reused), `meshes` (shapes meshed), `fullMeshes` (of those, meshed whole
+/// rather than only around the faces their step made), and `descriptions` (shapes whose faces
+/// and edges were measured for a reply). Then the microseconds spent in `booleanUs` (booleans),
+/// `volumeUs` (volume integrations), `meshUs` (meshing), `readoutUs` (reading a mesh out), and
+/// `describeUs` (measuring faces and edges). For tests and benches.
 pub fn stats() -> String {
     #[cfg(lime_occt)]
     {
@@ -50,6 +53,19 @@ pub fn stats() -> String {
     #[cfg(not(lime_occt))]
     {
         MISSING.into()
+    }
+}
+
+/// With `on`, mesh every face of a solid, as before a step meshed only around the faces it
+/// made, so a test can compare the two. Without the kernel this does nothing.
+pub fn set_whole_meshes(on: bool) {
+    #[cfg(lime_occt)]
+    {
+        native::set_whole_meshes(on);
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = on;
     }
 }
 
@@ -95,6 +111,11 @@ mod native {
     extern "C" {
         fn lime_model_occt_stats() -> *mut c_char;
         fn lime_model_occt_string_free(text: *mut c_char);
+        fn lime_model_occt_whole_meshes(on: std::os::raw::c_int);
+    }
+
+    pub fn set_whole_meshes(on: bool) {
+        unsafe { lime_model_occt_whole_meshes(std::os::raw::c_int::from(on)) };
     }
 
     pub fn stats() -> String {

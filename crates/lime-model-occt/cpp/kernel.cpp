@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -26,6 +27,7 @@
 #include <OSD_Parallel.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAlgoAPI_BooleanOperation.hxx>
 #include <BRepAlgoAPI_Check.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -61,6 +63,9 @@
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRepGProp_Domain.hxx>
+#include <BRepGProp_Face.hxx>
+#include <BRepGProp_Vinert.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
@@ -77,6 +82,7 @@
 #include <GeomAbs_Shape.hxx>
 #include <GProp_GProps.hxx>
 #include <Poly_Triangulation.hxx>
+#include <Poly_TriangulationParameters.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeFix_Solid.hxx>
 #include <Standard_Failure.hxx>
@@ -271,9 +277,32 @@ struct Stats {
     std::atomic<long> tessellations{0};
     std::atomic<long> meshes{0};
     std::atomic<long> descriptions{0};
+    /// Meshes of the whole shape; the rest meshed only around the faces a step made.
+    std::atomic<long> full_meshes{0};
+    /// Microseconds spent in each kind of work, for timing tests and benches.
+    std::atomic<long long> boolean_us{0};
+    std::atomic<long long> volume_us{0};
+    std::atomic<long long> mesh_us{0};
+    std::atomic<long long> readout_us{0};
+    std::atomic<long long> describe_us{0};
 };
 
 Stats g_stats;
+
+/// Adds the time from its making to its end to `total`.
+class Timed {
+public:
+    explicit Timed(std::atomic<long long>& total) : total_(total), start_(std::chrono::steady_clock::now()) {}
+    ~Timed() {
+        total_ += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_).count();
+    }
+    Timed(const Timed&) = delete;
+    Timed& operator=(const Timed&) = delete;
+
+private:
+    std::atomic<long long>& total_;
+    std::chrono::steady_clock::time_point start_;
+};
 
 char* alloc(const std::string& text) {
     char* out = static_cast<char*>(std::malloc(text.size() + 1));
@@ -355,7 +384,64 @@ TopoDS_Shape as_solid(const TopoDS_Shape& shape) {
 
 void integrate(const TopoDS_Shape& shape, GProp_GProps& props) {
     g_stats.volumes += 1;
+    const Timed timed(g_stats.volume_us);
     BRepGProp::VolumeProperties(shape, props);
+}
+
+/// `BRepGProp::VolumeProperties(shape, props).Mass()`, the same number to the last bit, with the faces integrated in
+/// parallel. Open CASCADE integrates each face about one point, the mean of the shape's vertices, and adds the faces'
+/// volumes in the order it explores them; this integrates each face alone, into its own slot, about the same point, and
+/// adds the slots in the same order. A face with no surface, which Open CASCADE measures from its mesh, sends the
+/// whole shape to Open CASCADE's own loop.
+double integrated_volume(const TopoDS_Shape& shape) {
+    g_stats.volumes += 1;
+    const Timed timed(g_stats.volume_us);
+    gp_XYZ middle(0, 0, 0);
+    int vertices = 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_VERTEX); explorer.More(); explorer.Next()) {
+        middle += BRep_Tool::Pnt(TopoDS::Vertex(explorer.Current())).XYZ();
+        vertices += 1;
+    }
+    std::vector<TopoDS_Face> faces;
+    bool plain = vertices > 0;
+    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More() && plain; explorer.Next()) {
+        const TopoDS_Face& face = TopoDS::Face(explorer.Current());
+        TopLoc_Location location;
+        plain = !BRep_Tool::Surface(face, location).IsNull();
+        faces.push_back(face);
+    }
+    if (!plain) {
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(shape, props);
+        return props.Mass();
+    }
+    middle /= vertices;
+    const gp_Pnt about(middle);
+    std::vector<double> parts(faces.size(), 0.0);
+    OSD_Parallel::For(0, static_cast<int>(faces.size()), [&faces, &parts, &about](int i) {
+        const TopoDS_Face& face = faces[static_cast<size_t>(i)];
+        const TopAbs_Orientation orientation = face.Orientation();
+        if (orientation != TopAbs_FORWARD && orientation != TopAbs_REVERSED) {
+            return;
+        }
+        BRepGProp_Face surface;
+        BRepGProp_Vinert inertia;
+        inertia.SetLocation(about);
+        surface.Load(face);
+        if (face.NbChildren() == 0) {
+            inertia.Perform(surface);
+        } else {
+            BRepGProp_Domain domain;
+            domain.Init(face);
+            inertia.Perform(surface, domain);
+        }
+        parts[static_cast<size_t>(i)] = inertia.Mass();
+    });
+    double total = 0.0;
+    for (const double part : parts) {
+        total = total + part;
+    }
+    return total;
 }
 
 double volume_of(const TopoDS_Shape& shape) {
@@ -366,18 +452,14 @@ double volume_of(const TopoDS_Shape& shape) {
         double total = 0;
         int count = 0;
         for (TopExp_Explorer explorer(shape, TopAbs_SOLID); explorer.More(); explorer.Next()) {
-            GProp_GProps props;
-            integrate(explorer.Current(), props);
-            total += props.Mass();
+            total += integrated_volume(explorer.Current());
             count += 1;
         }
         if (count > 0) {
             return total;
         }
     }
-    GProp_GProps props;
-    integrate(shape, props);
-    return props.Mass();
+    return integrated_volume(shape);
 }
 
 bool has_solid(const TopoDS_Shape& shape) {
@@ -432,6 +514,62 @@ void push_point(std::vector<float>& out, const gp_Pnt& point) {
 
 void append_face_normal(std::string& out, const TopoDS_Face& face);
 
+/// Mesh every face of a solid, never only around what a step made: for tests that compare the two.
+std::atomic<bool> g_whole_meshes{false};
+
+/// Whether the face carries a mesh made by a mesh asked at exactly `chord`, which meshing at `chord` keeps: Open CASCADE
+/// keeps a mesh made at under 1.1 times the face's own deflection, which is never under the chord
+/// (`BRepMesh_ModelPreProcessor`), and records the chord asked with the mesh (`BRepMesh_ModelPostProcessor`). A mesh made
+/// at another chord, even a finer one that would be kept too, answers no: its edges could be cut finer than a mesh of the
+/// whole solid at `chord` would take them from the faces beside it.
+bool mesh_kept(const TopoDS_Face& face, double chord) {
+    TopLoc_Location location;
+    const Handle(Poly_Triangulation)& mesh = BRep_Tool::Triangulation(face, location);
+    if (mesh.IsNull() || mesh->NbTriangles() == 0) {
+        return false;
+    }
+    const Handle(Poly_TriangulationParameters)& made = mesh->Parameters();
+    return !made.IsNull() && made->HasDeflection() && made->Deflection() == chord;
+}
+
+/// Mesh only the faces a step made and the faces beside them, when every other face keeps the mesh it shares with the
+/// solid the step was built on. Meshing the whole solid would keep those meshes too, and would mesh the made faces against
+/// the same edges of the faces beside them, so the result is the same; it only checks every face first. False when that
+/// does not hold, and nothing is meshed.
+bool mesh_around_made(Held& held, double chord) {
+    const int faces = held.faces.Extent();
+    if (!held.built_on || held.made.empty() || 2 * held.made.size() > static_cast<size_t>(faces)) {
+        return false;
+    }
+    std::vector<char> made(static_cast<size_t>(faces) + 1, 0);
+    for (const int index : held.made) {
+        made[static_cast<size_t>(index)] = 1;
+    }
+    for (int index = 1; index <= faces; ++index) {
+        if (!made[static_cast<size_t>(index)] && !mesh_kept(TopoDS::Face(held.faces(index)), chord)) {
+            return false;
+        }
+    }
+    TopTools_IndexedMapOfShape edges;
+    for (const int index : held.made) {
+        TopExp::MapShapes(held.faces(index), TopAbs_EDGE, edges);
+    }
+    TopoDS_Compound around;
+    BRep_Builder builder;
+    builder.MakeCompound(around);
+    for (int index = 1; index <= faces; ++index) {
+        bool beside = made[static_cast<size_t>(index)] != 0;
+        for (TopExp_Explorer explorer(held.faces(index), TopAbs_EDGE); !beside && explorer.More(); explorer.Next()) {
+            beside = edges.Contains(explorer.Current());
+        }
+        if (beside) {
+            builder.Add(around, held.faces(index));
+        }
+    }
+    const BRepMesh_IncrementalMesh mesher(around, chord, Standard_False, 0.5, Standard_True);
+    return true;
+}
+
 Mesh tessellate(Held& held, double chord) {
     g_stats.tessellations += 1;
     chord = chord_of(chord);
@@ -439,11 +577,16 @@ Mesh tessellate(Held& held, double chord) {
     // since is what meshing again would leave too.
     if (held.meshed != chord) {
         g_stats.meshes += 1;
-        // In parallel: faces mesh apart, after their shared edges, so the mesh is the same as one thread's.
-        BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_True);
-        mesher.Perform();
+        const Timed timed(g_stats.mesh_us);
+        if (g_whole_meshes.load() || !mesh_around_made(held, chord)) {
+            g_stats.full_meshes += 1;
+            // In parallel: faces mesh apart, after their shared edges, so the mesh is the same as one thread's.
+            // The constructor meshes; a second `Perform` only checked every face again.
+            const BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_True);
+        }
         held.meshed = chord;
     }
+    const Timed timed(g_stats.readout_us);
 
     struct Piece {
         Handle(Poly_Triangulation) tri;
@@ -507,6 +650,7 @@ Mesh tessellate(Held& held, double chord) {
 
 std::string describe(Held& held) {
     g_stats.descriptions += 1;
+    const Timed timed(g_stats.describe_us);
     const int faces = held.faces.Extent();
     const int edges = held.edges.Extent();
     held.face_about.resize(static_cast<size_t>(faces));
@@ -842,46 +986,41 @@ TopoDS_Shape make_solid(const PrimitiveSpec& given, std::string& error) {
     return builder.Shape();
 }
 
+/// One boolean, built once. The two-shape constructors of `BRepAlgoAPI_Fuse`, `_Cut` and `_Common` build at once, with the
+/// default options, so setting options on one and calling `Build` again ran every boolean twice, the first time
+/// destructively, which could change the input's tolerances. Nothing reads the algorithm's history, so it is not filled.
 TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const TopoDS_Shape& tool, std::string& error) {
-    g_stats.builds += 1;
+    BOPAlgo_Operation operation = BOPAlgo_UNKNOWN;
     if (op == "fuse") {
-        BRepAlgoAPI_Fuse algo(solid, tool);
-        algo.SetFuzzyValue(1.0e-7);
-        algo.SetNonDestructive(Standard_True);
-        algo.SetRunParallel(Standard_True);
-        algo.Build();
-        if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
-            error = "Open CASCADE did not complete the boolean";
-            return {};
-        }
-        return algo.Shape();
+        operation = BOPAlgo_FUSE;
+    } else if (op == "cut") {
+        operation = BOPAlgo_CUT;
+    } else if (op == "common") {
+        operation = BOPAlgo_COMMON;
+    } else {
+        error = "The boolean is fuse, cut, or common";
+        return {};
     }
-    if (op == "cut") {
-        BRepAlgoAPI_Cut algo(solid, tool);
-        algo.SetFuzzyValue(1.0e-7);
-        algo.SetNonDestructive(Standard_True);
-        algo.SetRunParallel(Standard_True);
-        algo.Build();
-        if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
-            error = "Open CASCADE did not complete the boolean";
-            return {};
-        }
-        return algo.Shape();
+    g_stats.builds += 1;
+    const Timed timed(g_stats.boolean_us);
+    TopTools_ListOfShape objects;
+    objects.Append(solid);
+    TopTools_ListOfShape tools;
+    tools.Append(tool);
+    BRepAlgoAPI_BooleanOperation algo;
+    algo.SetArguments(objects);
+    algo.SetTools(tools);
+    algo.SetOperation(operation);
+    algo.SetFuzzyValue(1.0e-7);
+    algo.SetNonDestructive(Standard_True);
+    algo.SetRunParallel(Standard_True);
+    algo.SetToFillHistory(Standard_False);
+    algo.Build();
+    if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
+        error = "Open CASCADE did not complete the boolean";
+        return {};
     }
-    if (op == "common") {
-        BRepAlgoAPI_Common algo(solid, tool);
-        algo.SetFuzzyValue(1.0e-7);
-        algo.SetNonDestructive(Standard_True);
-        algo.SetRunParallel(Standard_True);
-        algo.Build();
-        if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
-            error = "Open CASCADE did not complete the boolean";
-            return {};
-        }
-        return algo.Shape();
-    }
-    error = "The boolean is fuse, cut, or common";
-    return {};
+    return algo.Shape();
 }
 
 bool accepted_result(const TopoDS_Shape& shape, double& volume, std::string& error) {
@@ -1532,7 +1671,16 @@ bool build_split(
         }
         TopoDS_Shape acc = pieces.front();
         for (size_t index = 1; index < pieces.size(); ++index) {
-            BRepAlgoAPI_Fuse fuse(acc, pieces[index]);
+            // Built once: the two-shape constructor would build it a first time, destructively.
+            TopTools_ListOfShape objects;
+            objects.Append(acc);
+            TopTools_ListOfShape tools;
+            tools.Append(pieces[index]);
+            BRepAlgoAPI_Fuse fuse;
+            fuse.SetArguments(objects);
+            fuse.SetTools(tools);
+            fuse.SetNonDestructive(Standard_True);
+            fuse.SetToFillHistory(Standard_False);
             fuse.Build();
             if (!fuse.IsDone() || fuse.HasErrors() || fuse.Shape().IsNull()) {
                 join_error = "Open CASCADE did not join the split pieces";
@@ -2345,8 +2493,26 @@ extern "C" char* lime_model_occt_stats() {
     out += std::to_string(g_stats.meshes.load());
     out += ",\"descriptions\":";
     out += std::to_string(g_stats.descriptions.load());
+    out += ",\"fullMeshes\":";
+    out += std::to_string(g_stats.full_meshes.load());
+    const std::pair<const char*, const std::atomic<long long>*> timings[] = {
+        {"booleanUs", &g_stats.boolean_us},
+        {"volumeUs", &g_stats.volume_us},
+        {"meshUs", &g_stats.mesh_us},
+        {"readoutUs", &g_stats.readout_us},
+        {"describeUs", &g_stats.describe_us},
+    };
+    for (const auto& [name, total] : timings) {
+        out += ",\"";
+        out += name;
+        out += "\":";
+        out += std::to_string(total->load());
+    }
     out += '}';
     return alloc(out);
 }
 
 extern "C" void lime_model_occt_string_free(char* text) { std::free(text); }
+
+/// Non-zero meshes every face of a solid, as before a step meshed only around the faces it made. For tests.
+extern "C" void lime_model_occt_whole_meshes(int on) { g_whole_meshes = on != 0; }
