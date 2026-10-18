@@ -54,7 +54,16 @@ export function modelApplyReady(
   if (tool === "scale") return scale > 0 && Math.abs(scale - 1) > 1e-9;
   if (tool === "split") return splitOk;
   if (tool === "create") return true;
+  // --- A2 shell: a closed void needs no face. Apply waits on the dry-run, as a hole does. ---
+  if (tool === "shell") return probeOk;
   return (tool === "boolean" || tool === "hole") && probeOk;
+}
+
+/** The Shell panel's count of faces that will be removed. A closed shell ignores the picks. */
+export function shellFacesLabel(count: number, closed: boolean): string {
+  if (closed) return "Closed inside.";
+  if (count <= 0) return "No face open.";
+  return count === 1 ? "1 face open" : `${count} faces open`;
 }
 
 export function mixHex(from: number, to: number, t: number): number {

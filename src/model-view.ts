@@ -115,6 +115,8 @@ export interface ModelView {
   onSectionDrag(cb: (mm: number, phase: "start" | "move" | "end") => void): void;
   /** The history row under the pointer, or null. Its faces tint. */
   setStepHighlight(id: number | null): void;
+  // --- A2 shell: picked faces that the shell will remove, drawn in the danger colour with a dashed outline. ---
+  setRemovedFaces(on: boolean): void;
 }
 
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
@@ -208,6 +210,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
   });
+  /** Picked faces a shell will open: danger tint and a dashed outline, over the dry-run. */
+  let removedFaces = false;
   let pickCb: (pick: ModelPick | null, shift: boolean) => void = () => {};
   let down: { x: number; y: number } | null = null;
   let running = false;
@@ -369,7 +373,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** --- A10. One colour for a face of `shape`: its step, the accent when it is selected, or the idle grey. */
   function paintColours(shape: ModelSolid, into: Float32Array, selected: Set<number>, pickHover: number | null): Set<string> {
     const used = new Set<string>();
-    const tint = datumPick ? hexToThree(colors.teal) : accent;
+    const tint = removedFaces ? hexToThree(colors.danger) : datumPick ? hexToThree(colors.teal) : accent;
     shape.triangles.forEach((face, triangle) => {
       const owner = shape.stepFaces && face < shape.stepFaces.length ? (shape.stepFaces[face] ?? null) : null;
       const painted = facePaint({
@@ -450,13 +454,43 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const selectedFaces = picks.filter((pick) => pick.kind === "face").map((pick) => pick.index);
     const outline: number[] = [];
     for (const face of selectedFaces) outline.push(...(boundaries.get(face) ?? []));
-    faceOutline = replaceLine(faceOutline, outline, 2.5, 1, datumPick ? hexToThree(colors.teal) : accent);
+    const removed = removedFaces && selectedFaces.length > 0;
+    const outlineColor = removed ? hexToThree(colors.danger) : datumPick ? hexToThree(colors.teal) : accent;
+    faceOutline = replaceLine(faceOutline, removed ? dashSegments(outline) : outline, 2.5, 1, outlineColor);
 
     const wanted = new Set(picks.filter((pick) => pick.kind === "edge").map((pick) => pick.index));
     selectedEdges = replaceLine(selectedEdges, edgePositions(wanted), 4, 1);
 
     const hoverEdge = mode === "edge" && hover?.kind === "edge" && !wanted.has(hover.index) ? hover.index : null;
     hoverEdges = replaceLine(hoverEdges, hoverEdge == null ? [] : edgePositions(new Set([hoverEdge])), 2, 0.8);
+  }
+
+  /** A solid outline broken into short dashes, in millimetres along each segment, so it reads as removed. */
+  function dashSegments(positions: number[]): number[] {
+    const dash = 1.8;
+    const gap = 1.1;
+    const period = dash + gap;
+    const out: number[] = [];
+    for (let i = 0; i + 5 < positions.length; i += 6) {
+      const ax = positions[i]!;
+      const ay = positions[i + 1]!;
+      const az = positions[i + 2]!;
+      const bx = positions[i + 3]!;
+      const by = positions[i + 4]!;
+      const bz = positions[i + 5]!;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const dz = bz - az;
+      const length = Math.hypot(dx, dy, dz);
+      if (!(length > 1e-6)) continue;
+      for (let t = 0; t < length - 1e-6; t += period) {
+        const end = Math.min(t + dash, length);
+        const u0 = t / length;
+        const u1 = end / length;
+        out.push(ax + dx * u0, ay + dy * u0, az + dz * u0, ax + dx * u1, ay + dy * u1, az + dz * u1);
+      }
+    }
+    return out;
   }
 
   function edgePositions(ids: Set<number>): number[] {
@@ -1316,6 +1350,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       else canvas.dataset.highlight = String(id);
       paintFaces();
       repaintPreview();
+      kick();
+    },
+    // --- A2 shell ---
+    setRemovedFaces(on) {
+      if (removedFaces === on && canvas.dataset.removedFaces === (on ? "1" : "0")) return;
+      removedFaces = on;
+      canvas.dataset.removedFaces = on ? "1" : "0";
+      paintFaces();
+      paintLines();
       kick();
     },
   };
