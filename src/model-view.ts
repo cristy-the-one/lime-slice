@@ -15,7 +15,9 @@ import { contextMaterial } from "./context-look";
 import type { ContextPart } from "./model-context";
 import { turnCentre, type PrimitiveSpec } from "./model-primitive";
 import { boxUnder, posedBounds, type Affine } from "./model-space";
-import { faceBoundarySegments, faceColor } from "./model-select";
+import { facePaint, idleLook, sectionPlane, type LookState } from "./model-look";
+import { faceBoundarySegments } from "./model-select";
+import { sectionCap } from "./section-cap";
 import { framePose, localPoint, sameWorkplane, type Workplane } from "./workplane";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
@@ -32,6 +34,8 @@ export interface ModelSolid {
   /** The face of each triangle. */
   triangles: Uint32Array;
   edges: { id: number; lengthMm: number; points: Float32Array }[];
+  /** The history node that made each face. Null is a preview face with no step yet. */
+  stepFaces?: (number | null)[];
 }
 
 /**
@@ -105,6 +109,12 @@ export interface ModelView {
   setWorkplane(plane: Workplane | null): void;
   /** While on, a picked face is teal, so it is not the ordinary accent selection. */
   setDatumPick(on: boolean): void;
+  /** --- A10. Section plane and colour by step. View only: the solid and the probe are unchanged. */
+  setLook(state: LookState): void;
+  /** A drag of the section arrow, in millimetres along the cut normal from where the drag began. */
+  onSectionDrag(cb: (mm: number, phase: "start" | "move" | "end") => void): void;
+  /** The history row under the pointer, or null. Its faces tint. */
+  setStepHighlight(id: number | null): void;
 }
 
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
@@ -182,6 +192,22 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let datumDrawn = "";
   const datumLines: LineMaterial[] = [];
   let datumPick = false;
+  // --- A10. Section and colour by step. The arrow is scene-space, so a tool's handles stay in front of it.
+  let look: LookState = idleLook();
+  let sectionDragCb: (mm: number, phase: "start" | "move" | "end") => void = () => {};
+  let highlightStep: number | null = null;
+  let sectionPlaneWorld: { origin: THREE.Vector3; normal: THREE.Vector3 } | null = null;
+  let sectionArrow: THREE.ArrowHelper | null = null;
+  let sectionCapMesh: THREE.Mesh | null = null;
+  let sectionGesture: { pointerId: number; base: number; origin: THREE.Vector3; normal: THREE.Vector3 } | null = null;
+  const INSIDE = 0xcd463c;
+  const sectionCapMaterial = new THREE.MeshBasicMaterial({
+    color: INSIDE,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
   let pickCb: (pick: ModelPick | null, shift: boolean) => void = () => {};
   let down: { x: number; y: number } | null = null;
   let running = false;
@@ -253,6 +279,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (mesh) mesh.visible = true;
     if (edgeLines) edgeLines.visible = true;
     delete canvas.dataset.preview;
+    paintFaces();
+    rebuildCap();
   }
 
   /** The shape's mesh and edges, coloured as a solid is, drawn where the solid is; the solid hides while it is up. */
@@ -262,10 +290,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(shape.positions, 3));
     const color = new Float32Array(shape.positions.length);
-    shape.triangles.forEach((face, triangle) => {
-      const hex = faceColor(face, false, false, accent);
-      for (let vertex = 0; vertex < 3; vertex += 1) writeColor(hex, color, triangle * 9 + vertex * 3);
-    });
+    const used = paintColours(shape, color, new Set(), null);
+    publishFaceColours(used);
     geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
     geometry.computeVertexNormals();
     const shaded = new THREE.Mesh(geometry, solidMaterial);
@@ -287,10 +313,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (edgeLines) edgeLines.visible = false;
     preview = { shape, mesh: shaded, lines };
     canvas.dataset.preview = String(shape.volumeMm3.toFixed(2));
+    rebuildCap();
   }
 
   function clearBody() {
     clearPreview();
+    clearSectionCap();
     for (const object of [mesh, edgeLines]) {
       if (!object) continue;
       body.remove(object);
@@ -338,18 +366,51 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     into[offset + 2] = (hex & 255) / 255;
   }
 
+  /** --- A10. One colour for a face of `shape`: its step, the accent when it is selected, or the idle grey. */
+  function paintColours(shape: ModelSolid, into: Float32Array, selected: Set<number>, pickHover: number | null): Set<string> {
+    const used = new Set<string>();
+    const tint = datumPick ? hexToThree(colors.teal) : accent;
+    shape.triangles.forEach((face, triangle) => {
+      const owner = shape.stepFaces && face < shape.stepFaces.length ? (shape.stepFaces[face] ?? null) : null;
+      const painted = facePaint({
+        index: face,
+        owner,
+        selected: selected.has(face),
+        pickHover: pickHover === face,
+        stepHover: highlightStep != null && owner === highlightStep,
+        colourByStep: look.colourByStep,
+        accent: tint,
+      });
+      if (painted.stepHex) used.add(painted.stepHex);
+      const offset = triangle * 9;
+      for (let vertex = 0; vertex < 3; vertex += 1) writeColor(painted.hex, into, offset + vertex * 3);
+    });
+    return used;
+  }
+
+  function publishFaceColours(used: Set<string>) {
+    const text = [...used].sort().join(" ");
+    if (text) canvas.dataset.faceColors = text;
+    else delete canvas.dataset.faceColors;
+  }
+
   function paintFaces() {
     if (!mesh || !solid) return;
     const selected = new Set(picks.filter((pick) => pick.kind === "face").map((pick) => pick.index));
     const hoverFace = mode === "face" && hover?.kind === "face" ? hover.index : null;
     const attribute = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const array = attribute.array as Float32Array;
-    solid.triangles.forEach((face, triangle) => {
-      const hex = faceColor(face, selected.has(face), hoverFace === face, datumPick ? hexToThree(colors.teal) : accent);
-      const offset = triangle * 9;
-      for (let vertex = 0; vertex < 3; vertex += 1) writeColor(hex, array, offset + vertex * 3);
-    });
+    const used = paintColours(solid, array, selected, hoverFace);
     attribute.needsUpdate = true;
+    if (!preview) publishFaceColours(used);
+  }
+
+  function repaintPreview() {
+    if (!preview) return;
+    const attribute = preview.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const used = paintColours(preview.shape, attribute.array as Float32Array, new Set(), null);
+    attribute.needsUpdate = true;
+    publishFaceColours(used);
   }
 
   function fatLine(positions: number[], width: number, opacity: number, color = accent): LineSegments2 | null {
@@ -565,6 +626,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     clipToSplit();
     buildGhost();
     publishGhostBox();
+    rebuildCap();
   }
 
   /** The material that draws the side a split cuts off, tinted, shared by every split shown. */
@@ -577,12 +639,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function clipToSplit() {
     const plane = ghost?.kind === "plane" && mesh ? ghost : null;
     const keep: THREE.Plane[] = [];
+    const off: THREE.Plane[] = [];
     if (plane) {
       const normal = new THREE.Vector3(...plane.normal).normalize();
       const origin = new THREE.Vector3(...plane.origin);
       keep.push(new THREE.Plane(normal.clone().negate(), normal.dot(origin)));
+      off.push(new THREE.Plane(normal, -normal.dot(origin)));
       offcutMaterial.color.setHex(accent);
-      offcutMaterial.clippingPlanes = [new THREE.Plane(normal, -normal.dot(origin))];
       const offcut = new THREE.Mesh(mesh!.geometry, offcutMaterial);
       offcut.matrixAutoUpdate = false;
       offcut.matrix.copy(posed.matrix);
@@ -591,9 +654,69 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       offcut.userData.borrowed = true;
       ghosts.add(offcut);
     }
+    // --- A10. The section hides the side its normal points toward. three.js drops the negative side, so the clip normal is the opposite.
+    const section = sectionNow();
+    if (section) {
+      const clip = new THREE.Plane(section.normal.clone().negate(), section.normal.dot(section.origin));
+      keep.push(clip);
+      off.push(clip);
+    }
+    offcutMaterial.clippingPlanes = off;
+    // The cap lies on the section plane, so that plane must not clip it. A split still does.
+    sectionCapMaterial.clippingPlanes = keep.slice(0, plane ? 1 : 0);
     // A new count of planes compiles the shader again; new planes of the same count are only new numbers.
     if ((solidMaterial.clippingPlanes?.length ?? 0) !== keep.length) solidMaterial.needsUpdate = true;
+    if ((edgeMaterial.clippingPlanes?.length ?? 0) !== keep.length) edgeMaterial.needsUpdate = true;
     solidMaterial.clippingPlanes = keep;
+    edgeMaterial.clippingPlanes = keep;
+  }
+
+  /** The section plane in model space, which is world space here. */
+  function sectionNow(): { origin: THREE.Vector3; normal: THREE.Vector3 } | null {
+    if (!solidBox) return null;
+    const centre: [number, number, number] = [
+      (solidBox.min[0] + solidBox.max[0]) / 2,
+      (solidBox.min[1] + solidBox.max[1]) / 2,
+      (solidBox.min[2] + solidBox.max[2]) / 2,
+    ];
+    const plane = sectionPlane(look, centre);
+    if (!plane) return null;
+    return { origin: new THREE.Vector3(...plane.origin), normal: new THREE.Vector3(...plane.normal).normalize() };
+  }
+
+  function clearSectionCap() {
+    if (!sectionCapMesh) return;
+    body.remove(sectionCapMesh);
+    sectionCapMesh.geometry.dispose();
+    sectionCapMesh = null;
+  }
+
+  /** The cut face, in the solid's own frame, drawn in the inside colour. The section plane does not clip it. */
+  function rebuildCap() {
+    clearSectionCap();
+    sectionPlaneWorld = sectionNow();
+    if (!sectionPlaneWorld) {
+      delete canvas.dataset.section;
+      if (sectionArrow) sectionArrow.visible = false;
+      return;
+    }
+    const { origin, normal } = sectionPlaneWorld;
+    canvas.dataset.section = [origin.x, origin.y, origin.z, normal.x, normal.y, normal.z].map((value) => value.toFixed(2)).join(" ");
+    const shape = preview?.shape ?? solid;
+    const host = preview?.mesh ?? mesh;
+    if (!shape || !host || shape.positions.length < 9) return;
+    host.updateWorldMatrix(true, false);
+    const into = host.matrixWorld.clone().invert();
+    const localOrigin = origin.clone().applyMatrix4(into);
+    const localNormal = normal.clone().transformDirection(into).normalize();
+    const cap = sectionCap(shape.positions, shape.triangles, [localOrigin.x, localOrigin.y, localOrigin.z], [localNormal.x, localNormal.y, localNormal.z]);
+    if (cap.length < 9) return;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(cap, 3));
+    geometry.computeVertexNormals();
+    sectionCapMesh = new THREE.Mesh(geometry, sectionCapMaterial);
+    sectionCapMesh.raycast = () => undefined;
+    body.add(sectionCapMesh);
   }
 
   /** The ghost's world box, for tests: centre then size, in millimetres. */
@@ -873,6 +996,34 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return mode === "face" ? pickFace(ev) : pickEdge(ev);
   }
 
+  let sectionArrowLength = 1;
+
+  /** Screen distance to the section arrow. World points: the arrow lives in model space, not the solid's frame. */
+  function sectionHit(x: number, y: number): boolean {
+    if (!sectionPlaneWorld || !sectionArrow?.visible) return false;
+    const rect = canvas.getBoundingClientRect();
+    const tip = sectionPlaneWorld.origin.clone().addScaledVector(sectionPlaneWorld.normal, sectionArrowLength);
+    const projectWorld = (point: THREE.Vector3) => {
+      const p = point.clone().project(camera);
+      return { x: rect.left + (p.x * 0.5 + 0.5) * rect.width, y: rect.top + (-p.y * 0.5 + 0.5) * rect.height, z: p.z };
+    };
+    const a = projectWorld(sectionPlaneWorld.origin);
+    const b = projectWorld(tip);
+    if (a.z < -1 || a.z > 1 || b.z < -1 || b.z > 1) return false;
+    return segmentDistance(x, y, a.x, a.y, b.x, b.y) <= 14;
+  }
+
+  /** Millimetres along `normal` from `origin` to the pointer's closest approach. The line stays put for a whole drag. */
+  function sectionTravel(origin: THREE.Vector3, normal: THREE.Vector3, x: number, y: number): number | null {
+    const ray = rayAt(x, y);
+    return lineParam(
+      [origin.x, origin.y, origin.z],
+      [normal.x, normal.y, normal.z],
+      [ray.origin.x, ray.origin.y, ray.origin.z],
+      [ray.direction.x, ray.direction.y, ray.direction.z],
+    );
+  }
+
   function sameHover(next: ModelPick | null) {
     if (!hover || !next) return hover === next;
     return hover.kind === next.kind && hover.index === next.index;
@@ -905,11 +1056,31 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       beginDrag(part, ev);
       return;
     }
+    // --- A10. The section arrow is behind the tool handles: a handle wins when both are under the pointer.
+    if (sectionHit(ev.clientX, ev.clientY) && sectionPlaneWorld) {
+      const origin = sectionPlaneWorld.origin.clone();
+      const normal = sectionPlaneWorld.normal.clone();
+      const base = sectionTravel(origin, normal, ev.clientX, ev.clientY);
+      if (base != null) {
+        ev.stopImmediatePropagation();
+        ev.preventDefault();
+        controls.enabled = false;
+        canvas.setPointerCapture(ev.pointerId);
+        sectionGesture = { pointerId: ev.pointerId, base, origin, normal };
+        sectionDragCb(0, "start");
+        return;
+      }
+    }
     down = { x: ev.clientX, y: ev.clientY };
   }, { capture: true });
   canvas.addEventListener("pointermove", (ev) => {
     if (drag) {
       if (ev.pointerId === drag.pointerId) moveDrag(ev);
+      return;
+    }
+    if (sectionGesture && ev.pointerId === sectionGesture.pointerId) {
+      const at = sectionTravel(sectionGesture.origin, sectionGesture.normal, ev.clientX, ev.clientY);
+      if (at != null) sectionDragCb(at - sectionGesture.base, "move");
       return;
     }
     if (down) return;
@@ -924,6 +1095,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setHover(pickAt(ev));
   });
   const finishDrag = (ev: PointerEvent) => {
+    if (sectionGesture && ev.pointerId === sectionGesture.pointerId) {
+      const at = sectionTravel(sectionGesture.origin, sectionGesture.normal, ev.clientX, ev.clientY);
+      sectionDragCb((at ?? sectionGesture.base) - sectionGesture.base, "end");
+      sectionGesture = null;
+      controls.enabled = true;
+      if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+      return;
+    }
     if (!drag || ev.pointerId !== drag.pointerId) return;
     const done = drag;
     drag = null;
@@ -982,6 +1161,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         ghost = null;
         applyScale();
         paintFit();
+        rebuildCap();
         kick();
         return;
       }
@@ -1116,6 +1296,26 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       canvas.dataset.datumPick = on ? "1" : "0";
       paintFaces();
       paintLines();
+      kick();
+    },
+    // --- A10.
+    setLook(state) {
+      look = state;
+      rebuildGhost();
+      paintFaces();
+      repaintPreview();
+      kick();
+    },
+    onSectionDrag(cb) {
+      sectionDragCb = cb;
+    },
+    setStepHighlight(id) {
+      if (highlightStep === id) return;
+      highlightStep = id;
+      if (id == null) delete canvas.dataset.highlight;
+      else canvas.dataset.highlight = String(id);
+      paintFaces();
+      repaintPreview();
       kick();
     },
   };
@@ -1316,6 +1516,26 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     }
     const text = grips.join(" ");
     if (canvas.dataset.handles !== text) canvas.dataset.handles = text;
+    // --- A10. The section arrow, sized like a handle, drawn in model space.
+    if (sectionPlaneWorld) {
+      if (!sectionArrow) {
+        sectionArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), 1, INSIDE);
+        sectionArrow.raycast = () => undefined;
+        scene.add(sectionArrow);
+      }
+      sectionArrowLength = gizmoRadiusForPixels(camera.position.distanceTo(sectionPlaneWorld.origin), camera.fov, height, HANDLE_PX, camera.zoom);
+      sectionArrow.position.copy(sectionPlaneWorld.origin);
+      sectionArrow.setDirection(sectionPlaneWorld.normal);
+      sectionArrow.setLength(sectionArrowLength, sectionArrowLength * 0.28, sectionArrowLength * 0.16);
+      sectionArrow.visible = true;
+      const head = sectionPlaneWorld.origin.clone().addScaledVector(sectionPlaneWorld.normal, sectionArrowLength * 0.85);
+      const at = head.clone().project(camera);
+      const handle = `${Math.round((at.x * 0.5 + 0.5) * width)} ${Math.round((-at.y * 0.5 + 0.5) * height)}`;
+      if (canvas.dataset.sectionHandle !== handle) canvas.dataset.sectionHandle = handle;
+    } else if (sectionArrow) {
+      sectionArrow.visible = false;
+      delete canvas.dataset.sectionHandle;
+    }
   }
 
   /** Where a pointer grabs a handle: an arrow's head, a ring's rim, or a knob or dot itself. */

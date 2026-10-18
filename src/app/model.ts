@@ -94,6 +94,7 @@ import {
   type PlacePhase,
 } from "../ui/model-chrome";
 import { mountModelHistory, syncModelHistory, syncModelPosition } from "../ui/model-history";
+import { mountModelLook, sectionFacePicked } from "../ui/model-look";
 import { dropRefusal, readRow, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
@@ -395,7 +396,18 @@ export function bindModelView() {
     },
     openPlace: openPlaceTool,
     resetPosition: resetPose,
+    // --- A10. Hovering or focusing a row tints the faces that step made.
+    highlight(id) {
+      fx.model?.setStepHighlight(id);
+    },
   });
+  // --- A10. Section view and colour by step, from the View menu in the model foot.
+  if (fx.model) {
+    mountModelLook({
+      setLook: (state) => fx.model?.setLook(state),
+      onSectionDrag: (cb) => fx.model?.onSectionDrag(cb),
+    });
+  }
 }
 
 /** While a step is edited: its panel still says the step as it is, so Update would change nothing and no check is needed. */
@@ -2867,6 +2879,12 @@ async function onPick(pick: ModelPick | null, shift: boolean) {
   if (!at || !tree || !solid || (lens && !editing)) return;
   picks = nextModelPicks(picks, pick, shift);
   fx.model?.highlight(picks);
+  // --- A10. While the section axis is a face, the pick is that plane too. A curved face is refused in the menu.
+  if (pick?.kind === "face") {
+    const own = flatFace(solid, pick.index);
+    const posed = own ? posedFace(own) : null;
+    sectionFacePicked(posed ? { origin: posed.point, normal: posed.normal } : "curved");
+  }
   syncModelChrome(picks);
   const seq = ++measureSeq;
   if (picks.length === 0) {

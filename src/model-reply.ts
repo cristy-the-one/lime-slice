@@ -35,6 +35,8 @@ export interface SolidArrays {
   faces: { areaMm2: number; normal?: Vec3 }[];
   edges: { lengthMm: number; points: ArrayLike<number> }[];
   solid?: boolean;
+  /** The node that made each face, or null for a face the step being previewed has not applied yet. */
+  stepFaces?: (number | null)[];
 }
 
 /**
@@ -68,6 +70,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
     edges.push({ id: edge, lengthMm, points: points.subarray(from * 3, to * 3) });
   }
   if (offsets[edgeLengths.length]! * 3 !== points.length) return DAMAGED;
+  const stepFaces = readStepFaces(body.stepFaces, faces.length);
   return {
     id: typeof body.id === "number" ? body.id : 0,
     volumeMm3: body.volumeMm3,
@@ -77,6 +80,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
     edges,
     fingerprint: readFingerprint(body.fingerprint),
     editable: body.solid !== false,
+    ...(stepFaces ? { stepFaces } : {}),
   };
 }
 
@@ -93,7 +97,7 @@ export type SolidWire = {
   edgeOffsets: string;
 };
 
-export function encodeSolid(solid: SolidArrays): SolidWire {
+export function encodeSolid(solid: SolidArrays): SolidWire & { stepFaces?: (number | null)[] } {
   const offsets = [0];
   const points: number[] = [];
   for (const edge of solid.edges) {
@@ -110,6 +114,7 @@ export function encodeSolid(solid: SolidArrays): SolidWire {
     triangles: wordsBase64(Uint32Array.from(solid.triangles)),
     edgePoints: wordsBase64(Float32Array.from(points)),
     edgeOffsets: wordsBase64(Uint32Array.from(offsets)),
+    ...(solid.stepFaces && solid.stepFaces.length === solid.faces.length ? { stepFaces: solid.stepFaces } : {}),
   };
 }
 
@@ -137,6 +142,21 @@ function readNormal(value: unknown): Vec3 | null {
   const normal = value.slice(0, 3).map((item) => (typeof item === "number" ? item : Number.NaN));
   if (normal.some((item) => !Number.isFinite(item))) return null;
   return [normal[0]!, normal[1]!, normal[2]!];
+}
+
+/**
+ * `stepFaces` when it names one node, or null, per face. A missing field, or one that does not match
+ * the faces, is ignored: an older engine, and a damaged list, still draw the solid.
+ */
+function readStepFaces(value: unknown, faces: number): (number | null)[] | null {
+  if (!Array.isArray(value) || value.length !== faces) return null;
+  const owners: (number | null)[] = [];
+  for (const item of value) {
+    if (item == null) owners.push(null);
+    else if (typeof item === "number" && Number.isFinite(item)) owners.push(item);
+    else return null;
+  }
+  return owners;
 }
 
 /** A fingerprint as the engine writes it, or null. */

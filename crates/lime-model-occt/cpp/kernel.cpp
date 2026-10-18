@@ -1006,8 +1006,14 @@ TopoDS_Shape make_solid(const PrimitiveSpec& given, std::string& error) {
 
 /// One boolean, built once. The two-shape constructors of `BRepAlgoAPI_Fuse`, `_Cut` and `_Common` build at once, with the
 /// default options, so setting options on one and calling `Build` again ran every boolean twice, the first time
-/// destructively, which could change the input's tolerances. Nothing reads the algorithm's history, so it is not filled.
-TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const TopoDS_Shape& tool, std::string& error) {
+/// destructively, which could change the input's tolerances. History stays unfilled unless `history` is set: a hole's
+/// tool fuse and a split's piece fuse never ask, so their shapes stay as they were.
+TopoDS_Shape boolean_op(
+    const std::string& op,
+    const TopoDS_Shape& solid,
+    const TopoDS_Shape& tool,
+    std::string& error,
+    Handle(BRepTools_History)* history = nullptr) {
     BOPAlgo_Operation operation = BOPAlgo_UNKNOWN;
     if (op == "fuse") {
         operation = BOPAlgo_FUSE;
@@ -1032,11 +1038,14 @@ TopoDS_Shape boolean_op(const std::string& op, const TopoDS_Shape& solid, const 
     algo.SetFuzzyValue(1.0e-7);
     algo.SetNonDestructive(Standard_True);
     algo.SetRunParallel(Standard_True);
-    algo.SetToFillHistory(Standard_False);
+    algo.SetToFillHistory(history != nullptr ? Standard_True : Standard_False);
     algo.Build();
     if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
         error = "Open CASCADE did not complete the boolean";
         return {};
+    }
+    if (history != nullptr) {
+        *history = algo.History();
     }
     return algo.Shape();
 }
@@ -1234,8 +1243,15 @@ double largest_blend(const TopoDS_Shape& current, const std::vector<TopoDS_Edge>
 }
 
 /// `current` and `tool` combined, on a copy, with the result's volume. Empty `error` means the result is good.
-TopoDS_Shape combine(const TopoDS_Shape& current, const std::string& which, const TopoDS_Shape& tool, double& volume, std::string& error) {
-    const TopoDS_Shape result = boolean_op(which, current, tool, error);
+/// `history`, when set, receives the boolean's face history. Null leaves it unfilled.
+TopoDS_Shape combine(
+    const TopoDS_Shape& current,
+    const std::string& which,
+    const TopoDS_Shape& tool,
+    double& volume,
+    std::string& error,
+    Handle(BRepTools_History)* history = nullptr) {
+    const TopoDS_Shape result = boolean_op(which, current, tool, error, history);
     if (!error.empty()) {
         return {};
     }
@@ -1254,12 +1270,13 @@ TopoDS_Shape build_boolean(
     const std::string& which,
     const PrimitiveSpec& spec,
     double& volume,
-    std::string& error) {
+    std::string& error,
+    Handle(BRepTools_History)* history) {
     const TopoDS_Shape tool = make_solid(spec, error);
     if (tool.IsNull()) {
         return {};
     }
-    return combine(current, which, tool, volume, error);
+    return combine(current, which, tool, volume, error, history);
 }
 
 /// The other solid moves by a location, so nothing is copied, and the turn is built as a unit quaternion so the
@@ -1270,13 +1287,14 @@ TopoDS_Shape build_join(
     const std::string& which,
     const double* place,
     double& volume,
-    std::string& error) {
+    std::string& error,
+    Handle(BRepTools_History)* history) {
     gp_Quaternion turn(gp_Mat(place[0], place[1], place[2], place[3], place[4], place[5], place[6], place[7], place[8]));
     turn.Normalize();
     gp_Trsf trsf;
     trsf.SetRotation(turn);
     trsf.SetTranslationPart(gp_Vec(place[9], place[10], place[11]));
-    return combine(current, which, tool.Moved(TopLoc_Location(trsf)), volume, error);
+    return combine(current, which, tool.Moved(TopLoc_Location(trsf)), volume, error, history);
 }
 
 /// How far past the far side of the part's box a through hole runs, so its end never lies on a face.
