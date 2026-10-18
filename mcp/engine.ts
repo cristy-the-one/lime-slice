@@ -9,6 +9,7 @@ import { type ChildProcess, fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { encodePaths } from "../src/preview-wire.ts";
+import { appVersion } from "./version.ts";
 
 /**
  * This file's folder. In a checkout that is `mcp/`; in an installed app it is the
@@ -608,7 +609,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
     resets: 0,
     previewResets: 0,
     hung: false,
-    version: () => "2.8.2",
+    version: () => appVersion(),
     occt: () => true,
     meshPreview: async (body: string, bytes?: Uint8Array) => {
       const block = Number(process.env.LIME_MCP_FAKE_BLOCK_MS ?? 0);
