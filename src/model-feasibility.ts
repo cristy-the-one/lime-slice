@@ -3,6 +3,7 @@
  * The kernel probe itself stays off this module.
  */
 import { plainModelError } from "./app/model-error.ts";
+import { locatedBoxes, type LocatedBox } from "./model-check.ts";
 import { formatMm } from "./model-plane.ts";
 import { primitiveBounds, turnCentre, type PrimitiveSpec } from "./model-primitive.ts";
 import { eulerOrient } from "./mesh-place.ts";
@@ -44,6 +45,8 @@ export type ProbeView =
       /** Steps of a group whose tool missed the solid. */
       skipped?: number;
       measure?: ProbeMeasure & { before: ProbeMeasure };
+      /** Hollows and loose pieces, in the solid's frame. Drawn only when the reply named them. */
+      located?: LocatedBox[];
     };
 
 /** What a kernel answer depends on: the tree node it ran on, whose shape never changes, and the op's numbers. */
@@ -76,18 +79,21 @@ function readMeasure(value: unknown): ProbeMeasure | null {
   return { volumeMm3, solids: solids as number, shells: shells as number };
 }
 
-export function probeFromBody(body: { ok?: unknown; error?: unknown; maxMm?: unknown; volumeMm3?: unknown; solids?: unknown; shells?: unknown; before?: unknown; failedStep?: unknown; skipped?: unknown }): ProbeView {
+export function probeFromBody(body: { ok?: unknown; error?: unknown; maxMm?: unknown; volumeMm3?: unknown; solids?: unknown; shells?: unknown; before?: unknown; failedStep?: unknown; skipped?: unknown; voids?: unknown; pieces?: unknown }): ProbeView {
   const failedStep = Number.isInteger(body.failedStep) ? (body.failedStep as number) : undefined;
   const skipped = Number.isInteger(body.skipped) ? (body.skipped as number) : undefined;
+  // --- A7 model check --- present only when the reply named a box, so an ordinary probe stays the same object.
+  const located = locatedBoxes(body);
+  const where = located.length > 0 ? { located } : {};
   if (body.ok === true) {
     const after = readMeasure(body);
     const before = readMeasure(body.before);
     const extra = skipped != null ? { skipped } : {};
-    return after && before ? { phase: "done", ok: true, measure: { ...after, before }, ...extra } : { phase: "done", ok: true, ...extra };
+    return after && before ? { phase: "done", ok: true, measure: { ...after, before }, ...extra, ...where } : { phase: "done", ok: true, ...extra, ...where };
   }
   const error = typeof body.error === "string" && body.error.length > 0 ? body.error : "This does not fit.";
   const maxMm = typeof body.maxMm === "number" && Number.isFinite(body.maxMm) && body.maxMm > 0 ? body.maxMm : undefined;
-  return { phase: "done", ok: false, error, maxMm, ...(failedStep != null ? { failedStep } : {}) };
+  return { phase: "done", ok: false, error, maxMm, ...(failedStep != null ? { failedStep } : {}), ...where };
 }
 
 const CHECKING: Record<ProbedTool, string> = {

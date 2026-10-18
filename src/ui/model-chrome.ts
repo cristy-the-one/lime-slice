@@ -2,11 +2,11 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Egg, Focus, Globe, Grid3x3, Hexagon, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
+import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Egg, Focus, Globe, Grid3x3, Hexagon, ListChecks, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
-import type { PlaceFields } from "../model-space";
+import type { Affine, PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import type { EditPanel } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
@@ -19,6 +19,7 @@ import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
 import { fx } from "../app/fx";
 import { state } from "../app/state";
+import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queueModelCheck, refreshModelCheck as rerunModelCheck } from "./model-check-panel.ts";
 
 export type { ModelTool } from "../model-drag";
 
@@ -79,6 +80,9 @@ interface ModelChromeHooks {
   editJoinGhost(): ContextPart | null;
   /** While a step is edited: the panel still says the step as it is, so Update would change nothing. */
   editUnchanged(): boolean;
+  // --- A7 model check ---
+  /** The mesh Check measures, and the pose that puts its boxes into model space. */
+  checkSource(): { positions: Float32Array; toModel: Affine } | null;
 }
 
 interface JoinChoice {
@@ -100,13 +104,15 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "measure", icon: Ruler, label: "Measure" },
   { id: "place", icon: Move3d, label: "Place" },
   { id: "workplane", icon: Axis3d, label: "Workplane" },
+  // --- A7 model check ---
+  { id: "check", icon: ListChecks, label: "Check" },
 ];
 
 const PLACE_FIELDS = ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"] as const;
 const PLACE_KEYS = ["x", "y", "z", "rx", "ry", "rz"] as const satisfies readonly (keyof PlaceFields)[];
 const BED_KEY = "lime-slice-model-bed";
 /** Tools that leave the open solid as it is, so they run on surfaces with no closed solid too. */
-const KEEPS_SOLID: ReadonlySet<string> = new Set(["create", "measure", "place", "workplane"]);
+const KEEPS_SOLID: ReadonlySet<string> = new Set(["create", "measure", "place", "workplane", "check"]);
 const WP_FIELDS = ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"] as const;
 
 const PRIMITIVE_ICONS: Record<PrimitiveKind, IconNode> = {
@@ -192,6 +198,8 @@ function iconize(id: string, node: IconNode) {
 export function mountModelChrome(next: ModelChromeHooks) {
   hooks = next;
   for (const entry of TOOLS) iconize(`#modelTool${entry.label}`, entry.icon);
+  // --- A7 model check --- icon only, so the bar still fits at 1440 px beside Bed. The drag checklist reads class="model-tool" in the markup.
+  document.querySelector("#modelToolCheck")?.classList.add("is-icon");
   document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
     const kind = button.dataset.kind;
     if (button.querySelector(".ico") || !(isPrimitiveKind(kind) || kind === "object")) return;
@@ -241,6 +249,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
   });
   document.querySelector("#modelCancel")?.addEventListener("click", () => closeTool());
+  // --- A7 model check ---
+  mountModelCheck({
+    source: () => hooks?.checkSource() ?? null,
+    noteChanged: () => refreshNote(),
+  });
   document.querySelector("#modelPanel")?.addEventListener("change", (ev) => {
     if (ev.target instanceof HTMLElement && HOLE_CHOICES.has(ev.target.id)) {
       holeChoiceChanged(ev.target.id);
@@ -255,6 +268,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
     // A number settled (Tab, or leaving the field): its check goes now, not after the pause kept for typing.
     hooks?.probeNow();
+    // --- A7 model check ---
+    if (tool === "check") queueModelCheck(false);
   });
   document.querySelector("#modelPanel")?.addEventListener("input", (ev) => {
     // A box or the screw list changes on `change`, all at once.
@@ -272,6 +287,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (tool === "hole") paintScrew();
     refreshGhost();
     hooks?.paramsChanged(true);
+    // --- A7 model check ---
+    if (tool === "check") queueModelCheck(true);
   });
   document.querySelector("#modelPrim")?.addEventListener("keydown", (ev) => onPrimKey(ev as KeyboardEvent));
   document.querySelector("#modelObjects")?.addEventListener("keydown", (ev) => onObjectKey(ev as KeyboardEvent));
@@ -318,6 +335,11 @@ export function syncModelChrome(next: readonly ModelPickRef[]) {
 
 export function refreshModelGhost() {
   refreshGhost();
+}
+
+/** --- A7 model check --- The open solid changed while Check stays open. */
+export function refreshModelCheck() {
+  rerunModelCheck();
 }
 
 /** The open solid changed. A split plane goes back to the new middle, untilted. */
@@ -386,6 +408,8 @@ function toggleTool(next: ModelTool, editing = false) {
     closeTool();
     return;
   }
+  // --- A7 model check --- switching tools does not go through closeTool, so the outline has to go here.
+  if (tool === "check") closeModelCheck();
   if (edit && !editing) closeTool();
   tool = next;
   const bar = document.querySelector<HTMLElement>("#modelBar");
@@ -417,9 +441,9 @@ function toggleTool(next: ModelTool, editing = false) {
     seatedWpFace = lastFace(picks);
     syncWorkplaneFields(true);
   }
-  // Place and the workplane move as they go, so the button only closes the tool.
+  // Place, the workplane, and Check change nothing on Apply, so the button only closes the tool.
   const cancel = document.querySelector("#modelCancel");
-  if (cancel) cancel.textContent = next === "place" || next === "workplane" ? "Done" : "Cancel";
+  if (cancel) cancel.textContent = next === "place" || next === "workplane" || next === "check" ? "Done" : "Cancel";
   const apply = document.querySelector("#modelApply");
   if (apply) apply.textContent = editing ? "Update" : next === "create" ? "Create" : "Apply";
   // The edit's own numbers go in before anything reads the fields.
@@ -436,6 +460,8 @@ function toggleTool(next: ModelTool, editing = false) {
   // With nothing open, the view goes to where the new solid lands.
   if (next === "create" && !hooks?.solidBox()) hooks?.frameNewSolid(fieldPrimitive());
   hooks?.paramsChanged();
+  // --- A7 model check --- after the panel is shown, so the note it writes is the one on screen.
+  if (next === "check") openModelCheck();
 }
 
 /**
@@ -490,6 +516,8 @@ function picksObject(): boolean {
 }
 
 function closeTool() {
+  // --- A7 model check ---
+  if (tool === "check") closeModelCheck();
   const active = document.activeElement;
   if (active instanceof HTMLElement && active.closest("#modelPanel")) active.blur();
   const ended = edit;
@@ -950,7 +978,7 @@ function refreshTools() {
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
     const id = button.dataset.tool ?? "";
     button.dataset.tipIdle ??= button.dataset.tip ?? "";
-    const held = locked != null && id !== "create";
+    const held = locked != null && id !== "create" && id !== "check";
     const viewOnly = !editable && !KEEPS_SOLID.has(id);
     const blocked = held ? locked : viewOnly ? VIEW_ONLY_TIP : toolBlockedTip(id, picks, legal);
     button.disabled = held || viewOnly || !toolAvailable(id, picks, legal);
@@ -994,6 +1022,9 @@ function refreshNote() {
     ({ text, bad } = wpProblem ?? { text: workplaneNote(openPlane()), bad: false });
   } else if (tool === "create") {
     text = state.plate.objects.length === 0 ? "Lands at the origin, on Z 0." : "Lands beside the other objects, as a new object.";
+  } else if (tool === "check") {
+    // --- A7 model check ---
+    text = modelCheckNote();
   } else if (picksObject() && !joinTool) {
     text = (hooks?.joinChoices().length ?? 0) > 0 ? "Pick the tool: click a grey object, or one in the list." : "";
   } else if (isProbed(tool)) {
@@ -1061,6 +1092,8 @@ function onHandleDrag(drag: HandleDrag) {
   if (drag.phase === "end") {
     hooks?.probeNow();
     keepNewSolidInView();
+    // --- A7 model check --- a drag's last value runs now, not after the typing wait.
+    if (tool === "check") queueModelCheck(false);
   }
 }
 
@@ -1317,7 +1350,7 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     };
   }
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
-  if (current === "place" || current === "workplane") return null;
+  if (current === "place" || current === "workplane" || current === "check") return null;
   const edges = selectedEdges(picks);
   if (edges.length === 0) return null;
   return { kind: "blend", edges, radius: num("#modelBlend") };

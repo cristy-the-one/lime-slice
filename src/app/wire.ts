@@ -1,6 +1,7 @@
 import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { arrangePlate, duplicatePlateObject, framePlateObject, removePlateObject, selectPlateObject } from "./plate-actions";
+import { requestModelCheck } from "./model";
 import { separateShells } from "./shell-actions";
 import { applyTheme, type ThemeChoice } from "../theme";
 import { axisNormal, clampOffset, flipSection } from "../section-plane";
@@ -213,6 +214,12 @@ export function wireApp() {
     }
     if (t.id === "plateArrange" || t.closest("[data-plate-arrange]")) {
       arrangePlate();
+      return;
+    }
+    // --- A7 model check ---
+    const plateCheck = t.closest<HTMLElement>("[data-plate-check]")?.dataset.plateCheck;
+    if (plateCheck) {
+      requestModelCheck(plateCheck);
       return;
     }
     const plateFrame = t.closest<HTMLElement>("[data-plate-frame]")?.dataset.plateFrame;
