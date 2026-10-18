@@ -56,6 +56,11 @@ eq(
   probeFromBody({ ok: true, volumeMm3: 800, solids: 1, shells: 1, before: { volumeMm3: 1000, solids: 1, shells: 1 }, skipped: 1 }),
   { phase: "done", ok: true, measure: { volumeMm3: 800, solids: 1, shells: 1, before: { volumeMm3: 1000, solids: 1, shells: 1 } }, skipped: 1 },
 );
+eq(
+  "a failed probe keeps the void it named",
+  probeFromBody({ ok: false, error: "This would seal off a hollow inside the part.", voids: [{ min: [2, 2, 2], max: [8, 8, 6] }] }),
+  { phase: "done", ok: false, error: "This would seal off a hollow inside the part.", located: [{ min: [2, 2, 2], max: [8, 8, 6] }] },
+);
 
 eq("checking copy", probeNote("fillet", { phase: "checking" }), { text: "Checking this fillet…", bad: false });
 eq("a group is one check", probeNote("group", { phase: "checking" }), { text: "Checking these steps…", bad: false });
