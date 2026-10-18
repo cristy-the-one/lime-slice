@@ -3084,7 +3084,7 @@ fn build_group(
             build(shape, resolved, probe, None, edge_steps)
         };
         match outcome {
-            Ok(built) => {
+            Ok(mut built) => {
                 let before = current.as_ref().map_or(&*from, |shape| shape);
                 let silent = matches!(step, Op::Boolean { .. }) && volume_unchanged(before, &built.kept);
                 if silent {
