@@ -30,6 +30,11 @@ check("a fractional edge index is rejected", validateTool("model_probe", { objec
 check("a hole does not take a fillet size", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", size: 2 } }) !== null);
 check("a counterbore is a hole field", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", diameterMm: 4, through: true, counterboreDiameterMm: 8, counterboreDepth: 3 } }) === null);
 check("an unknown edit names the kinds", validateTool("model_probe", { op: { kind: "twist" } }) === "op.kind must be one of hole, fillet, chamfer, split, scale, extrude, revolve, loft, sweep, shell, boolean, root, join, pocket, boss, texture, pattern, mirror, text, array, ribs.");
+const square = [[0, 0], [10, 0], [10, 10], [0, 10]];
+check("an extrude accepts a second depth and a draft", validateTool("model_probe", { object: "obj_1", op: { kind: "extrude", profile: square, depth: 10, depth2: 4, draftDeg: 5 } }) === null);
+check("an extrude accepts a face to stop at", validateTool("model_probe", { object: "obj_1", op: { kind: "extrude", profile: square, depth: 0, upTo: 3 } }) === null);
+check("an extrude accepts a face selector to stop at", validateTool("model_probe", { object: "obj_1", op: { kind: "extrude", profile: square, depth: 10, upTo: { normal: [0, 0, 1], nearPoint: [5, 5, 10] } } }) === null);
+check("a draft of 90 degrees is rejected", validateTool("model_probe", { object: "obj_1", op: { kind: "extrude", profile: square, depth: 10, draftDeg: 90 } }) !== null);
 check("a low scale names the bound", validateTool("object_place", { object: "obj_1", scalePercent: 9 }) === "scalePercent must be at least 10.");
 const layerHeight = (TOOLS.find((tool) => tool.name === "settings_apply")!.inputSchema.properties as { layerHeight: { minimum?: number; maximum?: number } }).layerHeight;
 check("layer height is 0.08 to 0.4", layerHeight.minimum === 0.08 && layerHeight.maximum === 0.4);

@@ -80,10 +80,48 @@ export function opBox(op: ModelOp): Box | null {
       return primitiveBox(op);
     case "extrude": {
       const [u, v, w] = axes(op.turn);
-      const length = Math.abs(op.depth);
-      const start = op.symmetric ? -length / 2 : Math.min(op.depth, 0);
+      // K3. A second depth or a draft changes the box. Anything else, including up to a face, keeps the span depth already gave.
+      const drafted = op.draftDeg != null && op.draftDeg !== 0;
+      if (op.depth2 == null && !drafted) {
+        const length = Math.abs(op.depth);
+        const start = op.symmetric ? -length / 2 : Math.min(op.depth, 0);
+        let box: Box | null = null;
+        for (const [pu, pv] of reach(op.profile, op.smooth, op.corners)) for (const pw of [start, start + length]) box = grow(box, along(op.origin, [[u, pu], [v, pv], [w, pw]]));
+        return box;
+      }
+      const depth2 = op.depth2 ?? 0;
+      let lo: number;
+      let hi: number;
+      if (op.depth2 != null) {
+        if (op.depth >= 0) { lo = -depth2; hi = op.depth; }
+        else { lo = op.depth; hi = depth2; }
+      } else {
+        const length = Math.abs(op.depth);
+        lo = op.symmetric ? -length / 2 : Math.min(op.depth, 0);
+        hi = lo + length;
+      }
+      const angle = ((op.draftDeg ?? 0) * Math.PI) / 180;
+      const taper = Math.tan(Math.abs(angle));
+      // The larger end is what the box has to hold. A positive angle grows the −W end of a two-sided wall and shrinks a one-sided far end.
+      let pad = 0;
+      if (taper > 0 && angle !== 0) {
+        const two = op.depth2 != null || op.symmetric === true;
+        if (two) pad = (angle > 0 ? -lo : hi) * taper;
+        else if (angle < 0) pad = (hi > 0 ? hi : -lo) * taper;
+      }
+      const points = reach(op.profile, op.smooth, op.corners);
+      let minU = Infinity;
+      let maxU = -Infinity;
+      let minV = Infinity;
+      let maxV = -Infinity;
+      for (const [pu, pv] of points) {
+        minU = Math.min(minU, pu);
+        maxU = Math.max(maxU, pu);
+        minV = Math.min(minV, pv);
+        maxV = Math.max(maxV, pv);
+      }
       let box: Box | null = null;
-      for (const [pu, pv] of reach(op.profile, op.smooth, op.corners)) for (const pw of [start, start + length]) box = grow(box, along(op.origin, [[u, pu], [v, pv], [w, pw]]));
+      for (const pu of [minU - pad, maxU + pad]) for (const pv of [minV - pad, maxV + pad]) for (const pw of [lo, hi]) box = grow(box, along(op.origin, [[u, pu], [v, pv], [w, pw]]));
       return box;
     }
     case "revolve": {

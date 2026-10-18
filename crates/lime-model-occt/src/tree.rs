@@ -356,6 +356,16 @@ pub enum Op {
         smooth: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         corners: Vec<u32>,
+        // --- K3. Each one is absent on a plain extrude, so an older request stores and compares as it did. ---
+        /// The other side of the plane, above 0. The prism runs from −`depth2` to `depth` when `depth` is positive.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        depth2: Option<f64>,
+        /// Draft angle in degrees. Positive makes the section smaller as W increases.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        draft_deg: Option<f64>,
+        /// Stop at this face of the solid the extrude is built on, instead of at `depth`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_to: Option<FacePick>,
     },
     /// The same outline turned `angleDeg` (360 when absent) about the in-plane axis through `axisOrigin` ([0, 0]
     /// when absent) along `axisDir` (V, [0, 1], when absent), and combined by `op`.
@@ -2243,6 +2253,10 @@ fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolved, String>
             thickness,
             open_faces,
         } => resolve_shell(from, open_faces, *thickness),
+        // K3. A plain extrude has no face to resolve and falls through below.
+        Op::Extrude {
+            up_to: Some(_), ..
+        } => resolve_extrude_face(from, op),
         _ => Ok(Resolved {
             op: op.clone(),
             picks: Vec::new(),
@@ -2377,6 +2391,54 @@ fn resolve_shell(from: &mut Shape, faces: &[FacePick], thickness: f64) -> Result
     })
 }
 
+/// K3. The face an extrude stops at, stored as `{index, mid, areaMm2}` the way a shell stores an open face.
+fn resolve_extrude_face(from: &mut Shape, op: &Op) -> Result<Resolved, String> {
+    let Op::Extrude {
+        up_to: Some(pick), ..
+    } = op
+    else {
+        return Ok(Resolved {
+            op: op.clone(),
+            picks: Vec::new(),
+        });
+    };
+    let found = match *pick {
+        FacePick::Index(index) => from.face(index),
+        FacePick::Ref(want) => match from.face(want.index) {
+            Some(have) if same_face(&have, &want) => Some(have),
+            _ => {
+                let mut matched = None;
+                for index in 0..from.fingerprint().faces {
+                    let Some(have) = from.face(index) else {
+                        continue;
+                    };
+                    if same_face(&have, &want) {
+                        if matched.is_some() {
+                            return Err(
+                                "Two faces match the one this extrude stops at.".into(),
+                            );
+                        }
+                        matched = Some(have);
+                    }
+                }
+                matched
+            }
+        },
+    };
+    let found = found.ok_or_else(|| "That face is not on this solid.".to_string())?;
+    if !found.mid.iter().all(|value| value.is_finite()) || !found.area_mm2.is_finite() {
+        return Err("Open CASCADE could not measure that face".into());
+    }
+    let mut stored = op.clone();
+    if let Op::Extrude { up_to, .. } = &mut stored {
+        *up_to = Some(FacePick::Ref(found));
+    }
+    Ok(Resolved {
+        op: stored,
+        picks: vec![found.index],
+    })
+}
+
 /// The probe's measures of what it built, and of the solid it was built on, as JSON fields without braces.
 fn probe_metrics(from: &Shape, built: &Shape) -> String {
     let measure = |shape: &Shape| {
@@ -2417,6 +2479,33 @@ fn same_request(stored: &Op, incoming: &Op) -> bool {
             (a, b)
         }
         (Op::Fillet { .. } | Op::Chamfer { .. }, _) => return false,
+        // K3. A stored face matches an index pick by index, and a reference by its centre and area.
+        (
+            Op::Extrude {
+                up_to: Some(stored_face),
+                ..
+            },
+            Op::Extrude {
+                up_to: Some(incoming_face),
+                ..
+            },
+        ) => {
+            let stored_face = *stored_face;
+            let incoming_face = *incoming_face;
+            let mut left = stored.clone();
+            let mut right = incoming.clone();
+            if let Op::Extrude { up_to, .. } = &mut left {
+                *up_to = None;
+            }
+            if let Op::Extrude { up_to, .. } = &mut right {
+                *up_to = None;
+            }
+            return left == right && match (stored_face, incoming_face) {
+                (FacePick::Ref(have), FacePick::Index(index)) => have.index == index,
+                (FacePick::Ref(have), FacePick::Ref(want)) => same_face(&have, &want),
+                (have, want) => have == want,
+            };
+        }
         (
             Op::Shell {
                 thickness: x,
@@ -2621,6 +2710,10 @@ fn build(
             symmetric,
             smooth,
             corners,
+            // K3. None of these: the plain extrude, the same call as before.
+            depth2,
+            draft_deg,
+            up_to,
         } => {
             let mut p = vec![
                 origin[0],
@@ -2634,16 +2727,46 @@ fn build(
             ];
             push_shape(&mut p, *smooth, corners);
             let points: Vec<f64> = profile.iter().flatten().copied().collect();
-            Shape::made(|error| unsafe {
-                lime_tree_extrude(
-                    from.raw(),
-                    which.name().as_ptr(),
-                    p.as_ptr(),
-                    points.as_ptr(),
-                    profile.len() as c_int,
-                    error,
-                )
-            })
+            if depth2.is_none() && draft_deg.is_none() && up_to.is_none() {
+                Shape::made(|error| unsafe {
+                    lime_tree_extrude(
+                        from.raw(),
+                        which.name().as_ptr(),
+                        p.as_ptr(),
+                        points.as_ptr(),
+                        profile.len() as c_int,
+                        error,
+                    )
+                })
+            } else {
+                let face = picks.first().copied().unwrap_or(-1);
+                let mut flags = 0;
+                if depth2.is_some() {
+                    flags |= 1;
+                }
+                if draft_deg.is_some() {
+                    flags |= 2;
+                }
+                if up_to.is_some() {
+                    flags |= 4;
+                }
+                let depth2 = depth2.unwrap_or(0.0);
+                let draft_deg = draft_deg.unwrap_or(0.0);
+                Shape::made(|error| unsafe {
+                    lime_tree_extrude_extent(
+                        from.raw(),
+                        which.name().as_ptr(),
+                        p.as_ptr(),
+                        points.as_ptr(),
+                        profile.len() as c_int,
+                        depth2,
+                        draft_deg,
+                        face,
+                        flags,
+                        error,
+                    )
+                })
+            }
         }
         Op::Revolve {
             op: which,
@@ -2822,6 +2945,19 @@ extern "C" {
         p: *const f64,
         points: *const f64,
         count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    // K3. `flags` bit 0 depth2, bit 1 draft, bit 2 up to `face`.
+    fn lime_tree_extrude_extent(
+        from: *const RawShape,
+        op: *const c_char,
+        p: *const f64,
+        points: *const f64,
+        count: c_int,
+        depth2: f64,
+        draft_deg: f64,
+        face: c_int,
+        flags: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     fn lime_tree_revolve(

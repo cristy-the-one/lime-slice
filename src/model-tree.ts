@@ -97,6 +97,12 @@ export interface ExtrudeOp {
   /** Splines through the points instead of straight edges, sharp at the points `corners` lists. */
   smooth?: true;
   corners?: number[];
+  /** K3. The other side of the plane, above 0. Absent on a plain extrude. */
+  depth2?: number;
+  /** K3. Draft angle in degrees. Positive makes the section smaller as W increases. Absent when there is none. */
+  draftDeg?: number;
+  /** K3. Stop at this face. A fresh pick is an index; a stored op names `{index, mid, areaMm2}`. */
+  upTo?: number | FaceRef;
 }
 
 /** Turned `angleDeg` (360 when absent) about the line through `axisOrigin` ([0, 0]) along `axisDir` (V, [0, 1]). */
@@ -344,7 +350,9 @@ function canonical(op: ModelOp): string {
       ? { ...op, edges: op.edges.map(index) }
       : op.kind === "shell" && op.openFaces
         ? { ...op, openFaces: op.openFaces.map(index) }
-        : op;
+        : op.kind === "extrude" && op.upTo !== undefined
+          ? { ...op, upTo: index(op.upTo) }
+          : op;
   return JSON.stringify(plain, (_, value: unknown) =>
     value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value,
   );
@@ -524,7 +532,11 @@ export function opLabel(op: ModelOp): string {
       return primitiveTitle(op);
     case "extrude": {
       const verb = op.op === "fuse" ? "Extrude" : `${BOOLEAN_VERB[op.op]} extrude`;
-      return `${verb} ${op.profile.length}-point profile ${n(Math.abs(op.depth))}${op.symmetric ? " both ways" : ""}`;
+      const reach = op.upTo != null
+        ? "up to a face"
+        : `${n(Math.abs(op.depth))}${op.depth2 != null ? ` and ${n(op.depth2)}` : op.symmetric ? " both ways" : ""}`;
+      const draft = op.draftDeg != null && op.draftDeg !== 0 ? `, draft ${n(op.draftDeg)}°` : "";
+      return `${verb} ${op.profile.length}-point profile ${reach}${draft}`;
     }
     case "revolve": {
       const verb = op.op === "fuse" ? "Revolve" : `${BOOLEAN_VERB[op.op]} revolve`;

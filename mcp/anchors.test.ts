@@ -32,6 +32,8 @@ const loft = opBox({ kind: "loft", op: "fuse", sections: [{ origin: [0, 0, 0], t
 check("a loft's box spans its sections", !!loft && nearAll(loft.min, [-4, -4, 0]) && nearAll(loft.max, [4, 4, 10]), JSON.stringify(loft));
 const extrude = opBox({ kind: "extrude", op: "fuse", origin: [0, 5, 0], turn: [90, 0, 0], profile: [[0, 0], [10, 0], [5, 8]], depth: 4 });
 check("an extrude's box follows its plane", !!extrude && nearAll(extrude.min, [0, 1, 0]) && nearAll(extrude.max, [10, 5, 8]), JSON.stringify(extrude));
+const bothWays = opBox({ kind: "extrude", op: "fuse", origin: [0, 0, 0], turn: [0, 0, 0], profile: [[0, 0], [10, 0], [10, 10], [0, 10]], depth: 10, depth2: 4 });
+check("a second depth reaches the other side of the plane", !!bothWays && nearAll(bothWays.min, [0, 0, -4]) && nearAll(bothWays.max, [10, 10, 10]), JSON.stringify(bothWays));
 const revolve = opBox({ kind: "revolve", op: "fuse", origin: [0, 0, 0], turn: [90, 0, 0], profile: [[0, 0], [6, 0], [6, 2], [0, 4]] });
 check("a revolve's box is round its axis", !!revolve && nearAll(revolve.min, [-6, -6, 0]) && nearAll(revolve.max, [6, 6, 4]), JSON.stringify(revolve));
 check("points of a box", JSON.stringify(boxPoint({ min: [0, 0, 0], max: [2, 4, 6] }, "top")) === "[1,2,6]" && JSON.stringify(boxPoint({ min: [0, 0, 0], max: [2, 4, 6] }, "front")) === "[1,0,3]");

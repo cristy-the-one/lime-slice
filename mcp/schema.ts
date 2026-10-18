@@ -387,8 +387,15 @@ const sketchOps = [
       kind: { const: "extrude" },
       op: booleanKind,
       profile,
-      depth: { type: "number", minimum: -1000, maximum: 1000, description: "Along W; negative goes into the face." },
+      depth: { type: "number", minimum: -1000, maximum: 1000, description: "Along W; negative goes into the face. May be 0 when upTo is set." },
       symmetric: { type: "boolean", description: "Centred on the plane." },
+      // K3. Each one is optional. A plain extrude does not send them.
+      depth2: { type: "number", exclusiveMinimum: 0, maximum: 100000, description: "The other side of the plane, mm. Not with symmetric or upTo." },
+      draftDeg: { type: "number", exclusiveMinimum: -89, exclusiveMaximum: 89, description: "Draft, degrees. Positive shrinks the section as it goes along +W." },
+      upTo: {
+        description: "Stop at a face of this solid: an index, or {normal, nearPoint}. Depth only says which way.",
+        oneOf: [{ type: "integer", minimum: 0 }, faceSelector],
+      },
       ...profileShape,
       ...profilePlace,
       label,

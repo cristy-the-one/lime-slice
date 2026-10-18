@@ -3391,8 +3391,33 @@ export class Session {
       const booleanOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
       if (kind === "extrude") {
         const depth = spec.depth;
-        if (typeof depth !== "number" || depth === 0) return { reason: "An extrude needs a depth in millimetres." };
-        const made = extrudeOp(booleanOp, plane, profile, depth, spec.symmetric === true, shape);
+        if (typeof depth !== "number" || !Number.isFinite(depth)) return { reason: "An extrude needs a depth in millimetres." };
+        // K3. Each field is sent only when set. A plain extrude is the same call as before.
+        const extent: { depth2?: number; draftDeg?: number; upTo?: number } = {};
+        if (spec.depth2 !== undefined) {
+          if (typeof spec.depth2 !== "number" || !(spec.depth2 > 0)) return { reason: "The second depth is a distance on the other side of the plane, above 0." };
+          extent.depth2 = spec.depth2;
+        }
+        if (spec.draftDeg !== undefined && spec.draftDeg !== 0) {
+          if (typeof spec.draftDeg !== "number" || !Number.isFinite(spec.draftDeg) || Math.abs(spec.draftDeg) >= 89) return { reason: "A draft angle must be between -89 and 89 degrees." };
+          extent.draftDeg = spec.draftDeg;
+        }
+        if (spec.upTo !== undefined) {
+          if (typeof spec.upTo === "number" && Number.isInteger(spec.upTo)) {
+            if (!obj.solid?.faces[spec.upTo]) return { reason: "That face is not on this solid." };
+            extent.upTo = spec.upTo;
+          } else if (spec.upTo && typeof spec.upTo === "object") {
+            const found = this.expandContext(obj).faceBy(spec.upTo as Record<string, unknown>);
+            if (typeof found !== "number") return found;
+            extent.upTo = found;
+          } else return { reason: "That face is not on this solid." };
+        }
+        if (extent.upTo !== undefined && extent.depth2 !== undefined) return { reason: "An extrude up to a face starts at the profile. Drop the second depth." };
+        if (extent.upTo !== undefined && spec.symmetric === true) return { reason: "An extrude up to a face starts at the profile. Leave centred off." };
+        if (extent.upTo !== undefined && extent.draftDeg !== undefined) return { reason: "A draft up to a face is not available yet. Drop the draft, or drop the face and set a depth." };
+        if (extent.depth2 !== undefined && spec.symmetric === true) return { reason: "An extrude is centred, or it has a second depth, not both." };
+        if (depth === 0 && extent.upTo === undefined && extent.depth2 === undefined) return { reason: "An extrude needs a depth in millimetres." };
+        const made = extrudeOp(booleanOp, plane, profile, depth, spec.symmetric === true, shape, extent);
         return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
       }
       const axisOrigin = readProfile([spec.axisOrigin, [0, 0], [0, 0]])?.[0];

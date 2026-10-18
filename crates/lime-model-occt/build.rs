@@ -19,6 +19,8 @@ const LIBS: &[&str] = &[
     "TKBO",
     "TKFillet",
     "TKOffset",
+    // K3: BRepFeat_MakePrism and the draft prism (LocOpe_DPrism, the body of BRepFeat_MakeDPrism).
+    "TKFeat",
 ];
 
 const STEP_LIBS: &[&str] = &[
