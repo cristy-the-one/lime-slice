@@ -77,6 +77,12 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
   return { ...tree, nodes, lastChild, nextId, current: shown };
 }
 
+/**
+ * Edit step on a solid that started from a sketch. The sketch editor (E1) is what changes it; until then the pencil
+ * stays and the readout says this.
+ */
+export const FEATURE_ROOT_EDIT = "This solid started from a sketch. Open the sketch to change it.";
+
 /** Why step `id` cannot be edited, in plain words, or null when it can. */
 export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   const node = tree.nodes.get(id);
@@ -91,17 +97,20 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a shell, or a blend that takes an earlier step's edges. */
+/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a shell, a face extrude, a face move, or a blend that takes an earlier step's edges. */
 function hasPanel(op: ModelOp): boolean {
-  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "shell") return false;
+  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "shell" || op.kind === "faceExtrude" || op.kind === "moveFaces") return false;
   return !((op.kind === "fillet" || op.kind === "chamfer") && op.edges.some(isEdgeStep));
 }
 
-/** The op an edit of `id` starts from: its own, or the primitive a new solid's root is. */
+/** The op an edit of `id` starts from: its own, the primitive a new solid's root is, or the feature a sketch-started root is. */
 export function editedOp(tree: ModelTree, id: NodeId): ModelOp | null {
   const node = tree.nodes.get(id);
   if (node?.op) return node.op;
-  return node && tree.root.kind === "primitive" ? { kind: "root", ...tree.root.solid } : null;
+  if (!node) return null;
+  if (tree.root.kind === "primitive") return { kind: "root", ...tree.root.solid };
+  if (tree.root.kind === "feature") return tree.root.op;
+  return null;
 }
 
 /**
@@ -236,11 +245,14 @@ export function toolPose(pose: Affine, joins: readonly ToolLink[]): Affine {
   return joins.reduce((at, join) => thenPose(join.op.relative, at), pose);
 }
 
-/** The panel's header for a tool's step: "Editing Rod 1, step 2: Scale 150 %", or "Editing Rod 1's primitive: …". */
+/** The panel's header for a tool's step: "Editing Rod 1, step 2: Scale 150 %", "Editing Rod 1's primitive: …", or "Editing Rod 1's sketch: …". */
 export function toolEditHead(tool: ModelTree, id: NodeId, name: string): string {
   const node = tool.nodes.get(id);
   if (!node) return "";
-  if (node.parent === null || node.op?.kind === "root") return `Editing ${name}'s primitive: ${stepLabel(node)}`;
+  if (node.parent === null || node.op?.kind === "root") {
+    const what = node.parent === null && tool.root.kind === "feature" ? "sketch" : "primitive";
+    return `Editing ${name}'s ${what}: ${stepLabel(node)}`;
+  }
   return `Editing ${name}, step ${pathTo(tool, id).length - 1}: ${stepLabel(node)}`;
 }
 
@@ -309,6 +321,8 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "revolve":
     case "loft":
     case "shell":
+    case "faceExtrude":
+    case "moveFaces":
       // `editRefusal` turns these away before a panel opens.
       throw new Error(`No edit panel for a ${op.kind} step`);
   }

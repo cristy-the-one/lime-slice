@@ -46,6 +46,7 @@ import { mountReinforcePaint } from "./ui/reinforce-ui";
 import { fx } from "./app/fx";
 import { plateListed } from "./plate";
 import { mountMarkup } from "./app/markup";
+import "./app/modeling";
 import { wireApp } from "./app/wire";
 
 mountMarkup(document.querySelector("#app")!);

@@ -3,6 +3,7 @@ import {
   childrenOf,
   closeOrder,
   dropped,
+  featureObjectName,
   jumped,
   newTree,
   nodeWithMesh,
@@ -11,12 +12,14 @@ import {
   reachableTrees,
   redoTarget,
   reserveId,
+  rootLabel,
   savedNodes,
   toolUser,
   undoTarget,
   usesTree,
   visitStep,
   withChild,
+  withFeatureRoot,
   withNode,
   type ModelOp,
   type ModelTree,
@@ -161,6 +164,14 @@ eq("the join that keeps a tool's step", [toolUser(all, "b#1", new Set([1]))?.lab
 eq("trees close each before its tools", closeOrder(all, ["b#1", "a#1", "c#1"]), ["c#1", "a#1", "b#1"]);
 eq("a tree not closing changes nothing", closeOrder(all, ["b#1", "a#1"]), ["a#1", "b#1"]);
 eq("a join is saved as its op, ready to replay", savedNodes(targetTree).map((node) => node.op.kind), ["join"]);
+
+const sketch = { kind: "extrude" as const, op: "fuse" as const, origin: [0, 0, 0] as [number, number, number], turn: [0, 0, 0] as [number, number, number], profile: [[0, 0], [10, 0], [10, 10], [0, 10]] as [number, number][], depth: 10 };
+const taller = { ...sketch, depth: 20 };
+eq("a feature root is named from its op", rootLabel({ kind: "feature", op: sketch }, "file"), opLabel(sketch));
+eq("a feature solid is named Extrude, Revolve, or Loft, numbered past the names taken", [featureObjectName(["Box 1"], "extrude"), featureObjectName(["Extrude 1", "Extrude 2"], "revolve"), featureObjectName(["Loft 1"], "loft")], ["Extrude 1", "Revolve 1", "Loft 2"]);
+const sketched = newTree("ex#1", { kind: "feature", op: sketch }, opLabel(sketch), fp(1000));
+const editedRoot = withFeatureRoot(sketched, taller);
+eq("editing a feature root keeps node 0 and renames it", [editedRoot.nodes.get(0)?.id, editedRoot.root, editedRoot.nodes.get(0)?.label], [0, { kind: "feature", op: taller }, opLabel(taller)]);
 
 if (failed) {
   console.error(`${failed} failed`);
