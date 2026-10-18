@@ -231,3 +231,28 @@ fn a_moved_face_survives_an_edit_above() {
     let again = largest_facing(&apply("edit", 0, 5, &notch(11.0)), UP);
     assert_eq!(edited["built"][1]["op"]["faces"][0]["face"]["index"], json!(again));
 }
+
+/// P1. A cylinder's wall carries its radius. A box face does not: that JSON stays as it was.
+#[test]
+fn a_cylinder_reports_its_radius_and_a_box_does_not() {
+    let rod = call(json!({
+        "call": "open", "key": "radius",
+        "primitive": { "primitive": "cylinder", "origin": [0, 0, 0], "radius": 10.0, "height": 20.0 }
+    }));
+    if rod.get("error").is_some() {
+        assert!(!require(), "OCCT was required: {rod}");
+        return;
+    }
+    let wall = face_of_area(&rod, 2.0 * PI * 10.0 * 20.0);
+    let face = &rod["faces"][wall];
+    assert_eq!(face["surface"], json!("cylinder"), "{face}");
+    near(face["radiusMm"].as_f64().unwrap(), 10.0);
+    assert!(face["axis"].is_array(), "{face}");
+    assert!(face["axisPoint"].is_array(), "{face}");
+
+    let box = call(json!({ "call": "open", "key": "plain", "box": [20.0, 20.0, 10.0] }));
+    for face in box["faces"].as_array().unwrap() {
+        assert!(face.get("radiusMm").is_none(), "a box face has no radius: {face}");
+        assert!(face.get("surface").is_none(), "a box face has no surface: {face}");
+    }
+}

@@ -11,10 +11,10 @@ import { axesOf, framePose, isIdentityFrame, planePoint, type Workplane } from "
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure" | "place" | "workplane";
+export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "scale" | "measure" | "place" | "workplane" | "pushpull";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "scale", "measure", "place", "workplane"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "scale", "measure", "place", "workplane", "pushpull"];
 
 /** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
 const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight"];
@@ -31,6 +31,8 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   measure: ["modelAx", "modelAy", "modelAz", "modelBx", "modelBy", "modelBz"],
   place: ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"],
   workplane: ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"],
+  // --- P1: the distance a face push or pull writes. The arrow sits on the face, not on the dock. ---
+  pushpull: ["modelPull"],
 };
 
 /**
@@ -88,6 +90,11 @@ export interface DragContext {
    * Absent is the global frame. The Workplane tool's own arrows slide its origin along U, V, W.
    */
   frame?: Workplane;
+  /**
+   * P1. Where the push/pull arrow sits, in model space, and the outward normal it points along.
+   * Absent, or null, until a face is under the pointer: the tool then has nothing to drag.
+   */
+  pull?: { at: Vec3; dir: Vec3 } | null;
 }
 
 const X: Vec3 = [1, 0, 0];
@@ -110,7 +117,16 @@ function specsFor(tool: ModelTool | null, ctx: DragContext): Spec[] {
   if (tool === "measure") return measureHandles(ctx);
   if (tool === "place") return placeHandles(ctx);
   if (tool === "workplane") return workplaneHandles(ctx);
+  // --- P1: one arrow on the face, along its outward normal. ---
+  if (tool === "pushpull") return pullHandles(ctx);
   return [];
+}
+
+/** The in-place arrow. No face, no handle: a push waits until one is under the pointer. */
+function pullHandles(ctx: DragContext): Spec[] {
+  const seat = ctx.pull;
+  if (!seat) return [];
+  return [axisHandle("pull", "arrow", "modelPull", onFeature(seat.at), normalize(seat.dir), "accent", "Distance")];
 }
 
 function axisHandle(

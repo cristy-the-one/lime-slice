@@ -64,7 +64,8 @@ import {
   type Vec3,
 } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
-import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
+import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, wholeTreeRequest } from "../model-request";
+import { mountPull, pullFieldText, type PullMade } from "../push-pull-ui";
 import {
   closeModelTool,
   editedPanel,
@@ -85,6 +86,9 @@ import {
   setModelPreview,
   setModelProbe,
   setModelWaiting,
+  setAllowPullPreview,
+  setPullLive,
+  modelPreviewFresh,
   syncModelChrome,
   splitMode,
   syncModelSolid,
@@ -123,7 +127,8 @@ const VIEW_ONLY = "Surfaces only. This file can be measured but not edited.";
 const BROKEN = "This step could not be rebuilt, so it and the steps after it are unavailable.";
 const ROOT_BROKEN = "This solid's primitive builds differently in this modeler, so its history cannot be rebuilt.";
 /** Ops that name edges or faces by the solid's own numbering: they build only on a step the history built. */
-const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell"]);
+// --- P1: a face pull names faces, so a seed solid is rebuilt before the step, as a fillet is. ---
+const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell", "faceExtrude", "moveFaces"]);
 /** A history longer than this many steps rebuilds a few steps per call, with a count in the readout. */
 const COUNTED_REBUILD = 20;
 /** Parsed solids of recently shown nodes, so a jump back to one needs no engine call. */
@@ -138,6 +143,9 @@ let jumpSerial = 0;
 let jumpTarget: NodeId | null = null;
 let probeSerial = 0;
 let probeTimer = 0;
+// --- P1: a face drag's dry-run. While set, the panel's probe waits. ---
+let pullProbe = false;
+let pullGen = 0;
 let pendingProbe: (() => Promise<void>) | null = null;
 /** A check the engine is running. The engine runs one call at a time, so a newer check waits for it, and only the newest. */
 let probing = false;
@@ -372,6 +380,37 @@ export function bindModelView() {
     editJoinGhost,
     editUnchanged: editUntouched,
   });
+  // --- P1: face push/pull. The default when no other model tool is open. ---
+  if (fx.model) {
+    const pull = mountPull(fx.model, {
+      live: pullLiveNow,
+      toolOpen: () => openModelTool() === "pushpull",
+      solid: () => viewed(),
+      pose: () => openPose(),
+      selectedFaces: () => picks.filter((pick) => pick.kind === "face").map((pick) => pick.index),
+      distance: () => num("#modelPull"),
+      setField(distance) {
+        const input = document.querySelector<HTMLInputElement>("#modelPull");
+        if (!input || document.activeElement === input) return;
+        input.value = pullFieldText(distance);
+      },
+      readout,
+      parameters: () => ({}),
+      hold(on) {
+        pullProbe = on;
+      },
+      armPreview: setAllowPullPreview,
+      previewFresh: modelPreviewFresh,
+      probe(op) {
+        void probePull(op);
+      },
+      clearPreview: clearPullPreview,
+      apply: applyPull,
+      edit: editPull,
+      busy: () => busy || jumping,
+    });
+    setPullLive(() => pull.sync());
+  }
   mountModelHistory({
     jump(row) {
       const step = ownStep(row);
@@ -419,6 +458,8 @@ function nodeName(key: string, node: NodeId) {
  * An answer already known for this node and numbers is used without asking.
  */
 function scheduleProbe(wait: number) {
+  // --- P1: a face drag has its own probe. The panel's check must not cancel it. ---
+  if (pullProbe) return;
   window.clearTimeout(probeTimer);
   pendingProbe = null;
   probeSerial += 1;
@@ -427,7 +468,8 @@ function scheduleProbe(wait: number) {
   const tree = treeOf(at);
   const tool = openModelTool();
   const editable = !!viewed()?.editable;
-  const op = editable && isProbed(tool) && !editUntouched() ? panelOp() : null;
+  // --- P1: Push/Pull's panel probes like a face move. The gesture probes on its own. ---
+  const op = editable && (isProbed(tool) || tool === "pushpull") && !editUntouched() ? panelOp() : null;
   const picked = editable ? joinPick() : null;
   if (at && tree && !op && picked) {
     // A tool Model never opened gets its tree first: the engine builds the join from it.
@@ -599,6 +641,57 @@ async function sendProbe(serial: number, key: string, tree: string, node: NodeId
   setModelPreview(shape && typeof shape !== "string" ? shape : null);
 }
 
+/** P1. Drop a face drag's dry-run. A late answer is ignored. */
+function clearPullPreview() {
+  pullGen += 1;
+  setModelProbe(null);
+  setModelPreview(null);
+}
+
+/** P1. The kernel preview for a face drag, after the pointer has been still. */
+async function probePull(op: ModelOp) {
+  const gen = ++pullGen;
+  pullProbe = true;
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || !pullLiveNow()) return;
+  const node = tree.current;
+  const key = probeName(at.key, node, op);
+  const known = answers.get(key);
+  if (known && !(shaped.has(key) && !previewOf(key))) {
+    if (gen !== pullGen || !pullProbe) return;
+    setModelProbe(known);
+    setModelPreview(previewOf(key));
+    return;
+  }
+  setModelProbe({ phase: "checking" });
+  const body = await treeCall(at.key, node, probeRequest(at.key, node, op, state.stepTolerance));
+  if (gen !== pullGen || !pullProbe || state.stage !== "model") return;
+  const view = probeFromBody(body);
+  if (typeof body.ok === "boolean") remember(key, view);
+  const shape = body.ok === true && body.preview && typeof body.preview === "object" ? decodeSolid(body.preview as Body) : null;
+  if (shape && typeof shape !== "string") {
+    keepPreview(key, shape);
+    shaped.add(key);
+  }
+  if (gen !== pullGen || !pullProbe) return;
+  setModelProbe(view);
+  setModelPreview(shape && typeof shape !== "string" ? shape : null);
+  if (view && view.phase === "done" && !view.ok && view.error) readout(view.error.endsWith(".") ? view.error : `${view.error}.`);
+}
+
+/** P1. Face drag is on in Face mode, on an editable solid, when no other tool is open. */
+function pullLiveNow(): boolean {
+  if (state.stage !== "model" || busy || jumping) return false;
+  const tool = openModelTool();
+  if (tool && tool !== "pushpull") return false;
+  if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") return false;
+  const solid = viewed();
+  if (!solid?.editable) return false;
+  if (lens && !editing) return false;
+  return true;
+}
+
 /** A few checked shapes, by `probeKey`: going back to numbers just checked shows their shape at once. */
 const previews = new Map<string, ParsedSolid>();
 /** The answers that came with a shape, so one whose shape left `previews` is asked again rather than shown without it. */
@@ -683,6 +776,13 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
     }
     case "scale":
       return { kind: "scale", factor: num("#modelFactor") };
+    // --- P1: the panel always moves the selected faces. Alt is the drag, not this field. ---
+    case "pushpull": {
+      const faces = picks.filter((pick) => pick.kind === "face");
+      const distance = num("#modelPull");
+      if (faces.length === 0 || !Number.isFinite(distance) || distance === 0) return null;
+      return moveFacesOp(faces.map((pick) => ({ face: pick.index, distance })));
+    }
     default:
       return null;
   }
@@ -1490,6 +1590,9 @@ async function applyTool() {
     chamfer: `Chamfering ${count}…`,
     hole: "Cutting the hole…",
     scale: "Scaling the solid…",
+    // --- P1 ---
+    faceExtrude: "Pulling the face…",
+    moveFaces: "Pulling the face…",
   };
   await applyOp(op, working[op.kind] ?? "Editing the solid…");
 }
@@ -1611,6 +1714,18 @@ function takeOffPlate(id: string) {
 function leavingNotes(scaled: boolean): string {
   const paint = state.supportPaint.length + state.seamPaint.length + state.reinforcement.length + state.supportEdits.length > 0;
   return `${paint ? " Leaving Model clears this part's support paint." : ""}${scaled && state.partScale !== 1 ? " Placement scale becomes 100%." : ""}`;
+}
+
+/** P1. Apply a face drag. The step just made is what Tab edits. Null when it was not kept. */
+async function applyPull(op: ModelOp): Promise<PullMade | null> {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree) return null;
+  const parent = tree.current;
+  await applyOp(op, "Pulling the face…");
+  const now = modelTrees.get(at.key);
+  if (!now || now.current === parent || state.stage !== "model") return null;
+  return { parent, node: now.current };
 }
 
 function appliedMessage(op: ModelOp, solid: ParsedSolid) {
@@ -1890,6 +2005,68 @@ async function runEdit(run: Editing) {
   const notes = editNotes(modelTrees, latest, [run.node, ...run.replay], (key) => state.plate.objects.find((obj) => obj.modelTree === key)?.name ?? null);
   const plate = leavingNotes([op, ...replayOps].some((step) => step.kind === "scale"));
   present(parsed, [`Updated “${label(ids[0]!)}”${after}. ${about(parsed)}${failure}${plate}`, ...notes].join(" "));
+}
+
+/**
+ * P1. Edit the face step just made: a new sibling, the steps under it replayed.
+ * The history Edit command still refuses these ops until that editor lands.
+ */
+async function editPull(parent: NodeId, node: NodeId, op: ModelOp): Promise<boolean> {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || busy || jumping || !state.mesh || at.objectId !== state.plate.selectedId) return false;
+  const old = tree.nodes.get(node);
+  if (!old || old.parent !== parent || !old.op) return false;
+  const replayIds = replayChain(tree, node, tree.current);
+  const replayOps = replayIds.map((id) => tree.nodes.get(id)?.op).filter((step): step is ModelOp => !!step);
+  if (replayOps.length !== replayIds.length) return false;
+  const twin = builtBranch(tree, parent, op, replayOps);
+  if (twin != null) {
+    const shown = await showNode(ticket, at.objectId, at.key, twin, (solid) => `${opLabel(op)}. ${about(solid)}`);
+    return shown;
+  }
+  let reserved = tree;
+  const ids: NodeId[] = [];
+  while (ids.length < 1 + replayIds.length) {
+    const [next, id] = reserveId(reserved);
+    reserved = next;
+    ids.push(id);
+  }
+  modelTrees.set(at.key, reserved);
+  const renamed = stepIds([node, ...replayIds], ids);
+  const replay = replayOps.map((step, i) => ({ id: ids[i + 1]!, op: renumberedSteps(step, renamed) }));
+  const chord = state.stepTolerance;
+  const mine = ticket;
+  busy = true;
+  syncUndo();
+  readout("Rebuilding the step…");
+  const body = await treeCall(at.key, parent, editRequest(at.key, parent, ids[0]!, op, replay, chord));
+  if (mine === ticket) busy = false;
+  syncUndo();
+  const latest = modelTrees.get(at.key);
+  if (mine !== ticket || state.stage !== "model" || !latest) {
+    if (typeof body.error !== "string") void dropInEngine(at.key, ids[0]!);
+    return false;
+  }
+  if (failed(at.key, body)) return false;
+  const parsed = decodeSolid(body);
+  const built = builtSteps(body.built);
+  if (typeof parsed === "string" || !built?.has(parsed.id)) {
+    void dropInEngine(at.key, ids[0]!);
+    readout(typeof parsed === "string" ? parsed : DAMAGED);
+    return false;
+  }
+  const broken = brokenStep(body.broken);
+  const level = { key: at.key, parent, node: ids[0]!, op, replay, old: [node, ...replayIds] };
+  const steps = forkSteps(latest, level, built, broken);
+  const next = forked(latest, parent, steps, parsed.id);
+  modelTrees.set(at.key, next);
+  keepSolid(at.key, parsed.id, chord, parsed);
+  open = { ...at, solid: parsed };
+  editBack = { key: at.key, tip: parsed.id, back: node, undone: false };
+  const failure = broken ? ` ${sentence(broken.error)}` : "";
+  present(parsed, `${opLabel(steps[0]?.op ?? op)}. ${about(parsed)}${failure}`);
+  return true;
 }
 
 /** An edit's `built`: each step the engine kept with its solid, by id, with its op as stored and its fingerprint. Null when damaged. */

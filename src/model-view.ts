@@ -16,6 +16,7 @@ import type { ContextPart } from "./model-context";
 import { turnCentre, type PrimitiveSpec } from "./model-primitive";
 import { boxUnder, posedBounds, type Affine } from "./model-space";
 import { faceBoundarySegments, faceColor } from "./model-select";
+import { outwardFromMesh } from "./model-blend";
 import { framePose, localPoint, sameWorkplane, type Workplane } from "./workplane";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
@@ -46,7 +47,24 @@ export type ModelGhost =
   | { kind: "blend"; edges: number[]; radius: number }
   | { kind: "measure"; a: Vec3; b: Vec3 }
   /** Another plate object, a join's tool: its plate mesh where it sits in model space, drawn from the grey object's own geometry. */
-  | { kind: "object"; id: string; positions: Float32Array; matrix: Affine };
+  | { kind: "object"; id: string; positions: Float32Array; matrix: Affine }
+  /** P1. A face prism in the solid's own frame, drawn with the solid. */
+  | { kind: "soup"; positions: Float32Array };
+
+/** P1. A pointer event on a face, in model space. `local` is the solid's own frame. */
+export interface FacePointer {
+  phase: "hover" | "down" | "move" | "up" | "click";
+  face: number | null;
+  point: Vec3 | null;
+  local: Vec3 | null;
+  ray: { origin: Vec3; direction: Vec3 };
+  alt: boolean;
+  ctrl: boolean;
+  shift: boolean;
+  meta: boolean;
+  x: number;
+  y: number;
+}
 
 /** A handle moved. `values` go into the handle's fields in order. */
 export interface HandleDrag {
@@ -105,6 +123,16 @@ export interface ModelView {
   setWorkplane(plane: Workplane | null): void;
   /** While on, a picked face is teal, so it is not the ordinary accent selection. */
   setDatumPick(on: boolean): void;
+  /** P1. Pressing a face drags it. Empty space still orbits. Off, faces click as before. */
+  setFaceDrag(on: boolean): void;
+  /** P1. Hover, press, drag, and release on a face. */
+  onFacePointer(cb: (pointer: FacePointer) => void): void;
+  /** P1. A model-space point, in page pixels. Null when it is behind the camera. */
+  projectPoint(at: Vec3): { x: number; y: number } | null;
+  /** P1. A dotted line in model space, or null to hide it. */
+  setAlign(ends: [Vec3, Vec3] | null): void;
+  /** P1. The distance under the pointer, for tests. Null clears it. */
+  setPull(distance: number | null): void;
 }
 
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
@@ -155,6 +183,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   datum.matrixAutoUpdate = false;
   datum.visible = false;
   scene.add(context, posed, datum, ghosts, handleGroup);
+  // --- P1: the dotted line to the face a drag lines up with. ---
+  const alignLine = new THREE.Line(
+    new THREE.BufferGeometry(),
+    new THREE.LineDashedMaterial({ color: 0x8d9780, dashSize: 1.5, gapSize: 1, transparent: true, opacity: 0.9, depthTest: false }),
+  );
+  alignLine.visible = false;
+  alignLine.renderOrder = 4;
+  alignLine.raycast = () => undefined;
+  scene.add(alignLine);
 
   let solid: ModelSolid | null = null;
   /** The open solid's box in model space. */
@@ -195,6 +232,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let overHandle: string | null = null;
   let drag: ActiveDrag | null = null;
   let handleCb: (drag: HandleDrag) => void = () => {};
+  // --- P1 ---
+  let faceDrag = false;
+  let faceCb: (pointer: FacePointer) => void = () => {};
+  let faceDown: { x: number; y: number; pointerId: number; moved: boolean; hit: FaceHit } | null = null;
+  const FACE_SLOP = 4;
   const tip = document.createElement("div");
   tip.className = "model-drag-tip";
   tip.hidden = true;
@@ -612,6 +654,20 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function buildGhost() {
     const current = ghost;
     if (!current) return;
+    // --- P1: the client prism, in the solid's frame. ---
+    if (current.kind === "soup") {
+      if (current.positions.length < 9) return;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(current.positions, 3));
+      geometry.computeVertexNormals();
+      const meshGhost = new THREE.Mesh(geometry, ghostMaterial(0.28));
+      meshGhost.matrixAutoUpdate = false;
+      meshGhost.matrix.copy(posed.matrix);
+      meshGhost.renderOrder = 2;
+      meshGhost.raycast = () => undefined;
+      ghosts.add(meshGhost);
+      return;
+    }
     if (current.kind === "primitive") {
       // A new solid's ghost needs no open solid.
       if (current.mesh.length < 9) return;
@@ -828,6 +884,72 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     kick();
   }
 
+  interface FaceHit {
+    face: number;
+    point: Vec3;
+    local: Vec3;
+  }
+
+  /** P1. The face under the pointer, with the hit in model space and in the solid's frame. */
+  function faceHit(ev: PointerEvent): FaceHit | null {
+    if (!mesh || !solid || mode !== "face") return null;
+    rayAt(ev.clientX, ev.clientY);
+    const hit = raycaster.intersectObject(mesh, false)[0];
+    if (!hit || hit.faceIndex == null) return null;
+    const face = solid.triangles[hit.faceIndex];
+    if (face == null) return null;
+    const point = hit.point;
+    const local = posed.worldToLocal(point.clone());
+    return { face, point: [point.x, point.y, point.z], local: [local.x, local.y, local.z] };
+  }
+
+  function faceEvent(phase: FacePointer["phase"], ev: PointerEvent, hit: FaceHit | null): FacePointer {
+    const ray = rayAt(ev.clientX, ev.clientY);
+    return {
+      phase,
+      face: hit?.face ?? null,
+      point: hit?.point ?? null,
+      local: hit?.local ?? null,
+      ray: { origin: [ray.origin.x, ray.origin.y, ray.origin.z], direction: [ray.direction.x, ray.direction.y, ray.direction.z] },
+      alt: ev.altKey,
+      ctrl: ev.ctrlKey || ev.metaKey,
+      shift: ev.shiftKey,
+      meta: ev.metaKey,
+      x: ev.clientX,
+      y: ev.clientY,
+    };
+  }
+
+  /** P1. Take the press when it lands on a face. False leaves the press for a handle or the orbit. */
+  function beginFace(ev: PointerEvent): boolean {
+    if (!faceDrag || mode !== "face" || ev.button !== 0) return false;
+    const hit = faceHit(ev);
+    if (!hit) return false;
+    ev.stopImmediatePropagation();
+    ev.preventDefault();
+    controls.enabled = false;
+    canvas.setPointerCapture(ev.pointerId);
+    faceDown = { x: ev.clientX, y: ev.clientY, pointerId: ev.pointerId, moved: false, hit };
+    faceCb(faceEvent("down", ev, hit));
+    return true;
+  }
+
+  function finishFace(ev: PointerEvent) {
+    const done = faceDown;
+    faceDown = null;
+    if (!done) return;
+    controls.enabled = true;
+    if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+    const hit = faceHit(ev) ?? done.hit;
+    if (done.moved) faceCb(faceEvent("up", ev, hit));
+    else {
+      faceCb(faceEvent("click", ev, hit));
+      pickCb({ kind: "face", index: hit.face }, ev.shiftKey);
+      setHover({ kind: "face", index: hit.face });
+    }
+    paintHandles();
+  }
+
   function pickFace(ev: PointerEvent): ModelPick | null {
     if (!mesh) return null;
     const rect = canvas.getBoundingClientRect();
@@ -896,6 +1018,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       kick();
       return;
     }
+    // --- P1: a face press is a push, before a handle or an orbit can take it. Empty space still orbits. ---
+    if (beginFace(ev)) return;
     const part = handleAt(ev.clientX, ev.clientY);
     if (part) {
       ev.stopImmediatePropagation();
@@ -912,7 +1036,25 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       if (ev.pointerId === drag.pointerId) moveDrag(ev);
       return;
     }
+    // --- P1 ---
+    if (faceDown && ev.pointerId === faceDown.pointerId) {
+      if (Math.hypot(ev.clientX - faceDown.x, ev.clientY - faceDown.y) > FACE_SLOP) faceDown.moved = true;
+      if (faceDown.moved) {
+        const hit = faceHit(ev) ?? faceDown.hit;
+        faceCb(faceEvent("move", ev, hit));
+        paintHandles();
+      }
+      return;
+    }
     if (down) return;
+    if (faceDrag && mode === "face") {
+      const hit = faceHit(ev);
+      setOverHandle(null);
+      tip.hidden = true;
+      setHover(hit ? { kind: "face", index: hit.face } : null);
+      faceCb(faceEvent("hover", ev, hit));
+      return;
+    }
     const over = handleAt(ev.clientX, ev.clientY);
     setOverHandle(over?.handle.id ?? null);
     if (over) {
@@ -924,6 +1066,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setHover(pickAt(ev));
   });
   const finishDrag = (ev: PointerEvent) => {
+    // --- P1 ---
+    if (faceDown && ev.pointerId === faceDown.pointerId) {
+      finishFace(ev);
+      return;
+    }
     if (!drag || ev.pointerId !== drag.pointerId) return;
     const done = drag;
     drag = null;
@@ -935,8 +1082,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   };
   canvas.addEventListener("pointerup", finishDrag, { capture: true });
   canvas.addEventListener("pointercancel", finishDrag, { capture: true });
-  canvas.addEventListener("pointerleave", () => {
+  canvas.addEventListener("pointerleave", (ev) => {
     setHover(null);
+    if (faceDrag && !faceDown) faceCb(faceEvent("hover", ev, null));
     if (drag) return;
     setOverHandle(null);
     tip.hidden = true;
@@ -1118,6 +1266,45 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       paintLines();
       kick();
     },
+    // --- P1 ---
+    setFaceDrag(on) {
+      faceDrag = on;
+      if (!on) {
+        faceDown = null;
+        delete canvas.dataset.faces;
+      }
+      paintHandles();
+      kick();
+    },
+    onFacePointer(cb) {
+      faceCb = cb;
+    },
+    projectPoint(at) {
+      projected.set(at[0], at[1], at[2]);
+      projected.project(camera);
+      if (projected.z < -1 || projected.z > 1) return null;
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: rect.left + (projected.x * 0.5 + 0.5) * rect.width,
+        y: rect.top + (-projected.y * 0.5 + 0.5) * rect.height,
+      };
+    },
+    setAlign(ends) {
+      if (!ends) {
+        alignLine.visible = false;
+        delete canvas.dataset.align;
+      } else {
+        alignLine.geometry.setFromPoints([new THREE.Vector3(...ends[0]), new THREE.Vector3(...ends[1])]);
+        alignLine.computeLineDistances();
+        alignLine.visible = true;
+        canvas.dataset.align = "1";
+      }
+      kick();
+    },
+    setPull(distance) {
+      if (distance == null || !Number.isFinite(distance)) delete canvas.dataset.pull;
+      else canvas.dataset.pull = String(Math.round(distance * 10000) / 10000);
+    },
   };
 
   /**
@@ -1232,7 +1419,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const on = drag?.handle.id === part.handle.id || (!drag && overHandle === part.handle.id);
       part.material.color.setHex(on ? hot : handleColor(part.handle.color));
     }
-    canvas.style.cursor = drag ? "grabbing" : overHandle ? "grab" : "";
+    canvas.style.cursor = drag || faceDown?.moved ? "grabbing" : overHandle || (faceDrag && hover?.kind === "face") ? "grab" : "";
     setEmphasis(handleParts.some((part) => part.handle.seat.at === "dock" && part.handle.id === (drag?.handle.id ?? overHandle)));
     kick();
   }
@@ -1262,6 +1449,43 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     else if (canvas.dataset.solidScreen !== solidText) canvas.dataset.solidScreen = solidText;
   }
 
+  /** P1. Each face's centre on the canvas and its outward normal in model space: `index:x,y:nx,ny,nz`. */
+  function publishFaces(width: number, height: number) {
+    if (!faceDrag || !solid) {
+      if (canvas.dataset.faces) delete canvas.dataset.faces;
+      return;
+    }
+    const totals = new Map<number, { x: number; y: number; z: number; n: number }>();
+    const pos = solid.positions;
+    const tris = solid.triangles;
+    for (let tri = 0; tri < tris.length; tri += 1) {
+      const face = tris[tri] ?? 0;
+      let bag = totals.get(face);
+      if (!bag) totals.set(face, (bag = { x: 0, y: 0, z: 0, n: 0 }));
+      const base = tri * 9;
+      for (let corner = 0; corner < 3; corner += 1) {
+        bag.x += pos[base + corner * 3] ?? 0;
+        bag.y += pos[base + corner * 3 + 1] ?? 0;
+        bag.z += pos[base + corner * 3 + 2] ?? 0;
+        bag.n += 1;
+      }
+    }
+    const parts: string[] = [];
+    body.updateMatrixWorld(true);
+    for (const [face, bag] of totals) {
+      if (bag.n === 0) continue;
+      const world = body.localToWorld(new THREE.Vector3(bag.x / bag.n, bag.y / bag.n, bag.z / bag.n));
+      const p = world.project(camera);
+      const x = Math.round((p.x * 0.5 + 0.5) * width);
+      const y = Math.round((-p.y * 0.5 + 0.5) * height);
+      const solidNormal = outwardFromMesh(pos, tris, face) ?? [0, 0, 1];
+      const normal = new THREE.Vector3(...solidNormal).transformDirection(body.matrixWorld);
+      parts.push(`${face}:${x},${y}:${normal.x.toFixed(3)},${normal.y.toFixed(3)},${normal.z.toFixed(3)}`);
+    }
+    const text = parts.join(" ");
+    if (canvas.dataset.faces !== text) canvas.dataset.faces = text;
+  }
+
   function screenRect(box: THREE.Box3, width: number, height: number): string {
     let minX = Infinity;
     let minY = Infinity;
@@ -1285,6 +1509,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
     publishScreenBoxes(width, height);
+    publishFaces(width, height);
     let dockSize = 0;
     if (handleParts.some((part) => part.handle.seat.at === "dock")) {
       camera.updateMatrixWorld();
