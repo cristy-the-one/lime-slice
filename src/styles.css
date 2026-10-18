@@ -590,7 +590,9 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   white-space: nowrap;
 }
 .model-tool .ico { flex: 0 0 auto; }
-/* Icon only, its name in the tip, so the bar fits beside Bed at 1440 px: STEP, Undo, Redo and Bed always, New solid while a solid's tools show. */
+/* A hair tighter than a labelled tool, so one more icon still leaves room for a pick chip at 1440 px. */
+.model-tool.is-icon { padding-inline: 4px; }
+/* Icon only, its name in the tip, so the bar fits beside Bed at 1440 px: STEP, Undo, Redo and Bed always, New solid while a solid's tools show, and Push/Pull. */
 .model-tool.is-icon .model-tool-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .model-tool:disabled { opacity: 0.4; }
 .model-tool:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--surface-3); color: var(--text); }

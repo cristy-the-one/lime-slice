@@ -250,8 +250,8 @@ fn a_cylinder_reports_its_radius_and_a_box_does_not() {
     assert!(face["axis"].is_array(), "{face}");
     assert!(face["axisPoint"].is_array(), "{face}");
 
-    let box = call(json!({ "call": "open", "key": "plain", "box": [20.0, 20.0, 10.0] }));
-    for face in box["faces"].as_array().unwrap() {
+    let block = call(json!({ "call": "open", "key": "plain", "box": [20.0, 20.0, 10.0] }));
+    for face in block["faces"].as_array().unwrap() {
         assert!(face.get("radiusMm").is_none(), "a box face has no radius: {face}");
         assert!(face.get("surface").is_none(), "a box face has no surface: {face}");
     }
