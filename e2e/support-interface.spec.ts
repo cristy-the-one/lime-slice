@@ -27,10 +27,31 @@ async function quiet(page: Page) {
   return bodies;
 }
 
+/**
+ * The request is recorded before the reply rebuilds the settings panel.
+ * Returning here used to let the next edit run during that rebuild.
+ */
 async function sliceMatching(page: Page, bodies: SliceBody[], match: (body: SliceBody) => boolean) {
+  const slice = page.locator("#slice");
   const start = bodies.length;
-  await page.locator("#slice").click();
+  await slice.click();
   await expect.poll(() => bodies.slice(start).some(match)).toBe(true);
+  await expect(slice).toBeEnabled({ timeout: 0 });
+}
+
+/**
+ * A number fill focuses, then types on a later turn. The slice reply, and a
+ * quiet refresh, rebuild the settings panel; a rebuild between those turns
+ * drops the text and Slice sends the previous value. Retry until the field
+ * shows what was stored.
+ */
+async function fillNumber(page: Page, id: string, value: string) {
+  const input = page.locator(`#${id}`);
+  await expect(async () => {
+    await expect(page.locator("#slice")).toBeEnabled();
+    await input.fill(value);
+    await expect(input).toHaveValue(value, { timeout: 250 });
+  }).toPass();
 }
 
 test("support gaps and a tree brim stay off a default slice and are sent when set", async ({ page }) => {
@@ -52,26 +73,26 @@ test("support gaps and a tree brim stay off a default slice and are sent when se
 
   await setSupports(page, "auto");
   await expect(page.locator("#szgap")).toBeVisible();
-  await page.locator("#szgap").fill("0.35");
+  await fillNumber(page, "szgap", "0.35");
   await sliceMatching(page, bodies, (body) => body.supports === true && body.supportZGapMm === 0.35 && body.supportTreeBrimMm === undefined);
 
-  await page.locator("#sxygap").fill("0.9");
+  await fillNumber(page, "sxygap", "0.9");
   await sliceMatching(page, bodies, (body) => body.supportXyGapMm === 0.9);
 
-  await page.locator("#sifacel").fill("2");
+  await fillNumber(page, "sifacel", "2");
   await sliceMatching(page, bodies, (body) => body.supportInterfaceLayers === 2);
 
-  await page.locator("#stbrim").fill("4");
+  await fillNumber(page, "stbrim", "4");
   await sliceMatching(page, bodies, (body) => body.supportStyle === "tree" && body.supportTreeBrimMm === 4);
 
   await page.locator("#sstyle").selectOption("grid");
   await sliceMatching(page, bodies, (body) => body.supportStyle === "grid" && body.supportTreeBrimMm === undefined && body.supportZGapMm === 0.35);
 
   await page.locator("#sstyle").selectOption("tree");
-  await page.locator("#szgap").fill("0");
-  await page.locator("#sxygap").fill("0");
-  await page.locator("#sifacel").fill("0");
-  await page.locator("#stbrim").fill("0");
+  await fillNumber(page, "szgap", "0");
+  await fillNumber(page, "sxygap", "0");
+  await fillNumber(page, "sifacel", "0");
+  await fillNumber(page, "stbrim", "0");
   await sliceMatching(
     page,
     bodies,
