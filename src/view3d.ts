@@ -18,6 +18,8 @@ import { sameBox, type Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { onMeasureChange } from "./measure-pref";
+import { downscaleRgba, encodeRgbaPng, rgbaIsBlank } from "./png-rgba";
+import { THUMB_MAX_BYTES, THUMB_MAX_EDGE } from "./project-thumb";
 
 export interface PreviewBuffers extends PreviewGeometry {
   span: number;
@@ -82,6 +84,11 @@ export interface SliceView3d {
   /** Crosshair cursor, and only then `onPick` fires. */
   setPicking(on: boolean): void;
   resize(): void;
+  /**
+   * One frame of this view, at the current camera, into a PNG. The drawing buffer is not read back:
+   * the frame is rendered into a target. Null when the view is empty or the pixels will not encode.
+   */
+  captureThumbnail(): Promise<Uint8Array | null>;
 }
 
 const noopView: SliceView3d = {
@@ -108,6 +115,7 @@ const noopView: SliceView3d = {
   onPick() {},
   setPicking() {},
   resize() {},
+  captureThumbnail: () => Promise.resolve(null),
 };
 
 export function createSliceView(canvas: HTMLCanvasElement): SliceView3d {
@@ -695,8 +703,49 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     return objectGroups[o];
   }
 
+  async function captureThumbnail(): Promise<Uint8Array | null> {
+    const rect = canvas.getBoundingClientRect();
+    const aspect = rect.width > 1 && rect.height > 1 ? rect.width / rect.height : 1;
+    const width = aspect >= 1 ? THUMB_MAX_EDGE : Math.max(1, Math.round(THUMB_MAX_EDGE * aspect));
+    const height = aspect >= 1 ? Math.max(1, Math.round(THUMB_MAX_EDGE / aspect)) : THUMB_MAX_EDGE;
+    const target = new THREE.WebGLRenderTarget(width, height, { format: THREE.RGBAFormat, type: THREE.UnsignedByteType, depthBuffer: true });
+    const previous = renderer.getRenderTarget();
+    const clear = renderer.getClearColor(new THREE.Color());
+    const clearAlpha = renderer.getClearAlpha();
+    const aspectBefore = camera.aspect;
+    try {
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setClearColor(0x000000, 0);
+      renderer.setRenderTarget(target);
+      renderer.clear();
+      renderer.render(scene, camera);
+      const pixels = new Uint8Array(width * height * 4);
+      renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+      const flipped = new Uint8Array(pixels.length);
+      const stride = width * 4;
+      for (let y = 0; y < height; y += 1) flipped.set(pixels.subarray((height - 1 - y) * stride, (height - y) * stride), y * stride);
+      if (rgbaIsBlank(flipped)) return null;
+      let png = await encodeRgbaPng(flipped, width, height);
+      if (png && png.byteLength > THUMB_MAX_BYTES) {
+        const smaller = downscaleRgba(flipped, width, height, 256);
+        png = await encodeRgbaPng(smaller.rgba, smaller.width, smaller.height);
+      }
+      return png && png.byteLength <= THUMB_MAX_BYTES ? png : null;
+    } catch {
+      return null;
+    } finally {
+      camera.aspect = aspectBefore;
+      camera.updateProjectionMatrix();
+      renderer.setRenderTarget(previous);
+      renderer.setClearColor(clear, clearAlpha);
+      target.dispose();
+    }
+  }
+
   return {
     resize,
+    captureThumbnail,
     setBed(x, y, z) {
       bedX = x;
       bedY = y;

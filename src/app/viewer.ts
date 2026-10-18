@@ -4,6 +4,7 @@ import { createPrepareView } from "../prepare-view";
 import { createModelView, type ModelView } from "../model-view";
 import { bindModelView, leaveModel, showModel } from "./model";
 import { createSliceView, type SliceView3d } from "../view3d";
+import { setPlateThumbnailCapture } from "./thumb-capture";
 import { FEATURE_LABEL, FEATURE_COLOR, colorForPath } from "../colors";
 import { legendMarkup } from "../ui/legend";
 import { formatDuration } from "../format";
@@ -1107,6 +1108,16 @@ export function selectedObjectIndex(): number {
   return Math.max(0, at);
 }
 
+/** Drop the preview layers and the gizmo buffers from the previous slice. */
+export function dropShownPreview() {
+  shownPreview = null;
+  session.shown = null;
+  session.geomReady = null;
+  document.querySelector<HTMLCanvasElement>("#view3d")?.removeAttribute("data-preview-token");
+  fx.view3d?.setBuffers(null);
+  fx.view3d?.setSection(null);
+}
+
 /** Shows the worker's buffers once they and the result they belong to have both arrived. */
 export function applyGeom() {
   const result = state.result;
@@ -1168,6 +1179,7 @@ export function mountViews() {
   const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
   const ctx = canvas.getContext("2d")!;
   view3d = createSliceView(document.querySelector<HTMLCanvasElement>("#view3d")!);
+  setPlateThumbnailCapture(() => view3d.captureThumbnail());
   prepare = createPrepareView(document.querySelector<HTMLCanvasElement>("#prepare")!);
   model = createModelView(document.querySelector<HTMLCanvasElement>("#model")!);
   fx.model = model;
@@ -1333,4 +1345,4 @@ export function mountViews() {
   view3d.onPlane((at) => commitSplit(splitOnBed(at)));
 }
 
-Object.assign(fx, { paintLegend, paintSlider, loadGcode, layerGcode, pathsOf, movesNow, paintPlayback, paintGcode, syncGcodeHighlight, paintSpark, stopPlay, togglePlay, scrub, setView, setStage, setHelp, placedAxisBounds, realignSplit, syncCut, commitSplit, syncSplitField, paintGizmoReadout, syncPlanes, paintRegionOverlay, previewMap, canvasPx, resize, previewCenter, sectionLimit, activeSection, sectionKeeps, paintSectionChrome, draw, segmentStart, applyGeom, sync3d, fitNarrow, stepGizmo, syncPreviewPending });
+Object.assign(fx, { paintLegend, paintSlider, loadGcode, layerGcode, pathsOf, movesNow, paintPlayback, paintGcode, syncGcodeHighlight, paintSpark, stopPlay, togglePlay, scrub, setView, setStage, setHelp, placedAxisBounds, realignSplit, syncCut, commitSplit, syncSplitField, paintGizmoReadout, syncPlanes, paintRegionOverlay, previewMap, canvasPx, resize, previewCenter, sectionLimit, activeSection, sectionKeeps, paintSectionChrome, draw, segmentStart, applyGeom, dropShownPreview, sync3d, fitNarrow, stepGizmo, syncPreviewPending });

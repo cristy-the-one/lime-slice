@@ -13,6 +13,8 @@ import {
 import { dropEmptyReinforce } from "../reinforcement.ts";
 import { base64ToBytes } from "../base64.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile, type ToolTree } from "../project.ts";
+import { geometryHash, projectSummary, thumbnailFromPng, type ProjectThumbnail } from "../project-thumb.ts";
+import { capturePlatePng } from "./thumb-capture.ts";
 import { saveProfile, type PrinterProfile } from "../profiles.ts";
 import { fanDefaults, projectFan, withFan } from "../fan.ts";
 import { selection } from "../ui/machine-library.ts";
@@ -25,9 +27,13 @@ import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.t
 import { copyWorkplane } from "../workplane.ts";
 import { solidFileName } from "../model-request.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
-import { applyPreset, currentPreset, needsEngine, renderChrome } from "./settings.ts";
+import { applyPreset, currentPreset, needsEngine, renderChrome, stale } from "./settings.ts";
 import { customGcodeNotice } from "../layer-actions.ts";
+import { setProjectTitle } from "./project-title.ts";
 import { session, state } from "./state.ts";
+
+/** A picture opened with the file. Kept when a later save cannot draw and the geometry is unchanged. */
+let keptThumb: ProjectThumbnail | undefined;
 
 export async function saveCurrentProject() {
   if (!state.mesh) {
@@ -69,9 +75,19 @@ export async function saveCurrentProject() {
     if (state.sequentialClearance > 0) project.sequentialClearanceMm = state.sequentialClearance;
     if (state.sequentialGantry > 0) project.sequentialGantryMm = state.sequentialGantry;
   }
+  const estimate = !stale() && state.result?.estimate ? state.result.estimate : undefined;
+  project.summary = projectSummary(project, estimate ? { seconds: estimate.seconds, grams: estimate.filamentG } : undefined);
+  const hash = geometryHash(project);
+  const png = await capturePlatePng();
+  if (png) {
+    const drawn = thumbnailFromPng(png, hash, `lime-slice/${__APP_VERSION__}`);
+    if (drawn) project.thumbnail = drawn;
+  }
+  if (!project.thumbnail && keptThumb?.meshHash === hash) project.thumbnail = keptThumb;
   const name = `${state.mesh.name.replace(/\.(stl|3mf|step|stp|lime)$/i, "")}.lime`;
   const wrote = await saveProjectText(serializeProject(project), name);
   if (!wrote) return;
+  setProjectTitle(name);
   markProjectClean();
   if (history.unsaved.length > 0) {
     pushToast(`The Model history of ${history.unsaved.join(", ")} could not be saved, so the part is saved without it.`, "info");
@@ -85,7 +101,11 @@ export async function openProjectFile(file: File) {
     pushToast(parsed.message, "error", { label: "Retry", run: openProjectPicker });
     return;
   }
-  await restoreProject(parsed.project);
+  if (await restoreProject(parsed.project)) setProjectTitle(file.name);
+}
+
+export function forgetSavedThumbnail() {
+  keptThumb = undefined;
 }
 
 /** A file from File > Open, a launch argument, or the MCP bridge: a project, or a mesh that replaces the plate. */
@@ -129,9 +149,11 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   }
   session.projectRestoring = true;
   const unread = [...(project.unreadHistory ?? [])];
+  const doc = session.docEpoch;
   try {
     const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     await adoptBytes(project.mesh.name, copy);
+    if (session.docEpoch !== doc) return false;
     state.orient = project.placement.orient;
     state.partScale = project.placement.scale;
     state.centered = project.placement.centered;
@@ -154,6 +176,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
         pushToast(loaded, "error", { label: "Retry", run: openProjectPicker });
         return false;
       }
+      if (session.docEpoch !== doc) return false;
       state.plate = loaded.plate;
       applySelectedToState(loaded.plate);
       adoptSavedTrees(loaded.trees, project.modelTools ?? []);
@@ -166,6 +189,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     place("load");
     session.supportUi?.refresh();
     renderChrome();
+    keptThumb = project.thumbnail;
     markProjectClean();
     if (unread.length > 0) {
       pushToast(`The Model history of ${unread.join(", ")} could not be read, so it starts again from the saved part.`, "info");

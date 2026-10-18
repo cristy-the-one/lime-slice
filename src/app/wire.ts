@@ -11,6 +11,7 @@ import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCa
 import { planFileDrop } from "../file-drop";
 import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, openPickedFile, saveCurrentProject } from "./project-io";
+import { newProject } from "./new-project";
 import { pickModelFile } from "../platform";
 import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
@@ -323,7 +324,8 @@ export function wireApp() {
     if (!button) return;
     closeFileMenu();
     const action = button.dataset.fileAction;
-    if (action === "open") pickModelFile();
+    if (action === "new") void newProject();
+    else if (action === "open") pickModelFile();
     else if (action === "save") void saveCurrentProject();
     else if (button.dataset.sample) void loadNamed(button.dataset.sample).catch(fail);
     else if (button.id === "export3mf") void export3mf();

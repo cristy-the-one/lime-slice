@@ -14,6 +14,7 @@ import type { SliceResponse } from "./state";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
 import { confirmDiscard, markProjectDirty } from "../project-dirty";
+import { setProjectTitle } from "./project-title";
 import { pushToast } from "../ui/toasts";
 import { clearEdits } from "../support-edit-list";
 import { clearEditHistory, flushEdit, noteEdit } from "./history";
@@ -37,6 +38,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
   if (!session.projectRestoring && !confirmDiscard()) return;
   session.meshEpoch += 1;
   session.chosenZ = null;
+  if (!session.projectRestoring) setProjectTitle(name);
   state.mesh = { name, bytes };
   state.error = "";
   state.orient = ID_MATRIX;

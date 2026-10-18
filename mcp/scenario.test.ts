@@ -255,6 +255,11 @@ if (!ir3 || !pla) {
     if (again.ok) {
       const left = structuredClone(again.project);
       const right = structuredClone(richParsed.project);
+      // A save may add a preview. The rest of the project is what this check is about.
+      delete left.thumbnail;
+      delete left.summary;
+      delete right.thumbnail;
+      delete right.summary;
       left.placement = right.placement;
       left.objects?.forEach((obj, index) => {
         const orig = right.objects?.[index];

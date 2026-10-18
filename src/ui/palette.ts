@@ -14,6 +14,7 @@ import {
   selectedProfileId,
 } from "../app/profile-actions";
 import { removePlateObject } from "../app/plate-actions";
+import { newProject } from "../app/new-project";
 import { saveCurrentProject } from "../app/project-io";
 import { clearSettingsSearch, commitTypedFields, focusSettingsSearch, revealPrinterDetails } from "../app/settings";
 import { state } from "../app/state";
@@ -274,6 +275,9 @@ export function runCommand(id: string) {
       return;
     case "help-close":
       click("#helpClose");
+      return;
+    case "new-project":
+      void newProject();
       return;
     case "open":
       pickModelFile();

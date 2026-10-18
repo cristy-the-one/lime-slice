@@ -7,11 +7,13 @@ members = [
     "crates/lime-model-occt",
     "crates/lime-model-load",
     "crates/lime-mcp-engine",
+    "crates/lime-preview",
+    "crates/lime-shell",
     "src-tauri",
 ]
 
 [workspace.package]
-version = "2.7.0"
+version = "2.8.0"
 edition = "2021"
 license = "MIT"
 publish = false

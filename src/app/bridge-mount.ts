@@ -163,6 +163,17 @@ async function announce(): Promise<void> {
   }
 }
 
+/** Drop the mirrored plate so a new document does not keep the previous MCP session. */
+export function resetBridgeMirror(): void {
+  waiting.splice(0, waiting.length);
+  seen = { session: "", seq: 0 };
+  owned = new Set();
+  lastMissing = "";
+  if (timer !== undefined) clearTimeout(timer);
+  timer = undefined;
+  void announce();
+}
+
 export function mountBridge(): void {
   if (!isTauri()) return;
   void import("@tauri-apps/api/event").then(({ listen }) => {

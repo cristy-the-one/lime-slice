@@ -1,6 +1,6 @@
 # Lime Slice
 
-Lime Slice 2.7.0 is a slicer for filament printers. Open an STL, 3MF, or STEP file, set it on the build plate, and slice it to G-code. A Rust planner builds the toolpaths. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine. STEP import uses Open CASCADE when its optional bridge is installed; builds without it use truck. Version 2.7.0 saves Model solids in Open CASCADE's binary format (`.lime` version 3), so a saved part opens in Model in seconds, and the MCP server works straight from the installer.
+Lime Slice 2.8.0 is a slicer for filament printers. Open an STL, 3MF, or STEP file, set it on the build plate, and slice it to G-code. A Rust planner builds the toolpaths. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine. STEP import uses Open CASCADE when its optional bridge is installed; builds without it use truck. Version 2.8.0 saves Model solids in Open CASCADE's binary format (`.lime` version 3), so a saved part opens in Model in seconds, and the MCP server works straight from the installer.
 
 **Prepare** puts the model on the plate. Move, turn, and scale it, then choose a strategy: speed, efficiency, toughness, or a blend by weight, by layer, or by region. Each strategy is a real set of walls, infill, speed, acceleration, seam, and retraction.
 
@@ -29,6 +29,10 @@ Lime Slice 2.7.0 is a slicer for filament printers. Open an STL, 3MF, or STEP fi
 **MCP server.** An LLM client such as Claude can drive the slicer: import or build a part, edit it in Model, place it, change settings, slice, and write G-code. With the live bridge on, the open window shows the same plate as the session changes it, and `app_open` opens the session's project in the app. See [MCP server](#mcp-server).
 
 **Opening files.** The desktop app opens a `.lime`, `.stl`, `.3mf`, or `.step` file named on its command line (`lime-slice-desktop.exe duck.lime`). The installer registers `.lime`, so a double-click opens the project. Starting the app again while it is open hands the file to the open window instead of starting a second one, and the window asks before dropping unsaved changes, as File > Open does.
+
+**New project.** File > New project, Ctrl+N, or the same entry in the compact menu starts a blank document without restarting. The plate, the slice, Model, undo, and the file name are cleared. Settings and the printer go back to what a fresh window shows. If the open project has unsaved changes, the same dirty flag as Open asks Save, Don't save, or Cancel. The title bar says Untitled until a file is opened or saved.
+
+**Explorer preview.** A saved `.lime` can carry a small PNG and a one-line summary, still as version 3 JSON. Windows Explorer can show that picture. See [docs/lime-explorer-preview.md](docs/lime-explorer-preview.md).
 
 ## Screenshots
 
@@ -311,7 +315,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (2.7.0). Publishing that draft is a separate step. Draft releases through v1.8.0 are already on the repository.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (2.8.0). Publishing that draft is a separate step. Draft releases through v1.8.0 are already on the repository.
 
 ## Headless slice and bench
 

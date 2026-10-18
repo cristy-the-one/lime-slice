@@ -13,6 +13,8 @@ export interface WorkerRequest {
   token?: string;
   parseOnly?: string;
   cancel?: boolean;
+  /** Drop the mesh kept for the next slice of the same file. */
+  dropMesh?: boolean;
   /** Port to the geometry worker, sent once at startup. */
   geomPort?: MessagePort;
 }
@@ -31,6 +33,10 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   if (msg.cancel) {
     jobs.get(msg.id)?.abort();
     jobs.delete(msg.id);
+    return;
+  }
+  if (msg.dropMesh) {
+    mesh = { key: "", b64: "" };
     return;
   }
   if (msg.parseOnly != null) {

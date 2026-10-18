@@ -101,6 +101,8 @@ export interface RenderOptions {
   faces?: ArrayLike<number>;
   /** Only the side of the plane the normal points away from is drawn; the inside shows where it is cut, in red. */
   section?: { point: Vec; normal: Vec };
+  /** Empty pixels stay transparent (RGBA). The default preview is opaque RGB, which `render_view` keeps. */
+  transparent?: boolean;
 }
 
 /** The colour the inside of a part shows where a section cuts it. */
@@ -261,13 +263,16 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   }
   if (ghost) draw(ghost, ghostDepth, ghostShade);
   const ink = edgeInk(positions, project, toPixel, depth, width, height, fit, eye, section);
-  const raw = new Uint8Array((width * 3 + 1) * height);
+  const transparent = options.transparent === true;
+  const channels = transparent ? 4 : 3;
+  const raw = new Uint8Array((width * channels + 1) * height);
   for (let y = 0; y < height; y += 1) {
-    const row = y * (width * 3 + 1);
+    const row = y * (width * channels + 1);
     raw[row] = 0;
     for (let x = 0; x < width; x += 1) {
-      const at = row + 1 + x * 3;
+      const at = row + 1 + x * channels;
       const pixel = y * width + x;
+      if (transparent && color[pixel]! === 0 && ghostShade[pixel]! === 0) continue;
       const shade = color[pixel]! || 248;
       const dark = 1 - 0.78 * ink[pixel]! / 255;
       let rgb: Vec = [Math.round(shade * dark), Math.round(shade * dark), Math.round(Math.min(255, shade + 8) * dark)];
@@ -288,6 +293,7 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
       raw[at] = rgb[0];
       raw[at + 1] = rgb[1];
       raw[at + 2] = rgb[2];
+      if (transparent) raw[at + 3] = 255;
     }
   }
   const ihdr = new Uint8Array(13);
@@ -295,7 +301,7 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   view.setUint32(0, width);
   view.setUint32(4, height);
   ihdr[8] = 8;
-  ihdr[9] = 2;
+  ihdr[9] = transparent ? 6 : 2;
   const signature = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const parts = [signature, chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", new Uint8Array())];
   const png = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
