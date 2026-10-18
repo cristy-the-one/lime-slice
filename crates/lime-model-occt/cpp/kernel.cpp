@@ -520,8 +520,8 @@ Mesh tessellate(Held& held, double chord) {
         g_stats.meshes += 1;
         const Timed timed(g_stats.mesh_us);
         // In parallel: faces mesh apart, after their shared edges, so the mesh is the same as one thread's.
-        BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_True);
-        mesher.Perform();
+        // The constructor meshes; a second `Perform` only checked every face again.
+        const BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_True);
         held.meshed = chord;
     }
     const Timed timed(g_stats.readout_us);
