@@ -34,7 +34,7 @@ import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, un
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
-import { savedTree, loadedTree } from "../src/model-tree-file.ts";
+import { savedTree, loadedTree, withSavedNames } from "../src/model-tree-file.ts";
 import { addRange, addVolume, emptyOverrides, freshOverrideId, removeRange, removeVolume, type OverrideDocument, type SettingOverride } from "../src/overrides.ts";
 import { appendEdit, editRequestFields } from "../src/support-edit-list.ts";
 import type { EditEntry } from "../src/support-edit-list.ts";
@@ -1282,7 +1282,7 @@ export class Session {
     const stepRoot = root.kind === "step" && root.bytes ? { kind: "step" as const, name: root.name, bytes: root.bytes } : root.kind === "primitive" || root.kind === "feature" ? root : null;
     if (!stepRoot) return null;
     const objectKey = (id: string) => this.objects.find((row) => row.id === id)?.tree?.key ?? (this.find(id) ? `mcp-${id}` : undefined);
-    obj.tree = loadedTree(saved, key, stepRoot, obj.name, null, objectKey);
+    obj.tree = withSavedNames(loadedTree(saved, key, stepRoot, obj.name, null, objectKey));
     obj.platedNode = obj.tree.committed;
     // A file this server saved before 2.5.1 kept a Model solid's STEP as its plate mesh, which the slicer meshed with
     // truck: a loft could come back as a sheet a metre across. Such a plate takes the kernel's mesh of the committed

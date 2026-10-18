@@ -6,7 +6,7 @@
 import { formatMm } from "./model-plane.ts";
 import type { PlaceFields } from "./model-space.ts";
 import type { ToolLink } from "./model-edit.ts";
-import { ROOT, childrenOf, pathTo, subtree, toolUser, type JoinOp, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
+import { ROOT, childrenOf, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
 
 /** Where a row sits against the shown step: before it in its history, it, after it on the branch Redo follows, or elsewhere. */
 export type RowState = "past" | "current" | "redo" | "other";
@@ -73,6 +73,26 @@ export interface HistoryRow {
   blocked: boolean;
   /** The plate holds this step while the view shows another. */
   plate: boolean;
+  /** The step this row was built on. The root has none. */
+  parent: NodeId | null;
+  /**
+   * Set when this row is part of a folded MCP composite (`prefix k/n`).
+   * A collapsed run is one row; an expanded run marks its first step so it can fold again.
+   */
+  fold?: FoldMark;
+}
+
+/** A collapsible run of steps named `prefix 1/n` … `prefix n/n`. */
+export interface FoldMark {
+  id: string;
+  /** The collapsed stand-in, or the first step while the run is open. */
+  head: boolean;
+  expanded: boolean;
+  keys: RowKey[];
+  /** The last step: Undo from here lands before the first, and a click shows it. */
+  lastKey: RowKey;
+  /** The member on screen, when the view is inside this run. */
+  shownLabel?: string;
 }
 
 export interface HistoryLayout {
@@ -252,6 +272,7 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
         ...text(node),
         blocked,
         plate: false,
+        parent: node.parent,
       });
       owns.push(key);
       if (node.broken) blocked = true;
@@ -303,6 +324,7 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
       ...text(node),
       blocked: brokenAbove.has(id),
       plate: id === tree.committed && key !== shownKey,
+      parent: node.parent,
     });
   }
   return { rows, lanes, main };
@@ -362,6 +384,10 @@ export type HistoryAction =
   | { kind: "rename"; id: RowKey }
   | { kind: "drop"; id: RowKey }
   | { kind: "menu"; id: RowKey }
+  /** Open a folded composite so its steps show. */
+  | { kind: "expand"; id: string }
+  /** Fold a composite back into one row. */
+  | { kind: "collapse"; id: string }
   /** Back to the canvas. */
   | { kind: "leave" };
 
@@ -399,15 +425,20 @@ export function historyKey(ev: HistoryKey, tree: ModelTree, layout: HistoryLayou
     case "End":
       return move(keys.at(-1));
     case "ArrowLeft":
+      // An open composite folds on Left from its first step. Elsewhere Left still switches branches.
+      if (row.fold?.head && row.fold.expanded) return { kind: "collapse", id: row.fold.id };
       return move(row.via.length > 0 ? rowKey(row.via.slice(0, -1), row.via.at(-1)!) : branch(-1));
     case "ArrowRight":
+      if (row.fold?.head && !row.fold.expanded) return { kind: "expand", id: row.fold.id };
       return move(row.owns.length > 0 ? row.owns.at(-1) : branch(1));
     case "Enter":
     case " ":
-      return { kind: "jump", to: focused };
+      return { kind: "jump", to: row.fold && !row.fold.expanded ? row.fold.lastKey : focused };
     case "F2":
+      if (row.fold && !row.fold.expanded) return null;
       return { kind: "rename", id: focused };
     case "Delete":
+      if (row.fold && !row.fold.expanded) return null;
       return { kind: "drop", id: focused };
     case "F10":
       return ev.shiftKey ? { kind: "menu", id: focused } : null;
@@ -436,4 +467,226 @@ export function positionText(fields: PlaceFields): string {
     if (text !== "0") parts.push(`Turn ${name} ${text}°`);
   }
   return parts.length === 0 ? "At file position" : parts.join(" · ");
+}
+
+// --- A8. MCP composites arrive as many rows named "prefix k/n" until they are stored as one group.
+// Consecutive rows that run 1/n … n/n fold into one collapsible row. The shown step stays a node. ---
+
+/** "rim leaves 3/12" → { prefix: "rim leaves", k: 3, n: 12 }. A single step (n < 2) is not a run. */
+export function pieceLabel(text: string): { prefix: string; k: number; n: number } | null {
+  const match = /^(.+) (\d+)\/(\d+)$/.exec(text.trim());
+  if (!match) return null;
+  const prefix = match[1]!.trim();
+  const k = Number(match[2]);
+  const n = Number(match[3]);
+  if (!prefix || !Number.isInteger(k) || !Number.isInteger(n) || n < 2 || k < 1 || k > n) return null;
+  return { prefix, k, n };
+}
+
+/** The row a folded composite shows: "rim leaves · 12 steps". */
+export function foldTitle(prefix: string, n: number): string {
+  return `${prefix} · ${n} steps`;
+}
+
+export interface HistoryFold {
+  id: string;
+  prefix: string;
+  n: number;
+  label: string;
+  keys: RowKey[];
+  first: NodeId;
+  last: NodeId;
+}
+
+/** Consecutive rows on one chain whose names run `prefix 1/n` … `prefix n/n`. */
+export function historyFolds(rows: readonly HistoryRow[]): HistoryFold[] {
+  const folds: HistoryFold[] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const start = pieceLabel(rows[i]!.label);
+    if (!start || start.k !== 1) {
+      i += 1;
+      continue;
+    }
+    const { prefix, n } = start;
+    if (i + n > rows.length) {
+      i += 1;
+      continue;
+    }
+    let ok = true;
+    for (let k = 1; k <= n; k += 1) {
+      const row = rows[i + k - 1]!;
+      const got = pieceLabel(row.label);
+      if (!got || got.prefix !== prefix || got.n !== n || got.k !== k) {
+        ok = false;
+        break;
+      }
+      if (k > 1) {
+        const prev = rows[i + k - 2]!;
+        if (row.parent !== prev.id || row.tree !== prev.tree || row.via.join("/") !== prev.via.join("/")) {
+          ok = false;
+          break;
+        }
+      }
+    }
+    if (!ok) {
+      i += 1;
+      continue;
+    }
+    const members = rows.slice(i, i + n);
+    const first = members[0]!;
+    folds.push({
+      id: `fold:${first.key}`,
+      prefix,
+      n,
+      label: foldTitle(prefix, n),
+      keys: members.map((row) => row.key),
+      first: first.id,
+      last: members[n - 1]!.id,
+    });
+    i += n;
+  }
+  return folds;
+}
+
+/** The rows to draw: a collapsed run is one row, an open run keeps its steps and marks the first. */
+export function presentedRows(rows: readonly HistoryRow[], open: ReadonlySet<string>): HistoryRow[] {
+  const folds = historyFolds(rows);
+  const out: HistoryRow[] = [];
+  const hidden = new Set<RowKey>();
+  for (const fold of folds) if (!open.has(fold.id)) for (const key of fold.keys) hidden.add(key);
+  for (const row of rows) {
+    const fold = folds.find((item) => item.keys[0] === row.key);
+    if (fold && !open.has(fold.id)) {
+      out.push(collapsedFold(rows, fold));
+      continue;
+    }
+    if (hidden.has(row.key)) continue;
+    if (fold && open.has(fold.id)) out.push({ ...row, fold: { id: fold.id, head: true, expanded: true, keys: fold.keys, lastKey: fold.keys[fold.keys.length - 1]! } });
+    else out.push(row);
+  }
+  return out;
+}
+
+function collapsedFold(rows: readonly HistoryRow[], fold: HistoryFold): HistoryRow {
+  const members = fold.keys.map((key) => rows.find((row) => row.key === key)!);
+  const first = members[0]!;
+  const last = members[members.length - 1]!;
+  const shown = members.find((row) => row.state === "current");
+  const broken = members.find((row) => row.broken);
+  return {
+    ...first,
+    key: fold.id,
+    id: (shown ?? last).id,
+    label: fold.label,
+    opLabel: shown ? `Showing ${shown.label}` : null,
+    down: last.down,
+    forks: last.forks,
+    fork: last.fork,
+    owns: [],
+    merges: first.merges,
+    state: shown ? "current" : members.every((row) => row.state === "past") ? "past" : members.every((row) => row.state === "redo") ? "redo" : members.every((row) => row.state === "other") ? "other" : "past",
+    broken: broken?.broken ?? null,
+    blocked: first.blocked,
+    plate: members.some((row) => row.plate),
+    toolStart: false,
+    fold: { id: fold.id, head: true, expanded: false, keys: fold.keys, lastKey: last.key, shownLabel: shown?.label },
+  };
+}
+
+/** A join whose tool tree is open draws a lane, which would split the run. */
+function toolLaneOpen(node: ModelNode, trees: ReadonlyMap<string, ModelTree> | undefined): boolean {
+  const op = node.op;
+  if (op?.kind !== "join" || !trees) return false;
+  return trees.get(op.tool.key)?.nodes.has(op.tool.node) ?? false;
+}
+
+/**
+ * The run of `prefix 1/n` … `prefix n/n` that ends at `id`, when those steps are one chain with nothing drawn
+ * between them. Null when `id` is not the last step of such a run.
+ */
+export function foldEndingAt(tree: ModelTree, id: NodeId, trees?: ReadonlyMap<string, ModelTree>): { label: string; first: NodeId; last: NodeId; before: NodeId | null } | null {
+  const node = tree.nodes.get(id);
+  const piece = node ? pieceLabel(stepLabel(node)) : null;
+  if (!node || !piece || piece.k !== piece.n) return null;
+  const chain: ModelNode[] = [];
+  let at: ModelNode | undefined = node;
+  for (let k = piece.n; k >= 1; k -= 1) {
+    if (!at) return null;
+    const got = pieceLabel(stepLabel(at));
+    if (!got || got.prefix !== piece.prefix || got.n !== piece.n || got.k !== k) return null;
+    // A tool lane, or a side branch, is drawn between this step and the next, so the rows are not one run.
+    // The first step's lane sits above the run, and the last step's branches sit below it.
+    if (k > 1 && toolLaneOpen(at, trees)) return null;
+    if (k < piece.n && childrenOf(tree, at.id).length !== 1) return null;
+    chain.push(at);
+    at = k === 1 ? undefined : at.parent === null ? undefined : tree.nodes.get(at.parent);
+  }
+  const first = chain[chain.length - 1]!;
+  return { label: foldTitle(piece.prefix, piece.n), first: first.id, last: id, before: first.parent };
+}
+
+/**
+ * The run Redo would walk whole, when the next step is its `prefix 1/n` and the followed children run to `n/n`
+ * with nothing drawn between them.
+ */
+export function foldRedoFrom(tree: ModelTree, trees?: ReadonlyMap<string, ModelTree>): { label: string; last: NodeId } | null {
+  const next = redoTarget(tree);
+  if (next == null) return null;
+  let at = tree.nodes.get(next);
+  const piece = at ? pieceLabel(stepLabel(at)) : null;
+  if (!at || !piece || piece.k !== 1) return null;
+  for (let k = 1; k <= piece.n; k += 1) {
+    if (!at) return null;
+    const got = pieceLabel(stepLabel(at));
+    if (!got || got.prefix !== piece.prefix || got.n !== piece.n || got.k !== k) return null;
+    if (k > 1 && toolLaneOpen(at, trees)) return null;
+    if (k < piece.n && childrenOf(tree, at.id).length !== 1) return null;
+    if (k === piece.n) return { label: foldTitle(piece.prefix, piece.n), last: at.id };
+    const child = tree.lastChild.get(at.id);
+    at = child != null ? tree.nodes.get(child) : undefined;
+  }
+  return null;
+}
+
+/** Where Undo goes: before a folded composite when the shown step is its last step, otherwise the parent. */
+export function foldedUndoTarget(tree: ModelTree, trees?: ReadonlyMap<string, ModelTree>): NodeId | null {
+  const fold = foldEndingAt(tree, tree.current, trees);
+  if (fold) return fold.before;
+  return undoTarget(tree);
+}
+
+/** Where Redo goes: the end of a folded composite when the next steps are that whole run, otherwise the next step. */
+export function foldedRedoTarget(tree: ModelTree, trees?: ReadonlyMap<string, ModelTree>): NodeId | null {
+  return foldRedoFrom(tree, trees)?.last ?? redoTarget(tree);
+}
+
+export interface RecipeNote {
+  title: "Built by a recipe";
+  /** The recipe's name and parameters, in the order they were saved. Empty when it has neither. */
+  detail: string;
+}
+
+/**
+ * The recipe an MCP build saved for this object, under `mcpModel.recipes[id]`. Null when this object has none.
+ * Read-only: rebuilding from new parameters is a later change.
+ */
+export function recipeNote(mcpModel: unknown, objectId: string): RecipeNote | null {
+  if (!objectId || !mcpModel || typeof mcpModel !== "object" || Array.isArray(mcpModel)) return null;
+  const recipes = (mcpModel as { recipes?: unknown }).recipes;
+  if (!recipes || typeof recipes !== "object" || Array.isArray(recipes)) return null;
+  const saved = (recipes as Record<string, unknown>)[objectId];
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return null;
+  const recipe = (saved as { recipe?: unknown }).recipe;
+  if (!recipe || typeof recipe !== "object" || Array.isArray(recipe)) return null;
+  const rec = recipe as { name?: unknown; params?: unknown };
+  const bits: string[] = [];
+  if (typeof rec.name === "string" && rec.name.trim()) bits.push(rec.name.trim());
+  if (rec.params && typeof rec.params === "object" && !Array.isArray(rec.params)) {
+    for (const [key, value] of Object.entries(rec.params)) {
+      if (typeof value === "number" && Number.isFinite(value)) bits.push(`${key} = ${value}`);
+      else if (typeof value === "string") bits.push(`${key} = ${value}`);
+    }
+  }
+  return { title: "Built by a recipe", detail: bits.join(" · ") };
 }

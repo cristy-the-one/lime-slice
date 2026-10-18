@@ -4,8 +4,8 @@
  * after a typing pause, Left and Right switch branches. Rows are rebuilt only when the tree changes,
  * and only while the panel can be seen. Nothing here asks the engine anything.
  */
-import { ChevronDown, Ellipsis, History, Move3d, Pencil, RotateCcw, TriangleAlert, createElement, type IconNode } from "lucide";
-import { historyKey, historyLayout, positionText, rowCount, rowKey, type HistoryLayout, type HistoryRow, type RowKey } from "../model-history";
+import { ChevronDown, ChevronRight, Ellipsis, History, Move3d, Pencil, RotateCcw, TriangleAlert, createElement, type IconNode } from "lucide";
+import { historyFolds, historyKey, historyLayout, positionText, presentedRows, rowCount, rowKey, type HistoryLayout, type HistoryRow, type RecipeNote, type RowKey } from "../model-history";
 import type { PlaceFields } from "../model-space";
 import { toolKeys, type ModelTree } from "../model-tree";
 import { isMobileLayout } from "../platform";
@@ -46,6 +46,12 @@ let shown: RowKey | null = null;
 let drawn: readonly unknown[] | null = null;
 let counted: readonly unknown[] | null = null;
 let layout: HistoryLayout | null = null;
+/** The layout before composite runs are folded, so rows stay put while someone works in the list. */
+let raw: HistoryLayout | null = null;
+/** Runs the user opened, and runs they folded again. A run starts folded. */
+const foldOpen = new Set<string>();
+const foldShut = new Set<string>();
+let recipeEl: HTMLElement | null = null;
 let focusId: RowKey | null = null;
 let jumpTimer = 0;
 let collapsed = readCollapsed();
@@ -105,6 +111,15 @@ export function mountModelHistory(next: ModelHistoryHooks) {
   });
   reset?.addEventListener("click", () => hooks?.resetPosition());
   menu = buildMenu();
+  // --- A8. The recipe line sits with the header, so it shows while the tree is collapsed. ---
+  recipeEl = document.querySelector<HTMLElement>("#modelRecipe");
+  if (!recipeEl) {
+    recipeEl = document.createElement("p");
+    recipeEl.id = "modelRecipe";
+    recipeEl.className = "mh-recipe";
+    recipeEl.hidden = true;
+    document.querySelector("#modelPosition")?.before(recipeEl);
+  }
   note = document.createElement("p");
   note.className = "mh-note";
   note.setAttribute("role", "status");
@@ -147,6 +162,9 @@ export function syncModelHistory(next: ModelTree | null, all: ReadonlyMap<string
   if (next?.key !== tree?.key) {
     focusId = null;
     layout = null;
+    raw = null;
+    foldOpen.clear();
+    foldShut.clear();
     cancelJump();
     closeMenu(false);
     showNote("");
@@ -230,9 +248,9 @@ function working(focused: EventTarget | null): boolean {
 
 /** Once nobody is working in the panel, the shown step's path moves onto the main rail. */
 function relayout(focused: EventTarget | null) {
-  if (!visible() || working(focused) || !layout || !tree) return;
+  if (!visible() || working(focused) || !raw || !tree) return;
   const fresh = historyLayout(tree, undefined, trees, shownKey());
-  if (fresh.rows.every((row, i) => layout!.rows[i]?.key === row.key && layout!.rows[i]?.lane === row.lane)) return;
+  if (fresh.rows.every((row, i) => raw!.rows[i]?.key === row.key && raw!.rows[i]?.lane === row.lane)) return;
   drawn = null;
   sync();
 }
@@ -284,7 +302,9 @@ function render() {
   if (!list || !tree) return;
   const hadFocus = list.contains(document.activeElement) && !document.activeElement?.closest(".mh-rename");
   drawn = inputs();
-  layout = historyLayout(tree, layout && working(document.activeElement) ? layout.main : undefined, trees, shownKey());
+  raw = historyLayout(tree, raw && working(document.activeElement) ? raw.main : undefined, trees, shownKey());
+  const open = openFolds(raw);
+  layout = { ...raw, rows: presentedRows(raw.rows, open) };
   const ids = new Set(layout.rows.map((row) => row.key));
   for (const id of [...rowEls.keys()]) {
     if (ids.has(id)) continue;
@@ -315,9 +335,65 @@ function render() {
   const order = [...list.children];
   if (order.length !== els.length || els.some((el, i) => order[i] !== el)) list.replaceChildren(...els);
   applyTabIndex();
-  const onScreen = rowEls.get(hadFocus ? focusId ?? shownKey() : shownKey());
+  const onScreen = rowEls.get(hadFocus ? focusId ?? shownRow() : shownRow());
   if (hadFocus) onScreen?.focus({ preventScroll: true });
   if (onScreen) reveal(onScreen);
+}
+
+/** Runs the user has opened. A run starts folded, including the one the view is inside. */
+function openFolds(base: HistoryLayout): Set<string> {
+  const live = new Set(historyFolds(base.rows).map((fold) => fold.id));
+  for (const id of foldOpen) if (!live.has(id)) foldOpen.delete(id);
+  for (const id of foldShut) if (!live.has(id)) foldShut.delete(id);
+  const open = new Set<string>();
+  for (const id of live) if (foldOpen.has(id) && !foldShut.has(id)) open.add(id);
+  return open;
+}
+
+/** The row that stands for `key` while its composite is folded. */
+function shownRow(): RowKey {
+  const key = shownKey();
+  const fold = layout?.rows.find((row) => row.fold && !row.fold.expanded && row.fold.keys.includes(key));
+  return fold?.key ?? key;
+}
+
+/** A click or Enter on a folded row shows its last step. The view stays on that node. */
+function jumpRow(id: RowKey): RowKey {
+  const row = layout?.rows.find((item) => item.key === id);
+  return row?.fold && !row.fold.expanded ? row.fold.lastKey : id;
+}
+
+function toggleFold(id: string) {
+  const base = raw ?? layout;
+  const fold = base ? historyFolds(base.rows).find((item) => item.id === id) : undefined;
+  if (!fold) return;
+  const open = foldOpen.has(id) && !foldShut.has(id);
+  if (open) {
+    foldOpen.delete(id);
+    foldShut.add(id);
+    focusId = id;
+  } else {
+    foldShut.delete(id);
+    foldOpen.add(id);
+    const shown = shownKey();
+    focusId = fold.keys.includes(shown) ? shown : fold.keys[0]!;
+  }
+  drawn = null;
+  sync();
+}
+
+/** The recipe the open object was built from, or nothing. The line is read-only. */
+export function syncModelRecipe(note: RecipeNote | null) {
+  if (!recipeEl) return;
+  const text = note ? `${note.title}${note.detail ? ` ${note.detail}` : ""}` : "";
+  if (recipeEl.textContent === text && recipeEl.hidden === !note) return;
+  recipeEl.hidden = !note;
+  recipeEl.replaceChildren();
+  if (!note) return;
+  const title = document.createElement("strong");
+  title.textContent = note.title;
+  recipeEl.append(title);
+  if (note.detail) recipeEl.append(document.createTextNode(` ${note.detail}`));
 }
 
 function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
@@ -326,14 +402,17 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   el.toggleAttribute("data-blocked", row.blocked);
   el.setAttribute("aria-level", String(row.level));
   el.setAttribute("aria-selected", row.state === "current" ? "true" : "false");
-  // A fork, and a join with its tool's lane, are parents in the tree: the lane's rows are drawn above the join but belong to it.
-  if (row.fork || row.owns.length > 0) el.setAttribute("aria-expanded", "true");
+  // A folded composite hides its steps. A fork, and a join with its tool's lane, stay expanded: their rows are drawn.
+  if (row.fold?.head) el.setAttribute("aria-expanded", row.fold.expanded ? "true" : "false");
+  else if (row.fork || row.owns.length > 0) el.setAttribute("aria-expanded", "true");
   else el.removeAttribute("aria-expanded");
-  if (row.owns.length > 0) el.setAttribute("aria-owns", row.owns.map(rowElementId).join(" "));
+  const owned = [...row.owns, ...(row.fold?.head && row.fold.expanded ? row.fold.keys.slice(1) : [])];
+  if (owned.length > 0) el.setAttribute("aria-owns", owned.map(rowElementId).join(" "));
   else el.removeAttribute("aria-owns");
   el.toggleAttribute("data-tool", row.tool != null);
   const notes = [row.broken ? "cannot be rebuilt" : "", row.blocked ? "after a step that cannot be rebuilt" : "", row.plate ? "on the plate" : ""].filter(Boolean);
-  el.setAttribute("aria-label", [row.tool != null ? `${row.tool}: ${row.label}` : row.label, ...notes].join(", "));
+  const called = row.tool != null ? `${row.tool}: ${row.label}` : row.label;
+  el.setAttribute("aria-label", [called, ...notes].join(", "));
   // A label can be longer than the row, which ellipsizes it: the tip has it whole. The description adds
   // only what the name does not say: a renamed step's op, why a step is broken, and whose step a tool's is.
   const whose = row.tool != null ? `A step of ${row.tool}, as this part's join takes it. Click to look at it; Edit step changes it here` : "";
@@ -346,9 +425,15 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   let label = el.querySelector<HTMLElement>(":scope > .mh-label");
   let edit = el.querySelector<HTMLButtonElement>(":scope > .mh-edit");
   let more = el.querySelector<HTMLElement>(":scope > .mh-more");
-  if (!label || !edit || !more) {
+  let foldBtn = el.querySelector<HTMLButtonElement>(":scope > .mh-fold");
+  if (!label || !edit || !more || !foldBtn) {
     label = document.createElement("span");
     label.className = "mh-label";
+    foldBtn = document.createElement("button");
+    foldBtn.type = "button";
+    foldBtn.className = "mh-fold";
+    foldBtn.tabIndex = -1;
+    foldBtn.append(icon(ChevronRight, 12));
     edit = document.createElement("button");
     edit.type = "button";
     edit.className = "mh-edit";
@@ -364,11 +449,18 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
     more.setAttribute("aria-controls", "modelHistoryMenu");
     more.setAttribute("aria-expanded", "false");
     more.append(icon(Ellipsis));
-    el.replaceChildren(label, edit, more);
+    el.replaceChildren(foldBtn, label, edit, more);
   }
   label.textContent = row.label;
-  // A step that cannot be edited (the opened file, a step under a broken one) shows no pencil; its menu says why.
-  edit.hidden = !!hooks?.editRefusal(row.key);
+  const folding = !!row.fold?.head;
+  foldBtn.hidden = !folding;
+  if (folding) {
+    const verb = row.fold!.expanded ? "Collapse" : "Expand";
+    foldBtn.setAttribute("aria-label", `${verb} ${row.label}`);
+    foldBtn.dataset.tip = row.fold!.expanded ? "Hide these steps" : "Show these steps";
+  }
+  // A folded run is not one step. A step that cannot be edited shows no pencil; its menu says why.
+  edit.hidden = (!!row.fold && !row.fold.expanded) || !!hooks?.editRefusal(row.key);
   edit.setAttribute("aria-label", `Edit step: ${row.label}`);
   el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate, :scope > .mh-tool").forEach((node) => node.remove());
   label.before(railSvg(row, lanes));
@@ -429,7 +521,7 @@ function rowElementId(key: RowKey): string {
 }
 
 function applyTabIndex() {
-  const target = focusId ?? (tree ? shownKey() : null);
+  const target = focusId ?? (tree ? shownRow() : null);
   for (const [key, el] of rowEls) el.tabIndex = key === target ? 0 : -1;
 }
 
@@ -465,7 +557,7 @@ function reveal(el: HTMLElement) {
 
 function jumpNow(id: RowKey) {
   cancelJump();
-  hooks?.jump(id);
+  hooks?.jump(jumpRow(id));
 }
 
 /** The tree is `aria-busy` while a step waits out the typing pause. */
@@ -474,7 +566,7 @@ function jumpSoon(id: RowKey) {
   list?.setAttribute("aria-busy", "true");
   jumpTimer = window.setTimeout(() => {
     list?.removeAttribute("aria-busy");
-    hooks?.jump(id);
+    hooks?.jump(jumpRow(id));
   }, JUMP_WAIT_MS);
 }
 
@@ -494,6 +586,11 @@ function onClick(ev: MouseEvent) {
   const id = rowOf(ev.target);
   if (id == null) return;
   showNote("");
+  if ((ev.target as Element).closest(".mh-fold")) {
+    const row = layout?.rows.find((item) => item.key === id);
+    if (row?.fold) toggleFold(row.fold.id);
+    return;
+  }
   if ((ev.target as Element).closest(".mh-more")) {
     setFocus(id, true);
     openMenu(id);
@@ -512,6 +609,8 @@ function onClick(ev: MouseEvent) {
 function onDoubleClick(ev: MouseEvent) {
   if (!(ev.target as Element).closest(".mh-label")) return;
   const id = rowOf(ev.target);
+  const row = id == null ? undefined : layout?.rows.find((item) => item.key === id);
+  if (row?.fold && !row.fold.expanded) return;
   if (id != null) startRename(id);
 }
 
@@ -542,6 +641,10 @@ function onKey(ev: KeyboardEvent) {
     case "jump":
       jumpNow(action.to);
       return;
+    case "expand":
+    case "collapse":
+      toggleFold(action.id);
+      return;
     case "rename":
       startRename(action.id);
       return;
@@ -559,7 +662,8 @@ function onKey(ev: KeyboardEvent) {
 
 function leave() {
   cancelJump();
-  if (focusId != null && tree && focusId !== shownKey()) hooks?.jump(focusId);
+  const staying = focusId == null ? null : jumpRow(focusId);
+  if (staying != null && tree && staying !== shownKey()) hooks?.jump(staying);
   const back = returnFocus?.isConnected ? returnFocus : document.querySelector<HTMLElement>("#model");
   returnFocus = null;
   if (isMobileLayout()) {
@@ -578,6 +682,11 @@ export function editModelStep() {
 
 /** Edit `id`: its tool opens in the panel above, prefilled; a refusal is said in the readout, and in the sheet at phone width. */
 function editStep(id: RowKey) {
+  const folded = layout?.rows.find((row) => row.key === id)?.fold;
+  if (folded && !folded.expanded) {
+    showNote("Expand the group to change one of its steps.");
+    return;
+  }
   const refusal = hooks?.editRefusal(id) ?? null;
   if (refusal) showNote(refusal);
   else if (isMobileLayout()) setSheet(false, false);
@@ -586,6 +695,11 @@ function editStep(id: RowKey) {
 
 function dropBranch(id: RowKey) {
   if (!tree || !hooks) return;
+  const folded = layout?.rows.find((row) => row.key === id)?.fold;
+  if (folded && !folded.expanded) {
+    showNote("Expand the group to change one of its steps.");
+    return;
+  }
   const own = layout?.rows.find((row) => row.key === id);
   const up = own && own.via.length === 0 ? tree.nodes.get(own.id)?.parent ?? null : null;
   const parent = up == null ? null : rowKey([], up);
@@ -691,7 +805,11 @@ function openMenu(id: RowKey, at?: { x: number; y: number }) {
   const el = rowEls.get(id);
   if (!menu || !el || !hooks) return;
   menu.dataset.row = id;
-  for (const [act, refusal] of [["edit", hooks.editRefusal(id)], ["drop", hooks.dropRefusal(id)]] as const) {
+  const folded = layout?.rows.find((row) => row.key === id)?.fold;
+  const held = folded && !folded.expanded ? "Expand the group to change one of its steps." : null;
+  const rename = menu.querySelector<HTMLElement>('[data-act="rename"]')!;
+  rename.setAttribute("aria-disabled", held ? "true" : "false");
+  for (const [act, refusal] of [["edit", held ?? hooks.editRefusal(id)], ["drop", held ?? hooks.dropRefusal(id)]] as const) {
     const item = menu.querySelector<HTMLElement>(`[data-act="${act}"]`)!;
     item.setAttribute("aria-disabled", refusal ? "true" : "false");
     item.querySelector(".mh-why")!.textContent = refusal ?? "";
