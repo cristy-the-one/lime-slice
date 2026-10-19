@@ -10,7 +10,8 @@ import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
-import { ROOT, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { storedEdgeStep } from "./model-edge-step.ts";
+import { ROOT, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 
 /**
  * The steps that replay under an edit of `node`, oldest first: the shown branch below it. That is the path down to the
@@ -98,13 +99,12 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a face extrude, a face move, a group that is not a feature, or a blend that takes an earlier step's edges. */
+/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a face extrude, a face move, or a group that is not a feature. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
 function hasPanel(op: ModelOp): boolean {
   // --- A3 composite features: a pocket, boss, texture, array, ribs, or text group reopens its panel. ---
   if (op.kind === "group") return featureSource(op) != null;
   // --- end A3 ---
-  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "faceExtrude" || op.kind === "moveFaces") return false;
-  return !((op.kind === "fillet" || op.kind === "chamfer") && op.edges.some(isEdgeStep));
+  return !(op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "faceExtrude" || op.kind === "moveFaces");
 }
 
 /** The op an edit of `id` starts from: its own, the primitive a new solid's root is, or the feature a sketch-started root is. */
@@ -278,8 +278,13 @@ export interface EditPanel {
   axis?: Vec3;
   /** A hole's Through all and Counterbore boxes. */
   hole?: { through: boolean; counterbore: boolean };
-  /** A fillet's or a chamfer's edges, as stored. */
+  /** A fillet's or a chamfer's edges, as stored. Step picks are `step`, not here. */
   edges?: readonly (number | EdgeRef)[];
+  /**
+   * --- A5. The blend takes every edge from this one step. The panel shows "Edges of: <row> (filter)"
+   * once the row's name is known. Absent when the edges were picked on the solid.
+   */
+  step?: { fromNode: NodeId; filter: EdgeFilter };
   // --- A2 shell ---
   /** A shell's open faces, as stored. Empty while the closed box is on. */
   faces?: readonly (number | FaceRef)[];
@@ -323,8 +328,16 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
       return { tool: "split", ...splitFields(placed.origin, placed.normal, center) };
     }
     case "fillet":
-    case "chamfer":
-      return { tool: op.kind, fields: { modelBlend: op.size }, edges: op.edges.filter((edge): edge is number | EdgeRef => !isEdgeStep(edge)) };
+    case "chamfer": {
+      // --- A5. A blend of one step's edges opens on that step. Picked edges stay picked. ---
+      const step = storedEdgeStep(op.edges);
+      return {
+        tool: op.kind,
+        fields: { modelBlend: op.size },
+        edges: op.edges.filter((edge): edge is number | EdgeRef => !isEdgeStep(edge)),
+        ...(step ? { step } : {}),
+      };
+    }
     // --- A2 shell ---
     case "shell":
       return {
