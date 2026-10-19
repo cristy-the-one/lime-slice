@@ -44,6 +44,9 @@ check("a pocket applies when the dry-run says it fits", modelApplyReady("pocket"
 check("a pocket waits while the dry-run says it will not fit", modelApplyReady("pocket", [], 1, true, false) === false);
 check("a shell applies once the dry-run says it fits, with or without a face", modelApplyReady("shell", [], 1) && modelApplyReady("shell", [face(1)], 1));
 check("a shell waits while the dry-run says the wall is too thick", modelApplyReady("shell", [face(1)], 1, true, false) === false);
+check("a pattern applies when the dry-run says it fits", modelApplyReady("pattern", [], 1));
+check("a pattern waits while the dry-run says it will not fit", modelApplyReady("pattern", [], 1, true, false) === false);
+check("a mirror applies when the dry-run says it fits", modelApplyReady("mirror", [], 1));
 eq("a closed shell says so", shellFacesLabel(2, true), "Closed inside.");
 eq("no open face", shellFacesLabel(0, false), "No face open.");
 eq("one open face", shellFacesLabel(1, false), "1 face open");

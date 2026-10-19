@@ -75,6 +75,9 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
   { id: "model-features", label: "Features", group: "Model", when: "model", target: "#modelToolFeatures", keywords: "pocket boss texture array ribs text" },
+  // --- A4 pattern and mirror. No shortcut: P is Push/Pull, H is Hole, Shift+P is Place. ---
+  { id: "model-pattern", label: "Pattern", group: "Model", when: "model", target: "#modelMenuPattern", keywords: "repeat linear polar path copy steps" },
+  { id: "model-mirror", label: "Mirror", group: "Model", when: "model", target: "#modelMenuMirror", keywords: "reflect flip plane" },
   // --- A2 shell ---
   { id: "model-shell", label: "Shell", group: "Model", when: "model", target: "#modelToolShell", keywords: "hollow wall thickness open face" },
   { id: "model-scale", label: "Scale solid", group: "Model", keys: ["X"], when: "model", target: "#modelToolScale", keywords: "factor" },

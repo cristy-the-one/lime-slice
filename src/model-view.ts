@@ -25,6 +25,8 @@ import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, 
 export interface ModelPick {
   kind: "face" | "edge";
   index: number;
+  /** --- A4. Where a face click landed, in model space. A path point is this. --- */
+  at?: Vec3;
 }
 
 export interface ModelSolid {
@@ -1153,7 +1155,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (done.moved) faceCb(faceEvent("up", ev, hit));
     else {
       faceCb(faceEvent("click", ev, hit));
-      pickCb({ kind: "face", index: hit.face }, ev.shiftKey, { x: ev.clientX, y: ev.clientY });
+      pickCb({ kind: "face", index: hit.face, at: hit.point }, ev.shiftKey, { x: ev.clientX, y: ev.clientY });
       setHover({ kind: "face", index: hit.face });
     }
     paintHandles();
@@ -1169,7 +1171,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (!hit || hit.faceIndex == null || !solid) return null;
     const face = solid.triangles[hit.faceIndex];
     if (face == null) return null;
-    return { kind: "face", index: face };
+    const point = hit.point;
+    return { kind: "face", index: face, at: [point.x, point.y, point.z] };
   }
 
   function project(x: number, y: number, z: number, rect: DOMRect): { x: number; y: number; z: number } {
