@@ -115,7 +115,7 @@ test("dragging a face pulls it, Alt adds a prism, and Tab edits the distance", a
   await expect(typed).toBeVisible();
   await page.keyboard.type("12");
   await page.keyboard.press("Enter");
-  await expect(page.locator("#modelHistoryTree")).toContainText("Pull face 12 mm");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Extrude face 12 mm");
   const edited = await extent(page);
   expect(edited[0]).toBeCloseTo(32, 0);
   expect(edited[2]).toBeCloseTo(30, 0);
@@ -149,8 +149,13 @@ async function facePoint(page: Page, want: (normal: number[]) => boolean): Promi
 async function dragFace(page: Page, at: { x: number; y: number }, target: number, alt = false) {
   const canvas = page.locator("#model");
   const read = async () => Number((await canvas.getAttribute("data-pull")) ?? "NaN");
-  await page.mouse.move(at.x, at.y);
-  await expect.poll(async () => canvas.getAttribute("data-handles") ?? "").toContain("pull:");
+  let nudge = 0;
+  // A hover that lands while the solid is being replaced is redrawn on the next move, so each try moves a pixel.
+  await expect.poll(async () => {
+    nudge = (nudge + 1) % 3;
+    await page.mouse.move(at.x + nudge, at.y);
+    return canvas.getAttribute("data-handles") ?? "";
+  }).toContain("pull:");
   const box = (await canvas.boundingBox())!;
   const handles = (await canvas.getAttribute("data-handles")) ?? "";
   const grip = /pull:(-?\d+),(-?\d+)/.exec(handles);
@@ -350,4 +355,38 @@ test("leaving Model with a Tab edit open closes the box, and the app's keys work
   await expect(page.locator("#tabPreview"), "2 opens Preview: the hidden box took no key").toHaveAttribute("aria-selected", "true");
   await page.locator("#tabModel").click();
   await expect(hud, "the box does not come back with Model").toBeHidden();
+});
+
+test("History edits a pull and a prism in Push/Pull, and a prism stays a prism", async ({ page }) => {
+  const { applied } = await openPushBox(page);
+  const history = page.locator("#modelHistoryTree");
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await dragFace(page, top, 10);
+  await expect(history).toContainText("Pull face 10 mm");
+  const side = await facePoint(page, (normal) => normal[0]! > 0.5);
+  await dragFace(page, side, 8, true);
+  await expect(history).toContainText("Extrude face 8 mm");
+
+  const row = (text: string) => page.getByRole("treeitem", { name: new RegExp(`^${text}`) });
+  await row("Pull face 10 mm").hover();
+  await row("Pull face 10 mm").locator(".mh-edit").click();
+  await expect(page.locator("#modelEditHead")).toHaveText("Editing step 1: Pull face 10 mm");
+  const distance = page.locator("#modelPull");
+  await expect(distance).toHaveValue("10");
+  await distance.selectText();
+  await page.keyboard.type("6");
+  await page.locator("#modelApply").click();
+  await expect(history).toContainText("Pull face 6 mm");
+  expect(applied.at(-2)).toMatchObject({ kind: "moveFaces", faces: [{ face: 1, distance: 6 }] });
+
+  // The update forked the history: the prism on screen is the one replayed after the new pull.
+  const prism = row("Extrude face 8 mm").and(page.locator("[aria-selected=true]"));
+  await prism.hover();
+  await prism.locator(".mh-edit").click();
+  await expect(distance).toHaveValue("8");
+  await distance.selectText();
+  await page.keyboard.type("5");
+  await page.locator("#modelApply").click();
+  await expect(history).toContainText("Extrude face 5 mm");
+  expect(applied.at(-1)).toMatchObject({ kind: "faceExtrude", face: 5, distance: 5 });
 });

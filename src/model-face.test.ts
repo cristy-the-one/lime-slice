@@ -38,9 +38,9 @@ eq("labels", [opLabel(pull), opLabel(push), opLabel(two), opLabel(mixed), opLabe
   "Push face 3 mm",
   "Move 2 faces 1.5 mm",
   "Move 2 faces",
-  "Pull face 8 mm",
-  "Push face 3 mm",
-  "Pull face 5 mm, draft 4°, up to a face",
+  "Extrude face 8 mm",
+  "Cut face 3 mm",
+  "Extrude face 5 mm, draft 4°, up to a face",
 ]);
 
 const fp = (volumeMm3: number) => ({ volumeMm3, faces: 6, edges: 12 });
@@ -78,7 +78,7 @@ eq(
   probeNote("moveFaces", { phase: "done", ok: false, error: "This face cannot move with its neighbours here. Push or pull adds material instead: hold Alt." })?.text,
   "This face cannot move with its neighbours here. Push or pull adds material instead: hold Alt.",
 );
-for (const id of [1, 2]) eq(`step ${id} has no edit panel`, loaded && editRefusal(loaded, id), "This step has no edit panel yet. Delete it and apply it again with new numbers.");
+for (const id of [1, 2]) eq(`step ${id} opens Push/Pull`, loaded && editRefusal(loaded, id), null);
 eq("a shell step can be edited", loaded && editRefusal(loaded, 3), null);
 
 if (failed) {

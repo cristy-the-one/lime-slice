@@ -248,7 +248,7 @@ test("a circle on the top face, pushed in with the mouse, cuts 5", async ({ page
   await dragExtrude(page, -5);
   await expect(canvas).toHaveAttribute("data-extrude-mode", "cut");
   await page.locator("[data-sketch-apply]").click();
-  await expect(page.locator("#modelHistoryTree")).toContainText("Cut extrude 1-loop profile 5");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Cut extrude 1-loop profile -5 mm");
   await expect.poll(() => height(page)).toBeCloseTo(15, 0);
   const applied = tree.of("apply").at(-1)!.op as { kind?: string; op?: string; depth?: number; sketch?: unknown; loops?: unknown };
   expect(applied.kind).toBe("extrude");

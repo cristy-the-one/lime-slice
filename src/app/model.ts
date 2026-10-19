@@ -1372,6 +1372,9 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       const faces = picks.filter((pick) => pick.kind === "face");
       const distance = num("#modelPull");
       if (faces.length === 0 || !Number.isFinite(distance) || distance === 0) return null;
+      // An edit of a prism (Alt on one face) stays a prism, with its draft and its stop face.
+      const prism = editing?.op.kind === "faceExtrude" ? editing.op : null;
+      if (prism && faces.length === 1) return { ...prism, face: faces[0]!.index, distance };
       return moveFacesOp(faces.map((pick) => ({ face: pick.index, distance })));
     }
     default:
