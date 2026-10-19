@@ -573,14 +573,46 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 }
 .model-edit { display: contents; }
 .model-edit[hidden] { display: none !important; }
+/* A3 composite features: the menu is fixed so the toolbar's horizontal scroll does not clip it. */
+.model-feature { display: inline-flex; align-items: center; position: relative; flex: 0 0 auto; }
+.model-feature-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+.model-feature-more:hover, .model-feature-more[aria-expanded="true"] { background: var(--hover, color-mix(in srgb, var(--text) 8%, transparent)); color: var(--text); }
+.model-feature-menu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 8.5rem;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 36%, transparent);
+}
+.model-feature-menu[hidden] { display: none; }
+.model-feature-menu .model-tool { justify-content: flex-start; width: 100%; }
+/* end A3 */
 .model-sep { width: 1px; height: 16px; margin: 0 2px; background: var(--border); flex: 0 0 auto; }
 .model-tool {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   height: 26px;
-  /* 4px keeps Shell and Check on the bar at 1440 px with a pick's chip. */
-  padding: 0 4px;
+  /* 1px keeps Shell, Check, Push/Pull, and Features on the bar at 1440 px with a pick's chip. */
+  padding: 0 1px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -1230,6 +1262,55 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   font-size: var(--fs-2);
   pointer-events: none;
 }
+/* --- P3 context bar --- beside the selection, above the measure layer, never on the solid. */
+.context-bar {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - 16px);
+  padding: 3px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+  pointer-events: auto;
+}
+.context-bar[hidden] { display: none !important; }
+.context-bar.is-faded { opacity: 0; pointer-events: none; }
+.context-bar-split { display: inline-flex; align-items: center; }
+.context-bar-btn, .context-bar-caret, .context-bar-item {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+  font-size: var(--fs-2);
+  line-height: 1;
+  white-space: nowrap;
+}
+.context-bar-caret { padding: 0 6px; color: var(--text-dim); }
+.context-bar-btn:hover, .context-bar-caret:hover, .context-bar-item:hover { background: var(--surface-3); }
+.context-bar-btn:focus-visible, .context-bar-caret:focus-visible, .context-bar-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.context-bar-menu {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  min-width: 9rem;
+  padding: 3px;
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+}
+.context-bar-menu[hidden] { display: none !important; }
+.context-bar-item { text-align: left; }
 .gizmo-readout {
   position: absolute;
   left: 12px;

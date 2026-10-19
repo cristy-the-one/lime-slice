@@ -74,6 +74,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-fillet", label: "Fillet", group: "Model", keys: ["L"], when: "model", target: "#modelToolFillet", keywords: "round edge" },
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
+  { id: "model-features", label: "Features", group: "Model", when: "model", target: "#modelToolFeatures", keywords: "pocket boss texture array ribs text" },
   // --- A2 shell ---
   { id: "model-shell", label: "Shell", group: "Model", when: "model", target: "#modelToolShell", keywords: "hollow wall thickness open face" },
   { id: "model-scale", label: "Scale solid", group: "Model", keys: ["X"], when: "model", target: "#modelToolScale", keywords: "factor" },

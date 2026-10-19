@@ -1,4 +1,5 @@
 /** Face and edge selection for Model mode. Pure, so the gestures can be tested without WebGL. */
+import { isFeatureTool } from "./model-features.ts";
 
 export interface ModelPickRef {
   kind: "face" | "edge";
@@ -54,6 +55,9 @@ export function modelApplyReady(
   if (tool === "scale") return scale > 0 && Math.abs(scale - 1) > 1e-9;
   if (tool === "split") return splitOk;
   if (tool === "create") return true;
+  // --- A3 composite features: Apply waits on the same dry-run as a hole. ---
+  if (isFeatureTool(tool)) return probeOk;
+  // --- end A3 ---
   // --- A2 shell: a closed void needs no face. Apply waits on the dry-run, as a hole does. ---
   if (tool === "shell") return probeOk;
   return (tool === "boolean" || tool === "hole") && probeOk;
