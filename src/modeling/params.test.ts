@@ -8,6 +8,7 @@ import { newTree, withChild, type ModelOp } from "../model-tree.ts";
 import { readSavedTree, savedTree } from "../model-tree-file.ts";
 import { withoutSketch } from "../model-request.ts";
 import { evaluateTable, expressionMentions, patchOpNumbers, stepOutOfDate, usedByCount, withExprs } from "./params.ts";
+import { panelParamMessage } from "../ui/parameters.ts";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -34,6 +35,10 @@ const ordered = evaluateTable({ wallW: 60, half: "wallW / 2" });
 check("parameters evaluate in order", ordered.rows[1]?.value === 30 && ordered.rows[1]?.error == null && ordered.values.half === 30);
 const reversed = evaluateTable({ half: "wallW / 2", wallW: 60 });
 check("a later name is not visible yet", reversed.rows[0]?.error === `"wallW" is not a parameter. Set it with model_params first.` && reversed.values.wallW === 60);
+check(
+  "the panel rewrites that sentence for app users",
+  panelParamMessage(reversed.rows[0]?.error ?? "") === `"wallW" is not a parameter. Add it in Parameters above this row, or type a number.`,
+);
 const bad = evaluateTable({ "1wall": 4, wallH: "nope +" });
 check("a bad name is the evaluator's sentence", bad.rows[0]?.error === `"1wall" is not a parameter name. Use letters, digits, and underscores.`);
 check("a bad expression keeps the evaluator's sentence", typeof bad.rows[1]?.error === "string" && bad.rows[1]?.error.length > 0 && bad.values.wallH == null);

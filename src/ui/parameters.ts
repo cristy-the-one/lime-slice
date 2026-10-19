@@ -1,6 +1,7 @@
 /**
  * --- A6. The Parameters panel: a table of names, expressions, evaluated values, and how many
- * steps use each name. Add, delete, and reorder. Errors stay on the row, in the evaluator's words.
+ * steps use each name. Add, delete, and reorder. Errors stay on the row. An unknown name is
+ * told to add it above this row; the evaluator's own sentence stays for model_params.
  */
 import { evaluate, PARAM_NAME } from "../modeling/expr.ts";
 import { evaluateTable, isPlainNumber, type ParamTable } from "../modeling/params.ts";
@@ -16,6 +17,11 @@ export interface ParameterHooks {
 }
 
 let hooks: ParameterHooks | null = null;
+
+/** The panel never names the MCP tool. Other evaluator sentences pass through. */
+export function panelParamMessage(message: string): string {
+  return message.replace("Set it with model_params first.", "Add it in Parameters above this row, or type a number.");
+}
 
 export function mountParameters(next: ParameterHooks) {
   hooks = next;
@@ -194,6 +200,7 @@ function fillRow(row: HTMLElement, name: string, text: string) {
       }
     }
   }
+  if (message) message = panelParamMessage(message);
   if (valueCell) valueCell.textContent = value != null && Number.isFinite(value) ? String(value) : "";
   if (usedCell) usedCell.textContent = !message && PARAM_NAME.test(trimmed) ? String(hooks?.usedBy(trimmed) ?? 0) : "";
   if (error) {
