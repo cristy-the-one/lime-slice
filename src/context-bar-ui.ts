@@ -138,6 +138,24 @@ function activate(toolbar: string | undefined, then: string | undefined, run: ((
   if (then) document.querySelector<HTMLButtonElement>(then)?.click();
   run?.();
   closeMenu();
+  focusPanel();
+}
+
+/**
+ * The bar hides once its action opens a tool, and the focus would fall to the page. It goes to the panel's first
+ * field instead, so the size can be typed at once and the keyboard stays where the work is.
+ */
+function focusPanel() {
+  const panel = document.querySelector<HTMLElement>("#modelPanel");
+  if (!panel || panel.hidden) return;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body && !bar?.contains(active) && !menu?.contains(active)) return;
+  const field = [...panel.querySelectorAll<HTMLElement>("input:not([type=hidden]), select, textarea, button")].find((node) => {
+    if (node.closest("[hidden]") || (node as HTMLInputElement).disabled) return false;
+    return node.getClientRects().length > 0;
+  });
+  field?.focus();
+  if (field instanceof HTMLInputElement && field.type !== "checkbox") field.select();
 }
 
 function publish(kind: string) {
@@ -153,6 +171,8 @@ function armFade() {
   bar?.classList.remove("is-faded");
   if (bar) bar.dataset.faded = "0";
   timer = window.setTimeout(() => {
+    // A keyboard user reading the bar keeps it: it fades once the focus has left.
+    if (bar?.contains(document.activeElement)) return;
     faded = true;
     bar?.classList.add("is-faded");
     if (bar) bar.dataset.faded = "1";
@@ -245,6 +265,14 @@ function buttonOf(action: ContextAction, item: ContextMenuItem | null, className
   return button;
 }
 
+/** A toolbar is one Tab stop: the arrows move inside it, and the button last focused is the one Tab comes back to. */
+function rove(to: HTMLButtonElement | null) {
+  if (!bar) return;
+  const buttons = [...bar.querySelectorAll<HTMLButtonElement>("button")];
+  const keep = to && buttons.includes(to) ? to : buttons[0];
+  for (const button of buttons) button.tabIndex = button === keep ? 0 : -1;
+}
+
 function renderButtons(actions: ContextAction[]) {
   if (!bar) return;
   bar.replaceChildren();
@@ -274,6 +302,7 @@ function renderButtons(actions: ContextAction[]) {
     group.append(main, caret);
     bar.append(group);
   }
+  rove(null);
 }
 
 function reseat() {
@@ -359,8 +388,12 @@ export function mountContextBar(next: ContextBarHooks) {
 
   bar.addEventListener("keydown", onBarKey);
   menu.addEventListener("keydown", onMenuKey);
-  bar.addEventListener("focusin", () => {
+  bar.addEventListener("focusin", (ev) => {
+    rove(ev.target instanceof HTMLButtonElement ? ev.target : null);
     if (faded) armFade();
+  });
+  bar.addEventListener("focusout", (ev) => {
+    if (!bar?.contains(ev.relatedTarget as Node | null) && !bar?.hidden) armFade();
   });
   window.addEventListener("pointermove", (ev) => {
     if (!bar || bar.hidden) return;

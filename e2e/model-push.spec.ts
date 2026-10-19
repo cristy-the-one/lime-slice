@@ -282,6 +282,9 @@ test("a typed distance replaces the live one, with Ctrl held through the drag, a
 /** Press a face with Ctrl held and move `px` along its arrow. The button and Ctrl stay down. */
 async function pressAndPull(page: Page, at: { x: number; y: number }, px: number) {
   const canvas = page.locator("#model");
+  // Leave whatever the pointer lit last (an edge knob from the step before), then come back to the face.
+  const frame = (await canvas.boundingBox())!;
+  await page.mouse.move(frame.x + 4, frame.y + 4);
   let nudge = 0;
   // A hover that lands while the solid is being replaced is redrawn on the next move, so each try moves a pixel.
   await expect.poll(async () => {

@@ -30,6 +30,7 @@ import {
 } from "./push-pull.ts";
 
 export interface PullSolid {
+  volumeMm3?: number;
   positions: ArrayLike<number>;
   triangles: ArrayLike<number>;
   faces: {
@@ -437,7 +438,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
       if (!made) return;
       remember = { at: performance.now(), parent: made.parent, node: made.node, faces, alt, distance };
       hooks.setField(distance);
-      hooks.readout(pullDone(distance));
+      hooks.readout(pullDone(distance, hooks.solid()?.volumeMm3));
     } finally {
       applying = false;
     }
@@ -455,7 +456,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
       // An edit builds the step again under a new id: Tab and the repeat follow it.
       remember = { ...kept, at: performance.now(), distance, node: hooks.current() ?? kept.node };
       hooks.setField(distance);
-      hooks.readout(pullDone(distance));
+      hooks.readout(pullDone(distance, hooks.solid()?.volumeMm3));
     } finally {
       applying = false;
     }

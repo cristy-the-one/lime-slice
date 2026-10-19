@@ -50,9 +50,10 @@ eq("Alt on several faces still moves each one", pullOp([top, side], 4, true), {
 });
 eq("a push is a negative distance", pullOp([top], -3, false)?.kind === "moveFaces" && (pullOp([top], -3, false) as { faces: { distance: number }[] }).faces[0]!.distance, -3);
 
-eq("the hint names the last distance", pullHint(5), "Drag to push or pull · Alt: add material · double-click: repeat 5 mm");
-eq("the hint before any pull offers no repeat", pullHint(null), "Drag to push or pull · Alt: add material");
+eq("the hint names the last distance", pullHint(5), "Drag to push or pull · Alt: add or cut on this face only · double-click: repeat 5 mm");
+eq("the hint before any pull offers no repeat", pullHint(null), "Drag to push or pull · Alt: add or cut on this face only");
 eq("the readout after a pull", pullDone(10), "Pulled 10 mm · Tab to edit");
+eq("the readout keeps the new volume", pullDone(10, 12000), "Pulled 10 mm · Tab to edit · Volume 12000 mm³");
 eq("the readout after a push", pullDone(-3), "Pushed 3 mm · Tab to edit");
 check("Tab edits for three seconds", tabEditOpen(1000, 4000) && !tabEditOpen(1000, 4001) && !tabEditOpen(1000, 999));
 

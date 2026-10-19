@@ -120,7 +120,7 @@ export function mountMarkup(root: HTMLElement) {
                 <div class="model-edit" id="modelEdit" hidden>
                   <span class="model-sep"></span>
                   <!-- P1: Push/Pull. P. Also the gesture when no other model tool is open. -->
-                  <button class="model-tool" id="modelToolPull" type="button" data-tool="pushpull" aria-pressed="false" data-tip="Push or pull a face. Hold Alt to add or remove material on that face only">Push/Pull</button>
+                  <button class="model-tool" id="modelToolPull" type="button" data-tool="pushpull" aria-pressed="false" data-tip="Push or pull a face. Hold Alt to add or cut material on that face only">Push/Pull</button>
                   <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Fuse, cut, or intersect a primitive or another object on the plate">Boolean</button>
                   <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split along X, Y, Z, or a picked flat face, and tilt the plane">Split</button>
                   <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Round every selected edge in one step">Fillet</button>

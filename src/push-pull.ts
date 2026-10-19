@@ -46,15 +46,16 @@ export interface PullDrag {
 
 /** Hover, before a drag. A double-click repeats the last pull while that pull is the step on screen. */
 export function pullHint(previous: number | null): string {
-  const base = "Drag to push or pull · Alt: add material";
+  const base = "Drag to push or pull · Alt: add or cut on this face only";
   if (previous == null || previous === 0) return base;
   return `${base} · double-click: repeat ${formatNumber(Math.abs(previous), 1)} mm`;
 }
 
-/** After the pointer lets go. Tab, within {@link TAB_EDIT_MS}, edits this step. */
-export function pullDone(distance: number): string {
+/** After the pointer lets go. Tab, within {@link TAB_EDIT_MS}, edits this step. The new volume stays in the readout. */
+export function pullDone(distance: number, volumeMm3?: number | null): string {
   const verb = distance < 0 ? "Pushed" : "Pulled";
-  return `${verb} ${formatNumber(Math.abs(distance), 1)} mm · Tab to edit`;
+  const volume = volumeMm3 != null && Number.isFinite(volumeMm3) ? ` · Volume ${formatNumber(volumeMm3, 0)} mm³` : "";
+  return `${verb} ${formatNumber(Math.abs(distance), 1)} mm · Tab to edit${volume}`;
 }
 
 /** A push or pull is at most this many times the larger of the bed's and the part's diagonal. */
