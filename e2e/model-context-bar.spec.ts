@@ -59,18 +59,27 @@ function overlaps(a: { x: number; y: number; width: number; height: number }, b:
 }
 
 async function facePoint(page: Page, want: (normal: number[]) => boolean): Promise<{ x: number; y: number }> {
-  // A missing attribute is null, which is not "", so wait for a published list.
-  await expect.poll(async () => page.locator("#model").getAttribute("data-faces") ?? "").not.toBe("");
-  const text = (await page.locator("#model").getAttribute("data-faces")) ?? "";
-  const box = (await page.locator("#model").boundingBox())!;
-  for (const item of text.split(" ").filter(Boolean)) {
-    const [, xy, normalText] = item.split(":");
-    const normal = normalText!.split(",").map(Number);
-    if (!want(normal)) continue;
-    const [x, y] = xy!.split(",").map(Number);
-    return { x: box.x + x!, y: box.y + y! };
-  }
-  throw new Error(`no face in ${text}`);
+  // Face drag republishes this list on a frame and clears it when the gesture turns off.
+  // Read the match in the same turn as the check, so a clear between two reads is not a miss.
+  let found: { x: number; y: number } | null = null;
+  await expect.poll(async () => {
+    const text = (await page.locator("#model").getAttribute("data-faces")) ?? "";
+    const box = await page.locator("#model").boundingBox();
+    found = null;
+    if (!box) return "";
+    for (const item of text.split(" ").filter(Boolean)) {
+      const [, xy, normalText] = item.split(":");
+      if (!xy || !normalText) continue;
+      const normal = normalText.split(",").map(Number);
+      if (!want(normal)) continue;
+      const [x, y] = xy.split(",").map(Number);
+      found = { x: box.x + x!, y: box.y + y! };
+      return item;
+    }
+    return "";
+  }).not.toBe("");
+  if (!found) throw new Error("no face");
+  return found;
 }
 
 /** The bar, the solid, the toolbar, and the readout, in page pixels. */
