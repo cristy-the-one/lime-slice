@@ -49,6 +49,7 @@ import {
   reserveId,
   rootLabel,
   featureObjectName,
+  isSketchRevolveGroup,
   subtree,
   toolKeys,
   usesTree,
@@ -129,8 +130,9 @@ import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, no
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { mountEdgeDrag } from "./edge-drag";
-import { closeSketchSession, mountSketch, openSketchFeature, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
+import { closeSketchSession, mountSketch, openSketchFeature, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
 import { opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
+import { revolvePresetOf, sketchForRevolve } from "../sketch/revolve";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
@@ -2422,12 +2424,13 @@ async function startOwnEdit(node: NodeId) {
   if (!at || !tree || state.stage !== "model") return;
   const rootFeature = tree.root.kind === "feature" && tree.nodes.get(node)?.parent === null;
   const feature = editedOp(tree, node);
-  // --- E1. An extrude, including a feature root, reopens its sketch. A revolve or loft root still says so. ---
-  if (rootFeature && (!feature || !opensSketchEditor(feature))) {
+  // --- E1/F2. An extrude or a revolve, including a feature root, reopens its sketch. A loft root still says so. ---
+  const sketchFeature = feature != null && (opensSketchEditor(feature) || feature.kind === "revolve" || isSketchRevolveGroup(feature));
+  if (rootFeature && !sketchFeature) {
     readout(FEATURE_ROOT_EDIT);
     return;
   }
-  if (feature && opensSketchEditor(feature)) {
+  if (sketchFeature && feature) {
     await startSketchEdit(node, feature, rootFeature);
     return;
   }
@@ -2465,12 +2468,20 @@ async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || state.stage !== "model") return;
+  // --- F2. A revolve reopens its own sketch. An extrude keeps the path it already had. ---
+  const revSketch = sketchForRevolve(op);
+  const revPreset = revolvePresetOf(op, root);
   const sketch = sketchForFeature(op);
   const preset = presetOf(op, root);
-  if (!sketch || !preset) {
+  const revolveEdit = revSketch != null && revPreset != null;
+  if (!revolveEdit && (!sketch || !preset)) {
     readout("This sketch cannot be rebuilt.");
     return;
   }
+  const openIt = () => {
+    if (revolveEdit && revSketch && revPreset) openSketchRevolve(revSketch, revPreset);
+    else if (sketch && preset) openSketchFeature(sketch, preset);
+  };
   if (busy || jumping) {
     readout(STILL_WORKING);
     return;
@@ -2490,7 +2501,7 @@ async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
         return;
       }
     }
-    openSketchFeature(sketch, preset);
+    openIt();
     return;
   }
   const refusal = editRefusal(tree, node);
@@ -2514,7 +2525,7 @@ async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
     syncUndo();
     return;
   }
-  openSketchFeature(sketch, preset);
+  openIt();
 }
 
 /**
@@ -2522,7 +2533,7 @@ async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
  * the engine would mark a child "rebuilt differently" if the old one was sent. The shown node's
  * fingerprint is the solid just built. The old root fingerprint is not sent.
  */
-async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" }>): Promise<string | null> {
+async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revolve" }>): Promise<string | null> {
   const at = open;
   const tree = at ? modelTrees.get(at.key) : null;
   if (!at || !tree || tree.root.kind !== "feature") return "This solid did not start from a sketch.";
@@ -2573,17 +2584,21 @@ function forgetSolids(key: string) {
   for (const name of [...solids.keys()]) if (name.startsWith(`${key}#`)) solids.delete(name);
 }
 
-/** --- F1. Apply the extrude the sketch built. A root edit replaces node 0. A step edit replays. --- */
+/** --- F1/F2. Apply the extrude or revolve the sketch built. A root edit replaces node 0. A step edit replays. --- */
 async function commitSketchExtrude(op: ModelOp, placement: "new" | "on-solid"): Promise<string | null> {
   if (sketchRootEdit) {
-    if (op.kind !== "extrude") return "This solid is one extrude.";
-    return replaceFeatureRoot(op);
+    if (op.kind === "extrude" || op.kind === "revolve") return replaceFeatureRoot(op);
+    if (op.kind === "group" && op.steps.length > 0 && op.steps.every((step) => step.kind === "revolve")) return "A new solid is one revolve.";
+    return "This solid is one extrude.";
   }
   if (placement === "new") {
     if (editing?.sketch) return "Editing this step keeps it on this solid. Join, cut, or intersect.";
-    if (op.kind !== "extrude") return "A new solid is one extrude.";
-    const ok = await createFeatureSolid(op);
-    return ok ? null : readoutText || "The solid was not created.";
+    if (op.kind === "revolve" || op.kind === "extrude") {
+      const ok = await createFeatureSolid(op);
+      return ok ? null : readoutText || "The solid was not created.";
+    }
+    if (op.kind === "group" && op.steps.length > 0 && op.steps.every((step) => step.kind === "revolve")) return "A new solid is one revolve.";
+    return "A new solid is one extrude.";
   }
   if (editing?.sketch) {
     const run: Editing = { ...editing, featureOp: op };
@@ -2592,7 +2607,7 @@ async function commitSketchExtrude(op: ModelOp, placement: "new" | "on-solid"): 
     if (editing === run) return readoutText || "The step was not rebuilt.";
     return null;
   }
-  const ok = await applyOp(op, op.kind === "group" ? `Applying ${op.label}…` : "Extruding…");
+  const ok = await applyOp(op, op.kind === "group" ? `Applying ${op.label}…` : op.kind === "revolve" ? "Revolving…" : "Extruding…");
   return ok ? null : readoutText || "The extrude was not applied.";
 }
 
