@@ -124,7 +124,7 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
 
   await page.locator("[data-sketch-menu=draw]").click();
-  await expect(page.locator(".sketch-menu-list")).toBeVisible();
+  await expect(page.locator(".sketch-menu:has([data-sketch-menu=draw]) .sketch-menu-list")).toBeVisible();
   for (const label of ["Circle", "Arc", "Polygon", "Slot", "Spline", "Trim", "Offset", "Fillet corner", "Construction", "Use"]) {
     await expect(page.locator(`.sketch-menu-list [data-sketch-tool]`, { hasText: label })).toBeVisible();
   }
@@ -164,5 +164,61 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   await page.keyboard.press("X");
   await expect(canvas).toHaveAttribute("data-sketch-tool", "construction");
   expect(await fits(), "the toolbar still fits at 1440 px while a sketch is open").toBe(true);
+  await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
+});
+
+test("constraints live in the sketch card and a typed length drives the line", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openBox(page);
+  const canvas = page.locator("#model");
+  const fits = () => page.locator(".model-tools").evaluate((bar) => bar.scrollWidth <= bar.clientWidth);
+  expect(await fits(), "the toolbar fits before the sketch opens").toBe(true);
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await expect(canvas).toHaveAttribute("data-sketch-camera", "locked");
+  expect(await fits(), "constraints are not on the Model toolbar").toBe(true);
+  await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
+  await expect(page.locator("#modelToolSketch")).not.toHaveAttribute("data-tool", /.+/);
+
+  const box = (await canvas.boundingBox())!;
+  const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const end = { x: start.x + 140, y: start.y - 40 };
+  await page.mouse.click(start.x, start.y);
+  await page.mouse.click(end.x, end.y);
+  await page.keyboard.press("Escape");
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "1");
+
+  await page.locator("[data-sketch-tool=select]").click();
+  await page.mouse.move(start.x - 30, start.y + 30);
+  await page.mouse.down();
+  await page.mouse.move(end.x + 30, end.y - 30);
+  await page.mouse.up();
+  await page.locator("[data-sketch-menu=constrain]").click();
+  await expect(page.locator("[data-sketch-constrain=horizontal]")).toBeVisible();
+  await expect(page.locator("[data-sketch-constrain=coincident]")).toBeVisible();
+  await expect(page.locator("[data-sketch-constrain=length]")).toBeVisible();
+  await expect(page.locator("[data-sketch-constrain=remove]")).toBeVisible();
+  await page.locator("[data-sketch-constrain=horizontal]").click();
+  await page.locator("[data-sketch-menu=constrain]").click();
+  await page.locator("[data-sketch-constrain=length]").click();
+
+  const label = page.locator(".sketch-dim-input");
+  await expect(label).toBeVisible();
+  await label.fill("40");
+  await label.press("Enter");
+  await expect(canvas).toHaveAttribute("data-sketch-measure", "40.000,0.000");
+  await expect(canvas).toHaveAttribute("data-sketch-defined", "0");
+  await expect(canvas).toHaveAttribute("data-sketch-dof", /^\d+$/);
+  await expect(canvas).toHaveAttribute("data-sketch-constraints", "2");
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "1");
+
+  for (let step = 0; step < 6; step += 1) {
+    if ((await canvas.getAttribute("data-sketch-constraints")) === "0") break;
+    await page.keyboard.press("Control+z");
+  }
+  await expect(canvas).toHaveAttribute("data-sketch-constraints", "0");
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "1");
+  expect(await fits(), "the toolbar still fits at 1440 px with constraints in the card").toBe(true);
   await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
 });
