@@ -98,9 +98,13 @@ export function pullDrag(
   return { raw: dragged.raw, distance: dragged.distance, snap: dragged.snap, align: dragged.align, face: dragged.face };
 }
 
+/** A face this close to square with the drag lies at one height along it, so lining up with it means something. */
+export const LEVEL_PARALLEL = 0.99;
+
 /**
- * Signed heights of the faces that are not being dragged, along `direction` from `origin`.
- * A face whose centre is on the axis is skipped: snapping to it would not move anything.
+ * Signed heights of the faces that are not being dragged, along `direction` from `origin`: only faces parallel to the
+ * drag, at their plane, as a CAD push snaps to another face's level. A side wall's middle is no height at all.
+ * A face at the origin's own height is skipped: snapping to it would not move anything.
  */
 export function pullLevels(
   faces: readonly PullFace[],
@@ -113,6 +117,8 @@ export function pullLevels(
   const out: FaceLevel[] = [];
   for (const face of faces) {
     if (skip.has(face.index)) continue;
+    const normal = unit(face.normal);
+    if (!normal || Math.abs(dot(normal, dir)) < LEVEL_PARALLEL) continue;
     const delta = sub(face.at, origin);
     const distance = dot(delta, dir);
     if (!Number.isFinite(distance) || Math.abs(distance) < 1e-6) continue;

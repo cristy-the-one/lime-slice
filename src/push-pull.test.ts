@@ -53,11 +53,14 @@ eq("the readout after a pull", pullDone(10), "Pulled 10 mm · Tab to edit");
 eq("the readout after a push", pullDone(-3), "Pushed 3 mm · Tab to edit");
 check("Tab edits for three seconds", tabEditOpen(1000, 4000) && !tabEditOpen(1000, 4001) && !tabEditOpen(1000, 999));
 
-const levels = pullLevels([top, side, front], top.at, top.normal, new Set([top.index]));
-eq("other faces offer their height along the normal", levels.map((level) => [level.id, level.distance]), [
-  [5, -10],
-  [2, -10],
+const bottom: PullFace = { index: 0, normal: [0, 0, -1], at: [10, 10, 0] };
+const ledge: PullFace = { index: 7, normal: [0, 0, 1], at: [30, 10, 26] };
+const levels = pullLevels([top, side, front, bottom, ledge], top.at, top.normal, new Set([top.index]));
+eq("faces parallel to the drag offer their plane's height", levels.map((level) => [level.id, level.distance]), [
+  [0, -20],
+  [7, 6],
 ]);
+eq("a side wall's middle is no level", levels.some((level) => level.id === side.index || level.id === front.index), false);
 eq("the face being dragged is not a snap", levels.some((level) => level.id === top.index), false);
 
 const ray = { origin: [10, -40, 25] as [number, number, number], direction: [0, 1, 0] as [number, number, number] };
