@@ -302,6 +302,8 @@ interface Editing {
 let editing: Editing | null = null;
 /** --- E1. A feature-root edit is not a sibling fork. Undo waits until the sketch closes. --- */
 let sketchRootEdit = false;
+/** The step shown when a feature-root edit began. Apply rebuilds the history and shows it again; Cancel goes back to it. */
+let rootEditFrom: NodeId | null = null;
 /** Bumps when an extrude preview is dropped, so a late probe does not land on the next gesture. */
 let extrudeGen = 0;
 /** P2. The idle edge knob. Null until the view is bound. */
@@ -2608,11 +2610,13 @@ async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
   }
   if (root) {
     sketchRootEdit = true;
+    rootEditFrom = tree.current;
     syncUndo();
     if (tree.current !== ROOT) {
       const shown = await showNode(ticket, at.objectId, at.key, ROOT, about);
       if (!shown) {
         sketchRootEdit = false;
+        rootEditFrom = null;
         syncUndo();
         return;
       }
@@ -2655,7 +2659,9 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
   if (!at || !tree || tree.root.kind !== "feature") return "This solid did not start from a sketch.";
   if (busy || jumping) return STILL_WORKING;
   const previous = tree;
-  const cleared = clearFingerprints(withFeatureRoot(tree, op));
+  // The later steps build on the new root, up to the step shown before the edit, which the view shows again.
+  const back = rootEditFrom != null && tree.nodes.has(rootEditFrom) ? rootEditFrom : tree.current;
+  const cleared = jumped(clearFingerprints(withFeatureRoot(tree, op)), back);
   modelTrees.set(at.key, cleared);
   forgetSolids(at.key);
   const mine = ticket;
@@ -2663,7 +2669,7 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
   syncUndo();
   readout("Rebuilding the solid…");
   await post({ call: "close", key: at.key });
-  const problem = await openWhole(at.key, cleared.current);
+  const problem = await openWhole(at.key, back);
   if (mine === ticket) busy = false;
   syncUndo();
   if (problem) {
@@ -2675,7 +2681,13 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
     return problem;
   }
   forgetSolids(at.key);
-  const shown = await showNode(mine, at.objectId, at.key, modelTrees.get(at.key)?.current ?? ROOT, (solid) => `Updated the sketch. ${about(solid)}`);
+  let shown = await showNode(mine, at.objectId, at.key, back, (solid) => `Updated the sketch. ${about(solid)}`);
+  const rebuilt = modelTrees.get(at.key);
+  if (!shown && mine === ticket && rebuilt && back !== ROOT) {
+    // A later step that no longer builds on the new root stays in the history, marked; the last step that builds is shown.
+    const good = lastGood(rebuilt, back) ?? ROOT;
+    if (good !== back) shown = await showNode(mine, at.objectId, at.key, good, (solid) => `Updated the sketch. ${BROKEN} ${about(solid)}`);
+  }
   if (!shown) return "The solid did not rebuild.";
   const solid = open?.solid;
   const now = modelTrees.get(at.key);
@@ -2686,6 +2698,7 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
     modelTrees.set(at.key, { ...now, nodes });
   }
   sketchRootEdit = false;
+  rootEditFrom = null;
   syncUndo();
   return null;
 }
@@ -2751,8 +2764,14 @@ function clearExtrudePreview() {
 function cancelSketchFeature() {
   if (sketchRootEdit) {
     sketchRootEdit = false;
+    const back = rootEditFrom;
+    rootEditFrom = null;
     closeSketchSession();
     syncUndo();
+    // The edit showed the root. The step shown before it comes back, so the later steps are not left as Redo.
+    const at = open;
+    const tree = treeOf(at);
+    if (at && tree && back != null && tree.nodes.has(back) && tree.current !== back) void showNode(ticket, at.objectId, at.key, back, about);
     return;
   }
   if (editing?.sketch) cancelEdit();
@@ -2918,6 +2937,7 @@ function dropEdit() {
   const sketching = editing?.sketch === true || sketchRootEdit;
   editing = null;
   sketchRootEdit = false;
+  rootEditFrom = null;
   if (editedPanel()) closeModelTool();
   if (sketching) closeSketchSession();
 }

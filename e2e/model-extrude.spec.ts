@@ -217,6 +217,46 @@ test("a rectangle on the bed extrudes 20 into a new object, and History Edit cha
   expect(again.sketch).toBeUndefined();
 });
 
+test("editing the root of a part with a later cut keeps the cut current, on Cancel and on Apply", async ({ page }) => {
+  await start(page);
+  await extrudeOnBed(page, "20");
+  await expect.poll(() => height(page)).toBeCloseTo(20, 0);
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await page.mouse.click(top.x, top.y);
+  await page.locator("#modelContextBar").getByRole("button", { name: "Sketch on face" }).click();
+  const canvas = page.locator("#model");
+  await expect(canvas).toHaveAttribute("data-sketch-plane", "face 1");
+  await drawTypedCircle(page);
+  await page.keyboard.press("E");
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await hud.locator("input").first().fill("-5");
+  await hud.locator("input").first().press("Enter");
+  await expect.poll(() => height(page)).toBeCloseTo(15, 0);
+  const rows = page.locator("#modelHistoryTree .mh-row");
+  await expect(rows).toHaveCount(2);
+  const current = page.locator('#modelHistoryTree .mh-row[aria-selected="true"]');
+  await expect(current).toContainText("Cut");
+
+  // Cancel: the root was shown for the edit; the cut comes back as the current step.
+  await rows.first().locator(".mh-edit").click();
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await expect.poll(() => height(page)).toBeCloseTo(20, 0);
+  await page.locator("[data-sketch-finish]").click();
+  await expect(canvas).not.toHaveAttribute("data-sketch", "editing");
+  await expect(current).toContainText("Cut");
+  await expect.poll(() => height(page)).toBeCloseTo(15, 0);
+
+  // Apply: the history rebuilds on the new root and the cut is still current, not a Redo.
+  await rows.first().locator(".mh-edit").click();
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await hud.locator("input").first().fill("30");
+  await hud.locator("input").first().press("Enter");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Extrude 1-loop profile 30");
+  await expect(current).toContainText("Cut");
+  await expect.poll(() => height(page)).toBeCloseTo(25, 0);
+  await expect(page.locator("#modelRedo")).toBeDisabled();
+});
+
 async function drawTypedCircle(page: Page) {
   await page.locator("[data-sketch-menu=draw]").click();
   await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
