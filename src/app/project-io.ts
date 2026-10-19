@@ -17,8 +17,8 @@ import { geometryHash, projectSummary, thumbnailFromPng, type ProjectThumbnail }
 import { capturePlatePng } from "./thumb-capture.ts";
 import { saveProfile, type PrinterProfile } from "../profiles.ts";
 import { fanDefaults, projectFan, withFan } from "../fan.ts";
-import { selection } from "../ui/machine-library.ts";
-import { loadMachineLibrary } from "./machine-library.ts";
+import { filamentMatching, selectIn, selection } from "../ui/machine-library.ts";
+import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
@@ -167,6 +167,12 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     state.stepTolerance = project.placement.stepTolerance;
     state.profile = projectProfile(project.profile);
     saveProfile(state.profile);
+    // A project saved at a filament's own temperatures selects that filament, and does not rewrite it.
+    const match = filamentMatching(loadMachineLibrary(), state.profile);
+    if (match && match !== loadMachineLibrary().filamentId) {
+      const next = selectIn(loadMachineLibrary(), loadMachineLibrary().printerId, match, loadMachineLibrary().nozzleMm);
+      if (typeof next !== "string") storeMachineLibrary(next);
+    }
     applyPreset(project.settings);
     setSettingsLevel(project.level);
     state.supportEdits = project.supportEdits;

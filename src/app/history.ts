@@ -7,7 +7,7 @@ import { emptyOverrides } from "../overrides";
 import { emptyPlate, pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate } from "../plate";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
-import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setActiveFirmwareArcs, setAdvance, setFan, setNozzleTemp, setRetract } from "../ui/machine-library";
+import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setActiveFirmwareArcs, setAdvance, setFan, setNozzleTemp, setRetract, setTemps } from "../ui/machine-library";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
 import {
   beginGesture,
@@ -125,7 +125,12 @@ function applySnap(snap: EditSnap) {
     const selected = selectIn(loadMachineLibrary(), snap.machine.printerId, snap.machine.filamentId, snap.machine.nozzleMm);
     if (typeof selected !== "string") {
       const withAdvance = setAdvance(selected, state.pressureAdvance, state.linearAdvance);
-      const withHeatAndFan = setFan(setNozzleTemp(withAdvance, state.profile.nozzleTemp), withFan({}, state.profile));
+      const withHeat = typeof snap.profile.nozzleTemp === "number" && typeof snap.profile.bedTemp === "number"
+        ? setTemps(withAdvance, state.profile.nozzleTemp, state.profile.bedTemp)
+        : typeof snap.profile.nozzleTemp === "number"
+          ? setNozzleTemp(withAdvance, state.profile.nozzleTemp)
+          : withAdvance;
+      const withHeatAndFan = setFan(withHeat, withFan({}, state.profile));
       const speed = state.retractOn && Math.abs(state.retractSpeed - 30) > 1e-6 ? state.retractSpeed : null;
       storeMachineLibrary(setRetract(withHeatAndFan, state.retractOn ? state.retractLength : null, speed));
     }

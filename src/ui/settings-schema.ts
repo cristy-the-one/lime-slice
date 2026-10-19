@@ -20,7 +20,7 @@ import { fanLayersValue, fanPercentValue, MAX_FAN_OFF_LAYERS } from "../fan.ts";
 
 export type Settings = typeof state;
 export type Tier = SettingsLevel;
-export type GroupId = "strategy" | "objects" | "quality" | "walls" | "infill" | "speed" | "cooling" | "supports" | "printer" | "calibrate" | "gear";
+export type GroupId = "strategy" | "objects" | "quality" | "walls" | "infill" | "speed" | "temperature" | "cooling" | "supports" | "printer" | "calibrate" | "gear";
 
 /** What a control's options or limits may depend on. */
 export interface SchemaContext {
@@ -55,6 +55,8 @@ export interface ControlSpec {
   tip?: string;
   /** Extra search words. The label matches on its own. */
   keywords?: string;
+  /** The label drags the number, the same way a placement label does. */
+  scrub?: boolean;
   /** The preset key the control edits. The modified dot compares it with the factory default. */
   preset?: keyof PresetSettings;
   get?: (s: Settings) => number | boolean | string;
@@ -164,6 +166,18 @@ export const GROUPS: GroupSpec[] = [
     tier: "simple",
     accent: "--group-speed",
     summary: (s) => `${s.featureSpeeds ? "per feature" : "one speed"}${s.zHop !== "blend" && s.zHop !== "off" ? " · z-hop" : ""}`,
+  },
+  {
+    id: "temperature",
+    title: "Temperature",
+    tier: "simple",
+    accent: "--group-temperature",
+    summary: (s) => {
+      const nozzle = s.profile?.nozzleTemp;
+      const bed = s.profile?.bedTemp;
+      if (typeof nozzle !== "number" || typeof bed !== "number") return "";
+      return `${Math.round(nozzle)}° / ${Math.round(bed)}°`;
+    },
   },
   {
     id: "cooling",
@@ -533,6 +547,33 @@ export const CONTROLS: ControlSpec[] = [
   }),
   bound("retractLength", { id: "retractlen", label: "Retract length mm", group: "speed", tier: "expert", kind: num(0, 5, 0.05), parent: "retractset", when: (s) => s.retractOn, keywords: "retraction" }),
   bound("retractSpeed", { id: "retractspd", label: "Retract speed mm/s", group: "speed", tier: "expert", kind: num(5, 80, 1), parent: "retractset", when: (s) => s.retractOn, keywords: "retraction" }),
+
+  // Temperature: the filament's nozzle and bed, edited per print the way its fan is.
+  // The box shows the temperature that is sent (after the printer's limit). The value stored is the ask.
+  {
+    id: "nozzlec",
+    label: "Nozzle °C",
+    group: "temperature",
+    tier: "simple",
+    kind: num(150, 320, 1),
+    scrub: true,
+    tip: "The nozzle temperature for this filament. A change here is saved to the filament. When the printer's limit is lower, the box shows that limit and the note under Printer details says what the filament asked for.",
+    keywords: "temperature hotend m104 m109",
+    get: (s) => s.profile.nozzleTemp,
+    set: (s, value) => { s.profile.nozzleTemp = value as number; },
+  },
+  {
+    id: "bedc",
+    label: "Bed °C",
+    group: "temperature",
+    tier: "simple",
+    kind: num(0, 200, 1),
+    scrub: true,
+    tip: "The bed temperature for this filament. A change here is saved to the filament. When the printer's limit is lower, the box shows that limit. Raise the limit from Edit printer.",
+    keywords: "temperature heated m140 m190",
+    get: (s) => s.profile.bedTemp,
+    set: (s, value) => { s.profile.bedTemp = value as number; },
+  },
 
   // Cooling: the filament's fan, edited per print the way its temperature is.
   {

@@ -172,11 +172,50 @@ export function heatNotes(heat: Heat): string[] {
   return notes;
 }
 
+/** PLA temperatures a profile still has when nobody has chosen a filament's heat. */
+export const FACTORY_NOZZLE_C = 200;
+export const FACTORY_BED_C = 60;
+
+/**
+ * What the print asks for, before the printer's limits.
+ * A profile still on the PLA pair (200 °C / 60 °C) while the selected filament
+ * asks for something else has not been updated: the filament wins, so PETG
+ * stays 240 °C / 80 °C. Any other pair is a saved project or an edit, and it wins.
+ */
+export function resolvedAsks(
+  filament: { nozzleTemp: number; bedTemp: number } | undefined,
+  profileNozzle: number,
+  profileBed: number,
+): { nozzleTemp: number; bedTemp: number } {
+  if (
+    filament &&
+    profileNozzle === FACTORY_NOZZLE_C &&
+    profileBed === FACTORY_BED_C &&
+    (filament.nozzleTemp !== FACTORY_NOZZLE_C || filament.bedTemp !== FACTORY_BED_C)
+  ) {
+    return { nozzleTemp: filament.nozzleTemp, bedTemp: filament.bedTemp };
+  }
+  return { nozzleTemp: profileNozzle, bedTemp: profileBed };
+}
+
+/** The nozzle and bed fields show these: the temperatures that are sent. */
+export function fieldHeat(heat: Heat): { nozzleC: number; bedC: number } {
+  return { nozzleC: Math.round(heat.nozzleC), bedC: Math.round(heat.bedC) };
+}
+
 /** The same caps as sentences for the person at the printer panel. */
 export function heatWarnings(heat: Heat, filamentName: string): string[] {
   const out: string[] = [];
-  if (heat.bedC < heat.bedAskC) out.push(`Bed ${heat.bedC} °C (${filamentName} asks ${heat.bedAskC} °C, this printer stops at ${heat.bedC} °C)`);
-  if (heat.nozzleC < heat.nozzleAskC) out.push(`Nozzle ${heat.nozzleC} °C (${filamentName} asks ${heat.nozzleAskC} °C, this printer stops at ${heat.nozzleC} °C)`);
+  if (heat.bedC < heat.bedAskC) {
+    const bed = Math.round(heat.bedC);
+    const ask = Math.round(heat.bedAskC);
+    out.push(`Bed set to ${bed} °C: ${filamentName} asks for ${ask} °C, but this printer's limit is ${bed} °C. Change the limit in Edit printer.`);
+  }
+  if (heat.nozzleC < heat.nozzleAskC) {
+    const nozzle = Math.round(heat.nozzleC);
+    const ask = Math.round(heat.nozzleAskC);
+    out.push(`Nozzle set to ${nozzle} °C: ${filamentName} asks for ${ask} °C, but this printer's limit is ${nozzle} °C. Change the limit in Edit printer.`);
+  }
   return out;
 }
 
@@ -400,13 +439,46 @@ export function setRetract(library: MachineLibrary, length: number | null, speed
   };
 }
 
-export function setNozzleTemp(library: MachineLibrary, temp: number): MachineLibrary {
+function clampNozzleAsk(temp: number): number {
   const rounded = Math.round(temp);
-  const safe = Number.isFinite(rounded) ? Math.min(320, Math.max(150, rounded)) : 200;
+  return Number.isFinite(rounded) ? Math.min(320, Math.max(150, rounded)) : FACTORY_NOZZLE_C;
+}
+
+function clampBedAsk(temp: number): number {
+  const rounded = Math.round(temp);
+  return Number.isFinite(rounded) ? Math.min(200, Math.max(0, rounded)) : FACTORY_BED_C;
+}
+
+export function setNozzleTemp(library: MachineLibrary, temp: number): MachineLibrary {
+  const safe = clampNozzleAsk(temp);
   return {
     ...library,
     filaments: library.filaments.map((filament) => filament.id === library.filamentId ? { ...filament, nozzleTemp: safe } : filament),
   };
+}
+
+/** Both temperatures, saved on the active filament. The printer's limit is applied later, at send. */
+export function setTemps(library: MachineLibrary, nozzle: number, bed: number): MachineLibrary {
+  const nozzleTemp = clampNozzleAsk(nozzle);
+  const bedTemp = clampBedAsk(bed);
+  return {
+    ...library,
+    filaments: library.filaments.map((filament) => filament.id === library.filamentId ? { ...filament, nozzleTemp, bedTemp } : filament),
+  };
+}
+
+/** A saved filament whose temperature, density, and diameter are this profile's, if there is one. */
+export function filamentMatching(
+  library: MachineLibrary,
+  profile: { nozzleTemp: number; bedTemp: number; filamentDensityGCm3: number; filamentDiameter: number },
+): string | null {
+  const found = library.filaments.find((filament) =>
+    filament.nozzleTemp === profile.nozzleTemp
+    && filament.bedTemp === profile.bedTemp
+    && filament.densityGCm3 === profile.filamentDensityGCm3
+    && Math.abs(filament.diameterMm - profile.filamentDiameter) < 1e-6,
+  );
+  return found?.id ?? null;
 }
 
 /**
@@ -727,8 +799,8 @@ export function machineChipLabel(library: MachineLibrary): string {
   return `${picked.printer.name} · ${picked.filament.name} · ${nozzleKey(library.nozzleMm)} mm`;
 }
 
-/** The printer, filament, and nozzle pickers of the printer chip. */
-export function machinePickHtml(library: MachineLibrary): string {
+/** The printer, filament, and nozzle pickers of the printer chip. `heat` is the print's resolved temperatures. */
+export function machinePickHtml(library: MachineLibrary, heat?: Heat): string {
   const picked = selection(library);
   const nozzles: number[] = [...NOZZLE_MM];
   if (!nozzles.some((size) => nozzleKey(size) === nozzleKey(library.nozzleMm))) nozzles.push(library.nozzleMm);
@@ -751,7 +823,7 @@ export function machinePickHtml(library: MachineLibrary): string {
     <label class="field">Nozzle
       <select id="machineNozzle" aria-label="Nozzle size">${nozzleOptions}</select>
     </label>
-    ${picked ? heatNoteHtml(heatFor(picked.printer, picked.filament.nozzleTemp, picked.filament.bedTemp), picked.filament.name, "printerHeatNote") : ""}
+    ${picked ? heatNoteHtml(heat ?? heatFor(picked.printer, picked.filament.nozzleTemp, picked.filament.bedTemp), picked.filament.name, "printerHeatNote") : ""}
     <button class="btn" id="editPrinter" type="button">Edit printer…</button>`;
 }
 

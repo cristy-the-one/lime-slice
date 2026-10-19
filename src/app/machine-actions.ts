@@ -37,9 +37,11 @@ import {
   setHeatLimits,
   heatReadout,
   heatWarnings,
+  fieldHeat,
   DEFAULT_MAX_BED_C,
   DEFAULT_MAX_NOZZLE_C,
   setNozzleTemp,
+  setTemps,
   setRetract,
   type MachineLibrary,
   type MachineNumbers,
@@ -147,6 +149,29 @@ export function noteNozzleTemp(temp: number) {
   state.profile.nozzleTemp = next;
   saveProfile(state.profile);
   paintHeat(library);
+}
+
+/** The nozzle and bed fields changed `state.profile`: the active filament keeps both asks. */
+export function noteTemps() {
+  const library = setTemps(loadMachineLibrary(), state.profile.nozzleTemp, state.profile.bedTemp);
+  storeMachineLibrary(library);
+  const filament = selection(library)?.filament;
+  if (filament) {
+    state.profile.nozzleTemp = filament.nozzleTemp;
+    state.profile.bedTemp = filament.bedTemp;
+    saveProfile(state.profile);
+  }
+  paintHeat(library);
+  snapTempField("nozzlec");
+  snapTempField("bedc");
+}
+
+/** Show the temperature that will be sent. A focused box keeps what is being typed. */
+export function snapTempField(id: string, force = false) {
+  const input = document.querySelector<HTMLInputElement>(`#${id}`);
+  if (!input || (!force && document.activeElement === input)) return;
+  const shown = fieldHeat(activeHeat());
+  input.value = String(id === "bedc" ? shown.bedC : shown.nozzleC);
 }
 
 /** A fan field changed `state.profile`: the active filament keeps that value, as it keeps a temperature edit. */

@@ -304,7 +304,7 @@ check("both caps write two comment lines", JSON.stringify(heatNotes(heatFor({ ma
 check("no cap writes no comment", heatNotes(heatFor({ maxBedC: 90, maxNozzleC: 300 }, 200, 60)).length === 0);
 check(
   "the warning names the filament, the ask, and the limit",
-  JSON.stringify(heatWarnings(absAt100, "ABS")) === JSON.stringify(["Bed 90 °C (ABS asks 100 °C, this printer stops at 90 °C)"]),
+  JSON.stringify(heatWarnings(absAt100, "ABS")) === JSON.stringify(["Bed set to 90 °C: ABS asks for 100 °C, but this printer's limit is 90 °C. Change the limit in Edit printer."]),
   JSON.stringify(heatWarnings(absAt100, "ABS")),
 );
 check("no cap, no warning", heatWarnings(heatFor({ maxBedC: 90, maxNozzleC: 300 }, 200, 60), "PLA").length === 0);
