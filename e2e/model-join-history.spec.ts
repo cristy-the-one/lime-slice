@@ -298,3 +298,47 @@ test("colour by step colours only the part's own rows; a tool lane's row tints n
   await row(page, "2").hover();
   await expect(canvas(page)).toHaveAttribute("data-highlight", /^[1-9]/);
 });
+
+test("a pattern in a tool's tree follows its source when that source is edited from the part's History", async ({ page }) => {
+  const tree = await start(page);
+  // plate.step: a cut, and a pattern of three of it.
+  await page.locator("#modelToolBoolean").click();
+  await page.locator("#modelCut").click();
+  await page.locator("#modelDx").fill("4");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Volume 3900 mm³");
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuPattern").click();
+  await page.locator("#modelPatCount").fill("3");
+  await page.locator("#modelPatCount").press("Tab");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Volume 3800 mm³");
+  // Box 1 cut by it.
+  await page.locator("#modelToolNew").click();
+  await page.locator('#modelPrim [data-kind="box"]').click();
+  for (const id of ["modelDx", "modelDy", "modelDz"]) await page.locator(`#${id}`).fill("10");
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Box 1. Volume 1000 mm³");
+  await page.keyboard.press("Shift+G");
+  await page.locator("#modelObjects [data-object]").first().click();
+  await page.locator("#modelCut").click();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Volume 620 mm³");
+
+  // Edit the tool's cut from Box 1's History: the tool's pattern replays with copies of the new cut.
+  await row(page, "1/1").click({ button: "right" });
+  await page.getByRole("menuitem", { name: /Edit step/ }).click();
+  await expect(page.locator("#modelDx")).toHaveValue("4");
+  await page.locator("#modelDx").fill("6");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelPanel")).toBeHidden();
+  const sent = tree.of("edit").at(-1)!;
+  const tool = (sent.tools as { op: { size: number[] }; replay: { op: { kind: string; steps: { size: number[] }[] } }[] }[])[0]!;
+  expect(tool.op.size[0]).toBe(6);
+  expect(tool.replay[0]!.op.kind).toBe("group");
+  expect(tool.replay[0]!.op.steps.map((step) => step.size[0]), "the copies are of the new cut").toEqual([6, 6]);
+});

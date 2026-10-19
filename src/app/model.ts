@@ -3413,6 +3413,27 @@ async function runToolEdit(run: Editing, op: ModelOp) {
     modelTrees.set(key, reserved);
     return ids;
   });
+  // --- D2/D3 in a tool's tree: a pattern or mirror below the edited step follows it there too, as runEdit does.
+  const first = levels[0]!;
+  const fresh = [first.node, ...first.replay.map((step) => step.id)];
+  const oldOf = new Map(fresh.map((id, i) => [id, first.old[i]!] as const));
+  const renamed = stepIds(first.old, fresh);
+  const followed = followRepeatSources(
+    [{ id: first.node, op: first.op }, ...first.replay],
+    (id) => {
+      const old = oldOf.get(id);
+      const step = opForRepeat(from.tool, old ?? id);
+      return step && old !== undefined ? renumberedSteps(step, renamed) : step;
+    },
+    toolPose(objectPose(), from.joins),
+  );
+  if ("error" in followed) {
+    // Nothing was built yet; the ids reserved for it are spent, as a refused edit's are.
+    const row = from.tool.nodes.get(first.old[followed.at]!);
+    readout(row ? `Step ${pathTo(from.tool, row.id).length - 1} of ${from.joins.at(-1)?.op.tool.name ?? "the tool"}, “${stepLabel(row)}”, repeats the edited step and cannot follow it: ${sentence(followed.error)}` : sentence(followed.error));
+    return;
+  }
+  first.replay = first.replay.map((step, i) => ({ id: step.id, op: followed.ops[i + 1]! }));
   const own = levels.at(-1)!;
   const total = levels.reduce((sum, level) => sum + 1 + level.replay.length, 0);
   const chord = state.stepTolerance;
