@@ -80,7 +80,7 @@ import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosav
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, isPlainNumber, withExprs } from "../src/modeling/params.ts";
-import { featureExpandContext, featureLabel, featureSolidInModel, isFeatureTool } from "../src/model-features.ts";
+import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
 import { repeatLabel } from "../src/model-repeat.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "../src/modeling/expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
@@ -143,12 +143,23 @@ export function typedExprs(op: unknown): Record<string, string> | undefined {
     if (pu) out.modelTexPitchU = pu;
     if (pv) out.modelTexPitchV = pv;
   } else {
+    // A primitive placed by its centre grows from its corner when a size is rebuilt, so it keeps no size expression.
+    if ((kind === "boolean" || kind === "root") && raw.centre !== undefined) return undefined;
     for (const [field, key, half] of OP_EXPR_FIELDS[kind] ?? []) {
       const text = exprText(raw[field]);
       if (text) out[key] = half ? `(${text}) / 2` : text;
     }
-    // A box's dy is its dx when left out.
-    if ((kind === "boolean" || kind === "root") && raw.dy === undefined && out.modelDx) out.modelDy = out.modelDx;
+    // The fields primitiveFrom derives from dx and dz when they are left out follow them too.
+    if (kind === "boolean" || kind === "root") {
+      const dx = exprText(raw.dx);
+      const primitive = typeof raw.primitive === "string" ? raw.primitive : "box";
+      const readsRadius = ["cylinder", "cone", "tube", "sphere", "torus"].includes(primitive);
+      const readsHeight = ["cylinder", "cone", "tube", "polygon"].includes(primitive);
+      if (dx && raw.dy === undefined) out.modelDy = dx;
+      if (dx && raw.dz === undefined && (primitive === "sphere" || primitive === "ellipsoid")) out.modelDz = dx;
+      if (dx && raw.radius === undefined && readsRadius) out.modelRadius = `(${dx}) / 2`;
+      if (raw.height === undefined && out.modelDz && readsHeight) out.modelHeight = out.modelDz;
+    }
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -3942,7 +3953,8 @@ export class Session {
    */
   private expandContext(obj: PlateObject): ExpandContext {
     // --- D24. A moved part is read in model space, as the app reads it, since every op goes through toSolidOp once.
-    if (obj.solid && !isIdentity(obj.modelPose)) return featureExpandContext(featureSolidInModel(obj.solid, obj.modelPose), this.typedPlane(obj));
+    // The posed mesh and its face frames are kept per solid and pose (posedContext), so a batch reads them once.
+    if (obj.solid && !isIdentity(obj.modelPose)) return { ...posedContext(obj.solid, obj.modelPose), plane: this.typedPlane(obj) };
     // --- A3 composite features: one context builder for the session and the panel. ---
     return expandContextFromSolid(
       obj.solid ? { positions: obj.solid.positions, triangles: obj.solid.triangles, faces: obj.solid.faces as FrameFace[] } : null,

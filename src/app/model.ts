@@ -30,7 +30,7 @@ import { faceBoundarySegments, lastEdge, nextModelPicks, selectionCountLabel } f
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes, printFrame } from "../model-check.ts";
-import { emptyFeature, expandFeature, featureSource, isFeatureTool, keptFeatureFields, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
+import { emptyFeature, expandFeature, featureSource, forgetFeatureContext, isFeatureTool, keptFeatureFields, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
 import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
@@ -1858,7 +1858,6 @@ export function leaveModel() {
   void writeSteps();
 }
 
-/** The file's plate is gone: so are its trees. */
 /** The object whose View settings (section, colour by step) are showing. */
 let lookObject: string | null = null;
 
@@ -1869,8 +1868,10 @@ function lookFor(objectId: string) {
   resetModelLook();
 }
 
+/** The file's plate is gone: so are its trees. */
 export function forgetModelTrees() {
   lookObject = null;
+  forgetFeatureContext();
   resetModelLook();
   void closeInEngine(closeOrder(modelTrees, modelTrees.keys()));
   plateEra += 1;
@@ -1937,6 +1938,8 @@ export function showModel() {
   syncUndo();
   const mesh = state.mesh;
   shownFor = objectId;
+  // --- D11. A mesh with no tree starts the View menu over too.
+  if (objectId) lookFor(objectId);
   const obj = state.plate.objects.find((item) => item.id === objectId);
   const token = mesh ? meshTokenOf(mesh.bytes) : null;
   const known = objectId && token ? treeFor(objectId, obj?.modelTree, token) : null;
@@ -3073,7 +3076,20 @@ function refreshStored(op: ModelOp, after: Params, tree: ModelTree, parent: Node
 }
 
 /** Replay the shown branch from the earliest step a parameter change reaches, as one edit. */
+/** --- D21. A rebuild still asking the engine for a solid: a second Rebuild waits for it. */
+let rebuilding = false;
+
 async function rebuildFromParameters() {
+  if (rebuilding) return;
+  rebuilding = true;
+  try {
+    await rebuildNow();
+  } finally {
+    rebuilding = false;
+  }
+}
+
+async function rebuildNow() {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || busy || jumping || state.stage !== "model") return;

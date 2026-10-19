@@ -456,7 +456,13 @@ function noNestedPart(): { reason: string } {
  */
 let contextMemo: { solid: FeatureSolid; pose: string; ctx: ReturnType<typeof featureExpandContext> } | null = null;
 
-function posedContext(solid: FeatureSolid, pose: Affine): ReturnType<typeof featureExpandContext> {
+/** The plate went: the kept mesh copy goes with it. */
+export function forgetFeatureContext() {
+  contextMemo = null;
+}
+
+/** The expand context of `solid` at `pose` in model space, kept for the next call with the same solid and pose. */
+export function posedContext(solid: FeatureSolid, pose: Affine): ReturnType<typeof featureExpandContext> {
   const key = JSON.stringify(pose);
   if (contextMemo?.solid === solid && contextMemo.pose === key) return contextMemo.ctx;
   const built = featureExpandContext(featureSolidInModel(solid, pose), GLOBAL_WORKPLANE);

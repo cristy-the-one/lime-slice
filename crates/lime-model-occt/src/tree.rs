@@ -537,9 +537,11 @@ pub fn set_limits(limits: Limits) {
 
 /// --- D4. How long a new group (an Apply or a probe) may build before it stops at the next step. Every tree
 /// shares one store lock, so a group of hundreds of Booleans on a large part would hold up every other part.
-/// A replay (open, goto, edit) has no budget: a saved part must open the same on a slower machine.
+/// The edited step of an edit has it too. A replay (open, goto, the steps an edit replays) has no budget: a saved
+/// part must open the same on a slower machine.
 static GROUP_BUDGET_MS: AtomicU64 = AtomicU64::new(60_000);
 
+/// Sets how long a new group may build before it stops (60 s unless a test or the server changes it).
 pub fn set_group_budget(budget: Duration) {
     GROUP_BUDGET_MS.store(
         budget.as_millis().try_into().unwrap_or(u64::MAX),
@@ -600,7 +602,7 @@ fn group_overran(index: usize, count: usize) -> Option<String> {
     ))
 }
 
-// Answer one JSON request. See `docs/step-modeler.md` for the calls.
+/// Answer one JSON request. See `docs/step-modeler.md` for the calls.
 pub fn call(request: &str) -> String {
     let request: Request = match serde_json::from_str(request) {
         Ok(request) => request,
@@ -2193,6 +2195,8 @@ impl Store {
             None => {
                 let tool = self.join_tool(key, &op.op)?;
                 let from = doc_in(&mut self.docs, key)?.shape(parent);
+                // The edited step is typed now, as an Apply's is: it has the budget; the steps it replays do not.
+                let _budget = GroupBudget::start();
                 let _new = NewGroup::start();
                 build(from, op, false, tool, &steps).map_err(Failure::from)
             }

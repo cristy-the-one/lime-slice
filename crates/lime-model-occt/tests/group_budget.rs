@@ -45,6 +45,10 @@ fn a_new_group_stops_at_its_budget_and_a_saved_one_replays() {
         "{reopened}"
     );
 
+    // The edited step of an edit is typed now, as an Apply's is: it stops too.
+    let edited = call(json!({ "call": "edit", "key": "b2", "parent": 0, "node": 2, "op": group, "replay": [], "chordMm": 0.1 }));
+    assert_eq!(edited["error"], json!(expected), "{edited}");
+
     lime_model_occt::set_group_budget(Duration::from_secs(60));
     let applied = call(json!({ "call": "apply", "key": "b", "parent": 0, "node": 1, "op": group }));
     assert!(applied.get("error").is_none(), "{applied}");

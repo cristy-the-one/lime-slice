@@ -688,6 +688,8 @@ function onClick(ev: MouseEvent) {
   // --- A4, D29. While Pattern or Mirror is open, a click or a tap chooses a step to repeat and leaves the solid on
   // screen where it is. Ctrl-click does too, as before.
   if ((picking() || ev.ctrlKey || ev.metaKey) && hooks?.pickSource?.(id)) return;
+  // A row Pattern cannot take says so and stays: a click while picking never shows another step.
+  if (picking()) return;
   jumpNow(id);
 }
 

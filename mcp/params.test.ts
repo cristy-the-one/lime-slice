@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { fakeEngine } from "./engine.ts";
 import { stepOutOfDate } from "../src/modeling/params.ts";
 import type { ModelOp } from "../src/model-tree.ts";
-import { Session } from "./session.ts";
+import { Session, typedExprs as typedExprsOf } from "./session.ts";
 
 const workspace = mkdtempSync(join(tmpdir(), "lime-mcp-params-"));
 process.env.LIME_MCP_WORKSPACE = workspace;
@@ -102,6 +102,10 @@ check("project_create clears the defined parts", JSON.stringify(parts.parts) ===
   const exprs = ops.map((op) => op.exprs ?? null);
   check("the edited step keeps the expression this edit typed, and the replayed step its own", JSON.stringify(exprs.slice(-2)) === JSON.stringify([{ modelDx: "w + 1" }, { modelDx: "w" }]), JSON.stringify(exprs));
   check("a stored step is out of date when its parameter changes", ops.length >= 2 && !stepOutOfDate(ops.at(-1)!, { w: 12 }) && stepOutOfDate(ops.at(-1)!, { w: 14 }));
+
+  const derived = typedExprsOf({ kind: "boolean", op: "cut", primitive: "cylinder", dx: "d", height: 4 });
+  check("a cylinder typed by dx keeps its radius expression", JSON.stringify(derived) === JSON.stringify({ modelDx: "d", modelDy: "d", modelRadius: "(d) / 2" }), JSON.stringify(derived));
+  check("a primitive placed by its centre keeps no size expression", typedExprsOf({ kind: "boolean", op: "cut", primitive: "box", dx: "d", centre: [0, 0, 0] }) === undefined);
 
   // A root the app saved with expressions keeps them through the MCP.
   const rooted = JSON.parse(readFileSync(String(file.path), "utf8")) as { objects?: { modelTree?: Record<string, unknown> }[] };

@@ -144,6 +144,13 @@ test("an open tool's expression field and its dry-run follow a changed parameter
   await page.keyboard.type("8");
   await expect(width, "the field shows the new value").toHaveValue("8");
   await expect.poll(() => (tree.of("probe").at(-1)?.op as { source?: { width?: number } } | undefined)?.source?.width, "the dry-run asks again").toBe(8);
+  // Typing a parameter is one dry-run after the pause, not one per keystroke.
+  const probes = tree.of("probe").length;
+  await row.locator("[data-param-value]").selectText();
+  await page.keyboard.type("12");
+  await expect(width).toHaveValue("12");
+  await page.waitForTimeout(1000);
+  expect(tree.of("probe").length - probes, "one probe for two keystrokes").toBe(1);
 
   // A name the table does not have is told in the app's words.
   await width.click();

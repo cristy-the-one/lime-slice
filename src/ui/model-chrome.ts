@@ -562,7 +562,7 @@ export function setModelProbe(next: ProbeView) {
 }
 
 /** The last depth of a texture and of the other features, and which of them the Depth field holds now. */
-const featureDepths = { texture: 0.6, other: 2 };
+const featureDepths: Record<"texture" | "other", { value: number; expr?: string }> = { texture: { value: 0.6 }, other: { value: 2 } };
 let depthGroup: keyof typeof featureDepths = "other";
 
 /** Open `next`, or close it when it is open. Opening another tool ends an edit, which takes the view back. */
@@ -591,8 +591,11 @@ function toggleTool(next: ModelTool, editing = false) {
   if (isFeatureTool(next)) {
     const group = next === "texture" ? "texture" : "other";
     if (group !== depthGroup && !editing) {
-      featureDepths[depthGroup] = num("#modelFeatDepth");
-      writeFields(["modelFeatDepth"], [featureDepths[group]]);
+      const field = document.querySelector<HTMLInputElement>("#modelFeatDepth");
+      featureDepths[depthGroup] = { value: num("#modelFeatDepth"), expr: field?.dataset.expr };
+      const next = featureDepths[group];
+      writeFields(["modelFeatDepth"], [next.value]);
+      if (next.expr) restoreFieldExprs({ modelFeatDepth: next.expr });
     }
     depthGroup = group;
   }
@@ -2060,7 +2063,6 @@ export function restoreFieldExprs(exprs: Record<string, string> | undefined) {
  */
 export function followParameters() {
   if (!tool) return;
-  let moved: HTMLInputElement | null = null;
   for (const input of document.querySelectorAll<HTMLInputElement>("#modelPanel input[data-expr]")) {
     const text = input.dataset.expr;
     if (!text || document.activeElement === input) continue;
@@ -2082,11 +2084,9 @@ export function followParameters() {
     const shown = fieldText(value);
     if (input.value === shown) continue;
     input.value = shown;
+    // As a typed number: the dry-run waits out the typing pause, so each keystroke in Parameters is not a probe.
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    moved = input;
   }
-  // As Tab after typing: the dry-run goes now.
-  moved?.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 function fieldParams(): Params {
