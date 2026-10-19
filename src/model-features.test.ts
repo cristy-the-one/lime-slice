@@ -16,7 +16,6 @@ import {
   featurePanel,
   groupFromPieces,
   keptFeatureFields,
-  piecesOutlineOnly,
   readFeatureSpec,
   type FeatureChoices,
 } from "./model-features.ts";
@@ -115,8 +114,6 @@ const round = featurePanel({ kind: "text", text: "Hi", height: 8, depth: 1, face
 eq("an omitted stroke opens at height × 0.15", round.fields.modelTextStroke, 1.2);
 eq("text reopens on its face", round.feature.face, 2);
 
-eq("a ghost past 2000 pieces is outlines only", piecesOutlineOnly(2001), true);
-eq("a pocket's ghost is shaded", piecesOutlineOnly(3), false);
 
 const group = expanded.group ?? groupFromPieces("Pocket", spec, []);
 check("the group keeps the spec that was typed", (group.source as { kind?: string }).kind === "pocket" && group.steps.length === 3);
@@ -131,4 +128,4 @@ if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
 }
-console.log("model-features: pocket matches, panel reopens, ghost cap ok");
+console.log("model-features: pocket matches, panel reopens ok");

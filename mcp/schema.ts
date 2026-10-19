@@ -1314,7 +1314,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_params",
-    description: "Named numbers ops may use as text, e.g. dx: \"wallW / 2\". Session only.",
+    description: "Named numbers ops may use as text, e.g. dx: \"wallW / 2\". Saved as the project's parameters.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

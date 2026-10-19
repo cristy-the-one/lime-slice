@@ -8,28 +8,21 @@ import { standRegion } from "../mcp/plane-region.ts";
 import { faceRows, type FaceRow } from "../mcp/solid-geometry.ts";
 import { closeCracks } from "./mesh-check.ts";
 import { outwardFromMesh } from "./model-blend.ts";
-import { anchorOf, expand, primitiveFrom, type Piece } from "./modeling/compose.ts";
+import { anchorOf, expand, type Piece } from "./modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "./modeling/frames.ts";
 import { applyPose, isIdentity, turnDir, type Affine } from "./model-space.ts";
 import type { GroupOp, ModelOp } from "./model-tree.ts";
-import { planePoint, planePrimitive, axesOf, GLOBAL_WORKPLANE, type Workplane } from "./workplane.ts";
+import { planePoint, axesOf, GLOBAL_WORKPLANE, type Workplane } from "./workplane.ts";
 
 /** One toolbar entry; the menu chooses which of these is on the button. */
 export const FEATURE_TOOLS = ["pocket", "boss", "texture", "array", "ribs", "text"] as const;
 export type FeatureTool = (typeof FEATURE_TOOLS)[number];
-
-/** Past this many pieces the ghost draws outlines only. Expansion itself stops at MAX_PIECES (400). */
-export const GHOST_PIECE_CAP = 2000;
 
 /** Shown when the selection is not exactly one flat face. */
 export const PICK_ONE_FLAT_FACE = "Pick one flat face.";
 
 export function isFeatureTool(tool: unknown): tool is FeatureTool {
   return typeof tool === "string" && (FEATURE_TOOLS as readonly string[]).includes(tool);
-}
-
-export function piecesOutlineOnly(count: number): boolean {
-  return count > GHOST_PIECE_CAP;
 }
 
 const FEATURE_NAMES: Record<FeatureTool, string> = {
@@ -452,12 +445,9 @@ export function rangeNote(tool: FeatureTool, read: (id: string) => number): stri
   return null;
 }
 
-/** A plain boolean, for a nested pattern. Feature tools do not call it. */
-function toPart(op: Record<string, unknown>): Piece | { reason: string } {
-  const made = primitiveFrom(op);
-  if ("reason" in made) return made;
-  const which = op.op === "cut" || op.op === "common" ? op.op : "fuse";
-  return { op: which, spec: planePrimitive(made, GLOBAL_WORKPLANE) };
+/** A feature tool expands no nested op, so `expand` never asks for a plain part here. */
+function noNestedPart(): { reason: string } {
+  return { reason: "A feature has no nested op." };
 }
 
 /**
@@ -497,7 +487,7 @@ export function expandFeature(spec: Record<string, unknown>, solid: FeatureSolid
   const face = ctx.face(faceIndex);
   if ("reason" in face) return emptyFeature(PICK_ONE_FLAT_FACE);
   const typed = { ...spec, faceIndex };
-  const pieces = expand(typed, ctx, toPart);
+  const pieces = expand(typed, ctx, noNestedPart);
   if ("reason" in pieces) return emptyFeature(pieces.reason);
   const label = featureLabel(typed);
   const outward = axesOf(face.plane)[2];

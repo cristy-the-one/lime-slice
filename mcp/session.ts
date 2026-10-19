@@ -32,7 +32,7 @@ import { expandOps, type PartDef } from "../src/modeling/macro.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
 import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, withNode, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
-import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
+import { meshRecord, parseProject, readParameters, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
 import { savedTree, loadedTree, withSavedNames } from "../src/model-tree-file.ts";
 import { addRange, addVolume, emptyOverrides, freshOverrideId, removeRange, removeVolume, type OverrideDocument, type SettingOverride } from "../src/overrides.ts";
@@ -92,27 +92,6 @@ const SLICE_WAIT_MAX_S = 120;
 const STALE_SLICE = "The printer, filament, settings, or placement changed after this slice. Slice again.";
 const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a mesh.";
 const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the current handles.";
-/**
- * Whether a tool can change what the autosave holds: the plate, its objects, their histories and paint. Settings,
- * slices, exports, and machines are not in it, so they never cost a save.
- */
-/** The parameter table as `.lime` writes it. Empty is omitted. */
-function parametersForSave(table: Record<string, string | number>): Record<string, string | number> | undefined {
-  const read = readParamText(table);
-  return Object.keys(read).length > 0 ? read : undefined;
-}
-
-/** Names the file can keep: a finite number, or expression text. */
-function readParamText(value: Record<string, unknown>): Record<string, string | number> {
-  const out: Record<string, string | number> = {};
-  for (const [key, raw] of Object.entries(value)) {
-    if (!PARAM_NAME.test(key)) continue;
-    if (typeof raw === "number" && Number.isFinite(raw)) out[key] = raw;
-    else if (typeof raw === "string" && raw.trim()) out[key] = raw;
-  }
-  return out;
-}
-
 /** --- D25. Expression text, so an MCP step keeps the expressions it was typed with, as an app step keeps a field's. */
 function exprText(value: unknown): string | null {
   return typeof value === "string" && value.trim() && !isPlainNumber(value) ? value.trim() : null;
@@ -173,6 +152,10 @@ export function typedExprs(op: unknown): Record<string, string> | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * Whether a tool can change what the autosave holds: the plate, its objects, their histories and paint. Settings,
+ * slices, exports, and machines are not in it, so they never cost a save.
+ */
 function changesPlate(name: string): boolean {
   if (name === "model_export_step" || name === "model_check" || name === "model_params" || name === "model_define") return false;
   return /^(model_|object_|plate_|paint_|workplane_|support_edit|reinforce_|modifier_|range_|override_)/.test(name) || name === "solid_new" || name === "mesh_import" || name === "project_open" || name === "project_create";
@@ -1588,7 +1571,7 @@ export class Session {
     const mcpModel = this.mcpModelRecord();
     if (mcpModel) doc.mcpModel = mcpModel;
     else delete doc.mcpModel;
-    const parameters = parametersForSave(this.paramText);
+    const parameters = readParameters(this.paramText);
     if (parameters) doc.parameters = parameters;
     else delete doc.parameters;
     const tools = this.toolsOffPlate.flatMap((tool) => {
@@ -4478,7 +4461,7 @@ export class Session {
     this.paramText = {};
     const top = project.parameters;
     if (top && typeof top === "object" && !Array.isArray(top)) {
-      this.paramText = readParamText(top);
+      this.paramText = readParameters(top) ?? {};
     } else {
       const legacy = project.mcpModel?.params;
       if (legacy && typeof legacy === "object" && !Array.isArray(legacy)) {

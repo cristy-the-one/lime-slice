@@ -17,7 +17,7 @@ import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { holePointsSentence, refusedHole } from "../sketch/holes.ts";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
-import { featureName, isFeatureTool, panelChoices, piecesOutlineOnly, type FeatureChoices, type FeatureTool } from "../model-features";
+import { featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
 import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatName, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { paintRepeatSources } from "./model-history";
 import type { Piece } from "../modeling/compose";
@@ -561,6 +561,10 @@ export function setModelProbe(next: ProbeView) {
   // --- end A3 ---
 }
 
+/** The last depth of a texture and of the other features, and which of them the Depth field holds now. */
+const featureDepths = { texture: 0.6, other: 2 };
+let depthGroup: keyof typeof featureDepths = "other";
+
 /** Open `next`, or close it when it is open. Opening another tool ends an edit, which takes the view back. */
 function toggleTool(next: ModelTool, editing = false) {
   // --- F4. Leaving Hole drops the one-hole-per-point layout. Opening Hole keeps a count set just before. ---
@@ -582,6 +586,16 @@ function toggleTool(next: ModelTool, editing = false) {
   if (!isRepeatTool(next)) paintRepeatSources([]);
   // --- A3 composite features: the button shows the feature just opened, and a click picks a face. ---
   // --- A4. Pattern and Mirror share that button. A click picks a face, for a path point or a mirror face. ---
+  // --- D38. A texture's groove depth is its own (0.6 by default, as the MCP's): the shared Depth field swaps between
+  // the texture's and the other features' last depth when the tool changes between them.
+  if (isFeatureTool(next)) {
+    const group = next === "texture" ? "texture" : "other";
+    if (group !== depthGroup && !editing) {
+      featureDepths[depthGroup] = num("#modelFeatDepth");
+      writeFields(["modelFeatDepth"], [featureDepths[group]]);
+    }
+    depthGroup = group;
+  }
   if (isFeatureTool(next) || isRepeatTool(next)) {
     showFeatureButton(next);
     rememberFeature(next);
@@ -1953,14 +1967,14 @@ function ghostFor(current: ModelTool): ModelGhost | null {
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
   // --- A2 shell / A7 model check / P1: no stand-in. The dry-run's shape is the hollow, and the open faces are outlined as removed. The push/pull prism is drawn by the gesture. ---
   if (current === "place" || current === "workplane" || current === "check" || current === "shell" || current === "pushpull") return null;
-  // --- A3 composite features: every piece, shaded, or outlines only past the cap. A failed step is named for the view. ---
+  // --- A3 composite features: every piece, shaded (expansion stops at 400, so no ghost needs outlines only). A failed step is named for the view. ---
   if (isFeatureTool(current)) {
     const view = hooks?.featureView();
     if (!view?.pieces?.length) return null;
     const failed = probe?.phase === "done" && !probe.ok ? probe.failedStep : undefined;
     return {
       kind: "pieces",
-      outlines: piecesOutlineOnly(view.pieces.length),
+      outlines: false,
       ...(failed != null ? { failed } : {}),
       parts: view.pieces.map((piece) => ({ spec: piece.spec, mesh: featureMesh(piece.spec) })),
     };
@@ -1973,7 +1987,7 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     const failed = probe?.phase === "done" && !probe.ok ? probe.failedStep : undefined;
     return {
       kind: "pieces",
-      outlines: piecesOutlineOnly(view.pieces.length),
+      outlines: false,
       ...(failed != null ? { failed } : {}),
       parts: view.pieces.map((piece) => ({ spec: piece.spec, mesh: featureMesh(piece.spec) })),
     };
