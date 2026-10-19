@@ -54,6 +54,7 @@ import {
   usesTree,
   visitStep,
   withChild,
+  withFeatureRoot,
   withNode,
   type EdgeRef,
   type FeatureOp,
@@ -67,7 +68,7 @@ import {
   type Vec3,
 } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
-import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
+import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, keepSketch, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
 import { edgeOfText, remapBlendFromNode, storedEdgeStep } from "../model-edge-step";
 import { mountPull, pullFieldText, type PullMade } from "../push-pull-ui";
 import { averagePoint, contextKind, polylineMid } from "../context-bar";
@@ -127,7 +128,8 @@ import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, no
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { mountEdgeDrag } from "./edge-drag";
-import { mountSketch, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
+import { closeSketchSession, mountSketch, openSketchFeature, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
+import { opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
@@ -269,8 +271,18 @@ interface Editing {
    * or chamfer panel opens, and `editOp` returns this rather than the panel's fields.
    */
   edgeOp?: ModelOp;
+  /**
+   * --- F1/E1. Set while a sketch extrude is the editor. `featureOp` is the extrude Apply will
+   * replay. `sketch` marks the session so Cancel returns to the step instead of opening a panel.
+   */
+  featureOp?: ModelOp;
+  sketch?: true;
 }
 let editing: Editing | null = null;
+/** --- E1. A feature-root edit is not a sibling fork. Undo waits until the sketch closes. --- */
+let sketchRootEdit = false;
+/** Bumps when an extrude preview is dropped, so a late probe does not land on the next gesture. */
+let extrudeGen = 0;
 /** P2. The idle edge knob. Null until the view is bound. */
 let edgeDrag: { sync(): void; picksChanged(): void; holding(): boolean } | null = null;
 /** --- S2 sketch --- redraws the grid when the solid on screen changes. */
@@ -616,6 +628,29 @@ export function bindModelView() {
       },
       onHistory() {
         syncUndo();
+      },
+      // --- F1/E1. The sketch applies an extrude here. The context bar and the card call these. ---
+      bounds: openBox,
+      selectedFace() {
+        return picks.find((pick) => pick.kind === "face")?.index ?? null;
+      },
+      featureEdit() {
+        return sketchRootEdit ? "root" : editing?.sketch ? "step" : null;
+      },
+      commitExtrude(op, placement) {
+        return commitSketchExtrude(op, placement);
+      },
+      probeExtrude(op) {
+        void probeExtrude(op);
+      },
+      clearExtrudePreview() {
+        clearExtrudePreview();
+      },
+      cancelFeatureEdit() {
+        cancelSketchFeature();
+      },
+      frameSolid() {
+        frameModel(false);
       },
     });
   }
@@ -1143,6 +1178,8 @@ function panelOp(): ModelOp | null {
 
 /** An edited step's op as its panel says it: a join keeps its tool and placement, a new solid's root stands as `rootSpec` puts it. */
 function editOp(run: Editing): ModelOp | null {
+  // --- F1/E1. The sketch extrude's Apply is the op it built, not a panel. ---
+  if (run.featureOp) return run.featureOp;
   // P2. The edge drag's edit is the fillet or chamfer it holds, not whatever panel is open.
   if (run.edgeOp) return run.edgeOp;
   const tool = openModelTool();
@@ -1979,7 +2016,7 @@ async function step(way: "undo" | "redo") {
   const at = open;
   const tree = treeOf(at);
   const node = tree ? (way === "undo" ? undoNode(tree) : redoNode(tree)) : null;
-  if (!at || !tree || node == null || busy || jumping || editing) return;
+  if (!at || !tree || node == null || busy || jumping || editing || sketchRootEdit) return;
   parked = null;
   const back = editBack;
   const viaEdit = !!back && node === (way === "undo" ? back.back : back.tip) && tree.current === (way === "undo" ? back.tip : back.back) && back.undone === (way === "redo");
@@ -2211,13 +2248,13 @@ async function applyTool() {
 }
 
 /** Apply `op` to the shown node. The result is a new child, shown; the plate takes it on commit. */
-async function applyOp(op: ModelOp, working: string) {
+async function applyOp(op: ModelOp, working: string): Promise<boolean> {
   const at = open;
   const tree = treeOf(at);
-  if (!at || !tree || busy || jumping || !state.mesh) return;
+  if (!at || !tree || busy || jumping || !state.mesh) return false;
   if (at.objectId !== state.plate.selectedId) {
     followSelection();
-    return;
+    return false;
   }
   parked = null;
   editBack = null;
@@ -2228,7 +2265,7 @@ async function applyOp(op: ModelOp, working: string) {
     const shown = await showNode(ticket, at.objectId, at.key, twin, (solid) => appliedMessage(op, solid));
     if (shown) closeModelTool();
     if (shown && op.kind === "join" && !op.keepTool) takeOffPlate(op.tool.object);
-    return;
+    return shown;
   }
   // A new step placed by its numbers builds on the plate's STEP-read solid at once: rebuilding a long history first took
   // minutes (326 steps on the 2.6.1 back cover). A step that names edges or faces by the solid's numbering (a fillet, a
@@ -2244,25 +2281,24 @@ async function applyOp(op: ModelOp, working: string) {
     const problem = seeds.has(at.key) ? await openWhole(at.key, parent) : null;
     if (mine === ticket) busy = false;
     syncUndo();
-    if (mine !== ticket || state.stage !== "model") return;
+    if (mine !== ticket || state.stage !== "model") return false;
     if (problem) {
       readout(problem);
-      return;
+      return false;
     }
     if (!(await showNode(mine, at.objectId, at.key, parent, about))) {
       // The step no longer rebuilds: the view goes to the last one that does, and nothing is built.
       if (mine === ticket && state.stage === "model") await resume(mine, at.objectId, at.key, parent);
-      return;
+      return false;
     }
     // Edge and face numbers of the read solid may not be the rebuilt one's. A blend that names a step's
     // edges finds them again, and a closed shell names no face, so both go on.
     if (((op.kind === "fillet" || op.kind === "chamfer") && op.edges.some((edge) => !isEdgeStep(edge))) || (op.kind === "shell" && (op.openFaces?.length ?? 0) > 0)) {
       const what = op.kind === "shell" ? "faces" : "edges";
       readout(`${about(open!.solid)} The step was rebuilt from its history: pick the ${what} again.`);
-      return;
+      return false;
     }
-    await applyOp(op, working);
-    return;
+    return applyOp(op, working);
   }
   const [reserved, node] = reserveId(tree);
   modelTrees.set(at.key, reserved);
@@ -2276,8 +2312,8 @@ async function applyOp(op: ModelOp, working: string) {
   if (mine === ticket) busy = false;
   syncUndo();
   const latest = modelTrees.get(at.key);
-  if (mine !== ticket || state.stage !== "model" || !latest) return;
-  if (failed(at.key, body)) return;
+  if (mine !== ticket || state.stage !== "model" || !latest) return false;
+  if (failed(at.key, body)) return false;
   const parsed = decodeSolid(body);
   const other = !pieceKey ? null : body.other && typeof body.other === "object" ? decodeSolid(body.other as Body) : "The plane did not split this solid.";
   if (typeof parsed === "string" || typeof other === "string") {
@@ -2285,14 +2321,15 @@ async function applyOp(op: ModelOp, working: string) {
     void dropInEngine(at.key, node);
     if (pieceKey) void post({ call: "close", key: pieceKey });
     readout(typeof parsed === "string" ? parsed : (other as string));
-    return;
+    return false;
   }
-  const stored = isOp(body.op) ? body.op : op;
+  // --- F1. The engine's echo has no sketch. Put the one this call sent back on the stored op. ---
+  const stored = keepSketch(isOp(body.op) ? body.op : op, op);
   if (pieceKey && other && !addPiece(at, other, pieceKey, node)) {
     void dropInEngine(at.key, node);
     void post({ call: "close", key: pieceKey });
     readout("The other piece could not be added. The solid is unchanged.");
-    return;
+    return false;
   }
   const grown = withChild(modelTrees.get(at.key) ?? latest, parent, {
     id: node,
@@ -2311,6 +2348,7 @@ async function applyOp(op: ModelOp, working: string) {
   // Apply ends the tool: no ghost, panel or handles stay behind. Undo takes the step back, and the tool opens again on these numbers.
   closeModelTool();
   present(parsed, appliedMessage(stored, parsed));
+  return true;
 }
 
 /** A join's tool leaves the plate, in the visit's one Prepare step, so Prepare undo puts it back with the edit. */
@@ -2370,8 +2408,15 @@ async function startOwnEdit(node: NodeId) {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || state.stage !== "model") return;
-  if (tree.root.kind === "feature" && tree.nodes.get(node)?.parent === null) {
+  const rootFeature = tree.root.kind === "feature" && tree.nodes.get(node)?.parent === null;
+  const feature = editedOp(tree, node);
+  // --- E1. An extrude, including a feature root, reopens its sketch. A revolve or loft root still says so. ---
+  if (rootFeature && (!feature || !opensSketchEditor(feature))) {
     readout(FEATURE_ROOT_EDIT);
+    return;
+  }
+  if (feature && opensSketchEditor(feature)) {
+    await startSketchEdit(node, feature, rootFeature);
     return;
   }
   const refusal = editRefusal(tree, node) ?? (busy || jumping ? STILL_WORKING : !at.solid.editable ? VIEW_ONLY : null);
@@ -2398,6 +2443,175 @@ async function startOwnEdit(node: NodeId) {
     return;
   }
   openEditPanel(run, editHead(latest, node));
+}
+
+/**
+ * --- E1. Open the sketch on `op`, then its extrude drag. A root edit keeps node 0. A later step
+ * shows the parent and replays on Apply, the same fork an edited step already uses.
+ */
+async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || state.stage !== "model") return;
+  const sketch = sketchForFeature(op);
+  const preset = presetOf(op, root);
+  if (!sketch || !preset) {
+    readout("This sketch cannot be rebuilt.");
+    return;
+  }
+  if (busy || jumping) {
+    readout(STILL_WORKING);
+    return;
+  }
+  if (!at.solid.editable) {
+    readout(VIEW_ONLY);
+    return;
+  }
+  if (root) {
+    sketchRootEdit = true;
+    syncUndo();
+    if (tree.current !== ROOT) {
+      const shown = await showNode(ticket, at.objectId, at.key, ROOT, about);
+      if (!shown) {
+        sketchRootEdit = false;
+        syncUndo();
+        return;
+      }
+    }
+    openSketchFeature(sketch, preset);
+    return;
+  }
+  const refusal = editRefusal(tree, node);
+  if (refusal) {
+    readout(refusal);
+    return;
+  }
+  const from = editFrom(at, tree);
+  const parent = tree.nodes.get(node)?.parent ?? ROOT;
+  const mine = ticket;
+  if (seeds.has(at.key) && !(await wholeFirst(mine, [{ key: at.key, node: parent }]))) return;
+  const latest = modelTrees.get(at.key);
+  if (!latest?.nodes.has(node)) return;
+  const run: Editing = { key: at.key, target: at.key, row: rowKey([], node), joins: [], node, parent, from, replay: replayChain(latest, node, from), op, panel: null, opened: null, sketch: true };
+  editing = run;
+  syncUndo();
+  const shown = await showNode(mine, at.objectId, at.key, parent, about);
+  if (editing !== run) return;
+  if (!shown || !open || open.key !== run.key) {
+    editing = null;
+    syncUndo();
+    return;
+  }
+  openSketchFeature(sketch, preset);
+}
+
+/**
+ * --- E1. Replace the feature root and reopen the tree. Child fingerprints are cleared first:
+ * the engine would mark a child "rebuilt differently" if the old one was sent. The shown node's
+ * fingerprint is the solid just built. The old root fingerprint is not sent.
+ */
+async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" }>): Promise<string | null> {
+  const at = open;
+  const tree = at ? modelTrees.get(at.key) : null;
+  if (!at || !tree || tree.root.kind !== "feature") return "This solid did not start from a sketch.";
+  if (busy || jumping) return STILL_WORKING;
+  const previous = tree;
+  const cleared = clearFingerprints(withFeatureRoot(tree, op));
+  modelTrees.set(at.key, cleared);
+  forgetSolids(at.key);
+  const mine = ticket;
+  busy = true;
+  syncUndo();
+  readout("Rebuilding the solid…");
+  await post({ call: "close", key: at.key });
+  const problem = await openWhole(at.key, cleared.current);
+  if (mine === ticket) busy = false;
+  syncUndo();
+  if (problem) {
+    modelTrees.set(at.key, previous);
+    forgetSolids(at.key);
+    await post({ call: "close", key: at.key });
+    const back = await openWhole(at.key, previous.current);
+    if (!back && mine === ticket) await showNode(mine, at.objectId, at.key, previous.current, about);
+    return problem;
+  }
+  forgetSolids(at.key);
+  const shown = await showNode(mine, at.objectId, at.key, modelTrees.get(at.key)?.current ?? ROOT, (solid) => `Updated the sketch. ${about(solid)}`);
+  if (!shown) return "The solid did not rebuild.";
+  const solid = open?.solid;
+  const now = modelTrees.get(at.key);
+  if (solid && now) {
+    const nodes = new Map(now.nodes);
+    const node = nodes.get(solid.id);
+    if (node) nodes.set(node.id, { ...node, fingerprint: solid.fingerprint });
+    modelTrees.set(at.key, { ...now, nodes });
+  }
+  sketchRootEdit = false;
+  syncUndo();
+  return null;
+}
+
+function clearFingerprints(tree: ModelTree): ModelTree {
+  const nodes = new Map(tree.nodes);
+  for (const [id, node] of nodes) nodes.set(id, { ...node, fingerprint: null });
+  return { ...tree, nodes };
+}
+
+function forgetSolids(key: string) {
+  for (const name of [...solids.keys()]) if (name.startsWith(`${key}#`)) solids.delete(name);
+}
+
+/** --- F1. Apply the extrude the sketch built. A root edit replaces node 0. A step edit replays. --- */
+async function commitSketchExtrude(op: ModelOp, placement: "new" | "on-solid"): Promise<string | null> {
+  if (sketchRootEdit) {
+    if (op.kind !== "extrude") return "This solid is one extrude.";
+    return replaceFeatureRoot(op);
+  }
+  if (placement === "new") {
+    if (editing?.sketch) return "Editing this step keeps it on this solid. Join, cut, or intersect.";
+    if (op.kind !== "extrude") return "A new solid is one extrude.";
+    const ok = await createFeatureSolid(op);
+    return ok ? null : readoutText || "The solid was not created.";
+  }
+  if (editing?.sketch) {
+    const run: Editing = { ...editing, featureOp: op };
+    editing = run;
+    await runEdit(run);
+    if (editing === run) return readoutText || "The step was not rebuilt.";
+    return null;
+  }
+  const ok = await applyOp(op, op.kind === "group" ? `Applying ${op.label}…` : "Extruding…");
+  return ok ? null : readoutText || "The extrude was not applied.";
+}
+
+/** --- F1. The kernel preview for an extrude, after the pointer has been still. A new object is ghost only. --- */
+async function probeExtrude(op: ModelOp) {
+  const gen = ++extrudeGen;
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || sketchRootEdit) return;
+  const node = editing?.sketch ? editing.parent : tree.current;
+  const body = await treeCall(at.key, node, probeRequest(at.key, node, op, state.stepTolerance));
+  if (gen !== extrudeGen || state.stage !== "model") return;
+  const shape = body.ok === true && body.preview && typeof body.preview === "object" ? decodeSolid(body.preview as Body) : null;
+  setModelPreview(shape && typeof shape !== "string" ? shape : null);
+  if (body.ok === false && typeof body.error === "string") readout(body.error.endsWith(".") ? body.error : `${body.error}.`);
+}
+
+function clearExtrudePreview() {
+  extrudeGen += 1;
+  setModelPreview(null);
+}
+
+/** --- E1. The sketch closed without Apply. A step edit goes back to the step it started from. --- */
+function cancelSketchFeature() {
+  if (sketchRootEdit) {
+    sketchRootEdit = false;
+    closeSketchSession();
+    syncUndo();
+    return;
+  }
+  if (editing?.sketch) cancelEdit();
 }
 
 /**
@@ -2547,8 +2761,11 @@ function cancelEdit() {
 
 /** The edit ends where the view is: another step was picked, another object opened, Model closed, or the plate went. */
 function dropEdit() {
+  const sketching = editing?.sketch === true || sketchRootEdit;
   editing = null;
+  sketchRootEdit = false;
   if (editedPanel()) closeModelTool();
+  if (sketching) closeSketchSession();
 }
 
 /**
@@ -2738,7 +2955,7 @@ function forkSteps(tree: ModelTree, level: EditLevel, built: Built, broken: { id
     const made = built.get(id);
     return {
       id,
-      op: made?.op ?? (i === 0 ? level.op : level.replay[i - 1]!.op),
+      op: keepSketch(made?.op ?? (i === 0 ? level.op : level.replay[i - 1]!.op), i === 0 ? level.op : level.replay[i - 1]!.op),
       fingerprint: made?.fingerprint ?? null,
       ...(old?.name ? { name: old.name } : {}),
       ...(broken?.id === id ? { broken: broken.error } : {}),
@@ -2897,15 +3114,15 @@ async function createSolid() {
  * A new plate object whose root is an extrude, a revolve, or a loft, with no primitive under it (K2). The sketch
  * editor (F1) calls this for "New object". Cut and intersect are refused: the feature is the solid.
  */
-export async function createFeatureSolid(op: FeatureOp) {
-  if (busy || jumping || state.stage !== "model") return;
+export async function createFeatureSolid(op: FeatureOp): Promise<boolean> {
+  if (busy || jumping || state.stage !== "model") return false;
   if (op.op !== "fuse") {
     const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
     readout(`A new solid is the ${noun} itself. Cut and intersect need a part that is already there.`);
-    return;
+    return false;
   }
   const from: ModelRoot = { kind: "feature", op };
-  await finishNewSolid({
+  return finishNewSolid({
     request: (key, chord) => openRequest(key, from, chord),
     name: (names) => featureObjectName(names, op.kind),
     root: from,
@@ -2919,7 +3136,7 @@ async function finishNewSolid(made: {
   name: (names: Iterable<string>) => string;
   root: Exclude<ModelRoot, { kind: "piece" }>;
   bounds: (positions: Float32Array) => Bounds;
-}) {
+}): Promise<boolean> {
   const id = freshPlateId();
   const key = freshTreeKey(id);
   const chord = state.stepTolerance;
@@ -2935,7 +3152,7 @@ async function finishNewSolid(made: {
     // An open the engine answered left a tree there.
     if (typeof body.error !== "string") void post({ call: "close", key });
     if (mine === ticket && state.stage === "model" && typeof parsed === "string") readout(parsed);
-    return;
+    return false;
   }
   // The open object's edits reach the plate first. The new object then joins the visit's Prepare step, as an edit does.
   const others = plateBoxes();
@@ -2969,6 +3186,7 @@ async function finishNewSolid(made: {
   closeModelTool();
   open = { objectId: id, key, solid: parsed };
   present(parsed, `${name}. ${about(parsed)} Pick a face or an edge.`);
+  return true;
 }
 
 /** Where New solid puts `spec` in model space: its root, standing at the origin or beside every object in `others`. */

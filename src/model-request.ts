@@ -17,8 +17,8 @@ export type TreeRequest = Record<string, unknown>;
  */
 function rootFields(root: Exclude<ModelRoot, { kind: "piece" }>, fingerprint: Fingerprint | null): TreeRequest {
   if (root.kind === "primitive") return { primitive: root.solid, ...(fingerprint ? { fingerprint } : {}) };
-  // --- K2 feature root. ---
-  if (root.kind === "feature") return { feature: root.op, ...(fingerprint ? { fingerprint } : {}) };
+  // --- K2 feature root. The sketch on an extrude is editing state; the engine never sees it. ---
+  if (root.kind === "feature") return { feature: withoutSketch(root.op), ...(fingerprint ? { fingerprint } : {}) };
   return { filename: root.name, dataB64: bytesToBase64(new Uint8Array(root.bytes)) };
 }
 
@@ -46,12 +46,12 @@ export function wholeTreeRequest(
 ): TreeRequest {
   const { seed, quiet } = extra;
   const seedField = seed ? { seed: { node: seed.node, dataB64: bytesToBase64(seed.bytes instanceof Uint8Array ? seed.bytes : new Uint8Array(seed.bytes)) } } : {};
-  return { call: "open", key: tree.key, ...rootFields(root, tree.nodes.get(0)?.fingerprint ?? null), chordMm, nodes: savedNodes(tree), current, ...seedField, ...(quiet ? { quiet: true } : {}) };
+  return { call: "open", key: tree.key, ...rootFields(root, tree.nodes.get(0)?.fingerprint ?? null), chordMm, nodes: engineNodes(tree), current, ...seedField, ...(quiet ? { quiet: true } : {}) };
 }
 
 /** Build `op` on `parent` as `node`. `otherKey` starts the tree of a split's other piece. */
 export function applyRequest(key: string, parent: NodeId, node: NodeId, op: ModelOp, chordMm: number, otherKey?: string | null): TreeRequest {
-  return { call: "apply", key, parent, node, op, chordMm, ...(otherKey ? { otherKey } : {}) };
+  return { call: "apply", key, parent, node, op: withoutSketch(op), chordMm, ...(otherKey ? { otherKey } : {}) };
 }
 
 /**
@@ -221,7 +221,7 @@ export function stepEdgesRequest(key: string, node: NodeId, filter?: EdgeFilter)
  * before it. The engine keeps the steps that built, and the first that did not as broken with the rest under it.
  */
 export function editRequest(key: string, parent: NodeId, node: NodeId, op: ModelOp, replay: readonly { id: NodeId; op: ModelOp }[], chordMm: number): TreeRequest {
-  return { call: "edit", key, parent, node, op, replay, chordMm };
+  return { call: "edit", key, parent, node, op: withoutSketch(op), replay: replay.map((step) => ({ id: step.id, op: withoutSketch(step.op) })), chordMm };
 }
 
 /**
@@ -230,13 +230,63 @@ export function editRequest(key: string, parent: NodeId, node: NodeId, op: Model
  */
 export function crossEditRequest(levels: readonly EditLevel[], chordMm: number): TreeRequest {
   const own = levels.at(-1)!;
-  const tools = levels.slice(0, -1).map(({ key, parent, node, op, replay }) => ({ key, parent, node, op, replay }));
+  const tools = levels.slice(0, -1).map(({ key, parent, node, op, replay }) => ({ key, parent, node, op: withoutSketch(op), replay: replay.map((step) => ({ id: step.id, op: withoutSketch(step.op) })) }));
   return { ...editRequest(own.key, own.parent, own.node, own.op, own.replay, chordMm), ...(tools.length > 0 ? { tools } : {}) };
 }
 
 /** A dry-run of `op` on `node`. With `previewMm`, a build that works answers its shape, tessellated at that chord, as `preview`. */
 export function probeRequest(key: string, node: NodeId, op: ModelOp, previewMm?: number): TreeRequest {
-  return { call: "probe", key, node, op, ...(previewMm != null ? { preview: true, chordMm: previewMm } : {}) };
+  return { call: "probe", key, node, op: withoutSketch(op), ...(previewMm != null ? { preview: true, chordMm: previewMm } : {}) };
+}
+
+/**
+ * --- F1. Drop `sketch` before an engine call. An op with no sketch is returned as the same object,
+ * so a request that never had one stays byte-for-byte what it was.
+ */
+export function withoutSketch(op: ModelOp): ModelOp {
+  if (op.kind === "extrude") {
+    if (!op.sketch) return op;
+    const { sketch: _sketch, ...rest } = op;
+    return rest;
+  }
+  if (op.kind === "group") {
+    let changed = false;
+    const steps = op.steps.map((step) => {
+      const next = withoutSketch(step);
+      if (next !== step) changed = true;
+      return next;
+    });
+    return changed ? { ...op, steps } : op;
+  }
+  return op;
+}
+
+/** Put `source`'s sketch back on `stored`. The engine's echo has none. `stored` itself when there is nothing to put back. */
+export function keepSketch(stored: ModelOp, source: ModelOp): ModelOp {
+  if (stored.kind === "extrude" && source.kind === "extrude" && source.sketch && !stored.sketch) return { ...stored, sketch: source.sketch };
+  if (stored.kind === "group" && source.kind === "group") {
+    let changed = false;
+    const steps = stored.steps.map((step, index) => {
+      const next = keepSketch(step, source.steps[index] ?? step);
+      if (next !== step) changed = true;
+      return next;
+    });
+    return changed ? { ...stored, steps } : stored;
+  }
+  return stored;
+}
+
+/** Saved nodes with sketches removed. The same array when none of them has one. */
+function engineNodes(tree: ModelTree): ReturnType<typeof savedNodes> {
+  const nodes = savedNodes(tree);
+  let changed = false;
+  const mapped = nodes.map((node) => {
+    const op = withoutSketch(node.op);
+    if (op === node.op) return node;
+    changed = true;
+    return { ...node, op };
+  });
+  return changed ? mapped : nodes;
 }
 
 export function gotoRequest(key: string, node: NodeId, chordMm: number): TreeRequest {
