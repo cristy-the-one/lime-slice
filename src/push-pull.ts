@@ -6,7 +6,7 @@
  */
 
 import { dragAxis, type AxisDrag, type FaceLevel, type Ray } from "./interact/drag-axis.ts";
-import { facePrism } from "./interact/ghosts.ts";
+import { facePrism, radialShift } from "./interact/ghosts.ts";
 import { formatNumber, type HudField } from "./interact/hud.ts";
 import { dot, scale, sub, type Vec3 } from "./model-drag.ts";
 import { faceExtrudeOp, moveFacesOp } from "./model-request.ts";
@@ -147,7 +147,11 @@ export function pullGhost(
   const parts: Float32Array[] = [];
   let total = 0;
   for (const face of faces) {
-    const soup = facePrism(faceTriangles(positions, triangles, face.index), face.normal, distance);
+    // A cylinder moves along its radius everywhere, not along the one normal under the pointer.
+    const radial = face.surface === "cylinder" && face.axis && face.axisPoint;
+    const soup = radial
+      ? radialShift(faceTriangles(positions, triangles, face.index), face.axisPoint!, face.axis!, distance * axisSense(face))
+      : facePrism(faceTriangles(positions, triangles, face.index), face.normal, distance);
     if (soup.length === 0) continue;
     parts.push(soup);
     total += soup.length;
@@ -197,6 +201,31 @@ export function distanceForDiameter(faces: readonly PullFace[], diameter: number
   const away = axisSense(only);
   if (away === 0) return null;
   return (diameter / 2 - only.radiusMm) / away;
+}
+
+/**
+ * A curved face's outward normal at `at`, in the solid's frame. The kernel sends a normal for planar faces only, and the
+ * mean of a cylinder's triangle normals points nowhere useful. Away from the axis for a cylinder or a cone, away from the
+ * centre for a sphere, then turned to the side the mesh triangle under the pointer faces: inward on a hole's wall.
+ * Null when the point is on the axis, or the face is not one of these.
+ */
+export function curvedNormal(
+  face: Pick<PullFace, "surface" | "axisPoint" | "axis">,
+  at: Vec3,
+  meshNormal: Vec3 | null,
+): Vec3 | null {
+  if (!face.surface || !face.axisPoint) return null;
+  const fromAxis = sub(at, face.axisPoint);
+  let radial = fromAxis;
+  if (face.surface !== "sphere") {
+    const axis = face.axis ? unit(face.axis) : null;
+    if (!axis) return null;
+    radial = sub(fromAxis, scale(axis, dot(fromAxis, axis)));
+  }
+  const out = unit(radial);
+  if (!out) return null;
+  if (meshNormal && dot(out, meshNormal) < 0) return [-out[0], -out[1], -out[2]];
+  return out;
 }
 
 /** +1 when the outward normal points away from the axis (a boss), −1 when it points toward it (a hole). */

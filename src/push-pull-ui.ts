@@ -9,13 +9,14 @@ import { GHOST_PROBE_WAIT_MS } from "./interact/ghosts.ts";
 import { mountHud, type HudCommit, type Params } from "./interact/hud.ts";
 import { repeatClick, type ClickAt } from "./interact/drag-axis.ts";
 import type { FaceLevel } from "./interact/drag-axis.ts";
-import { faceTable } from "./interact/face-table.ts";
+import { faceTable, triangleAt } from "./interact/face-table.ts";
 import { fieldText, handlesFor, type Vec3 } from "./model-drag.ts";
 import { applyPose, turnDir, type Affine } from "./model-space.ts";
 import type { FaceExtrudeOp, MoveFacesOp } from "./model-tree.ts";
 import { isPlainNumber, withExprs } from "./modeling/params.ts";
 import type { FacePointer, ModelView } from "./model-view.ts";
 import {
+  curvedNormal,
   distanceForDiameter,
   pullDone,
   pullDrag,
@@ -106,6 +107,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
   const hud = mountHud(parent);
   let hoverFace: number | null = null;
   let hoverLocal: Vec3 | null = null;
+  let hoverTriangle: number | null = null;
   /** The press, before it has moved enough to be a drag. */
   let armed: FacePointer | null = null;
   let dragging: Dragging | null = null;
@@ -142,6 +144,9 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
   });
   hud.onEdit((values) => {
     typed = editedDistance(values);
+    // The other size follows the one being typed: a distance shows its diameter, and a diameter its distance.
+    const faces = dragging?.faces ?? remember?.faces;
+    if (typed != null && faces) hud.setValues(pullFields(typed, faces).map((field) => field.value));
     if (dragging && typed != null) paintDrag(typed);
   });
 
@@ -150,6 +155,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     if (ev.phase === "hover") {
       hoverFace = ev.face;
       hoverLocal = ev.local;
+      hoverTriangle = ev.triangle;
       if (!dragging && !editing) {
         paintIdle();
         if (ev.face != null) hooks.readout(pullHint(repeatable()));
@@ -257,7 +263,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     if (!again || last == null || !remember || ev.face == null) return;
     const solid = hooks.solid();
     if (!solid) return;
-    const faces = facesFor(solid, ev.face, ev.local);
+    const faces = facesFor(solid, ev.face, ev.local, ev.triangle);
     if (faces.length === 0) return;
     void commitNew(last, faces, remember.alt);
   }
@@ -271,7 +277,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
   function begin(grab: FacePointer, ev: FacePointer) {
     const solid = hooks.solid();
     if (!solid || grab.face == null || !grab.point) return;
-    const faces = facesFor(solid, grab.face, grab.local);
+    const faces = facesFor(solid, grab.face, grab.local, grab.triangle);
     const under = faces.find((face) => face.index === grab.face) ?? faces[0];
     if (!under) return;
     const pose = hooks.pose();
@@ -332,7 +338,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
       view.setGhost(null);
       return;
     }
-    const hover = hoverFace == null ? null : describe(solid, hoverFace, hoverLocal);
+    const hover = hoverFace == null ? null : describe(solid, hoverFace, hoverLocal, hoverTriangle);
     const selected = hooks.selectedFaces();
     const last = selected.length > 0 ? describe(solid, selected[selected.length - 1]!, null) : null;
     const seat = hover ?? (hooks.toolOpen() ? last : null);
@@ -429,24 +435,36 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     }
   }
 
-  function facesFor(solid: PullSolid, face: number, local: Vec3 | null): PullFace[] {
+  function facesFor(solid: PullSolid, face: number, local: Vec3 | null, triangle: number | null): PullFace[] {
     const selected = hooks.selectedFaces();
     const indexes = selected.includes(face) && selected.length > 1 ? selected : [face];
     const faces: PullFace[] = [];
     for (const index of indexes) {
-      const described = describe(solid, index, index === face ? local : null);
+      const described = index === face ? describe(solid, index, local, triangle) : describe(solid, index, null);
       if (described) faces.push(described);
     }
     return faces;
   }
 
-  function describe(solid: PullSolid, index: number, local: Vec3 | null): PullFace | null {
+  /**
+   * One face as the drag sees it. A planar face has the kernel's normal. A curved face is read where the pointer is (or,
+   * with no pointer, on its first triangle, since a cylinder's centre is on its axis): the arrow points away from the
+   * axis there, or into a hole.
+   */
+  function describe(solid: PullSolid, index: number, local: Vec3 | null, triangle: number | null = null): PullFace | null {
     const row = rowsOf(solid).get(index);
     const table = faceTable(solid.positions, solid.triangles).get(index);
-    const normal = row?.normal ?? table?.normal;
+    if (!table) return null;
+    // The kernel's normal on a curved face is one direction for the whole face, which is no use to an arrow.
+    let normal: Vec3 | null = row?.surface ? null : row?.normal ?? null;
+    let at: Vec3 = local ?? table.centre;
+    if (!normal) {
+      const onFace = triangle != null && solid.triangles[triangle] === index ? triangle : table.first;
+      const sample = triangleAt(solid.positions, onFace);
+      if (!local && sample) at = sample.centre;
+      normal = (row ? curvedNormal(row, at, sample?.normal ?? null) : null) ?? sample?.normal ?? table.normal;
+    }
     if (!normal) return null;
-    const at = local ?? table?.centre;
-    if (!at) return null;
     return {
       index,
       normal,

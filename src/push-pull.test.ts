@@ -2,6 +2,7 @@ import { faceTable } from "./interact/face-table.ts";
 import { facePrism } from "./interact/ghosts.ts";
 import { outwardFromMesh } from "./model-blend.ts";
 import {
+  curvedNormal,
   cylinderDiameter,
   distanceForDiameter,
   faceTriangles,
@@ -90,6 +91,25 @@ eq("the hud shows the diameter of one cylinder", pullFields(2, [boss]).map((fiel
 eq("several faces show the distance alone", pullFields(2, [boss, { ...boss, index: 3 }]).map((field) => field.id), ["distance"]);
 eq("a typed diameter is the distance that reaches it", distanceForDiameter([boss], 24), 2);
 eq("a hole's diameter types the other way", distanceForDiameter([hole], 16), 2);
+
+// A cylinder r10 on the Z axis. The mean of its triangle normals is nothing; the normal is read where the pointer is.
+const cylinder = { surface: "cylinder" as const, axisPoint: [0, 0, 0] as [number, number, number], axis: [0, 0, 1] as [number, number, number] };
+eq("on a boss the normal points away from the axis", curvedNormal(cylinder, [0, 10, 7], [0, 1, 0]), [0, 1, 0]);
+eq("on a hole wall the mesh faces the axis, and so does the normal", curvedNormal(cylinder, [0, 10, 7], [0, -0.9, 0.1]), [-0, -1, -0]);
+eq("a point on the axis has no radial normal", curvedNormal(cylinder, [0, 0, 7], [0, 1, 0]), null);
+eq("a sphere's normal points away from its centre", curvedNormal({ surface: "sphere", axisPoint: [1, 1, 1] }, [1, 1, 6], null), [0, 0, 1]);
+eq("a planar face is not curved", curvedNormal({}, [0, 0, 0], [0, 0, 1]), null);
+const r10 = { ...boss, axisPoint: [0, 0, 0] as [number, number, number], at: [10, 0, 7] as [number, number, number] };
+eq("the r10 boss pushed 4.7 mm reads 10.6 mm across, as the kernel builds it", pullFields(-4.7, [r10]).map((field) => [field.id, Math.round(field.value * 10) / 10]), [
+  ["distance", -4.7],
+  ["diameter", 10.6],
+]);
+// One wall triangle at radius 10, from x = 10 to y = 10. A push of 2 mm moves every corner to radius 8.
+const wall = [10, 0, 0, 0, 10, 0, 0, 10, 5];
+const shifted = pullGhost(wall, [7], [{ ...r10, index: 7 }], -2);
+const radii = [0, 3, 6].map((i) => Math.round(Math.hypot(shifted[i]!, shifted[i + 1]!) * 1000) / 1000);
+eq("a cylinder's ghost moves along its radius, not along one normal", radii, [8, 8, 8]);
+eq("its heights stay", [shifted[2], shifted[5], shifted[8]], [0, 0, 5]);
 
 if (failed) {
   console.error(`${failed} failed`);

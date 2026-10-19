@@ -77,6 +77,26 @@ export function facePrism(
 }
 
 /**
+ * A cylinder's triangles with every corner moved `delta` millimetres away from the axis (toward it when negative).
+ * The ghost of a push on a boss or a hole wall: the wall where it lands.
+ */
+export function radialShift(positions: ArrayLike<number>, axisPoint: Vec3, axis: Vec3, delta: number): Float32Array {
+  const dir = unit(axis);
+  if (!dir || !Number.isFinite(delta) || delta === 0) return new Float32Array();
+  const out = new Float32Array(Math.floor(positions.length / 3) * 3);
+  for (let i = 0; i + 2 < positions.length; i += 3) {
+    const point: Vec3 = [positions[i] ?? 0, positions[i + 1] ?? 0, positions[i + 2] ?? 0];
+    const from = sub(point, axisPoint);
+    const along = dot(from, dir);
+    const radial: Vec3 = [from[0] - dir[0] * along, from[1] - dir[1] * along, from[2] - dir[2] * along];
+    const away = unit(radial);
+    const moved = away ? move(point, scale(away, delta)) : point;
+    out.set(moved, i);
+  }
+  return out;
+}
+
+/**
  * A sketch region extruded along the plane normal. The first loop is the outside; the rest are holes.
  * The region is ear-clipped, then walled the same way as a face prism.
  */

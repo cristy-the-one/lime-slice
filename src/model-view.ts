@@ -67,6 +67,8 @@ export type ModelGhost =
 export interface FacePointer {
   phase: "hover" | "down" | "move" | "up" | "click" | "cancel";
   face: number | null;
+  /** The mesh triangle under the pointer, whose winding gives a curved face's outward side there. */
+  triangle: number | null;
   point: Vec3 | null;
   local: Vec3 | null;
   ray: { origin: Vec3; direction: Vec3 };
@@ -1353,6 +1355,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   interface FaceHit {
     face: number;
+    triangle: number;
     point: Vec3;
     local: Vec3;
   }
@@ -1367,7 +1370,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (face == null) return null;
     const point = hit.point;
     const local = posed.worldToLocal(point.clone());
-    return { face, point: [point.x, point.y, point.z], local: [local.x, local.y, local.z] };
+    return { face, triangle: hit.faceIndex, point: [point.x, point.y, point.z], local: [local.x, local.y, local.z] };
   }
 
   function faceEvent(phase: FacePointer["phase"], ev: PointerEvent, hit: FaceHit | null): FacePointer {
@@ -1375,6 +1378,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return {
       phase,
       face: hit?.face ?? null,
+      triangle: hit?.triangle ?? null,
       point: hit?.point ?? null,
       local: hit?.local ?? null,
       ray: { origin: [ray.origin.x, ray.origin.y, ray.origin.z], direction: [ray.direction.x, ray.direction.y, ray.direction.z] },
