@@ -36,8 +36,14 @@ function push() {
     message.hidden = !note;
     message.textContent = note;
   }
-  syncStepColours(state.colourByStep, stepHex);
+  // --- D36. A section drag pushes on every move; History repaints its rows only when colour by step changes.
+  if (paintedColours !== state.colourByStep) {
+    paintedColours = state.colourByStep;
+    syncStepColours(state.colourByStep, stepHex);
+  }
 }
+
+let paintedColours: boolean | null = null;
 
 function paintAxis(axis: SectionAxis) {
   for (const button of document.querySelectorAll<HTMLButtonElement>("#modelSectionAxis [data-axis]")) {

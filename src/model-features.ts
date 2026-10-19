@@ -464,10 +464,36 @@ function toPart(op: Record<string, unknown>): Piece | { reason: string } {
  * Expand `spec` on `solid` at `pose`. `faceIndex` null, or a curved face, is the panel's "Pick one flat face."
  * Other refusals keep the expander's own sentence.
  */
+/**
+ * --- D36. The context of the last solid and pose, with each face's frame read once: a drag that moves only `at`
+ * reads the whole mesh once, not on every move. A new solid or pose builds it again.
+ */
+let contextMemo: { solid: FeatureSolid; pose: string; ctx: ReturnType<typeof featureExpandContext> } | null = null;
+
+function posedContext(solid: FeatureSolid, pose: Affine): ReturnType<typeof featureExpandContext> {
+  const key = JSON.stringify(pose);
+  if (contextMemo?.solid === solid && contextMemo.pose === key) return contextMemo.ctx;
+  const built = featureExpandContext(featureSolidInModel(solid, pose), GLOBAL_WORKPLANE);
+  const frames = new Map<string, ReturnType<typeof built.face>>();
+  const ctx: typeof built = {
+    ...built,
+    face: (index, coplanar = false) => {
+      const name = `${index}|${coplanar}`;
+      let frame = frames.get(name);
+      if (!frame) {
+        frame = built.face(index, coplanar);
+        frames.set(name, frame);
+      }
+      return frame;
+    },
+  };
+  contextMemo = { solid, pose: key, ctx };
+  return ctx;
+}
+
 export function expandFeature(spec: Record<string, unknown>, solid: FeatureSolid | null, pose: Affine, faceIndex: number | null): ExpandedFeature {
   if (!solid || faceIndex == null || faceIndex < 0 || faceIndex >= solid.faces.length) return emptyFeature(PICK_ONE_FLAT_FACE);
-  const posed = featureSolidInModel(solid, pose);
-  const ctx = featureExpandContext(posed, GLOBAL_WORKPLANE);
+  const ctx = posedContext(solid, pose);
   const face = ctx.face(faceIndex);
   if ("reason" in face) return emptyFeature(PICK_ONE_FLAT_FACE);
   const typed = { ...spec, faceIndex };

@@ -4434,14 +4434,21 @@ function drillAxis(): Vec3 {
 }
 
 // --- A2 shell ---
+let seatMemo: { solid: ParsedSolid; face: number; outward: Vec3 | null; centre: Vec3 | null } | null = null;
+
 /** The first picked face's middle and inward normal, in model space. The thickness knob sits there. */
 function shellSeat(): { point: Vec3; inward: Vec3 } | null {
   const face = selectedFaces(picks)[0];
   const solid = viewed();
   if (face == null || !solid) return null;
-  const stored = solid.faces.find((item) => item.id === face)?.normal;
-  const outward = stored ?? outwardFromMesh(solid.positions, solid.triangles, face);
-  const centre = faceCentre(solid.positions, solid.triangles, face);
+  // --- D36. The face's middle and normal walk the whole mesh, so they are read once per solid and face, not per drag move.
+  let seat = seatMemo?.solid === solid && seatMemo.face === face ? seatMemo : null;
+  if (!seat) {
+    const stored = solid.faces.find((item) => item.id === face)?.normal;
+    seat = { solid, face, outward: stored ?? outwardFromMesh(solid.positions, solid.triangles, face), centre: faceCentre(solid.positions, solid.triangles, face) };
+    seatMemo = seat;
+  }
+  const { outward, centre } = seat;
   if (!outward || !centre) return null;
   const inward = holeAxis(outward);
   const pose = openPose();
