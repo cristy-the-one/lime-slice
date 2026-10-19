@@ -128,6 +128,7 @@ test("a polar pattern of a cylinder is one row of six cuts", async ({ page }) =>
   await setField(page, "modelPatCount", "4");
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
+  await expect(page.locator("#modelHistoryTree [role=treeitem]").filter({ hasText: "Pattern × 4" })).toHaveCount(1);
   const edited = tree.of("edit").at(-1)!.op as { source: { polar: { count: number } }; steps: unknown[] };
   expect(edited.source.polar.count).toBe(4);
   expect(edited.steps).toHaveLength(4);
