@@ -140,3 +140,15 @@ test("a texture pitch typed below its minimum, or one too small for the face, is
   await page.keyboard.type("0.1");
   await expect(page.locator("#modelNote")).toHaveText("A groove must be narrower than the pitch.");
 });
+
+test("the position dot follows From, where the pocket is cut", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelToolFeatures").click();
+  await pickFace(page);
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  const dot = async () => ((await page.locator("#model").getAttribute("data-handles")) ?? "").split(" ").find((item) => item.startsWith("feat-at:")) ?? "";
+  await expect.poll(dot).not.toBe("");
+  const centred = await dot();
+  await page.locator("#modelFeatFrom [data-from=corner]").click();
+  await expect.poll(dot, "the dot moves to the face's corner, as the cut does").not.toBe(centred);
+});

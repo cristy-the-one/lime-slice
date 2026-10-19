@@ -8,11 +8,11 @@ import { standRegion } from "../mcp/plane-region.ts";
 import { faceRows, type FaceRow } from "../mcp/solid-geometry.ts";
 import { closeCracks } from "./mesh-check.ts";
 import { outwardFromMesh } from "./model-blend.ts";
-import { expand, primitiveFrom, type Piece } from "./modeling/compose.ts";
+import { anchorOf, expand, primitiveFrom, type Piece } from "./modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "./modeling/frames.ts";
 import { applyPose, isIdentity, turnDir, type Affine } from "./model-space.ts";
 import type { GroupOp, ModelOp } from "./model-tree.ts";
-import { planePrimitive, axesOf, GLOBAL_WORKPLANE, type Workplane } from "./workplane.ts";
+import { planePoint, planePrimitive, axesOf, GLOBAL_WORKPLANE, type Workplane } from "./workplane.ts";
 
 /** One toolbar entry; the menu chooses which of these is on the button. */
 export const FEATURE_TOOLS = ["pocket", "boss", "texture", "array", "ribs", "text"] as const;
@@ -406,6 +406,7 @@ export interface ExpandedFeature {
   note: string | null;
   pieces: Piece[] | null;
   group: GroupOp | null;
+  /** The face's workplane, with U, V = 0 where the spec's `at` is measured from (its From anchor). */
   frame: Workplane | null;
   outward: [number, number, number] | null;
 }
@@ -461,5 +462,8 @@ export function expandFeature(spec: Record<string, unknown>, solid: FeatureSolid
   if ("reason" in pieces) return emptyFeature(pieces.reason);
   const label = featureLabel(typed);
   const outward = axesOf(face.plane)[2];
-  return { note: null, pieces, group: groupFromPieces(label, typed, pieces), frame: face.plane, outward };
+  // --- D16. The position dot and its drag measure `at` from where From puts U, V = 0, as the expansion does.
+  const shift = spec.from === undefined ? null : anchorOf(spec.from, face.extent);
+  const frame = shift && !("reason" in shift) ? { ...face.plane, origin: planePoint(face.plane, [shift[0], shift[1], 0]) } : face.plane;
+  return { note: null, pieces, group: groupFromPieces(label, typed, pieces), frame, outward };
 }
