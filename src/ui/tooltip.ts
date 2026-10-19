@@ -1,8 +1,13 @@
 import { computePosition, flip, offset, shift } from "@floating-ui/dom";
 
-import { commandForElement, shortcutOf, targetSelector } from "./commands";
+import { COMMANDS, commandForElement, shortcutOf, targetSelector, type CommandSpec } from "./commands";
 
 const SHOW_MS = 380;
+
+function commandById(id: string | undefined): CommandSpec | undefined {
+  if (!id) return undefined;
+  return COMMANDS.find((command) => command.id === id);
+}
 
 /** A summary whose menu or popover is open: the tip would sit on top of what it opened. */
 function opensMenu(el: HTMLElement): boolean {
@@ -31,7 +36,8 @@ export function mountTooltips(root: ParentNode = document) {
       hide();
       return;
     }
-    const command = commandForElement(el);
+    // --- P3 context bar --- a selection button names its command, since it is not the toolbar button.
+    const command = commandForElement(el) ?? commandById(el.dataset.command);
     const text = el.dataset.tip ?? command?.label ?? "";
     const shortcut = command ? shortcutOf(command) ?? "" : "";
     if (!text && !shortcut) {
