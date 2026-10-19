@@ -301,6 +301,7 @@ test("hovering and dragging a face of a part with thousands of faces keeps the v
   const gaps = await page.evaluate(() => (window as unknown as { frameGaps: number[] }).frameGaps.slice(3));
   gaps.sort((a, b) => a - b);
   const median = gaps[Math.floor(gaps.length / 2)]!;
-  // Each face's normal was read by walking every triangle, every frame: seconds a frame on this part.
-  expect(median, `frame gaps ${gaps.map(Math.round).join(" ")}`).toBeLessThan(100);
+  // Each face's normal was read by walking every triangle, every frame: seconds a frame on this part. Headless
+  // Chromium draws 200,000 triangles on the CPU, 50 to 130 ms a frame on a busy machine, so the bound leaves that room.
+  expect(median, `frame gaps ${gaps.map(Math.round).join(" ")}`).toBeLessThan(300);
 });
