@@ -373,6 +373,14 @@ const boxStill = (await faceBox(null, "box-still.lime")) as number[] | null;
 const boxMoved = (await faceBox({ x: 40, y: -15, z: 5, turnZ: 90 }, "box-moved.lime")) as number[] | null;
 check("a box on a moved part's face workplane is stored as on the part where it was", !!boxStill && !!boxMoved && nearAll(boxStill, boxMoved, 1e-3), JSON.stringify({ boxStill, boxMoved }));
 
+// --- D20. A composite whose every step misses the part is refused, not applied as nothing.
+{
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
+  const away = await own.call("model_apply", { object: made.object, op: { kind: "pattern", op: { kind: "boolean", op: "cut", primitive: "box", origin: [500, 0, 0], dx: 2, dy: 2, dz: 2 }, linear: { step: [10, 0, 0], count: 3 } } });
+  check("a pattern that misses everywhere is refused", away.ok === false && JSON.stringify(away).includes("None of its 3 steps changes the part."), JSON.stringify(away));
+}
+
 if (failed > 0) {
   console.error(`compose: ${failed} failed`);
   process.exit(1);

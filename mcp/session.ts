@@ -4052,6 +4052,10 @@ export class Session {
         ownNodes.push(node);
         steps.push(op);
       }
+      // --- D20. A composite whose every step missed changes nothing: refused, as the engine refuses such a group.
+      if (!refused && ownNodes.length === 0 && pieces.length > 0) {
+        refused = { reason: pieces.length === 1 ? "Its one step does not change the part." : `None of its ${pieces.length} steps changes the part.` };
+      }
       if (refused) {
         const ended = await refuse(refused);
         if (ended) return ended;
