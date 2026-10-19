@@ -144,3 +144,46 @@ for (const width of [1280, 1600]) {
     await page.screenshot({ path: path.join(shots, `after-slice-${width}.png`) });
   });
 }
+
+for (const { width, left, columns } of [
+  { width: 2560, left: 360, columns: "auto" },
+  { width: 3440, left: 600, columns: "2" },
+]) {
+  test(`${width} opens both docks by default, settings ${left} wide in ${columns === "2" ? "two columns" : "one column"}`, async ({ page }) => {
+    await quiet(page);
+    await page.setViewportSize({ width, height: 1440 });
+    await page.goto("/");
+    await autoSliceOff(page);
+    await loadCube(page);
+    const workspace = page.locator(".workspace");
+    await expect(workspace).not.toHaveClass(/is-left-collapsed/);
+    await expect(workspace).not.toHaveClass(/is-right-collapsed/);
+    await expect(page.locator("#timing")).toHaveAttribute("aria-expanded", "true");
+    // Nothing is stored until the user chooses: the width alone opened the results.
+    expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBeNull();
+    const docks = await page.evaluate(() => ({
+      left: document.querySelector("#leftDock")!.getBoundingClientRect().width,
+      right: document.querySelector("#rightDock")!.getBoundingClientRect().width,
+      columns: getComputedStyle(document.querySelector("#leftBody")!).columnCount,
+    }));
+    expect(docks.left).toBe(left);
+    expect(docks.right).toBe(340);
+    expect(docks.columns).toBe(columns);
+
+    await page.locator("#slice").click();
+    await expect(page.locator("#estimate")).toContainText("g");
+    await page.locator("#tabPreview").click();
+    // Both docks open still leave the preview a large view.
+    const view = await page.evaluate(() => document.querySelector("#previewBody")!.getBoundingClientRect().width);
+    expect(view).toBeGreaterThanOrEqual(1764);
+    await page.screenshot({ path: path.join(shots, `wide-${width}.png`) });
+
+    // A user's close is remembered over the width's default.
+    await page.locator("#rightDock .dock-close").click();
+    await expect(workspace).toHaveClass(/is-right-collapsed/);
+    expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBe("1");
+    await page.reload();
+    await expect(workspace).toHaveClass(/is-right-collapsed/);
+    await expect(workspace).not.toHaveClass(/is-left-collapsed/);
+  });
+}

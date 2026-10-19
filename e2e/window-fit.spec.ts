@@ -68,3 +68,58 @@ for (const engine of ["running", "down"] as const) test(`desktop shell fits the 
   await expect(page.locator("#right")).toBeVisible();
   expect((await outerOverflow(page)).delta).toBe(0);
 });
+
+test("from 961 to 1200 px the docks are drawers over a still view, one at a time, found from the rail", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await page.goto("/");
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#objectList .obj").first()).toBeAttached();
+  const workspace = page.locator(".workspace");
+  await expect(workspace).toHaveClass(/is-drawers/);
+  await expect(workspace).toHaveClass(/is-left-collapsed/);
+  await expect(workspace).toHaveClass(/is-right-collapsed/);
+  // The closed settings are labelled on the rail and named in the status line.
+  const toggle = page.locator("#leftToggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle.locator(".rail-label")).toBeVisible();
+  await expect(page.locator("#statusText")).toContainText("Settings are in the drawer (Ctrl+B)");
+  const stage = async () => page.evaluate(() => {
+    const r = document.querySelector("#stage")!.getBoundingClientRect();
+    return [r.x, r.width];
+  });
+  const before = await stage();
+
+  await toggle.click();
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(toggle.locator(".rail-label")).toBeHidden();
+  await expect(page.locator("#statusText")).not.toContainText("drawer");
+  expect(await stage(), "the view keeps its size under an open drawer").toEqual(before);
+  const fit = await outerOverflow(page);
+  expect(fit.delta).toBe(0);
+  expect(fit.deltaW).toBe(0);
+  const drawer = await page.evaluate(() => document.querySelector("#leftDock")!.getBoundingClientRect().width);
+  expect(drawer).toBe(320);
+
+  // The estimate opens the results drawer, which takes the settings drawer's place.
+  await page.locator("#timing").click();
+  await expect(workspace).not.toHaveClass(/is-right-collapsed/);
+  await expect(workspace).toHaveClass(/is-left-collapsed/);
+  expect(await stage()).toEqual(before);
+
+  // Ctrl+B swaps back; the chevron closes and hands focus to the rail toggle.
+  await page.keyboard.press("Control+b");
+  await expect(workspace).not.toHaveClass(/is-left-collapsed/);
+  await expect(workspace).toHaveClass(/is-right-collapsed/);
+  await page.locator("#leftDock .dock-close").focus();
+  await page.keyboard.press("Enter");
+  await expect(workspace).toHaveClass(/is-left-collapsed/);
+  await expect(toggle).toBeFocused();
+
+  // Drawers are not remembered: a reload starts closed, and a desktop width keeps its own choice.
+  expect(await page.evaluate(() => localStorage.getItem("lime-slice-panel-left-collapsed"))).toBeNull();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(workspace).not.toHaveClass(/is-drawers/);
+  await expect(workspace).not.toHaveClass(/is-left-collapsed/);
+});
