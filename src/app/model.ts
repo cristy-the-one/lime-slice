@@ -30,6 +30,7 @@ import { nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes } from "../model-check.ts";
+import { expandFeature, isFeatureTool, panelChoices, readFeatureSpec, type FeatureTool } from "../model-features";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
@@ -417,6 +418,14 @@ export function bindModelView() {
     editClosed: cancelEdit,
     editJoinGhost,
     editUnchanged: editUntouched,
+    // --- A3 composite features ---
+    featureView() {
+      const current = openModelTool();
+      if (!isFeatureTool(current)) return { note: null, pieces: null, frame: null, outward: null };
+      const expanded = featureNow(current);
+      return { note: expanded.note, pieces: expanded.pieces, frame: expanded.frame, outward: expanded.outward };
+    },
+    // --- end A3 ---
     // --- A5. The blend is built on the step on screen, and can take edges from it or a step above it. ---
     shownNode() {
       return blendTarget()?.node ?? null;
@@ -1036,6 +1045,9 @@ function toolOp(tool: string | null | undefined): ModelOp | null {
 
 /** The open tool's edit as its fields say it, in model space. */
 function fieldOp(tool: string | null | undefined): ModelOp | null {
+  // --- A3 composite features: the group is expanded in model space, then toolOp stores it in the solid's frame. ---
+  if (isFeatureTool(tool)) return featureNow(tool).group;
+  // --- end A3 ---
   const origin: Vec3 = [num("#modelX"), num("#modelY"), num("#modelZ")];
   switch (tool) {
     case "fillet":
@@ -1083,6 +1095,29 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       return null;
   }
 }
+
+// --- A3 composite features ---
+let featureMemo: { key: string; value: ReturnType<typeof expandFeature> } | null = null;
+
+/** The one picked face, or null when the selection is not exactly one face. */
+function oneFeatureFace(): number | null {
+  const faces = picks.filter((pick) => pick.kind === "face");
+  return faces.length === 1 ? faces[0]!.index : null;
+}
+
+/** The open feature, expanded on the solid on screen. Memoized across the ghost, the note, and Apply. */
+function featureNow(tool: FeatureTool) {
+  const solid = viewed();
+  const face = oneFeatureFace();
+  const spec = readFeatureSpec(tool, (id) => num(`#${id}`), panelChoices(tool), face ?? 0);
+  const pose = openPose();
+  const key = JSON.stringify({ spec, face, id: solid?.id ?? null, pose });
+  if (featureMemo?.key === key) return featureMemo.value;
+  const value = expandFeature(spec, solid, pose, face);
+  featureMemo = { key, value };
+  return value;
+}
+// --- end A3 ---
 
 function boolOp(): "fuse" | "cut" | "common" {
   if (document.querySelector("#modelCut")?.getAttribute("aria-pressed") === "true") return "cut";
@@ -1911,7 +1946,7 @@ async function applyTool() {
     faceExtrude: "Pulling the face…",
     moveFaces: "Pulling the face…",
   };
-  await applyOp(op, working[op.kind] ?? "Editing the solid…");
+  await applyOp(op, op.kind === "group" ? `Applying ${op.label}…` : working[op.kind] ?? "Editing the solid…");
 }
 
 /** Apply `op` to the shown node. The result is a new child, shown; the plate takes it on commit. */
@@ -2197,6 +2232,14 @@ function openEditPanel(run: Editing, head: string) {
     fx.model?.highlight(picks);
     if (missing > 0) said = `${about(solid)} ${missing === panel.edges.length ? "This step's edges are" : `${missing} of this step's edges are`} not on this solid any more: pick them again.`;
   }
+  // --- A3 composite features: the face is picked before the snapshot, so an untouched panel matches the step. ---
+  if (panel.feature?.face != null) {
+    if (panel.feature.face >= 0 && panel.feature.face < solid.faces.length) {
+      picks = [{ kind: "face", index: panel.feature.face }];
+      fx.model?.highlight(picks);
+    } else said = `${about(solid)} Pick one flat face.`;
+  }
+  // --- end A3 ---
   // --- A2 shell: stored face refs are picked again before the opened snapshot, so Update stays off. ---
   if (panel.faces) {
     if (panel.shellClosed || panel.faces.length === 0) {

@@ -9,6 +9,7 @@ import { isComposite, MAX_PIECES } from "./compose.ts";
 import { splinePoints } from "./sweep.ts";
 import { textStrokes } from "./text.ts";
 import { thinWalls } from "./thin.ts";
+import { levelFrame } from "./frames.ts";
 import { hasAnchor as hasAnchorShim } from "../../mcp/anchors.ts";
 import { evaluate as evaluateShim } from "../../mcp/expr.ts";
 import { expandOps as expandOpsShim } from "../../mcp/macro.ts";
@@ -21,7 +22,7 @@ const dir = new URL(".", import.meta.url);
 const library = readdirSync(dir)
   .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
   .sort();
-const expected = ["anchors.ts", "compose.ts", "expr.ts", "macro.ts", "sweep.ts", "text.ts", "thin.ts"];
+const expected = ["anchors.ts", "compose.ts", "expr.ts", "frames.ts", "macro.ts", "sweep.ts", "text.ts", "thin.ts"];
 if (library.join() !== expected.join()) {
   throw new Error(`src/modeling should be ${expected.join(", ")}, found ${library.join(", ")}`);
 }
@@ -67,5 +68,7 @@ const strokes = textStrokes("A", 6, 1, undefined);
 if (!Array.isArray(strokes) || strokes.length === 0) throw new Error("textStrokes");
 const walls = thinWalls(new Float32Array(0), 1);
 if (walls.sampled !== 0 || walls.regions.length !== 0) throw new Error("thinWalls");
+const up = levelFrame({ point: [0, 0, 1], normal: [0, 0, 1] });
+if (up.source !== "face" || up.origin[2] !== 1) throw new Error("levelFrame");
 
 console.log("src/modeling: ok");

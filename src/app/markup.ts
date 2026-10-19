@@ -142,6 +142,20 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Cut a cylinder into the picked face, or straight down">Hole</button>
                   <!-- A2 shell -->
                   <button class="model-tool" id="modelToolShell" type="button" data-tool="shell" aria-pressed="false" data-tip="Hollow the solid to a wall thickness, with picked faces open">Shell</button>
+                  <!-- A3 composite features: one toolbar entry, last-used on the button, the rest in the menu. -->
+                  <div class="model-feature" id="modelFeature">
+                    <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
+                    <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text">▾</button>
+                    <div class="model-feature-menu" id="modelFeatureMenu" role="menu" hidden>
+                      <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
+                      <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
+                      <button class="model-tool" type="button" role="menuitem" data-tool="texture">Texture</button>
+                      <button class="model-tool" type="button" role="menuitem" data-tool="array">Array</button>
+                      <button class="model-tool" type="button" role="menuitem" data-tool="ribs">Ribs</button>
+                      <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
+                    </div>
+                  </div>
+                  <!-- end A3 -->
                   <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
                   <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" aria-pressed="false" data-tip="Drag two points on the solid and read the distance">Measure</button>
                   <button class="model-tool" id="modelToolPlace" type="button" data-tool="place" aria-pressed="false" data-tip="Move and turn this object among the others. The plate stays as it is">Place</button>
@@ -245,6 +259,39 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelWpRz" type="number" step="1" value="0" aria-label="Turn the workplane about model z, degrees"></label>
                   <!-- --- A7 model check --- -->
                   <label data-for="check" data-snap="0.05"><span class="scrub-label" data-scrub>Thin wall</span><input id="modelThin" type="number" step="0.05" min="0.05" max="20" value="0.8" aria-label="Thin wall, mm"></label>
+                  <!-- A3 composite features. Each number is one line: the drag checklist reads it that way. -->
+                  <label data-for="pocket boss" data-shape="rect arch" data-snap="1" data-tip="U size."><span class="scrub-label" data-scrub>Width</span><input id="modelFeatW" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="U size"></label>
+                  <label data-for="pocket boss" data-shape="rect arch" data-snap="1" data-tip="V size."><span class="scrub-label" data-scrub>Height</span><input id="modelFeatH" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="V size"></label>
+                  <label data-for="pocket boss" data-shape="circle" data-snap="1" data-tip="Circle."><span class="scrub-label" data-scrub>Diameter</span><input id="modelFeatDia" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="Circle"></label>
+                  <label data-for="pocket boss texture array ribs text" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelFeatDepth" type="number" step="0.1" min="0.1" max="1000" value="2" aria-label="Depth"></label>
+                  <label data-for="pocket boss text" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>U</span><input id="modelFeatU" type="number" step="0.1" value="0" aria-label="Position along U"></label>
+                  <label data-for="pocket boss text" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>V</span><input id="modelFeatV" type="number" step="0.1" value="0" aria-label="Position along V"></label>
+                  <label data-for="pocket" data-snap="1" data-tip="Count."><span class="scrub-label" data-scrub>Bars across</span><input id="modelFeatBarsV" type="number" step="1" min="0" max="20" value="0" data-whole aria-label="Vertical bars"></label>
+                  <label data-for="pocket" data-snap="1" data-tip="Count."><span class="scrub-label" data-scrub>Bars along</span><input id="modelFeatBarsH" type="number" step="1" min="0" max="20" value="0" data-whole aria-label="Horizontal bars"></label>
+                  <label data-for="pocket" data-snap="1" data-tip="Default 1."><span class="scrub-label" data-scrub>Bar width</span><input id="modelFeatBarW" type="number" step="0.1" min="0.1" max="50" value="1" aria-label="Bar width, default 1"></label>
+                  <label data-for="texture" data-snap="1" data-tip="[U, V] tile size."><span class="scrub-label" data-scrub>Pitch U</span><input id="modelTexPitchU" type="number" step="0.1" min="0.1" value="5" aria-label="Pitch along U"></label>
+                  <label data-for="texture" data-snap="1" data-tip="[U, V] tile size."><span class="scrub-label" data-scrub>Pitch V</span><input id="modelTexPitchV" type="number" step="0.1" min="0.1" value="5" aria-label="Pitch along V"></label>
+                  <label data-for="texture" data-snap="1" data-tip="Default 0.8."><span class="scrub-label" data-scrub>Groove</span><input id="modelTexGroove" type="number" step="0.1" min="0.1" max="20" value="0.8" aria-label="Groove width, default 0.8"></label>
+                  <label data-for="array" data-cell="rect" data-snap="1" data-tip="U size."><span class="scrub-label" data-scrub>Cell width</span><input id="modelArrW" type="number" step="0.1" min="0.1" max="500" value="4" aria-label="Cell width along U"></label>
+                  <label data-for="array" data-cell="rect" data-snap="1" data-tip="V size."><span class="scrub-label" data-scrub>Cell height</span><input id="modelArrH" type="number" step="0.1" min="0.1" max="500" value="3" aria-label="Cell height along V"></label>
+                  <label data-for="array" data-cell="circle" data-snap="1" data-tip="Circle."><span class="scrub-label" data-scrub>Diameter</span><input id="modelArrDia" type="number" step="0.1" min="0.1" max="500" value="4" aria-label="Cell diameter"></label>
+                  <label data-for="array" data-cell="polygon" data-snap="1" data-tip="Polygon."><span class="scrub-label" data-scrub>Sides</span><input id="modelArrSides" type="number" step="1" min="3" max="64" value="6" data-whole aria-label="Polygon sides"></label>
+                  <label data-for="array" data-cell="polygon" data-snap="1" data-tip="Polygon corners."><span class="scrub-label" data-scrub>Across</span><input id="modelArrAcross" type="number" step="0.1" min="0.1" max="500" value="4" aria-label="Width across corners"></label>
+                  <label data-for="array" data-snap="15" data-tip="Cell turn."><span class="scrub-label" data-scrub>Turn</span><input id="modelArrTurn" type="number" step="1" min="-360" max="360" value="0" aria-label="Cell turn, degrees"></label>
+                  <label data-for="array" data-snap="1" data-tip="[U, V] cell spacing."><span class="scrub-label" data-scrub>Pitch U</span><input id="modelArrPitchU" type="number" step="0.1" min="0.1" value="6" aria-label="Cell spacing along U"></label>
+                  <label data-for="array" data-snap="1" data-tip="[U, V] cell spacing."><span class="scrub-label" data-scrub>Pitch V</span><input id="modelArrPitchV" type="number" step="0.1" min="0.1" value="5" aria-label="Cell spacing along V"></label>
+                  <label data-for="array" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelArrAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Layout angle, degrees"></label>
+                  <label data-for="array" data-snap="1" data-tip="Kept from the face's edges."><span class="scrub-label" data-scrub>Margin</span><input id="modelArrMargin" type="number" step="0.1" min="0" max="100" value="0" aria-label="Margin from the face's edges"></label>
+                  <label data-for="ribs" data-snap="1" data-tip="Rib width."><span class="scrub-label" data-scrub>Width</span><input id="modelRibWidth" type="number" step="0.1" min="0.1" max="100" value="1.2" aria-label="Rib width"></label>
+                  <label data-for="ribs" data-snap="1" data-tip="Centre spacing."><span class="scrub-label" data-scrub>Pitch</span><input id="modelRibPitch" type="number" step="0.1" min="0.1" max="1000" value="4" aria-label="Centre spacing"></label>
+                  <label data-for="ribs" data-snap="1" data-tip="Or this many, evenly."><span class="scrub-label" data-scrub>Count</span><input id="modelRibCount" type="number" step="1" min="0" max="200" value="0" data-whole aria-label="How many ribs, evenly. 0 uses the pitch"></label>
+                  <label data-for="ribs" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelRibAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Rib angle, degrees"></label>
+                  <label data-for="ribs" data-snap="1" data-tip="Kept from the face's edges."><span class="scrub-label" data-scrub>Margin</span><input id="modelRibMargin" type="number" step="0.1" min="0" max="100" value="0" aria-label="Margin from the face's edges"></label>
+                  <label data-for="text" data-snap="1" data-tip="Capitals, mm."><span class="scrub-label" data-scrub>Height</span><input id="modelTextHeight" type="number" step="0.1" min="0.1" max="500" value="6" aria-label="Capitals, mm"></label>
+                  <label data-for="text" data-snap="1" data-tip="Default height × 0.15."><span class="scrub-label" data-scrub>Stroke</span><input id="modelTextStroke" type="number" step="0.1" min="0.1" max="100" value="0.9" aria-label="Stroke width, default height × 0.15"></label>
+                  <label data-for="text" data-snap="1" data-tip="Default height / 3."><span class="scrub-label" data-scrub>Spacing</span><input id="modelTextSpace" type="number" step="0.1" min="0" max="100" value="2" aria-label="Spacing, default height / 3"></label>
+                  <label data-for="text" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelTextAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Text angle, degrees"></label>
+                  <!-- end A3 -->
                 </div>
                 <!-- A5: which of the step's edges. The line names the row, "Edges of: Roof (convex)". -->
                 <div class="modes" id="modelEdgeFilter" data-for="fillet chamfer" data-when="step" role="group" aria-label="Which edges">
@@ -271,6 +318,52 @@ export function mountMarkup(root: HTMLElement) {
                 <!-- A2 shell -->
                 <p class="model-note" id="modelShellFaces" data-for="shell"></p>
                 <label class="model-keep" data-for="shell"><input id="modelShellClosed" type="checkbox"> Keep it closed (hollow inside)</label>
+                <!-- A3 composite features -->
+                <div class="modes" id="modelFeatShape" data-for="pocket boss" role="group" aria-label="Shape" data-tip="rect, circle, arch.">
+                  <button class="btn mode on" type="button" data-shape="rect" aria-pressed="true">Rect</button>
+                  <button class="btn mode" type="button" data-shape="circle" aria-pressed="false">Circle</button>
+                  <button class="btn mode" type="button" data-shape="arch" aria-pressed="false">Arch</button>
+                </div>
+                <div class="modes" id="modelFeatFrom" data-for="pocket boss text" role="group" aria-label="From" data-tip="U, V = 0 at the face centre, min corner, or bottom or top edge middle.">
+                  <button class="btn mode on" type="button" data-from="centre" aria-pressed="true">Centre</button>
+                  <button class="btn mode" type="button" data-from="corner" aria-pressed="false">Corner</button>
+                  <button class="btn mode" type="button" data-from="bottom" aria-pressed="false">Bottom</button>
+                  <button class="btn mode" type="button" data-from="top" aria-pressed="false">Top</button>
+                </div>
+                <div class="modes" id="modelTexPattern" data-for="texture" role="group" aria-label="Pattern" data-tip="brick and shingle stagger rows.">
+                  <button class="btn mode on" type="button" data-pattern="lines" aria-pressed="true">Lines</button>
+                  <button class="btn mode" type="button" data-pattern="grid" aria-pressed="false">Grid</button>
+                  <button class="btn mode" type="button" data-pattern="brick" aria-pressed="false">Brick</button>
+                  <button class="btn mode" type="button" data-pattern="shingle" aria-pressed="false">Shingle</button>
+                </div>
+                <div class="modes" id="modelArrCell" data-for="array" role="group" aria-label="Cell" data-tip="Default rect.">
+                  <button class="btn mode on" type="button" data-cell="rect" aria-pressed="true">Rect</button>
+                  <button class="btn mode" type="button" data-cell="circle" aria-pressed="false">Circle</button>
+                  <button class="btn mode" type="button" data-cell="polygon" aria-pressed="false">Polygon</button>
+                </div>
+                <div class="modes" id="modelArrFit" data-for="array" role="group" aria-label="Fit" data-tip="Whole cell on the face (default), or its centre.">
+                  <button class="btn mode on" type="button" data-fit="inside" aria-pressed="true">Inside</button>
+                  <button class="btn mode" type="button" data-fit="centre" aria-pressed="false">Centre</button>
+                </div>
+                <label class="model-keep" data-for="array" data-tip="Every other row half a pitch over."><input id="modelArrStagger" type="checkbox"> Stagger</label>
+                <div class="modes" id="modelRibAlong" data-for="ribs" role="group" aria-label="Along" data-tip="u is level (default).">
+                  <button class="btn mode on" type="button" data-along="u" aria-pressed="true">Along U</button>
+                  <button class="btn mode" type="button" data-along="v" aria-pressed="false">Along V</button>
+                </div>
+                <div class="modes" id="modelFeatOp" data-for="array ribs" role="group" aria-label="Raise or cut" data-tip="fuse raises (default); cut recesses.">
+                  <button class="btn mode on" type="button" data-op="fuse" aria-pressed="true">Raise</button>
+                  <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Cut</button>
+                </div>
+                <label data-for="text" data-tip="A-Z, 0-9, space, -+.,:!?/'&amp;."><span class="scrub-label">Text</span><input id="modelFeatText" type="text" maxlength="80" value="A" aria-label="Text"></label>
+                <div class="modes" id="modelTextAlign" data-for="text" role="group" aria-label="Align" data-tip="at is the middle or start.">
+                  <button class="btn mode on" type="button" data-align="centre" aria-pressed="true">Centre</button>
+                  <button class="btn mode" type="button" data-align="left" aria-pressed="false">Start</button>
+                </div>
+                <div class="modes" id="modelTextOp" data-for="text" role="group" aria-label="Raise or engrave" data-tip="fuse raises (default); cut recesses.">
+                  <button class="btn mode on" type="button" data-op="fuse" aria-pressed="true">Raise</button>
+                  <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Engrave</button>
+                </div>
+                <!-- end A3 -->
                 <p class="model-note" id="modelNote" hidden></p>
                 <div class="model-actions">
                   <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>
