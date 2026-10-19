@@ -1848,6 +1848,8 @@ function forgetShown(key: string) {
 
 /** Leaving Model: the plate takes the shown node, the visit is one Prepare step, and its solid is written off the UI's path. */
 export function leaveModel() {
+  // --- D40. A Check asked for and not yet open is dropped with the visit, so it cannot open on a later one.
+  checkQueued = null;
   forgetPlaceSteps();
   forgetWorkplaneSteps();
   commitModel();
@@ -3930,12 +3932,12 @@ function present(parsed: ParsedSolid, message: string, view: Lens | null = null)
   else if (openModelTool() === "check") refreshModelCheck();
 }
 
-/** Prepare asked to check this object. The tool opens once that solid, or its mesh, is on screen. */
-let checkQueued = false;
+/** Prepare asked to check this object. The tool opens once that solid, or its mesh, is on screen, and not for another. */
+let checkQueued: string | null = null;
 
 export function requestModelCheck(objectId: string) {
   if (!state.plate.objects.some((obj) => obj.id === objectId)) return;
-  checkQueued = true;
+  checkQueued = objectId;
   const changed = state.plate.selectedId !== objectId;
   if (changed) fx.selectPlateObject(objectId);
   if (state.stage !== "model") {
@@ -3946,8 +3948,9 @@ export function requestModelCheck(objectId: string) {
 }
 
 function openQueuedCheck() {
-  if (!checkQueued) return;
-  checkQueued = false;
+  // --- D40. Another object on screen first keeps the request for the one Prepare named.
+  if (!checkQueued || (open?.objectId ?? state.plate.selectedId) !== checkQueued) return;
+  checkQueued = null;
   if (openModelTool() === "check") refreshModelCheck();
   else document.querySelector<HTMLButtonElement>("#modelToolCheck")?.click();
 }

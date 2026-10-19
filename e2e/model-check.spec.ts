@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree } from "./model-tree-mock";
 
@@ -124,4 +124,27 @@ test("Check says so when its worker fails", async ({ page }) => {
   await page.locator("#modelToolCheck").click();
   await expect(page.locator("#modelNote")).toContainText("The check stopped:");
   await expect(page.locator("#modelCheckList [data-check-row]")).toHaveCount(0);
+});
+
+test("a Check asked for from Prepare does not open on a later visit once Model was left", async ({ page }) => {
+  await openModel(page, () => ({ ok: true }));
+  await page.locator("#tabPrepare").click();
+  await page.locator("#plateAddFile").setInputFiles({ name: "other.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  // The second object's history takes a while to open; Prepare comes back before it does.
+  const slow = async (route: Route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.fallback();
+  };
+  await page.route("**/api/model/tree", slow);
+  await page.locator("[data-plate-check]").nth(1).click();
+  await expect(page.locator("#tabModel")).toHaveAttribute("aria-selected", "true");
+  await page.locator("#tabPrepare").click();
+  await page.waitForTimeout(2500);
+  await page.unroute("**/api/model/tree", slow);
+  await page.locator("[data-plate-select]").first().click();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  await page.waitForTimeout(500);
+  await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", "check");
 });
