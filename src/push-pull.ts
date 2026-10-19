@@ -44,10 +44,11 @@ export interface PullDrag {
   face: FaceLevel | null;
 }
 
-/** Hover, before a drag. The last distance is named once one has been made. */
+/** Hover, before a drag. A double-click repeats the last pull while that pull is the step on screen. */
 export function pullHint(previous: number | null): string {
-  const repeat = previous != null && previous !== 0 ? `${formatNumber(Math.abs(previous), 1)} mm` : "the last distance";
-  return `Drag to push or pull · Alt: add material · double-click: repeat ${repeat}`;
+  const base = "Drag to push or pull · Alt: add material";
+  if (previous == null || previous === 0) return base;
+  return `${base} · double-click: repeat ${formatNumber(Math.abs(previous), 1)} mm`;
 }
 
 /** After the pointer lets go. Tab, within {@link TAB_EDIT_MS}, edits this step. */

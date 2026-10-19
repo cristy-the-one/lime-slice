@@ -232,3 +232,19 @@ test("P opens Push/Pull, D opens Split, and L still opens Fillet", async ({ page
   await expect(page.locator("#modelPanel")).toBeVisible();
   await expect(page.locator("#model")).not.toHaveAttribute("data-edge-drag", /./);
 });
+
+test("after Undo, Tab leaves the undone fillet alone", async ({ page }) => {
+  const applied: Op[] = [];
+  await openBox(page, () => ({ ok: true }), applied);
+  await knobAt(page);
+  await page.keyboard.press("2");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("Tab to edit");
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#modelReadout")).not.toContainText("Tab to edit");
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press("Tab");
+  await page.waitForTimeout(300);
+  await expect(page.locator("#model"), "Tab does not reopen an undone step").not.toHaveAttribute("data-edge-drag", "edit");
+  await expect(page.locator(".interact-hud:not([hidden])")).toBeHidden();
+});

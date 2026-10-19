@@ -313,3 +313,41 @@ test("a pointer the system cancels mid-drag applies nothing", async ({ page }) =
   expect(applied, "the cancelled push is not applied").toHaveLength(0);
   await expect(page.locator("#modelHistoryTree")).not.toContainText("Pull face");
 });
+
+test("after Undo, Tab and a double-click leave the undone pull alone", async ({ page }) => {
+  const { applied, tree } = await openPushBox(page);
+  const hud = page.locator(".interact-hud input").first();
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await dragFace(page, top, 10);
+  await expect(page.locator("#modelHistoryTree")).toContainText("Pull face 10 mm");
+  await page.locator("#modelUndo").click();
+  await expect.poll(async () => height(page)).toBeCloseTo(20, 0);
+  await page.locator("#model").hover({ position: { x: 4, y: 4 } });
+  await page.keyboard.press("Tab");
+  await page.waitForTimeout(300);
+  await expect(hud, "Tab does not reopen an undone step").toBeHidden();
+  expect(tree.of("edit"), "the undone step is not rebuilt").toHaveLength(0);
+
+  const again = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await page.mouse.dblclick(again.x, again.y);
+  await page.waitForTimeout(400);
+  expect(applied, "a double-click after Undo repeats nothing").toHaveLength(1);
+  expect(await height(page)).toBeCloseTo(20, 0);
+});
+
+test("leaving Model with a Tab edit open closes the box, and the app's keys work again", async ({ page }) => {
+  await openPushBox(page);
+  const hud = page.locator(".interact-hud input").first();
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await dragFace(page, top, 10);
+  await expect(page.locator("#modelReadout")).toContainText("Tab to edit");
+  await page.keyboard.press("Tab");
+  await expect(hud).toBeVisible();
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#tabPrepare")).toHaveAttribute("aria-selected", "true");
+  await page.locator("body").click({ position: { x: 2, y: 2 } });
+  await page.keyboard.press("2");
+  await expect(page.locator("#tabPreview"), "2 opens Preview: the hidden box took no key").toHaveAttribute("aria-selected", "true");
+  await page.locator("#tabModel").click();
+  await expect(hud, "the box does not come back with Model").toBeHidden();
+});

@@ -72,6 +72,8 @@ export interface PullHooks {
   /** Tab edits the step just made. False when the edit was not kept. */
   edit(parent: number, node: number, op: MoveFacesOp | FaceExtrudeOp): Promise<boolean>;
   busy(): boolean;
+  /** The step on screen. Tab and the double-click repeat belong to the step just made, while it is the one showing. */
+  current(): number | null;
 }
 
 interface Dragging {
@@ -95,6 +97,8 @@ interface Remember {
 export interface PullController {
   /** Draw the arrow, or return false so another tool draws. */
   sync(): boolean;
+  /** Model is closing: drop a drag and a Tab edit, so no hidden box keeps the keys. */
+  end(): void;
 }
 
 export function mountPull(view: ModelView, hooks: PullHooks): PullController {
@@ -107,8 +111,6 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
   let dragging: Dragging | null = null;
   let dragDistance = 0;
   let typed: number | null = null;
-  let previous: number | null = null;
-  let previousAlt = false;
   let lastClick: ClickAt | null = null;
   let remember: Remember | null = null;
   let editing = false;
@@ -136,7 +138,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     typed = null;
     if (dragging) stopGesture();
     else hud.close();
-    hooks.readout(pullHint(previous));
+    hooks.readout(pullHint(repeatable()));
   });
   hud.onEdit((values) => {
     typed = editedDistance(values);
@@ -150,7 +152,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
       hoverLocal = ev.local;
       if (!dragging && !editing) {
         paintIdle();
-        if (ev.face != null) hooks.readout(pullHint(previous));
+        if (ev.face != null) hooks.readout(pullHint(repeatable()));
       }
       return;
     }
@@ -172,14 +174,14 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
       const distance = typed ?? dragDistance;
       stopGesture();
       if (distance !== 0) void commitNew(distance, faces, alt);
-      else hooks.readout(pullHint(previous));
+      else hooks.readout(pullHint(repeatable()));
       return;
     }
     if (ev.phase === "cancel") {
       // The system took the pointer (a touch turned into a scroll, a window lost focus): nothing is applied.
       armed = null;
       if (dragging) stopGesture();
-      hooks.readout(pullHint(previous));
+      hooks.readout(pullHint(repeatable()));
       return;
     }
     if (ev.phase === "click") {
@@ -191,12 +193,34 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
 
   window.addEventListener("keydown", onTab, true);
 
-  return { sync };
+  return { sync, end };
+
+  function end() {
+    if (dragging) stopGesture();
+    editing = false;
+    typed = null;
+    hud.close();
+    remember = null;
+  }
 
   function sync(): boolean {
+    // Undo, a jump, or another step: Tab and the repeat no longer name the step on screen.
+    if (remember && hooks.current() !== remember.node && !applying) remember = null;
     if (!hooks.live()) {
+      // Leaving Model, opening another tool, or losing the solid ends a drag and a Tab edit: the box would stay
+      // hidden behind the stage and keep taking keys. A moment of busy, as an Apply landing, ends nothing.
+      if (hooks.busy() || applying) {
+        view.setFaceDrag(false);
+        return false;
+      }
+      if (dragging) stopGesture();
+      if (editing || hud.shown) {
+        editing = false;
+        typed = null;
+        hud.close();
+      }
       view.setFaceDrag(false);
-      if (!dragging) view.setAlign(null);
+      view.setAlign(null);
       return false;
     }
     view.setFaceDrag(true);
@@ -214,7 +238,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     if (hud.shown || dragging || editing || applying) return;
     const target = ev.target;
     if (target instanceof HTMLElement && target.closest("input, textarea, select")) return;
-    if (!remember || !tabEditOpen(remember.at, performance.now())) return;
+    if (!remember || !tabEditOpen(remember.at, performance.now()) || hooks.current() !== remember.node) return;
     ev.preventDefault();
     ev.stopPropagation();
     editing = true;
@@ -229,12 +253,19 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     const now = { at: performance.now(), x: ev.x, y: ev.y };
     const again = repeatClick(lastClick, now);
     lastClick = now;
-    if (!again || previous == null || previous === 0 || ev.face == null) return;
+    const last = repeatable();
+    if (!again || last == null || !remember || ev.face == null) return;
     const solid = hooks.solid();
     if (!solid) return;
     const faces = facesFor(solid, ev.face, ev.local);
     if (faces.length === 0) return;
-    void commitNew(previous, faces, previousAlt);
+    void commitNew(last, faces, remember.alt);
+  }
+
+  /** The distance a double-click repeats: the last pull's, while that pull is still the step on screen. */
+  function repeatable(): number | null {
+    if (!remember || remember.distance === 0 || hooks.current() !== remember.node) return null;
+    return remember.distance;
   }
 
   function begin(grab: FacePointer, ev: FacePointer) {
@@ -268,7 +299,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
       fine: ev.shift,
       faces: drag.levels,
       mmPerPx: mmPerPx(drag.origin, drag.dir),
-      previous,
+      previous: repeatable(),
     });
     if (!dragged) return;
     if (typed == null) dragDistance = dragged.distance;
@@ -372,8 +403,6 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     try {
       const made = await hooks.apply(stamped(op, texts));
       if (!made) return;
-      previous = distance;
-      previousAlt = alt;
       remember = { at: performance.now(), parent: made.parent, node: made.node, faces, alt, distance };
       hooks.setField(distance);
       hooks.readout(pullDone(distance));
@@ -391,9 +420,8 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     try {
       const ok = await hooks.edit(kept.parent, kept.node, stamped(op, texts));
       if (!ok) return;
-      previous = distance;
-      previousAlt = kept.alt;
-      remember = { ...kept, at: performance.now(), distance };
+      // An edit builds the step again under a new id: Tab and the repeat follow it.
+      remember = { ...kept, at: performance.now(), distance, node: hooks.current() ?? kept.node };
       hooks.setField(distance);
       hooks.readout(pullDone(distance));
     } finally {

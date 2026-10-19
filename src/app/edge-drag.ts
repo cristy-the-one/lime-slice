@@ -73,6 +73,8 @@ export interface EdgeDragHost {
   setPreview(shape: ModelSolid | null): void;
   ray(x: number, y: number): { origin: Vec3; direction: Vec3 };
   params(): Params;
+  /** The step on screen. Tab edits the step just made only while it is the one showing. */
+  current(): number | null;
 }
 
 interface Target {
@@ -99,7 +101,7 @@ interface Session {
 }
 
 /** Wire the idle edge knob. `sync` when the open tool or the solid changes; `picksChanged` after a click. */
-export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(): void; holding(): boolean } {
+export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(): void; holding(): boolean; end(): void } {
   let live: Session | null = null;
   let shown: Target | null = null;
   let hoverEdge: number | null = null;
@@ -495,6 +497,7 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
       return;
     }
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (tab && tab.node !== host.current()) tab = null;
     if (ev.key === "Tab" && !ev.shiftKey && !live && tab && tabStillOpen(tab.at, performance.now())) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -574,6 +577,11 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     picksChanged,
     holding() {
       return live != null;
+    },
+    /** Model is closing: drop the drag or the typed size, and the Tab window. */
+    end() {
+      tab = null;
+      if (live) cancel(!!live.editing, true);
     },
   };
 }

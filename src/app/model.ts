@@ -305,7 +305,7 @@ let sketchRootEdit = false;
 /** Bumps when an extrude preview is dropped, so a late probe does not land on the next gesture. */
 let extrudeGen = 0;
 /** P2. The idle edge knob. Null until the view is bound. */
-let edgeDrag: { sync(): void; picksChanged(): void; holding(): boolean } | null = null;
+let edgeDrag: { sync(): void; picksChanged(): void; holding(): boolean; end(): void } | null = null;
 /** --- S2 sketch --- redraws the grid when the solid on screen changes. */
 let sketchUi: { sync(): void } | null = null;
 /** --- F4. The points H snapped, and the sketch as it was then. Held while the Hole panel is that layout. --- */
@@ -314,6 +314,7 @@ let sketchHoleDraft: { sketch: SketchData; points: HoleTarget[] } | null = null;
 let holdSketchHoles = false;
 /** P1's face-drag sync, so a sketch can arm it again on the way out. */
 let syncPullDrag: (() => void) | null = null;
+let endPullDrag: (() => void) | null = null;
 
 /**
  * A tool's step on screen in place of the open solid's: what a click on a tool's row in History shows, read-only, and
@@ -573,10 +574,12 @@ export function bindModelView() {
       apply: applyPull,
       edit: editPull,
       busy: () => busy || jumping,
+      current: () => treeOf(open)?.current ?? null,
     });
     syncPullDrag = () => {
       pull.sync();
     };
+    endPullDrag = () => pull.end();
     setPullLive(() => pull.sync());
   }
   // P2. Hover an edge and drag its knob: a fillet, or a chamfer while Alt is held. No toolbar tool.
@@ -625,6 +628,7 @@ export function bindModelView() {
       return fx.model?.pointerRay(x, y) ?? { origin: [0, 0, 0], direction: [0, 0, -1] };
     },
     params: () => currentParams(),
+    current: () => treeOf(open)?.current ?? null,
   });
   edgeDrag.sync();
   // --- S2 sketch ---
@@ -1820,6 +1824,9 @@ function forgetShown(key: string) {
 
 /** Leaving Model: the plate takes the shown node, the visit is one Prepare step, and its solid is written off the UI's path. */
 export function leaveModel() {
+  // A face push or an edge size still being typed ends with Model, so its box does not stay behind.
+  endPullDrag?.();
+  edgeDrag?.end();
   forgetPlaceSteps();
   forgetWorkplaneSteps();
   commitModel();
@@ -3200,6 +3207,8 @@ async function editPull(parent: NodeId, node: NodeId, op: ModelOp): Promise<bool
   if (!at || !tree || busy || jumping || !state.mesh || at.objectId !== state.plate.selectedId) return false;
   const old = tree.nodes.get(node);
   if (!old || old.parent !== parent || !old.op) return false;
+  // An undone step is off the path on screen: editing it would bring it back.
+  if (!pathTo(tree, tree.current).includes(node)) return false;
   const replayIds = replayChain(tree, node, tree.current);
   const replayOps = replayIds.map((id) => tree.nodes.get(id)?.op).filter((step): step is ModelOp => !!step);
   if (replayOps.length !== replayIds.length) return false;

@@ -262,6 +262,8 @@ export function mountHud(parent: HTMLElement): HudMount {
 
   const onKey = (ev: KeyboardEvent) => {
     if (!shown) return;
+    // A box whose stage was hidden under it is not on screen, and must not take the app's keys.
+    if (parent.closest("[hidden]") || !element.isConnected) return;
     // --- S4. A driving-dimension label is its own editor. Leave its keys alone. ---
     if (ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) return;
     const key = keyName(ev.key);
