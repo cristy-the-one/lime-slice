@@ -231,10 +231,16 @@ const doubledRegions = sketchRegions(doubled);
 eq("two identical circles are one region", doubledRegions.length, 1);
 near("of that circle's area", doubledRegions[0]!.area, Math.PI * 9, 1e-4);
 
-function sum(regions: Region[]): number {
+function sum(regions: readonly Region[]): number {
   return regions.reduce((total, region) => total + region.area, 0);
 }
 near("the split square's regions add up", sum(halves), 100);
+
+// A pointer move asks for the same sketch's regions again: they are traced once, and a changed sketch is traced anew.
+eq("the same sketch gives back the same regions", sketchRegions(doubled) === doubledRegions, true);
+const tripled = addCircle(doubled, [20, 0], 2).sketch;
+eq("a changed sketch is traced again", sketchRegions(tripled).length, 2);
+eq("and the first keeps its own", sketchRegions(doubled).length, 1);
 
 if (failed) {
   console.error(`regions: ${failed} failed`);

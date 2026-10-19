@@ -405,6 +405,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (ev.key === "Escape" && menuOpen) {
       ev.preventDefault();
       ev.stopImmediatePropagation();
+      cardFocus = [`[data-sketch-menu="${menuOpen}"]`];
       menuOpen = null;
       publish("skip");
       return;
@@ -651,6 +652,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let aimKey = "";
   let refsKey = "";
   let menuOpen: "draw" | "constrain" | null = null;
+  // A pointer move publishes. The cards and the Undo buttons are painted only when what they show changes, so a move
+  // costs no DOM rebuild and a focused card button keeps its focus.
+  let cardsKey = "";
+  let historyKey = "";
+  /** A card button to focus once the cards are painted: a menu's first item when it opens, its button when it closes. */
+  let cardFocus: string[] = [];
   let shownPlanes: OriginPlane[] = [];
   let chooseDown: { x: number; y: number } | null = null;
   let lastClient = { x: 0, y: 0 };
@@ -690,6 +697,30 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     editor = beginChoose(editor);
     enterNamed("XY");
   });
+  // A card menu is a keyboard menu: the arrows, Home and End move through its items, and Tab leaves it closed.
+  cards?.addEventListener("keydown", (ev) => {
+    const menu = ev.target instanceof HTMLElement ? ev.target.closest<HTMLElement>("[role=menu]") : null;
+    if (!menu || !menuOpen) return;
+    const items = [...menu.querySelectorAll<HTMLElement>("[role^=menuitem]")];
+    const at = items.indexOf(ev.target as HTMLElement);
+    const next =
+      ev.key === "ArrowDown" ? (at + 1) % items.length
+      : ev.key === "ArrowUp" ? (at - 1 + items.length) % items.length
+      : ev.key === "Home" ? 0
+      : ev.key === "End" ? items.length - 1
+      : null;
+    if (next != null) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      items[next]?.focus();
+      return;
+    }
+    if (ev.key === "Tab") {
+      menuOpen = null;
+      publish("skip");
+    }
+  });
+
   cards?.addEventListener("click", (ev) => {
     // The card waits while an Apply is on its way, as the keys do.
     if (committing) return;
@@ -727,6 +758,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (target.dataset.sketchMenu === "draw" || target.dataset.sketchMenu === "constrain") {
       const which = target.dataset.sketchMenu;
       menuOpen = menuOpen === which ? null : which;
+      // An open menu takes the focus, on its checked item or its first, so the arrow keys move through it.
+      const list = `[data-sketch-menu="${which}"] + [role=menu]`;
+      cardFocus = menuOpen ? [`${list} [aria-checked=true]`, `${list} [role^=menuitem]`] : [`[data-sketch-menu="${which}"]`];
       publish("skip");
       return;
     }
@@ -873,6 +907,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     // undo: the app's Undo command would otherwise take it and step the sketch.
     if (field && !(history && field.closest(".interact-hud"))) {
       if (history) ev.stopPropagation();
+      return;
+    }
+    // Enter on a focused card button presses that button. The app's Enter (Apply model edit) would cancel the press.
+    if (ev.key === "Enter" && ev.target instanceof HTMLButtonElement) {
+      if (ev.target.closest("#sketchCards")) ev.stopPropagation();
       return;
     }
     ev.preventDefault();
@@ -1075,7 +1114,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     // --- F1. The empty-plate card sits on the plane. Hide it while drawing so a click reaches the sketch. ---
     const empty = document.querySelector<HTMLElement>("#modelEmpty");
     if (empty) empty.hidden = sketchBusy(editor) || host.solid() != null;
-    host.onHistory();
+    const history = editor.phase === "editing" ? `${canUndoSketch(editor)}:${canRedoSketch(editor)}` : editor.phase;
+    if (history !== historyKey) {
+      historyKey = history;
+      host.onHistory();
+    }
   }
 
   /**
@@ -1272,10 +1315,34 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     box.style.height = `${Math.abs(drag.y - drag.sy)}px`;
   }
 
+  /** Everything the cards show. They are rebuilt only when this changes. */
+  function cardsState(pinned: readonly { id: number; name: string }[]): string {
+    const parts: string[] = [editor.phase, String(editor.active), editor.tool, menuOpen ?? "", editor.lookAround ? "look" : ""];
+    parts.push(pinned.map((item) => `${item.id}=${item.name}`).join("/"));
+    if (editor.phase === "editing") {
+      parts.push(activeSketch(editor)?.on?.kind ?? "");
+      if (gesture || revolve || loft || sweep) {
+        const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
+        const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
+        parts.push(mode, choice, loft ? (loft.ruled ? "ruled" : "smooth") : "");
+      }
+    }
+    return parts.join("|");
+  }
+
   function paintCards() {
     if (!cards) return;
-    cards.replaceChildren();
     const pinned = editor.pinned.filter((item) => item.id !== editor.active && item.name !== "Sketch");
+    const key = cardsState(pinned);
+    if (key === cardsKey) {
+      takeCardFocus();
+      return;
+    }
+    cardsKey = key;
+    // The rebuilt card keeps the keyboard where it was: the button with the same data is focused again.
+    const focused = document.activeElement instanceof HTMLElement && cards.contains(document.activeElement) ? sameButton(document.activeElement) : null;
+    if (focused && cardFocus.length === 0) cardFocus = [focused];
+    cards.replaceChildren();
     if (editor.phase === "off" && pinned.length === 0) {
       cards.hidden = true;
       return;
@@ -1285,6 +1352,21 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (editor.phase === "editing") cards.append(card(editingRow()));
     for (const item of pinned) cards.append(card(pinnedRow(item.id, item.name)));
     if (cards.childElementCount === 0) cards.hidden = true;
+    takeCardFocus();
+  }
+
+  function takeCardFocus() {
+    if (cardFocus.length === 0 || !cards) return;
+    const host = cards;
+    const node = cardFocus.map((selector) => host.querySelector<HTMLElement>(selector)).find((found) => found != null);
+    cardFocus = [];
+    node?.focus();
+  }
+
+  /** A selector for the button with the same data attributes as `node`, or null when it has none. */
+  function sameButton(node: HTMLElement): string | null {
+    const data = Object.entries(node.dataset).map(([name, value]) => `[data-${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${CSS.escape(value ?? "")}"]`);
+    return data.length > 0 ? `button${data.join("")}` : null;
   }
 
   function chooserRow(): Node[] {
@@ -1339,20 +1421,20 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     open.textContent = current?.label ?? "Draw";
     open.setAttribute("aria-haspopup", "menu");
     open.setAttribute("aria-expanded", menuOpen === "draw" ? "true" : "false");
-    open.setAttribute("aria-pressed", current ? "true" : "false");
     const menu = document.createElement("div");
     menu.className = "sketch-menu-list";
     menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "Draw");
     menu.hidden = menuOpen !== "draw";
     for (const item of DRAW_MENU) {
       const node = document.createElement("button");
       node.type = "button";
       node.className = "btn";
-      node.setAttribute("role", "menuitem");
+      node.setAttribute("role", "menuitemradio");
       node.dataset.sketchTool = item.tool;
       node.textContent = item.label;
       node.title = item.shortcut;
-      node.setAttribute("aria-pressed", editor.tool === item.tool ? "true" : "false");
+      node.setAttribute("aria-checked", editor.tool === item.tool ? "true" : "false");
       menu.append(node);
     }
     wrap.append(open, menu);
@@ -1370,29 +1452,37 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     open.textContent = current?.label ?? "Constrain";
     open.setAttribute("aria-haspopup", "menu");
     open.setAttribute("aria-expanded", menuOpen === "constrain" ? "true" : "false");
-    open.setAttribute("aria-pressed", current ? "true" : "false");
     const menu = document.createElement("div");
     menu.className = "sketch-menu-list";
     menu.setAttribute("role", "menu");
     menu.setAttribute("aria-label", "Constraints");
     menu.hidden = menuOpen !== "constrain";
     let group = "";
+    let section: HTMLElement = menu;
     for (const item of CONSTRAIN_MENU) {
       if (item.group !== group) {
         group = item.group;
+        const name = item.group === "geom" ? "Geometry" : item.group === "size" ? "Size" : "Edit";
         const heading = document.createElement("p");
         heading.className = "sketch-menu-label";
-        heading.textContent = item.group === "geom" ? "Geometry" : item.group === "size" ? "Size" : "Edit";
-        menu.append(heading);
+        heading.textContent = name;
+        heading.setAttribute("aria-hidden", "true");
+        section = document.createElement("div");
+        section.setAttribute("role", "group");
+        section.setAttribute("aria-label", name);
+        section.style.display = "contents";
+        menu.append(heading, section);
       }
       const node = document.createElement("button");
       node.type = "button";
       node.className = "btn";
-      node.setAttribute("role", "menuitem");
+      // "Remove constraint" is a command; the others arm a constraint tool, one at a time.
+      const command = item.action === "remove";
+      node.setAttribute("role", command ? "menuitem" : "menuitemradio");
       node.dataset.sketchConstrain = item.action;
       node.textContent = item.label;
-      node.setAttribute("aria-pressed", editor.tool === item.action ? "true" : "false");
-      menu.append(node);
+      if (!command) node.setAttribute("aria-checked", editor.tool === item.action ? "true" : "false");
+      section.append(node);
     }
     wrap.append(open, menu);
     return wrap;
@@ -1428,6 +1518,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
         node = wantInput ? dimensionInput(item.id, item.expr ?? item.text) : dimensionButton(item.id, item.text, item.title, item.expr);
         labels.append(node);
       } else if (node instanceof HTMLButtonElement) paintDimensionButton(node, item.text, item.expr);
+      if (node instanceof HTMLButtonElement) node.setAttribute("aria-label", `${item.spoken}${item.expr ? `, from ${item.expr}` : ""}. Click to type a new one.`);
       const screen = host.view.projectPoint(toWorld(frame, item.at));
       node.hidden = !screen;
       if (screen) {
@@ -1466,7 +1557,6 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     node.dataset.dimId = String(id);
     paintDimensionButton(node, text, expr);
     node.title = title;
-    node.setAttribute("aria-label", title);
     node.addEventListener("click", (ev) => {
       ev.stopPropagation();
       ev.preventDefault();

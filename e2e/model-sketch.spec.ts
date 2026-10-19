@@ -214,6 +214,8 @@ test("constraints live in the sketch card and a typed length drives the line", a
   await page.keyboard.type("45");
   await page.mouse.click(start.x - 60, start.y + 120);
   await expect(canvas).toHaveAttribute("data-sketch-measure", "45.000,0.000");
+  // A screen reader hears the label's value, not only what it is.
+  await expect(page.locator(".sketch-dim").first()).toHaveAttribute("aria-label", "Length 45 mm. Click to type a new one.");
   // Esc closes an open card menu first, and the sketch stays open.
   await page.locator("[data-sketch-menu=constrain]").click();
   await expect(page.locator("[data-sketch-constrain=length]")).toBeVisible();
@@ -233,6 +235,51 @@ test("constraints live in the sketch card and a typed length drives the line", a
   await expect(canvas).toHaveAttribute("data-sketch-entities", "1");
   expect(await fits(), "the toolbar still fits at 1440 px with constraints in the card").toBe(true);
   await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
+});
+
+test("the sketch card keeps the keyboard while the pointer moves, and its menus are keyboard menus", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  const box = (await canvas.boundingBox())!;
+  const rectangle = page.locator("[data-sketch-tool=rectangle]");
+  await rectangle.focus();
+  for (let step = 0; step < 6; step += 1) await page.mouse.move(box.x + box.width / 2 + step * 9, box.y + box.height / 2 + step * 5);
+  await expect(rectangle).toBeFocused();
+
+  // The Draw menu opens on its checked item, the arrows move through it, Esc closes it back onto its button.
+  await page.locator("[data-sketch-menu=draw]").focus();
+  await page.keyboard.press("Enter");
+  const items = page.locator(".sketch-menu:has([data-sketch-menu=draw]) [role=menuitemradio]");
+  await expect(items.first()).toBeVisible();
+  const count = await items.count();
+  expect(count).toBeGreaterThan(2);
+  await expect(page.locator(".sketch-menu:has([data-sketch-menu=draw]) [aria-checked=true]")).toHaveCount(0);
+  await expect(items.nth(0)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await expect(items.nth(count - 1)).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(items.nth(0)).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(items.first()).toBeHidden();
+  await expect(page.locator("[data-sketch-menu=draw]")).toBeFocused();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+
+  // A tool picked from the menu is its checked item the next time it opens.
+  await page.keyboard.press("Enter");
+  await items.nth(1).press("Enter");
+  const picked = await items.nth(1).getAttribute("data-sketch-tool");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", picked!);
+  await page.locator("[data-sketch-menu=draw]").focus();
+  await page.keyboard.press("Enter");
+  await expect(items.nth(1)).toHaveAttribute("aria-checked", "true");
+  await expect(items.nth(1)).toBeFocused();
+  await expect(page.locator(".sketch-menu:has([data-sketch-menu=constrain]) [role=group]")).toHaveCount(3);
 });
 
 /** Open a sketch on XY and draw a 12 x 5 rectangle at the canvas centre. Returns that centre. */

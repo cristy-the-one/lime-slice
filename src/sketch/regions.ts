@@ -76,7 +76,18 @@ interface Face {
 }
 
 /** The selectable regions of a sketch, largest area first. */
-export function sketchRegions(sketch: SketchData): Region[] {
+export function sketchRegions(sketch: SketchData): readonly Region[] {
+  // A sketch is never changed in place, so its regions are kept until it is replaced. A pointer move asks again.
+  const cached = regionsOf.get(sketch);
+  if (cached) return cached;
+  const found = traceRegions(sketch);
+  regionsOf.set(sketch, found);
+  return found;
+}
+
+const regionsOf = new WeakMap<SketchData, readonly Region[]>();
+
+function traceRegions(sketch: SketchData): Region[] {
   const curves: Curve[] = [];
   for (const entity of sketch.entities) {
     if (entity.construction) continue;

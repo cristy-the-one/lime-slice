@@ -91,6 +91,8 @@ export interface DimLabel {
   text: string;
   at: Pt;
   title: string;
+  /** What a screen reader says: the kind and the value with its unit, "Length 12 mm". */
+  spoken: string;
   /** The expression, when the dimension was not typed as a plain number. */
   expr?: string;
 }
@@ -278,7 +280,7 @@ export function dimensionLabels(sketch: SketchData): DimLabel[] {
     if (!at) continue;
     const raw = sketch.dims?.find((dim) => dim.id === constraint.id);
     const expr = typeof raw?.expr === "string" && raw.expr.trim() ? raw.expr : undefined;
-    labels.push({ id: constraint.id, text: labelText(constraint), at, title: labelTitle(constraint), ...(expr ? { expr } : {}) });
+    labels.push({ id: constraint.id, text: labelText(constraint), at, title: labelTitle(constraint), spoken: labelSpoken(constraint), ...(expr ? { expr } : {}) });
   }
   return labels;
 }
@@ -650,6 +652,13 @@ function labelText(constraint: SketchConstraint): string {
   if (constraint.kind === "diameter") return `âŒ€${text}`;
   if (constraint.kind === "radius") return `R${text}`;
   return text;
+}
+
+function labelSpoken(constraint: SketchConstraint): string {
+  const value = formatDim("value" in constraint && typeof constraint.value === "number" ? constraint.value : 0);
+  if (constraint.kind === "angle") return `Angle ${value}°`;
+  const noun = constraint.kind === "diameter" ? "Diameter" : constraint.kind === "radius" ? "Radius" : constraint.kind === "distance" ? "Distance" : "Length";
+  return `${noun} ${value} mm`;
 }
 
 function labelTitle(constraint: SketchConstraint): string {
