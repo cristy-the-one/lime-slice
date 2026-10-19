@@ -12,6 +12,8 @@ import type { EditPanel } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, localPoint, planePoint, planePrimitive, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
 import { lastFace, selectedEdges, selectedFaces } from "../model-blend";
+import { edgeOfText, isEdgeFilter, type EdgeSource } from "../model-edge-step";
+import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { lastEdge, modelApplyReady, selectionCountLabel, shellFacesLabel, type ModelPickRef } from "../model-select";
@@ -80,6 +82,10 @@ interface ModelChromeHooks {
   editJoinGhost(): ContextPart | null;
   /** While a step is edited: the panel still says the step as it is, so Update would change nothing. */
   editUnchanged(): boolean;
+  /** --- A5. The step on screen: a blend of a step's edges starts there. --- */
+  shownNode(): number | null;
+  /** Steps this blend can take edges from, the one on screen and the steps above it, root first. */
+  edgeSteps(): { id: number; label: string }[];
   // --- A7 model check ---
   /** The mesh Check measures, and the pose that puts its boxes into model space. */
   checkSource(): { positions: Float32Array; toModel: Affine } | null;
@@ -118,6 +124,13 @@ const BED_KEY = "lime-slice-model-bed";
 /** Tools that leave the open solid as it is, so they run on surfaces with no closed solid too. */
 const KEEPS_SOLID: ReadonlySet<string> = new Set(["create", "measure", "place", "workplane", "check"]);
 const WP_FIELDS = ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"] as const;
+
+// --- A5. Fillet and chamfer: picked edges, or every edge one history step made. ---
+let edgeSource: EdgeSource = "picked";
+let edgeFilter: EdgeFilter = "all";
+/** Indexes on the solid on screen, from the engine, so the highlight and the size handle sit on them. */
+let stepEdgeIndexes: number[] = [];
+let edgeStepRows: { id: number; label: string }[] = [];
 
 const PRIMITIVE_ICONS: Record<PrimitiveKind, IconNode> = {
   box: Box,
@@ -247,6 +260,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (plane) setPlaneMode(plane.dataset.plane as PlaneMode);
     const wp = target?.closest<HTMLButtonElement>("#modelWpModes [data-wp]")?.dataset.wp;
     if (wp === "global" || wp === "bed" || wp === "face") setWpSource(wp);
+    // --- A5. ---
+    const edgeMode = target?.closest<HTMLButtonElement>("#modelEdgeModes [data-edge-mode]")?.dataset.edgeMode;
+    if (edgeMode === "picked" || edgeMode === "step") setEdgeSource(edgeMode);
+    const edgeWhich = target?.closest<HTMLButtonElement>("#modelEdgeFilter [data-edge-filter]")?.dataset.edgeFilter;
+    if (isEdgeFilter(edgeWhich)) setEdgeFilter(edgeWhich);
     if (target?.closest("#modelWpPrint")) {
       hooks?.printWUp();
       refreshWpPrint();
@@ -259,6 +277,12 @@ export function mountModelChrome(next: ModelChromeHooks) {
     noteChanged: () => refreshNote(),
   });
   document.querySelector("#modelPanel")?.addEventListener("change", (ev) => {
+    // --- A5. The step list and the step number are the same step. ---
+    if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelEdgeStep") {
+      const id = Number(ev.target.value);
+      if (Number.isInteger(id) && id >= 0) writeEdgeStep(id);
+      return;
+    }
     if (ev.target instanceof HTMLElement && HOLE_CHOICES.has(ev.target.id)) {
       holeChoiceChanged(ev.target.id);
       return;
@@ -296,6 +320,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
     if (tool === "split") syncSplitField();
     if (tool === "hole") paintScrew();
+    // --- A5. A typed step number follows the list, and the line names that row. ---
+    if (ev.target instanceof HTMLElement && ev.target.id === "modelEdgeNode") syncEdgeSelect();
     refreshGhost();
     hooks?.paramsChanged(true);
     // --- A7 model check ---
@@ -461,6 +487,8 @@ function toggleTool(next: ModelTool, editing = false) {
   if (cancel) cancel.textContent = next === "place" || next === "workplane" || next === "check" ? "Done" : "Cancel";
   const apply = document.querySelector("#modelApply");
   if (apply) apply.textContent = editing ? "Update" : next === "create" ? "Create" : "Apply";
+  // --- A5. A fillet opened fresh starts on picked edges. An edit fills its own mode next. ---
+  if ((next === "fillet" || next === "chamfer") && !editing) resetEdgeSource();
   // The edit's own numbers go in before anything reads the fields.
   if (editing) fillEdit();
   paintPrimRow();
@@ -500,6 +528,13 @@ function fillEdit() {
   if (panel.flats !== undefined) paintAcross(panel.flats);
   if (panel.plane) paintPlaneMode(panel.plane.mode);
   if (panel.hole) setHoleBoxes(panel.hole.through, panel.hole.counterbore);
+  // --- A5. A stored step pick opens on that step; picked edges stay picked. ---
+  if (panel.step) {
+    setEdgeFilter(panel.step.filter, true);
+    setEdgeSource("step", { step: panel.step.fromNode, quiet: true });
+  } else if (panel.tool === "fillet" || panel.tool === "chamfer") {
+    setEdgeSource("picked", { quiet: true });
+  }
   // --- A2 shell ---
   if (panel.shellClosed !== undefined) setShellClosed(panel.shellClosed);
   if (panel.join) {
@@ -540,6 +575,8 @@ function closeTool() {
   const ended = edit;
   edit = null;
   exact.clear();
+  // --- A5. The next fillet starts on picked edges. ---
+  resetEdgeSource();
   if (ended) {
     ({ primKind, withObject, joinTool } = ended.before);
     setHoleBoxes(ended.before.hole.through, ended.before.hole.counterbore);
@@ -722,8 +759,9 @@ function paintBoolOp(id: string) {
 function syncFields() {
   const kind = primitiveKind();
   const withMode = withObject ? "object" : "primitive";
-  document.querySelectorAll<HTMLElement>("#modelPanel [data-for]").forEach((node) => {
-    const forOk = !!tool && (node.dataset.for ?? "").split(" ").includes(tool);
+  // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
+  document.querySelectorAll<HTMLElement>("#modelPanel [data-for], #modelPanel [data-when]").forEach((node) => {
+    const forOk = !node.dataset.for || (!!tool && node.dataset.for.split(" ").includes(tool));
     const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(kind);
     // Only Boolean asks what it combines with: New solid and Hole show their fields whatever Boolean has picked.
     const withOk = !node.dataset.with || tool !== "boolean" || node.dataset.with === withMode;
@@ -731,8 +769,10 @@ function syncFields() {
     const editOk = !edit || node.id !== "modelWithObject" || !!edit.panel.join;
     // A counterbore's fields show while its box is ticked.
     const boreOk = node.dataset.bore === undefined || holeBoxes().counterbore;
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk));
+    const whenOk = !node.dataset.when || (node.dataset.when === edgeSource && (tool === "fillet" || tool === "chamfer"));
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && whenOk));
   });
+  if (tool === "fillet" || tool === "chamfer") fillEdgeStepList();
   // Through all cuts to wherever the part ends: there is no depth to type.
   const depth = document.querySelector<HTMLInputElement>("#modelHoleD");
   if (depth) depth.disabled = holeBoxes().through;
@@ -748,6 +788,163 @@ function setLabel(labelId: string, inputId: string, text: string, aria = text) {
   const label = document.querySelector(labelId);
   if (label && label.textContent !== text) label.textContent = text;
   document.querySelector(inputId)?.setAttribute("aria-label", aria);
+}
+
+// --- A5. Edges a step made. ---
+
+/** Picked edges, or the edges of one history step. */
+export function edgeMode(): EdgeSource {
+  return edgeSource;
+}
+
+/** All of the step's sharp edges, or only the convex or the concave ones. */
+export function edgeFilterChoice(): EdgeFilter {
+  return edgeFilter;
+}
+
+/** The step number in the field, or null while it is not a whole number. */
+export function edgeStepId(): number | null {
+  const value = Number(document.querySelector<HTMLInputElement>("#modelEdgeNode")?.value);
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+/** Whether that step is the one on screen or a step above it. */
+export function edgeStepKnown(): boolean {
+  const id = edgeStepId();
+  return id != null && edgeStepRows.some((step) => step.id === id);
+}
+
+/** Indexes the engine named, so the view can outline them. */
+export function stepEdgesOnSolid(): readonly number[] {
+  return stepEdgeIndexes;
+}
+
+/** The engine's answer: which edges of the step are still on the solid on screen. */
+export function setStepEdgeIndexes(indexes: readonly number[]) {
+  stepEdgeIndexes = indexes.filter((index) => Number.isInteger(index) && index >= 0);
+  if (edgeSource === "step") refreshGhost();
+}
+
+/** A history row was clicked, or a step was typed: both fields show it. */
+export function setEdgeStep(id: number) {
+  writeEdgeStep(id);
+}
+
+function writeEdgeStep(id: number) {
+  const input = document.querySelector<HTMLInputElement>("#modelEdgeNode");
+  if (input) input.value = String(id);
+  syncEdgeSelect();
+  paintEdgeOf();
+  refreshApply();
+  refreshNote();
+  refreshGhost();
+  hooks?.paramsChanged();
+}
+
+function syncEdgeSelect() {
+  const select = document.querySelector<HTMLSelectElement>("#modelEdgeStep");
+  const id = edgeStepId();
+  if (select && id != null && edgeStepRows.some((step) => step.id === id)) select.value = String(id);
+  paintEdgeOf();
+}
+
+function setEdgeSource(next: EdgeSource, opts?: { step?: number; quiet?: boolean }) {
+  const was = edgeSource;
+  edgeSource = next;
+  paintEdgeSource();
+  if (next === "step") {
+    // Clicking A step again keeps the step already chosen. Opening the mode starts at the step on screen.
+    const kept = was === "step" ? edgeStepId() : null;
+    const id = opts?.step ?? kept ?? hooks?.shownNode();
+    if (id != null) {
+      const input = document.querySelector<HTMLInputElement>("#modelEdgeNode");
+      if (input) input.value = String(id);
+    }
+  } else {
+    stepEdgeIndexes = [];
+  }
+  syncFields();
+  paintEdgeOf();
+  refreshApply();
+  refreshNote();
+  refreshGhost();
+  if (!opts?.quiet) hooks?.paramsChanged();
+}
+
+function setEdgeFilter(next: EdgeFilter, quiet = false) {
+  edgeFilter = next;
+  paintEdgeFilter();
+  paintEdgeOf();
+  refreshApply();
+  refreshNote();
+  if (!quiet) hooks?.paramsChanged();
+}
+
+function paintEdgeSource() {
+  document.querySelectorAll<HTMLButtonElement>("#modelEdgeModes [data-edge-mode]").forEach((button) => {
+    const on = button.dataset.edgeMode === edgeSource;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  });
+}
+
+function paintEdgeFilter() {
+  document.querySelectorAll<HTMLButtonElement>("#modelEdgeFilter [data-edge-filter]").forEach((button) => {
+    const on = button.dataset.edgeFilter === edgeFilter;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  });
+}
+
+function fillEdgeStepList() {
+  const steps = hooks?.edgeSteps() ?? [];
+  edgeStepRows = steps;
+  const select = document.querySelector<HTMLSelectElement>("#modelEdgeStep");
+  if (!select) return;
+  const sig = steps.map((step) => `${step.id}\t${step.label}`).join("\n");
+  if (select.dataset.sig !== sig) {
+    select.dataset.sig = sig;
+    select.replaceChildren(
+      ...steps.map((step) => {
+        const option = document.createElement("option");
+        option.value = String(step.id);
+        option.textContent = step.label;
+        return option;
+      }),
+    );
+  }
+  const id = edgeStepId();
+  if (id != null && steps.some((step) => step.id === id)) select.value = String(id);
+  paintEdgeOf();
+}
+
+function paintEdgeOf() {
+  const line = document.querySelector("#modelEdgeOf");
+  if (!line) return;
+  const id = edgeStepId();
+  const step = edgeStepRows.find((row) => row.id === id);
+  let text = "";
+  let bad = false;
+  if (id == null) {
+    text = "Type a step number, or click a history row.";
+    bad = true;
+  } else if (!step) {
+    text = `Step ${id} is not on this solid. Pick this step or one above it.`;
+    bad = true;
+  } else {
+    text = edgeOfText(step.label, edgeFilter);
+  }
+  line.textContent = text;
+  line.classList.toggle("is-bad", bad);
+}
+
+function resetEdgeSource() {
+  edgeSource = "picked";
+  edgeFilter = "all";
+  stepEdgeIndexes = [];
+  edgeStepRows = [];
+  paintEdgeSource();
+  paintEdgeFilter();
 }
 
 /** The primitive picked last, for Boolean and New solid alike. */
@@ -1026,13 +1223,15 @@ function refreshTools() {
 function refreshApply() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button) return;
-  button.disabled = waiting || !tool || (picksObject() && !joinTool) || (!!edit && !!hooks?.editUnchanged()) || !modelApplyReady(
-    tool,
-    picks,
-    num("#modelFactor"),
-    tool === "split" && !!splitPlan()?.inside,
-    probeAllowsApply(tool, probe),
-  );
+  // --- A5. A step's edges need no pick: Apply waits on that step and the dry-run. ---
+  const current = tool;
+  const stepBlend = (current === "fillet" || current === "chamfer") && edgeSource === "step";
+  const ready = !current
+    ? false
+    : stepBlend
+      ? edgeStepKnown() && probeAllowsApply(current, probe)
+      : modelApplyReady(current, picks, num("#modelFactor"), current === "split" && !!splitPlan()?.inside, probeAllowsApply(current, probe));
+  button.disabled = waiting || !current || (picksObject() && !joinTool) || (!!edit && !!hooks?.editUnchanged()) || !ready;
 }
 
 function refreshNote() {
@@ -1047,6 +1246,15 @@ function refreshNote() {
   } else if (tool === "split") {
     const split = hooks?.split();
     if (split) ({ text, bad } = splitNote(split));
+  } else if ((tool === "fillet" || tool === "chamfer") && edgeSource === "step") {
+    if (!edgeStepKnown()) {
+      text = document.querySelector("#modelEdgeOf")?.textContent ?? "Pick a step.";
+      bad = true;
+    } else if (isProbed(tool)) {
+      const status = probeNote(tool, probe);
+      text = status?.text ?? "";
+      bad = status?.bad ?? false;
+    }
   } else if ((tool === "fillet" || tool === "chamfer") && selectedEdges(picks).length === 0) {
     text = "Pick an edge.";
   } else if (tool === "scale") {
@@ -1098,7 +1306,8 @@ function dragContext(): DragContext {
   const box = hooks?.solidBox() ?? null;
   const center: Vec3 = box ? [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2] : [0, 0, 0];
   const extent = box ? Math.max(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2], 1) : 1;
-  const edge = lastEdge(picks);
+  // --- A5. The size handle sits on a step edge when the blend takes its edges from a step. ---
+  const edge = (tool === "fillet" || tool === "chamfer") && edgeSource === "step" ? (stepEdgeIndexes[0] ?? null) : lastEdge(picks);
   const points = edge == null ? null : hooks?.edgePoints(edge) ?? null;
   return {
     read: (field) => num(`#${field}`),
@@ -1395,7 +1604,8 @@ function ghostFor(current: ModelTool): ModelGhost | null {
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
   // --- A2 shell / A7 model check: no stand-in. The dry-run's shape is the hollow, and the open faces are outlined as removed. ---
   if (current === "place" || current === "workplane" || current === "check" || current === "shell") return null;
-  const edges = selectedEdges(picks);
+  // --- A5. A step's edges stand in for the picks until the dry-run's shape replaces them. ---
+  const edges = edgeSource === "step" ? stepEdgeIndexes : selectedEdges(picks);
   if (edges.length === 0) return null;
   return { kind: "blend", edges, radius: num("#modelBlend") };
 }

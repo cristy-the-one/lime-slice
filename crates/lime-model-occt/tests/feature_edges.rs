@@ -117,3 +117,65 @@ fn blend_the_edges_a_step_made() {
         "A blend can only take edges from this step's parent or a step above it.",
     );
 }
+
+/// The house in `tests/sketch.rs`: a 100 × 60 × 50 body and a gable roof, then the convex edges that roof made.
+/// The fillet is the one the MCP sends (`{fromNode, filter: "convex"}`). `stepEdges` names those same edges on the
+/// solid on screen, and filleting them by index removes the same volume.
+#[test]
+fn fillet_convex_edges_of_the_house_roof() {
+    let opened = call(json!({ "call": "open", "key": "house", "box": [100.0, 60.0, 50.0] }));
+    if opened.get("error").is_some() {
+        assert!(!require(), "OCCT was required: {opened}");
+        return;
+    }
+    near(volume(&opened), 300_000.0);
+    let mut roof = json!({
+        "kind": "extrude", "op": "fuse",
+        "origin": [0.0, 30.0, 0.0], "turn": [90.0, 0.0, 0.0],
+        "profile": [[-5.0, 50.0], [105.0, 50.0], [50.0, 80.0]],
+        "depth": 70.0,
+    });
+    roof["symmetric"] = json!(true);
+    let roofed = apply("house", 0, 1, &roof);
+    near(volume(&roofed), 300_000.0 + 1650.0 * 70.0);
+
+    let by_step = from_step("fillet", 1, Some("convex"), 1.0);
+    let listed = call(json!({ "call": "stepEdges", "key": "house", "node": 1, "filter": "convex" }));
+    assert!(listed.get("error").is_none(), "{listed}");
+    assert_eq!(listed["id"], json!(1), "indexes are on the solid on screen");
+    assert_eq!(listed["node"], json!(1));
+    let indexes = listed["edges"].as_array().expect("edges");
+    assert!(!indexes.is_empty(), "{listed}");
+    // No filter is every sharp edge, which includes the convex ones.
+    let all = call(json!({ "call": "stepEdges", "key": "house", "node": 1 }));
+    assert!(
+        all.get("error").is_none() && all["edges"].as_array().unwrap().len() >= indexes.len(),
+        "{all}"
+    );
+
+    let by_index = json!({ "kind": "fillet", "edges": indexes, "size": 1.0 });
+    let probe_step = call(json!({ "call": "probe", "key": "house", "node": 1, "op": by_step }));
+    let probe_index = call(json!({ "call": "probe", "key": "house", "node": 1, "op": by_index }));
+    assert_eq!(probe_step["ok"], json!(true), "{probe_step}");
+    assert_eq!(probe_index["ok"], json!(true), "{probe_index}");
+    near(
+        probe_step["volumeMm3"].as_f64().unwrap(),
+        probe_index["volumeMm3"].as_f64().unwrap(),
+    );
+    let rounded = apply("house", 1, 2, &by_step);
+    near(volume(&rounded), probe_step["volumeMm3"].as_f64().unwrap());
+    assert!(volume(&rounded) < volume(&roofed), "a convex fillet removes material");
+    assert_eq!(rounded["op"], by_step, "the pick is stored as the MCP sends it");
+
+    // A step that is not this solid or above it is refused, and so is one that is not in the history.
+    let back = call(json!({ "call": "goto", "key": "house", "node": 1 }));
+    assert!(back.get("error").is_none(), "{back}");
+    refused(
+        &call(json!({ "call": "stepEdges", "key": "house", "node": 2, "filter": "convex" })),
+        "A blend can only take edges from this step's parent or a step above it.",
+    );
+    refused(
+        &call(json!({ "call": "stepEdges", "key": "house", "node": 9 })),
+        "Step 9 is not in this history.",
+    );
+}
