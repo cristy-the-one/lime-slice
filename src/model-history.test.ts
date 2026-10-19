@@ -352,6 +352,11 @@ eq("an object with a recipe says so", recipeNote({ recipes: { "obj-1": { recipe:
 eq("another object has no recipe", recipeNote({ recipes: { "obj-1": { recipe: { name: "pegs", params: {} } } } }, "obj-2"), null);
 eq("a recipe with no name still counts", recipeNote({ recipes: { part: { recipe: { params: {} } } } }, "part")?.title, "Built by a recipe");
 
+// --- D29. While Pattern or Mirror is open, Enter and Space choose the focused row; the arrows still move.
+eq("Space picks while picking", historyKey({ key: " " }, forked, layout, "1", true), { kind: "pick", id: "1" });
+eq("Enter picks while picking", historyKey({ key: "Enter" }, forked, layout, "1", true), { kind: "pick", id: "1" });
+eq("Up still moves while picking", historyKey({ key: "ArrowUp" }, forked, layout, "1", true), { kind: "move", to: "0" });
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

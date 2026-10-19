@@ -163,3 +163,42 @@ fn three_cuts_one_row() {
     ok(json!({ "call": "close", "key": "g" }));
     ok(json!({ "call": "close", "key": "g2" }));
 }
+
+/// --- D20. A new group whose every step misses changes nothing, so it is refused; a saved one still replays.
+#[test]
+fn a_new_group_that_misses_everywhere_is_refused() {
+    let opened = call(json!({ "call": "open", "key": "gm", "box": [10.0, 10.0, 10.0] }));
+    if opened.get("error").is_some() {
+        assert!(!require(), "OCCT was required: {opened}");
+        return;
+    }
+    let away = group(
+        "Pattern × 2",
+        None,
+        vec![
+            cut([100.0, 0.0, 0.0], [10.0, 10.0, 2.0]),
+            cut([200.0, 0.0, 0.0], [10.0, 10.0, 2.0]),
+        ],
+    );
+    let expected = json!("None of its 2 steps changes the part.");
+    let probed = call(json!({ "call": "probe", "key": "gm", "node": 0, "op": away }));
+    assert_eq!(probed["error"], expected, "{probed}");
+    let applied = call(json!({ "call": "apply", "key": "gm", "parent": 0, "node": 1, "op": away }));
+    assert_eq!(applied["error"], expected, "{applied}");
+    let one = group("One", None, vec![cut([100.0, 0.0, 0.0], [10.0, 10.0, 2.0])]);
+    let single = call(json!({ "call": "probe", "key": "gm", "node": 0, "op": one }));
+    assert_eq!(single["error"], json!("Its one step does not change the part."), "{single}");
+
+    // An edit to a group that misses everywhere is refused the same way.
+    let hit = group("Pattern × 1", None, vec![cut([0.0, 0.0, 8.0], [10.0, 10.0, 2.0])]);
+    near(volume(&ok(json!({ "call": "apply", "key": "gm", "parent": 0, "node": 2, "op": hit }))), 800.0);
+    let edited = call(json!({ "call": "edit", "key": "gm", "parent": 0, "node": 3, "op": away, "replay": [], "chordMm": 0.1 }));
+    assert_eq!(edited["error"], expected, "{edited}");
+
+    // A saved group whose steps all miss still opens: a part must open as it was saved.
+    let reopened = ok(json!({
+        "call": "open", "key": "gm2", "box": [10.0, 10.0, 10.0],
+        "nodes": [{ "id": 1, "parent": 0, "op": away }], "current": 1,
+    }));
+    near(volume(&reopened), 1000.0);
+}

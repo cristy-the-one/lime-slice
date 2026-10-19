@@ -422,7 +422,6 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="btn mode on" type="button" data-plane="z" aria-pressed="true">Z</button>
                   <button class="btn mode" type="button" data-plane="face" aria-pressed="false" data-tip="A picked flat face">Face</button>
                 </div>
-                <label class="model-keep" data-for="mirror"><input id="modelMirKeep" type="checkbox" checked> Keep the original</label>
                 <!-- --- end A4 --- -->
                 <p class="model-note" id="modelNote" hidden></p>
                 <div class="model-actions">

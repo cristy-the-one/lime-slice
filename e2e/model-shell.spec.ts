@@ -143,3 +143,14 @@ test("Shell opens the top face at thickness 2, then an edit to 3 rebuilds", asyn
   const edited = tree.of("edit").at(-1)!.op as { thickness: number; openFaces: number[] };
   expect(edited).toMatchObject({ kind: "shell", thickness: 3, openFaces: [1] });
 });
+
+test("Closed inside starts off each time Shell opens", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelToolShell").click();
+  await page.locator("#modelShellClosed").check();
+  await expect(page.locator("#modelShellFaces")).toHaveText("Closed inside.");
+  await page.locator("#modelCancel").click();
+  await page.locator("#modelToolShell").click();
+  await expect(page.locator("#modelShellClosed")).not.toBeChecked();
+  await expect(page.locator("#modelShellFaces")).toHaveText("No face open.");
+});

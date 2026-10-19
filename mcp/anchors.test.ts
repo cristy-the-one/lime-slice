@@ -5,9 +5,9 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { boxPoint, opBox, resolveAnchors } from "./anchors.ts";
+import { boxPoint, opBox, resolveAnchors } from "../src/modeling/anchors.ts";
 import { fakeEngine } from "./engine.ts";
-import { expandOps } from "./macro.ts";
+import { expandOps } from "../src/modeling/macro.ts";
 import { OP_WORDS, validateTool } from "./schema.ts";
 import { Session } from "./session.ts";
 

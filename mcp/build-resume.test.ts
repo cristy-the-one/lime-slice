@@ -6,11 +6,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { pieceReport, separateReason, splitReason } from "./compose.ts";
+import { pieceReport, separateReason, splitReason } from "../src/modeling/compose.ts";
 import { fakeEngine } from "./engine.ts";
 import { validateTool } from "./schema.ts";
 import { Session } from "./session.ts";
-import { sweepSections } from "./sweep.ts";
+import { sweepSections } from "../src/modeling/sweep.ts";
 import { eulerOrient } from "../src/mesh-place.ts";
 import { toSolidOp } from "../src/model-space.ts";
 import { readSavedTree, savedTree } from "../src/model-tree-file.ts";

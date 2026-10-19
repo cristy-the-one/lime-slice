@@ -24,6 +24,8 @@ export interface ModelCheckMount {
 
 let mount: ModelCheckMount | null = null;
 let worker: Worker | null = null;
+/** --- D31. The check the worker is running, if any: closing Check or a new solid stops it. */
+let running = 0;
 let serial = 0;
 let timer = 0;
 let rows: CheckRow[] = [];
@@ -34,13 +36,45 @@ export function modelCheckNote(): string {
   return note;
 }
 
-export function mountModelCheck(next: ModelCheckMount) {
-  mount = next;
-  worker = new Worker(new URL("../model-check-worker.ts", import.meta.url), { type: "module" });
-  worker.onmessage = (ev: MessageEvent<{ id: number; report: ModelCheckReport }>) => {
+/** The check's worker, started on first use and again after it failed or was stopped. */
+function checkWorker(): Worker {
+  if (worker) return worker;
+  const made = new Worker(new URL("../model-check-worker.ts", import.meta.url), { type: "module" });
+  made.onmessage = (ev: MessageEvent<{ id: number; report: ModelCheckReport }>) => {
+    if (ev.data.id === running) running = 0;
     if (ev.data.id !== serial) return;
     applyReport(ev.data.report);
   };
+  // --- D31. A worker that fails says so, instead of leaving "Checking this solid…" on screen.
+  const failed = (why: string) => {
+    if (worker === made) worker = null;
+    made.terminate();
+    const shown = running === serial;
+    running = 0;
+    if (!shown) return;
+    rows = [];
+    render([]);
+    setNote(`The check stopped: ${why}. Change the thin wall or the solid to try again.`);
+  };
+  made.onerror = (ev) => {
+    ev.preventDefault();
+    failed(ev.message || "the check failed");
+  };
+  made.onmessageerror = () => failed("its answer could not be read");
+  worker = made;
+  return made;
+}
+
+/** Stop a check still running: its answer would be thrown away, and a big part keeps a core busy. */
+function stopRunning() {
+  if (!running || !worker) return;
+  worker.terminate();
+  worker = null;
+  running = 0;
+}
+
+export function mountModelCheck(next: ModelCheckMount) {
+  mount = next;
   document.querySelector("#modelCheckList")?.addEventListener("click", (ev) => {
     const button = ev.target instanceof Element ? ev.target.closest<HTMLButtonElement>("[data-check-row]") : null;
     const index = Number(button?.dataset.checkRow);
@@ -64,6 +98,7 @@ export function openModelCheck() {
 
 export function closeModelCheck() {
   serial += 1;
+  stopRunning();
   window.clearTimeout(timer);
   note = "";
   rows = [];
@@ -84,16 +119,33 @@ export function queueModelCheck(typed: boolean) {
   else runCheck();
 }
 
-function thinMm(): number {
-  const value = Number(document.querySelector<HTMLInputElement>("#modelThin")?.value);
-  if (!Number.isFinite(value)) return defaultThinMm(state.profile.nozzleDiameter);
-  return Math.min(20, Math.max(0.05, value));
+/** --- D31. The typed thin wall, or why it cannot be used: empty, 0, negative, or past 20 mm is said, not clamped. */
+export function thinWallMm(text: string): number | string {
+  const value = text.trim() === "" ? NaN : Number(text);
+  if (!Number.isFinite(value)) return "Type a thin wall in millimetres.";
+  if (value < THIN_MIN) return `Thin wall is at least ${THIN_MIN} mm.`;
+  if (value > THIN_MAX) return `Thin wall is at most ${THIN_MAX} mm.`;
+  return value;
 }
+
+const THIN_MIN = 0.05;
+const THIN_MAX = 20;
 
 function runCheck() {
   const id = ++serial;
   const source = mount?.source() ?? null;
   fx.model?.setCheckBox(null);
+  const input = document.querySelector<HTMLInputElement>("#modelThin");
+  const thin = thinWallMm(input?.value ?? String(defaultThinMm(state.profile.nozzleDiameter)));
+  if (typeof thin === "string") input?.setAttribute("aria-invalid", "true");
+  else input?.removeAttribute("aria-invalid");
+  if (typeof thin === "string") {
+    stopRunning();
+    rows = [];
+    render([]);
+    setNote(thin);
+    return;
+  }
   if (!source || source.positions.length < 9) {
     pose = null;
     rows = [];
@@ -104,7 +156,9 @@ function runCheck() {
   pose = source.toModel;
   setNote("Checking this solid…");
   const positions = new Float32Array(source.positions);
-  worker?.postMessage({ id, positions, minWallMm: thinMm(), nozzleMm: state.profile.nozzleDiameter || 0.4, buildMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ] }, [positions.buffer]);
+  stopRunning();
+  running = id;
+  checkWorker().postMessage({ id, positions, minWallMm: thin, nozzleMm: state.profile.nozzleDiameter || 0.4, buildMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ] }, [positions.buffer]);
 }
 
 function applyReport(report: ModelCheckReport) {
@@ -121,16 +175,19 @@ function setNote(next: string) {
 function render(list: readonly CheckRow[]) {
   const root = document.querySelector("#modelCheckList");
   if (!root) return;
+  // --- D31. A list item holds each row's button, which frames that place and is pressed while it is framed.
   root.replaceChildren(
     ...list.map((row, index) => {
+      const item = document.createElement("div");
+      item.setAttribute("role", "listitem");
       const button = document.createElement("button");
       button.type = "button";
       button.className = row.bad ? "model-check-row is-bad" : "model-check-row";
       button.dataset.checkRow = String(index);
-      button.setAttribute("role", "listitem");
       button.setAttribute("aria-pressed", "false");
       button.textContent = row.text;
-      return button;
+      item.append(button);
+      return item;
     }),
   );
 }

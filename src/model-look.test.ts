@@ -42,6 +42,17 @@ const a = stepHex(0);
 const b = stepHex(1);
 check("two steps get two colours", a !== b && /^#[0-9a-f]{6}$/.test(a) && /^#[0-9a-f]{6}$/.test(b));
 eq("a step keeps its colour", stepHex(4), stepHex(4));
+// --- D34. No step is drawn in the reds the section cap and the danger boxes use; the root is blue.
+const hueOf = (hex: string) => {
+  const [r, g, b] = [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16) / 255) as [number, number, number];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return (h * 60 + 360) % 360;
+};
+check("no step hue is red", Array.from({ length: 200 }, (_, id) => hueOf(stepHex(id))).every((hue) => hue > 30 && hue < 330));
+check("the root is blue", Math.abs(hueOf(stepHex(0)) - 215) < 3);
 
 const accent = 0x2255aa;
 const painted = facePaint({ index: 0, owner: 1, selected: false, pickHover: false, stepHover: false, colourByStep: true, accent });

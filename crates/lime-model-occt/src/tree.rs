@@ -9,12 +9,15 @@
 //! Every call holds the store lock from start to end, so the kernel never sees one solid from two
 //! threads.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fmt::Write as _;
 use std::os::raw::{c_char, c_int};
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -530,6 +533,73 @@ impl Default for Limits {
 
 pub fn set_limits(limits: Limits) {
     lock().limits = limits;
+}
+
+/// --- D4. How long a new group (an Apply or a probe) may build before it stops at the next step. Every tree
+/// shares one store lock, so a group of hundreds of Booleans on a large part would hold up every other part.
+/// The edited step of an edit has it too. A replay (open, goto, the steps an edit replays) has no budget: a saved
+/// part must open the same on a slower machine.
+static GROUP_BUDGET_MS: AtomicU64 = AtomicU64::new(60_000);
+
+/// Sets how long a new group may build before it stops (60 s unless a test or the server changes it).
+pub fn set_group_budget(budget: Duration) {
+    GROUP_BUDGET_MS.store(
+        budget.as_millis().try_into().unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+}
+
+thread_local! {
+    /// When the new group being built on this thread must stop; none outside an Apply or a probe.
+    static GROUP_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// --- D20. A group built for an Apply, a probe or an edited step, not one replayed: it is refused when every step misses.
+    static NEW_GROUP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks the op of one Apply, probe or edit as new while it is built, and clears the mark however the call ends.
+struct NewGroup;
+
+impl NewGroup {
+    fn start() -> NewGroup {
+        NEW_GROUP.set(true);
+        NewGroup
+    }
+}
+
+impl Drop for NewGroup {
+    fn drop(&mut self) {
+        NEW_GROUP.set(false);
+    }
+}
+
+/// Holds the group deadline for one Apply or probe, and clears it however the call ends.
+struct GroupBudget;
+
+impl GroupBudget {
+    fn start() -> GroupBudget {
+        let budget = Duration::from_millis(GROUP_BUDGET_MS.load(Ordering::Relaxed));
+        GROUP_DEADLINE.set(Instant::now().checked_add(budget));
+        GroupBudget
+    }
+}
+
+impl Drop for GroupBudget {
+    fn drop(&mut self) {
+        GROUP_DEADLINE.set(None);
+    }
+}
+
+/// The refusal for a group past its deadline, before step `index` of `count`.
+fn group_overran(index: usize, count: usize) -> Option<String> {
+    let deadline = GROUP_DEADLINE.get()?;
+    if Instant::now() < deadline {
+        return None;
+    }
+    let seconds = GROUP_BUDGET_MS.load(Ordering::Relaxed).div_ceil(1000);
+    Some(format!(
+        "This group stopped after {seconds} s, before step {} of {count}. Use fewer steps, a larger pitch, or a smaller region.",
+        index + 1
+    ))
 }
 
 /// Answer one JSON request. See `docs/step-modeler.md` for the calls.
@@ -1782,6 +1852,8 @@ impl Store {
             None => {
                 let tool = self.join_tool(&key, &op.op)?;
                 let from = doc_in(&mut self.docs, &key)?.shape(parent);
+                let _budget = GroupBudget::start();
+                let _new = NewGroup::start();
                 build(from, op, false, tool, &steps).map_err(Failure::from)?
             }
         };
@@ -1879,7 +1951,11 @@ impl Store {
                     .map(|resolved| (resolved, tool, found))
                     .map_err(BuildFail::plain)
             })
-            .and_then(|(resolved, tool, found)| build(from, resolved, true, tool, &found));
+            .and_then(|(resolved, tool, found)| {
+                let _budget = GroupBudget::start();
+                let _new = NewGroup::start();
+                build(from, resolved, true, tool, &found)
+            });
         match result {
             Ok(mut built) => {
                 // The shape keeps what its reply measured and meshed, so an Apply that takes it meshes nothing again.
@@ -2119,6 +2195,9 @@ impl Store {
             None => {
                 let tool = self.join_tool(key, &op.op)?;
                 let from = doc_in(&mut self.docs, key)?.shape(parent);
+                // The edited step is typed now, as an Apply's is: it has the budget; the steps it replays do not.
+                let _budget = GroupBudget::start();
+                let _new = NewGroup::start();
                 build(from, op, false, tool, &steps).map_err(Failure::from)
             }
         }
@@ -3122,6 +3201,9 @@ fn build_group(
     let mut skipped = 0u32;
     let mut stored: Vec<Op> = Vec::with_capacity(count);
     for (index, step) in steps.iter().enumerate() {
+        if let Some(message) = group_overran(index, count) {
+            return Err(BuildFail::plain(message));
+        }
         let outcome = {
             let shape = match current.as_mut() {
                 Some(shape) => shape,
@@ -3164,7 +3246,16 @@ fn build_group(
             Err(fail) => return Err(step_failed(index, count, fail.message, fail.max_mm)),
         }
     }
-    // Every step missed: the group keeps the solid it started from. A copy, so the parent keeps its own.
+    // --- D20. A new group that changes nothing is refused: Apply would store a step that does nothing.
+    if current.is_none() && NEW_GROUP.get() {
+        let message = if count == 1 {
+            "Its one step does not change the part.".to_owned()
+        } else {
+            format!("None of its {count} steps changes the part.")
+        };
+        return Err(BuildFail::plain(message));
+    }
+    // Every step of a replayed group missed: it keeps the solid it started from. A copy, so the parent keeps its own.
     let kept = match current {
         Some(kept) => kept,
         None => {

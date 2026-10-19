@@ -7,7 +7,7 @@ import { expandFeature, featureSource, type FeatureSolid } from "./model-feature
 import { expandRepeat, repeatSource } from "./model-repeat.ts";
 import type { ModelOp } from "./model-tree.ts";
 import { evaluate, type Params } from "./modeling/expr.ts";
-import { expressionChanged, patchOpNumbers, type ParamTable } from "./modeling/params.ts";
+import { patchOpNumbers, type ParamTable } from "./modeling/params.ts";
 import { commitDriving } from "./sketch/constrain.ts";
 import { buildSketchExtrude, chooseRegions, presetOf, sketchForFeature } from "./sketch/extrude.ts";
 import { holesInModel, pointsFromSource, sketchHoleSource, type HoleSizes } from "./sketch/holes.ts";
@@ -20,26 +20,20 @@ export interface RefreshContext {
   solid?: FeatureSolid | null;
   /** The ops a pattern or mirror repeats, in the solid's frame. */
   repeated?: readonly { id: number; op: ModelOp }[];
-  /**
-   * Write each expression's new value even when the stored number was not the old evaluation.
-   * Used when a file's numbers and its parameter table have drifted apart.
-   */
-  absolute?: boolean;
 }
 
-function dimExprs(sketch: SketchData): { id: number; expr: string }[] {
-  const found: { id: number; expr: string }[] = [];
+function dimExprs(sketch: SketchData): { id: number; expr: string; value: unknown }[] {
+  const found: { id: number; expr: string; value: unknown }[] = [];
   for (const dim of sketch.dims ?? []) {
-    if (typeof dim.expr === "string" && dim.expr.trim()) found.push({ id: dim.id, expr: dim.expr });
+    if (typeof dim.expr === "string" && dim.expr.trim()) found.push({ id: dim.id, expr: dim.expr, value: dim.value });
   }
   return found;
 }
 
-function refreshSketch(sketch: SketchData, before: Params, after: Params): { sketch: SketchData; error?: string; changed: boolean } {
+function refreshSketch(sketch: SketchData, after: Params): { sketch: SketchData; error?: string; changed: boolean } {
   let next = sketch;
   let changed = false;
   for (const dim of dimExprs(sketch)) {
-    if (!expressionChanged(dim.expr, before, after)) continue;
     let value: number;
     try {
       value = evaluate(dim.expr, after);
@@ -47,6 +41,7 @@ function refreshSketch(sketch: SketchData, before: Params, after: Params): { ske
       return { sketch, changed: false, error: err instanceof Error ? err.message : String(err) };
     }
     if (!Number.isFinite(value)) return { sketch, changed: false, error: `"${dim.expr}" is not a finite number.` };
+    if (typeof dim.value === "number" && Math.abs(dim.value - value) <= 1e-6) continue;
     const built = commitDriving(next, dim.id, value, dim.expr);
     if (!built.sketch) return { sketch, changed: false, error: built.error ?? "That dimension could not be rebuilt." };
     next = built.sketch;
@@ -110,11 +105,11 @@ function rebuildHoles(op: ModelOp, sketch: SketchData, pose: Affine): { op: Mode
   return { op: copyExprs(built.op, op.exprs) };
 }
 
-function sketchChanged(op: ModelOp, before: Params, after: Params, pose: Affine): { op: ModelOp; error?: string; toSolid?: boolean } {
+function sketchChanged(op: ModelOp, after: Params, pose: Affine): { op: ModelOp; error?: string; toSolid?: boolean } {
   if (op.kind === "extrude" || op.kind === "revolve") {
     const sketch = op.kind === "extrude" ? sketchForFeature(op) : sketchForRevolve(op);
     if (!sketch) return { op };
-    const refreshed = refreshSketch(sketch, before, after);
+    const refreshed = refreshSketch(sketch, after);
     if (refreshed.error) return { op, error: refreshed.error };
     if (!refreshed.changed) return { op };
     return op.kind === "extrude" ? rebuildExtrude(op, refreshed.sketch) : rebuildRevolve(op, refreshed.sketch);
@@ -122,7 +117,7 @@ function sketchChanged(op: ModelOp, before: Params, after: Params, pose: Affine)
   if (op.kind === "group" && sketchHoleSource(op)) {
     const source = sketchHoleSource(op);
     if (!source) return { op };
-    const refreshed = refreshSketch(source.sketch, before, after);
+    const refreshed = refreshSketch(source.sketch, after);
     if (refreshed.error) return { op, error: refreshed.error };
     if (!refreshed.changed) return { op };
     const holes = rebuildHoles(op, refreshed.sketch, pose);
@@ -131,7 +126,7 @@ function sketchChanged(op: ModelOp, before: Params, after: Params, pose: Affine)
   if (op.kind === "group") {
     const steps: ModelOp[] = [];
     for (const step of op.steps) {
-      const child = sketchChanged(step, before, after, pose);
+      const child = sketchChanged(step, after, pose);
       if (child.error) return { op, error: child.error };
       steps.push(child.op);
     }
@@ -140,13 +135,13 @@ function sketchChanged(op: ModelOp, before: Params, after: Params, pose: Affine)
   if (op.kind === "loft" && op.drawing?.sketches) {
     for (const sketch of op.drawing.sketches) {
       if (!sketch) continue;
-      const refreshed = refreshSketch(sketch, before, after);
+      const refreshed = refreshSketch(sketch, after);
       if (refreshed.error) return { op, error: refreshed.error };
       if (refreshed.changed) return { op, error: "This loft's sketch changed. Edit the loft to rebuild its sections." };
     }
   }
   if (op.kind === "loft" && op.drawing?.sweep?.profile) {
-    const refreshed = refreshSketch(op.drawing.sweep.profile, before, after);
+    const refreshed = refreshSketch(op.drawing.sweep.profile, after);
     if (refreshed.error) return { op, error: refreshed.error };
     if (refreshed.changed) return { op, error: "This sweep's sketch changed. Edit the sweep to rebuild it." };
   }
@@ -174,10 +169,10 @@ function reexpand(op: ModelOp, before: ModelOp, ctx: RefreshContext): { op: Mode
 }
 
 /** `op` evaluated again at `after`. `error` is the evaluator's sentence, or why the sketch could not rebuild. `toSolid` means the op is in model space and still needs the solid's frame. */
-export function refreshOp(op: ModelOp, before: Params, after: Params, ctx: RefreshContext = {}): { op: ModelOp; error?: string; toSolid?: boolean } {
-  const numbers = patchOpNumbers(op, before, after, ctx.absolute === true);
+export function refreshOp(op: ModelOp, after: Params, ctx: RefreshContext = {}): { op: ModelOp; error?: string; toSolid?: boolean } {
+  const numbers = patchOpNumbers(op, after);
   if (numbers.error) return numbers;
-  const drawn = sketchChanged(numbers.op, before, after, ctx.pose ?? IDENTITY_POSE);
+  const drawn = sketchChanged(numbers.op, after, ctx.pose ?? IDENTITY_POSE);
   if (drawn.error) return drawn;
   const expanded = reexpand(drawn.op, op, ctx);
   if (expanded.error) return expanded;
