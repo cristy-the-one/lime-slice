@@ -16,7 +16,7 @@ jobs:
     env:
       LIME_REQUIRE_OCCT: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # runner.temp is not available in a job-level env block.
       - name: Point at the OCCT install
@@ -48,7 +48,7 @@ jobs:
 
       - name: Restore the OCCT shared libraries
         id: occt-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
@@ -60,7 +60,7 @@ jobs:
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
@@ -71,7 +71,7 @@ jobs:
           export LIME_OCCT_BRIDGE="$PWD/target/debug/liblime_model_occt.so"
           cargo test --workspace --locked
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -99,9 +99,9 @@ jobs:
     name: typecheck and frontend build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -123,7 +123,7 @@ jobs:
         run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
@@ -146,7 +146,7 @@ jobs:
     name: MCP server
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the C++ toolchain Clipper2 links against
         run: |
@@ -169,7 +169,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -208,7 +208,7 @@ jobs:
     name: MCP server (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -224,7 +224,7 @@ jobs:
           cargo build -p lime-shell --release --locked
           cargo build -p lime-shell --release --locked --example self-test
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -239,7 +239,7 @@ jobs:
     name: MCP server (macOS)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -248,7 +248,7 @@ jobs:
       - name: Release in-process engine
         run: cargo build -p lime-mcp-engine --release --locked
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -266,7 +266,7 @@ jobs:
     name: release bench smoke
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the C++ toolchain Clipper2 links against
         run: |
@@ -306,13 +306,13 @@ jobs:
           test -s bench-out/pa-marlin.gcode
 
       - name: Upload bench output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-smoke
           path: bench-out/
           if-no-files-found: error
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -325,7 +325,7 @@ jobs:
         run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
@@ -358,12 +358,12 @@ jobs:
     env:
       LIME_REQUIRE_OCCT: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Point at the OCCT install
         run: Add-Content -Path $env:GITHUB_ENV -Value "OCCT_ROOT=${{ runner.temp }}\occt-7.9.2"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -373,7 +373,7 @@ jobs:
 
       - name: Restore the OCCT shared libraries
         id: occt-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
@@ -385,7 +385,7 @@ jobs:
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
@@ -428,7 +428,7 @@ jobs:
     env:
       LIME_REQUIRE_OCCT: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Point at the OCCT install
         run: |
@@ -448,7 +448,7 @@ jobs:
 
       - name: Restore the OCCT shared libraries
         id: occt-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
@@ -460,7 +460,7 @@ jobs:
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
