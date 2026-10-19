@@ -3,8 +3,8 @@
  * steps use each name. Add, delete, and reorder. Errors stay on the row. An unknown name is
  * told to add it above this row; the evaluator's own sentence stays for model_params.
  */
-import { evaluate, PARAM_NAME } from "../modeling/expr.ts";
-import { evaluateTable, isPlainNumber, type ParamTable } from "../modeling/params.ts";
+import { PARAM_NAME } from "../modeling/expr.ts";
+import { appParamMessage, evaluateTable, isPlainNumber, type ParamTable } from "../modeling/params.ts";
 
 export interface ParameterHooks {
   table(): ParamTable;
@@ -20,13 +20,23 @@ let hooks: ParameterHooks | null = null;
 
 /** The panel never names the MCP tool. Other evaluator sentences pass through. */
 export function panelParamMessage(message: string): string {
-  return message.replace("Set it with model_params first.", "Add it in Parameters above this row, or type a number.");
+  return appParamMessage(message, "Add it in Parameters above this row, or type a number.");
 }
 
 export function mountParameters(next: ParameterHooks) {
   hooks = next;
   document.querySelector("#modelParamsAdd")?.addEventListener("click", () => {
     paint(true);
+    // --- D33. The new row is where typing goes.
+    [...document.querySelectorAll<HTMLInputElement>("#modelParamsBody [data-param-name]")].at(-1)?.focus();
+  });
+  // --- D33. Escape closes the panel, as it closes a tool, and focus goes back to the Features menu button.
+  document.querySelector("#modelParams")?.addEventListener("keydown", (ev) => {
+    if ((ev as KeyboardEvent).key !== "Escape") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeParameters();
+    document.querySelector<HTMLButtonElement>("#modelFeatureMore")?.focus();
   });
   document.querySelector("#modelParamsClose")?.addEventListener("click", () => closeParameters());
   document.querySelector("#modelParamsRebuild")?.addEventListener("click", () => hooks?.rebuild());
@@ -68,7 +78,7 @@ function onInput(ev: Event) {
   const target = ev.target;
   if (!(target instanceof HTMLInputElement)) return;
   writeFromDom();
-  refreshRow(target.closest<HTMLElement>("[data-param-row]"));
+  refreshRows();
   paintRebuild();
 }
 
@@ -110,12 +120,13 @@ function paint(addBlank: boolean) {
   const table = document.createElement("table");
   table.className = "model-params-table";
   const head = document.createElement("thead");
-  head.innerHTML = "<tr><th>Name</th><th>Value</th><th>Evaluated</th><th>Used by</th><th></th></tr>";
+  head.innerHTML = '<tr><th>Name</th><th>Value</th><th>Evaluated</th><th>Used by</th><th><span class="sr-only">Order and delete</span></th></tr>';
   table.append(head);
   const list = document.createElement("tbody");
   rows.forEach((row, index) => list.append(rowView(row, index, rows.length)));
   table.append(list);
   body.append(table);
+  refreshRows();
   paintRebuild();
 }
 
@@ -153,7 +164,6 @@ function rowView(row: { name: string; text: string }, index: number, count: numb
   error.hidden = true;
   valueCell.append(error);
   tr.append(nameCell, valueCell, evaluated, used, actions);
-  fillRow(tr, row.name, row.text);
   return tr;
 }
 
@@ -168,13 +178,23 @@ function iconButton(attr: string, label: string, disabled: boolean): HTMLButtonE
   return button;
 }
 
-function fillRow(row: HTMLElement, name: string, text: string) {
+/**
+ * Every row's evaluated value, error, and use count, from one `evaluateTable` of the rows in the DOM. A row that
+ * names an edited parameter changes with it, so the whole table is filled again after any edit.
+ */
+function refreshRows() {
+  const rows = [...document.querySelectorAll<HTMLElement>("#modelParamsBody [data-param-row]")];
+  const names = rows.map((row) => row.querySelector<HTMLInputElement>("[data-param-name]")?.value.trim() ?? "");
+  const evaluated = evaluateTable(readDom());
+  rows.forEach((row, index) => fillRow(row, names, index, evaluated));
+}
+
+function fillRow(row: HTMLElement, names: readonly string[], index: number, evaluated: ReturnType<typeof evaluateTable>) {
   const valueCell = row.querySelector<HTMLElement>("[data-param-eval]");
   const usedCell = row.querySelector<HTMLElement>("[data-param-used]");
   const error = row.querySelector<HTMLElement>("[data-param-error]");
-  const trimmed = name.trim();
-  const index = Number(row.dataset.paramRow);
-  const names = [...document.querySelectorAll<HTMLInputElement>("#modelParamsBody [data-param-name]")].map((input) => input.value.trim());
+  const trimmed = names[index] ?? "";
+  const text = row.querySelector<HTMLInputElement>("[data-param-value]")?.value ?? "";
   let message: string | null = null;
   let value: number | null = null;
   if (!trimmed && !text.trim()) {
@@ -187,18 +207,9 @@ function fillRow(row: HTMLElement, name: string, text: string) {
   else if (!PARAM_NAME.test(trimmed)) message = `"${trimmed}" is not a parameter name. Use letters, digits, and underscores.`;
   else if (names.indexOf(trimmed) !== index) message = `"${trimmed}" is already a parameter.`;
   else {
-    const table = readDom();
-    const rowResult = evaluateTable(table).rows.find((item) => item.name === trimmed);
+    const rowResult = evaluated.rows.find((item) => item.name === trimmed);
     message = rowResult?.error ?? null;
     value = rowResult?.value ?? null;
-    if (!rowResult) {
-      try {
-        value = isPlainNumber(text) ? Number(text) : evaluate(text, evaluateTable(table).values);
-      } catch (err) {
-        message = err instanceof Error ? err.message : String(err);
-        value = null;
-      }
-    }
   }
   if (message) message = panelParamMessage(message);
   if (valueCell) valueCell.textContent = value != null && Number.isFinite(value) ? String(value) : "";
@@ -207,13 +218,6 @@ function fillRow(row: HTMLElement, name: string, text: string) {
     error.hidden = !message;
     error.textContent = message ?? "";
   }
-}
-
-function refreshRow(row: HTMLElement | null) {
-  if (!row) return;
-  const name = row.querySelector<HTMLInputElement>("[data-param-name]")?.value ?? "";
-  const text = row.querySelector<HTMLInputElement>("[data-param-value]")?.value ?? "";
-  fillRow(row, name, text);
 }
 
 function readDom(): ParamTable {

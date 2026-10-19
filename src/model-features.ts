@@ -8,28 +8,21 @@ import { standRegion } from "../mcp/plane-region.ts";
 import { faceRows, type FaceRow } from "../mcp/solid-geometry.ts";
 import { closeCracks } from "./mesh-check.ts";
 import { outwardFromMesh } from "./model-blend.ts";
-import { expand, primitiveFrom, type Piece } from "./modeling/compose.ts";
+import { anchorOf, expand, type Piece } from "./modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "./modeling/frames.ts";
 import { applyPose, isIdentity, turnDir, type Affine } from "./model-space.ts";
 import type { GroupOp, ModelOp } from "./model-tree.ts";
-import { planePrimitive, axesOf, GLOBAL_WORKPLANE, type Workplane } from "./workplane.ts";
+import { planePoint, axesOf, GLOBAL_WORKPLANE, type Workplane } from "./workplane.ts";
 
 /** One toolbar entry; the menu chooses which of these is on the button. */
 export const FEATURE_TOOLS = ["pocket", "boss", "texture", "array", "ribs", "text"] as const;
 export type FeatureTool = (typeof FEATURE_TOOLS)[number];
-
-/** Past this many pieces the ghost draws outlines only. Expansion itself stops at MAX_PIECES (400). */
-export const GHOST_PIECE_CAP = 2000;
 
 /** Shown when the selection is not exactly one flat face. */
 export const PICK_ONE_FLAT_FACE = "Pick one flat face.";
 
 export function isFeatureTool(tool: unknown): tool is FeatureTool {
   return typeof tool === "string" && (FEATURE_TOOLS as readonly string[]).includes(tool);
-}
-
-export function piecesOutlineOnly(count: number): boolean {
-  return count > GHOST_PIECE_CAP;
 }
 
 const FEATURE_NAMES: Record<FeatureTool, string> = {
@@ -280,13 +273,25 @@ export function featureSource(op: ModelOp): Record<string, unknown> | null {
   return isFeatureTool(source.kind) ? source : null;
 }
 
+/**
+ * --- D28. What an edit keeps from the step it edits that the panel has no field for: a texture's, an array's or ribs'
+ * `region` box, which the MCP may type. Empty when there is none.
+ */
+export function keptFeatureFields(source: Record<string, unknown> | null, tool: FeatureTool): Record<string, unknown> {
+  if (!source || source.kind !== tool || (tool !== "texture" && tool !== "array" && tool !== "ribs")) return {};
+  const region = source.region as { u?: unknown; v?: unknown } | undefined;
+  const pair = (value: unknown) => Array.isArray(value) && value.length === 2 && value.every((n) => typeof n === "number" && Number.isFinite(n));
+  return region && pair(region.u) && pair(region.v) ? { region: { u: [...(region.u as number[])], v: [...(region.v as number[])] } } : {};
+}
+
 /** The panel an edited feature group reopens with. */
 export function featurePanel(source: Record<string, unknown>): { tool: FeatureTool; fields: Record<string, number>; feature: FeatureChoices } {
   const tool: FeatureTool = isFeatureTool(source.kind) ? source.kind : "pocket";
   const at = (source.at ?? {}) as { u?: unknown; v?: unknown };
   const bars = (source.bars ?? {}) as { vertical?: unknown; horizontal?: unknown; width?: unknown };
   const cell = (source.cell ?? {}) as Record<string, unknown>;
-  const pitch = Array.isArray(source.pitch) ? source.pitch : [];
+  // --- D28. The MCP may store one pitch for both directions.
+  const pitch = Array.isArray(source.pitch) ? source.pitch : typeof source.pitch === "number" ? [source.pitch, source.pitch] : [];
   const height = numOf(source.height, FEATURE_FIELD_DEFAULTS.modelTextHeight!);
   const shape = source.shape === "circle" || source.shape === "arch" ? source.shape : "rect";
   const cellShape = cell.shape === "circle" || cell.shape === "polygon" ? cell.shape : "rect";
@@ -406,20 +411,76 @@ export interface ExpandedFeature {
   note: string | null;
   pieces: Piece[] | null;
   group: GroupOp | null;
+  /** The face's workplane, with U, V = 0 where the spec's `at` is measured from (its From anchor). */
   frame: Workplane | null;
   outward: [number, number, number] | null;
 }
 
-function emptyFeature(note: string): ExpandedFeature {
+export function emptyFeature(note: string): ExpandedFeature {
   return { note, pieces: null, group: null, frame: null, outward: null };
 }
 
-/** A plain boolean, for a nested pattern. Feature tools do not call it. */
-function toPart(op: Record<string, unknown>): Piece | { reason: string } {
-  const made = primitiveFrom(op);
-  if ("reason" in made) return made;
-  const which = op.op === "cut" || op.op === "common" ? op.op : "fuse";
-  return { op: which, spec: planePrimitive(made, GLOBAL_WORKPLANE) };
+function trimmed(value: number): string {
+  return String(Math.round(value * 1000) / 1000);
+}
+
+/**
+ * The first shown number field of `tool` whose value (`read`, which also evaluates an expression) is outside its
+ * `min` or `max`, as a sentence; null when all are in range. A typed value is not clamped: the user sees why.
+ */
+export function rangeNote(tool: FeatureTool, read: (id: string) => number): string | null {
+  if (typeof document === "undefined") return null;
+  // A field that takes an expression is a text input, so the range is read from its attributes.
+  // An array, as the MCP's DOM types have no NodeList iterator.
+  for (const input of Array.from(document.querySelectorAll<HTMLInputElement>("#modelPanel label[data-for] input:is([min], [max])"))) {
+    const label = input.closest("label");
+    if (!input.id || !label || label.closest("[hidden]") || !(label.dataset.for ?? "").split(" ").includes(tool)) continue;
+    const value = read(input.id);
+    const name = input.getAttribute("aria-label")?.split(",")[0] ?? input.id;
+    const min = Number(input.getAttribute("min") ?? NaN);
+    const max = Number(input.getAttribute("max") ?? NaN);
+    if (Number.isFinite(min) && value < min) return `${name} is at least ${trimmed(min)}.`;
+    if (Number.isFinite(max) && value > max) return `${name} is at most ${trimmed(max)}.`;
+  }
+  return null;
+}
+
+/** A feature tool expands no nested op, so `expand` never asks for a plain part here. */
+function noNestedPart(): { reason: string } {
+  return { reason: "A feature has no nested op." };
+}
+
+/**
+ * --- D36. The context of the last solid and pose, with each face's frame read once: a drag that moves only `at`
+ * reads the whole mesh once, not on every move. A new solid or pose builds it again.
+ */
+let contextMemo: { solid: FeatureSolid; pose: string; ctx: ReturnType<typeof featureExpandContext> } | null = null;
+
+/** The plate went: the kept mesh copy goes with it. */
+export function forgetFeatureContext() {
+  contextMemo = null;
+}
+
+/** The expand context of `solid` at `pose` in model space, kept for the next call with the same solid and pose. */
+export function posedContext(solid: FeatureSolid, pose: Affine): ReturnType<typeof featureExpandContext> {
+  const key = JSON.stringify(pose);
+  if (contextMemo?.solid === solid && contextMemo.pose === key) return contextMemo.ctx;
+  const built = featureExpandContext(featureSolidInModel(solid, pose), GLOBAL_WORKPLANE);
+  const frames = new Map<string, ReturnType<typeof built.face>>();
+  const ctx: typeof built = {
+    ...built,
+    face: (index, coplanar = false) => {
+      const name = `${index}|${coplanar}`;
+      let frame = frames.get(name);
+      if (!frame) {
+        frame = built.face(index, coplanar);
+        frames.set(name, frame);
+      }
+      return frame;
+    },
+  };
+  contextMemo = { solid, pose: key, ctx };
+  return ctx;
 }
 
 /**
@@ -428,14 +489,16 @@ function toPart(op: Record<string, unknown>): Piece | { reason: string } {
  */
 export function expandFeature(spec: Record<string, unknown>, solid: FeatureSolid | null, pose: Affine, faceIndex: number | null): ExpandedFeature {
   if (!solid || faceIndex == null || faceIndex < 0 || faceIndex >= solid.faces.length) return emptyFeature(PICK_ONE_FLAT_FACE);
-  const posed = featureSolidInModel(solid, pose);
-  const ctx = featureExpandContext(posed, GLOBAL_WORKPLANE);
+  const ctx = posedContext(solid, pose);
   const face = ctx.face(faceIndex);
   if ("reason" in face) return emptyFeature(PICK_ONE_FLAT_FACE);
   const typed = { ...spec, faceIndex };
-  const pieces = expand(typed, ctx, toPart);
+  const pieces = expand(typed, ctx, noNestedPart);
   if ("reason" in pieces) return emptyFeature(pieces.reason);
   const label = featureLabel(typed);
   const outward = axesOf(face.plane)[2];
-  return { note: null, pieces, group: groupFromPieces(label, typed, pieces), frame: face.plane, outward };
+  // --- D16. The position dot and its drag measure `at` from where From puts U, V = 0, as the expansion does.
+  const shift = spec.from === undefined ? null : anchorOf(spec.from, face.extent);
+  const frame = shift && !("reason" in shift) ? { ...face.plane, origin: planePoint(face.plane, [shift[0], shift[1], 0]) } : face.plane;
+  return { note: null, pieces, group: groupFromPieces(label, typed, pieces), frame, outward };
 }

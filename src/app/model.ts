@@ -29,9 +29,9 @@ import { throughLength } from "../model-hole";
 import { faceBoundarySegments, lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
-import { locatedBoxes } from "../model-check.ts";
-import { expandFeature, isFeatureTool, panelChoices, readFeatureSpec, type FeatureTool } from "../model-features";
-import { expandRepeat, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
+import { locatedBoxes, printFrame } from "../model-check.ts";
+import { emptyFeature, expandFeature, featureSource, forgetFeatureContext, isFeatureTool, keptFeatureFields, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
+import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
@@ -101,6 +101,7 @@ import {
   setEdgeStep,
   setStepEdgeIndexes,
   stepEdgesOnSolid,
+  followParameters,
   refreshModelCheck,
   refreshModelGhost,
   setModelEditable,
@@ -125,7 +126,7 @@ import {
   type PlacePhase,
 } from "../ui/model-chrome";
 import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
-import { mountModelLook, sectionFacePicked } from "../ui/model-look";
+import { lookPoseChanged, mountModelLook, resetModelLook, sectionFacePicked } from "../ui/model-look";
 import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
@@ -147,7 +148,7 @@ import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
 import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
-import { evaluateTable, stepOutOfDate, usedByCount } from "../modeling/params.ts";
+import { appParamMessage, evaluateTable, stepOutOfDate, usedByCount } from "../modeling/params.ts";
 import { refreshOp } from "../param-rebuild.ts";
 import { mountParameters, syncParameters } from "../ui/parameters.ts";
 import { closeCracks } from "../mesh-check";
@@ -413,11 +414,19 @@ export function bindModelView() {
       return openBox();
     },
     // --- A7 model check ---
+    // --- D13. The check reads the part as it prints: the plate's turn and scale, lowered to the bed.
     checkSource() {
       const solid = viewed();
-      if (solid && solid.positions.length >= 9) return { positions: solid.positions, toModel: openPose() };
+      const shown = solid ? state.plate.objects.find((item) => item.id === open?.objectId) : undefined;
+      if (solid && shown && solid.positions.length >= 9) {
+        const printed = printFrame(solid.positions, shown.orient, shown.partScale);
+        return { positions: printed.positions, toModel: thenPose(printed.toSource, openPose()) };
+      }
       const obj = state.plate.objects.find((item) => item.id === state.plate.selectedId);
-      if (obj && obj.sourcePos.length >= 9) return { positions: obj.sourcePos, toModel: meshToModel(obj) };
+      if (obj && obj.sourcePos.length >= 9) {
+        const printed = printFrame(obj.sourcePos, obj.orient, obj.partScale);
+        return { positions: printed.positions, toModel: thenPose(printed.toSource, meshToModel(obj)) };
+      }
       return null;
     },
     edgePoints(edge) {
@@ -532,11 +541,9 @@ export function bindModelView() {
     table: () => session.parameters,
     setTable(table) {
       session.parameters = table;
-      if (paramsInDate()) {
-        builtParams = { ...currentParams() };
-        paramsTrusted = true;
-      }
       markProjectDirty();
+      // --- D17. An open tool's expression fields and its dry-run follow the table.
+      followParameters();
     },
     usedBy: usedByName,
     affected: () => affectedNodeIds().length,
@@ -772,6 +779,7 @@ export function bindModelView() {
       fx.model?.setStepHighlight(id);
     },
     // --- A4. Ctrl-click adds or removes a step of this solid. A tool's step is not one of those. ---
+    picking: () => isRepeatTool(openModelTool()) && !lens,
     pickSource(row) {
       if (!isRepeatTool(openModelTool())) return false;
       const parsed = readRow(row);
@@ -790,6 +798,10 @@ export function bindModelView() {
     mountModelLook({
       setLook: (state) => fx.model?.setLook(state),
       onSectionDrag: (cb) => fx.model?.onSectionDrag(cb),
+      posed(plane) {
+        const at = posedFace({ point: plane.origin, normal: plane.normal })!;
+        return { origin: at.point, normal: at.normal };
+      },
     });
   }
 }
@@ -1171,7 +1183,7 @@ async function sendProbe(serial: number, key: string, tree: string, node: NodeId
     }
   }
   const body = await treeCall(tree, node, probeRequest(tree, node, op, state.stepTolerance));
-  const view = probeFromBody(body);
+  const view = probeFromBody(body, op.kind === "group" ? op.steps.length : undefined);
   if (typeof body.ok === "boolean") remember(key, view);
   // The shape the check built, as Apply would commit it: the engine keeps what it meshed for it, so Apply meshes nothing again.
   const shape = body.ok === true && body.preview && typeof body.preview === "object" ? decodeSolid(body.preview as Body) : null;
@@ -1388,11 +1400,14 @@ function oneFeatureFace(): number | null {
 function featureNow(tool: FeatureTool) {
   const solid = viewed();
   const face = oneFeatureFace();
-  const spec = readFeatureSpec(tool, (id) => num(`#${id}`), panelChoices(tool), face ?? 0);
+  const typed = readFeatureSpec(tool, (id) => num(`#${id}`), panelChoices(tool), face ?? 0);
+  // --- D28. An edit keeps the region its step was typed with, which the panel has no field for.
+  const spec = { ...typed, ...keptFeatureFields(editing ? featureSource(editing.op) : null, tool) };
   const pose = openPose();
   const key = JSON.stringify({ spec, face, id: solid?.id ?? null, pose });
   if (featureMemo?.key === key) return featureMemo.value;
-  const value = expandFeature(spec, solid, pose, face);
+  const range = rangeNote(tool, (id) => num(`#${id}`));
+  const value = range ? emptyFeature(range) : expandFeature(spec, solid, pose, face);
   featureMemo = { key, value };
   return value;
 }
@@ -1419,6 +1434,16 @@ function edgeDirection(edge: number): [number, number, number] | null {
   const a = at(0);
   const b = at(points.length - 3);
   return unitDir([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+}
+
+/** The middle of an edge's first and last points, in model space. */
+function edgeMiddle(edge: number): [number, number, number] | null {
+  const points = viewed()?.edges.find((item) => item.id === edge)?.points;
+  if (!points || points.length < 6) return null;
+  const last = points.length - 3;
+  const mid: [number, number, number] = [(points[0]! + points[last]!) / 2, (points[1]! + points[last + 1]!) / 2, (points[2]! + points[last + 2]!) / 2];
+  const pose = openPose();
+  return isIdentity(pose) ? mid : applyPose(pose, mid);
 }
 
 /** A cylinder or cone face's axis in model space, and a point on it. */
@@ -1522,6 +1547,9 @@ function noteRepeatPick(pick: ModelPick | null) {
     if (pick.kind === "edge") {
       const axis = edgeDirection(pick.index);
       if (axis) setHeldAxis(axis);
+      // --- D15. The axis runs along the edge, so the centre is on it too: its middle.
+      const at = edgeMiddle(pick.index);
+      if (axis && at) setPatternCentre(at);
     } else {
       const round = roundFaceAxis(pick.index);
       if (round) {
@@ -1820,6 +1848,8 @@ function forgetShown(key: string) {
 
 /** Leaving Model: the plate takes the shown node, the visit is one Prepare step, and its solid is written off the UI's path. */
 export function leaveModel() {
+  // --- D40. A Check asked for and not yet open is dropped with the visit, so it cannot open on a later one.
+  checkQueued = null;
   forgetPlaceSteps();
   forgetWorkplaneSteps();
   commitModel();
@@ -1828,8 +1858,21 @@ export function leaveModel() {
   void writeSteps();
 }
 
+/** The object whose View settings (section, colour by step) are showing. */
+let lookObject: string | null = null;
+
+/** --- D11. The View menu belongs to one object: another object starts it over. */
+function lookFor(objectId: string) {
+  if (lookObject === objectId) return;
+  lookObject = objectId;
+  resetModelLook();
+}
+
 /** The file's plate is gone: so are its trees. */
 export function forgetModelTrees() {
+  lookObject = null;
+  forgetFeatureContext();
+  resetModelLook();
   void closeInEngine(closeOrder(modelTrees, modelTrees.keys()));
   plateEra += 1;
   modelTrees.clear();
@@ -1895,6 +1938,8 @@ export function showModel() {
   syncUndo();
   const mesh = state.mesh;
   shownFor = objectId;
+  // --- D11. A mesh with no tree starts the View menu over too.
+  if (objectId) lookFor(objectId);
   const obj = state.plate.objects.find((item) => item.id === objectId);
   const token = mesh ? meshTokenOf(mesh.bytes) : null;
   const known = objectId && token ? treeFor(objectId, obj?.modelTree, token) : null;
@@ -2039,6 +2084,7 @@ async function openTree(mine: number, objectId: string, label: string, from: Exc
   keepSolid(started.key, ROOT, state.stepTolerance, started.parsed);
   if (mine !== ticket || state.stage !== "model") return;
   open = { objectId, key: started.key, solid: started.parsed };
+  lookFor(objectId);
   present(started.parsed, `${about(started.parsed)} Pick a face or an edge.`);
 }
 
@@ -2114,6 +2160,7 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
   if (!latest) return false;
   modelTrees.set(key, jumped(latest, node));
   open = { objectId, key, solid };
+  lookFor(objectId);
   const note = seedNotes.get(key);
   seedNotes.delete(key);
   present(solid, note ? `${message(solid)} ${note}` : message(solid));
@@ -2152,7 +2199,10 @@ async function step(way: "undo" | "redo") {
   const done = viaEdit ? (way === "undo" ? "Edit of the step undone." : "Edit of the step redone.") : viaFold && foldLabel ? `${foldLabel} ${way === "undo" ? "undone" : "redone"}.` : way === "undo" ? "Edit undone." : "Edit redone.";
   const shown = await showNode(ticket, at.objectId, at.key, node, (solid) => `${about(solid)} ${done}`);
   if (shown && viaEdit && editBack === back) back!.undone = way === "undo";
-  if (shown) syncUndo();
+  if (!shown) return;
+  syncUndo();
+  // The shown branch changed, so the Rebuild count does too.
+  noteParametersBuilt();
 }
 
 /** A row of the History panel: show that step. A jump still on its way to another step gives way to this one. */
@@ -2165,7 +2215,7 @@ async function jumpTo(node: NodeId) {
   editBack = null;
   // A step picked in the history ends an edit: the view goes there, not back.
   dropEdit();
-  await showNode(ticket, at.objectId, at.key, node, about);
+  if (await showNode(ticket, at.objectId, at.key, node, about)) noteParametersBuilt();
 }
 
 /** The open solid's own step a History row names, or null for a tool's step. */
@@ -2925,26 +2975,12 @@ function currentParams(): Params {
   return evaluateTable(session.parameters).values;
 }
 
-/** The table the open solid's numbers were last in step with. */
-let builtParams: Params = {};
-/** False when a file's numbers and its parameter table do not agree, so a rebuild writes the expressions. */
-let paramsTrusted = true;
-
-/** Every open history agrees with the parameter table. A file can disagree before Model is showing. */
-function paramsInDate(): boolean {
-  const after = currentParams();
-  for (const tree of modelTrees.values()) {
-    if (branchHits(tree, after).length > 0) return false;
-  }
-  return true;
-}
-
-/** The open solid now agrees with the parameter table, or it does not and the next rebuild writes the expressions. */
+/**
+ * The history or the table changed (a rebuild, an undo, a redo, a jump, a file): the Parameters panel and its
+ * Rebuild count follow. A step is out of date when a stored number differs from its expression at the table, so
+ * nothing needs to remember which table the numbers were built at.
+ */
 export function noteParametersBuilt() {
-  if (paramsInDate()) {
-    builtParams = { ...currentParams() };
-    paramsTrusted = true;
-  } else paramsTrusted = false;
   syncParameters();
 }
 
@@ -2989,9 +3025,37 @@ function affectedNodeIds(): NodeId[] {
   return tree ? branchHits(tree, currentParams()) : [];
 }
 
-function refreshStored(op: ModelOp, before: Params, after: Params, tree: ModelTree, parent: NodeId): { op: ModelOp; error?: string } {
+/**
+ * --- D21. The solid a feature step was built on, which its re-expansion reads: kept, on screen, or asked of the engine
+ * (`goto`), as after a reopen, when only the shown step is kept. A string is why the engine could not give it.
+ */
+async function builtOn(tree: ModelTree, parent: NodeId): Promise<ParsedSolid | string> {
+  const chord = state.stepTolerance;
+  const kept = recentSolid(tree.key, parent, chord) ?? (open?.key === tree.key && open.solid.id === parent ? open.solid : null);
+  if (kept) return kept;
+  const body = await treeCall(tree.key, parent, gotoRequest(tree.key, parent, chord));
+  const error = text(body.error);
+  if (error) return error;
+  const decoded = decodeSolid(body);
+  if (typeof decoded === "string") return decoded;
+  if (body.seeded) readSolids.add(decoded);
+  keepSolid(tree.key, parent, chord, decoded);
+  return decoded;
+}
+
+/** `refreshStored`, after the solid a feature step re-expands on is in hand. */
+async function refreshStoredStep(op: ModelOp, after: Params, tree: ModelTree, parent: NodeId): Promise<{ op: ModelOp; error?: string }> {
+  if (op.kind === "group" && featureSource(op)) {
+    const solid = await builtOn(tree, parent);
+    if (typeof solid === "string") return { op, error: solid };
+    return refreshStored(op, after, tree, parent, solid);
+  }
+  return refreshStored(op, after, tree, parent);
+}
+
+function refreshStored(op: ModelOp, after: Params, tree: ModelTree, parent: NodeId, known?: ParsedSolid): { op: ModelOp; error?: string } {
   const pose = openPose();
-  const cached = recentSolid(tree.key, parent, state.stepTolerance);
+  const cached = known ?? recentSolid(tree.key, parent, state.stepTolerance);
   const solid = cached ?? (open?.key === tree.key && open.solid.id === parent ? open.solid : null);
   let repeated: { id: number; op: ModelOp }[] | undefined;
   if (op.kind === "group") {
@@ -3006,13 +3070,26 @@ function refreshStored(op: ModelOp, before: Params, after: Params, tree: ModelTr
       }
     }
   }
-  const next = refreshOp(op, before, after, { pose, solid, repeated, absolute: !paramsTrusted });
+  const next = refreshOp(op, after, { pose, solid, repeated });
   if (next.error || !next.toSolid) return next;
   return { op: toSolidOp(next.op, pose) };
 }
 
 /** Replay the shown branch from the earliest step a parameter change reaches, as one edit. */
+/** --- D21. A rebuild still asking the engine for a solid: a second Rebuild waits for it. */
+let rebuilding = false;
+
 async function rebuildFromParameters() {
+  if (rebuilding) return;
+  rebuilding = true;
+  try {
+    await rebuildNow();
+  } finally {
+    rebuilding = false;
+  }
+}
+
+async function rebuildNow() {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || busy || jumping || state.stage !== "model") return;
@@ -3031,7 +3108,6 @@ async function rebuildFromParameters() {
     readout("This step is no longer in the history.");
     return;
   }
-  const before = { ...builtParams };
   const after = { ...currentParams() };
   const from = tree.current;
   const parent = node.parent ?? ROOT;
@@ -3042,9 +3118,10 @@ async function rebuildFromParameters() {
     return;
   }
   const supplied: ModelOp[] = [];
-  const first = refreshStored(startOp, before, after, tree, parent);
+  const first = await refreshStoredStep(startOp, after, tree, parent);
+  if (at !== open || state.stage !== "model" || treeOf(at)?.current !== from) return;
   if (first.error) {
-    readout(first.error);
+    readout(appParamMessage(first.error));
     return;
   }
   supplied.push(first.op);
@@ -3054,9 +3131,10 @@ async function rebuildFromParameters() {
       readout("This step is no longer in the history.");
       return;
     }
-    const next = refreshStored(step, before, after, tree, tree.nodes.get(id)?.parent ?? ROOT);
+    const next = await refreshStoredStep(step, after, tree, tree.nodes.get(id)?.parent ?? ROOT);
+    if (at !== open || state.stage !== "model" || treeOf(at)?.current !== from) return;
     if (next.error) {
-      readout(next.error);
+      readout(appParamMessage(next.error));
       return;
     }
     supplied.push(next.op);
@@ -3125,7 +3203,19 @@ async function runEdit(run: Editing) {
     readout("This step is no longer in the history.");
     return;
   }
-  const replayOps = supplied ? supplied.slice(1) : run.replay.map((id) => tree.nodes.get(id)!.op!);
+  const storedOps = supplied ? supplied.slice(1) : run.replay.map((id) => tree.nodes.get(id)!.op!);
+  // A pattern or mirror below an edited source step is expanded again, so its copies follow the source.
+  const followed = followRepeatSources(
+    [{ id: run.node, op }, ...run.replay.map((id, i) => ({ id, op: storedOps[i]! }))],
+    (id) => opForRepeat(tree, id),
+    openPose(),
+  );
+  if ("error" in followed) {
+    const row = tree.nodes.get(run.replay[followed.at - 1]!)!;
+    readout(`Step ${pathTo(tree, row.id).length - 1}, “${stepLabel(row)}”, repeats the edited step and cannot follow it: ${sentence(followed.error)}`);
+    return;
+  }
+  const replayOps = followed.ops.slice(1);
   const twin = builtBranch(tree, run.parent, op, replayOps);
   if (twin != null) {
     // These numbers already built this branch, in an earlier edit: show it rather than build it again.
@@ -3339,6 +3429,27 @@ async function runToolEdit(run: Editing, op: ModelOp) {
     modelTrees.set(key, reserved);
     return ids;
   });
+  // --- D2/D3 in a tool's tree: a pattern or mirror below the edited step follows it there too, as runEdit does.
+  const first = levels[0]!;
+  const fresh = [first.node, ...first.replay.map((step) => step.id)];
+  const oldOf = new Map(fresh.map((id, i) => [id, first.old[i]!] as const));
+  const renamed = stepIds(first.old, fresh);
+  const followed = followRepeatSources(
+    [{ id: first.node, op: first.op }, ...first.replay],
+    (id) => {
+      const old = oldOf.get(id);
+      const step = opForRepeat(from.tool, old ?? id);
+      return step && old !== undefined ? renumberedSteps(step, renamed) : step;
+    },
+    toolPose(objectPose(), from.joins),
+  );
+  if ("error" in followed) {
+    // Nothing was built yet; the ids reserved for it are spent, as a refused edit's are.
+    const row = from.tool.nodes.get(first.old[followed.at]!);
+    readout(row ? `Step ${pathTo(from.tool, row.id).length - 1} of ${from.joins.at(-1)?.op.tool.name ?? "the tool"}, “${stepLabel(row)}”, repeats the edited step and cannot follow it: ${sentence(followed.error)}` : sentence(followed.error));
+    return;
+  }
+  first.replay = first.replay.map((step, i) => ({ id: step.id, op: followed.ops[i + 1]! }));
   const own = levels.at(-1)!;
   const total = levels.reduce((sum, level) => sum + 1 + level.replay.length, 0);
   const chord = state.stepTolerance;
@@ -3858,12 +3969,12 @@ function present(parsed: ParsedSolid, message: string, view: Lens | null = null)
   else if (openModelTool() === "check") refreshModelCheck();
 }
 
-/** Prepare asked to check this object. The tool opens once that solid, or its mesh, is on screen. */
-let checkQueued = false;
+/** Prepare asked to check this object. The tool opens once that solid, or its mesh, is on screen, and not for another. */
+let checkQueued: string | null = null;
 
 export function requestModelCheck(objectId: string) {
   if (!state.plate.objects.some((obj) => obj.id === objectId)) return;
-  checkQueued = true;
+  checkQueued = objectId;
   const changed = state.plate.selectedId !== objectId;
   if (changed) fx.selectPlateObject(objectId);
   if (state.stage !== "model") {
@@ -3874,8 +3985,9 @@ export function requestModelCheck(objectId: string) {
 }
 
 function openQueuedCheck() {
-  if (!checkQueued) return;
-  checkQueued = false;
+  // --- D40. Another object on screen first keeps the request for the one Prepare named.
+  if (!checkQueued || (open?.objectId ?? state.plate.selectedId) !== checkQueued) return;
+  checkQueued = null;
   if (openModelTool() === "check") refreshModelCheck();
   else document.querySelector<HTMLButtonElement>("#modelToolCheck")?.click();
 }
@@ -4008,6 +4120,7 @@ function placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase) 
 function putPose(objectId: string, pose: Affine) {
   state.plate = withModelPose(state.plate, objectId, pose);
   fx.model?.setPose(objectPose());
+  lookPoseChanged();
   refreshModelGhost();
   markProjectDirty();
 }
@@ -4361,14 +4474,21 @@ function drillAxis(): Vec3 {
 }
 
 // --- A2 shell ---
+let seatMemo: { solid: ParsedSolid; face: number; outward: Vec3 | null; centre: Vec3 | null } | null = null;
+
 /** The first picked face's middle and inward normal, in model space. The thickness knob sits there. */
 function shellSeat(): { point: Vec3; inward: Vec3 } | null {
   const face = selectedFaces(picks)[0];
   const solid = viewed();
   if (face == null || !solid) return null;
-  const stored = solid.faces.find((item) => item.id === face)?.normal;
-  const outward = stored ?? outwardFromMesh(solid.positions, solid.triangles, face);
-  const centre = faceCentre(solid.positions, solid.triangles, face);
+  // --- D36. The face's middle and normal walk the whole mesh, so they are read once per solid and face, not per drag move.
+  let seat = seatMemo?.solid === solid && seatMemo.face === face ? seatMemo : null;
+  if (!seat) {
+    const stored = solid.faces.find((item) => item.id === face)?.normal;
+    seat = { solid, face, outward: stored ?? outwardFromMesh(solid.positions, solid.triangles, face), centre: faceCentre(solid.positions, solid.triangles, face) };
+    seatMemo = seat;
+  }
+  const { outward, centre } = seat;
   if (!outward || !centre) return null;
   const inward = holeAxis(outward);
   const pose = openPose();
@@ -4410,11 +4530,10 @@ async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: numb
   contextFromPick = true;
   picks = nextModelPicks(picks, pick, shift);
   paintBlendHighlight();
-  // --- A10. While the section axis is a face, the pick is that plane too. A curved face is refused in the menu.
+  // --- A10. Right after the section axis became Face, the pick is that plane too, kept in the solid's frame. A curved face is refused in the menu.
   if (pick?.kind === "face") {
     const own = flatFace(solid, pick.index);
-    const posed = own ? posedFace(own) : null;
-    sectionFacePicked(posed ? { origin: posed.point, normal: posed.normal } : "curved");
+    sectionFacePicked(own ? { origin: own.point, normal: own.normal } : "curved");
   }
   syncModelChrome(picks);
   const seq = ++measureSeq;

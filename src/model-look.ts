@@ -74,9 +74,12 @@ export function offsetAfterDrag(offset: number, mm: number, flip: boolean): numb
   return offset + mm * (flip ? -1 : 1);
 }
 
-/** Stable per node: a golden-angle hue, so undo does not reshuffle the colours. */
+/**
+ * Stable per node: a golden-angle hue, so undo does not reshuffle the colours. --- D34. The hues stay out of the reds
+ * (325° to 35°), which mean danger and the section cap, and the root starts on blue.
+ */
 export function stepHex(id: number): string {
-  const hue = (((id * 137.508) % 360) + 360) % 360;
+  const hue = STEP_HUE_FROM + ((((id * 137.508 + STEP_HUE_ROOT) % STEP_HUE_SPAN) + STEP_HUE_SPAN) % STEP_HUE_SPAN);
   const saturation = 0.58;
   const light = 0.48;
   const chroma = saturation * Math.min(light, 1 - light);
@@ -89,6 +92,11 @@ export function stepHex(id: number): string {
   };
   return `#${channel(0)}${channel(8)}${channel(4)}`;
 }
+
+const STEP_HUE_FROM = 35;
+const STEP_HUE_SPAN = 290;
+/** The root's hue, 215° (blue), from STEP_HUE_FROM. */
+const STEP_HUE_ROOT = 180;
 
 export function stepColour(id: number): number {
   return Number.parseInt(stepHex(id).slice(1), 16);

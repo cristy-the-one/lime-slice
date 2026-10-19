@@ -110,3 +110,101 @@ test("the Features menu keeps the last choice on the button", async ({ page }) =
   await expect(page.locator("#modelToolFeatures")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#modelNote")).toHaveText("Pick one flat face.");
 });
+
+test("a texture pitch typed below its minimum, or one too small for the face, is refused before the engine sees it", async ({ page }) => {
+  const tree = await openModel(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelFeatureMenu [data-tool=texture]").click();
+  await pickFace(page);
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  const probes = tree.of("probe").length;
+
+  await page.locator("#modelTexPitchU").selectText();
+  await page.keyboard.type("0.02");
+  await expect(page.locator("#modelNote")).toHaveText("Pitch along U is at least 0.1.");
+  await expect(page.locator("#modelApply")).toBeDisabled();
+  await page.waitForTimeout(500);
+  expect(tree.of("probe").length, "no dry-run of a value below the field's minimum").toBe(probes);
+
+  await page.locator("#modelTexPattern [data-pattern=brick]").click();
+  await page.locator("#modelTexGroove").selectText();
+  await page.keyboard.type("0.1");
+  await page.locator("#modelTexPitchU").selectText();
+  await page.keyboard.type("0.5");
+  await page.locator("#modelTexPitchV").selectText();
+  await page.keyboard.type("0.5");
+  await expect(page.locator("#modelNote")).toHaveText(/This texture makes about \d+ grooves, more than 400\./);
+  await expect(page.locator("#modelApply")).toBeDisabled();
+
+  await page.locator("#modelTexPitchV").selectText();
+  await page.keyboard.type("0.1");
+  await expect(page.locator("#modelNote")).toHaveText("A groove must be narrower than the pitch.");
+});
+
+test("the position dot follows From, where the pocket is cut", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelToolFeatures").click();
+  await pickFace(page);
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  const dot = async () => ((await page.locator("#model").getAttribute("data-handles")) ?? "").split(" ").find((item) => item.startsWith("feat-at:")) ?? "";
+  await expect.poll(dot).not.toBe("");
+  const centred = await dot();
+  await page.locator("#modelFeatFrom [data-from=corner]").click();
+  await expect.poll(dot, "the dot moves to the face's corner, as the cut does").not.toBe(centred);
+});
+
+test("Rebuild re-expands a feature whose parent solid is no longer kept", async ({ page }) => {
+  const tree = await openModel(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuParameters").click();
+  const row = page.locator("#modelParams [data-param-row]").first();
+  await row.locator("[data-param-name]").click();
+  await page.keyboard.type("w");
+  await row.locator("[data-param-value]").click();
+  await page.keyboard.type("6");
+
+  await page.locator("#modelToolFeatures").click();
+  await pickFace(page);
+  await page.locator("#modelFeatW").click();
+  await page.keyboard.type("w");
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(2);
+  // Four more steps push the pocket's parent out of the solids the app keeps, as a reopen does.
+  for (let i = 0; i < 4; i += 1) {
+    await page.locator("#modelToolBoolean").click();
+    await page.locator("#modelCut").click();
+    await page.locator("#modelDx").fill(String(8 - i));
+    await expect(page.locator("#modelApply")).toBeEnabled();
+    await page.locator("#modelApply").click();
+    await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(3 + i);
+  }
+
+  await row.locator("[data-param-value]").selectText();
+  await page.keyboard.type("8");
+  await expect(page.locator("#modelParamsRebuild")).toHaveText("Rebuild 1 step");
+  const gotos = tree.of("goto").length;
+  await page.locator("#modelParamsRebuild").click();
+  await expect.poll(() => tree.of("edit").length).toBe(1);
+  const edited = tree.of("edit")[0]!.op as { source: { width: number } };
+  expect(edited.source.width).toBe(8);
+  expect(tree.of("goto").slice(gotos).map((call) => call.node), "the parent's solid is asked of the engine").toContain(0);
+  await expect(page.locator("#modelReadout")).not.toContainText("Show the step");
+  await expect(page.locator("#modelParamsRebuild")).toBeHidden();
+});
+
+test("a texture starts at its own groove depth, and the other features keep theirs", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelToolFeatures").click();
+  await expect(page.locator("#modelFeatDepth")).toHaveValue("2");
+  await page.locator("#modelFeatDepth").selectText();
+  await page.keyboard.type("3");
+  await page.keyboard.press("Tab");
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelFeatureMenu [data-tool=texture]").click();
+  await expect(page.locator("#modelFeatDepth"), "a groove is 0.6 deep, as the MCP's").toHaveValue("0.6");
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelFeatureMenu [data-tool=boss]").click();
+  await expect(page.locator("#modelFeatDepth"), "the pocket's depth comes back").toHaveValue("3");
+});

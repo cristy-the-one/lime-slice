@@ -46,10 +46,12 @@ check("a bad expression keeps the evaluator's sentence", typeof bad.rows[1]?.err
 check("wall is not a prefix of wallH", !expressionMentions("wallH / 2", "wall") && expressionMentions("wallH / 2", "wallH"));
 check("a function call is not a parameter", !expressionMentions("sin(30)", "sin") && expressionMentions("sin(wallH)", "wallH"));
 
-const grown = patchOpNumbers(box(30, "wallH"), { wallH: 30 }, { wallH: 40 });
+const grown = patchOpNumbers(box(30, "wallH"), { wallH: 40 });
 check("wallH 30 to 40 makes the box 40 tall", grown.op.kind === "boolean" && grown.op.size[2] === 40 && grown.error == null);
-const shifted = patchOpNumbers(box(35, "wallH"), { wallH: 30 }, { wallH: 40 });
-check("a hand-edited size moves by the same delta", shifted.op.kind === "boolean" && shifted.op.size[2] === 45);
+const shifted = patchOpNumbers(box(35, "wallH"), { wallH: 40 });
+check("a size that drifted from its expression takes the expression's value, as a CAD parameter does", shifted.op.kind === "boolean" && shifted.op.size[2] === 40);
+const inDate = box(40, "wallH");
+check("a step already in date is the same object", patchOpNumbers(inDate, { wallH: 40 }).op === inDate);
 check("the expression stays on the op", grown.op.exprs?.modelDz === "wallH");
 check("the box is out of date at the new table", stepOutOfDate(box(30, "wallH"), { wallH: 40 }));
 check("the box is in date at the old table", !stepOutOfDate(box(30, "wallH"), { wallH: 30 }));

@@ -25,13 +25,6 @@ export function selectedFaces(picks: readonly ModelPickRef[]): number[] {
   return faces;
 }
 
-/** The first selected face. A shell's thickness knob sits on this one; Apply still uses every face. */
-export function firstFace(picks: readonly ModelPickRef[]): number | null {
-  for (const pick of picks) {
-    if (pick.kind === "face") return pick.index;
-  }
-  return null;
-}
 
 /** The last selected face, when the drill should follow that face. */
 export function lastFace(picks: readonly ModelPickRef[]): number | null {

@@ -480,7 +480,11 @@ export function renumberedSteps(op: ModelOp, ids: ReadonlyMap<NodeId, NodeId>): 
   // --- A1 group: a blend inside a group takes edges from the replayed step's new id. ---
   if (op.kind === "group") {
     const steps = op.steps.map((step) => renumberedSteps(step, ids));
-    return steps.every((step, i) => step === op.steps[i]) ? op : { ...op, steps };
+    // A pattern or mirror names its source steps; a replayed source step has a new id.
+    const of = (op.source as { of?: unknown } | undefined)?.of;
+    const renamed = Array.isArray(of) && of.some((id) => ids.has(id)) ? of.map((id) => ids.get(id) ?? id) : null;
+    if (!renamed && steps.every((step, i) => step === op.steps[i])) return op;
+    return { ...op, steps, ...(renamed ? { source: { ...(op.source as Record<string, unknown>), of: renamed } } : {}) };
   }
   if (op.kind !== "fillet" && op.kind !== "chamfer") return op;
   if (!op.edges.some((edge) => isEdgeStep(edge) && ids.has(edge.fromNode))) return op;

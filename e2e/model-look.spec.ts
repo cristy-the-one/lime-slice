@@ -98,3 +98,41 @@ test("colour by step shows two colours, and a section offset is typed or dragged
   await page.mouse.up();
   await expect(page.locator("#model")).not.toHaveAttribute("data-section", "10.00 10.00 8.00 0.00 0.00 1.00");
 });
+
+test("a section face is taken only right after Face, and another object starts the View menu over", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelLookOpen").click();
+  await page.locator("#modelSection").check();
+  await page.locator("#modelSectionAxis [data-axis=face]").click();
+  await expect(page.locator("#modelSectionNote")).toHaveText("Pick a flat face.");
+  const [x, y, w, h] = ((await page.locator("#model").getAttribute("data-solid-screen")) ?? "").split(",").map(Number);
+  const box = (await page.locator("#model").boundingBox())!;
+  await page.mouse.click(box.x + x! + w! * 0.5, box.y + y! + h! * 0.5);
+  const plane = await page.locator("#model").getAttribute("data-section");
+  expect(plane, "the picked face is the plane").toBeTruthy();
+  await expect(page.locator("#modelSectionNote")).toBeHidden();
+
+  // A later face pick is for another tool: the plane stays.
+  // The top face, clear of the View panel and the History card.
+  const other = { x: box.x + x! + w! * 0.5, y: box.y + y! + h! * 0.12 };
+  await page.mouse.click(other.x, other.y);
+  await expect(page.locator("#model")).toHaveAttribute("data-section", plane!);
+  // Face again arms the pick: the same click now moves the plane, so it was another face.
+  if (await page.locator("#modelLookPanel").isHidden()) await page.locator("#modelLookOpen").click();
+  await page.locator("#modelSectionAxis [data-axis=face]").click();
+  await page.mouse.click(other.x, other.y);
+  await expect(page.locator("#model")).not.toHaveAttribute("data-section", plane!);
+
+  if (await page.locator("#modelLookPanel").isHidden()) await page.locator("#modelLookOpen").click();
+  await page.locator("#modelColourSteps").check();
+  await page.locator("#tabPrepare").click();
+  await page.locator("#plateAddFile").setInputFiles({ name: "other.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  await page.locator("[data-plate-select]").nth(1).click();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  await expect(page.locator("#modelSection"), "section is off on another object").not.toBeChecked();
+  await expect(page.locator("#modelColourSteps")).not.toBeChecked();
+  await expect(page.locator("#model")).not.toHaveAttribute("data-section", /./);
+  await expect(page.locator("#modelSectionAxis [data-axis=z]")).toHaveAttribute("aria-pressed", "true");
+});

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree } from "./model-tree-mock";
 
@@ -82,4 +82,69 @@ test("Check lists the solid and frames the row that was clicked", async ({ page 
   await row.click();
   await expect(canvas).toHaveAttribute("data-check-box", /0\.00,0\.00,0\.00,20\.00,20\.00,10\.00/);
   await expect(canvas).not.toHaveAttribute("data-camera", zoomed ?? "");
+});
+
+test("Enter on a focused Model button presses that button, not Apply", async ({ page }) => {
+  await openModel(page, () => ({ ok: true }));
+  await page.locator("#modelToolCheck").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "check");
+  await page.locator("#modelCancel").click();
+  await page.locator("#modelFeatureMore").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelFeatureMenu")).toBeVisible();
+});
+
+test("Check says why a thin wall cannot be used, and lists its rows as items", async ({ page }) => {
+  await openModel(page, () => ({ ok: true }));
+  await page.locator("#modelToolCheck").click();
+  const rows = page.locator("#modelCheckList [data-check-row]");
+  await expect(rows.first()).toBeVisible();
+  await expect(page.locator("#modelCheckList > [role=listitem] > button[data-check-row]").first()).toBeVisible();
+  const thin = page.locator("#modelThin");
+  for (const [typed, said] of [["0", "Thin wall is at least 0.05 mm."], ["-1", "Thin wall is at least 0.05 mm."], ["", "Type a thin wall in millimetres."], ["25", "Thin wall is at most 20 mm."]] as const) {
+    await thin.selectText();
+    if (typed) await page.keyboard.type(typed);
+    else await page.keyboard.press("Delete");
+    await page.keyboard.press("Tab");
+    await expect(page.locator("#modelNote"), `thin wall "${typed}"`).toHaveText(said);
+    await expect(rows).toHaveCount(0);
+    await expect(thin).toHaveAttribute("aria-invalid", "true");
+  }
+  await thin.selectText();
+  await page.keyboard.type("0.8");
+  await page.keyboard.press("Tab");
+  await expect(rows.first()).toBeVisible();
+  await expect(thin).not.toHaveAttribute("aria-invalid", /.*/);
+});
+
+test("Check says so when its worker fails", async ({ page }) => {
+  await page.route("**/*model-check-worker*", (route) => route.fulfill({ contentType: "text/javascript", body: "throw new Error('boom');" }));
+  await openModel(page, () => ({ ok: true }));
+  await page.locator("#modelToolCheck").click();
+  await expect(page.locator("#modelNote")).toContainText("The check stopped:");
+  await expect(page.locator("#modelCheckList [data-check-row]")).toHaveCount(0);
+});
+
+test("a Check asked for from Prepare does not open on a later visit once Model was left", async ({ page }) => {
+  await openModel(page, () => ({ ok: true }));
+  await page.locator("#tabPrepare").click();
+  await page.locator("#plateAddFile").setInputFiles({ name: "other.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  // The second object's history takes a while to open; Prepare comes back before it does.
+  const slow = async (route: Route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.fallback();
+  };
+  await page.route("**/api/model/tree", slow);
+  await page.locator("[data-plate-check]").nth(1).click();
+  await expect(page.locator("#tabModel")).toHaveAttribute("aria-selected", "true");
+  await page.locator("#tabPrepare").click();
+  await page.waitForTimeout(2500);
+  await page.unroute("**/api/model/tree", slow);
+  await page.locator("[data-plate-select]").first().click();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  await page.waitForTimeout(500);
+  await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", "check");
 });

@@ -7,8 +7,6 @@ export interface ModelPickRef {
   index: number;
 }
 
-const IDLE = 0x5c6750;
-const IDLE_LIFT = 0x7d8870;
 
 export function samePick(a: ModelPickRef, b: ModelPickRef): boolean {
   return a.kind === b.kind && a.index === b.index;
@@ -80,14 +78,6 @@ export function mixHex(from: number, to: number, t: number): number {
     return Math.max(0, Math.min(255, Math.round(a + (b - a) * t)));
   };
   return (channel(16) << 16) | (channel(8) << 8) | channel(0);
-}
-
-/** Selected faces are the accent. Hover is a light mix of that accent. The rest stay a dim neutral. */
-export function faceColor(index: number, selected: boolean, hovered: boolean, accent: number): number {
-  if (selected) return accent;
-  const wobble = (Math.abs(index) * 17) % 7;
-  const idle = mixHex(IDLE, IDLE_LIFT, wobble / 6);
-  return hovered ? mixHex(idle, accent, 0.4) : idle;
 }
 
 /**

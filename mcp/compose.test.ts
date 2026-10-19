@@ -6,8 +6,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { addsPiece, cleanOp, cutsOffPiece, expand, movedSpec, primitiveFrom, type ExpandContext, type Piece } from "./compose.ts";
-import { evaluate, resolveNumbers } from "./expr.ts";
+import { addsPiece, cleanOp, cutsOffPiece, expand, movedSpec, primitiveFrom, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
+import { evaluate, resolveNumbers } from "../src/modeling/expr.ts";
 import { fakeEngine } from "./engine.ts";
 import { validateTool } from "./schema.ts";
 import { Session } from "./session.ts";
@@ -102,6 +102,13 @@ check("a boss is one fuse", sill.length === 1 && sill[0]!.op === "fuse");
 const tiles = expand({ kind: "texture", faceIndex: 5, pattern: "brick", pitch: [10, 7] }, faceCtx, toPart) as Piece[];
 const lines = tiles.filter((piece) => Math.max(...piece.spec.size) >= 59);
 check("a brick texture has row grooves and staggered joints", lines.length === 4 && tiles.length > lines.length, `${tiles.length} ${lines.length}`);
+// D4. A small pitch is refused before any groove is made, and a groove as wide as the pitch is refused.
+const fine = expand({ kind: "texture", faceIndex: 5, pattern: "lines", pitch: [0.02, 0.02], grooveWidth: 0.01 }, faceCtx, toPart);
+check("a texture of thousands of grooves is refused before it is made", "reason" in fine && /about \d+ grooves, more than 400/.test(fine.reason), JSON.stringify(fine).slice(0, 120));
+const wide = expand({ kind: "texture", faceIndex: 5, pattern: "lines", pitch: [5, 1], grooveWidth: 1 }, faceCtx, toPart);
+check("a groove as wide as the pitch is refused", "reason" in wide && wide.reason === "A groove must be narrower than the pitch.", JSON.stringify(wide).slice(0, 120));
+const crowd = expand({ kind: "pattern", linear: { step: [1, 0, 0], count: 100000 }, op: { kind: "boolean", op: "cut", primitive: "box", dx: 1, dy: 1, dz: 1 } }, globalCtx, toPart);
+check("a pattern of 100000 copies is refused before its motions are made", "reason" in crowd && crowd.reason === "A pattern makes at most 400 copies.", JSON.stringify(crowd).slice(0, 120));
 check("a texture without a face or region is refused", "reason" in (expand({ kind: "texture", pitch: [5, 5] }, globalCtx, toPart) as object));
 const picked = expand({ kind: "pocket", face: { normal: [0, -1, 0] }, at: { u: 18, v: 2.5 }, width: 10, height: 10, depth: 1.5 }, faceCtx, toPart) as Piece[];
 check("a face selector picks the face", Array.isArray(picked) && JSON.stringify(picked[0]!.spec) === JSON.stringify(window[0]!.spec));
@@ -332,6 +339,77 @@ const refusedSave = await call("project_save", { name: "taken.lime", ifExists: "
 check("project_save can refuse to replace a file", refusedSave.ok === false && String(refusedSave.reason).includes("already"), JSON.stringify(refusedSave));
 const saved = await call("project_save", { name: "fresh.lime", ifExists: "refuse" });
 check("project_save writes a new name", saved.ok === true, JSON.stringify(saved));
+
+// --- D24. A composite on a part moved in model space lands where it does on the unmoved part: the face is read in
+// model space, as the app reads it, and the steps go to the solid's frame once.
+async function pocketSteps(place: Record<string, unknown> | null, name: string): Promise<number[][]> {
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
+  if (place) await own.call("model_place", { object: made.object, ...place });
+  const pocket = await own.call("model_apply", { object: made.object, op: { kind: "pocket", faceIndex: 5, at: { u: 6, v: 3 }, width: 10, height: 8, depth: 2 } });
+  check(`the pocket applies (${name})`, pocket.ok === true, JSON.stringify(pocket));
+  await own.call("project_save", { name });
+  const doc = JSON.parse(readFileSync(join(workspace, name), "utf8")) as { objects?: { modelTree?: { nodes?: { op?: { kind?: string; steps?: { origin?: number[]; turn?: number[] }[] } | null }[] } }[] };
+  const group = doc.objects?.[0]?.modelTree?.nodes?.map((node) => node.op).find((op) => op?.kind === "group");
+  return (group?.steps ?? []).map((step) => [...(step.origin ?? []), ...(step.turn ?? [])]);
+}
+const still = await pocketSteps(null, "pocket-still.lime");
+const moved = await pocketSteps({ x: 40, y: -15, z: 5, turnZ: 90 }, "pocket-moved.lime");
+check("a pocket on a moved part is stored as on the part where it was", still.length > 0 && still.length === moved.length && still.every((row, i) => nearAll(row, moved[i]!, 1e-3)), JSON.stringify({ still, moved }));
+
+async function faceBox(place: Record<string, unknown> | null, name: string, placeAfter = false): Promise<unknown> {
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
+  if (place && !placeAfter) await own.call("model_place", { object: made.object, ...place });
+  await own.call("workplane_set", { object: made.object, faceIndex: 5 });
+  if (place && placeAfter) await own.call("model_place", { object: made.object, ...place });
+  const hole = await own.call("model_apply", { object: made.object, op: { kind: "boolean", op: "cut", primitive: "box", dx: 4, dy: 4, dz: 2 }, probe: true });
+  check(`the box applies (${name})`, hole.ok === true, JSON.stringify(hole));
+  await own.call("project_save", { name });
+  const doc = JSON.parse(readFileSync(join(workspace, name), "utf8")) as { objects?: { modelTree?: { nodes?: { op?: { kind?: string; origin?: number[]; turn?: number[] } | null }[] } }[] };
+  const op = doc.objects?.[0]?.modelTree?.nodes?.map((node) => node.op).find((row) => row?.kind === "boolean");
+  return op ? [...(op.origin ?? []), ...(op.turn ?? [])] : null;
+}
+const boxStill = (await faceBox(null, "box-still.lime")) as number[] | null;
+const boxMoved = (await faceBox({ x: 40, y: -15, z: 5, turnZ: 90 }, "box-moved.lime")) as number[] | null;
+const boxMovedAfter = (await faceBox({ x: 40, y: -15, z: 5, turnZ: 90 }, "box-moved-after.lime", true)) as number[] | null;
+check("a face workplane moves with its part when the part is moved after it", !!boxStill && !!boxMovedAfter && nearAll(boxStill, boxMovedAfter, 1e-3), JSON.stringify({ boxStill, boxMovedAfter }));
+{
+  const doc = (name: string) => JSON.parse(readFileSync(join(workspace, name), "utf8")) as { objects?: { workplane?: unknown }[] };
+  check("the file keeps the face workplane in the part's own frame, moved or not", JSON.stringify(doc("box-still.lime").objects?.[0]?.workplane) === JSON.stringify(doc("box-moved.lime").objects?.[0]?.workplane), JSON.stringify([doc("box-still.lime").objects?.[0]?.workplane, doc("box-moved.lime").objects?.[0]?.workplane]));
+}
+check("a box on a moved part's face workplane is stored as on the part where it was", !!boxStill && !!boxMoved && nearAll(boxStill, boxMoved, 1e-3), JSON.stringify({ boxStill, boxMoved }));
+
+// --- D20. A composite whose every step misses the part is refused, not applied as nothing.
+{
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
+  const away = await own.call("model_apply", { object: made.object, op: { kind: "pattern", op: { kind: "boolean", op: "cut", primitive: "box", origin: [500, 0, 0], dx: 2, dy: 2, dz: 2 }, linear: { step: [10, 0, 0], count: 3 } } });
+  check("a pattern that misses everywhere is refused", away.ok === false && JSON.stringify(away).includes("None of its 3 steps changes the part."), JSON.stringify(away));
+}
+
+// --- D28. A feature typed with a face selector is stored with the face it found, so the app can edit it.
+{
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
+  const pocket = await own.call("model_apply", { object: made.object, op: { kind: "pocket", face: { normal: [0, -1, 0] }, at: { u: 0, v: 0 }, width: 8, height: 8, depth: 1 } });
+  check("the selector pocket applies", pocket.ok === true, JSON.stringify(pocket));
+  await own.call("project_save", { name: "selector.lime" });
+  const doc = JSON.parse(readFileSync(join(workspace, "selector.lime"), "utf8")) as { objects?: { modelTree?: { nodes?: { op?: { kind?: string; source?: Record<string, unknown> } | null }[] } }[] };
+  const source = doc.objects?.[0]?.modelTree?.nodes?.map((node) => node.op).find((op) => op?.kind === "group")?.source;
+  check("the stored pocket names its face by index", typeof source?.faceIndex === "number" && source.face === undefined, JSON.stringify(source));
+}
+
+// --- D39. An MCP pattern or mirror row reads as the app's does.
+{
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
+  const cut = { kind: "boolean", op: "cut", primitive: "box", origin: [-25, -15, 30], dx: 2, dy: 2, dz: 6 };
+  const row = await own.call("model_apply", { object: made.object, op: { kind: "pattern", op: cut, linear: { step: [5, 0, 0], count: 3 } } });
+  const mirrored = await own.call("model_apply", { object: made.object, op: { kind: "mirror", plane: "x", op: cut } });
+  const labels = ((await own.call("model_history", { object: made.object })).nodes as { label: string }[]).map((node) => node.label);
+  check("pattern and mirror rows read as the app's", row.ok === true && mirrored.ok === true && labels.includes("Pattern × 3") && labels.includes("Mirror across X"), JSON.stringify(labels));
+}
 
 if (failed > 0) {
   console.error(`compose: ${failed} failed`);

@@ -1416,27 +1416,13 @@ fn err_json(message: &str) -> String {
     serde_json::json!({ "error": message }).to_string()
 }
 
+/// Every answer the tree gives is a 200, a refusal (`{error}`) or a forgotten tree (`{error, missing}`) too: the
+/// client reads `error` from the body, and a 4xx would log a console error for each ordinary refusal. Only a
+/// bridge that could not answer at all is a 503.
 fn model_reply(result: Result<String, String>) -> (u16, String) {
     match result {
-        // A solid or a STEP reply has no error and can be megabytes, so it is not parsed to find out.
-        Ok(json) if json.starts_with("{\"id\":") || json.starts_with("{\"bytesBase64\":") => (200, json),
-        Ok(json) => {
-            let failed = serde_json::from_str::<serde_json::Value>(&json)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("error")
-                        .and_then(|err| err.as_str())
-                        .map(|text| !text.is_empty())
-                })
-                .unwrap_or(false);
-            if failed {
-                (400, json)
-            } else {
-                (200, json)
-            }
-        }
-        Err(err) => (400, err_json(&err)),
+        Ok(json) => (200, json),
+        Err(err) => (503, err_json(&err)),
     }
 }
 
@@ -1912,15 +1898,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_model_reply_is_an_error_only_when_it_says_so() {
+    fn every_tree_answer_is_a_200_and_only_a_missing_bridge_fails() {
         let solid = "{\"id\":3,\"volumeMm3\":1000.0}".to_string();
         assert_eq!(model_reply(Ok(solid.clone())), (200, solid));
         let step = "{\"bytesBase64\":\"QQ==\",\"byteLength\":1}".to_string();
         assert_eq!(model_reply(Ok(step.clone())).0, 200);
-        assert_eq!(model_reply(Ok("{\"error\":\"unknown\",\"missing\":[0]}".into())).0, 400);
-        assert_eq!(model_reply(Ok("{\"ok\":false,\"error\":\"The hole missed this solid\"}".into())).0, 400);
+        assert_eq!(
+            model_reply(Ok("{\"error\":\"unknown\",\"missing\":[0]}".into())).0,
+            200
+        );
+        assert_eq!(
+            model_reply(Ok(
+                "{\"ok\":false,\"error\":\"The hole missed this solid\"}".into()
+            ))
+            .0,
+            200
+        );
         assert_eq!(model_reply(Ok("{\"ok\":true}".into())).0, 200);
-        assert_eq!(model_reply(Err("bridge missing".into())).0, 400);
+        assert_eq!(model_reply(Err("bridge missing".into())).0, 503);
     }
 
     #[test]

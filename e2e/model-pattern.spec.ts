@@ -23,12 +23,17 @@ function boxSolid(volumeMm3 = 4000): MockSolid {
       triangles.push(face);
     }
   });
-  return { volumeMm3, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 400 })), edges: [] };
+  const corners: V[] = [c(0, 0, 0), c(1, 0, 0), c(1, 1, 0), c(0, 1, 0), c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)];
+  const pairs = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+  const edges = pairs.map(([a, b], id) => {
+    const [pa, pb] = [corners[a!]!, corners[b!]!];
+    return { id, lengthMm: Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]), points: [...pa, ...pb] };
+  });
+  return { volumeMm3, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 400 })), edges };
 }
 
 /**
- * Cylinder cuts, a pocket, or a mirror. A pattern's first copy sits on the source step, which the parent already
- * cut, so only the further copies change the volume.
+ * Cylinder cuts, a pocket, or a mirror. A pattern's group holds only the new copies; the source step is its own row.
  */
 function cutVolume(parent: MockSolid, op: Body): number {
   const source = (op.source ?? {}) as { kind?: string; width?: number; height?: number; depth?: number };
@@ -44,7 +49,7 @@ function cutVolume(parent: MockSolid, op: Body): number {
     const seen = new Set(steps.map((step) => (step.origin as number[]).map((value) => value.toFixed(3)).join(",")));
     const radius = (steps[0]?.radius as number) ?? 0;
     const height = (steps[0]?.height as number) ?? 0;
-    return Math.round(parent.volumeMm3 - Math.max(0, seen.size - 1) * Math.PI * radius * radius * height);
+    return Math.round(parent.volumeMm3 - seen.size * Math.PI * radius * radius * height);
   }
   return parent.volumeMm3;
 }
@@ -120,7 +125,7 @@ test("a polar pattern of a cylinder is one row of six cuts", async ({ page }) =>
   expect(op.source.kind).toBe("pattern");
   expect(op.source.of).toEqual([1]);
   expect(op.source.polar.count).toBe(6);
-  expect(op.steps).toHaveLength(6);
+  expect(op.steps, "five copies; the original stays its own row").toHaveLength(5);
 
   await page.keyboard.press("Shift+E");
   await expect(page.locator("#modelApply")).toHaveText("Update");
@@ -131,7 +136,7 @@ test("a polar pattern of a cylinder is one row of six cuts", async ({ page }) =>
   await expect(page.locator("#modelHistoryTree [role=treeitem]").filter({ hasText: "Pattern × 4" })).toHaveCount(1);
   const edited = tree.of("edit").at(-1)!.op as { source: { polar: { count: number } }; steps: unknown[] };
   expect(edited.source.polar.count).toBe(4);
-  expect(edited.steps).toHaveLength(4);
+  expect(edited.steps).toHaveLength(3);
 });
 
 test("a step arrow drags the pattern distance", async ({ page }) => {
@@ -150,7 +155,7 @@ test("a step arrow drags the pattern distance", async ({ page }) => {
   await expect.poll(async () => Number(await page.locator("#modelPatSx").inputValue())).not.toBe(10);
 });
 
-test("a mirror of a pocket is one row and keeps the original", async ({ page }) => {
+test("a mirror of a pocket is one row of the reflection; the pocket stays its own row", async ({ page }) => {
   const tree = await openModel(page);
   await page.locator("#modelToolFeatures").click();
   const [x, y, w, h] = ((await page.locator("#model").getAttribute("data-solid-screen")) ?? "").split(",").map(Number);
@@ -166,7 +171,6 @@ test("a mirror of a pocket is one row and keeps the original", async ({ page }) 
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuMirror").click();
   await page.locator("#modelMirPlane [data-plane=x]").click();
-  await expect(page.locator("#modelMirKeep")).toBeChecked();
   await expect(page.locator("#modelMirX")).toHaveValue("10");
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
@@ -176,5 +180,96 @@ test("a mirror of a pocket is one row and keeps the original", async ({ page }) 
   expect(op.source.kind).toBe("mirror");
   expect(op.source.keepOriginal).toBeUndefined();
   expect(op.source.of).toEqual([1]);
-  expect(op.steps).toHaveLength(2);
+  expect(op.steps, "the reflection only").toHaveLength(1);
+  await expect(page.locator("#modelMirKeep"), "Mirror always keeps the pocket").toHaveCount(0);
+});
+
+test("editing the patterned step moves the copies with it", async ({ page }) => {
+  const tree = await openModel(page);
+  await cutCylinder(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuPattern").click();
+  const rows = page.locator("#modelHistoryTree [role=treeitem]");
+  await expect(rows.nth(1), "the step on screen is the source").toHaveAttribute("data-repeat", "");
+  await page.locator("#modelPatMode [data-pat=linear]").click();
+  await setField(page, "modelPatSx", "5");
+  await setField(page, "modelPatSy", "0");
+  await setField(page, "modelPatSz", "0");
+  await setField(page, "modelPatCount", "3");
+  await setField(page, "modelPatCount2", "1");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(rows.filter({ hasText: "Pattern × 3" })).toHaveCount(1);
+
+  await rows.nth(1).click();
+  await page.keyboard.press("Shift+E");
+  await expect(page.locator("#modelApply")).toHaveText("Update");
+  await setField(page, "modelX", "12");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(rows.filter({ hasText: "Pattern × 3" })).toHaveCount(2);
+  const edit = tree.of("edit").at(-1)!;
+  const replayed = (edit.replay as { op: { source: { of: number[] }; steps: { origin: number[] }[] } }[])[0]!.op;
+  expect(replayed.source.of, "the pattern names the edited step's new id").toEqual([edit.node]);
+  expect(replayed.steps.map((step) => step.origin[0]), "the copies follow the source to X 12").toEqual([17, 22]);
+});
+
+test("a polar pattern about an edge turns about that edge, where it is", async ({ page }) => {
+  await openModel(page);
+  await cutCylinder(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuPattern").click();
+  await page.locator("#modelPatMode [data-pat=polar]").click();
+  await page.locator("#modelPatAxis [data-axis=pick]").click();
+  await expect(page.locator("#modelPickEdge"), "Edge picks edges").toHaveAttribute("aria-pressed", "true");
+  const box = (await page.locator("#model").boundingBox())!;
+  let picked = "";
+  for (let r = 0; r < 9 && !picked; r += 1) {
+    for (let col = 0; col < 9 && !picked; col += 1) {
+      await page.mouse.click(box.x + box.width * (0.18 + col * 0.08), box.y + box.height * (0.18 + r * 0.08));
+      const text = await page.locator("#modelReadout").innerText();
+      if (/Edge \d+/.test(text)) picked = text;
+    }
+  }
+  expect(picked, "an edge is under the scan").not.toBe("");
+  // Every box edge lies on x, y in {0, 20} or z in {0, 10}: the centre sits on the picked edge, not the solid's middle.
+  const centre = [Number(await page.locator("#modelPatCx").inputValue()), Number(await page.locator("#modelPatCy").inputValue()), Number(await page.locator("#modelPatCz").inputValue())];
+  const onEdge = [centre[0] === 0 || centre[0] === 20, centre[1] === 0 || centre[1] === 20, centre[2] === 0 || centre[2] === 10].filter(Boolean).length;
+  expect(onEdge, `centre ${centre.join(", ")} lies on an edge`).toBe(2);
+});
+
+test("while Pattern is open, History rows are chosen by a click or Space, and the arrows show no step", async ({ page }) => {
+  const tree = await openModel(page);
+  await cutCylinder(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuPattern").click();
+  const list = page.locator("#modelHistoryTree");
+  const rows = list.locator("[role=treeitem]");
+  await expect(list).toHaveAttribute("aria-multiselectable", "true");
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(rows.nth(1)).toHaveAttribute("aria-current", "step");
+
+  // A plain click takes the row out, and the solid on screen stays.
+  const gotos = tree.of("goto").length;
+  await rows.nth(1).click();
+  await expect(rows.nth(1)).not.toHaveAttribute("data-repeat", "");
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "false");
+  await expect(page.locator("#modelNote")).toHaveText("Click history rows to choose steps.");
+  // Up moves to the root without showing it; Down and Space choose the cut again.
+  await page.keyboard.press("ArrowUp");
+  await expect(rows.nth(0)).toBeFocused();
+  await page.waitForTimeout(400);
+  await expect(rows.nth(1)).toHaveAttribute("data-state", "current");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Space");
+  await expect(rows.nth(1)).toHaveAttribute("data-repeat", "");
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+  expect(tree.of("goto").length, "no step was asked for").toBe(gotos);
+
+  // Closed, History shows the step on screen again.
+  await page.locator("#modelCancel").click();
+  await expect(list).toHaveAttribute("aria-multiselectable", "false");
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(rows.nth(0)).toHaveAttribute("aria-selected", "false");
+  await expect(rows.nth(1)).not.toHaveAttribute("aria-current", /.*/);
 });

@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 
 import { fakeEngine } from "./engine.ts";
-import { printCheck, probeMetrics, solidMetrics, surfaceAt } from "./inspect.ts";
+import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt } from "./inspect.ts";
+import { printFrame } from "../src/model-check.ts";
 import { handleRpc } from "./protocol.ts";
 import { cameraBasis, readCamera, renderMesh } from "./render.ts";
 import { TOOLS } from "./schema.ts";
@@ -214,6 +215,10 @@ check("a refused probe has no metrics", refused.ok === false && refused.metrics 
 const cubeCheck = await call("model_check", { object });
 check("a cube on the bed has contact and no overhang", cubeCheck.ok === true && (cubeCheck.bedContact as { areaMm2: number }).areaMm2 > 100 && (cubeCheck.overhang as { areaMm2: number }).areaMm2 === 0 && (cubeCheck.islands as unknown[]).length === 0, JSON.stringify(cubeCheck));
 check("a cube has no thin walls", (cubeCheck.thinWalls as { regions: unknown[]; sampledPoints: number }).regions.length === 0 && (cubeCheck.thinWalls as { sampledPoints: number }).sampledPoints > 0, JSON.stringify(cubeCheck.thinWalls));
+await call("object_place", { object, turn: { axis: "x", degrees: 30 } });
+const grown = await call("model_check", { object });
+check("model_check reads the plate's turn: a cube tipped 30° overhangs and rests on an edge", (grown.overhang as { areaMm2: number }).areaMm2 > 300 && (grown.bedContact as { areaMm2: number }).areaMm2 === 0, JSON.stringify([grown.overhang, grown.bedContact]));
+await call("object_place", { object, turn: { axis: "x", degrees: -30 } });
 check("the cube fits the bed", (cubeCheck.fit as { fits: boolean }).fits === true && typeof cubeCheck.printer === "string");
 
 const build: [number, number, number] = [220, 220, 250];
@@ -222,9 +227,26 @@ const tableCheck = printCheck({ positions: table, overhangDeg: 45, buildMm: buil
 const ceilings = tableCheck.ceilings as { zMm: number; areaMm2: number }[];
 check("a table top is a flat face pointing down above the bed", ceilings.length === 1 && near(ceilings[0]!.zMm, 10, 0.01) && ceilings[0]!.areaMm2 > 1400, JSON.stringify(tableCheck));
 const overhang = tableCheck.overhang as { areaMm2: number; regions: { centre: number[] }[]; thresholdDeg: number };
-check("its overhang has a place", overhang.areaMm2 > 1400 && overhang.regions.length > 0 && overhang.regions[0]!.centre[2]! > 9.9 && overhang.thresholdDeg === 45);
+check("the table top counts as overhang area but is listed once, as a ceiling", overhang.areaMm2 > 1400 && overhang.regions.length === 0 && overhang.thresholdDeg === 45, JSON.stringify(overhang.regions));
+// A slope 40 mm wide crosses four 10 mm cells, and is still one region.
+const slope = new Float32Array([0, 0, 10, 0, 20, 20, 40, 0, 10, 40, 0, 10, 0, 20, 20, 40, 20, 20]);
+const sloped = printCheck({ positions: join3(box([0, 0, 0], [6, 6, 10]), slope), overhangDeg: 45, buildMm: build });
+const slopeRegions = (sloped.overhang as { regions: { areaMm2: number; min: number[]; max: number[] }[] }).regions;
+check("one slanted overhang over several cells is one region", slopeRegions.length === 1 && near(slopeRegions[0]!.areaMm2, 894.4, 0.1) && slopeRegions[0]!.min[0] === 0 && slopeRegions[0]!.max[0] === 40, JSON.stringify(slopeRegions));
 check("it warns in sentences", (tableCheck.warnings as string[]).some((w) => w.startsWith("Flat faces point down above the bed at Z 10")));
 
+// D13. The check reads the part as the plate turns it: a table laid upside down rests on its top and has no ceiling.
+const upsideDown = [1, 0, 0, 0, -1, 0, 0, 0, -1];
+const flipped = printFrame(table, upsideDown, 1);
+const flippedCheck = checkInSource(printCheck({ positions: flipped.positions, overhangDeg: 45, buildMm: build }), flipped.toSource);
+check("a table upside down has no 1600 mm² ceiling (the leg box's own end, inside the top, stays)", (flippedCheck.ceilings as { areaMm2: number }[]).every((row) => row.areaMm2 < 100), JSON.stringify(flippedCheck.ceilings));
+check("it rests on its top", (flippedCheck.bedContact as { areaMm2: number }).areaMm2 > 1500, JSON.stringify(flippedCheck.bedContact));
+const doubled = printFrame(box([0, 0, 0], [100, 100, 10]), [1, 0, 0, 0, 1, 0, 0, 0, 1], 2.5);
+check("the plate's scale counts against the build volume", (printCheck({ positions: doubled.positions, overhangDeg: 45, buildMm: build }).fit as { over: string[] }).over.join() === "x,y");
+// Turned on the bed, a place comes back in the solid's frame, where the caller aims an edit.
+const spun = printFrame(table, [-1, 0, 0, 0, -1, 0, 0, 0, 1], 1);
+const spunCheck = checkInSource(printCheck({ positions: spun.positions, overhangDeg: 45, buildMm: build }), spun.toSource);
+check("a turned ceiling is named where it is on the solid", JSON.stringify((spunCheck.ceilings as { centre: number[] }[]).map((row) => row.centre)) === JSON.stringify(ceilings.map((row) => (row as unknown as { centre: number[] }).centre)), JSON.stringify([spunCheck.ceilings, ceilings]));
 const gentle = printCheck({ positions: box([0, 0, 0], [10, 10, 10]), overhangDeg: 45, buildMm: build });
 check("a face on the bed is contact, not overhang", (gentle.bedContact as { areaMm2: number }).areaMm2 > 99);
 const strict = printCheck({ positions: table, overhangDeg: 89, buildMm: build });

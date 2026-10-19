@@ -7,9 +7,9 @@ import { registerContextAction } from "./context-bar.ts";
 import { align, orientEuler } from "./mesh-place.ts";
 import { MAX_PIECES, mirrorMotion, movedSpec, patternMotions, type Motion, type Piece } from "./modeling/compose.ts";
 import { isPrimitiveKind, type PrimitiveSpec } from "./model-primitive.ts";
-import { fromSolidOp, type Affine } from "./model-space.ts";
+import { fromSolidOp, toSolidOp, type Affine } from "./model-space.ts";
 import { groupFromPieces } from "./model-features.ts";
-import type { BooleanKind, GroupOp, HoleOp, ModelOp } from "./model-tree.ts";
+import type { GroupOp, HoleOp, ModelOp } from "./model-tree.ts";
 import { GLOBAL_WORKPLANE } from "./workplane.ts";
 
 export const REPEAT_TOOLS = ["pattern", "mirror"] as const;
@@ -28,14 +28,13 @@ export const REPEAT_ONLY = "Only a Boolean, a hole, or a feature can be repeated
 /** Shown when the steps named in `source.of` are no longer in the history. */
 export const REPEAT_DELETED = "A step this repeats was deleted.";
 
-/** Shown until a history row is chosen. Ctrl-click adds another; the last step is the one the tool opens on. */
-export const REPEAT_PICK = "Ctrl-click history rows to choose steps.";
+/** Shown until a history row is chosen. A click on a row adds it or takes it out; the tool opens on the step on screen. */
+export const REPEAT_PICK = "Click history rows to choose steps.";
 
 export const REPEAT_AXIS = "Pick an edge or a round face for the axis, or choose X, Y, or Z.";
 
 export const REPEAT_FACE = "Pick a flat face, or choose X, Y, or Z.";
 
-const STILL: Motion = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], reflect: false };
 
 type Vec3 = [number, number, number];
 
@@ -57,7 +56,6 @@ export interface RepeatChoices {
   plane: MirrorPlane;
   /** The picked face's normal, when Face is on. */
   normal: Vec3 | null;
-  keep: boolean;
   points: Vec3[];
   of: number[];
 }
@@ -69,7 +67,6 @@ export const REPEAT_CHOICE_DEFAULTS: RepeatChoices = {
   align: true,
   plane: "z",
   normal: null,
-  keep: true,
   points: [],
   of: [],
 };
@@ -122,7 +119,6 @@ export function readRepeatSpec(tool: RepeatTool, read: (id: string) => number, c
       spec.plane = choices.plane;
       spec.origin = origin;
     }
-    if (!choices.keep) spec.keepOriginal = false;
     return spec;
   }
   if (choices.mode === "polar") {
@@ -160,9 +156,13 @@ function axisWord(axis: Vec3): string {
   return namedAxis(axis)?.toUpperCase() ?? "an axis";
 }
 
-/** The history row: "Pattern × 6 around Z", "Pattern 3 × 2", "Mirror". */
+/** The history row: "Pattern × 6 around Z", "Pattern 3 × 2", "Mirror across X", "Mirror across a face". */
 export function repeatLabel(spec: Record<string, unknown>): string {
-  if (spec.kind === "mirror") return "Mirror";
+  // --- D39. A mirror names its plane, as a pattern names its count and axis. The MCP's rows read the same.
+  if (spec.kind === "mirror") {
+    const plane = spec.plane === "x" || spec.plane === "y" || spec.plane === "z" ? spec.plane : spec.normal ? namedAxis(vec3(spec.normal, [0, 0, 1])) : "z";
+    return plane ? `Mirror across ${plane.toUpperCase()}` : "Mirror across a face";
+  }
   const polar = spec.polar as { count?: unknown; axis?: unknown } | undefined;
   if (polar) return `Pattern × ${Math.round(numOf(polar.count, 0))} around ${axisWord(vec3(polar.axis, [0, 0, 1]))}`;
   const linear = spec.linear as { count?: unknown; count2?: unknown } | undefined;
@@ -220,18 +220,23 @@ export function repeatPanel(source: Record<string, unknown>): { tool: RepeatTool
     align: path.align !== false,
     plane,
     normal: plane === "face" ? vec3(source.normal, [0, 0, 1]) : null,
-    keep: source.keepOriginal !== false,
     points,
     of,
   };
   return { tool, fields, repeat };
 }
 
-/** A group's pattern or mirror, when it is one of these tools. */
+/**
+ * A group's pattern or mirror, when it is one of these tools and repeats steps of the history (`of`). --- D28. The MCP's
+ * pattern repeats an op typed inside it instead (`op`, no `of`): the app has no panel for that, so it is not one here,
+ * and History says it has no edit panel rather than opening an empty pattern.
+ */
 export function repeatSource(op: ModelOp): Record<string, unknown> | null {
   if (op.kind !== "group" || !op.source || typeof op.source !== "object") return null;
   const source = op.source as Record<string, unknown>;
-  return source.kind === "pattern" || source.kind === "mirror" ? source : null;
+  if (source.kind !== "pattern" && source.kind !== "mirror") return null;
+  if (!Array.isArray(source.of) && source.op && typeof source.op === "object") return null;
+  return source;
 }
 
 function round6(value: number): number {
@@ -244,12 +249,16 @@ function unit(value: Vec3): Vec3 | null {
   return length > 1e-9 ? [value[0] / length, value[1] / length, value[2] / length] : null;
 }
 
-/** A cylinder whose local +Z follows `axis`, starting at `origin`. */
+/**
+ * A cylinder whose local +Z follows `axis`, starting at `origin`, as the engine drills a hole. A primitive turns about
+ * the middle of its axis, so the stored origin is that middle less half the height along local Z.
+ */
 function cylinderCut(origin: Vec3, radius: number, height: number, axis: Vec3): Piece {
   const euler = orientEuler(align([0, 0, 1], axis));
+  const half = height / 2;
   const spec: PrimitiveSpec = {
     primitive: "cylinder",
-    origin: [...origin],
+    origin: [round6(origin[0] + axis[0] * half), round6(origin[1] + axis[1] * half), round6(origin[2] + axis[2] * half - half)],
     size: [0, 0, 0],
     radius,
     height,
@@ -300,11 +309,14 @@ function still(motion: Motion): boolean {
   return !motion.reflect && motion.t.every((value) => value === 0) && motion.m.every((value, index) => value === (index % 4 === 0 ? 1 : 0));
 }
 
-function inverse(op: BooleanKind): BooleanKind | { reason: string } {
-  if (op === "cut") return "fuse";
-  if (op === "fuse") return "cut";
-  return { reason: "Keep the original on for a common." };
-}
+/**
+ * A mirror always keeps its source steps, as Fusion's and Onshape's feature mirrors do. Undoing a step with the opposite
+ * Boolean is not exact (a cut runs past the face, a boss sinks in), so an old spec with `keepOriginal: false` is refused.
+ */
+export const MIRROR_KEEPS = "Mirror keeps the steps it mirrors. To drop one, delete or edit that step.";
+
+/** A count of 1 adds no copy. */
+export const REPEAT_NOTHING = "This repeats the step onto itself. Set a count of 2 or more.";
 
 export interface ExpandedRepeat {
   note: string | null;
@@ -319,7 +331,8 @@ function emptyRepeat(note: string): ExpandedRepeat {
 /**
  * One group for `spec`, from the source steps' ops (in the solid's frame). `pose` brings them into model space,
  * where the panel's distances are typed; `toSolidOp` puts the group back. A missing id is the caller's to refuse
- * before this runs. The count includes the original, so the first copy sits on the step that is already there.
+ * before this runs. The count includes the original, which stays its own step: the group holds only the new copies,
+ * so an edit of the source step moves the original and the group follows it (`followRepeatSources`).
  */
 export function expandRepeat(spec: Record<string, unknown>, steps: readonly { id: number; op: ModelOp }[], pose: Affine): ExpandedRepeat {
   if (steps.length === 0) return emptyRepeat(REPEAT_PICK);
@@ -335,34 +348,69 @@ export function expandRepeat(spec: Record<string, unknown>, steps: readonly { id
     if ("reason" in made) return emptyRepeat(made.reason);
     motions = made;
   } else if (spec.kind === "mirror") {
+    if (spec.keepOriginal === false) return emptyRepeat(MIRROR_KEEPS);
     const made = mirrorMotion(spec, GLOBAL_WORKPLANE);
     if ("reason" in made) return emptyRepeat(made.reason);
-    motions = spec.keepOriginal === false ? [made] : [STILL, made];
+    motions = [made];
   } else {
     return emptyRepeat(REPEAT_ONLY);
   }
   const out: Piece[] = [];
-  if (spec.kind === "mirror" && spec.keepOriginal === false) {
-    for (const piece of [...pieces].reverse()) {
-      const flipped = inverse(piece.op);
-      if (typeof flipped !== "string") return emptyRepeat(flipped.reason);
-      out.push({ op: flipped, spec: piece.spec });
-    }
-  }
   for (const motion of motions) {
+    if (still(motion)) continue;
     for (const piece of pieces) {
-      if (still(motion)) {
-        out.push(piece);
-      } else {
-        const moved = movedSpec(piece.spec, motion);
-        if ("reason" in moved) return emptyRepeat(moved.reason);
-        out.push({ op: piece.op, spec: moved });
-      }
+      const moved = movedSpec(piece.spec, motion);
+      if ("reason" in moved) return emptyRepeat(moved.reason);
+      out.push({ op: piece.op, spec: moved });
       if (out.length > MAX_PIECES) return emptyRepeat(`This makes more than ${MAX_PIECES} steps. Split it into smaller edits.`);
     }
   }
+  if (out.length === 0) return emptyRepeat(REPEAT_NOTHING);
   const label = repeatLabel(spec);
   return { note: null, pieces: out, group: groupFromPieces(label, spec, out) };
+}
+
+/**
+ * An edit rebuilds `chain`: the edited step, then the steps replayed under it, each with its old id and its new op
+ * (in the solid's frame). A pattern or mirror in the chain whose source step is earlier in the chain and changed is
+ * expanded again from the new op, so its copies follow the source. `before` is a step's op as the history holds it.
+ * The ids in `source.of` are renamed with the rest of the replay (`renumberedSteps`). `at` is the chain index that
+ * could not follow its source.
+ */
+export function followRepeatSources(
+  chain: readonly { id: number; op: ModelOp }[],
+  before: (id: number) => ModelOp | null,
+  pose: Affine,
+): { ops: ModelOp[] } | { error: string; at: number } {
+  const ops = chain.map((step) => step.op);
+  const index = new Map(chain.map((step, i) => [step.id, i] as const));
+  const earlier = (id: number, i: number) => {
+    const at = index.get(id);
+    return at !== undefined && at < i ? at : null;
+  };
+  for (let i = 1; i < chain.length; i += 1) {
+    const op = ops[i]!;
+    const source = repeatSource(op);
+    if (!source || !Array.isArray(source.of)) continue;
+    const of = source.of.filter((id): id is number => typeof id === "number");
+    const changed = of.some((id) => {
+      const at = earlier(id, i);
+      return at !== null && JSON.stringify(ops[at]) !== JSON.stringify(before(id));
+    });
+    if (!changed) continue;
+    const steps: { id: number; op: ModelOp }[] = [];
+    for (const id of of) {
+      const at = earlier(id, i);
+      const step = at !== null ? ops[at]! : before(id);
+      if (!step) return { error: REPEAT_DELETED, at: i };
+      steps.push({ id, op: step });
+    }
+    const expanded = expandRepeat(source, steps, pose);
+    if (!expanded.group) return { error: expanded.note ?? REPEAT_ONLY, at: i };
+    const group = toSolidOp(expanded.group, pose);
+    ops[i] = op.exprs ? { ...group, exprs: op.exprs } : group;
+  }
+  return { ops };
 }
 
 /** "Repeating Pocket 10 × 10", or how many steps, for the panel line above the dry-run. */
@@ -396,7 +444,6 @@ export function panelRepeatChoices(): RepeatChoices {
   const axis = pressed("modelPatAxis", "axis", "z");
   const plane = pressed("modelMirPlane", "plane", "z");
   const align = typeof document === "undefined" || document.querySelector<HTMLInputElement>("#modelPatAlign")?.checked !== false;
-  const keep = typeof document === "undefined" || document.querySelector<HTMLInputElement>("#modelMirKeep")?.checked !== false;
   return {
     mode: mode === "polar" || mode === "path" ? mode : "linear",
     axis: axis === "x" || axis === "y" || axis === "pick" ? axis : "z",
@@ -404,7 +451,6 @@ export function panelRepeatChoices(): RepeatChoices {
     align,
     plane: plane === "x" || plane === "y" || plane === "face" ? plane : "z",
     normal: mirrorNormal ? [...mirrorNormal] : null,
-    keep,
     points: pathPoints.map((point) => [...point]),
     of: [...sourceIds],
   };

@@ -428,7 +428,7 @@ function parametersForWire(table: Record<string, string | number> | undefined): 
  * A parameter table as the file keeps it. A number is a plain value. A string is an expression.
  * A bad name or value is left out, and a missing or damaged field does not refuse the file.
  */
-function readParameters(value: unknown): Record<string, string | number> | undefined {
+export function readParameters(value: unknown): Record<string, string | number> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const out: Record<string, string | number> = {};
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
