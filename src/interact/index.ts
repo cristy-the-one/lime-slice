@@ -25,17 +25,16 @@ export {
   type Ray,
 } from "./drag-axis.ts";
 export {
-  FILLET_AROUND,
+  BLEND_STEPS,
+  blendGhost,
   facePrism,
-  filletGhost,
   GHOST_PROBE_WAIT_MS,
-  previewIsGhost,
   loftGhost,
   regionExtrude,
   REVOLVE_STEPS,
   revolveGhost,
   triangulate,
-  type FilletGhost,
+  type BlendSide,
   type PlaneFrame,
   type RevolveGhost,
 } from "./ghosts.ts";

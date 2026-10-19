@@ -2,7 +2,7 @@
  * The edge drag's geometry and wording, without WebGL: which faces an edge belongs to, which way
  * the knob points, which edges move together, and how a probe's largest size clamps the radius.
  */
-import { blendDirection, blendRadius, clampBlendSize, edgeAppliedNote, edgeDragEdges, edgeDragKind, edgeDragNote, edgeDragOp, edgeDragRefusal, edgeFrame, edgeHoverHint, edgeIsSmooth, edgeSizeRefusal, facesOnEdge, knobAt, tabStillOpen, EDGE_EDIT_MS } from "./edge-drag.ts";
+import { blendDirection, blendRadius, clampBlendSize, edgeAppliedNote, edgeDragEdges, edgeDragKind, edgeDragNote, edgeDragOp, edgeDragRefusal, edgeFrame, edgeHoverHint, edgeIsSmooth, edgeSides, edgeSizeRefusal, facesOnEdge, knobAt, tabStillOpen, EDGE_EDIT_MS } from "./edge-drag.ts";
 import type { Vec3 } from "../model-drag.ts";
 
 let failed = 0;
@@ -93,6 +93,26 @@ eq("one face alone is not judged smooth", edgeIsSmooth(square.slice(0, 9), [0], 
 eq("a typed 0 is refused", edgeSizeRefusal("fillet", 0), "A fillet needs a radius of at least 0.05 mm.");
 eq("a typed negative chamfer is refused", edgeSizeRefusal("chamfer", -2), "A chamfer needs a distance of at least 0.05 mm.");
 eq("a typed 2 is taken", edgeSizeRefusal("fillet", 2), null);
+
+// C20. The blend ghost reads each edge point's two faces from the mesh: on a cube's top front edge, the top and the front.
+{
+  const q = (a: Vec3, b: Vec3, c: Vec3, d: Vec3) => [...a, ...b, ...c, ...a, ...c, ...d];
+  const cube = [
+    ...q([0, 0, 0], [0, 10, 0], [10, 10, 0], [10, 0, 0]),
+    ...q([0, 0, 10], [10, 0, 10], [10, 10, 10], [0, 10, 10]),
+    ...q([0, 0, 0], [10, 0, 0], [10, 0, 10], [0, 0, 10]),
+    ...q([0, 10, 0], [0, 10, 10], [10, 10, 10], [10, 10, 0]),
+    ...q([0, 0, 0], [0, 0, 10], [0, 10, 10], [0, 10, 0]),
+    ...q([10, 0, 0], [10, 10, 0], [10, 10, 10], [10, 0, 10]),
+  ];
+  const faces = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5];
+  const sides = edgeSides(cube, faces, [0, 0, 10, 5, 0, 10, 10, 0, 10]);
+  const round = (v: readonly number[]) => v.map((n) => Math.round(n * 1e6) / 1e6 + 0);
+  eq("three edge points, each with its two faces", sides.length, 3);
+  eq("the faces are the top and the front, not the end face at a corner", sides.map((side) => [round(side.n1), round(side.n2)].sort().join(" ")), Array(3).fill("0,-1,0 0,0,1"));
+  eq("a cube's edge is convex", sides.map((side) => side.convex), [true, true, true]);
+  eq("into the top is +Y, into the front is −Z", round(sides[1]!.n1[2] === 1 ? sides[1]!.w1 : sides[1]!.w2), [0, 1, 0]);
+}
 
 if (failed > 0) {
   console.error(`${failed} failed`);

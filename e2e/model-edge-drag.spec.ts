@@ -309,3 +309,26 @@ test("a smooth edge, between faces that carry on flat, offers no knob", async ({
   });
   expect(lit, "no knob on a smooth edge").toBe(false);
 });
+
+test("the drag's ghost is the fillet's own surface, inside the corner it rounds", async ({ page }) => {
+  const applied: Op[] = [];
+  await openBox(page, () => ({ ok: true }), applied);
+  const canvas = page.locator("#model");
+  await knobAt(page);
+  // A typed size draws the same ghost as a drag, at a size this box can take.
+  await page.keyboard.type("2.5");
+  await expect(canvas).toHaveAttribute("data-edge-size", "2.5");
+  await expect(canvas).toHaveAttribute("data-ghost", /\d/);
+  const [cx, cy, cz, sx, sy, sz] = ((await canvas.getAttribute("data-ghost")) ?? "").split(" ").map(Number);
+  const solid = ((await canvas.getAttribute("data-solid")) ?? "").split(",").map(Number);
+  const lo = [cx! - sx! / 2, cy! - sy! / 2, cz! - sz! / 2];
+  const hi = [cx! + sx! / 2, cy! + sy! / 2, cz! + sz! / 2];
+  for (let axis = 0; axis < 3; axis += 1) {
+    expect(lo[axis]!, `the ghost stays inside the box on axis ${axis}`).toBeGreaterThanOrEqual(solid[axis]! - 0.01);
+    expect(hi[axis]!, `the ghost stays inside the box on axis ${axis}`).toBeLessThanOrEqual(solid[axis + 3]! + 0.01);
+  }
+  // Across the edge it spans the radius on each face, not a tube twice as wide.
+  const across = [sx!, sy!, sz!].sort((a, b) => a - b).slice(0, 2);
+  expect(across.map((span) => Math.round(span * 100) / 100), "2.5 mm along each face").toEqual([2.5, 2.5]);
+  await page.keyboard.press("Escape");
+});

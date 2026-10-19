@@ -207,7 +207,7 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     const view = host.view();
     if (!view || !session) return;
     view.setEdgeKnob(knob(session.point, session.dir, session.size, session.kind));
-    host.setGhost(session.size > 0 ? { kind: "blend", edges: session.edges, radius: session.size } : null);
+    host.setGhost(session.size > 0 ? { kind: "blend", edges: session.edges, radius: session.size, chamfer: session.kind === "chamfer" } : null);
     if (hud?.shown && !session.typing) hud.setValues([session.size]);
     publish();
   }

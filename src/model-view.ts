@@ -10,7 +10,11 @@ import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { onMeasureChange } from "./measure-pref";
-import { EDGE_KNOB_ID } from "./interact/edge-drag";
+import { EDGE_KNOB_ID, edgeSides } from "./interact/edge-drag";
+import { blendGhost, type BlendSide } from "./interact/ghosts";
+
+/** P2. The edge drag's ghost is rebuilt when its size changes by this much. */
+const BLEND_GHOST_STEP_MM = 0.05;
 
 /** P1. The push/pull arrow's handle id (`pullHandles` in `model-drag.ts`). */
 const PULL_HANDLE_ID = "pull";
@@ -57,7 +61,8 @@ export type ModelGhost =
   /** --- F4. One cylinder per sketch point. `failed` (from 1) is the hole a probe refused. --- */
   | { kind: "holes"; holes: { x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }[]; failed?: number }
   | { kind: "scale"; factor: number }
-  | { kind: "blend"; edges: number[]; radius: number }
+  /** An edge drag's blend, drawn as its new surface. `chamfer` draws the flat, else the fillet's arc. */
+  | { kind: "blend"; edges: number[]; radius: number; chamfer?: boolean }
   | { kind: "measure"; a: Vec3; b: Vec3 }
   /** Another plate object, a join's tool: its plate mesh where it sits in model space, drawn from the grey object's own geometry. */
   | { kind: "object"; id: string; positions: Float32Array; matrix: Affine }
@@ -897,12 +902,27 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     });
   }
 
-  function addGhostMesh(geometry: THREE.BufferGeometry, position: THREE.Vector3, opacity = 0.22) {
+  /** Each edge's points with their two faces, read once per solid: the drag only rebuilds the strip. */
+  const blendSides = new WeakMap<object, Map<number, BlendSide[]>>();
+
+  function sidesOf(shape: ModelSolid, edgeId: number): BlendSide[] {
+    let known = blendSides.get(shape);
+    if (!known) blendSides.set(shape, (known = new Map()));
+    let sides = known.get(edgeId);
+    if (!sides) {
+      const edge = shape.edges.find((item) => item.id === edgeId);
+      sides = edge ? edgeSides(shape.positions, shape.triangles, edge.points) : [];
+      known.set(edgeId, sides);
+    }
+    return sides;
+  }
+
+  function addGhostMesh(geometry: THREE.BufferGeometry, position: THREE.Vector3, opacity = 0.22, edgeAngle = 1) {
     const meshGhost = new THREE.Mesh(geometry, ghostMaterial(opacity));
     meshGhost.position.copy(position);
     meshGhost.renderOrder = 2;
     const edges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(geometry),
+      new THREE.EdgesGeometry(geometry, edgeAngle),
       new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.95 }),
     );
     edges.raycast = () => undefined;
@@ -1244,19 +1264,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (current.kind === "blend") {
       if (!(current.radius > 0)) return;
       for (const edgeId of current.edges) {
-        const edge = solid.edges.find((item) => item.id === edgeId);
-        if (!edge) continue;
-        const points: THREE.Vector3[] = [];
-        for (let i = 0; i + 2 < edge.points.length; i += 3) {
-          const next = new THREE.Vector3(edge.points[i], edge.points[i + 1], edge.points[i + 2]);
-          const prev = points[points.length - 1];
-          if (!prev || prev.distanceToSquared(next) > 1e-8) points.push(next);
-        }
-        if (points.length < 2) continue;
-        const curve = new THREE.CatmullRomCurve3(points);
-        const tube = new THREE.TubeGeometry(curve, Math.max(8, points.length * 3), current.radius, 8, false);
-        // The edge is in the solid's own frame: the tube goes where the solid is drawn.
-        const meshGhost = addGhostMesh(tube, new THREE.Vector3(), 0.38);
+        const soup = blendGhost(sidesOf(solid, edgeId), current.radius, current.chamfer === true);
+        if (soup.length < 9) continue;
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(soup, 3));
+        geometry.computeVertexNormals();
+        // The edge is in the solid's own frame: the blend goes where the solid is drawn. Only its outline is lined.
+        const meshGhost = addGhostMesh(geometry, new THREE.Vector3(), 0.38, 30);
         meshGhost.matrixAutoUpdate = false;
         meshGhost.matrix.copy(posed.matrix);
       }
@@ -1906,6 +1920,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       kick();
     },
     setGhost(next) {
+      // A drag moves the blend in steps finer than anyone sees: the strip is rebuilt once it grows by 0.05 mm.
+      if (ghost?.kind === "blend" && next?.kind === "blend" && next.radius > 0 && ghost.radius > 0 && ghost.chamfer === next.chamfer
+        && ghost.edges.join() === next.edges.join() && Math.abs(ghost.radius - next.radius) < BLEND_GHOST_STEP_MM) return;
       ghost = next;
       rebuildGhost();
       kick();

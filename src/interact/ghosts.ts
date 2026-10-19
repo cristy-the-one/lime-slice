@@ -13,13 +13,8 @@ export type Pt = [number, number];
 export const GHOST_PROBE_WAIT_MS = 300;
 /** Facets around a full turn of a revolve ghost. A shorter angle uses the same spacing. */
 export const REVOLVE_STEPS = 48;
-/** Facets around a fillet tube, the same count the blend ghost in the view uses. */
-export const FILLET_AROUND = 8;
-
-/** True while the pointer has not been still long enough to ask the kernel. */
-export function previewIsGhost(stillMs: number): boolean {
-  return stillMs < GHOST_PROBE_WAIT_MS;
-}
+/** Facets across a fillet's arc in the blend ghost. */
+export const BLEND_STEPS = 8;
 
 export interface PlaneFrame {
   origin: Vec3;
@@ -175,41 +170,64 @@ export function revolveGhost(spec: RevolveGhost): Float32Array {
   return soup(out);
 }
 
-export interface FilletGhost {
-  /** The edge, at least two points. */
-  points: readonly Vec3[];
-  radius: number;
-  /** Facets around the tube. Default 8. */
-  around?: number;
+/**
+ * One point of an edge with its two faces: their outward normals there, the directions from the edge into each face
+ * (square to the edge), and whether the corner is convex (material inside the angle) or a concave inside corner.
+ */
+export interface BlendSide {
+  at: Vec3;
+  n1: Vec3;
+  n2: Vec3;
+  w1: Vec3;
+  w2: Vec3;
+  convex: boolean;
 }
 
 /**
- * A tube of `radius` along the edge: the blend ghost, without three.js. Open at the ends, the way
- * the view's tube is. Vertices sit on a ring of that radius about the polyline.
+ * The blend's new surface along the edge: a fillet's arc of `radius`, tangent to both faces, or a chamfer's flat strip
+ * `radius` in along each face. It sits where the blend will be, inside a convex corner and in the air of a concave one,
+ * not a tube around the edge. One strip between each pair of neighbouring sides.
  */
-export function filletGhost(spec: FilletGhost): Float32Array {
-  const points = spec.points.map(copy3).filter((point, index, all) => {
-    const prev = all[index - 1];
-    return !prev || dist3(prev, point) > 1e-8;
-  });
-  const around = spec.around ?? FILLET_AROUND;
-  if (points.length < 2 || !(spec.radius > 0) || around < 3) return new Float32Array();
-  const frames = tubeFrames(points);
-  const rings = frames.map((frame) => ring(frame.centre, frame.normal, frame.binormal, spec.radius, around));
+export function blendGhost(sides: readonly BlendSide[], radius: number, chamfer: boolean, steps = BLEND_STEPS): Float32Array {
+  if (sides.length < 2 || !(radius > 0)) return new Float32Array();
+  const profiles = sides.map((side) => (chamfer ? chamferProfile(side, radius) : filletProfile(side, radius, steps)));
   const out: number[] = [];
-  for (let i = 0; i + 1 < rings.length; i += 1) {
-    const a = rings[i]!;
-    const b = rings[i + 1]!;
-    for (let k = 0; k < around; k += 1) {
-      const n = (k + 1) % around;
-      const a0 = a[k];
-      const a1 = a[n];
-      const b0 = b[k];
-      const b1 = b[n];
-      if (a0 && a1 && b0 && b1) pushQuad(out, a0, a1, b1, b0);
-    }
+  for (let i = 0; i + 1 < profiles.length; i += 1) {
+    const a = profiles[i]!;
+    const b = profiles[i + 1]!;
+    for (let k = 0; k + 1 < a.length && k + 1 < b.length; k += 1) pushQuad(out, a[k]!, a[k + 1]!, b[k + 1]!, b[k]!);
   }
   return Float32Array.from(out);
+}
+
+function chamferProfile(side: BlendSide, distance: number): Vec3[] {
+  return [add3(side.at, scale(side.w1, distance)), add3(side.at, scale(side.w2, distance))];
+}
+
+/**
+ * The arc's centre is `radius` from both face planes, on the bisector: inside the material for a convex edge, out in
+ * the air for a concave one. The arc runs from the tangent point on the first face to the one on the second.
+ */
+function filletProfile(side: BlendSide, radius: number, steps: number): Vec3[] {
+  const cos = Math.max(-0.999999, Math.min(1, dot(side.n1, side.n2)));
+  const sense = side.convex ? -1 : 1;
+  const k = radius / (1 + cos);
+  const centre = add3(side.at, scale(add3(side.n1, side.n2), sense * k));
+  const angle = Math.acos(cos);
+  const out: Vec3[] = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const t = i / steps;
+    const sin = Math.sin(angle);
+    const dir: Vec3 = sin > 1e-9
+      ? add3(scale(side.n1, Math.sin((1 - t) * angle) / sin), scale(side.n2, Math.sin(t * angle) / sin))
+      : side.n1;
+    out.push(add3(centre, scale(dir, -sense * radius)));
+  }
+  return out;
+}
+
+function add3(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 }
 
 interface FlatMesh {
@@ -415,50 +433,6 @@ function placeOnAxis(point: Pt, angle: number, basis: AxisBasis): Vec3 {
     centre[1] + (radial3[1] * c + binormal[1] * s) * radius,
     centre[2] + (radial3[2] * c + binormal[2] * s) * radius,
   ];
-}
-
-interface Frame {
-  centre: Vec3;
-  normal: Vec3;
-  binormal: Vec3;
-}
-
-function tubeFrames(points: Vec3[]): Frame[] {
-  const tangents: Vec3[] = [];
-  for (let index = 0; index < points.length; index += 1) {
-    const prev = points[Math.max(0, index - 1)]!;
-    const next = points[Math.min(points.length - 1, index + 1)]!;
-    tangents.push(unit([next[0] - prev[0], next[1] - prev[1], next[2] - prev[2]]) ?? [1, 0, 0]);
-  }
-  let normal = perpendicular(tangents[0]!);
-  const frames: Frame[] = [];
-  for (let i = 0; i < points.length; i += 1) {
-    const tangent = tangents[i]!;
-    const carried = unit(sub(normal, scale(tangent, dot(normal, tangent))));
-    normal = carried ?? perpendicular(tangent);
-    frames.push({ centre: points[i]!, normal, binormal: cross(tangent, normal) });
-  }
-  return frames;
-}
-
-function ring(centre: Vec3, normal: Vec3, binormal: Vec3, radius: number, around: number): Vec3[] {
-  const out: Vec3[] = [];
-  for (let i = 0; i < around; i += 1) {
-    const angle = (i / around) * Math.PI * 2;
-    const c = Math.cos(angle) * radius;
-    const s = Math.sin(angle) * radius;
-    out.push([
-      centre[0] + normal[0] * c + binormal[0] * s,
-      centre[1] + normal[1] * c + binormal[1] * s,
-      centre[2] + normal[2] * c + binormal[2] * s,
-    ]);
-  }
-  return out;
-}
-
-function perpendicular(tangent: Vec3): Vec3 {
-  const up: Vec3 = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
-  return unit(cross(tangent, up)) ?? [0, 0, 1];
 }
 
 function planeNormal(plane: PlaneFrame): Vec3 {
@@ -712,10 +686,6 @@ function sub(a: Vec3, b: Vec3): Vec3 {
 
 function dist2(a: Pt, b: Pt): number {
   return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
-}
-
-function dist3(a: Vec3, b: Vec3): number {
-  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
 function same2(a: Pt, b: Pt): boolean {

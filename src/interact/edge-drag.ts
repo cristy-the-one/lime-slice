@@ -9,6 +9,7 @@
 import { dragAxis, type Ray } from "./drag-axis.ts";
 import type { Vec3 } from "../model-blend.ts";
 import { faceTable } from "./face-table.ts";
+import type { BlendSide } from "./ghosts.ts";
 import { add, edgeAnchor, normalize, scale } from "../model-drag.ts";
 import { faceBoundarySegments } from "../model-select.ts";
 import { formatMm } from "../model-plane.ts";
@@ -127,6 +128,98 @@ export function edgeIsSmooth(positions: ArrayLike<number>, triangles: ArrayLike<
     }
   }
   return true;
+}
+
+/**
+ * The edge's points with the two faces at each, read from the mesh triangles that touch the point along a side. A
+ * point where the faces meet flat is left out: the blend has no corner there. Read once per edge, when its ghost is
+ * first drawn, so the drag only rebuilds the strip.
+ */
+export function edgeSides(positions: ArrayLike<number>, triangles: ArrayLike<number>, points: ArrayLike<number>): BlendSide[] {
+  const samples: Vec3[] = [];
+  for (let i = 0; i + 2 < points.length; i += 3) {
+    const point: Vec3 = [points[i]!, points[i + 1]!, points[i + 2]!];
+    const prev = samples[samples.length - 1];
+    if (!prev || Math.hypot(point[0] - prev[0], point[1] - prev[1], point[2] - prev[2]) > 1e-6) samples.push(point);
+  }
+  if (samples.length < 2) return [];
+  // An end of the edge is a corner that a third face touches too, so its faces are read half way along its segment.
+  const last = samples.length - 1;
+  const half = (a: Vec3, b: Vec3): Vec3 => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+  const probes = samples.map((sample, index) => (index === 0 ? half(sample, samples[1]!) : index === last ? half(samples[last - 1]!, sample) : sample));
+  const lo: Vec3 = [Infinity, Infinity, Infinity];
+  const hi: Vec3 = [-Infinity, -Infinity, -Infinity];
+  for (const sample of samples) {
+    for (let axis = 0; axis < 3; axis += 1) {
+      lo[axis] = Math.min(lo[axis]!, sample[axis]! - EDGE_FACE_MM);
+      hi[axis] = Math.max(hi[axis]!, sample[axis]! + EDGE_FACE_MM);
+    }
+  }
+  const touching: { normal: Vec3; centre: Vec3 }[][] = samples.map(() => []);
+  const count = Math.min(triangles.length, Math.floor(positions.length / 9));
+  for (let tri = 0; tri < count; tri += 1) {
+    const base = tri * 9;
+    const a: Vec3 = [positions[base]!, positions[base + 1]!, positions[base + 2]!];
+    const b: Vec3 = [positions[base + 3]!, positions[base + 4]!, positions[base + 5]!];
+    const c: Vec3 = [positions[base + 6]!, positions[base + 7]!, positions[base + 8]!];
+    let away = false;
+    for (let axis = 0; axis < 3 && !away; axis += 1) away = Math.max(a[axis]!, b[axis]!, c[axis]!) < lo[axis]! || Math.min(a[axis]!, b[axis]!, c[axis]!) > hi[axis]!;
+    if (away) continue;
+    let normal: Vec3 | null = null;
+    probes.forEach((sample, index) => {
+      for (let axis = 0; axis < 3; axis += 1) {
+        if (sample[axis]! < Math.min(a[axis]!, b[axis]!, c[axis]!) - EDGE_FACE_MM || sample[axis]! > Math.max(a[axis]!, b[axis]!, c[axis]!) + EDGE_FACE_MM) return;
+      }
+      if (segmentDistance(sample, a, b) > EDGE_FACE_MM && segmentDistance(sample, b, c) > EDGE_FACE_MM && segmentDistance(sample, c, a) > EDGE_FACE_MM) return;
+      if (!normal) {
+        const n: Vec3 = [
+          (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+          (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+          (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+        ];
+        const length = Math.hypot(n[0], n[1], n[2]);
+        if (!(length > 1e-12)) return;
+        normal = [n[0] / length, n[1] / length, n[2] / length];
+      }
+      touching[index]!.push({ normal, centre: [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3] });
+    });
+  }
+  const out: BlendSide[] = [];
+  samples.forEach((at, index) => {
+    const near = touching[index]!;
+    const first = near[0];
+    if (!first) return;
+    let other = first;
+    for (const item of near) if (dot3(item.normal, first.normal) < dot3(other.normal, first.normal)) other = item;
+    if (dot3(other.normal, first.normal) >= EDGE_SMOOTH_COS) return;
+    const prev = samples[Math.max(0, index - 1)]!;
+    const next = samples[Math.min(samples.length - 1, index + 1)]!;
+    const along = normalize([next[0] - prev[0], next[1] - prev[1], next[2] - prev[2]]);
+    const into = (centre: Vec3, normal: Vec3): Vec3 => {
+      let v: Vec3 = [centre[0] - at[0], centre[1] - at[1], centre[2] - at[2]];
+      v = sub3(v, scale(along, dot3(v, along)));
+      v = sub3(v, scale(normal, dot3(v, normal)));
+      return normalize(v);
+    };
+    out.push({
+      at,
+      n1: first.normal,
+      n2: other.normal,
+      w1: into(first.centre, first.normal),
+      w2: into(other.centre, other.normal),
+      // Convex when the second face runs below the first face's plane.
+      convex: dot3(first.normal, sub3(other.centre, at)) < 0,
+    });
+  });
+  return out;
+}
+
+function dot3(a: Vec3, b: Vec3): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function sub3(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
 /** A typed size a fillet or a chamfer can be: a refusal sentence for 0, a negative number, or a size too small. */
