@@ -30,6 +30,11 @@ interface ModelHistoryHooks {
   resetPosition(): void;
   /** --- A10. The row under the pointer or focus, so its faces can tint. Null when neither is on a row. */
   highlight?(id: number | null): void;
+  /**
+   * --- A4. Ctrl-click (Cmd-click) a row while Pattern or Mirror is open. True consumes the click, so the view stays.
+   * Absent, a Ctrl-click jumps as any other click does.
+   */
+  pickSource?(row: RowKey): boolean;
 }
 
 /** --- A10. Colour by step paints a swatch on each row. Off, the swatches go and the rows repaint. */
@@ -76,6 +81,17 @@ let note: HTMLElement | null = null;
 let pointerIn = false;
 const rowEls = new Map<RowKey, HTMLElement>();
 const rowSigs = new Map<RowKey, string>();
+/** --- A4. History steps Pattern or Mirror will repeat. Only the open solid's own rows, via empty, are marked. --- */
+let repeatIds = new Set<number>();
+
+/** Mark the open solid's own rows that a pattern or a mirror repeats. An empty list clears the marks. */
+export function paintRepeatSources(ids: readonly number[]) {
+  repeatIds = new Set(ids);
+  if (!layout) return;
+  for (const row of layout.rows) {
+    rowEls.get(row.key)?.toggleAttribute("data-repeat", row.via.length === 0 && repeatIds.has(row.id));
+  }
+}
 
 function readCollapsed(): boolean {
   try {
@@ -419,6 +435,7 @@ export function syncModelRecipe(note: RecipeNote | null) {
 
 function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   el.dataset.state = row.state;
+  el.toggleAttribute("data-repeat", row.via.length === 0 && repeatIds.has(row.id));
   el.toggleAttribute("data-broken", !!row.broken);
   el.toggleAttribute("data-blocked", row.blocked);
   el.setAttribute("aria-level", String(row.level));
@@ -641,6 +658,8 @@ function onClick(ev: MouseEvent) {
   }
   if ((ev.target as Element).closest(".mh-rename")) return;
   setFocus(id, true);
+  // --- A4. Ctrl-click chooses a step to repeat and leaves the solid on screen where it is. ---
+  if ((ev.ctrlKey || ev.metaKey) && hooks?.pickSource?.(id)) return;
   jumpNow(id);
 }
 

@@ -26,11 +26,12 @@ import type { ModelPick } from "../model-view";
 import { DAMAGED, decodeSolid, readFingerprint, type ParsedSolid } from "../model-reply";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges, selectedFaces } from "../model-blend";
 import { throughLength } from "../model-hole";
-import { nextModelPicks, selectionCountLabel } from "../model-select";
+import { lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes } from "../model-check.ts";
 import { expandFeature, isFeatureTool, panelChoices, readFeatureSpec, type FeatureTool } from "../model-features";
+import { expandRepeat, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
@@ -99,7 +100,10 @@ import {
   setModelLocked,
   setModelPreview,
   setModelProbe,
+  setMirrorOrigin,
   setModelWaiting,
+  setPatternCentre,
+  showPathPoint,
   setAllowPullPreview,
   setPullLive,
   modelPreviewFresh,
@@ -113,7 +117,7 @@ import {
   toolFrame,
   type PlacePhase,
 } from "../ui/model-chrome";
-import { mountModelHistory, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
+import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
 import { mountModelLook, sectionFacePicked } from "../ui/model-look";
 import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withWorkplane, withoutObject, type PlateObject } from "../plate";
@@ -427,6 +431,20 @@ export function bindModelView() {
       return { note: expanded.note, pieces: expanded.pieces, frame: expanded.frame, outward: expanded.outward };
     },
     // --- end A3 ---
+    // --- A4 pattern and mirror ---
+    repeatView() {
+      const current = openModelTool();
+      if (!isRepeatTool(current)) return { note: null, pieces: null, repeating: "" };
+      const expanded = repeatNow(current);
+      return { note: expanded.note, pieces: expanded.pieces, repeating: expanded.repeating };
+    },
+    seedRepeat() {
+      const tree = treeOf(open);
+      if (!tree || lens) setRepeatSources([]);
+      else setRepeatSources(tree.current === ROOT ? [] : [tree.current]);
+      paintRepeatSources(repeatSourceIds());
+    },
+    // --- end A4 ---
     // --- A5. The blend is built on the step on screen, and can take edges from it or a step above it. ---
     shownNode() {
       return blendTarget()?.node ?? null;
@@ -546,6 +564,19 @@ export function bindModelView() {
     // --- A10. Hovering or focusing a row tints the faces that step made.
     highlight(id) {
       fx.model?.setStepHighlight(id);
+    },
+    // --- A4. Ctrl-click adds or removes a step of this solid. A tool's step is not one of those. ---
+    pickSource(row) {
+      if (!isRepeatTool(openModelTool())) return false;
+      const parsed = readRow(row);
+      if (!parsed || parsed.via.length !== 0) {
+        readout("A pattern repeats a step of this solid.");
+        return true;
+      }
+      toggleRepeatSource(parsed.id);
+      paintRepeatSources(repeatSourceIds());
+      syncModelChrome(picks);
+      return true;
     },
   });
   // --- A10. Section view and colour by step, from the View menu in the model foot.
@@ -1060,6 +1091,9 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
   // --- A3 composite features: the group is expanded in model space, then toolOp stores it in the solid's frame. ---
   if (isFeatureTool(tool)) return featureNow(tool).group;
   // --- end A3 ---
+  // --- A4 pattern and mirror: one group, the source steps each moved by the same motions. ---
+  if (isRepeatTool(tool)) return repeatNow(tool).group;
+  // --- end A4 ---
   const origin: Vec3 = [num("#modelX"), num("#modelY"), num("#modelZ")];
   switch (tool) {
     case "fillet":
@@ -1130,6 +1164,147 @@ function featureNow(tool: FeatureTool) {
   return value;
 }
 // --- end A3 ---
+
+// --- A4 pattern and mirror ---
+let repeatMemo: { key: string; value: ReturnType<typeof expandRepeat> & { repeating: string } } | null = null;
+
+function unitDir(dir: readonly number[]): [number, number, number] | null {
+  const length = Math.hypot(dir[0] ?? 0, dir[1] ?? 0, dir[2] ?? 0);
+  if (!(length > 1e-9)) return null;
+  return [(dir[0] ?? 0) / length, (dir[1] ?? 0) / length, (dir[2] ?? 0) / length];
+}
+
+/** An edge's direction in model space, from its first point to its last. */
+function edgeDirection(edge: number): [number, number, number] | null {
+  const points = viewed()?.edges.find((item) => item.id === edge)?.points;
+  if (!points || points.length < 6) return null;
+  const pose = openPose();
+  const at = (index: number): [number, number, number] => {
+    const point: [number, number, number] = [points[index]!, points[index + 1]!, points[index + 2]!];
+    return isIdentity(pose) ? point : applyPose(pose, point);
+  };
+  const a = at(0);
+  const b = at(points.length - 3);
+  return unitDir([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+}
+
+/** A cylinder or cone face's axis in model space, and a point on it. */
+function roundFaceAxis(face: number): { axis: [number, number, number]; at: [number, number, number] | null } | null {
+  const row = viewed()?.faces.find((item) => item.id === face);
+  if (!row?.axis || (row.surface !== "cylinder" && row.surface !== "cone")) return null;
+  const pose = openPose();
+  const axis = unitDir(isIdentity(pose) ? row.axis : turnDir(pose, row.axis));
+  if (!axis) return null;
+  const at = row.axisPoint ? (isIdentity(pose) ? row.axisPoint : applyPose(pose, row.axisPoint)) : null;
+  return { axis, at };
+}
+
+/** The picked flat face's outward normal in model space. */
+function mirrorNormalOf(face: number): [number, number, number] | null {
+  const solid = viewed();
+  if (!solid) return null;
+  const plane = flatFace(solid, face);
+  if (!plane) return null;
+  const pose = openPose();
+  return unitDir(isIdentity(pose) ? plane.normal : turnDir(pose, plane.normal));
+}
+
+function mirrorPointOf(face: number): [number, number, number] | null {
+  const solid = viewed();
+  if (!solid) return null;
+  const plane = flatFace(solid, face);
+  if (!plane) return null;
+  const pose = openPose();
+  return isIdentity(pose) ? plane.point : applyPose(pose, plane.point);
+}
+
+/** The axis a polar pattern turns about: the last edge, else a round face, else the one an edit saved. */
+function livePatternAxis(choices: RepeatChoices): [number, number, number] | null {
+  const edge = lastEdge(picks);
+  if (edge != null) return edgeDirection(edge);
+  const face = lastFace(picks);
+  if (face != null) {
+    const round = roundFaceAxis(face);
+    if (round) return round.axis;
+  }
+  return choices.axisVec;
+}
+
+function opForRepeat(tree: NonNullable<ReturnType<typeof treeOf>>, id: number): ModelOp | null {
+  const node = tree.nodes.get(id);
+  if (!node) return null;
+  if (node.op) return node.op;
+  if (node.parent === null && tree.root.kind === "primitive") return { kind: "root", ...tree.root.solid };
+  if (node.parent === null && tree.root.kind === "feature") return tree.root.op;
+  return null;
+}
+
+function repeatLabels(of: readonly number[]): string[] {
+  const tree = treeOf(open);
+  if (!tree) return [];
+  return of.flatMap((id) => {
+    const node = tree.nodes.get(id);
+    return node ? [stepLabel(node)] : [];
+  });
+}
+
+/** The open pattern or mirror, expanded on the steps it names. Memoized across the ghost, the note, and Apply. */
+function repeatNow(tool: RepeatTool) {
+  const choices = panelRepeatChoices();
+  const resolved: RepeatChoices = choices.mode === "polar" && choices.axis === "pick" ? { ...choices, axisVec: livePatternAxis(choices) } : choices;
+  const repeating = repeatingText(repeatLabels(resolved.of));
+  const tree = treeOf(open);
+  const missing = repeatTargets(resolved.of, (id) => !!tree?.nodes.has(id));
+  if (missing || !tree) {
+    const note = missing ?? REPEAT_PICK;
+    return { note, pieces: null, group: null, repeating: note === repeating ? "" : repeating };
+  }
+  const spec = readRepeatSpec(tool, (id) => num(`#${id}`), resolved);
+  if ("reason" in spec && typeof spec.reason === "string") return { note: spec.reason, pieces: null, group: null, repeating: spec.reason === repeating ? "" : repeating };
+  const steps: { id: number; op: ModelOp }[] = [];
+  for (const id of resolved.of) {
+    const op = opForRepeat(tree, id);
+    if (!op) return { note: REPEAT_ONLY, pieces: null, group: null, repeating };
+    steps.push({ id, op });
+  }
+  const pose = openPose();
+  const key = JSON.stringify({ spec, pose, steps });
+  if (repeatMemo?.key === key) return repeatMemo.value;
+  const value = { ...expandRepeat(spec, steps, pose), repeating };
+  repeatMemo = { key, value };
+  return value;
+}
+
+/** A click while Pattern or Mirror is open: a path point, a polar axis, or a mirror face. */
+function noteRepeatPick(pick: ModelPick | null) {
+  const tool = openModelTool();
+  if (!pick || !isRepeatTool(tool)) return;
+  const choices = panelRepeatChoices();
+  if (tool === "pattern" && choices.mode === "path" && pick.kind === "face" && pick.at) {
+    pushPathPoint(pick.at);
+    showPathPoint(pick.at);
+    return;
+  }
+  if (tool === "pattern" && choices.axis === "pick") {
+    if (pick.kind === "edge") {
+      const axis = edgeDirection(pick.index);
+      if (axis) setHeldAxis(axis);
+    } else {
+      const round = roundFaceAxis(pick.index);
+      if (round) {
+        setHeldAxis(round.axis);
+        if (round.at) setPatternCentre(round.at);
+      }
+    }
+  }
+  if (tool === "mirror" && choices.plane === "face" && pick.kind === "face") {
+    const normal = mirrorNormalOf(pick.index);
+    const point = mirrorPointOf(pick.index);
+    if (normal) lockMirrorFace(normal);
+    if (point) setMirrorOrigin(point);
+  }
+}
+// --- end A4 ---
 
 function boolOp(): "fuse" | "cut" | "common" {
   if (document.querySelector("#modelCut")?.getAttribute("aria-pressed") === "true") return "cut";
@@ -3588,6 +3763,8 @@ async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: numb
   const solid = viewed();
   // A tool's step looked at is read-only; while one is edited, picks are on it.
   if (!at || !tree || !solid || (lens && !editing)) return;
+  // --- A4. A path point, an axis, or a mirror face, before the selection changes. ---
+  noteRepeatPick(pick);
   contextClick = { x: pointer.x, y: pointer.y, empty: pick == null };
   contextFromPick = true;
   picks = nextModelPicks(picks, pick, shift);

@@ -89,10 +89,14 @@ for (const tool of MODEL_TOOLS) {
   // A hole's counterbore fields show only with its box ticked, and have handles then.
   // A feature's circle and polygon sizes show only for that shape, and have handles then.
   const features: Partial<DragContext>[] = [{}, { feature: { shape: "circle" } }, { feature: { shape: "arch" } }, { feature: { cell: "circle" } }, { feature: { cell: "polygon" } }, { feature: { along: "v" } }];
+  // --- A4. Polar and path fields are on screen only in that mode, and have handles then. ---
+  const repeats: Partial<DragContext>[] = [{}, { repeat: { mode: "polar" } }, { repeat: { mode: "path" } }];
   for (const hole of [undefined, { through: false, counterbore: true }]) {
     for (const { kind: primitive } of PRIMITIVES) {
       for (const feature of features) {
-        for (const handle of handlesFor(tool, context(primitive, { hole, ...feature }))) handle.fields.forEach((field) => dragged.add(field));
+        for (const repeat of repeats) {
+          for (const handle of handlesFor(tool, context(primitive, { hole, ...feature, ...repeat }))) handle.fields.forEach((field) => dragged.add(field));
+        }
       }
     }
   }
@@ -174,7 +178,7 @@ check("measure has two surface points", handlesFor("measure", context("box")).ev
 
 // Every docked handle sits on the dock; only handles that edit a picked feature stay on the solid.
 const everyTool = MODEL_TOOLS.flatMap((tool) => handlesFor(tool, context("box")));
-eq("the origin dot, the blend knob, the split plane, the measure dots, the pull arrow and the feature dots stay on the feature", everyTool.filter((handle) => !docked(handle)).map((handle) => handle.id), ["plane", "blend", "blend", "hole-origin", "measure-a", "measure-b", "pull", "feat-at", "feat-at", "feat-at"]);
+eq("the origin dot, the blend knob, the split plane, the measure dots, the pull arrow, the feature dots and the mirror point stay on the feature", everyTool.filter((handle) => !docked(handle)).map((handle) => handle.id), ["plane", "blend", "blend", "hole-origin", "measure-a", "measure-b", "pull", "feat-at", "feat-at", "feat-at", "mir-origin"]);
 const pocket = handlesFor("pocket", context("box"));
 eq("a pocket's position stays on the face and its depth knob points into it", [pocket.find((handle) => handle.id === "feat-at")!.seat.at, pocket.find((handle) => handle.id === "feat-depth")!.dir], ["feature", [0, 0, -1]]);
 eq("texture pitch knobs are docked", handlesFor("texture", context("box")).filter((handle) => handle.id.startsWith("feat-pitch")).every(docked), true);

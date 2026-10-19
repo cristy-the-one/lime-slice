@@ -273,7 +273,7 @@ export function groupFromPieces(label: string, source: Record<string, unknown>, 
   };
 }
 
-/** A group's composite, when it is one of these tools. Pattern and mirror stay for a later package. */
+/** A group's composite, when it is one of these tools. Pattern and mirror reopen from their own source (A4). */
 export function featureSource(op: ModelOp): Record<string, unknown> | null {
   if (op.kind !== "group" || !op.source || typeof op.source !== "object") return null;
   const source = op.source as Record<string, unknown>;
