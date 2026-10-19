@@ -224,3 +224,84 @@ test("the piece a split adds opens as a solid of its own and splits again", asyn
   const splits = calls.tree.of("apply");
   expect(splits.map((request) => request.key)).toEqual([splits[0]!.key, splits[0]!.otherKey]);
 });
+
+/**
+ * A slab whose top is `cols` × `rows` faces, each cut into `split` × `split` quads, as a big STEP part's
+ * tessellation is: thousands of faces and over a hundred thousand triangles.
+ */
+function tiledSlab(cols: number, rows: number, split: number) {
+  const positions: number[] = [];
+  const triangles: number[] = [];
+  const quad = (a: number[], b: number[], c: number[], d: number[], face: number) => {
+    positions.push(...a, ...b, ...c, ...a, ...c, ...d);
+    triangles.push(face, face);
+  };
+  const cell = 1;
+  for (let j = 0; j < rows; j += 1) {
+    for (let i = 0; i < cols; i += 1) {
+      const face = j * cols + i;
+      const step = cell / split;
+      for (let v = 0; v < split; v += 1) {
+        for (let u = 0; u < split; u += 1) {
+          const x = i * cell + u * step;
+          const y = j * cell + v * step;
+          quad([x, y, 5], [x + step, y, 5], [x + step, y + step, 5], [x, y + step, 5], face);
+        }
+      }
+    }
+  }
+  const w = cols * cell;
+  const h = rows * cell;
+  const base = cols * rows;
+  quad([0, 0, 0], [0, h, 0], [w, h, 0], [w, 0, 0], base);
+  quad([0, 0, 0], [w, 0, 0], [w, 0, 5], [0, 0, 5], base + 1);
+  quad([0, h, 0], [0, h, 5], [w, h, 5], [w, h, 0], base + 2);
+  quad([0, 0, 0], [0, 0, 5], [0, h, 5], [0, h, 0], base + 3);
+  quad([w, 0, 0], [w, h, 0], [w, h, 5], [w, 0, 5], base + 4);
+  const faces = Array.from({ length: base + 5 }, (_, id) => ({ id, areaMm2: 1 }));
+  return { volumeMm3: w * h * 5, positions, triangles, faces, edges: [] };
+}
+
+test("hovering and dragging a face of a part with thousands of faces keeps the view drawing", async ({ page }) => {
+  const slab = tiledSlab(60, 50, 6);
+  expect(slab.faces.length).toBeGreaterThan(3000);
+  expect(slab.triangles.length).toBeGreaterThan(200_000);
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: SOLID.positions } }));
+  await mockModelTree(page, { open: () => slab, probe: () => ({ ok: true }) });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 15000 mm³");
+  const canvas = page.locator("#model");
+  await expect.poll(async () => ((await canvas.getAttribute("data-faces")) ?? "").split(" ").length).toBe(slab.faces.length);
+  const screen = (await canvas.getAttribute("data-solid-screen"))!.split(",").map(Number);
+  const rect = (await canvas.boundingBox())!;
+  const cx = rect.x + screen[0]! + screen[2]! / 2;
+  const cy = rect.y + screen[1]! + screen[3]! / 2;
+  await page.evaluate(() => {
+    const w = window as unknown as { frameGaps: number[] };
+    w.frameGaps = [];
+    let last = performance.now();
+    const tick = () => {
+      const now = performance.now();
+      w.frameGaps.push(now - last);
+      last = now;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  for (let i = 0; i < 20; i += 1) await page.mouse.move(cx - 40 + i * 4, cy + (i % 3));
+  await page.mouse.down();
+  for (let i = 0; i < 20; i += 1) await page.mouse.move(cx + 40, cy - 8 - i * 3);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  const gaps = await page.evaluate(() => (window as unknown as { frameGaps: number[] }).frameGaps.slice(3));
+  gaps.sort((a, b) => a - b);
+  const median = gaps[Math.floor(gaps.length / 2)]!;
+  // Each face's normal was read by walking every triangle, every frame: seconds a frame on this part. Headless
+  // Chromium draws 200,000 triangles on the CPU, 50 to 130 ms a frame on a busy machine, so the bound leaves that room.
+  expect(median, `frame gaps ${gaps.map(Math.round).join(" ")}`).toBeLessThan(300);
+});

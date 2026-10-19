@@ -95,6 +95,22 @@ test.describe("iPhone 14 compact layout", () => {
     await page.screenshot({ path: path.join(out, "06-chrome-hidden.png") });
   });
 
+  test("the 4 and 1 keys move the compact nav with the stage", async ({ page }) => {
+    await boot(page, "compact");
+    await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="lime_hull.stl"]')?.click());
+    await expect(page.locator("#compactFile")).toContainText("lime_hull");
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press("4");
+    await expect(page.locator("#tabModel")).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("#compactTabs [data-tab=model]"), "the nav says Model").toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("html")).toHaveAttribute("data-compact-tab", "model");
+    await expect(page.locator("#compactSheet"), "the Prepare sheet goes").toHaveAttribute("data-detent", "closed");
+    await page.keyboard.press("1");
+    await expect(page.locator("#tabPrepare")).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("#compactTabs [data-tab=prepare]")).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("#compactSheet")).toHaveAttribute("data-detent", "peek");
+  });
+
   test("landscape phone stays compact", async ({ page }) => {
     await page.setViewportSize({ width: 844, height: 390 });
     await boot(page, null);

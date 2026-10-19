@@ -1536,7 +1536,7 @@ function refreshNote() {
   // --- P1: the panel's note. The hover sentence lives in the readout. ---
   } else if (tool === "pushpull") {
     if (!picks.some((pick) => pick.kind === "face")) text = "Pick a face.";
-    else if (num("#modelPull") === 0) text = "Type a distance, or drag the face. Alt adds material on that face only.";
+    else if (num("#modelPull") === 0) text = "Type a distance, or drag the face. Alt adds or cuts material on that face only.";
     else {
       const status = probeNote("moveFaces", probe);
       text = status?.text ?? "";

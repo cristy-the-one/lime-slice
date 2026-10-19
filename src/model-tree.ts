@@ -702,9 +702,10 @@ export function opLabel(op: ModelOp): string {
     case "extrude": {
       const verb = op.op === "fuse" ? "Extrude" : `${BOOLEAN_VERB[op.op]} extrude`;
       const outline = op.loops?.length ? `${op.loops.length}-loop profile` : `${op.profile?.length ?? 0}-point profile`;
+      // The depth keeps its sign, which says the side, and its unit, as every other row does.
       const reach = op.upTo != null
         ? "up to a face"
-        : `${n(Math.abs(op.depth))}${op.depth2 != null ? ` and ${n(op.depth2)}` : op.symmetric ? " both ways" : ""}`;
+        : `${n(op.depth)}${op.depth2 != null ? ` and ${n(op.depth2)}` : ""} mm${op.depth2 == null && op.symmetric ? " both ways" : ""}`;
       const draft = op.draftDeg != null && op.draftDeg !== 0 ? `, draft ${n(op.draftDeg)}°` : "";
       return `${verb} ${outline} ${reach}${draft}`;
     }
@@ -729,8 +730,9 @@ export function opLabel(op: ModelOp): string {
     // --- A1 group: the row is the composite's name, not a list of its steps. ---
     case "group":
       return op.label;
+    // A prism on one face adds or cuts material; it does not move the face, so it is not called a pull.
     case "faceExtrude": {
-      const verb = op.distance < 0 ? "Push" : "Pull";
+      const verb = op.distance < 0 ? "Cut" : "Extrude";
       const draft = op.draftDeg ? `, draft ${n(op.draftDeg)}°` : "";
       const until = op.upTo !== undefined ? ", up to a face" : "";
       return `${verb} face ${n(Math.abs(op.distance))} mm${draft}${until}`;

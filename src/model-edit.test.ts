@@ -104,6 +104,17 @@ const pieceTree = newTree("plate-piece#1", { kind: "piece", tree: "plate#1", nod
 eq("a piece's root is not", editRefusal(pieceTree, 0), "This piece is as its split cut it. Edit that split in the part it came from.");
 eq("the broken step itself can be edited", editRefusal(broke, 7), null);
 eq("a step under a broken one cannot", editRefusal(broke, 8), "A step above this one cannot be rebuilt. Edit or delete that step first.");
+// P1. Push/Pull steps reopen Push/Pull on their faces with their distance.
+const pulls = [
+  { kind: "moveFaces", faces: [{ face: 1, distance: 10 }] },
+  { kind: "faceExtrude", face: 5, distance: -3, draftDeg: 2 },
+  { kind: "moveFaces", faces: [{ face: 1, distance: 4 }, { face: 2, distance: 6 }] },
+] as ModelOp[];
+const pulled = pulls.reduce((tree, op, i) => apply(tree, op, 8000 + i), start);
+eq("a pull and a prism can be edited", [editRefusal(pulled, 1), editRefusal(pulled, 2)], [null, null]);
+eq("a move with a distance per face has no one field", editRefusal(pulled, 3), "This step has no edit panel yet. Delete it and apply it again with new numbers.");
+eq("a pull opens Push/Pull on its face", editPanel(pulls[0]!, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }, [0, 0, 0]), { tool: "pushpull", fields: { modelPull: 10 }, faces: [1] });
+eq("a prism opens on its one face", editPanel(pulls[1]!, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }, [0, 0, 0]), { tool: "pushpull", fields: { modelPull: -3 }, faces: [5] });
 eq("an edit of the root starts from its primitive", editedOp(line, 0), { kind: "root", ...boxSpec });
 eq("the header names the step and its label", [editHead(line, 2), editHead(line, 0), editHead(edited, 7)], ["Editing step 2: Hole ⌀4 depth 8", "Editing the new solid: Box 20×20×20", "Editing step 3: Round"]);
 const extrudeRoot = { kind: "extrude" as const, op: "fuse" as const, origin: [0, 0, 0] as Vec3, turn: [0, 0, 0] as Vec3, profile: [[0, 0], [10, 0], [10, 10], [0, 10]] as [number, number][], depth: 10 };

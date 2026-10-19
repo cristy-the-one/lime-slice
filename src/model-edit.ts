@@ -101,7 +101,7 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for a face extrude, a face move, or a group that is not a feature, a pattern, a mirror, a sketch extrude or revolve, or holes from a sketch. An extrude, a revolve, or a loft reopens its sketch. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
+/** Whether the app has a panel for `op`: not yet for a face move with a distance per face, or a group that is not a feature, a pattern, a mirror, a sketch extrude or revolve, or holes from a sketch. An extrude, a revolve, or a loft reopens its sketch. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
 function hasPanel(op: ModelOp): boolean {
   // --- A3 composite features: a pocket, boss, texture, array, ribs, or text group reopens its panel. ---
   // --- A4. A pattern or a mirror group reopens that panel too. ---
@@ -112,7 +112,9 @@ function hasPanel(op: ModelOp): boolean {
   // --- end A3 ---
   // --- F3. A loft, including a sweep stored as a loft, reopens its sketches. ---
   if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft") return true;
-  return !(op.kind === "faceExtrude" || op.kind === "moveFaces");
+  // P1. A push/pull reopens Push/Pull on its faces. A move with a distance per face has no one field to show.
+  if (op.kind === "moveFaces") return op.faces.length > 0 && op.faces.every((row) => row.distance === op.faces[0]!.distance);
+  return true;
 }
 
 /** The op an edit of `id` starts from: its own, the primitive a new solid's root is, or the feature a sketch-started root is. */
@@ -367,11 +369,14 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
       return { tool: "scale", fields: { modelFactor: op.factor } };
     case "join":
       return { tool: "boolean", fields: {}, boolOp: op.op, join: { name: op.tool.name, keepTool: op.keepTool } };
+    // P1. Push/Pull opens on the step's faces with its distance. A prism stays a prism when it is updated.
+    case "faceExtrude":
+      return { tool: "pushpull", fields: { modelPull: op.distance }, faces: [op.face] };
+    case "moveFaces":
+      return { tool: "pushpull", fields: { modelPull: op.faces[0]?.distance ?? 0 }, faces: op.faces.map((row) => row.face) };
     case "extrude":
     case "revolve":
     case "loft":
-    case "faceExtrude":
-    case "moveFaces":
       // `editRefusal` turns these away before a panel opens.
       throw new Error(`No edit panel for a ${op.kind} step`);
     case "group": {

@@ -176,7 +176,9 @@ export interface HudMount {
 /**
  * The floating box. `at` is in the parent's coordinates, the same way the drag tip is placed.
  * Keys are taken while it is open: on the box itself, and from anywhere else, so a drag that
- * still owns the canvas can be typed into. Ctrl, Cmd and Alt are left for the app.
+ * still owns the canvas can be typed into. The live number is selected, so the first key typed
+ * replaces it, as in a CAD dimension box. Esc and Enter work with any modifier held, and so do
+ * digits, since Ctrl and Alt are held through a drag; other Ctrl, Cmd and Alt keys are left for the app.
  */
 export function mountHud(parent: HTMLElement): HudMount {
   const element = document.createElement("div");
@@ -213,7 +215,15 @@ export function mountHud(parent: HTMLElement): HudMount {
     element.style.top = `${spot.top}px`;
   };
 
-  const paint = () => {
+  /** The live number, selected while nothing is typed, so a key replaces it instead of adding to it. */
+  const selectLive = (input: HTMLInputElement | undefined) => {
+    if (!input || !shown || model.draft != null || document.activeElement !== input) return;
+    if (input.selectionStart === 0 && input.selectionEnd === input.value.length) return;
+    input.select();
+  };
+
+  /** `force` writes the active field even while it has the caret: a key the box took itself changed it. */
+  const paint = (force = false) => {
     live.textContent = model.error ? `${hudText(model)}. ${model.error}` : hudText(model);
     error.textContent = model.error ?? "";
     element.dataset.hud = hudText(model);
@@ -225,19 +235,20 @@ export function mountHud(parent: HTMLElement): HudMount {
       const expression = typeof stored === "string" && stored.trim() !== "" && !isPlainNumber(stored);
       const focused = document.activeElement === input;
       const text = index === model.active && model.draft != null ? model.draft : focused && expression && stored ? stored.trim() : formatNumber(field.value, field.places ?? 1);
-      if (!(focused && model.draft != null) && input.value !== text) input.value = text;
+      if ((force || !(focused && model.draft != null)) && input.value !== text) input.value = text;
       input.style.width = `${Math.min(24, Math.max(4, text.length + 1))}ch`;
       input.classList.toggle("is-active", index === model.active);
       input.setAttribute("aria-invalid", model.error && index === model.active ? "true" : "false");
       const mark = input.parentElement?.querySelector<HTMLElement>(":scope > .expr-mark");
       if (mark) mark.hidden = !expression || focused;
     });
+    selectLive(inputs[model.active]);
     if (shown) place();
   };
 
-  const apply = (result: HudResult) => {
+  const apply = (result: HudResult, force = false) => {
     model = result.model;
-    paint();
+    paint(force);
     if (result.type === "commit") commitCb({ values: result.values, texts: result.texts });
     if (result.type === "cancel") cancelCb();
     if (result.type === "change" && model.draft != null) {
@@ -246,20 +257,25 @@ export function mountHud(parent: HTMLElement): HudMount {
     }
     const input = inputs[model.active];
     if (shown && input && document.activeElement !== input) input.focus({ preventScroll: true });
+    selectLive(input);
   };
 
   const onKey = (ev: KeyboardEvent) => {
     if (!shown) return;
+    // A box whose stage was hidden under it is not on screen, and must not take the app's keys.
+    if (parent.closest("[hidden]") || !element.isConnected) return;
     // --- S4. A driving-dimension label is its own editor. Leave its keys alone. ---
     if (ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) return;
-    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const key = keyName(ev.key);
+    const held = ev.ctrlKey || ev.metaKey || ev.altKey;
+    // Ctrl snaps and Alt adds material through a drag, so Esc, Enter and a typed number still reach the box.
+    if (held && key !== "Escape" && key !== "Enter" && !HELD_EDITABLE.test(key)) return;
     const command = key === "Tab" || key === "Enter" || key === "Escape";
     const inside = element.contains(ev.target as Node);
-    if (inside && !command) return;
+    if (inside && !command && !held) return;
     if (!command && (key.length !== 1 || !EDITABLE.test(key)) && key !== "Backspace" && key !== "Delete") return;
     ev.preventDefault();
-    apply(hudKey(model, key, params, ev.shiftKey));
+    apply(hudKey(model, key, params, ev.shiftKey), inside);
   };
 
   const onInput = (ev: Event) => {
@@ -295,6 +311,7 @@ export function mountHud(parent: HTMLElement): HudMount {
       input.addEventListener("focus", () => {
         if (model.active !== index) model = { ...model, active: index, draft: null, error: null };
         paint();
+        selectLive(input);
       });
       const unit = document.createElement("span");
       unit.className = "interact-hud-unit";
@@ -328,6 +345,7 @@ export function mountHud(parent: HTMLElement): HudMount {
       rebuild();
       paint();
       inputs[0]?.focus({ preventScroll: true });
+      selectLive(inputs[0]);
     },
     move(spot) {
       at = spot;
@@ -365,6 +383,8 @@ export function mountHud(parent: HTMLElement): HudMount {
 }
 
 const EDITABLE = /^[0-9A-Za-z_+\-*/^(). ]$/;
+/** What the box still takes while Ctrl, Cmd or Alt is down: a number, not a letter that may be a shortcut. */
+const HELD_EDITABLE = /^[0-9.\-]$/;
 
 function keyName(key: string): string {
   if (key === "NumpadEnter") return "Enter";

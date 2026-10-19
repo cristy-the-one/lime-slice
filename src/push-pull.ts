@@ -6,7 +6,7 @@
  */
 
 import { dragAxis, type AxisDrag, type FaceLevel, type Ray } from "./interact/drag-axis.ts";
-import { facePrism } from "./interact/ghosts.ts";
+import { facePrism, radialShift } from "./interact/ghosts.ts";
 import { formatNumber, type HudField } from "./interact/hud.ts";
 import { dot, scale, sub, type Vec3 } from "./model-drag.ts";
 import { faceExtrudeOp, moveFacesOp } from "./model-request.ts";
@@ -44,16 +44,64 @@ export interface PullDrag {
   face: FaceLevel | null;
 }
 
-/** Hover, before a drag. The last distance is named once one has been made. */
+/** Hover, before a drag. A double-click repeats the last pull while that pull is the step on screen. */
 export function pullHint(previous: number | null): string {
-  const repeat = previous != null && previous !== 0 ? `${formatNumber(Math.abs(previous), 1)} mm` : "the last distance";
-  return `Drag to push or pull · Alt: add material · double-click: repeat ${repeat}`;
+  const base = "Drag to push or pull · Alt: add or cut on this face only";
+  if (previous == null || previous === 0) return base;
+  return `${base} · double-click: repeat ${formatNumber(Math.abs(previous), 1)} mm`;
 }
 
-/** After the pointer lets go. Tab, within {@link TAB_EDIT_MS}, edits this step. */
-export function pullDone(distance: number): string {
+/** After the pointer lets go. Tab, within {@link TAB_EDIT_MS}, edits this step. The new volume stays in the readout. */
+export function pullDone(distance: number, volumeMm3?: number | null): string {
   const verb = distance < 0 ? "Pushed" : "Pulled";
-  return `${verb} ${formatNumber(Math.abs(distance), 1)} mm · Tab to edit`;
+  const volume = volumeMm3 != null && Number.isFinite(volumeMm3) ? ` · Volume ${formatNumber(volumeMm3, 0)} mm³` : "";
+  return `${verb} ${formatNumber(Math.abs(distance), 1)} mm · Tab to edit${volume}`;
+}
+
+/** A push or pull is at most this many times the larger of the bed's and the part's diagonal. */
+export const PULL_REACH = 10;
+
+/** The longest push or pull for a part whose box diagonal is `partMm` on a bed whose diagonal is `bedMm`. */
+export function pullLimit(partMm: number, bedMm: number): number {
+  const base = Math.max(Number.isFinite(partMm) ? partMm : 0, Number.isFinite(bedMm) ? bedMm : 0, 1);
+  return PULL_REACH * base;
+}
+
+/** How deep the solid goes behind a planar face: from the face's plane to its farthest corner against `normal`. */
+export function depthBehind(positions: ArrayLike<number>, at: Vec3, normal: Vec3): number | null {
+  const n = unit(normal);
+  if (!n) return null;
+  const level = dot(at, n);
+  let deepest = 0;
+  for (let i = 0; i + 2 < positions.length; i += 3) {
+    const depth = level - ((positions[i] ?? 0) * n[0] + (positions[i + 1] ?? 0) * n[1] + (positions[i + 2] ?? 0) * n[2]);
+    if (depth > deepest) deepest = depth;
+  }
+  return deepest;
+}
+
+/**
+ * Why a push or pull is refused before the kernel is asked, or null. A distance past `limitMm` would build a part no
+ * printer holds. A move that pushes a face as deep as the part goes through it, where the kernel can only say the
+ * neighbours cannot follow; a prism (Alt) may cut through, so the sentence offers that for one face. `depths` are the
+ * faces' depths behind them, null where unknown (a curved face). The depth is a coarse bound, to the part's farthest
+ * corner behind the face's plane: it never refuses a push that fits, and a thin wall of an L or a U is left to the kernel.
+ */
+export function pullRefusal(kind: PullKind, distance: number, depths: readonly (number | null)[], limitMm: number, single = true): string | null {
+  if (!Number.isFinite(distance)) return "Type a distance in millimetres.";
+  if (Math.abs(distance) > limitMm) {
+    return `${formatNumber(Math.abs(distance), 1)} mm is farther than any printer reaches. A push or pull goes up to ${formatNumber(limitMm, 0)} mm here.`;
+  }
+  if (kind === "move" && distance < 0) {
+    const through = depths.filter((depth): depth is number => depth != null && -distance >= depth - 1e-6);
+    if (through.length > 0) {
+      const depth = Math.min(...through);
+      // Alt makes a prism on one face only, so several faces are only told to push less.
+      const alt = single ? ", or hold Alt to cut through" : "";
+      return `That push goes through the part: it is ${formatNumber(depth, 1)} mm deep there. Push less${alt}.`;
+    }
+  }
+  return null;
 }
 
 /** True while Tab still edits the step just made. */
@@ -88,8 +136,6 @@ export function pullDrag(
     fine?: boolean;
     faces?: readonly FaceLevel[];
     mmPerPx?: number;
-    previous?: number | null;
-    repeat?: boolean;
   } = {},
 ): PullDrag | null {
   const dragged = dragAxis(ray, { origin, direction }, input);
@@ -97,9 +143,13 @@ export function pullDrag(
   return { raw: dragged.raw, distance: dragged.distance, snap: dragged.snap, align: dragged.align, face: dragged.face };
 }
 
+/** A face this close to square with the drag lies at one height along it, so lining up with it means something. */
+export const LEVEL_PARALLEL = 0.99;
+
 /**
- * Signed heights of the faces that are not being dragged, along `direction` from `origin`.
- * A face whose centre is on the axis is skipped: snapping to it would not move anything.
+ * Signed heights of the faces that are not being dragged, along `direction` from `origin`: only faces parallel to the
+ * drag, at their plane, as a CAD push snaps to another face's level. A side wall's middle is no height at all.
+ * A face at the origin's own height is skipped: snapping to it would not move anything.
  */
 export function pullLevels(
   faces: readonly PullFace[],
@@ -112,6 +162,8 @@ export function pullLevels(
   const out: FaceLevel[] = [];
   for (const face of faces) {
     if (skip.has(face.index)) continue;
+    const normal = unit(face.normal);
+    if (!normal || Math.abs(dot(normal, dir)) < LEVEL_PARALLEL) continue;
     const delta = sub(face.at, origin);
     const distance = dot(delta, dir);
     if (!Number.isFinite(distance) || Math.abs(distance) < 1e-6) continue;
@@ -146,7 +198,11 @@ export function pullGhost(
   const parts: Float32Array[] = [];
   let total = 0;
   for (const face of faces) {
-    const soup = facePrism(faceTriangles(positions, triangles, face.index), face.normal, distance);
+    // A cylinder moves along its radius everywhere, not along the one normal under the pointer.
+    const radial = face.surface === "cylinder" && face.axis && face.axisPoint;
+    const soup = radial
+      ? radialShift(faceTriangles(positions, triangles, face.index), face.axisPoint!, face.axis!, distance * axisSense(face))
+      : facePrism(faceTriangles(positions, triangles, face.index), face.normal, distance);
     if (soup.length === 0) continue;
     parts.push(soup);
     total += soup.length;
@@ -198,6 +254,31 @@ export function distanceForDiameter(faces: readonly PullFace[], diameter: number
   return (diameter / 2 - only.radiusMm) / away;
 }
 
+/**
+ * A curved face's outward normal at `at`, in the solid's frame. The kernel sends a normal for planar faces only, and the
+ * mean of a cylinder's triangle normals points nowhere useful. Away from the axis for a cylinder or a cone, away from the
+ * centre for a sphere, then turned to the side the mesh triangle under the pointer faces: inward on a hole's wall.
+ * Null when the point is on the axis, or the face is not one of these.
+ */
+export function curvedNormal(
+  face: Pick<PullFace, "surface" | "axisPoint" | "axis">,
+  at: Vec3,
+  meshNormal: Vec3 | null,
+): Vec3 | null {
+  if (!face.surface || !face.axisPoint) return null;
+  const fromAxis = sub(at, face.axisPoint);
+  let radial = fromAxis;
+  if (face.surface !== "sphere") {
+    const axis = face.axis ? unit(face.axis) : null;
+    if (!axis) return null;
+    radial = sub(fromAxis, scale(axis, dot(fromAxis, axis)));
+  }
+  const out = unit(radial);
+  if (!out) return null;
+  if (meshNormal && dot(out, meshNormal) < 0) return [-out[0], -out[1], -out[2]];
+  return out;
+}
+
 /** +1 when the outward normal points away from the axis (a boss), −1 when it points toward it (a hole). */
 function axisSense(face: PullFace): number {
   if (!face.axis || !face.axisPoint) return 1;
@@ -215,25 +296,4 @@ function unit(v: Vec3): Vec3 | null {
   const length = Math.hypot(v[0], v[1], v[2]);
   if (!(length > 1e-12)) return null;
   return [v[0] / length, v[1] / length, v[2] / length];
-}
-
-/** The area-weighted centre is not here. The mean of the face's triangle corners is enough to seat a snap. */
-export function faceCentre(positions: ArrayLike<number>, triangles: ArrayLike<number>, face: number): Vec3 | null {
-  let x = 0;
-  let y = 0;
-  let z = 0;
-  let count = 0;
-  const tris = Math.min(triangles.length, Math.floor(positions.length / 9));
-  for (let tri = 0; tri < tris; tri += 1) {
-    if (triangles[tri] !== face) continue;
-    const base = tri * 9;
-    for (let corner = 0; corner < 3; corner += 1) {
-      x += positions[base + corner * 3] ?? 0;
-      y += positions[base + corner * 3 + 1] ?? 0;
-      z += positions[base + corner * 3 + 2] ?? 0;
-      count += 1;
-    }
-  }
-  if (count === 0) return null;
-  return [x / count, y / count, z / count];
 }

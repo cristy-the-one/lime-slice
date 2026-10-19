@@ -2,7 +2,7 @@
  * The edge drag's geometry and wording, without WebGL: which faces an edge belongs to, which way
  * the knob points, which edges move together, and how a probe's largest size clamps the radius.
  */
-import { blendDirection, blendRadius, clampBlendSize, edgeAppliedNote, edgeDragEdges, edgeDragKind, edgeDragNote, edgeDragOp, edgeDragRefusal, edgeFrame, edgeHoverHint, facesOnEdge, knobAt, tabStillOpen, EDGE_EDIT_MS } from "./edge-drag.ts";
+import { blendDirection, blendRadius, edgeAppliedNote, edgeDragEdges, edgeDragKind, edgeDragNote, edgeDragOp, edgeDragRefusal, edgeFrame, edgeHoverHint, edgeIsSmooth, edgeSides, edgeSizeRefusal, facesOnEdge, knobAt, tabStillOpen, EDGE_EDIT_MS } from "./edge-drag.ts";
 import type { Vec3 } from "../model-drag.ts";
 
 let failed = 0;
@@ -62,10 +62,6 @@ eq("a size past the largest that fits is clamped", blendRadius({ origin: [4, 5, 
 eq("the far side of the edge is no radius", blendRadius({ origin: [-2, 5, 0], direction: [0, -1, 0] }, [0, 0, 0], [1, 0, 0]), 0);
 eq("a ray along the bisector has no radius", blendRadius({ origin: [0, 0, 5], direction: [1, 0, 0] }, [0, 0, 0], [1, 0, 0]), null);
 
-eq("a size inside the limit is kept", clampBlendSize(1, 2.5), { size: 1, clamped: false });
-eq("a size past the limit takes the limit", clampBlendSize(10, 2.5), { size: 2.5, clamped: true });
-eq("no limit leaves the size", clampBlendSize(4, null), { size: 4, clamped: false });
-eq("a negative drag is no radius", clampBlendSize(-1, 2), { size: 0, clamped: false });
 
 eq("the op names the edges and the size", edgeDragOp("chamfer", [1, 4], 0.5), { kind: "chamfer", edges: [1, 4], size: 0.5 });
 eq("the hover hint names one edge", edgeHoverHint(1), "Drag to fillet · Alt: chamfer · type a size");
@@ -77,6 +73,42 @@ eq("a refusal keeps the probe's sentence and its largest size", edgeDragRefusal(
 eq("the applied note offers Tab", edgeAppliedNote("fillet", 2), "Fillet 2 mm · Tab to edit");
 check("Tab still reaches a step inside the window", tabStillOpen(1000, 1000 + EDGE_EDIT_MS));
 check("Tab misses a step once the window has passed", !tabStillOpen(1000, 1000 + EDGE_EDIT_MS + 1));
+
+// A tangent edge offers no knob: the faces either side of it face the same way.
+const edgeLine = [0, 0, 0, 10, 0, 0];
+const square = [0, 0, 0, 10, 0, 0, 0, 10, 0, /* the other face, at 90° */ 0, 0, 0, 0, 0, 10, 10, 0, 0];
+eq("a square corner is not smooth", edgeIsSmooth(square, [0, 1], edgeLine), false);
+const flat = [0, 0, 0, 10, 0, 0, 0, 10, 0, /* the other face, on in the same plane */ 0, 0, 0, 10, -10, 0, 10, 0, 0];
+eq("faces that carry on flat across the edge are smooth", edgeIsSmooth(flat, [0, 1], edgeLine), true);
+const tangent = [0, 0, 0, 10, 0, 0, 0, 10, 0, /* 2° off flat, as a fillet meets its face */ 0, 0, 0, 10, -10, -Math.tan((2 * Math.PI) / 180) * 10, 10, 0, 0];
+eq("faces 2° off flat are smooth", edgeIsSmooth(tangent, [0, 1], edgeLine), true);
+const bent = [0, 0, 0, 10, 0, 0, 0, 10, 0, /* 10° off flat */ 0, 0, 0, 10, -10, -Math.tan((10 * Math.PI) / 180) * 10, 10, 0, 0];
+eq("faces 10° off flat are a corner", edgeIsSmooth(bent, [0, 1], edgeLine), false);
+eq("one face alone is not judged smooth", edgeIsSmooth(square.slice(0, 9), [0], edgeLine), false);
+
+eq("a typed 0 is refused", edgeSizeRefusal("fillet", 0), "A fillet needs a radius of at least 0.05 mm.");
+eq("a typed negative chamfer is refused", edgeSizeRefusal("chamfer", -2), "A chamfer needs a distance of at least 0.05 mm.");
+eq("a typed 2 is taken", edgeSizeRefusal("fillet", 2), null);
+
+// C20. The blend ghost reads each edge point's two faces from the mesh: on a cube's top front edge, the top and the front.
+{
+  const q = (a: Vec3, b: Vec3, c: Vec3, d: Vec3) => [...a, ...b, ...c, ...a, ...c, ...d];
+  const cube = [
+    ...q([0, 0, 0], [0, 10, 0], [10, 10, 0], [10, 0, 0]),
+    ...q([0, 0, 10], [10, 0, 10], [10, 10, 10], [0, 10, 10]),
+    ...q([0, 0, 0], [10, 0, 0], [10, 0, 10], [0, 0, 10]),
+    ...q([0, 10, 0], [0, 10, 10], [10, 10, 10], [10, 10, 0]),
+    ...q([0, 0, 0], [0, 0, 10], [0, 10, 10], [0, 10, 0]),
+    ...q([10, 0, 0], [10, 10, 0], [10, 10, 10], [10, 0, 10]),
+  ];
+  const faces = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5];
+  const sides = edgeSides(cube, faces, [0, 0, 10, 5, 0, 10, 10, 0, 10]);
+  const round = (v: readonly number[]) => v.map((n) => Math.round(n * 1e6) / 1e6 + 0);
+  eq("three edge points, each with its two faces", sides.length, 3);
+  eq("the faces are the top and the front, not the end face at a corner", sides.map((side) => [round(side.n1), round(side.n2)].sort().join(" ")), Array(3).fill("0,-1,0 0,0,1"));
+  eq("a cube's edge is convex", sides.map((side) => side.convex), [true, true, true]);
+  eq("into the top is +Y, into the front is −Z", round(sides[1]!.n1[2] === 1 ? sides[1]!.w1 : sides[1]!.w2), [0, 1, 0]);
+}
 
 if (failed > 0) {
   console.error(`${failed} failed`);

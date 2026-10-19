@@ -29,7 +29,10 @@ export interface SnapPoint {
   kind: "endpoint" | "midpoint" | "centre" | "intersection" | "vertex" | "edge-midpoint";
 }
 
-/** A curve on the plane. An arc is the one from `a` to `b` that passes through `through`. */
+/**
+ * A curve on the plane. An arc is the one from `a` to `b` that passes through `through`. A sketch polyline is a spline's
+ * samples: its two ends are endpoints and its middle is the midpoint, and its samples are only on-curve.
+ */
 export type SnapEntity =
   | { kind: "segment"; a: Pt; b: Pt }
   | { kind: "polyline"; points: readonly Pt[] }
@@ -227,6 +230,15 @@ function pointsOf(entities: readonly SnapEntity[], side: "sketch" | "solid"): Sn
     if (entity.kind === "segment") {
       out.push({ at: entity.a, kind: endKind }, { at: entity.b, kind: endKind });
       out.push({ at: mid(entity.a, entity.b), kind: midKind });
+    } else if (entity.kind === "polyline" && side === "sketch") {
+      // A spline's samples are 0.5 mm apart: as endpoints, one beside its end won the snap over the end itself.
+      const pts = entity.points;
+      const first = pts[0];
+      const last = pts[pts.length - 1];
+      if (first) out.push({ at: first, kind: endKind });
+      if (last && pts.length > 1) out.push({ at: last, kind: endKind });
+      const middle = halfway(pts);
+      if (middle) out.push({ at: middle, kind: midKind });
     } else if (entity.kind === "polyline") {
       const pts = entity.points;
       for (let i = 0; i < pts.length; i += 1) {
@@ -248,6 +260,26 @@ function pointsOf(entities: readonly SnapEntity[], side: "sketch" | "solid"): Sn
     }
   }
   return out;
+}
+
+/** The point half way along a polyline, by length. */
+function halfway(points: readonly Pt[]): Pt | null {
+  if (points.length < 2) return null;
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) total += Math.hypot(points[i]![0] - points[i - 1]![0], points[i]![1] - points[i - 1]![1]);
+  if (!(total > 0)) return null;
+  let left = total / 2;
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1]!;
+    const b = points[i]!;
+    const step = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (step >= left && step > 0) {
+      const t = left / step;
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+    left -= step;
+  }
+  return points[points.length - 1]!;
 }
 
 function intersections(entities: readonly SnapEntity[]): Pt[] {

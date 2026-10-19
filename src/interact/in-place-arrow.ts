@@ -5,12 +5,9 @@
  * view's arrow already leaves (a cylinder of length 0.55 centred 0.4 handle-units out).
  */
 
-import { add, normalize, scale, type DragHandle, type Vec3 } from "../model-drag.ts";
+import { normalize, scale, type DragHandle, type Vec3 } from "../model-drag.ts";
 
 export type { Vec3 };
-
-/** Handle units from the face to the near end of the shaft. */
-export const ARROW_CLEARANCE = 0.125;
 
 export interface InPlaceArrowSpec {
   /** World point on the face or region. The arrow is seated here, not on the dock. */
@@ -65,10 +62,3 @@ export function inPlaceArrow(spec: InPlaceArrowSpec): InPlaceArrowHandle {
   };
 }
 
-/**
- * Where the shaft begins, in world millimetres. `handleMm` is one handle unit at the current zoom.
- * The point is strictly along the arrow, so a shaft drawn from here does not enter the face.
- */
-export function arrowShaftStart(at: Vec3, dir: Vec3, handleMm: number): Vec3 {
-  return add(at, scale(normalize(dir), ARROW_CLEARANCE * Math.max(0, handleMm)));
-}
