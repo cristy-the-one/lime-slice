@@ -426,8 +426,9 @@ function trimmed(value: number): string {
 export function rangeNote(tool: FeatureTool, read: (id: string) => number): string | null {
   if (typeof document === "undefined") return null;
   // A field that takes an expression is a text input, so the range is read from its attributes.
-  for (const input of document.querySelectorAll<HTMLInputElement>("#modelPanel label[data-for] input:is([min], [max])")) {
-    const label = input.closest<HTMLElement>("label");
+  // An array, as the MCP's DOM types have no NodeList iterator.
+  for (const input of Array.from(document.querySelectorAll<HTMLInputElement>("#modelPanel label[data-for] input:is([min], [max])"))) {
+    const label = input.closest("label");
     if (!input.id || !label || label.closest("[hidden]") || !(label.dataset.for ?? "").split(" ").includes(tool)) continue;
     const value = read(input.id);
     const name = input.getAttribute("aria-label")?.split(",")[0] ?? input.id;
