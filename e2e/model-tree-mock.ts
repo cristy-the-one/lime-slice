@@ -32,6 +32,8 @@ interface Handlers {
   apply?(request: Body, parent: MockSolid, tool?: MockSolid): Built;
   /** A dry-run of `request.op` on `on`, the solid of the node it names. */
   probe?(request: Body, on: MockSolid): Body | Promise<Body>;
+  /** --- A5. The edges step `request.node` made. Absent answers the first few edges of that step's solid. --- */
+  stepEdges?(request: Body, on: MockSolid): Body;
   /** The shape a dry-run that works answers when the request asks for a preview; without it the mock sends none. */
   preview?(request: Body, on: MockSolid, tool?: MockSolid): MockSolid | null;
   /** An answer of its own for a jump, such as a step that no longer rebuilds. Null answers as usual. */
@@ -236,6 +238,9 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       }
       case "distance":
         return { id: node, distanceMm: handlers.distanceMm ?? 20 };
+      // --- A5. Indexes of the edges one step made. The real call answers them on the current solid. ---
+      case "stepEdges":
+        return handlers.stepEdges?.(request, base.solid) ?? { edges: base.solid.edges.slice(0, 4).map((edge) => edge.id) };
       case "drop": {
         const gone = subtree(doc, node);
         for (const id of gone) doc.delete(id);

@@ -175,6 +175,11 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="btn mode" id="modelWpBed" type="button" data-wp="bed" aria-pressed="false" data-tip="Under the middle of the part, W up">Bed</button>
                   <button class="btn mode" id="modelWpFace" type="button" data-wp="face" aria-pressed="false" data-tip="On a picked flat face, W out of it">Face</button>
                 </div>
+                <!-- A5: edges a step made. Picked is today's fillet; A step takes every edge that history row made. -->
+                <div class="modes" id="modelEdgeModes" data-for="fillet chamfer" role="group" aria-label="Edges">
+                  <button class="btn mode on" id="modelEdgesPicked" type="button" data-edge-mode="picked" aria-pressed="true">Picked</button>
+                  <button class="btn mode" id="modelEdgesStep" type="button" data-edge-mode="step" aria-pressed="false" data-tip="Every sharp edge a history step made that is still on this solid">A step</button>
+                </div>
                 <div class="modes model-plane-modes" id="modelPlaneModes" data-for="split" role="group" aria-label="Plane">
                   <button class="btn mode" id="modelSplitX" type="button" data-plane="x" aria-pressed="false" data-tip="Cut square to X">X</button>
                   <button class="btn mode" id="modelSplitY" type="button" data-plane="y" aria-pressed="false" data-tip="Cut square to Y">Y</button>
@@ -209,6 +214,9 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
                   <!-- P1: the distance, typed. A drag writes the same field. -->
                   <label data-for="pushpull" data-snap="1"><span class="scrub-label" data-scrub>Distance</span><input id="modelPull" type="number" step="0.1" value="0" aria-label="Push or pull distance, mm"></label>
+                  <!-- A5: the step, by its row or by its number. The number has no data-for, so the drag checklist stays on Size. -->
+                  <label data-for="fillet chamfer" data-when="step" data-wide><span>Step</span><select id="modelEdgeStep" aria-label="History step"></select></label>
+                  <label data-when="step" data-snap="1"><span class="scrub-label" data-scrub>Step number</span><input id="modelEdgeNode" type="number" step="1" min="0" value="0" data-whole aria-label="Step number"></label>
                   <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelHoleR" type="number" step="0.1" min="0" value="2" aria-label="Hole radius"></label>
                   <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelHoleD" type="number" step="0.1" min="0" value="12" aria-label="Hole depth"></label>
                   <label data-for="hole"><span class="scrub-label">Screw</span><select id="modelScrew" aria-label="Screw size: a clearance hole through, counterbored for a socket head" data-tip="A clearance hole through, counterbored for a socket head cap screw"><option value="" disabled>Custom</option>${SCREWS.map((screw) => `<option value="${screw.name}">${screw.name}</option>`).join("")}</select></label>
@@ -238,6 +246,13 @@ export function mountMarkup(root: HTMLElement) {
                   <!-- --- A7 model check --- -->
                   <label data-for="check" data-snap="0.05"><span class="scrub-label" data-scrub>Thin wall</span><input id="modelThin" type="number" step="0.05" min="0.05" max="20" value="0.8" aria-label="Thin wall, mm"></label>
                 </div>
+                <!-- A5: which of the step's edges. The line names the row, "Edges of: Roof (convex)". -->
+                <div class="modes" id="modelEdgeFilter" data-for="fillet chamfer" data-when="step" role="group" aria-label="Which edges">
+                  <button class="btn mode on" id="modelEdgeAll" type="button" data-edge-filter="all" aria-pressed="true">All</button>
+                  <button class="btn mode" id="modelEdgeConvex" type="button" data-edge-filter="convex" aria-pressed="false">Convex</button>
+                  <button class="btn mode" id="modelEdgeConcave" type="button" data-edge-filter="concave" aria-pressed="false">Concave</button>
+                </div>
+                <p class="model-note" id="modelEdgeOf" data-for="fillet chamfer" data-when="step" hidden></p>
                 <div class="model-check-list" id="modelCheckList" data-for="check" role="list" aria-label="Check"></div>
                 <div class="modes" id="modelAcrossModes" data-for="boolean create" data-with="primitive" data-prim="polygon" role="group" aria-label="Width across">
                   <button class="btn mode" id="modelCorners" type="button" aria-pressed="false" data-tip="Size the polygon from corner to corner">Corners</button>

@@ -88,13 +88,17 @@ async function split(page: Page, z: number) {
   await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
 }
 
-/** Pick one edge of the shown solid by scanning the canvas in Edge mode. */
+/** Pick one edge of the shown solid by scanning the canvas in Edge mode. A click on the open panel or on History is skipped. */
 async function pickEdge(page: Page) {
   await page.locator("#modelPickEdge").click();
   const box = (await page.locator("#model").boundingBox())!;
   for (let r = 0; r < 9; r += 1) {
     for (let col = 0; col < 9; col += 1) {
-      await page.mouse.click(box.x + box.width * (0.18 + col * 0.08), box.y + box.height * (0.18 + r * 0.08));
+      const x = box.x + box.width * (0.18 + col * 0.08);
+      const y = box.y + box.height * (0.18 + r * 0.08);
+      const top = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.id ?? "", { x, y });
+      if (top !== "model") continue;
+      await page.mouse.click(x, y);
       if (/Edge \d+/.test(await readout(page).innerText())) return;
     }
   }
