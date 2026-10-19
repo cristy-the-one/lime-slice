@@ -285,3 +285,16 @@ test("every probed tool shows the shape its check built, and Apply ends the tool
   await page.locator("#modelCancel").click();
   await expect(canvas(page)).not.toHaveAttribute("data-preview", /./);
 });
+
+test("colour by step colours only the part's own rows; a tool lane's row tints no face of the part", async ({ page }) => {
+  await joinScene(page);
+  await page.locator("#modelLookOpen").click();
+  await page.locator("#modelColourSteps").check();
+  await expect(page.locator(".mh-swatch")).toHaveCount(3);
+  await expect(row(page, "1/0").locator(".mh-swatch")).toHaveCount(0);
+  await expect(row(page, "1/1").locator(".mh-swatch")).toHaveCount(0);
+  await row(page, "1/1").hover();
+  await expect(canvas(page)).not.toHaveAttribute("data-highlight", /^[1-9]/);
+  await row(page, "2").hover();
+  await expect(canvas(page)).toHaveAttribute("data-highlight", /^[1-9]/);
+});

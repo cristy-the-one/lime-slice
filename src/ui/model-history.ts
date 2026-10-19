@@ -5,7 +5,7 @@
  * and only while the panel can be seen. Nothing here asks the engine anything.
  */
 import { ChevronDown, ChevronRight, Ellipsis, History, Move3d, Pencil, RotateCcw, TriangleAlert, createElement, type IconNode } from "lucide";
-import { historyFolds, historyKey, historyLayout, positionText, presentedRows, rowCount, rowKey, type HistoryLayout, type HistoryRow, type RecipeNote, type RowKey } from "../model-history";
+import { historyFolds, historyKey, historyLayout, positionText, presentedRows, readRow, rowCount, rowKey, type HistoryLayout, type HistoryRow, type RecipeNote, type RowKey } from "../model-history";
 import type { PlaceFields } from "../model-space";
 import { toolKeys, type ModelTree } from "../model-tree";
 import { isMobileLayout } from "../platform";
@@ -39,6 +39,14 @@ interface ModelHistoryHooks {
 
 /** --- A10. Colour by step paints a swatch on each row. Off, the swatches go and the rows repaint. */
 let stepColourOf: ((id: number) => string) | null = null;
+
+/**
+ * A row's step colour. A tool lane's row is a step of another tree: its id names no face of this solid (the join
+ * owns those), so it has no colour.
+ */
+function ownColour(row: { via: readonly number[]; id: number }): string | null {
+  return stepColourOf && row.via.length === 0 ? stepColourOf(row.id) : null;
+}
 
 export function syncStepColours(on: boolean, colour: (id: number) => string) {
   stepColourOf = on ? colour : null;
@@ -361,7 +369,7 @@ function render() {
       rowEls.set(row.key, el);
     }
     // --- A10. The swatch colour is part of the signature, so turning colour by step on repaints the rows.
-    const sig = JSON.stringify([row, layout!.lanes, stepColourOf?.(row.id) ?? ""]);
+    const sig = JSON.stringify([row, layout!.lanes, ownColour(row) ?? ""]);
     // A row being renamed keeps its field; it is painted when the name is done.
     if (row.key !== renaming && rowSigs.get(row.key) !== sig) {
       paintRow(el, row, layout!.lanes);
@@ -503,10 +511,11 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate, :scope > .mh-tool, :scope > .mh-swatch").forEach((node) => node.remove());
   label.before(railSvg(row, lanes));
   // --- A10. The swatch sits after the rail and before the label, and only while colour by step is on.
-  if (stepColourOf) {
+  const colour = ownColour(row);
+  if (colour) {
     const swatch = document.createElement("span");
     swatch.className = "mh-swatch";
-    swatch.style.background = stepColourOf(row.id);
+    swatch.style.background = colour;
     swatch.setAttribute("aria-hidden", "true");
     label.before(swatch);
   }
@@ -576,13 +585,11 @@ function rowOf(target: EventTarget | null): RowKey | null {
   return el?.dataset.row ?? null;
 }
 
-/** --- A10. The history node of the row under `target`. */
+/** --- A10. The history node of the row under `target`, when it is a step of this solid; a tool lane's row is not. */
 function rowNode(target: EventTarget | null): number | null {
-  const el = target instanceof Element ? target.closest<HTMLElement>(".mh-row") : null;
-  const id = el?.dataset.id;
-  if (id == null || id === "") return null;
-  const node = Number(id);
-  return Number.isFinite(node) ? node : null;
+  const key = rowOf(target);
+  const row = key == null ? null : readRow(key);
+  return row && row.via.length === 0 ? row.id : null;
 }
 
 function setFocus(id: RowKey, move: boolean) {
