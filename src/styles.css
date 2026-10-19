@@ -755,6 +755,8 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 /* --- A7 model check --- */
 .model-check-list { display: grid; gap: 4px; margin-top: var(--space-2); }
 .model-check-list[hidden] { display: none !important; }
+.model-check-list > [role="listitem"] { display: grid; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .model-check-row {
   padding: 4px 6px;
   border: 1px solid var(--line);

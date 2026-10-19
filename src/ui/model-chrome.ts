@@ -2135,12 +2135,18 @@ function bindExpressions() {
   }
 }
 
+/** A bad expression's marks go. `aria-invalid` another check set (Check's thin wall) is that check's to clear. */
+function clearExprBad(input: HTMLInputElement) {
+  if (!input.classList.contains("is-bad")) return;
+  input.classList.remove("is-bad");
+  input.removeAttribute("aria-invalid");
+}
+
 function settleExpression(input: HTMLInputElement) {
   const text = input.value.trim();
   if (!text || isPlainNumber(text)) {
     delete input.dataset.expr;
-    input.classList.remove("is-bad");
-    input.removeAttribute("aria-invalid");
+    clearExprBad(input);
     if (input.title) input.title = "";
     input.type = "number";
     showExprMark(input, false);
@@ -2150,8 +2156,7 @@ function settleExpression(input: HTMLInputElement) {
     const value = evaluate(text, fieldParams());
     if (!Number.isFinite(value)) throw new Error(`"${text}" is not a finite number.`);
     input.dataset.expr = text;
-    input.classList.remove("is-bad");
-    input.removeAttribute("aria-invalid");
+    clearExprBad(input);
     input.title = text;
     input.type = "number";
     input.value = fieldText(value);

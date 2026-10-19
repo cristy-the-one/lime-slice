@@ -94,3 +94,34 @@ test("Enter on a focused Model button presses that button, not Apply", async ({ 
   await page.keyboard.press("Enter");
   await expect(page.locator("#modelFeatureMenu")).toBeVisible();
 });
+
+test("Check says why a thin wall cannot be used, and lists its rows as items", async ({ page }) => {
+  await openModel(page, () => ({ ok: true }));
+  await page.locator("#modelToolCheck").click();
+  const rows = page.locator("#modelCheckList [data-check-row]");
+  await expect(rows.first()).toBeVisible();
+  await expect(page.locator("#modelCheckList > [role=listitem] > button[data-check-row]").first()).toBeVisible();
+  const thin = page.locator("#modelThin");
+  for (const [typed, said] of [["0", "Thin wall is at least 0.05 mm."], ["-1", "Thin wall is at least 0.05 mm."], ["", "Type a thin wall in millimetres."], ["25", "Thin wall is at most 20 mm."]] as const) {
+    await thin.selectText();
+    if (typed) await page.keyboard.type(typed);
+    else await page.keyboard.press("Delete");
+    await page.keyboard.press("Tab");
+    await expect(page.locator("#modelNote"), `thin wall "${typed}"`).toHaveText(said);
+    await expect(rows).toHaveCount(0);
+    await expect(thin).toHaveAttribute("aria-invalid", "true");
+  }
+  await thin.selectText();
+  await page.keyboard.type("0.8");
+  await page.keyboard.press("Tab");
+  await expect(rows.first()).toBeVisible();
+  await expect(thin).not.toHaveAttribute("aria-invalid", /.*/);
+});
+
+test("Check says so when its worker fails", async ({ page }) => {
+  await page.route("**/*model-check-worker*", (route) => route.fulfill({ contentType: "text/javascript", body: "throw new Error('boom');" }));
+  await openModel(page, () => ({ ok: true }));
+  await page.locator("#modelToolCheck").click();
+  await expect(page.locator("#modelNote")).toContainText("The check stopped:");
+  await expect(page.locator("#modelCheckList [data-check-row]")).toHaveCount(0);
+});
