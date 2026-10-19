@@ -4377,6 +4377,24 @@ export class Session {
     this.params = "reason" in merged ? {} : merged;
   }
 
+  /**
+   * A call's `params` evaluated in order on top of the session's numbers. A later name may use an
+   * earlier one. The session table is unchanged.
+   */
+  private mergeParams(set: Record<string, unknown>): Record<string, number> | { reason: string } {
+    const out: Record<string, number> = { ...this.params };
+    for (const [name, value] of Object.entries(set)) {
+      if (!PARAM_NAME.test(name)) return { reason: `"${name}" is not a parameter name. Use letters, digits, and underscores.` };
+      try {
+        out[name] = typeof value === "number" ? value : evaluate(String(value), out);
+      } catch (err) {
+        return { reason: `${name}: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      if (!Number.isFinite(out[name])) return { reason: `${name} is not a finite number.` };
+    }
+    return out;
+  }
+
   /** The whole table, in order. The first bad row refuses the set and changes nothing. */
   private evaluateParams(table: Record<string, string | number>): Record<string, number> | { reason: string } {
     const out: Record<string, number> = {};
