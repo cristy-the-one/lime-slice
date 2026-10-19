@@ -1,0 +1,234 @@
+import { expect, test, type Page } from "@playwright/test";
+import { autoSliceOff } from "./auto-slice";
+import { mockModelTree, type MockSolid } from "./model-tree-mock";
+
+type V = [number, number, number];
+
+/** A 20 x 20 x 10 mm box, as the modeler reports it. */
+function boxSolid(volume = 4000): MockSolid {
+  const min: V = [0, 0, 0];
+  const size: V = [20, 20, 10];
+  const [ox, oy, oz] = min;
+  const [sx, sy, sz] = size;
+  const c = (x: number, y: number, z: number): V => [ox + x * sx, oy + y * sy, oz + z * sz];
+  const quads: V[][] = [
+    [c(0, 0, 0), c(0, 1, 0), c(1, 1, 0), c(1, 0, 0)],
+    [c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)],
+    [c(0, 0, 0), c(1, 0, 0), c(1, 0, 1), c(0, 0, 1)],
+    [c(0, 1, 0), c(0, 1, 1), c(1, 1, 1), c(1, 1, 0)],
+    [c(0, 0, 0), c(0, 0, 1), c(0, 1, 1), c(0, 1, 0)],
+    [c(1, 0, 0), c(1, 1, 0), c(1, 1, 1), c(1, 0, 1)],
+  ];
+  const positions: number[] = [];
+  const triangles: number[] = [];
+  quads.forEach((q, face) => {
+    for (const tri of [[0, 1, 2], [0, 2, 3]]) {
+      for (const i of tri) positions.push(...q[i]!);
+      triangles.push(face);
+    }
+  });
+  const corners: V[] = [c(0, 0, 0), c(1, 0, 0), c(1, 1, 0), c(0, 1, 0), c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)];
+  const pairs = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+  const edges = pairs.map(([a, b], id) => {
+    const pa = corners[a!]!;
+    const pb = corners[b!]!;
+    return { id, lengthMm: Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]), points: [...pa, ...pb] };
+  });
+  const faces = quads.map((_, id) => ({ id, areaMm2: 0 }));
+  return { volumeMm3: volume, positions, triangles, faces, edges };
+}
+
+interface Op {
+  kind?: string;
+  size?: number;
+  edges?: number[];
+}
+
+async function openBox(page: Page, probe: (op: Op) => Record<string, unknown>, applied: Op[], preview?: MockSolid) {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: boxSolid().positions } }));
+  await mockModelTree(page, {
+    open: () => boxSolid(),
+    apply: (request) => {
+      applied.push(request.op as Op);
+      return boxSolid(3900);
+    },
+    probe: (request) => probe(request.op as Op),
+    preview: () => preview ?? null,
+  });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
+  // The file input keeps focus after the drop, and a key aimed at it never reaches the view.
+  await page.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  });
+}
+
+/** Move across the solid until an edge lights, and return that knob in page pixels. */
+async function knobAt(page: Page): Promise<{ x: number; y: number }> {
+  const canvas = page.locator("#model");
+  const hit = await canvas.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    for (let y = rect.top + rect.height * 0.12; y <= rect.top + rect.height * 0.88; y += 12) {
+      for (let x = rect.left + rect.width * 0.12; x <= rect.left + rect.width * 0.88; x += 12) {
+        node.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, bubbles: true, pointerId: 1, pointerType: "mouse" }));
+        if (node.dataset.edgeDrag === "hover") return true;
+      }
+    }
+    return false;
+  });
+  expect(hit, "an edge lights when the pointer crosses it").toBe(true);
+  await expect(canvas).toHaveAttribute("data-handles", /edge-blend:/);
+  const box = (await canvas.boundingBox())!;
+  const handles = (await canvas.getAttribute("data-handles")) ?? "";
+  const at = handles.match(/edge-blend:(-?\d+),(-?\d+)/);
+  expect(at).toBeTruthy();
+  return { x: box.x + Number(at![1]), y: box.y + Number(at![2]) };
+}
+
+/** Drag from the knob until the radius passes `min`, and leave the button down. */
+async function dragPast(page: Page, at: { x: number; y: number }, min: number): Promise<{ x: number; y: number }> {
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  const canvas = page.locator("#model");
+  let best = { x: at.x, y: at.y, size: 0 };
+  for (const [dx, dy] of [
+    [140, 0], [-140, 0], [0, 140], [0, -140],
+    [100, 100], [-100, 100], [100, -100], [-100, -100],
+    [180, 40], [-40, 180], [40, -180], [-180, -40],
+  ]) {
+    const x = at.x + dx;
+    const y = at.y + dy;
+    await page.mouse.move(x, y);
+    const size = Number(await canvas.getAttribute("data-edge-size"));
+    if (size > best.size) best = { x, y, size };
+  }
+  if (best.size < min) {
+    const dx = best.x - at.x;
+    const dy = best.y - at.y;
+    const span = Math.hypot(dx, dy) || 1;
+    for (const reach of [220, 320, 420]) {
+      const x = at.x + (dx / span) * reach;
+      const y = at.y + (dy / span) * reach;
+      await page.mouse.move(x, y);
+      const size = Number(await canvas.getAttribute("data-edge-size"));
+      if (size > best.size) best = { x, y, size };
+      if (size >= min) break;
+    }
+  }
+  await page.mouse.move(best.x, best.y);
+  expect(Number(await canvas.getAttribute("data-edge-size")), "the drag moves the radius").toBeGreaterThanOrEqual(min);
+  return { x: best.x, y: best.y };
+}
+
+test("dragging an edge knob fillets it, and Alt chamfers it", async ({ page }) => {
+  const probes: Op[] = [];
+  const applied: Op[] = [];
+  await openBox(page, (op) => {
+    probes.push(op);
+    return { ok: true };
+  }, applied, boxSolid(4100));
+  const at = await knobAt(page);
+  await expect(page.locator("#modelReadout")).toContainText("Drag to fillet");
+  await expect(page.locator("#modelReadout")).toContainText("Alt: chamfer");
+
+  const during = probes.length;
+  const moved = await dragPast(page, at, 0.5);
+  // The probe waits until the pointer has been still. It is what puts the preview on the canvas.
+  await expect(page.locator("#model")).toHaveAttribute("data-preview", "4100.00", { timeout: 2000 });
+  expect(probes.length).toBeGreaterThan(during);
+  await page.mouse.move(moved.x, moved.y);
+  await page.mouse.up();
+  await expect(page.locator("#modelReadout")).toContainText("Tab to edit");
+  expect(applied.at(-1)?.kind).toBe("fillet");
+  expect(applied.at(-1)?.size ?? 0).toBeGreaterThanOrEqual(0.5);
+  await expect(page.locator("#model")).not.toHaveAttribute("data-edge-drag", /./);
+
+  const again = await knobAt(page);
+  await page.keyboard.down("Alt");
+  const alt = await dragPast(page, again, 0.5);
+  await page.mouse.move(alt.x, alt.y);
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  await expect(page.locator("#modelReadout")).toContainText("Chamfer");
+  await expect(page.locator("#modelReadout")).toContainText("Tab to edit");
+  expect(applied.at(-1)?.kind).toBe("chamfer");
+});
+
+test("a typed size fillets the hovered edge", async ({ page }) => {
+  const applied: Op[] = [];
+  await openBox(page, () => ({ ok: true }), applied);
+  await knobAt(page);
+  await page.keyboard.press("2");
+  await expect(page.locator("#tabModel")).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".interact-hud:not([hidden])")).toBeVisible();
+  await expect(page.locator("#model")).toHaveAttribute("data-edge-drag", "type");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("Fillet 2 mm · Tab to edit");
+  expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 2 });
+});
+
+test("maxMm clamps a typed size and the readout says why", async ({ page }) => {
+  const applied: Op[] = [];
+  await openBox(page, (op) => {
+    if ((op.size ?? 0) > 1) return { ok: false, error: "The fillet is too big.", maxMm: 1 };
+    return { ok: true };
+  }, applied);
+  await knobAt(page);
+  // Typing asks the kernel once the box has a number. A drag can be clamped mid-gesture, before
+  // the pointer has travelled far enough for a screen test to see a size past the limit.
+  await page.keyboard.press("5");
+  await expect(page.locator("#model")).toHaveAttribute("data-edge-clamp", "1", { timeout: 2000 });
+  await expect(page.locator("#modelReadout")).toContainText("The largest that fits is 1 mm.");
+  await expect(page.locator("#model")).toHaveAttribute("data-edge-size", "1");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("Fillet 1 mm · Tab to edit");
+  expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 1 });
+});
+
+test("Tab reopens the fillet, Esc cancels, and Enter edits it", async ({ page }) => {
+  const applied: Op[] = [];
+  await openBox(page, () => ({ ok: true }), applied);
+  await knobAt(page);
+  await page.keyboard.press("2");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("Tab to edit");
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#model")).toHaveAttribute("data-edge-drag", "edit");
+  await expect(page.locator(".interact-hud:not([hidden])")).toBeVisible();
+  const input = page.locator(".interact-hud:not([hidden]) input");
+  await input.fill("3");
+  await input.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("Fillet 3 mm · Tab to edit");
+  expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 3 });
+
+  await page.keyboard.press("Tab");
+  await expect(page.locator(".interact-hud:not([hidden])")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".interact-hud:not([hidden])")).toBeHidden();
+  await expect(page.locator("#model")).not.toHaveAttribute("data-edge-drag", /./);
+});
+
+test("P opens Push/Pull, D opens Split, and L still opens Fillet", async ({ page }) => {
+  await openBox(page, () => ({ ok: true }), []);
+  await page.keyboard.press("p");
+  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "pushpull");
+  await page.keyboard.press("p");
+  await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
+  await page.keyboard.press("d");
+  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "split");
+  await page.keyboard.press("d");
+  await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
+  // Fillet's button waits for an edge. Enabling it and pressing L is the same click the shortcut sends.
+  await page.locator("#modelToolFillet").evaluate((button) => button.removeAttribute("disabled"));
+  await page.keyboard.press("l");
+  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "fillet");
+  await expect(page.locator("#modelPanel")).toBeVisible();
+  await expect(page.locator("#model")).not.toHaveAttribute("data-edge-drag", /./);
+});

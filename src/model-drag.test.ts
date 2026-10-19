@@ -79,6 +79,8 @@ function context(primitive: DragContext["primitive"], extra: Partial<DragContext
     extent: 10,
     split: splitAt("z", 5),
     edge: { point: [5, 0, 10], out: [0, -Math.SQRT1_2, Math.SQRT1_2] },
+    // P1. A face under the pointer, so Push/Pull has its arrow. A test that wants none passes pull: null.
+    pull: { at: [5, 5, 10], dir: [0, 0, 1] },
     ...extra,
   };
 }
@@ -97,6 +99,7 @@ for (const tool of MODEL_TOOLS) {
   for (const field of DRAG_FIELDS[tool]) check(`${tool} has a handle for ${field}`, dragged.has(field));
 }
 check("a fillet with no edge has no handle yet", handlesFor("fillet", context("box", { edge: null })).length === 0);
+check("push/pull with no face has no arrow yet", handlesFor("pushpull", context("box", { pull: null })).length === 0);
 check("no tool, no handles", handlesFor(null, context("box")).length === 0);
 
 const docked = (handle: DragHandle) => handle.seat.at === "dock";
@@ -171,7 +174,7 @@ check("measure has two surface points", handlesFor("measure", context("box")).ev
 
 // Every docked handle sits on the dock; only handles that edit a picked feature stay on the solid.
 const everyTool = MODEL_TOOLS.flatMap((tool) => handlesFor(tool, context("box")));
-eq("the origin dot, the blend knob, the split plane and the measure dots stay on the feature", everyTool.filter((handle) => !docked(handle)).map((handle) => handle.id), ["plane", "blend", "blend", "hole-origin", "measure-a", "measure-b", "feat-at", "feat-at", "feat-at"]);
+eq("the origin dot, the blend knob, the split plane, the measure dots, the pull arrow and the feature dots stay on the feature", everyTool.filter((handle) => !docked(handle)).map((handle) => handle.id), ["plane", "blend", "blend", "hole-origin", "measure-a", "measure-b", "pull", "feat-at", "feat-at", "feat-at"]);
 const pocket = handlesFor("pocket", context("box"));
 eq("a pocket's position stays on the face and its depth knob points into it", [pocket.find((handle) => handle.id === "feat-at")!.seat.at, pocket.find((handle) => handle.id === "feat-depth")!.dir], ["feature", [0, 0, -1]]);
 eq("texture pitch knobs are docked", handlesFor("texture", context("box")).filter((handle) => handle.id.startsWith("feat-pitch")).every(docked), true);

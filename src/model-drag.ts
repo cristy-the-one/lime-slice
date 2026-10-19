@@ -11,10 +11,10 @@ import { axesOf, framePose, isIdentityFrame, planePoint, workplaneOnFace, type W
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "check" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text";
+export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "check" | "pushpull" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "check", "pocket", "boss", "texture", "array", "ribs", "text"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "check", "pushpull", "pocket", "boss", "texture", "array", "ribs", "text"];
 
 // --- A3 composite features: one drag entry per feature, behind the single Features button. ---
 const FEATURE_DRAG: readonly ModelTool[] = ["pocket", "boss", "texture", "array", "ribs", "text"];
@@ -43,6 +43,8 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   workplane: ["modelWpX", "modelWpY", "modelWpZ", "modelWpRx", "modelWpRy", "modelWpRz"],
   // --- A7 model check ---
   check: ["modelThin"],
+  // --- P1: the distance a face push or pull writes. The arrow sits on the face, not on the dock. ---
+  pushpull: ["modelPull"],
   // --- A3 composite features ---
   pocket: ["modelFeatW", "modelFeatH", "modelFeatDia", "modelFeatDepth", "modelFeatU", "modelFeatV", "modelFeatBarsV", "modelFeatBarsH", "modelFeatBarW"],
   boss: ["modelFeatW", "modelFeatH", "modelFeatDia", "modelFeatDepth", "modelFeatU", "modelFeatV"],
@@ -122,6 +124,11 @@ export interface DragContext {
     /** Ribs run this way; the pitch knob steps across them. Absent is along U, so pitch follows V. */
     along?: "u" | "v";
   };
+  /**
+   * P1. Where the push/pull arrow sits, in model space, and the outward normal it points along.
+   * Absent, or null, until a face is under the pointer: the tool then has nothing to drag.
+   */
+  pull?: { at: Vec3; dir: Vec3 } | null;
 }
 
 const X: Vec3 = [1, 0, 0];
@@ -148,10 +155,19 @@ function specsFor(tool: ModelTool | null, ctx: DragContext): Spec[] {
   if (tool === "workplane") return workplaneHandles(ctx);
   // --- A7 model check ---
   if (tool === "check") return checkHandles();
+  // --- P1: one arrow on the face, along its outward normal. ---
+  if (tool === "pushpull") return pullHandles(ctx);
   // --- A3 composite features ---
   if (isFeatureDrag(tool)) return featureHandles(tool, ctx);
   // --- end A3 ---
   return [];
+}
+
+/** The in-place arrow. No face, no handle: a push waits until one is under the pointer. */
+function pullHandles(ctx: DragContext): Spec[] {
+  const seat = ctx.pull;
+  if (!seat) return [];
+  return [axisHandle("pull", "arrow", "modelPull", onFeature(seat.at), normalize(seat.dir), "accent", "Distance")];
 }
 
 function axisHandle(

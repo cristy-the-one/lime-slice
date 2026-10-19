@@ -133,6 +133,8 @@ export function mountMarkup(root: HTMLElement) {
                 <span class="model-count" id="modelCount" hidden></span>
                 <div class="model-edit" id="modelEdit" hidden>
                   <span class="model-sep"></span>
+                  <!-- P1: Push/Pull. P. Also the gesture when no other model tool is open. -->
+                  <button class="model-tool" id="modelToolPull" type="button" data-tool="pushpull" aria-pressed="false" data-tip="Push or pull a face. Hold Alt to add or remove material on that face only">Push/Pull</button>
                   <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Fuse, cut, or intersect a primitive or another object on the plate">Boolean</button>
                   <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split along X, Y, Z, or a picked flat face, and tilt the plane">Split</button>
                   <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Round every selected edge in one step">Fillet</button>
@@ -224,6 +226,8 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt A, degrees"></label>
                   <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt B, degrees"></label>
                   <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
+                  <!-- P1: the distance, typed. A drag writes the same field. -->
+                  <label data-for="pushpull" data-snap="1"><span class="scrub-label" data-scrub>Distance</span><input id="modelPull" type="number" step="0.1" value="0" aria-label="Push or pull distance, mm"></label>
                   <!-- A5: the step, by its row or by its number. The number has no data-for, so the drag checklist stays on Size. -->
                   <label data-for="fillet chamfer" data-when="step" data-wide><span>Step</span><select id="modelEdgeStep" aria-label="History step"></select></label>
                   <label data-when="step" data-snap="1"><span class="scrub-label" data-scrub>Step number</span><input id="modelEdgeNode" type="number" step="1" min="0" value="0" data-whole aria-label="Step number"></label>

@@ -68,7 +68,9 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-edge", label: "Pick edges", group: "Model", keys: ["W"], when: "model", target: "#modelPickEdge", keywords: "select edge" },
   { id: "model-boolean", label: "Boolean", group: "Model", keys: ["G"], when: "model", target: "#modelToolBoolean", keywords: "fuse cut intersect box cylinder sphere cone torus wedge polygon tube" },
   { id: "model-join", label: "Boolean with another object", group: "Model", keys: ["Shift+G"], when: "model", keywords: "fuse cut intersect join combine object part piece split import tool" },
-  { id: "model-split", label: "Split with a plane", group: "Model", keys: ["P"], when: "model", target: "#modelToolSplit", keywords: "plane" },
+  { id: "model-split", label: "Split with a plane", group: "Model", keys: ["D"], when: "model", target: "#modelToolSplit", keywords: "plane" },
+  // --- P1: Push/Pull takes P, which Split had. Split is D. P is also the gesture when no model tool is open. ---
+  { id: "model-pushpull", label: "Push/Pull", group: "Model", keys: ["P"], when: "model", target: "#modelToolPull", keywords: "push pull face extrude offset move faces" },
   { id: "model-fillet", label: "Fillet", group: "Model", keys: ["L"], when: "model", target: "#modelToolFillet", keywords: "round edge" },
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
@@ -132,6 +134,8 @@ export const COMMANDS: CommandSpec[] = [
 /** Gestures the sheet lists beside the keys. The pointer code lives in the views. */
 export const MOUSE_HINTS: { gesture: string; label: string }[] = [
   { gesture: "Shift+click", label: "Add or remove a face or edge in Model" },
+  // --- P1 ---
+  { gesture: "Drag a face", label: "Push or pull. Alt adds material." },
   { gesture: "Click empty", label: "Clear the Model selection" },
   { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°" },
   { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring" },
