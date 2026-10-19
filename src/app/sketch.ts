@@ -72,7 +72,10 @@ import {
 } from "../sketch/session";
 import { DRAW_MENU, isDrawTool } from "../sketch/tools";
 // --- S4. Constraints live in the sketch card menu, not on the Model toolbar. ---
-import { CONSTRAIN_MENU, dimensionLabels, firstLineMeasure, isConstrainTool, placedStatus } from "../sketch/constrain";
+import { CONSTRAIN_MENU, dimensionLabels, firstLineMeasure, isConstrainTool, placedStatus, plainDrivingValue, setDrivingEvaluator } from "../sketch/constrain";
+import { evaluate, ExprError } from "../modeling/expr.ts";
+import { isPlainNumber, withExprs } from "../modeling/params.ts";
+import type { Params } from "../modeling/expr.ts";
 import { parseConstraints } from "../sketch/solve";
 import { workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 import {
@@ -139,6 +142,8 @@ export interface SketchHost {
   focus(): Vec3;
   /** How large the part is, in millimetres, for the camera distance and the plane quads. */
   extent(): number;
+  /** Evaluated project parameters. Driving dimensions and the heads-up box read these. */
+  parameters(): Params;
   workplane(): Workplane;
   /** A flat face in model space, or null when the face is curved or missing. The ref is the solid's own frame. */
   faceInfo(face: number): { ref: FaceRef; plane: FacePlane } | null;
@@ -280,6 +285,20 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     button.append(text);
     button.classList.add("is-icon");
   }
+  setDrivingEvaluator((text) => {
+    const plain = plainDrivingValue(text);
+    if (plain != null) return plain;
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    try {
+      const value = evaluate(trimmed, host.parameters());
+      if (!Number.isFinite(value)) return { error: `"${trimmed}" is not a finite number.` };
+      return value;
+    } catch (err) {
+      const message = err instanceof ExprError || err instanceof Error ? err.message : String(err);
+      return { error: message.replace("Set it with model_params first.", "Add it in Parameters, or type a number.") };
+    }
+  });
   // --- F1. Extrude state. The key listener is registered before the HUD so E, M, and Esc are taken first. ---
   interface ExtrudeGesture {
     slots: 1 | 2 | 3;
@@ -292,6 +311,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     dragging: boolean;
     guide: [Vec3, Vec3] | null;
     down: { x: number; y: number; distance: number } | null;
+    /** Heads-up text for distance, the other side, and draft. */
+    texts?: Record<string, string>;
   }
   let gesture: ExtrudeGesture | null = null;
   // --- F2. The axis stays live until a click or a drag locks it. ---
@@ -304,6 +325,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     dragging: boolean;
     crossing: boolean;
     down: { x: number; y: number; angle: number } | null;
+    /** The angle as typed, when it was an expression. */
+    angleText?: string;
   }
   let revolve: RevolveGesture | null = null;
   let revolveNote = "";
@@ -332,6 +355,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     dragging: boolean;
     down: { x: number; y: number; scale: number } | null;
     note: string;
+    /** The scale as typed, when it was an expression. */
+    scaleText?: string;
   }
   let loft: LoftGesture | null = null;
   let sweep: SweepGesture | null = null;
@@ -516,7 +541,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
         host.readout("Each radius and scale is above 0.");
         return;
       }
-      sweep = { ...sweep, scale: value, note: "" };
+      const scaleText = commit.texts[0] ?? undefined;
+      sweep = { ...sweep, scale: value, note: "", ...(scaleText ? { scaleText } : {}) };
       void commitSweep();
       return;
     }
@@ -526,16 +552,18 @@ export function mountSketch(host: SketchHost): { sync(): void } {
         host.readout(typed.error);
         return;
       }
-      revolve = { ...revolve, angle: typed.angle, follow: false };
+      const angleText = commit.texts[0] ?? undefined;
+      revolve = { ...revolve, angle: typed.angle, follow: false, ...(angleText ? { angleText } : {}) };
       void commitRevolve();
       return;
     }
     if (gesture) {
+      gesture = { ...gesture, texts: fieldTexts(extrudeFields(), commit.texts) };
       takeValues(commit.values);
       void commitExtrude();
       return;
     }
-    editor = commitSizes(editor, commit.values);
+    editor = commitSizes(editor, commit.values, commit.texts);
     publish("open");
   });
   hud.onCancel(() => {
@@ -1045,11 +1073,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function syncHud(mode: "open" | "values" | "skip") {
+    hud.setParams(host.parameters());
     if (mode === "skip") return;
     if (sweep && editor.phase === "editing") {
       const fields: HudField[] = [{ id: "scale", label: "Scale", unit: "×", value: scaleOf(sweep.scale) }];
       const at = pointerAt();
-      if (mode === "open" || !hud.shown) hud.open(fields, at);
+      if (mode === "open" || !hud.shown) hud.open(fields, at, host.parameters());
       else hud.setValues(fields.map((field) => field.value));
       hud.move(at);
       return;
@@ -1061,7 +1090,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (revolve && editor.phase === "editing") {
       const fields: HudField[] = [{ id: "angle", label: "Angle", unit: "°", value: revolve.angle }];
       const at = pointerAt();
-      if (mode === "open" || !hud.shown) hud.open(fields, at);
+      if (mode === "open" || !hud.shown) hud.open(fields, at, host.parameters());
       else hud.setValues(fields.map((field) => field.value));
       hud.move(at);
       return;
@@ -1069,7 +1098,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (gesture && editor.phase === "editing") {
       const fields = extrudeFields();
       const at = pointerAt();
-      if (mode === "open" || !hud.shown) hud.open(fields, at);
+      if (mode === "open" || !hud.shown) hud.open(fields, at, host.parameters());
       else hud.setValues(fields.map((field) => field.value));
       hud.move(at);
       return;
@@ -1080,7 +1109,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const at = pointerAt();
-    if (mode === "open" || !hud.shown) hud.open(dims.fields, at);
+    if (mode === "open" || !hud.shown) hud.open(dims.fields, at, host.parameters());
     else hud.setValues(dims.fields.map((field) => field.value));
     hud.move(at);
   }
@@ -1322,9 +1351,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       const isInput = node instanceof HTMLInputElement;
       if (!node || wantInput !== isInput) {
         node?.remove();
-        node = wantInput ? dimensionInput(item.id, item.text) : dimensionButton(item.id, item.text, item.title);
+        node = wantInput ? dimensionInput(item.id, item.expr ?? item.text) : dimensionButton(item.id, item.text, item.title, item.expr);
         labels.append(node);
-      } else if (node instanceof HTMLButtonElement) node.textContent = item.text;
+      } else if (node instanceof HTMLButtonElement) paintDimensionButton(node, item.text, item.expr);
       const screen = host.view.projectPoint(toWorld(frame, item.at));
       node.hidden = !screen;
       if (screen) {
@@ -1346,12 +1375,22 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     editor = acknowledgeDimensionFocus(editor);
   }
 
-  function dimensionButton(id: number, text: string, title: string): HTMLButtonElement {
+  function paintDimensionButton(node: HTMLButtonElement, text: string, expr?: string) {
+    node.replaceChildren(document.createTextNode(text));
+    if (!expr) return;
+    const mark = document.createElement("span");
+    mark.className = "expr-mark";
+    mark.textContent = "ƒ";
+    mark.setAttribute("aria-hidden", "true");
+    node.append(mark);
+  }
+
+  function dimensionButton(id: number, text: string, title: string, expr?: string): HTMLButtonElement {
     const node = document.createElement("button");
     node.type = "button";
     node.className = "sketch-dim";
     node.dataset.dimId = String(id);
-    node.textContent = text;
+    paintDimensionButton(node, text, expr);
     node.title = title;
     node.setAttribute("aria-label", title);
     node.addEventListener("click", (ev) => {
@@ -1695,9 +1734,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       host.readout(built.error);
       return;
     }
+    const op = withExprs(built.op, gesture.texts);
     committing = true;
     const mode = resolvedMode();
-    const error = await host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid");
+    const error = await host.commitExtrude(op, mode === "new" ? "new" : "on-solid");
     committing = false;
     if (!gesture) return;
     if (error) {
@@ -1727,6 +1767,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       const op = currentOp();
       if (op) host.probeExtrude(op);
     }, GHOST_PROBE_WAIT_MS);
+  }
+
+  function fieldTexts(fields: readonly HudField[], texts: readonly (string | null)[]): Record<string, string> {
+    const out: Record<string, string> = {};
+    fields.forEach((field, index) => {
+      const text = texts[index];
+      if (text && text.trim() && !isPlainNumber(text)) out[field.id] = text.trim();
+    });
+    return out;
   }
 
   function extrudeFields(): HudField[] {
@@ -1959,9 +2008,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       host.readout(built.error);
       return;
     }
+    const op = withExprs(built.op, revolve.angleText ? { angle: revolve.angleText } : undefined);
     committing = true;
     const mode = resolvedRevolveMode();
-    const error = await host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid");
+    const error = await host.commitExtrude(op, mode === "new" ? "new" : "on-solid");
     committing = false;
     if (!revolve) return;
     if (error) {
@@ -2498,9 +2548,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       host.readout(built.error);
       return;
     }
+    const op = withExprs(built.op, sweep.scaleText ? { scale: sweep.scaleText } : undefined);
     committing = true;
     const mode = resolvedSweepMode();
-    const error = await host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid");
+    const error = await host.commitExtrude(op, mode === "new" ? "new" : "on-solid");
     committing = false;
     if (!sweep) return;
     if (error) {

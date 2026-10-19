@@ -90,6 +90,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-reset-view", label: "Reset view", group: "Model", keys: ["Home"], when: "model", target: "#modelResetView", keywords: "frame zoom fit camera" },
   { id: "model-frame-all", label: "Frame every object", group: "Model", keys: ["Shift+Home"], when: "model", keywords: "reset view zoom fit camera all" },
   { id: "model-history", label: "Model history", group: "Model", keys: ["Shift+H"], when: "model", target: "#modelHistoryOpen", keywords: "steps tree branch undo jump rename" },
+  { id: "model-parameters", label: "Parameters", group: "Model", keys: ["Ctrl+Alt+P"], when: "model", typing: true, keywords: "expression variable wall height rebuild" },
   { id: "model-edit-step", label: "Edit step", group: "Model", keys: ["Shift+E"], when: "model", keywords: "history change numbers parameters size radius update fork" },
   { id: "model-apply", label: "Apply model edit", group: "Model", keys: ["Enter"], when: "model", target: "#modelApply", keywords: "confirm" },
   { id: "model-escape", label: "Cancel model tool or clear selection", group: "Model", keys: ["Esc"], when: "model", typing: true, keywords: "clear deselect" },

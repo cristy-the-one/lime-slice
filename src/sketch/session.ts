@@ -50,6 +50,7 @@ import {
   dropConstraints,
   drivingField,
   drivingValue,
+  plainDrivingValue,
   freshConstrain,
   idleConstrain,
   isConstrainTool,
@@ -342,7 +343,7 @@ export function sketchDimensions(editor: SketchEditor): SketchDimensions | null 
 }
 
 /** Enter on the heads-up sizes. A line places its next point and stays in the polyline. A rectangle is committed. */
-export function commitSizes(editor: SketchEditor, values: readonly number[]): SketchEditor {
+export function commitSizes(editor: SketchEditor, values: readonly number[], texts?: readonly (string | null)[]): SketchEditor {
   const sketch = activeSketch(editor);
   if (!sketch || editor.phase !== "editing") return editor;
   if (editor.tool === "line" && editor.chain && editor.chain.length >= 1) {
@@ -366,7 +367,7 @@ export function commitSizes(editor: SketchEditor, values: readonly number[]): Sk
   // --- S3. Enter on a typed diameter, radius, distance, or the piece under the pointer. ---
   if (isDrawTool(editor.tool)) return commitDraw(editor, sketch, values);
   // --- S4. Enter sets the driving dimension in the heads-up box. ---
-  if (editor.constrain.hud != null) return commitDrivingSize(editor, sketch, values[0]);
+  if (editor.constrain.hud != null) return commitDrivingSize(editor, sketch, values[0], texts?.[0] ?? null);
   return editor;
 }
 
@@ -832,20 +833,30 @@ export function applyConstraint(editor: SketchEditor, action: ConstrainAction): 
   return { ...withTool(editor, action), constrain: { ...freshConstrain(), note: built.hint ?? built.error ?? null } };
 }
 
-/** A typed driving value. Words are refused until a parameters evaluator is installed. */
+/** A typed driving value. An expression uses the installed parameters evaluator. */
 export function commitDimensionText(editor: SketchEditor, id: number, text: string): SketchEditor {
   if (editor.phase !== "editing") return editor;
   const sketch = activeSketch(editor);
   if (!sketch) return editor;
   const value = drivingValue(text);
   if (value == null) return { ...editor, constrain: { ...editor.constrain, note: "Type a number." } };
+  if (typeof value === "object") return { ...editor, constrain: { ...editor.constrain, note: value.error } };
   const current = drivingField(sketch, id);
-  if (current && Math.abs(current.value - value) <= 1e-9) {
+  if (current && Math.abs(current.value - value) <= 1e-9 && currentExpr(sketch, id) === expressionText(text)) {
     return { ...editor, constrain: { ...editor.constrain, hud: null, focus: null } };
   }
-  const built = commitDriving(sketch, id, value);
+  const built = commitDriving(sketch, id, value, text);
   if (!built.sketch) return { ...editor, constrain: { ...editor.constrain, note: built.error ?? "Type a number." } };
   return rememberConstraint(editor, built.sketch, null, null);
+}
+
+function expressionText(text: string): string {
+  return plainDrivingValue(text) == null && text.trim() ? text.trim() : "";
+}
+
+function currentExpr(sketch: SketchData, id: number): string {
+  const dim = sketch.dims?.find((item) => item.id === id);
+  return typeof dim?.expr === "string" ? dim.expr : "";
 }
 
 /** Esc in the dimension label closes the editor and leaves the dimension. */
@@ -888,10 +899,10 @@ function applyConstrainPointer(editor: SketchEditor, sketch: SketchData, ev: Ske
   return rememberConstraint(editor, built.sketch, built.focus ?? null, null);
 }
 
-function commitDrivingSize(editor: SketchEditor, sketch: SketchData, value: number | undefined): SketchEditor {
+function commitDrivingSize(editor: SketchEditor, sketch: SketchData, value: number | undefined, expr: string | null): SketchEditor {
   const id = editor.constrain.hud;
   if (id == null || value == null) return editor;
-  const built = commitDriving(sketch, id, value);
+  const built = commitDriving(sketch, id, value, expr);
   if (!built.sketch) return { ...editor, constrain: { ...editor.constrain, note: built.error ?? "Type a number." } };
   return rememberConstraint(editor, built.sketch, null, null);
 }

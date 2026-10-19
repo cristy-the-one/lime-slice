@@ -147,7 +147,7 @@ export function mountMarkup(root: HTMLElement) {
                   <!-- A3 composite features: one toolbar entry, last-used on the button, the rest in the menu. -->
                   <div class="model-feature" id="modelFeature">
                     <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-                    <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, pattern, mirror">▾</button>
+                    <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, pattern, mirror, parameters">▾</button>
                     <div class="model-feature-menu" id="modelFeatureMenu" role="menu" hidden>
                       <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
                       <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
@@ -159,6 +159,9 @@ export function mountMarkup(root: HTMLElement) {
                       <button class="model-tool" id="modelMenuPattern" type="button" role="menuitem" data-tool="pattern">Pattern</button>
                       <button class="model-tool" id="modelMenuMirror" type="button" role="menuitem" data-tool="mirror">Mirror</button>
                       <!-- --- end A4 --- -->
+                      <!-- --- A6. Not a toolbar button, so the bar still fits at 1440 px. --- -->
+                      <button id="modelMenuParameters" type="button" role="menuitem">Parameters</button>
+                      <!-- --- end A6 --- -->
                     </div>
                   </div>
                   <!-- end A3 -->
@@ -192,6 +195,19 @@ export function mountMarkup(root: HTMLElement) {
               </div>
             </div>
             <div class="model-side">
+              <!-- --- A6 Parameters. A panel, not a tool, so it adds no toolbar button. --- -->
+              <section class="model-params" id="modelParams" aria-label="Parameters" hidden>
+                <div class="model-params-head">
+                  <h2>Parameters</h2>
+                  <button class="btn" id="modelParamsClose" type="button">Close</button>
+                </div>
+                <div id="modelParamsBody"></div>
+                <div class="model-params-bar">
+                  <button class="btn" id="modelParamsAdd" type="button">Add parameter</button>
+                  <button class="btn" id="modelParamsRebuild" type="button" hidden>Rebuild</button>
+                </div>
+              </section>
+              <!-- --- end A6 --- -->
               <div class="model-panel" id="modelPanel" hidden>
                 <h2 class="model-edit-head" id="modelEditHead" hidden></h2>
                 <div class="modes model-plane-modes" id="modelWpModes" data-for="workplane" role="group" aria-label="Workplane">

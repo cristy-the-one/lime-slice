@@ -27,6 +27,9 @@ import { snapStep } from "../gizmo-math";
 import { fx } from "../app/fx";
 import { state } from "../app/state";
 import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queueModelCheck, refreshModelCheck as rerunModelCheck } from "./model-check-panel.ts";
+import { evaluate, type Params } from "../modeling/expr.ts";
+import { isPlainNumber } from "../modeling/params.ts";
+import { toggleParameters } from "./parameters.ts";
 
 export type { ModelTool } from "../model-drag";
 
@@ -43,6 +46,8 @@ interface ModelChromeHooks {
   splitLegal(): boolean;
   /** A tool opened, the selection changed, or a number changed. `typed` while a number is still being typed or dragged. */
   paramsChanged(typed?: boolean): void;
+  /** --- A6. The project's parameters, evaluated, for every number field. */
+  parameters(): Params;
   /** A typed or dragged number settled: ask the kernel now instead of after the typing wait. */
   probeNow(): void;
   /** Bounds of the open solid in model space. */
@@ -268,6 +273,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
       toggleFeatureMenu();
       return;
     }
+    if (target?.closest("#modelMenuParameters")) {
+      closeFeatureMenu();
+      toggleParameters();
+      return;
+    }
     const featureItem = target?.closest<HTMLButtonElement>("#modelFeatureMenu [data-tool]");
     if (featureItem?.dataset.tool && (isFeatureTool(featureItem.dataset.tool) || isRepeatTool(featureItem.dataset.tool))) {
       chooseFeature(featureItem.dataset.tool);
@@ -408,6 +418,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   document.querySelector("#modelPrim")?.addEventListener("keydown", (ev) => onPrimKey(ev as KeyboardEvent));
   document.querySelector("#modelObjects")?.addEventListener("keydown", (ev) => onObjectKey(ev as KeyboardEvent));
   bindScrub();
+  bindExpressions();
   fx.model?.onHandleDrag(onHandleDrag);
   fx.model?.onObjectPick((id: string) => {
     if (!pickJoinTool(id)) hooks?.notATool(id);
@@ -678,6 +689,7 @@ function fillEdit() {
   if (panel.repeat) paintRepeat(panel.repeat);
   // --- end A4 ---
   writeFields(Object.keys(panel.fields), Object.values(panel.fields));
+  restoreFieldExprs(panel.exprs);
   for (const [id, value] of Object.entries(panel.fields)) {
     const input = document.querySelector<HTMLInputElement>(`#${id}`);
     if (input) exact.set(id, { text: input.value, value });
@@ -1352,7 +1364,9 @@ function applyMeasureDefaults() {
 function writeFields(fields: readonly string[], values: readonly number[]) {
   fields.forEach((field, i) => {
     const input = document.querySelector<HTMLInputElement>(`#${field}`);
-    if (input) input.value = fieldText(values[i] ?? 0);
+    if (!input) return;
+    clearExpression(input);
+    input.value = fieldText(values[i] ?? 0);
   });
 }
 
@@ -1971,13 +1985,140 @@ function previewFresh(): boolean {
  */
 const exact = new Map<string, { text: string; value: number }>();
 
-/** The number in field `id` (no `#`): as typed, or an edited step's own while that field is untouched. */
+/** The number in field `id` (no `#`): as typed, an expression, or an edited step's own while that field is untouched. */
 export function fieldNumber(id: string): number {
   const input = document.querySelector<HTMLInputElement>(`#${id}`);
   const kept = exact.get(id);
-  if (kept && input?.value === kept.text) return kept.value;
+  if (kept && input?.value === kept.text && !input.dataset.expr) return kept.value;
+  const live = expressionValue(input);
+  if (live != null) return live;
   const value = Number(input?.value);
   return Number.isFinite(value) ? value : 0;
+}
+
+/** Expressions on the open panel, for the op that Apply stores. Hidden fields stay out. */
+export function panelExprs(): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  document.querySelectorAll<HTMLInputElement>("#modelPanel input[data-expr]").forEach((input) => {
+    const label = input.closest("label");
+    if (!input.id || !input.dataset.expr || label?.hasAttribute("hidden")) return;
+    out[input.id] = input.dataset.expr;
+  });
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Put a stored step's expressions back into the fields that show its numbers. */
+export function restoreFieldExprs(exprs: Record<string, string> | undefined) {
+  if (!exprs) return;
+  for (const [id, text] of Object.entries(exprs)) {
+    const input = document.querySelector<HTMLInputElement>(`#${id}`);
+    if (!input || !text.trim()) continue;
+    const value = evaluateText(text);
+    if (value == null) continue;
+    input.dataset.expr = text;
+    input.type = "number";
+    input.value = fieldText(value);
+    input.title = text;
+    input.classList.remove("is-bad");
+    showExprMark(input, true);
+  }
+}
+
+function fieldParams(): Params {
+  return hooks?.parameters() ?? {};
+}
+
+function evaluateText(text: string): number | null {
+  try {
+    const value = evaluate(text, fieldParams());
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function expressionValue(input: HTMLInputElement | null): number | null {
+  if (!input) return null;
+  const focused = document.activeElement === input;
+  const text = focused ? input.value : input.dataset.expr;
+  if (!text || isPlainNumber(text)) return null;
+  return evaluateText(text);
+}
+
+function showExprMark(input: HTMLInputElement, on: boolean) {
+  let mark = input.parentElement?.querySelector<HTMLElement>(":scope > .expr-mark");
+  if (!mark && input.parentElement) {
+    mark = document.createElement("span");
+    mark.className = "expr-mark";
+    mark.textContent = "ƒ";
+    mark.setAttribute("aria-hidden", "true");
+    input.insertAdjacentElement("afterend", mark);
+  }
+  if (mark) mark.hidden = !on;
+}
+
+function clearExpression(input: HTMLInputElement) {
+  delete input.dataset.expr;
+  input.classList.remove("is-bad");
+  if (input.dataset.exprField) input.type = "number";
+  if (input.title && input.dataset.exprField) input.title = "";
+  showExprMark(input, false);
+}
+
+function bindExpressions() {
+  const roots = [document.querySelector("#modelPanel"), document.querySelector("#sectionOffset")?.parentElement].filter((node): node is HTMLElement => !!node);
+  const onFocus = (ev: Event) => {
+    const input = ev.target;
+    if (!(input instanceof HTMLInputElement) || input.type !== "number" && input.dataset.exprField !== "1") return;
+    if (input.type !== "number" && input.type !== "text") return;
+    input.dataset.exprField = "1";
+    const expr = input.dataset.expr;
+    if (input.type === "number") input.type = "text";
+    if (expr) input.value = expr;
+    showExprMark(input, false);
+    // The caret would otherwise sit in front of the old number, so a typed 90 became 900.
+    input.select();
+  };
+  const onBlur = (ev: Event) => {
+    const input = ev.target;
+    if (!(input instanceof HTMLInputElement) || input.dataset.exprField !== "1") return;
+    settleExpression(input);
+  };
+  for (const root of roots) {
+    root.addEventListener("focusin", onFocus);
+    root.addEventListener("focusout", onBlur);
+  }
+}
+
+function settleExpression(input: HTMLInputElement) {
+  const text = input.value.trim();
+  if (!text || isPlainNumber(text)) {
+    delete input.dataset.expr;
+    input.classList.remove("is-bad");
+    input.removeAttribute("aria-invalid");
+    if (input.title) input.title = "";
+    input.type = "number";
+    showExprMark(input, false);
+    return;
+  }
+  try {
+    const value = evaluate(text, fieldParams());
+    if (!Number.isFinite(value)) throw new Error(`"${text}" is not a finite number.`);
+    input.dataset.expr = text;
+    input.classList.remove("is-bad");
+    input.removeAttribute("aria-invalid");
+    input.title = text;
+    input.type = "number";
+    input.value = fieldText(value);
+    showExprMark(input, true);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  } catch (err) {
+    input.classList.add("is-bad");
+    input.setAttribute("aria-invalid", "true");
+    input.title = err instanceof Error ? err.message : String(err);
+    input.type = "text";
+    showExprMark(input, false);
+  }
 }
 
 function onEnter(ev: KeyboardEvent) {
@@ -2019,6 +2160,8 @@ function onScrubMove(ev: PointerEvent) {
   if (current.mode === "pending") {
     current.mode = scrubIntent(dx, dy);
     if (current.mode !== "scrub") return;
+    clearExpression(current.input);
+    if (current.input.dataset.exprField) current.input.type = "number";
   }
   if (current.mode !== "scrub") return;
   ev.preventDefault();

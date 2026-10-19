@@ -12,6 +12,7 @@ import { outwardFromMesh } from "./model-blend.ts";
 import { fieldText, handlesFor, type Vec3 } from "./model-drag.ts";
 import { applyPose, turnDir, type Affine } from "./model-space.ts";
 import type { FaceExtrudeOp, MoveFacesOp } from "./model-tree.ts";
+import { isPlainNumber, withExprs } from "./modeling/params.ts";
 import type { FacePointer, ModelView } from "./model-view.ts";
 import {
   distanceForDiameter,
@@ -114,17 +115,18 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
 
   hud.onCommit((commit) => {
     const distance = commitDistance(commit);
+    const texts = pullTexts(commit);
     if (editing && remember) {
       editing = false;
       hud.close();
-      void commitEdit(distance);
+      void commitEdit(distance, texts);
       return;
     }
     if (!dragging) return;
     const faces = dragging.faces;
     const alt = dragging.alt;
     stopGesture();
-    void commitNew(distance, faces, alt);
+    void commitNew(distance, faces, alt, texts);
   });
   hud.onCancel(() => {
     editing = false;
@@ -340,12 +342,26 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     hooks.clearPreview();
   }
 
-  async function commitNew(distance: number, faces: PullFace[], alt: boolean) {
+  function pullTexts(commit: HudCommit): Record<string, string> | undefined {
+    const ids = ["distance", "diameter"];
+    const out: Record<string, string> = {};
+    commit.texts.forEach((text, index) => {
+      const id = ids[index];
+      if (id && text && !isPlainNumber(text)) out[id] = text.trim();
+    });
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+
+  function stamped(op: MoveFacesOp | FaceExtrudeOp, texts: Record<string, string> | undefined): MoveFacesOp | FaceExtrudeOp {
+    return withExprs(op, texts) as MoveFacesOp | FaceExtrudeOp;
+  }
+
+  async function commitNew(distance: number, faces: PullFace[], alt: boolean, texts?: Record<string, string>) {
     const op = pullOp(faces, distance, alt);
     if (!op || applying) return;
     applying = true;
     try {
-      const made = await hooks.apply(op);
+      const made = await hooks.apply(stamped(op, texts));
       if (!made) return;
       previous = distance;
       previousAlt = alt;
@@ -357,14 +373,14 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     }
   }
 
-  async function commitEdit(distance: number) {
+  async function commitEdit(distance: number, texts?: Record<string, string>) {
     const kept = remember;
     if (!kept || applying) return;
     const op = pullOp(kept.faces, distance, kept.alt);
     if (!op) return;
     applying = true;
     try {
-      const ok = await hooks.edit(kept.parent, kept.node, op);
+      const ok = await hooks.edit(kept.parent, kept.node, stamped(op, texts));
       if (!ok) return;
       previous = distance;
       previousAlt = kept.alt;

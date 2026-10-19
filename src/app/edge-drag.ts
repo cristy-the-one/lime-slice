@@ -6,6 +6,7 @@
  */
 
 import { mountHud, type HudMount, type Params } from "../interact/hud";
+import { isPlainNumber } from "../modeling/params.ts";
 import {
   blendRadius,
   edgeAppliedNote,
@@ -93,6 +94,8 @@ interface Session {
   typing: boolean;
   proved: string | null;
   editing: boolean;
+  /** The radius or distance as typed, when it was an expression. */
+  expr?: string;
 }
 
 /** Wire the idle edge knob. `sync` when the open tool or the solid changes; `picksChanged` after a click. */
@@ -128,9 +131,11 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     hud.onCommit((commit) => {
       if (!live) return;
       const size = commit.values[0];
+      const text = commit.texts[0];
       live.typing = false;
       live.dragging = false;
       if (size != null && Number.isFinite(size)) live.size = Math.max(0, size);
+      live.expr = text && !isPlainNumber(text) ? text.trim() : undefined;
       live.proved = null;
       void commitSession();
     });
@@ -413,7 +418,8 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
       window.clearTimeout(timer);
       const ok = await check(gen, true);
       if (!ok || live !== session) return;
-      const op = edgeDragOp(session.kind, session.edges, session.size);
+      const made = edgeDragOp(session.kind, session.edges, session.size);
+      const op = session.expr ? { ...made, exprs: { modelBlend: session.expr } } : made;
       // Drop the session before the view is replaced, so that refresh does not cancel the edit it is committing.
       live = null;
       shown = null;

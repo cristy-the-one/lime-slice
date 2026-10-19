@@ -31,7 +31,7 @@ import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes } from "../model-check.ts";
 import { expandFeature, isFeatureTool, panelChoices, readFeatureSpec, type FeatureTool } from "../model-features";
-import { expandRepeat, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
+import { expandRepeat, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
@@ -87,6 +87,7 @@ import {
   joinOpen,
   joinPick,
   mountModelChrome,
+  panelExprs,
   openEditTool,
   openPlaceTool,
   refreshJoinChoices,
@@ -145,6 +146,10 @@ import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
 import { session, state } from "./state";
+import type { Params } from "../modeling/expr.ts";
+import { evaluateTable, stepOutOfDate, usedByCount } from "../modeling/params.ts";
+import { refreshOp } from "../param-rebuild.ts";
+import { mountParameters, syncParameters } from "../ui/parameters.ts";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
 import { axesOf, drillDown, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
@@ -288,6 +293,11 @@ interface Editing {
    */
   featureOp?: ModelOp;
   sketch?: true;
+  /**
+   * --- A6. Ops for this one edit, earliest first. Set by a parameter rebuild so the replay
+   * uses the new numbers without rewriting the old branch.
+   */
+  supplied?: ModelOp[];
 }
 let editing: Editing | null = null;
 /** --- E1. A feature-root edit is not a sibling fork. Undo waits until the sketch closes. --- */
@@ -516,7 +526,25 @@ export function bindModelView() {
     shellSeat() {
       return shellSeat();
     },
+    parameters: () => currentParams(),
   });
+  mountParameters({
+    table: () => session.parameters,
+    setTable(table) {
+      session.parameters = table;
+      if (paramsInDate()) {
+        builtParams = { ...currentParams() };
+        paramsTrusted = true;
+      }
+      markProjectDirty();
+    },
+    usedBy: usedByName,
+    affected: () => affectedNodeIds().length,
+    rebuild() {
+      void rebuildFromParameters();
+    },
+  });
+  noteParametersBuilt();
   // --- P1: face push/pull. The default when no other model tool is open. ---
   if (fx.model) {
     const pull = mountPull(fx.model, {
@@ -532,7 +560,7 @@ export function bindModelView() {
         input.value = pullFieldText(distance);
       },
       readout,
-      parameters: () => ({}),
+      parameters: () => currentParams(),
       hold(on) {
         pullProbe = on;
       },
@@ -596,7 +624,7 @@ export function bindModelView() {
     ray(x, y) {
       return fx.model?.pointerRay(x, y) ?? { origin: [0, 0, 0], direction: [0, 0, -1] };
     },
-    params: () => ({}),
+    params: () => currentParams(),
   });
   edgeDrag.sync();
   // --- S2 sketch ---
@@ -606,6 +634,7 @@ export function bindModelView() {
       view: fx.model,
       canvas: sketchCanvas,
       readout,
+      parameters: () => currentParams(),
       idleReadout() {
         const solid = viewed();
         return solid ? `${about(solid)} Pick a face or an edge.` : "";
@@ -1253,7 +1282,12 @@ function editOp(run: Editing): ModelOp | null {
   // P2. The edge drag's edit is the fillet or chamfer it holds, not whatever panel is open.
   if (run.edgeOp) return run.edgeOp;
   const tool = openModelTool();
-  if (run.op.kind === "root") return tool === "create" ? { kind: "root", ...rootSpec(fieldPrimitive()) } : null;
+  if (run.op.kind === "root") {
+    if (tool !== "create") return null;
+    const spec = rootSpec(fieldPrimitive());
+    const exprs = panelExprs();
+    return exprs ? { kind: "root", ...spec, exprs } : { kind: "root", ...spec };
+  }
   if (run.op.kind === "join") {
     const keepTool = document.querySelector<HTMLInputElement>("#modelKeepTool")?.checked ?? false;
     return tool === "boolean" ? { ...run.op, op: boolOp(), keepTool } : null;
@@ -1264,7 +1298,8 @@ function editOp(run: Editing): ModelOp | null {
 /** The open tool's edit in the solid's own frame, from its model-space fields. Null when it cannot run yet. */
 function toolOp(tool: string | null | undefined): ModelOp | null {
   const op = fieldOp(tool);
-  return op && toSolidOp(op, openPose());
+  const posed = op && toSolidOp(op, openPose());
+  return posed ? withPanelExprs(posed) : null;
 }
 
 /** --- F4. Radius, depth, Through all, and the counterbore, shared by every point. --- */
@@ -1686,7 +1721,8 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
     // While a step is edited the view shows its parent; the file reopens on the step shown before the edit.
     const live = treeOfKey(key);
     const shown = editing?.target === key && live.nodes.has(editing.from) ? { ...live, current: editing.from } : live;
-    const tree = { ...savedTree(shown, node, (other) => owner.get(other)), ...root };
+    const rootExprs = live.root.kind === "primitive" && live.root.exprs && Object.keys(live.root.exprs).length > 0 ? live.root.exprs : undefined;
+    const tree = { ...savedTree(shown, node, (other) => owner.get(other)), ...root, ...(rootExprs ? { rootExprs } : {}) };
     if (held.has(id)) trees.set(id, tree);
     else tools.push({ id, name, tree });
   }
@@ -1711,7 +1747,7 @@ export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: str
     const root: ModelRoot = tree.rootFeature
       ? { kind: "feature", op: tree.rootFeature }
       : tree.rootPrimitive
-        ? { kind: "primitive", solid: tree.rootPrimitive }
+        ? { kind: "primitive", solid: tree.rootPrimitive, ...(tree.rootExprs ? { exprs: tree.rootExprs } : {}) }
         : { kind: "step", ...tree.rootStep };
     if (!obj) {
       // A tool that left the plate: its tree stays for the joins that name it, and opens whole when one is built.
@@ -2884,6 +2920,173 @@ function dropEdit() {
   if (sketching) closeSketchSession();
 }
 
+/** Evaluated parameters. Later names see earlier ones, as `mergeParams` does. */
+function currentParams(): Params {
+  return evaluateTable(session.parameters).values;
+}
+
+/** The table the open solid's numbers were last in step with. */
+let builtParams: Params = {};
+/** False when a file's numbers and its parameter table do not agree, so a rebuild writes the expressions. */
+let paramsTrusted = true;
+
+/** Every open history agrees with the parameter table. A file can disagree before Model is showing. */
+function paramsInDate(): boolean {
+  const after = currentParams();
+  for (const tree of modelTrees.values()) {
+    if (branchHits(tree, after).length > 0) return false;
+  }
+  return true;
+}
+
+/** The open solid now agrees with the parameter table, or it does not and the next rebuild writes the expressions. */
+export function noteParametersBuilt() {
+  if (paramsInDate()) {
+    builtParams = { ...currentParams() };
+    paramsTrusted = true;
+  } else paramsTrusted = false;
+  syncParameters();
+}
+
+function withPanelExprs(op: ModelOp): ModelOp {
+  const exprs = panelExprs();
+  if (exprs) return { ...op, exprs };
+  if (!op.exprs) return op;
+  const { exprs: _drop, ...rest } = op;
+  return rest;
+}
+
+function usedByName(name: string): number {
+  const tree = treeOf(open);
+  if (!tree) return 0;
+  const path = pathTo(tree, tree.current);
+  const rootOnPath = path.some((id) => tree.nodes.get(id)?.op?.kind === "root");
+  const ops = path.map((id) => tree.nodes.get(id)?.op ?? null);
+  const rootExprs = !rootOnPath && tree.root.kind === "primitive" ? tree.root.exprs : null;
+  return usedByCount(name, ops, rootExprs);
+}
+
+/** History steps on a shown branch whose stored numbers no longer match `after`. */
+function branchHits(tree: ModelTree, after: Params): NodeId[] {
+  const path = pathTo(tree, tree.current);
+  const rootOnPath = path.some((id) => tree.nodes.get(id)?.op?.kind === "root");
+  const hits: NodeId[] = [];
+  if (!rootOnPath && tree.root.kind === "primitive" && tree.root.exprs) {
+    const rootOp: ModelOp = { kind: "root", ...tree.root.solid, exprs: tree.root.exprs };
+    if (stepOutOfDate(rootOp, after)) hits.push(ROOT);
+  }
+  for (const id of path) {
+    const op = tree.nodes.get(id)?.op;
+    if (!op || (id === ROOT && hits.includes(ROOT))) continue;
+    if (stepOutOfDate(op, after)) hits.push(id);
+  }
+  return hits;
+}
+
+/** History steps on the shown branch whose stored numbers no longer match the parameter table. */
+function affectedNodeIds(): NodeId[] {
+  const tree = treeOf(open);
+  return tree ? branchHits(tree, currentParams()) : [];
+}
+
+function refreshStored(op: ModelOp, before: Params, after: Params, tree: ModelTree, parent: NodeId): { op: ModelOp; error?: string } {
+  const pose = openPose();
+  const cached = recentSolid(tree.key, parent, state.stepTolerance);
+  const solid = cached ?? (open?.key === tree.key && open.solid.id === parent ? open.solid : null);
+  let repeated: { id: number; op: ModelOp }[] | undefined;
+  if (op.kind === "group") {
+    const source = repeatSource(op);
+    const of = source && Array.isArray(source.of) ? source.of : null;
+    if (of) {
+      repeated = [];
+      for (const id of of) {
+        if (typeof id !== "number") continue;
+        const step = tree.nodes.get(id)?.op;
+        if (step) repeated.push({ id, op: step });
+      }
+    }
+  }
+  const next = refreshOp(op, before, after, { pose, solid, repeated, absolute: !paramsTrusted });
+  if (next.error || !next.toSolid) return next;
+  return { op: toSolidOp(next.op, pose) };
+}
+
+/** Replay the shown branch from the earliest step a parameter change reaches, as one edit. */
+async function rebuildFromParameters() {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || busy || jumping || state.stage !== "model") return;
+  if (!at.solid.editable) {
+    readout(VIEW_ONLY);
+    return;
+  }
+  const hits = affectedNodeIds();
+  if (hits.length === 0) {
+    noteParametersBuilt();
+    return;
+  }
+  const earliest = hits[0]!;
+  const node = tree.nodes.get(earliest);
+  if (!node) {
+    readout("This step is no longer in the history.");
+    return;
+  }
+  const before = { ...builtParams };
+  const after = { ...currentParams() };
+  const from = tree.current;
+  const parent = node.parent ?? ROOT;
+  const replay = replayChain(tree, earliest, from);
+  const startOp = node.op ?? (tree.root.kind === "primitive" ? { kind: "root" as const, ...tree.root.solid, ...(tree.root.exprs ? { exprs: tree.root.exprs } : {}) } : null);
+  if (!startOp) {
+    readout("This step cannot be rebuilt.");
+    return;
+  }
+  const supplied: ModelOp[] = [];
+  const first = refreshStored(startOp, before, after, tree, parent);
+  if (first.error) {
+    readout(first.error);
+    return;
+  }
+  supplied.push(first.op);
+  for (const id of replay) {
+    const step = tree.nodes.get(id)?.op;
+    if (!step) {
+      readout("This step is no longer in the history.");
+      return;
+    }
+    const next = refreshStored(step, before, after, tree, tree.nodes.get(id)?.parent ?? ROOT);
+    if (next.error) {
+      readout(next.error);
+      return;
+    }
+    supplied.push(next.op);
+  }
+  const run: Editing = {
+    key: at.key,
+    target: at.key,
+    row: rowKey([], earliest),
+    joins: [],
+    node: earliest,
+    parent,
+    from,
+    replay,
+    op: supplied[0]!,
+    panel: null,
+    opened: null,
+    supplied,
+  };
+  editing = run;
+  syncUndo();
+  const back = editBack;
+  await runEdit(run);
+  if (editing === run) {
+    editing = null;
+    syncUndo();
+    return;
+  }
+  if (editBack !== back) noteParametersBuilt();
+}
+
 /**
  * Update: the edited op as a new sibling of the step, and the steps under it replayed on it, in one engine call. The view
  * goes to the last step that built; a step that no longer builds is kept, broken, with the steps after it, and the
@@ -2898,7 +3101,8 @@ async function runEdit(run: Editing) {
     followSelection();
     return;
   }
-  const op = editOp(run);
+  const supplied = run.supplied;
+  const op = supplied?.[0] ?? editOp(run);
   if (!op) {
     if (run.op.kind === "fillet" || run.op.kind === "chamfer") readout(run.op.kind === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
     if (run.op.kind === "split") readout(splitNote(splitState()).text);
@@ -2917,7 +3121,11 @@ async function runEdit(run: Editing) {
     readout("This step is no longer in the history.");
     return;
   }
-  const replayOps = run.replay.map((id) => tree.nodes.get(id)!.op!);
+  if (supplied && supplied.length !== 1 + run.replay.length) {
+    readout("This step is no longer in the history.");
+    return;
+  }
+  const replayOps = supplied ? supplied.slice(1) : run.replay.map((id) => tree.nodes.get(id)!.op!);
   const twin = builtBranch(tree, run.parent, op, replayOps);
   if (twin != null) {
     // These numbers already built this branch, in an earlier edit: show it rather than build it again.
@@ -3216,7 +3424,8 @@ async function createSolid() {
   if (busy || jumping || state.stage !== "model") return;
   const typed = fieldPrimitive();
   const root = rootSpec(typed);
-  const from: ModelRoot = { kind: "primitive", solid: root };
+  const exprs = panelExprs();
+  const from: ModelRoot = exprs ? { kind: "primitive", solid: root, exprs } : { kind: "primitive", solid: root };
   await finishNewSolid({
     request: (key, chord) => newSolidRequest(key, typed, chord),
     name: (names) => primitiveName(names, typed.primitive),

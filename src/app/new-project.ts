@@ -8,7 +8,7 @@ import { emptyPlate, resetHeldGeometry } from "../plate.ts";
 import { clearEdits } from "../support-edit-list.ts";
 import { applyActivePrinter, launchSettingsLevel } from "./machine-actions.ts";
 import { beginModelVisit, clearEditHistory } from "./history.ts";
-import { forgetModelTrees, showModel } from "./model.ts";
+import { forgetModelTrees, noteParametersBuilt, showModel } from "./model.ts";
 import { forgetSavedThumbnail, saveCurrentProject } from "./project-io.ts";
 import { setProjectTitle } from "./project-title.ts";
 import { resetBridgeMirror } from "./bridge-mount.ts";
@@ -69,6 +69,8 @@ export function blankProject() {
   session.docEpoch += 1;
   // --- A8. File > New drops the previous project's MCP record. ---
   session.mcpModel = undefined;
+  session.parameters = {};
+  noteParametersBuilt();
   const stayInModel = state.stage === "model";
   cancelSlice();
   dropWorkerMesh();
