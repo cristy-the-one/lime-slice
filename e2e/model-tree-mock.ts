@@ -10,6 +10,8 @@ export interface MockSolid {
   faces: { id: number; areaMm2: number }[];
   edges: { id: number; lengthMm: number; points: number[] }[];
   solid?: boolean;
+  /** --- A10. The node that made each face, when a test wants colour by step. */
+  stepFaces?: (number | null)[];
 }
 
 export type Body = Record<string, unknown>;
