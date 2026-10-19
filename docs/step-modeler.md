@@ -394,7 +394,7 @@ Sketches, push/pull, and the idle edge drag share helpers in `src/interact/`. Pu
 
 ### Sketch
 
-Sketch (S in Model) draws Line and Rectangle on a plane. S in Prepare is still Scale. The button has no `data-tool`: it is not a dock-handle tool, and it does not join the drag checklist. It stays visible on an empty plate, next to New solid.
+Sketch (S in Model) draws Line and Rectangle on a plane. S in Prepare is still Scale. The button has no `data-tool`: it is not a dock-handle tool, and it does not join the drag checklist. It is an icon, and icon buttons use 1 px of padding, so the bar still fits at 1440 px with a pick's chip. It stays visible on an empty plate, next to New solid.
 
 Click Sketch, then a flat face, one of the three origin planes at the part origin, or the workplane. The card under the toolbar has the same planes, so the choice does not depend on a ray. Double-click a flat face to start there when Push/Pull is not the gesture under the pointer. In Face mode, double-click still repeats the last push or pull. On an empty plate the card's Sketch on the bed starts on XY at Z = 0.
 

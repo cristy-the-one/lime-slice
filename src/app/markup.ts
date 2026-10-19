@@ -126,7 +126,7 @@ export function mountMarkup(root: HTMLElement) {
               <div class="model-tools" role="toolbar" aria-label="Model">
                 <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="Start a new solid from a box, cylinder, cone, or another primitive">New solid</button>
                 <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
-                <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. Line and rectangle.">Sketch</button>
+                <button class="model-tool is-icon" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. Line and rectangle.">Sketch</button>
                 <span class="model-sep"></span>
                 <div class="modes" role="group" aria-label="Pick">
                   <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
