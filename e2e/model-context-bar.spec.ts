@@ -246,3 +246,26 @@ test("an edge offers Fillet and Chamfer, and the bar fades until the pointer ret
   await page.mouse.move(top.x + 3, top.y + 3);
   await expect(bar).toHaveAttribute("data-faded", "0");
 });
+
+test("a face drag takes the bar away, and so does a sketch on the face", async ({ page }) => {
+  await openModel(page);
+  const bar = page.locator("#modelContextBar");
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await page.mouse.click(top.x, top.y);
+  await expect(bar).toBeVisible();
+
+  // The press lands on the face, which push/pull takes before anything else hears it.
+  await page.mouse.move(top.x, top.y);
+  await page.mouse.down();
+  for (let step = 1; step <= 6; step += 1) await page.mouse.move(top.x, top.y - step * 6);
+  await expect(bar, "the bar leaves while the face is dragged").toBeHidden();
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+
+  const again = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await page.mouse.click(again.x, again.y);
+  await expect(bar).toBeVisible();
+  await bar.locator("[data-action='sketch-on-face']").click();
+  await expect(page.locator("#model")).not.toHaveAttribute("data-sketch", "off");
+  await expect(bar, "the face's actions are not for the sketch").toBeHidden();
+});

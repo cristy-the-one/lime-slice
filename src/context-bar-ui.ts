@@ -58,6 +58,12 @@ function toolOpen(): boolean {
   return !!document.querySelector<HTMLElement>("#modelBar")?.dataset.tool;
 }
 
+/** A sketch is being chosen or drawn: its card and tools own the view, and the face's actions are not for it. */
+function sketching(): boolean {
+  const phase = canvas()?.dataset.sketch;
+  return !!phase && phase !== "off";
+}
+
 function pageBox(node: Element): ContextBox | null {
   const rect = node.getBoundingClientRect();
   if (rect.width < 1 || rect.height < 1) return null;
@@ -299,6 +305,10 @@ function reseat() {
 function render(state: ContextBarState) {
   if (!bar) return;
   pending = state;
+  if (sketching()) {
+    hideContextBar();
+    return;
+  }
   if (toolOpen() || host()?.hidden) {
     bar.hidden = true;
     closeMenu();
@@ -372,23 +382,30 @@ export function mountContextBar(next: ContextBarHooks) {
   const node = canvas();
   if (node) {
     let press: { x: number; y: number } | null = null;
-    node.addEventListener("pointerdown", (ev) => {
-      if (ev.button !== 0) return;
+    // On the window, in the capture phase: a face push, the edge knob and a handle drag stop the event on the canvas
+    // itself, so a listener there never heard the drag that should take the bar away.
+    window.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0 || ev.target !== node) return;
       press = { x: ev.clientX, y: ev.clientY };
-    });
-    node.addEventListener("pointermove", (ev) => {
+    }, true);
+    window.addEventListener("pointermove", (ev) => {
       if (!press || (ev.buttons & 1) === 0) return;
       if ((ev.clientX - press.x) ** 2 + (ev.clientY - press.y) ** 2 > 16) {
         press = null;
         hideContextBar();
       }
-    });
-    node.addEventListener("pointerup", () => {
+    }, true);
+    const release = () => {
       press = null;
-    });
+    };
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
     new MutationObserver(() => {
       if (pending && !bar?.hidden) reseat();
     }).observe(node, { attributes: true, attributeFilter: ["data-camera", "data-solid-screen"] });
+    new MutationObserver(() => {
+      if (sketching()) hideContextBar();
+    }).observe(node, { attributes: true, attributeFilter: ["data-sketch"] });
   }
   const modelBar = document.querySelector("#modelBar");
   if (modelBar) {
