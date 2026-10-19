@@ -51,6 +51,8 @@ export type ModelGhost =
   | { kind: "primitive"; spec: PrimitiveSpec; mesh: Float32Array }
   | { kind: "plane"; origin: Vec3; normal: Vec3 }
   | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }
+  /** --- F4. One cylinder per sketch point. `failed` (from 1) is the hole a probe refused. --- */
+  | { kind: "holes"; holes: { x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }[]; failed?: number }
   | { kind: "scale"; factor: number }
   | { kind: "blend"; edges: number[]; radius: number }
   | { kind: "measure"; a: Vec3; b: Vec3 }
@@ -896,11 +898,26 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return meshGhost;
   }
 
-  function pointCylinder(x: number, y: number, z: number, radius: number, height: number) {
+  function pointCylinder(x: number, y: number, z: number, radius: number, height: number, failed = false) {
     if (!(radius > 0) || !(height > 0)) return;
     const geometry = new THREE.CylinderGeometry(radius, radius, height, 32);
-    const meshGhost = addGhostMesh(geometry, new THREE.Vector3(x, y, z));
+    const meshGhost = failed ? addFailedGhost(geometry, new THREE.Vector3(x, y, z)) : addGhostMesh(geometry, new THREE.Vector3(x, y, z));
     meshGhost.quaternion.setFromUnitVectors(yAxis, zAxis);
+    return meshGhost;
+  }
+
+  /** --- F4. The hole a probe refused, in the same red as a failed feature piece. --- */
+  function addFailedGhost(geometry: THREE.BufferGeometry, position: THREE.Vector3) {
+    const meshGhost = new THREE.Mesh(geometry, failedGhostMaterial());
+    meshGhost.position.copy(position);
+    meshGhost.renderOrder = 2;
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geometry),
+      new THREE.LineBasicMaterial({ color: 0xd64545, transparent: true, opacity: 0.95 }),
+    );
+    edges.raycast = () => undefined;
+    meshGhost.add(edges);
+    ghosts.add(meshGhost);
     return meshGhost;
   }
 
@@ -1137,26 +1154,32 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       ghosts.add(line);
       return;
     }
-    if (current.kind === "hole") {
-      const dir = current.dir ?? [0, 0, -1];
-      const length = Math.hypot(dir[0], dir[1], dir[2]);
-      const axis = length > 1e-9 ? [dir[0] / length, dir[1] / length, dir[2] / length] as Vec3 : [0, 0, -1] as Vec3;
-      const straightDown = Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < 0;
-      // A cylinder from the origin `depth` into the part: the hole, and its counterbore at the entry.
-      const drill = (radius: number, depth: number) => {
-        const cylinder = pointCylinder(
-          current.x + axis[0] * depth / 2,
-          current.y + axis[1] * depth / 2,
-          current.z + axis[2] * depth / 2,
-          radius,
-          depth,
-        );
-        if (cylinder && !straightDown) {
-          cylinder.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(zAxis, new THREE.Vector3(axis[0], axis[1], axis[2])));
-        }
-      };
-      drill(current.radius, current.depth);
-      if (current.bore) drill(current.bore.radius, current.bore.depth);
+    if (current.kind === "hole" || current.kind === "holes") {
+      const holes = current.kind === "hole" ? [current] : current.holes;
+      const failedAt = current.kind === "holes" ? current.failed : undefined;
+      holes.forEach((hole, index) => {
+        const failed = failedAt === index + 1;
+        const dir = hole.dir ?? [0, 0, -1];
+        const length = Math.hypot(dir[0], dir[1], dir[2]);
+        const axis = length > 1e-9 ? [dir[0] / length, dir[1] / length, dir[2] / length] as Vec3 : [0, 0, -1] as Vec3;
+        const straightDown = Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < 0;
+        // A cylinder from the origin `depth` into the part: the hole, and its counterbore at the entry.
+        const drill = (radius: number, depth: number) => {
+          const cylinder = pointCylinder(
+            hole.x + axis[0] * depth / 2,
+            hole.y + axis[1] * depth / 2,
+            hole.z + axis[2] * depth / 2,
+            radius,
+            depth,
+            failed,
+          );
+          if (cylinder && !straightDown) {
+            cylinder.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(zAxis, new THREE.Vector3(axis[0], axis[1], axis[2])));
+          }
+        };
+        drill(hole.radius, hole.depth);
+        if (hole.bore) drill(hole.bore.radius, hole.bore.depth);
+      });
       return;
     }
     if (current.kind === "plane") {

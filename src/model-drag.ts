@@ -133,6 +133,8 @@ export interface DragContext {
    * Absent, or null, until a face is under the pointer: the tool then has nothing to drag.
    */
   pull?: { at: Vec3; dir: Vec3 } | null;
+  /** --- F4. One hole per sketch point: the points are the origins, so only the sizes drag. --- */
+  sketchHoles?: boolean;
   /** --- A4. Which pattern fields are on screen. Absent is linear. Mirror ignores it. --- */
   repeat?: { mode: "linear" | "polar" | "path" };
 }
@@ -342,11 +344,25 @@ function shellHandles(ctx: DragContext): Spec[] {
 
 function holeHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
+  const axis = drillAxis(ctx.holeAxis);
+  const side = drillSide(axis);
+  const knobs: Spec[] = [
+    axisHandle("hole-radius", "knob", "modelHoleR", KNOB, side, "accent", "Radius", { min: 0.1, step: 0.5 }),
+    ...(ctx.hole?.through ? [] : [axisHandle("hole-depth", "knob", "modelHoleD", KNOB, axis, "z", "Depth", { min: 0.1 })]),
+    // The counterbore's radius takes the next axis, as a primitive's second size does; its depth sits on the drill
+    // axis nearer the dock's middle than the hole's, as the shallower of the two.
+    ...(ctx.hole?.counterbore
+      ? [
+          axisHandle("bore-radius", "knob", "modelBoreR", KNOB, facingUp(cross(axis, side)), "accent", "Bore radius", { min: 0.1, step: 0.5 }),
+          axisHandle("bore-depth", "knob", "modelBoreD", BORE_DEPTH_SEAT, axis, "z", "Bore depth", { min: 0.1 }),
+        ]
+      : []),
+  ];
+  // --- F4. One hole per sketch point: the points are the origins, so only the sizes drag. ---
+  if (ctx.sketchHoles) return knobs;
   const typed: Vec3 = [r("modelX"), r("modelY"), r("modelZ")];
   const { axes, local } = frameAxes(ctx.frame);
   const top = local ? planePoint(ctx.frame!, typed) : typed;
-  const axis = drillAxis(ctx.holeAxis);
-  const side = drillSide(axis);
   const slide = (id: string, dir: Vec3): Spec => ({
     id, kind: "axis", look: "arrow", fields: ["modelX", "modelY", "modelZ"], seat: onDock(0), dir, rate: 1, step: 1,
     color: nearestAxisColor(dir), label: "Move", unit: "mm",
@@ -358,16 +374,7 @@ function holeHandles(ctx: DragContext): Spec[] {
   return [
     { id: "hole-origin", kind: "surface", look: "dot", fields: ["modelX", "modelY", "modelZ"], seat: onFeature(top), dir: Z, rate: 1, step: 1, color: "accent", label: "Origin", unit: "mm", ...(local ? { frame: ctx.frame } : {}) },
     ...moves,
-    axisHandle("hole-radius", "knob", "modelHoleR", KNOB, side, "accent", "Radius", { min: 0.1, step: 0.5 }),
-    ...(ctx.hole?.through ? [] : [axisHandle("hole-depth", "knob", "modelHoleD", KNOB, axis, "z", "Depth", { min: 0.1 })]),
-    // The counterbore's radius takes the next axis, as a primitive's second size does; its depth sits on the drill
-    // axis nearer the dock's middle than the hole's, as the shallower of the two.
-    ...(ctx.hole?.counterbore
-      ? [
-          axisHandle("bore-radius", "knob", "modelBoreR", KNOB, facingUp(cross(axis, side)), "accent", "Bore radius", { min: 0.1, step: 0.5 }),
-          axisHandle("bore-depth", "knob", "modelBoreD", BORE_DEPTH_SEAT, axis, "z", "Bore depth", { min: 0.1 }),
-        ]
-      : []),
+    ...knobs,
   ];
 }
 

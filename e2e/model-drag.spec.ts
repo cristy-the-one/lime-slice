@@ -110,10 +110,12 @@ async function grip(page: Page, id: string) {
 }
 
 async function drag(page: Page, id: string, dx: number, dy: number, keys: string[] = []) {
+  // Hold Shift or Ctrl before the button goes down. A modifier pressed mid-drag can drop the
+  // pointer on a busy runner, and the plane then stays where it was.
+  for (const key of keys) await page.keyboard.down(key);
   const from = await grip(page, id);
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
-  for (const key of keys) await page.keyboard.down(key);
   for (let i = 1; i <= 8; i += 1) await page.mouse.move(from.x + (dx * i) / 8, from.y + (dy * i) / 8);
   await page.mouse.up();
   for (const key of keys) await page.keyboard.up(key);
@@ -132,6 +134,7 @@ test("the split plane drags inside the part, Shift is fine, and Ctrl snaps", asy
 
   await page.locator("#modelPlane").fill("5");
   await page.locator("#modelPlane").dispatchEvent("input");
+  await page.locator("#modelPlane").blur();
   await drag(page, "plane", 0, -40, ["Shift"]);
   const fine = (await value(page, "modelPlane")) - 5;
   expect(fine).toBeGreaterThan(0);
@@ -142,6 +145,7 @@ test("the split plane drags inside the part, Shift is fine, and Ctrl snaps", asy
 
   await page.locator("#modelPlane").fill("5");
   await page.locator("#modelPlane").dispatchEvent("input");
+  await page.locator("#modelPlane").blur();
   await drag(page, "plane", 0, -40, ["Control"]);
   expect(Number.isInteger(await value(page, "modelPlane"))).toBe(true);
   await expect(page.locator("#modelApply")).toBeEnabled();

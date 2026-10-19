@@ -13,6 +13,7 @@ import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
 import { storedEdgeStep } from "./model-edge-step.ts";
 import { ROOT, isSketchExtrudeGroup, isSketchRevolveGroup, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { isSketchHoleGroup, sketchHolePanel } from "./sketch/holes.ts";
 
 /**
  * The steps that replay under an edit of `node`, oldest first: the shown branch below it. That is the path down to the
@@ -100,13 +101,14 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for a face extrude, a face move, or a group that is not a feature, a pattern, a mirror, or a sketch extrude or revolve. An extrude, a revolve, or a loft reopens its sketch. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
+/** Whether the app has a panel for `op`: not yet for a face extrude, a face move, or a group that is not a feature, a pattern, a mirror, a sketch extrude or revolve, or holes from a sketch. An extrude, a revolve, or a loft reopens its sketch. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
 function hasPanel(op: ModelOp): boolean {
   // --- A3 composite features: a pocket, boss, texture, array, ribs, or text group reopens its panel. ---
   // --- A4. A pattern or a mirror group reopens that panel too. ---
   // --- F1/E1. A group of sketch extrudes reopens the sketch, not a feature panel. ---
   // --- F2. A group of sketch revolves does too. ---
-  if (op.kind === "group") return featureSource(op) != null || repeatSource(op) != null || isSketchExtrudeGroup(op) || isSketchRevolveGroup(op);
+  // --- F4. Holes from a sketch reopen the Hole panel. ---
+  if (op.kind === "group") return featureSource(op) != null || repeatSource(op) != null || isSketchExtrudeGroup(op) || isSketchRevolveGroup(op) || isSketchHoleGroup(op);
   // --- end A3 ---
   // --- F3. A loft, including a sweep stored as a loft, reopens its sketches. ---
   if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft") return true;
@@ -374,6 +376,9 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
       const repeated = repeatSource(op);
       if (repeated) return repeatPanel(repeated);
       // --- end A4 ---
+      // --- F4. Holes from a sketch reopen the Hole panel, one hole per stored point. ---
+      const holes = sketchHolePanel(op, pose);
+      if (holes) return holes;
       throw new Error(`No edit panel for a ${op.kind} step`);
     }
   }

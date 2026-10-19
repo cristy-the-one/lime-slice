@@ -179,8 +179,8 @@ test("a counterbore has its fields and knobs, a screw fills them, and Edit step 
   for (const [id, value] of [["#modelHoleR", "1.7"], ["#modelBoreR", "3.25"], ["#modelBoreD", "3.4"]] as const) await expect(page.locator(id)).toHaveValue(value);
   await expect(apply(page)).toBeEnabled();
   await apply(page).click();
-  const sent = tree.of("apply").at(-1)!.op;
-  expect(sent).toMatchObject({ kind: "hole", radius: 1.7, through: true, counterboreRadius: 3.25, counterboreDepth: 3.4 });
+  // The click returns before the apply request is recorded. Wait for that call.
+  await expect.poll(() => tree.of("apply").at(-1)?.op).toMatchObject({ kind: "hole", radius: 1.7, through: true, counterboreRadius: 3.25, counterboreDepth: 3.4 });
   await expect(rows(page).nth(1)).toContainText("Hole ⌀3.4 through, counterbore ⌀6.5 × 3.4");
   await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
 

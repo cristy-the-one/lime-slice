@@ -20,6 +20,7 @@ import type { Bounds } from "../mesh-place";
 import type { LoftSection, ModelOp, ProfileLoop } from "../model-tree";
 import type { ModelView } from "../model-view";
 import { sketchJson, type FaceRef, type SketchData, type SketchOn, type Vec3 } from "../sketch/model";
+import { FACE_REFUSAL, POINT_REFUSAL, holeTargets, sketchOnFace, type HoleTarget } from "../sketch/holes.ts";
 import { sketchMesh, type OriginPlane, type SketchStroke } from "../sketch/draw";
 import {
   frameFromWorkplane,
@@ -161,8 +162,13 @@ export interface SketchHost {
   cancelFeatureEdit(): void;
   /** The solid just built should fill the view. Closing the sketch restores the camera from before it. */
   frameSolid(): void;
-  /** --- F3. A flat face as loft loops. The sentence when there is no solid, or the face is curved. --- */
+/** --- F3. A flat face as loft loops. The sentence when there is no solid, or the face is curved. --- */
   faceLoops(face: number): Promise<{ origin: Vec3; turn: Vec3; loops: ProfileLoop[] } | { error: string }>;
+  /** --- F4. Open the Hole panel for these points. H only calls this while a sketch is being edited. --- */
+  beginSketchHoles(sketch: SketchData, targets: readonly HoleTarget[]): void;
+  endSketchHoles(): void;
+  sketchHolesArmed(): boolean;
+  sketchHoleCount(): number | null;
 }
 
 interface SketchApi {
@@ -337,6 +343,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (editor.phase !== "editing" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const drawing = sketchDimensions(editor) != null;
     const dimField = ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null;
+    const typing = ev.target instanceof HTMLElement && (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT" || ev.target.tagName === "TEXTAREA" || ev.target.isContentEditable);
     // --- F3. Shift+L is the loft while a sketch is open. L alone stays the Line tool.
     // With the sketch closed, Shift+L is still Chamfer. ---
     if (ev.shiftKey && (ev.key === "l" || ev.key === "L")) {
@@ -344,6 +351,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (drawing) return;
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) endExtrude();
       if (revolve) endRevolve();
       if (sweep) endSweep();
@@ -356,16 +364,37 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (drawing) return;
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) endExtrude();
       if (revolve) endRevolve();
       if (loft) endLoft();
       if (!sweep) beginSweep();
       return;
     }
+    // --- F4. H places a hole at each selected point. It is taken only while the sketch is open. ---
+    if (ev.key === "h" || ev.key === "H") {
+      if (drawing || typing) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      if (gesture || host.sketchHolesArmed()) return;
+      if (revolve) endRevolve();
+      if (loft) endLoft();
+      if (sweep) endSweep();
+      beginHoles();
+      return;
+    }
+    if (ev.key === "Escape" && host.sketchHolesArmed()) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      host.endSketchHoles();
+      publish("open");
+      return;
+    }
     if (ev.key === "e" || ev.key === "E") {
       if (drawing) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       if (revolve) endRevolve();
       if (loft) endLoft();
       if (sweep) endSweep();
@@ -379,6 +408,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) endExtrude();
       if (loft) endLoft();
       if (sweep) endSweep();
@@ -634,6 +664,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     if (target.dataset.sketchExtrude != null) {
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       if (revolve) endRevolve();
       if (loft) endLoft();
       if (sweep) endSweep();
@@ -646,6 +677,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (gesture) endExtrude();
       if (loft) endLoft();
       if (sweep) endSweep();
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       if (revolve) void commitRevolve();
       else beginRevolve();
       return;
@@ -655,6 +687,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (gesture) endExtrude();
       if (revolve) endRevolve();
       if (sweep) endSweep();
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       if (loft) void commitLoft();
       else beginLoft();
       return;
@@ -663,6 +696,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (gesture) endExtrude();
       if (revolve) endRevolve();
       if (loft) endLoft();
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       if (sweep) void commitSweep();
       else beginSweep();
       return;
@@ -670,6 +704,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (target.dataset.sketchRuled != null && loft) {
       loft = { ...loft, ruled: !loft.ruled, note: "" };
       publish("open");
+      return;
+    }
+    // --- F4. The card button does what H does. It is not a toolbar button. ---
+    if (target.dataset.sketchHoles != null) {
+      if (gesture || revolve || loft || sweep) return;
+      beginHoles();
       return;
     }
     if (target.dataset.sketchMode != null && (gesture || revolve || loft || sweep)) {
@@ -930,7 +970,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       aimKey = "";
       host.view.setSketchCamera(null);
     }
-    host.view.setSketchCapture(sketchBusy(editor) && !editor.lookAround);
+    host.view.setSketchCapture(sketchBusy(editor) && !editor.lookAround && !host.sketchHolesArmed());
     host.view.setSketchDim(sketchBusy(editor));
     if (editor.phase === "editing" && aimKey) host.view.setSketchLock(!editor.lookAround);
     draw();
@@ -1092,6 +1132,25 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.sweepScale = sweeping ? String(scaleOf(sweeping.scale)) : "";
     host.canvas.dataset.sweepPath = sweeping && sweeping.path.length >= 2 ? "1" : "0";
     host.canvas.dataset.sweepProfile = sweeping?.profile ? "1" : "0";
+    // --- F4. Off unless the Hole panel is placing one hole per point. Hits are client pixels, for tests. ---
+    const holeCount = host.sketchHoleCount();
+    host.canvas.dataset.sketchHoles = holeCount == null ? "off" : String(holeCount);
+    if (editor.phase === "editing") {
+      const frame = drawingFrame();
+      const drawn = activeSketch(editor);
+      const hits: string[] = [];
+      if (frame && drawn) {
+        for (const point of drawn.points) {
+          const at = host.view.projectPoint(toWorld(frame, point.at));
+          if (at) hits.push(`${point.id}:${at.x.toFixed(1)},${at.y.toFixed(1)}`);
+        }
+      }
+      host.canvas.dataset.sketchHits = hits.join(" ");
+      host.canvas.dataset.sketchSelected = editor.selection.points.join(",");
+    } else {
+      delete host.canvas.dataset.sketchHits;
+      delete host.canvas.dataset.sketchSelected;
+    }
   }
 
   function paintBox() {
@@ -1151,6 +1210,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       textButton("Loft (⇧L)", { sketchLoft: "" }),
       textButton("Sweep (W)", { sketchSweep: "" }),
     ];
+    // --- F4. Only a sketch on a face has a solid to drill. ---
+    if (activeSketch(editor)?.on?.kind === "face") row.push(textButton("Holes (H)", { sketchHoles: "" }));
     if (gesture || revolve || loft || sweep) {
       const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
       const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
@@ -1472,6 +1533,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   };
   closeFeatureImpl = () => {
     editSession = false;
+    if (host.sketchHolesArmed()) host.endSketchHoles();
     if (editor.phase !== "editing" && editor.phase !== "choosing") {
       gesture = null;
       revolve = null;
@@ -1513,6 +1575,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const session = editSession;
     if (left) {
       editSession = false;
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       gesture = null;
       revolve = null;
       loft = null;
@@ -1527,7 +1590,23 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (left && session) host.cancelFeatureEdit();
   }
 
+  function beginHoles() {
+    const sketch = activeSketch(editor);
+    if (!sketch || !sketchOnFace(sketch)) {
+      host.readout(FACE_REFUSAL);
+      return;
+    }
+    const targets = holeTargets(sketch, editor.selection);
+    if (targets.length === 0) {
+      host.readout(POINT_REFUSAL);
+      return;
+    }
+    host.beginSketchHoles(sketch, targets);
+    publish("open");
+  }
+
   function beginExtrude() {
+    if (host.sketchHolesArmed()) host.endSketchHoles();
     if (revolve) endRevolve();
     if (loft) endLoft();
     if (sweep) endSweep();
@@ -1790,6 +1869,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   // --- F2. Revolve from the open sketch. The ring is drawn; the angle is this pointer, because the
   // sketch camera looks along the plane and a view-ring drag cannot measure a turn in that plane. ---
   function beginRevolve(preset?: RevolvePreset) {
+    if (host.sketchHolesArmed()) host.endSketchHoles();
     if (gesture) endExtrude();
     if (loft) endLoft();
     if (sweep) endSweep();
@@ -2072,6 +2152,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function beginLoft() {
+    if (host.sketchHolesArmed()) host.endSketchHoles();
     if (gesture) endExtrude();
     if (revolve) endRevolve();
     if (sweep) endSweep();
@@ -2099,6 +2180,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function beginSweep() {
+    if (host.sketchHolesArmed()) host.endSketchHoles();
     if (gesture) endExtrude();
     if (revolve) endRevolve();
     if (loft) endLoft();
