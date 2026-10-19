@@ -111,14 +111,15 @@ test("Measure turns it all off, a reload keeps that, and Shift+M brings it back"
   await openCube(page);
   await page.locator("#tabPrepare").click();
   await expect(dims(page.locator("#prepareBody"))).toHaveCount(3);
-  await expect(page.locator("#measureOn")).toBeChecked();
+  const measure = page.locator("#measureField");
+  await expect(measure).toHaveAttribute("aria-pressed", "true");
 
-  await page.locator("#measureField").click();
-  await expect(page.locator("#measureOn")).not.toBeChecked();
+  await measure.click();
+  await expect(measure).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator(".measure svg")).toHaveCount(0);
 
   await page.reload();
-  await expect(page.locator("#measureOn")).not.toBeChecked();
+  await expect(measure).toHaveAttribute("aria-pressed", "false");
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#tabPrepare").click();
@@ -127,7 +128,7 @@ test("Measure turns it all off, a reload keeps that, and Shift+M brings it back"
 
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press("Shift+M");
-  await expect(page.locator("#measureOn")).toBeChecked();
+  await expect(measure).toHaveAttribute("aria-pressed", "true");
   await expect(dims(page.locator("#prepareBody"))).toHaveCount(3);
   expect(await page.evaluate(() => localStorage.getItem("lime-slice-measure"))).toBe("1");
 });

@@ -2,6 +2,7 @@
 # The list lives here because one npm script of every file is longer than Windows allows (8191).
 src/slice-action.test.ts
 src/ui/commands.test.ts
+src/ui/legend.test.ts
 src/ui/edit-history.test.ts
 src/ui/settings-search.test.ts
 src/ui/settings-schema.test.ts

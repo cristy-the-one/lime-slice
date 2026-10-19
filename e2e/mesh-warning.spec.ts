@@ -32,6 +32,7 @@ test("a repaired mesh shows a dismissible warning in the estimate", async ({ pag
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
 
   await page.locator("#slice").click();
+  await page.locator("#timing").click();
   const pill = page.locator("#summaryCard #meshWarn");
   await expect(pill).toContainText("The mesh has gaps on 4 layers.");
   await expect(pill).toContainText("The slicer closed 12.5 mm of those gaps.");
