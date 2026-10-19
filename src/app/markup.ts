@@ -147,7 +147,7 @@ export function mountMarkup(root: HTMLElement) {
                   <!-- A3 composite features: one toolbar entry, last-used on the button, the rest in the menu. -->
                   <div class="model-feature" id="modelFeature">
                     <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-                    <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text">▾</button>
+                    <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, pattern, mirror">▾</button>
                     <div class="model-feature-menu" id="modelFeatureMenu" role="menu" hidden>
                       <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
                       <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
@@ -155,6 +155,10 @@ export function mountMarkup(root: HTMLElement) {
                       <button class="model-tool" type="button" role="menuitem" data-tool="array">Array</button>
                       <button class="model-tool" type="button" role="menuitem" data-tool="ribs">Ribs</button>
                       <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
+                      <!-- --- A4 pattern and mirror. In this menu so the 1440 toolbar stays one row. --- -->
+                      <button class="model-tool" id="modelMenuPattern" type="button" role="menuitem" data-tool="pattern">Pattern</button>
+                      <button class="model-tool" id="modelMenuMirror" type="button" role="menuitem" data-tool="mirror">Mirror</button>
+                      <!-- --- end A4 --- -->
                     </div>
                   </div>
                   <!-- end A3 -->
@@ -298,6 +302,26 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="text" data-snap="1" data-tip="Default height / 3."><span class="scrub-label" data-scrub>Spacing</span><input id="modelTextSpace" type="number" step="0.1" min="0" max="100" value="2" aria-label="Spacing, default height / 3"></label>
                   <label data-for="text" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelTextAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Text angle, degrees"></label>
                   <!-- end A3 -->
+                  <!-- --- A4 pattern and mirror. Each number is one line: the drag checklist reads it that way. --- -->
+                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="The first direction, in model space."><span class="scrub-label" data-scrub>Step X</span><input id="modelPatSx" type="number" step="0.1" value="10" aria-label="Step along X"></label>
+                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="The first direction, in model space."><span class="scrub-label" data-scrub>Step Y</span><input id="modelPatSy" type="number" step="0.1" value="0" aria-label="Step along Y"></label>
+                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="The first direction, in model space."><span class="scrub-label" data-scrub>Step Z</span><input id="modelPatSz" type="number" step="0.1" value="0" aria-label="Step along Z"></label>
+                  <label data-for="pattern" data-snap="1" data-tip="Copies, including the original."><span class="scrub-label" data-scrub>Count</span><input id="modelPatCount" type="number" step="1" min="1" max="200" value="6" data-whole aria-label="Copies, including the original"></label>
+                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="A second direction. Count 1 leaves it out."><span class="scrub-label" data-scrub>Step 2 X</span><input id="modelPatS2x" type="number" step="0.1" value="0" aria-label="Second step along X"></label>
+                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="A second direction. Count 1 leaves it out."><span class="scrub-label" data-scrub>Step 2 Y</span><input id="modelPatS2y" type="number" step="0.1" value="0" aria-label="Second step along Y"></label>
+                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="A second direction. Count 1 leaves it out."><span class="scrub-label" data-scrub>Step 2 Z</span><input id="modelPatS2z" type="number" step="0.1" value="0" aria-label="Second step along Z"></label>
+                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="Copies in the second direction. 1 leaves it out."><span class="scrub-label" data-scrub>Count 2</span><input id="modelPatCount2" type="number" step="1" min="1" max="200" value="1" data-whole aria-label="Copies in the second direction"></label>
+                  <label data-for="pattern" data-mode="polar" data-snap="15" data-tip="360 spaces the copies evenly around the whole turn."><span class="scrub-label" data-scrub>Angle</span><input id="modelPatAngle" type="number" step="1" min="-360" max="360" value="360" aria-label="Total angle, degrees"></label>
+                  <label data-for="pattern" data-mode="polar" data-snap="1" data-tip="The centre the copies turn about."><span class="scrub-label" data-scrub>Centre X</span><input id="modelPatCx" type="number" step="0.1" value="0" aria-label="Centre x"></label>
+                  <label data-for="pattern" data-mode="polar" data-snap="1" data-tip="The centre the copies turn about."><span class="scrub-label" data-scrub>Centre Y</span><input id="modelPatCy" type="number" step="0.1" value="0" aria-label="Centre y"></label>
+                  <label data-for="pattern" data-mode="polar" data-snap="1" data-tip="The centre the copies turn about."><span class="scrub-label" data-scrub>Centre Z</span><input id="modelPatCz" type="number" step="0.1" value="0" aria-label="Centre z"></label>
+                  <label data-for="pattern" data-mode="path" data-snap="1" data-tip="The last point. Add point keeps it."><span class="scrub-label" data-scrub>Point X</span><input id="modelPatPx" type="number" step="0.1" value="0" aria-label="Path point x"></label>
+                  <label data-for="pattern" data-mode="path" data-snap="1" data-tip="The last point. Add point keeps it."><span class="scrub-label" data-scrub>Point Y</span><input id="modelPatPy" type="number" step="0.1" value="0" aria-label="Path point y"></label>
+                  <label data-for="pattern" data-mode="path" data-snap="1" data-tip="The last point. Add point keeps it."><span class="scrub-label" data-scrub>Point Z</span><input id="modelPatPz" type="number" step="0.1" value="0" aria-label="Path point z"></label>
+                  <label data-for="mirror" data-snap="1" data-tip="A point the plane passes through."><span class="scrub-label" data-scrub>Plane X</span><input id="modelMirX" type="number" step="0.1" value="0" aria-label="Plane point x"></label>
+                  <label data-for="mirror" data-snap="1" data-tip="A point the plane passes through."><span class="scrub-label" data-scrub>Plane Y</span><input id="modelMirY" type="number" step="0.1" value="0" aria-label="Plane point y"></label>
+                  <label data-for="mirror" data-snap="1" data-tip="A point the plane passes through."><span class="scrub-label" data-scrub>Plane Z</span><input id="modelMirZ" type="number" step="0.1" value="0" aria-label="Plane point z"></label>
+                  <!-- --- end A4 --- -->
                 </div>
                 <!-- A5: which of the step's edges. The line names the row, "Edges of: Roof (convex)". -->
                 <div class="modes" id="modelEdgeFilter" data-for="fillet chamfer" data-when="step" role="group" aria-label="Which edges">
@@ -370,6 +394,33 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Engrave</button>
                 </div>
                 <!-- end A3 -->
+                <!-- --- A4 pattern and mirror --- -->
+                <p class="model-note" id="modelRepeatOf" data-for="pattern mirror"></p>
+                <div class="modes" id="modelPatMode" data-for="pattern" role="group" aria-label="Pattern">
+                  <button class="btn mode on" type="button" data-pat="linear" aria-pressed="true">Linear</button>
+                  <button class="btn mode" type="button" data-pat="polar" aria-pressed="false">Polar</button>
+                  <button class="btn mode" type="button" data-pat="path" aria-pressed="false">Path</button>
+                </div>
+                <div class="modes" id="modelPatAxis" data-for="pattern" data-mode="polar" role="group" aria-label="Axis">
+                  <button class="btn mode" type="button" data-axis="x" aria-pressed="false">X</button>
+                  <button class="btn mode" type="button" data-axis="y" aria-pressed="false">Y</button>
+                  <button class="btn mode on" type="button" data-axis="z" aria-pressed="true">Z</button>
+                  <button class="btn mode" type="button" data-axis="pick" aria-pressed="false" data-tip="An edge, or a cylinder or a cone">Edge</button>
+                </div>
+                <p class="model-note" id="modelPathList" data-for="pattern" data-mode="path"></p>
+                <div class="modes" id="modelPathActions" data-for="pattern" data-mode="path" role="group" aria-label="Path points">
+                  <button class="btn" id="modelPathAdd" type="button">Add point</button>
+                  <button class="btn" id="modelPathDrop" type="button">Remove last</button>
+                </div>
+                <label class="model-keep" data-for="pattern" data-mode="path" data-tip="Each copy turns to follow the path."><input id="modelPatAlign" type="checkbox" checked> Align to the path</label>
+                <div class="modes" id="modelMirPlane" data-for="mirror" role="group" aria-label="Mirror plane">
+                  <button class="btn mode" type="button" data-plane="x" aria-pressed="false">X</button>
+                  <button class="btn mode" type="button" data-plane="y" aria-pressed="false">Y</button>
+                  <button class="btn mode on" type="button" data-plane="z" aria-pressed="true">Z</button>
+                  <button class="btn mode" type="button" data-plane="face" aria-pressed="false" data-tip="A picked flat face">Face</button>
+                </div>
+                <label class="model-keep" data-for="mirror"><input id="modelMirKeep" type="checkbox" checked> Keep the original</label>
+                <!-- --- end A4 --- -->
                 <p class="model-note" id="modelNote" hidden></p>
                 <div class="model-actions">
                   <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>

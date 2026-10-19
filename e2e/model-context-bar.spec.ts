@@ -59,14 +59,14 @@ function overlaps(a: { x: number; y: number; width: number; height: number }, b:
 }
 
 async function facePoint(page: Page, want: (normal: number[]) => boolean): Promise<{ x: number; y: number }> {
-  // Face drag republishes this list on a frame and clears it when the gesture turns off.
-  // Read the match in the same turn as the check, so a clear between two reads is not a miss.
+  // A missing attribute is null, which is not "", so wait for a published list.
+  // The list is cleared for a frame while a dry-run replaces the solid, so the point is taken from the same read.
   let found: { x: number; y: number } | null = null;
   await expect.poll(async () => {
     const text = (await page.locator("#model").getAttribute("data-faces")) ?? "";
     const box = await page.locator("#model").boundingBox();
     found = null;
-    if (!box) return "";
+    if (!box || text === "") return "";
     for (const item of text.split(" ").filter(Boolean)) {
       const [, xy, normalText] = item.split(":");
       if (!xy || !normalText) continue;
@@ -74,7 +74,7 @@ async function facePoint(page: Page, want: (normal: number[]) => boolean): Promi
       if (!want(normal)) continue;
       const [x, y] = xy.split(",").map(Number);
       found = { x: box.x + x!, y: box.y + y! };
-      return item;
+      return text;
     }
     return "";
   }).not.toBe("");
@@ -146,6 +146,16 @@ test("several faces, a cylinder, an edge, and empty space each offer their own a
   await expect(bar).toHaveAttribute("data-kind", "faces");
   await expect(bar.locator("[data-action='move-faces']")).toBeVisible();
   await expect(bar.locator("[data-action='shell-faces']")).toHaveText("Shell (open these)");
+  // --- A4. Pattern and Mirror register on several faces and click the Features menu. ---
+  await expect(bar.locator("[data-action='pattern']")).toBeVisible();
+  await expect(bar.locator("[data-action='mirror']")).toBeVisible();
+  await bar.locator("[data-action='pattern']").click();
+  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "pattern");
+  await expect(page.locator("#modelPatCount")).toBeVisible();
+  await expect(bar).toBeHidden();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#modelPatCount")).toBeHidden();
+  await expect(bar).toBeVisible();
   await bar.locator("[data-action='shell-faces']").click();
   await expect(page.locator("#modelShell")).toBeVisible();
   await expect(page.locator("#modelShellFaces")).toContainText("2 faces open");

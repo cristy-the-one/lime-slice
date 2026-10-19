@@ -123,7 +123,7 @@ function axisTurn(axis: Vec3, deg: number): Mat3 {
 }
 
 /** A rigid move or a reflection, p → m·p + t. */
-interface Motion {
+export interface Motion {
   m: Mat3;
   t: Vec3;
   reflect: boolean;
@@ -175,7 +175,7 @@ function planeVector(plane: Workplane, v: Vec3): Vec3 {
 }
 
 /** The motions a pattern makes, the first one the original in place. */
-function patternMotions(spec: Record<string, unknown>, plane: Workplane): Motion[] | { reason: string } {
+export function patternMotions(spec: Record<string, unknown>, plane: Workplane): Motion[] | { reason: string } {
   const still: Motion = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], reflect: false };
   const linear = spec.linear as Record<string, unknown> | undefined;
   const polar = spec.polar as Record<string, unknown> | undefined;
@@ -217,7 +217,7 @@ function patternMotions(spec: Record<string, unknown>, plane: Workplane): Motion
  * Copies along a smooth curve through `points`, evenly spaced, `count` of them. The op is typed at the first point;
  * with `align` (default true) each copy also turns as the curve does, so a scale or a fin follows a body.
  */
-function pathMotions(path: Record<string, unknown>, plane: Workplane): Motion[] | { reason: string } {
+export function pathMotions(path: Record<string, unknown>, plane: Workplane): Motion[] | { reason: string } {
   const points = (Array.isArray(path.points) ? path.points : []).map((p) => planePoint(plane, readVec3(p, [NaN, NaN, NaN])));
   const count = Math.round(numOr(path.count, 0));
   const samples = pathSamples(points as Vec3[], count, path.closed === true);
@@ -279,7 +279,7 @@ function textPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] 
 }
 
 /** The reflection a mirror makes: a plane through `origin` with `normal`, or "x", "y", "z" for the frame's planes. */
-function mirrorMotion(spec: Record<string, unknown>, plane: Workplane): Motion | { reason: string } {
+export function mirrorMotion(spec: Record<string, unknown>, plane: Workplane): Motion | { reason: string } {
   const named = spec.plane;
   let normal: Vec3;
   if (named === "x" || named === "y" || named === "z") normal = named === "x" ? [1, 0, 0] : named === "y" ? [0, 1, 0] : [0, 0, 1];
