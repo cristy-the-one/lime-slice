@@ -81,8 +81,8 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
 }
 
 /**
- * Edit step on a loft that started the solid. An extrude or a revolve root reopens its sketch.
- * Until a loft editor lands, the pencil stays and the readout says this.
+ * A feature root edited from another object's History. An extrude, a revolve, or a loft on the
+ * open solid reopens its sketch. This sentence stays for a root reached through a tool.
  */
 export const FEATURE_ROOT_EDIT = "This solid started from a sketch. Open the sketch to change it.";
 
@@ -100,7 +100,7 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for a loft, a face extrude, a face move, or a group that is not a feature, a pattern, a mirror, or a sketch extrude or revolve. An extrude or a revolve reopens its sketch. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
+/** Whether the app has a panel for `op`: not yet for a face extrude, a face move, or a group that is not a feature, a pattern, a mirror, or a sketch extrude or revolve. An extrude, a revolve, or a loft reopens its sketch. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
 function hasPanel(op: ModelOp): boolean {
   // --- A3 composite features: a pocket, boss, texture, array, ribs, or text group reopens its panel. ---
   // --- A4. A pattern or a mirror group reopens that panel too. ---
@@ -108,8 +108,9 @@ function hasPanel(op: ModelOp): boolean {
   // --- F2. A group of sketch revolves does too. ---
   if (op.kind === "group") return featureSource(op) != null || repeatSource(op) != null || isSketchExtrudeGroup(op) || isSketchRevolveGroup(op);
   // --- end A3 ---
-  if (op.kind === "extrude" || op.kind === "revolve") return true;
-  return !(op.kind === "loft" || op.kind === "faceExtrude" || op.kind === "moveFaces");
+  // --- F3. A loft, including a sweep stored as a loft, reopens its sketches. ---
+  if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft") return true;
+  return !(op.kind === "faceExtrude" || op.kind === "moveFaces");
 }
 
 /** The op an edit of `id` starts from: its own, the primitive a new solid's root is, or the feature a sketch-started root is. */

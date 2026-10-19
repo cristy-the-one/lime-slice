@@ -992,6 +992,19 @@ function rectCorner(anchor: Pt, cursor: Pt, width: number, height: number, fromC
 }
 
 /**
+ * --- F3. Keep `sketch` as a named card without opening it. Loft and sweep leave the other
+ * sections pinned. The id is past every card already there, so a later `enterSketch` does not reuse it.
+ */
+export function pinSketch(editor: SketchEditor, sketch: SketchData, name: string): SketchEditor {
+  const used = new Set(editor.pinned.map((item) => item.id));
+  let id = Math.max(editor.nextName, 0);
+  if (used.has(id) || id === 0) id = Math.max(0, ...used, editor.nextName) + 1;
+  while (used.has(id)) id += 1;
+  const card: PinnedSketch = { id, name, sketch: sketchJson(sketch) };
+  return { ...editor, pinned: [...editor.pinned, card], nextName: Math.max(editor.nextName, id + 1) };
+}
+
+/**
  * --- F1/E1. Open `sketch` for editing. History Edit uses this to draw an extrude's sketch again.
  * The card is named when the sketch is finished.
  */

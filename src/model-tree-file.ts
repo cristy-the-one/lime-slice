@@ -4,6 +4,7 @@
  * tree for one page load. A split names its piece, and a join its tool, by that plate object's id instead.
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
+import { readLoftDrawing } from "./sketch/loft.ts";
 import { readSketch } from "./sketch/model.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
@@ -379,7 +380,9 @@ function readOp(value: unknown): SavedOp | undefined {
         section.loops = loops;
         sections.push(section);
       }
-      return { kind: "loft", op: value.op, sections, ...(value.ruled === true ? { ruled: true as const } : {}) };
+      // --- F3. `drawing` is optional. A bad drawing is dropped and the loft still opens. ---
+      const drawing = value.drawing === undefined ? undefined : readLoftDrawing(value.drawing);
+      return { kind: "loft", op: value.op, sections, ...(value.ruled === true ? { ruled: true as const } : {}), ...(drawing ? { drawing } : {}) };
     }
     case "shell": {
       if (!finite(value.thickness)) return undefined;

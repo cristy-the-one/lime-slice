@@ -30,6 +30,7 @@ export {
   filletGhost,
   GHOST_PROBE_WAIT_MS,
   previewIsGhost,
+  loftGhost,
   regionExtrude,
   REVOLVE_STEPS,
   revolveGhost,

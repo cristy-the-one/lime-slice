@@ -179,12 +179,36 @@ export interface LoftSection {
   loops?: ProfileLoop[];
 }
 
+/**
+ * --- F3. A sweep remembered on the loft it became. The kernel never reads it.
+ * `scale` is the MCP sweep field: one number, or one per path point. There is no twist field.
+ */
+export interface SweepDrawing {
+  profile: SketchData;
+  pathSketch?: SketchData;
+  path: Vec3[];
+  scale: number | number[];
+  /** Solid edges the path was picked from, when it was. */
+  edges?: number[];
+}
+
+/**
+ * --- F3. The sketches a loft was picked from. Absent on a loft from before this field.
+ * `sketches` lines up with `sections`; null is a face, or a section typed without a drawing.
+ */
+export interface LoftDrawing {
+  sketches?: (SketchData | null)[];
+  sweep?: SweepDrawing;
+}
+
 /** A solid through `sections` in order, smooth or `ruled` (flat between sections), fused, cut, or intersected. */
 export interface LoftOp {
   kind: "loft";
   op: BooleanKind;
   sections: LoftSection[];
   ruled?: true;
+  /** --- F3. Stripped before the engine sees the op. An old loft has none. --- */
+  drawing?: LoftDrawing;
 }
 
 /** The solid hollowed inward to walls `thickness` thick, with `openFaces` removed: indexes when fresh, references once stored. */
@@ -619,6 +643,14 @@ export function featureObjectName(names: Iterable<string>, kind: FeatureOp["kind
   return `${label} ${at}`;
 }
 
+/** --- F3. A sweep is a loft op. The plate still calls the object a sweep. --- */
+export function sweepObjectName(names: Iterable<string>): string {
+  const taken = new Set(names);
+  let at = 1;
+  while (taken.has(`Sweep ${at}`)) at += 1;
+  return `Sweep ${at}`;
+}
+
 /**
  * The same tree, now rooted in `op`. Node 0 keeps its id; its label becomes the feature's. A sketch edit
  * (E1) calls this when the root feature's numbers change.
@@ -671,6 +703,11 @@ export function opLabel(op: ModelOp): string {
       return `${verb} ${outline} ${n(op.angleDeg ?? 360)}°`;
     }
     case "loft": {
+      // --- F3. A sweep is stored as a loft. The row names the path. ---
+      if (op.drawing?.sweep) {
+        const verb = op.op === "fuse" ? "Sweep" : `${BOOLEAN_VERB[op.op]} sweep`;
+        return `${verb} along ${op.drawing.sweep.path.length} points`;
+      }
       const verb = op.op === "fuse" ? "Loft" : `${BOOLEAN_VERB[op.op]} loft`;
       return `${verb} through ${op.sections.length} sections${op.ruled ? ", ruled" : ""}`;
     }

@@ -49,6 +49,7 @@ import {
   reserveId,
   rootLabel,
   featureObjectName,
+  sweepObjectName,
   isSketchRevolveGroup,
   subtree,
   toolKeys,
@@ -69,7 +70,7 @@ import {
   type Vec3,
 } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
-import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, keepSketch, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
+import { applyRequest, crossEditRequest, editRequest, exportRequest, faceLoopsRequest, gotoRequest, isBrep, joinOp, keepSketch, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
 import { edgeOfText, remapBlendFromNode, storedEdgeStep } from "../model-edge-step";
 import { mountPull, pullFieldText, type PullMade } from "../push-pull-ui";
 import { averagePoint, contextKind, polylineMid } from "../context-bar";
@@ -130,9 +131,11 @@ import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, no
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { mountEdgeDrag } from "./edge-drag";
-import { closeSketchSession, mountSketch, openSketchFeature, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
+import { closeSketchSession, mountSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
 import { opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
+import { loftEditOf, readFaceLoops } from "../sketch/loft";
 import { revolvePresetOf, sketchForRevolve } from "../sketch/revolve";
+import { sweepEditOf } from "../sketch/sweep";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
@@ -614,7 +617,7 @@ export function bindModelView() {
         const solid = viewed();
         if (!solid) return [];
         const pose = openPose();
-        return solid.edges.map((edge) => ({ points: posePoints(edge.points, pose) }));
+        return solid.edges.map((edge) => ({ id: edge.id, points: posePoints(edge.points, pose) }));
       },
       outline(face) {
         const solid = viewed();
@@ -654,6 +657,14 @@ export function bindModelView() {
       },
       frameSolid() {
         frameModel(false);
+      },
+      // --- F3. A flat face becomes loft loops. No solid, or a curved face, is a sentence. ---
+      async faceLoops(face) {
+        const at = open;
+        const tree = treeOf(at);
+        if (!at || !tree || !viewed()) return { error: "A face section needs a solid." };
+        const body = await treeCall(at.key, tree.current, faceLoopsRequest(at.key, tree.current, face));
+        return readFaceLoops(body);
       },
     });
   }
@@ -2424,8 +2435,8 @@ async function startOwnEdit(node: NodeId) {
   if (!at || !tree || state.stage !== "model") return;
   const rootFeature = tree.root.kind === "feature" && tree.nodes.get(node)?.parent === null;
   const feature = editedOp(tree, node);
-  // --- E1/F2. An extrude or a revolve, including a feature root, reopens its sketch. A loft root still says so. ---
-  const sketchFeature = feature != null && (opensSketchEditor(feature) || feature.kind === "revolve" || isSketchRevolveGroup(feature));
+  // --- E1/F2/F3. An extrude, a revolve, or a loft, including a feature root, reopens its sketch. ---
+  const sketchFeature = feature != null && (opensSketchEditor(feature) || feature.kind === "revolve" || feature.kind === "loft" || isSketchRevolveGroup(feature));
   if (rootFeature && !sketchFeature) {
     readout(FEATURE_ROOT_EDIT);
     return;
@@ -2469,17 +2480,22 @@ async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
   const tree = treeOf(at);
   if (!at || !tree || state.stage !== "model") return;
   // --- F2. A revolve reopens its own sketch. An extrude keeps the path it already had. ---
+  // --- F3. A loft or a sweep reopens the sections it was picked from. ---
+  const sweepPreset = sweepEditOf(op, root);
+  const loftPreset = sweepPreset ? null : loftEditOf(op, root);
   const revSketch = sketchForRevolve(op);
   const revPreset = revolvePresetOf(op, root);
   const sketch = sketchForFeature(op);
   const preset = presetOf(op, root);
   const revolveEdit = revSketch != null && revPreset != null;
-  if (!revolveEdit && (!sketch || !preset)) {
+  if (!sweepPreset && !loftPreset && !revolveEdit && (!sketch || !preset)) {
     readout("This sketch cannot be rebuilt.");
     return;
   }
   const openIt = () => {
-    if (revolveEdit && revSketch && revPreset) openSketchRevolve(revSketch, revPreset);
+    if (sweepPreset) openSketchLoft(sweepPreset);
+    else if (loftPreset) openSketchLoft(loftPreset);
+    else if (revolveEdit && revSketch && revPreset) openSketchRevolve(revSketch, revPreset);
     else if (sketch && preset) openSketchFeature(sketch, preset);
   };
   if (busy || jumping) {
@@ -2533,7 +2549,7 @@ async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
  * the engine would mark a child "rebuilt differently" if the old one was sent. The shown node's
  * fingerprint is the solid just built. The old root fingerprint is not sent.
  */
-async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revolve" }>): Promise<string | null> {
+async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revolve" | "loft" }>): Promise<string | null> {
   const at = open;
   const tree = at ? modelTrees.get(at.key) : null;
   if (!at || !tree || tree.root.kind !== "feature") return "This solid did not start from a sketch.";
@@ -2587,13 +2603,13 @@ function forgetSolids(key: string) {
 /** --- F1/F2. Apply the extrude or revolve the sketch built. A root edit replaces node 0. A step edit replays. --- */
 async function commitSketchExtrude(op: ModelOp, placement: "new" | "on-solid"): Promise<string | null> {
   if (sketchRootEdit) {
-    if (op.kind === "extrude" || op.kind === "revolve") return replaceFeatureRoot(op);
+    if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft") return replaceFeatureRoot(op);
     if (op.kind === "group" && op.steps.length > 0 && op.steps.every((step) => step.kind === "revolve")) return "A new solid is one revolve.";
     return "This solid is one extrude.";
   }
   if (placement === "new") {
     if (editing?.sketch) return "Editing this step keeps it on this solid. Join, cut, or intersect.";
-    if (op.kind === "revolve" || op.kind === "extrude") {
+    if (op.kind === "revolve" || op.kind === "extrude" || op.kind === "loft") {
       const ok = await createFeatureSolid(op);
       return ok ? null : readoutText || "The solid was not created.";
     }
@@ -2607,7 +2623,8 @@ async function commitSketchExtrude(op: ModelOp, placement: "new" | "on-solid"): 
     if (editing === run) return readoutText || "The step was not rebuilt.";
     return null;
   }
-  const ok = await applyOp(op, op.kind === "group" ? `Applying ${op.label}…` : op.kind === "revolve" ? "Revolving…" : "Extruding…");
+  const working = op.kind === "loft" ? (op.drawing?.sweep ? "Sweeping…" : "Lofting…") : op.kind === "group" ? `Applying ${op.label}…` : op.kind === "revolve" ? "Revolving…" : "Extruding…";
+  const ok = await applyOp(op, working);
   return ok ? null : readoutText || "The extrude was not applied.";
 }
 
@@ -3151,7 +3168,7 @@ export async function createFeatureSolid(op: FeatureOp): Promise<boolean> {
   const from: ModelRoot = { kind: "feature", op };
   return finishNewSolid({
     request: (key, chord) => openRequest(key, from, chord),
-    name: (names) => featureObjectName(names, op.kind),
+    name: (names) => (op.kind === "loft" && op.drawing?.sweep ? sweepObjectName(names) : featureObjectName(names, op.kind)),
     root: from,
     bounds: (positions) => boundsOf(positions),
   });
@@ -3170,7 +3187,8 @@ async function finishNewSolid(made: {
   const mine = ticket;
   busy = true;
   syncUndo();
-  readout("Building the solid…");
+  const feature = made.root.kind === "feature" ? made.root.op : null;
+  readout(feature?.kind === "loft" ? (feature.drawing?.sweep ? "Sweeping…" : "Lofting…") : "Building the solid…");
   const body = await post(made.request(key, chord));
   if (mine === ticket) busy = false;
   syncUndo();
