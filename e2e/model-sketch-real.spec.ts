@@ -12,6 +12,17 @@ const api = process.env.LIME_EDIT_API;
 test.skip(!api, "set LIME_EDIT_API to a running lime-slice serve");
 test.setTimeout(180_000);
 
+// The release bench engine has no OCCT bridge (CI builds `lime-slice` without it): then there is no modeler to sketch
+// features with, and every Apply is refused. Skip rather than fail, as model-push-real does.
+test.beforeAll(async ({ request }) => {
+  const res = await request.post(`${api}/api/model/tree`, {
+    data: { call: "open", key: "sketch-real-probe", primitive: { primitive: "box", origin: [0, 0, 0], size: [1, 1, 1], turn: [0, 0, 0] }, chordMm: 0.1 },
+  });
+  const body = (await res.json().catch(() => ({}))) as { volumeMm3?: number };
+  test.skip(typeof body.volumeMm3 !== "number", "this engine has no OCCT modeler");
+  await request.post(`${api}/api/model/tree`, { data: { call: "close", key: "sketch-real-probe" } });
+});
+
 async function start(page: Page) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.route("http://127.0.0.1:43118/**", async (route) => {
