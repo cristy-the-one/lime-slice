@@ -11,10 +11,10 @@ import { axesOf, framePose, isIdentityFrame, planePoint, workplaneOnFace, type W
 
 export type Vec3 = [number, number, number];
 
-export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "check" | "pushpull" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text";
+export type ModelTool = "create" | "boolean" | "split" | "fillet" | "chamfer" | "hole" | "shell" | "scale" | "measure" | "place" | "workplane" | "check" | "pushpull" | "pocket" | "boss" | "texture" | "array" | "ribs" | "text" | "pattern" | "mirror";
 
 /** Every tool on the Model toolbar. A tool that is not here has no drag, and the checklist test fails. */
-export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "check", "pushpull", "pocket", "boss", "texture", "array", "ribs", "text"];
+export const MODEL_TOOLS: readonly ModelTool[] = ["create", "boolean", "split", "fillet", "chamfer", "hole", "shell", "scale", "measure", "place", "workplane", "check", "pushpull", "pocket", "boss", "texture", "array", "ribs", "text", "pattern", "mirror"];
 
 // --- A3 composite features: one drag entry per feature, behind the single Features button. ---
 const FEATURE_DRAG: readonly ModelTool[] = ["pocket", "boss", "texture", "array", "ribs", "text"];
@@ -53,6 +53,10 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   ribs: ["modelFeatDepth", "modelRibWidth", "modelRibPitch", "modelRibCount", "modelRibAngle", "modelRibMargin"],
   text: ["modelFeatDepth", "modelFeatU", "modelFeatV", "modelTextHeight", "modelTextStroke", "modelTextSpace", "modelTextAngle"],
   // --- end A3 ---
+  // --- A4 pattern and mirror. Every number the panel shows, whichever mode has it on screen. ---
+  pattern: ["modelPatSx", "modelPatSy", "modelPatSz", "modelPatCount", "modelPatS2x", "modelPatS2y", "modelPatS2z", "modelPatCount2", "modelPatAngle", "modelPatCx", "modelPatCy", "modelPatCz", "modelPatPx", "modelPatPy", "modelPatPz"],
+  mirror: ["modelMirX", "modelMirY", "modelMirZ"],
+  // --- end A4 ---
 };
 
 /**
@@ -129,6 +133,8 @@ export interface DragContext {
    * Absent, or null, until a face is under the pointer: the tool then has nothing to drag.
    */
   pull?: { at: Vec3; dir: Vec3 } | null;
+  /** --- A4. Which pattern fields are on screen. Absent is linear. Mirror ignores it. --- */
+  repeat?: { mode: "linear" | "polar" | "path" };
 }
 
 const X: Vec3 = [1, 0, 0];
@@ -160,6 +166,9 @@ function specsFor(tool: ModelTool | null, ctx: DragContext): Spec[] {
   // --- A3 composite features ---
   if (isFeatureDrag(tool)) return featureHandles(tool, ctx);
   // --- end A3 ---
+  // --- A4 pattern and mirror ---
+  if (tool === "pattern" || tool === "mirror") return repeatHandles(tool, ctx);
+  // --- end A4 ---
   return [];
 }
 
@@ -480,6 +489,45 @@ function featureHandles(tool: "pocket" | "boss" | "texture" | "array" | "ribs" |
   return [...placed, ...dockKnobs(knobs)];
 }
 // --- end A3 ---
+
+// --- A4 pattern and mirror. Arrows move a distance; knobs change a count or an angle; a dot sits on a point. ---
+function repeatHandles(tool: "pattern" | "mirror", ctx: DragContext): Spec[] {
+  if (tool === "mirror") {
+    const origin: Vec3 = [ctx.read("modelMirX"), ctx.read("modelMirY"), ctx.read("modelMirZ")];
+    return [
+      { id: "mir-origin", kind: "surface", look: "dot", fields: ["modelMirX", "modelMirY", "modelMirZ"], seat: onFeature(origin), dir: Z, rate: 1, step: 1, color: "accent", label: "Plane point", unit: "mm" },
+      ...moveArrows(["modelMirX", "modelMirY", "modelMirZ"], "mir"),
+    ];
+  }
+  const mode = ctx.repeat?.mode ?? "linear";
+  const count: FeatureKnob = { id: "pat-count", field: "modelPatCount", label: "Count", dir: [0, 0, 1], extra: { min: 1, max: 200, step: 1, whole: true, unit: "count" } };
+  if (mode === "polar") {
+    const centre: Vec3 = [ctx.read("modelPatCx"), ctx.read("modelPatCy"), ctx.read("modelPatCz")];
+    return [
+      { id: "pat-centre", kind: "surface", look: "dot", fields: ["modelPatCx", "modelPatCy", "modelPatCz"], seat: onFeature(centre), dir: Z, rate: 1, step: 1, color: "accent", label: "Centre", unit: "mm" },
+      ...moveArrows(["modelPatCx", "modelPatCy", "modelPatCz"], "pat-c"),
+      ...dockKnobs([count, { id: "pat-angle", field: "modelPatAngle", label: "Angle", dir: [0, 1, 0], extra: { min: -360, max: 360, step: 15, unit: "°" } }]),
+    ];
+  }
+  if (mode === "path") {
+    const at: Vec3 = [ctx.read("modelPatPx"), ctx.read("modelPatPy"), ctx.read("modelPatPz")];
+    return [
+      { id: "pat-point", kind: "surface", look: "dot", fields: ["modelPatPx", "modelPatPy", "modelPatPz"], seat: onFeature(at), dir: Z, rate: 1, step: 1, color: "accent", label: "Point", unit: "mm" },
+      ...dockKnobs([count]),
+    ];
+  }
+  return [
+    ...moveArrows(["modelPatSx", "modelPatSy", "modelPatSz"], "pat-step"),
+    ...dockKnobs([
+      { id: "pat-s2x", field: "modelPatS2x", label: "Step 2 X", dir: X },
+      { id: "pat-s2y", field: "modelPatS2y", label: "Step 2 Y", dir: Y },
+      { id: "pat-s2z", field: "modelPatS2z", label: "Step 2 Z", dir: Z },
+      count,
+      { id: "pat-count2", field: "modelPatCount2", label: "Count 2", extra: { min: 1, max: 200, step: 1, whole: true, unit: "count" } },
+    ]),
+  ];
+}
+// --- end A4 ---
 
 /** Index of the largest component of a direction. */
 function dominantAxis(dir: Vec3): number {

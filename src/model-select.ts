@@ -1,5 +1,6 @@
 /** Face and edge selection for Model mode. Pure, so the gestures can be tested without WebGL. */
 import { isFeatureTool } from "./model-features.ts";
+import { isRepeatTool } from "./model-repeat.ts";
 
 export interface ModelPickRef {
   kind: "face" | "edge";
@@ -58,6 +59,8 @@ export function modelApplyReady(
   // --- A3 composite features: Apply waits on the same dry-run as a hole. ---
   if (isFeatureTool(tool)) return probeOk;
   // --- end A3 ---
+  // --- A4. Pattern and mirror wait on the same dry-run. A refusal leaves the group unbuilt, so Apply stays off. ---
+  if (isRepeatTool(tool)) return probeOk;
   // --- A2 shell: a closed void needs no face. Apply waits on the dry-run, as a hole does. ---
   if (tool === "shell") return probeOk;
   return (tool === "boolean" || tool === "hole") && probeOk;

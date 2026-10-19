@@ -6,6 +6,7 @@
  */
 import type { ModelTool } from "./model-drag.ts";
 import { featurePanel, featureSource, type FeatureChoices } from "./model-features.ts";
+import { repeatPanel, repeatSource, type RepeatChoices } from "./model-repeat.ts";
 import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
@@ -99,10 +100,11 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a face extrude, a face move, or a group that is not a feature. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
+/** Whether the app has a panel for `op`: not yet for an extrude, a revolve, a loft, a face extrude, a face move, or a group that is not a feature, a pattern, or a mirror. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
 function hasPanel(op: ModelOp): boolean {
   // --- A3 composite features: a pocket, boss, texture, array, ribs, or text group reopens its panel. ---
-  if (op.kind === "group") return featureSource(op) != null;
+  // --- A4. A pattern or a mirror group reopens that panel too. ---
+  if (op.kind === "group") return featureSource(op) != null || repeatSource(op) != null;
   // --- end A3 ---
   return !(op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "faceExtrude" || op.kind === "moveFaces");
 }
@@ -295,6 +297,8 @@ export interface EditPanel {
   // --- A3 composite features: the choices a feature group's panel reopens with, including the face. ---
   feature?: FeatureChoices;
   // --- end A3 ---
+  // --- A4. The choices a pattern or mirror group reopens with, including the steps it repeats. ---
+  repeat?: RepeatChoices;
 }
 
 /**
@@ -362,6 +366,10 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
       const source = featureSource(op);
       if (source) return featurePanel(source);
       // --- end A3 ---
+      // --- A4 pattern and mirror ---
+      const repeated = repeatSource(op);
+      if (repeated) return repeatPanel(repeated);
+      // --- end A4 ---
       throw new Error(`No edit panel for a ${op.kind} step`);
     }
   }
