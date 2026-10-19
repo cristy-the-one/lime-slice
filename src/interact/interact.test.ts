@@ -399,6 +399,13 @@ const loftRing = (z: number): [number, number, number][] => [[0, 0, z], [10, 0, 
 check("a loft ghost of a 10 mm square prism is 1000 mm³", near(volume(loftGhost([loftRing(0), loftRing(10)])), 1000, 1e-3));
 check("one loft ring draws nothing", loftGhost([loftRing(0)]).length === 0);
 
+// A11. A spline's samples are on-curve only: near its end, the end itself is the snap, not the sample beside it.
+const spline: Pt[] = Array.from({ length: 41 }, (_, i) => [i * 0.5, Math.sin(i / 8)] as Pt);
+const nearEnd = snapPoint([19.6, Math.sin(40 / 8) + 0.05], { mmPerPx: 0.1, sketch: [{ kind: "polyline", points: spline }], grid: false });
+eq("near a spline's end, the end is the snap", [nearEnd.kind, nearEnd.at], ["endpoint", spline[40]]);
+const between = snapPoint([5.1, Math.sin(10 / 8) + 0.02], { mmPerPx: 0.1, sketch: [{ kind: "polyline", points: spline }], grid: false });
+eq("an inner sample is on the curve, not an endpoint", between.kind, "on-curve");
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
