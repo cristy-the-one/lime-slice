@@ -1,6 +1,7 @@
 /**
- * Shared interaction for sketches and push/pull. No tool calls these yet.
+ * Shared interaction for sketches and push/pull.
  * The right-hand gizmo stays for Place and Workplane; an in-place arrow is a feature handle.
+ * Edge drag (P2) is the first caller: a knob on an edge fillets it, or chamfers it with Alt.
  */
 
 export {
@@ -69,3 +70,25 @@ export {
   type SnapKind,
   type SnapPoint,
 } from "./snap.ts";
+export {
+  blendDirection,
+  blendRadius,
+  clampBlendSize,
+  EDGE_EDIT_MS,
+  EDGE_FACE_MM,
+  EDGE_KNOB_ID,
+  EDGE_MIN_MM,
+  EDGE_STEP_MM,
+  edgeAppliedNote,
+  edgeDragEdges,
+  edgeDragKind,
+  edgeDragNote,
+  edgeDragOp,
+  edgeDragRefusal,
+  edgeFrame,
+  edgeHoverHint,
+  facesOnEdge,
+  knobAt,
+  tabStillOpen,
+  type BlendKind,
+} from "./edge-drag.ts";
