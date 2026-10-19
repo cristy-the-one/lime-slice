@@ -24,13 +24,13 @@ import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
 import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
-import { applyRequest, crossEditRequest, exportRequest, extrudeOp, faceExtrudeOp, gotoRequest, isBrep, joinOp, loftOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, solidFileName, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
+import { applyRequest, crossEditRequest, exportRequest, extrudeOp, faceExtrudeOp, gotoRequest, isBrep, joinOp, keepSketch, loftOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, solidFileName, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
 import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { thinWalls } from "./thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "./anchors.ts";
 import { expandOps, type PartDef } from "./macro.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
+import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, withNode, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
@@ -79,7 +79,7 @@ import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./sche
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "./compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
-import { evaluateTable } from "../src/modeling/params.ts";
+import { evaluateTable, isPlainNumber, withExprs } from "../src/modeling/params.ts";
 import { featureExpandContext, featureLabel, featureSolidInModel, isFeatureTool } from "../src/model-features.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
@@ -111,6 +111,66 @@ function readParamText(value: Record<string, unknown>): Record<string, string | 
     else if (typeof raw === "string" && raw.trim()) out[key] = raw;
   }
   return out;
+}
+
+/** --- D25. Expression text, so an MCP step keeps the expressions it was typed with, as an app step keeps a field's. */
+function exprText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() && !isPlainNumber(value) ? value.trim() : null;
+}
+
+/** The app field each typed number lands in, by op kind; a diameter is halved into the radius the op stores. */
+const OP_EXPR_FIELDS: Record<string, readonly (readonly [string, string, boolean?])[]> = {
+  root: [["dx", "modelDx"], ["dy", "modelDy"], ["dz", "modelDz"], ["radius", "modelRadius"], ["height", "modelHeight"], ["topRadius", "modelTopR"], ["tubeRadius", "modelTube"], ["innerRadius", "modelInnerR"], ["topX", "modelTopX"], ["sides", "modelSides"], ["across", "modelAcross"]],
+  boolean: [["dx", "modelDx"], ["dy", "modelDy"], ["dz", "modelDz"], ["radius", "modelRadius"], ["height", "modelHeight"], ["topRadius", "modelTopR"], ["tubeRadius", "modelTube"], ["innerRadius", "modelInnerR"], ["topX", "modelTopX"], ["sides", "modelSides"], ["across", "modelAcross"]],
+  hole: [["diameterMm", "modelHoleR", true], ["depth", "modelHoleD"], ["counterboreDiameterMm", "modelBoreR", true], ["counterboreDepth", "modelBoreD"]],
+  fillet: [["size", "modelBlend"]],
+  chamfer: [["size", "modelBlend"]],
+  shell: [["thickness", "modelShell"]],
+  scale: [["factor", "modelFactor"]],
+  extrude: [["depth", "depth"], ["depth2", "depth2"], ["draftDeg", "draftDeg"]],
+  revolve: [["angleDeg", "angle"]],
+};
+const FEATURE_EXPR_FIELDS: readonly (readonly [string, string])[] = [["width", "modelFeatW"], ["height", "modelFeatH"], ["depth", "modelFeatDepth"], ["diameter", "modelFeatDia"], ["grooveWidth", "modelTexGroove"]];
+
+/**
+ * The expression fields of one typed op, keyed as the app's panel stores them (`op.exprs`), so the app's Rebuild and
+ * its out-of-date mark follow a parameter the MCP named. A placement (origin, centre, turn) is left out: the stored op
+ * is in the solid's frame, so its numbers are not the typed ones on a moved part.
+ */
+export function typedExprs(op: unknown): Record<string, string> | undefined {
+  if (!op || typeof op !== "object" || Array.isArray(op)) return undefined;
+  const raw = op as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  const kind = typeof raw.kind === "string" ? raw.kind : "";
+  if (kind === "pocket" || kind === "boss" || kind === "texture" || kind === "array" || kind === "ribs" || kind === "text") {
+    for (const [field, key] of FEATURE_EXPR_FIELDS) {
+      const text = exprText(raw[field]);
+      if (text) out[key] = text;
+    }
+    const at = raw.at as Record<string, unknown> | undefined;
+    const u = exprText(at?.u);
+    const v = exprText(at?.v);
+    if (u) out.modelFeatU = u;
+    if (v) out.modelFeatV = v;
+    const bars = raw.bars as Record<string, unknown> | undefined;
+    for (const [field, key] of [["vertical", "modelFeatBarsV"], ["horizontal", "modelFeatBarsH"], ["width", "modelFeatBarW"]] as const) {
+      const text = exprText(bars?.[field]);
+      if (text) out[key] = text;
+    }
+    const pitch = raw.pitch;
+    const pu = exprText(Array.isArray(pitch) ? pitch[0] : pitch);
+    const pv = exprText(Array.isArray(pitch) ? pitch[1] : pitch);
+    if (pu) out.modelTexPitchU = pu;
+    if (pv) out.modelTexPitchV = pv;
+  } else {
+    for (const [field, key, half] of OP_EXPR_FIELDS[kind] ?? []) {
+      const text = exprText(raw[field]);
+      if (text) out[key] = half ? `(${text}) / 2` : text;
+    }
+    // A box's dy is its dx when left out.
+    if ((kind === "boolean" || kind === "root") && raw.dy === undefined && out.modelDx) out.modelDy = out.modelDx;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function changesPlate(name: string): boolean {
@@ -586,6 +646,8 @@ export class Session {
   private toolsOffPlate: PlateObject[] = [];
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
   private pendingRecipe: Recipe | null = null;
+  /** --- D25. Each typed op's expression fields from the call being run, by op index; set before its numbers resolve. */
+  private pendingExprs: (Record<string, string> | undefined)[] = [];
 
   /** How app_open reaches the desktop app. Tests replace it. */
   appOpener: AppOpener = systemOpener;
@@ -702,8 +764,12 @@ export class Session {
    * check, from the session's parameters and the call's own `params`.
    */
   private withNumbers(name: string, args: unknown): { args: unknown } | { reason: string } {
+    this.pendingExprs = [];
     if (!EXPRESSION_TOOLS.has(name) || !args || typeof args !== "object") return { args };
     const input = { ...(args as Record<string, unknown>) };
+    if (name === "model_apply" || name === "model_edit") this.pendingExprs = [typedExprs(input.op)];
+    // A part placed with {kind: "use"} becomes several ops, so a batch that uses one keeps no expressions.
+    if (name === "model_apply_batch" && Array.isArray(input.ops) && !input.ops.some((op) => (op as { kind?: unknown } | null)?.kind === "use")) this.pendingExprs = input.ops.map(typedExprs);
     if (name === "model_define") return { args: input };
     // model_build {object, params} with no ops reruns the recipe that object was built from, with those parameters.
     if (name === "model_build" && typeof input.object === "string" && input.ops === undefined && input.base === undefined) {
@@ -1313,7 +1379,8 @@ export class Session {
     if (!tree || tree.root.kind === "piece") return undefined;
     const owner = (key: string) => this.byTreeKey(key)?.id;
     const body = savedTree(tree, tree.committed, owner);
-    if (tree.root.kind === "primitive") return { ...body, rootPrimitive: tree.root.solid };
+    // --- D25. A primitive root keeps the expressions its sizes were typed with, as the app saves them.
+    if (tree.root.kind === "primitive") return { ...body, rootPrimitive: tree.root.solid, ...(tree.root.exprs && Object.keys(tree.root.exprs).length > 0 ? { rootExprs: tree.root.exprs } : {}) };
     // --- K2 feature root. The op as stored, no STEP. ---
     if (tree.root.kind === "feature") return { ...body, rootFeature: tree.root.op };
     const bytes = new Uint8Array(tree.root.bytes);
@@ -1326,7 +1393,7 @@ export class Session {
     const root = saved.rootFeature
       ? { kind: "feature" as const, op: saved.rootFeature }
       : saved.rootPrimitive
-        ? { kind: "primitive" as const, solid: saved.rootPrimitive }
+        ? { kind: "primitive" as const, solid: saved.rootPrimitive, ...(saved.rootExprs ? { exprs: saved.rootExprs } : {}) }
         : saved.rootStep?.bytesBase64
           ? { kind: "step" as const, name: saved.rootStep.name, bytes: this.bufferOf(saved.rootStep.bytesBase64) }
           : null;
@@ -3768,15 +3835,30 @@ export class Session {
     const anchored = this.anchored(obj, input.op as Record<string, unknown>);
     if ("reason" in anchored) return { ok: false, reason: anchored.reason };
     const raw = anchored.op;
+    const exprs = this.pendingExprs;
+    this.pendingExprs = [];
     if (isComposite(raw?.kind)) {
-      const { checkpoints: _checkpoints, ...ran } = await this.applyMany(obj, [raw], { label: typeof raw.label === "string" ? raw.label : undefined });
+      const { checkpoints, ...ran } = await this.applyMany(obj, [raw], { label: typeof raw.label === "string" ? raw.label : undefined });
+      this.keepExprs(obj, checkpoints as (number | null)[], exprs);
       return ran;
     }
     if (input.probe === true) {
       const probed = await this.probe(obj, raw);
       if (probed.ok !== true) return { ...probed, applied: false };
     }
-    return this.apply(obj, raw);
+    const done = await this.apply(obj, raw);
+    if (done.ok === true) this.keepExprs(obj, [parseNode(done.node)], exprs);
+    return done;
+  }
+
+  /** --- D25. Each applied op's node keeps the expressions it was typed with. A node an op did not make is left. */
+  private keepExprs(obj: PlateObject, nodes: readonly (number | null)[], exprs: readonly (Record<string, string> | undefined)[]): void {
+    nodes.forEach((id, index) => {
+      const texts = exprs[index];
+      const node = id === null ? undefined : obj.tree?.nodes.get(id);
+      if (!texts || !node?.op || !obj.tree || id === null) return;
+      obj.tree = withNode(obj.tree, id, { op: withExprs(node.op, texts) });
+    });
   }
 
   private async apply(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
@@ -4134,7 +4216,11 @@ export class Session {
   private async applyBatch(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
     if (ops.length === 0) return { ok: false, reason: "The batch needs at least one op." };
-    const { checkpoints: _checkpoints, ...ran } = await this.applyMany(obj, ops, { label: typeof input.label === "string" ? input.label : undefined, onError: input.onError });
+    const exprs = this.pendingExprs;
+    this.pendingExprs = [];
+    const { checkpoints, ...ran } = await this.applyMany(obj, ops, { label: typeof input.label === "string" ? input.label : undefined, onError: input.onError });
+    // A batch rolled back made no node to keep them on.
+    if (ran.rolledBack !== true) this.keepExprs(obj, checkpoints as (number | null)[], exprs);
     return ran;
   }
 
@@ -4522,7 +4608,7 @@ export class Session {
     return this.gotoNode(obj, target);
   }
 
-  private async editRoot(obj: PlateObject, tree: ModelTree, node: number, raw: unknown): Promise<Record<string, unknown>> {
+  private async editRoot(obj: PlateObject, tree: ModelTree, node: number, raw: unknown, exprs?: Record<string, string>): Promise<Record<string, unknown>> {
     const refusal = editRefusal(tree, node);
     if (refusal) return { ok: false, reason: refusal };
     const baked = this.bake(obj, raw);
@@ -4551,11 +4637,12 @@ export class Session {
     }
     if (baked.op.kind !== "root" || tree.root.kind !== "primitive") return { ok: false, reason: "The new solid's first step takes a root edit." };
     if (!obj.probes.has(probeKey(String(node), baked.op))) return { ok: false, reason: "Probe this edit first. It was not applied." };
-    const { kind: _kind, ...solid } = baked.op;
+    const { kind: _kind, exprs: _exprs, ...solid } = baked.op;
     const root = { kind: "primitive" as const, solid };
     const reply = await this.treeCall(openRequest(tree.key, root, CHORD), "root");
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, "create") };
-    obj.tree = { ...tree, root };
+    // --- D25. The new sizes keep the expressions this call typed; typed numbers drop the old ones.
+    obj.tree = { ...tree, root: exprs ? { ...root, exprs } : root };
     const next = rememberSolid(reply);
     if (next) obj.solid = next;
     obj.probes.clear();
@@ -4574,13 +4661,15 @@ export class Session {
   }
 
   private async edit(obj: PlateObject, node: number | null, raw: unknown): Promise<Record<string, unknown>> {
+    const exprs = this.pendingExprs[0];
+    this.pendingExprs = [];
     const toolReason = await this.openJoinTool(raw);
     if (toolReason) return { ok: false, reason: toolReason };
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
     const parent = tree.nodes.get(node)?.parent;
-    if (parent === null || parent === undefined) return this.editRoot(obj, tree, node, raw);
+    if (parent === null || parent === undefined) return this.editRoot(obj, tree, node, raw, exprs);
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
     const probed = [parent, node, tree.current].some((id) => obj.probes.has(probeKey(String(id), baked.op)));
@@ -4610,9 +4699,12 @@ export class Session {
     const ids = [own.node, ...own.replay.map((step) => step.id)];
     const steps = ids.map((id, index) => {
       const made = built?.get(id);
+      // --- D25. The engine's echo has no sketch and no expressions: each step keeps its own, and the edited step the
+      // expressions this call typed.
+      const source = index === 0 ? withExprs(own.op, exprs) : own.replay[index - 1]!.op;
       return {
         id,
-        op: made?.op ?? (index === 0 ? own.op : own.replay[index - 1]!.op),
+        op: made ? keepSketch(made.op, source) : source,
         fingerprint: made?.fingerprint ?? null,
         ...(broken?.id === id ? { broken: broken.error } : {}),
       };
@@ -4663,12 +4755,16 @@ export class Session {
       const made = readBuilt(parts[index]?.built);
       const broken = readBroken(parts[index]?.broken);
       const ids = [level.node, ...level.replay.map((step) => step.id)];
-      const steps = ids.map((id, step) => ({
+      const steps = ids.map((id, step) => {
+        const source = step === 0 ? level.op : level.replay[step - 1]!.op;
+        const echo = made?.get(id)?.op;
+        return {
         id,
-        op: made?.get(id)?.op ?? (step === 0 ? level.op : level.replay[step - 1]!.op),
+        op: echo ? keepSketch(echo, source) : source,
         fingerprint: made?.get(id)?.fingerprint ?? null,
         ...(broken?.id === id ? { broken: broken.error } : {}),
-      }));
+        };
+      });
       const tip = [...steps].reverse().find((step) => !step.broken)?.id ?? ids[0]!;
       host.tree = forked(host.tree, level.parent, steps, tip, false);
     });

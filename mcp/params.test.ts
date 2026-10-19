@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fakeEngine } from "./engine.ts";
+import { stepOutOfDate } from "../src/modeling/params.ts";
+import type { ModelOp } from "../src/model-tree.ts";
 import { Session } from "./session.ts";
 
 const workspace = mkdtempSync(join(tmpdir(), "lime-mcp-params-"));
@@ -81,6 +83,38 @@ const fresh = await badSession.call("model_params", {});
 check("project_create clears the parameters", created.ok === true && JSON.stringify(fresh.params) === "{}" && fresh.errors === undefined, JSON.stringify(fresh));
 const parts = await badSession.call("model_define", {});
 check("project_create clears the defined parts", JSON.stringify(parts.parts) === "[]", JSON.stringify(parts));
+
+// --- D25. An op typed with expressions keeps them, as an app step does, so the app's Rebuild follows the table.
+{
+  const own = new Session(engine);
+  await own.call("model_params", { set: { w: 12 } });
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 30 });
+  const first = await own.call("model_apply", { object: made.object, probe: true, op: { kind: "boolean", op: "cut", primitive: "box", origin: [0, 0, 25], dx: "w", dy: 10, dz: "w / 2" } });
+  const second = await own.call("model_apply", { object: made.object, probe: true, op: { kind: "boolean", op: "cut", primitive: "box", origin: [-20, -10, 25], dx: "w", dy: 6, dz: 10 } });
+  check("both expression ops apply", first.ok === true && second.ok === true, JSON.stringify([first, second]));
+  const wider = { kind: "boolean", op: "cut", primitive: "box", origin: [0, 0, 25], dx: "w + 1", dy: 10, dz: 6 };
+  await own.call("model_probe", { object: made.object, op: wider });
+  const edited = await own.call("model_edit", { object: made.object, node: first.node, op: wider });
+  check("the first op is edited", edited.ok === true, JSON.stringify(edited));
+  const file = await own.call("project_save", { name: "exprs.lime" });
+  const doc = JSON.parse(readFileSync(String(file.path), "utf8")) as { objects?: { modelTree?: { nodes?: { op?: ModelOp | null }[] } }[] };
+  const ops = (doc.objects?.at(-1)?.modelTree?.nodes ?? []).map((node) => node.op).filter((op): op is ModelOp => op?.kind === "boolean");
+  const exprs = ops.map((op) => op.exprs ?? null);
+  check("the edited step keeps the expression this edit typed, and the replayed step its own", JSON.stringify(exprs.slice(-2)) === JSON.stringify([{ modelDx: "w + 1" }, { modelDx: "w" }]), JSON.stringify(exprs));
+  check("a stored step is out of date when its parameter changes", ops.length >= 2 && !stepOutOfDate(ops.at(-1)!, { w: 12 }) && stepOutOfDate(ops.at(-1)!, { w: 14 }));
+
+  // A root the app saved with expressions keeps them through the MCP.
+  const rooted = JSON.parse(readFileSync(String(file.path), "utf8")) as { objects?: { modelTree?: Record<string, unknown> }[] };
+  const tree = rooted.objects!.at(-1)!.modelTree!;
+  tree.rootExprs = { modelDx: "w * 5" };
+  const rootedPath = join(workspace, "root-exprs.lime");
+  writeFileSync(rootedPath, JSON.stringify(rooted));
+  const again = new Session(engine);
+  await again.call("project_open", { path: rootedPath });
+  const resaved = await again.call("project_save", { name: "root-exprs-2.lime" });
+  const back = JSON.parse(readFileSync(String(resaved.path), "utf8")) as { objects?: { modelTree?: { rootExprs?: unknown } }[] };
+  check("the root's expressions survive an MCP open and save", JSON.stringify(back.objects?.at(-1)?.modelTree?.rootExprs) === JSON.stringify({ modelDx: "w * 5" }), JSON.stringify(back.objects?.at(-1)?.modelTree?.rootExprs));
+}
 
 if (failed) {
   console.error(`${failed} failed`);
