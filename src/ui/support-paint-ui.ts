@@ -32,7 +32,7 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
   tool.setAttribute("aria-label", "Paint supports");
   tool.setAttribute("aria-pressed", "false");
   tool.append(createElement(Paintbrush, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
-  rail?.querySelector('[data-tool="supports"]')?.before(tool);
+  rail?.querySelector("#railPaint")?.append(tool);
 
   const bar = document.createElement("div");
   bar.className = "paint-bar";

@@ -256,18 +256,20 @@ function paintTiming() {
   const timing = document.querySelector<HTMLElement>("#timing");
   if (!timing) return;
   const result = state.result;
-  timing.dataset.tip = "Show the results panel";
+  timing.dataset.tip = "Results panel";
+  timing.removeAttribute("aria-label");
   if (state.busy) {
     timing.textContent = busyText();
     return;
   }
   if (!result) {
     timing.textContent = "";
+    timing.setAttribute("aria-label", "Results panel");
     return;
   }
   const grams = shownGrams(result);
   timing.innerHTML = `<span>${formatDuration(result.estimate?.seconds ?? 0)}</span><span class="est-mass"> · ${formatMass(grams)}</span><span class="est-cost"> · ${formatMoney(filamentCost(grams, state.profile))}</span>`;
-  timing.dataset.tip = `${timing.textContent} · Show the results panel`;
+  timing.dataset.tip = `${timing.textContent} · Results panel`;
 }
 
 type Band = { index: number; z0: number; z1: number };
@@ -346,15 +348,6 @@ export function revealPrinterDetails() {
   group.open = true;
   if (window.innerWidth <= 960) document.querySelector(".workspace")?.classList.add("show-left");
   group.scrollIntoView({ block: "start", behavior: "smooth" });
-}
-
-/** Show the results panel where the layout hides it, and scroll it to the estimate. */
-export function revealResults() {
-  const workspace = document.querySelector(".workspace");
-  if (workspace?.classList.contains("is-right-collapsed")) document.querySelector<HTMLButtonElement>(".panel-collapse-right")?.click();
-  if (window.innerWidth <= 960) workspace?.classList.add("show-right");
-  const right = document.querySelector<HTMLElement>("#right");
-  if (right) right.scrollTop = 0;
 }
 
 /** The slice's filament in grams at the profile's density. */
@@ -1567,4 +1560,4 @@ export async function probe() {
   paintBanner();
 }
 
-Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow, revealPrinterDetails, revealResults, setCalibrate });
+Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow, revealPrinterDetails, setCalibrate });

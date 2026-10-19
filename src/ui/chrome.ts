@@ -9,6 +9,7 @@ import {
   Printer,
   Layers,
   Move3d,
+  PanelLeft,
   RefreshCw,
   Rotate3d,
   Scaling,
@@ -17,12 +18,15 @@ import {
   X,
   type IconNode,
 } from "lucide";
+import { toggleDock } from "./splitters";
 import { mountTooltips } from "./tooltip";
 import "./chrome.css";
 
 export type GizmoTool = "all" | "move" | "rotate" | "scale";
+export type Stage = "prepare" | "preview" | "gcode" | "model";
 
 export interface ChromeHooks {
+  stage(): Stage;
   setGizmoTool(tool: GizmoTool): void;
   onToolReadout(): void;
 }
@@ -77,11 +81,19 @@ function iconizeToolbar() {
   iconOnly(document.querySelector("#flatZoomOut"), Minus, 14);
 }
 
+const STAGE_NAME: Record<Stage, string> = { prepare: "Prepare", preview: "Preview", gcode: "G-code", model: "Model" };
+
+/**
+ * The rail at the far left: one vertical toolbar whose tool set follows the stage. Prepare's set also serves Model
+ * until Model has a set of its own; Preview and G-code share one. The foot holds the settings dock toggle.
+ */
 function mountToolRail(hooks: ChromeHooks) {
-  const host = document.querySelector("#stage");
-  const rail = document.createElement("nav");
+  const host = document.querySelector(".workspace");
+  const rail = document.createElement("div");
   rail.id = "toolRail";
   rail.className = "tool-rail";
+  rail.setAttribute("role", "toolbar");
+  rail.setAttribute("aria-orientation", "vertical");
   rail.setAttribute("aria-label", "Prepare tools");
   rail.dataset.tool = "all";
 
@@ -92,22 +104,36 @@ function mountToolRail(hooks: ChromeHooks) {
   const lay = toolButton("layflat", ArrowDownToLine, "Lay flat", "Drop the flattest face onto the bed.");
   lay.classList.add("is-disabled");
   lay.setAttribute("aria-disabled", "true");
-  const section = toolButton("section", SquareSplitHorizontal, "Section", "Clip the preview. Does not change the slice.");
-  section.setAttribute("aria-pressed", "false");
   const supports = toolButton("supports", TreeDeciduous, "Edit supports", "Pick tree supports to delete or regrow. Does not move the part.");
   supports.setAttribute("aria-pressed", "false");
   supports.classList.add("is-disabled");
   supports.setAttribute("aria-disabled", "true");
+  // The paint brushes mount themselves into this group.
+  const paint = document.createElement("div");
+  paint.id = "railPaint";
+  paint.className = "rail-group";
+  paint.setAttribute("role", "group");
+  paint.setAttribute("aria-label", "Paint");
 
-  const sep = () => {
-    const line = document.createElement("div");
-    line.className = "rail-sep";
-    return line;
-  };
-  rail.append(move, rotate, scale, lay, sep(), section, sep(), supports, gizmoNudge());
-  host?.before(rail);
+  const prepareSet = railSet("prepare model", "Prepare tools");
+  prepareSet.append(caption("Place"), move, rotate, scale, lay, sep(), caption("View"), sectionButton(), sep(), caption("Paint"), paint);
+  const previewSet = railSet("preview gcode", "Preview tools");
+  previewSet.append(caption("View"), sectionButton(), sep(), caption("Edit"), supports);
 
-  const buttons = { move, rotate, scale, lay, section };
+  const foot = document.createElement("div");
+  foot.className = "rail-foot";
+  const leftToggle = toolButton("dock", PanelLeft, "Settings panel", "Settings panel");
+  leftToggle.id = "leftToggle";
+  leftToggle.setAttribute("aria-controls", "leftDock");
+  leftToggle.setAttribute("aria-pressed", "true");
+  foot.append(leftToggle);
+
+  rail.append(prepareSet, previewSet, gizmoNudge(), foot);
+  host?.prepend(rail);
+  mountRovingFocus(rail);
+  paintRailStage(hooks.stage());
+
+  const buttons = { move, rotate, scale };
 
   rail.addEventListener("click", (ev) => {
     const button = (ev.target as Element | null)?.closest<HTMLButtonElement>("button");
@@ -116,13 +142,93 @@ function mountToolRail(hooks: ChromeHooks) {
     if (id === "move" || id === "rotate" || id === "scale") selectManipulator(id, buttons, hooks);
     if (id === "layflat") document.querySelector<HTMLButtonElement>("#layflat")?.click();
     if (id === "section") toggleSection();
+    if (id === "dock") toggleDock("left");
   });
 
-  document.querySelector("#sectionOn")?.addEventListener("change", () => syncSection(section));
+  document.querySelector("#sectionOn")?.addEventListener("change", () => syncSection());
   const left = document.querySelector("#left");
   if (left) new MutationObserver(() => syncLay(lay)).observe(left, { childList: true, subtree: true });
   syncLay(lay);
-  syncSection(section);
+  syncSection();
+}
+
+function railSet(stages: string, label: string) {
+  const set = document.createElement("div");
+  set.className = "rail-set";
+  set.dataset.for = stages;
+  set.setAttribute("role", "group");
+  set.setAttribute("aria-label", label);
+  return set;
+}
+
+function caption(text: string) {
+  const el = document.createElement("span");
+  el.className = "rail-caption";
+  el.setAttribute("aria-hidden", "true");
+  el.textContent = text;
+  return el;
+}
+
+function sep() {
+  const line = document.createElement("div");
+  line.className = "rail-sep";
+  return line;
+}
+
+function sectionButton() {
+  const button = toolButton("section", SquareSplitHorizontal, "Section", "Clip the preview. Does not change the slice.");
+  button.setAttribute("aria-pressed", "false");
+  return button;
+}
+
+/** Show the stage's tool set, and name the toolbar and the stage landmark after it. */
+export function paintRailStage(stage: Stage) {
+  const rail = document.querySelector<HTMLElement>("#toolRail");
+  if (!rail) return;
+  rail.querySelectorAll<HTMLElement>(".rail-set").forEach((set) => {
+    set.hidden = !(set.dataset.for ?? "").split(" ").includes(stage);
+  });
+  rail.setAttribute("aria-label", `${STAGE_NAME[stage]} tools`);
+  document.querySelector("#stage")?.setAttribute("aria-label", STAGE_NAME[stage]);
+  rovingReset(rail);
+}
+
+function railButtons(rail: HTMLElement) {
+  return [...rail.querySelectorAll<HTMLButtonElement>("button")].filter((button) => !button.closest("[hidden]") && button.offsetParent !== null);
+}
+
+/** One tab stop for the rail: the arrows walk it, Home and End jump to its ends. */
+function mountRovingFocus(rail: HTMLElement) {
+  rail.addEventListener("focusin", (ev) => {
+    const target = ev.target as HTMLElement;
+    if (target.tagName !== "BUTTON") return;
+    for (const button of rail.querySelectorAll<HTMLButtonElement>("button")) button.tabIndex = button === target ? 0 : -1;
+  });
+  const steps: Record<string, number> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1, Home: -Infinity, End: Infinity };
+  rail.addEventListener("keydown", (ev) => {
+    const step = steps[ev.key];
+    if (step === undefined || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+    const buttons = railButtons(rail);
+    const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (at < 0) return;
+    ev.preventDefault();
+    const next = step === -Infinity ? 0 : step === Infinity ? buttons.length - 1 : (at + step + buttons.length) % buttons.length;
+    buttons[next].focus();
+  });
+  // The paint brushes and the gizmo nudge come and go after mount.
+  new MutationObserver(() => rovingReset(rail)).observe(rail, { childList: true, subtree: true, attributeFilter: ["hidden"] });
+}
+
+/** Exactly one shown rail button sits in the tab order: the focused one, else the one that had the stop, else the first. */
+function rovingReset(rail: HTMLElement) {
+  const buttons = railButtons(rail);
+  const keep = buttons.find((button) => button === document.activeElement)
+    ?? buttons.find((button) => button.tabIndex === 0)
+    ?? buttons[0];
+  for (const button of rail.querySelectorAll<HTMLButtonElement>("button")) {
+    const tab = button === keep ? 0 : -1;
+    if (button.tabIndex !== tab) button.tabIndex = tab;
+  }
 }
 
 function gizmoNudge() {
@@ -192,16 +298,14 @@ function toggleSection() {
   }
 }
 
-function syncSection(button: HTMLButtonElement) {
+function syncSection() {
   const on = !!document.querySelector<HTMLInputElement>("#sectionOn")?.checked;
-  button.setAttribute("aria-pressed", on ? "true" : "false");
+  document.querySelectorAll('#toolRail [data-tool="section"]').forEach((button) => button.setAttribute("aria-pressed", on ? "true" : "false"));
 }
 
 function syncLay(button: HTMLButtonElement) {
   const ready = !!document.querySelector("#layflat");
   button.classList.toggle("is-disabled", !ready);
   button.setAttribute("aria-disabled", ready ? "false" : "true");
-  if (ready) button.tabIndex = 0;
-  else button.tabIndex = -1;
 }
 

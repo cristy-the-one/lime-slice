@@ -70,6 +70,7 @@ view3d.setTheme();
 prepare.setTheme();
 model.setTheme();
 mountChrome({
+  stage: () => state.stage,
   setGizmoTool: (tool) => prepare.setGizmoTool(tool),
   onToolReadout: () => paintGizmoReadout(),
 });

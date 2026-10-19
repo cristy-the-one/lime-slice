@@ -24,6 +24,7 @@ import type { PreviewGeometry } from "../preview-geom";
 import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
+import { paintRailStage } from "../ui/chrome";
 import { clampPartPercent } from "../gizmo-math";
 import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
 import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, wheelKind, wheelZoomFactor, zoomFlat, type FlatView, type XyBounds } from "../ui/flat-view";
@@ -92,6 +93,29 @@ export function paintSlider() {
   paintRangeBands();
   prepare?.setModifiers(state.overrides, state.selectedVolumeId, state.modifierTool);
   syncLayerTip();
+  paintStatus();
+}
+
+/** The status line names where the stage is: the layer in Preview and G-code, the part and its size in Prepare. */
+export function paintStatus() {
+  const el = document.querySelector("#statusText");
+  if (!el) return;
+  const text = statusLine();
+  if (el.textContent !== text) el.textContent = text;
+}
+
+function statusLine(): string {
+  if (state.stage === "preview" || state.stage === "gcode") {
+    const layers = state.result?.layers ?? [];
+    const layer = layers[state.layer];
+    return layer ? `Layer ${state.layer + 1} / ${layers.length} · Z ${layer.z.toFixed(2)} mm` : "";
+  }
+  if (state.stage === "prepare" && state.mesh && state.placed) {
+    const { min, max } = state.placed.bounds;
+    const size = [0, 1, 2].map((axis) => (max[axis] - min[axis]).toFixed(1)).join(" × ");
+    return `${state.mesh.name} · ${size} mm`;
+  }
+  return "";
 }
 
 function paintLayerActions(max: number) {
@@ -464,6 +488,7 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
     beginModelVisit();
   }
   state.stage = stage;
+  paintRailStage(stage);
   document.querySelector<HTMLElement>("#prepareBody")!.hidden = stage !== "prepare";
   document.querySelector<HTMLElement>("#modelBody")!.hidden = stage !== "model";
   document.querySelector<HTMLElement>("#previewBody")!.hidden = stage !== "preview";
@@ -486,6 +511,7 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
   syncEmptyState(!!state.mesh);
   paintSectionChrome();
   paintGcode();
+  paintStatus();
   resize();
   paintSpark();
   if (stage === "model") showModel();

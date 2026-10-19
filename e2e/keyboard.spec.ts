@@ -196,6 +196,51 @@ test("Ctrl+B and Ctrl+Alt+B fold the side panels", async ({ page }) => {
   await expect(workspace).toHaveClass(/is-right-collapsed/);
 });
 
+test("the rail is one vertical toolbar whose tool set and landmarks follow the stage", async ({ page }) => {
+  await mockEngine(page);
+  await openCube(page);
+  await page.keyboard.press("1");
+  const rail = page.getByRole("toolbar", { name: "Prepare tools" });
+  await expect(rail).toHaveAttribute("aria-orientation", "vertical");
+  await expect(page.getByRole("main", { name: "Prepare" })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Settings" })).toBeVisible();
+  await expect(page.locator("#statusText")).toHaveAttribute("aria-live", "polite");
+  await expect(page.locator("#statusText")).toHaveText("calibration_cube_20mm.stl · 20.0 × 20.0 × 20.0 mm");
+  // The order a reader meets: the top band, the rail, settings, the stage, results, the status line.
+  const order = await page.evaluate(() => [...document.querySelectorAll("header.top, #toolRail, #leftDock, main#stage, #rightDock, footer.status")].map((el) => el.id || el.tagName.toLowerCase()));
+  expect(order).toEqual(["header", "toolRail", "leftDock", "stage", "rightDock", "footer"]);
+
+  await expect(rail.locator("button[tabindex='0']")).toHaveCount(1);
+  await rail.locator('[data-tool="move"]').focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(rail.locator('[data-tool="rotate"]')).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(rail.locator('[data-tool="move"]')).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(page.locator("#leftToggle")).toBeFocused();
+  await expect(rail.locator("button[tabindex='0']")).toHaveCount(1);
+  const workspace = page.locator(".workspace");
+  await page.keyboard.press("Enter");
+  await expect(workspace).toHaveClass(/is-left-collapsed/);
+  await expect(page.locator("#leftToggle")).toHaveAttribute("aria-pressed", "false");
+  await page.keyboard.press("Enter");
+  await expect(workspace).not.toHaveClass(/is-left-collapsed/);
+  await page.locator("#leftToggle").hover();
+  await expect(page.locator(".lime-tip[data-open=true] kbd")).toHaveText("Ctrl+B");
+  const sides = await page.evaluate(() => ({
+    tip: document.querySelector(".lime-tip[data-open=true]")!.getBoundingClientRect().left,
+    rail: document.querySelector("#toolRail")!.getBoundingClientRect().right,
+  }));
+  expect(sides.tip, "a rail tip opens to the right of the rail").toBeGreaterThanOrEqual(sides.rail);
+
+  await page.keyboard.press("2");
+  await expect(page.getByRole("toolbar", { name: "Preview tools" })).toBeVisible();
+  await expect(page.getByRole("main", { name: "Preview" })).toBeVisible();
+  await expect(page.locator('#toolRail [data-tool="move"]')).toBeHidden();
+  await expect(page.locator('#toolRail [data-tool="supports"]')).toBeVisible();
+  await expect(page.locator("#toolRail button[tabindex='0']")).toHaveCount(1);
+});
+
 test("a tool key toggles its tool; Esc leaves it", async ({ page }) => {
   await mockEngine(page);
   await openCube(page);

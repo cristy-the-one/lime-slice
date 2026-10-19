@@ -60,18 +60,29 @@ test("the default prepare viewport is at least 70% of a 1440 window", async ({ p
   expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBe("1");
 });
 
-test("a slice opens the results panel when the user has not collapsed it", async ({ page }) => {
+test("a slice leaves the results closed, and the estimate opens them and is remembered", async ({ page }) => {
   await quiet(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await autoSliceOff(page);
   await loadCube(page);
-  await expect(page.locator(".workspace")).toHaveClass(/is-right-collapsed/);
+  const workspace = page.locator(".workspace");
+  await expect(workspace).toHaveClass(/is-right-collapsed/);
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
-  await expect(page.locator(".workspace")).not.toHaveClass(/is-right-collapsed/);
+  await expect(workspace).toHaveClass(/is-right-collapsed/);
+  expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBeNull();
+
+  const timing = page.locator("#timing");
+  await expect(timing).toHaveAttribute("aria-expanded", "false");
+  await timing.click();
+  await expect(workspace).not.toHaveClass(/is-right-collapsed/);
+  await expect(timing).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator("#right")).toBeVisible();
   await expect(page.locator("#right")).toContainText("Triangles");
+  // 1440 has no room for both docks: the one opened last stays, and settings fold to the rail.
+  await expect(workspace).toHaveClass(/is-left-collapsed/);
+  await expect(page.locator("#leftToggle")).toHaveAttribute("aria-pressed", "false");
   const openRatio = await prepareRatio(page);
   expect(openRatio, `prepare width ratio after results open ${openRatio}`).toBeGreaterThanOrEqual(0.7);
   await page.locator("#tabPreview").click();
@@ -83,11 +94,33 @@ test("a slice opens the results panel when the user has not collapsed it", async
     return body - canvas;
   });
   expect(canvasGap, "the 3D canvas keeps the preview viewport aside from the layer slider").toBeLessThanOrEqual(80);
-  await page.locator("#tabPrepare").click();
-  expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBeNull();
+  expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBe("0");
   await page.reload();
-  await expect(page.locator(".workspace")).toHaveClass(/is-right-collapsed/);
-  expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBeNull();
+  await expect(workspace).not.toHaveClass(/is-right-collapsed/);
+
+  await page.locator("#rightDock .dock-close").click();
+  await expect(workspace).toHaveClass(/is-right-collapsed/);
+  await expect(workspace).not.toHaveClass(/is-left-collapsed/);
+  expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBe("1");
+});
+
+test("1920 fits both docks: settings yield to the results", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await loadCube(page);
+  await page.locator("#timing").click();
+  const workspace = page.locator(".workspace");
+  await expect(workspace).not.toHaveClass(/is-right-collapsed/);
+  await expect(workspace).not.toHaveClass(/is-left-collapsed/);
+  const widths = await page.evaluate(() => ({
+    left: document.querySelector("#leftDock")!.getBoundingClientRect().width,
+    right: document.querySelector("#rightDock")!.getBoundingClientRect().width,
+  }));
+  expect(widths.right).toBe(280);
+  expect(widths.left).toBeGreaterThanOrEqual(240);
+  expect(await prepareRatio(page)).toBeGreaterThanOrEqual(0.7);
 });
 
 for (const width of [1280, 1600]) {
@@ -101,6 +134,7 @@ for (const width of [1280, 1600]) {
     expect(before, `prepare width ratio before slice ${before}`).toBeGreaterThanOrEqual(0.7);
     await page.locator("#slice").click();
     await expect(page.locator("#estimate")).toContainText("g");
+    await page.locator("#timing").click();
     await expect(page.locator(".workspace")).not.toHaveClass(/is-right-collapsed/);
     const prepare = await prepareRatio(page);
     expect(prepare, `prepare width ratio ${prepare}`).toBeGreaterThanOrEqual(0.7);

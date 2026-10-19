@@ -49,7 +49,7 @@ export function mountMarkup(root: HTMLElement) {
       </div>
       <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
       <button class="btn panel-toggle" id="toggleRight" type="button">Results</button>
-      <div class="estimate-slot"><button class="estimate" id="timing" type="button" data-tip="Show the results panel"></button></div>
+      <div class="estimate-slot"><button class="estimate" id="timing" type="button" aria-controls="rightDock" aria-expanded="false" data-tip="Results panel"></button></div>
       <div class="action-row">
         <button class="btn" id="cancel" type="button" hidden>Cancel</button>
         <button class="btn" id="sendPrinter" type="button" hidden disabled>Send</button>
@@ -75,8 +75,11 @@ export function mountMarkup(root: HTMLElement) {
     </header>
     <div class="banner-rail" id="banner"></div>
     <div class="workspace">
-      <aside class="panel" id="left"><div id="leftBody"></div></aside>
-      <section class="stage mode-solid" id="stage">
+      <aside class="dock left" id="leftDock" aria-label="Settings">
+        <div class="dock-head"><h2>Settings</h2><button class="btn ghost dock-close" type="button" aria-label="Collapse settings" aria-controls="leftDock"></button></div>
+        <div class="panel" id="left"><div id="leftBody"></div></div>
+      </aside>
+      <main class="stage mode-solid" id="stage" aria-label="Preview">
         <div class="viewbar">
           <div class="modes" id="viewModes">
             <button class="btn mode" type="button" data-mode="flat" aria-pressed="false">2D</button>
@@ -528,10 +531,13 @@ export function mountMarkup(root: HTMLElement) {
           </div>
         </div>
         <div class="legend" id="legend"></div>
-      </section>
-      <aside class="panel right" id="right"></aside>
+      </main>
+      <aside class="dock right" id="rightDock" aria-label="Results">
+        <div class="dock-head"><button class="btn ghost dock-close" type="button" aria-label="Collapse results" aria-controls="rightDock"></button><h2>Results</h2></div>
+        <div class="panel right" id="right"></div>
+      </aside>
     </div>
-    <footer class="status"><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
+    <footer class="status"><span class="status-text" id="statusText" role="status" aria-live="polite"></span><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
   </div>
   <div id="calibrate" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="calibrateTitle">
     <div class="sheet-card cal-card">

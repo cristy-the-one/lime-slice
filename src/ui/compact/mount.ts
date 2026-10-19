@@ -435,9 +435,7 @@ function enter() {
 
 function leave() {
   if (!home) return;
-  const rail = document.querySelector("#toolRail");
-  if (rail) home.leftParent.insertBefore(home.left, rail);
-  else home.leftParent.prepend(home.left);
+  home.leftParent.append(home.left);
   home.action.prepend(home.cancel);
   const exportButton = home.action.querySelector("#export");
   if (exportButton) home.action.insertBefore(home.slice, exportButton);

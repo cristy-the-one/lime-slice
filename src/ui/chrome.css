@@ -20,20 +20,47 @@
 .lime-tip[data-open="true"] { display: flex; }
 .lime-tip kbd { flex: 0 0 auto; background: var(--surface-1); }
 
+/* The rail: 48px at the far left, one tool set per stage, captions over the groups, the dock toggle at its foot. */
 .tool-rail {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-1);
-  width: 40px;
+  gap: 2px;
+  width: 48px;
   min-height: 0;
   padding: var(--space-2) 0;
   background: var(--surface-1);
   border-right: 1px solid var(--border);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.tool-rail .rail-set,
+.tool-rail .rail-group { display: contents; }
+.tool-rail .rail-set[hidden] { display: none; }
+.tool-rail .rail-caption {
+  flex: 0 0 auto;
+  margin: 6px 0 1px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.tool-rail .rail-set > .rail-caption:first-child { margin-top: 0; }
+.tool-rail .rail-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding-top: var(--space-2);
 }
 .tool-rail button {
-  width: var(--control-h);
-  height: var(--control-h);
+  flex: 0 0 auto;
+  width: 36px;
+  height: 32px;
   padding: 0;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
@@ -52,9 +79,10 @@
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
 }
 .tool-rail .rail-sep {
-  width: 16px;
+  flex: 0 0 auto;
+  width: 20px;
   height: 1px;
-  margin: 2px 0;
+  margin: 3px 0;
   background: var(--border);
 }
 .tool-rail .gizmo-nudge {
@@ -62,8 +90,8 @@
   flex-direction: column;
   gap: 2px;
   width: 100%;
-  margin-top: auto;
-  padding: var(--space-1) 3px 0;
+  margin-top: var(--space-2);
+  padding: var(--space-1) 6px 0;
 }
 .tool-rail .gizmo-nudge button {
   width: 100%;
@@ -82,4 +110,9 @@
 .tool-rail .gizmo-nudge button:hover {
   background: var(--surface-3);
   color: var(--text);
+}
+/* A short window drops the captions first; the separators keep the groups apart. */
+@media (max-height: 819px) {
+  .tool-rail .rail-caption { display: none; }
+  .tool-rail .rail-sep { margin: 4px 0; }
 }

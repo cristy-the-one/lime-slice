@@ -14,7 +14,7 @@ import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail
 import { mountProjectFiles, openPickedFile, saveCurrentProject } from "./project-io";
 import { newProject } from "./new-project";
 import { pickModelFile } from "../platform";
-import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
+import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, setCalibrate, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
 import { bindPlaceScrub } from "./place-scrub";
 import { bindFieldScrub } from "../ui/field-scrub";
@@ -43,6 +43,7 @@ import {
   setModifierTool,
 } from "./override-actions";
 import { setModifierOpen } from "../ui/overrides-panel";
+import { toggleDock } from "../ui/splitters";
 import { pushToast } from "../ui/toasts";
 import { currentRules } from "./rules";
 import { turnOnSupports } from "./support-actions";
@@ -374,7 +375,7 @@ export function wireApp() {
     if (chip) chip.open = false;
     revealPrinterDetails();
   });
-  document.querySelector("#timing")!.addEventListener("click", () => revealResults());
+  document.querySelector("#timing")!.addEventListener("click", () => toggleDock("right"));
   // A menu stays open until a click lands outside it, as its own summary toggles it.
   document.addEventListener("pointerdown", (ev) => {
     const target = ev.target as Element | null;

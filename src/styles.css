@@ -46,9 +46,9 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
 }
 .top {
   flex-wrap: nowrap;
-  height: 44px;
-  min-height: 44px;
-  max-height: 44px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
   overflow: hidden;
   /* Keep the bar in its grid cell. min-width: auto would grow it for the project name, and Cancel would move Slice. */
   min-width: 0;
@@ -56,7 +56,8 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
 .status {
   flex-wrap: nowrap;
   justify-content: flex-end;
-  min-height: 26px;
+  height: 24px;
+  min-height: 24px;
   border-bottom: 0;
   border-top: 1px solid var(--line);
   color: var(--muted);
@@ -129,25 +130,59 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
   100% { transform: translateX(400%); }
 }
 
+/* Rail, settings dock, stage, results dock. Each sits in its own column, so a closed dock leaves the others put. */
 .workspace {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
   position: relative;
   display: grid;
-  grid-template-columns: var(--panel-left, 300px) 40px minmax(0, 1fr) var(--panel-right, 240px);
+  grid-template-columns: 48px var(--panel-left, 288px) minmax(0, 1fr) var(--panel-right, 0px);
   grid-template-rows: minmax(0, 1fr);
 }
+#toolRail { grid-column: 1; grid-row: 1; }
+#leftDock { grid-column: 2; grid-row: 1; }
+#stage { grid-column: 3; grid-row: 1; }
+#rightDock { grid-column: 4; grid-row: 1; }
+.dock {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--panel);
+}
+.dock.left { border-right: 1px solid var(--line); }
+.dock.right { border-left: 1px solid var(--line); }
+.dock-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 36px;
+  padding: 0 var(--space-2) 0 var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.dock.right .dock-head { padding: 0 var(--space-3) 0 var(--space-2); }
+.dock-head h2 {
+  margin: 0;
+  font-size: var(--fs-2);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.dock.left .dock-close { margin-left: auto; }
+.dock-close { width: var(--control-h); padding: 0; justify-content: center; }
 .panel {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   background: var(--panel);
   padding: var(--space-3);
-  border-right: 1px solid var(--line);
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
-.panel.right { border-right: 0; border-left: 1px solid var(--line); }
 .stage {
   min-width: 0;
   min-height: 0;
@@ -1509,31 +1544,32 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
 
 .panel-toggle { display: none; }
 @media (max-width: 1200px) {
-  .workspace { grid-template-columns: var(--panel-left, 240px) 40px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 220px); }
-  #left { grid-column: 1; grid-row: 1; }
-  #toolRail { grid-column: 2; grid-row: 1; }
-  #stage { grid-column: 3; grid-row: 1; }
-  .panel.right { grid-column: 1 / -1; grid-row: 2; border-left: 0; border-top: 1px solid var(--line); max-height: none; min-height: 0; }
+  .workspace { grid-template-columns: 48px var(--panel-left, 240px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 220px); }
+  .workspace.is-left-collapsed { --panel-left: 0px; }
+  .workspace.is-right-collapsed { grid-template-rows: minmax(0, 1fr) 0; }
+  #rightDock { grid-column: 1 / -1; grid-row: 2; border-left: 0; border-top: 1px solid var(--line); }
 }
 @media (max-width: 960px) {
   .panel-toggle { display: inline-flex; }
   .workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-  #left, #stage, #right, #toolRail { grid-column: auto; }
+  #leftDock, #stage, #rightDock, #toolRail { grid-column: auto; }
   .stage { grid-row: 1; }
-  .panel { display: none; }
-  .workspace.show-left #left,
-  .workspace.show-right #right { display: block; max-height: none; min-height: 0; overflow: auto; }
+  .dock, .workspace.is-left-collapsed .dock, .workspace.is-right-collapsed .dock { display: none; }
+  .dock-head { display: none; }
+  .workspace.show-left #leftDock,
+  .workspace.show-right #rightDock { display: flex; max-height: none; min-height: 0; }
   .workspace.show-left { grid-template-rows: minmax(0, 180px) minmax(0, 1fr); }
-  .workspace.show-left #left { grid-row: 1; }
+  .workspace.show-left #leftDock { grid-row: 1; }
   .workspace.show-left .stage { grid-row: 2; }
   .workspace.show-right { grid-template-rows: minmax(0, 1fr) minmax(0, 180px); }
   .workspace.show-right .stage { grid-row: 1; }
-  .workspace.show-right #right { grid-row: 2; }
+  .workspace.show-right #rightDock { grid-row: 2; }
   .workspace.show-left.show-right { grid-template-rows: minmax(0, 160px) minmax(0, 1fr) minmax(0, 160px); }
-  .workspace.show-left.show-right #left { grid-row: 1; }
+  .workspace.show-left.show-right #leftDock { grid-row: 1; }
   .workspace.show-left.show-right .stage { grid-row: 2; }
-  .workspace.show-left.show-right #right { grid-row: 3; }
+  .workspace.show-left.show-right #rightDock { grid-row: 3; }
   .top { flex-wrap: wrap; height: auto; max-height: none; overflow: visible; }
+  #toolRail .rail-caption { display: none; }
   #toolRail {
     position: absolute;
     z-index: 4;

@@ -36,7 +36,8 @@ html.layout-compact .app {
 html.layout-compact .top,
 html.layout-compact .status,
 html.layout-compact .win-controls,
-html.layout-compact #right,
+html.layout-compact .dock,
+html.layout-compact .splitter,
 html.layout-compact .viewbar,
 html.layout-compact .legend,
 html.layout-compact .gizmo-readout,
@@ -278,6 +279,8 @@ html.layout-compact #toolRail {
   border: 0;
 }
 html.layout-compact #toolRail .rail-sep,
+html.layout-compact #toolRail .rail-caption,
+html.layout-compact #toolRail .rail-foot,
 html.layout-compact #toolRail [data-tool="section"] { display: none; }
 html.layout-compact #toolRail button {
   width: 44px;

@@ -120,11 +120,14 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
   await page.locator("#theme").selectOption("dark");
   await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
+  await page.locator("#timing").click();
   await page.getByRole("button", { name: "Compare speed, mixes, toughness" }).click();
   await expect(page.locator(".pareto-dot")).toHaveCount(5);
   await page.locator("#pareto").screenshot({ path: path.join(out, "p1-pareto.png") });
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await page.locator(".top").screenshot({ path: path.join(out, "p1-export.png") });
+  // 1440 fits one dock beside the stage: closing results brings settings back.
+  await page.locator("#timing").click();
 
   await page.getByRole("button", { name: /^By layer/ }).click();
   await expect(page.locator("#layerBand")).toBeVisible();
@@ -174,8 +177,10 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.locator("#legend label", { hasText: "Outer wall" }).locator("input").uncheck();
   await page.locator("#legend").screenshot({ path: path.join(out, "v3-14-legend-toggles.png") });
 
+  await page.locator("#timing").click();
   await page.locator("#estimate").scrollIntoViewIfNeeded();
   await page.locator("#estimate").screenshot({ path: path.join(out, "v3-15-estimate-card.png") });
+  await page.locator("#timing").click();
 
   await page.setViewportSize({ width: 960, height: 800 });
   await page.waitForTimeout(250);

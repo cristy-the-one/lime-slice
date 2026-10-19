@@ -8,7 +8,7 @@
   z-index: 3;
   display: grid;
   gap: var(--space-2);
-  padding: var(--space-3) 30px var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-3) var(--space-2);
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
@@ -316,7 +316,7 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
 }
 
 /* Results panel */
-#right.panel { padding: var(--space-1) var(--space-3) var(--space-3) 30px; }
+#right.panel { padding: var(--space-1) var(--space-3) var(--space-3); }
 .res { padding-top: var(--space-3); }
 .res h4 {
   margin: 0 0 var(--space-2);

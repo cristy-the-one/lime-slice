@@ -1,4 +1,4 @@
-/* Phase 1b shell. The top bar stays 44px above 960 so the canvas size does not move. */
+/* The shell. The top band stays 40px above 960 so the canvas size does not move. */
 
 .top { overflow: visible; position: relative; }
 
@@ -36,7 +36,7 @@ html[data-chrome="custom"] .win-controls { display: flex; }
   border: 0;
   border-radius: 0;
   background: transparent;
-  height: 44px;
+  height: 40px;
 }
 .win-controls .btn:hover { background: var(--surface-3); }
 .win-controls .win-close:hover { background: var(--danger); color: #fff; }
@@ -110,37 +110,12 @@ html[data-chrome="custom"] .win-controls { display: flex; }
 }
 .splitter:hover::after,
 .splitter.is-drag::after { background: var(--accent); }
-.splitter-left { left: calc(var(--panel-left, 300px) - 4px); }
-.splitter-right { right: calc(var(--panel-right, 240px) - 4px); }
-.panel-collapse {
-  position: absolute;
-  z-index: 6;
-  top: 8px;
-  width: 18px;
-  height: 28px;
-  padding: 0;
-}
-.panel-collapse-left { left: calc(var(--panel-left, 300px) - 22px); }
-.panel-collapse-right { right: calc(var(--panel-right, 240px) - 22px); }
-.workspace.is-left-collapsed #leftBody { display: none; }
-.workspace.is-right-collapsed #right { display: none; }
-/* A results rail under 240px: the collapse button still needs a clear edge, and the tiles stack. */
-.workspace.is-slim-results #right.panel { padding: var(--space-1) 8px var(--space-3) 22px; }
-/* Floors that cannot share the 30% budget: results float and the stage keeps the column. */
-.workspace.is-right-hud #right {
-  display: block;
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  bottom: 8px;
-  width: 240px;
-  z-index: 7;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-pop);
-}
-.workspace.is-right-hud .splitter-right { display: none; }
-.workspace.is-right-hud .panel-collapse-right { right: calc(240px + 8px); }
+.splitter-left { left: calc(48px + var(--panel-left, 288px) - 4px); }
+.splitter-right { right: calc(var(--panel-right, 0px) - 4px); }
+.workspace.is-left-collapsed #leftDock,
+.workspace.is-right-collapsed #rightDock,
+.workspace.is-left-collapsed .splitter-left,
+.workspace.is-right-collapsed .splitter-right { display: none; }
 
 .empty-drop {
   position: absolute;
@@ -164,16 +139,10 @@ html[data-chrome="custom"] .win-controls { display: flex; }
 #viewPresets { margin-left: 0; }
 
 @media (max-width: 1200px) {
-  .splitter-left { left: calc(var(--panel-left, 240px) - 4px); }
-  .panel-collapse-left { left: calc(var(--panel-left, 240px) - 22px); }
-  .splitter-right,
-  .panel-collapse-right { display: none; }
+  .splitter-left { left: calc(48px + var(--panel-left, 240px) - 4px); }
+  .splitter-right { display: none; }
 }
 @media (max-width: 960px) {
-  .splitter,
-  .panel-collapse { display: none; }
+  .splitter { display: none; }
   .title-tabs { flex: 1 1 100%; order: 8; justify-content: flex-start; }
-  .workspace.show-left #leftBody,
-  .workspace.show-right #right { display: block; }
-  .workspace.show-left #left { display: block; }
 }
