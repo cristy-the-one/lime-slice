@@ -152,3 +152,44 @@ test("the position dot follows From, where the pocket is cut", async ({ page }) 
   await page.locator("#modelFeatFrom [data-from=corner]").click();
   await expect.poll(dot, "the dot moves to the face's corner, as the cut does").not.toBe(centred);
 });
+
+test("Rebuild re-expands a feature whose parent solid is no longer kept", async ({ page }) => {
+  const tree = await openModel(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuParameters").click();
+  const row = page.locator("#modelParams [data-param-row]").first();
+  await row.locator("[data-param-name]").click();
+  await page.keyboard.type("w");
+  await row.locator("[data-param-value]").click();
+  await page.keyboard.type("6");
+
+  await page.locator("#modelToolFeatures").click();
+  await pickFace(page);
+  await page.locator("#modelFeatW").click();
+  await page.keyboard.type("w");
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(2);
+  // Four more steps push the pocket's parent out of the solids the app keeps, as a reopen does.
+  for (let i = 0; i < 4; i += 1) {
+    await page.locator("#modelToolBoolean").click();
+    await page.locator("#modelCut").click();
+    await page.locator("#modelDx").fill(String(8 - i));
+    await expect(page.locator("#modelApply")).toBeEnabled();
+    await page.locator("#modelApply").click();
+    await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(3 + i);
+  }
+
+  await row.locator("[data-param-value]").selectText();
+  await page.keyboard.type("8");
+  await expect(page.locator("#modelParamsRebuild")).toHaveText("Rebuild 1 step");
+  const gotos = tree.of("goto").length;
+  await page.locator("#modelParamsRebuild").click();
+  await expect.poll(() => tree.of("edit").length).toBe(1);
+  const edited = tree.of("edit")[0]!.op as { source: { width: number } };
+  expect(edited.source.width).toBe(8);
+  expect(tree.of("goto").slice(gotos).map((call) => call.node), "the parent's solid is asked of the engine").toContain(0);
+  await expect(page.locator("#modelReadout")).not.toContainText("Show the step");
+  await expect(page.locator("#modelParamsRebuild")).toBeHidden();
+});

@@ -30,7 +30,7 @@ import { faceBoundarySegments, lastEdge, nextModelPicks, selectionCountLabel } f
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes, printFrame } from "../model-check.ts";
-import { emptyFeature, expandFeature, isFeatureTool, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
+import { emptyFeature, expandFeature, featureSource, isFeatureTool, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
 import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
@@ -3017,9 +3017,37 @@ function affectedNodeIds(): NodeId[] {
   return tree ? branchHits(tree, currentParams()) : [];
 }
 
-function refreshStored(op: ModelOp, after: Params, tree: ModelTree, parent: NodeId): { op: ModelOp; error?: string } {
+/**
+ * --- D21. The solid a feature step was built on, which its re-expansion reads: kept, on screen, or asked of the engine
+ * (`goto`), as after a reopen, when only the shown step is kept. A string is why the engine could not give it.
+ */
+async function builtOn(tree: ModelTree, parent: NodeId): Promise<ParsedSolid | string> {
+  const chord = state.stepTolerance;
+  const kept = recentSolid(tree.key, parent, chord) ?? (open?.key === tree.key && open.solid.id === parent ? open.solid : null);
+  if (kept) return kept;
+  const body = await treeCall(tree.key, parent, gotoRequest(tree.key, parent, chord));
+  const error = text(body.error);
+  if (error) return error;
+  const decoded = decodeSolid(body);
+  if (typeof decoded === "string") return decoded;
+  if (body.seeded) readSolids.add(decoded);
+  keepSolid(tree.key, parent, chord, decoded);
+  return decoded;
+}
+
+/** `refreshStored`, after the solid a feature step re-expands on is in hand. */
+async function refreshStoredStep(op: ModelOp, after: Params, tree: ModelTree, parent: NodeId): Promise<{ op: ModelOp; error?: string }> {
+  if (op.kind === "group" && featureSource(op)) {
+    const solid = await builtOn(tree, parent);
+    if (typeof solid === "string") return { op, error: solid };
+    return refreshStored(op, after, tree, parent, solid);
+  }
+  return refreshStored(op, after, tree, parent);
+}
+
+function refreshStored(op: ModelOp, after: Params, tree: ModelTree, parent: NodeId, known?: ParsedSolid): { op: ModelOp; error?: string } {
   const pose = openPose();
-  const cached = recentSolid(tree.key, parent, state.stepTolerance);
+  const cached = known ?? recentSolid(tree.key, parent, state.stepTolerance);
   const solid = cached ?? (open?.key === tree.key && open.solid.id === parent ? open.solid : null);
   let repeated: { id: number; op: ModelOp }[] | undefined;
   if (op.kind === "group") {
@@ -3069,7 +3097,8 @@ async function rebuildFromParameters() {
     return;
   }
   const supplied: ModelOp[] = [];
-  const first = refreshStored(startOp, after, tree, parent);
+  const first = await refreshStoredStep(startOp, after, tree, parent);
+  if (at !== open || state.stage !== "model" || treeOf(at)?.current !== from) return;
   if (first.error) {
     readout(appParamMessage(first.error));
     return;
@@ -3081,7 +3110,8 @@ async function rebuildFromParameters() {
       readout("This step is no longer in the history.");
       return;
     }
-    const next = refreshStored(step, after, tree, tree.nodes.get(id)?.parent ?? ROOT);
+    const next = await refreshStoredStep(step, after, tree, tree.nodes.get(id)?.parent ?? ROOT);
+    if (at !== open || state.stage !== "model" || treeOf(at)?.current !== from) return;
     if (next.error) {
       readout(appParamMessage(next.error));
       return;
