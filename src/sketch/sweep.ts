@@ -15,6 +15,7 @@ import { sketchJson, type Pt, type SketchData } from "./model.ts";
 import { toLoops, type Region } from "./regions.ts";
 import { regionCentroid, sampleLoop, type ModeChoice, type ResolvedMode } from "./extrude.ts";
 import { buildSketchLoft, type LoftPickInput } from "./loft.ts";
+import { sentence } from "./loops.ts";
 
 /** A turn steeper than this, at a corner the path actually bends, is refused. */
 export const SHARP_DEG = 25;
@@ -382,7 +383,3 @@ function round(value: number): number {
   return Math.round(value * 1e6) / 1e6;
 }
 
-function sentence(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.endsWith(".") ? trimmed : `${trimmed}.`;
-}

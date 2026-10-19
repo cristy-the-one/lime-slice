@@ -8,13 +8,14 @@
  */
 import type { DragHandle, Vec3 } from "../model-drag.ts";
 import { revolveOp, type ProfilePlane } from "../model-request.ts";
-import { isSketchRevolveGroup, type BooleanKind, type GroupOp, type ModelOp, type ProfileLoop as EngineLoop, type ProfileSegment as EngineSegment, type RevolveOp, type Vec2 } from "../model-tree.ts";
+import { isSketchRevolveGroup, type BooleanKind, type GroupOp, type ModelOp, type RevolveOp } from "../model-tree.ts";
 import { arcFrom3, arcPoint, curveOf, dist, sampleSpline, unit } from "./geom.ts";
 import type { ArcGeom, Pt } from "./geom.ts";
-import { addArc, addLine, addSpline, emptySketch, sketchJson, type SketchData } from "./model.ts";
+import { emptySketch, sketchJson, type SketchData } from "./model.ts";
 import { toLoops, type ProfileLoop, type ProfileSegment, type Region } from "./regions.ts";
 import { chooseRegions, cycleMode, modeLabel, outlinesOf, regionsOfOutlines, resolveExtrudeMode, sketchTouchesSolid, tooManyHoles, type ModeChoice, type ResolvedMode } from "./extrude.ts";
 import type { RefSegment } from "./refs.ts";
+import { copyLoops, drawLoop, lineLoop } from "./loops.ts";
 
 /** The kernel's full turn. Typing this snaps to it. */
 export const FULL_TURN = 360;
@@ -258,10 +259,10 @@ export function sketchForRevolve(op: ModelOp): SketchData | null {
   if (!revolve) return null;
   if (revolve.sketch) return sketchJson(revolve.sketch);
   const plane = { origin: [...revolve.origin] as Vec3, turn: [...revolve.turn] as Vec3 };
-  const loops = revolve.loops ?? (revolve.profile ? [profileLoop(revolve.profile)] : null);
+  const loops = revolve.loops ?? (revolve.profile ? [lineLoop(revolve.profile)] : null);
   if (!loops || loops.length === 0) return null;
   let sketch = emptySketch(plane);
-  for (const loop of loops) sketch = addLoop(sketch, loop);
+  for (const loop of loops) sketch = drawLoop(sketch, loop);
   return sketch.entities.length > 0 ? sketch : null;
 }
 
@@ -331,7 +332,7 @@ function oneRevolve(sketch: SketchData, region: Region, axis: RevolveAxis, angle
   const loops = toLoops(region);
   const plane: ProfilePlane = { origin: [...sketch.plane.origin] as Vec3, turn: [...sketch.plane.turn] as Vec3 };
   const boolean: BooleanKind = mode === "new" ? "fuse" : mode;
-  const made = revolveOp(boolean, plane, [], { origin: [axis.origin[0], axis.origin[1]], dir: [axis.dir[0], axis.dir[1]], angleDeg: angle }, {}, asLoops(loops));
+  const made = revolveOp(boolean, plane, [], { origin: [axis.origin[0], axis.origin[1]], dir: [axis.dir[0], axis.dir[1]], angleDeg: angle }, {}, copyLoops(loops));
   return { op: { ...made, sketch: sketchJson(sketch) } };
 }
 
@@ -409,34 +410,3 @@ function onSweep(arc: ArcGeom, theta: number): boolean {
   return delta >= arc.sweep - 1e-8;
 }
 
-function asLoops(loops: readonly ProfileLoop[]): EngineLoop[] {
-  return loops.map((loop) => ({
-    start: [loop.start[0], loop.start[1]] as Vec2,
-    segments: loop.segments.map((segment): EngineSegment => {
-      if (segment.kind === "line") return { kind: "line", to: [segment.to[0], segment.to[1]] };
-      if (segment.kind === "arc") return { kind: "arc", through: [segment.through[0], segment.through[1]], to: [segment.to[0], segment.to[1]] };
-      return { kind: "spline", through: segment.through.map((pt) => [pt[0], pt[1]] as Vec2), to: [segment.to[0], segment.to[1]] };
-    }),
-  }));
-}
-
-function profileLoop(profile: readonly Vec2[]): ProfileLoop {
-  const points = profile.map((pt) => [pt[0], pt[1]] as Pt);
-  const first = points[0] ?? [0, 0];
-  const rest = points.slice(1);
-  const last = rest[rest.length - 1];
-  if (!last || Math.hypot(last[0] - first[0], last[1] - first[1]) > 1e-6) rest.push(first);
-  return { start: first, segments: rest.map((pt) => ({ kind: "line" as const, to: pt })) };
-}
-
-function addLoop(sketch: SketchData, loop: ProfileLoop): SketchData {
-  let next = sketch;
-  let prev = loop.start;
-  for (const segment of loop.segments) {
-    if (segment.kind === "line") next = addLine(next, prev, segment.to).sketch;
-    else if (segment.kind === "arc") next = addArc(next, prev, segment.to, segment.through).sketch;
-    else next = addSpline(next, [prev, ...segment.through, segment.to]).sketch;
-    prev = segment.to;
-  }
-  return next;
-}

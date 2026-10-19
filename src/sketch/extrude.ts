@@ -8,10 +8,11 @@
  */
 import { arcFrom3, arcPoint, curveOf, dist, pointOn, projectToArc, projectToSegment, projectToSpline, sampleSpline } from "./geom.ts";
 import { frameOf, toPlane, type SketchFrame } from "./frame.ts";
-import { addArc, addLine, addSpline, emptySketch, sketchEntity, sketchJson, type Pt, type SketchData, type Vec3 } from "./model.ts";
+import { emptySketch, sketchEntity, sketchJson, type Pt, type SketchData, type Vec3 } from "./model.ts";
 import { loopSignedArea, regionAt, sketchRegions, toLoops, type ProfileLoop, type ProfileSegment, type Region } from "./regions.ts";
 import { extrudeOp, type ProfilePlane } from "../model-request.ts";
 import { isSketchExtrudeGroup, type BooleanKind, type ExtrudeOp, type FaceRef, type GroupOp, type ModelOp, type ProfileLoop as EngineLoop, type ProfileSegment as EngineSegment, type Vec2 } from "../model-tree.ts";
+import { copyLoops, drawLoop, lineLoop } from "./loops.ts";
 
 /** A point on a boundary is this close, in millimetres. Winding is 0 exactly on the line. */
 const NEAR_MM = 0.05;
@@ -83,10 +84,10 @@ export function sketchForFeature(op: ModelOp): SketchData | null {
   if (!extrude) return null;
   if (extrude.sketch) return sketchJson(extrude.sketch);
   const plane = { origin: [...extrude.origin] as Vec3, turn: [...extrude.turn] as Vec3 };
-  const loops = extrude.loops ?? (extrude.profile ? [profileLoop(extrude.profile)] : null);
+  const loops = extrude.loops ?? (extrude.profile ? [lineLoop(extrude.profile)] : null);
   if (!loops || loops.length === 0) return null;
   let sketch = emptySketch(plane);
-  for (const loop of loops) sketch = addLoop(sketch, loop);
+  for (const loop of loops) sketch = drawLoop(sketch, loop);
   return sketch.entities.length > 0 ? sketch : null;
 }
 
@@ -120,7 +121,7 @@ export function outlinesOf(steps: readonly { loops?: readonly EngineLoop[]; prof
   for (const step of steps) {
     const outer = step.loops?.[0];
     if (outer) out.push({ start: [outer.start[0], outer.start[1]], segments: outer.segments.map(copySegment) });
-    else if (step.profile && step.profile.length >= 3) out.push(profileLoop(step.profile));
+    else if (step.profile && step.profile.length >= 3) out.push(lineLoop(step.profile));
   }
   return out;
 }
@@ -293,7 +294,7 @@ function oneExtrude(
     if (!profile) return { error: loopExtentRefusal(extent) };
     return { op: { ...extrudeOp(boolean, plane, profile, depth, extent.symmetric, {}, fields), sketch: sketchCopy } };
   }
-  return { op: { ...extrudeOp(boolean, plane, [], depth, extent.symmetric, {}, asLoops(loops)), sketch: sketchCopy } };
+  return { op: { ...extrudeOp(boolean, plane, [], depth, extent.symmetric, {}, copyLoops(loops)), sketch: sketchCopy } };
 }
 
 /** A single all-line outline, or null when an arc, a spline, or a hole would have to become points. */
@@ -309,38 +310,6 @@ function lineProfile(loops: readonly ProfileLoop[]): Vec2[] | null {
   const last = points[points.length - 1]!;
   if (Math.hypot(last[0] - first[0], last[1] - first[1]) <= 1e-6) points.pop();
   return points.length >= 3 ? points : null;
-}
-
-function asLoops(loops: readonly ProfileLoop[]): EngineLoop[] {
-  return loops.map((loop) => ({
-    start: [loop.start[0], loop.start[1]] as Vec2,
-    segments: loop.segments.map((segment): EngineSegment => {
-      if (segment.kind === "line") return { kind: "line", to: [segment.to[0], segment.to[1]] };
-      if (segment.kind === "arc") return { kind: "arc", through: [segment.through[0], segment.through[1]], to: [segment.to[0], segment.to[1]] };
-      return { kind: "spline", through: segment.through.map((pt) => [pt[0], pt[1]] as Vec2), to: [segment.to[0], segment.to[1]] };
-    }),
-  }));
-}
-
-function profileLoop(profile: readonly Vec2[]): ProfileLoop {
-  const points = profile.map((pt) => [pt[0], pt[1]] as Pt);
-  const first = points[0] ?? [0, 0];
-  const rest = points.slice(1);
-  const last = rest[rest.length - 1];
-  if (!last || Math.hypot(last[0] - first[0], last[1] - first[1]) > 1e-6) rest.push(first);
-  return { start: first, segments: rest.map((pt) => ({ kind: "line", to: pt })) };
-}
-
-function addLoop(sketch: SketchData, loop: ProfileLoop): SketchData {
-  let next = sketch;
-  let prev = loop.start;
-  for (const segment of loop.segments) {
-    if (segment.kind === "line") next = addLine(next, prev, segment.to).sketch;
-    else if (segment.kind === "arc") next = addArc(next, prev, segment.to, segment.through).sketch;
-    else next = addSpline(next, [prev, ...segment.through, segment.to]).sketch;
-    prev = segment.to;
-  }
-  return next;
 }
 
 function entityPoint(sketch: SketchData, id: number): Pt | null {
