@@ -135,7 +135,7 @@ function mountToolRail(hooks: ChromeHooks) {
 
   const place = railSet("prepare model", "Place");
   place.append(caption("Place"), move, rotate, scale, lay, sep(), caption("View"));
-  const look = railSet("preview gcode", "View");
+  const look = railSet("preview", "View");
   look.append(
     caption("View"),
     ...views,
@@ -143,7 +143,7 @@ function mountToolRail(hooks: ChromeHooks) {
     flyButton("flyColor", Palette, "Color by"),
     flyButton("flyFeatures", Layers, "Features shown"),
   );
-  const bed = railSet("prepare preview gcode", "Bed");
+  const bed = railSet("prepare preview", "Bed");
   bed.append(flyButton("flyBed", Grid3x3, "Bed opacity"));
   const shared = railSet("prepare preview gcode model", "Measure and section");
   shared.append(measure, section);
@@ -260,7 +260,7 @@ export function paintRailStage(stage: Stage) {
 
 /** The rail's reachable buttons: not in a hidden set or group. */
 function railButtons(rail: HTMLElement) {
-  return [...rail.querySelectorAll<HTMLButtonElement>("button")].filter((button) => !button.closest("[hidden]"));
+  return [...rail.querySelectorAll<HTMLButtonElement>("button")].filter((button) => !button.closest("[hidden]") && button.checkVisibility());
 }
 
 /** One tab stop for the rail: the arrows walk it, Home and End jump to its ends. */
@@ -288,6 +288,7 @@ function mountRovingFocus(rail: HTMLElement) {
 /** Exactly one shown rail button sits in the tab order: the focused one, else the one that had the stop, else the first. */
 function rovingReset(rail: HTMLElement) {
   const buttons = railButtons(rail);
+  if (buttons.length === 0) return;
   const keep = buttons.find((button) => button === document.activeElement)
     ?? buttons.find((button) => button.tabIndex === 0)
     ?? buttons[0];
@@ -364,7 +365,7 @@ function toggleSection() {
   }
 }
 
-function syncSection() {
+export function syncSection() {
   const on = !!document.querySelector<HTMLInputElement>("#sectionOn")?.checked;
   document.querySelectorAll('#toolRail [data-tool="section"]').forEach((button) => button.setAttribute("aria-pressed", on ? "true" : "false"));
 }

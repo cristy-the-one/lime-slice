@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FEATURE_COLOR, featureColor, hexRgb } from "../src/colors";
+import { groupFeatures } from "../src/estimate";
 import { buildWirePreview, fillHiddenKindMask, KIND_SHIFT } from "../src/preview-geom";
 import { encodePaths } from "../src/preview-wire";
 
@@ -14,6 +15,30 @@ test("thin wall and gap fill use different legend colors, and the preview reads 
   expect(featureColor("gap-fill")).toBe(GAP);
   expect(contrastOnDark(THIN)).toBeGreaterThan(4.5);
   expect(contrastOnDark(GAP)).toBeGreaterThan(4.5);
+});
+
+test("the MCP summary groups thin-wall time with inner walls and gap fill with infill", () => {
+  const groups = groupFeatures(
+    [
+      { kind: "outer", seconds: 10, filamentMm: 20 },
+      { kind: "inner", seconds: 20, filamentMm: 40 },
+      { kind: "wall", seconds: 4, filamentMm: 5 },
+      { kind: "thin-wall", seconds: 15, filamentMm: 15 },
+      { kind: "gap-fill", seconds: 8, filamentMm: 10 },
+      { kind: "sparse", seconds: 7, filamentMm: 8 },
+      { kind: "solid", seconds: 3, filamentMm: 4 },
+      { kind: "skirt", seconds: 3, filamentMm: 2 },
+    ],
+    { filamentDiameter: 1.75, filamentDensityGCm3: 1.24, filamentCostPerKg: 20 },
+  );
+  const row = (label: string) => groups.find((group) => group.label === label);
+  expect(row("Inner wall")?.seconds).toBeCloseTo(39);
+  expect(row("Inner wall")?.grams).toBeCloseTo(0.17895, 5);
+  expect(row("Infill")?.seconds).toBeCloseTo(18);
+  expect(row("Infill")?.grams).toBeCloseTo(0.06562, 5);
+  expect(row("Other")?.seconds).toBeCloseTo(3);
+  expect(row("Other")?.grams).toBeCloseTo(0.005965, 6);
+  expect(groups.some((group) => group.label === "Thin wall")).toBe(false);
 });
 
 test("hiding thin wall does not hide gap fill in the preview slots", () => {
@@ -108,8 +133,8 @@ test("legend toggles and the estimate table keep thin wall and gap fill apart", 
   const estimate = await page.locator("#estimate .est-row").evaluateAll((rows) =>
     rows.map((row) => `${row.querySelector(".est-label")!.textContent} ${row.querySelector(".est-time")!.textContent}`),
   );
-  // One row per feature, the same rows the Features flyout toggles: thin wall and gap fill each keep their own time.
-  expect(estimate).toEqual(["Gap fill 8.0 s", "Inner wall 20 s", "Outer wall 10 s", "Skirt 3.0 s", "Sparse infill 7.0 s", "Thin wall 15 s"]);
+  // One row per feature, longest first, the same rows the Features flyout toggles: thin wall and gap fill keep their own time.
+  expect(estimate).toEqual(["Inner wall 20 s", "Thin wall 15 s", "Outer wall 10 s", "Gap fill 8.0 s", "Sparse infill 7.0 s", "Skirt 3.0 s"]);
 
   const swatch = (label: string) =>
     page.locator("#legend label", { hasText: new RegExp(`^${label}`) }).locator(".swatch").evaluate((el) => getComputedStyle(el).backgroundColor);

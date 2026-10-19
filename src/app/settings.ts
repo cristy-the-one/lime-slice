@@ -1017,11 +1017,18 @@ export function estimateHtml() {
   `;
 }
 
-/** The features the slice drew and timed, with what the preview shows. */
+const drawnKinds = new WeakMap<object, Set<string>>();
+
+/** The features the slice drew and timed, with what the preview shows. The drawn kinds are read once per reply. */
 export function previewFeatureRows() {
-  const kinds = new Set<string>();
-  for (const layer of state.result?.layers ?? []) for (const kind of layer.paths.kinds) kinds.add(kind);
-  return featureRows({ kinds, estimate: state.result?.estimate, hidden: state.hidden, showTravel: state.showTravel });
+  const result = state.result;
+  let kinds = result ? drawnKinds.get(result) : undefined;
+  if (result && !kinds) {
+    kinds = new Set<string>();
+    for (const layer of result.layers) for (const kind of layer.paths.kinds) kinds.add(kind);
+    drawnKinds.set(result, kinds);
+  }
+  return featureRows({ kinds: kinds ?? [], estimate: result?.estimate, hidden: state.hidden, showTravel: state.showTravel });
 }
 
 export function paretoHtml() {

@@ -81,7 +81,7 @@ html.layout-compact .stage-body:not([hidden]) {
   min-height: 0;
   height: 100%;
 }
-/* The desktop preview body is a 72px + 1fr grid. Once the scrubber is
+/* The desktop preview body is a 48px + 1fr grid. Once the scrubber is
    position:absolute it would occupy that first column alone, so the 3D
    pane must leave the grid and fill the stage. */
 html.layout-compact #previewBody {
@@ -401,8 +401,11 @@ html.layout-compact .track input[type="range"]::-moz-range-thumb {
   white-space: nowrap;
 }
 
+html.layout-compact .stage { --vslider-w: 0px; }
 html.layout-compact .stage-tools {
   display: block !important;
+  height: auto;
+  border-top: 0;
   position: absolute;
   left: 12px;
   bottom: 8px;

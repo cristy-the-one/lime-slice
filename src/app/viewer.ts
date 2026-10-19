@@ -24,7 +24,7 @@ import type { PreviewGeometry } from "../preview-geom";
 import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
-import { paintRailStage } from "../ui/chrome";
+import { paintRailStage, syncSection } from "../ui/chrome";
 import { clampPartPercent } from "../gizmo-math";
 import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
 import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, wheelKind, wheelZoomFactor, zoomFlat, type FlatView, type XyBounds } from "../ui/flat-view";
@@ -38,7 +38,8 @@ import { type Vec3, sectionAxis, sectionReach, type SectionSpec, keepsPoint, cli
 
 export function paintLegend() {
   const legend = document.querySelector("#legend");
-  if (legend) legend.innerHTML = legendMarkup(previewFeatureRows(), (state.result?.estimate?.scarfedLoops ?? 0) > 0);
+  if (!legend) return;
+  legend.innerHTML = legendMarkup(previewFeatureRows(), (state.result?.estimate?.scarfedLoops ?? 0) > 0) || `<p class="fly-note">Slice to list the features.</p>`;
 }
 
 export function paintSlider() {
@@ -927,6 +928,7 @@ export function paintSectionChrome() {
   const on = state.sectionOn;
   document.querySelector<HTMLElement>("#sectionChip")!.hidden = !(preview && on);
   document.querySelector<HTMLInputElement>("#sectionOn")!.checked = on;
+  syncSection();
   const axis = document.querySelector<HTMLSelectElement>("#sectionAxis")!;
   if (document.activeElement !== axis) axis.value = sectionAxis(state.sectionNormal);
   const slider = document.querySelector<HTMLInputElement>("#sectionOffset")!;

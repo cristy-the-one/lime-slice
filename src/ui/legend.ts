@@ -63,9 +63,11 @@ export function legendMarkup(rows: FeatureRow[], scarf: boolean): string {
   return `<div class="legend-rows">${body}${scarfMark}</div>`;
 }
 
-/** The results rows: the same checkboxes, with a bar for the share, the time and the filament. */
+/** The results rows, longest first: the same checkboxes, with a bar for the share, the time and the filament. */
 export function featureTableMarkup(rows: FeatureRow[], grams: (filamentMm: number) => number): string {
-  const timed = rows.filter((row) => (row.seconds ?? 0) > 0.05 || (row.filamentMm ?? 0) > 0.01);
+  const timed = rows
+    .filter((row) => (row.seconds ?? 0) > 0.05 || (row.filamentMm ?? 0) > 0.01)
+    .sort((a, b) => (b.seconds ?? 0) - (a.seconds ?? 0));
   const longest = Math.max(0.001, ...timed.map((row) => row.seconds ?? 0));
   return timed.map((row) => {
     const width = Math.min(100, ((row.seconds ?? 0) / longest) * 100);

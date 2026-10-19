@@ -45,6 +45,16 @@ export function mountRailFlyouts(rail: HTMLElement) {
     const target = ev.target as Element | null;
     if (open && target && !open.panel.contains(target) && !open.button.contains(target)) close(false);
   }, true);
+  document.addEventListener("focusout", (ev) => {
+    if (!open) return;
+    const next = (ev as FocusEvent).relatedTarget as Node | null;
+    const from = ev.target as Node;
+    if (!open.panel.contains(from) && !open.button.contains(from)) return;
+    // Focus that goes nowhere (a click on the panel itself) stays; a click outside is the pointerdown above.
+    if (!next || open.panel.contains(next) || open.button.contains(next)) return;
+    close(false);
+  });
+  window.addEventListener("resize", () => close(false));
   document.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape" || !open) return;
     if (!open.panel.contains(ev.target as Node) && !open.button.contains(ev.target as Node)) return;

@@ -1,4 +1,4 @@
-import { filamentCost, filamentGrams, withFooterGrams, type Filament } from "./estimate.ts";
+import { filamentCost, filamentGrams, groupFeatures, withFooterGrams, type Filament } from "./estimate.ts";
 
 let failed = 0;
 
@@ -30,6 +30,26 @@ eq(
 );
 eq("G-code without the footer is left alone", withFooterGrams("G1 X1 Y1 E0.1\n", 5), "G1 X1 Y1 E0.1\n");
 eq("a comment that only mentions FILAMENT_G is left alone", withFooterGrams("; FILAMENT_G:1\n", 5), "; FILAMENT_G:1\n");
+
+const rows = [
+  { kind: "outer", seconds: 10, filamentMm: 400 },
+  { kind: "inner", seconds: 5, filamentMm: 300 },
+  { kind: "thin-wall", seconds: 1, filamentMm: 100 },
+  { kind: "ironing", seconds: 4, filamentMm: 20 },
+  { kind: "travel", seconds: 3, filamentMm: 0 },
+  { kind: "skirt", seconds: 2, filamentMm: 50 },
+];
+eq(
+  "features group with grams at the profile's density",
+  groupFeatures(rows, petg).map((g) => [g.label, g.seconds, g.grams.toFixed(3)]),
+  [
+    ["Outer wall", 10, "1.222"],
+    ["Inner wall", 6, "1.222"],
+    ["Ironing", 4, "0.061"],
+    ["Travel", 3, "0.000"],
+    ["Other", 2, "0.153"],
+  ],
+);
 
 if (failed) throw new Error(`${failed} estimate checks failed`);
 console.log("estimate ok");

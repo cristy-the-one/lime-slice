@@ -213,6 +213,7 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
   white-space: nowrap;
 }
 .stale-chip[hidden] { display: none; }
+#previewBody:has(#sectionChip:not([hidden])) .stale-chip { top: calc(var(--space-2) + 36px); }
 .stale-chip .btn { height: calc(var(--control-h-sm) - 6px); padding: 0 var(--space-2); background: var(--stage-chip-on); border-color: var(--stage-chip-line); color: var(--on-stage); }
 .stale-chip .btn[hidden] { display: none; }
 .stale-chip:has(.btn[hidden]) { padding-right: var(--space-3); }
@@ -238,7 +239,7 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
   z-index: 2;
 }
 .section-readout[hidden] { display: none; }
-/* Segmented controls: the stage tabs, the 2D/Split/3D modes, and the camera presets. */
+/* Segmented controls: the stage tabs, the camera presets and the tool panels' choices. */
 .modes {
   display: inline-flex;
   gap: 2px;
@@ -332,10 +333,12 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-1);
+  line-height: 1.25;
   color: var(--on-stage-dim);
-  text-align: left;
+  text-align: center;
   min-width: 0;
-  white-space: nowrap;
+  max-width: calc(var(--vslider-w) - 4px);
+  overflow-wrap: anywhere;
   pointer-events: none;
 }
 .track {
@@ -1559,6 +1562,7 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   }
 }
 @media (max-width: 480px) {
+  .stage-tools { height: auto; padding-bottom: var(--space-2); }
   .playback {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }

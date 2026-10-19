@@ -80,7 +80,7 @@ test("polyline clip and layer line follow the same plane", () => {
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 const out = path.resolve("artifacts/preview-section");
 
-test("bed opacity and section controls are preview-only chrome", async ({ page }) => {
+test("section controls are Preview chrome, and bed opacity is a rail flyout", async ({ page }) => {
   const logs: string[] = [];
   page.on("console", (msg) => logs.push(`${msg.type()}: ${msg.text()}`));
   page.on("pageerror", (err) => logs.push(`pageerror: ${err.message}`));
