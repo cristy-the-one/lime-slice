@@ -22,6 +22,8 @@ import {
   samePt,
   type Curve,
   type Pt,
+  SPLINE_THROUGH_MAX,
+  throughPoints,
 } from "./geom.ts";
 import type { SketchData } from "./model.ts";
 
@@ -278,7 +280,9 @@ function emitLoop(pieces: Piece[], ccw: boolean): ProfileLoop {
         else segments.push(segment);
       }
     } else {
-      const points = piece.emit ?? piece.points;
+      // A cut piece of a spline is its 0.5 mm samples. The engine takes few points between a segment's ends, so the
+      // piece is sent as the samples a smooth curve needs to stay within 0.01 mm of it.
+      const points = piece.emit && piece.emit.length <= SPLINE_THROUGH_MAX + 2 ? piece.emit : throughPoints(piece.points, 0.01, SPLINE_THROUGH_MAX + 2);
       if (points.length <= 2) pushLine(points[points.length - 1] ?? from);
       else segments.push({ kind: "spline", through: points.slice(1, -1).map(clonePt), to: clonePt(points[points.length - 1]!) });
     }

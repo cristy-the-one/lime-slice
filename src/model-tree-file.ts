@@ -6,6 +6,7 @@
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
 import { readLoftDrawing } from "./sketch/loft.ts";
 import { readSketch } from "./sketch/model.ts";
+import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
 
@@ -545,7 +546,7 @@ function readLoops(value: unknown): ProfileLoop[] | null | undefined {
         if (!through) return null;
         segments.push({ kind: "arc", through, to });
       } else if (seg.kind === "spline") {
-        if (!Array.isArray(seg.through) || seg.through.length < 1 || seg.through.length > 200) return null;
+        if (!Array.isArray(seg.through) || seg.through.length < 1 || seg.through.length > SPLINE_THROUGH_MAX) return null;
         const through: Vec2[] = [];
         for (const point of seg.through) {
           const at = pair(point);

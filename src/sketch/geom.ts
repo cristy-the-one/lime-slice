@@ -316,6 +316,58 @@ export function sampleSpline(points: readonly Pt[], closed: boolean, stepMm = 0.
   return out;
 }
 
+/** The most points between a spline segment's ends that the engine, the file reader and the MCP take. */
+export const SPLINE_THROUGH_MAX = 200;
+export const SPLINE_THROUGH_REFUSAL = `A spline segment has at most ${SPLINE_THROUGH_MAX} points between its ends.`;
+
+/**
+ * Few points that a smooth curve through them follows within `tolMm` of the dense `samples`: the ends, and the samples
+ * where a chord would leave the curve. Never more than `max`; past that, points evenly spaced along the curve.
+ */
+export function throughPoints(samples: readonly Pt[], tolMm: number, max: number): Pt[] {
+  const points = dropDuplicates(samples);
+  if (points.length <= 2) return points.map((point) => [point[0], point[1]] as Pt);
+  const keep = new Array<boolean>(points.length).fill(false);
+  keep[0] = true;
+  keep[points.length - 1] = true;
+  const stack: [number, number][] = [[0, points.length - 1]];
+  while (stack.length > 0) {
+    const [from, to] = stack.pop()!;
+    let far = -1;
+    let farDist = tolMm;
+    for (let i = from + 1; i < to; i++) {
+      const hit = projectToSegment(points[from]!, points[to]!, points[i]!);
+      const gap = hit ? hit.distance : dist(points[i]!, points[from]!);
+      if (gap > farDist) {
+        far = i;
+        farDist = gap;
+      }
+    }
+    if (far < 0) continue;
+    keep[far] = true;
+    stack.push([from, far], [far, to]);
+  }
+  // Too many for one segment: points evenly spaced along the curve instead.
+  const kept = points.filter((_, index) => keep[index]);
+  if (kept.length <= max) return kept.map((point) => [point[0], point[1]] as Pt);
+  const lengths = [0];
+  for (let i = 1; i < points.length; i++) lengths.push(lengths[i - 1]! + dist(points[i - 1]!, points[i]!));
+  const total = lengths[lengths.length - 1]!;
+  const out: Pt[] = [];
+  let at = 0;
+  for (let k = 0; k < max; k++) {
+    const target = (total * k) / (max - 1);
+    while (at < lengths.length - 2 && lengths[at + 1]! < target) at++;
+    const span = lengths[at + 1]! - lengths[at]! || 1;
+    const t = Math.min(1, Math.max(0, (target - lengths[at]!) / span));
+    const a = points[at]!;
+    const b = points[at + 1]!;
+    out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+  }
+  out[out.length - 1] = [points[points.length - 1]![0], points[points.length - 1]![1]];
+  return out;
+}
+
 export function projectToSpline(samples: readonly Pt[], pt: Pt, closed = false): Projection | null {
   if (samples.length === 0) return null;
   if (samples.length === 1) return { pt: [samples[0][0], samples[0][1]], distance: dist(pt, samples[0]), t: 0 };

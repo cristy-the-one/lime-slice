@@ -30,6 +30,9 @@ import {
   unit,
   type Curve,
   type Pt,
+  SPLINE_THROUGH_MAX,
+  projectToSpline,
+  sampleSpline,
 } from "./geom.ts";
 import {
   addArc,
@@ -560,11 +563,47 @@ function entityFromSpan(sketch: SketchData, entity: SketchEntity, curve: Curve, 
     return addArc(end.sketch, start.id, end.id, mid, entity.construction).sketch;
   }
   if (curve.kind === "spline" && entity.kind === "spline") {
-    const points = sampledSpan(curve.samples, t0, t1);
+    const points = keptSpline(curve, t0, t1);
     if (points.length < 2) return null;
     return addSpline(sketch, points, entity.construction).sketch;
   }
   return null;
+}
+
+/**
+ * The points of the spline kept between `t0` and `t1`: the cut ends and the old spline's own points between them, so
+ * the piece keeps its shape with a handful of points. Where the new curve strays more than 0.02 mm from the old one,
+ * the old curve's sample farthest off is added, until it follows; never every 0.5 mm sample.
+ */
+function keptSpline(curve: Extract<Curve, { kind: "spline" }>, t0: number, t1: number): Pt[] {
+  const span = sampledSpan(curve.samples, t0, t1);
+  if (span.length < 2) return [];
+  const picked = new Set<number>([0, span.length - 1]);
+  for (const control of curve.controls) {
+    const t = projectToSpline(curve.samples, control, curve.closed)?.t ?? -1;
+    if (!(t > t0 + 1e-6 && t < t1 - 1e-6)) continue;
+    let nearest = 0;
+    span.forEach((point, index) => {
+      if (dist(point, control) < dist(span[nearest]!, control)) nearest = index;
+    });
+    picked.add(nearest);
+  }
+  const points = () => [...picked].sort((a, b) => a - b).map((index) => [span[index]![0], span[index]![1]] as Pt);
+  while (picked.size < Math.min(span.length, SPLINE_THROUGH_MAX + 2)) {
+    const redrawn = sampleSpline(points(), false);
+    let worst = -1;
+    let worstGap = 0.02;
+    span.forEach((point, index) => {
+      const gap = projectToSpline(redrawn, point)?.distance ?? Infinity;
+      if (gap > worstGap && !picked.has(index)) {
+        worst = index;
+        worstGap = gap;
+      }
+    });
+    if (worst < 0) break;
+    picked.add(worst);
+  }
+  return points();
 }
 
 function sampledSpan(samples: readonly Pt[], t0: number, t1: number): Pt[] {

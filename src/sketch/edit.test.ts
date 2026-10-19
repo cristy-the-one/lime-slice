@@ -249,6 +249,19 @@ near(
 eq("a round copy needs an angle", polarCopy(spoke.sketch, [spoke.id], [0, 0], 0, 2).error, "A round copy needs an angle other than 0.");
 eq("the sketch that was copied is unchanged", polarCopy(spoke.sketch, [spoke.id], [0, 0], 90, 1).sketch !== spoke.sketch && spoke.sketch.entities.length, 1);
 
+
+// A trimmed spline keeps a few points along the kept piece, not every 0.5 mm sample of the old one.
+{
+  const controls: [number, number][] = [];
+  for (let x = 0; x <= 120; x += 20) controls.push([x, 6 * Math.sin(x / 15)]);
+  const wave = addSpline(emptySketch(), controls);
+  const cutter = addLine(wave.sketch, [100, -10], [100, 10]);
+  const kept = trim(cutter.sketch, wave.id, [110, 6 * Math.sin(110 / 15)]);
+  const spline = kept.sketch.entities.find((entity) => entity.kind === "spline");
+  check("the trim keeps a spline", !kept.error && !!spline);
+  const count = spline && spline.kind === "spline" ? spline.through.length : 0;
+  check(`the kept spline has a few points (${count}), not hundreds`, count >= 3 && count <= 40);
+}
 if (failed) {
   console.error(`edit: ${failed} failed`);
   throw new Error(`edit: ${failed} failed`);
