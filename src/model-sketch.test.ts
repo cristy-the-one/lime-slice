@@ -104,9 +104,9 @@ eq("an edit renames each replayed step", [...ids], [[3, 9], [4, 10]]);
 eq("a blend takes edges from its step's new id", renumberedSteps(blend, ids), { kind: "fillet", edges: [{ fromNode: 9, filter: "convex" }, 7], size: 1 });
 eq("a blend of a step not replayed is the same op", renumberedSteps(blend, stepIds([5], [11])) === blend, true);
 
-// An extrude reopens its sketch. A revolve still has no panel. A shell does, and so does a blend of a step's edges.
+// An extrude or a revolve reopens its sketch. A shell does too, and so does a blend of a step's edges.
 eq("an extrude step reopens its sketch", editRefusal(tree, 1), null);
-eq("a revolve step has no edit panel", editRefusal(tree, 2), "This step has no edit panel yet. Delete it and apply it again with new numbers.");
+eq("a revolve step reopens its sketch", editRefusal(tree, 2), null);
 eq("a shell step can be edited", editRefusal(tree, 3), null);
 eq("a blend of a step's edges can be edited", editRefusal(tree, 4), null);
 

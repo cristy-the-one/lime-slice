@@ -244,7 +244,8 @@ export function probeRequest(key: string, node: NodeId, op: ModelOp, previewMm?:
  * so a request that never had one stays byte-for-byte what it was.
  */
 export function withoutSketch(op: ModelOp): ModelOp {
-  if (op.kind === "extrude") {
+  // --- F2. A revolve keeps its sketch the same way an extrude does. ---
+  if (op.kind === "extrude" || op.kind === "revolve") {
     if (!op.sketch) return op;
     const { sketch: _sketch, ...rest } = op;
     return rest;
@@ -263,7 +264,10 @@ export function withoutSketch(op: ModelOp): ModelOp {
 
 /** Put `source`'s sketch back on `stored`. The engine's echo has none. `stored` itself when there is nothing to put back. */
 export function keepSketch(stored: ModelOp, source: ModelOp): ModelOp {
-  if (stored.kind === "extrude" && source.kind === "extrude" && source.sketch && !stored.sketch) return { ...stored, sketch: source.sketch };
+  // --- F2. The engine's echo of a revolve has no sketch either. ---
+  if ((stored.kind === "extrude" || stored.kind === "revolve") && stored.kind === source.kind && source.sketch && !stored.sketch) {
+    return { ...stored, sketch: source.sketch };
+  }
   if (stored.kind === "group" && source.kind === "group") {
     let changed = false;
     const steps = stored.steps.map((step, index) => {

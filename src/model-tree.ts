@@ -156,6 +156,11 @@ export interface RevolveOp {
   corners?: number[];
   /** K1: closed loops in place of `profile`. Absent for a point profile. */
   loops?: ProfileLoop[];
+  /**
+   * --- F2. The sketch this revolve was edited as. The kernel never reads it.
+   * Absent on a revolve from before sketches, and on one typed without a drawing.
+   */
+  sketch?: SketchData;
 }
 
 /**
@@ -598,6 +603,11 @@ const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft" } a
  */
 export function isSketchExtrudeGroup(op: ModelOp): op is GroupOp {
   return op.kind === "group" && op.source == null && op.steps.length > 0 && op.steps.every((step) => step.kind === "extrude");
+}
+
+/** --- F2. A group of revolves from one sketch. Edit reopens that sketch. Any other group stays what it was. */
+export function isSketchRevolveGroup(op: ModelOp): op is GroupOp {
+  return op.kind === "group" && op.source == null && op.steps.length > 0 && op.steps.every((step) => step.kind === "revolve");
 }
 
 /** The plate name of a solid that started from a sketch: "Extrude 1", and the first number no object of that kind has yet. */

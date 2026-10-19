@@ -8,7 +8,7 @@ import { sketchPoint, type Pt, type Vec3 } from "./model.ts";
 import type { RefGeom } from "./refs.ts";
 import { activeSketch, rubber, type SketchEditor } from "./session.ts";
 
-export type StrokeRole = "grid" | "ref" | "entity" | "selected" | "construction" | "rubber" | "hint";
+export type StrokeRole = "grid" | "ref" | "entity" | "selected" | "construction" | "rubber" | "hint" | "axis" | "refuse";
 
 export interface SketchStroke {
   xyz: number[];
