@@ -231,6 +231,13 @@ function applyFit() {
   // A drawer opens over the view, so the canvas keeps its size and nothing needs to fit again.
   if (!drawers || modeChanged) window.dispatchEvent(new Event("resize"));
   fitting = false;
+  window.dispatchEvent(new Event("lime-docks"));
+}
+
+/** Settings sit in a closed drawer (961–1200 px), so the rail and the status line point at them. */
+export function settingsInClosedDrawer(): boolean {
+  const ws = workspace();
+  return !!ws && ws.classList.contains("is-drawers") && ws.classList.contains("is-left-collapsed");
 }
 
 function paintToggles(leftShown: boolean, rightShown: boolean) {

@@ -197,6 +197,8 @@ test.describe("the reinforce brush stays in the sheet on compact", () => {
     await expect(page.locator("html")).toHaveClass(/layout-compact/);
     await page.locator("#compactTabs [data-tab=prepare]").click();
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+    // The brush stays off until the sample has loaded, as a user sees from its greyed button.
+    await expect(page.locator('[data-tool="reinforce"]')).not.toHaveClass(/is-disabled/);
     await page.locator('[data-tool="reinforce"]').click();
     await expect(page.locator("#reinforceBar")).toBeVisible();
     await page.waitForTimeout(250);

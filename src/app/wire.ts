@@ -7,7 +7,7 @@ import { applyTheme, type ThemeChoice } from "../theme";
 import { axisNormal, clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
-import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
+import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, paintStatus, prepare, scrub, sectionLimit, setHelp, setStage, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
 import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
@@ -383,6 +383,8 @@ export function wireApp() {
       if (!target || !menu.contains(target)) menu.open = false;
     });
   });
+  // A drawer opening or closing changes the status line's pointer to the settings.
+  window.addEventListener("lime-docks", () => paintStatus());
   document.addEventListener("lime-open-calibrate", () => setCalibrate(true));
   document.querySelector("#calibrateClose")!.addEventListener("click", () => setCalibrate(false));
   document.querySelector("#calibrate")!.addEventListener("mousedown", (ev) => {
