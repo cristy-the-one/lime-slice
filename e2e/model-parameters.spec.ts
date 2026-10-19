@@ -152,3 +152,33 @@ test("an open tool's expression field and its dry-run follow a changed parameter
   await page.keyboard.press("Tab");
   await expect(width).toHaveAttribute("title", '"nope" is not a parameter. Add it in Parameters, or type a number.');
 });
+
+test("Parameters closes on Escape, Add focuses the new row, and the Features menu takes arrow keys", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelFeatureMore").click();
+  const items = page.locator("#modelFeatureMenu [role=menuitem]");
+  await expect(items.first()).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(page.locator("#modelMenuParameters"), "Up from the first goes round to the last").toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(items.first()).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(items.nth(1)).toBeFocused();
+  await expect(page.locator("#modelFeatureMenu [role=menuitem][aria-pressed]"), "a menu item is not a toggle").toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#modelFeatureMenu")).toBeHidden();
+  await expect(page.locator("#modelFeatureMore")).toBeFocused();
+
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelParams")).toBeVisible();
+  await expect(page.locator("#modelParams th").last()).toHaveText("Order and delete");
+  await page.locator("#modelParams [data-param-name]").first().click();
+  await page.keyboard.type("a");
+  await page.locator("#modelParamsAdd").click();
+  await expect(page.locator("#modelParams [data-param-name]").nth(1)).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#modelParams")).toBeHidden();
+  await expect(page.locator("#modelFeatureMore")).toBeFocused();
+});

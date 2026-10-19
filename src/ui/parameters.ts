@@ -27,6 +27,16 @@ export function mountParameters(next: ParameterHooks) {
   hooks = next;
   document.querySelector("#modelParamsAdd")?.addEventListener("click", () => {
     paint(true);
+    // --- D33. The new row is where typing goes.
+    [...document.querySelectorAll<HTMLInputElement>("#modelParamsBody [data-param-name]")].at(-1)?.focus();
+  });
+  // --- D33. Escape closes the panel, as it closes a tool, and focus goes back to the Features menu button.
+  document.querySelector("#modelParams")?.addEventListener("keydown", (ev) => {
+    if ((ev as KeyboardEvent).key !== "Escape") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeParameters();
+    document.querySelector<HTMLButtonElement>("#modelFeatureMore")?.focus();
   });
   document.querySelector("#modelParamsClose")?.addEventListener("click", () => closeParameters());
   document.querySelector("#modelParamsRebuild")?.addEventListener("click", () => hooks?.rebuild());
@@ -110,7 +120,7 @@ function paint(addBlank: boolean) {
   const table = document.createElement("table");
   table.className = "model-params-table";
   const head = document.createElement("thead");
-  head.innerHTML = "<tr><th>Name</th><th>Value</th><th>Evaluated</th><th>Used by</th><th></th></tr>";
+  head.innerHTML = '<tr><th>Name</th><th>Value</th><th>Evaluated</th><th>Used by</th><th><span class="sr-only">Order and delete</span></th></tr>';
   table.append(head);
   const list = document.createElement("tbody");
   rows.forEach((row, index) => list.append(rowView(row, index, rows.length)));

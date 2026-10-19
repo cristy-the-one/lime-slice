@@ -419,6 +419,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (tool === "check") queueModelCheck(true);
   });
   document.querySelector("#modelPrim")?.addEventListener("keydown", (ev) => onPrimKey(ev as KeyboardEvent));
+  document.querySelector("#modelFeatureMenu")?.addEventListener("keydown", (ev) => onFeatureMenuKey(ev as KeyboardEvent));
   document.querySelector("#modelObjects")?.addEventListener("keydown", (ev) => onObjectKey(ev as KeyboardEvent));
   bindScrub();
   bindExpressions();
@@ -599,7 +600,7 @@ function toggleTool(next: ModelTool, editing = false) {
   // --- end A3 ---
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) bar.dataset.tool = next;
-  document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
+  document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]:not([role=menuitem])").forEach((button) => {
     button.setAttribute("aria-pressed", button.dataset.tool === next ? "true" : "false");
   });
   document.querySelector("#modelPanel")?.toggleAttribute("hidden", false);
@@ -758,7 +759,7 @@ function closeTool() {
   paintRepeatSources([]);
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) delete bar.dataset.tool;
-  document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
+  document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]:not([role=menuitem])").forEach((button) => {
     button.setAttribute("aria-pressed", "false");
   });
   document.querySelector("#modelPanel")?.toggleAttribute("hidden", true);
@@ -2331,6 +2332,32 @@ function toggleFeatureMenu() {
   menu.style.left = `${Math.max(8, rect.left)}px`;
   menu.hidden = false;
   more.setAttribute("aria-expanded", "true");
+  // --- D33. The menu takes the keys a menu does: focus goes to its first item.
+  menuItems()[0]?.focus();
+}
+
+function menuItems(): HTMLButtonElement[] {
+  return [...document.querySelectorAll<HTMLButtonElement>("#modelFeatureMenu [role=menuitem]")].filter((item) => !item.disabled && !item.hidden);
+}
+
+/** --- D33. Up and Down move round the items, Home and End go to the ends, Escape and Tab close it. */
+function onFeatureMenuKey(ev: KeyboardEvent) {
+  const items = menuItems();
+  const at = items.indexOf(document.activeElement as HTMLButtonElement);
+  const go = (index: number) => {
+    ev.preventDefault();
+    items[(index + items.length) % items.length]?.focus();
+  };
+  if (ev.key === "ArrowDown") go(at + 1);
+  else if (ev.key === "ArrowUp") go(at < 0 ? -1 : at - 1);
+  else if (ev.key === "Home") go(0);
+  else if (ev.key === "End") go(-1);
+  else if (ev.key === "Escape") {
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeFeatureMenu();
+    document.querySelector<HTMLButtonElement>("#modelFeatureMore")?.focus();
+  } else if (ev.key === "Tab") closeFeatureMenu();
 }
 
 function paintModeGroup(button: HTMLButtonElement) {
