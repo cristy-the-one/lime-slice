@@ -244,6 +244,8 @@ export function mountHud(parent: HTMLElement): HudMount {
 
   const onKey = (ev: KeyboardEvent) => {
     if (!shown) return;
+    // --- S4. A driving-dimension label is its own editor. Leave its keys alone. ---
+    if (ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) return;
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const key = keyName(ev.key);
     const command = key === "Tab" || key === "Enter" || key === "Escape";
@@ -330,6 +332,8 @@ export function mountHud(parent: HTMLElement): HudMount {
     close() {
       shown = false;
       element.hidden = true;
+      // A hidden box must not keep the caret, or the next sketch key is typed into it.
+      if (element.contains(document.activeElement) && document.activeElement instanceof HTMLElement) document.activeElement.blur();
       model = { ...model, draft: null, error: null };
     },
     destroy() {
