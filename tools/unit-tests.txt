@@ -129,6 +129,8 @@ src/sketch/tools.test.ts
 src/sketch/extrude.test.ts
 src/sketch/holes.test.ts
 src/sketch/revolve.test.ts
+src/sketch/loft.test.ts
+src/sketch/sweep.test.ts
 src/sketch/edit.test.ts
 src/sketch/solve.test.ts
 src/modeling/index.test.ts

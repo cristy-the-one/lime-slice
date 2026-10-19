@@ -250,6 +250,12 @@ export function withoutSketch(op: ModelOp): ModelOp {
     const { sketch: _sketch, ...rest } = op;
     return rest;
   }
+  // --- F3. A loft's drawing is the same kind of client field. No drawing leaves the op as it was. ---
+  if (op.kind === "loft") {
+    if (!op.drawing) return op;
+    const { drawing: _drawing, ...rest } = op;
+    return rest;
+  }
   if (op.kind === "group") {
     let changed = false;
     const steps = op.steps.map((step) => {
@@ -267,6 +273,10 @@ export function keepSketch(stored: ModelOp, source: ModelOp): ModelOp {
   // --- F2. The engine's echo of a revolve has no sketch either. ---
   if ((stored.kind === "extrude" || stored.kind === "revolve") && stored.kind === source.kind && source.sketch && !stored.sketch) {
     return { ...stored, sketch: source.sketch };
+  }
+  // --- F3. The engine's echo of a loft has no drawing either. ---
+  if (stored.kind === "loft" && source.kind === "loft" && source.drawing && !stored.drawing) {
+    return { ...stored, drawing: source.drawing };
   }
   if (stored.kind === "group" && source.kind === "group") {
     let changed = false;

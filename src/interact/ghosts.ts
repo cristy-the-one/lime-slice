@@ -453,6 +453,107 @@ function onPlane(plane: PlaneFrame, point: Pt): Vec3 {
   ];
 }
 
+/**
+ * --- F3. A coarse loft: linear quads between rings that share a point count, plus the two caps.
+ * Ruled and smooth look the same here; `ruled` is a kernel flag. Rings are closed outlines.
+ */
+export function loftGhost(rings: readonly (readonly Vec3[])[]): Float32Array {
+  const usable = rings.filter((ring) => ring.length >= 3);
+  if (usable.length < 2) return new Float32Array();
+  const count = Math.max(...usable.map((ring) => ring.length));
+  const matched = usable.map((ring) => resampleRing(ring, count));
+  for (let i = 1; i < matched.length; i += 1) matched[i] = alignRing(matched[i - 1]!, matched[i]!);
+  const out: number[] = [];
+  capRing(out, matched[0]!, false);
+  for (let i = 0; i < matched.length - 1; i += 1) {
+    const lower = matched[i]!;
+    const upper = matched[i + 1]!;
+    for (let k = 0; k < count; k += 1) {
+      const next = (k + 1) % count;
+      pushQuad(out, lower[k]!, lower[next]!, upper[next]!, upper[k]!);
+    }
+  }
+  capRing(out, matched[matched.length - 1]!, true);
+  return soup(out);
+}
+
+function ringDistance(a: Vec3, b: Vec3): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+function resampleRing(ring: readonly Vec3[], count: number): Vec3[] {
+  if (ring.length === count) return ring.map((point) => [point[0], point[1], point[2]]);
+  const spans: number[] = [];
+  let total = 0;
+  for (let i = 0; i < ring.length; i += 1) {
+    const span = ringDistance(ring[i]!, ring[(i + 1) % ring.length]!);
+    spans.push(span);
+    total += span;
+  }
+  const out: Vec3[] = [];
+  for (let k = 0; k < count; k += 1) {
+    let target = total * (k / count);
+    let walked = 0;
+    let placed = false;
+    for (let i = 0; i < ring.length; i += 1) {
+      const span = spans[i]!;
+      if (walked + span >= target - 1e-9 || i === ring.length - 1) {
+        const t = span > 1e-9 ? Math.min(1, Math.max(0, (target - walked) / span)) : 0;
+        const a = ring[i]!;
+        const b = ring[(i + 1) % ring.length]!;
+        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]);
+        placed = true;
+        break;
+      }
+      walked += span;
+    }
+    if (!placed) out.push([ring[0]![0], ring[0]![1], ring[0]![2]]);
+  }
+  return out;
+}
+
+/** The rotation, or the reversal, whose points sit nearest the ring before it. */
+function alignRing(prev: readonly Vec3[], ring: readonly Vec3[]): Vec3[] {
+  const count = ring.length;
+  let best = ring.map((point) => [point[0], point[1], point[2]] as Vec3);
+  let bestScore = Infinity;
+  for (const reversed of [false, true]) {
+    const source = reversed ? [...ring].reverse() : ring;
+    for (let shift = 0; shift < count; shift += 1) {
+      let score = 0;
+      const spun: Vec3[] = [];
+      for (let i = 0; i < count; i += 1) {
+        const point = source[(i + shift) % count]!;
+        spun.push([point[0], point[1], point[2]]);
+        score += ringDistance(point, prev[i]!);
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        best = spun;
+      }
+    }
+  }
+  return best;
+}
+
+function capRing(out: number[], ring: readonly Vec3[], outwardUp: boolean) {
+  const centre: Vec3 = [0, 0, 0];
+  for (const point of ring) {
+    centre[0] += point[0];
+    centre[1] += point[1];
+    centre[2] += point[2];
+  }
+  centre[0] /= ring.length;
+  centre[1] /= ring.length;
+  centre[2] /= ring.length;
+  for (let i = 0; i < ring.length; i += 1) {
+    const a = ring[i]!;
+    const b = ring[(i + 1) % ring.length]!;
+    if (outwardUp) pushTri(out, centre, a, b);
+    else pushTri(out, centre, b, a);
+  }
+}
+
 function soup(values: number[]): Float32Array {
   if (signedVolume(values) < -1e-6) {
     for (let i = 0; i + 8 < values.length; i += 9) {

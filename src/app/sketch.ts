@@ -3,22 +3,23 @@
  * Enter and leave a sketch, the plane camera, the grid, reference lines, Line and Rectangle.
  * --- F1. Extrude copies the sketch onto the op. A sketch with no feature is still not saved.
  * --- F2. Revolve copies the sketch onto the op the same way. V is taken only while a sketch is open.
+ * --- F3. Loft (Shift+L) and sweep (W) are taken only while a sketch is open.
  * Undo here is the sketch's own stack (`docs/plan-gui-cad-modeling.md` §4.3).
  */
 import { Pencil, createElement } from "lucide";
 import { mountHud, type HudField } from "../interact/hud";
 import { gridSpacing } from "../interact/snap";
 import { dragAxis } from "../interact/drag-axis";
-import { GHOST_PROBE_WAIT_MS, regionExtrude, revolveGhost } from "../interact/ghosts";
+import { GHOST_PROBE_WAIT_MS, loftGhost, regionExtrude, revolveGhost } from "../interact/ghosts";
 import { inPlaceArrow } from "../interact/in-place-arrow";
 import { registerContextAction } from "../context-bar";
 import type { ParsedSolid } from "../model-reply";
 import type { FacePlane } from "../model-plane";
 import type { Affine } from "../model-space";
 import type { Bounds } from "../mesh-place";
-import type { ModelOp } from "../model-tree";
+import type { LoftSection, ModelOp, ProfileLoop } from "../model-tree";
 import type { ModelView } from "../model-view";
-import type { FaceRef, SketchData, SketchOn, Vec3 } from "../sketch/model";
+import { sketchJson, type FaceRef, type SketchData, type SketchOn, type Vec3 } from "../sketch/model";
 import { FACE_REFUSAL, POINT_REFUSAL, holeTargets, sketchOnFace, type HoleTarget } from "../sketch/holes.ts";
 import { sketchMesh, type OriginPlane, type SketchStroke } from "../sketch/draw";
 import {
@@ -46,6 +47,7 @@ import {
   enterSketch,
   enterSketchData,
   finishSketch,
+  pinSketch,
   previewSizes,
   redoSketch,
   reopenSketch,
@@ -87,7 +89,7 @@ import {
   type ExtrudePreset,
   type ModeChoice,
 } from "../sketch/extrude";
-import { toLoops, type Region } from "../sketch/regions";
+import { regionAt, sketchRegions, toLoops, type Region } from "../sketch/regions";
 import {
   CROSS_REFUSAL,
   axisWorld,
@@ -108,6 +110,19 @@ import {
   type RevolveAxis,
   type RevolvePreset,
 } from "../sketch/revolve";
+import {
+  buildSketchLoft,
+  sectionFromRegion,
+  sectionOutline,
+  type LoftPreset,
+} from "../sketch/loft";
+import {
+  EDGE_MEET,
+  buildSketchSweep,
+  extendPath,
+  openChain,
+  type SweepPreset,
+} from "../sketch/sweep";
 
 export interface SketchHost {
   view: ModelView;
@@ -128,7 +143,7 @@ export interface SketchHost {
   /** A flat face in model space, or null when the face is curved or missing. The ref is the solid's own frame. */
   faceInfo(face: number): { ref: FaceRef; plane: FacePlane } | null;
   /** Solid edges in model space. */
-  edges(): { points: ArrayLike<number> }[];
+  edges(): { id?: number; points: ArrayLike<number> }[];
   /** The face outline in model space, packed as segment pairs. Empty when the sketch is not on a face. */
   outline(face: number | null): number[];
   /** Push/Pull is the gesture under the pointer, so a double-click stays that repeat. */
@@ -147,6 +162,8 @@ export interface SketchHost {
   cancelFeatureEdit(): void;
   /** The solid just built should fill the view. Closing the sketch restores the camera from before it. */
   frameSolid(): void;
+/** --- F3. A flat face as loft loops. The sentence when there is no solid, or the face is curved. --- */
+  faceLoops(face: number): Promise<{ origin: Vec3; turn: Vec3; loops: ProfileLoop[] } | { error: string }>;
   /** --- F4. Open the Hole panel for these points. H only calls this while a sketch is being edited. --- */
   beginSketchHoles(sketch: SketchData, targets: readonly HoleTarget[]): void;
   endSketchHoles(): void;
@@ -180,6 +197,12 @@ export function openSketchFeature(sketch: SketchData, preset: ExtrudePreset) {
 let openRevolveImpl: (sketch: SketchData, preset: RevolvePreset) => void = () => {};
 export function openSketchRevolve(sketch: SketchData, preset: RevolvePreset) {
   openRevolveImpl(sketch, preset);
+}
+
+/** --- F3. Reopen a loft's sections, or a sweep's profile and path. History Edit calls this. --- */
+let openLoftImpl: (preset: LoftPreset | SweepPreset) => void = () => {};
+export function openSketchLoft(preset: LoftPreset | SweepPreset) {
+  openLoftImpl(preset);
 }
 
 /** Leave the sketch without applying. A history jump uses this so the editor does not stay up. */
@@ -284,6 +307,34 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
   let revolve: RevolveGesture | null = null;
   let revolveNote = "";
+  // --- F3. Loft sections in pick order, and a sweep's profile and path. ---
+  interface LoftPick {
+    key: string;
+    sketchId: number | null;
+    sketch: SketchData | null;
+    section: LoftSection;
+  }
+  interface LoftGesture {
+    picks: LoftPick[];
+    ruled: boolean;
+    choice: ModeChoice;
+    note: string;
+  }
+  interface SweepGesture {
+    profileSketch: SketchData | null;
+    profile: Region | null;
+    pathSketch: SketchData | null;
+    path: Vec3[];
+    check: boolean[];
+    scale: number | number[];
+    edges: number[];
+    choice: ModeChoice;
+    dragging: boolean;
+    down: { x: number; y: number; scale: number } | null;
+    note: string;
+  }
+  let loft: LoftGesture | null = null;
+  let sweep: SweepGesture | null = null;
   let editSession = false;
   let committing = false;
   let probeTimer = 0;
@@ -291,7 +342,35 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   window.addEventListener("keydown", (ev) => {
     if (editor.phase !== "editing" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const drawing = sketchDimensions(editor) != null;
+    const dimField = ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null;
     const typing = ev.target instanceof HTMLElement && (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT" || ev.target.tagName === "TEXTAREA" || ev.target.isContentEditable);
+    // --- F3. Shift+L is the loft while a sketch is open. L alone stays the Line tool.
+    // With the sketch closed, Shift+L is still Chamfer. ---
+    if (ev.shiftKey && (ev.key === "l" || ev.key === "L")) {
+      if (dimField) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      if (drawing) return;
+      if (host.sketchHolesArmed()) host.endSketchHoles();
+      if (gesture) endExtrude();
+      if (revolve) endRevolve();
+      if (sweep) endSweep();
+      if (!loft) beginLoft();
+      return;
+    }
+    // --- F3. W sweeps while a sketch is open. With the sketch closed, W still picks edges. ---
+    if ((ev.key === "w" || ev.key === "W") && !ev.shiftKey) {
+      if (dimField) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      if (drawing) return;
+      if (host.sketchHolesArmed()) host.endSketchHoles();
+      if (gesture) endExtrude();
+      if (revolve) endRevolve();
+      if (loft) endLoft();
+      if (!sweep) beginSweep();
+      return;
+    }
     // --- F4. H places a hole at each selected point. It is taken only while the sketch is open. ---
     if (ev.key === "h" || ev.key === "H") {
       if (drawing || typing) return;
@@ -299,6 +378,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.stopImmediatePropagation();
       if (gesture || host.sketchHolesArmed()) return;
       if (revolve) endRevolve();
+      if (loft) endLoft();
+      if (sweep) endSweep();
       beginHoles();
       return;
     }
@@ -315,6 +396,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.stopImmediatePropagation();
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (revolve) endRevolve();
+      if (loft) endLoft();
+      if (sweep) endSweep();
       if (!gesture) beginExtrude();
       return;
     }
@@ -327,8 +410,53 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.stopImmediatePropagation();
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) endExtrude();
+      if (loft) endLoft();
+      if (sweep) endSweep();
       if (!revolve) beginRevolve();
       return;
+    }
+    if (loft) {
+      if (ev.key === "r" || ev.key === "R") {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        loft = { ...loft, ruled: !loft.ruled, note: "" };
+        publish("open");
+        return;
+      }
+      if (ev.key === "m" || ev.key === "M") {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        loft = { ...loft, choice: cycleMode(loft.choice, host.featureEdit()), note: "" };
+        publish("open");
+        return;
+      }
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        void commitLoft();
+        return;
+      }
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        endLoft();
+        return;
+      }
+    }
+    if (sweep) {
+      if (ev.key === "m" || ev.key === "M") {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        sweep = { ...sweep, choice: cycleMode(sweep.choice, host.featureEdit()), note: "" };
+        publish("open");
+        return;
+      }
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        endSweep();
+        return;
+      }
     }
     if (revolve) {
       if (ev.key === "m" || ev.key === "M") {
@@ -382,6 +510,16 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   box.hidden = true;
   document.body.append(box);
   hud.onCommit((commit) => {
+    if (sweep) {
+      const value = commit.values[0] ?? Number.NaN;
+      if (!(value > 0)) {
+        host.readout("Each radius and scale is above 0.");
+        return;
+      }
+      sweep = { ...sweep, scale: value, note: "" };
+      void commitSweep();
+      return;
+    }
     if (revolve) {
       const typed = typedAngle(commit.values[0] ?? Number.NaN);
       if ("error" in typed) {
@@ -401,6 +539,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     publish("open");
   });
   hud.onCancel(() => {
+    if (sweep) {
+      endSweep();
+      return;
+    }
+    if (loft) {
+      endLoft();
+      return;
+    }
     if (revolve) {
       endRevolve();
       return;
@@ -414,6 +560,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     leaveEditing(next);
   });
   hud.onEdit((values) => {
+    if (sweep) {
+      const value = values[0];
+      if (value != null && value > 0) sweep = { ...sweep, scale: value, note: "" };
+      publish("skip");
+      armSweepProbe();
+      return;
+    }
     if (revolve) {
       takeRevolveAngle(values[0] ?? revolve.angle);
       publish("skip");
@@ -485,6 +638,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (picked) {
       if (gesture) endExtrude();
       if (revolve) endRevolve();
+      if (loft) endLoft();
+      if (sweep) endSweep();
       menuOpen = null;
       editor = withTool(editor, picked);
       publish("open");
@@ -495,6 +650,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (constrain && (constrain === "remove" || isConstrainTool(constrain))) {
       if (gesture) endExtrude();
       if (revolve) endRevolve();
+      if (loft) endLoft();
+      if (sweep) endSweep();
       menuOpen = null;
       editor = applyConstraint(editor, constrain);
       publish("open");
@@ -509,6 +666,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (target.dataset.sketchExtrude != null) {
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (revolve) endRevolve();
+      if (loft) endLoft();
+      if (sweep) endSweep();
       if (gesture) void commitExtrude();
       else beginExtrude();
       return;
@@ -516,25 +675,55 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     // --- F2. The card's Revolve button. A second click applies, the same as Extrude. ---
     if (target.dataset.sketchRevolve != null) {
       if (gesture) endExtrude();
+      if (loft) endLoft();
+      if (sweep) endSweep();
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (revolve) void commitRevolve();
       else beginRevolve();
       return;
     }
+    // --- F3. Loft and sweep live on the card. A second click applies. ---
+    if (target.dataset.sketchLoft != null) {
+      if (gesture) endExtrude();
+      if (revolve) endRevolve();
+      if (sweep) endSweep();
+      if (host.sketchHolesArmed()) host.endSketchHoles();
+      if (loft) void commitLoft();
+      else beginLoft();
+      return;
+    }
+    if (target.dataset.sketchSweep != null) {
+      if (gesture) endExtrude();
+      if (revolve) endRevolve();
+      if (loft) endLoft();
+      if (host.sketchHolesArmed()) host.endSketchHoles();
+      if (sweep) void commitSweep();
+      else beginSweep();
+      return;
+    }
+    if (target.dataset.sketchRuled != null && loft) {
+      loft = { ...loft, ruled: !loft.ruled, note: "" };
+      publish("open");
+      return;
+    }
     // --- F4. The card button does what H does. It is not a toolbar button. ---
     if (target.dataset.sketchHoles != null) {
-      if (gesture || revolve) return;
+      if (gesture || revolve || loft || sweep) return;
       beginHoles();
       return;
     }
-    if (target.dataset.sketchMode != null && (gesture || revolve)) {
-      if (revolve) revolve = { ...revolve, choice: cycleMode(revolve.choice, host.featureEdit()) };
+    if (target.dataset.sketchMode != null && (gesture || revolve || loft || sweep)) {
+      if (sweep) sweep = { ...sweep, choice: cycleMode(sweep.choice, host.featureEdit()), note: "" };
+      else if (loft) loft = { ...loft, choice: cycleMode(loft.choice, host.featureEdit()), note: "" };
+      else if (revolve) revolve = { ...revolve, choice: cycleMode(revolve.choice, host.featureEdit()) };
       else if (gesture) gesture = { ...gesture, choice: cycleMode(gesture.choice, host.featureEdit()) };
       publish("open");
       return;
     }
     if (target.dataset.sketchApply != null) {
-      if (revolve) void commitRevolve();
+      if (sweep) void commitSweep();
+      else if (loft) void commitLoft();
+      else if (revolve) void commitRevolve();
       else void commitExtrude();
       return;
     }
@@ -546,19 +735,32 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (target.dataset.sketchFinish != null) {
       endExtrude();
       endRevolve();
+      endLoft();
+      endSweep();
       leaveEditing(finishSketch(editor));
       return;
     }
     if (target.dataset.sketchCancel != null) {
-      if (revolve) endRevolve();
+      if (sweep) endSweep();
+      else if (loft) endLoft();
+      else if (revolve) endRevolve();
       else if (gesture) endExtrude();
       else leaveEditing(sketchKey(editor, "Escape", { ctrl: false, meta: false, shift: false }) ?? editor);
       return;
     }
     const openId = target.dataset.sketchOpen;
     if (openId) {
+      const pinnedId = Number(openId);
+      if (loft) {
+        takeLoftSketch(pinnedId);
+        return;
+      }
+      if (sweep) {
+        takeSweepSketch(pinnedId);
+        return;
+      }
       host.closeTool();
-      editor = reopenSketch(editor, Number(openId));
+      editor = reopenSketch(editor, pinnedId);
       aimKey = "";
       refsKey = "";
       publish("open");
@@ -600,8 +802,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     ev.stopPropagation();
     const next = sketchKey(editor, ev.key, mods);
     if (!next || next === editor) return;
-    if (revolve && editor.phase === "editing" && next.phase === "editing" && next.tool !== editor.tool) {
+    if ((revolve || loft || sweep) && editor.phase === "editing" && next.phase === "editing" && next.tool !== editor.tool) {
       revolve = null;
+      loft = null;
+      sweep = null;
       window.clearTimeout(probeTimer);
       host.view.setHandles([]);
       host.view.setGhost(null);
@@ -633,6 +837,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!frame) return;
     if (revolve) {
       revolvePointer(ev, frame);
+      return;
+    }
+    if (sweep) {
+      sweepPointer(ev, frame);
+      return;
+    }
+    if (loft) {
+      loftPointer(ev);
       return;
     }
     if (gesture) {
@@ -684,6 +896,16 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.canvas.dataset.revolveAxis = "";
   host.canvas.dataset.revolveRegions = "0";
   host.canvas.dataset.revolveCross = "0";
+  // --- F3 ---
+  host.canvas.dataset.loft = "off";
+  host.canvas.dataset.loftMode = "";
+  host.canvas.dataset.loftSections = "0";
+  host.canvas.dataset.loftRuled = "0";
+  host.canvas.dataset.sweep = "off";
+  host.canvas.dataset.sweepMode = "";
+  host.canvas.dataset.sweepScale = "";
+  host.canvas.dataset.sweepPath = "0";
+  host.canvas.dataset.sweepProfile = "0";
 
   function enterNamed(name: "XY" | "XZ" | "YZ" | "workplane") {
     const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : originFrame(name, host.origin());
@@ -757,6 +979,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     paintDataset();
     paintLabels();
     if (editor.phase === "off") host.readout(host.idleReadout());
+    else if (sweep && editor.phase === "editing") host.readout(sweep.note || sweepReadout());
+    else if (loft && editor.phase === "editing") host.readout(loft.note || loftReadout());
     else if (revolve && editor.phase === "editing") host.readout(revolveNote || revolveReadout());
     else if (gesture && editor.phase === "editing") host.readout(extrudeReadout());
     else host.readout(sketchReadout(editor));
@@ -767,6 +991,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.syncEdge();
     paintExtrude();
     paintRevolve();
+    paintLoft();
+    paintSweep();
     // --- F1. The empty-plate card sits on the plane. Hide it while drawing so a click reaches the sketch. ---
     const empty = document.querySelector<HTMLElement>("#modelEmpty");
     if (empty) empty.hidden = sketchBusy(editor) || host.solid() != null;
@@ -802,6 +1028,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const mesh = sketchMesh(editor, frame, grid, shownPlanes);
     if (gesture?.guide) mesh.strokes.push({ xyz: [...gesture.guide[0], ...gesture.guide[1]], role: "hint" });
     if (revolve && frame) mesh.strokes.push(...revolveStrokes(frame));
+    if ((loft || sweep) && frame) mesh.strokes.push(...pinnedStrokes());
     host.view.setSketchDraw(mesh);
   }
 
@@ -819,6 +1046,18 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   function syncHud(mode: "open" | "values" | "skip") {
     if (mode === "skip") return;
+    if (sweep && editor.phase === "editing") {
+      const fields: HudField[] = [{ id: "scale", label: "Scale", unit: "×", value: scaleOf(sweep.scale) }];
+      const at = pointerAt();
+      if (mode === "open" || !hud.shown) hud.open(fields, at);
+      else hud.setValues(fields.map((field) => field.value));
+      hud.move(at);
+      return;
+    }
+    if (loft && editor.phase === "editing") {
+      hud.close();
+      return;
+    }
     if (revolve && editor.phase === "editing") {
       const fields: HudField[] = [{ id: "angle", label: "Angle", unit: "°", value: revolve.angle }];
       const at = pointerAt();
@@ -882,6 +1121,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.revolveAxis = spun ? spun.axis.kind : "";
     host.canvas.dataset.revolveRegions = spun ? String(spun.regions.length) : "0";
     host.canvas.dataset.revolveCross = spun && spun.crossing ? "1" : "0";
+    const lofting = loft && editor.phase === "editing" ? loft : null;
+    host.canvas.dataset.loft = lofting ? "pick" : "off";
+    host.canvas.dataset.loftMode = lofting ? resolvedLoftMode() : "";
+    host.canvas.dataset.loftSections = lofting ? String(lofting.picks.length) : "0";
+    host.canvas.dataset.loftRuled = lofting?.ruled ? "1" : "0";
+    const sweeping = sweep && editor.phase === "editing" ? sweep : null;
+    host.canvas.dataset.sweep = sweeping ? (sweeping.dragging ? "aim" : "pick") : "off";
+    host.canvas.dataset.sweepMode = sweeping ? resolvedSweepMode() : "";
+    host.canvas.dataset.sweepScale = sweeping ? String(scaleOf(sweeping.scale)) : "";
+    host.canvas.dataset.sweepPath = sweeping && sweeping.path.length >= 2 ? "1" : "0";
+    host.canvas.dataset.sweepProfile = sweeping?.profile ? "1" : "0";
     // --- F4. Off unless the Hole panel is placing one hole per point. Hits are client pixels, for tests. ---
     const holeCount = host.sketchHoleCount();
     host.canvas.dataset.sketchHoles = holeCount == null ? "off" : String(holeCount);
@@ -956,14 +1206,18 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       toolButton("select", "Select"),
       textButton("Extrude (E)", { sketchExtrude: "" }),
       textButton("Revolve (V)", { sketchRevolve: "" }),
+      // --- F3. No toolbar button. Shift+L and W are taken only while this card is open. ---
+      textButton("Loft (⇧L)", { sketchLoft: "" }),
+      textButton("Sweep (W)", { sketchSweep: "" }),
     ];
     // --- F4. Only a sketch on a face has a solid to drill. ---
     if (activeSketch(editor)?.on?.kind === "face") row.push(textButton("Holes (H)", { sketchHoles: "" }));
-    if (gesture || revolve) {
-      const mode = revolve ? resolvedRevolveMode() : resolvedMode();
-      const choice = revolve ? revolve.choice : gesture?.choice ?? "auto";
+    if (gesture || revolve || loft || sweep) {
+      const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
+      const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
       const auto = choice === "auto" ? "Auto · " : "";
       row.push(textButton(`${auto}${modeLabel(mode)} (M)`, { sketchMode: mode }));
+      if (loft) row.push(textButton(loft.ruled ? "Ruled" : "Smooth", { sketchRuled: loft.ruled ? "1" : "0" }));
       row.push(textButton("Apply", { sketchApply: "" }));
     }
     row.push(textButton(editor.lookAround ? "Lock view" : "Look around", { sketchLook: editor.lookAround ? "1" : "0" }));
@@ -1182,6 +1436,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     editSession = true;
     const slots: 1 | 2 | 3 = preset.draftDeg != null && preset.draftDeg !== 0 ? 3 : preset.depth2 != null && preset.depth2 > 0 ? 2 : 1;
     revolve = null;
+    loft = null;
+    sweep = null;
     gesture = {
       slots,
       distance: preset.distance,
@@ -1203,6 +1459,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     editor = enterSketchData(editor, sketch);
     editSession = true;
     gesture = null;
+    loft = null;
+    sweep = null;
     const drawn = activeSketch(editor) ?? sketch;
     const regions = regionsForEdit(drawn);
     revolveNote = "";
@@ -1220,16 +1478,73 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     refsKey = "";
     publish("open");
   };
+  openLoftImpl = (preset) => {
+    host.closeTool();
+    editor = sketchOff();
+    editSession = true;
+    gesture = null;
+    revolve = null;
+    if (preset.kind === "sweep") {
+      if (preset.pathSketch) editor = pinSketch(editor, preset.pathSketch, "Sketch 1");
+      editor = enterSketchData(editor, preset.profile);
+      const drawn = activeSketch(editor) ?? preset.profile;
+      const profile = chooseRegions(drawn, [], null)[0] ?? null;
+      sweep = {
+        profileSketch: drawn,
+        profile,
+        pathSketch: preset.pathSketch,
+        path: preset.path.map((point) => [point[0], point[1], point[2]]),
+        check: preset.path.map(() => true),
+        scale: preset.scale,
+        edges: [...preset.edges],
+        choice: preset.choice,
+        dragging: false,
+        down: null,
+        note: "",
+      };
+      loft = null;
+    } else {
+      const real = preset.sketches.map((sketch, index) => ({ sketch, index })).filter((item) => item.sketch);
+      const active = real.at(-1);
+      let nameAt = 1;
+      for (const item of real) {
+        if (item === active || !item.sketch) continue;
+        editor = pinSketch(editor, item.sketch, `Sketch ${nameAt}`);
+        nameAt += 1;
+      }
+      const drawn = active?.sketch ?? preset.sketches.find((sketch) => sketch) ?? null;
+      if (drawn) editor = enterSketchData(editor, drawn);
+      const picks: LoftPick[] = preset.sections.map((section, index) => {
+        const sketch = preset.sketches[index] ?? null;
+        const pinned = sketch ? editor.pinned.find((item) => item.sketch === sketch || JSON.stringify(item.sketch) === JSON.stringify(sketch)) : undefined;
+        return {
+          key: pinned ? `sketch:${pinned.id}` : `section:${index}`,
+          sketchId: pinned?.id ?? null,
+          sketch,
+          section,
+        };
+      });
+      loft = { picks, ruled: preset.ruled, choice: preset.choice, note: "" };
+      sweep = null;
+    }
+    aimKey = "";
+    refsKey = "";
+    publish("open");
+  };
   closeFeatureImpl = () => {
     editSession = false;
     if (host.sketchHolesArmed()) host.endSketchHoles();
     if (editor.phase !== "editing" && editor.phase !== "choosing") {
       gesture = null;
       revolve = null;
+      loft = null;
+      sweep = null;
       return;
     }
     gesture = null;
     revolve = null;
+    loft = null;
+    sweep = null;
     window.clearTimeout(probeTimer);
     host.view.setHandles([]);
     host.view.setGhost(null);
@@ -1263,6 +1578,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (host.sketchHolesArmed()) host.endSketchHoles();
       gesture = null;
       revolve = null;
+      loft = null;
+      sweep = null;
       window.clearTimeout(probeTimer);
       host.view.setHandles([]);
       host.view.setGhost(null);
@@ -1291,6 +1608,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   function beginExtrude() {
     if (host.sketchHolesArmed()) host.endSketchHoles();
     if (revolve) endRevolve();
+    if (loft) endLoft();
+    if (sweep) endSweep();
     const sketch = activeSketch(editor);
     if (!sketch || editor.phase !== "editing") return;
     const chosen = chooseRegions(sketch, editor.selection.entities, editor.cursor);
@@ -1552,6 +1871,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   function beginRevolve(preset?: RevolvePreset) {
     if (host.sketchHolesArmed()) host.endSketchHoles();
     if (gesture) endExtrude();
+    if (loft) endLoft();
+    if (sweep) endSweep();
     const sketch = activeSketch(editor);
     const frame = drawingFrame();
     if (!sketch || !frame || editor.phase !== "editing") return;
@@ -1818,6 +2139,541 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       parts.push(...soup);
     }
     host.view.setGhost(parts.length > 0 ? { kind: "soup", positions: new Float32Array(parts) } : null);
+  }
+
+  // --- F3. Loft and sweep from the open sketch. ---
+  function scaleOf(scale: number | number[]): number {
+    return typeof scale === "number" ? scale : scale[0] ?? 1;
+  }
+
+  function regionKey(id: number, region: Region): string {
+    const centre = regionsCentroid([region]);
+    return `sketch:${id}:${centre[0].toFixed(3)},${centre[1].toFixed(3)}`;
+  }
+
+  function beginLoft() {
+    if (host.sketchHolesArmed()) host.endSketchHoles();
+    if (gesture) endExtrude();
+    if (revolve) endRevolve();
+    if (sweep) endSweep();
+    const sketch = activeSketch(editor);
+    if (!sketch || editor.phase !== "editing" || editor.active == null) return;
+    const chosen = chooseRegions(sketch, editor.selection.entities, editor.cursor);
+    const picks = chosen.map((region) => ({
+      key: regionKey(editor.active!, region),
+      sketchId: editor.active,
+      sketch: sketchJson(sketch),
+      section: sectionFromRegion(sketch, region),
+    }));
+    loft = { picks, ruled: false, choice: host.featureEdit() === "root" ? "new" : "auto", note: "" };
+    publish("open");
+    armLoftProbe();
+  }
+
+  function endLoft() {
+    if (!loft) return;
+    loft = null;
+    window.clearTimeout(probeTimer);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    publish("open");
+  }
+
+  function beginSweep() {
+    if (host.sketchHolesArmed()) host.endSketchHoles();
+    if (gesture) endExtrude();
+    if (revolve) endRevolve();
+    if (loft) endLoft();
+    const sketch = activeSketch(editor);
+    if (!sketch || editor.phase !== "editing") return;
+    const region = chooseRegions(sketch, editor.selection.entities, editor.cursor)[0] ?? null;
+    const chain = openChain(sketch);
+    let profileSketch: SketchData | null = region ? sketch : null;
+    let profile = region;
+    let pathSketch: SketchData | null = chain ? sketch : null;
+    let path = chain?.path ?? [];
+    let check = chain?.check ?? [];
+    if (region && chain) {
+      pathSketch = sketch;
+      path = chain.path;
+      check = chain.check;
+    } else if (region) {
+      const found = pinnedChain();
+      if (found) {
+        pathSketch = found.sketch;
+        path = found.chain.path;
+        check = found.chain.check;
+      }
+    } else if (chain) {
+      const found = pinnedRegion();
+      if (found) {
+        profileSketch = found.sketch;
+        profile = found.region;
+      }
+    }
+    sweep = {
+      profileSketch,
+      profile,
+      pathSketch,
+      path,
+      check,
+      scale: 1,
+      edges: [],
+      choice: host.featureEdit() === "root" ? "new" : "auto",
+      dragging: false,
+      down: null,
+      note: "",
+    };
+    if (profile && profileSketch && path.length >= 2) {
+      const built = buildSketchSweep({ profileSketch, profile, path, check, pathSketch, scale: 1, mode: host.featureEdit() === "root" ? "new" : "fuse" });
+      if ("error" in built) sweep = { ...sweep, note: built.error };
+    }
+    publish("open");
+    armSweepProbe();
+  }
+
+  function endSweep() {
+    if (!sweep) return;
+    sweep = null;
+    window.clearTimeout(probeTimer);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    publish("open");
+  }
+
+  function pinnedChain(): { sketch: SketchData; chain: { path: Vec3[]; check: boolean[] } } | null {
+    for (const item of editor.pinned) {
+      if (item.id === editor.active) continue;
+      const chain = openChain(item.sketch);
+      if (chain) return { sketch: item.sketch, chain };
+    }
+    return null;
+  }
+
+  function pinnedRegion(): { sketch: SketchData; region: Region } | null {
+    for (const item of editor.pinned) {
+      if (item.id === editor.active) continue;
+      const region = chooseRegions(item.sketch, [], null)[0];
+      if (region) return { sketch: item.sketch, region };
+    }
+    return null;
+  }
+
+  function takeLoftSketch(id: number) {
+    if (!loft) return;
+    const item = editor.pinned.find((pinned) => pinned.id === id);
+    if (!item) return;
+    const region = chooseRegions(item.sketch, [], null)[0];
+    if (!region) {
+      loft = { ...loft, note: "That sketch has no region to loft." };
+      publish("open");
+      return;
+    }
+    const key = `sketch:${id}`;
+    const pick: LoftPick = { key, sketchId: id, sketch: sketchJson(item.sketch), section: sectionFromRegion(item.sketch, region) };
+    const at = loft.picks.findIndex((itemPick) => itemPick.key === key);
+    const picks = at >= 0 ? loft.picks.filter((_, index) => index !== at) : [...loft.picks, pick];
+    loft = { ...loft, picks, note: "" };
+    publish("open");
+    armLoftProbe();
+  }
+
+  function takeSweepSketch(id: number) {
+    if (!sweep) return;
+    const item = editor.pinned.find((pinned) => pinned.id === id);
+    if (!item) return;
+    const region = chooseRegions(item.sketch, [], null)[0] ?? null;
+    const chain = openChain(item.sketch);
+    if (!region && !chain) {
+      sweep = { ...sweep, note: "That sketch needs a region or an open path." };
+      publish("open");
+      return;
+    }
+    let next = sweep;
+    if (region) next = { ...next, profile: region, profileSketch: item.sketch, note: "" };
+    if (chain && (!region || next.path.length < 2)) next = { ...next, path: chain.path, check: chain.check, pathSketch: item.sketch, edges: [], note: "" };
+    sweep = next;
+    publish("open");
+    armSweepProbe();
+  }
+
+  function resolvedLoftMode() {
+    const touches = loftTouches();
+    return resolveExtrudeMode({
+      choice: loft?.choice ?? "auto",
+      hasSolid: host.solid() != null,
+      touches,
+      distance: 1,
+      lockNew: host.featureEdit() === "root",
+    });
+  }
+
+  function resolvedSweepMode() {
+    return resolveExtrudeMode({
+      choice: sweep?.choice ?? "auto",
+      hasSolid: host.solid() != null,
+      touches: loftTouches(),
+      distance: 1,
+      lockNew: host.featureEdit() === "root",
+    });
+  }
+
+  function loftTouches(): boolean {
+    const sketch = activeSketch(editor);
+    const frame = drawingFrame();
+    const regions: Region[] = [];
+    if (loft) {
+      for (const pick of loft.picks) {
+        if (pick.sketchId === editor.active && pick.sketch) regions.push(...chooseRegions(pick.sketch, [], null));
+      }
+    } else if (sweep?.profile) regions.push(sweep.profile);
+    return !!sketch && !!frame && regions.length > 0 && sketchTouchesSolid(frame, regions, host.bounds(), sketch.on?.kind === "face");
+  }
+
+  function freshLoftPicks(): LoftPick[] {
+    if (!loft) return [];
+    return loft.picks.map((pick) => {
+      if (pick.sketchId == null) return pick;
+      const live = pick.sketchId === editor.active ? activeSketch(editor) : editor.pinned.find((item) => item.id === pick.sketchId)?.sketch;
+      if (!live) return pick;
+      if (pick.sketch && JSON.stringify(sketchJson(live)) === JSON.stringify(sketchJson(pick.sketch))) return { ...pick, sketch: sketchJson(live) };
+      const region = chooseRegions(live, [], null)[0];
+      if (!region) return { ...pick, sketch: sketchJson(live) };
+      return { ...pick, sketch: sketchJson(live), section: sectionFromRegion(live, region) };
+    });
+  }
+
+  function currentLoftOp(): ModelOp | null {
+    if (!loft || loft.picks.length < 2) return null;
+    const built = buildSketchLoft({ picks: freshLoftPicks(), ruled: loft.ruled, mode: resolvedLoftMode() });
+    return "op" in built ? built.op : null;
+  }
+
+  async function commitLoft() {
+    if (!loft || committing) return;
+    const built = buildSketchLoft({ picks: freshLoftPicks(), ruled: loft.ruled, mode: resolvedLoftMode() });
+    if ("error" in built) {
+      loft = { ...loft, note: built.error };
+      publish("skip");
+      host.readout(built.error);
+      return;
+    }
+    committing = true;
+    const mode = resolvedLoftMode();
+    const error = await host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid");
+    committing = false;
+    if (!loft) return;
+    if (error) {
+      loft = { ...loft, note: error };
+      host.readout(error);
+      return;
+    }
+    editSession = false;
+    loft = null;
+    window.clearTimeout(probeTimer);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    editor = finishSketch(editor);
+    publish("open");
+    // The sketch card would say the sketch was kept. The new solid's volume is what was just made.
+    if (host.solid()) host.readout(host.idleReadout());
+    host.frameSolid();
+  }
+
+  function armLoftProbe() {
+    window.clearTimeout(probeTimer);
+    if (!loft) return;
+    if (resolvedLoftMode() === "new" || !host.solid() || loft.picks.length < 2) {
+      host.clearExtrudePreview();
+      return;
+    }
+    probeTimer = window.setTimeout(() => {
+      const op = currentLoftOp();
+      if (op) host.probeExtrude(op);
+    }, GHOST_PROBE_WAIT_MS);
+  }
+
+  function loftReadout(): string {
+    if (!loft) return "";
+    if (loft.note) return loft.note;
+    const mode = modeLabel(resolvedLoftMode());
+    const count = loft.picks.length;
+    return `Loft, ${count} ${count === 1 ? "section" : "sections"}, ${mode}. Pick sections in order: a sketch region or a flat face. R rules the loft. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
+  }
+
+  function loftPointer(ev: { phase: "down" | "move" | "up"; x: number; y: number }) {
+    if (!loft || ev.phase !== "up") return;
+    const frame = drawingFrame();
+    const ray = host.view.pointerRay(ev.x, ev.y);
+    const plane = frame ? rayOnPlane(frame, ray.origin, ray.direction) : null;
+    const face = host.view.pickSolid(ev.x, ev.y);
+    if (face && (!plane || face.t + 0.05 < plane.t)) {
+      void addFaceSection(face.face);
+      return;
+    }
+    const sketch = activeSketch(editor);
+    if (!sketch || !plane || editor.active == null) return;
+    const region = regionAt(sketchRegions(sketch), plane.uv);
+    if (!region) return;
+    const key = regionKey(editor.active, region);
+    const pick: LoftPick = { key, sketchId: editor.active, sketch: sketchJson(sketch), section: sectionFromRegion(sketch, region) };
+    const at = loft.picks.findIndex((item) => item.key === key || item.key === `sketch:${editor.active}`);
+    const picks = at >= 0 ? loft.picks.filter((_, index) => index !== at) : [...loft.picks, pick];
+    loft = { ...loft, picks, note: "" };
+    publish("open");
+    armLoftProbe();
+  }
+
+  async function addFaceSection(face: number) {
+    const read = await host.faceLoops(face);
+    if (!loft) return;
+    if ("error" in read) {
+      loft = { ...loft, note: read.error };
+      host.readout(read.error);
+      return;
+    }
+    const key = `face:${face}`;
+    const section: LoftSection = { origin: read.origin, turn: read.turn, loops: read.loops };
+    const pick: LoftPick = { key, sketchId: null, sketch: null, section };
+    const at = loft.picks.findIndex((item) => item.key === key);
+    const picks = at >= 0 ? loft.picks.filter((_, index) => index !== at) : [...loft.picks, pick];
+    loft = { ...loft, picks, note: "" };
+    publish("open");
+    armLoftProbe();
+  }
+
+  function paintLoft() {
+    if (!loft || editor.phase !== "editing") return;
+    host.view.setHandles([]);
+    if (loft.picks.length < 2) {
+      host.view.setGhost(null);
+      return;
+    }
+    const rings = freshLoftPicks().map((pick) => sectionOutline(pick.section));
+    if (rings.some((ring) => ring.length < 3)) {
+      host.view.setGhost(null);
+      return;
+    }
+    const soup = loftGhost(rings);
+    host.view.setGhost(soup.length > 0 ? { kind: "soup", positions: soup } : null);
+  }
+
+  function currentSweepOp(): ModelOp | null {
+    if (!sweep?.profile || !sweep.profileSketch || sweep.path.length < 2) return null;
+    const built = buildSketchSweep({
+      profileSketch: sweep.profileSketch,
+      profile: sweep.profile,
+      path: sweep.path,
+      check: sweep.check,
+      pathSketch: sweep.pathSketch,
+      scale: sweep.scale,
+      edges: sweep.edges,
+      mode: resolvedSweepMode(),
+    });
+    return "op" in built ? built.op : null;
+  }
+
+  async function commitSweep() {
+    if (!sweep || committing) return;
+    if (!sweep.profile || !sweep.profileSketch) {
+      sweep = { ...sweep, note: "Pick a region to sweep." };
+      host.readout(sweep.note);
+      return;
+    }
+    const profileSketch = sweep.profileSketch;
+    const profile = chooseRegions(profileSketch, [], null)[0] ?? sweep.profile;
+    const built = buildSketchSweep({
+      profileSketch,
+      profile,
+      path: sweep.path,
+      check: sweep.check,
+      pathSketch: sweep.pathSketch,
+      scale: sweep.scale,
+      edges: sweep.edges,
+      mode: resolvedSweepMode(),
+    });
+    if ("error" in built) {
+      sweep = { ...sweep, note: built.error };
+      publish("skip");
+      host.readout(built.error);
+      return;
+    }
+    committing = true;
+    const mode = resolvedSweepMode();
+    const error = await host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid");
+    committing = false;
+    if (!sweep) return;
+    if (error) {
+      sweep = { ...sweep, note: error };
+      host.readout(error);
+      return;
+    }
+    editSession = false;
+    sweep = null;
+    window.clearTimeout(probeTimer);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    editor = finishSketch(editor);
+    publish("open");
+    if (host.solid()) host.readout(host.idleReadout());
+    host.frameSolid();
+  }
+
+  function armSweepProbe() {
+    window.clearTimeout(probeTimer);
+    if (!sweep || sweep.dragging) return;
+    if (resolvedSweepMode() === "new" || !host.solid() || !currentSweepOp()) {
+      host.clearExtrudePreview();
+      return;
+    }
+    probeTimer = window.setTimeout(() => {
+      const op = currentSweepOp();
+      if (op) host.probeExtrude(op);
+    }, GHOST_PROBE_WAIT_MS);
+  }
+
+  function sweepReadout(): string {
+    if (!sweep) return "";
+    if (sweep.note) return sweep.note;
+    const mode = modeLabel(resolvedSweepMode());
+    const profile = sweep.profile ? "profile" : "no profile";
+    const path = sweep.path.length >= 2 ? "path" : "no path";
+    return `Sweep, ${profile}, ${path}, scale ${scaleOf(sweep.scale)}, ${mode}. Drag or type the scale. Pick an open chain, or Shift-click edges that meet. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
+  }
+
+  function sweepPointer(ev: { phase: "down" | "move" | "up"; x: number; y: number; shift: boolean; ctrl: boolean }, _frame: ReturnType<typeof drawingFrame>) {
+    if (!sweep) return;
+    if (ev.phase === "down") {
+      sweep = { ...sweep, down: { x: ev.x, y: ev.y, scale: scaleOf(sweep.scale) }, dragging: false };
+      return;
+    }
+    if (ev.phase === "move" && sweep.down) {
+      const moved = Math.hypot(ev.x - sweep.down.x, ev.y - sweep.down.y);
+      if (moved < 4 && !sweep.dragging) return;
+      let scale = sweep.down.scale + (sweep.down.y - ev.y) / 100;
+      if (ev.ctrl) scale = Math.round(scale * 10) / 10;
+      else scale = Math.round(scale * 100) / 100;
+      scale = Math.max(0.05, scale);
+      sweep = { ...sweep, dragging: true, scale, note: "" };
+      host.clearExtrudePreview();
+      publish("values");
+      return;
+    }
+    if (ev.phase === "up" && sweep.down) {
+      const moved = Math.hypot(ev.x - sweep.down.x, ev.y - sweep.down.y);
+      const shifted = ev.shift;
+      sweep = { ...sweep, down: null, dragging: false };
+      if (shifted) {
+        addSweepEdge(ev.x, ev.y);
+        return;
+      }
+      if (moved < 4) pickSweepAt(ev.x, ev.y);
+      else {
+        publish("open");
+        armSweepProbe();
+      }
+    }
+  }
+
+  function addSweepEdge(x: number, y: number) {
+    if (!sweep) return;
+    const hit = nearestEdge(x, y);
+    if (!hit) {
+      sweep = { ...sweep, note: EDGE_MEET };
+      host.readout(EDGE_MEET);
+      return;
+    }
+    const extended = extendPath(sweep.path, sweep.check, hit.points);
+    if ("error" in extended) {
+      sweep = { ...sweep, note: extended.error };
+      host.readout(extended.error);
+      return;
+    }
+    const edges = sweep.edges.includes(hit.id) ? sweep.edges : [...sweep.edges, hit.id];
+    sweep = { ...sweep, path: extended.path, check: extended.check, edges, note: "" };
+    publish("open");
+    armSweepProbe();
+  }
+
+  function edgePoints(points: ArrayLike<number>): Vec3[] {
+    const out: Vec3[] = [];
+    for (let i = 0; i + 2 < points.length; i += 3) out.push([points[i]!, points[i + 1]!, points[i + 2]!]);
+    return out;
+  }
+
+  function nearestEdge(x: number, y: number): { id: number; points: Vec3[] } | null {
+    let best: { id: number; points: Vec3[]; distance: number } | null = null;
+    host.edges().forEach((edge, index) => {
+      const points = edgePoints(edge.points);
+      if (points.length < 2) return;
+      const mid = points[Math.floor(points.length / 2)]!;
+      const screen = host.view.projectPoint(mid);
+      if (!screen) return;
+      const distance = Math.hypot(screen.x - x, screen.y - y);
+      if (distance > 14) return;
+      const id = edge.id ?? index;
+      if (!best || distance < best.distance) best = { id, points, distance };
+    });
+    return best;
+  }
+
+  function pickSweepAt(x: number, y: number) {
+    if (!sweep) return;
+    const frame = drawingFrame();
+    const sketch = activeSketch(editor);
+    if (!frame || !sketch) return;
+    const ray = host.view.pointerRay(x, y);
+    const plane = rayOnPlane(frame, ray.origin, ray.direction);
+    if (!plane) return;
+    const region = regionAt(sketchRegions(sketch), plane.uv);
+    const chain = openChain(sketch);
+    if (region && !sweep.profile) {
+      sweep = { ...sweep, profile: region, profileSketch: sketch, note: "" };
+    } else if (chain && sweep.path.length < 2) {
+      sweep = { ...sweep, path: chain.path, check: chain.check, pathSketch: sketch, edges: [], note: "" };
+    }
+    publish("open");
+    armSweepProbe();
+  }
+
+  function paintSweep() {
+    if (!sweep || editor.phase !== "editing") return;
+    host.view.setHandles([]);
+    const op = currentSweepOp();
+    if (!op || op.kind !== "loft") {
+      host.view.setGhost(null);
+      return;
+    }
+    const rings = op.sections.map((section) => sectionOutline(section));
+    const soup = loftGhost(rings);
+    host.view.setGhost(soup.length > 0 ? { kind: "soup", positions: soup } : null);
+  }
+
+  function pinnedStrokes(): { xyz: number[]; role: "hint" }[] {
+    const strokes: { xyz: number[]; role: "hint" }[] = [];
+    for (const item of editor.pinned) {
+      if (item.id === editor.active) continue;
+      const frame = frameFromWorkplane(workplaneIn({ source: "global", origin: item.sketch.plane.origin, turn: item.sketch.plane.turn }, host.pose()));
+      for (const entity of item.sketch.entities) {
+        if (entity.construction) continue;
+        const region = chooseRegions(item.sketch, [entity.id], null)[0];
+        if (!region) continue;
+        const loop = sampleLoop(toLoops(region)[0] ?? region.outer);
+        const xyz: number[] = [];
+        for (const point of loop) {
+          const at = toWorld(frame, point);
+          xyz.push(at[0], at[1], at[2]);
+        }
+        if (xyz.length >= 6) strokes.push({ xyz, role: "hint" });
+        break;
+      }
+    }
+    if (sweep && sweep.path.length >= 2) {
+      const xyz: number[] = [];
+      for (const point of sweep.path) xyz.push(point[0], point[1], point[2]);
+      strokes.push({ xyz, role: "hint" });
+    }
+    return strokes;
   }
 }
 

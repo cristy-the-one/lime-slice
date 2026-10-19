@@ -9,6 +9,7 @@ import {
   filletGhost,
   GHOST_PROBE_WAIT_MS,
   previewIsGhost,
+  loftGhost,
   regionExtrude,
   REVOLVE_STEPS,
   revolveGhost,
@@ -393,6 +394,10 @@ for (let i = 0; i < blend.length; i += 3) {
 }
 check("every fillet vertex is one millimetre off the edge", blendOk);
 check("a fillet with no radius draws nothing", filletGhost({ points: [[0, 0, 0], [1, 0, 0]], radius: 0 }).length === 0);
+
+const loftRing = (z: number): [number, number, number][] => [[0, 0, z], [10, 0, z], [10, 10, z], [0, 10, z]];
+check("a loft ghost of a 10 mm square prism is 1000 mm³", near(volume(loftGhost([loftRing(0), loftRing(10)])), 1000, 1e-3));
+check("one loft ring draws nothing", loftGhost([loftRing(0)]).length === 0);
 
 if (failed) {
   console.error(`${failed} failed`);
