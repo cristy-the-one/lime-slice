@@ -128,7 +128,7 @@ controlById("supfanpct")!.set!(state, 7);
 eq("typed values are held to whole numbers in range", fanOfRow(state.profile), { fanPercent: 23, overhangFanPercent: 100, fanOffLayers: 0, supportFanPercent: 7 });
 controlById("supfanpct")!.set!(state, "");
 eq("an emptied Support fan % follows", [controlById("supfanpct")!.get!(state), controlById("supfanpct")!.placeholder!(state)], ["", "23"]);
-eq("Cooling sits between Speed and Supports", GROUPS.map((group) => group.id).slice(5, 8), ["speed", "cooling", "supports"]);
+eq("Temperature sits between Speed and Cooling", GROUPS.map((group) => group.id).slice(5, 9), ["speed", "temperature", "cooling", "supports"]);
 const cooling = GROUPS.find((group) => group.id === "cooling")!;
 const ctx = { belt: false, lineWidth: 0.45 };
 eq("the Cooling summary names the overhang fan only while it applies", [cooling.summary(state, ctx), cooling.summary({ ...state, overhangControl: false }, ctx)], ["fan 23% · overhang 100%", "fan 23%"]);

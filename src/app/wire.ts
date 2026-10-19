@@ -53,6 +53,7 @@ import {
   noteFlow,
   noteHeatLimits,
   noteNozzleTemp,
+  snapTempField,
   noteRetract,
   chooseMachine,
   deleteMachine,
@@ -93,6 +94,10 @@ export function wireApp() {
     }
     if (target.id === "machineMaxBed" || target.id === "machineMaxNozzle") {
       noteHeatLimits();
+      return;
+    }
+    if (target.id === "nozzlec" || target.id === "bedc") {
+      snapTempField(target.id, true);
       return;
     }
     if (target.id === "placeX" || target.id === "placeY") {

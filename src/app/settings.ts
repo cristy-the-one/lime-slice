@@ -18,11 +18,11 @@ import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
-import { noteAdvance, noteFan, noteFirmware, noteFirmwareArcs, noteFlow, noteGcode, noteHeatLimits, noteRetract, setSupportMode } from "./machine-actions";
+import { noteAdvance, noteFan, noteFirmware, noteFirmwareArcs, noteFlow, noteGcode, noteHeatLimits, noteRetract, noteTemps, setSupportMode } from "./machine-actions";
 import { currentRules } from "./rules";
 import { ADVANCE, orderFields, type Rules } from "../settings-rules";
 import { activeHeat, loadMachineLibrary } from "./machine-library";
-import { beltStamp, machineChipLabel, machinePickHtml, machineSectionHtml } from "../ui/machine-library";
+import { beltStamp, fieldHeat, machineChipLabel, machinePickHtml, machineSectionHtml } from "../ui/machine-library";
 import { prusaSummary, rememberPrusaForm, syncSendButtons } from "./prusa-actions";
 import { noteEdit } from "./history";
 import { loadProfileLibrary } from "./profile-library";
@@ -331,7 +331,7 @@ function paintPrinterChip() {
   const label = document.querySelector("#printerChipLabel");
   if (label) label.textContent = machineChipLabel(library);
   const pick = document.querySelector("#printerPick");
-  if (pick) pick.innerHTML = machinePickHtml(library);
+  if (pick) pick.innerHTML = machinePickHtml(library, activeHeat(library));
 }
 
 /** Open the Printer details group and scroll to it. Simple has no such group, so it steps up to Advanced. */
@@ -526,7 +526,7 @@ function groupCardHtml(group: GroupSpec, rules: Rules, ctx: SchemaContext): stri
   const body = controlsOf(group.id).map((spec) => controlHtml(spec, rules, ctx)).join("");
   const hidden = group.id === "objects" && !state.placed ? " hidden" : "";
   return `<details class="group" data-group="${group.id}" data-level="${group.tier}" style="--hue: var(${group.accent})"${closedGroups.has(group.id) ? "" : " open"}${hidden}>
-    <summary class="group-head"><span class="group-tick" aria-hidden="true"></span><span class="group-title">${escapeHtml(group.title)}</span><span class="group-sum">${escapeHtml(group.summary(state, ctx))}</span><span class="group-chev" aria-hidden="true"></span></summary>
+    <summary class="group-head"><span class="group-tick" aria-hidden="true"></span><span class="group-title">${escapeHtml(group.title)}</span><span class="group-sum">${escapeHtml(groupSummaryText(group, ctx))}</span><span class="group-chev" aria-hidden="true"></span></summary>
     <div class="group-body">${body}</div>
   </details>`;
 }
@@ -560,12 +560,14 @@ function controlHtml(spec: ControlSpec, rules: Rules, ctx: SchemaContext): strin
     const body = CUSTOM[spec.id]?.() ?? "";
     return body ? `<div class="slot" data-slot="${spec.id}" data-level="${spec.tier}">${body}</div>` : "";
   }
-  const value = spec.get!(state);
+  const value = controlValue(spec);
   // A locked control shows what the slice does, not the choice it keeps for a printer that allows it.
   const locked = lockedReason(spec, rules);
   const attrs = `data-level="${spec.tier}" data-label="${escapeHtml(spec.label.toLowerCase())}"${spec.keywords ? ` data-keywords="${escapeHtml(spec.keywords)}"` : ""}${tipAttr(locked ?? spec.tip)}`;
   const cls = `row setting${spec.parent ? " sub" : ""}${locked ? " is-disabled" : ""}`;
-  const label = `<span class="row-label">${escapeHtml(spec.label)}</span>`;
+  const label = spec.scrub
+    ? `<span class="row-label scrub-label" data-scrub="field">${escapeHtml(spec.label)}</span>`
+    : `<span class="row-label">${escapeHtml(spec.label)}</span>`;
   if (spec.kind.type === "check") {
     // Still focusable, so the reason reaches the keyboard and a screen reader; a click on it is cancelled in wire.ts.
     if (locked) return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="checkbox" class="switch" role="switch" aria-disabled="true" aria-description="${escapeHtml(locked)}"/></label>`;
@@ -861,10 +863,28 @@ function objectOverrideFields(obj: NonNullable<ReturnType<typeof selectedObject>
 }
 
 function machineHtml() {
-  const p = state.profile;
   const library = loadMachineLibrary();
   const rules = currentRules(library);
-  return machineSectionHtml(library, { advance: state[ADVANCE[rules.firmware].key], nozzleTemp: p.nozzleTemp, bedTemp: p.bedTemp, flow: state.flow }, rules, prusaSummary());
+  const heat = activeHeat(library);
+  return machineSectionHtml(library, { advance: state[ADVANCE[rules.firmware].key], nozzleTemp: heat.nozzleAskC, bedTemp: heat.bedAskC, flow: state.flow }, rules, prusaSummary());
+}
+
+/** The Temperature header shows what is sent, the same numbers as the fields. */
+function groupSummaryText(group: GroupSpec, ctx: SchemaContext): string {
+  if (group.id === "temperature") {
+    const shown = fieldHeat(activeHeat());
+    return `${shown.nozzleC}° / ${shown.bedC}°`;
+  }
+  return group.summary(state, ctx);
+}
+
+/** Nozzle and bed boxes show the sent temperature. Every other field shows what it stores. */
+function controlValue(spec: ControlSpec): number | boolean | string {
+  if (spec.id === "nozzlec" || spec.id === "bedc") {
+    const shown = fieldHeat(activeHeat());
+    return spec.id === "bedc" ? shown.bedC : shown.nozzleC;
+  }
+  return spec.get!(state);
 }
 
 export function paramLine(card: ResolvedCard) {
@@ -1340,6 +1360,10 @@ function afterSet(spec: ControlSpec, value: number | boolean | string): "stale" 
     case "fanoff":
       noteFan("fanOffLayers");
       return "stale";
+    case "nozzlec":
+    case "bedc":
+      noteTemps();
+      return "stale";
     case "bedx":
     case "bedy":
     case "bedz":
@@ -1518,7 +1542,7 @@ function paintGroupSummaries() {
   const ctx = schemaContext();
   for (const group of GROUPS) {
     const node = document.querySelector(`#left .group[data-group="${group.id}"] .group-sum`);
-    if (node) node.textContent = group.summary(state, ctx);
+    if (node) node.textContent = groupSummaryText(group, ctx);
   }
 }
 

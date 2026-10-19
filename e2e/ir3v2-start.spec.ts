@@ -62,10 +62,10 @@ test("the IR3 V2 with ABS asks for a 90 C bed, says so, and exports a file that 
   await autoSliceOff(page);
   await chooseIr3Abs(page);
 
-  await expect(page.locator("#printerHeatNote")).toHaveText("Bed 90 °C (ABS asks 100 °C, this printer stops at 90 °C)");
+  await expect(page.locator("#printerHeatNote")).toHaveText("Bed set to 90 °C: ABS asks for 100 °C, but this printer's limit is 90 °C. Change the limit in Edit printer.");
   await page.locator("#printerChip").evaluate((el) => { (el as HTMLDetailsElement).open = false; });
   await expect(page.locator("#machineTemps")).toHaveText("Nozzle 250 °C · bed 90 °C");
-  await expect(page.locator("#machineHeatNote")).toHaveText("Bed 90 °C (ABS asks 100 °C, this printer stops at 90 °C)");
+  await expect(page.locator("#machineHeatNote")).toHaveText("Bed set to 90 °C: ABS asks for 100 °C, but this printer's limit is 90 °C. Change the limit in Edit printer.");
 
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#slice")).toBeEnabled();
