@@ -113,10 +113,16 @@ test("a section face is taken only right after Face, and another object starts t
   await expect(page.locator("#modelSectionNote")).toBeHidden();
 
   // A later face pick is for another tool: the plane stays.
-  await page.mouse.click(box.x + x! + w! * 0.15, box.y + y! + h! * 0.85);
+  const other = { x: box.x + x! + w! * 0.5, y: box.y + y! + h! * 0.97 };
+  await page.mouse.click(other.x, other.y);
   await expect(page.locator("#model")).toHaveAttribute("data-section", plane!);
+  // Face again arms the pick: the same click now moves the plane, so it was another face.
+  if (await page.locator("#modelLookPanel").isHidden()) await page.locator("#modelLookOpen").click();
+  await page.locator("#modelSectionAxis [data-axis=face]").click();
+  await page.mouse.click(other.x, other.y);
+  await expect(page.locator("#model")).not.toHaveAttribute("data-section", plane!);
 
-  await page.locator("#modelLookOpen").click();
+  if (await page.locator("#modelLookPanel").isHidden()) await page.locator("#modelLookOpen").click();
   await page.locator("#modelColourSteps").check();
   await page.locator("#tabPrepare").click();
   await page.locator("#plateAddFile").setInputFiles({ name: "other.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
