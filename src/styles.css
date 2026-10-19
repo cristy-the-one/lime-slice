@@ -1204,6 +1204,55 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   font-size: var(--fs-2);
   pointer-events: none;
 }
+/* --- P3 context bar --- beside the selection, above the measure layer, never on the solid. */
+.context-bar {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - 16px);
+  padding: 3px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+  pointer-events: auto;
+}
+.context-bar[hidden] { display: none !important; }
+.context-bar.is-faded { opacity: 0; pointer-events: none; }
+.context-bar-split { display: inline-flex; align-items: center; }
+.context-bar-btn, .context-bar-caret, .context-bar-item {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+  font-size: var(--fs-2);
+  line-height: 1;
+  white-space: nowrap;
+}
+.context-bar-caret { padding: 0 6px; color: var(--text-dim); }
+.context-bar-btn:hover, .context-bar-caret:hover, .context-bar-item:hover { background: var(--surface-3); }
+.context-bar-btn:focus-visible, .context-bar-caret:focus-visible, .context-bar-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.context-bar-menu {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  min-width: 9rem;
+  padding: 3px;
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+}
+.context-bar-menu[hidden] { display: none !important; }
+.context-bar-item { text-align: left; }
 .gizmo-readout {
   position: absolute;
   left: 12px;
