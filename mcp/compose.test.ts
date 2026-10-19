@@ -381,6 +381,18 @@ check("a box on a moved part's face workplane is stored as on the part where it 
   check("a pattern that misses everywhere is refused", away.ok === false && JSON.stringify(away).includes("None of its 3 steps changes the part."), JSON.stringify(away));
 }
 
+// --- D28. A feature typed with a face selector is stored with the face it found, so the app can edit it.
+{
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
+  const pocket = await own.call("model_apply", { object: made.object, op: { kind: "pocket", face: { normal: [0, -1, 0] }, at: { u: 0, v: 0 }, width: 8, height: 8, depth: 1 } });
+  check("the selector pocket applies", pocket.ok === true, JSON.stringify(pocket));
+  await own.call("project_save", { name: "selector.lime" });
+  const doc = JSON.parse(readFileSync(join(workspace, "selector.lime"), "utf8")) as { objects?: { modelTree?: { nodes?: { op?: { kind?: string; source?: Record<string, unknown> } | null }[] } }[] };
+  const source = doc.objects?.[0]?.modelTree?.nodes?.map((node) => node.op).find((op) => op?.kind === "group")?.source;
+  check("the stored pocket names its face by index", typeof source?.faceIndex === "number" && source.face === undefined, JSON.stringify(source));
+}
+
 if (failed > 0) {
   console.error(`compose: ${failed} failed`);
   process.exit(1);

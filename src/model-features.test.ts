@@ -15,6 +15,7 @@ import {
   featureLabel,
   featurePanel,
   groupFromPieces,
+  keptFeatureFields,
   piecesOutlineOnly,
   readFeatureSpec,
   type FeatureChoices,
@@ -119,6 +120,12 @@ eq("a pocket's ghost is shaded", piecesOutlineOnly(3), false);
 
 const group = expanded.group ?? groupFromPieces("Pocket", spec, []);
 check("the group keeps the spec that was typed", (group.source as { kind?: string }).kind === "pocket" && group.steps.length === 3);
+
+// --- D28. An MCP texture's one pitch and its region come back in an app edit.
+eq("a scalar pitch fills both pitch fields", [featurePanel({ kind: "texture", pitch: 3, depth: 0.5 }).fields.modelTexPitchU, featurePanel({ kind: "texture", pitch: 3, depth: 0.5 }).fields.modelTexPitchV], [3, 3]);
+eq("an edit keeps a texture's region", keptFeatureFields({ kind: "texture", region: { u: [-5, 5], v: [0, 8] } }, "texture"), { region: { u: [-5, 5], v: [0, 8] } });
+eq("another tool's region is not carried", keptFeatureFields({ kind: "texture", region: { u: [-5, 5], v: [0, 8] } }, "ribs"), {});
+eq("a malformed region is not carried", keptFeatureFields({ kind: "ribs", region: { u: [1], v: [0, 8] } }, "ribs"), {});
 
 if (failed) {
   console.error(`${failed} failed`);

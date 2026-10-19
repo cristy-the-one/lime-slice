@@ -30,7 +30,7 @@ import { faceBoundarySegments, lastEdge, nextModelPicks, selectionCountLabel } f
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes, printFrame } from "../model-check.ts";
-import { emptyFeature, expandFeature, featureSource, isFeatureTool, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
+import { emptyFeature, expandFeature, featureSource, isFeatureTool, keptFeatureFields, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
 import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
@@ -1399,7 +1399,9 @@ function oneFeatureFace(): number | null {
 function featureNow(tool: FeatureTool) {
   const solid = viewed();
   const face = oneFeatureFace();
-  const spec = readFeatureSpec(tool, (id) => num(`#${id}`), panelChoices(tool), face ?? 0);
+  const typed = readFeatureSpec(tool, (id) => num(`#${id}`), panelChoices(tool), face ?? 0);
+  // --- D28. An edit keeps the region its step was typed with, which the panel has no field for.
+  const spec = { ...typed, ...keptFeatureFields(editing ? featureSource(editing.op) : null, tool) };
   const pose = openPose();
   const key = JSON.stringify({ spec, face, id: solid?.id ?? null, pose });
   if (featureMemo?.key === key) return featureMemo.value;

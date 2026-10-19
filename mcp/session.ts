@@ -3964,6 +3964,18 @@ export class Session {
   }
 
   /**
+   * --- D28. A feature typed with a face selector is stored with the face it found, as the app stores its pick, so an
+   * edit in the app and a replay re-expand on that face. A selector that finds none is left for expand to refuse.
+   */
+  private withFaceIndex(obj: PlateObject, raw: Record<string, unknown>): Record<string, unknown> {
+    if (!isFeatureTool(raw.kind) || raw.face === undefined || raw.faceIndex !== undefined || !raw.face || typeof raw.face !== "object") return raw;
+    const index = this.expandContext(obj).faceBy(raw.face as Record<string, unknown>);
+    if (typeof index !== "number") return raw;
+    const { face: _face, ...rest } = raw;
+    return { ...rest, faceIndex: index };
+  }
+
+  /**
    * The plane a profile is drawn on: origin and turn as given, else a face (face or faceIndex, with from: corner putting
    * U, V = 0 at the face's min corner), else the object's workplane.
    */
@@ -4045,7 +4057,7 @@ export class Session {
         checkpoints.push(null);
         continue;
       }
-      const raw = anchored.op;
+      const raw = this.withFaceIndex(obj, anchored.op);
       const ownNodes: number[] = [];
       // One op's refusal: the run ends, or with skip the op's own steps go and the run carries on.
       const refuse = async (failed: Record<string, unknown>): Promise<Record<string, unknown> | null> => {

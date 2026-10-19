@@ -16,6 +16,7 @@ import {
   readRepeatSpec,
   repeatLabel,
   repeatPanel,
+  repeatSource,
   repeatTargets,
   type RepeatChoices,
 } from "./model-repeat.ts";
@@ -176,6 +177,12 @@ eq("a source that can no longer be repeated names the pattern", asFillet, { erro
 const renamed = renumberedSteps(seedGroup!, new Map([[1, 7]]));
 eq("a replayed source step's new id is the one the pattern names", (renamed as { source: { of: number[] } }).source.of, [7]);
 check("a pattern whose sources are not replayed is unchanged", renumberedSteps(seedGroup!, new Map([[5, 9]])) === seedGroup);
+
+// --- D28. The MCP's pattern repeats an op of its own, not steps of the history: the app has no panel for it.
+const mcpPattern: ModelOp = { kind: "group", label: "Pattern", source: { kind: "pattern", op: { kind: "boolean", op: "cut", primitive: "box", dx: 2 }, linear: { step: [5, 0, 0], count: 3 } }, steps: [] };
+eq("an MCP pattern is not an app repeat", repeatSource(mcpPattern), null);
+const appPattern: ModelOp = { kind: "group", label: "Pattern × 3", source: { kind: "pattern", of: [1], linear: { step: [5, 0, 0], count: 3 } }, steps: [] };
+check("an app pattern still is", repeatSource(appPattern) !== null);
 
 if (failed > 0) {
   console.error(`${failed} failed`);

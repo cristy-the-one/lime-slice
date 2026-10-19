@@ -222,11 +222,17 @@ export function repeatPanel(source: Record<string, unknown>): { tool: RepeatTool
   return { tool, fields, repeat };
 }
 
-/** A group's pattern or mirror, when it is one of these tools. */
+/**
+ * A group's pattern or mirror, when it is one of these tools and repeats steps of the history (`of`). --- D28. The MCP's
+ * pattern repeats an op typed inside it instead (`op`, no `of`): the app has no panel for that, so it is not one here,
+ * and History says it has no edit panel rather than opening an empty pattern.
+ */
 export function repeatSource(op: ModelOp): Record<string, unknown> | null {
   if (op.kind !== "group" || !op.source || typeof op.source !== "object") return null;
   const source = op.source as Record<string, unknown>;
-  return source.kind === "pattern" || source.kind === "mirror" ? source : null;
+  if (source.kind !== "pattern" && source.kind !== "mirror") return null;
+  if (!Array.isArray(source.of) && source.op && typeof source.op === "object") return null;
+  return source;
 }
 
 function round6(value: number): number {

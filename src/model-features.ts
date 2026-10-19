@@ -280,13 +280,25 @@ export function featureSource(op: ModelOp): Record<string, unknown> | null {
   return isFeatureTool(source.kind) ? source : null;
 }
 
+/**
+ * --- D28. What an edit keeps from the step it edits that the panel has no field for: a texture's, an array's or ribs'
+ * `region` box, which the MCP may type. Empty when there is none.
+ */
+export function keptFeatureFields(source: Record<string, unknown> | null, tool: FeatureTool): Record<string, unknown> {
+  if (!source || source.kind !== tool || (tool !== "texture" && tool !== "array" && tool !== "ribs")) return {};
+  const region = source.region as { u?: unknown; v?: unknown } | undefined;
+  const pair = (value: unknown) => Array.isArray(value) && value.length === 2 && value.every((n) => typeof n === "number" && Number.isFinite(n));
+  return region && pair(region.u) && pair(region.v) ? { region: { u: [...(region.u as number[])], v: [...(region.v as number[])] } } : {};
+}
+
 /** The panel an edited feature group reopens with. */
 export function featurePanel(source: Record<string, unknown>): { tool: FeatureTool; fields: Record<string, number>; feature: FeatureChoices } {
   const tool: FeatureTool = isFeatureTool(source.kind) ? source.kind : "pocket";
   const at = (source.at ?? {}) as { u?: unknown; v?: unknown };
   const bars = (source.bars ?? {}) as { vertical?: unknown; horizontal?: unknown; width?: unknown };
   const cell = (source.cell ?? {}) as Record<string, unknown>;
-  const pitch = Array.isArray(source.pitch) ? source.pitch : [];
+  // --- D28. The MCP may store one pitch for both directions.
+  const pitch = Array.isArray(source.pitch) ? source.pitch : typeof source.pitch === "number" ? [source.pitch, source.pitch] : [];
   const height = numOf(source.height, FEATURE_FIELD_DEFAULTS.modelTextHeight!);
   const shape = source.shape === "circle" || source.shape === "arch" ? source.shape : "rect";
   const cellShape = cell.shape === "circle" || cell.shape === "polygon" ? cell.shape : "rect";
