@@ -115,19 +115,19 @@
 /* The settings toggle names itself while settings sit in a closed drawer, at any window height. */
 .tool-rail .rail-label { display: none; }
 .workspace.is-drawers.is-left-collapsed #leftToggle {
+  width: 44px;
   height: 44px;
   grid-template-rows: auto auto;
   align-content: center;
   gap: 2px;
   color: var(--accent-text);
-  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
 }
 .workspace.is-drawers.is-left-collapsed #leftToggle .rail-label {
   display: block;
   font-size: 9px;
   font-weight: 600;
-  letter-spacing: 0.02em;
   line-height: 1;
+  white-space: nowrap;
 }
 /* A short window drops the captions first; the separators keep the groups apart. */
 @media (max-height: 819px) {

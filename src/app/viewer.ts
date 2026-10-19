@@ -25,7 +25,6 @@ import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
 import { paintRailStage, syncSection } from "../ui/chrome";
-import { settingsInClosedDrawer } from "../ui/splitters";
 import { clampPartPercent } from "../gizmo-math";
 import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
 import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, wheelKind, wheelZoomFactor, zoomFlat, type FlatView, type XyBounds } from "../ui/flat-view";
@@ -103,8 +102,7 @@ function statusLine(): string {
   if (state.stage === "prepare" && state.mesh && state.placed) {
     const { min, max } = state.placed.bounds;
     const size = [0, 1, 2].map((axis) => (max[axis] - min[axis]).toFixed(1)).join(" × ");
-    const line = `${state.mesh.name} · ${size} mm`;
-    return settingsInClosedDrawer() ? `${line} · Settings are in the drawer (Ctrl+B)` : line;
+    return `${state.mesh.name} · ${size} mm`;
   }
   return "";
 }

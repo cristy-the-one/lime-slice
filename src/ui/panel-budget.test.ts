@@ -1,4 +1,4 @@
-import { dockBudget, dockDefaults, dockMode, drawerWidth, dragMax, fitDocks, LEFT_MIN, RAIL_PX, resultsOpenByDefault, stageWidth, type DockWish } from "./panel-budget.ts";
+import { dockBudget, dockDefaults, dockMode, DRAWER_PX, dragMax, fitDocks, LEFT_MIN, RAIL_PX, resultsOpenByDefault, stageWidth, type DockWish } from "./panel-budget.ts";
 
 let failed = 0;
 
@@ -59,13 +59,16 @@ eq("2560: results 340", big.right, 340);
 const ultra = fit(3440, { rightOpen: true });
 eq("3440: settings take 600 for two columns", ultra.left, 600);
 eq("3440: results 340", ultra.right, 340);
+const from = fit(3000, { rightOpen: true });
+eq("3000: settings keep 600 for two columns", from.left, 600);
+check("3000: results give way, above their floor", from.right === (dockBudget(3000) ?? 0) - 600 && from.right >= 240, JSON.stringify(from));
 const edge = fit(2400, { rightOpen: true });
 check("2400 keeps both docks, settings yielding a little", edge.right === 340 && edge.left === (dockBudget(2400) ?? 0) - 340, JSON.stringify(edge));
 
 check("961 to 1200 are drawers", dockMode(961) === "drawer" && dockMode(1200) === "drawer");
 check("960 and under stack", dockMode(960) === "narrow");
 check("1201 docks", dockMode(1201) === "dock");
-eq("a drawer is 320 wide", drawerWidth(1100), 320);
+eq("a drawer is 320 wide", DRAWER_PX, 320);
 
 eq("a settings drag stops where results begin", dragMax("left", 1920, 280), (dockBudget(1920) ?? 0) - 280);
 eq("a results drag leaves settings their floor", dragMax("right", 1920, 248), (dockBudget(1920) ?? 0) - LEFT_MIN);

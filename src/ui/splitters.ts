@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight, createElement } from "lucide";
 import {
   dockMode,
-  drawerWidth,
+  DRAWER_PX,
   dragMax,
   fitDocks,
   LEFT_MAX,
@@ -93,16 +93,33 @@ export function toggleDock(side: DockSide) {
 export function setDock(side: DockSide, open: boolean) {
   const dock = document.querySelector(DOCK_ID[side]);
   const hadFocus = !!dock?.contains(document.activeElement);
-  if (mode() === "drawer") {
+  const other: DockSide = side === "left" ? "right" : "left";
+  const otherHadFocus = !!document.querySelector(DOCK_ID[other])?.contains(document.activeElement);
+  const drawers = mode() === "drawer";
+  if (drawers) {
     // One drawer at a time, over the view.
     drawerOpen[side] = open;
-    if (open) drawerOpen[side === "left" ? "right" : "left"] = false;
+    if (open) drawerOpen[other] = false;
   } else {
     if (open) write(LAST_KEY, side);
     write(CLOSED_KEY[side], open ? "0" : "1");
   }
   applyFit();
   if (hadFocus && !dockShown(side)) document.querySelector<HTMLElement>(OPENER[side])?.focus();
+  // A drawer that takes the other's place takes its focus too, rather than leaving it on the rail.
+  if (drawers && open && otherHadFocus) document.querySelector<HTMLElement>(`${DOCK_ID[side]} .dock-close`)?.focus();
+}
+
+/** Escape closes an open drawer from inside it, unless a field or menu in it used the key. */
+function bindDrawerEscape(side: DockSide) {
+  document.querySelector(DOCK_ID[side])?.addEventListener("keydown", (ev) => {
+    const e = ev as KeyboardEvent;
+    if (e.key !== "Escape" || e.defaultPrevented || mode() !== "drawer" || !drawerOpen[side]) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("textarea, select, [contenteditable=true], input:not([type=checkbox]):not([type=radio]):not([type=range])")) return;
+    e.preventDefault();
+    setDock(side, false);
+  });
 }
 
 function lastOpened(): DockSide {
@@ -118,6 +135,7 @@ export function mountSplitters() {
     close?.append(createElement(side === "left" ? ChevronLeft : ChevronRight, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
     close?.addEventListener("click", () => setDock(side, false));
     bindDrag(ws, handles[side], side);
+    bindDrawerEscape(side);
   }
   applyFit();
   window.addEventListener("resize", () => {
@@ -175,8 +193,7 @@ function bindDrag(ws: HTMLElement, handle: HTMLElement, side: DockSide) {
  */
 function currentFit(): DockFit {
   if (mode() === "drawer") {
-    const width = drawerWidth(window.innerWidth);
-    return { left: drawerOpen.left ? width : 0, right: drawerOpen.right ? width : 0 };
+    return { left: drawerOpen.left ? DRAWER_PX : 0, right: drawerOpen.right ? DRAWER_PX : 0 };
   }
   const leftOpen = wantsOpen("left");
   const rightOpen = wantsOpen("right");
@@ -231,13 +248,16 @@ function applyFit() {
   // A drawer opens over the view, so the canvas keeps its size and nothing needs to fit again.
   if (!drawers || modeChanged) window.dispatchEvent(new Event("resize"));
   fitting = false;
-  window.dispatchEvent(new Event("lime-docks"));
+  paintDrawerHint(drawers && leftClosed);
 }
 
-/** Settings sit in a closed drawer (961–1200 px), so the rail and the status line point at them. */
-export function settingsInClosedDrawer(): boolean {
-  const ws = workspace();
-  return !!ws && ws.classList.contains("is-drawers") && ws.classList.contains("is-left-collapsed");
+/**
+ * While settings sit in a closed drawer (961–1200 px) the status line says where they are. The hint is its own span,
+ * outside the live status text, so opening and closing a drawer is not read out again.
+ */
+function paintDrawerHint(show: boolean) {
+  const hint = document.querySelector<HTMLElement>("#statusHint");
+  if (hint && hint.hidden === show) hint.hidden = !show;
 }
 
 function paintToggles(leftShown: boolean, rightShown: boolean) {

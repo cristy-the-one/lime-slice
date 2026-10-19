@@ -19,10 +19,8 @@ export const NARROW_MAX_PX = 960;
 export const WIDE_PX = 2400;
 /** From this width settings take two columns. */
 export const ULTRA_PX = 3000;
-/** A drawer's width, leaving the stage a strip to click back into. */
-export function drawerWidth(width: number): number {
-  return Math.min(320, width - 120);
-}
+/** A drawer's width (961–1200 px windows), leaving at least 590 px of the view beside it. */
+export const DRAWER_PX = 320;
 
 export type DockMode = "dock" | "drawer" | "narrow";
 
@@ -51,7 +49,8 @@ export interface DockFit {
 
 /** Settings and results widths for the window: wider on large screens, two settings columns from 3000 px. */
 export function dockDefaults(width: number): DockFit {
-  if (width >= ULTRA_PX) return { left: 600, right: 340 };
+  // Two settings columns need the full 600, so from 3000 px the results give way first, down to their floor.
+  if (width >= ULTRA_PX) return { left: 600, right: clamp((dockBudget(width) ?? 0) - 600, RIGHT_MIN, 340) };
   if (width >= WIDE_PX) return { left: 360, right: 340 };
   return width >= 1600 ? { left: 320, right: 280 } : { left: 288, right: 300 };
 }

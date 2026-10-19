@@ -357,11 +357,14 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
  * feature rows; narrow, tiles stacked and each feature row on two lines. A number is never cut.
  */
 #left { container: left / inline-size; }
-/* A settings dock wide enough for two columns (3000 px windows) flows the group cards into them. */
+/*
+ * A settings dock wide enough for two columns (3000 px windows) flows the group cards into them. Each card is then its
+ * own `left` container, so the narrow-card rules above answer to the card's width, not the dock's. Not on a phone sheet.
+ */
 @container left (min-width: 560px) {
-  #leftBody { column-count: 2; column-gap: var(--space-2); }
-  #leftBody > .panel-head { column-span: all; }
-  #leftBody > .group { break-inside: avoid; }
+  html:not(.layout-compact) #leftBody { column-count: 2; column-gap: 0; }
+  html:not(.layout-compact) #leftBody > .panel-head { column-span: all; }
+  html:not(.layout-compact) #leftBody > .group { break-inside: avoid; container: left / inline-size; }
 }
 #right { container: right / inline-size; }
 
