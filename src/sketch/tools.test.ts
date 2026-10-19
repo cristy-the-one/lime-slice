@@ -76,6 +76,7 @@ if (arc && arc.kind === "arc") {
   const sketch = activeSketch(editor)!;
   const built = arcFrom3(sketchPoint(sketch, arc.a)!.at, arc.through, sketchPoint(sketch, arc.b)!.at);
   near("the arc passes through the third click", built ? arcPoint(built, 0.5)[1] : 0, 5, 1e-6);
+  eq("and runs from the first click to the second", [sketchPoint(sketch, arc.a)!.at, sketchPoint(sketch, arc.b)!.at], [[0, 0], [10, 0]]);
 }
 editor = open("line");
 editor = click(editor, [0, 0]);
@@ -152,7 +153,7 @@ const before = activeSketch(editor)!;
 void cross(before);
 editor = click(editor, [8, 0]);
 const trimmed = activeSketch(editor)!;
-check("trimming drops the clicked end", trimmed.entities.length === before.entities.length);
+check("trimming keeps both lines, one of them shorter", trimmed.entities.length === before.entities.length && trimmed.entities.every((entity) => entity.kind === "line"));
 const kept = trimmed.entities.filter((entity) => entity.kind === "line").map((entity) => {
   if (entity.kind !== "line") return null;
   const a = sketchPoint(trimmed, entity.a)?.at;
@@ -172,6 +173,9 @@ const raised = activeSketch(editor)!.entities.filter((entity) => entity.kind ===
 check("typing an offset distance adds a parallel line", raised.length === 2);
 const heights = raised.map((entity) => (entity.kind === "line" ? sketchPoint(activeSketch(editor)!, entity.a)?.at[1] : 0));
 check("the new line sits the typed distance to the left", heights.some((y) => Math.abs((y ?? 0) - 3) < 1e-6), JSON.stringify(heights));
+const copy = raised.find((entity) => entity.kind === "line" && Math.abs((sketchPoint(activeSketch(editor)!, entity.a)?.at[1] ?? 0) - 3) < 1e-6);
+const copyEnds = copy && copy.kind === "line" ? [sketchPoint(activeSketch(editor)!, copy.a)!.at[0], sketchPoint(activeSketch(editor)!, copy.b)!.at[0]].sort((a, b) => a - b) : [];
+eq("and spans the same run, 0 to 10", copyEnds, [0, 10]);
 
 editor = open("line");
 editor = click(editor, [0, 0]);
@@ -189,7 +193,10 @@ editor = commitSizes(editor, [2]);
 const rounded = activeSketch(editor)!;
 check("typing a radius adds the corner arc", rounded.entities.some((entity) => entity.kind === "arc"), JSON.stringify(rounded.entities.map((entity) => entity.kind)));
 const round = rounded.entities.find((entity) => entity.kind === "arc");
-if (round && round.kind === "arc") near("the arc bulges into the corner", round.through[0], 2 - Math.SQRT2, 1e-6);
+if (round && round.kind === "arc") {
+  near("the arc bulges into the corner", round.through[0], 2 - Math.SQRT2, 1e-6);
+  eq("and meets the lines where they were cut back, 2 from the corner", [sketchPoint(rounded, round.a)!.at, sketchPoint(rounded, round.b)!.at].map((at) => at.map((v) => Math.round(v * 1e6) / 1e6)).sort(), [[0, 2], [2, 0]]);
+}
 
 editor = open("line");
 editor = click(editor, [0, 0]);
