@@ -130,6 +130,7 @@ test("a face click opens Push/Pull, Hole, and Shell off the solid, and Enter typ
   await expect(distance).toBeVisible();
   await distance.fill("7");
   await expect(distance).toHaveValue("7");
+  await expect(page.locator("#modelPullDiameter"), "a flat face has no diameter").toBeHidden();
   await expect(bar).toBeHidden();
 });
 
@@ -178,6 +179,13 @@ test("a cylinder offers Change diameter, and empty space offers a typed primitiv
   await expect(bar.locator("[data-action='change-diameter']")).toBeVisible();
   await bar.locator("[data-action='change-diameter']").click();
   await expect(page.locator("#modelPull")).toBeVisible();
+  // One cylinder: the panel types its diameter too, and Distance is the offset that reaches it.
+  const diameter = page.locator("#modelPullDiameter");
+  await expect(diameter).toBeVisible();
+  await expect(diameter).toHaveValue("20");
+  await diameter.selectText();
+  await page.keyboard.type("12");
+  await expect(page.locator("#modelPull")).toHaveValue(/^-?4$/);
   await page.keyboard.press("Escape");
 
   const canvasBox = (await page.locator("#model").boundingBox())!;
@@ -245,4 +253,50 @@ test("an edge offers Fillet and Chamfer, and the bar fades until the pointer ret
   await expect(bar).toHaveAttribute("data-faded", "1");
   await page.mouse.move(top.x + 3, top.y + 3);
   await expect(bar).toHaveAttribute("data-faded", "0");
+});
+
+test("a face drag takes the bar away, and so does a sketch on the face", async ({ page }) => {
+  await openModel(page);
+  const bar = page.locator("#modelContextBar");
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await page.mouse.click(top.x, top.y);
+  await expect(bar).toBeVisible();
+
+  // The press lands on the face, which push/pull takes before anything else hears it.
+  await page.mouse.move(top.x, top.y);
+  await page.mouse.down();
+  for (let step = 1; step <= 6; step += 1) await page.mouse.move(top.x, top.y - step * 6);
+  await expect(bar, "the bar leaves while the face is dragged").toBeHidden();
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+
+  const again = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await page.mouse.click(again.x, again.y);
+  await expect(bar).toBeVisible();
+  await bar.locator("[data-action='sketch-on-face']").click();
+  await expect(page.locator("#model")).not.toHaveAttribute("data-sketch", "off");
+  await expect(bar, "the face's actions are not for the sketch").toBeHidden();
+});
+
+test("the bar is one Tab stop, stays while it has the focus, and hands the focus to the panel it opens", async ({ page }) => {
+  await openModel(page);
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await page.mouse.click(top.x, top.y);
+  const bar = page.locator("#modelContextBar");
+  await expect(bar).toBeVisible();
+  const stops = await bar.locator("button").evaluateAll((nodes) => nodes.map((node) => (node as HTMLButtonElement).tabIndex));
+  expect(stops, "a roving tab stop: only the first button is in the tab order").toEqual([0, ...Array(stops.length - 1).fill(-1)]);
+  await bar.locator("[data-action='push-pull']").focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(bar.locator("[data-action='hole']")).toHaveAttribute("tabindex", "0");
+  await expect(bar.locator("[data-action='push-pull']")).toHaveAttribute("tabindex", "-1");
+  await page.waitForTimeout(3400);
+  await expect(bar, "a focused bar does not fade").toHaveAttribute("data-faded", "0");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Enter");
+  const distance = page.locator("#modelPull");
+  await expect(distance).toBeVisible();
+  await expect(distance, "the focus goes to the distance, not the page").toBeFocused();
+  await page.keyboard.type("6");
+  await expect(distance).toHaveValue("6");
 });

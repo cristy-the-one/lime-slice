@@ -50,7 +50,7 @@ eq("a loft section can be loops", loftOp("fuse", [
   { origin: [0, 0, 8], turn: [0, 0, 0], loops: washer },
 ]).sections[0]!.loops?.length, 2);
 
-eq("the label counts loops", opLabel(made), "Extrude 2-loop profile 5");
+eq("the label counts loops", opLabel(made), "Extrude 2-loop profile 5 mm");
 
 const fp = (volumeMm3: number) => ({ volumeMm3, faces: 6, edges: 12 });
 const root = { kind: "primitive" as const, solid: { primitive: "box" as const, origin: [0, 0, 0] as Vec3, size: [40, 40, 10] as Vec3, radius: 0, height: 0, turn: [0, 0, 0] as Vec3 } };

@@ -141,7 +141,7 @@ export const COMMANDS: CommandSpec[] = [
 export const MOUSE_HINTS: { gesture: string; label: string }[] = [
   { gesture: "Shift+click", label: "Add or remove a face or edge in Model" },
   // --- P1 ---
-  { gesture: "Drag a face", label: "Push or pull. Alt adds material." },
+  { gesture: "Drag a face", label: "Push or pull. Alt adds or cuts on that face only." },
   { gesture: "Click empty", label: "Clear the Model selection" },
   { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°" },
   { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring" },

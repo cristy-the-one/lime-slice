@@ -49,8 +49,8 @@ eq("labels", [
   opLabel({ kind: "fillet", edges: [stepEdges(2, "convex")], size: 1 }),
   opLabel({ kind: "chamfer", edges: [3, stepEdges(2)], size: 0.5 }),
 ], [
-  "Extrude 3-point profile 70 both ways",
-  "Cut extrude 4-point profile 10",
+  "Extrude 3-point profile 70 mm both ways",
+  "Cut extrude 4-point profile -10 mm",
   "Revolve 4-point profile 360°",
   "Intersect revolve 3-point profile 90°",
   "Shell 2, closed",
@@ -169,7 +169,7 @@ eq("a second depth and a draft are sent when set", tapered, { kind: "extrude", o
 eq("a zero draft is left off", "draftDeg" in extrudeOp("fuse", bed, square, 10, false, {}, { draftDeg: 0 }), false);
 eq("a plain extrude still sends none of them", Object.keys(extrudeOp("fuse", bed, square, 10)), ["kind", "op", "origin", "turn", "profile", "depth"]);
 const stopped = extrudeOp("cut", bed, square, 0, false, {}, { upTo: 3 });
-eq("labels name the second side, the draft, and the face", [opLabel(tapered), opLabel(stopped)], ["Extrude 4-point profile 10 and 4, draft 5°", "Cut extrude 4-point profile up to a face"]);
+eq("labels name the second side, the draft, and the face", [opLabel(tapered), opLabel(stopped)], ["Extrude 4-point profile 10 and 4 mm, draft 5°", "Cut extrude 4-point profile up to a face"]);
 const storedStop: ModelOp = { ...stopped, upTo: { index: 3, mid: [5, 5, 20], areaMm2: 100 } };
 const stopTree = withChild(newTree("e", root, "Box", fp(1)), 0, { id: 1, op: storedStop, label: opLabel(storedStop), fingerprint: fp(1) });
 eq("a fresh face index finds the extrude that stops there", childWithOp(stopTree, 0, stopped), 1);

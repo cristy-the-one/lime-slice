@@ -17,6 +17,8 @@ import {
   edgeDragRefusal,
   edgeFrame,
   edgeHoverHint,
+  edgeIsSmooth,
+  edgeSizeRefusal,
   EDGE_KNOB_ID,
   EDGE_MIN_MM,
   EDGE_STEP_MM,
@@ -73,6 +75,8 @@ export interface EdgeDragHost {
   setPreview(shape: ModelSolid | null): void;
   ray(x: number, y: number): { origin: Vec3; direction: Vec3 };
   params(): Params;
+  /** The step on screen. Tab edits the step just made only while it is the one showing. */
+  current(): number | null;
 }
 
 interface Target {
@@ -99,10 +103,11 @@ interface Session {
 }
 
 /** Wire the idle edge knob. `sync` when the open tool or the solid changes; `picksChanged` after a click. */
-export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(): void; holding(): boolean } {
+export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(): void; holding(): boolean; end(): void } {
   let live: Session | null = null;
   let shown: Target | null = null;
   let hoverEdge: number | null = null;
+  const smoothEdges = new WeakMap<object, Map<number, boolean>>();
   let hinting = false;
   let lastAt: { x: number; y: number } | null = null;
   let tab: { at: number; node: number } | null = null;
@@ -134,10 +139,17 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
       const text = commit.texts[0];
       live.typing = false;
       live.dragging = false;
-      if (size != null && Number.isFinite(size)) live.size = Math.max(0, size);
+      // 0, a negative size, or one too small is refused in a sentence, and the box stays open for another number.
+      const said = edgeSizeRefusal(live.kind, size ?? Number.NaN);
+      if (said) {
+        live.typing = true;
+        host.readout(said);
+        return;
+      }
+      live.size = size!;
       live.expr = text && !isPlainNumber(text) ? text.trim() : undefined;
       live.proved = null;
-      void commitSession();
+      void commitSession(true);
     });
     hud.onCancel(() => cancel(!!live?.editing));
     hud.onEdit((values) => {
@@ -195,7 +207,7 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     const view = host.view();
     if (!view || !session) return;
     view.setEdgeKnob(knob(session.point, session.dir, session.size, session.kind));
-    host.setGhost(session.size > 0 ? { kind: "blend", edges: session.edges, radius: session.size } : null);
+    host.setGhost(session.size > 0 ? { kind: "blend", edges: session.edges, radius: session.size, chamfer: session.kind === "chamfer" } : null);
     if (hud?.shown && !session.typing) hud.setValues([session.size]);
     publish();
   }
@@ -219,6 +231,22 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     canvas.dataset.edgeEdges = (edges ?? []).join(",");
     if (session?.maxMm != null && session.size >= session.maxMm - 1e-6) canvas.dataset.edgeClamp = String(session.maxMm);
     else delete canvas.dataset.edgeClamp;
+  }
+
+  /** Whether the edge is tangent, read once per edge of each mesh: a smooth edge offers no knob. */
+  function smooth(edge: number): boolean {
+    const solid = host.solid();
+    if (!solid) return false;
+    const key = solid.positions as unknown as object;
+    let known = smoothEdges.get(key);
+    if (!known) smoothEdges.set(key, (known = new Map()));
+    let answer = known.get(edge);
+    if (answer == null) {
+      const found = solid.edges.find((item) => item.id === edge);
+      answer = !!found && edgeIsSmooth(solid.positions, solid.triangles, found.points);
+      known.set(edge, answer);
+    }
+    return answer;
   }
 
   function targetOf(edge: number): Omit<Target, "edge"> | null {
@@ -250,7 +278,7 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
       }
       return;
     }
-    const target = targetOf(edge);
+    const target = smooth(edge) ? null : targetOf(edge);
     if (!target) {
       shown = null;
       view?.setEdgeKnob(null);
@@ -375,7 +403,8 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     window.clearTimeout(timer);
     const gen = ++probeGen;
     timer = window.setTimeout(() => {
-      void check(gen, true);
+      // A drag stops at the largest size that fits. A typed size is the user's number: it is refused, not changed.
+      void check(gen, !live?.typing);
     }, GHOST_PROBE_WAIT_MS);
   }
 
@@ -409,14 +438,22 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     return false;
   }
 
-  async function commitSession() {
+  /**
+   * Apply the session. A drag that went past the largest size that fits applies that size. A typed size is never changed
+   * behind the user's back: it is refused with the largest size, and the box stays open for another number.
+   */
+  async function commitSession(typed = false) {
     if (!live || committing) return;
     committing = true;
     const session = live;
     try {
       const gen = ++probeGen;
       window.clearTimeout(timer);
-      const ok = await check(gen, true);
+      const ok = await check(gen, !typed);
+      if (!ok && typed && live === session) {
+        session.typing = true;
+        return;
+      }
       if (!ok || live !== session) return;
       const made = edgeDragOp(session.kind, session.edges, session.size);
       const op = session.expr ? { ...made, exprs: { modelBlend: session.expr } } : made;
@@ -495,6 +532,7 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
       return;
     }
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (tab && tab.node !== host.current()) tab = null;
     if (ev.key === "Tab" && !ev.shiftKey && !live && tab && tabStillOpen(tab.at, performance.now())) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -504,9 +542,9 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
       return;
     }
     if (live || !shown || ev.repeat) return;
-    // A digit, a decimal or an opening parenthesis starts the size. Letters stay with the tool keys
-    // (Fillet is L, Chamfer is Shift+L) until the box is open, and then the box takes them.
-    if (!/^[0-9.(]$/.test(ev.key)) return;
+    // A digit, a decimal, a minus or an opening parenthesis starts the size, so "-2" is refused rather than read as 2.
+    // Letters stay with the tool keys (Fillet is L, Chamfer is Shift+L) until the box is open, and then the box takes them.
+    if (!/^[0-9.(-]$/.test(ev.key)) return;
     ev.preventDefault();
     ev.stopPropagation();
     startTyping(ev.key);
@@ -574,6 +612,11 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     picksChanged,
     holding() {
       return live != null;
+    },
+    /** Model is closing: drop the drag or the typed size, and the Tab window. */
+    end() {
+      tab = null;
+      if (live) cancel(!!live.editing, true);
     },
   };
 }

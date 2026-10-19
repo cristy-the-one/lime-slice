@@ -72,7 +72,9 @@ import {
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
 import { applyRequest, crossEditRequest, editRequest, exportRequest, faceLoopsRequest, gotoRequest, isBrep, joinOp, keepSketch, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
 import { edgeOfText, remapBlendFromNode, storedEdgeStep } from "../model-edge-step";
-import { mountPull, pullFieldText, type PullMade } from "../push-pull-ui";
+import { mountPull, pullFieldText, type PullController, type PullMade } from "../push-pull-ui";
+import { depthBehind, pullLimit, pullRefusal } from "../push-pull";
+import { faceTable } from "../interact/face-table";
 import { averagePoint, contextKind, polylineMid } from "../context-bar";
 import { hideContextBar, mountContextBar, showContextBar } from "../context-bar-ui";
 import {
@@ -308,7 +310,7 @@ let rootEditFrom: NodeId | null = null;
 /** Bumps when an extrude preview is dropped, so a late probe does not land on the next gesture. */
 let extrudeGen = 0;
 /** P2. The idle edge knob. Null until the view is bound. */
-let edgeDrag: { sync(): void; picksChanged(): void; holding(): boolean } | null = null;
+let edgeDrag: { sync(): void; picksChanged(): void; holding(): boolean; end(): void } | null = null;
 /** --- S2 sketch --- redraws the grid when the solid on screen changes. */
 let sketchUi: { sync(): void } | null = null;
 /** --- F4. The points H snapped, and the sketch as it was then. Held while the Hole panel is that layout. --- */
@@ -319,6 +321,9 @@ let holdSketchHoles = false;
 let holeRefused = false;
 /** P1's face-drag sync, so a sketch can arm it again on the way out. */
 let syncPullDrag: (() => void) | null = null;
+let endPullDrag: (() => void) | null = null;
+/** P1. The face push, for the panel's Diameter field on one picked cylinder. */
+let pullPanel: PullController | null = null;
 
 /**
  * A tool's step on screen in place of the open solid's: what a click on a tool's row in History shows, read-only, and
@@ -414,7 +419,9 @@ export function bindModelView() {
       void refreshStepEdges();
       scheduleProbe(typed ? PROBE_WAIT_MS : 0);
       syncUndo();
-      // P2. A tool opening or closing arms or disarms the idle edge knob.
+      // P1/P2. A tool opening or closing arms or disarms the face push and the idle edge knob: closed with Esc or
+      // Cancel, nothing else would wake the push before the next click.
+      syncPullDrag?.();
       edgeDrag?.sync();
       // --- S2 sketch ---
       sketchUi?.sync();
@@ -588,16 +595,31 @@ export function bindModelView() {
       armPreview: setAllowPullPreview,
       previewFresh: modelPreviewFresh,
       probe(op) {
-        void probePull(op);
+        probePull(op);
       },
       clearPreview: clearPullPreview,
       apply: applyPull,
       edit: editPull,
       busy: () => busy || jumping,
+      current: () => treeOf(open)?.current ?? null,
     });
     syncPullDrag = () => {
       pull.sync();
+      syncPullDiameter();
     };
+    pullPanel = pull;
+    // A typed diameter is the distance that reaches it: Distance follows, and the panel checks that as it would a typed distance.
+    document.querySelector<HTMLInputElement>("#modelPullDiameter")?.addEventListener("input", (ev) => {
+      // An emptied field is not a diameter of 0: Distance waits for a number.
+      const text = (ev.currentTarget as HTMLInputElement).value.trim();
+      const typed = Number(text);
+      const distance = text !== "" && Number.isFinite(typed) && typed > 0 ? pull.pickedDistance(typed) : null;
+      const field = document.querySelector<HTMLInputElement>("#modelPull");
+      if (distance == null || !field) return;
+      field.value = pullFieldText(distance);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    endPullDrag = () => pull.end();
     setPullLive(() => pull.sync());
   }
   // P2. Hover an edge and drag its knob: a fillet, or a chamfer while Alt is held. No toolbar tool.
@@ -646,6 +668,7 @@ export function bindModelView() {
       return fx.model?.pointerRay(x, y) ?? { origin: [0, 0, 0], direction: [0, 0, -1] };
     },
     params: () => currentParams(),
+    current: () => treeOf(open)?.current ?? null,
   });
   edgeDrag.sync();
   // --- S2 sketch ---
@@ -1040,6 +1063,13 @@ function scheduleProbe(wait: number) {
     if (!edgeDrag?.holding()) setModelPreview(null);
     return;
   }
+  // P1. A distance no printer reaches, or a push through the part, is refused here, in its own words.
+  const pulled = tool === "pushpull" ? pullGuard(op) : null;
+  if (pulled) {
+    publishProbe({ phase: "done", ok: false, error: pulled });
+    setModelPreview(null);
+    return;
+  }
   if (op.kind === "boolean") {
     const solid = viewed();
     const missed = solid ? disjointBoolean(boundsOf(solid.positions), op, op.op) : null;
@@ -1217,24 +1247,39 @@ function clearPullPreview() {
   setModelPreview(null);
 }
 
-/** P1. The kernel preview for a face drag, after the pointer has been still. */
-async function probePull(op: ModelOp) {
+/**
+ * P1. The kernel preview for a face drag, after the pointer has been still. It waits in the same single line as the
+ * panel's checks: a drag that rests, moves and rests again sends only the newest, after the one running answers.
+ * `pullProbe` is the gesture's own hold (`hold`), not set here, so a probe that gives up never leaves it on.
+ */
+function probePull(op: ModelOp) {
   const gen = ++pullGen;
-  pullProbe = true;
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || !pullLiveNow()) return;
+  const said = pullGuard(op);
+  if (said) {
+    setModelProbe({ phase: "done", ok: false, error: said });
+    setModelPreview(null);
+    readout(said);
+    return;
+  }
   const node = tree.current;
   const key = probeName(at.key, node, op);
   const known = answers.get(key);
   if (known && !(shaped.has(key) && !previewOf(key))) {
-    if (gen !== pullGen || !pullProbe) return;
     setModelProbe(known);
     setModelPreview(previewOf(key));
     return;
   }
   setModelProbe({ phase: "checking" });
-  const body = await treeCall(at.key, node, probeRequest(at.key, node, op, state.stepTolerance));
+  pendingProbe = () => sendPullProbe(gen, key, at.key, node, op);
+  sendPending();
+}
+
+async function sendPullProbe(gen: number, key: string, treeKey: string, node: NodeId, op: ModelOp) {
+  if (gen !== pullGen || !pullProbe) return;
+  const body = await treeCall(treeKey, node, probeRequest(treeKey, node, op, state.stepTolerance));
   if (gen !== pullGen || !pullProbe || state.stage !== "model") return;
   const view = probeFromBody(body);
   if (typeof body.ok === "boolean") remember(key, view);
@@ -1249,6 +1294,47 @@ async function probePull(op: ModelOp) {
   if (view && view.phase === "done" && !view.ok && view.error) readout(view.error.endsWith(".") ? view.error : `${view.error}.`);
 }
 
+/**
+ * P1. Why a push or pull is refused before the kernel is asked: a distance past ten bed or part diagonals, or a move
+ * that pushes a planar face as deep as the part. Null lets the kernel decide. Each face is read on the solid on screen,
+ * so `depths` is false where that solid is the step's own result (a Tab edit), not the one it is built on.
+ */
+function pullGuard(op: ModelOp, depths = true): string | null {
+  if (op.kind !== "moveFaces" && op.kind !== "faceExtrude") return null;
+  const solid = viewed();
+  if (!solid) return null;
+  const box = boxOf(solid.positions);
+  const part = Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]);
+  const bed = Math.hypot(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+  const limit = pullLimit(part, bed);
+  const rows = op.kind === "moveFaces" ? op.faces : [{ face: op.face, distance: op.distance }];
+  const table = faceTable(solid.positions, solid.triangles);
+  for (const row of rows) {
+    const index = typeof row.face === "number" ? row.face : row.face.index;
+    const info = solid.faces[index];
+    const normal = info && !info.surface ? info.normal ?? null : null;
+    const centre = table.get(index)?.centre;
+    const depth = depths && normal && centre ? depthBehind(solid.positions, centre, normal) : null;
+    const said = pullRefusal(op.kind === "moveFaces" ? "move" : "extrude", row.distance, [depth], limit, rows.length === 1);
+    if (said) return said;
+  }
+  return null;
+}
+
+/**
+ * P1. The panel's Diameter beside Distance, while Push/Pull is open on exactly one cylinder: "Change diameter" then
+ * types a diameter, as Shapr3D and Fusion show one for a cylindrical face. Distance stays the offset either way.
+ */
+function syncPullDiameter() {
+  const row = document.querySelector<HTMLElement>("#modelPullDiameterRow");
+  const input = document.querySelector<HTMLInputElement>("#modelPullDiameter");
+  if (!row || !input) return;
+  const distance = num("#modelPull");
+  const diameter = openModelTool() === "pushpull" && pullPanel ? pullPanel.pickedDiameter(Number.isFinite(distance) ? distance : 0) : null;
+  row.hidden = diameter == null;
+  if (diameter != null && document.activeElement !== input) input.value = pullFieldText(diameter);
+}
+
 /** P1. Face drag is on in Face mode, on an editable solid, when no other tool is open. */
 function pullLiveNow(): boolean {
   // --- S2: a sketch being chosen or edited owns the left button. ---
@@ -1259,7 +1345,8 @@ function pullLiveNow(): boolean {
   if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") return false;
   const solid = viewed();
   if (!solid?.editable) return false;
-  if (lens && !editing) return false;
+  // A History edit, Push/Pull's own included, is typed in its panel: a drag would add a step beside the one edited.
+  if (lens || editing) return false;
   return true;
 }
 
@@ -1394,6 +1481,9 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       const faces = picks.filter((pick) => pick.kind === "face");
       const distance = num("#modelPull");
       if (faces.length === 0 || !Number.isFinite(distance) || distance === 0) return null;
+      // An edit of a prism (Alt on one face) stays a prism, with its draft and its stop face.
+      const prism = editing?.op.kind === "faceExtrude" ? editing.op : null;
+      if (prism && faces.length === 1) return { ...prism, face: faces[0]!.index, distance };
       return moveFacesOp(faces.map((pick) => ({ face: pick.index, distance })));
     }
     default:
@@ -1862,6 +1952,9 @@ function forgetShown(key: string) {
 
 /** Leaving Model: the plate takes the shown node, the visit is one Prepare step, and its solid is written off the UI's path. */
 export function leaveModel() {
+  // A face push or an edge size still being typed ends with Model, so its box does not stay behind.
+  endPullDrag?.();
+  edgeDrag?.end();
   // --- D40. A Check asked for and not yet open is dropped with the visit, so it cannot open on a later one.
   checkQueued = null;
   forgetPlaceSteps();
@@ -2629,6 +2722,11 @@ async function applyPull(op: ModelOp): Promise<PullMade | null> {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree) return null;
+  const said = pullGuard(op);
+  if (said) {
+    readout(said);
+    return null;
+  }
   const parent = tree.current;
   await applyOp(op, "Pulling the face…");
   const now = modelTrees.get(at.key);
@@ -3417,6 +3515,14 @@ async function editPull(parent: NodeId, node: NodeId, op: ModelOp): Promise<bool
   if (!at || !tree || busy || jumping || !state.mesh || at.objectId !== state.plate.selectedId) return false;
   const old = tree.nodes.get(node);
   if (!old || old.parent !== parent || !old.op) return false;
+  // An undone step is off the path on screen: editing it would bring it back.
+  if (!pathTo(tree, tree.current).includes(node)) return false;
+  // The solid on screen is this step's result: its faces have already moved, so only the distance bound is checked here.
+  const said = pullGuard(op, tree.current === parent);
+  if (said) {
+    readout(said);
+    return false;
+  }
   const replayIds = replayChain(tree, node, tree.current);
   const replayOps = replayIds.map((id) => tree.nodes.get(id)?.op).filter((step): step is ModelOp => !!step);
   if (replayOps.length !== replayIds.length) return false;

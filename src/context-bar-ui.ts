@@ -58,6 +58,12 @@ function toolOpen(): boolean {
   return !!document.querySelector<HTMLElement>("#modelBar")?.dataset.tool;
 }
 
+/** A sketch is being chosen or drawn: its card and tools own the view, and the face's actions are not for it. A pinned card does not. */
+function sketching(): boolean {
+  const phase = canvas()?.dataset.sketch;
+  return phase === "editing" || phase === "choosing";
+}
+
 function pageBox(node: Element): ContextBox | null {
   const rect = node.getBoundingClientRect();
   if (rect.width < 1 || rect.height < 1) return null;
@@ -127,11 +133,30 @@ function pressToolbar(selector: string | undefined): void {
   button.click();
 }
 
-function activate(toolbar: string | undefined, then: string | undefined, run: (() => void) | undefined): void {
+/** `keyboard` is an activation from Enter or Space (a click with no pointer detail): only then the focus follows. */
+function activate(toolbar: string | undefined, then: string | undefined, run: (() => void) | undefined, keyboard = false): void {
   pressToolbar(toolbar);
   if (then) document.querySelector<HTMLButtonElement>(then)?.click();
   run?.();
   closeMenu();
+  if (keyboard) focusPanel();
+}
+
+/**
+ * The bar hides once its action opens a tool, and the focus would fall to the page. It goes to the panel's first
+ * field instead, so the size can be typed at once and the keyboard stays where the work is.
+ */
+function focusPanel() {
+  const panel = document.querySelector<HTMLElement>("#modelPanel");
+  if (!panel || panel.hidden) return;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body && !bar?.contains(active) && !menu?.contains(active)) return;
+  const shown = (node: HTMLElement) => !node.closest("[hidden]") && !(node as HTMLInputElement).disabled && node.getClientRects().length > 0;
+  // A size field first (Fillet's Size, not its Picked mode button), then any control.
+  const field = [...panel.querySelectorAll<HTMLElement>("input:not([type=hidden]):not([type=checkbox]), select, textarea")].find(shown)
+    ?? [...panel.querySelectorAll<HTMLElement>("input, button")].find(shown);
+  field?.focus();
+  if (field instanceof HTMLInputElement && field.type !== "checkbox") field.select();
 }
 
 function publish(kind: string) {
@@ -147,6 +172,8 @@ function armFade() {
   bar?.classList.remove("is-faded");
   if (bar) bar.dataset.faded = "0";
   timer = window.setTimeout(() => {
+    // A keyboard user reading the bar keeps it: it fades once the focus has left.
+    if (bar?.contains(document.activeElement)) return;
     faded = true;
     bar?.classList.add("is-faded");
     if (bar) bar.dataset.faded = "1";
@@ -218,7 +245,7 @@ function openMenu(action: ContextAction, anchor: HTMLButtonElement) {
     button.role = "menuitem";
     button.dataset.action = item.id;
     button.textContent = item.label;
-    button.addEventListener("click", () => activate(item.toolbar ?? action.toolbar, item.then, item.run));
+    button.addEventListener("click", (ev) => activate(item.toolbar ?? action.toolbar, item.then, item.run, ev.detail === 0));
     menu.append(button);
   }
   menu.hidden = false;
@@ -239,20 +266,28 @@ function buttonOf(action: ContextAction, item: ContextMenuItem | null, className
   return button;
 }
 
+/** A toolbar is one Tab stop: the arrows move inside it, and the button last focused is the one Tab comes back to. */
+function rove(to: HTMLButtonElement | null) {
+  if (!bar) return;
+  const buttons = [...bar.querySelectorAll<HTMLButtonElement>("button")];
+  const keep = to && buttons.includes(to) ? to : buttons[0];
+  for (const button of buttons) button.tabIndex = button === keep ? 0 : -1;
+}
+
 function renderButtons(actions: ContextAction[]) {
   if (!bar) return;
   bar.replaceChildren();
   for (const action of actions) {
     if (!action.menu?.length) {
       const button = buttonOf(action, null, "context-bar-btn");
-      button.addEventListener("click", () => activate(action.toolbar, undefined, action.run));
+      button.addEventListener("click", (ev) => activate(action.toolbar, undefined, action.run, ev.detail === 0));
       bar.append(button);
       continue;
     }
     const group = document.createElement("span");
     group.className = "context-bar-split";
     const main = buttonOf(action, null, "context-bar-btn");
-    main.addEventListener("click", () => activate(action.toolbar, undefined, action.run));
+    main.addEventListener("click", (ev) => activate(action.toolbar, undefined, action.run, ev.detail === 0));
     const caret = document.createElement("button");
     caret.type = "button";
     caret.className = "context-bar-caret";
@@ -268,6 +303,7 @@ function renderButtons(actions: ContextAction[]) {
     group.append(main, caret);
     bar.append(group);
   }
+  rove(null);
 }
 
 function reseat() {
@@ -299,6 +335,10 @@ function reseat() {
 function render(state: ContextBarState) {
   if (!bar) return;
   pending = state;
+  if (sketching()) {
+    hideContextBar();
+    return;
+  }
   if (toolOpen() || host()?.hidden) {
     bar.hidden = true;
     closeMenu();
@@ -349,8 +389,12 @@ export function mountContextBar(next: ContextBarHooks) {
 
   bar.addEventListener("keydown", onBarKey);
   menu.addEventListener("keydown", onMenuKey);
-  bar.addEventListener("focusin", () => {
+  bar.addEventListener("focusin", (ev) => {
+    rove(ev.target instanceof HTMLButtonElement ? ev.target : null);
     if (faded) armFade();
+  });
+  bar.addEventListener("focusout", (ev) => {
+    if (!bar?.contains(ev.relatedTarget as Node | null) && !bar?.hidden) armFade();
   });
   window.addEventListener("pointermove", (ev) => {
     if (!bar || bar.hidden) return;
@@ -372,23 +416,30 @@ export function mountContextBar(next: ContextBarHooks) {
   const node = canvas();
   if (node) {
     let press: { x: number; y: number } | null = null;
-    node.addEventListener("pointerdown", (ev) => {
-      if (ev.button !== 0) return;
+    // On the window, in the capture phase: a face push, the edge knob and a handle drag stop the event on the canvas
+    // itself, so a listener there never heard the drag that should take the bar away.
+    window.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0 || ev.target !== node) return;
       press = { x: ev.clientX, y: ev.clientY };
-    });
-    node.addEventListener("pointermove", (ev) => {
+    }, true);
+    window.addEventListener("pointermove", (ev) => {
       if (!press || (ev.buttons & 1) === 0) return;
       if ((ev.clientX - press.x) ** 2 + (ev.clientY - press.y) ** 2 > 16) {
         press = null;
         hideContextBar();
       }
-    });
-    node.addEventListener("pointerup", () => {
+    }, true);
+    const release = () => {
       press = null;
-    });
+    };
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
     new MutationObserver(() => {
       if (pending && !bar?.hidden) reseat();
     }).observe(node, { attributes: true, attributeFilter: ["data-camera", "data-solid-screen"] });
+    new MutationObserver(() => {
+      if (sketching()) hideContextBar();
+    }).observe(node, { attributes: true, attributeFilter: ["data-sketch"] });
   }
   const modelBar = document.querySelector("#modelBar");
   if (modelBar) {

@@ -174,22 +174,28 @@ test("a typed size fillets the hovered edge", async ({ page }) => {
   expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 2 });
 });
 
-test("maxMm clamps a typed size and the readout says why", async ({ page }) => {
+test("a typed size too big for the edge is refused with the largest that fits, and the box stays open", async ({ page }) => {
   const applied: Op[] = [];
   await openBox(page, (op) => {
     if ((op.size ?? 0) > 1) return { ok: false, error: "The fillet is too big.", maxMm: 1 };
     return { ok: true };
   }, applied);
   await knobAt(page);
-  // Typing asks the kernel once the box has a number. A drag can be clamped mid-gesture, before
-  // the pointer has travelled far enough for a screen test to see a size past the limit.
+  // Typing asks the kernel once the box has a number. It says the largest size, and keeps the number typed.
   await page.keyboard.press("5");
-  await expect(page.locator("#model")).toHaveAttribute("data-edge-clamp", "1", { timeout: 2000 });
-  await expect(page.locator("#modelReadout")).toContainText("The largest that fits is 1 mm.");
-  await expect(page.locator("#model")).toHaveAttribute("data-edge-size", "1");
+  await expect(page.locator("#modelReadout")).toContainText("The largest that fits is 1 mm.", { timeout: 2000 });
+  await expect(page.locator("#model")).toHaveAttribute("data-edge-size", "5");
   await page.keyboard.press("Enter");
-  await expect(page.locator("#modelReadout")).toContainText("Fillet 1 mm · Tab to edit");
-  expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 1 });
+  await expect(page.locator("#modelReadout")).toContainText("The fillet is too big. The largest that fits is 1 mm.");
+  const box = page.locator(".interact-hud:not([hidden]) input");
+  await expect(box, "the box stays open for another number").toBeVisible();
+  await page.waitForTimeout(300);
+  expect(applied, "nothing is applied at a size nobody typed").toHaveLength(0);
+  await page.keyboard.type("0.8");
+  await expect(box).toHaveValue("0.8");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("Fillet 0.8 mm · Tab to edit");
+  expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 0.8 });
 });
 
 test("Tab reopens the fillet, Esc cancels, and Enter edits it", async ({ page }) => {
@@ -231,4 +237,103 @@ test("P opens Push/Pull, D opens Split, and L still opens Fillet", async ({ page
   await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "fillet");
   await expect(page.locator("#modelPanel")).toBeVisible();
   await expect(page.locator("#model")).not.toHaveAttribute("data-edge-drag", /./);
+});
+
+test("after Undo, Tab leaves the undone fillet alone", async ({ page }) => {
+  const applied: Op[] = [];
+  await openBox(page, () => ({ ok: true }), applied);
+  await knobAt(page);
+  await page.keyboard.press("2");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("Tab to edit");
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#modelReadout")).not.toContainText("Tab to edit");
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press("Tab");
+  await page.waitForTimeout(300);
+  await expect(page.locator("#model"), "Tab does not reopen an undone step").not.toHaveAttribute("data-edge-drag", "edit");
+  await expect(page.locator(".interact-hud:not([hidden])")).toBeHidden();
+});
+
+test("a typed 0 or negative size is refused in a sentence, and the box stays open", async ({ page }) => {
+  const applied: Op[] = [];
+  await openBox(page, () => ({ ok: true }), applied);
+  await knobAt(page);
+  const box = page.locator(".interact-hud:not([hidden]) input");
+  await page.keyboard.type("-2");
+  await expect(box, "a minus starts the box, so the size is not read as 2").toHaveValue("-2");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("A fillet needs a radius of at least 0.05 mm.");
+  await expect(box).toBeVisible();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("0");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("A fillet needs a radius of at least 0.05 mm.");
+  await page.waitForTimeout(300);
+  expect(applied, "nothing is applied").toHaveLength(0);
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("1.5");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("Fillet 1.5 mm · Tab to edit");
+  expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 1.5 });
+});
+
+test("a smooth edge, between faces that carry on flat, offers no knob", async ({ page }) => {
+  const solid = boxSolid();
+  // The top's two triangles are two faces in one plane, and the diagonal between them is the only edge.
+  const top = [2, 3];
+  top.forEach((tri) => {
+    solid.triangles[tri] = tri === 2 ? 1 : 6;
+  });
+  solid.faces.push({ id: 6, areaMm2: 0 });
+  // The diagonal is smooth; edge 1, the top's front edge, is a real corner and lights as a control.
+  solid.edges = [
+    { id: 0, lengthMm: Math.hypot(20, 20), points: [0, 0, 10, 20, 20, 10] },
+    { id: 1, lengthMm: 20, points: [0, 0, 10, 20, 0, 10] },
+  ];
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
+  await mockModelTree(page, { open: () => solid, probe: () => ({ ok: true }) });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  const canvas = page.locator("#model");
+  const lit = await canvas.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    const seen = new Set<string>();
+    for (let y = rect.top + rect.height * 0.12; y <= rect.top + rect.height * 0.88; y += 6) {
+      for (let x = rect.left + rect.width * 0.12; x <= rect.left + rect.width * 0.88; x += 6) {
+        node.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, bubbles: true, pointerId: 1, pointerType: "mouse" }));
+        if (node.dataset.edgeDrag === "hover") seen.add(node.dataset.edgeEdges ?? "");
+      }
+    }
+    return [...seen].sort();
+  });
+  expect(lit, "the corner lights, the smooth diagonal never does").toEqual(["1"]);
+});
+
+test("the drag's ghost is the fillet's own surface, inside the corner it rounds", async ({ page }) => {
+  const applied: Op[] = [];
+  await openBox(page, () => ({ ok: true }), applied);
+  const canvas = page.locator("#model");
+  await knobAt(page);
+  // A typed size draws the same ghost as a drag, at a size this box can take.
+  await page.keyboard.type("2.5");
+  await expect(canvas).toHaveAttribute("data-edge-size", "2.5");
+  await expect(canvas).toHaveAttribute("data-ghost", /\d/);
+  const [cx, cy, cz, sx, sy, sz] = ((await canvas.getAttribute("data-ghost")) ?? "").split(" ").map(Number);
+  const solid = ((await canvas.getAttribute("data-solid")) ?? "").split(",").map(Number);
+  const lo = [cx! - sx! / 2, cy! - sy! / 2, cz! - sz! / 2];
+  const hi = [cx! + sx! / 2, cy! + sy! / 2, cz! + sz! / 2];
+  for (let axis = 0; axis < 3; axis += 1) {
+    expect(lo[axis]!, `the ghost stays inside the box on axis ${axis}`).toBeGreaterThanOrEqual(solid[axis]! - 0.01);
+    expect(hi[axis]!, `the ghost stays inside the box on axis ${axis}`).toBeLessThanOrEqual(solid[axis + 3]! + 0.01);
+  }
+  // Across the edge it spans the radius on each face, not a tube twice as wide.
+  const across = [sx!, sy!, sz!].sort((a, b) => a - b).slice(0, 2);
+  expect(across.map((span) => Math.round(span * 100) / 100), "2.5 mm along each face").toEqual([2.5, 2.5]);
+  await page.keyboard.press("Escape");
 });

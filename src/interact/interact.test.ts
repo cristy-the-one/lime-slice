@@ -5,10 +5,9 @@ import { readFileSync } from "node:fs";
 import { PROBE_WAIT_MS } from "../model-feasibility.ts";
 import { dragAxis, FACE_SNAP_PX, repeatClick, type Vec3 } from "./drag-axis.ts";
 import {
+  blendGhost,
   facePrism,
-  filletGhost,
   GHOST_PROBE_WAIT_MS,
-  previewIsGhost,
   loftGhost,
   regionExtrude,
   REVOLVE_STEPS,
@@ -17,7 +16,7 @@ import {
   type PlaneFrame,
 } from "./ghosts.ts";
 import { emptyHud, formatDimension, hudKey, hudSetValues, hudText, HUD_MAX_FIELDS, placeHud } from "./hud.ts";
-import { ARROW_CLEARANCE, arrowShaftStart, inPlaceArrow } from "./in-place-arrow.ts";
+import { inPlaceArrow } from "./in-place-arrow.ts";
 import { GRID_MIN_PX, gridSpacing, SNAP_PX, snapHint, snapPoint, type Pt } from "./snap.ts";
 
 let failed = 0;
@@ -199,12 +198,6 @@ const faced = dragAxis({ origin: [9.4, 5, 0], direction: [0, -1, 0] }, line, {
 eq("without Ctrl the nearest face height wins", faced && [faced.snap, faced.distance, faced.face?.id], ["face", 10, 3]);
 check("the dotted line runs from the axis to that face", !!faced?.align && nearPt(faced.align[0], [10, 0, 0]) && nearPt(faced.align[1], [10, 0, 5]));
 
-const repeat = dragAxis(ray, line, { repeat: true, previous: 5, faces: [{ distance: 4, at: [4, 0, 0] }], round: true });
-eq("a double-click repeats the previous distance", repeat && [repeat.snap, repeat.distance], ["repeat", 5]);
-
-const noPrevious = dragAxis(ray, line, { repeat: true, previous: null });
-eq("a repeat with no previous distance drags instead", noPrevious && noPrevious.snap, "none");
-
 const clamped = dragAxis({ origin: [25, 1, 0], direction: [0, -1, 0] }, line, { min: 0, max: 20 });
 eq("a drag stops at its maximum", clamped && clamped.distance, 20);
 const pushed = dragAxis({ origin: [-4, 1, 0], direction: [0, -1, 0] }, line, { min: 0 });
@@ -230,9 +223,6 @@ const arrow = inPlaceArrow({ at: [1, 2, 3], dir: [0, 0, -2], outward: [0, 0, 1],
 eq("the arrow sits on the feature, not the dock", arrow.seat, { at: "feature", origin: [1, 2, 3] });
 eq("a direction into the solid is turned outward", arrow.dir, [0, 0, 1]);
 eq("the arrow is a single axis handle", [arrow.kind, arrow.look, arrow.color, arrow.values], ["axis", "arrow", "accent", [4]]);
-const shaft = arrowShaftStart([0, 0, 0], arrow.dir, 10);
-eq("the shaft starts clear of the face, along the outward normal", shaft, [0, 0, ARROW_CLEARANCE * 10]);
-check("that clearance is in front of the face", shaft[2]! > 0);
 
 const arrowSource = readFileSync(new URL("./in-place-arrow.ts", import.meta.url), "utf8");
 check("the in-place arrow does not build a dock handle", !arrowSource.includes("dockSeat") && !arrowSource.includes('at: "dock"'));
@@ -288,8 +278,6 @@ check("the box does not cover the pointer when there is room", !(spot.left <= 19
 // --- ghost meshes --------------------------------------------------------------------
 
 eq("the ghost waits the same 300 ms as a typed number", GHOST_PROBE_WAIT_MS, PROBE_WAIT_MS);
-check("a moving pointer draws only the ghost", previewIsGhost(299));
-check("a pointer still for 300 ms may ask the kernel", !previewIsGhost(300));
 
 function volume(mesh: Float32Array): number {
   let sum = 0;
@@ -383,21 +371,42 @@ const half = revolveGhost({
 });
 check("half a turn is half the cylinder", near(volume(half), ngonArea(2, 48) * 5 * 0.5, 1e-2));
 
-const blend = filletGhost({ points: [[0, 0, 0], [10, 0, 0]], radius: 1 });
-eq("a straight fillet tube has a ring between the two ends", blend.length, 8 * 2 * 9);
+// C20. A box's top edge along X at y = 0, z = 0: the top's normal is +Z, the front's is −Y.
+const side = (x: number) => ({ at: [x, 0, 0] as Vec3, n1: [0, 0, 1] as Vec3, n2: [0, -1, 0] as Vec3, w1: [0, 1, 0] as Vec3, w2: [0, 0, -1] as Vec3, convex: true });
+const blend = blendGhost([side(0), side(10)], 1, false);
+eq("a straight fillet is one strip of eight facets", blend.length, 8 * 2 * 9);
 let blendOk = blend.length > 0;
 for (let i = 0; i < blend.length; i += 3) {
   const x = blend[i]!;
   const y = blend[i + 1]!;
   const z = blend[i + 2]!;
-  if (x < -1e-6 || x > 10 + 1e-6 || !near(Math.hypot(y, z), 1, 1e-6)) blendOk = false;
+  // The arc's centre is 1 mm in from both faces, at y = 1, z = -1, and the arc stays in the corner it rounds.
+  if (x < -1e-6 || x > 10 + 1e-6 || !near(Math.hypot(y - 1, z + 1), 1, 1e-6) || y < -1e-9 || z > 1e-9) blendOk = false;
 }
-check("every fillet vertex is one millimetre off the edge", blendOk);
-check("a fillet with no radius draws nothing", filletGhost({ points: [[0, 0, 0], [1, 0, 0]], radius: 0 }).length === 0);
+check("every fillet vertex is on the 1 mm arc inside the corner, not around the edge", blendOk);
+const ends = [blend.slice(0, 3), blend.slice(3, 6)].map((v) => [...v].map((n) => Math.round(n * 1e6) / 1e6));
+eq("the arc starts on the top, 1 mm in", ends[0], [0, 1, 0]);
+const chamfer = blendGhost([side(0), side(10)], 2, true);
+const chamferPoints = new Set<string>();
+for (let i = 0; i < chamfer.length; i += 3) chamferPoints.add([chamfer[i + 1], chamfer[i + 2]].map((n) => Math.round(n! * 1e6) / 1e6 + 0).join(","));
+eq("a chamfer is the flat from 2 mm in on the top to 2 mm down the front", [...chamferPoints].sort(), ["0,-2", "2,0"]);
+const inside = blendGhost([{ ...side(0), convex: false }, { ...side(10), convex: false }], 1, false);
+let insideOk = inside.length > 0;
+for (let i = 0; i < inside.length; i += 3) if (!near(Math.hypot(inside[i + 1]! + 1, inside[i + 2]! - 1), 1, 1e-6)) insideOk = false;
+check("a concave corner's fillet arcs about a centre out in the air", insideOk);
+eq("a gap in the steps, over a smooth stretch, is not bridged", blendGhost([{ ...side(0), step: 0 }, { ...side(5), step: 1 }, { ...side(10), step: 3 }], 1, false).length, 8 * 2 * 9);
+check("a fillet with no radius draws nothing", blendGhost([side(0), side(1)], 0, false).length === 0);
 
 const loftRing = (z: number): [number, number, number][] => [[0, 0, z], [10, 0, z], [10, 10, z], [0, 10, z]];
 check("a loft ghost of a 10 mm square prism is 1000 mm³", near(volume(loftGhost([loftRing(0), loftRing(10)])), 1000, 1e-3));
 check("one loft ring draws nothing", loftGhost([loftRing(0)]).length === 0);
+
+// A11. A spline's samples are on-curve only: near its end, the end itself is the snap, not the sample beside it.
+const spline: Pt[] = Array.from({ length: 41 }, (_, i) => [i * 0.5, Math.sin(i / 8)] as Pt);
+const nearEnd = snapPoint([19.6, Math.sin(40 / 8) + 0.05], { mmPerPx: 0.1, sketch: [{ kind: "polyline", points: spline }], grid: false });
+eq("near a spline's end, the end is the snap", [nearEnd.kind, nearEnd.at], ["endpoint", spline[40]]);
+const between = snapPoint([5.1, Math.sin(10 / 8) + 0.02], { mmPerPx: 0.1, sketch: [{ kind: "polyline", points: spline }], grid: false });
+eq("an inner sample is on the curve, not an endpoint", between.kind, "on-curve");
 
 if (failed) {
   console.error(`${failed} failed`);

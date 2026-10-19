@@ -10,7 +10,14 @@ import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { onMeasureChange } from "./measure-pref";
-import { EDGE_KNOB_ID } from "./interact/edge-drag";
+import { EDGE_KNOB_ID, edgeSides } from "./interact/edge-drag";
+import { blendGhost, type BlendSide } from "./interact/ghosts";
+
+/** P2. The edge drag's ghost is rebuilt when its size changes by this much. */
+const BLEND_GHOST_STEP_MM = 0.05;
+
+/** P1. The push/pull arrow's handle id (`pullHandles` in `model-drag.ts`). */
+const PULL_HANDLE_ID = "pull";
 import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { contextMaterial } from "./context-look";
 import type { ContextPart } from "./model-context";
@@ -19,7 +26,7 @@ import { boxUnder, posedBounds, type Affine } from "./model-space";
 import { facePaint, idleLook, sectionPlane, type LookState } from "./model-look";
 import { faceBoundarySegments } from "./model-select";
 import { sectionCap } from "./section-cap";
-import { outwardFromMesh } from "./model-blend";
+import { faceTable } from "./interact/face-table";
 import { framePose, localPoint, sameWorkplane, type Workplane } from "./workplane";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
@@ -54,7 +61,8 @@ export type ModelGhost =
   /** --- F4. One cylinder per sketch point. `failed` (from 1) is the hole a probe refused. --- */
   | { kind: "holes"; holes: { x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }[]; failed?: number }
   | { kind: "scale"; factor: number }
-  | { kind: "blend"; edges: number[]; radius: number }
+  /** An edge drag's blend, drawn as its new surface. `chamfer` draws the flat, else the fillet's arc. */
+  | { kind: "blend"; edges: number[]; radius: number; chamfer?: boolean }
   | { kind: "measure"; a: Vec3; b: Vec3 }
   /** Another plate object, a join's tool: its plate mesh where it sits in model space, drawn from the grey object's own geometry. */
   | { kind: "object"; id: string; positions: Float32Array; matrix: Affine }
@@ -63,10 +71,12 @@ export type ModelGhost =
   /** P1. A face prism in the solid's own frame, drawn with the solid. */
   | { kind: "soup"; positions: Float32Array };
 
-/** P1. A pointer event on a face, in model space. `local` is the solid's own frame. */
+/** P1. A pointer event on a face, in model space. `local` is the solid's own frame. `cancel` is a press the system took away. */
 export interface FacePointer {
-  phase: "hover" | "down" | "move" | "up" | "click";
+  phase: "hover" | "down" | "move" | "up" | "click" | "cancel";
   face: number | null;
+  /** The mesh triangle under the pointer, whose winding gives a curved face's outward side there. */
+  triangle: number | null;
   point: Vec3 | null;
   local: Vec3 | null;
   ray: { origin: Vec3; direction: Vec3 };
@@ -327,6 +337,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let checkBox: Bounds | null = null;
   let selectedEdges: LineSegments2 | null = null;
   let hoverEdges: LineSegments2 | null = null;
+  /** --- A10. The section's clip plane, in world space, while a section is on: the picks and their outlines keep to the side shown. */
+  let sectionClip: THREE.Plane[] = [];
   const fatLines: LineMaterial[] = [];
   let picks: ModelPick[] = [];
   let hover: ModelPick | null = null;
@@ -380,6 +392,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let faceDrag = false;
   let faceCb: (pointer: FacePointer) => void = () => {};
   let faceDown: { x: number; y: number; pointerId: number; moved: boolean; hit: FaceHit } | null = null;
+  /** P1. The face hit the push arrow is seated on, so a press on the arrow drags that face. */
+  let seatHit: FaceHit | null = null;
+  /** What `data-faces` was last written for, so a still view does not redo it. */
+  let facesSolid: ModelSolid | null = null;
+  let facesKey = "";
   const FACE_SLOP = 4;
   // --- S2 sketch ---
   let sketchCapture = false;
@@ -654,6 +671,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       disposeObject(current);
     }
     const next = fatLine(positions, width, opacity, color);
+    if (next) (next.material as LineMaterial).clippingPlanes = sectionClip;
     if (next) body.add(next);
     return next;
   }
@@ -884,12 +902,27 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     });
   }
 
-  function addGhostMesh(geometry: THREE.BufferGeometry, position: THREE.Vector3, opacity = 0.22) {
+  /** Each edge's points with their two faces, read once per solid: the drag only rebuilds the strip. */
+  const blendSides = new WeakMap<object, Map<number, BlendSide[]>>();
+
+  function sidesOf(shape: ModelSolid, edgeId: number): BlendSide[] {
+    let known = blendSides.get(shape);
+    if (!known) blendSides.set(shape, (known = new Map()));
+    let sides = known.get(edgeId);
+    if (!sides) {
+      const edge = shape.edges.find((item) => item.id === edgeId);
+      sides = edge ? edgeSides(shape.positions, shape.triangles, edge.points) : [];
+      known.set(edgeId, sides);
+    }
+    return sides;
+  }
+
+  function addGhostMesh(geometry: THREE.BufferGeometry, position: THREE.Vector3, opacity = 0.22, edgeAngle = 1) {
     const meshGhost = new THREE.Mesh(geometry, ghostMaterial(opacity));
     meshGhost.position.copy(position);
     meshGhost.renderOrder = 2;
     const edges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(geometry),
+      new THREE.EdgesGeometry(geometry, edgeAngle),
       new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.95 }),
     );
     edges.raycast = () => undefined;
@@ -962,6 +995,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       keep.push(clip);
       off.push(clip);
     }
+    clipHighlights(section ? [keep[keep.length - 1]!] : []);
     offcutMaterial.clippingPlanes = off;
     // The cap lies on the section plane, so that plane must not clip it. A split still does.
     sectionCapMaterial.clippingPlanes = keep.slice(0, plane ? 1 : 0);
@@ -970,6 +1004,40 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if ((edgeMaterial.clippingPlanes?.length ?? 0) !== keep.length) edgeMaterial.needsUpdate = true;
     solidMaterial.clippingPlanes = keep;
     edgeMaterial.clippingPlanes = keep;
+  }
+
+  /** The pick outlines are cut where the solid is, so a picked face's outline does not float over the hidden half. */
+  function clipHighlights(planes: THREE.Plane[]) {
+    const count = sectionClip.length;
+    sectionClip = planes;
+    for (const line of [faceOutline, selectedEdges, hoverEdges]) {
+      if (!line) continue;
+      const material = line.material as LineMaterial;
+      material.clippingPlanes = planes;
+      if (count !== planes.length) material.needsUpdate = true;
+    }
+  }
+
+  /** Whether the section hides this world point. */
+  function cutAway(point: THREE.Vector3): boolean {
+    return sectionClip.some((plane) => plane.distanceToPoint(point) < 0);
+  }
+
+  /**
+   * The first hit on the solid that the section leaves on screen. A hit on the hidden side is skipped. A back face
+   * behind it means the ray went in through the cut, so the cap is in front and nothing is picked.
+   */
+  function solidHit(hits: THREE.Intersection[]): THREE.Intersection | null {
+    if (sectionClip.length === 0) return hits[0] ?? null;
+    for (const hit of hits) {
+      if (cutAway(hit.point)) continue;
+      if (hit.face && hit.object instanceof THREE.Mesh) {
+        const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+        if (normal.dot(raycaster.ray.direction) > 0) return null;
+      }
+      return hit;
+    }
+    return null;
   }
 
   /** The section plane in model space, which is world space here. */
@@ -1196,19 +1264,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (current.kind === "blend") {
       if (!(current.radius > 0)) return;
       for (const edgeId of current.edges) {
-        const edge = solid.edges.find((item) => item.id === edgeId);
-        if (!edge) continue;
-        const points: THREE.Vector3[] = [];
-        for (let i = 0; i + 2 < edge.points.length; i += 3) {
-          const next = new THREE.Vector3(edge.points[i], edge.points[i + 1], edge.points[i + 2]);
-          const prev = points[points.length - 1];
-          if (!prev || prev.distanceToSquared(next) > 1e-8) points.push(next);
-        }
-        if (points.length < 2) continue;
-        const curve = new THREE.CatmullRomCurve3(points);
-        const tube = new THREE.TubeGeometry(curve, Math.max(8, points.length * 3), current.radius, 8, false);
-        // The edge is in the solid's own frame: the tube goes where the solid is drawn.
-        const meshGhost = addGhostMesh(tube, new THREE.Vector3(), 0.38);
+        const soup = blendGhost(sidesOf(solid, edgeId), current.radius, current.chamfer === true);
+        if (soup.length < 9) continue;
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(soup, 3));
+        geometry.computeVertexNormals();
+        // The edge is in the solid's own frame: the blend goes where the solid is drawn. Only its outline is lined.
+        const meshGhost = addGhostMesh(geometry, new THREE.Vector3(), 0.38, 30);
         meshGhost.matrixAutoUpdate = false;
         meshGhost.matrix.copy(posed.matrix);
       }
@@ -1350,6 +1412,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   interface FaceHit {
     face: number;
+    triangle: number;
     point: Vec3;
     local: Vec3;
   }
@@ -1358,13 +1421,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function faceHit(ev: PointerEvent): FaceHit | null {
     if (!mesh || !solid || mode !== "face") return null;
     rayAt(ev.clientX, ev.clientY);
-    const hit = raycaster.intersectObject(mesh, false)[0];
+    const hit = solidHit(raycaster.intersectObject(mesh, false));
     if (!hit || hit.faceIndex == null) return null;
     const face = solid.triangles[hit.faceIndex];
     if (face == null) return null;
     const point = hit.point;
     const local = posed.worldToLocal(point.clone());
-    return { face, point: [point.x, point.y, point.z], local: [local.x, local.y, local.z] };
+    return { face, triangle: hit.faceIndex, point: [point.x, point.y, point.z], local: [local.x, local.y, local.z] };
   }
 
   function faceEvent(phase: FacePointer["phase"], ev: PointerEvent, hit: FaceHit | null): FacePointer {
@@ -1372,6 +1435,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return {
       phase,
       face: hit?.face ?? null,
+      triangle: hit?.triangle ?? null,
       point: hit?.point ?? null,
       local: hit?.local ?? null,
       ray: { origin: [ray.origin.x, ray.origin.y, ray.origin.z], direction: [ray.direction.x, ray.direction.y, ray.direction.z] },
@@ -1385,9 +1449,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   /** P1. Take the press when it lands on a face. False leaves the press for a handle or the orbit. */
-  function beginFace(ev: PointerEvent): boolean {
+  function beginFace(ev: PointerEvent, onArrow = false): boolean {
     if (!faceDrag || mode !== "face" || ev.button !== 0) return false;
-    const hit = faceHit(ev);
+    // A press on the arrow grabs the face it sits on, as the edge knob grabs its edge.
+    const hit = (onArrow ? seatHit : null) ?? faceHit(ev);
     if (!hit) return false;
     ev.stopImmediatePropagation();
     ev.preventDefault();
@@ -1405,7 +1470,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     controls.enabled = true;
     if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
     const hit = faceHit(ev) ?? done.hit;
-    if (done.moved) faceCb(faceEvent("up", ev, hit));
+    if (ev.type === "pointercancel") faceCb(faceEvent("cancel", ev, hit));
+    else if (done.moved) faceCb(faceEvent("up", ev, hit));
     else {
       faceCb(faceEvent("click", ev, hit));
       pickCb({ kind: "face", index: hit.face, at: hit.point }, ev.shiftKey, { x: ev.clientX, y: ev.clientY });
@@ -1420,7 +1486,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     pointer.x = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    const hit = raycaster.intersectObject(mesh, false)[0];
+    const hit = solidHit(raycaster.intersectObject(mesh, false));
     if (!hit || hit.faceIndex == null || !solid) return null;
     const face = solid.triangles[hit.faceIndex];
     if (face == null) return null;
@@ -1446,6 +1512,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     for (const edge of solid.edges) {
       const points = edge.points;
       for (let i = 0; i + 5 < points.length; i += 3) {
+        // A segment the section hides wholly cannot be picked; one it crosses can, as its shown part is drawn.
+        if (sectionClip.length > 0 && cutAwayLocal(points, i) && cutAwayLocal(points, i + 3)) continue;
         const a = project(points[i]!, points[i + 1]!, points[i + 2]!, rect);
         const b = project(points[i + 3]!, points[i + 4]!, points[i + 5]!, rect);
         if (a.z < -1 || a.z > 1 || b.z < -1 || b.z > 1) continue;
@@ -1454,6 +1522,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       }
     }
     return best ? { kind: "edge", index: best.index } : null;
+  }
+
+  const sectionProbe = new THREE.Vector3();
+
+  /** Whether the section hides the solid-frame point at `points[i]`. */
+  function cutAwayLocal(points: ArrayLike<number>, i: number): boolean {
+    sectionProbe.set(points[i]!, points[i + 1]!, points[i + 2]!);
+    body.localToWorld(sectionProbe);
+    return cutAway(sectionProbe);
   }
 
   function pickAt(ev: PointerEvent): ModelPick | null {
@@ -1556,7 +1633,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       }
     }
     // --- P1: a face press is a push, before a handle or an orbit can take it. Empty space still orbits. ---
-    if (beginFace(ev)) return;
+    if (beginFace(ev, part?.handle.id === PULL_HANDLE_ID)) return;
     if (part) {
       ev.stopImmediatePropagation();
       ev.preventDefault();
@@ -1621,8 +1698,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (edgeHoverOn) updateEdgeHover(ev, over);
     // --- P1: a face hover still runs while an edge can light, so both idle gestures share the view. ---
     if (faceDrag && mode === "face") {
+      // The arrow stays seated while the pointer is on it, so its tip can be reached and grabbed.
+      if (over?.handle.id === PULL_HANDLE_ID && seatHit) {
+        setOverHandle(PULL_HANDLE_ID);
+        tip.hidden = true;
+        return;
+      }
       const knob = over?.handle.id === EDGE_KNOB_ID;
       const hit = knob ? null : faceHit(ev);
+      seatHit = hit;
       setOverHandle(knob ? EDGE_KNOB_ID : null);
       tip.hidden = true;
       setHover(hit ? { kind: "face", index: hit.face } : null);
@@ -1698,6 +1782,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   canvas.addEventListener("pointercancel", finishDrag, { capture: true });
   canvas.addEventListener("pointerleave", (ev) => {
     setHover(null);
+    seatHit = null;
     if (faceDrag && !faceDown) faceCb(faceEvent("hover", ev, null));
     if (drag || edgeDrag || edgePress) return;
     if (edgeLit != null) {
@@ -1728,7 +1813,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     pointer.x = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    const hit = raycaster.intersectObjects(mesh ? [...context.children, mesh] : context.children, false)[0];
+    // The open solid's hidden half does not stand in front of a grey object.
+    const hit = raycaster.intersectObjects(mesh ? [...context.children, mesh] : context.children, false).find((item) => item.object !== mesh || !cutAway(item.point));
     const id = hit?.object.userData.id;
     return typeof id === "string" ? id : null;
   }
@@ -1754,6 +1840,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setSolid(next, at) {
       clearBody();
       solid = next;
+      // The arrow's face hit was on the solid just replaced: a press must not drag from where that face was.
+      seatHit = null;
       picks = [];
       hover = null;
       edgeLit = null;
@@ -1802,6 +1890,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     },
     setPose(next) {
       setPosedMatrix(next);
+      seatHit = null;
       rebuildGhost();
       kick();
     },
@@ -1834,6 +1923,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       kick();
     },
     setGhost(next) {
+      // A drag moves the blend in steps finer than anyone sees: the strip is rebuilt once it grows by 0.05 mm.
+      if (ghost?.kind === "blend" && next?.kind === "blend" && next.radius > 0 && ghost.radius > 0 && ghost.chamfer === next.chamfer
+        && ghost.edges.join() === next.edges.join() && Math.abs(ghost.radius - next.radius) < BLEND_GHOST_STEP_MM) return;
       ghost = next;
       rebuildGhost();
       kick();
@@ -1964,8 +2056,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     // --- P1 ---
     setFaceDrag(on) {
       faceDrag = on;
+      if (!on) seatHit = null;
       if (!on) {
         faceDown = null;
+        facesKey = "";
         delete canvas.dataset.faces;
       }
       paintHandles();
@@ -2132,7 +2226,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     pickSolid(x, y) {
       if (!mesh || !solid) return null;
       rayAt(x, y);
-      const hit = raycaster.intersectObject(mesh, false)[0];
+      const hit = solidHit(raycaster.intersectObject(mesh, false));
       if (!hit || hit.faceIndex == null) return null;
       const face = solid.triangles[hit.faceIndex];
       if (face == null) return null;
@@ -2483,37 +2577,31 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     else if (canvas.dataset.solidScreen !== solidText) canvas.dataset.solidScreen = solidText;
   }
 
-  /** P1. Each face's centre on the canvas and its outward normal in model space: `index:x,y:nx,ny,nz`. */
+  /**
+   * P1. Each face's centre on the canvas and its outward normal in model space: `index:x,y:nx,ny,nz`.
+   * The centres and normals are read once per solid; the text is redone only when the camera, the pose or the canvas changed.
+   */
   function publishFaces(width: number, height: number) {
     if (!faceDrag || !solid) {
+      facesKey = "";
       if (canvas.dataset.faces) delete canvas.dataset.faces;
       return;
     }
-    const totals = new Map<number, { x: number; y: number; z: number; n: number }>();
-    const pos = solid.positions;
-    const tris = solid.triangles;
-    for (let tri = 0; tri < tris.length; tri += 1) {
-      const face = tris[tri] ?? 0;
-      let bag = totals.get(face);
-      if (!bag) totals.set(face, (bag = { x: 0, y: 0, z: 0, n: 0 }));
-      const base = tri * 9;
-      for (let corner = 0; corner < 3; corner += 1) {
-        bag.x += pos[base + corner * 3] ?? 0;
-        bag.y += pos[base + corner * 3 + 1] ?? 0;
-        bag.z += pos[base + corner * 3 + 2] ?? 0;
-        bag.n += 1;
-      }
-    }
-    const parts: string[] = [];
     body.updateMatrixWorld(true);
-    for (const [face, bag] of totals) {
-      if (bag.n === 0) continue;
-      const world = body.localToWorld(new THREE.Vector3(bag.x / bag.n, bag.y / bag.n, bag.z / bag.n));
+    const key = `${width},${height};${camera.matrixWorld.elements.join(",")};${camera.projectionMatrix.elements.join(",")};${body.matrixWorld.elements.join(",")}`;
+    if (facesSolid === solid && key === facesKey) return;
+    facesSolid = solid;
+    facesKey = key;
+    const parts: string[] = [];
+    const world = new THREE.Vector3();
+    const normal = new THREE.Vector3();
+    for (const [face, row] of faceTable(solid.positions, solid.triangles)) {
+      world.set(...row.centre);
+      body.localToWorld(world);
       const p = world.project(camera);
       const x = Math.round((p.x * 0.5 + 0.5) * width);
       const y = Math.round((-p.y * 0.5 + 0.5) * height);
-      const solidNormal = outwardFromMesh(pos, tris, face) ?? [0, 0, 1];
-      const normal = new THREE.Vector3(...solidNormal).transformDirection(body.matrixWorld);
+      normal.set(...(row.normal ?? [0, 0, 1])).transformDirection(body.matrixWorld);
       parts.push(`${face}:${x},${y}:${normal.x.toFixed(3)},${normal.y.toFixed(3)},${normal.z.toFixed(3)}`);
     }
     const text = parts.join(" ");
@@ -2661,7 +2749,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function surfacePoint(x: number, y: number, snap: boolean): Vec3 | null {
     if (!mesh) return null;
     rayAt(x, y);
-    const hit = raycaster.intersectObject(mesh, false)[0];
+    const hit = solidHit(raycaster.intersectObject(mesh, false));
     if (!hit) return null;
     // A point the user puts down is a model-space number, like every other tool field.
     const point = hit.point.clone();
