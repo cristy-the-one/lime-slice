@@ -18,6 +18,7 @@
 #include <Standard_Failure.hxx>
 #include <Standard_VersionInfo.hxx>
 #include <TopoDS.hxx>
+#include <TopTools_ListIteratorOfListOfShape.hxx>
 
 #include "kernel.h"
 
@@ -38,11 +39,13 @@ struct FaceInfo {
 /// Everything a node keeps about its solid. The volume comes from the op that built it; edge
 /// midpoints are computed when a fillet or chamfer first asks for them, face middles when a shell does.
 /// `created` is the edges the op that built it made or changed: those not on the solid it was built from.
+/// `from_face` is, for each face, the parent face it descends from, or -1 when this step made it.
 struct LimeShape {
     Held held;
     std::vector<EdgeInfo> edges;
     std::vector<FaceInfo> faces;
     std::vector<int> created;
+    std::vector<int> from_face;
 };
 
 /// A Mesh's arrays as bytes in this machine's order, and the shape's description as JSON.
@@ -76,18 +79,65 @@ std::unique_ptr<LimeShape> hold(const TopoDS_Shape& shape, double volume) {
     out->held = hold_of(shape, volume);
     out->edges.resize(static_cast<size_t>(out->held.edges.Extent()));
     out->faces.resize(static_cast<size_t>(out->held.faces.Extent()));
-    // A solid with no parent made every edge it has.
+    // A solid with no parent made every edge it has, and every face.
     out->created.resize(out->edges.size());
     for (size_t i = 0; i < out->created.size(); ++i) {
         out->created[i] = static_cast<int>(i);
     }
+    out->from_face.assign(out->faces.size(), -1);
     return out;
+}
+
+/// A result face still equal to a parent face keeps that parent's index. A boolean's history then
+/// fills the rest: a face it only trimmed is `Modified` (or `Generated`) from a parent face, and
+/// stays that parent's. Tool faces and anything else stay -1, made by this step. IsSame wins, so
+/// history never reassigns a face the parent still has.
+void note_lineage(LimeShape& out, const LimeShape& from, const Handle(BRepTools_History)& history) {
+    const int count = static_cast<int>(out.faces.size());
+    out.from_face.assign(static_cast<size_t>(count), -1);
+    for (int index = 0; index < count; ++index) {
+        const int parent = from.held.faces.FindIndex(out.held.faces(index + 1));
+        if (parent > 0) {
+            out.from_face[static_cast<size_t>(index)] = parent - 1;
+        }
+    }
+    if (history.IsNull()) {
+        return;
+    }
+    const auto claim = [&](int parent_index, const TopoDS_Shape& made) {
+        const int found = out.held.faces.FindIndex(made);
+        if (found <= 0) {
+            return;
+        }
+        int& slot = out.from_face[static_cast<size_t>(found - 1)];
+        if (slot < 0) {
+            slot = parent_index;
+        }
+    };
+    for (int parent = 0; parent < from.held.faces.Extent(); ++parent) {
+        const TopoDS_Shape face = from.held.faces(parent + 1);
+        for (TopTools_ListIteratorOfListOfShape it(history->Modified(face)); it.More(); it.Next()) {
+            claim(parent, it.Value());
+        }
+    }
+    for (int parent = 0; parent < from.held.faces.Extent(); ++parent) {
+        const TopoDS_Shape face = from.held.faces(parent + 1);
+        for (TopTools_ListIteratorOfListOfShape it(history->Generated(face)); it.More(); it.Next()) {
+            claim(parent, it.Value());
+        }
+    }
 }
 
 /// The accepted result of an edit: one solid with volume. `volume` is what the op integrated.
 /// `empty` is the refusal when there is no solid. Released to the caller only once nothing can throw.
 /// `from` is the solid it was built from: an edge still on it, the same edge, was not made by this op.
-std::unique_ptr<LimeShape> adopt(const TopoDS_Shape& result, double volume, const std::string& empty, char** error, const LimeShape* from) {
+std::unique_ptr<LimeShape> adopt(
+    const TopoDS_Shape& result,
+    double volume,
+    const std::string& empty,
+    char** error,
+    const LimeShape* from,
+    const Handle(BRepTools_History)& history = Handle(BRepTools_History)()) {
     const TopoDS_Shape solid = as_solid(result);
     if (solid.IsNull() || !has_solid(solid) || !(volume > 1e-6)) {
         set_error(error, empty);
@@ -108,6 +158,7 @@ std::unique_ptr<LimeShape> adopt(const TopoDS_Shape& result, double volume, cons
                 out->created.push_back(index - 1);
             }
         }
+        note_lineage(*out, *from, history);
     }
     return out;
 }
@@ -270,12 +321,14 @@ LimeShape* lime_tree_boolean(const LimeShape* from, const char* op, const char* 
         std::string message;
         const std::string which = op == nullptr ? "" : op;
         double volume = 0.0;
-        const TopoDS_Shape result = build_boolean(from->held.shape, which, spec_of(primitive, p), volume, message);
+        Handle(BRepTools_History) history;
+        const TopoDS_Shape result =
+            build_boolean(from->held.shape, which, spec_of(primitive, p), volume, message, &history);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;
         }
-        return adopt(result, volume, "The boolean removed the solid", error, from).release();
+        return adopt(result, volume, "The boolean removed the solid", error, from, history).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -292,12 +345,14 @@ LimeShape* lime_tree_join(const LimeShape* from, const LimeShape* tool, const ch
         std::string message;
         const std::string which = op == nullptr ? "" : op;
         double volume = 0.0;
-        const TopoDS_Shape result = build_join(from->held.shape, tool->held.shape, which, place, volume, message);
+        Handle(BRepTools_History) history;
+        const TopoDS_Shape result =
+            build_join(from->held.shape, tool->held.shape, which, place, volume, message, &history);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;
         }
-        return adopt(result, volume, "The boolean removed the solid", error, from).release();
+        return adopt(result, volume, "The boolean removed the solid", error, from, history).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
@@ -988,6 +1043,21 @@ LimeShape* lime_tree_shell(const LimeShape* from, const int* faces, int count, d
 int lime_tree_created(const LimeShape* shape, const int** out) {
     *out = shape->created.data();
     return static_cast<int>(shape->created.size());
+}
+
+/// --- A10 face provenance. Each face's parent face, or -1 when this step made it. Read through `out` while the shape lives.
+int lime_tree_face_from(const LimeShape* shape, const int** out) {
+    *out = shape->from_face.data();
+    return static_cast<int>(shape->from_face.size());
+}
+
+/// Replace `from_face`. A group composes lineage across its internal steps so the vector indexes the solid the group started from.
+void lime_tree_set_face_from(LimeShape* shape, const int* indexes, int count) {
+    if (indexes == nullptr || count < 0) {
+        shape->from_face.clear();
+        return;
+    }
+    shape->from_face.assign(indexes, indexes + count);
 }
 
 /// Each of `edges` as convex (1), concave (2), or neither (0). 0 when an index is not on this solid or Open CASCADE fails.

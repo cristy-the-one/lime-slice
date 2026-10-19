@@ -30,7 +30,7 @@ import { thinWalls } from "./thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "./anchors.ts";
 import { expandOps, type PartDef } from "./macro.ts";
 import { applyPose, IDENTITY_POSE, inversePose, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, type EdgePick, type Fingerprint, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
+import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
@@ -78,6 +78,7 @@ import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./sche
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "./compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
+import { featureLabel, isFeatureTool } from "../src/model-features.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
 
@@ -362,6 +363,29 @@ function stableKey(value: unknown): string {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableKey((value as Record<string, unknown>)[key])}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * --- A9. Steps the kernel actually builds: every history node, plus each step inside a group.
+ * A group is one node, so a budget that counted only nodes would stop a long composite short.
+ */
+function modelSteps(tree: ModelTree): number {
+  let count = 0;
+  for (const node of tree.nodes.values()) {
+    count += 1;
+    if (node.op?.kind === "group") count += node.op.steps.length;
+  }
+  return count;
+}
+
+/** The history row for a composite: the label that was typed, else the feature's name, else Pattern or Mirror. */
+function compositeGroupLabel(raw: Record<string, unknown>, given?: string): string {
+  const typed = given?.trim();
+  if (typed) return typed.slice(0, 80);
+  if (raw.kind === "pattern") return "Pattern";
+  if (raw.kind === "mirror") return "Mirror";
+  if (isFeatureTool(raw.kind)) return featureLabel(raw).slice(0, 80);
+  return "Group";
 }
 
 /** The first node on the path from `from` down to `to`: the child of `from` that `to` descends from. */
@@ -1293,7 +1317,8 @@ export class Session {
     try {
       const at = stepPlate ? tree.committed : tree.current;
       // A refused seed means the history replays in full: the budget covers every step, as after a restart.
-      const budget = Math.max(this.modelTimeoutMs(), tree.nodes.size * 2000);
+      // --- A9. Count steps inside groups, or one long composite restarts inside the per-node budget. ---
+      const budget = Math.max(this.modelTimeoutMs(), modelSteps(tree) * 2000);
       const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD, { seed: this.seedOf(obj, tree) }), "open", budget);
       if (typeof reply.seedRefused === "string") note = `${shownName(obj.name)}: the saved solid did not open (${reply.seedRefused}), so its history was rebuilt.`;
       const solid = rememberSolid(reply);
@@ -3118,7 +3143,8 @@ export class Session {
         }
       }
     }
-    const budget = Math.max(this.modelTimeoutMs(), tree.nodes.size * 2000);
+    // --- A9. The same step count as an open: groups are one node but many kernel steps. ---
+    const budget = Math.max(this.modelTimeoutMs(), modelSteps(tree) * 2000);
     let reply: Record<string, unknown>;
     try {
       reply = await this.treeCall(wholeTreeRequest(tree, tree.root, tree.current, obj.stepTolerance || CHORD, { seed: this.seedOf(obj, tree) }), "open", budget);
@@ -3645,7 +3671,7 @@ export class Session {
    * The check before an apply, for an op already in the solid's frame. A probe that passes is remembered for `at`.
    * `measure` asks the modeler for the built shape too, for model_probe's metrics; a batch step does not need it.
    */
-  private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown> }, measure = false, composite = false): Promise<Record<string, unknown>> {
+  private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown> }, measure = false, composite = false, budgetMs?: number): Promise<Record<string, unknown>> {
     const picked = baked.op.kind === "fillet" || baked.op.kind === "chamfer" ? { edges: baked.typed.edges } : {};
     const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) });
     if (baked.op.kind === "scale") {
@@ -3676,7 +3702,7 @@ export class Session {
     const preview = measure || blend ? (obj.stepTolerance || CHORD) : undefined;
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(probeRequest(tree.key, at, baked.op, preview), baked.op.kind);
+      reply = await this.treeCall(probeRequest(tree.key, at, baked.op, preview), baked.op.kind, budgetMs);
     } catch (err) {
       const lost = this.lostReply(err);
       if (lost) return lost;
@@ -3685,7 +3711,9 @@ export class Session {
     const view = probeFromBody(reply);
     this.lastPreview = reply.preview && typeof reply.preview === "object" ? rememberSolid(reply.preview as Record<string, unknown>) : null;
     const note = probeNote(tool, view);
-    if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}) });
+    // --- A9. A group probe names the step that failed, counting from 1. ---
+    const failedStep = view?.phase === "done" && view.ok === false && view.failedStep != null ? { failedStep: view.failedStep } : {};
+    if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}), ...failedStep });
     if (view?.phase === "done" && addsPiece(baked.op as { kind: string; op?: string }, view.measure)) {
       const where = pieceReport(reply, (p) => applyPose(obj.modelPose, p));
       return answer({ ok: false, reason: separateReason(where), ...(where ? { where } : {}) });
@@ -3734,7 +3762,7 @@ export class Session {
     return done;
   }
 
-  private async applyBaked(obj: PlateObject, tree: ModelTree, baked: { op: ModelOp; typed: Record<string, unknown> }, raw: unknown): Promise<Record<string, unknown>> {
+  private async applyBaked(obj: PlateObject, tree: ModelTree, baked: { op: ModelOp; typed: Record<string, unknown> }, raw: unknown, budgetMs?: number): Promise<Record<string, unknown>> {
     if (baked.op.kind === "split") {
       const note = this.splitCheck(obj, baked.op);
       if (note.bad) return { ok: false, reason: note.text };
@@ -3747,19 +3775,24 @@ export class Session {
     const otherKey = baked.op.kind === "split" && keep === "both" ? `mcp-split-${obj.id}-${node}` : undefined;
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(applyRequest(tree.key, tree.current, node, baked.op, CHORD, otherKey), baked.op.kind);
+      reply = await this.treeCall(applyRequest(tree.key, tree.current, node, baked.op, CHORD, otherKey), baked.op.kind, budgetMs);
     } catch (err) {
       const lost = this.lostReply(err);
       if (lost) return lost;
       throw err;
     }
-    if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, baked.op.kind) };
+    if (typeof reply.error === "string" && reply.error) {
+      // --- A9. The kernel's failedStep is the piece inside a group, counting from 1. ---
+      const failedStep = Number.isInteger(reply.failedStep) ? { failedStep: reply.failedStep as number } : {};
+      return { ok: false, reason: plainModelError(reply.error, baked.op.kind), ...failedStep };
+    }
     obj.tree = withChild(obj.tree, tree.current, { id: node, op: baked.op, label: opLabel(baked.op), fingerprint: null });
     const prior = obj.solid;
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     obj.probes.clear();
-    const guarded = this.stepGuard(obj, baked.op, prior, obj.solid);
+    // --- A9. Each piece of a group was already guarded. A group of cuts may remove more than half on purpose. ---
+    const guarded = baked.op.kind === "group" ? null : this.stepGuard(obj, baked.op, prior, obj.solid);
     if (guarded) {
       await this.takeBack(obj, tree.current, node);
       return { ok: false, ...guarded };
@@ -3840,6 +3873,7 @@ export class Session {
    * applied, and `skip` leaves the refused op out and carries on, reporting every refusal. `keep` leaves the steps of
    * a rolled-back run in the history, so a model_build can resume from them. A run of more than one step is one undo
    * step. `offset` numbers the ops from there, for a resumed build.
+   * --- A9. A composite whose pieces all apply is then one group node, and one checkpoint. ---
    */
   private async applyMany(obj: PlateObject, raws: Record<string, unknown>[], options: { label?: string; onError?: unknown; keep?: boolean; offset?: number; start?: number }): Promise<Record<string, unknown>> {
     const opened = await this.opened(obj);
@@ -3936,20 +3970,25 @@ export class Session {
       }
       if ((made += pieces.length) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
       let refused: Record<string, unknown> | null = null;
+      // --- A9. The pieces that landed, in the solid's frame, become the group's steps. ---
+      const steps: ModelOp[] = [];
       for (let k = 0; k < pieces.length; k += 1) {
         if (meta?.signal?.aborted) return cancelled();
         progress(index, k, pieces.length);
         const piece = pieces[k]!;
-        const attempt = async (spec: PrimitiveSpec) => {
+        const attempt = async (spec: PrimitiveSpec): Promise<{ probed: Record<string, unknown>; done: Record<string, unknown>; typed: Record<string, unknown>; op: ModelOp | null }> => {
           const at = await this.opened(obj);
-          if ("reason" in at) return { probed: { ok: false, reason: at.reason }, done: { ok: false, reason: at.reason }, typed: {} };
+          if ("reason" in at) {
+            const missed = { ok: false, reason: at.reason };
+            return { probed: missed, done: missed, typed: {}, op: null };
+          }
           const typed = { kind: "boolean", op: piece.op, ...spec } as Record<string, unknown>;
           const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...spec }, obj.modelPose), typed };
           const probed = await this.probeBaked(obj, at, at.current, baked, false, true);
           const done = probed.ok === true ? await this.applyBaked(obj, at, baked, {}) : probed;
-          return { probed, done, typed };
+          return { probed, done, typed, op: baked.op };
         };
-        let { probed, done, typed } = await attempt(piece.spec);
+        let { probed, done, typed, op } = await attempt(piece.spec);
         if (probed.ok !== true && probed.missed === true) {
           skipped += 1;
           continue;
@@ -3957,7 +3996,7 @@ export class Session {
         // A step that leaves pieces meeting along an edge is tried once a little shorter, then left out.
         if (done.ok !== true && done.touching === true) {
           for (const shorter of shortenedBoxes(piece.spec, TOUCH_TRIM)) {
-            ({ probed, done, typed } = await attempt(shorter));
+            ({ probed, done, typed, op } = await attempt(shorter));
             if (done.ok === true || (done.touching !== true && probed.missed !== true)) break;
           }
           if (done.ok !== true && (done.touching === true || probed.missed === true)) {
@@ -3967,26 +4006,44 @@ export class Session {
           }
         }
         if (done.ok !== true) {
-          refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(typed), step: k + 1, of: pieces.length, ...(done.where ? { where: done.where } : {}) };
+          // --- A9. failedStep is the piece, counting from 1, including a located refusal. ---
+          refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(typed), step: k + 1, of: pieces.length, failedStep: k + 1, ...(done.where ? { where: done.where } : {}) };
           break;
         }
         const node = parseNode(done.node);
-        if (node === null) continue;
+        if (node === null || !op) continue;
         nodes.push(node);
         ownNodes.push(node);
-        if (label) this.rename(obj, node, `${label} ${k + 1}/${pieces.length}`);
+        steps.push(op);
       }
       if (refused) {
         const ended = await refuse(refused);
         if (ended) return ended;
         continue;
       }
+      // --- A9. Replace the piece chain with one group. A composite that applied nothing stays as it was. ---
+      if (ownNodes.length > 0) {
+        const stored = await this.storeGroup(obj, before, ownNodes[0]!, steps, label, raw);
+        if (stored.ok !== true) {
+          // The pieces are already gone. refuse still drops them when they remain, and rolls the run back.
+          const ended = await refuse(stored.failed);
+          if (ended) return ended;
+          continue;
+        }
+        nodes.splice(nodes.length - ownNodes.length, ownNodes.length);
+        nodes.push(stored.node);
+      }
       checkpoints.push(obj.tree?.current ?? null);
     }
     // A cancel that came while the last step ran takes the run back too.
     if (meta?.signal?.aborted) return cancelled();
-    if (nodes.length > 1 || (options.start !== undefined && nodes.length > 0)) {
-      obj.groups = [...(obj.groups ?? []), { start, end: nodes[nodes.length - 1]!, label: options.label ?? `${nodes.length} steps` }];
+    // --- A9. One group node is still one undo step, the same as a run of several pieces was. ---
+    const end = nodes[nodes.length - 1];
+    const storedGroup = nodes.some((id) => obj.tree?.nodes.get(id)?.op?.kind === "group");
+    if (end !== undefined && (nodes.length > 1 || storedGroup || (options.start !== undefined && nodes.length > 0))) {
+      const endOp = obj.tree?.nodes.get(end)?.op;
+      const groupLabel = options.label ?? (endOp?.kind === "group" ? endOp.label : `${nodes.length} steps`);
+      obj.groups = [...(obj.groups ?? []), { start, end, label: groupLabel }];
     }
     return result({
       ok: failures.length === 0,
@@ -3999,6 +4056,39 @@ export class Session {
       fingerprint: obj.solid?.fingerprint ?? null,
       bounds: obj.solid?.bounds ?? null,
     });
+  }
+
+  /**
+   * --- A9. The pieces of one composite become a single group node.
+   * Go back to the step before them, drop the chain, then probe and apply the group.
+   * The probe and the apply share a budget that grows with the step count, so one composite is not cut off at the per-call limit.
+   */
+  private async storeGroup(obj: PlateObject, before: number, firstPiece: number, steps: ModelOp[], label: string | undefined, raw: Record<string, unknown>): Promise<{ ok: true; node: number } | { ok: false; failed: Record<string, unknown> }> {
+    const back = await this.gotoNode(obj, before);
+    if (back.ok !== true) return { ok: false, failed: { reason: String(back.reason ?? "The steps could not be gathered into one.") } };
+    if (obj.tree?.nodes.has(firstPiece)) this.drop(obj, firstPiece);
+    let source: unknown = raw;
+    try {
+      source = JSON.parse(JSON.stringify(raw)) as unknown;
+    } catch {
+      source = raw;
+    }
+    const group: GroupOp = { kind: "group", label: compositeGroupLabel(raw, label), source, steps };
+    const at = await this.opened(obj);
+    if ("reason" in at) return { ok: false, failed: { reason: at.reason } };
+    const baked = { op: group as ModelOp, typed: group as unknown as Record<string, unknown> };
+    const budget = Math.max(this.modelTimeoutMs(), Math.max(1, steps.length) * 5000);
+    const probed = await this.probeBaked(obj, at, at.current, baked, false, false, budget);
+    if (probed.ok !== true) {
+      return { ok: false, failed: { reason: String(probed.reason ?? "These steps did not fit."), ...(typeof probed.failedStep === "number" ? { failedStep: probed.failedStep } : {}), ...(probed.where ? { where: probed.where } : {}) } };
+    }
+    const done = await this.applyBaked(obj, at, baked, {}, budget);
+    if (done.ok !== true) {
+      return { ok: false, failed: { reason: String(done.reason ?? "These steps did not apply."), ...(typeof done.failedStep === "number" ? { failedStep: done.failedStep } : {}), ...(done.where ? { where: done.where } : {}) } };
+    }
+    const node = parseNode(done.node);
+    if (node === null) return { ok: false, failed: { reason: "These steps did not apply." } };
+    return { ok: true, node };
   }
 
   private async applyBatch(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -4104,8 +4194,8 @@ export class Session {
 
   /**
    * The box, in the frame ops are typed in, of the tools the steps a label names applied: a step's own label, every
-   * step named under it ("label k/n" of a composite, "label body" of a placed part), or a batch's label, on the path to
-   * the current step. "part" is the solid.
+   * step named under it ("label body" of a placed part, or an older file's "label k/n"), a group's own label, or a
+   * batch's label, on the path to the current step. "part" is the solid.
    */
   private labelBox(obj: PlateObject, label: string, solidFrame = false): Box | null {
     const tree = obj.tree;
@@ -4126,7 +4216,7 @@ export class Session {
       const row = tree.nodes.get(node);
       if (!row?.op) continue;
       const name = row.label.toLowerCase();
-      // "fish 0" names "fish 0 body" and "fish 0 tail", the steps a use placed under it, and a composite's "label k/n".
+      // "fish 0" names "fish 0 body" and "fish 0 tail". An older file's "label k/n" still matches; a group matches its own label.
       const piece = name.startsWith(`${wanted} `);
       if (name !== wanted && !piece && !grouped.has(node)) continue;
       const own = opBox(row.op);

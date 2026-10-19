@@ -331,6 +331,14 @@ eq("a folded row does not rename or delete", [foldKey(fortyFolded[1]!.key, "F2")
 let carried = withNode(apply(root, box(8)), 1, { label: "rim leaves 1/2" });
 carried = called(apply(carried, box(6)), "rim leaves 2/2");
 const saved = savedTree(carried, carried.committed, () => undefined);
+const groupOp: ModelOp = { kind: "group", label: "Pocket 10 × 10", source: { kind: "pocket" }, steps: [box(2), box(3)] };
+let beside = apply(root, groupOp);
+beside = called(apply(beside, box(1)), "rim leaves 1/2");
+beside = called(apply(beside, box(1)), "rim leaves 2/2");
+eq("a group stays one row beside a folded run", presentedRows(historyLayout(beside).rows, new Set()).map((row) => row.label), ["bracket.step", "Pocket 10 × 10", "rim leaves · 2 steps"]);
+eq("undo of the group is one step", foldedUndoTarget(jumped(beside, 1)), 0);
+eq("undo of the run still skips the run", foldedUndoTarget(beside), 1);
+
 eq("a composite's labels are kept as step names", saved.nodes.filter((node) => node.id > 0).map((node) => node.name), ["rim leaves 1/2", "rim leaves 2/2"]);
 const loaded = loadedTree(saved, "part#2", carried.root, "bracket.step", null, () => undefined);
 eq("the app shows those names", [1, 2].map((id) => stepLabel(loaded.nodes.get(id)!)), ["rim leaves 1/2", "rim leaves 2/2"]);
