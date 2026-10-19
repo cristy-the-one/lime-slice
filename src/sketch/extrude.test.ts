@@ -73,7 +73,9 @@ eq("an op with no sketch is the same object", withoutSketch(bare) === bare, true
 eq("no solid is a new object even when the choice is cut", resolveExtrudeMode({ choice: "cut", hasSolid: false, touches: true, distance: -5, lockNew: false }), "new");
 eq("a push into a touched solid cuts", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: true, distance: -5, lockNew: false }), "cut");
 eq("a pull out of it joins", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: true, distance: 5, lockNew: false }), "fuse");
-eq("a sketch that misses the solid joins as a new body only when chosen", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: false, distance: 5, lockNew: false }), "fuse");
+eq("a sketch that misses the solid is a new object", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: false, distance: 5, lockNew: false }), "new");
+eq("one pushed away from it is a new object too", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: false, distance: -5, lockNew: false }), "new");
+eq("a step edit that misses its solid still joins", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: false, distance: 5, lockNew: false, stepEdit: true }), "fuse");
 eq("the card's intersect wins", resolveExtrudeMode({ choice: "common", hasSolid: true, touches: true, distance: 5, lockNew: false }), "common");
 eq("a root edit stays a new object", resolveExtrudeMode({ choice: "cut", hasSolid: true, touches: true, distance: -5, lockNew: true }), "new");
 

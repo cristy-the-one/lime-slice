@@ -354,6 +354,67 @@ test("Esc waits for an Apply, one Esc leaves a History Edit, and an edit leaves 
   await expect(cards.first()).toHaveText("Sketch 1");
 });
 
+test("two regions on an empty bed make two objects, and Undo takes them back as one step", async ({ page }) => {
+  const tree = await start(page);
+  await page.locator("#modelEmptySketch").click();
+  const canvas = page.locator("#model");
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  const box = (await canvas.boundingBox())!;
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await page.locator("[data-sketch-tool=rectangle]").click();
+  for (const dx of [-120, 60]) {
+    await page.mouse.click(centre.x + dx, centre.y);
+    await hud.locator("input").nth(0).fill("10");
+    await hud.locator("input").nth(0).press("Tab");
+    await hud.locator("input").nth(1).fill("10");
+    await hud.locator("input").nth(1).press("Enter");
+  }
+  await page.locator("[data-sketch-tool=select]").click();
+  await page.mouse.move(box.x + 8, box.y + 120);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 8, box.y + box.height - 8, { steps: 4 });
+  await page.mouse.up();
+  await page.keyboard.press("E");
+  await expect(canvas).toHaveAttribute("data-extrude-regions", "2");
+  await expect(canvas).toHaveAttribute("data-extrude-mode", "new");
+  await hud.locator("input").first().fill("5");
+  await hud.locator("input").first().press("Enter");
+  const objects = page.locator("#objectList .obj");
+  await expect(objects).toHaveCount(2);
+  expect(tree.of("open")).toHaveLength(2);
+  await expect(canvas).not.toHaveAttribute("data-sketch", "editing");
+
+  await page.keyboard.press("Control+z");
+  await expect(objects).toHaveCount(0);
+  await expect(page.locator("#modelEmpty")).toBeVisible();
+  await page.keyboard.press("Control+y");
+  await expect(objects).toHaveCount(2);
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+});
+
+test("Auto makes a new object of a sketch beside the part, and the face sketch's new object stays on the face", async ({ page }) => {
+  await start(page);
+  await extrudeOnBed(page, "20");
+  await expect.poll(() => height(page)).toBeCloseTo(20, 0);
+  const canvas = page.locator("#model");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  const box = (await canvas.boundingBox())!;
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await page.locator("[data-sketch-tool=rectangle]").click();
+  await page.mouse.click(box.x + box.width * 0.85, box.y + box.height / 2);
+  await hud.locator("input").nth(0).fill("4");
+  await hud.locator("input").nth(0).press("Tab");
+  await hud.locator("input").nth(1).fill("4");
+  await hud.locator("input").nth(1).press("Enter");
+  await page.keyboard.press("E");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await expect(canvas).toHaveAttribute("data-extrude-mode", "new");
+  await expect(page.locator("[data-sketch-mode]")).toHaveText("Auto · New object (M)");
+});
+
 async function drawTypedCircle(page: Page) {
   await page.locator("[data-sketch-menu=draw]").click();
   await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();

@@ -180,13 +180,16 @@ export function regionsCentroid(regions: readonly Region[]): Pt {
 }
 
 /**
- * Join, cut, intersect, or a new object. No solid is always a new object. Auto cuts when the
- * sketch touches the solid and the distance runs into it, and joins otherwise.
+ * Join, cut, intersect, or a new object. No solid is always a new object. Auto cuts when the sketch touches the solid
+ * and the distance runs into it, and joins when it touches and runs out. A sketch that does not touch the solid is a new
+ * object, as Fusion's and Onshape's default is, since the engine refuses to join two solids that do not meet. A step
+ * edit stays on its solid, so Auto joins there.
  */
-export function resolveExtrudeMode(input: { choice: ModeChoice; hasSolid: boolean; touches: boolean; distance: number; lockNew: boolean }): ResolvedMode {
+export function resolveExtrudeMode(input: { choice: ModeChoice; hasSolid: boolean; touches: boolean; distance: number; lockNew: boolean; stepEdit?: boolean }): ResolvedMode {
   if (input.lockNew || !input.hasSolid) return "new";
   if (input.choice !== "auto") return input.choice;
-  return input.touches && input.distance < 0 ? "cut" : "fuse";
+  if (!input.touches) return input.stepEdit ? "fuse" : "new";
+  return input.distance < 0 ? "cut" : "fuse";
 }
 
 export function cycleMode(choice: ModeChoice, lock: "root" | "step" | null): ModeChoice {

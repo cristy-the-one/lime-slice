@@ -78,6 +78,21 @@ export function holeTargets(sketch: SketchData, selection: { entities: readonly 
   return out;
 }
 
+/**
+ * Why these sizes cannot drill, checked here rather than sent for the engine to refuse. Null when they can: a radius
+ * above 0, a depth above 0 unless the hole goes through, and a counterbore wider than the hole and deeper than 0.
+ */
+export function holeSizeRefusal(sizes: HoleSizes): string | null {
+  if (!(sizes.radius > 0)) return "A hole needs a radius above 0.";
+  if (!sizes.through && !(sizes.depth > 0)) return "A hole needs a depth above 0, or Through.";
+  if (sizes.counterboreRadius != null && sizes.counterboreDepth != null) {
+    if (!(sizes.counterboreRadius > sizes.radius)) return "A counterbore needs a radius larger than the hole's.";
+    if (!(sizes.counterboreDepth > 0)) return "A counterbore needs a depth above 0.";
+    if (!sizes.through && !(sizes.counterboreDepth < sizes.depth)) return "A counterbore must be shallower than the hole.";
+  }
+  return null;
+}
+
 /** The line under the Hole fields while one hole is placed at each point. */
 export function holePointsSentence(count: number): string {
   const noun = count === 1 ? "point" : "points";
@@ -100,6 +115,8 @@ export function holesLabel(count: number, sizes: HoleSizes): string {
  */
 export function holesInModel(input: { sketch: SketchData; points: readonly HoleTarget[]; pose: Affine; sizes: HoleSizes }): { op: GroupOp } | { error: string } {
   if (input.points.length === 0) return { error: POINT_REFUSAL };
+  const sizeError = holeSizeRefusal(input.sizes);
+  if (sizeError) return { error: sizeError };
   const frame = frameOfSketch(input.sketch, input.pose);
   const axis = inward(frame.w);
   const bore = input.sizes.counterboreRadius != null && input.sizes.counterboreDepth != null

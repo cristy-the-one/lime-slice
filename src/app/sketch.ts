@@ -217,6 +217,12 @@ export function closeSketchSession() {
   closeFeatureImpl();
 }
 
+let holdImpl: (on: boolean) => void = () => {};
+/** Model applies a feature of the open sketch (its holes): the sketch waits and leaves the readout to Model. */
+export function holdSketchForApply(on: boolean) {
+  holdImpl(on);
+}
+
 let forgetImpl: () => void = () => {};
 /** Another model was loaded: the sketches drawn on the old one go with it, cards included. */
 export function forgetSketches() {
@@ -376,6 +382,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let editCards: number[] = [];
   /** An Apply just closed the sketch: the readout keeps what the apply said about the solid. */
   let keepReadout = false;
+  /** The readout holds the sketch's own sentence, so closing the sketch hands it back. */
+  let saidLast = false;
   let probeTimer = 0;
 
   window.addEventListener("keydown", (ev) => {
@@ -1039,14 +1047,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     paintBox();
     paintDataset();
     paintLabels();
-    if (keepReadout || committing) {
-      // The apply's own sentences, working and done, stay.
-    } else if (editor.phase === "off") host.readout(host.idleReadout());
-    else if (sweep && editor.phase === "editing") host.readout(sweep.note || sweepReadout());
-    else if (loft && editor.phase === "editing") host.readout(loft.note || loftReadout());
-    else if (revolve && editor.phase === "editing") host.readout(revolveNote || revolveReadout());
-    else if (gesture && editor.phase === "editing") host.readout(extrudeReadout());
-    else host.readout(sketchReadout(editor));
+    paintReadout();
     syncHud(hudMode);
     focusDimensionLabel();
     if (button) button.setAttribute("aria-pressed", sketchBusy(editor) ? "true" : "false");
@@ -1060,6 +1061,29 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const empty = document.querySelector<HTMLElement>("#modelEmpty");
     if (empty) empty.hidden = sketchBusy(editor) || host.solid() != null;
     host.onHistory();
+  }
+
+  /**
+   * The readout is the sketch's while it is open. An Apply's sentences, working and done, and the Hole panel's stay.
+   * Once the sketch closes it hands the readout back once ("Sketch kept…" after Finish), and then leaves the solid's
+   * own sentences alone, so a later sync does not write over "Edit undone." or a volume.
+   */
+  function paintReadout() {
+    if (keepReadout || committing || host.sketchHolesArmed()) {
+      saidLast = false;
+      return;
+    }
+    if (!sketchBusy(editor)) {
+      if (saidLast) host.readout(editor.phase === "pinned" ? sketchReadout(editor) : host.idleReadout());
+      saidLast = false;
+      return;
+    }
+    saidLast = true;
+    if (sweep && editor.phase === "editing") host.readout(sweep.note || sweepReadout());
+    else if (loft && editor.phase === "editing") host.readout(loft.note || loftReadout());
+    else if (revolve && editor.phase === "editing") host.readout(revolveNote || revolveReadout());
+    else if (gesture && editor.phase === "editing") host.readout(extrudeReadout());
+    else host.readout(sketchReadout(editor));
   }
 
   function aim(frame: SketchFrame | null) {
@@ -1616,7 +1640,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     refsKey = "";
     publish("open");
   };
+  // Model closes the sketch: a history jump, holes from it applied, or Model left. What Model says then stays.
   closeFeatureImpl = () => {
+    keepReadout = true;
+    try {
+      closeQuietly();
+    } finally {
+      keepReadout = false;
+      saidLast = false;
+    }
+  };
+  function closeQuietly() {
     if (host.sketchHolesArmed()) host.endSketchHoles();
     if (editor.phase !== "editing" && editor.phase !== "choosing") {
       gesture = null;
@@ -1639,7 +1673,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.clearExtrudePreview();
     editor = endEditSession(finishSketch(editor));
     publish("open");
-  };
+  }
   // Another Model tool opened from the toolbar or a key. The sketch gives way to it, as starting a command ends the
   // sketch in Fusion or Onshape: a new sketch stays as a card, and a History Edit is cancelled. Holes from this
   // sketch are its own tool, and an Apply on its way finishes first.
@@ -1656,6 +1690,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       else leaveEditing(finishSketch(editor));
     }).observe(bar, { attributes: true, attributeFilter: ["data-tool"] });
   }
+  holdImpl = (on) => {
+    committing = on && sketchBusy(editor);
+  };
   forgetImpl = () => {
     if (editor.phase === "off" && editor.pinned.length === 0 && !editSession) return;
     if (host.sketchHolesArmed()) host.endSketchHoles();
@@ -1801,6 +1838,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       touches,
       distance: gesture?.distance ?? 0,
       lockNew: host.featureEdit() === "root",
+      stepEdit: host.featureEdit() === "step",
     });
   }
 
@@ -2119,6 +2157,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       touches,
       distance: 1,
       lockNew: host.featureEdit() === "root",
+      stepEdit: host.featureEdit() === "step",
     });
   }
 
@@ -2486,6 +2525,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       touches,
       distance: 1,
       lockNew: host.featureEdit() === "root",
+      stepEdit: host.featureEdit() === "step",
     });
   }
 
@@ -2496,6 +2536,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       touches: loftTouches(),
       distance: 1,
       lockNew: host.featureEdit() === "root",
+      stepEdit: host.featureEdit() === "step",
     });
   }
 
