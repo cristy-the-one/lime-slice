@@ -66,6 +66,7 @@ import {
   applyConstraint,
   cancelDimensionEdit,
   commitDimensionText,
+  blurDimensionText,
   editDimension,
   type SketchEditor,
   type SketchTool,
@@ -400,6 +401,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     // A letter typed in any field is text: "wallH / 2" in the size box, or a search. Only the size box's Tab and Esc are the gesture's.
     const field = typingTarget(ev.target);
     if (field && !(field.closest(".interact-hud") && (ev.key === "Tab" || ev.key === "Escape"))) return;
+    // Esc closes an open card menu before it ends a gesture or the selection.
+    if (ev.key === "Escape" && menuOpen) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      menuOpen = null;
+      publish("skip");
+      return;
+    }
     // --- F3. Shift+L is the loft while a sketch is open. L alone stays the Line tool.
     // With the sketch closed, Shift+L is still Chamfer. ---
     if (ev.shiftKey && (ev.key === "l" || ev.key === "L")) {
@@ -900,7 +909,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       publish("skip");
       return;
     }
-    if (ev.phase === "down") menuOpen = null;
+    if (ev.phase === "down") {
+      menuOpen = null;
+      // A press on the canvas leaves an open dimension label: its typed value is set first.
+      const label = labels.querySelector<HTMLInputElement>("input.sketch-dim-input");
+      if (label) commitOpenLabel(label);
+    }
     if (editor.phase !== "editing" || editor.lookAround) return;
     const frame = drawingFrame();
     if (!frame) return;
@@ -944,7 +958,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   });
 
   host.canvas.dataset.sketch = "off";
-  host.canvas.dataset.sketchTool = "";
+  // Not `data-sketch-tool`: the card's tool buttons carry that, and a locator for one must not also match the canvas.
+  host.canvas.dataset.sketchCurrentTool = "";
   host.canvas.dataset.sketchEntities = "0";
   host.canvas.dataset.sketchPlane = "";
   host.canvas.dataset.sketchLook = "0";
@@ -1183,7 +1198,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const sketch = activeSketch(editor) ?? (editor.phase === "pinned" ? editor.pinned[editor.pinned.length - 1]?.sketch : null);
     const on = sketch?.on;
     host.canvas.dataset.sketch = editor.phase;
-    host.canvas.dataset.sketchTool = editor.phase === "editing" ? editor.tool : "";
+    host.canvas.dataset.sketchCurrentTool = editor.phase === "editing" ? editor.tool : "";
     host.canvas.dataset.sketchEntities = String(sketch?.entities.length ?? 0);
     host.canvas.dataset.sketchPlane = on?.kind === "plane" ? on.name : on?.kind === "face" ? `face ${on.face.index}` : on?.kind === "workplane" ? "workplane" : "";
     host.canvas.dataset.sketchLook = editor.lookAround ? "1" : "0";
@@ -1471,13 +1486,29 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     node.setAttribute("aria-label", "Driving dimension");
     node.addEventListener("keydown", (ev) => {
       ev.stopPropagation();
+      if (ev.key === "Escape") node.dataset.cancelled = "1";
       if (ev.key !== "Enter") return;
       ev.preventDefault();
+      node.dataset.done = "1";
       editor = commitDimensionText(editor, id, node.value);
       publish("open");
     });
     node.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    // Leaving the label sets what was typed, as Enter does, unless Esc cancelled it. Typed values are not lost on a
+    // click elsewhere (the class of bug #183 and #186 fixed for the settings fields).
+    node.addEventListener("blur", () => commitOpenLabel(node));
     return node;
+  }
+
+  /** Set the label's typed value if it is still open, not cancelled, and not already set by Enter. */
+  function commitOpenLabel(node: HTMLInputElement) {
+    if (node.dataset.cancelled || node.dataset.done || editor.phase !== "editing") return;
+    node.dataset.done = "1";
+    const id = Number(node.dataset.dimId);
+    const next = blurDimensionText(editor, id, node.value);
+    if (next === editor) return;
+    editor = next;
+    publish("open");
   }
 
   function pinnedRow(id: number, name: string): Node[] {

@@ -152,7 +152,7 @@ test("three sketch points become one group of holes, and History Edit changes th
 
   await page.locator("[data-sketch-menu=draw]").click();
   await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "circle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   const view = (await canvas.boundingBox())!;
   const spots = [
     { x: view.x + view.width * 0.42, y: view.y + view.height * 0.48 },
@@ -163,7 +163,7 @@ test("three sketch points become one group of holes, and History Edit changes th
   await expect(canvas).toHaveAttribute("data-sketch-kinds", "circle,circle,circle");
 
   await page.getByRole("button", { name: "Select", exact: true }).click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "select");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "select");
   await expect.poll(async () => ((await canvas.getAttribute("data-sketch-hits")) ?? "").split(" ").filter(Boolean).length).toBe(3);
   const hits = ((await canvas.getAttribute("data-sketch-hits")) ?? "").split(" ").filter(Boolean).map((item) => {
     const [, xy] = item.split(":");

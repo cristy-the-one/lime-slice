@@ -65,7 +65,7 @@ test("a sketch draws a line and a rectangle, then pins", async ({ page }) => {
   await expect(page.locator("#modelReadout")).toContainText("origin plane");
   await page.locator("[data-sketch-plane=XY]").click();
   await expect(canvas).toHaveAttribute("data-sketch", "editing");
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "line");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "line");
   await expect(canvas).toHaveAttribute("data-sketch-plane", "XY");
   await expect(canvas).toHaveAttribute("data-sketch-camera", "locked");
   const camera = (await canvas.getAttribute("data-camera")) ?? "";
@@ -89,7 +89,7 @@ test("a sketch draws a line and a rectangle, then pins", async ({ page }) => {
   await expect(canvas).toHaveAttribute("data-sketch-entities", "2");
 
   await page.locator("[data-sketch-tool=rectangle]").click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "rectangle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "rectangle");
   await page.mouse.click(start.x, start.y);
   await expect(hud).toBeVisible();
   await hud.locator("input").nth(0).fill("12");
@@ -129,7 +129,7 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
     await expect(page.locator(`.sketch-menu-list [data-sketch-tool]`, { hasText: label })).toBeVisible();
   }
   await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "circle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   await expect(page.locator("#modelReadout")).toContainText("Type a diameter");
 
   const box = (await canvas.boundingBox())!;
@@ -143,7 +143,7 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   await expect(canvas).toHaveAttribute("data-sketch-kinds", "circle");
 
   await page.keyboard.press("N");
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "polygon");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "polygon");
   await expect(page.locator("#modelReadout")).toContainText("across corners");
   await page.mouse.click(centre.x, centre.y);
   await expect(hud).toBeVisible();
@@ -156,13 +156,13 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   await page.keyboard.press("T");
   await expect(page.locator("#modelReadout")).toContainText("Trim");
   await page.keyboard.press("F");
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "offset");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "offset");
   await page.keyboard.press("G");
   await expect(page.locator("#modelReadout")).toContainText("Fillet corner");
   await page.keyboard.press("U");
   await expect(page.locator("#modelReadout")).toContainText("faint edge");
   await page.keyboard.press("X");
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "construction");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "construction");
   expect(await fits(), "the toolbar still fits at 1440 px while a sketch is open").toBe(true);
   await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
 });
@@ -208,6 +208,18 @@ test("constraints live in the sketch card and a typed length drives the line", a
   await label.fill("40");
   await label.press("Enter");
   await expect(canvas).toHaveAttribute("data-sketch-measure", "40.000,0.000");
+  // A value typed on the label is set when the label loses focus to a click on the canvas.
+  await page.locator(".sketch-dim").first().click();
+  await expect(label).toBeFocused();
+  await page.keyboard.type("45");
+  await page.mouse.click(start.x - 60, start.y + 120);
+  await expect(canvas).toHaveAttribute("data-sketch-measure", "45.000,0.000");
+  // Esc closes an open card menu first, and the sketch stays open.
+  await page.locator("[data-sketch-menu=constrain]").click();
+  await expect(page.locator("[data-sketch-constrain=length]")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-sketch-constrain=length]")).toBeHidden();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
   await expect(canvas).toHaveAttribute("data-sketch-defined", "0");
   await expect(canvas).toHaveAttribute("data-sketch-dof", /^\d+$/);
   await expect(canvas).toHaveAttribute("data-sketch-constraints", "2");
@@ -230,7 +242,7 @@ async function sketchRectangle(page: Page) {
   await page.locator("[data-sketch-plane=XY]").click();
   await expect(canvas).toHaveAttribute("data-sketch", "editing");
   await page.keyboard.press("r");
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "rectangle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "rectangle");
   const box = (await canvas.boundingBox())!;
   const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   await page.mouse.click(centre.x, centre.y);

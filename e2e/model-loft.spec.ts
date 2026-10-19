@@ -70,7 +70,7 @@ async function start(page: Page): Promise<TreeMock> {
 async function drawTypedRectangle(page: Page, width: string, height: string) {
   const canvas = page.locator("#model");
   await page.locator("[data-sketch-tool=rectangle]").click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "rectangle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "rectangle");
   const box = (await canvas.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   const hud = page.locator(".interact-hud:not([hidden])");
@@ -86,7 +86,7 @@ async function drawTypedCircle(page: Page, diameter: string) {
   await page.locator("[data-sketch-menu=draw]").click();
   await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
   const canvas = page.locator("#model");
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "circle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   const box = (await canvas.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   const hud = page.locator(".interact-hud:not([hidden])");
@@ -101,7 +101,7 @@ async function drawTypedArc(page: Page, radius: string, sweep: string) {
   await page.locator("[data-sketch-menu=draw]").click();
   await page.locator(".sketch-menu-list [data-sketch-tool=arc]").click();
   const canvas = page.locator("#model");
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "arc");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "arc");
   const box = (await canvas.boundingBox())!;
   const start = { x: box.x + box.width * 0.5, y: box.y + box.height * 0.55 };
   await page.mouse.click(start.x, start.y);
@@ -265,7 +265,7 @@ test("an L path is refused instead of sweeping a sharp corner", async ({ page })
   await expect(canvas).toHaveAttribute("data-sketch", "pinned");
 
   await page.locator("#modelEmptySketch").click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "line");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "line");
   const bed = (await canvas.boundingBox())!;
   const corner = { x: bed.x + bed.width * 0.45, y: bed.y + bed.height * 0.5 };
   await page.mouse.click(corner.x, corner.y);

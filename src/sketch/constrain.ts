@@ -161,8 +161,11 @@ export function constrainReadout(tool: ConstrainTool, note: string | null): stri
 export function applyConstrainAction(sketch: SketchData, action: ConstrainAction, selection: { entities: number[]; points: number[] }, selectedDim: number | null): ConstrainBuild {
   if (action === "remove") {
     const next = removeConstraints(sketch, selection, selectedDim);
-    if (next === sketch) return { error: "Select a constraint, or the geometry it is on." };
-    return { sketch: next, focus: null };
+    if (next !== sketch) return { sketch: next, focus: null };
+    // With nothing chosen, the constraints that cannot be met go, so a sketch that conflicts can be freed in one step.
+    const unmet = selection.entities.length === 0 && selection.points.length === 0 && selectedDim == null ? constraintStatus(sketch)?.conflicting ?? [] : [];
+    if (unmet.length > 0) return { sketch: dropDimIds(sketch, new Set(unmet)), focus: null };
+    return { error: "Select a constraint, or the geometry it is on." };
   }
   return finishDraft(sketch, fromSelection(sketch, action, selection), false);
 }
@@ -197,8 +200,74 @@ export function commitDriving(sketch: SketchData, id: number, value: number, exp
     else delete next.expr;
     return next;
   });
-  const solved = solveKeeping(sketch, { ...sketch, dims });
+  const solved = solveOrRefuse(sketch, { ...sketch, dims });
+  if (!solved) return { error: VALUE_CONFLICT };
   return { sketch: solved, focus: null };
+}
+
+/** A driving value the other constraints cannot meet is refused, and the old value stays. */
+export const VALUE_CONFLICT = "That value cannot be met with the other constraints. The old value stays.";
+/** A constraint that over-constrains the sketch is not added. */
+export const ADD_CONFLICT = "That constraint cannot be met with the others, so it was not added.";
+
+/**
+ * The sketch with `withDims` solved, or null when the solve cannot meet a constraint that `before` could: a new
+ * conflict, or a solve that does not converge. A conflict the sketch already had does not block an unrelated change.
+ */
+function solveOrRefuse(before: SketchData, withDims: SketchData): SketchData | null {
+  const solved = solveSketch(withDims);
+  if (solved.ok) return solved.sketch;
+  const had = constraintStatus(before)?.conflicting ?? [];
+  const fresh = solved.conflicting.filter((id) => !had.includes(id));
+  if (fresh.length > 0 || solved.conflicting.length === 0) return null;
+  return solveKeeping(before, withDims);
+}
+
+/**
+ * The dimensions after an edit replaced or reshaped geometry (trim, fillet corner, offset). One that names a point or
+ * an entity that is gone is dropped. On an entity whose end points the edit moved, only the directional constraints
+ * stay (horizontal, vertical, parallel, perpendicular, angle); a size or a position there would now fight the edit
+ * and lock the sketch, so it goes. A fillet keeps its own geometry, and the solver is not run.
+ */
+export function carryDims(before: SketchData, after: SketchData): SketchData {
+  if (!after.dims?.length) return after;
+  const points = new Set(after.points.map((point) => point.id));
+  const entities = new Map(after.entities.map((entity) => [entity.id, entity]));
+  const reshaped = new Set<number>();
+  for (const old of before.entities) {
+    const now = entities.get(old.id);
+    if (now && JSON.stringify(entityEnds(old)) !== JSON.stringify(entityEnds(now))) reshaped.add(old.id);
+  }
+  const keepOnReshaped = new Set(["horizontal", "vertical", "parallel", "perpendicular", "angle"]);
+  const drop = new Set<number>();
+  for (const constraint of parseConstraints(after)) {
+    const ids = namedIds(constraint);
+    if (ids.points.some((id) => !points.has(id)) || ids.entities.some((id) => !entities.has(id))) drop.add(constraint.id);
+    else if (ids.entities.some((id) => reshaped.has(id)) && !keepOnReshaped.has(constraint.kind)) drop.add(constraint.id);
+  }
+  return drop.size > 0 ? dropDimIds(after, drop) : after;
+}
+
+function entityEnds(entity: SketchEntity): number[] {
+  if (entity.kind === "line" || entity.kind === "arc") return [entity.a, entity.b];
+  if (entity.kind === "circle") return [entity.centre];
+  return [...entity.through];
+}
+
+function dropDimIds(sketch: SketchData, drop: ReadonlySet<number>): SketchData {
+  const kept = (sketch.dims ?? []).filter((dim) => !drop.has(dim.id));
+  const released = new Set(parseConstraints(sketch).filter((item) => drop.has(item.id) && item.kind === "fixed").map((item) => (item.kind === "fixed" ? item.point : -1)));
+  const next: SketchData = { ...sketch };
+  if (kept.length) next.dims = kept;
+  else delete next.dims;
+  const still = new Set(parseConstraints(next).filter((item) => item.kind === "fixed").map((item) => (item.kind === "fixed" ? item.point : -1)));
+  next.points = next.points.map((point) => {
+    if (!released.has(point.id) || still.has(point.id) || !point.fixed) return point;
+    const copy = { ...point };
+    delete copy.fixed;
+    return copy;
+  });
+  return next;
 }
 
 export function dimensionLabels(sketch: SketchData): DimLabel[] {
@@ -408,7 +477,9 @@ function commitAdded(sketch: SketchData, constraint: SketchConstraint, extras: r
   let next = addOne(sketch, constraint);
   const focus = "value" in constraint ? next.id : null;
   for (const point of extras) next = { sketch: addOne(next.sketch, { id: 0, kind: "fixed", point }).sketch, id: next.id };
-  return { sketch: solveKeeping(sketch, next.sketch), focus };
+  const solved = solveOrRefuse(sketch, next.sketch);
+  if (!solved) return { error: ADD_CONFLICT };
+  return { sketch: solved, focus };
 }
 
 function addOne(sketch: SketchData, constraint: SketchConstraint): { sketch: SketchData; id: number } {

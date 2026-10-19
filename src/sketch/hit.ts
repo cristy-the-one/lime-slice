@@ -3,7 +3,7 @@
  * Left-to-right selects what is enclosed. Right-to-left selects what the box crosses.
  */
 import { curveOf, pointOn, type Curve } from "./geom.ts";
-import { sketchPoint, type Pt, type SketchData, type SketchEntity } from "./model.ts";
+import type { Pt, SketchData, SketchEntity } from "./model.ts";
 
 export interface Screen {
   x: number;
@@ -181,8 +181,4 @@ export function entityPointIds(sketch: SketchData, entityId: number): number[] {
   if (entity.kind === "line" || entity.kind === "arc") return [entity.a, entity.b];
   if (entity.kind === "circle") return [entity.centre];
   return [...entity.through];
-}
-
-export function pointAt(sketch: SketchData, id: number): Pt | null {
-  return sketchPoint(sketch, id)?.at ?? null;
 }

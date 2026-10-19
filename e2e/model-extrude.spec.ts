@@ -89,7 +89,7 @@ async function start(page: Page): Promise<TreeMock> {
 async function drawTypedRectangle(page: Page) {
   const canvas = page.locator("#model");
   await page.locator("[data-sketch-tool=rectangle]").click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "rectangle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "rectangle");
   const box = (await canvas.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   const hud = page.locator(".interact-hud:not([hidden])");
@@ -419,7 +419,7 @@ async function drawTypedCircle(page: Page) {
   await page.locator("[data-sketch-menu=draw]").click();
   await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
   const canvas = page.locator("#model");
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "circle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   const box = (await canvas.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   const hud = page.locator(".interact-hud:not([hidden])");

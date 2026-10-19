@@ -4,8 +4,7 @@
  */
 import { curveOf, pointOn } from "./geom.ts";
 import { toWorld, type SketchFrame } from "./frame.ts";
-import { sketchPoint, type Pt, type Vec3 } from "./model.ts";
-import type { RefGeom } from "./refs.ts";
+import type { Pt, Vec3 } from "./model.ts";
 import { activeSketch, rubber, type SketchEditor } from "./session.ts";
 
 export type StrokeRole = "grid" | "ref" | "entity" | "selected" | "construction" | "rubber" | "hint" | "axis" | "refuse";
@@ -55,7 +54,8 @@ export function sketchMesh(editor: SketchEditor, frame: SketchFrame | null, grid
     const curve = curveOf(sketch, entity);
     if (!curve) continue;
     const samples = curveSamples(curve);
-    const role: StrokeRole = entity.construction ? "construction" : selected.has(entity.id) ? "selected" : editor.hover.entity === entity.id ? "hint" : "entity";
+    // Selected and hovered win over the construction style, so a construction line can be seen to be picked.
+    const role: StrokeRole = selected.has(entity.id) ? "selected" : editor.hover.entity === entity.id ? "hint" : entity.construction ? "construction" : "entity";
     strokes.push({ xyz: flat(frame, samples), role });
   }
   const band = rubber(editor);
@@ -69,10 +69,6 @@ export function sketchMesh(editor: SketchEditor, frame: SketchFrame | null, grid
   return { strokes, dots, quads };
 }
 
-/** Reference geometry kept on the editor, drawn with the sketch. */
-export function refsOf(editor: SketchEditor): RefGeom {
-  return editor.refs;
-}
 
 function curveSamples(curve: NonNullable<ReturnType<typeof curveOf>>): Pt[] {
   if (curve.kind === "line") return [curve.a, curve.b];
@@ -108,9 +104,3 @@ function flat(frame: SketchFrame, points: readonly Pt[]): number[] {
   return out;
 }
 
-/** A point id that the sketch still has, for tests that read a corner back. */
-export function pointStill(editor: SketchEditor, id: number): Pt | null {
-  const sketch = activeSketch(editor);
-  if (!sketch) return null;
-  return sketchPoint(sketch, id)?.at ?? null;
-}

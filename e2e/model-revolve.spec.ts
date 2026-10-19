@@ -56,7 +56,7 @@ async function start(page: Page): Promise<TreeMock> {
 async function drawRectangle(page: Page, at: { x: number; y: number }, width: string, height: string, fromCentre: boolean) {
   const canvas = page.locator("#model");
   await page.locator("[data-sketch-tool=rectangle]").click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "rectangle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "rectangle");
   if (fromCentre) await page.keyboard.down("Control");
   await page.mouse.click(at.x, at.y);
   if (fromCentre) await page.keyboard.up("Control");
