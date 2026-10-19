@@ -105,6 +105,23 @@ export function lookAtFrame(frame: SketchFrame, focus: Vec3, extent: number, fov
   };
 }
 
+/**
+ * The same framing seen from above the plane at a tilt, a little to the side, as Fusion turns the view when an
+ * extrude starts, so the depth a feature adds can be seen. Up is the plane normal.
+ */
+export function tiltedAtFrame(frame: SketchFrame, focus: Vec3, extent: number, fovDeg: number): CameraPose {
+  const plan = lookAtFrame(frame, focus, extent, fovDeg);
+  const dist = Math.hypot(plan.position[0] - plan.target[0], plan.position[1] - plan.target[1], plan.position[2] - plan.target[2]);
+  const raw: Vec3 = [0, 1, 2].map((i) => frame.w[i]! * 0.75 - frame.v[i]! * 0.55 + frame.u[i]! * 0.35) as Vec3;
+  const size = Math.hypot(raw[0], raw[1], raw[2]);
+  const dir: Vec3 = [raw[0] / size, raw[1] / size, raw[2] / size];
+  return {
+    position: [plan.target[0] + dir[0] * dist, plan.target[1] + dir[1] * dist, plan.target[2] + dir[2] * dist],
+    target: plan.target,
+    up: [frame.w[0], frame.w[1], frame.w[2]],
+  };
+}
+
 /** Smooth step from `a` to `b`. `t` is 0 at the start and 1 at the end. */
 export function lerpPose(a: CameraPose, b: CameraPose, t: number): CameraPose {
   const s = smooth(t);

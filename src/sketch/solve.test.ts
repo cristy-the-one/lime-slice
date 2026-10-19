@@ -5,7 +5,7 @@
 import { arcFrom3 } from "./geom.ts";
 import { originFrame, planeOf } from "./frame.ts";
 import { addArc, addCircle, addLine, addPoint, emptySketch, sketchPoint, type SketchData } from "./model.ts";
-import { applyConstrainAction, drivingValue, plainDrivingValue, setDrivingEvaluator } from "./constrain.ts";
+import { applyConstrainAction, constraintGlyphs, drivingValue, plainDrivingValue, setDrivingEvaluator, withRectangleConstraints } from "./constrain.ts";
 import {
   activeSketch,
   applyConstraint,
@@ -73,9 +73,8 @@ const hStatus = constraintStatus(horizontal)!;
 eq("one horizontal on a free line leaves three degrees of freedom", hStatus.dof, 3);
 check("so the line is not fully defined", hStatus.fullyDefined === false && hStatus.conflicting.length === 0);
 
-const again = applyConstrainAction(horizontal, "horizontal", { entities: [1], points: [] }, null).sketch!;
-const redundant = constraintStatus(again)!;
-check("a second horizontal is redundant", redundant.redundant.length === 1 && redundant.conflicting.length === 0, JSON.stringify(redundant));
+const again = applyConstrainAction(horizontal, "horizontal", { entities: [1], points: [] }, null);
+eq("a second horizontal on the same line is not added, and says so", [again.sketch, again.hint ?? again.error], [undefined, "Those lines are already horizontal."]);
 
 const sized = applyConstrainAction(line([0, 0], [3, 4]), "length", { entities: [1], points: [] }, null).sketch!;
 const longer = applyConstrainAction(sized, "length", { entities: [1], points: [] }, null).sketch!;
@@ -319,6 +318,64 @@ check("delete removes the driving dimension", !activeSketch(editor)!.dims!.some(
 check("the horizontal remains", activeSketch(editor)!.dims!.some((dim) => dim.kind === "horizontal"));
 editor = undoSketch(editor);
 near("undo puts the dimension back", lengthOf(activeSketch(editor)!), 40, 1e-3);
+
+// --- A16. Horizontal on every selected line, a point on a line or a circle, a rectangle that stays square, and marks.
+{
+  let two = line([0, 0], [10, 1]);
+  two = addLine(two, [0, 5], [10, 7]).sketch;
+  const both = applyConstrainAction(two, "horizontal", { entities: [1, 2], points: [] }, null).sketch!;
+  near("the first selected line is made horizontal", ends(both, 1)[0][1], ends(both, 1)[1][1], 1e-6);
+  near("and so is the second", ends(both, 2)[0][1], ends(both, 2)[1][1], 1e-6);
+  eq("one horizontal each", parseConstraints(both).map((item) => item.kind), ["horizontal", "horizontal"]);
+
+  let onLine = line([0, 0], [10, 0]);
+  const loose = addPoint(onLine, [4, 3]);
+  onLine = loose.sketch;
+  const pinned = applyConstrainAction(onLine, "coincident", { entities: [1], points: [loose.id] }, null).sketch!;
+  eq("a point made coincident with a line moves onto it, straight across", sketchPoint(pinned, loose.id)!.at.map((v) => Math.round(v * 1e6) / 1e6), [4, 0]);
+  eq("and the line stays where it was", ends(pinned, 1), [[0, 0], [10, 0]]);
+  check("and is not merged into an end", pinned.points.length === 3);
+  const slid = dragSketch(pinned, [loose.id], [3, 2]);
+  const [la, lb] = ends(slid, 1);
+  const moved = sketchPoint(slid, loose.id)!.at;
+  const off = ((lb[0] - la[0]) * (moved[1] - la[1]) - (lb[1] - la[1]) * (moved[0] - la[0])) / Math.hypot(lb[0] - la[0], lb[1] - la[1]);
+  near("dragged, it stays on the line", off, 0, 1e-5);
+  check("and moves", Math.hypot(moved[0] - 4, moved[1]) > 0.5);
+
+  const ring = addCircle(emptySketch(), [0, 0], 5);
+  const near0 = addPoint(ring.sketch, [7, 1]);
+  const onCircle = applyConstrainAction(near0.sketch, "coincident", { entities: [ring.id], points: [near0.id] }, null).sketch!;
+  const at = sketchPoint(onCircle, near0.id)!.at;
+  const centre = sketchPoint(onCircle, onCircle.entities[0]!.kind === "circle" ? onCircle.entities[0]!.centre : 0)!.at;
+  const radius = onCircle.entities[0]!.kind === "circle" ? onCircle.entities[0]!.radius : 0;
+  near("a point made coincident with a circle lands on it", Math.hypot(at[0] - centre[0], at[1] - centre[1]), radius, 1e-6);
+  eq("and the circle keeps its centre and radius", [centre, radius], [[0, 0], 5]);
+
+  let box = emptySketch();
+  const corners: [number, number][] = [[0, 0], [10, 0], [10, 6], [0, 6]];
+  const ids: number[] = [];
+  for (const corner of corners) {
+    const added = addPoint(box, corner);
+    box = added.sketch;
+    ids.push(added.id);
+  }
+  const sides: number[] = [];
+  for (let i = 0; i < 4; i += 1) {
+    const added = addLine(box, ids[i]!, ids[(i + 1) % 4]!);
+    box = added.sketch;
+    sides.push(added.id);
+  }
+  const square = withRectangleConstraints(box, sides as [number, number, number, number]);
+  eq("a rectangle carries horizontal and vertical sides", parseConstraints(square).map((item) => item.kind), ["horizontal", "vertical", "horizontal", "vertical"]);
+  const pulled = dragSketch(square, [ids[2]!], [3, 2]);
+  near("a dragged corner keeps the top level", sketchPoint(pulled, ids[3]!)!.at[1], sketchPoint(pulled, ids[2]!)!.at[1], 1e-6);
+  near("and the side upright", sketchPoint(pulled, ids[1]!)!.at[0], sketchPoint(pulled, ids[2]!)!.at[0], 1e-6);
+
+  const marks = constraintGlyphs(square);
+  eq("each side shows its mark", marks.map((mark) => mark.text), ["H", "V", "H", "V"]);
+  eq("at the side's middle", marks[0]!.at, [5, 0]);
+  eq("a mark can be picked by the constraint it shows", marks.map((mark) => mark.id), parseConstraints(square).map((item) => item.id));
+}
 
 if (failed) {
   console.error(`solve: ${failed} failed`);

@@ -70,7 +70,7 @@ async function start(page: Page): Promise<TreeMock> {
 async function drawTypedRectangle(page: Page, width: string, height: string) {
   const canvas = page.locator("#model");
   await page.locator("[data-sketch-tool=rectangle]").click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "rectangle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "rectangle");
   const box = (await canvas.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   const hud = page.locator(".interact-hud:not([hidden])");
@@ -86,34 +86,36 @@ async function drawTypedCircle(page: Page, diameter: string) {
   await page.locator("[data-sketch-menu=draw]").click();
   await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
   const canvas = page.locator("#model");
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "circle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   const box = (await canvas.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   const hud = page.locator(".interact-hud:not([hidden])");
   await expect(hud).toBeVisible();
   await hud.locator("input").nth(0).fill(diameter);
   await hud.locator("input").nth(0).press("Enter");
-  await expect(canvas).toHaveAttribute("data-sketch-kinds", "circle");
+  await expect(canvas).toHaveAttribute("data-sketch-kinds", /(^|,)circle$/);
 }
 
-/** Two clicks start the arc, then the radius and sweep are typed. The clicks stay close so a large radius fits the chord. */
-async function drawTypedArc(page: Page, radius: string, sweep: string) {
-  await page.locator("[data-sketch-menu=draw]").click();
-  await page.locator(".sketch-menu-list [data-sketch-tool=arc]").click();
+/** A sketch on the XZ plane with one line straight up from the canvas centre, `length` long: a path across the bed. */
+async function drawUprightPath(page: Page, length: string) {
   const canvas = page.locator("#model");
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "arc");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XZ]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await expect(canvas).toHaveAttribute("data-sketch-plane", "XZ");
+  await page.locator("[data-sketch-tool=line]").click();
   const box = (await canvas.boundingBox())!;
   const start = { x: box.x + box.width * 0.5, y: box.y + box.height * 0.55 };
   await page.mouse.click(start.x, start.y);
-  await page.mouse.click(start.x + 24, start.y - 8);
-  await page.mouse.move(start.x + 40, start.y + 12);
+  await page.mouse.move(start.x, start.y - 30);
   const hud = page.locator(".interact-hud:not([hidden])");
   await expect(hud).toBeVisible();
-  await hud.locator("input").nth(0).fill(radius);
+  await hud.locator("input").nth(0).fill(length);
   await hud.locator("input").nth(0).press("Tab");
-  await hud.locator("input").nth(1).fill(sweep);
+  await hud.locator("input").nth(1).fill("90");
   await hud.locator("input").nth(1).press("Enter");
-  await expect(canvas).toHaveAttribute("data-sketch-kinds", "arc");
+  await page.keyboard.press("Escape");
+  await expect(canvas).toHaveAttribute("data-sketch-kinds", "line");
 }
 
 test("a rectangle on the bed lofts to a circle 30 mm above, and History Edit reopens the picks", async ({ page }) => {
@@ -153,6 +155,16 @@ test("a rectangle on the bed lofts to a circle 30 mm above, and History Edit reo
   await expect(canvas).toHaveAttribute("data-loft-sections", "1");
   await page.locator("[data-sketch-open]").click();
   await expect(canvas).toHaveAttribute("data-loft-sections", "2");
+  // In Look around a click still picks a section: the circle under it is dropped, then taken again.
+  await page.locator("button[data-sketch-look]").click();
+  await expect(canvas).toHaveAttribute("data-sketch-look", "1");
+  const view = (await canvas.boundingBox())!;
+  await page.mouse.click(view.x + view.width / 2, view.y + view.height / 2);
+  await expect(canvas).toHaveAttribute("data-loft-sections", "1");
+  await page.mouse.click(view.x + view.width / 2, view.y + view.height / 2);
+  await expect(canvas).toHaveAttribute("data-loft-sections", "2");
+  await page.locator("button[data-sketch-look]").click();
+  await expect(canvas).toHaveAttribute("data-sketch-look", "0");
   await page.locator("[data-sketch-ruled]").click();
   await expect(canvas).toHaveAttribute("data-loft-ruled", "1");
   await page.keyboard.press("R");
@@ -203,7 +215,7 @@ test("a rectangle on the bed lofts to a circle 30 mm above, and History Edit reo
   await expect(canvas).toHaveAttribute("data-loft-mode", "new");
 });
 
-test("a square sweeps along an arc, the scale is dragged and typed, and History Edit reopens it", async ({ page }) => {
+test("a square sweeps along a path across it, the end scale is dragged and typed, and History Edit reopens it", async ({ page }) => {
   const tree = await start(page);
   const canvas = page.locator("#model");
   await page.locator("#modelEmptySketch").click();
@@ -212,9 +224,7 @@ test("a square sweeps along an arc, the scale is dragged and typed, and History 
   await page.locator("[data-sketch-finish]").click();
   await expect(canvas).toHaveAttribute("data-sketch", "pinned");
 
-  await page.locator("#modelEmptySketch").click();
-  await expect(canvas).toHaveAttribute("data-sketch", "editing");
-  await drawTypedArc(page, "40", "90");
+  await drawUprightPath(page, "30");
   await page.keyboard.press("W");
   await expect(canvas).toHaveAttribute("data-sweep", "pick");
   await expect(canvas).toHaveAttribute("data-sweep-profile", "1");
@@ -232,6 +242,7 @@ test("a square sweeps along an arc, the scale is dragged and typed, and History 
   await expect(canvas).toHaveAttribute("data-sweep", "pick");
 
   const hud = page.locator(".interact-hud:not([hidden])");
+  await expect(hud.locator("input").first(), "the scale is the size at the path's end").toHaveAttribute("aria-label", "End scale");
   await hud.locator("input").first().fill("1");
   await hud.locator("input").first().press("Enter");
 
@@ -256,6 +267,74 @@ test("a square sweeps along an arc, the scale is dragged and typed, and History 
   await expect(canvas).toHaveAttribute("data-sweep-scale", "1");
 });
 
+test("a washer sweeps where it was drawn with its hole, and a loft takes a two-region sketch's ring from its card", async ({ page }) => {
+  const tree = await start(page);
+  const canvas = page.locator("#model");
+  await page.locator("#modelEmptySketch").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await drawTypedCircle(page, "12");
+  await drawTypedCircle(page, "4");
+  await expect(canvas).toHaveAttribute("data-sketch-kinds", "circle,circle");
+  await page.locator("[data-sketch-finish]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "pinned");
+
+  await drawUprightPath(page, "20");
+  await page.keyboard.press("W");
+  await expect(canvas).toHaveAttribute("data-sweep", "pick");
+  await expect(canvas, "the washer's ring is the profile, though its sketch has two regions").toHaveAttribute("data-sweep-profile", "1");
+  await expect(canvas).toHaveAttribute("data-sweep-path", "1");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#objectList .obj").first()).toContainText("Sweep 1");
+  const feature = tree.of("open").at(-1)!.feature as { sections?: LoftSection[] };
+  const sections = feature.sections ?? [];
+  expect(sections.length).toBeGreaterThanOrEqual(2);
+  expect(sections.every((section) => section.loops?.length === 2), "every section keeps the hole").toBe(true);
+  expect(sections[0]!.origin, "the first section is the drawing on the bed, not recentred onto the path").toEqual([0, 0, 0]);
+  expect(sections[0]!.turn).toEqual([0, 0, 0]);
+  const top = sections.at(-1)!;
+  expect(top.origin[2]).toBeCloseTo(20, 1);
+  expect(sectionArea(top)).toBeCloseTo(Math.PI * (36 - 4), 0);
+
+  // A loft takes the same two-region sketch from its card: the ring, not "no region".
+  await page.locator("#modelToolWorkplane").click();
+  const z = page.locator("#modelWpZ");
+  await z.fill("30");
+  await z.dispatchEvent("input");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=workplane]").click();
+  await expect(canvas).toHaveAttribute("data-sketch-plane", "workplane");
+  await drawTypedCircle(page, "10");
+  await page.keyboard.press("Shift+L");
+  await expect(canvas).toHaveAttribute("data-loft-sections", "1");
+  await page.locator("[data-sketch-open]").filter({ hasText: "Sketch 1" }).click();
+  await expect(canvas).toHaveAttribute("data-loft-sections", "2");
+});
+
+test("on an empty plate a loft starts from the bed and an origin plane offset 30 above it", async ({ page }) => {
+  const tree = await start(page);
+  const canvas = page.locator("#model");
+  await page.locator("#modelEmptySketch").click();
+  await drawTypedRectangle(page, "10", "10");
+  await page.locator("[data-sketch-finish]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "pinned");
+  await page.locator("#modelToolSketch").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "choosing");
+  const offset = page.locator("[data-sketch-offset]");
+  await offset.click();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("30");
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await drawTypedCircle(page, "6");
+  await page.keyboard.press("Shift+L");
+  await page.locator("[data-sketch-open]").filter({ hasText: "Sketch 1" }).click();
+  await expect(canvas).toHaveAttribute("data-loft-sections", "2");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#objectList .obj").filter({ hasText: "Loft 1" })).toHaveCount(1);
+  const sections = ((tree.of("open").at(-1)!.feature as { sections?: LoftSection[] }).sections ?? []).map((section) => section.origin[2]).sort((a, b) => a - b);
+  expect(sections, "the circle is 30 above the bed").toEqual([0, 30]);
+});
+
 test("an L path is refused instead of sweeping a sharp corner", async ({ page }) => {
   await start(page);
   const canvas = page.locator("#model");
@@ -265,7 +344,7 @@ test("an L path is refused instead of sweeping a sharp corner", async ({ page })
   await expect(canvas).toHaveAttribute("data-sketch", "pinned");
 
   await page.locator("#modelEmptySketch").click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "line");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "line");
   const bed = (await canvas.boundingBox())!;
   const corner = { x: bed.x + bed.width * 0.45, y: bed.y + bed.height * 0.5 };
   await page.mouse.click(corner.x, corner.y);

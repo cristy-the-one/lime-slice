@@ -5,14 +5,14 @@
 import { IDENTITY_POSE, type Affine } from "./model-space.ts";
 import { expandFeature, featureSource, type FeatureSolid } from "./model-features.ts";
 import { expandRepeat, repeatSource } from "./model-repeat.ts";
-import type { ModelOp } from "./model-tree.ts";
+import { isSketchExtrudeGroup, isSketchRevolveGroup, type ModelOp } from "./model-tree.ts";
 import { evaluate, type Params } from "./modeling/expr.ts";
 import { patchOpNumbers, type ParamTable } from "./modeling/params.ts";
 import { commitDriving } from "./sketch/constrain.ts";
-import { buildSketchExtrude, chooseRegions, presetOf, sketchForFeature } from "./sketch/extrude.ts";
+import { buildSketchExtrude, chooseRegions, featureOutlines, presetOf, regionsOfOutlines, sketchForFeature } from "./sketch/extrude.ts";
 import { holesInModel, pointsFromSource, sketchHoleSource, type HoleSizes } from "./sketch/holes.ts";
 import type { SketchData } from "./sketch/model.ts";
-import { buildSketchRevolve, revolvePresetOf, sketchForRevolve } from "./sketch/revolve.ts";
+import { buildSketchRevolve, revolveOutlines, revolvePresetOf, sketchForRevolve } from "./sketch/revolve.ts";
 
 export interface RefreshContext {
   pose?: Affine;
@@ -54,10 +54,19 @@ function copyExprs(op: ModelOp, exprs: ModelOp["exprs"]): ModelOp {
   return exprs ? { ...op, exprs } : op;
 }
 
+/**
+ * The regions the step was applied to, found again in the re-solved sketch by outline or by a point inside it, so a
+ * group of several regions rebuilds all of them. A step with no stored outline takes the only outer region.
+ */
+function sameRegions(sketch: SketchData, outlines: Parameters<typeof regionsOfOutlines>[1]) {
+  const found = outlines.length > 0 ? regionsOfOutlines(sketch, outlines) : [];
+  return found.length > 0 ? found : chooseRegions(sketch, [], null);
+}
+
 function rebuildExtrude(op: ModelOp, sketch: SketchData): { op: ModelOp; error?: string } {
   const preset = presetOf(op, false);
   if (!preset) return { op, error: "This extrude cannot be rebuilt from its sketch." };
-  const regions = chooseRegions(sketch, [], null);
+  const regions = sameRegions(sketch, featureOutlines(op));
   if (regions.length === 0) return { op, error: "This extrude's sketch has no region to rebuild." };
   const built = buildSketchExtrude({
     sketch,
@@ -75,7 +84,7 @@ function rebuildExtrude(op: ModelOp, sketch: SketchData): { op: ModelOp; error?:
 function rebuildRevolve(op: ModelOp, sketch: SketchData): { op: ModelOp; error?: string } {
   const preset = revolvePresetOf(op, false);
   if (!preset) return { op, error: "This revolve cannot be rebuilt from its sketch." };
-  const regions = chooseRegions(sketch, [], null);
+  const regions = sameRegions(sketch, revolveOutlines(op));
   if (regions.length === 0) return { op, error: "This revolve's sketch has no region to rebuild." };
   const built = buildSketchRevolve({
     sketch,
@@ -106,13 +115,17 @@ function rebuildHoles(op: ModelOp, sketch: SketchData, pose: Affine): { op: Mode
 }
 
 function sketchChanged(op: ModelOp, after: Params, pose: Affine): { op: ModelOp; error?: string; toSolid?: boolean } {
-  if (op.kind === "extrude" || op.kind === "revolve") {
-    const sketch = op.kind === "extrude" ? sketchForFeature(op) : sketchForRevolve(op);
+  // A group of several regions from one sketch is rebuilt whole, each region found again, not step by step.
+  const extrudeGroup: boolean = isSketchExtrudeGroup(op);
+  const revolveGroup: boolean = isSketchRevolveGroup(op);
+  if (op.kind === "extrude" || op.kind === "revolve" || extrudeGroup || revolveGroup) {
+    const extruded = op.kind === "extrude" || extrudeGroup;
+    const sketch = extruded ? sketchForFeature(op) : sketchForRevolve(op);
     if (!sketch) return { op };
     const refreshed = refreshSketch(sketch, after);
     if (refreshed.error) return { op, error: refreshed.error };
     if (!refreshed.changed) return { op };
-    return op.kind === "extrude" ? rebuildExtrude(op, refreshed.sketch) : rebuildRevolve(op, refreshed.sketch);
+    return extruded ? rebuildExtrude(op, refreshed.sketch) : rebuildRevolve(op, refreshed.sketch);
   }
   if (op.kind === "group" && sketchHoleSource(op)) {
     const source = sketchHoleSource(op);

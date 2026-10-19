@@ -233,6 +233,11 @@ export function patchEditBrep(token: string, brep: ArrayBuffer | undefined) {
   putBrepFor(history, token, brep);
 }
 
+/** The steps Undo and Redo would take next, so Model can tell that a step it made is still the newest. */
+export function newestEdits(): { undo: EditSnap | null; redo: EditSnap | null; pending: boolean } {
+  return { undo: history.undo.at(-1) ?? null, redo: history.redo.at(-1) ?? null, pending: history.pending != null };
+}
+
 export function undoUserEdit(): boolean {
   window.clearTimeout(timer);
   const step = undoSnap(history, capture());

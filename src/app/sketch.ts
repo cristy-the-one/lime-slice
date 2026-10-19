@@ -15,7 +15,7 @@ import { inPlaceArrow } from "../interact/in-place-arrow";
 import { registerContextAction } from "../context-bar";
 import type { ParsedSolid } from "../model-reply";
 import type { FacePlane } from "../model-plane";
-import type { Affine } from "../model-space";
+import { applyPose, inversePose, type Affine } from "../model-space";
 import type { Bounds } from "../mesh-place";
 import type { LoftSection, ModelOp, ProfileLoop } from "../model-tree";
 import type { ModelView } from "../model-view";
@@ -25,6 +25,7 @@ import { sketchMesh, type OriginPlane, type SketchStroke } from "../sketch/draw"
 import {
   frameFromWorkplane,
   lookAtFrame,
+  tiltedAtFrame,
   originFrame,
   planeOf,
   planeWindow,
@@ -63,27 +64,32 @@ import {
   withRefs,
   withTool,
   acknowledgeDimensionFocus,
+  selectConstraint,
   applyConstraint,
   cancelDimensionEdit,
   commitDimensionText,
+  blurDimensionText,
   editDimension,
   type SketchEditor,
   type SketchTool,
 } from "../sketch/session";
 import { DRAW_MENU, isDrawTool } from "../sketch/tools";
 // --- S4. Constraints live in the sketch card menu, not on the Model toolbar. ---
-import { CONSTRAIN_MENU, dimensionLabels, firstLineMeasure, isConstrainTool, placedStatus, plainDrivingValue, setDrivingEvaluator } from "../sketch/constrain";
+import { CONSTRAIN_MENU, constraintGlyphs, dimensionLabels, firstLineMeasure, type ConstraintGlyph, isConstrainTool, placedStatus, plainDrivingValue, setDrivingEvaluator } from "../sketch/constrain";
 import { evaluate, ExprError } from "../modeling/expr.ts";
-import { isPlainNumber, withExprs } from "../modeling/params.ts";
+import { appParamMessage, isPlainNumber, withExprs } from "../modeling/params.ts";
 import type { Params } from "../modeling/expr.ts";
 import { parseConstraints } from "../sketch/solve";
 import { workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
+import { state } from "./state";
+import { formatMm } from "../model-plane";
 import {
   buildSketchExtrude,
   chooseRegions,
   cycleMode,
   modeLabel,
   regionSamples,
+  regionsOfOutlines,
   regionsCentroid,
   resolveExtrudeMode,
   sketchTouchesSolid,
@@ -101,6 +107,7 @@ import {
   dashSegment,
   defaultAxis,
   dragAngle,
+  flipAxis,
   edgeAxes,
   pickAxis,
   planeAxes,
@@ -183,25 +190,26 @@ interface SketchApi {
   undo(): void;
   redo(): void;
   sync(): void;
+  takePick(x: number, y: number): boolean;
 }
 
 let editor: SketchEditor = sketchOff();
 /** --- F1. Set by mountSketch. History Edit calls these. --- */
-let openFeatureImpl: (sketch: SketchData, preset: ExtrudePreset) => void = () => {};
+let openFeatureImpl: (sketch: SketchData, preset: ExtrudePreset, outlines: readonly ProfileLoop[]) => void = () => {};
 let closeFeatureImpl: () => void = () => {};
 let faceForSketch: () => number | null = () => null;
 let enterFaceAction: (face: number) => void = () => {};
 let enterBedAction: () => void = () => {};
 
-/** Reopen a sketch and its extrude drag. E1 calls this from History Edit. */
-export function openSketchFeature(sketch: SketchData, preset: ExtrudePreset) {
-  openFeatureImpl(sketch, preset);
+/** Reopen a sketch and its extrude drag, with the regions the extrude was applied to. E1 calls this from History Edit. */
+export function openSketchFeature(sketch: SketchData, preset: ExtrudePreset, outlines: readonly ProfileLoop[]) {
+  openFeatureImpl(sketch, preset, outlines);
 }
 
 /** --- F2. Reopen a sketch and its revolve drag. History Edit calls this. --- */
-let openRevolveImpl: (sketch: SketchData, preset: RevolvePreset) => void = () => {};
-export function openSketchRevolve(sketch: SketchData, preset: RevolvePreset) {
-  openRevolveImpl(sketch, preset);
+let openRevolveImpl: (sketch: SketchData, preset: RevolvePreset, outlines: readonly ProfileLoop[]) => void = () => {};
+export function openSketchRevolve(sketch: SketchData, preset: RevolvePreset, outlines: readonly ProfileLoop[]) {
+  openRevolveImpl(sketch, preset, outlines);
 }
 
 /** --- F3. Reopen a loft's sections, or a sweep's profile and path. History Edit calls this. --- */
@@ -213,6 +221,18 @@ export function openSketchLoft(preset: LoftPreset | SweepPreset) {
 /** Leave the sketch without applying. A history jump uses this so the editor does not stay up. */
 export function closeSketchSession() {
   closeFeatureImpl();
+}
+
+let holdImpl: (on: boolean) => void = () => {};
+/** Model applies a feature of the open sketch (its holes): the sketch waits and leaves the readout to Model. */
+export function holdSketchForApply(on: boolean) {
+  holdImpl(on);
+}
+
+let forgetImpl: () => void = () => {};
+/** Another model was loaded: the sketches drawn on the old one go with it, cards included. */
+export function forgetSketches() {
+  forgetImpl();
 }
 
 // --- F1. Sketch on a face, and on the bed. Order 35 sits between Hole and Shell, so the face bar's arrow keys stay. ---
@@ -249,6 +269,7 @@ let api: SketchApi = {
   undo: () => {},
   redo: () => {},
   sync: () => {},
+  takePick: () => false,
 };
 
 /** Choosing or editing. Pinned cards do not take the view, so push/pull and the edge knob stay. */
@@ -262,6 +283,14 @@ export function sketchOwnsHistory(): boolean {
 
 export function sketchHistoryButtons(): { undo: boolean; redo: boolean } | null {
   return api.history();
+}
+
+/**
+ * A click the view gave the Model picks, at client pixels. While Look around is on during a loft or a sweep the
+ * click picks a section or a profile, as it does with the view locked. True when the sketch took it.
+ */
+export function sketchTakesPick(x: number, y: number): boolean {
+  return api.takePick(x, y);
 }
 
 export function sketchUndo(): void {
@@ -296,7 +325,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return value;
     } catch (err) {
       const message = err instanceof ExprError || err instanceof Error ? err.message : String(err);
-      return { error: message.replace("Set it with model_params first.", "Add it in Parameters, or type a number.") };
+      return { error: appParamMessage(message) };
     }
   });
   // --- F1. Extrude state. The key listener is registered before the HUD so E, M, and Esc are taken first. ---
@@ -311,6 +340,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     dragging: boolean;
     guide: [Vec3, Vec3] | null;
     down: { x: number; y: number; distance: number } | null;
+    /** A click picked the regions: the pointer no longer picks the one under it. */
+    picked?: boolean;
     /** Heads-up text for distance, the other side, and draft. */
     texts?: Record<string, string>;
   }
@@ -325,6 +356,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     dragging: boolean;
     crossing: boolean;
     down: { x: number; y: number; angle: number } | null;
+    /** A click picked the regions: the pointer no longer picks the one under it. */
+    picked?: boolean;
     /** The angle as typed, when it was an expression. */
     angleText?: string;
   }
@@ -361,18 +394,48 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let loft: LoftGesture | null = null;
   let sweep: SweepGesture | null = null;
   let editSession = false;
-  let committing = false;
+  /** The outlines a History Edit's feature was applied to: Extrude or Revolve again in the edit picks those regions. */
+  let editOutlines: ProfileLoop[] = [];
+  let applying = false;
+  // The Hole panel holds the sketch while its own Apply runs. Two owners, so each has its own flag.
+  let holding = false;
+  /** The cards a History Edit opened: its sketch, and a loft's other sections. They go when the edit ends. */
+  let editCards: number[] = [];
+  /** An Apply just closed the sketch: the readout keeps what the apply said about the solid. */
+  let keepReadout = false;
+  /** The readout holds the sketch's own sentence, so closing the sketch hands it back. */
+  let saidLast = false;
   let probeTimer = 0;
 
   window.addEventListener("keydown", (ev) => {
-    if (editor.phase !== "editing" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (state.stage !== "model" || editor.phase !== "editing" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (applying || holding) {
+      // An Apply is on its way. Its keys wait for it, so an Esc cannot leave the step applied and the sketch open.
+      // A field outside the sketch (Parameters, a search) still takes its own typing.
+      const outside = typingTarget(ev.target);
+      if (outside && !outside.closest(".interact-hud, #sketchCards, .sketch-dims")) return;
+      if (ev.key === "Escape" || ev.key === "Enter" || ev.key === "Tab" || ev.key.length === 1) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+      return;
+    }
     const drawing = sketchDimensions(editor) != null;
-    const dimField = ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null;
-    const typing = ev.target instanceof HTMLElement && (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT" || ev.target.tagName === "TEXTAREA" || ev.target.isContentEditable);
+    // A letter typed in any field is text: "wallH / 2" in the size box, or a search. Only the size box's Tab and Esc are the gesture's.
+    const field = typingTarget(ev.target);
+    if (field && !(field.closest(".interact-hud") && (ev.key === "Tab" || ev.key === "Escape"))) return;
+    // Esc closes an open card menu before it ends a gesture or the selection.
+    if (ev.key === "Escape" && menuOpen) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      cardFocus = [`[data-sketch-menu="${menuOpen}"]`];
+      menuOpen = null;
+      publish("skip");
+      return;
+    }
     // --- F3. Shift+L is the loft while a sketch is open. L alone stays the Line tool.
     // With the sketch closed, Shift+L is still Chamfer. ---
     if (ev.shiftKey && (ev.key === "l" || ev.key === "L")) {
-      if (dimField) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (drawing) return;
@@ -385,7 +448,6 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     // --- F3. W sweeps while a sketch is open. With the sketch closed, W still picks edges. ---
     if ((ev.key === "w" || ev.key === "W") && !ev.shiftKey) {
-      if (dimField) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (drawing) return;
@@ -398,7 +460,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     // --- F4. H places a hole at each selected point. It is taken only while the sketch is open. ---
     if (ev.key === "h" || ev.key === "H") {
-      if (drawing || typing) return;
+      if (drawing) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (gesture || host.sketchHolesArmed()) return;
@@ -429,8 +491,6 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     // --- F2. V revolves only while this sketch is open. A size box keeps V for the view. ---
     if (ev.key === "v" || ev.key === "V") {
       if (drawing) return;
-      // A driving-dimension field is a real text box. The size HUD is not, so V still starts a revolve from there.
-      if (ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (host.sketchHolesArmed()) host.endSketchHoles();
@@ -464,7 +524,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (ev.key === "Escape") {
         ev.preventDefault();
         ev.stopImmediatePropagation();
-        endLoft();
+        escapeFeature(endLoft);
         return;
       }
     }
@@ -479,7 +539,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (ev.key === "Escape") {
         ev.preventDefault();
         ev.stopImmediatePropagation();
-        endSweep();
+        escapeFeature(endSweep);
         return;
       }
     }
@@ -494,7 +554,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (ev.key === "Escape") {
         ev.preventDefault();
         ev.stopImmediatePropagation();
-        endRevolve();
+        escapeFeature(endRevolve);
         return;
       }
     }
@@ -509,7 +569,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (ev.key === "Escape") {
       ev.preventDefault();
       ev.stopImmediatePropagation();
-      endExtrude();
+      escapeFeature(endExtrude);
       return;
     }
     if (ev.key === "Tab" && !ev.shiftKey && gesture.slots < 3) {
@@ -567,20 +627,21 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     publish("open");
   });
   hud.onCancel(() => {
+    if (applying || holding) return;
     if (sweep) {
-      endSweep();
+      escapeFeature(endSweep);
       return;
     }
     if (loft) {
-      endLoft();
+      escapeFeature(endLoft);
       return;
     }
     if (revolve) {
-      endRevolve();
+      escapeFeature(endRevolve);
       return;
     }
     if (gesture) {
-      endExtrude();
+      escapeFeature(endExtrude);
       return;
     }
     const next = sketchKey(editor, "Escape", { ctrl: false, meta: false, shift: false });
@@ -614,6 +675,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let aimKey = "";
   let refsKey = "";
   let menuOpen: "draw" | "constrain" | null = null;
+  // A pointer move publishes. The cards and the Undo buttons are painted only when what they show changes, so a move
+  // costs no DOM rebuild and a focused card button keeps its focus.
+  let cardsKey = "";
+  let historyKey = "";
+  /** A card button to focus once the cards are painted: a menu's first item when it opens, its button when it closes. */
+  let cardFocus: string[] = [];
+  /** --- B14. How far the chosen origin plane is moved along its normal, typed on the "Sketch on" card. --- */
+  let chooseOffset = 0;
   let shownPlanes: OriginPlane[] = [];
   let chooseDown: { x: number; y: number } | null = null;
   let lastClient = { x: 0, y: 0 };
@@ -621,6 +690,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   labels.className = "sketch-dims";
   labels.hidden = true;
   document.body.append(labels);
+  // --- A16. Each geometric constraint's mark beside its geometry. A click selects it; Delete removes it. ---
+  const glyphs = document.createElement("div");
+  glyphs.className = "sketch-dims sketch-glyphs";
+  glyphs.hidden = true;
+  document.body.append(glyphs);
+  let glyphsKey = "";
+  const glyphsOf = new WeakMap<SketchData, ConstraintGlyph[]>();
 
   const sync = () => {
     if (editor.phase === "off") return;
@@ -630,6 +706,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   api = {
     occupies: () => sketchBusy(editor),
     ownsHistory: () => editor.phase === "editing",
+    takePick(x, y) {
+      if (editor.phase !== "editing" || !editor.lookAround || (applying || holding) || !(loft || sweep)) return false;
+      if (loft) loftPointer({ phase: "up", x, y });
+      else pickSweepAt(x, y);
+      return true;
+    },
     history: () => (editor.phase === "editing" ? { undo: canUndoSketch(editor), redo: canRedoSketch(editor) } : null),
     undo() {
       editor = undoSketch(editor);
@@ -653,7 +735,33 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     editor = beginChoose(editor);
     enterNamed("XY");
   });
+  // A card menu is a keyboard menu: the arrows, Home and End move through its items, and Tab leaves it closed.
+  cards?.addEventListener("keydown", (ev) => {
+    const menu = ev.target instanceof HTMLElement ? ev.target.closest<HTMLElement>("[role=menu]") : null;
+    if (!menu || !menuOpen) return;
+    const items = [...menu.querySelectorAll<HTMLElement>("[role^=menuitem]")];
+    const at = items.indexOf(ev.target as HTMLElement);
+    const next =
+      ev.key === "ArrowDown" ? (at + 1) % items.length
+      : ev.key === "ArrowUp" ? (at - 1 + items.length) % items.length
+      : ev.key === "Home" ? 0
+      : ev.key === "End" ? items.length - 1
+      : null;
+    if (next != null) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      items[next]?.focus();
+      return;
+    }
+    if (ev.key === "Tab") {
+      menuOpen = null;
+      publish("skip");
+    }
+  });
+
   cards?.addEventListener("click", (ev) => {
+    // The card waits while an Apply is on its way, as the keys do.
+    if (applying || holding) return;
     const target = ev.target instanceof HTMLElement ? ev.target.closest("button") : null;
     if (!(target instanceof HTMLButtonElement)) return;
     const plane = target.dataset.sketchPlane;
@@ -688,6 +796,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (target.dataset.sketchMenu === "draw" || target.dataset.sketchMenu === "constrain") {
       const which = target.dataset.sketchMenu;
       menuOpen = menuOpen === which ? null : which;
+      // An open menu takes the focus, on its checked item or its first, so the arrow keys move through it.
+      const list = `[data-sketch-menu="${which}"] + [role=menu]`;
+      cardFocus = menuOpen ? [`${list} [aria-checked=true]`, `${list} [role^=menuitem]`] : [`[data-sketch-menu="${which}"]`];
       publish("skip");
       return;
     }
@@ -727,6 +838,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (sweep) void commitSweep();
       else beginSweep();
+      return;
+    }
+    // --- B20. A revolve turns the other way about the same axis. ---
+    if (target.dataset.sketchFlip != null && revolve) {
+      revolve = { ...revolve, axis: flipAxis(revolve.axis), follow: false };
+      publish("open");
+      armRevolveProbe();
       return;
     }
     if (target.dataset.sketchRuled != null && loft) {
@@ -811,12 +929,19 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     enterFace(hit.face);
   });
   window.addEventListener("keydown", (ev) => {
-    if (!sketchBusy(editor) || ev.defaultPrevented) return;
+    if (state.stage !== "model" || !sketchBusy(editor) || ev.defaultPrevented) return;
     const mods = { ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey };
     const history = (ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z" || ev.key === "y" || ev.key === "Y");
     if (!sketchHandlesKey(ev.key, mods) && !history) return;
-    const typing = ev.target instanceof HTMLElement && (ev.target.tagName === "INPUT" || ev.target.tagName === "TEXTAREA" || ev.target.isContentEditable);
-    if (typing && ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) {
+    if (applying || holding) {
+      const outside = typingTarget(ev.target);
+      if (outside && !outside.closest(".interact-hud, #sketchCards, .sketch-dims")) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
+    const field = typingTarget(ev.target);
+    if (field?.dataset.sketchDimInput != null) {
       if (ev.key === "Escape") {
         ev.preventDefault();
         ev.stopPropagation();
@@ -825,7 +950,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       }
       return;
     }
-    if (typing && !history && ev.key !== "Escape") return;
+    // Ctrl+Z in the size box steps the sketch the box belongs to. In any other field it is that field's own
+    // undo: the app's Undo command would otherwise take it and step the sketch.
+    if (field && !(history && field.closest(".interact-hud"))) {
+      if (history) ev.stopPropagation();
+      return;
+    }
+    // Enter on a focused card button presses that button. The app's Enter (Apply model edit) would cancel the press.
+    if (ev.key === "Enter" && ev.target instanceof HTMLButtonElement) {
+      if (ev.target.closest("#sketchCards")) ev.stopPropagation();
+      return;
+    }
     ev.preventDefault();
     ev.stopPropagation();
     const next = sketchKey(editor, ev.key, mods);
@@ -843,6 +978,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }, true);
   host.view.onSketchPointer((ev) => {
     lastClient = { x: ev.x, y: ev.y };
+    if (applying || holding) return;
     if (editor.phase === "choosing") {
       const hit = chooseAt(ev.x, ev.y);
       editor = { ...editor, hotPlane: hit?.kind === "plane" ? hit.name : null };
@@ -859,7 +995,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       publish("skip");
       return;
     }
-    if (ev.phase === "down") menuOpen = null;
+    if (ev.phase === "down") {
+      menuOpen = null;
+      // A press on the canvas leaves an open dimension label: its typed value is set first.
+      const label = labels.querySelector<HTMLInputElement>("input.sketch-dim-input");
+      if (label) commitOpenLabel(label);
+    }
     if (editor.phase !== "editing" || editor.lookAround) return;
     const frame = drawingFrame();
     if (!frame) return;
@@ -903,7 +1044,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   });
 
   host.canvas.dataset.sketch = "off";
-  host.canvas.dataset.sketchTool = "";
+  // Not `data-sketch-tool`: the card's tool buttons carry that, and a locator for one must not also match the canvas.
+  host.canvas.dataset.sketchCurrentTool = "";
   host.canvas.dataset.sketchEntities = "0";
   host.canvas.dataset.sketchPlane = "";
   host.canvas.dataset.sketchLook = "0";
@@ -936,7 +1078,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.canvas.dataset.sweepProfile = "0";
 
   function enterNamed(name: "XY" | "XZ" | "YZ" | "workplane") {
-    const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : originFrame(name, host.origin());
+    const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : offsetFrame(originFrame(name, host.origin()));
     const own = workplaneOwn({ source: "global", origin: frame.origin, turn: planeOf(frame).turn }, host.pose());
     const on: SketchOn = name === "workplane" ? { kind: "workplane" } : { kind: "plane", name };
     startDrawing(own.origin, own.turn, on);
@@ -953,6 +1095,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function startDrawing(origin: Vec3, turn: Vec3, on: SketchOn) {
+    chooseOffset = 0;
     const base = editor.phase === "choosing" ? editor : beginChoose(editor);
     editor = enterSketch(base, { origin, turn }, on);
     aimKey = "";
@@ -966,10 +1109,16 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return frameFromWorkplane(workplaneIn({ source: "global", origin: sketch.plane.origin, turn: sketch.plane.turn }, host.pose()));
   }
 
+  /** An origin plane moved by the card's Offset along its normal, so a sketch can start above the bed with no solid. */
+  function offsetFrame(frame: SketchFrame): SketchFrame {
+    if (chooseOffset === 0) return frame;
+    return { ...frame, origin: [0, 1, 2].map((i) => frame.origin[i]! + frame.w[i]! * chooseOffset) as Vec3 };
+  }
+
   function chooserPlanes(): OriginPlane[] {
     const origin = host.origin();
     const half = Math.max(host.extent(), 20) * 0.75;
-    const planes: OriginPlane[] = (["XY", "XZ", "YZ"] as const).map((name) => ({ name, frame: originFrame(name, origin), half }));
+    const planes: OriginPlane[] = (["XY", "XZ", "YZ"] as const).map((name) => ({ name, frame: offsetFrame(originFrame(name, origin)), half }));
     const work = frameFromWorkplane(host.workplane());
     const same = planes.some((plane) => framesMatch(plane.frame, work));
     if (!same) planes.push({ name: "workplane", frame: work, half });
@@ -1000,18 +1149,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     host.view.setSketchCapture(sketchBusy(editor) && !editor.lookAround && !host.sketchHolesArmed());
     host.view.setSketchDim(sketchBusy(editor));
-    if (editor.phase === "editing" && aimKey) host.view.setSketchLock(!editor.lookAround);
+    if (editor.phase === "editing" && aimKey) host.view.setSketchLock(!editor.lookAround && !featureTilt());
     draw();
     paintCards();
     paintBox();
     paintDataset();
     paintLabels();
-    if (editor.phase === "off") host.readout(host.idleReadout());
-    else if (sweep && editor.phase === "editing") host.readout(sweep.note || sweepReadout());
-    else if (loft && editor.phase === "editing") host.readout(loft.note || loftReadout());
-    else if (revolve && editor.phase === "editing") host.readout(revolveNote || revolveReadout());
-    else if (gesture && editor.phase === "editing") host.readout(extrudeReadout());
-    else host.readout(sketchReadout(editor));
+    paintGlyphs();
+    paintReadout();
     syncHud(hudMode);
     focusDimensionLabel();
     if (button) button.setAttribute("aria-pressed", sketchBusy(editor) ? "true" : "false");
@@ -1024,17 +1169,51 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     // --- F1. The empty-plate card sits on the plane. Hide it while drawing so a click reaches the sketch. ---
     const empty = document.querySelector<HTMLElement>("#modelEmpty");
     if (empty) empty.hidden = sketchBusy(editor) || host.solid() != null;
-    host.onHistory();
+    const history = editor.phase === "editing" ? `${canUndoSketch(editor)}:${canRedoSketch(editor)}` : editor.phase;
+    if (history !== historyKey) {
+      historyKey = history;
+      host.onHistory();
+    }
+  }
+
+  /**
+   * The readout is the sketch's while it is open. An Apply's sentences, working and done, and the Hole panel's stay.
+   * Once the sketch closes it hands the readout back once ("Sketch kept…" after Finish), and then leaves the solid's
+   * own sentences alone, so a later sync does not write over "Edit undone." or a volume.
+   */
+  function paintReadout() {
+    if (keepReadout || (applying || holding) || host.sketchHolesArmed()) {
+      saidLast = false;
+      return;
+    }
+    if (!sketchBusy(editor)) {
+      if (saidLast) host.readout(editor.phase === "pinned" ? sketchReadout(editor) : host.idleReadout());
+      saidLast = false;
+      return;
+    }
+    saidLast = true;
+    if (sweep && editor.phase === "editing") host.readout(sweep.note || sweepReadout());
+    else if (loft && editor.phase === "editing") host.readout(loft.note || loftReadout());
+    else if (revolve && editor.phase === "editing") host.readout(revolveNote || revolveReadout());
+    else if (gesture && editor.phase === "editing") host.readout(extrudeReadout());
+    else host.readout(sketchReadout(editor));
   }
 
   function aim(frame: SketchFrame | null) {
     if (!frame) return;
-    const key = `${editor.active}:${frame.origin.map((value) => value.toFixed(3)).join()}:${frame.w.map((value) => value.toFixed(3)).join()}`;
+    const tilt = featureTilt();
+    const key = `${editor.active}:${frame.origin.map((value) => value.toFixed(3)).join()}:${frame.w.map((value) => value.toFixed(3)).join()}:${tilt ? "tilt" : "plan"}`;
     if (key === aimKey) return;
     aimKey = key;
     const view = host.view.sketchView();
-    const pose = lookAtFrame(frame, host.focus(), host.extent(), view.fov);
-    host.view.setSketchCamera({ ...pose, animateMs: SKETCH_ANIM_MS, lock: !editor.lookAround });
+    // --- B15. An extrude or a revolve tilts the view so its depth shows; back in the sketch the view is the plan again.
+    const pose = (tilt ? tiltedAtFrame : lookAtFrame)(frame, host.focus(), host.extent(), view.fov);
+    host.view.setSketchCamera({ ...pose, animateMs: SKETCH_ANIM_MS, lock: !editor.lookAround && !tilt });
+  }
+
+  /** An extrude or a revolve is being aimed. */
+  function featureTilt(): boolean {
+    return !!(gesture || revolve);
   }
 
   function ensureRefs(frame: SketchFrame) {
@@ -1076,7 +1255,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     hud.setParams(host.parameters());
     if (mode === "skip") return;
     if (sweep && editor.phase === "editing") {
-      const fields: HudField[] = [{ id: "scale", label: "Scale", unit: "×", value: scaleOf(sweep.scale) }];
+      const fields: HudField[] = [{ id: "scale", label: "End scale", unit: "×", value: scaleOf(sweep.scale) }];
       const at = pointerAt();
       if (mode === "open" || !hud.shown) hud.open(fields, at, host.parameters());
       else hud.setValues(fields.map((field) => field.value));
@@ -1124,7 +1303,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const sketch = activeSketch(editor) ?? (editor.phase === "pinned" ? editor.pinned[editor.pinned.length - 1]?.sketch : null);
     const on = sketch?.on;
     host.canvas.dataset.sketch = editor.phase;
-    host.canvas.dataset.sketchTool = editor.phase === "editing" ? editor.tool : "";
+    host.canvas.dataset.sketchCurrentTool = editor.phase === "editing" ? editor.tool : "";
     host.canvas.dataset.sketchEntities = String(sketch?.entities.length ?? 0);
     host.canvas.dataset.sketchPlane = on?.kind === "plane" ? on.name : on?.kind === "face" ? `face ${on.face.index}` : on?.kind === "workplane" ? "workplane" : "";
     host.canvas.dataset.sketchLook = editor.lookAround ? "1" : "0";
@@ -1198,10 +1377,34 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     box.style.height = `${Math.abs(drag.y - drag.sy)}px`;
   }
 
+  /** Everything the cards show. They are rebuilt only when this changes. */
+  function cardsState(pinned: readonly { id: number; name: string }[]): string {
+    const parts: string[] = [editor.phase, String(editor.active), editor.tool, menuOpen ?? "", editor.lookAround ? "look" : ""];
+    parts.push(pinned.map((item) => `${item.id}=${item.name}`).join("/"));
+    if (editor.phase === "editing") {
+      parts.push(activeSketch(editor)?.on?.kind ?? "");
+      if (gesture || revolve || loft || sweep) {
+        const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
+        const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
+        parts.push(mode, choice, loft ? (loft.ruled ? "ruled" : "smooth") : "");
+      }
+    }
+    return parts.join("|");
+  }
+
   function paintCards() {
     if (!cards) return;
-    cards.replaceChildren();
     const pinned = editor.pinned.filter((item) => item.id !== editor.active && item.name !== "Sketch");
+    const key = cardsState(pinned);
+    if (key === cardsKey) {
+      takeCardFocus();
+      return;
+    }
+    cardsKey = key;
+    // The rebuilt card keeps the keyboard where it was: the button with the same data is focused again.
+    const focused = document.activeElement instanceof HTMLElement && cards.contains(document.activeElement) ? sameButton(document.activeElement) : null;
+    if (focused && cardFocus.length === 0) cardFocus = [focused];
+    cards.replaceChildren();
     if (editor.phase === "off" && pinned.length === 0) {
       cards.hidden = true;
       return;
@@ -1211,6 +1414,21 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (editor.phase === "editing") cards.append(card(editingRow()));
     for (const item of pinned) cards.append(card(pinnedRow(item.id, item.name)));
     if (cards.childElementCount === 0) cards.hidden = true;
+    takeCardFocus();
+  }
+
+  function takeCardFocus() {
+    if (cardFocus.length === 0 || !cards) return;
+    const host = cards;
+    const node = cardFocus.map((selector) => host.querySelector<HTMLElement>(selector)).find((found) => found != null);
+    cardFocus = [];
+    node?.focus();
+  }
+
+  /** A selector for the button with the same data attributes as `node`, or null when it has none. */
+  function sameButton(node: HTMLElement): string | null {
+    const data = Object.entries(node.dataset).map(([name, value]) => `[data-${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${CSS.escape(value ?? "")}"]`);
+    return data.length > 0 ? `button${data.join("")}` : null;
   }
 
   function chooserRow(): Node[] {
@@ -1220,8 +1438,35 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       planeButton("XZ", "XZ plane"),
       planeButton("YZ", "YZ plane"),
       planeButton("workplane", "Workplane"),
+      offsetField(),
       textButton("Cancel", { sketchCancel: "" }),
     ];
+  }
+
+  function offsetField(): HTMLElement {
+    const label = document.createElement("label");
+    label.className = "sketch-offset";
+    label.append("Offset ");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.size = 5;
+    input.value = String(chooseOffset);
+    input.dataset.sketchOffset = "";
+    input.setAttribute("aria-label", "Offset of the origin plane, mm");
+    input.title = "Move XY, XZ or YZ along its normal before sketching on it.";
+    input.addEventListener("input", () => {
+      const value = Number(input.value.trim().replace(",", "."));
+      input.setAttribute("aria-invalid", Number.isFinite(value) ? "false" : "true");
+      if (!Number.isFinite(value)) {
+        host.readout("Type the offset in millimetres, such as 30 or -5.");
+        return;
+      }
+      chooseOffset = value;
+      publish("skip");
+    });
+    label.append(input, " mm");
+    return label;
   }
 
   function editingRow(): Node[] {
@@ -1247,6 +1492,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       const auto = choice === "auto" ? "Auto · " : "";
       row.push(textButton(`${auto}${modeLabel(mode)} (M)`, { sketchMode: mode }));
       if (loft) row.push(textButton(loft.ruled ? "Ruled" : "Smooth", { sketchRuled: loft.ruled ? "1" : "0" }));
+      if (revolve) row.push(textButton("Flip", { sketchFlip: "" }));
       row.push(textButton("Apply", { sketchApply: "" }));
     }
     row.push(textButton(editor.lookAround ? "Lock view" : "Look around", { sketchLook: editor.lookAround ? "1" : "0" }));
@@ -1265,20 +1511,20 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     open.textContent = current?.label ?? "Draw";
     open.setAttribute("aria-haspopup", "menu");
     open.setAttribute("aria-expanded", menuOpen === "draw" ? "true" : "false");
-    open.setAttribute("aria-pressed", current ? "true" : "false");
     const menu = document.createElement("div");
     menu.className = "sketch-menu-list";
     menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "Draw");
     menu.hidden = menuOpen !== "draw";
     for (const item of DRAW_MENU) {
       const node = document.createElement("button");
       node.type = "button";
       node.className = "btn";
-      node.setAttribute("role", "menuitem");
+      node.setAttribute("role", "menuitemradio");
       node.dataset.sketchTool = item.tool;
       node.textContent = item.label;
       node.title = item.shortcut;
-      node.setAttribute("aria-pressed", editor.tool === item.tool ? "true" : "false");
+      node.setAttribute("aria-checked", editor.tool === item.tool ? "true" : "false");
       menu.append(node);
     }
     wrap.append(open, menu);
@@ -1296,29 +1542,37 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     open.textContent = current?.label ?? "Constrain";
     open.setAttribute("aria-haspopup", "menu");
     open.setAttribute("aria-expanded", menuOpen === "constrain" ? "true" : "false");
-    open.setAttribute("aria-pressed", current ? "true" : "false");
     const menu = document.createElement("div");
     menu.className = "sketch-menu-list";
     menu.setAttribute("role", "menu");
     menu.setAttribute("aria-label", "Constraints");
     menu.hidden = menuOpen !== "constrain";
     let group = "";
+    let section: HTMLElement = menu;
     for (const item of CONSTRAIN_MENU) {
       if (item.group !== group) {
         group = item.group;
+        const name = item.group === "geom" ? "Geometry" : item.group === "size" ? "Size" : "Edit";
         const heading = document.createElement("p");
         heading.className = "sketch-menu-label";
-        heading.textContent = item.group === "geom" ? "Geometry" : item.group === "size" ? "Size" : "Edit";
-        menu.append(heading);
+        heading.textContent = name;
+        heading.setAttribute("aria-hidden", "true");
+        section = document.createElement("div");
+        section.setAttribute("role", "group");
+        section.setAttribute("aria-label", name);
+        section.style.display = "contents";
+        menu.append(heading, section);
       }
       const node = document.createElement("button");
       node.type = "button";
       node.className = "btn";
-      node.setAttribute("role", "menuitem");
+      // "Remove constraint" is a command; the others arm a constraint tool, one at a time.
+      const command = item.action === "remove";
+      node.setAttribute("role", command ? "menuitem" : "menuitemradio");
       node.dataset.sketchConstrain = item.action;
       node.textContent = item.label;
-      node.setAttribute("aria-pressed", editor.tool === item.action ? "true" : "false");
-      menu.append(node);
+      if (!command) node.setAttribute("aria-checked", editor.tool === item.action ? "true" : "false");
+      section.append(node);
     }
     wrap.append(open, menu);
     return wrap;
@@ -1354,6 +1608,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
         node = wantInput ? dimensionInput(item.id, item.expr ?? item.text) : dimensionButton(item.id, item.text, item.title, item.expr);
         labels.append(node);
       } else if (node instanceof HTMLButtonElement) paintDimensionButton(node, item.text, item.expr);
+      if (node instanceof HTMLButtonElement) node.setAttribute("aria-label", `${item.spoken}${item.expr ? `, from ${item.expr}` : ""}. Click to type a new one.`);
       const screen = host.view.projectPoint(toWorld(frame, item.at));
       node.hidden = !screen;
       if (screen) {
@@ -1364,6 +1619,64 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       node.dataset.conflict = status?.conflicting.includes(item.id) ? "1" : "0";
       node.title = item.title;
     }
+  }
+
+  function paintGlyphs() {
+    const sketch = activeSketch(editor);
+    const frame = drawingFrame();
+    if (!sketch || !frame || editor.phase !== "editing") {
+      glyphs.hidden = true;
+      return;
+    }
+    let marks = glyphsOf.get(sketch);
+    if (!marks) {
+      marks = constraintGlyphs(sketch);
+      glyphsOf.set(sketch, marks);
+    }
+    if (marks.length === 0) {
+      glyphs.hidden = true;
+      return;
+    }
+    glyphs.hidden = false;
+    const status = placedStatus(sketch);
+    const key = marks.map((mark) => `${mark.id}:${mark.text}:${mark.slot}`).join(" ") + `|${editor.constrain.selected ?? ""}|${status?.conflicting.join(",") ?? ""}`;
+    if (key !== glyphsKey) {
+      glyphsKey = key;
+      glyphs.replaceChildren(
+        ...marks.map((mark) => {
+          const node = document.createElement("button");
+          node.type = "button";
+          node.className = "sketch-dim sketch-glyph";
+          node.dataset.glyphId = String(mark.id);
+          node.textContent = mark.text;
+          node.title = mark.title;
+          node.setAttribute("aria-label", mark.title);
+          const selected = editor.constrain.selected === mark.id;
+          node.setAttribute("aria-pressed", selected ? "true" : "false");
+          node.dataset.conflict = status?.conflicting.includes(mark.id) ? "1" : "0";
+          node.style.fontSize = "10px";
+          node.style.padding = "0 3px";
+          if (selected) node.style.outline = "2px solid var(--accent)";
+          node.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            ev.preventDefault();
+            editor = selectConstraint(editor, mark.id);
+            publish("open");
+          });
+          return node;
+        }),
+      );
+    }
+    marks.forEach((mark, index) => {
+      const node = glyphs.children[index] as HTMLElement | undefined;
+      if (!node) return;
+      const screen = host.view.projectPoint(toWorld(frame, mark.at));
+      node.hidden = !screen;
+      if (screen) {
+        node.style.left = `${screen.x + 12 + mark.slot * 16}px`;
+        node.style.top = `${screen.y - 12}px`;
+      }
+    });
   }
 
   /** The heads-up box focuses itself on open. Put the caret back in the dimension label. */
@@ -1392,7 +1705,6 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     node.dataset.dimId = String(id);
     paintDimensionButton(node, text, expr);
     node.title = title;
-    node.setAttribute("aria-label", title);
     node.addEventListener("click", (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
@@ -1412,13 +1724,29 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     node.setAttribute("aria-label", "Driving dimension");
     node.addEventListener("keydown", (ev) => {
       ev.stopPropagation();
+      if (ev.key === "Escape") node.dataset.cancelled = "1";
       if (ev.key !== "Enter") return;
       ev.preventDefault();
+      node.dataset.done = "1";
       editor = commitDimensionText(editor, id, node.value);
       publish("open");
     });
     node.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    // Leaving the label sets what was typed, as Enter does, unless Esc cancelled it. Typed values are not lost on a
+    // click elsewhere (the class of bug #183 and #186 fixed for the settings fields).
+    node.addEventListener("blur", () => commitOpenLabel(node));
     return node;
+  }
+
+  /** Set the label's typed value if it is still open, not cancelled, and not already set by Enter. */
+  function commitOpenLabel(node: HTMLInputElement) {
+    if (node.dataset.cancelled || node.dataset.done || editor.phase !== "editing") return;
+    node.dataset.done = "1";
+    const id = Number(node.dataset.dimId);
+    const next = blurDimensionText(editor, id, node.value);
+    if (next === editor) return;
+    editor = next;
+    publish("open");
   }
 
   function pinnedRow(id: number, name: string): Node[] {
@@ -1469,14 +1797,18 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return node;
   }
 
-  openFeatureImpl = (sketch, preset) => {
+  openFeatureImpl = (sketch, preset, outlines) => {
     host.closeTool();
-    editor = enterSketchData(editor, sketch);
+    editor = enterSketchData(endEditSession(editor), sketch);
     editSession = true;
+    editCards = editor.active != null ? [editor.active] : [];
+    editOutlines = [...outlines];
     const slots: 1 | 2 | 3 = preset.draftDeg != null && preset.draftDeg !== 0 ? 3 : preset.depth2 != null && preset.depth2 > 0 ? 2 : 1;
     revolve = null;
     loft = null;
     sweep = null;
+    const drawn = activeSketch(editor) ?? sketch;
+    const found = regionsOfOutlines(drawn, outlines);
     gesture = {
       slots,
       distance: preset.distance,
@@ -1484,7 +1816,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       draft: preset.draftDeg,
       upTo: preset.upTo,
       choice: preset.choice,
-      regions: chooseRegions(editor && activeSketch(editor) ? activeSketch(editor)! : sketch, [], null),
+      regions: found.length > 0 ? found : chooseRegions(drawn, [], null),
       dragging: false,
       guide: null,
       down: null,
@@ -1493,15 +1825,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     refsKey = "";
     publish("open");
   };
-  openRevolveImpl = (sketch, preset) => {
+  openRevolveImpl = (sketch, preset, outlines) => {
     host.closeTool();
-    editor = enterSketchData(editor, sketch);
+    editor = enterSketchData(endEditSession(editor), sketch);
     editSession = true;
+    editCards = editor.active != null ? [editor.active] : [];
+    editOutlines = [...outlines];
     gesture = null;
     loft = null;
     sweep = null;
     const drawn = activeSketch(editor) ?? sketch;
-    const regions = regionsForEdit(drawn);
+    const regions = regionsForEdit(drawn, outlines);
     revolveNote = "";
     revolve = {
       angle: preset.angleDeg,
@@ -1519,12 +1853,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   };
   openLoftImpl = (preset) => {
     host.closeTool();
-    editor = sketchOff();
+    // The cards already on screen stay. The edit's own sections are cards of their own, which go when the edit ends.
+    editor = endEditSession(editor);
+    if (editor.phase === "editing") editor = finishSketch(editor);
+    const before = new Set(editor.pinned.map((item) => item.id));
     editSession = true;
     gesture = null;
     revolve = null;
     if (preset.kind === "sweep") {
-      if (preset.pathSketch) editor = pinSketch(editor, preset.pathSketch, "Sketch 1");
+      if (preset.pathSketch) editor = pinSketch(editor, preset.pathSketch, "Path");
       editor = enterSketchData(editor, preset.profile);
       const drawn = activeSketch(editor) ?? preset.profile;
       const profile = chooseRegions(drawn, [], null)[0] ?? null;
@@ -1548,14 +1885,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       let nameAt = 1;
       for (const item of real) {
         if (item === active || !item.sketch) continue;
-        editor = pinSketch(editor, item.sketch, `Sketch ${nameAt}`);
+        editor = pinSketch(editor, item.sketch, `Section ${nameAt}`);
         nameAt += 1;
       }
       const drawn = active?.sketch ?? preset.sketches.find((sketch) => sketch) ?? null;
       if (drawn) editor = enterSketchData(editor, drawn);
+      const own = editor.pinned.filter((item) => !before.has(item.id));
       const picks: LoftPick[] = preset.sections.map((section, index) => {
         const sketch = preset.sketches[index] ?? null;
-        const pinned = sketch ? editor.pinned.find((item) => item.sketch === sketch || JSON.stringify(item.sketch) === JSON.stringify(sketch)) : undefined;
+        const pinned = sketch ? own.find((item) => item.sketch === sketch || JSON.stringify(item.sketch) === JSON.stringify(sketch)) : undefined;
         return {
           key: pinned ? `sketch:${pinned.id}` : `section:${index}`,
           sketchId: pinned?.id ?? null,
@@ -1566,18 +1904,32 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       loft = { picks, ruled: preset.ruled, choice: preset.choice, note: "" };
       sweep = null;
     }
+    editCards = editor.pinned.filter((item) => !before.has(item.id)).map((item) => item.id);
     aimKey = "";
     refsKey = "";
     publish("open");
   };
+  // Model closes the sketch: a history jump, holes from it applied, or Model left. What Model says then stays.
   closeFeatureImpl = () => {
-    editSession = false;
+    keepReadout = true;
+    try {
+      closeQuietly();
+    } finally {
+      keepReadout = false;
+      saidLast = false;
+    }
+  };
+  function closeQuietly() {
     if (host.sketchHolesArmed()) host.endSketchHoles();
     if (editor.phase !== "editing" && editor.phase !== "choosing") {
       gesture = null;
       revolve = null;
       loft = null;
       sweep = null;
+      if (editSession) {
+        editor = endEditSession(editor);
+        publish("open");
+      }
       return;
     }
     gesture = null;
@@ -1588,7 +1940,45 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.view.setHandles([]);
     host.view.setGhost(null);
     host.clearExtrudePreview();
-    editor = finishSketch(editor);
+    editor = endEditSession(finishSketch(editor));
+    publish("open");
+  }
+  // Another Model tool opened from the toolbar or a key. The sketch gives way to it, as starting a command ends the
+  // sketch in Fusion or Onshape: a new sketch stays as a card, and a History Edit is cancelled. Holes from this
+  // sketch are its own tool, and an Apply on its way finishes first.
+  const bar = document.querySelector<HTMLElement>("#modelBar");
+  if (bar) {
+    new MutationObserver(() => {
+      if (!bar.dataset.tool || !sketchBusy(editor) || host.sketchHolesArmed() || (applying || holding)) return;
+      if (editor.phase === "choosing") {
+        editor = finishSketch(editor);
+        publish("open");
+        return;
+      }
+      if (editSession) escapeFeature(() => {});
+      else leaveEditing(finishSketch(editor));
+    }).observe(bar, { attributes: true, attributeFilter: ["data-tool"] });
+  }
+  holdImpl = (on) => {
+    holding = on && sketchBusy(editor);
+  };
+  forgetImpl = () => {
+    if (editor.phase === "off" && editor.pinned.length === 0 && !editSession) return;
+    if (host.sketchHolesArmed()) host.endSketchHoles();
+    gesture = null;
+    revolve = null;
+    revolveNote = "";
+    loft = null;
+    sweep = null;
+    editSession = false;
+    editCards = [];
+    editOutlines = [];
+    menuOpen = null;
+    window.clearTimeout(probeTimer);
+    host.view.setHandles([]);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    editor = sketchOff();
     publish("open");
   };
   faceForSketch = () => host.selectedFace();
@@ -1609,11 +1999,21 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   return { sync };
 
-  function leaveEditing(next: SketchEditor) {
+  /** Esc in a feature gesture: back to the sketch, or in a History Edit, out of the edit at once. */
+  function escapeFeature(end: () => void) {
+    if (!editSession) {
+      end();
+      return;
+    }
+    leaveEditing(editor.active != null ? discardSketch(editor, editor.active) : finishSketch(editor));
+  }
+
+  function leaveEditing(after: SketchEditor) {
+    let next = after;
     const left = editor.phase === "editing" && next.phase !== "editing";
     const session = editSession;
     if (left) {
-      editSession = false;
+      next = endEditSession(next);
       if (host.sketchHolesArmed()) host.endSketchHoles();
       gesture = null;
       revolve = null;
@@ -1651,7 +2051,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (sweep) endSweep();
     const sketch = activeSketch(editor);
     if (!sketch || editor.phase !== "editing") return;
-    const chosen = chooseRegions(sketch, editor.selection.entities, editor.cursor);
+    const chosen = editedRegions(sketch) ?? chooseRegions(sketch, editor.selection.entities, editor.cursor);
     if (chosen.length === 0) {
       host.readout("Select a region to extrude.");
       return;
@@ -1670,6 +2070,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     };
     publish("open");
     armProbe();
+  }
+
+  /** In a History Edit with nothing selected, the regions the step was applied to. Null otherwise. */
+  function editedRegions(sketch: SketchData): Region[] | null {
+    if (!editSession || editOutlines.length === 0 || editor.selection.entities.length > 0) return null;
+    const found = regionsOfOutlines(sketch, editOutlines);
+    return found.length > 0 ? found : null;
   }
 
   function endExtrude() {
@@ -1700,6 +2107,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       touches,
       distance: gesture?.distance ?? 0,
       lockNew: host.featureEdit() === "root",
+      stepEdit: host.featureEdit() === "step",
     });
   }
 
@@ -1720,7 +2128,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   async function commitExtrude() {
     const sketch = activeSketch(editor);
-    if (!sketch || !gesture || committing) return;
+    if (!sketch || !gesture || (applying || holding)) return;
     const built = buildSketchExtrude({
       sketch,
       regions: gesture.regions,
@@ -1735,25 +2143,65 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const op = withExprs(built.op, gesture.texts);
-    committing = true;
     const mode = resolvedMode();
-    const error = await host.commitExtrude(op, mode === "new" ? "new" : "on-solid");
-    committing = false;
-    if (!gesture) return;
+    const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
+    if (error === undefined) return;
     if (error) {
       host.readout(error);
       return;
     }
-    editSession = false;
+    afterFeature();
+  }
+
+  /**
+   * Await an Apply. Keys, clicks, and pointer picks wait while it runs (`applying`), so an Esc cannot leave the
+   * step applied with the sketch still open. Undefined when the sketch closed meanwhile (Model was left, or the
+   * history jumped), so the caller does nothing more.
+   */
+  async function committed(apply: Promise<string | null>): Promise<string | null | undefined> {
+    applying = true;
+    let error: string | null;
+    try {
+      error = await apply;
+    } finally {
+      applying = false;
+    }
+    return editor.phase === "editing" ? error : undefined;
+  }
+
+  /**
+   * The feature was applied. The gesture ends and the sketch closes: a new sketch stays as a card, a History Edit's
+   * copy goes. The readout keeps what the apply said about the solid, and the solid is framed, since putting the
+   * sketch camera back would hide what was just made.
+   */
+  function afterFeature() {
     gesture = null;
+    revolve = null;
+    revolveNote = "";
+    loft = null;
+    sweep = null;
     window.clearTimeout(probeTimer);
     host.view.setHandles([]);
     host.view.setGhost(null);
     host.clearExtrudePreview();
-    editor = finishSketch(editor);
-    publish("open");
-    // The sketch camera is put back, which would hide a solid this extrude just made. Frame it.
+    editor = endEditSession(finishSketch(editor));
+    keepReadout = true;
+    try {
+      publish("open");
+    } finally {
+      keepReadout = false;
+    }
     host.frameSolid();
+  }
+
+  /** An edit is over: the cards it opened go with it. A sketch that was not an edit is returned as it is. */
+  function endEditSession(next: SketchEditor): SketchEditor {
+    let out = next;
+    if (editSession) for (const id of editCards) out = discardSketch(out, id);
+    editSession = false;
+    editCards = [];
+    editOutlines = [];
+    return out;
   }
 
   function armProbe() {
@@ -1791,7 +2239,18 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!gesture) return "";
     const mode = modeLabel(resolvedMode());
     const where = gesture.upTo != null ? `Up to face ${typeof gesture.upTo === "number" ? gesture.upTo : gesture.upTo.index}. ` : "";
-    return `${where}Extrude ${gesture.distance} mm, ${mode}. Drag the arrow or type the distance. M changes join, cut, or new object. Tab adds the other side, then a draft. Enter or Apply keeps it. Esc returns to the sketch.`;
+    return `${where}${tooBig()}Extrude ${gesture.distance} mm, ${mode}. Drag the arrow or type the distance. Click a region to extrude it, Shift-click to add one. M changes join, cut, or new object. Tab adds the other side, then a draft. Enter or Apply keeps it. Esc returns to the sketch.`;
+  }
+
+  /** --- B28. A depth past the printer's build volume along the extrude is said first; it is not refused. --- */
+  function tooBig(): string {
+    const frame = drawingFrame();
+    if (!gesture || !frame || gesture.upTo != null) return "";
+    const span = Math.abs(gesture.distance) + (gesture.slots >= 2 && gesture.depth2 != null ? gesture.depth2 : 0);
+    const upright = Math.abs(frame.w[2]) > 0.7;
+    const limit = upright ? state.profile.bedZ : Math.max(state.profile.bedX, state.profile.bedY);
+    if (!(limit > 0) || span <= limit) return "";
+    return `${formatMm(span)} mm is more than the printer's ${formatMm(limit)} mm build ${upright ? "height" : "width"}. `;
   }
 
   function extrudePointer(ev: { phase: "down" | "move" | "up"; x: number; y: number; shift: boolean; ctrl: boolean; alt: boolean }, frame: ReturnType<typeof drawingFrame>) {
@@ -1813,7 +2272,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (ev.phase === "move") {
       const sketch = activeSketch(editor);
-      if (sketch && editor.selection.entities.length === 0) {
+      if (sketch && editor.selection.entities.length === 0 && !editSession && !gesture.picked) {
         const hit = rayOnPlane(frame, host.view.pointerRay(ev.x, ev.y).origin, host.view.pointerRay(ev.x, ev.y).direction);
         const chosen = chooseRegions(sketch, [], hit?.uv ?? null);
         if (chosen.length > 0) gesture = { ...gesture, regions: chosen };
@@ -1824,12 +2283,31 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (ev.phase === "up" && gesture.down) {
       const moved = Math.hypot(ev.x - gesture.down.x, ev.y - gesture.down.y);
       gesture = { ...gesture, down: null, dragging: false };
-      if (moved < 4) void commitExtrude();
-      else {
-        publish("open");
-        armProbe();
+      if (moved < 4) {
+        // A click picks the region under it, as in Fusion. Shift or Ctrl adds or drops one. Enter or Apply keeps the extrude.
+        const regions = clickedRegions(ev, frame, gesture.regions);
+        if (regions) gesture = { ...gesture, regions, picked: true };
       }
+      publish("open");
+      armProbe();
     }
+  }
+
+  /**
+   * The regions after a click during an extrude or revolve: the one under the pointer, or with Shift or Ctrl the
+   * current ones with it added or dropped. Null when the click is on no region, so the pick stays.
+   */
+  function clickedRegions(ev: { x: number; y: number; shift: boolean; ctrl: boolean }, frame: SketchFrame, current: readonly Region[]): Region[] | null {
+    const sketch = activeSketch(editor);
+    if (!sketch) return null;
+    const ray = host.view.pointerRay(ev.x, ev.y);
+    const hit = rayOnPlane(frame, ray.origin, ray.direction);
+    const region = hit ? regionAt(sketchRegions(sketch), hit.uv) : null;
+    if (!region) return null;
+    if (!(ev.shift || ev.ctrl)) return [region];
+    const kept = current.filter((item) => item !== region);
+    if (kept.length === current.length) return [...current, region];
+    return kept.length > 0 ? kept : null;
   }
 
   function dragDistance(ev: { x: number; y: number; ctrl: boolean; shift: boolean }, frame: NonNullable<ReturnType<typeof drawingFrame>>, down: { x: number; y: number; distance: number }): number | null {
@@ -1925,7 +2403,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const sketch = activeSketch(editor);
     const frame = drawingFrame();
     if (!sketch || !frame || editor.phase !== "editing") return;
-    const regions = preset ? regionsForEdit(sketch) : chooseRegions(sketch, editor.selection.entities, editor.cursor);
+    const regions = (preset ? regionsForEdit(sketch, editOutlines) : editedRegions(sketch)) ?? chooseRegions(sketch, editor.selection.entities, editor.cursor);
     if (regions.length === 0) {
       host.readout("Select a region to revolve.");
       return;
@@ -1978,6 +2456,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       touches,
       distance: 1,
       lockNew: host.featureEdit() === "root",
+      stepEdit: host.featureEdit() === "step",
     });
   }
 
@@ -1996,7 +2475,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   async function commitRevolve() {
     const sketch = activeSketch(editor);
-    if (!sketch || !revolve || committing) return;
+    if (!sketch || !revolve || (applying || holding)) return;
     const built = buildSketchRevolve({
       sketch,
       regions: revolve.regions,
@@ -2009,24 +2488,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const op = withExprs(built.op, revolve.angleText ? { angle: revolve.angleText } : undefined);
-    committing = true;
     const mode = resolvedRevolveMode();
-    const error = await host.commitExtrude(op, mode === "new" ? "new" : "on-solid");
-    committing = false;
-    if (!revolve) return;
+    const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
+    if (error === undefined) return;
     if (error) {
       host.readout(error);
       return;
     }
-    editSession = false;
-    revolve = null;
-    window.clearTimeout(probeTimer);
-    host.view.setHandles([]);
-    host.view.setGhost(null);
-    host.clearExtrudePreview();
-    editor = finishSketch(editor);
-    publish("open");
-    host.frameSolid();
+    afterFeature();
   }
 
   function armRevolveProbe() {
@@ -2049,7 +2518,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!revolve) return "";
     if (revolve.crossing) return `${CROSS_REFUSAL} Move the axis, or pick a region on one side of it.`;
     const mode = modeLabel(resolvedRevolveMode());
-    return `Revolve ${revolve.angle}°, ${mode}. Drag the ring or type the angle. Typing 360 is a full turn. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
+    return `Revolve ${revolve.angle}°, ${mode}. Drag the ring or type the angle. Typing 360 is a full turn. Click a region to revolve it, Shift-click to add one. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
   }
 
   function axisUnderPointer(sketch: SketchData, frame: NonNullable<ReturnType<typeof drawingFrame>>): RevolveAxis | null {
@@ -2099,15 +2568,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       const wasFollow = revolve.follow;
       revolve = { ...revolve, down: null, dragging: false };
       if (moved < 4) {
-        if (wasFollow) {
-          revolve = { ...revolve, follow: false };
-          publish("open");
-          armRevolveProbe();
-        } else void commitRevolve();
-      } else {
-        publish("open");
-        armRevolveProbe();
+        // The first click locks the axis. A later one picks the region under it; Enter or Apply keeps the revolve.
+        if (wasFollow) revolve = { ...revolve, follow: false };
+        else {
+          const regions = clickedRegions(ev, frame, revolve.regions);
+          if (regions) revolve = { ...revolve, regions, picked: true, crossing: regions.some((region) => regionCrossesAxis(region, revolve!.axis)) };
+        }
       }
+      publish("open");
+      armRevolveProbe();
     }
   }
 
@@ -2315,7 +2784,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!item) return;
     const region = chooseRegions(item.sketch, [], null)[0];
     if (!region) {
-      loft = { ...loft, note: "That sketch has no region to loft." };
+      loft = { ...loft, note: sketchRegions(item.sketch).length > 1 ? "That sketch has more than one region. Click the one to loft in the view." : "That sketch has no region to loft." };
       publish("open");
       return;
     }
@@ -2335,7 +2804,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const region = chooseRegions(item.sketch, [], null)[0] ?? null;
     const chain = openChain(item.sketch);
     if (!region && !chain) {
-      sweep = { ...sweep, note: "That sketch needs a region or an open path." };
+      sweep = { ...sweep, note: sketchRegions(item.sketch).length > 1 ? "That sketch has more than one region. Click the one to sweep in the view." : "That sketch needs a region or an open path." };
       publish("open");
       return;
     }
@@ -2355,6 +2824,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       touches,
       distance: 1,
       lockNew: host.featureEdit() === "root",
+      stepEdit: host.featureEdit() === "step",
     });
   }
 
@@ -2365,6 +2835,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       touches: loftTouches(),
       distance: 1,
       lockNew: host.featureEdit() === "root",
+      stepEdit: host.featureEdit() === "step",
     });
   }
 
@@ -2374,7 +2845,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const regions: Region[] = [];
     if (loft) {
       for (const pick of loft.picks) {
-        if (pick.sketchId === editor.active && pick.sketch) regions.push(...chooseRegions(pick.sketch, [], null));
+        const region = pick.sketchId === editor.active && pick.sketch ? sameRegionIn(pick.sketch, pick.section.loops as ProfileLoop[] | undefined) : null;
+        if (region) regions.push(region);
       }
     } else if (sweep?.profile) regions.push(sweep.profile);
     return !!sketch && !!frame && regions.length > 0 && sketchTouchesSolid(frame, regions, host.bounds(), sketch.on?.kind === "face");
@@ -2387,7 +2859,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       const live = pick.sketchId === editor.active ? activeSketch(editor) : editor.pinned.find((item) => item.id === pick.sketchId)?.sketch;
       if (!live) return pick;
       if (pick.sketch && JSON.stringify(sketchJson(live)) === JSON.stringify(sketchJson(pick.sketch))) return { ...pick, sketch: sketchJson(live) };
-      const region = chooseRegions(live, [], null)[0];
+      const region = sameRegionIn(live, pick.section.loops as ProfileLoop[] | undefined);
       if (!region) return { ...pick, sketch: sketchJson(live) };
       return { ...pick, sketch: sketchJson(live), section: sectionFromRegion(live, region) };
     });
@@ -2400,7 +2872,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   async function commitLoft() {
-    if (!loft || committing) return;
+    if (!loft || (applying || holding)) return;
     const built = buildSketchLoft({ picks: freshLoftPicks(), ruled: loft.ruled, mode: resolvedLoftMode() });
     if ("error" in built) {
       loft = { ...loft, note: built.error };
@@ -2408,26 +2880,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       host.readout(built.error);
       return;
     }
-    committing = true;
     const mode = resolvedLoftMode();
-    const error = await host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid");
-    committing = false;
-    if (!loft) return;
+    const error = await committed(host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid"));
+    if (error === undefined) return;
     if (error) {
-      loft = { ...loft, note: error };
+      if (loft) loft = { ...loft, note: error };
       host.readout(error);
       return;
     }
-    editSession = false;
-    loft = null;
-    window.clearTimeout(probeTimer);
-    host.view.setGhost(null);
-    host.clearExtrudePreview();
-    editor = finishSketch(editor);
-    publish("open");
-    // The sketch card would say the sketch was kept. The new solid's volume is what was just made.
-    if (host.solid()) host.readout(host.idleReadout());
-    host.frameSolid();
+    afterFeature();
   }
 
   function armLoftProbe() {
@@ -2457,17 +2918,22 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const ray = host.view.pointerRay(ev.x, ev.y);
     const plane = frame ? rayOnPlane(frame, ray.origin, ray.direction) : null;
     const face = host.view.pickSolid(ev.x, ev.y);
-    if (face && (!plane || face.t + 0.05 < plane.t)) {
+    const sketch = activeSketch(editor);
+    if (!sketch || editor.active == null) return;
+    // The region under the click: on the sketch being drawn, or on a pinned one, the nearest first.
+    const own = plane ? regionAt(sketchRegions(sketch), plane.uv) : null;
+    const pinned = pinnedRegionAt(ev.x, ev.y);
+    const hit = own && (!pinned || plane!.t <= pinned.t) ? { id: editor.active, sketch, region: own, t: plane!.t } : pinned;
+    // A face in front of the region wins. A face behind the sketch plane is picked when the click is on no region.
+    if (face && (!hit || face.t + 0.05 < hit.t)) {
       void addFaceSection(face.face);
       return;
     }
-    const sketch = activeSketch(editor);
-    if (!sketch || !plane || editor.active == null) return;
-    const region = regionAt(sketchRegions(sketch), plane.uv);
-    if (!region) return;
-    const key = regionKey(editor.active, region);
-    const pick: LoftPick = { key, sketchId: editor.active, sketch: sketchJson(sketch), section: sectionFromRegion(sketch, region) };
-    const at = loft.picks.findIndex((item) => item.key === key || item.key === `sketch:${editor.active}`);
+    if (!hit) return;
+    const { id, region } = hit;
+    const key = regionKey(id, region);
+    const pick: LoftPick = { key, sketchId: id, sketch: sketchJson(hit.sketch), section: sectionFromRegion(hit.sketch, region) };
+    const at = loft.picks.findIndex((item) => item.key === key || item.key === `sketch:${id}`);
     const picks = at >= 0 ? loft.picks.filter((_, index) => index !== at) : [...loft.picks, pick];
     loft = { ...loft, picks, note: "" };
     publish("open");
@@ -2490,6 +2956,27 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     loft = { ...loft, picks, note: "" };
     publish("open");
     armLoftProbe();
+  }
+
+  /** The region of a pinned sketch, not the one being drawn, under the pointer: the nearest one along the ray. */
+  function pinnedRegionAt(x: number, y: number): { id: number; sketch: SketchData; region: Region; t: number } | null {
+    const ray = host.view.pointerRay(x, y);
+    let best: { id: number; sketch: SketchData; region: Region; t: number } | null = null;
+    for (const item of editor.pinned) {
+      if (item.id === editor.active) continue;
+      const frame = frameFromWorkplane(workplaneIn({ source: "global", origin: item.sketch.plane.origin, turn: item.sketch.plane.turn }, host.pose()));
+      const hit = rayOnPlane(frame, ray.origin, ray.direction);
+      if (!hit || (best && hit.t >= best.t)) continue;
+      const region = regionAt(sketchRegions(item.sketch), hit.uv);
+      if (region) best = { id: item.id, sketch: item.sketch, region, t: hit.t };
+    }
+    return best;
+  }
+
+  /** `region` found again in `sketch` after the drawing changed, by its outline or a point inside it. */
+  function sameRegionIn(sketch: SketchData, loops: readonly ProfileLoop[] | undefined): Region | null {
+    const outer = loops?.[0];
+    return outer ? regionsOfOutlines(sketch, [outer])[0] ?? null : null;
   }
 
   function paintLoft() {
@@ -2524,14 +3011,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   async function commitSweep() {
-    if (!sweep || committing) return;
+    if (!sweep || (applying || holding)) return;
     if (!sweep.profile || !sweep.profileSketch) {
       sweep = { ...sweep, note: "Pick a region to sweep." };
       host.readout(sweep.note);
       return;
     }
     const profileSketch = sweep.profileSketch;
-    const profile = chooseRegions(profileSketch, [], null)[0] ?? sweep.profile;
+    const profile = sameRegionIn(profileSketch, toLoops(sweep.profile)) ?? sweep.profile;
     const built = buildSketchSweep({
       profileSketch,
       profile,
@@ -2549,25 +3036,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const op = withExprs(built.op, sweep.scaleText ? { scale: sweep.scaleText } : undefined);
-    committing = true;
     const mode = resolvedSweepMode();
-    const error = await host.commitExtrude(op, mode === "new" ? "new" : "on-solid");
-    committing = false;
-    if (!sweep) return;
+    const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
+    if (error === undefined) return;
     if (error) {
-      sweep = { ...sweep, note: error };
+      if (sweep) sweep = { ...sweep, note: error };
       host.readout(error);
       return;
     }
-    editSession = false;
-    sweep = null;
-    window.clearTimeout(probeTimer);
-    host.view.setGhost(null);
-    host.clearExtrudePreview();
-    editor = finishSketch(editor);
-    publish("open");
-    if (host.solid()) host.readout(host.idleReadout());
-    host.frameSolid();
+    afterFeature();
   }
 
   function armSweepProbe() {
@@ -2589,7 +3066,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const mode = modeLabel(resolvedSweepMode());
     const profile = sweep.profile ? "profile" : "no profile";
     const path = sweep.path.length >= 2 ? "path" : "no path";
-    return `Sweep, ${profile}, ${path}, scale ${scaleOf(sweep.scale)}, ${mode}. Drag or type the scale. Pick an open chain, or Shift-click edges that meet. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
+    return `Sweep, ${profile}, ${path}, end scale ${scaleOf(sweep.scale)}, ${mode}. Drag or type the size at the end of the path. Click a region for the profile. Pick an open chain, or Shift-click edges that meet. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
   }
 
   function sweepPointer(ev: { phase: "down" | "move" | "up"; x: number; y: number; shift: boolean; ctrl: boolean }, _frame: ReturnType<typeof drawingFrame>) {
@@ -2634,7 +3111,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       host.readout(EDGE_MEET);
       return;
     }
-    const extended = extendPath(sweep.path, sweep.check, hit.points);
+    // The view's edges are where the solid stands. The path, like the profile's plane, is in the solid's own frame.
+    const back = inversePose(host.pose());
+    const extended = extendPath(sweep.path, sweep.check, hit.points.map((point) => applyPose(back, point)));
     if ("error" in extended) {
       sweep = { ...sweep, note: extended.error };
       host.readout(extended.error);
@@ -2675,11 +3154,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!frame || !sketch) return;
     const ray = host.view.pointerRay(x, y);
     const plane = rayOnPlane(frame, ray.origin, ray.direction);
-    if (!plane) return;
-    const region = regionAt(sketchRegions(sketch), plane.uv);
+    // A click on a region, on this sketch or a pinned one, makes it the profile in place of the last one.
+    const own = plane ? regionAt(sketchRegions(sketch), plane.uv) : null;
+    const pinned = pinnedRegionAt(x, y);
+    const hit = own && (!pinned || plane!.t <= pinned.t) ? { sketch, region: own } : pinned;
     const chain = openChain(sketch);
-    if (region && !sweep.profile) {
-      sweep = { ...sweep, profile: region, profileSketch: sketch, note: "" };
+    if (hit) {
+      sweep = { ...sweep, profile: hit.region, profileSketch: hit.sketch, note: "" };
     } else if (chain && sweep.path.length < 2) {
       sweep = { ...sweep, path: chain.path, check: chain.check, pathSketch: sketch, edges: [], note: "" };
     }
@@ -2705,23 +3186,20 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     for (const item of editor.pinned) {
       if (item.id === editor.active) continue;
       const frame = frameFromWorkplane(workplaneIn({ source: "global", origin: item.sketch.plane.origin, turn: item.sketch.plane.turn }, host.pose()));
-      for (const entity of item.sketch.entities) {
-        if (entity.construction) continue;
-        const region = chooseRegions(item.sketch, [entity.id], null)[0];
-        if (!region) continue;
-        const loop = sampleLoop(toLoops(region)[0] ?? region.outer);
+      // Every region of a pinned sketch is drawn, so each one can be clicked as a section or a profile.
+      for (const region of sketchRegions(item.sketch)) {
         const xyz: number[] = [];
-        for (const point of loop) {
+        for (const point of sampleLoop(region.outer)) {
           const at = toWorld(frame, point);
           xyz.push(at[0], at[1], at[2]);
         }
         if (xyz.length >= 6) strokes.push({ xyz, role: "hint" });
-        break;
       }
     }
     if (sweep && sweep.path.length >= 2) {
       const xyz: number[] = [];
-      for (const point of sweep.path) xyz.push(point[0], point[1], point[2]);
+      // The path is in the solid's own frame, as the op is; the view draws it where the solid stands.
+      for (const point of sweep.path) xyz.push(...applyPose(host.pose(), point));
       strokes.push({ xyz, role: "hint" });
     }
     return strokes;
@@ -2746,6 +3224,12 @@ function unit3(value: Vec3): Vec3 | null {
   const length = Math.hypot(value[0], value[1], value[2]);
   if (!(length > 1e-9)) return null;
   return [value[0] / length, value[1] / length, value[2] / length];
+}
+
+/** A text field, a list, or editable content: a key there is typing, not a sketch command. */
+function typingTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof HTMLElement)) return null;
+  return target.tagName === "INPUT" || target.tagName === "SELECT" || target.tagName === "TEXTAREA" || target.isContentEditable ? target : null;
 }
 
 function framesMatch(a: SketchFrame, b: SketchFrame): boolean {

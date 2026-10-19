@@ -1,7 +1,7 @@
 /**
  * Regions a sketch encloses: splitting, the left-turn faces, nesting, and profile v2 loops.
  */
-import { arcFrom3 } from "./geom.ts";
+import { SPLINE_THROUGH_MAX, arcFrom3, projectToSpline, sampleSpline } from "./geom.ts";
 import { addArc, addCircle, addLine, addSpline, emptySketch, type Pt, type SketchData } from "./model.ts";
 import { loopSignedArea, regionAt, sketchRegions, toLoops, type ProfileLoop, type Region } from "./regions.ts";
 
@@ -231,11 +231,40 @@ const doubledRegions = sketchRegions(doubled);
 eq("two identical circles are one region", doubledRegions.length, 1);
 near("of that circle's area", doubledRegions[0]!.area, Math.PI * 9, 1e-4);
 
-function sum(regions: Region[]): number {
+function sum(regions: readonly Region[]): number {
   return regions.reduce((total, region) => total + region.area, 0);
 }
 near("the split square's regions add up", sum(halves), 100);
 
+// A pointer move asks for the same sketch's regions again: they are traced once, and a changed sketch is traced anew.
+eq("the same sketch gives back the same regions", sketchRegions(doubled) === doubledRegions, true);
+const tripled = addCircle(doubled, [20, 0], 2).sketch;
+eq("a changed sketch is traced again", sketchRegions(tripled).length, 2);
+eq("and the first keeps its own", sketchRegions(doubled).length, 1);
+
+
+/** A wavy spline 300 mm long, closed below by three lines, and crossed by a line near its end. */
+function crossedWave(): SketchData {
+  const controls: Pt[] = [];
+  for (let x = 0; x <= 300; x += 20) controls.push([x, 20 + 6 * Math.sin(x / 15)]);
+  let sketch = addSpline(emptySketch(), controls).sketch;
+  const first = controls[0]!;
+  const last = controls[controls.length - 1]!;
+  sketch = addLine(sketch, last, [300, 0]).sketch;
+  sketch = addLine(sketch, [300, 0], [0, 0]).sketch;
+  sketch = addLine(sketch, [0, 0], first).sketch;
+  return addLine(sketch, [290, -5], [290, 40]).sketch;
+}
+
+// A spline cut by another curve is sent as few points between its ends, never more than the engine takes.
+const waveRegions = sketchRegions(crossedWave());
+eq("the crossed wave makes two regions", waveRegions.length, 2);
+const waveSplines = waveRegions.flatMap((region) => toLoops(region)).flatMap((loop) => loop.segments).filter((segment) => segment.kind === "spline");
+check("each cut spline piece has at most the engine's 200 points between its ends", waveSplines.length > 0 && waveSplines.every((segment) => segment.kind === "spline" && segment.through.length <= SPLINE_THROUGH_MAX));
+const wide = waveRegions.reduce((big, region) => (region.area > big.area ? region : big));
+const sent = toLoops(wide)[0]!.segments.find((segment) => segment.kind === "spline");
+const curve = sampleSpline(Array.from({ length: 16 }, (_, k) => [k * 20, 20 + 6 * Math.sin((k * 20) / 15)] as Pt), false);
+check("and every point sent is on the wave", !!sent && sent.kind === "spline" && sent.through.every((point) => (projectToSpline(curve, point)?.distance ?? 1) < 0.02));
 if (failed) {
   console.error(`regions: ${failed} failed`);
   console.error("areas", regionAreas(box), regionAreas(split), regionAreas(frame));

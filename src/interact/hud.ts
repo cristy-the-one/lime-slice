@@ -5,7 +5,7 @@
  */
 
 import { evaluate, ExprError, type Params } from "../modeling/expr.ts";
-import { isPlainNumber } from "../modeling/params.ts";
+import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
 
 export type { Params };
 
@@ -430,7 +430,7 @@ function preview(model: HudModel, params: Params): number[] | null {
 
 function refusal(err: unknown): string {
   const message = err instanceof ExprError ? err.message : "Type a number or an expression.";
-  return message.replace("Set it with model_params first.", "Add it in Parameters, or type a number.");
+  return appParamMessage(message);
 }
 
 function copyField(field: HudField): HudField {
