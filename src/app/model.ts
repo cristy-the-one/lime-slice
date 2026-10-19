@@ -69,6 +69,8 @@ import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-
 import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
 import { edgeOfText, remapBlendFromNode, storedEdgeStep } from "../model-edge-step";
 import { mountPull, pullFieldText, type PullMade } from "../push-pull-ui";
+import { averagePoint, contextKind, polylineMid } from "../context-bar";
+import { hideContextBar, mountContextBar, showContextBar } from "../context-bar-ui";
 import {
   closeModelTool,
   editedPanel,
@@ -103,6 +105,7 @@ import {
   modelPreviewFresh,
   shellClosed,
   syncModelChrome,
+  onModelSelection,
   splitMode,
   syncModelSolid,
   syncPlaceFields,
@@ -290,7 +293,10 @@ let lens: Lens | null = null;
 let editBack: { key: string; tip: NodeId; back: NodeId; undone: boolean } | null = null;
 
 export function bindModelView() {
-  fx.model?.onPick((pick: ModelPick | null, shift: boolean) => void onPick(pick, shift));
+  // --- P3 context bar ---
+  mountContextBar({ project: (at) => fx.model?.projectPoint(at) ?? null });
+  onModelSelection(() => paintContextBar());
+  fx.model?.onPick((pick: ModelPick | null, shift: boolean, at: { x: number; y: number }) => void onPick(pick, shift, at));
   document.querySelector("#modelPickFace")?.addEventListener("click", () => setMode("face"));
   document.querySelector("#modelPickEdge")?.addEventListener("click", () => setMode("edge"));
   document.querySelector("#modelApply")?.addEventListener("click", () => void applyTool());
@@ -3669,13 +3675,18 @@ function stlName(name: string) {
 }
 
 let measureSeq = 0;
+/** --- P3 context bar --- The click that made the current selection. `empty` is a click on nothing. */
+let contextClick: { x: number; y: number; empty: boolean } | null = null;
+let contextFromPick = false;
 
-async function onPick(pick: ModelPick | null, shift: boolean) {
+async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: number; y: number }) {
   const at = open;
   const tree = treeOf(at);
   const solid = viewed();
   // A tool's step looked at is read-only; while one is edited, picks are on it.
   if (!at || !tree || !solid || (lens && !editing)) return;
+  contextClick = { x: pointer.x, y: pointer.y, empty: pick == null };
+  contextFromPick = true;
   picks = nextModelPicks(picks, pick, shift);
   paintBlendHighlight();
   syncModelChrome(picks);
@@ -3716,6 +3727,53 @@ async function onPick(pick: ModelPick | null, shift: boolean) {
   }
   readout(`${describe(solid, picks[0]!)} ${describe(solid, picks[1]!)} Distance ${mm(distance)} mm.`);
   edgeDrag?.picksChanged();
+}
+
+/** --- P3 context bar --- A click chooses the bar. Clearing the selection, or switching pick mode, takes it away. */
+function paintContextBar() {
+  const fromPick = contextFromPick;
+  contextFromPick = false;
+  const solid = viewed();
+  if (!solid || (lens && !editing)) {
+    hideContextBar();
+    return;
+  }
+  if (!fromPick) {
+    if (picks.length === 0) hideContextBar();
+    return;
+  }
+  const pointer = contextClick;
+  if (picks.length === 0) {
+    if (pointer?.empty) showContextBar({ kind: "empty", picks, pointer, anchor: null });
+    else hideContextBar();
+    return;
+  }
+  const kind = contextKind(
+    picks,
+    solid.faces.map((face) => ({ index: face.id, ...(face.surface ? { surface: face.surface } : {}) })),
+  );
+  if (!kind || !pointer) {
+    hideContextBar();
+    return;
+  }
+  showContextBar({ kind, picks, pointer, anchor: contextAnchor(solid) });
+}
+
+function contextAnchor(solid: ParsedSolid): Vec3 | null {
+  const pose = openPose();
+  const place = (point: Vec3): Vec3 => (isIdentity(pose) ? point : applyPose(pose, point));
+  const points: Vec3[] = [];
+  for (const pick of picks) {
+    if (pick.kind === "face") {
+      const centre = faceCentre(solid.positions, solid.triangles, pick.index);
+      if (centre) points.push(place(centre));
+    } else {
+      const edge = solid.edges.find((item) => item.id === pick.index);
+      const mid = polylineMid(edge?.points);
+      if (mid) points.push(place(mid));
+    }
+  }
+  return averagePoint(points);
 }
 
 function describe(current: ParsedSolid, pick: ModelPick) {

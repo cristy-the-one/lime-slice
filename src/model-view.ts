@@ -128,7 +128,7 @@ export interface ModelView {
   setBed(x: number, y: number, z: number): void;
   setTheme(): void;
   resize(): void;
-  onPick(cb: (pick: ModelPick | null, shift: boolean) => void): void;
+  onPick(cb: (pick: ModelPick | null, shift: boolean, at: { x: number; y: number }) => void): void;
   /** While on, a click on a grey object picks that object (`onObjectPick`) instead of a face or an edge of the solid in front. */
   setObjectPicking(on: boolean): void;
   onObjectPick(cb: (id: string) => void): void;
@@ -333,7 +333,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let datumPick = false;
   /** Picked faces a shell will open: danger tint and a dashed outline, over the dry-run. */
   let removedFaces = false;
-  let pickCb: (pick: ModelPick | null, shift: boolean) => void = () => {};
+  let pickCb: (pick: ModelPick | null, shift: boolean, at: { x: number; y: number }) => void = () => {};
   let down: { x: number; y: number } | null = null;
   let running = false;
   /** Frames drawn with nothing changing; past `STILL_FRAMES` the loop stops until the next `kick`. */
@@ -1261,7 +1261,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (done.moved) faceCb(faceEvent("up", ev, hit));
     else {
       faceCb(faceEvent("click", ev, hit));
-      pickCb({ kind: "face", index: hit.face }, ev.shiftKey);
+      pickCb({ kind: "face", index: hit.face }, ev.shiftKey, { x: ev.clientX, y: ev.clientY });
       setHover({ kind: "face", index: hit.face });
     }
     paintHandles();
@@ -1514,7 +1514,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       objectPickCb(object);
       return;
     }
-    pickCb(pickAt(ev), ev.shiftKey);
+    pickCb(pickAt(ev), ev.shiftKey, { x: ev.clientX, y: ev.clientY });
     setHover(pickAt(ev));
   });
 
