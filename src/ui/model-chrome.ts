@@ -614,6 +614,8 @@ function toggleTool(next: ModelTool, editing = false) {
     // The hole drills into the face clicked last, so a click picks faces.
     if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
   }
+  // --- D26. Closed inside is asked per shell, as Keep the tool object is: it opens off. An edit fills its own.
+  if (next === "shell" && !editing) setShellClosed(false);
   // --- A2 shell: open faces are face picks. ---
   if (next === "shell" && document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") {
     document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
