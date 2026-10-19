@@ -1140,6 +1140,9 @@ export class Session {
     this.sourceHash = "";
     this.sourcePath = "";
     this.profileTouched = false;
+    // --- D23. A new project starts with no parameters and no defined parts, as project_open adopts only the file's.
+    this.adoptParameters({});
+    this.adoptMcpModel(undefined);
     return { ok: true, project: "project", label: "New plate" };
   }
 

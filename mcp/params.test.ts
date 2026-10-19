@@ -73,6 +73,15 @@ check("a bad row this call sets is refused", refused.ok === false && refused.rea
 const after = await badSession.call("model_params", {});
 check("a refused set changes nothing", numbers(after)?.more === undefined && numbers(after)?.depth === 31, JSON.stringify(after));
 
+// --- D23. A new project starts with an empty table and no defined parts.
+const peg = await badSession.call("model_define", { name: "peg", params: { r: 2 }, ops: [{ kind: "boolean", op: "fuse", primitive: "cylinder", radius: "r", height: 3, centre: [0, 0, 0], label: "peg" }] });
+check("a part is defined", peg.ok === true, JSON.stringify(peg));
+const created = await badSession.call("project_create", {});
+const fresh = await badSession.call("model_params", {});
+check("project_create clears the parameters", created.ok === true && JSON.stringify(fresh.params) === "{}" && fresh.errors === undefined, JSON.stringify(fresh));
+const parts = await badSession.call("model_define", {});
+check("project_create clears the defined parts", JSON.stringify(parts.parts) === "[]", JSON.stringify(parts));
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
