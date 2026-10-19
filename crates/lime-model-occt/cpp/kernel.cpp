@@ -531,6 +531,7 @@ void push_point(std::vector<float>& out, const gp_Pnt& point) {
 }
 
 void append_face_normal(std::string& out, const TopoDS_Face& face);
+void append_face_radius(std::string& out, const TopoDS_Face& face);
 
 /// Mesh every face of a solid, never only around what a step made: for tests that compare the two.
 std::atomic<bool> g_whole_meshes{false};
@@ -684,6 +685,8 @@ std::string describe(Held& held) {
         text = "{\"areaMm2\":";
         append_num(text, props.Mass());
         append_face_normal(text, TopoDS::Face(held.faces(i + 1)));
+        // P1. Optional. A plane, the faces of a box, stays as it was.
+        append_face_radius(text, TopoDS::Face(held.faces(i + 1)));
         text += '}';
     });
     OSD_Parallel::For(0, edges, [&held](int i) {
@@ -1089,6 +1092,62 @@ void append_face_normal(std::string& out, const TopoDS_Face& face) {
         out += ',';
         append_num(out, normal.Z());
         out += ']';
+    } catch (const Standard_Failure&) {
+    }
+}
+
+/// P1. A cylinder, cone, or sphere names its surface and radius. Anything else, including a plane, adds nothing.
+void append_face_radius(std::string& out, const TopoDS_Face& face) {
+    try {
+        BRepAdaptor_Surface surface(face);
+        const GeomAbs_SurfaceType kind = surface.GetType();
+        const char* name = nullptr;
+        double radius = 0.0;
+        gp_Pnt axis_point;
+        gp_Dir axis_dir;
+        bool axis = false;
+        if (kind == GeomAbs_Cylinder) {
+            name = "cylinder";
+            const gp_Cylinder cyl = surface.Cylinder();
+            radius = cyl.Radius();
+            axis_point = cyl.Position().Location();
+            axis_dir = cyl.Axis().Direction();
+            axis = true;
+        } else if (kind == GeomAbs_Cone) {
+            name = "cone";
+            const gp_Cone cone = surface.Cone();
+            radius = cone.RefRadius();
+            axis_point = cone.Position().Location();
+            axis_dir = cone.Axis().Direction();
+            axis = true;
+        } else if (kind == GeomAbs_Sphere) {
+            name = "sphere";
+            radius = surface.Sphere().Radius();
+        } else {
+            return;
+        }
+        if (name == nullptr || !(radius > 1e-9)) {
+            return;
+        }
+        out += ",\"surface\":\"";
+        out += name;
+        out += "\",\"radiusMm\":";
+        append_num(out, radius);
+        if (axis) {
+            out += ",\"axisPoint\":[";
+            append_num(out, axis_point.X());
+            out += ',';
+            append_num(out, axis_point.Y());
+            out += ',';
+            append_num(out, axis_point.Z());
+            out += "],\"axis\":[";
+            append_num(out, axis_dir.X());
+            out += ',';
+            append_num(out, axis_dir.Y());
+            out += ',';
+            append_num(out, axis_dir.Z());
+            out += ']';
+        }
     } catch (const Standard_Failure&) {
     }
 }

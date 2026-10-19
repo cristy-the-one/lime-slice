@@ -9,7 +9,8 @@ import type { ModelSolid } from "./model-view.ts";
  * The bulk arrays are base64 of little-endian words: `positions` (f32, nine per triangle),
  * `triangles` (u32, the face of each triangle), `edgePoints` (f32, every edge's polyline in turn),
  * and `edgeOffsets` (u32, edge `i` is points `edgeOffsets[i]` up to `edgeOffsets[i + 1]`). The
- * rest is JSON: `volumeMm3`, `solid`, `faces` (`areaMm2` and an optional outward `normal`, by face
+ * rest is JSON: `volumeMm3`, `solid`, `faces` (`areaMm2`, an optional outward `normal`, and, for a
+ * cylinder, cone, or sphere, optional `surface`, `radiusMm`, `axisPoint`, and `axis`, by face
  * index), `edgeLengths` (by edge index), and the node's `fingerprint`.
  */
 export const SOLID_FORMAT = "lime-solid-2";
@@ -20,8 +21,21 @@ export const DAMAGED = "The modeler sent a damaged solid.";
 type Vec3 = [number, number, number];
 
 /** A solid as Model draws, picks, and measures it. Face and edge ids are their indexes. */
+export type FaceSurface = "cylinder" | "cone" | "sphere";
+
+export interface ParsedFace {
+  id: number;
+  areaMm2: number;
+  normal?: Vec3;
+  /** P1. Present when the face is a cylinder, a cone, or a sphere. */
+  radiusMm?: number;
+  surface?: FaceSurface;
+  axisPoint?: Vec3;
+  axis?: Vec3;
+}
+
 export interface ParsedSolid extends ModelSolid {
-  faces: { id: number; areaMm2: number; normal?: Vec3 }[];
+  faces: ParsedFace[];
   fingerprint: Fingerprint | null;
   /** False for surfaces with no closed solid: measured, never edited, and its volume means nothing. */
   editable: boolean;
@@ -32,7 +46,7 @@ export interface SolidArrays {
   volumeMm3: number;
   positions: ArrayLike<number>;
   triangles: ArrayLike<number>;
-  faces: { areaMm2: number; normal?: Vec3 }[];
+  faces: { areaMm2: number; normal?: Vec3; radiusMm?: number; surface?: FaceSurface; axisPoint?: Vec3; axis?: Vec3 }[];
   edges: { lengthMm: number; points: ArrayLike<number> }[];
   solid?: boolean;
   /** The node that made each face, or null for a face the step being previewed has not applied yet. */
@@ -56,10 +70,19 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
   if (positions.length !== triangles.length * 9 || offsets.length !== edgeLengths.length + 1 || offsets[0] !== 0) return DAMAGED;
   for (const face of triangles) if (face >= faceRows.length) return DAMAGED;
   const faces: ParsedSolid["faces"] = [];
-  for (const row of faceRows as { areaMm2?: unknown; normal?: unknown }[]) {
+  for (const row of faceRows as { areaMm2?: unknown; normal?: unknown; radiusMm?: unknown; surface?: unknown; axisPoint?: unknown; axis?: unknown }[]) {
     if (!row || typeof row.areaMm2 !== "number") return DAMAGED;
     const normal = readNormal(row.normal);
-    faces.push({ id: faces.length, areaMm2: row.areaMm2, ...(normal ? { normal } : {}) });
+    const surface = row.surface === "cylinder" || row.surface === "cone" || row.surface === "sphere" ? row.surface : undefined;
+    const radiusMm = typeof row.radiusMm === "number" && row.radiusMm > 0 ? row.radiusMm : undefined;
+    const axisPoint = readNormal(row.axisPoint);
+    const axis = readNormal(row.axis);
+    faces.push({
+      id: faces.length,
+      areaMm2: row.areaMm2,
+      ...(normal ? { normal } : {}),
+      ...(surface && radiusMm != null ? { surface, radiusMm, ...(axisPoint && axis ? { axisPoint, axis } : {}) } : {}),
+    });
   }
   const edges: ParsedSolid["edges"] = [];
   for (let edge = 0; edge < edgeLengths.length; edge += 1) {
@@ -89,7 +112,7 @@ export type SolidWire = {
   format: string;
   volumeMm3: number;
   solid: boolean;
-  faces: { areaMm2: number; normal?: Vec3 }[];
+  faces: { areaMm2: number; normal?: Vec3; radiusMm?: number; surface?: FaceSurface; axisPoint?: Vec3; axis?: Vec3 }[];
   edgeLengths: number[];
   positions: string;
   triangles: string;
@@ -108,7 +131,11 @@ export function encodeSolid(solid: SolidArrays): SolidWire & { stepFaces?: (numb
     format: SOLID_FORMAT,
     volumeMm3: solid.volumeMm3,
     solid: solid.solid !== false,
-    faces: solid.faces.map(({ areaMm2, normal }) => ({ areaMm2, ...(normal ? { normal } : {}) })),
+    faces: solid.faces.map(({ areaMm2, normal, radiusMm, surface, axisPoint, axis }) => ({
+      areaMm2,
+      ...(normal ? { normal } : {}),
+      ...(surface && radiusMm != null ? { surface, radiusMm, ...(axisPoint && axis ? { axisPoint, axis } : {}) } : {}),
+    })),
     edgeLengths: solid.edges.map((edge) => edge.lengthMm),
     positions: wordsBase64(Float32Array.from(solid.positions)),
     triangles: wordsBase64(Uint32Array.from(solid.triangles)),

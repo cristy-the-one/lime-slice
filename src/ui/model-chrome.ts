@@ -2,7 +2,7 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Egg, Focus, Globe, Grid3x3, Hexagon, Layers, ListChecks, Move3d, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
+import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Egg, Focus, Globe, Grid3x3, Hexagon, Layers, ListChecks, Move3d, MoveVertical, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
@@ -116,6 +116,8 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "workplane", icon: Axis3d, label: "Workplane" },
   // --- A7 model check ---
   { id: "check", icon: ListChecks, label: "Check" },
+  // --- P1: the button reads Push/Pull; the id is modelToolPull, from this label. ---
+  { id: "pushpull", icon: MoveVertical, label: "Pull" },
 ];
 
 const PLACE_FIELDS = ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"] as const;
@@ -217,6 +219,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
   for (const entry of TOOLS) iconize(`#modelTool${entry.label}`, entry.icon);
   // --- A7 model check --- icon only, so the bar still fits at 1440 px beside Bed. The drag checklist reads class="model-tool" in the markup.
   document.querySelector("#modelToolCheck")?.classList.add("is-icon");
+  // --- P1: icon only, named Push/Pull in its tip. The checklist reads class="model-tool" in the markup. ---
+  document.querySelector("#modelToolPull")?.classList.add("is-icon");
   document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
     const kind = button.dataset.kind;
     if (button.querySelector(".ico") || !(isPrimitiveKind(kind) || kind === "object")) return;
@@ -417,7 +421,8 @@ export function setModelLocked(why: string | null) {
 export function setModelPreview(next: ModelSolid | null) {
   const was = previewFresh();
   // The view draws a shape it already shows once, and draws it again after a new solid cleared it.
-  preview = tool ? next : null;
+  // P1: a face drag previews with no tool panel open.
+  preview = tool || allowPullPreview ? next : null;
   fx.model?.setPreview(preview);
   if (previewFresh() !== was) refreshGhost();
 }
@@ -1223,6 +1228,14 @@ function refreshTools() {
 function refreshApply() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button) return;
+  // --- P1: Apply moves the selected faces once the distance is a real change and the dry-run agrees. ---
+  if (tool === "pushpull") {
+    const distance = num("#modelPull");
+    const face = picks.some((pick) => pick.kind === "face");
+    const probeOk = !!probe && probe.phase === "done" && probe.ok;
+    button.disabled = waiting || !face || distance === 0 || !probeOk || (!!edit && !!hooks?.editUnchanged());
+    return;
+  }
   // --- A5. A step's edges need no pick: Apply waits on that step and the dry-run. ---
   const current = tool;
   const stepBlend = (current === "fillet" || current === "chamfer") && edgeSource === "step";
@@ -1267,6 +1280,15 @@ function refreshNote() {
     ({ text, bad } = wpProblem ?? { text: workplaneNote(openPlane()), bad: false });
   } else if (tool === "create") {
     text = state.plate.objects.length === 0 ? "Lands at the origin, on Z 0." : "Lands beside the other objects, as a new object.";
+  // --- P1: the panel's note. The hover sentence lives in the readout. ---
+  } else if (tool === "pushpull") {
+    if (!picks.some((pick) => pick.kind === "face")) text = "Pick a face.";
+    else if (num("#modelPull") === 0) text = "Type a distance, or drag the face. Alt adds material on that face only.";
+    else {
+      const status = probeNote("moveFaces", probe);
+      text = status?.text ?? "";
+      bad = status?.bad ?? false;
+    }
   } else if (tool === "check") {
     // --- A7 model check ---
     text = modelCheckNote();
@@ -1284,9 +1306,37 @@ function refreshNote() {
   refreshShellFaces();
 }
 
+/**
+ * P1. While this returns true, Push/Pull owns the arrow and the ghost, including when no tool is open.
+ * It returns false when another tool should draw, and that path is unchanged.
+ */
+let pullLive: (() => boolean) | null = null;
+
+export function setPullLive(next: (() => boolean) | null) {
+  pullLive = next;
+}
+
+/** P1. A kernel preview may stand in for the solid while Push/Pull drags, even though no tool panel is open. */
+let allowPullPreview = false;
+
+export function setAllowPullPreview(on: boolean) {
+  allowPullPreview = on;
+}
+
+/** P1. Whether the dry-run's shape is the one on screen. */
+export function modelPreviewFresh(): boolean {
+  return previewFresh();
+}
+
 function refreshGhost() {
   const view = fx.model;
   if (!view) return;
+  // --- P1 ---
+  if (pullLive?.()) {
+    view.setRemovedFaces(false);
+    refreshDatum();
+    return;
+  }
   if (state.stage !== "model" || !tool) {
     view.setGhost(null);
     view.setHandles([]);
@@ -1603,7 +1653,8 @@ function ghostFor(current: ModelTool): ModelGhost | null {
   }
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
   // --- A2 shell / A7 model check: no stand-in. The dry-run's shape is the hollow, and the open faces are outlined as removed. ---
-  if (current === "place" || current === "workplane" || current === "check" || current === "shell") return null;
+  // --- P1: the prism is drawn by the push/pull gesture, not as a tool stand-in. ---
+  if (current === "place" || current === "workplane" || current === "check" || current === "shell" || current === "pushpull") return null;
   // --- A5. A step's edges stand in for the picks until the dry-run's shape replaces them. ---
   const edges = edgeSource === "step" ? stepEdgeIndexes : selectedEdges(picks);
   if (edges.length === 0) return null;
