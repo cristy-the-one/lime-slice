@@ -10,9 +10,9 @@ import { coverageWarning, inAirWarning } from "../slice-action";
 import { meshRepairOf, meshWarningKey, meshWarningText } from "./mesh-warning";
 import { supportModeOf, type SupportMode } from "../support-source";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
-import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
+import { filamentCost, filamentGrams } from "../estimate";
 import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
-import { OTHER_COLOR, featureColor } from "../colors";
+import { featureRows, featureTableMarkup } from "../ui/legend";
 import { shellCount } from "../mesh-shells";
 import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
@@ -256,18 +256,20 @@ function paintTiming() {
   const timing = document.querySelector<HTMLElement>("#timing");
   if (!timing) return;
   const result = state.result;
-  timing.dataset.tip = "Show the results panel";
+  timing.dataset.tip = "Results panel";
+  timing.removeAttribute("aria-label");
   if (state.busy) {
     timing.textContent = busyText();
     return;
   }
   if (!result) {
     timing.textContent = "";
+    timing.setAttribute("aria-label", "Results panel");
     return;
   }
   const grams = shownGrams(result);
   timing.innerHTML = `<span>${formatDuration(result.estimate?.seconds ?? 0)}</span><span class="est-mass"> · ${formatMass(grams)}</span><span class="est-cost"> · ${formatMoney(filamentCost(grams, state.profile))}</span>`;
-  timing.dataset.tip = `${timing.textContent} · Show the results panel`;
+  timing.dataset.tip = `${timing.textContent} · Results panel`;
 }
 
 type Band = { index: number; z0: number; z1: number };
@@ -346,15 +348,6 @@ export function revealPrinterDetails() {
   group.open = true;
   if (window.innerWidth <= 960) document.querySelector(".workspace")?.classList.add("show-left");
   group.scrollIntoView({ block: "start", behavior: "smooth" });
-}
-
-/** Show the results panel where the layout hides it, and scroll it to the estimate. */
-export function revealResults() {
-  const workspace = document.querySelector(".workspace");
-  if (workspace?.classList.contains("is-right-collapsed")) document.querySelector<HTMLButtonElement>(".panel-collapse-right")?.click();
-  if (window.innerWidth <= 960) workspace?.classList.add("show-right");
-  const right = document.querySelector<HTMLElement>("#right");
-  if (right) right.scrollTop = 0;
 }
 
 /** The slice's filament in grams at the profile's density. */
@@ -1005,19 +998,11 @@ export function dismissMeshWarning() {
   dismissedMeshWarning = counts ? meshWarningKey(counts) : dismissedMeshWarning;
 }
 
-/** The feature each estimate row is colored as. */
-const ROW_KIND: Record<string, string> = { "Outer wall": "outer", "Inner wall": "inner", Infill: "sparse", "Top / bottom": "top", Ironing: "ironing", Supports: "support", Travel: "travel" };
-
 export function estimateHtml() {
   const est = state.result?.estimate;
   if (!est) return "";
-  const groups = groupFeatures(est.byFeature ?? [], state.profile);
-  const longest = Math.max(0.001, ...groups.map((row) => row.seconds));
-  const rows = groups.map((row) => {
-    const kind = ROW_KIND[row.label];
-    const color = kind ? featureColor(kind) : OTHER_COLOR;
-    return `<div class="est-row"><span class="est-label">${row.label}</span><div class="bar"><span style="width:${Math.min(100, (row.seconds / longest) * 100)}%;background:${color}"></span></div><span class="est-time">${formatDuration(row.seconds)}</span><span class="est-mass">${formatMass(row.grams)}</span></div>`;
-  }).join("");
+  // The legend's rows, so a feature is timed, weighed and shown or hidden in one place.
+  const rows = featureTableMarkup(previewFeatureRows(), (mm) => filamentGrams(mm, state.profile));
   const grams = filamentGrams(est.filamentMm, state.profile);
   const tile = durationTile(est.seconds);
   return `
@@ -1030,6 +1015,20 @@ export function estimateHtml() {
     <div class="chips">${chips()}</div>
     ${statGridHtml([["Arcs", formatCount(est.arcMoves)], ["Retracts", formatCount(est.retracts ?? 0)], ["Travel", formatLength(est.travelMm ?? 0)], ["Scarfed loops", formatCount(est.scarfedLoops ?? 0)]])}
   `;
+}
+
+const drawnKinds = new WeakMap<object, Set<string>>();
+
+/** The features the slice drew and timed, with what the preview shows. The drawn kinds are read once per reply. */
+export function previewFeatureRows() {
+  const result = state.result;
+  let kinds = result ? drawnKinds.get(result) : undefined;
+  if (result && !kinds) {
+    kinds = new Set<string>();
+    for (const layer of result.layers) for (const kind of layer.paths.kinds) kinds.add(kind);
+    drawnKinds.set(result, kinds);
+  }
+  return featureRows({ kinds: kinds ?? [], estimate: result?.estimate, hidden: state.hidden, showTravel: state.showTravel });
 }
 
 export function paretoHtml() {
@@ -1567,4 +1566,4 @@ export async function probe() {
   paintBanner();
 }
 
-Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow, revealPrinterDetails, revealResults, setCalibrate });
+Object.assign(fx, { apiBase, apiToken, card, stale, settingsHash, blend, currentWeight, renderChrome, markEngineDown, markEngineUp, paintEngineLink, markBusy, busyText, bannerLine, toastTransient, takeTransient, paintBanner, paramLine, paramTable, layerReadout, triangleLine, triangleMeta, stageHtml, estimateHtml, isStepName, needsEngine, paretoHtml, chips, pct, signed, currentPreset, applyPreset, applyFilter, onBlend, onSettings, pickStrategy, touch, markStale, staleWarning, escapeHtml, probe, fieldRow, revealPrinterDetails, setCalibrate });

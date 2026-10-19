@@ -25,14 +25,17 @@ async function openLongPrint(page: Page) {
   await page.locator("#slice").click();
   await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
   await expect(page.locator("#estimate")).toContainText("Time by feature");
+  await page.locator("#timing").click();
+  await expect(page.locator("#right")).toBeVisible();
 }
 
 async function setPanels(page: Page, left: number, right: number) {
   await page.evaluate(([l, r]) => {
+    // Both docks at forced widths, past the window's own fit, to read the extremes.
     const workspace = document.querySelector<HTMLElement>(".workspace")!;
+    workspace.classList.remove("is-left-collapsed", "is-right-collapsed");
     workspace.style.setProperty("--panel-left", `${l}px`);
     workspace.style.setProperty("--panel-right", `${r}px`);
-    window.dispatchEvent(new Event("resize"));
   }, [left, right]);
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 }

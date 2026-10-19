@@ -1,4 +1,4 @@
-import { allocatePanels, panelBudget, stageWidth, LEFT_DEFAULT, LEFT_MIN, RIGHT_DEFAULT, RIGHT_FLOOR } from "./panel-budget.ts";
+import { dockBudget, dockDefaults, dragMax, fitDocks, LEFT_MIN, RAIL_PX, resultsOpenByDefault, stageWidth, type DockWish } from "./panel-budget.ts";
 
 let failed = 0;
 
@@ -12,72 +12,52 @@ function eq(name: string, actual: number, expected: number): void {
   check(name, actual === expected, `got ${actual}, expected ${expected}`);
 }
 
-function desktop(width: number, extra: Partial<Parameters<typeof allocatePanels>[0]> = {}) {
-  return allocatePanels({
-    budget: panelBudget(width),
-    leftCollapsed: false,
-    rightCollapsed: false,
-    leftDesired: LEFT_DEFAULT,
-    rightDesired: RIGHT_DEFAULT,
-    ...extra,
-  });
+function fit(width: number, extra: Partial<DockWish> = {}) {
+  const out = fitDocks({ width, leftOpen: true, rightOpen: false, leftDesired: null, rightDesired: null, last: "left", ...extra });
+  if (!out) throw new Error(`${width} is not a desktop width`);
+  return out;
 }
 
-for (const width of [1280, 1440, 1600, 1920]) {
-  const fit = desktop(width);
-  const stage = stageWidth(width, fit);
-  check(`${width}: both panels dock`, fit.hud === false, JSON.stringify(fit));
-  check(`${width}: stage is at least 70%`, stage / width >= 0.7, `stage ${stage}`);
-  check(`${width}: settings stay usable`, fit.left >= LEFT_MIN, `left ${fit.left}`);
-  check(`${width}: results stay above the floor`, fit.right >= RIGHT_FLOOR, `right ${fit.right}`);
+for (const width of [1280, 1366, 1440, 1600, 1920, 2560, 3440]) {
+  for (const [leftOpen, rightOpen] of [[true, false], [false, true], [true, true]] as const) {
+    for (const last of ["left", "right"] as const) {
+      const f = fit(width, { leftOpen, rightOpen, last });
+      const stage = stageWidth(width, f);
+      check(`${width} ${leftOpen}/${rightOpen} ${last}: stage is at least 70%`, stage / width >= 0.7, `stage ${stage}`);
+      if (f.left) check(`${width}: settings stay usable`, f.left >= LEFT_MIN, `left ${f.left}`);
+    }
+  }
 }
 
-const wide = desktop(1920);
-eq("1920 keeps the 240px results rail", wide.right, RIGHT_DEFAULT);
-check("1920 only trims settings", wide.left < LEFT_DEFAULT && wide.left >= LEFT_MIN, `left ${wide.left}`);
+eq("1366 opens settings at 288", fit(1366).left, 288);
+eq("1440 opens settings at 288", fit(1440).left, 288);
+eq("1920 opens settings at 320", fit(1920).left, 320);
+eq("results stay closed by default", fit(1440).right, 0);
 
-const laptop = desktop(1440);
-eq("1440 keeps settings at the floor", laptop.left, LEFT_MIN);
-check("1440 slims the results rail to the leftover", laptop.right < RIGHT_DEFAULT && laptop.right > RIGHT_FLOOR, `right ${laptop.right}`);
+const laptop = fit(1440, { rightOpen: true, last: "right" });
+eq("1440: results opened last keep 300", laptop.right, 300);
+eq("1440: settings fold when both cannot fit", laptop.left, 0);
+const laptopLeft = fit(1440, { rightOpen: true, last: "left" });
+eq("1440: settings opened last stay", laptopLeft.left, 288);
+eq("1440: results fold when settings were opened last", laptopLeft.right, 0);
 
-const folded = desktop(1440, { rightCollapsed: true });
-eq("a folded results panel leaves settings at 300", folded.left, LEFT_DEFAULT);
-eq("a folded results panel is the collapsed column", folded.right, 28);
-check("folded results do not float", folded.hud === false);
+const wide = fit(1920, { rightOpen: true, last: "right" });
+eq("1920: results keep 280", wide.right, 280);
+eq("1920: settings yield to the leftover", wide.left, (dockBudget(1920) ?? 0) - 280);
+check("1920: both docks fit", wide.left >= LEFT_MIN);
 
-const narrow = allocatePanels({
-  budget: panelBudget(1100),
-  leftCollapsed: false,
-  rightCollapsed: false,
-  leftDesired: 480,
-  rightDesired: 560,
-});
-eq("a narrow window does not budget the panels", narrow.left, 480);
-eq("a narrow window keeps a wide results panel", narrow.right, 560);
-check("1100 is not a desktop budget", panelBudget(1100) === null);
+eq("a lone dragged dock is capped at the budget", fit(1280, { leftDesired: 480 }).left, dockBudget(1280) ?? 0);
+eq("the budget leaves the rail its column", (dockBudget(1440) ?? 0) + RAIL_PX, Math.floor(1440 * 0.3));
+check("1200 is not a desktop budget", fitDocks({ width: 1200, leftOpen: true, rightOpen: true, leftDesired: null, rightDesired: null, last: "left" }) === null);
+eq("1600 picks the wider settings default", dockDefaults(1600).left, 320);
+check("results never open by themselves below 2400", !resultsOpenByDefault(1920) && !resultsOpenByDefault(2399));
 
-const hud = allocatePanels({
-  budget: 200,
-  leftCollapsed: false,
-  rightCollapsed: false,
-  leftDesired: LEFT_DEFAULT,
-  rightDesired: RIGHT_DEFAULT,
-});
-check("floors that overflow float the results panel", hud.hud === true, JSON.stringify(hud));
-eq("a floating results panel takes no column", hud.right, 0);
-check("the settings panel still fits the budget", hud.left <= 200, `left ${hud.left}`);
-
-const opened = desktop(1600);
-eq("1600 keeps a 240px results rail", opened.right, 240);
-eq("1600 slims settings to the leftover", opened.left, 200);
-
-const dragged = desktop(1440, { keep: "left", leftDesired: 400 });
-eq("dragging settings wider slims the results rail to the floor", dragged.right, RIGHT_FLOOR);
-check("dragging settings wider keeps the leftover", dragged.left + dragged.right <= (panelBudget(1440) ?? 0), JSON.stringify(dragged));
-check("a settings drag is not folded back to the floor", dragged.left > LEFT_MIN, `left ${dragged.left}`);
+eq("a settings drag stops where results begin", dragMax("left", 1920, 280), (dockBudget(1920) ?? 0) - 280);
+eq("a results drag leaves settings their floor", dragMax("right", 1920, 248), (dockBudget(1920) ?? 0) - LEFT_MIN);
+eq("a lone drag may take the budget", dragMax("left", 1440, 0), dockBudget(1440) ?? 0);
 
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
 }
-console.log("panel budget: 70% stage on 1280–1920");
+console.log("panel budget: 70% stage on 1280–3440, last-opened dock wins");

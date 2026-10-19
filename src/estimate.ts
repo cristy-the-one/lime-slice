@@ -37,7 +37,7 @@ export function withFooterGrams(gcode: string, grams: number): string {
 }
 
 /**
- * Rolls per-feature time into the estimate table.
+ * Rolls per-feature time into groups for the MCP summary. The app's results list each feature on its own row.
  *
  * Thin wall joins Inner wall (with inner and wall). The core prints that bead
  * at inner speed and scores it as a wall, same strength class as outer, inner,

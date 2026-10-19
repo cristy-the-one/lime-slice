@@ -80,7 +80,7 @@ test("polyline clip and layer line follow the same plane", () => {
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 const out = path.resolve("artifacts/preview-section");
 
-test("bed opacity and section controls are preview-only chrome", async ({ page }) => {
+test("section controls are Preview chrome, and bed opacity is a rail flyout", async ({ page }) => {
   const logs: string[] = [];
   page.on("console", (msg) => logs.push(`${msg.type()}: ${msg.text()}`));
   page.on("pageerror", (err) => logs.push(`pageerror: ${err.message}`));
@@ -107,7 +107,8 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   await expect(page.locator("#slice")).toHaveAttribute("data-slice-action", "current");
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
-  await page.locator("#sectionOn").check();
+  await page.locator('#toolRail [data-tool="section"]').click();
+  await expect(page.locator("#sectionOn")).toBeChecked();
   await expect(page.locator("#sectionOffset")).toBeVisible();
   await expect(page.locator("#sectionFlip")).toBeVisible();
   await expect(page.locator("#sectionReadout")).toBeHidden();
@@ -121,10 +122,11 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   await page.waitForTimeout(400);
   fs.mkdirSync(out, { recursive: true });
   await page.locator("#view3d").screenshot({ path: path.join(out, "section-plus-z.png") });
-  await page.locator("#sectionOn").uncheck();
+  await page.locator('#toolRail [data-tool="section"]').click();
+  await expect(page.locator("#sectionOn")).not.toBeChecked();
   await page.waitForTimeout(200);
   await page.locator("#view3d").screenshot({ path: path.join(out, "section-off.png") });
-  await page.locator("#sectionOn").check();
+  await page.locator('#toolRail [data-tool="section"]').click();
   await page.locator("#sectionFlip").click();
   await expect(page.locator("#sectionReadout")).toBeHidden();
   await page.locator("#bedOpacity").evaluate((el) => {
@@ -135,7 +137,9 @@ test("bed opacity and section controls are preview-only chrome", async ({ page }
   await page.waitForTimeout(200);
   await page.locator("#view3d").screenshot({ path: path.join(out, "bed-hidden.png") });
   await page.getByRole("tab", { name: "Prepare", exact: true }).click();
-  await expect(page.locator("#sectionField")).toBeHidden();
+  await expect(page.locator("#sectionChip")).toBeHidden();
+  // Bed opacity lives in the rail's Bed flyout, in Prepare as in Preview.
+  await page.locator('#toolRail [data-fly="flyBed"]').click();
   await expect(bed).toBeVisible();
   expect(logs.filter((line) => line.startsWith("pageerror:") || line.startsWith("error:"))).toEqual([]);
 });
@@ -265,7 +269,7 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await page.waitForTimeout(400);
   const ghostFull = await colorBuckets(page, "ghost-full");
-  await page.locator("#sectionOn").check();
+  await page.locator('#toolRail [data-tool="section"]').click();
   await setOffset(page, "0");
   const ghostHalf = await colorBuckets(page, "ghost-half");
   const beforeDrag = await sectionOffsetOf(page);
@@ -281,7 +285,7 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
   await setOffset(page, "min");
   const ghostCut = await colorBuckets(page, "ghost-cut");
 
-  await page.locator("#sectionOn").uncheck();
+  await page.locator('#toolRail [data-tool="section"]').click();
   await page.locator("#slice").click();
   await expect(page.locator("#estimate")).toContainText("g");
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
@@ -293,10 +297,12 @@ test("section plane clips 3D beads, travels, and the solid ghost", async ({ page
     beadsFull = await colorBuckets(page);
   }
   await colorBuckets(page, "beads-full");
+  await page.locator('#toolRail [data-fly="flyFeatures"]').click();
   await page.locator("#legend label", { hasText: "Travel" }).click();
+  await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
   const travelOn = await colorBuckets(page, "travels-on");
-  await page.locator("#sectionOn").check();
+  await page.locator('#toolRail [data-tool="section"]').click();
   await setOffset(page, "0");
   const beadsHalf = await colorBuckets(page, "beads-half");
   // Before a slice the view is blurred, which washes the rings out.

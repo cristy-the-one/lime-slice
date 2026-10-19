@@ -49,7 +49,7 @@ export function mountMarkup(root: HTMLElement) {
       </div>
       <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
       <button class="btn panel-toggle" id="toggleRight" type="button">Results</button>
-      <div class="estimate-slot"><button class="estimate" id="timing" type="button" data-tip="Show the results panel"></button></div>
+      <div class="estimate-slot"><button class="estimate" id="timing" type="button" aria-controls="rightDock" aria-expanded="false" data-tip="Results panel"></button></div>
       <div class="action-row">
         <button class="btn" id="cancel" type="button" hidden>Cancel</button>
         <button class="btn" id="sendPrinter" type="button" hidden disabled>Send</button>
@@ -75,46 +75,30 @@ export function mountMarkup(root: HTMLElement) {
     </header>
     <div class="banner-rail" id="banner"></div>
     <div class="workspace">
-      <aside class="panel" id="left"><div id="leftBody"></div></aside>
-      <section class="stage mode-solid" id="stage">
-        <div class="viewbar">
-          <div class="modes" id="viewModes">
-            <button class="btn mode" type="button" data-mode="flat" aria-pressed="false">2D</button>
-            <button class="btn mode" type="button" data-mode="split" aria-pressed="false">Split</button>
-            <button class="btn mode" type="button" data-mode="solid" aria-pressed="true">3D</button>
-          </div>
-          <label class="view-inline">Color
-            <select id="colorBy" aria-label="Color by">
-              <option value="feature">Feature</option>
-              <option value="weight">Blend weight</option>
-              <option value="speed">Speed</option>
-            </select>
-          </label>
-          <label class="view-inline" data-tip="Build plate opacity. 0 hides the plate. Does not change the slice.">
-            Bed
-            <input id="bedOpacity" type="range" min="0" max="100" value="40" aria-label="Bed opacity" />
-          </label>
-          <label class="view-toggle" id="measureField" data-tip="Sizes: the part's length, width and height, a scale bar, and numbers along the bed. The scale bar is measured at the view centre.">
-            <input id="measureOn" type="checkbox" aria-label="Measure" checked /><span class="view-toggle-face">Measure</span>
-          </label>
-          <label class="view-toggle" id="sectionField" data-tip="Section: clip the preview on the arrow side of a free plane. Offset slides the plane, the rings aim it, and the axis keeps it square to the bed. Does not change the slice.">
-            <input id="sectionOn" type="checkbox" aria-label="Section" /><span class="view-toggle-face">Section</span>
-          </label>
-          <label class="view-inline" id="sectionAxisField" hidden data-tip="Align the section plane with a bed axis. Custom means the rings have tilted it.">
-            Axis
-            <select id="sectionAxis" aria-label="Section axis">
-              <option value="x">X</option>
-              <option value="y">Y</option>
-              <option value="z">Z</option>
-              <option value="custom" disabled>Custom</option>
-            </select>
-          </label>
-          <label class="view-inline" id="sectionOffsetField" hidden data-tip="Distance from the part center along the section normal, in millimetres.">
-            <span class="scrub-label" data-scrub="field">Offset mm</span>
-            <input id="sectionOffset" type="number" min="-100" max="100" step="0.1" value="0" aria-label="Section offset" />
-          </label>
-          <button class="btn" id="sectionFlip" type="button" hidden data-tip="Hide the other side of the section plane">Flip</button>
-        </div>
+      <div class="rail-fly" id="flyColor" role="dialog" aria-label="Color by" hidden>
+        <label class="fly-field">Color by
+          <select id="colorBy" aria-label="Color by">
+            <option value="feature">Feature</option>
+            <option value="weight">Blend weight</option>
+            <option value="speed">Speed</option>
+          </select>
+        </label>
+      </div>
+      <div class="rail-fly" id="flyFeatures" role="dialog" aria-label="Features shown" hidden>
+        <h3>Features shown</h3>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="rail-fly" id="flyBed" role="dialog" aria-label="Bed" hidden>
+        <label class="fly-field">Bed opacity
+          <input id="bedOpacity" type="range" min="0" max="100" value="40" aria-label="Bed opacity" />
+        </label>
+        <p class="fly-note">0 hides the plate. Does not change the slice.</p>
+      </div>
+      <aside class="dock left" id="leftDock" aria-label="Settings">
+        <div class="dock-head"><h2>Settings</h2><button class="btn ghost dock-close" type="button" aria-label="Collapse settings" aria-controls="leftDock"></button></div>
+        <div class="panel" id="left"><div id="leftBody"></div></div>
+      </aside>
+      <main class="stage mode-solid" id="stage" aria-label="Preview">
         <div class="stage-body" id="prepareBody" role="tabpanel" aria-labelledby="tabPrepare" hidden>
           <canvas id="prepare" aria-label="Model on the build plate"></canvas>
           <div class="gizmo-readout" id="gizmoReadout" hidden></div>
@@ -481,6 +465,23 @@ export function mountMarkup(root: HTMLElement) {
           </div>
         </div>
         <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">
+          <div class="stage-chip section-chip" id="sectionChip" role="group" aria-label="Section" hidden data-tip="Section: clip the preview on the arrow side of a free plane. Offset slides the plane, the rings aim it, and the axis keeps it square to the bed. Does not change the slice.">
+            <input id="sectionOn" type="checkbox" aria-label="Section" hidden />
+            <label class="chip-field" id="sectionAxisField" data-tip="Align the section plane with a bed axis. Custom means the rings have tilted it.">
+              Axis
+              <select id="sectionAxis" aria-label="Section axis">
+                <option value="x">X</option>
+                <option value="y">Y</option>
+                <option value="z">Z</option>
+                <option value="custom" disabled>Custom</option>
+              </select>
+            </label>
+            <label class="chip-field" id="sectionOffsetField" data-tip="Distance from the part center along the section normal, in millimetres.">
+              <span class="scrub-label" data-scrub="field">Offset mm</span>
+              <input id="sectionOffset" type="number" min="-100" max="100" step="0.1" value="0" aria-label="Section offset" />
+            </label>
+            <button class="btn" id="sectionFlip" type="button" data-tip="Hide the other side of the section plane">Flip</button>
+          </div>
           <div class="stale-chip" id="staleChip" role="status" hidden>
             <span id="staleChipText"></span>
             <button class="btn" id="staleReslice" type="button" data-tip="Slice again (Ctrl+Enter)" hidden>Re-slice</button>
@@ -517,21 +518,22 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="gcode-pane" id="gcodePane" role="tabpanel" aria-labelledby="tabGcode" tabindex="-1" hidden></div>
         <div class="stage-tools">
-          <div class="spark-wrap">
-            <div class="spark-label" id="sparkLabel"><span>Layer time</span><span class="spark-key"><span><i style="background:var(--slow)"></i>slow</span><span><i style="background:var(--fast)"></i>too fast</span></span></div>
-            <canvas id="spark" aria-label="Per-layer time"></canvas>
-          </div>
           <div class="playback">
             <button class="btn" id="play" type="button" disabled aria-label="Play layer">Play</button>
-            <input id="move" type="range" min="0" max="0" value="0" aria-label="Toolpath playback" />
+            <div class="scrub" id="scrub" data-tip="Layer time behind the playback: amber is slow, orange too fast. Click a bar to go to its layer.">
+              <canvas id="spark" aria-label="Per-layer time"></canvas>
+              <input id="move" type="range" min="0" max="0" value="0" aria-label="Toolpath playback" />
+            </div>
             <div class="play-readout" id="playReadout"></div>
           </div>
         </div>
-        <div class="legend" id="legend"></div>
-      </section>
-      <aside class="panel right" id="right"></aside>
+      </main>
+      <aside class="dock right" id="rightDock" aria-label="Results">
+        <div class="dock-head"><button class="btn ghost dock-close" type="button" aria-label="Collapse results" aria-controls="rightDock"></button><h2>Results</h2></div>
+        <div class="panel right" id="right"></div>
+      </aside>
     </div>
-    <footer class="status"><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
+    <footer class="status"><span class="status-text" id="statusText" aria-live="polite"></span><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
   </div>
   <div id="calibrate" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="calibrateTitle">
     <div class="sheet-card cal-card">
