@@ -156,9 +156,13 @@ function axisWord(axis: Vec3): string {
   return namedAxis(axis)?.toUpperCase() ?? "an axis";
 }
 
-/** The history row: "Pattern × 6 around Z", "Pattern 3 × 2", "Mirror". */
+/** The history row: "Pattern × 6 around Z", "Pattern 3 × 2", "Mirror across X", "Mirror across a face". */
 export function repeatLabel(spec: Record<string, unknown>): string {
-  if (spec.kind === "mirror") return "Mirror";
+  // --- D39. A mirror names its plane, as a pattern names its count and axis. The MCP's rows read the same.
+  if (spec.kind === "mirror") {
+    const plane = spec.plane === "x" || spec.plane === "y" || spec.plane === "z" ? spec.plane : spec.normal ? namedAxis(vec3(spec.normal, [0, 0, 1])) : "z";
+    return plane ? `Mirror across ${plane.toUpperCase()}` : "Mirror across a face";
+  }
   const polar = spec.polar as { count?: unknown; axis?: unknown } | undefined;
   if (polar) return `Pattern × ${Math.round(numOf(polar.count, 0))} around ${axisWord(vec3(polar.axis, [0, 0, 1]))}`;
   const linear = spec.linear as { count?: unknown; count2?: unknown } | undefined;

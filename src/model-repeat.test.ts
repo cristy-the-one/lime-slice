@@ -88,6 +88,9 @@ const removed = (spun?.pieces ?? []).reduce((sum, piece) => sum + Math.PI * piec
 eq("with the original, the volume matches six single cuts", removed + Math.PI * 1.5 * 1.5 * 10, 6 * Math.PI * 1.5 * 1.5 * 10);
 eq("one history row", spun?.group?.kind, "group");
 eq("the row names the turn", repeatLabel(polar as Record<string, unknown>), "Pattern × 6 around Z");
+// --- D39. A mirror's row names its plane.
+eq("a mirror names its axis plane", repeatLabel({ kind: "mirror", plane: "x" }), "Mirror across X");
+eq("a mirror on a face says so", repeatLabel({ kind: "mirror", normal: [0.6, 0.8, 0] }), "Mirror across a face");
 check("the group remembers the steps", Array.isArray((spun?.group?.source as { of?: unknown })?.of) && ((spun?.group?.source as { of: number[] }).of).length === 1);
 
 const box: ModelOp = {

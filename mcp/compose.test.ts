@@ -393,6 +393,17 @@ check("a box on a moved part's face workplane is stored as on the part where it 
   check("the stored pocket names its face by index", typeof source?.faceIndex === "number" && source.face === undefined, JSON.stringify(source));
 }
 
+// --- D39. An MCP pattern or mirror row reads as the app's does.
+{
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
+  const cut = { kind: "boolean", op: "cut", primitive: "box", origin: [-25, -15, 30], dx: 2, dy: 2, dz: 6 };
+  const row = await own.call("model_apply", { object: made.object, op: { kind: "pattern", op: cut, linear: { step: [5, 0, 0], count: 3 } } });
+  const mirrored = await own.call("model_apply", { object: made.object, op: { kind: "mirror", plane: "x", op: cut } });
+  const labels = ((await own.call("model_history", { object: made.object })).nodes as { label: string }[]).map((node) => node.label);
+  check("pattern and mirror rows read as the app's", row.ok === true && mirrored.ok === true && labels.includes("Pattern × 3") && labels.includes("Mirror across X"), JSON.stringify(labels));
+}
+
 if (failed > 0) {
   console.error(`compose: ${failed} failed`);
   process.exit(1);

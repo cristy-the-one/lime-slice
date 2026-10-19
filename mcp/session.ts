@@ -81,6 +81,7 @@ import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, isPlainNumber, withExprs } from "../src/modeling/params.ts";
 import { featureExpandContext, featureLabel, featureSolidInModel, isFeatureTool } from "../src/model-features.ts";
+import { repeatLabel } from "../src/model-repeat.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "../src/modeling/expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
 
@@ -444,8 +445,8 @@ function modelSteps(tree: ModelTree): number {
 function compositeGroupLabel(raw: Record<string, unknown>, given?: string): string {
   const typed = given?.trim();
   if (typed) return typed.slice(0, 80);
-  if (raw.kind === "pattern") return "Pattern";
-  if (raw.kind === "mirror") return "Mirror";
+  // --- D39. The app's own row labels: "Pattern × 6 around Z", "Mirror across X".
+  if (raw.kind === "pattern" || raw.kind === "mirror") return repeatLabel(raw);
   if (isFeatureTool(raw.kind)) return featureLabel(raw).slice(0, 80);
   return "Group";
 }
