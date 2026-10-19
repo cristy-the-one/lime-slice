@@ -10,7 +10,9 @@ import {
   cycleMode,
   type ModeChoice,
   featureExtrude,
+  featureOutlines,
   opensSketchEditor,
+  regionsOfOutlines,
   presetOf,
   resolveExtrudeMode,
   sketchForFeature,
@@ -84,10 +86,24 @@ eq("two rectangles are two regions", both.length, 2);
 const group = buildSketchExtrude({ sketch: two, regions: both, distance: 8, depth2: null, draftDeg: null, upTo: null, mode: "fuse" });
 check("disjoint regions are a group", "op" in group && group.op.kind === "group" && group.op.steps.length === 2);
 if ("op" in group && group.op.kind === "group") {
-  check("each step keeps the sketch", group.op.steps.every((step) => step.kind === "extrude" && step.sketch?.entities.length === two.entities.length));
+  eq("only the first step keeps the drawing", group.op.steps.map((step) => (step.kind === "extrude" ? step.sketch?.entities.length ?? 0 : -1)), [8, 0]);
   check("the group is not a pocket", group.op.source == null);
-  eq("the engine group drops both sketches", withoutSketch(group.op) === group.op, false);
+  eq("the engine group drops the sketch", withoutSketch(group.op) === group.op, false);
+  const reopened = sketchForFeature(group.op);
+  eq("an edit reopens the whole drawing", reopened?.entities.length, 8);
+  const outlines = featureOutlines(group.op);
+  eq("each step's outline is kept", outlines.length, 2);
+  const again = reopened ? regionsOfOutlines(reopened, outlines) : [];
+  eq("both regions are picked again", again.map((region) => Math.round(region.area)), [40, 16]);
+  // A third rectangle that was never extruded stays out of the edit.
+  const more = reopened ? rect(40, 0, 2, 2, reopened) : emptySketch();
+  eq("a region the step did not use is not picked", regionsOfOutlines(more, outlines).map((region) => Math.round(region.area)), [40, 16]);
+  // The drawing moved 0.5 mm: each region is found from a point inside its old outline.
+  const moved = reopened ? { ...reopened, points: reopened.points.map((point) => ({ ...point, at: [point.at[0] + 0.5, point.at[1]] as [number, number] })) } : emptySketch();
+  eq("a moved drawing still picks both", regionsOfOutlines(moved, outlines).length, 2);
 }
+const pointProfile: ExtrudeOp = { kind: "extrude", op: "fuse", origin: [0, 0, 0], turn: [0, 0, 0], profile: [[20, 0], [24, 0], [24, 4], [20, 4]], depth: 5, depth2: 2 };
+eq("a point profile's outline picks its region", regionsOfOutlines(two, featureOutlines(pointProfile)).map((region) => Math.round(region.area)), [16]);
 
 let washer = addCircle(emptySketch(), [0, 0], 10).sketch;
 washer = addCircle(washer, [0, 0], 4).sketch;

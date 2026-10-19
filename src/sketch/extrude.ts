@@ -95,6 +95,39 @@ export function presetOf(op: ModelOp, root: boolean): ExtrudePreset | null {
   };
 }
 
+/** The outer outline of each extrude a stored op made: one per region it was applied to. */
+export function featureOutlines(op: ModelOp): ProfileLoop[] {
+  const steps = op.kind === "extrude" ? [op] : isSketchExtrudeGroup(op) ? op.steps.filter((step): step is ExtrudeOp => step.kind === "extrude") : [];
+  return outlinesOf(steps);
+}
+
+/** Each step's outer loop, or its point profile as a loop. */
+export function outlinesOf(steps: readonly { loops?: readonly EngineLoop[]; profile?: readonly Vec2[] }[]): ProfileLoop[] {
+  const out: ProfileLoop[] = [];
+  for (const step of steps) {
+    const outer = step.loops?.[0];
+    if (outer) out.push({ start: [outer.start[0], outer.start[1]], segments: outer.segments.map(copySegment) });
+    else if (step.profile && step.profile.length >= 3) out.push(profileLoop(step.profile));
+  }
+  return out;
+}
+
+/**
+ * The regions of `sketch` a stored feature was applied to, so an edit reopens with each of them picked. A region whose
+ * outline is the stored one is that region; after the drawing moved, the region holding a point inside the stored outline
+ * is. Empty when the drawing has none of them.
+ */
+export function regionsOfOutlines(sketch: SketchData, outlines: readonly ProfileLoop[]): Region[] {
+  const regions = sketchRegions(sketch);
+  const out: Region[] = [];
+  for (const outline of outlines) {
+    const inside = pointInside(outline);
+    const hit = regions.find((region) => sameLoop(region.outer, outline)) ?? (inside ? regionAt(regions, inside) : null);
+    if (hit && !out.includes(hit)) out.push(hit);
+  }
+  return dropHoles(out);
+}
+
 /**
  * Regions to extrude. Selected entities win, then the region under the pointer, then the only
  * region. A hole is dropped when its ring is selected too: the ring's loops already include it.
@@ -202,8 +235,14 @@ export function buildSketchExtrude(draft: ExtrudeDraft): { op: ModelOp } | { err
     steps.push(built.op);
   }
   if (steps.length === 1) return { op: steps[0]! };
-  const group: GroupOp = { kind: "group", label: `Extrude ${steps.length} regions`, steps };
+  // One copy of the drawing is enough: an edit reopens the first step's, and finds each region again from the outlines.
+  const group: GroupOp = { kind: "group", label: `Extrude ${steps.length} regions`, steps: steps.map((step, index) => (index === 0 ? step : withoutDrawing(step))) };
   return { op: group };
+}
+
+function withoutDrawing(step: ExtrudeOp): ExtrudeOp {
+  const { sketch: _sketch, ...rest } = step;
+  return rest;
 }
 
 /** Sampled outlines, in plane coordinates, for the extrude ghost. */
@@ -333,6 +372,52 @@ export function sampleLoop(loop: ProfileLoop): Pt[] {
   const last = points[points.length - 1];
   if (first && last && dist(first, last) <= 1e-6) points.pop();
   return points;
+}
+
+function copySegment(segment: EngineSegment): ProfileSegment {
+  if (segment.kind === "line") return { kind: "line", to: [segment.to[0], segment.to[1]] };
+  if (segment.kind === "arc") return { kind: "arc", through: [segment.through[0], segment.through[1]], to: [segment.to[0], segment.to[1]] };
+  return { kind: "spline", through: segment.through.map((pt) => [pt[0], pt[1]] as Pt), to: [segment.to[0], segment.to[1]] };
+}
+
+/** A point inside a closed outline: its area centre when that is inside, else a hair inside the middle of an edge. */
+function pointInside(loop: ProfileLoop): Pt | null {
+  const poly = sampleLoop(loop);
+  if (poly.length < 3) return null;
+  const centre = regionCentroid({ outer: loop, holes: [], area: 0 });
+  if (windingOf(poly, centre) !== 0) return centre;
+  let twice = 0;
+  for (let i = 0; i < poly.length; i += 1) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % poly.length]!;
+    twice += a[0] * b[1] - b[0] * a[1];
+  }
+  const side = twice >= 0 ? 1 : -1;
+  for (let i = 0; i < poly.length; i += 1) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % poly.length]!;
+    const length = dist(a, b);
+    if (length < 1e-9) continue;
+    const left: Pt = [(-(b[1] - a[1]) / length) * side, ((b[0] - a[0]) / length) * side];
+    for (const step of [1e-3, 1e-2, 0.1, 1]) {
+      const pt: Pt = [(a[0] + b[0]) / 2 + left[0] * step, (a[1] + b[1]) / 2 + left[1] * step];
+      if (windingOf(poly, pt) !== 0) return pt;
+    }
+  }
+  return null;
+}
+
+function windingOf(poly: readonly Pt[], pt: Pt): number {
+  let wind = 0;
+  for (let i = 0; i < poly.length; i += 1) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % poly.length]!;
+    const across = (b[0] - a[0]) * (pt[1] - a[1]) - (b[1] - a[1]) * (pt[0] - a[0]);
+    if (a[1] <= pt[1]) {
+      if (b[1] > pt[1] && across > 0) wind += 1;
+    } else if (b[1] <= pt[1] && across < 0) wind -= 1;
+  }
+  return wind;
 }
 
 function distToLoop(loop: ProfileLoop, pt: Pt): number {

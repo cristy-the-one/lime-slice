@@ -138,9 +138,9 @@ import { mountEdgeDrag } from "./edge-drag";
 import { closeSketchSession, mountSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
 import { holeMarks, holesInModel, isSketchHoleGroup, pointsFromSource, sketchHoleSource, type HoleSizes, type HoleTarget } from "../sketch/holes.ts";
 import { sketchJson, type SketchData } from "../sketch/model.ts";
-import { opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
+import { featureOutlines, opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
 import { loftEditOf, readFaceLoops } from "../sketch/loft";
-import { revolvePresetOf, sketchForRevolve } from "../sketch/revolve";
+import { revolveOutlines, revolvePresetOf, sketchForRevolve } from "../sketch/revolve";
 import { sweepEditOf } from "../sketch/sweep";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
@@ -2597,8 +2597,8 @@ async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
   const openIt = () => {
     if (sweepPreset) openSketchLoft(sweepPreset);
     else if (loftPreset) openSketchLoft(loftPreset);
-    else if (revolveEdit && revSketch && revPreset) openSketchRevolve(revSketch, revPreset);
-    else if (sketch && preset) openSketchFeature(sketch, preset);
+    else if (revolveEdit && revSketch && revPreset) openSketchRevolve(revSketch, revPreset, revolveOutlines(op));
+    else if (sketch && preset) openSketchFeature(sketch, preset, featureOutlines(op));
   };
   if (busy || jumping) {
     readout(STILL_WORKING);

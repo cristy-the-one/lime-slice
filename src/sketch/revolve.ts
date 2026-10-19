@@ -13,7 +13,7 @@ import { arcFrom3, arcPoint, curveOf, dist, sampleSpline, unit } from "./geom.ts
 import type { ArcGeom, Pt } from "./geom.ts";
 import { addArc, addLine, addSpline, emptySketch, sketchJson, type SketchData } from "./model.ts";
 import { toLoops, type ProfileLoop, type ProfileSegment, type Region } from "./regions.ts";
-import { chooseRegions, cycleMode, modeLabel, resolveExtrudeMode, sketchTouchesSolid, type ModeChoice, type ResolvedMode } from "./extrude.ts";
+import { chooseRegions, cycleMode, modeLabel, outlinesOf, regionsOfOutlines, resolveExtrudeMode, sketchTouchesSolid, type ModeChoice, type ResolvedMode } from "./extrude.ts";
 import type { RefSegment } from "./refs.ts";
 
 /** The kernel's full turn. Typing this snaps to it. */
@@ -214,7 +214,16 @@ export function buildSketchRevolve(draft: RevolveDraft): { op: ModelOp } | { err
     steps.push(built.op);
   }
   if (steps.length === 1) return { op: steps[0]! };
-  const group: GroupOp = { kind: "group", label: `Revolve ${steps.length} regions`, steps };
+  // One copy of the drawing: an edit reopens the first step's and finds each region again from the outlines.
+  const group: GroupOp = {
+    kind: "group",
+    label: `Revolve ${steps.length} regions`,
+    steps: steps.map((step, index) => {
+      if (index === 0) return step;
+      const { sketch: _sketch, ...rest } = step;
+      return rest;
+    }),
+  };
   return { op: group };
 }
 
@@ -257,10 +266,19 @@ export function revolvePresetOf(op: ModelOp, root: boolean): RevolvePreset | nul
   };
 }
 
-/** Regions an edit revolves again: every one the stored drawing still closes. */
-export function regionsForEdit(sketch: SketchData): Region[] {
-  const all = chooseRegions(sketch, sketch.entities.map((entity) => entity.id), null);
-  return all.length > 0 ? all : chooseRegions(sketch, [], null);
+/** The outer outline of each revolve a stored op made: one per region it was applied to. */
+export function revolveOutlines(op: ModelOp): ProfileLoop[] {
+  const steps = op.kind === "revolve" ? [op] : isSketchRevolveGroup(op) ? op.steps.filter((step): step is RevolveOp => step.kind === "revolve") : [];
+  return outlinesOf(steps);
+}
+
+/**
+ * Regions an edit revolves again: the ones the stored op was applied to. A file with no outline to match, or a drawing
+ * that no longer has them, falls back to the only region.
+ */
+export function regionsForEdit(sketch: SketchData, outlines: readonly ProfileLoop[]): Region[] {
+  const found = regionsOfOutlines(sketch, outlines);
+  return found.length > 0 ? found : chooseRegions(sketch, [], null);
 }
 
 /** The ring handle, seated at the region's centre, turning about the axis. It is not the dock gizmo. */

@@ -257,6 +257,55 @@ test("editing the root of a part with a later cut keeps the cut current, on Canc
   await expect(page.locator("#modelRedo")).toBeDisabled();
 });
 
+test("History Edit of a two-region extrude reopens with both regions and applies both", async ({ page }) => {
+  const tree = await start(page);
+  await extrudeOnBed(page, "20");
+  await expect.poll(() => height(page)).toBeCloseTo(20, 0);
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await page.mouse.click(top.x, top.y);
+  await page.locator("#modelContextBar").getByRole("button", { name: "Sketch on face" }).click();
+  const canvas = page.locator("#model");
+  await expect(canvas).toHaveAttribute("data-sketch-plane", "face 1");
+  const box = (await canvas.boundingBox())!;
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await page.locator("[data-sketch-tool=rectangle]").click();
+  for (const dx of [-60, 40]) {
+    await page.mouse.click(centre.x + dx, centre.y);
+    await hud.locator("input").nth(0).fill("3");
+    await hud.locator("input").nth(0).press("Tab");
+    await hud.locator("input").nth(1).fill("3");
+    await hud.locator("input").nth(1).press("Enter");
+  }
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "8");
+  await page.locator("[data-sketch-tool=select]").click();
+  await page.mouse.move(centre.x - 160, centre.y - 160);
+  await page.mouse.down();
+  await page.mouse.move(centre.x + 160, centre.y + 160, { steps: 4 });
+  await page.mouse.up();
+  await page.keyboard.press("E");
+  await expect(canvas).toHaveAttribute("data-extrude-regions", "2");
+  await hud.locator("input").first().fill("4");
+  await hud.locator("input").first().press("Enter");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Extrude 2 regions");
+  const applied = tree.of("apply").at(-1)!.op as { kind?: string; steps?: unknown[] };
+  expect(applied.kind).toBe("group");
+  expect(applied.steps).toHaveLength(2);
+
+  await page.locator("#modelHistoryTree .mh-row", { hasText: "Extrude 2 regions" }).locator(".mh-edit").click();
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await expect(canvas).toHaveAttribute("data-extrude-regions", "2");
+  // Moving over one region does not drop the other from the edit.
+  await page.mouse.move(centre.x + 40, centre.y + 5);
+  await expect(canvas).toHaveAttribute("data-extrude-regions", "2");
+  await hud.locator("input").first().fill("6");
+  await hud.locator("input").first().press("Enter");
+  await expect(canvas).not.toHaveAttribute("data-sketch", "editing");
+  const edited = tree.of("edit").at(-1)!.op as { kind?: string; steps?: { depth?: number }[] };
+  expect(edited.kind).toBe("group");
+  expect(edited.steps?.map((step) => step.depth)).toEqual([6, 6]);
+});
+
 async function drawTypedCircle(page: Page) {
   await page.locator("[data-sketch-menu=draw]").click();
   await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();

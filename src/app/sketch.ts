@@ -85,6 +85,7 @@ import {
   cycleMode,
   modeLabel,
   regionSamples,
+  regionsOfOutlines,
   regionsCentroid,
   resolveExtrudeMode,
   sketchTouchesSolid,
@@ -188,21 +189,21 @@ interface SketchApi {
 
 let editor: SketchEditor = sketchOff();
 /** --- F1. Set by mountSketch. History Edit calls these. --- */
-let openFeatureImpl: (sketch: SketchData, preset: ExtrudePreset) => void = () => {};
+let openFeatureImpl: (sketch: SketchData, preset: ExtrudePreset, outlines: readonly ProfileLoop[]) => void = () => {};
 let closeFeatureImpl: () => void = () => {};
 let faceForSketch: () => number | null = () => null;
 let enterFaceAction: (face: number) => void = () => {};
 let enterBedAction: () => void = () => {};
 
-/** Reopen a sketch and its extrude drag. E1 calls this from History Edit. */
-export function openSketchFeature(sketch: SketchData, preset: ExtrudePreset) {
-  openFeatureImpl(sketch, preset);
+/** Reopen a sketch and its extrude drag, with the regions the extrude was applied to. E1 calls this from History Edit. */
+export function openSketchFeature(sketch: SketchData, preset: ExtrudePreset, outlines: readonly ProfileLoop[]) {
+  openFeatureImpl(sketch, preset, outlines);
 }
 
 /** --- F2. Reopen a sketch and its revolve drag. History Edit calls this. --- */
-let openRevolveImpl: (sketch: SketchData, preset: RevolvePreset) => void = () => {};
-export function openSketchRevolve(sketch: SketchData, preset: RevolvePreset) {
-  openRevolveImpl(sketch, preset);
+let openRevolveImpl: (sketch: SketchData, preset: RevolvePreset, outlines: readonly ProfileLoop[]) => void = () => {};
+export function openSketchRevolve(sketch: SketchData, preset: RevolvePreset, outlines: readonly ProfileLoop[]) {
+  openRevolveImpl(sketch, preset, outlines);
 }
 
 /** --- F3. Reopen a loft's sections, or a sweep's profile and path. History Edit calls this. --- */
@@ -362,6 +363,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let loft: LoftGesture | null = null;
   let sweep: SweepGesture | null = null;
   let editSession = false;
+  /** The outlines a History Edit's feature was applied to: Extrude or Revolve again in the edit picks those regions. */
+  let editOutlines: ProfileLoop[] = [];
   let committing = false;
   let probeTimer = 0;
 
@@ -1472,14 +1475,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return node;
   }
 
-  openFeatureImpl = (sketch, preset) => {
+  openFeatureImpl = (sketch, preset, outlines) => {
     host.closeTool();
     editor = enterSketchData(editor, sketch);
     editSession = true;
+    editOutlines = [...outlines];
     const slots: 1 | 2 | 3 = preset.draftDeg != null && preset.draftDeg !== 0 ? 3 : preset.depth2 != null && preset.depth2 > 0 ? 2 : 1;
     revolve = null;
     loft = null;
     sweep = null;
+    const drawn = activeSketch(editor) ?? sketch;
+    const found = regionsOfOutlines(drawn, outlines);
     gesture = {
       slots,
       distance: preset.distance,
@@ -1487,7 +1493,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       draft: preset.draftDeg,
       upTo: preset.upTo,
       choice: preset.choice,
-      regions: chooseRegions(editor && activeSketch(editor) ? activeSketch(editor)! : sketch, [], null),
+      regions: found.length > 0 ? found : chooseRegions(drawn, [], null),
       dragging: false,
       guide: null,
       down: null,
@@ -1496,15 +1502,16 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     refsKey = "";
     publish("open");
   };
-  openRevolveImpl = (sketch, preset) => {
+  openRevolveImpl = (sketch, preset, outlines) => {
     host.closeTool();
     editor = enterSketchData(editor, sketch);
     editSession = true;
+    editOutlines = [...outlines];
     gesture = null;
     loft = null;
     sweep = null;
     const drawn = activeSketch(editor) ?? sketch;
-    const regions = regionsForEdit(drawn);
+    const regions = regionsForEdit(drawn, outlines);
     revolveNote = "";
     revolve = {
       angle: preset.angleDeg,
@@ -1654,7 +1661,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (sweep) endSweep();
     const sketch = activeSketch(editor);
     if (!sketch || editor.phase !== "editing") return;
-    const chosen = chooseRegions(sketch, editor.selection.entities, editor.cursor);
+    const chosen = editedRegions(sketch) ?? chooseRegions(sketch, editor.selection.entities, editor.cursor);
     if (chosen.length === 0) {
       host.readout("Select a region to extrude.");
       return;
@@ -1673,6 +1680,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     };
     publish("open");
     armProbe();
+  }
+
+  /** In a History Edit with nothing selected, the regions the step was applied to. Null otherwise. */
+  function editedRegions(sketch: SketchData): Region[] | null {
+    if (!editSession || editOutlines.length === 0 || editor.selection.entities.length > 0) return null;
+    const found = regionsOfOutlines(sketch, editOutlines);
+    return found.length > 0 ? found : null;
   }
 
   function endExtrude() {
@@ -1816,7 +1830,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (ev.phase === "move") {
       const sketch = activeSketch(editor);
-      if (sketch && editor.selection.entities.length === 0) {
+      if (sketch && editor.selection.entities.length === 0 && !editSession) {
         const hit = rayOnPlane(frame, host.view.pointerRay(ev.x, ev.y).origin, host.view.pointerRay(ev.x, ev.y).direction);
         const chosen = chooseRegions(sketch, [], hit?.uv ?? null);
         if (chosen.length > 0) gesture = { ...gesture, regions: chosen };
@@ -1928,7 +1942,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const sketch = activeSketch(editor);
     const frame = drawingFrame();
     if (!sketch || !frame || editor.phase !== "editing") return;
-    const regions = preset ? regionsForEdit(sketch) : chooseRegions(sketch, editor.selection.entities, editor.cursor);
+    const regions = (preset ? regionsForEdit(sketch, editOutlines) : editedRegions(sketch)) ?? chooseRegions(sketch, editor.selection.entities, editor.cursor);
     if (regions.length === 0) {
       host.readout("Select a region to revolve.");
       return;
