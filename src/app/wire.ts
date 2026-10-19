@@ -7,7 +7,7 @@ import { applyTheme, type ThemeChoice } from "../theme";
 import { axisNormal, clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
-import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
+import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
 import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
@@ -432,10 +432,6 @@ export function wireApp() {
     if (t.id === "retractexport" && state.retractGcode) void saveText(withPrinterGcode(state.retractGcode), "retraction-calibration.gcode", "gcode");
   });
   document.querySelector(".top")!.addEventListener("input", onSettings);
-  document.querySelectorAll<HTMLButtonElement>(".mode:not(.tab)").forEach((button) => {
-    if (!button.dataset.mode) return;
-    button.addEventListener("click", () => setView(button.dataset.mode as typeof state.viewMode, "user"));
-  });
   document.querySelector("#theme")!.addEventListener("change", (ev) => {
     applyTheme((ev.target as HTMLSelectElement).value as ThemeChoice);
     view3d.setTheme();
@@ -506,10 +502,13 @@ export function wireApp() {
     paintSectionChrome();
     draw();
   });
-  document.querySelector("#legend")!.addEventListener("change", (ev) => {
+  document.addEventListener("change", (ev) => {
     const input = ev.target as HTMLInputElement;
     const kind = input.dataset.kind;
-    if (!kind) return;
+    if (!kind || !input.closest("#legend, #right")) return;
+    document.querySelectorAll<HTMLInputElement>(`#legend input[data-kind="${CSS.escape(kind)}"], #right input[data-kind="${CSS.escape(kind)}"]`).forEach((box) => {
+      box.checked = input.checked;
+    });
     if (input.checked) state.hidden.delete(kind);
     else state.hidden.add(kind);
     if (kind === "travel") state.showTravel = input.checked;

@@ -163,7 +163,9 @@ test("ui states from real slice fixtures", async ({ page }) => {
     input.value = String(value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }, mid);
+  await page.locator('#toolRail [data-fly="flyFeatures"]').click();
   await page.locator("#legend label", { hasText: "Travel" }).locator("input").check();
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "2D", exact: true }).click();
   await page.waitForTimeout(200);
   await page.locator("#view").screenshot({ path: path.join(out, "v3-12-preview-2d.png") });
@@ -174,8 +176,10 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.waitForTimeout(400);
   await page.locator("#view3d").screenshot({ path: path.join(out, "v3-13-preview-3d.png") });
 
+  await page.locator('#toolRail [data-fly="flyFeatures"]').click();
   await page.locator("#legend label", { hasText: "Outer wall" }).locator("input").uncheck();
-  await page.locator("#legend").screenshot({ path: path.join(out, "v3-14-legend-toggles.png") });
+  await page.locator("#flyFeatures").screenshot({ path: path.join(out, "v3-14-legend-toggles.png") });
+  await page.keyboard.press("Escape");
 
   await page.locator("#timing").click();
   await page.locator("#estimate").scrollIntoViewIfNeeded();

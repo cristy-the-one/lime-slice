@@ -90,14 +90,21 @@ test("legend and Color by recolor the 3D preview without rebuilding it", async (
   const canvas = page.locator("#view3d");
   await page.waitForTimeout(800);
   const feature = await canvas.screenshot();
+  await page.locator('#toolRail [data-fly="flyFeatures"]').click();
   await page.locator("#legend label", { hasText: "Outer wall" }).locator("input").uncheck();
+  await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
   const noOuter = await canvas.screenshot();
+  await page.locator('#toolRail [data-fly="flyColor"]').click();
   await page.locator("#colorBy").selectOption("speed");
+  await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
   const speed = await canvas.screenshot();
+  await page.locator('#toolRail [data-fly="flyFeatures"]').click();
   await page.locator("#legend label", { hasText: "Outer wall" }).locator("input").check();
+  await page.locator('#toolRail [data-fly="flyColor"]').click();
   await page.locator("#colorBy").selectOption("feature");
+  await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
   const back = await canvas.screenshot();
   expect(noOuter.equals(feature)).toBe(false);
@@ -217,8 +224,8 @@ test("layer scrub does not resize the spark or the layer track", async ({ page }
   const track = page.locator("#vslider .track");
   const spark0 = (await spark.boundingBox())!;
   const track0 = (await track.boundingBox())!;
-  const label0 = await page.locator("#sparkLabel").innerText();
-  expect(label0, "the legend names the two swatches").toMatch(/slow[\s\S]*too fast/);
+  const label0 = await page.locator("#scrub").getAttribute("data-tip");
+  expect(label0, "the chart's tip names the two colors").toMatch(/slow[\s\S]*too fast/);
   expect(label0, "the layer's time lives in the slider readout").not.toMatch(/\d s/);
   const z0 = await page.locator("#readHigh").innerText();
   await page.locator("#rangeHigh").evaluate((el) => {
@@ -229,7 +236,7 @@ test("layer scrub does not resize the spark or the layer track", async ({ page }
   await expect(page.locator("#readHigh")).not.toHaveText(z0);
   const spark1 = (await spark.boundingBox())!;
   const track1 = (await track.boundingBox())!;
-  expect(await page.locator("#sparkLabel").innerText(), "a scrub leaves the legend alone").toBe(label0);
+  expect(await page.locator("#scrub").getAttribute("data-tip"), "a scrub leaves the chart's tip alone").toBe(label0);
   await expect(page.locator("#readLow"), "the layer's time is in the slider readout").toHaveText(/^\d+(\.\d)? s$|^\d+ min \d+ s$/);
   expect(Math.abs(spark1.x - spark0.x)).toBeLessThan(1);
   expect(Math.abs(spark1.width - spark0.width)).toBeLessThan(1);

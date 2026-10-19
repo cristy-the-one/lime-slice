@@ -89,7 +89,8 @@ test("section offset is a number and the axis select aims the plane", async ({ p
   await expect(page.locator("#estimate")).toContainText("g");
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.getByRole("button", { name: "3D", exact: true }).click();
-  await page.locator("#sectionOn").check();
+  await page.locator('#toolRail [data-tool="section"]').click();
+  await expect(page.locator("#sectionOn")).toBeChecked();
   const offset = page.locator("#sectionOffset");
   await expect(offset).toHaveAttribute("type", "number");
   await expect(page.locator("#sectionAxis")).toHaveValue("z");

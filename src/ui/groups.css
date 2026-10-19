@@ -373,7 +373,10 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
   color: var(--text-dim);
 }
 .est-row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; padding: 3px 0; }
-.est-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.est-label { min-width: 0; overflow-wrap: anywhere; display: flex; align-items: center; gap: var(--space-1); cursor: pointer; }
+.est-label input { flex: 0 0 auto; margin: 0; }
+.est-label .swatch, .est-check { flex: 0 0 auto; }
+.est-check { width: 13px; }
 .est-time, .est-mass { text-align: right; white-space: nowrap; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .est-mass { color: var(--text-faint); }
 .est .bar > span { background: var(--teal); }

@@ -10,9 +10,9 @@ import { coverageWarning, inAirWarning } from "../slice-action";
 import { meshRepairOf, meshWarningKey, meshWarningText } from "./mesh-warning";
 import { supportModeOf, type SupportMode } from "../support-source";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
-import { filamentCost, filamentGrams, groupFeatures } from "../estimate";
+import { filamentCost, filamentGrams } from "../estimate";
 import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
-import { OTHER_COLOR, featureColor } from "../colors";
+import { featureRows, featureTableMarkup } from "../ui/legend";
 import { shellCount } from "../mesh-shells";
 import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
@@ -998,19 +998,11 @@ export function dismissMeshWarning() {
   dismissedMeshWarning = counts ? meshWarningKey(counts) : dismissedMeshWarning;
 }
 
-/** The feature each estimate row is colored as. */
-const ROW_KIND: Record<string, string> = { "Outer wall": "outer", "Inner wall": "inner", Infill: "sparse", "Top / bottom": "top", Ironing: "ironing", Supports: "support", Travel: "travel" };
-
 export function estimateHtml() {
   const est = state.result?.estimate;
   if (!est) return "";
-  const groups = groupFeatures(est.byFeature ?? [], state.profile);
-  const longest = Math.max(0.001, ...groups.map((row) => row.seconds));
-  const rows = groups.map((row) => {
-    const kind = ROW_KIND[row.label];
-    const color = kind ? featureColor(kind) : OTHER_COLOR;
-    return `<div class="est-row"><span class="est-label">${row.label}</span><div class="bar"><span style="width:${Math.min(100, (row.seconds / longest) * 100)}%;background:${color}"></span></div><span class="est-time">${formatDuration(row.seconds)}</span><span class="est-mass">${formatMass(row.grams)}</span></div>`;
-  }).join("");
+  // The legend's rows, so a feature is timed, weighed and shown or hidden in one place.
+  const rows = featureTableMarkup(previewFeatureRows(), (mm) => filamentGrams(mm, state.profile));
   const grams = filamentGrams(est.filamentMm, state.profile);
   const tile = durationTile(est.seconds);
   return `
@@ -1023,6 +1015,13 @@ export function estimateHtml() {
     <div class="chips">${chips()}</div>
     ${statGridHtml([["Arcs", formatCount(est.arcMoves)], ["Retracts", formatCount(est.retracts ?? 0)], ["Travel", formatLength(est.travelMm ?? 0)], ["Scarfed loops", formatCount(est.scarfedLoops ?? 0)]])}
   `;
+}
+
+/** The features the slice drew and timed, with what the preview shows. */
+export function previewFeatureRows() {
+  const kinds = new Set<string>();
+  for (const layer of state.result?.layers ?? []) for (const kind of layer.paths.kinds) kinds.add(kind);
+  return featureRows({ kinds, estimate: state.result?.estimate, hidden: state.hidden, showTravel: state.showTravel });
 }
 
 export function paretoHtml() {

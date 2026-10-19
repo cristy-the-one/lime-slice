@@ -38,8 +38,10 @@ html.layout-compact .status,
 html.layout-compact .win-controls,
 html.layout-compact .dock,
 html.layout-compact .splitter,
-html.layout-compact .viewbar,
-html.layout-compact .legend,
+html.layout-compact #viewPresets,
+html.layout-compact .rail-fly,
+html.layout-compact #toolRail [data-fly],
+html.layout-compact #toolRail [data-tool="rulers"],
 html.layout-compact .gizmo-readout,
 html.layout-compact #gizmoNudge { display: none !important; }
 html.layout-compact .layer-step {
@@ -410,7 +412,8 @@ html.layout-compact .stage-tools {
   padding: 0;
   background: transparent;
 }
-html.layout-compact .spark-wrap { display: none; }
+html.layout-compact #spark { display: none; }
+html.layout-compact .scrub { flex: 1 1 auto; min-width: 96px; height: 36px; }
 html.layout-compact .playback {
   display: flex;
   align-items: center;
@@ -422,7 +425,7 @@ html.layout-compact .playback {
   box-shadow: var(--shadow-pop);
 }
 html.layout-compact #play { flex: 0 0 auto; width: auto; min-width: 56px; height: 36px; border: 0; border-radius: 999px; background: transparent; color: var(--text); }
-html.layout-compact .playback input[type="range"] { flex: 1 1 auto; width: auto; min-width: 96px; }
+html.layout-compact .scrub input[type="range"] { top: 0; bottom: 0; height: 100%; }
 html.layout-compact #playReadout { display: none; }
 
 #compactDevice {

@@ -1,6 +1,5 @@
 import { applyTheme, loadTheme, onSchemeChange } from "./theme";
 import { mountChrome } from "./ui/chrome";
-import { mountLegend } from "./ui/legend";
 import { mountLayerTip } from "./ui/layer-tip";
 import { mountKeys } from "./ui/keys";
 import { fillHelpShortcuts, mountPalette, mountStageTabs } from "./ui/palette";
@@ -71,6 +70,8 @@ prepare.setTheme();
 model.setTheme();
 mountChrome({
   stage: () => state.stage,
+  viewMode: () => state.viewMode,
+  setViewMode: (mode) => setView(mode, "user"),
   setGizmoTool: (tool) => prepare.setGizmoTool(tool),
   onToolReadout: () => paintGizmoReadout(),
 });
@@ -212,7 +213,6 @@ mountPalette();
 mountKeys();
 mountStageTabs();
 fillHelpShortcuts(document.querySelector("#helpShortcuts")!);
-mountLegend();
 mountLayerTip();
 document.addEventListener("lime-open-help", () => setHelp(true));
 syncEmptyState(!!state.mesh);
