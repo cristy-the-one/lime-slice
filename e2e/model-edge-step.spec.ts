@@ -152,3 +152,26 @@ test("the step list follows Undo and Redo while Fillet is open", async ({ page }
   await expect(page.locator("#modelEdgeOf")).toHaveText("Edges of: Cut box 8×10×10 (all)");
   await expect(page.locator("#modelApply")).toBeEnabled();
 });
+
+test("a step number that is not on the solid is said once, and the list shows no step", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelToolBoolean").click();
+  await page.locator("#modelCut").click();
+  await page.locator("#modelDx").fill("8");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 3200 mm³");
+  await pickEdge(page);
+  await page.locator("#modelToolFillet").click();
+  await page.locator("#modelEdgesStep").click();
+  await expect(page.locator("#modelEdgeStep")).toHaveValue("1");
+
+  await page.locator("#modelEdgeNode").selectText();
+  await page.keyboard.type("7");
+  const said = "Step 7 is not on this solid. Pick this step or one above it.";
+  await expect(page.locator("#modelEdgeOf")).toHaveText(said);
+  await expect(page.locator("#modelPanel")).not.toContainText(`${said}${said}`);
+  await expect(page.locator("#modelPanel .model-note:visible", { hasText: said })).toHaveCount(1);
+  await expect(page.locator("#modelEdgeStep"), "the list leaves the step it showed").toHaveValue("");
+  await expect(page.locator("#modelApply")).toBeDisabled();
+});

@@ -1039,7 +1039,11 @@ function writeEdgeStep(id: number) {
 function syncEdgeSelect() {
   const select = document.querySelector<HTMLSelectElement>("#modelEdgeStep");
   const id = edgeStepId();
-  if (select && id != null && edgeStepRows.some((step) => step.id === id)) select.value = String(id);
+  // --- D32. A number that names no step on the list leaves the list on none, not on the step before.
+  if (select) {
+    if (id != null && edgeStepRows.some((step) => step.id === id)) select.value = String(id);
+    else select.selectedIndex = -1;
+  }
   paintEdgeOf();
 }
 
@@ -1110,6 +1114,7 @@ function fillEdgeStepList() {
   }
   const id = edgeStepId();
   if (id != null && steps.some((step) => step.id === id)) select.value = String(id);
+  else select.selectedIndex = -1;
   paintEdgeOf();
 }
 
@@ -1490,9 +1495,9 @@ function refreshNote() {
     const split = hooks?.split();
     if (split) ({ text, bad } = splitNote(split));
   } else if ((tool === "fillet" || tool === "chamfer") && edgeSource === "step") {
+    // --- D32. A step that is not on this solid is said once, on the line under its field.
     if (!edgeStepKnown()) {
-      text = document.querySelector("#modelEdgeOf")?.textContent ?? "Pick a step.";
-      bad = true;
+      text = "";
     } else if (isProbed(tool)) {
       const status = probeNote(tool, probe);
       text = status?.text ?? "";
