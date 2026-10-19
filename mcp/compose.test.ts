@@ -6,8 +6,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { addsPiece, cleanOp, cutsOffPiece, expand, movedSpec, primitiveFrom, type ExpandContext, type Piece } from "./compose.ts";
-import { evaluate, resolveNumbers } from "./expr.ts";
+import { addsPiece, cleanOp, cutsOffPiece, expand, movedSpec, primitiveFrom, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
+import { evaluate, resolveNumbers } from "../src/modeling/expr.ts";
 import { fakeEngine } from "./engine.ts";
 import { validateTool } from "./schema.ts";
 import { Session } from "./session.ts";

@@ -4,7 +4,7 @@
  * The box is an aria-live region. Nothing here is drawn until a tool calls `mountHud`.
  */
 
-import { evaluate, ExprError, type Params } from "../../mcp/expr.ts";
+import { evaluate, ExprError, type Params } from "../modeling/expr.ts";
 import { isPlainNumber } from "../modeling/params.ts";
 
 export type { Params };

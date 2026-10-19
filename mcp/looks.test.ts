@@ -9,9 +9,9 @@ import { inflateSync } from "node:zlib";
 import { fakeEngine } from "./engine.ts";
 import { renderMesh } from "./render.ts";
 import { Session } from "./session.ts";
-import { pathSamples } from "./sweep.ts";
-import { textStrokes } from "./text.ts";
-import { thinWalls } from "./thin.ts";
+import { pathSamples } from "../src/modeling/sweep.ts";
+import { textStrokes } from "../src/modeling/text.ts";
+import { thinWalls } from "../src/modeling/thin.ts";
 
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-mcp-looks-"));
 

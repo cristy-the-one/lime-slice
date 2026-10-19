@@ -1,6 +1,6 @@
 // The shared modelling modules, loaded the way the browser will load them.
 // This file is the Node test. The modules beside it must stay free of Node builtins, the MCP session, and the DOM.
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 
 import { hasAnchor, resolveAnchors } from "./anchors.ts";
 import { evaluate } from "./expr.ts";
@@ -10,13 +10,6 @@ import { splinePoints } from "./sweep.ts";
 import { textStrokes } from "./text.ts";
 import { thinWalls } from "./thin.ts";
 import { levelFrame } from "./frames.ts";
-import { hasAnchor as hasAnchorShim } from "../../mcp/anchors.ts";
-import { evaluate as evaluateShim } from "../../mcp/expr.ts";
-import { expandOps as expandOpsShim } from "../../mcp/macro.ts";
-import { isComposite as isCompositeShim } from "../../mcp/compose.ts";
-import { splinePoints as splinePointsShim } from "../../mcp/sweep.ts";
-import { textStrokes as textStrokesShim } from "../../mcp/text.ts";
-import { thinWalls as thinWallsShim } from "../../mcp/thin.ts";
 
 const dir = new URL(".", import.meta.url);
 const library = readdirSync(dir)
@@ -37,11 +30,9 @@ for (const name of library) {
   }
 }
 
-if (evaluate !== evaluateShim || isComposite !== isCompositeShim || expandOps !== expandOpsShim) {
-  throw new Error("a shim is not the shared module");
-}
-if (hasAnchor !== hasAnchorShim || splinePoints !== splinePointsShim || textStrokes !== textStrokesShim || thinWalls !== thinWallsShim) {
-  throw new Error("a shim is not the shared module");
+// --- D38. The MCP imports these modules from here; the old re-export shims in mcp/ are gone.
+for (const name of ["anchors", "compose", "expr", "macro", "sweep", "text", "thin"]) {
+  if (existsSync(new URL(`../../mcp/${name}.ts`, import.meta.url))) throw new Error(`mcp/${name}.ts is back: import src/modeling/${name}.ts instead`);
 }
 
 if (evaluate("wallH / 2 + 1", { wallH: 10 }) !== 6) throw new Error("evaluate");

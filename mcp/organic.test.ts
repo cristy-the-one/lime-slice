@@ -6,12 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 
-import { primitiveFrom } from "./compose.ts";
+import { primitiveFrom } from "../src/modeling/compose.ts";
 import { fakeEngine } from "./engine.ts";
 import { renderMesh } from "./render.ts";
 import { validateTool } from "./schema.ts";
 import { Session } from "./session.ts";
-import { sweepSections } from "./sweep.ts";
+import { sweepSections } from "../src/modeling/sweep.ts";
 import { primitiveBounds, primitiveMesh, rootSpec, turnCentre, type PrimitiveSpec } from "../src/model-primitive.ts";
 import type { LoftSection } from "../src/model-tree.ts";
 
