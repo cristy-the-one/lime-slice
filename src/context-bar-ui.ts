@@ -58,10 +58,10 @@ function toolOpen(): boolean {
   return !!document.querySelector<HTMLElement>("#modelBar")?.dataset.tool;
 }
 
-/** A sketch is being chosen or drawn: its card and tools own the view, and the face's actions are not for it. */
+/** A sketch is being chosen or drawn: its card and tools own the view, and the face's actions are not for it. A pinned card does not. */
 function sketching(): boolean {
   const phase = canvas()?.dataset.sketch;
-  return !!phase && phase !== "off";
+  return phase === "editing" || phase === "choosing";
 }
 
 function pageBox(node: Element): ContextBox | null {
