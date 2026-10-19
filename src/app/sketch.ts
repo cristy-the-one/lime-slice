@@ -77,7 +77,7 @@ import { DRAW_MENU, isDrawTool } from "../sketch/tools";
 // --- S4. Constraints live in the sketch card menu, not on the Model toolbar. ---
 import { CONSTRAIN_MENU, constraintGlyphs, dimensionLabels, firstLineMeasure, type ConstraintGlyph, isConstrainTool, placedStatus, plainDrivingValue, setDrivingEvaluator } from "../sketch/constrain";
 import { evaluate, ExprError } from "../modeling/expr.ts";
-import { isPlainNumber, withExprs } from "../modeling/params.ts";
+import { appParamMessage, isPlainNumber, withExprs } from "../modeling/params.ts";
 import type { Params } from "../modeling/expr.ts";
 import { parseConstraints } from "../sketch/solve";
 import { workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
@@ -325,7 +325,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return value;
     } catch (err) {
       const message = err instanceof ExprError || err instanceof Error ? err.message : String(err);
-      return { error: message.replace("Set it with model_params first.", "Add it in Parameters, or type a number.") };
+      return { error: appParamMessage(message) };
     }
   });
   // --- F1. Extrude state. The key listener is registered before the HUD so E, M, and Esc are taken first. ---
