@@ -83,3 +83,57 @@ test("a slice on Prepare paints the layer chart at its on-screen size", async ({
     return cssW > 1 && cssH > 1 && canvas.width === cssW && canvas.height === cssH;
   })).toBe(true);
 });
+
+test("the Preview rail holds the view bar, the strip is 52 px and the layer slider 48 px", async ({ page }) => {
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await serveSliceJob(page, cube);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#slice").click();
+  await expect(page.locator("#export")).toHaveAttribute("data-slice", "current");
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
+
+  const rail = page.getByRole("toolbar", { name: "Preview tools" });
+  for (const name of ["2D", "Split", "3D", "Color by", "Features shown", "Bed opacity", "Measure", "Section", "Edit supports"]) {
+    await expect(rail.getByRole("button", { name, exact: true })).toBeVisible();
+  }
+  await expect(page.locator(".viewbar")).toHaveCount(0);
+
+  // A flyout opens beside the rail and says so on its button; Esc closes it back onto the button.
+  const color = rail.getByRole("button", { name: "Color by", exact: true });
+  await color.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#flyColor")).toBeVisible();
+  await expect(color).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("#colorBy")).toBeFocused();
+  const sides = await page.evaluate(() => ({
+    fly: document.querySelector("#flyColor")!.getBoundingClientRect().left,
+    rail: document.querySelector("#toolRail")!.getBoundingClientRect().right,
+  }));
+  expect(sides.fly).toBeGreaterThanOrEqual(sides.rail);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#flyColor")).toBeHidden();
+  await expect(color).toBeFocused();
+  await expect(color).toHaveAttribute("aria-expanded", "false");
+  await page.locator('#toolRail [data-fly="flyFeatures"]').click();
+  await expect(page.locator("#flyFeatures")).toBeVisible();
+  await page.locator("#view3d").click({ position: { x: 20, y: 20 } });
+  await expect(page.locator("#flyFeatures")).toBeHidden();
+
+  const sizes = await page.evaluate(() => ({
+    strip: document.querySelector(".stage-tools")!.getBoundingClientRect().height,
+    slider: document.querySelector("#vslider")!.getBoundingClientRect().width,
+    canvas: document.querySelector("#view3d")!.getBoundingClientRect().height,
+    stage: document.querySelector("#stage")!.getBoundingClientRect().height,
+  }));
+  expect(sizes.strip).toBe(52);
+  expect(sizes.slider).toBe(48);
+  expect(sizes.stage - sizes.canvas, "only the strip sits under the 3D view").toBeLessThanOrEqual(53);
+
+  // The rail's view modes drive the stage.
+  await rail.getByRole("button", { name: "2D", exact: true }).click();
+  await expect(page.locator("#stage")).toHaveClass(/mode-flat/);
+  await expect(rail.getByRole("button", { name: "2D", exact: true })).toHaveAttribute("aria-pressed", "true");
+});

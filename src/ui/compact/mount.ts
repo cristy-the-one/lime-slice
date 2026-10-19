@@ -312,7 +312,7 @@ function menu() {
     ["Fit view", () => document.querySelector<HTMLButtonElement>("#viewPresets button:last-child")?.click()],
     ["Lay flat", () => document.querySelector<HTMLButtonElement>("#layflat")?.click()],
     ["Section", () => document.querySelector<HTMLButtonElement>("#toolRail [data-tool=section]")?.click()],
-    ["Measure", () => document.querySelector<HTMLInputElement>("#measureOn")?.click()],
+    ["Measure", () => document.querySelector<HTMLButtonElement>("#measureField")?.click()],
   ] as const) {
     const button = document.createElement("button");
     button.type = "button";
@@ -435,9 +435,7 @@ function enter() {
 
 function leave() {
   if (!home) return;
-  const rail = document.querySelector("#toolRail");
-  if (rail) home.leftParent.insertBefore(home.left, rail);
-  else home.leftParent.prepend(home.left);
+  home.leftParent.append(home.left);
   home.action.prepend(home.cancel);
   const exportButton = home.action.querySelector("#export");
   if (exportButton) home.action.insertBefore(home.slice, exportButton);

@@ -1,43 +1,50 @@
 /**
- * Desktop panel widths that leave the centre stage at least 70% of the window.
- * The tool rail is a fixed 40px column between settings and the stage, so the
- * two panels share `floor(width * 0.30) - 40`.
+ * Dock widths for the desktop shell. The tool rail is a fixed column at the far left; the settings dock sits beside
+ * it and the results dock at the right edge. Together they take at most `floor(width * 0.30)`, so the stage keeps at
+ * least 70% of the window.
  */
 
-export const PANEL_RAIL_PX = 40;
-export const PANEL_COLLAPSED_PX = 28;
-export const LEFT_MIN = 180;
+export type DockSide = "left" | "right";
+
+export const RAIL_PX = 48;
+export const LEFT_MIN = 240;
 export const LEFT_MAX = 480;
-export const LEFT_DEFAULT = 300;
-/** Preferred results rail. The drag range starts here and the budget may slim it further. */
-export const RIGHT_MIN = 200;
+export const RIGHT_MIN = 240;
 export const RIGHT_MAX = 560;
-export const RIGHT_DEFAULT = 240;
-/** Narrowest docked results rail before it floats over the stage. */
-export const RIGHT_FLOOR = 140;
+/** At and below this width the docks leave the row beside the stage. */
 export const DESKTOP_MIN_PX = 1200;
 
-export interface PanelWish {
-  /** Combined pixel budget for the two panels, or null when the window is not a desktop layout. */
-  budget: number | null;
-  leftCollapsed: boolean;
-  rightCollapsed: boolean;
-  leftDesired: number;
-  rightDesired: number;
-  /** Which open panel keeps its width when both cannot. Defaults to the results rail. */
-  keep?: "left" | "right";
+export interface DockWish {
+  width: number;
+  leftOpen: boolean;
+  rightOpen: boolean;
+  /** A width the user dragged, or null for the width's default. */
+  leftDesired: number | null;
+  rightDesired: number | null;
+  /** The dock opened last stays when both cannot. */
+  last: DockSide;
 }
 
-export interface PanelFit {
+/** Shown widths; 0 is a dock that is closed or folded for room. */
+export interface DockFit {
   left: number;
   right: number;
-  /** Results take no grid column and draw as a floating drawer. */
-  hud: boolean;
 }
 
-export function panelBudget(windowWidth: number): number | null {
-  if (windowWidth <= DESKTOP_MIN_PX) return null;
-  return Math.max(PANEL_COLLAPSED_PX * 2, Math.floor(windowWidth * 0.3) - PANEL_RAIL_PX);
+/** Settings and results widths for a window that has room for both. */
+export function dockDefaults(width: number): DockFit {
+  return width >= 1600 ? { left: 320, right: 280 } : { left: 288, right: 300 };
+}
+
+/** Whether results start open when the user has not chosen. No width opens them by itself yet. */
+export function resultsOpenByDefault(_width: number): boolean {
+  return false;
+}
+
+/** What the rail and the two docks may take, or null when the window is not a desktop layout. */
+export function dockBudget(width: number): number | null {
+  if (width <= DESKTOP_MIN_PX) return null;
+  return Math.floor(width * 0.3) - RAIL_PX;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -45,55 +52,47 @@ function clamp(value: number, min: number, max: number) {
 }
 
 /**
- * Fit the two panels into `budget`. The panel named by `keep` holds its width and the
- * other one yields: settings down to {@link LEFT_MIN}, the results rail down to
- * {@link RIGHT_FLOOR}. The default keeps the results rail, so opening it after a slice
- * slims settings first. If the floors still overflow, the results panel floats and the
- * stage keeps the whole budget.
+ * Fit the open docks into the budget. Results keep their width and settings yield down to {@link LEFT_MIN}; when the
+ * two still do not fit, the dock opened last stays and the other folds to the rail. A lone dock is capped at the
+ * budget. Null below the desktop breakpoint.
  */
-export function allocatePanels(input: PanelWish): PanelFit {
-  const leftWant = clamp(input.leftDesired, LEFT_MIN, LEFT_MAX);
-  const rightWant = clamp(input.rightDesired, RIGHT_MIN, RIGHT_MAX);
-  if (input.budget === null) {
-    return {
-      left: input.leftCollapsed ? PANEL_COLLAPSED_PX : leftWant,
-      right: input.rightCollapsed ? PANEL_COLLAPSED_PX : rightWant,
-      hud: false,
-    };
+export function fitDocks(wish: DockWish): DockFit | null {
+  const budget = dockBudget(wish.width);
+  if (budget === null) return null;
+  const base = dockDefaults(wish.width);
+  const leftWant = clamp(wish.leftDesired ?? base.left, LEFT_MIN, LEFT_MAX);
+  const rightWant = clamp(wish.rightDesired ?? base.right, RIGHT_MIN, RIGHT_MAX);
+  let left = wish.leftOpen;
+  let right = wish.rightOpen;
+  let leftPx = leftWant;
+  if (left && right && leftPx + rightWant > budget) {
+    leftPx = Math.max(LEFT_MIN, budget - rightWant);
+    if (leftPx + rightWant > budget) {
+      if (wish.last === "left") right = false;
+      else left = false;
+      leftPx = leftWant;
+    }
   }
-
-  let left = input.leftCollapsed ? PANEL_COLLAPSED_PX : leftWant;
-  let right = input.rightCollapsed ? PANEL_COLLAPSED_PX : rightWant;
-  const budget = input.budget;
-  if (left + right <= budget) return { left, right, hud: false };
-
-  const leftFloor = input.leftCollapsed ? PANEL_COLLAPSED_PX : LEFT_MIN;
-  const rightFloor = input.rightCollapsed ? PANEL_COLLAPSED_PX : RIGHT_FLOOR;
-  const shed = (side: "left" | "right") => {
-    const floor = side === "left" ? leftFloor : rightFloor;
-    const current = side === "left" ? left : right;
-    if (current <= floor || left + right <= budget) return;
-    const next = current - Math.min(current - floor, left + right - budget);
-    if (side === "left") left = next;
-    else right = next;
+  return {
+    left: left ? Math.min(leftPx, budget) : 0,
+    right: right ? Math.min(rightWant, budget) : 0,
   };
-  if (input.keep === "left") {
-    shed("right");
-    shed("left");
-  } else {
-    shed("left");
-    shed("right");
-  }
-  if (left + right <= budget) return { left, right, hud: false };
-
-  if (!input.rightCollapsed) {
-    const leftSized = input.leftCollapsed ? PANEL_COLLAPSED_PX : Math.min(leftWant, budget);
-    return { left: leftSized, right: 0, hud: true };
-  }
-  return { left: Math.max(PANEL_COLLAPSED_PX, budget - PANEL_COLLAPSED_PX), right: PANEL_COLLAPSED_PX, hud: false };
 }
 
-/** Stage width implied by a fit, used by tests and the viewport budget. */
-export function stageWidth(windowWidth: number, fit: PanelFit): number {
-  return windowWidth - fit.left - fit.right - PANEL_RAIL_PX;
+/**
+ * The widest a dragged dock may go. Settings stop where results begin; results may squeeze settings to their floor,
+ * not past it, so a drag never folds the other dock.
+ */
+export function dragMax(side: DockSide, width: number, otherShown: number): number {
+  const max = side === "left" ? LEFT_MAX : RIGHT_MAX;
+  const min = side === "left" ? LEFT_MIN : RIGHT_MIN;
+  const budget = dockBudget(width);
+  if (budget === null) return max;
+  const other = otherShown > 0 ? (side === "left" ? otherShown : LEFT_MIN) : 0;
+  return clamp(budget - other, min, max);
+}
+
+/** Stage width implied by a fit. */
+export function stageWidth(width: number, fit: DockFit): number {
+  return width - RAIL_PX - fit.left - fit.right;
 }

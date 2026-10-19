@@ -13,23 +13,21 @@ export function syncEmptyState(hasMesh: boolean) {
   });
 }
 
+/** Top, Front and Iso: a chip over the Prepare view's top right corner. */
 function mountViewKeys(hooks: { setViewPreset(preset: ViewPreset): void }) {
-  const bar = document.querySelector(".viewbar");
-  if (!bar || document.querySelector("#viewPresets")) return;
+  const host = document.querySelector("#prepareBody");
+  if (!host || document.querySelector("#viewPresets")) return;
   const row = document.createElement("div");
   row.id = "viewPresets";
-  row.className = "modes";
+  row.className = "modes stage-chip view-presets";
   row.setAttribute("role", "group");
   row.setAttribute("aria-label", "Camera");
-  row.hidden = true;
   row.append(
     viewButton("top", "Top", hooks),
     viewButton("front", "Front", hooks),
     viewButton("iso", "Iso", hooks),
   );
-  const modes = document.querySelector("#viewModes");
-  if (modes) modes.after(row);
-  else bar.prepend(row);
+  host.append(row);
 }
 
 function viewButton(

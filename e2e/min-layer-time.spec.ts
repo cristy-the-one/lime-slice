@@ -76,6 +76,7 @@ test("the active layer says when it was slowed for cooling, in a row that fits",
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(1);
   await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#timing").click();
 
   const readout = page.locator("#layerReadout");
   const goTo = async (layer: number) =>
@@ -90,7 +91,6 @@ test("the active layer says when it was slowed for cooling, in a row that fits",
   // Every value stays inside the narrowest results panel (as fit.spec.ts sets it) instead of running past its edge.
   await page.evaluate(() => {
     document.querySelector<HTMLElement>(".workspace")!.style.setProperty("--panel-right", "240px");
-    window.dispatchEvent(new Event("resize"));
   });
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   const clipped = await readout.locator("dd").evaluateAll((cells) => cells.filter((cell) => cell.scrollWidth > cell.clientWidth + 1).length);

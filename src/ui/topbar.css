@@ -63,7 +63,8 @@
 
 /* The slot takes what the bar can spare; the estimate drops price, then mass, to stay whole in it. */
 .estimate-slot { flex: 0 1 252px; min-width: 104px; container: estimate / inline-size; display: flex; justify-content: flex-end; }
-.estimate-slot:has(.estimate:empty) { display: none; }
+/* Before a slice the estimate is only its dock icon, so results stay one click away. */
+.estimate-slot:has(.estimate:empty) { flex: 0 0 var(--control-h); min-width: var(--control-h); }
 @container estimate (max-width: 239px) { .est-cost { display: none; } }
 @container estimate (max-width: 179px) { .est-mass { display: none; } }
 .estimate {
@@ -81,7 +82,6 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.estimate:empty { display: none; }
 .estimate:hover { background: var(--surface-2); color: var(--text); }
 
 .split { display: inline-flex; align-items: stretch; }
@@ -101,7 +101,24 @@
 #slice.show-result + .split-more > summary { background: var(--panel-2); color: var(--text); border-color: var(--line); }
 #slice.reslice + .split-more > summary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
-.status { min-height: 26px; padding: 0 var(--space-3); font-size: var(--fs-1); }
+.status { padding: 0 var(--space-3); font-size: var(--fs-1); }
+.status-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
+/* The estimate opens the results dock; the icon says so. */
+.estimate[aria-expanded] { display: inline-flex; align-items: center; gap: var(--space-2); }
+.estimate[aria-expanded]::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  opacity: 0.7;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='18' x='3' y='3' rx='2'/%3E%3Cpath d='M15 3v18'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='18' x='3' y='3' rx='2'/%3E%3Cpath d='M15 3v18'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.estimate[aria-expanded="true"] { background: var(--surface-2); color: var(--text); }
 
 /* Slice and Export trade the accent; one weight keeps both widths, so neither moves under the pointer. */
 .action-row .btn { font-weight: 600; }
+.estimate:empty { width: var(--control-h); padding: 0; justify-content: center; }
+/* Below 1200 the stage tabs need the room; the window title still names the project. */
+@media (max-width: 1200px) and (min-width: 961px) { .project-title { display: none; } }
