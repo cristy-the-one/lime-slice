@@ -217,6 +217,12 @@ export function closeSketchSession() {
   closeFeatureImpl();
 }
 
+let forgetImpl: () => void = () => {};
+/** Another model was loaded: the sketches drawn on the old one go with it, cards included. */
+export function forgetSketches() {
+  forgetImpl();
+}
+
 // --- F1. Sketch on a face, and on the bed. Order 35 sits between Hole and Shell, so the face bar's arrow keys stay. ---
 registerContextAction({
   id: "sketch-on-face",
@@ -366,10 +372,22 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   /** The outlines a History Edit's feature was applied to: Extrude or Revolve again in the edit picks those regions. */
   let editOutlines: ProfileLoop[] = [];
   let committing = false;
+  /** The cards a History Edit opened: its sketch, and a loft's other sections. They go when the edit ends. */
+  let editCards: number[] = [];
+  /** An Apply just closed the sketch: the readout keeps what the apply said about the solid. */
+  let keepReadout = false;
   let probeTimer = 0;
 
   window.addEventListener("keydown", (ev) => {
     if (state.stage !== "model" || editor.phase !== "editing" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (committing) {
+      // An Apply is on its way. Its keys wait for it, so an Esc cannot leave the step applied and the sketch open.
+      if (ev.key === "Escape" || ev.key === "Enter" || ev.key === "Tab" || ev.key.length === 1) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+      return;
+    }
     const drawing = sketchDimensions(editor) != null;
     // A letter typed in any field is text: "wallH / 2" in the size box, or a search. Only the size box's Tab and Esc are the gesture's.
     const field = typingTarget(ev.target);
@@ -465,7 +483,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (ev.key === "Escape") {
         ev.preventDefault();
         ev.stopImmediatePropagation();
-        endLoft();
+        escapeFeature(endLoft);
         return;
       }
     }
@@ -480,7 +498,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (ev.key === "Escape") {
         ev.preventDefault();
         ev.stopImmediatePropagation();
-        endSweep();
+        escapeFeature(endSweep);
         return;
       }
     }
@@ -495,7 +513,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (ev.key === "Escape") {
         ev.preventDefault();
         ev.stopImmediatePropagation();
-        endRevolve();
+        escapeFeature(endRevolve);
         return;
       }
     }
@@ -510,7 +528,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (ev.key === "Escape") {
       ev.preventDefault();
       ev.stopImmediatePropagation();
-      endExtrude();
+      escapeFeature(endExtrude);
       return;
     }
     if (ev.key === "Tab" && !ev.shiftKey && gesture.slots < 3) {
@@ -568,20 +586,21 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     publish("open");
   });
   hud.onCancel(() => {
+    if (committing) return;
     if (sweep) {
-      endSweep();
+      escapeFeature(endSweep);
       return;
     }
     if (loft) {
-      endLoft();
+      escapeFeature(endLoft);
       return;
     }
     if (revolve) {
-      endRevolve();
+      escapeFeature(endRevolve);
       return;
     }
     if (gesture) {
-      endExtrude();
+      escapeFeature(endExtrude);
       return;
     }
     const next = sketchKey(editor, "Escape", { ctrl: false, meta: false, shift: false });
@@ -655,6 +674,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     enterNamed("XY");
   });
   cards?.addEventListener("click", (ev) => {
+    // The card waits while an Apply is on its way, as the keys do.
+    if (committing) return;
     const target = ev.target instanceof HTMLElement ? ev.target.closest("button") : null;
     if (!(target instanceof HTMLButtonElement)) return;
     const plane = target.dataset.sketchPlane;
@@ -816,6 +837,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const mods = { ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey };
     const history = (ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z" || ev.key === "y" || ev.key === "Y");
     if (!sketchHandlesKey(ev.key, mods) && !history) return;
+    if (committing) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
     const field = typingTarget(ev.target);
     if (field?.dataset.sketchDimInput != null) {
       if (ev.key === "Escape") {
@@ -849,6 +875,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }, true);
   host.view.onSketchPointer((ev) => {
     lastClient = { x: ev.x, y: ev.y };
+    if (committing) return;
     if (editor.phase === "choosing") {
       const hit = chooseAt(ev.x, ev.y);
       editor = { ...editor, hotPlane: hit?.kind === "plane" ? hit.name : null };
@@ -1012,7 +1039,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     paintBox();
     paintDataset();
     paintLabels();
-    if (editor.phase === "off") host.readout(host.idleReadout());
+    if (keepReadout || committing) {
+      // The apply's own sentences, working and done, stay.
+    } else if (editor.phase === "off") host.readout(host.idleReadout());
     else if (sweep && editor.phase === "editing") host.readout(sweep.note || sweepReadout());
     else if (loft && editor.phase === "editing") host.readout(loft.note || loftReadout());
     else if (revolve && editor.phase === "editing") host.readout(revolveNote || revolveReadout());
@@ -1477,8 +1506,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   openFeatureImpl = (sketch, preset, outlines) => {
     host.closeTool();
-    editor = enterSketchData(editor, sketch);
+    editor = enterSketchData(endEditSession(editor), sketch);
     editSession = true;
+    editCards = editor.active != null ? [editor.active] : [];
     editOutlines = [...outlines];
     const slots: 1 | 2 | 3 = preset.draftDeg != null && preset.draftDeg !== 0 ? 3 : preset.depth2 != null && preset.depth2 > 0 ? 2 : 1;
     revolve = null;
@@ -1504,8 +1534,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   };
   openRevolveImpl = (sketch, preset, outlines) => {
     host.closeTool();
-    editor = enterSketchData(editor, sketch);
+    editor = enterSketchData(endEditSession(editor), sketch);
     editSession = true;
+    editCards = editor.active != null ? [editor.active] : [];
     editOutlines = [...outlines];
     gesture = null;
     loft = null;
@@ -1529,12 +1560,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   };
   openLoftImpl = (preset) => {
     host.closeTool();
-    editor = sketchOff();
+    // The cards already on screen stay. The edit's own sections are cards of their own, which go when the edit ends.
+    editor = endEditSession(editor);
+    if (editor.phase === "editing") editor = finishSketch(editor);
+    const before = new Set(editor.pinned.map((item) => item.id));
     editSession = true;
     gesture = null;
     revolve = null;
     if (preset.kind === "sweep") {
-      if (preset.pathSketch) editor = pinSketch(editor, preset.pathSketch, "Sketch 1");
+      if (preset.pathSketch) editor = pinSketch(editor, preset.pathSketch, "Path");
       editor = enterSketchData(editor, preset.profile);
       const drawn = activeSketch(editor) ?? preset.profile;
       const profile = chooseRegions(drawn, [], null)[0] ?? null;
@@ -1558,14 +1592,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       let nameAt = 1;
       for (const item of real) {
         if (item === active || !item.sketch) continue;
-        editor = pinSketch(editor, item.sketch, `Sketch ${nameAt}`);
+        editor = pinSketch(editor, item.sketch, `Section ${nameAt}`);
         nameAt += 1;
       }
       const drawn = active?.sketch ?? preset.sketches.find((sketch) => sketch) ?? null;
       if (drawn) editor = enterSketchData(editor, drawn);
+      const own = editor.pinned.filter((item) => !before.has(item.id));
       const picks: LoftPick[] = preset.sections.map((section, index) => {
         const sketch = preset.sketches[index] ?? null;
-        const pinned = sketch ? editor.pinned.find((item) => item.sketch === sketch || JSON.stringify(item.sketch) === JSON.stringify(sketch)) : undefined;
+        const pinned = sketch ? own.find((item) => item.sketch === sketch || JSON.stringify(item.sketch) === JSON.stringify(sketch)) : undefined;
         return {
           key: pinned ? `sketch:${pinned.id}` : `section:${index}`,
           sketchId: pinned?.id ?? null,
@@ -1576,18 +1611,22 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       loft = { picks, ruled: preset.ruled, choice: preset.choice, note: "" };
       sweep = null;
     }
+    editCards = editor.pinned.filter((item) => !before.has(item.id)).map((item) => item.id);
     aimKey = "";
     refsKey = "";
     publish("open");
   };
   closeFeatureImpl = () => {
-    editSession = false;
     if (host.sketchHolesArmed()) host.endSketchHoles();
     if (editor.phase !== "editing" && editor.phase !== "choosing") {
       gesture = null;
       revolve = null;
       loft = null;
       sweep = null;
+      if (editSession) {
+        editor = endEditSession(editor);
+        publish("open");
+      }
       return;
     }
     gesture = null;
@@ -1598,7 +1637,42 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.view.setHandles([]);
     host.view.setGhost(null);
     host.clearExtrudePreview();
-    editor = finishSketch(editor);
+    editor = endEditSession(finishSketch(editor));
+    publish("open");
+  };
+  // Another Model tool opened from the toolbar or a key. The sketch gives way to it, as starting a command ends the
+  // sketch in Fusion or Onshape: a new sketch stays as a card, and a History Edit is cancelled. Holes from this
+  // sketch are its own tool, and an Apply on its way finishes first.
+  const bar = document.querySelector<HTMLElement>("#modelBar");
+  if (bar) {
+    new MutationObserver(() => {
+      if (!bar.dataset.tool || !sketchBusy(editor) || host.sketchHolesArmed() || committing) return;
+      if (editor.phase === "choosing") {
+        editor = finishSketch(editor);
+        publish("open");
+        return;
+      }
+      if (editSession) escapeFeature(() => {});
+      else leaveEditing(finishSketch(editor));
+    }).observe(bar, { attributes: true, attributeFilter: ["data-tool"] });
+  }
+  forgetImpl = () => {
+    if (editor.phase === "off" && editor.pinned.length === 0 && !editSession) return;
+    if (host.sketchHolesArmed()) host.endSketchHoles();
+    gesture = null;
+    revolve = null;
+    revolveNote = "";
+    loft = null;
+    sweep = null;
+    editSession = false;
+    editCards = [];
+    editOutlines = [];
+    menuOpen = null;
+    window.clearTimeout(probeTimer);
+    host.view.setHandles([]);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    editor = sketchOff();
     publish("open");
   };
   faceForSketch = () => host.selectedFace();
@@ -1619,11 +1693,21 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   return { sync };
 
-  function leaveEditing(next: SketchEditor) {
+  /** Esc in a feature gesture: back to the sketch, or in a History Edit, out of the edit at once. */
+  function escapeFeature(end: () => void) {
+    if (!editSession) {
+      end();
+      return;
+    }
+    leaveEditing(editor.active != null ? discardSketch(editor, editor.active) : finishSketch(editor));
+  }
+
+  function leaveEditing(after: SketchEditor) {
+    let next = after;
     const left = editor.phase === "editing" && next.phase !== "editing";
     const session = editSession;
     if (left) {
-      editSession = false;
+      next = endEditSession(next);
       if (host.sketchHolesArmed()) host.endSketchHoles();
       gesture = null;
       revolve = null;
@@ -1752,25 +1836,65 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const op = withExprs(built.op, gesture.texts);
-    committing = true;
     const mode = resolvedMode();
-    const error = await host.commitExtrude(op, mode === "new" ? "new" : "on-solid");
-    committing = false;
-    if (!gesture) return;
+    const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
+    if (error === undefined) return;
     if (error) {
       host.readout(error);
       return;
     }
-    editSession = false;
+    afterFeature();
+  }
+
+  /**
+   * Await an Apply. Keys, clicks, and pointer picks wait while it runs (`committing`), so an Esc cannot leave the
+   * step applied with the sketch still open. Undefined when the sketch closed meanwhile (Model was left, or the
+   * history jumped), so the caller does nothing more.
+   */
+  async function committed(apply: Promise<string | null>): Promise<string | null | undefined> {
+    committing = true;
+    let error: string | null;
+    try {
+      error = await apply;
+    } finally {
+      committing = false;
+    }
+    return editor.phase === "editing" ? error : undefined;
+  }
+
+  /**
+   * The feature was applied. The gesture ends and the sketch closes: a new sketch stays as a card, a History Edit's
+   * copy goes. The readout keeps what the apply said about the solid, and the solid is framed, since putting the
+   * sketch camera back would hide what was just made.
+   */
+  function afterFeature() {
     gesture = null;
+    revolve = null;
+    revolveNote = "";
+    loft = null;
+    sweep = null;
     window.clearTimeout(probeTimer);
     host.view.setHandles([]);
     host.view.setGhost(null);
     host.clearExtrudePreview();
-    editor = finishSketch(editor);
-    publish("open");
-    // The sketch camera is put back, which would hide a solid this extrude just made. Frame it.
+    editor = endEditSession(finishSketch(editor));
+    keepReadout = true;
+    try {
+      publish("open");
+    } finally {
+      keepReadout = false;
+    }
     host.frameSolid();
+  }
+
+  /** An edit is over: the cards it opened go with it. A sketch that was not an edit is returned as it is. */
+  function endEditSession(next: SketchEditor): SketchEditor {
+    let out = next;
+    if (editSession) for (const id of editCards) out = discardSketch(out, id);
+    editSession = false;
+    editCards = [];
+    editOutlines = [];
+    return out;
   }
 
   function armProbe() {
@@ -2026,24 +2150,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const op = withExprs(built.op, revolve.angleText ? { angle: revolve.angleText } : undefined);
-    committing = true;
     const mode = resolvedRevolveMode();
-    const error = await host.commitExtrude(op, mode === "new" ? "new" : "on-solid");
-    committing = false;
-    if (!revolve) return;
+    const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
+    if (error === undefined) return;
     if (error) {
       host.readout(error);
       return;
     }
-    editSession = false;
-    revolve = null;
-    window.clearTimeout(probeTimer);
-    host.view.setHandles([]);
-    host.view.setGhost(null);
-    host.clearExtrudePreview();
-    editor = finishSketch(editor);
-    publish("open");
-    host.frameSolid();
+    afterFeature();
   }
 
   function armRevolveProbe() {
@@ -2425,26 +2539,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       host.readout(built.error);
       return;
     }
-    committing = true;
     const mode = resolvedLoftMode();
-    const error = await host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid");
-    committing = false;
-    if (!loft) return;
+    const error = await committed(host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid"));
+    if (error === undefined) return;
     if (error) {
-      loft = { ...loft, note: error };
+      if (loft) loft = { ...loft, note: error };
       host.readout(error);
       return;
     }
-    editSession = false;
-    loft = null;
-    window.clearTimeout(probeTimer);
-    host.view.setGhost(null);
-    host.clearExtrudePreview();
-    editor = finishSketch(editor);
-    publish("open");
-    // The sketch card would say the sketch was kept. The new solid's volume is what was just made.
-    if (host.solid()) host.readout(host.idleReadout());
-    host.frameSolid();
+    afterFeature();
   }
 
   function armLoftProbe() {
@@ -2566,25 +2669,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const op = withExprs(built.op, sweep.scaleText ? { scale: sweep.scaleText } : undefined);
-    committing = true;
     const mode = resolvedSweepMode();
-    const error = await host.commitExtrude(op, mode === "new" ? "new" : "on-solid");
-    committing = false;
-    if (!sweep) return;
+    const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
+    if (error === undefined) return;
     if (error) {
-      sweep = { ...sweep, note: error };
+      if (sweep) sweep = { ...sweep, note: error };
       host.readout(error);
       return;
     }
-    editSession = false;
-    sweep = null;
-    window.clearTimeout(probeTimer);
-    host.view.setGhost(null);
-    host.clearExtrudePreview();
-    editor = finishSketch(editor);
-    publish("open");
-    if (host.solid()) host.readout(host.idleReadout());
-    host.frameSolid();
+    afterFeature();
   }
 
   function armSweepProbe() {

@@ -279,6 +279,18 @@ test("sketch keys leave text fields alone and stop when Model closes", async ({ 
   await page.keyboard.press("Escape");
   await expect(canvas).toHaveAttribute("data-extrude", "off");
 
+  // A toolbar tool ends the extrude and the sketch instead of opening on top of them.
+  await page.keyboard.press("e");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await page.locator("#modelToolShell").click();
+  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "shell");
+  await expect(canvas).toHaveAttribute("data-extrude", "off");
+  await expect(canvas).toHaveAttribute("data-sketch", "pinned");
+  await expect(page.locator(".interact-hud:not([hidden])")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.locator("[data-sketch-open]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+
   // Leaving Model keeps the sketch as a card; Prepare's keys do not reach it.
   await page.locator("#tabPrepare").click();
   await expect(canvas).toHaveAttribute("data-sketch", "pinned");

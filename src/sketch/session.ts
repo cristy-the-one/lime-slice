@@ -238,7 +238,10 @@ export function finishSketch(editor: SketchEditor): SketchEditor {
   const cleared = clearGesture(editor);
   const sketch = activeSketch(cleared);
   if (!sketch || sketch.entities.length === 0) return discardActive(cleared);
-  const name = `Sketch ${cleared.nextName}`;
+  // A sketch reopened from its card keeps its name. A new one takes the next number.
+  const card = cleared.pinned.find((item) => item.id === cleared.active);
+  const named = !!card && card.name !== "Sketch";
+  const name = named ? card.name : `Sketch ${cleared.nextName}`;
   return {
     ...cleared,
     phase: "pinned",
@@ -250,7 +253,7 @@ export function finishSketch(editor: SketchEditor): SketchEditor {
     esc: 0,
     undo: [],
     redo: [],
-    nextName: cleared.nextName + 1,
+    nextName: named ? cleared.nextName : cleared.nextName + 1,
   };
 }
 

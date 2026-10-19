@@ -306,6 +306,54 @@ test("History Edit of a two-region extrude reopens with both regions and applies
   expect(edited.steps?.map((step) => step.depth)).toEqual([6, 6]);
 });
 
+test("Esc waits for an Apply, one Esc leaves a History Edit, and an edit leaves no extra card", async ({ page }) => {
+  await start(page);
+  // Hold the modeler's reply to the first open, so Esc lands while the Apply is on its way.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let holding = true;
+  await page.route("**/api/model/tree", async (route) => {
+    const body = route.request().postDataJSON() as { call?: string };
+    if (holding && body.call === "open") {
+      holding = false;
+      await held;
+    }
+    await route.fallback();
+  });
+  const canvas = page.locator("#model");
+  await extrudeOnBed(page, "20");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  release();
+  await expect.poll(() => height(page)).toBeCloseTo(20, 0);
+  await expect(canvas).toHaveAttribute("data-sketch", "pinned");
+  await expect(canvas).toHaveAttribute("data-extrude", "off");
+  // The readout names the solid just made, not the kept sketch.
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  await expect(page.locator("#modelReadout")).not.toContainText("Sketch kept");
+  const cards = page.locator("[data-sketch-open]");
+  await expect(cards).toHaveCount(1);
+
+  // One Esc leaves the edit, with the view back on the step and no card added.
+  await page.locator("#modelHistoryTree .mh-edit").click();
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await page.keyboard.press("Escape");
+  await expect(canvas).not.toHaveAttribute("data-sketch", "editing");
+  await expect(cards).toHaveCount(1);
+
+  // Applying an edit does not pin another copy of the sketch.
+  await page.locator("#modelHistoryTree .mh-edit").click();
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await hud.locator("input").first().fill("14");
+  await hud.locator("input").first().press("Enter");
+  await expect.poll(() => height(page)).toBeCloseTo(14, 0);
+  await expect(canvas).not.toHaveAttribute("data-sketch", "editing");
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first()).toHaveText("Sketch 1");
+});
+
 async function drawTypedCircle(page: Page) {
   await page.locator("[data-sketch-menu=draw]").click();
   await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();

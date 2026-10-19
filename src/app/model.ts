@@ -135,7 +135,7 @@ import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, no
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { mountEdgeDrag } from "./edge-drag";
-import { closeSketchSession, mountSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
+import { closeSketchSession, forgetSketches, mountSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
 import { holeMarks, holesInModel, isSketchHoleGroup, pointsFromSource, sketchHoleSource, type HoleSizes, type HoleTarget } from "../sketch/holes.ts";
 import { sketchJson, type SketchData } from "../sketch/model.ts";
 import { featureOutlines, opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
@@ -1854,6 +1854,7 @@ export function forgetModelTrees() {
   stepKnown.clear();
   writing.clear();
   dropEdit();
+  forgetSketches();
   editBack = null;
   open = null;
   shownFor = null;
