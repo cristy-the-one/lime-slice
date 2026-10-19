@@ -1,3 +1,4 @@
+import { actionsFor } from "./context-bar.ts";
 import { editPanel } from "./model-edit.ts";
 import { IDENTITY_POSE } from "./model-space.ts";
 import type { ModelOp } from "./model-tree.ts";
@@ -137,6 +138,11 @@ if (spun?.group) {
 
 const round = "reason" in polar ? null : repeatPanel(polar as Record<string, unknown>);
 eq("the panel round-trips the centre", round && [round.fields.modelPatCx, round.fields.modelPatCy, round.fields.modelPatCz], [10, 10, 5]);
+
+const faces = actionsFor("faces").map((action) => action.id);
+check("several faces offer Pattern", faces.includes("pattern"));
+check("several faces offer Mirror", faces.includes("mirror"));
+eq("one face does not offer Pattern", actionsFor("flat-face").some((action) => action.id === "pattern"), false);
 
 if (failed > 0) {
   console.error(`${failed} failed`);

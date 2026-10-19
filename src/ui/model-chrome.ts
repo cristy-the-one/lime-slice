@@ -455,6 +455,14 @@ export function syncModelChrome(next: readonly ModelPickRef[]) {
   refreshNote();
   refreshGhost();
   hooks?.paramsChanged();
+  // --- P3 context bar --- the selection the bar reads. A number change does not come through here.
+  contextSelection?.();
+}
+
+/** --- P3 context bar --- The picks on screen changed. */
+let contextSelection: (() => void) | null = null;
+export function onModelSelection(cb: () => void) {
+  contextSelection = cb;
 }
 
 export function refreshModelGhost() {

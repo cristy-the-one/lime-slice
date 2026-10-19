@@ -3,6 +3,7 @@
  * A source is one or more Boolean steps, holes, or groups of those. Each copy is that step moved by the same
  * motions the MCP uses (`patternMotions`, `pathMotions`, `mirrorMotion`, `movedSpec`). The result is one group.
  */
+import { registerContextAction } from "./context-bar.ts";
 import { align, orientEuler } from "./mesh-place.ts";
 import { MAX_PIECES, mirrorMotion, movedSpec, patternMotions, type Motion, type Piece } from "./modeling/compose.ts";
 import { isPrimitiveKind, type PrimitiveSpec } from "./model-primitive.ts";
@@ -484,3 +485,23 @@ export function mirrorFaceLocked(): boolean {
 export function unlockMirrorFace() {
   mirrorFaceLock = false;
 }
+
+// --- A4. Several faces offer Pattern and Mirror. The bar clicks the Features menu items. ---
+registerContextAction({
+  id: "pattern",
+  label: "Pattern",
+  when: ["faces"],
+  order: 50,
+  tip: "Repeat history steps",
+  command: "model-pattern",
+  toolbar: "#modelMenuPattern",
+});
+registerContextAction({
+  id: "mirror",
+  label: "Mirror",
+  when: ["faces"],
+  order: 55,
+  tip: "Mirror history steps",
+  command: "model-mirror",
+  toolbar: "#modelMenuMirror",
+});
