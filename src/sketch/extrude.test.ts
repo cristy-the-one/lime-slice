@@ -4,7 +4,6 @@
 import { addArc, addCircle, addLine, emptySketch, type SketchData } from "./model.ts";
 import { sketchRegions, toLoops } from "./regions.ts";
 import {
-  LOOP_EXTENT_REFUSAL,
   buildSketchExtrude,
   chooseRegions,
   cycleMode,
@@ -134,7 +133,11 @@ let bulged = addLine(emptySketch(), [0, 0], [10, 0]).sketch;
 bulged = addArc(bulged, [10, 0], [0, 0], [5, 4]).sketch;
 const bulgeRegions = chooseRegions(bulged, [], null);
 const bulge = buildSketchExtrude({ sketch: bulged, regions: bulgeRegions, distance: 10, depth2: null, draftDeg: 5, upTo: null, mode: "fuse" });
-eq("an arc with a draft is refused in the kernel's words", "error" in bulge ? bulge.error : "", LOOP_EXTENT_REFUSAL);
+eq("an arc with a draft is refused in plain words", "error" in bulge ? bulge.error : "", "A draft works on an outline of straight lines with no holes for now. Drop the draft, or draw the outline with lines.");
+const twoSided = buildSketchExtrude({ sketch: bulged, regions: bulgeRegions, distance: 10, depth2: 4, draftDeg: null, upTo: null, mode: "fuse" });
+eq("an arc with two different sides says to make them the same", "error" in twoSided ? twoSided.error : "", "A different depth on the other side works on an outline of straight lines with no holes for now. Give both sides the same depth, or draw the outline with lines.");
+const evenSides = buildSketchExtrude({ sketch: bulged, regions: bulgeRegions, distance: 6, depth2: 6, draftDeg: null, upTo: null, mode: "fuse" });
+check("an arc with the same depth both sides builds", "op" in evenSides);
 
 const upTo: { index: number; mid: Vec3; areaMm2: number } = { index: 3, mid: [0, 0, 10], areaMm2: 40 };
 const stopped = buildSketchExtrude({ sketch: bed, regions, distance: 10, depth2: null, draftDeg: 4, upTo, mode: "fuse" });

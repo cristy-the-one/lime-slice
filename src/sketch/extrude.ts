@@ -18,7 +18,12 @@ const NEAR_MM = 0.05;
 /** Two sides this close are the centred extrude. */
 const EQUAL_MM = 1e-4;
 
-export const LOOP_EXTENT_REFUSAL = "A second depth, a draft, or a face to stop at is for a point profile.";
+/** Why a second depth, a draft, or a face to stop at is refused on an outline with arcs, splines, or holes, in plain words. */
+export function loopExtentRefusal(extent: { depth2: number | null; draftDeg: number | null; upTo: unknown }): string {
+  const what = extent.draftDeg != null ? "A draft" : extent.upTo != null ? "Stopping at a face" : "A different depth on the other side";
+  const instead = extent.draftDeg != null ? "Drop the draft" : extent.upTo != null ? "Set a depth instead" : "Give both sides the same depth";
+  return `${what} works on an outline of straight lines with no holes for now. ${instead}, or draw the outline with lines.`;
+}
 export const DRAFT_UP_TO_REFUSAL = "A draft up to a face is not available yet. Drop the draft, or drop the face and set a depth.";
 export const UP_TO_SECOND_REFUSAL = "An extrude up to a face starts at the profile. Drop the second depth.";
 export const DEPTH_REFUSAL = "An extrude needs a depth other than 0.";
@@ -285,7 +290,7 @@ function oneExtrude(
   const sketchCopy = sketchJson(sketch);
   if (needsPoint) {
     const profile = lineProfile(loops);
-    if (!profile) return { error: LOOP_EXTENT_REFUSAL };
+    if (!profile) return { error: loopExtentRefusal(extent) };
     return { op: { ...extrudeOp(boolean, plane, profile, depth, extent.symmetric, {}, fields), sketch: sketchCopy } };
   }
   return { op: { ...extrudeOp(boolean, plane, [], depth, extent.symmetric, {}, asLoops(loops)), sketch: sketchCopy } };
