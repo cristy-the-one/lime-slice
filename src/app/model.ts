@@ -73,6 +73,8 @@ import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-
 import { applyRequest, crossEditRequest, editRequest, exportRequest, faceLoopsRequest, gotoRequest, isBrep, joinOp, keepSketch, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
 import { edgeOfText, remapBlendFromNode, storedEdgeStep } from "../model-edge-step";
 import { mountPull, pullFieldText, type PullMade } from "../push-pull-ui";
+import { depthBehind, pullLimit, pullRefusal } from "../push-pull";
+import { faceTable } from "../interact/face-table";
 import { averagePoint, contextKind, polylineMid } from "../context-bar";
 import { hideContextBar, mountContextBar, showContextBar } from "../context-bar-ui";
 import {
@@ -568,7 +570,7 @@ export function bindModelView() {
       armPreview: setAllowPullPreview,
       previewFresh: modelPreviewFresh,
       probe(op) {
-        void probePull(op);
+        probePull(op);
       },
       clearPreview: clearPullPreview,
       apply: applyPull,
@@ -1018,6 +1020,13 @@ function scheduleProbe(wait: number) {
     if (!edgeDrag?.holding()) setModelPreview(null);
     return;
   }
+  // P1. A distance no printer reaches, or a push through the part, is refused here, in its own words.
+  const pulled = tool === "pushpull" ? pullGuard(op) : null;
+  if (pulled) {
+    publishProbe({ phase: "done", ok: false, error: pulled });
+    setModelPreview(null);
+    return;
+  }
   if (op.kind === "boolean") {
     const solid = viewed();
     const missed = solid ? disjointBoolean(boundsOf(solid.positions), op, op.op) : null;
@@ -1195,24 +1204,39 @@ function clearPullPreview() {
   setModelPreview(null);
 }
 
-/** P1. The kernel preview for a face drag, after the pointer has been still. */
-async function probePull(op: ModelOp) {
+/**
+ * P1. The kernel preview for a face drag, after the pointer has been still. It waits in the same single line as the
+ * panel's checks: a drag that rests, moves and rests again sends only the newest, after the one running answers.
+ * `pullProbe` is the gesture's own hold (`hold`), not set here, so a probe that gives up never leaves it on.
+ */
+function probePull(op: ModelOp) {
   const gen = ++pullGen;
-  pullProbe = true;
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || !pullLiveNow()) return;
+  const said = pullGuard(op);
+  if (said) {
+    setModelProbe({ phase: "done", ok: false, error: said });
+    setModelPreview(null);
+    readout(said);
+    return;
+  }
   const node = tree.current;
   const key = probeName(at.key, node, op);
   const known = answers.get(key);
   if (known && !(shaped.has(key) && !previewOf(key))) {
-    if (gen !== pullGen || !pullProbe) return;
     setModelProbe(known);
     setModelPreview(previewOf(key));
     return;
   }
   setModelProbe({ phase: "checking" });
-  const body = await treeCall(at.key, node, probeRequest(at.key, node, op, state.stepTolerance));
+  pendingProbe = () => sendPullProbe(gen, key, at.key, node, op);
+  sendPending();
+}
+
+async function sendPullProbe(gen: number, key: string, treeKey: string, node: NodeId, op: ModelOp) {
+  if (gen !== pullGen || !pullProbe) return;
+  const body = await treeCall(treeKey, node, probeRequest(treeKey, node, op, state.stepTolerance));
   if (gen !== pullGen || !pullProbe || state.stage !== "model") return;
   const view = probeFromBody(body);
   if (typeof body.ok === "boolean") remember(key, view);
@@ -1225,6 +1249,32 @@ async function probePull(op: ModelOp) {
   setModelProbe(view);
   setModelPreview(shape && typeof shape !== "string" ? shape : null);
   if (view && view.phase === "done" && !view.ok && view.error) readout(view.error.endsWith(".") ? view.error : `${view.error}.`);
+}
+
+/**
+ * P1. Why a push or pull is refused before the kernel is asked: a distance past ten bed or part diagonals, or a move
+ * that pushes a planar face as deep as the part. Null lets the kernel decide. Each face is read on the solid on screen.
+ */
+function pullGuard(op: ModelOp): string | null {
+  if (op.kind !== "moveFaces" && op.kind !== "faceExtrude") return null;
+  const solid = viewed();
+  if (!solid) return null;
+  const box = boxOf(solid.positions);
+  const part = Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]);
+  const bed = Math.hypot(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
+  const limit = pullLimit(part, bed);
+  const rows = op.kind === "moveFaces" ? op.faces : [{ face: op.face, distance: op.distance }];
+  const table = faceTable(solid.positions, solid.triangles);
+  for (const row of rows) {
+    const index = typeof row.face === "number" ? row.face : row.face.index;
+    const info = solid.faces[index];
+    const normal = info && !info.surface ? info.normal ?? null : null;
+    const centre = table.get(index)?.centre;
+    const depth = normal && centre ? depthBehind(solid.positions, centre, normal) : null;
+    const said = pullRefusal(op.kind === "moveFaces" ? "move" : "extrude", row.distance, [depth], limit);
+    if (said) return said;
+  }
+  return null;
 }
 
 /** P1. Face drag is on in Face mode, on an editable solid, when no other tool is open. */
@@ -2507,6 +2557,11 @@ async function applyPull(op: ModelOp): Promise<PullMade | null> {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree) return null;
+  const said = pullGuard(op);
+  if (said) {
+    readout(said);
+    return null;
+  }
   const parent = tree.current;
   await applyOp(op, "Pulling the face…");
   const now = modelTrees.get(at.key);
@@ -3212,6 +3267,11 @@ async function editPull(parent: NodeId, node: NodeId, op: ModelOp): Promise<bool
   if (!old || old.parent !== parent || !old.op) return false;
   // An undone step is off the path on screen: editing it would bring it back.
   if (!pathTo(tree, tree.current).includes(node)) return false;
+  const said = pullGuard(op);
+  if (said) {
+    readout(said);
+    return false;
+  }
   const replayIds = replayChain(tree, node, tree.current);
   const replayOps = replayIds.map((id) => tree.nodes.get(id)?.op).filter((step): step is ModelOp => !!step);
   if (replayOps.length !== replayIds.length) return false;

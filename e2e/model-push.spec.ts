@@ -4,7 +4,7 @@ import { mockModelTree } from "./model-tree-mock";
 
 type V = [number, number, number];
 
-/** A box the modeler can draw. Face 0 is −Z, 1 is +Z, 2 is y = 0, 3 is y = 1, 4 is x = 0, 5 is x = 1. */
+/** A box the modeler can draw, with the kernel's planar normals. Face 0 is −Z, 1 is +Z, 2 is y = 0, 3 is y = 1, 4 is x = 0, 5 is x = 1. */
 function boxSolid(min: V = [0, 0, 0], size: V = [20, 20, 20]) {
   const [ox, oy, oz] = min;
   const [sx, sy, sz] = size;
@@ -39,7 +39,9 @@ function boxSolid(min: V = [0, 0, 0], size: V = [20, 20, 20]) {
     const n = [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!];
     return Math.hypot(...n);
   };
-  const faces = quads.map((_, id) => ({ id, areaMm2: area(id) }));
+  // The kernel sends a normal for every planar face.
+  const normals: V[] = [[0, 0, -1], [0, 0, 1], [0, -1, 0], [0, 1, 0], [-1, 0, 0], [1, 0, 0]];
+  const faces = quads.map((_, id) => ({ id, areaMm2: area(id), normal: normals[id]! }));
   return { volumeMm3: sx * sy * sz, positions, triangles, faces, edges };
 }
 
@@ -389,4 +391,72 @@ test("History edits a pull and a prism in Push/Pull, and a prism stays a prism",
   await page.locator("#modelApply").click();
   await expect(history).toContainText("Extrude face 5 mm");
   expect(applied.at(-1)).toMatchObject({ kind: "faceExtrude", face: 5, distance: 5 });
+});
+
+test("a distance no printer reaches is refused in the panel", async ({ page }) => {
+  await openPushBox(page);
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await page.mouse.click(top.x, top.y);
+  await page.locator("#modelToolPull").click();
+  const distance = page.locator("#modelPull");
+  await expect(distance).toBeVisible();
+  await distance.selectText();
+  await page.keyboard.type("1000000");
+  await expect(page.locator("#modelNote")).toContainText("1000000 mm is farther than any printer reaches.");
+  await expect(page.locator("#modelApply")).toBeDisabled();
+});
+
+test("a push as deep as the part is refused in its own words, and nothing is applied", async ({ page }) => {
+  const { applied } = await openPushBox(page);
+  const hud = page.locator(".interact-hud input").first();
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await pressAndPull(page, top, 40);
+  await expect(hud).toBeVisible();
+  await page.keyboard.type("-20");
+  await expect(hud).toHaveValue("-20");
+  await page.keyboard.press("Enter");
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  await expect(page.locator("#modelReadout")).toContainText("That push goes through the part: it is 20 mm deep there.");
+  await page.waitForTimeout(300);
+  expect(applied, "the push through the part is not applied").toHaveLength(0);
+  expect(await height(page)).toBeCloseTo(20, 0);
+});
+
+test("a drag that rests three times waits for each dry-run before it sends the next", async ({ page }) => {
+  const solid = boxSolid();
+  let running = 0;
+  let most = 0;
+  let sent = 0;
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
+  await mockModelTree(page, {
+    open: () => solid,
+    probe: async () => {
+      sent += 1;
+      running += 1;
+      most = Math.max(most, running);
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      running -= 1;
+      return { ok: true };
+    },
+  });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await pressAndPull(page, top, 24);
+  for (const px of [12, 24, 36]) {
+    await page.mouse.move(top.x, top.y - 24 - px);
+    await page.waitForTimeout(400);
+  }
+  await page.waitForTimeout(2000);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  expect(sent, "the drag asked the engine").toBeGreaterThan(1);
+  expect(most, "one dry-run at a time").toBe(1);
 });

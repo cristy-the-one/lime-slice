@@ -57,6 +57,49 @@ export function pullDone(distance: number): string {
   return `${verb} ${formatNumber(Math.abs(distance), 1)} mm · Tab to edit`;
 }
 
+/** A push or pull is at most this many times the larger of the bed's and the part's diagonal. */
+export const PULL_REACH = 10;
+
+/** The longest push or pull for a part whose box diagonal is `partMm` on a bed whose diagonal is `bedMm`. */
+export function pullLimit(partMm: number, bedMm: number): number {
+  const base = Math.max(Number.isFinite(partMm) ? partMm : 0, Number.isFinite(bedMm) ? bedMm : 0, 1);
+  return PULL_REACH * base;
+}
+
+/** How deep the solid goes behind a planar face: from the face's plane to its farthest corner against `normal`. */
+export function depthBehind(positions: ArrayLike<number>, at: Vec3, normal: Vec3): number | null {
+  const n = unit(normal);
+  if (!n) return null;
+  const level = dot(at, n);
+  let deepest = 0;
+  for (let i = 0; i + 2 < positions.length; i += 3) {
+    const depth = level - ((positions[i] ?? 0) * n[0] + (positions[i + 1] ?? 0) * n[1] + (positions[i + 2] ?? 0) * n[2]);
+    if (depth > deepest) deepest = depth;
+  }
+  return deepest;
+}
+
+/**
+ * Why a push or pull is refused before the kernel is asked, or null. A distance past `limitMm` would build a part no
+ * printer holds. A move that pushes a face as deep as the part goes through it, where the kernel can only say the
+ * neighbours cannot follow; a prism (Alt) may cut through, so the sentence offers that. `depths` are the faces' depths
+ * behind them, null where unknown (a curved face).
+ */
+export function pullRefusal(kind: PullKind, distance: number, depths: readonly (number | null)[], limitMm: number): string | null {
+  if (!Number.isFinite(distance)) return "Type a distance in millimetres.";
+  if (Math.abs(distance) > limitMm) {
+    return `${formatNumber(Math.abs(distance), 1)} mm is farther than any printer reaches. A push or pull goes up to ${formatNumber(limitMm, 0)} mm here.`;
+  }
+  if (kind === "move" && distance < 0) {
+    const through = depths.filter((depth): depth is number => depth != null && -distance >= depth - 1e-6);
+    if (through.length > 0) {
+      const depth = Math.min(...through);
+      return `That push goes through the part: it is ${formatNumber(depth, 1)} mm deep there. Push less, or hold Alt to cut through.`;
+    }
+  }
+  return null;
+}
+
 /** True while Tab still edits the step just made. */
 export function tabEditOpen(releasedAt: number, now: number, windowMs = TAB_EDIT_MS): boolean {
   if (!Number.isFinite(releasedAt) || !Number.isFinite(now)) return false;
