@@ -402,7 +402,9 @@ export function bindModelView() {
       void refreshStepEdges();
       scheduleProbe(typed ? PROBE_WAIT_MS : 0);
       syncUndo();
-      // P2. A tool opening or closing arms or disarms the idle edge knob.
+      // P1/P2. A tool opening or closing arms or disarms the face push and the idle edge knob: closed with Esc or
+      // Cancel, nothing else would wake the push before the next click.
+      syncPullDrag?.();
       edgeDrag?.sync();
       // --- S2 sketch ---
       sketchUi?.sync();

@@ -460,3 +460,22 @@ test("a drag that rests three times waits for each dry-run before it sends the n
   expect(sent, "the drag asked the engine").toBeGreaterThan(1);
   expect(most, "one dry-run at a time").toBe(1);
 });
+
+test("after a tool is closed with Esc or Cancel, the next hover offers the push at once", async ({ page }) => {
+  const { applied } = await openPushBox(page);
+  const canvas = page.locator("#model");
+  // The box does not move, so the top's point on screen is read once, while the push is live.
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  for (const [tool, close] of [["#modelToolSplit", "Escape"], ["#modelToolScale", "cancel"], ["#modelToolShell", "Escape"], ["#modelToolHole", "cancel"]] as const) {
+    await page.locator(tool).click();
+    await expect(page.locator("#modelPanel")).toBeVisible();
+    if (close === "Escape") await page.keyboard.press("Escape");
+    else await page.locator("#modelCancel").click();
+    await expect(page.locator("#modelPanel")).toBeHidden();
+    await page.mouse.move(top.x, top.y);
+    await page.mouse.move(top.x + 1, top.y);
+    await expect(canvas, `the arrow is back after ${tool} and ${close}, with no click`).toHaveAttribute("data-handles", /pull:/);
+  }
+  await dragFace(page, top, 10);
+  expect(applied.at(-1)?.kind).toBe("moveFaces");
+});
