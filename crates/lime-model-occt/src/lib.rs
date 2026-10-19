@@ -26,6 +26,19 @@ pub fn tree(request: &str) -> String {
     }
 }
 
+/// How long a new group (an Apply or a probe) may build before it stops; 60 s unless set. Without the kernel
+/// this does nothing.
+pub fn set_group_budget(budget: std::time::Duration) {
+    #[cfg(lime_occt)]
+    {
+        tree::set_group_budget(budget);
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = budget;
+    }
+}
+
 /// How many unpinned solids and cached replies the tree keeps. Without the kernel this does nothing.
 pub fn set_tree_limits(shapes: usize, replies: usize) {
     #[cfg(lime_occt)]

@@ -6,6 +6,7 @@
 import { shellCount, shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { eulerOrient } from "../src/mesh-place.ts";
 import { primitiveMesh, turnCentre, type PrimitiveSpec } from "../src/model-primitive.ts";
+import { applyPose, boxUnder, type Affine } from "../src/model-space.ts";
 
 type Vec = [number, number, number];
 export interface Box {
@@ -178,6 +179,81 @@ export interface CheckInput {
 
 const BED_EPS = 0.02;
 
+/** Overhang triangles gathered in one 10 mm grid cell. `at` is the cell's place in the grid. */
+interface OverhangCell {
+  at: Vec;
+  area: number;
+  sum: Vec;
+  min: Vec;
+  max: Vec;
+}
+
+function touch(a: OverhangCell, b: OverhangCell): boolean {
+  return [0, 1, 2].every((axis) => a.min[axis]! <= b.max[axis]! + BED_EPS && b.min[axis]! <= a.max[axis]! + BED_EPS);
+}
+
+/**
+ * One overhang that spans several grid cells is one region: neighbouring cells whose triangles meet are merged.
+ * Each cell is joined only to the 26 around it, so this is linear in the cells.
+ */
+function mergedCells(cells: ReadonlyMap<string, OverhangCell>): OverhangCell[] {
+  const parent = new Map<OverhangCell, OverhangCell>();
+  const find = (cell: OverhangCell): OverhangCell => {
+    let root = cell;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    parent.set(cell, root);
+    return root;
+  };
+  for (const cell of cells.values()) parent.set(cell, cell);
+  for (const cell of cells.values()) {
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dz = -1; dz <= 1; dz += 1) {
+          const other = cells.get(`${cell.at[0] + dx},${cell.at[1] + dy},${cell.at[2] + dz}`);
+          if (!other || other === cell || !touch(cell, other)) continue;
+          const a = find(cell);
+          const b = find(other);
+          if (a !== b) parent.set(b, a);
+        }
+      }
+    }
+  }
+  const merged = new Map<OverhangCell, OverhangCell>();
+  for (const cell of cells.values()) {
+    const root = find(cell);
+    const into = merged.get(root) ?? { at: root.at, area: 0, sum: [0, 0, 0], min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+    into.area += cell.area;
+    for (let axis = 0; axis < 3; axis += 1) {
+      into.sum[axis]! += cell.sum[axis]!;
+      into.min[axis] = Math.min(into.min[axis]!, cell.min[axis]!);
+      into.max[axis] = Math.max(into.max[axis]!, cell.max[axis]!);
+    }
+    merged.set(root, into);
+  }
+  return [...merged.values()];
+}
+
+/**
+ * `printCheck` of the part in its print frame (`printFrame`), with each place mapped back into the solid's frame
+ * through `toSource`, where the caller aims an edit. A height (`zMm`, `floatsMm`) and the fit stay as printed.
+ */
+export function checkInSource(checked: Record<string, unknown>, toSource: Affine): Record<string, unknown> {
+  const back = (point: readonly number[]) => roundVec(applyPose(toSource, point));
+  const backBox = (box: { min: readonly number[]; max: readonly number[] }) => {
+    const mapped = boxUnder({ min: [box.min[0]!, box.min[1]!, box.min[2]!], max: [box.max[0]!, box.max[1]!, box.max[2]!] }, toSource);
+    return { min: roundVec(mapped.min), max: roundVec(mapped.max) };
+  };
+  const overhang = checked.overhang as { regions: { centre: Vec; min: Vec; max: Vec }[] };
+  const ceilings = checked.ceilings as { centre: Vec }[];
+  const islands = checked.islands as { bbox: { min: Vec; max: Vec } }[];
+  return {
+    ...checked,
+    overhang: { ...overhang, regions: overhang.regions.map((region) => ({ ...region, centre: back(region.centre), ...backBox(region) })) },
+    ceilings: ceilings.map((row) => ({ ...row, centre: back(row.centre) })),
+    islands: islands.map((island) => ({ ...island, bbox: backBox(island.bbox) })),
+  };
+}
+
 /** model_check: the printability of the solid as it stands, lowest point on the bed. */
 export function printCheck(input: CheckInput): Record<string, unknown> {
   const { positions: pos, overhangDeg, buildMm } = input;
@@ -185,7 +261,7 @@ export function printCheck(input: CheckInput): Record<string, unknown> {
   const floor = box.min[2];
   const sine = Math.sin((overhangDeg * Math.PI) / 180);
   const cell = 10;
-  const cells = new Map<string, { area: number; sum: Vec; min: Vec; max: Vec }>();
+  const cells = new Map<string, OverhangCell>();
   const levels = new Map<number, { area: number; sum: Vec }>();
   let total = 0;
   let overhang = 0;
@@ -215,15 +291,7 @@ export function printCheck(input: CheckInput): Record<string, unknown> {
     }
     if (-nz <= sine) continue;
     overhang += area;
-    const key = `${Math.floor(centre[0] / cell)},${Math.floor(centre[1] / cell)},${Math.floor(centre[2] / cell)}`;
-    const slot = cells.get(key) ?? { area: 0, sum: [0, 0, 0], min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
-    slot.area += area;
-    for (let axis = 0; axis < 3; axis += 1) {
-      slot.sum[axis]! += centre[axis]! * area;
-      slot.min[axis] = Math.min(slot.min[axis]!, pos[b + axis]!, pos[b + 3 + axis]!, pos[b + 6 + axis]!);
-      slot.max[axis] = Math.max(slot.max[axis]!, pos[b + axis]!, pos[b + 3 + axis]!, pos[b + 6 + axis]!);
-    }
-    cells.set(key, slot);
+    // A face flat and pointing down is a ceiling, listed by its height below; it is not a slanted overhang too.
     if (nz < -0.99) {
       const level = round(centre[2], 1);
       const row = levels.get(level) ?? { area: 0, sum: [0, 0, 0] };
@@ -231,9 +299,20 @@ export function printCheck(input: CheckInput): Record<string, unknown> {
       row.sum[0]! += centre[0] * area;
       row.sum[1]! += centre[1] * area;
       levels.set(level, row);
+      continue;
     }
+    const at: Vec = [Math.floor(centre[0] / cell), Math.floor(centre[1] / cell), Math.floor(centre[2] / cell)];
+    const key = at.join(",");
+    const slot = cells.get(key) ?? { at, area: 0, sum: [0, 0, 0], min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+    slot.area += area;
+    for (let axis = 0; axis < 3; axis += 1) {
+      slot.sum[axis]! += centre[axis]! * area;
+      slot.min[axis] = Math.min(slot.min[axis]!, pos[b + axis]!, pos[b + 3 + axis]!, pos[b + 6 + axis]!);
+      slot.max[axis] = Math.max(slot.max[axis]!, pos[b + axis]!, pos[b + 3 + axis]!, pos[b + 6 + axis]!);
+    }
+    cells.set(key, slot);
   }
-  const regions = [...cells.values()]
+  const regions = mergedCells(cells)
     .sort((a, b) => b.area - a.area)
     .slice(0, 6)
     .map((slot) => ({

@@ -29,6 +29,8 @@ export function isComposite(kind: unknown): kind is CompositeKind {
 /** The most steps one composite edit or one batch may become. */
 export const MAX_PIECES = 400;
 
+const TOO_MANY_COPIES = `A pattern makes at most ${MAX_PIECES} copies.`;
+
 /** Gap left past a face so a cut leaves it cleanly, and depth a boss sinks in so it fuses, mm. */
 const CUT_PAST = 1;
 const BOSS_SINK = 0.2;
@@ -186,6 +188,7 @@ export function patternMotions(spec: Record<string, unknown>, plane: Workplane):
     const count = Math.round(numOr(linear.count, 0));
     const count2 = Math.round(numOr(linear.count2, 1));
     if (count < 1 || count2 < 1) return { reason: "A pattern count is at least 1." };
+    if (count * count2 > MAX_PIECES) return { reason: TOO_MANY_COPIES };
     const step = planeVector(plane, readVec3(linear.step, [0, 0, 0]));
     const step2 = planeVector(plane, readVec3(linear.step2, [0, 0, 0]));
     const out: Motion[] = [];
@@ -199,6 +202,7 @@ export function patternMotions(spec: Record<string, unknown>, plane: Workplane):
   if (!polar) return { reason: "A pattern needs linear, polar, or path." };
   const count = Math.round(numOr(polar.count, 0));
   if (count < 1) return { reason: "A pattern count is at least 1." };
+  if (count > MAX_PIECES) return { reason: TOO_MANY_COPIES };
   const axis = unit(planeVector(plane, readVec3(polar.axis, [0, 0, 1])));
   if (!axis) return { reason: "The polar axis needs a direction." };
   const centre = planePoint(plane, readVec3(polar!.centre, [0, 0, 0]));
@@ -220,6 +224,7 @@ export function patternMotions(spec: Record<string, unknown>, plane: Workplane):
 export function pathMotions(path: Record<string, unknown>, plane: Workplane): Motion[] | { reason: string } {
   const points = (Array.isArray(path.points) ? path.points : []).map((p) => planePoint(plane, readVec3(p, [NaN, NaN, NaN])));
   const count = Math.round(numOr(path.count, 0));
+  if (count > MAX_PIECES) return { reason: TOO_MANY_COPIES };
   const samples = pathSamples(points as Vec3[], count, path.closed === true);
   if ("reason" in samples) return samples;
   const first = samples[0]!;
@@ -427,6 +432,13 @@ function texturePieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece
   const depth = numOr(spec.depth, 0.6);
   if (!(groove > 0) || !(depth > 0)) return { reason: "A groove needs a width and a depth above 0." };
   const pattern = spec.pattern === "grid" || spec.pattern === "brick" || spec.pattern === "shingle" ? spec.pattern : "lines";
+  // A groove as wide as the pitch leaves no ridge, only a lower face.
+  if (groove >= pitch[1] || (pattern !== "lines" && groove >= pitch[0])) return { reason: "A groove must be narrower than the pitch." };
+  // Counted before any is made: a small pitch on a large face would make thousands, each its own Boolean.
+  const linesV = Math.max(0, Math.ceil((v1 - groove - v0) / pitch[1]) - 1);
+  const linesU = Math.max(0, Math.ceil((u1 - groove - u0) / pitch[0]) - 1);
+  const grooves = pattern === "lines" ? linesV : pattern === "grid" ? linesV + linesU : linesV + (linesV + 1) * (linesU + 1);
+  if (grooves > MAX_PIECES) return { reason: `This texture makes about ${grooves} grooves, more than ${MAX_PIECES}. Use a larger pitch or a smaller region.` };
   const pieces: Piece[] = [];
   const cut = (origin: Vec3, size: Vec3) => pieces.push({ op: "cut", spec: boxIn(plane, origin, size) });
   const rows: number[] = [v0];
@@ -736,6 +748,12 @@ export function shortenedBoxes(spec: PrimitiveSpec, trim: number): PrimitiveSpec
  * The plain Boolean pieces an op becomes. `toPart` turns a plain boolean op (typed in the session's workplane) into
  * its part-frame primitive; composite kinds call back into this for the op they wrap.
  */
+/** Every composite stops at MAX_PIECES steps, the app's and the MCP's alike: each piece is its own Boolean. */
+function capped(pieces: Piece[] | { reason: string }): Piece[] | { reason: string } {
+  if ("reason" in pieces || pieces.length <= MAX_PIECES) return pieces;
+  return { reason: `This makes ${pieces.length} steps, more than ${MAX_PIECES}. Split it into smaller edits.` };
+}
+
 export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart: (op: Record<string, unknown>) => Piece | { reason: string }, depth = 0): Piece[] | { reason: string } {
   if (depth > 4) return { reason: "Composite edits nest at most four deep." };
   const kind = raw.kind;
@@ -743,11 +761,11 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
     const piece = toPart(raw);
     return "reason" in piece ? piece : [piece];
   }
-  if (kind === "pocket" || kind === "boss") return pocketPieces(raw, ctx, kind === "boss");
-  if (kind === "texture") return texturePieces(raw, ctx);
-  if (kind === "array") return arrayPieces(raw, ctx);
-  if (kind === "ribs") return ribPieces(raw, ctx);
-  if (kind === "text") return textPieces(raw, ctx);
+  if (kind === "pocket" || kind === "boss") return capped(pocketPieces(raw, ctx, kind === "boss"));
+  if (kind === "texture") return capped(texturePieces(raw, ctx));
+  if (kind === "array") return capped(arrayPieces(raw, ctx));
+  if (kind === "ribs") return capped(ribPieces(raw, ctx));
+  if (kind === "text") return capped(textPieces(raw, ctx));
   if (kind === "pattern" || kind === "mirror") {
     const inner = raw.op;
     if (!inner || typeof inner !== "object") return { reason: `A ${kind} needs the op it repeats.` };

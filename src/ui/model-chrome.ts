@@ -17,7 +17,7 @@ import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { holePointsSentence, refusedHole } from "../sketch/holes.ts";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
-import { featureName, isFeatureTool, panelChoices, piecesOutlineOnly, type FeatureChoices, type FeatureTool } from "../model-features";
+import { featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
 import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatName, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { paintRepeatSources } from "./model-history";
 import type { Piece } from "../modeling/compose";
@@ -28,7 +28,7 @@ import { fx } from "../app/fx";
 import { state } from "../app/state";
 import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queueModelCheck, refreshModelCheck as rerunModelCheck } from "./model-check-panel.ts";
 import { evaluate, type Params } from "../modeling/expr.ts";
-import { isPlainNumber } from "../modeling/params.ts";
+import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
 import { toggleParameters } from "./parameters.ts";
 
 export type { ModelTool } from "../model-drag";
@@ -287,6 +287,9 @@ export function mountModelChrome(next: ModelChromeHooks) {
     const patMode = target?.closest<HTMLButtonElement>("#modelPatMode [data-pat], #modelPatAxis [data-axis], #modelMirPlane [data-plane]");
     if (patMode) {
       paintModeGroup(patMode);
+      // --- D15. An Edge axis is picked as an edge, and a mirror face as a face: the pick mode follows the choice.
+      const wants = patMode.dataset.axis === "pick" ? "#modelPickEdge" : patMode.dataset.plane === "face" ? "#modelPickFace" : null;
+      if (wants && document.querySelector(wants)?.getAttribute("aria-pressed") !== "true") document.querySelector<HTMLButtonElement>(wants)?.click();
       syncFields();
       refreshGhost();
       refreshNote();
@@ -370,8 +373,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
       hooks?.paramsChanged();
       return;
     }
-    // --- A4. Keep the original, and Align to the path, change the group at once. ---
-    if (ev.target instanceof HTMLElement && (ev.target.id === "modelMirKeep" || ev.target.id === "modelPatAlign")) {
+    // --- A4. Align to the path changes the group at once. ---
+    if (ev.target instanceof HTMLElement && (ev.target.id === "modelPatAlign")) {
       refreshNote();
       refreshGhost();
       hooks?.paramsChanged();
@@ -416,6 +419,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (tool === "check") queueModelCheck(true);
   });
   document.querySelector("#modelPrim")?.addEventListener("keydown", (ev) => onPrimKey(ev as KeyboardEvent));
+  document.querySelector("#modelFeatureMenu")?.addEventListener("keydown", (ev) => onFeatureMenuKey(ev as KeyboardEvent));
   document.querySelector("#modelObjects")?.addEventListener("keydown", (ev) => onObjectKey(ev as KeyboardEvent));
   bindScrub();
   bindExpressions();
@@ -496,6 +500,8 @@ export function syncModelSolid() {
     writeFields(["modelTiltA", "modelTiltB"], [0, 0]);
     applySplitDefaults();
   }
+  // --- D19. Undo, Redo or a jump changed the steps a blend can take its edges from.
+  if (tool === "fillet" || tool === "chamfer") fillEdgeStepList();
   refreshTools();
   refreshApply();
   refreshNote();
@@ -555,6 +561,10 @@ export function setModelProbe(next: ProbeView) {
   // --- end A3 ---
 }
 
+/** The last depth of a texture and of the other features, and which of them the Depth field holds now. */
+const featureDepths: Record<"texture" | "other", { value: number; expr?: string }> = { texture: { value: 0.6 }, other: { value: 2 } };
+let depthGroup: keyof typeof featureDepths = "other";
+
 /** Open `next`, or close it when it is open. Opening another tool ends an edit, which takes the view back. */
 function toggleTool(next: ModelTool, editing = false) {
   // --- F4. Leaving Hole drops the one-hole-per-point layout. Opening Hole keeps a count set just before. ---
@@ -572,8 +582,23 @@ function toggleTool(next: ModelTool, editing = false) {
   if (tool === "check") closeModelCheck();
   if (edit && !editing) closeTool();
   tool = next;
+  // --- D29. History stops picking steps to repeat once another tool is open.
+  if (!isRepeatTool(next)) paintRepeatSources([]);
   // --- A3 composite features: the button shows the feature just opened, and a click picks a face. ---
   // --- A4. Pattern and Mirror share that button. A click picks a face, for a path point or a mirror face. ---
+  // --- D38. A texture's groove depth is its own (0.6 by default, as the MCP's): the shared Depth field swaps between
+  // the texture's and the other features' last depth when the tool changes between them.
+  if (isFeatureTool(next)) {
+    const group = next === "texture" ? "texture" : "other";
+    if (group !== depthGroup && !editing) {
+      const field = document.querySelector<HTMLInputElement>("#modelFeatDepth");
+      featureDepths[depthGroup] = { value: num("#modelFeatDepth"), expr: field?.dataset.expr };
+      const next = featureDepths[group];
+      writeFields(["modelFeatDepth"], [next.value]);
+      if (next.expr) restoreFieldExprs({ modelFeatDepth: next.expr });
+    }
+    depthGroup = group;
+  }
   if (isFeatureTool(next) || isRepeatTool(next)) {
     showFeatureButton(next);
     rememberFeature(next);
@@ -592,7 +617,7 @@ function toggleTool(next: ModelTool, editing = false) {
   // --- end A3 ---
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) bar.dataset.tool = next;
-  document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
+  document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]:not([role=menuitem])").forEach((button) => {
     button.setAttribute("aria-pressed", button.dataset.tool === next ? "true" : "false");
   });
   document.querySelector("#modelPanel")?.toggleAttribute("hidden", false);
@@ -609,6 +634,8 @@ function toggleTool(next: ModelTool, editing = false) {
     // The hole drills into the face clicked last, so a click picks faces.
     if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
   }
+  // --- D26. Closed inside is asked per shell, as Keep the tool object is: it opens off. An edit fills its own.
+  if (next === "shell" && !editing) setShellClosed(false);
   // --- A2 shell: open faces are face picks. ---
   if (next === "shell" && document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") {
     document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
@@ -743,13 +770,13 @@ function closeTool() {
     document.querySelector("#modelPanel")?.removeAttribute("aria-labelledby");
     paintPrimRow();
   }
-  // --- A4. A closed tool repeats nothing. ---
-  paintRepeatSources([]);
   if (!ended) resetRepeatDraft();
   tool = null;
+  // --- A4. A closed tool repeats nothing. --- D29: painted once closed, so History shows the step on screen again.
+  paintRepeatSources([]);
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) delete bar.dataset.tool;
-  document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {
+  document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]:not([role=menuitem])").forEach((button) => {
     button.setAttribute("aria-pressed", "false");
   });
   document.querySelector("#modelPanel")?.toggleAttribute("hidden", true);
@@ -1030,7 +1057,11 @@ function writeEdgeStep(id: number) {
 function syncEdgeSelect() {
   const select = document.querySelector<HTMLSelectElement>("#modelEdgeStep");
   const id = edgeStepId();
-  if (select && id != null && edgeStepRows.some((step) => step.id === id)) select.value = String(id);
+  // --- D32. A number that names no step on the list leaves the list on none, not on the step before.
+  if (select) {
+    if (id != null && edgeStepRows.some((step) => step.id === id)) select.value = String(id);
+    else select.selectedIndex = -1;
+  }
   paintEdgeOf();
 }
 
@@ -1101,6 +1132,7 @@ function fillEdgeStepList() {
   }
   const id = edgeStepId();
   if (id != null && steps.some((step) => step.id === id)) select.value = String(id);
+  else select.selectedIndex = -1;
   paintEdgeOf();
 }
 
@@ -1481,9 +1513,9 @@ function refreshNote() {
     const split = hooks?.split();
     if (split) ({ text, bad } = splitNote(split));
   } else if ((tool === "fillet" || tool === "chamfer") && edgeSource === "step") {
+    // --- D32. A step that is not on this solid is said once, on the line under its field.
     if (!edgeStepKnown()) {
-      text = document.querySelector("#modelEdgeOf")?.textContent ?? "Pick a step.";
-      bad = true;
+      text = "";
     } else if (isProbed(tool)) {
       const status = probeNote(tool, probe);
       text = status?.text ?? "";
@@ -1938,14 +1970,14 @@ function ghostFor(current: ModelTool): ModelGhost | null {
   if (current === "scale") return { kind: "scale", factor: num("#modelFactor") };
   // --- A2 shell / A7 model check / P1: no stand-in. The dry-run's shape is the hollow, and the open faces are outlined as removed. The push/pull prism is drawn by the gesture. ---
   if (current === "place" || current === "workplane" || current === "check" || current === "shell" || current === "pushpull") return null;
-  // --- A3 composite features: every piece, shaded, or outlines only past the cap. A failed step is named for the view. ---
+  // --- A3 composite features: every piece, shaded (expansion stops at 400, so no ghost needs outlines only). A failed step is named for the view. ---
   if (isFeatureTool(current)) {
     const view = hooks?.featureView();
     if (!view?.pieces?.length) return null;
     const failed = probe?.phase === "done" && !probe.ok ? probe.failedStep : undefined;
     return {
       kind: "pieces",
-      outlines: piecesOutlineOnly(view.pieces.length),
+      outlines: false,
       ...(failed != null ? { failed } : {}),
       parts: view.pieces.map((piece) => ({ spec: piece.spec, mesh: featureMesh(piece.spec) })),
     };
@@ -1958,7 +1990,7 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     const failed = probe?.phase === "done" && !probe.ok ? probe.failedStep : undefined;
     return {
       kind: "pieces",
-      outlines: piecesOutlineOnly(view.pieces.length),
+      outlines: false,
       ...(failed != null ? { failed } : {}),
       parts: view.pieces.map((piece) => ({ spec: piece.spec, mesh: featureMesh(piece.spec) })),
     };
@@ -2021,6 +2053,39 @@ export function restoreFieldExprs(exprs: Record<string, string> | undefined) {
     input.title = text;
     input.classList.remove("is-bad");
     showExprMark(input, true);
+  }
+}
+
+/**
+ * --- D17. The table changed while a tool is open: every field written as an expression shows its new value, and the
+ * panel reacts as it does to a typed number (its ghost, its dry-run). A field being typed in is left alone; a name the
+ * table no longer has marks the field bad, as typing it would.
+ */
+export function followParameters() {
+  if (!tool) return;
+  for (const input of document.querySelectorAll<HTMLInputElement>("#modelPanel input[data-expr]")) {
+    const text = input.dataset.expr;
+    if (!text || document.activeElement === input) continue;
+    let value: number;
+    try {
+      value = evaluate(text, fieldParams());
+      if (!Number.isFinite(value)) throw new Error(`"${text}" is not a finite number.`);
+    } catch (err) {
+      input.classList.add("is-bad");
+      input.setAttribute("aria-invalid", "true");
+      input.title = appParamMessage(err instanceof Error ? err.message : String(err));
+      showExprMark(input, false);
+      continue;
+    }
+    input.classList.remove("is-bad");
+    input.removeAttribute("aria-invalid");
+    input.title = text;
+    showExprMark(input, true);
+    const shown = fieldText(value);
+    if (input.value === shown) continue;
+    input.value = shown;
+    // As a typed number: the dry-run waits out the typing pause, so each keystroke in Parameters is not a probe.
+    input.dispatchEvent(new Event("input", { bubbles: true }));
   }
 }
 
@@ -2090,12 +2155,18 @@ function bindExpressions() {
   }
 }
 
+/** A bad expression's marks go. `aria-invalid` another check set (Check's thin wall) is that check's to clear. */
+function clearExprBad(input: HTMLInputElement) {
+  if (!input.classList.contains("is-bad")) return;
+  input.classList.remove("is-bad");
+  input.removeAttribute("aria-invalid");
+}
+
 function settleExpression(input: HTMLInputElement) {
   const text = input.value.trim();
   if (!text || isPlainNumber(text)) {
     delete input.dataset.expr;
-    input.classList.remove("is-bad");
-    input.removeAttribute("aria-invalid");
+    clearExprBad(input);
     if (input.title) input.title = "";
     input.type = "number";
     showExprMark(input, false);
@@ -2105,8 +2176,7 @@ function settleExpression(input: HTMLInputElement) {
     const value = evaluate(text, fieldParams());
     if (!Number.isFinite(value)) throw new Error(`"${text}" is not a finite number.`);
     input.dataset.expr = text;
-    input.classList.remove("is-bad");
-    input.removeAttribute("aria-invalid");
+    clearExprBad(input);
     input.title = text;
     input.type = "number";
     input.value = fieldText(value);
@@ -2115,7 +2185,7 @@ function settleExpression(input: HTMLInputElement) {
   } catch (err) {
     input.classList.add("is-bad");
     input.setAttribute("aria-invalid", "true");
-    input.title = err instanceof Error ? err.message : String(err);
+    input.title = appParamMessage(err instanceof Error ? err.message : String(err));
     input.type = "text";
     showExprMark(input, false);
   }
@@ -2276,6 +2346,32 @@ function toggleFeatureMenu() {
   menu.style.left = `${Math.max(8, rect.left)}px`;
   menu.hidden = false;
   more.setAttribute("aria-expanded", "true");
+  // --- D33. The menu takes the keys a menu does: focus goes to its first item.
+  menuItems()[0]?.focus();
+}
+
+function menuItems(): HTMLButtonElement[] {
+  return [...document.querySelectorAll<HTMLButtonElement>("#modelFeatureMenu [role=menuitem]")].filter((item) => !item.disabled && !item.hidden);
+}
+
+/** --- D33. Up and Down move round the items, Home and End go to the ends, Escape and Tab close it. */
+function onFeatureMenuKey(ev: KeyboardEvent) {
+  const items = menuItems();
+  const at = items.indexOf(document.activeElement as HTMLButtonElement);
+  const go = (index: number) => {
+    ev.preventDefault();
+    items[(index + items.length) % items.length]?.focus();
+  };
+  if (ev.key === "ArrowDown") go(at + 1);
+  else if (ev.key === "ArrowUp") go(at < 0 ? -1 : at - 1);
+  else if (ev.key === "Home") go(0);
+  else if (ev.key === "End") go(-1);
+  else if (ev.key === "Escape") {
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeFeatureMenu();
+    document.querySelector<HTMLButtonElement>("#modelFeatureMore")?.focus();
+  } else if (ev.key === "Tab") closeFeatureMenu();
 }
 
 function paintModeGroup(button: HTMLButtonElement) {
@@ -2334,8 +2430,6 @@ function paintRepeat(choices: RepeatChoices) {
   paintNamed("modelMirPlane", "plane", choices.plane);
   const align = document.querySelector<HTMLInputElement>("#modelPatAlign");
   if (align) align.checked = choices.align;
-  const keep = document.querySelector<HTMLInputElement>("#modelMirKeep");
-  if (keep) keep.checked = choices.keep;
   paintPathList();
   paintRepeatSources(repeatSourceIds());
 }

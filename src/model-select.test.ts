@@ -1,4 +1,4 @@
-import { faceBoundarySegments, faceColor, lastEdge, modelApplyReady, nextModelPicks, selectionCountLabel, shellFacesLabel } from "./model-select.ts";
+import { faceBoundarySegments, lastEdge, modelApplyReady, nextModelPicks, selectionCountLabel, shellFacesLabel } from "./model-select.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -52,12 +52,6 @@ eq("no open face", shellFacesLabel(0, false), "No face open.");
 eq("one open face", shellFacesLabel(1, false), "1 face open");
 eq("two open faces", shellFacesLabel(2, false), "2 faces open");
 
-const accent = 0xa3e635;
-eq("a selected face is the accent", faceColor(2, true, true, accent), accent);
-const idle = faceColor(2, false, false, accent);
-const hover = faceColor(2, false, true, accent);
-check("an idle face is not the accent", idle !== accent);
-check("hover sits between the idle face and the accent", hover !== idle && hover !== accent);
 
 // A square face, two triangles. The shared diagonal is not part of the outline.
 const positions = [
