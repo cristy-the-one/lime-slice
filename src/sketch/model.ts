@@ -5,9 +5,9 @@
  * share that point and a later drag of the corner moves both. An arc's bulge (`through`) is a
  * coordinate, not a point: it records the circle and is not a corner of its own.
  *
- * The whole value is plain JSON with `"v": 1`, the shape a feature will keep on its op. Nothing
- * here draws or solves. Driving dimensions are stored and round-tripped; the solver is a later
- * phase and is not applied.
+ * The whole value is plain JSON with `"v": 1`, the shape a feature will keep on its op. Driving
+ * dimensions and constraints live in the optional `dims` field. An older sketch has no `dims`,
+ * and a sketch that still has none is not solved (`src/sketch/solve.ts`).
  */
 export type Pt = [number, number];
 export type Vec3 = [number, number, number];
@@ -45,8 +45,8 @@ export type SketchEntity =
   | { id: number; kind: "spline"; through: number[]; construction?: true };
 
 /**
- * A driving dimension or constraint. The solver that gives these meaning is not in this phase;
- * a sketch keeps whatever was stored so a later phase can read it back.
+ * A driving dimension or constraint stored on the sketch. Known kinds are read by the in-house
+ * solver. Anything else with an id is kept so an older or newer file still opens.
  */
 export interface Dimension {
   id: number;

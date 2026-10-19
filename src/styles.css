@@ -868,6 +868,28 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 }
 .sketch-menu-list[hidden] { display: none; }
 .sketch-menu-list .btn { justify-content: flex-start; width: 100%; text-align: left; }
+/* --- S4. Driving dimensions sit on the sketch. Accent while under-defined, ok when the sketch is fully defined. --- */
+.sketch-menu-label { margin: 4px 6px 0; font-size: var(--fs-2); color: var(--text-dim); }
+.sketch-dims { position: fixed; inset: 0; pointer-events: none; z-index: 6; }
+.sketch-dims[hidden] { display: none; }
+.sketch-dim, .sketch-dim-input {
+  position: fixed;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  font: 12px/1.2 "IBM Plex Mono", ui-monospace, monospace;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.sketch-dims[data-defined="1"] .sketch-dim,
+.sketch-dim[data-defined="1"],
+.sketch-dims[data-defined="1"] .sketch-dim-input,
+.sketch-dim-input[data-defined="1"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 65%, transparent); }
+.sketch-dim[data-conflict="1"],
+.sketch-dim-input[data-conflict="1"] { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 70%, transparent); }
+.sketch-dim-input { width: 4.5rem; text-align: center; }
 .sketch-box {
   position: fixed;
   z-index: 4;
