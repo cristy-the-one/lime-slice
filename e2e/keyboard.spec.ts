@@ -222,7 +222,7 @@ test("the rail is one vertical toolbar whose tool set and landmarks follow the s
   const workspace = page.locator(".workspace");
   await page.keyboard.press("Enter");
   await expect(workspace).toHaveClass(/is-left-collapsed/);
-  await expect(page.locator("#leftToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#leftToggle")).toHaveAttribute("aria-expanded", "false");
   await page.keyboard.press("Enter");
   await expect(workspace).not.toHaveClass(/is-left-collapsed/);
   await page.locator("#leftToggle").hover();

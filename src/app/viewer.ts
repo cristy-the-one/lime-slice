@@ -101,7 +101,11 @@ export function paintStatus() {
   const el = document.querySelector("#statusText");
   if (!el) return;
   const text = statusLine();
-  if (el.textContent !== text) el.textContent = text;
+  if (el.textContent === text) return;
+  // A layer step would read the line on top of the slider's own value, so layer lines stay quiet.
+  const live = state.stage === "preview" || state.stage === "gcode" ? "off" : "polite";
+  if (el.getAttribute("aria-live") !== live) el.setAttribute("aria-live", live);
+  el.textContent = text;
 }
 
 function statusLine(): string {

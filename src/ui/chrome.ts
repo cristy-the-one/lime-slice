@@ -125,7 +125,7 @@ function mountToolRail(hooks: ChromeHooks) {
   const leftToggle = toolButton("dock", PanelLeft, "Settings panel", "Settings panel");
   leftToggle.id = "leftToggle";
   leftToggle.setAttribute("aria-controls", "leftDock");
-  leftToggle.setAttribute("aria-pressed", "true");
+  leftToggle.setAttribute("aria-expanded", "true");
   foot.append(leftToggle);
 
   rail.append(prepareSet, previewSet, gizmoNudge(), foot);
@@ -185,16 +185,25 @@ function sectionButton() {
 export function paintRailStage(stage: Stage) {
   const rail = document.querySelector<HTMLElement>("#toolRail");
   if (!rail) return;
+  const focused = rail.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
   rail.querySelectorAll<HTMLElement>(".rail-set").forEach((set) => {
     set.hidden = !(set.dataset.for ?? "").split(" ").includes(stage);
   });
   rail.setAttribute("aria-label", `${STAGE_NAME[stage]} tools`);
   document.querySelector("#stage")?.setAttribute("aria-label", STAGE_NAME[stage]);
+  // A rail button that just left with its set hands focus to its twin in the new set, else to the new tab stop.
+  if (focused?.closest("[hidden]")) {
+    const twin = railButtons(rail).find((button) => button.dataset.tool === focused.dataset.tool);
+    rovingReset(rail);
+    (twin ?? rail.querySelector<HTMLButtonElement>("button[tabindex='0']"))?.focus();
+    return;
+  }
   rovingReset(rail);
 }
 
+/** The rail's reachable buttons: not in a hidden set or group. */
 function railButtons(rail: HTMLElement) {
-  return [...rail.querySelectorAll<HTMLButtonElement>("button")].filter((button) => !button.closest("[hidden]") && button.offsetParent !== null);
+  return [...rail.querySelectorAll<HTMLButtonElement>("button")].filter((button) => !button.closest("[hidden]"));
 }
 
 /** One tab stop for the rail: the arrows walk it, Home and End jump to its ends. */

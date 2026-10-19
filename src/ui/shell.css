@@ -144,5 +144,7 @@ html[data-chrome="custom"] .win-controls { display: flex; }
 }
 @media (max-width: 960px) {
   .splitter { display: none; }
+  .workspace.show-left #leftDock,
+  .workspace.show-right #rightDock { display: flex; }
   .title-tabs { flex: 1 1 100%; order: 8; justify-content: flex-start; }
 }

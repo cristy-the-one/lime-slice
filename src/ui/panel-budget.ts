@@ -36,7 +36,7 @@ export function dockDefaults(width: number): DockFit {
   return width >= 1600 ? { left: 320, right: 280 } : { left: 288, right: 300 };
 }
 
-/** Results open by themselves only where both docks fit beside a large stage. */
+/** Whether results start open when the user has not chosen. No width opens them by itself yet. */
 export function resultsOpenByDefault(_width: number): boolean {
   return false;
 }

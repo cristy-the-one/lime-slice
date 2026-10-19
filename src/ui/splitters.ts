@@ -16,8 +16,9 @@ const WIDTH_KEY: Record<DockSide, string> = { left: "lime-slice-panel-left", rig
 const CLOSED_KEY: Record<DockSide, string> = { left: "lime-slice-panel-left-collapsed", right: "lime-slice-panel-right-collapsed" };
 const DOCK_ID: Record<DockSide, string> = { left: "#leftDock", right: "#rightDock" };
 const NAME: Record<DockSide, string> = { left: "settings", right: "results" };
-
-let last: DockSide = "right";
+/** The control that opens each dock; a closing dock hands it the focus. */
+const OPENER: Record<DockSide, string> = { left: "#leftToggle", right: "#timing" };
+const LAST_KEY = "lime-slice-dock-last";
 let fitting = false;
 
 function read(key: string): string | null {
@@ -68,18 +69,28 @@ export function dockShown(side: DockSide): boolean {
 /** Open or close a dock, as its chevron, the rail foot, the estimate, Ctrl+B and Ctrl+Alt+B do. Remembered. */
 export function toggleDock(side: DockSide) {
   const ws = workspace();
+  // The phone layout has its own sheets.
+  if (!ws || compact()) return;
   // A narrow window stacks a dock over the stage on demand; the top bar's Settings and Results buttons do the same.
-  if (ws && !compact() && window.innerWidth <= 960) {
+  if (window.innerWidth <= 960) {
     ws.classList.toggle(side === "left" ? "show-left" : "show-right");
+    paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
     return;
   }
   setDock(side, !dockShown(side));
 }
 
 export function setDock(side: DockSide, open: boolean) {
-  if (open) last = side;
+  const dock = document.querySelector(DOCK_ID[side]);
+  const hadFocus = !!dock?.contains(document.activeElement);
+  if (open) write(LAST_KEY, side);
   write(CLOSED_KEY[side], open ? "0" : "1");
   applyFit();
+  if (hadFocus && !dockShown(side)) document.querySelector<HTMLElement>(OPENER[side])?.focus();
+}
+
+function lastOpened(): DockSide {
+  return read(LAST_KEY) === "left" ? "left" : "right";
 }
 
 export function mountSplitters() {
@@ -121,7 +132,7 @@ function bindDrag(ws: HTMLElement, handle: HTMLElement, side: DockSide) {
       const dock = document.querySelector<HTMLElement>(DOCK_ID[side])?.getBoundingClientRect();
       const raw = side === "left" ? e.clientX - (dock?.left ?? rect.left) : rect.right - e.clientX;
       const shownOther = dockShown(other) ? (document.querySelector<HTMLElement>(DOCK_ID[other])?.offsetWidth ?? 0) : 0;
-      const max = Math.min(side === "left" ? LEFT_MAX : RIGHT_MAX, dragMax(side, window.innerWidth, shownOther));
+      const max = dragMax(side, window.innerWidth, shownOther);
       const px = Math.round(Math.min(max, Math.max(side === "left" ? LEFT_MIN : RIGHT_MIN, raw)));
       write(WIDTH_KEY[side], String(px));
       applyFit();
@@ -130,9 +141,11 @@ function bindDrag(ws: HTMLElement, handle: HTMLElement, side: DockSide) {
       handle.classList.remove("is-drag");
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
     };
     handle.addEventListener("pointermove", move);
     handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
   });
   handle.addEventListener("dblclick", () => {
     write(WIDTH_KEY[side], null);
@@ -152,7 +165,7 @@ function currentFit(): DockFit {
       rightOpen,
       leftDesired: storedWidth("left"),
       rightDesired: storedWidth("right"),
-      last,
+      last: lastOpened(),
     });
   if (fit) return fit;
   return { left: leftOpen ? (storedWidth("left") ?? -1) : 0, right: rightOpen ? (storedWidth("right") ?? -1) : 0 };
@@ -168,6 +181,9 @@ function applyFit() {
   };
   const leftClosed = fit.left === 0;
   const rightClosed = fit.right === 0;
+  for (const [side, closed] of [["left", leftClosed], ["right", rightClosed]] as const) {
+    if (closed && document.querySelector(DOCK_ID[side])?.contains(document.activeElement)) document.querySelector<HTMLElement>(OPENER[side])?.focus();
+  }
   paintToggles(!leftClosed, !rightClosed);
   if (
     ws.style.getPropertyValue("--panel-left") === next.left
@@ -188,6 +204,6 @@ function applyFit() {
 }
 
 function paintToggles(leftShown: boolean, rightShown: boolean) {
-  document.querySelector("#leftToggle")?.setAttribute("aria-pressed", String(leftShown));
+  document.querySelector("#leftToggle")?.setAttribute("aria-expanded", String(leftShown));
   document.querySelector("#timing")?.setAttribute("aria-expanded", String(rightShown));
 }

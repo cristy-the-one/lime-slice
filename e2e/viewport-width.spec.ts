@@ -82,7 +82,7 @@ test("a slice leaves the results closed, and the estimate opens them and is reme
   await expect(page.locator("#right")).toContainText("Triangles");
   // 1440 has no room for both docks: the one opened last stays, and settings fold to the rail.
   await expect(workspace).toHaveClass(/is-left-collapsed/);
-  await expect(page.locator("#leftToggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#leftToggle")).toHaveAttribute("aria-expanded", "false");
   const openRatio = await prepareRatio(page);
   expect(openRatio, `prepare width ratio after results open ${openRatio}`).toBeGreaterThanOrEqual(0.7);
   await page.locator("#tabPreview").click();

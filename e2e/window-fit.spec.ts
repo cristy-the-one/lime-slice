@@ -63,4 +63,8 @@ for (const engine of ["running", "down"] as const) test(`desktop shell fits the 
   expect(settings.statusBottom).toBeLessThanOrEqual(settings.innerHeight + 0.5);
   expect(settings.legendBottom).not.toBeNull();
   expect(settings.legendBottom!).toBeLessThanOrEqual(settings.innerHeight + 0.5);
+  // Results start folded on a desktop width; the narrow window's Results button still shows them.
+  await page.locator("#toggleRight").click();
+  await expect(page.locator("#right")).toBeVisible();
+  expect((await outerOverflow(page)).delta).toBe(0);
 });
