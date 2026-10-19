@@ -17,6 +17,8 @@ import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { featureName, isFeatureTool, panelChoices, piecesOutlineOnly, type FeatureChoices, type FeatureTool } from "../model-features";
+import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatName, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices, type RepeatTool } from "../model-repeat";
+import { paintRepeatSources } from "./model-history";
 import type { Piece } from "../modeling/compose";
 import { lastEdge, modelApplyReady, selectionCountLabel, shellFacesLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
@@ -88,6 +90,10 @@ interface ModelChromeHooks {
   /** The open feature, expanded on the solid on screen. Null pieces until one flat face is picked and the spec fits. */
   featureView(): { note: string | null; pieces: Piece[] | null; frame: Workplane | null; outward: [number, number, number] | null };
   // --- end A3 ---
+  // --- A4. The open pattern or mirror. `repeating` names the history steps. A note is why it cannot build yet. ---
+  repeatView(): { note: string | null; pieces: Piece[] | null; repeating: string };
+  /** Pattern or Mirror just opened: the step on screen is the one it repeats, unless that step is the root. */
+  seedRepeat(): void;
   /** --- A5. The step on screen: a blend of a step's edges starts there. --- */
   shownNode(): number | null;
   /** Steps this blend can take edges from, the one on screen and the steps above it, root first. */
@@ -176,7 +182,7 @@ let waiting = false;
  * The step being edited, while its tool's panel is open: what it opened with, its header, and what Boolean, New solid
  * and Hole's boxes had before, which they get back when the edit closes.
  */
-let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null; hole: { through: boolean; counterbore: boolean }; feature: FeatureChoices; shellClosed: boolean } } | null = null;
+let edit: { panel: EditPanel; head: string; before: { primKind: PrimitiveKind; withObject: boolean; joinTool: string | null; hole: { through: boolean; counterbore: boolean }; feature: FeatureChoices; repeat: RepeatChoices; shellClosed: boolean } } | null = null;
 const VIEW_ONLY_TIP = "This STEP file has surfaces but no closed solid, so it can be measured but not edited.";
 
 type Scrub = {
@@ -258,10 +264,36 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     const featureItem = target?.closest<HTMLButtonElement>("#modelFeatureMenu [data-tool]");
-    if (featureItem?.dataset.tool && isFeatureTool(featureItem.dataset.tool)) {
+    if (featureItem?.dataset.tool && (isFeatureTool(featureItem.dataset.tool) || isRepeatTool(featureItem.dataset.tool))) {
       chooseFeature(featureItem.dataset.tool);
       return;
     }
+    // --- A4 pattern and mirror ---
+    const patMode = target?.closest<HTMLButtonElement>("#modelPatMode [data-pat], #modelPatAxis [data-axis], #modelMirPlane [data-plane]");
+    if (patMode) {
+      paintModeGroup(patMode);
+      syncFields();
+      refreshGhost();
+      refreshNote();
+      hooks?.paramsChanged();
+      return;
+    }
+    if (target?.closest("#modelPathAdd")) {
+      pushPathPoint([num("#modelPatPx"), num("#modelPatPy"), num("#modelPatPz")]);
+      paintPathList();
+      refreshGhost();
+      hooks?.paramsChanged();
+      return;
+    }
+    if (target?.closest("#modelPathDrop")) {
+      const last = dropPathPoint();
+      if (last) writeFields(["modelPatPx", "modelPatPy", "modelPatPz"], last);
+      paintPathList();
+      refreshGhost();
+      hooks?.paramsChanged();
+      return;
+    }
+    // --- end A4 ---
     const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextOp [data-op]");
     if (featureMode) {
       paintModeGroup(featureMode);
@@ -323,6 +355,13 @@ export function mountModelChrome(next: ModelChromeHooks) {
       hooks?.paramsChanged();
       return;
     }
+    // --- A4. Keep the original, and Align to the path, change the group at once. ---
+    if (ev.target instanceof HTMLElement && (ev.target.id === "modelMirKeep" || ev.target.id === "modelPatAlign")) {
+      refreshNote();
+      refreshGhost();
+      hooks?.paramsChanged();
+      return;
+    }
     keepNewSolidInView();
     // A typed tilt past the limit shows the limit the plane already uses.
     const input = ev.target instanceof HTMLInputElement && (ev.target.id === "modelTiltA" || ev.target.id === "modelTiltB") ? ev.target : null;
@@ -351,6 +390,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (tool === "hole") paintScrew();
     // --- A5. A typed step number follows the list, and the line names that row. ---
     if (ev.target instanceof HTMLElement && ev.target.id === "modelEdgeNode") syncEdgeSelect();
+    // --- A4. The path fields edit the last point. ---
+    if (tool === "pattern" && ev.target instanceof HTMLElement && (ev.target.id === "modelPatPx" || ev.target.id === "modelPatPy" || ev.target.id === "modelPatPz")) {
+      if (pathPointCount() > 0) setLastPathPoint([num("#modelPatPx"), num("#modelPatPy"), num("#modelPatPz")]);
+      paintPathList();
+    }
     refreshGhost();
     hooks?.paramsChanged(true);
     // --- A7 model check ---
@@ -501,15 +545,31 @@ function toggleTool(next: ModelTool, editing = false) {
     closeTool();
     return;
   }
+  // --- A4. Leaving Pattern or Mirror clears the history marks. Opening the other one seeds them again below. ---
+  if (isRepeatTool(tool) && tool !== next) {
+    resetRepeatDraft();
+    paintRepeatSources([]);
+  }
   // --- A7 model check --- switching tools does not go through closeTool, so the outline has to go here.
   if (tool === "check") closeModelCheck();
   if (edit && !editing) closeTool();
   tool = next;
   // --- A3 composite features: the button shows the feature just opened, and a click picks a face. ---
-  if (isFeatureTool(next)) {
+  // --- A4. Pattern and Mirror share that button. A click picks a face, for a path point or a mirror face. ---
+  if (isFeatureTool(next) || isRepeatTool(next)) {
     showFeatureButton(next);
     rememberFeature(next);
     if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
+  }
+  if (isRepeatTool(next) && !editing) {
+    resetRepeatDraft();
+    paintPathList();
+    const box = hooks?.solidBox();
+    if (box) {
+      const centre: Vec3 = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
+      writeFields(["modelPatCx", "modelPatCy", "modelPatCz", "modelMirX", "modelMirY", "modelMirZ"], [...centre, ...centre]);
+    }
+    hooks?.seedRepeat();
   }
   // --- end A3 ---
   const bar = document.querySelector<HTMLElement>("#modelBar");
@@ -576,7 +636,7 @@ function toggleTool(next: ModelTool, editing = false) {
  */
 export function openEditTool(panel: EditPanel, head: string) {
   if (tool) closeTool();
-  edit = { panel, head, before: { primKind, withObject, joinTool, hole: holeBoxes(), feature: panelChoices(isFeatureTool(tool) ? tool : undefined), shellClosed: shellClosed() } };
+  edit = { panel, head, before: { primKind, withObject, joinTool, hole: holeBoxes(), feature: panelChoices(isFeatureTool(tool) ? tool : undefined), repeat: panelRepeatChoices(), shellClosed: shellClosed() } };
   if (panel.primitive) primKind = panel.primitive;
   withObject = !!panel.join;
   joinTool = null;
@@ -607,6 +667,9 @@ function fillEdit() {
   // --- A3 composite features ---
   if (panel.feature) paintFeature(panel.feature);
   // --- end A3 ---
+  // --- A4 pattern and mirror ---
+  if (panel.repeat) paintRepeat(panel.repeat);
+  // --- end A4 ---
   writeFields(Object.keys(panel.fields), Object.values(panel.fields));
   for (const [id, value] of Object.entries(panel.fields)) {
     const input = document.querySelector<HTMLInputElement>(`#${id}`);
@@ -652,11 +715,16 @@ function closeTool() {
     // --- A3 composite features ---
     paintFeature(ended.before.feature);
     // --- end A3 ---
+    // --- A4. The choices from before the edit, without marking history while the tool is closed. ---
+    setRepeatDraft(ended.before.repeat);
     setShellClosed(ended.before.shellClosed);
     document.querySelector<HTMLElement>("#modelEditHead")?.toggleAttribute("hidden", true);
     document.querySelector("#modelPanel")?.removeAttribute("aria-labelledby");
     paintPrimRow();
   }
+  // --- A4. A closed tool repeats nothing. ---
+  paintRepeatSources([]);
+  if (!ended) resetRepeatDraft();
   tool = null;
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) delete bar.dataset.tool;
@@ -847,7 +915,9 @@ function syncFields() {
     // --- end A3 ---
     // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
     const whenOk = !node.dataset.when || (node.dataset.when === edgeSource && (tool === "fillet" || tool === "chamfer"));
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && whenOk));
+    // --- A4. A pattern mode shows only its own fields. Count stays for every mode. ---
+    const modeOk = !node.dataset.mode || node.dataset.mode === (tool === "pattern" ? repeatModeNow() : "");
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && whenOk && modeOk));
   });
   // --- A3 composite features ---
   if (isFeatureTool(tool)) {
@@ -1393,6 +1463,20 @@ function refreshNote() {
       bad = status?.bad ?? false;
     }
     // --- end A3 ---
+  } else if (isRepeatTool(tool)) {
+    // --- A4 pattern and mirror ---
+    const view = hooks?.repeatView();
+    const line = document.querySelector("#modelRepeatOf");
+    if (line) line.textContent = view?.repeating ?? "";
+    if (view?.note) {
+      text = view.note;
+      bad = true;
+    } else {
+      const status = probeNote(tool, probe);
+      text = status?.text ?? "";
+      bad = status?.bad ?? false;
+    }
+    // --- end A4 ---
   } else if (isProbed(tool)) {
     const lead = tool === "hole" ? `${holeLead()} ` : "";
     const status = probeNote(tool, probe);
@@ -1473,6 +1557,8 @@ function dragContext(): DragContext {
     // --- A3 composite features ---
     ...(isFeatureTool(tool) ? { feature: featureDrag(tool) } : {}),
     // --- end A3 ---
+    // --- A4. Linear until the panel says polar or path. ---
+    ...(tool === "pattern" ? { repeat: { mode: repeatModeNow() } } : {}),
   };
 }
 
@@ -1491,6 +1577,12 @@ function onHandleDrag(drag: HandleDrag) {
     if (drag.phase === "end") wpGrab = null;
     workplaneChanged(drag.handle.fields, values, drag.phase === "end" ? "end" : "drag");
     return;
+  }
+  // --- A4. Dragging the plane point leaves the picked face; dragging the path point edits the last one. ---
+  if (tool === "mirror" && drag.handle.fields.includes("modelMirX")) unlockMirrorFace();
+  if (tool === "pattern" && drag.handle.fields.includes("modelPatPx") && pathPointCount() > 0) {
+    setLastPathPoint([drag.values[0] ?? 0, drag.values[1] ?? 0, drag.values[2] ?? 0]);
+    paintPathList();
   }
   document.querySelector("#modelPanel")?.dispatchEvent(new Event("input", { bubbles: true }));
   if (drag.phase === "end") {
@@ -1769,6 +1861,19 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     };
   }
   // --- end A3 ---
+  // --- A4 pattern and mirror: the same piece ghost as a feature. ---
+  if (isRepeatTool(current)) {
+    const view = hooks?.repeatView();
+    if (!view?.pieces?.length) return null;
+    const failed = probe?.phase === "done" && !probe.ok ? probe.failedStep : undefined;
+    return {
+      kind: "pieces",
+      outlines: piecesOutlineOnly(view.pieces.length),
+      ...(failed != null ? { failed } : {}),
+      parts: view.pieces.map((piece) => ({ spec: piece.spec, mesh: featureMesh(piece.spec) })),
+    };
+  }
+  // --- end A4 ---
   // --- A5. A step's edges stand in for the picks until the dry-run's shape replaces them. ---
   const edges = edgeSource === "step" ? stepEdgeIndexes : selectedEdges(picks);
   if (edges.length === 0) return null;
@@ -1875,26 +1980,34 @@ function onScrubUp(ev: PointerEvent) {
 
 // --- A3 composite features ---
 const FEATURE_KEY = "lime-slice-model-feature";
-const FEATURE_TIPS: Record<FeatureTool, string> = {
+type MenuTool = FeatureTool | RepeatTool;
+const FEATURE_TIPS: Record<MenuTool, string> = {
   pocket: "Cut a rect, circle, or arch into the picked face",
   boss: "Raise a rect, circle, or arch from the picked face",
   texture: "Cut a line, grid, brick, or shingle groove over the picked face",
   array: "Repeat a cell over the picked face, raised or cut",
   ribs: "Raise or cut ribs along the picked face",
   text: "Raise or engrave text on the picked face",
+  // --- A4 ---
+  pattern: "Repeat history steps in a line, around an axis, or along a path",
+  mirror: "Mirror history steps across X, Y, Z, or a picked flat face",
 };
 
-function rememberedFeature(): FeatureTool {
+function menuToolName(next: MenuTool): string {
+  return isRepeatTool(next) ? repeatName(next) : featureName(next);
+}
+
+function rememberedFeature(): MenuTool {
   try {
     const saved = localStorage.getItem(FEATURE_KEY);
-    if (isFeatureTool(saved)) return saved;
+    if (isFeatureTool(saved) || isRepeatTool(saved)) return saved;
   } catch {
     // A blocked store only means the last feature is not remembered.
   }
   return "pocket";
 }
 
-function rememberFeature(next: FeatureTool) {
+function rememberFeature(next: MenuTool) {
   try {
     localStorage.setItem(FEATURE_KEY, next);
   } catch {
@@ -1902,16 +2015,16 @@ function rememberFeature(next: FeatureTool) {
   }
 }
 
-function showFeatureButton(next: FeatureTool) {
+function showFeatureButton(next: MenuTool) {
   const button = document.querySelector<HTMLButtonElement>("#modelToolFeatures");
   if (!button) return;
   button.dataset.tool = next;
-  button.textContent = featureName(next);
+  button.textContent = menuToolName(next);
   button.dataset.tip = FEATURE_TIPS[next];
   button.dataset.tipIdle = FEATURE_TIPS[next];
 }
 
-function chooseFeature(next: FeatureTool) {
+function chooseFeature(next: MenuTool) {
   closeFeatureMenu();
   showFeatureButton(next);
   rememberFeature(next);
@@ -1993,6 +2106,44 @@ function featureDrag(current: FeatureTool): NonNullable<DragContext["feature"]> 
 
 /** One ghost mesh per size. A move only changes where the view puts it. */
 const featureMeshes = new Map<string, Float32Array>();
+
+// --- A4 pattern and mirror ---
+function paintRepeat(choices: RepeatChoices) {
+  setRepeatDraft(choices);
+  paintNamed("modelPatMode", "pat", choices.mode);
+  paintNamed("modelPatAxis", "axis", choices.axis);
+  paintNamed("modelMirPlane", "plane", choices.plane);
+  const align = document.querySelector<HTMLInputElement>("#modelPatAlign");
+  if (align) align.checked = choices.align;
+  const keep = document.querySelector<HTMLInputElement>("#modelMirKeep");
+  if (keep) keep.checked = choices.keep;
+  paintPathList();
+  paintRepeatSources(repeatSourceIds());
+}
+
+function paintPathList() {
+  const note = document.querySelector("#modelPathList");
+  if (!note) return;
+  const points = panelRepeatChoices().points;
+  note.textContent = points.length === 0 ? "No points yet. Click the solid, or type a point and add it." : points.map((point, index) => `${index + 1}. ${point.map((value) => value.toFixed(1)).join(", ")}`).join(" · ");
+}
+
+/** The centre a polar pattern turns about, written when the tool opens or a round face is picked. */
+export function setPatternCentre(point: Vec3) {
+  writeFields(["modelPatCx", "modelPatCy", "modelPatCz"], point);
+}
+
+/** The mirror plane's point, written when a flat face is picked. */
+export function setMirrorOrigin(point: Vec3) {
+  writeFields(["modelMirX", "modelMirY", "modelMirZ"], point);
+}
+
+/** A click on the solid appends this path point and shows it in the fields. */
+export function showPathPoint(point: Vec3) {
+  writeFields(["modelPatPx", "modelPatPy", "modelPatPz"], point);
+  paintPathList();
+}
+// --- end A4 ---
 
 function featureMesh(spec: PrimitiveSpec): Float32Array {
   const key = JSON.stringify({ ...spec, origin: null, turn: null });
