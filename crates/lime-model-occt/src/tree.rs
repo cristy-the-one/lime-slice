@@ -673,6 +673,13 @@ enum Request {
         node: NodeId,
         face: FacePick,
     },
+    /// --- A5. The edges step `node` made, as indexes on the tree's current solid. ---
+    StepEdges {
+        key: String,
+        node: NodeId,
+        #[serde(default)]
+        filter: EdgeFilter,
+    },
     /// `format` is `step` (the default, for a file to hand on) or `brep` (the binary a project keeps).
     Export {
         key: String,
@@ -1302,6 +1309,45 @@ impl Store {
         Ok(ToolSolid(shape.raw()))
     }
 
+    /// --- A5. Indexes on the current solid of the edges step `node` made, kept by `filter`. ---
+    fn step_edge_indexes(
+        &mut self,
+        key: String,
+        node: NodeId,
+        filter: EdgeFilter,
+    ) -> Result<Answer, Failure> {
+        let current = {
+            let doc = doc_in(&mut self.docs, &key)?;
+            if !doc.nodes.contains_key(&node) {
+                return Err(Failure::Message(format!(
+                    "Step {node} is not in this history."
+                )));
+            }
+            let current = doc.current;
+            if !doc.above(current, node) {
+                return Err(Failure::Message(NOT_ABOVE.into()));
+            }
+            current
+        };
+        // The same pick a fillet stores, so the indexes are the ones that fillet would blend.
+        let op = Op::Fillet {
+            edges: vec![EdgePick::Step(EdgeStep {
+                from_node: node,
+                filter: Some(filter),
+            })],
+            size: 1.0,
+        };
+        let steps = self.step_edges(&key, current, &op)?;
+        self.ensure(&key, current)?;
+        let shape = doc_in(&mut self.docs, &key)?.shape(current);
+        let resolved = resolve(shape, &op, &steps).map_err(|message| {
+            Failure::Message(message.replace(" to fillet.", "."))
+        })?;
+        Ok(Answer::Plain(
+            json!({ "id": current, "node": node, "edges": resolved.picks }).to_string(),
+        ))
+    }
+
     /// The edges each step that `op`, built on `parent`, takes edges from made: read once from that step's solid,
     /// which is built first if it must be. A step that is not `parent` or above it is refused.
     fn step_edges(&mut self, key: &str, parent: NodeId, op: &Op) -> Result<Steps, Failure> {
@@ -1510,6 +1556,8 @@ impl Store {
                     json!({ "id": node, "distanceMm": distance }).to_string(),
                 ))
             }
+            // --- A5. Edges step `node` made, found on the solid the tree is showing. ---
+            Request::StepEdges { key, node, filter } => self.step_edge_indexes(key, node, filter),
             // K4: the face's loops, read from the solid the node already holds.
             Request::FaceLoops { key, node, face } => {
                 self.ensure(&key, node)?;
