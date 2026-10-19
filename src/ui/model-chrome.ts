@@ -287,6 +287,9 @@ export function mountModelChrome(next: ModelChromeHooks) {
     const patMode = target?.closest<HTMLButtonElement>("#modelPatMode [data-pat], #modelPatAxis [data-axis], #modelMirPlane [data-plane]");
     if (patMode) {
       paintModeGroup(patMode);
+      // --- D15. An Edge axis is picked as an edge, and a mirror face as a face: the pick mode follows the choice.
+      const wants = patMode.dataset.axis === "pick" ? "#modelPickEdge" : patMode.dataset.plane === "face" ? "#modelPickFace" : null;
+      if (wants && document.querySelector(wants)?.getAttribute("aria-pressed") !== "true") document.querySelector<HTMLButtonElement>(wants)?.click();
       syncFields();
       refreshGhost();
       refreshNote();

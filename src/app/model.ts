@@ -1430,6 +1430,16 @@ function edgeDirection(edge: number): [number, number, number] | null {
   return unitDir([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
 }
 
+/** The middle of an edge's first and last points, in model space. */
+function edgeMiddle(edge: number): [number, number, number] | null {
+  const points = viewed()?.edges.find((item) => item.id === edge)?.points;
+  if (!points || points.length < 6) return null;
+  const last = points.length - 3;
+  const mid: [number, number, number] = [(points[0]! + points[last]!) / 2, (points[1]! + points[last + 1]!) / 2, (points[2]! + points[last + 2]!) / 2];
+  const pose = openPose();
+  return isIdentity(pose) ? mid : applyPose(pose, mid);
+}
+
 /** A cylinder or cone face's axis in model space, and a point on it. */
 function roundFaceAxis(face: number): { axis: [number, number, number]; at: [number, number, number] | null } | null {
   const row = viewed()?.faces.find((item) => item.id === face);
@@ -1531,6 +1541,9 @@ function noteRepeatPick(pick: ModelPick | null) {
     if (pick.kind === "edge") {
       const axis = edgeDirection(pick.index);
       if (axis) setHeldAxis(axis);
+      // --- D15. The axis runs along the edge, so the centre is on it too: its middle.
+      const at = edgeMiddle(pick.index);
+      if (axis && at) setPatternCentre(at);
     } else {
       const round = roundFaceAxis(pick.index);
       if (round) {

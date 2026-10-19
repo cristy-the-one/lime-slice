@@ -23,7 +23,13 @@ function boxSolid(volumeMm3 = 4000): MockSolid {
       triangles.push(face);
     }
   });
-  return { volumeMm3, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 400 })), edges: [] };
+  const corners: V[] = [c(0, 0, 0), c(1, 0, 0), c(1, 1, 0), c(0, 1, 0), c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)];
+  const pairs = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+  const edges = pairs.map(([a, b], id) => {
+    const [pa, pb] = [corners[a!]!, corners[b!]!];
+    return { id, lengthMm: Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]), points: [...pa, ...pb] };
+  });
+  return { volumeMm3, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 400 })), edges };
 }
 
 /**
@@ -206,4 +212,28 @@ test("editing the patterned step moves the copies with it", async ({ page }) => 
   const replayed = (edit.replay as { op: { source: { of: number[] }; steps: { origin: number[] }[] } }[])[0]!.op;
   expect(replayed.source.of, "the pattern names the edited step's new id").toEqual([edit.node]);
   expect(replayed.steps.map((step) => step.origin[0]), "the copies follow the source to X 12").toEqual([17, 22]);
+});
+
+test("a polar pattern about an edge turns about that edge, where it is", async ({ page }) => {
+  await openModel(page);
+  await cutCylinder(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuPattern").click();
+  await page.locator("#modelPatMode [data-pat=polar]").click();
+  await page.locator("#modelPatAxis [data-axis=pick]").click();
+  await expect(page.locator("#modelPickEdge"), "Edge picks edges").toHaveAttribute("aria-pressed", "true");
+  const box = (await page.locator("#model").boundingBox())!;
+  let picked = "";
+  for (let r = 0; r < 9 && !picked; r += 1) {
+    for (let col = 0; col < 9 && !picked; col += 1) {
+      await page.mouse.click(box.x + box.width * (0.18 + col * 0.08), box.y + box.height * (0.18 + r * 0.08));
+      const text = await page.locator("#modelReadout").innerText();
+      if (/Edge \d+/.test(text)) picked = text;
+    }
+  }
+  expect(picked, "an edge is under the scan").not.toBe("");
+  // Every box edge lies on x, y in {0, 20} or z in {0, 10}: the centre sits on the picked edge, not the solid's middle.
+  const centre = [Number(await page.locator("#modelPatCx").inputValue()), Number(await page.locator("#modelPatCy").inputValue()), Number(await page.locator("#modelPatCz").inputValue())];
+  const onEdge = [centre[0] === 0 || centre[0] === 20, centre[1] === 0 || centre[1] === 20, centre[2] === 0 || centre[2] === 10].filter(Boolean).length;
+  expect(onEdge, `centre ${centre.join(", ")} lies on an edge`).toBe(2);
 });
