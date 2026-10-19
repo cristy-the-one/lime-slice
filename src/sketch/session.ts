@@ -3,7 +3,8 @@
  * (`docs/plan-gui-cad-modeling.md`, Plan B §4.3 and the Line and Rectangle rows of §4.4).
  *
  * A sketch lives here until a feature takes a copy. Leaving pins it. Discarding drops it.
- * Undo and redo step this stack, not the solid's history. No solver, and no file field.
+ * Undo and redo step this stack, not the solid's history.
+ * --- S4 --- a sketch with constraints is solved in `solve.ts`. With none, drags stay exact.
  */
 import { snapHint, snapPoint, type SnapEntity, type SnapHit } from "../interact/snap.ts";
 import { curveOf, pointOn } from "./geom.ts";
@@ -40,8 +41,27 @@ import {
   type DrawState,
   type DrawTool,
 } from "./tools.ts";
+// --- S4 constraints and driving dimensions. The solver runs only when the sketch has some. ---
+import {
+  applyConstrainAction,
+  constrainFromPick,
+  constrainReadout,
+  commitDriving,
+  dropConstraints,
+  drivingField,
+  drivingValue,
+  freshConstrain,
+  idleConstrain,
+  isConstrainTool,
+  placedStatus,
+  type ConstrainAction,
+  type ConstrainState,
+  type ConstrainTool,
+} from "./constrain.ts";
+import { dragSketch } from "./solve.ts";
 
-export type SketchTool = "select" | "line" | "rectangle" | DrawTool;
+export type SketchTool = "select" | "line" | "rectangle" | DrawTool | ConstrainTool;
+export type { ConstrainTool };
 
 export type { DrawTool };
 export type SketchPhase = "off" | "choosing" | "editing" | "pinned";
@@ -63,6 +83,8 @@ interface Mark {
   selection: SketchSelection;
   /** S3 gesture, so undo puts a half-drawn spline or circle back as well. */
   draw: DrawState;
+  /** S4 picks and the dimension being typed. */
+  constrain: ConstrainState;
 }
 
 interface Drag {
@@ -108,6 +130,8 @@ export interface SketchEditor {
   refs: RefGeom;
   /** S3 tools: circle, arc, polygon, slot, spline, trim, offset, fillet, construction, use. */
   draw: DrawState;
+  /** S4 constraint tool: picks, the dimension being typed, and a refusal. */
+  constrain: ConstrainState;
   /** Which origin plane the pointer is over, while choosing. */
   hotPlane: "XY" | "XZ" | "YZ" | "workplane" | null;
   nextName: number;
@@ -154,6 +178,7 @@ export function sketchOff(): SketchEditor {
     redo: [],
     refs: EMPTY_REFS,
     draw: freshDraw(),
+    constrain: freshConstrain(),
     hotPlane: null,
     nextName: 1,
   };
@@ -199,6 +224,7 @@ export function enterSketch(editor: SketchEditor, plane: SketchPlane, on?: Sketc
     undo: [],
     redo: [],
     draw: freshDraw(),
+    constrain: freshConstrain(),
     hotPlane: null,
     nextName: id,
   };
@@ -256,6 +282,7 @@ export function reopenSketch(editor: SketchEditor, id: number): SketchEditor {
     undo: [],
     redo: [],
     draw: idleDraw(left.draw),
+    constrain: freshConstrain(),
   };
 }
 
@@ -274,7 +301,7 @@ export function withLook(editor: SketchEditor, on: boolean): SketchEditor {
 }
 
 export interface SketchDimensions {
-  kind: "line" | "rectangle" | DrawTool;
+  kind: "line" | "rectangle" | "dimension" | DrawTool;
   fields: { id: string; label: string; unit: string; value: number; places?: number }[];
 }
 
@@ -306,6 +333,11 @@ export function sketchDimensions(editor: SketchEditor): SketchDimensions | null 
   }
   // --- S3 ---
   if (isDrawTool(editor.tool)) return drawDimensions(editor.draw, editor.tool, at);
+  // --- S4. The heads-up box edits the driving dimension that was just added or clicked. ---
+  if (editor.constrain.hud != null) {
+    const field = drivingField(sketch, editor.constrain.hud);
+    if (field) return { kind: "dimension", fields: [field] };
+  }
   return null;
 }
 
@@ -333,6 +365,8 @@ export function commitSizes(editor: SketchEditor, values: readonly number[]): Sk
   }
   // --- S3. Enter on a typed diameter, radius, distance, or the piece under the pointer. ---
   if (isDrawTool(editor.tool)) return commitDraw(editor, sketch, values);
+  // --- S4. Enter sets the driving dimension in the heads-up box. ---
+  if (editor.constrain.hud != null) return commitDrivingSize(editor, sketch, values[0]);
   return editor;
 }
 
@@ -368,11 +402,17 @@ export function sketchPointer(editor: SketchEditor, ev: SketchPointer, env: Sket
   const snapped = snapAt(editor, sketch, ev.uv, env.mmPerPx);
   let next: SketchEditor = { ...editor, cursor: snapped.at, snap: snapped, typed: ev.phase === "move" ? null : editor.typed, esc: ev.phase === "down" ? 0 : editor.esc };
   if (ev.phase === "move") next = { ...next, hover: hitSketch(sketch, snapped.at, env.mmPerPx * 8) };
-  if (next.tool === "select") return selectPointer(next, sketch, ev, env, snapped.at);
+  if (next.tool === "select") {
+    const picked = selectPointer(next, sketch, ev, env, snapped.at);
+    if (ev.phase !== "down") return picked;
+    return { ...picked, constrain: { ...picked.constrain, selected: null, hud: null, focus: null } };
+  }
   if (next.tool === "line" && ev.phase === "up") return lineClick(next, sketch, snapped.at, ev);
   if (next.tool === "rectangle") return rectPointer(next, sketch, ev, snapped.at);
   // --- S3 ---
   if (isDrawTool(next.tool)) return applyDrawPointer(next, sketch, ev, env, snapped.at);
+  // --- S4 ---
+  if (isConstrainTool(next.tool)) return applyConstrainPointer(next, sketch, ev, env, snapped.at);
   return next;
 }
 
@@ -447,6 +487,7 @@ export function sketchReadout(editor: SketchEditor): string {
   if (editor.phase === "choosing") return "Click a flat face, an origin plane, or the workplane. Esc cancels.";
   if (editor.phase === "pinned") return "Sketch kept. A feature can use it. Discard drops it.";
   if (editor.phase !== "editing") return "";
+  const sketch = activeSketch(editor);
   const snap = editor.snap && editor.snap.kind !== "none" ? snapHint(editor.snap.kind) : "";
   const tail = snap ? ` ${snap}.` : "";
   if (editor.esc === 1 && !editor.chain && !editor.rect && !editor.draw.gesture) return `Esc again finishes the sketch.${tail}`;
@@ -461,7 +502,10 @@ export function sketchReadout(editor: SketchEditor): string {
     const note = editor.draw.note ? ` ${editor.draw.note}` : "";
     return `${drawReadout(editor.tool)}${note}${tail}`;
   }
-  return `Select. Click a line or a point. Drag a point to move it. Drag empty space to box-select. L line, R rectangle.${tail}`;
+  // --- S4 ---
+  if (isConstrainTool(editor.tool)) return `${constrainReadout(editor.tool, editor.constrain.note)}${tail}${sketch ? constraintClause(sketch) : ""}`;
+  const note = editor.constrain.note ? ` ${editor.constrain.note}` : "";
+  return `Select. Click a line or a point. Drag a point to move it. Drag empty space to box-select. L line, R rectangle.${note}${tail}${sketch ? constraintClause(sketch) : ""}`;
 }
 
 export function rubber(editor: SketchEditor): Pt[] | null {
@@ -508,7 +552,7 @@ function selectPointer(editor: SketchEditor, sketch: SketchData, ev: SketchPoint
     const done = { ...editor, drag: null };
     if (!drag.active) return done;
     const moved = editor.undo;
-    return { ...done, undo: [...moved, { sketch: drag.base, chain: editor.chain, selection: editor.selection, draw: cloneDraw(editor.draw) }].slice(-100), redo: [] };
+    return { ...done, undo: [...moved, { sketch: drag.base, chain: editor.chain, selection: editor.selection, draw: cloneDraw(editor.draw), constrain: cloneConstrain(editor.constrain) }].slice(-100), redo: [] };
   }
   if (ev.phase === "up" && editor.box) {
     const box = editor.box;
@@ -595,7 +639,9 @@ function placeRectangle(editor: SketchEditor, sketch: SketchData, anchor: Pt, at
 }
 
 function onEsc(editor: SketchEditor): SketchEditor {
-  if (editor.chain || editor.rect || editor.drag || editor.box || editor.draw.gesture) return { ...clearGesture(editor), esc: 1 };
+  if (editor.chain || editor.rect || editor.drag || editor.box || editor.draw.gesture || editor.constrain.picks.length > 0 || editor.constrain.hud != null) {
+    return { ...clearGesture(editor), esc: 1 };
+  }
   if (editor.esc === 1) return finishSketch(editor);
   return { ...editor, esc: 1 };
 }
@@ -611,12 +657,14 @@ function clearGesture(editor: SketchEditor): SketchEditor {
   const sketch = activeSketch(editor);
   const pruned = sketch ? prunePoints(sketch) : null;
   const next = pruned ? replaceSketch(editor, pruned) : editor;
-  return { ...next, chain: null, rect: null, typed: null, drag: null, box: null, draw: idleDraw(editor.draw) };
+  return { ...next, chain: null, rect: null, typed: null, drag: null, box: null, draw: idleDraw(editor.draw), constrain: idleConstrain(editor.constrain) };
 }
 
 function deleteSelection(editor: SketchEditor): SketchEditor {
   const sketch = activeSketch(editor);
   if (!sketch) return editor;
+  // --- S4. Delete removes the selected driving dimension before it removes geometry. ---
+  if (editor.constrain.selected != null) return removeChosenConstraint(editor, sketch);
   if (editor.selection.entities.length === 0 && editor.selection.points.length === 0) return editor;
   const drop = new Set(editor.selection.entities);
   const points = new Set(editor.selection.points);
@@ -625,8 +673,9 @@ function deleteSelection(editor: SketchEditor): SketchEditor {
   }
   if (drop.size === 0) return editor;
   const before = currentMark(editor);
-  const next = prunePoints({ ...sketch, entities: sketch.entities.filter((entity) => !drop.has(entity.id)) });
-  return { ...replaceSketch(editor, next), selection: freshSelection(), undo: [...editor.undo, before].slice(-100), redo: [], esc: 0 };
+  const pruned = prunePoints({ ...sketch, entities: sketch.entities.filter((entity) => !drop.has(entity.id)) });
+  const next = dropConstraints(pruned, drop, points);
+  return { ...replaceSketch(editor, next), selection: freshSelection(), constrain: freshConstrain(), undo: [...editor.undo, before].slice(-100), redo: [], esc: 0 };
 }
 
 function snapAt(editor: SketchEditor, sketch: SketchData, at: Pt, mmPerPx: number): SnapHit {
@@ -678,6 +727,7 @@ function currentMark(editor: SketchEditor): Mark {
     chain: editor.chain ? [...editor.chain] : null,
     selection: { entities: [...editor.selection.entities], points: [...editor.selection.points] },
     draw: cloneDraw(editor.draw),
+    constrain: cloneConstrain(editor.constrain),
   };
 }
 
@@ -688,6 +738,7 @@ function applyMark(editor: SketchEditor, mark: Mark): SketchEditor {
       chain: mark.chain ? [...mark.chain] : null,
       selection: { entities: [...mark.selection.entities], points: [...mark.selection.points] },
       draw: cloneDraw(mark.draw ?? freshDraw()),
+      constrain: cloneConstrain(mark.constrain ?? freshConstrain()),
     },
     sketchJson(mark.sketch),
   );
@@ -747,6 +798,108 @@ function enterKey(editor: SketchEditor): SketchEditor | null {
   const dims = drawDimensions(editor.draw, editor.tool, editor.typed ?? editor.cursor);
   if (!dims) return null;
   return commitDraw(editor, sketch, dims.fields.map((field) => field.value));
+}
+
+function cloneConstrain(state: ConstrainState): ConstrainState {
+  return {
+    picks: state.picks.map((pick) => ({ point: pick.point, entity: pick.entity })),
+    hud: state.hud,
+    focus: state.focus,
+    selected: state.selected,
+    note: state.note,
+  };
+}
+
+function constraintClause(sketch: SketchData): string {
+  const status = placedStatus(sketch);
+  if (!status) return "";
+  if (status.conflicting.length) return " A constraint conflicts.";
+  if (status.fullyDefined) return " Fully defined.";
+  if (status.redundant.length) return " A constraint repeats another.";
+  return "";
+}
+
+/** The sketch card's Constrain menu. A complete selection applies at once. Otherwise the tool waits for clicks. */
+export function applyConstraint(editor: SketchEditor, action: ConstrainAction): SketchEditor {
+  if (editor.phase !== "editing") return editor;
+  const sketch = activeSketch(editor);
+  if (!sketch) return editor;
+  const built = applyConstrainAction(sketch, action, editor.selection, editor.constrain.selected);
+  if (built.sketch) return rememberConstraint(editor, built.sketch, built.focus ?? null, null);
+  if (action === "remove" || !isConstrainTool(action)) {
+    return { ...editor, constrain: { ...editor.constrain, note: built.error ?? built.hint ?? null } };
+  }
+  return { ...withTool(editor, action), constrain: { ...freshConstrain(), note: built.hint ?? built.error ?? null } };
+}
+
+/** A typed driving value. Words are refused until a parameters evaluator is installed. */
+export function commitDimensionText(editor: SketchEditor, id: number, text: string): SketchEditor {
+  if (editor.phase !== "editing") return editor;
+  const sketch = activeSketch(editor);
+  if (!sketch) return editor;
+  const value = drivingValue(text);
+  if (value == null) return { ...editor, constrain: { ...editor.constrain, note: "Type a number." } };
+  const current = drivingField(sketch, id);
+  if (current && Math.abs(current.value - value) <= 1e-9) {
+    return { ...editor, constrain: { ...editor.constrain, hud: null, focus: null } };
+  }
+  const built = commitDriving(sketch, id, value);
+  if (!built.sketch) return { ...editor, constrain: { ...editor.constrain, note: built.error ?? "Type a number." } };
+  return rememberConstraint(editor, built.sketch, null, null);
+}
+
+/** Esc in the dimension label closes the editor and leaves the dimension. */
+export function cancelDimensionEdit(editor: SketchEditor): SketchEditor {
+  if (editor.constrain.hud == null && editor.constrain.focus == null) return editor;
+  return { ...editor, constrain: { ...editor.constrain, hud: null, focus: null } };
+}
+
+/** Clicking a dimension label opens it for typing. */
+export function editDimension(editor: SketchEditor, id: number): SketchEditor {
+  if (editor.phase !== "editing") return editor;
+  return { ...editor, constrain: { ...editor.constrain, selected: id, hud: id, focus: id, note: null }, esc: 0 };
+}
+
+/** The view focused the label, so the next paint must not steal the cursor. */
+export function acknowledgeDimensionFocus(editor: SketchEditor): SketchEditor {
+  if (editor.constrain.focus == null) return editor;
+  return { ...editor, constrain: { ...editor.constrain, focus: null } };
+}
+
+function rememberConstraint(editor: SketchEditor, sketch: SketchData, focus: number | null, note: string | null): SketchEditor {
+  const before = currentMark(editor);
+  const next = replaceSketch({ ...clearGesture(editor), tool: "select" }, sketch);
+  return {
+    ...next,
+    constrain: { ...freshConstrain(), focus, hud: focus, note },
+    undo: [...editor.undo, before].slice(-100),
+    redo: [],
+    esc: 0,
+  };
+}
+
+function applyConstrainPointer(editor: SketchEditor, sketch: SketchData, ev: SketchPointer, env: SketchEnv, at: Pt): SketchEditor {
+  if (ev.phase !== "up" || !isConstrainTool(editor.tool)) return editor;
+  const hit = hitSketch(sketch, at, env.mmPerPx * 8);
+  const picks = [...editor.constrain.picks, { point: hit.point, entity: hit.entity }];
+  const built = constrainFromPick(sketch, editor.tool, picks);
+  if (built.needMore) return { ...editor, constrain: { ...editor.constrain, picks, note: built.hint ?? null }, esc: 0 };
+  if (!built.sketch) return { ...editor, constrain: { ...freshConstrain(), note: built.error ?? built.hint ?? null }, esc: 0 };
+  return rememberConstraint(editor, built.sketch, built.focus ?? null, null);
+}
+
+function commitDrivingSize(editor: SketchEditor, sketch: SketchData, value: number | undefined): SketchEditor {
+  const id = editor.constrain.hud;
+  if (id == null || value == null) return editor;
+  const built = commitDriving(sketch, id, value);
+  if (!built.sketch) return { ...editor, constrain: { ...editor.constrain, note: built.error ?? "Type a number." } };
+  return rememberConstraint(editor, built.sketch, null, null);
+}
+
+function removeChosenConstraint(editor: SketchEditor, sketch: SketchData): SketchEditor {
+  const built = applyConstrainAction(sketch, "remove", editor.selection, editor.constrain.selected);
+  if (!built.sketch) return { ...editor, constrain: { ...editor.constrain, note: built.error ?? null } };
+  return rememberConstraint(editor, built.sketch, null, null);
 }
 
 function cloneDraw(state: DrawState): DrawState {
@@ -809,15 +962,8 @@ function dragIds(sketch: SketchData, selection: SketchSelection, hit: { point: n
 }
 
 function movePoints(sketch: SketchData, ids: readonly number[], delta: Pt): SketchData {
-  const moving = new Set(ids);
-  if (moving.size === 0 || (delta[0] === 0 && delta[1] === 0)) return sketch;
-  return {
-    ...sketch,
-    points: sketch.points.map((point) => {
-      if (!moving.has(point.id) || point.fixed) return point;
-      return { ...point, at: [point.at[0] + delta[0], point.at[1] + delta[1]] as Pt };
-    }),
-  };
+  // --- S4. No constraints: dragSketch translates and does not solve. ---
+  return dragSketch(sketch, ids, delta);
 }
 
 function entityPoints(entity: SketchData["entities"][number]): number[] {

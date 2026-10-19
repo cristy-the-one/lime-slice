@@ -51,10 +51,18 @@ import {
   withLook,
   withRefs,
   withTool,
+  acknowledgeDimensionFocus,
+  applyConstraint,
+  cancelDimensionEdit,
+  commitDimensionText,
+  editDimension,
   type SketchEditor,
   type SketchTool,
 } from "../sketch/session";
 import { DRAW_MENU, isDrawTool } from "../sketch/tools";
+// --- S4. Constraints live in the sketch card menu, not on the Model toolbar. ---
+import { CONSTRAIN_MENU, dimensionLabels, firstLineMeasure, isConstrainTool, placedStatus } from "../sketch/constrain";
+import { parseConstraints } from "../sketch/solve";
 import { workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 
 export interface SketchHost {
@@ -161,10 +169,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   let aimKey = "";
   let refsKey = "";
-  let drawOpen = false;
+  let menuOpen: "draw" | "constrain" | null = null;
   let shownPlanes: OriginPlane[] = [];
   let chooseDown: { x: number; y: number } | null = null;
   let lastClient = { x: 0, y: 0 };
+  const labels = document.createElement("div");
+  labels.className = "sketch-dims";
+  labels.hidden = true;
+  document.body.append(labels);
 
   const sync = () => {
     if (editor.phase === "off") return;
@@ -208,13 +220,22 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const tool = target.dataset.sketchTool;
     const picked = tool === "line" || tool === "rectangle" || tool === "select" || (typeof tool === "string" && isDrawTool(tool)) ? tool : null;
     if (picked) {
-      drawOpen = false;
+      menuOpen = null;
       editor = withTool(editor, picked);
       publish("open");
       return;
     }
-    if (target.dataset.sketchMenu != null) {
-      drawOpen = !drawOpen;
+    // --- S4. Constraint commands are menu items on the sketch card. ---
+    const constrain = target.dataset.sketchConstrain;
+    if (constrain && (constrain === "remove" || isConstrainTool(constrain))) {
+      menuOpen = null;
+      editor = applyConstraint(editor, constrain);
+      publish("open");
+      return;
+    }
+    if (target.dataset.sketchMenu === "draw" || target.dataset.sketchMenu === "constrain") {
+      const which = target.dataset.sketchMenu;
+      menuOpen = menuOpen === which ? null : which;
       publish("skip");
       return;
     }
@@ -264,6 +285,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const history = (ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z" || ev.key === "y" || ev.key === "Y");
     if (!sketchHandlesKey(ev.key, mods) && !history) return;
     const typing = ev.target instanceof HTMLElement && (ev.target.tagName === "INPUT" || ev.target.tagName === "TEXTAREA" || ev.target.isContentEditable);
+    if (typing && ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        editor = cancelDimensionEdit(editor);
+        publish("open");
+      }
+      return;
+    }
     if (typing && !history && ev.key !== "Escape") return;
     ev.preventDefault();
     ev.stopPropagation();
@@ -290,7 +320,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       publish("skip");
       return;
     }
-    if (ev.phase === "down") drawOpen = false;
+    if (ev.phase === "down") menuOpen = null;
     if (editor.phase !== "editing" || editor.lookAround) return;
     const frame = drawingFrame();
     if (!frame) return;
@@ -324,6 +354,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.canvas.dataset.sketchLook = "0";
   host.canvas.dataset.sketchKinds = "";
   host.canvas.dataset.sketchConstruction = "0";
+  host.canvas.dataset.sketchDims = "0";
+  host.canvas.dataset.sketchDefined = "";
+  host.canvas.dataset.sketchDof = "";
+  host.canvas.dataset.sketchConstraints = "0";
 
   function enterNamed(name: "XY" | "XZ" | "YZ" | "workplane") {
     const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : originFrame(name, host.origin());
@@ -395,9 +429,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     paintCards();
     paintBox();
     paintDataset();
+    paintLabels();
     if (editor.phase === "off") host.readout(host.idleReadout());
     else host.readout(sketchReadout(editor));
     syncHud(hudMode);
+    focusDimensionLabel();
     if (button) button.setAttribute("aria-pressed", sketchBusy(editor) ? "true" : "false");
     host.syncPull();
     host.syncEdge();
@@ -474,6 +510,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.sketchLook = editor.lookAround ? "1" : "0";
     host.canvas.dataset.sketchKinds = sketch?.entities.map((entity) => entity.kind).join(",") ?? "";
     host.canvas.dataset.sketchConstruction = String(sketch?.entities.filter((entity) => entity.construction).length ?? 0);
+    const status = sketch && editor.phase === "editing" ? placedStatus(sketch) : null;
+    host.canvas.dataset.sketchDims = String(sketch && editor.phase === "editing" ? dimensionLabels(sketch).length : 0);
+    host.canvas.dataset.sketchDefined = status ? (status.fullyDefined ? "1" : "0") : "";
+    host.canvas.dataset.sketchDof = status ? String(status.dof) : "";
+    host.canvas.dataset.sketchConstraints = String(sketch && editor.phase === "editing" ? parseConstraints(sketch).length : 0);
+    const measure = sketch && editor.phase === "editing" ? firstLineMeasure(sketch) : null;
+    if (measure) host.canvas.dataset.sketchMeasure = `${measure.length.toFixed(3)},${measure.rise.toFixed(3)}`;
+    else delete host.canvas.dataset.sketchMeasure;
   }
 
   function paintBox() {
@@ -524,6 +568,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       toolButton("rectangle", "Rectangle"),
       // --- S3. Drawing tools live in this menu, not on the Model toolbar. ---
       drawMenu(),
+      // --- S4. Constraints and driving dimensions, in a menu so the toolbar stays one row. ---
+      constrainMenu(),
       toolButton("select", "Select"),
       textButton(editor.lookAround ? "Lock view" : "Look around", { sketchLook: editor.lookAround ? "1" : "0" }),
       textButton("Finish sketch", { sketchFinish: "" }),
@@ -540,12 +586,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     open.dataset.sketchMenu = "draw";
     open.textContent = current?.label ?? "Draw";
     open.setAttribute("aria-haspopup", "menu");
-    open.setAttribute("aria-expanded", drawOpen ? "true" : "false");
+    open.setAttribute("aria-expanded", menuOpen === "draw" ? "true" : "false");
     open.setAttribute("aria-pressed", current ? "true" : "false");
     const menu = document.createElement("div");
     menu.className = "sketch-menu-list";
     menu.setAttribute("role", "menu");
-    menu.hidden = !drawOpen;
+    menu.hidden = menuOpen !== "draw";
     for (const item of DRAW_MENU) {
       const node = document.createElement("button");
       node.type = "button";
@@ -559,6 +605,132 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     wrap.append(open, menu);
     return wrap;
+  }
+
+  function constrainMenu(): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "sketch-menu";
+    const current = isConstrainTool(editor.tool) ? CONSTRAIN_MENU.find((item) => item.action === editor.tool) : undefined;
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "btn";
+    open.dataset.sketchMenu = "constrain";
+    open.textContent = current?.label ?? "Constrain";
+    open.setAttribute("aria-haspopup", "menu");
+    open.setAttribute("aria-expanded", menuOpen === "constrain" ? "true" : "false");
+    open.setAttribute("aria-pressed", current ? "true" : "false");
+    const menu = document.createElement("div");
+    menu.className = "sketch-menu-list";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "Constraints");
+    menu.hidden = menuOpen !== "constrain";
+    let group = "";
+    for (const item of CONSTRAIN_MENU) {
+      if (item.group !== group) {
+        group = item.group;
+        const heading = document.createElement("p");
+        heading.className = "sketch-menu-label";
+        heading.textContent = item.group === "geom" ? "Geometry" : item.group === "size" ? "Size" : "Edit";
+        menu.append(heading);
+      }
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = "btn";
+      node.setAttribute("role", "menuitem");
+      node.dataset.sketchConstrain = item.action;
+      node.textContent = item.label;
+      node.setAttribute("aria-pressed", editor.tool === item.action ? "true" : "false");
+      menu.append(node);
+    }
+    wrap.append(open, menu);
+    return wrap;
+  }
+
+  function paintLabels() {
+    const sketch = activeSketch(editor);
+    const frame = drawingFrame();
+    if (!sketch || !frame || editor.phase !== "editing") {
+      labels.hidden = true;
+      labels.replaceChildren();
+      return;
+    }
+    const items = dimensionLabels(sketch);
+    if (items.length === 0) {
+      labels.hidden = true;
+      labels.replaceChildren();
+      return;
+    }
+    labels.hidden = false;
+    const status = placedStatus(sketch);
+    labels.dataset.defined = status?.fullyDefined ? "1" : "0";
+    const keep = new Set(items.map((item) => String(item.id)));
+    for (const child of [...labels.children]) {
+      if (!(child instanceof HTMLElement) || !keep.has(child.dataset.dimId ?? "")) child.remove();
+    }
+    for (const item of items) {
+      const wantInput = editor.constrain.focus === item.id || editor.constrain.hud === item.id;
+      let node = labels.querySelector<HTMLElement>(`[data-dim-id="${item.id}"]`);
+      const isInput = node instanceof HTMLInputElement;
+      if (!node || wantInput !== isInput) {
+        node?.remove();
+        node = wantInput ? dimensionInput(item.id, item.text) : dimensionButton(item.id, item.text, item.title);
+        labels.append(node);
+      } else if (node instanceof HTMLButtonElement) node.textContent = item.text;
+      const screen = host.view.projectPoint(toWorld(frame, item.at));
+      node.hidden = !screen;
+      if (screen) {
+        node.style.left = `${screen.x}px`;
+        node.style.top = `${screen.y}px`;
+      }
+      node.dataset.defined = status?.fullyDefined ? "1" : "0";
+      node.dataset.conflict = status?.conflicting.includes(item.id) ? "1" : "0";
+      node.title = item.title;
+    }
+  }
+
+  /** The heads-up box focuses itself on open. Put the caret back in the dimension label. */
+  function focusDimensionLabel() {
+    if (editor.constrain.focus == null) return;
+    const input = labels.querySelector<HTMLInputElement>("input.sketch-dim-input");
+    input?.focus();
+    input?.select();
+    editor = acknowledgeDimensionFocus(editor);
+  }
+
+  function dimensionButton(id: number, text: string, title: string): HTMLButtonElement {
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = "sketch-dim";
+    node.dataset.dimId = String(id);
+    node.textContent = text;
+    node.title = title;
+    node.setAttribute("aria-label", title);
+    node.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      editor = editDimension(editor, id);
+      publish("open");
+    });
+    return node;
+  }
+
+  function dimensionInput(id: number, text: string): HTMLInputElement {
+    const node = document.createElement("input");
+    node.type = "text";
+    node.className = "sketch-dim-input";
+    node.dataset.dimId = String(id);
+    node.dataset.sketchDimInput = "";
+    node.value = text;
+    node.setAttribute("aria-label", "Driving dimension");
+    node.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      editor = commitDimensionText(editor, id, node.value);
+      publish("open");
+    });
+    node.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    return node;
   }
 
   function pinnedRow(id: number, name: string): Node[] {
