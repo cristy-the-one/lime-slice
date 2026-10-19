@@ -221,6 +221,12 @@ export function opBox(op: ModelOp): Box | null {
       const radius = Math.max(op.radius, op.counterboreRadius ?? 0);
       return circleBox(circleBox(null, op.origin, dir, radius), end, dir, radius);
     }
+    // --- A9. A group's box is the union of its steps, so a label still colours and anchors. ---
+    case "group": {
+      let box: Box | null = null;
+      for (const step of op.steps) box = unionBox(box, opBox(step));
+      return box;
+    }
     default:
       return null;
   }

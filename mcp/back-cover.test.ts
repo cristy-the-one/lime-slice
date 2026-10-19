@@ -107,6 +107,18 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
     JSON.stringify(touching),
   );
   check("a composite step that touches along an edge is left out and reported", boss.leftOut === 1 && String(boss.leftOutNote).startsWith("1 step would have left pieces meeting only along an edge, even 0.3 mm shorter at each end, and was left out."), JSON.stringify(boss));
+
+  const barredBox = await session.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
+  process.env.LIME_MCP_FAKE_LOSE_FUSE = "1";
+  const barred = await session.call("model_apply", { object: barredBox.object, op: { kind: "pocket", faceIndex: 5, width: 8, height: 8, depth: 2, bars: { vertical: 1 }, label: "window" } });
+  delete process.env.LIME_MCP_FAKE_LOSE_FUSE;
+  const barredHistory = await session.call("model_history", { object: barredBox.object });
+  const barredFailed = barred.failed as { failedStep?: number; step?: number } | undefined;
+  check(
+    "a barred pocket that loses a bar names that piece and rolls back",
+    barred.ok === false && barred.rolledBack === true && barredFailed?.failedStep === 2 && barredFailed.step === 2 && (barredHistory.nodes as unknown[]).length === 1,
+    JSON.stringify({ barred, history: barredHistory }),
+  );
 }
 
 // Finding 2b: a step that runs past the kernel's budget restarts the modeler, but every history stays and builds again.

@@ -14,6 +14,8 @@ import { Session } from "./session.ts";
 import { GLOBAL_WORKPLANE, workplaneOnFace } from "../src/workplane.ts";
 import type { PrimitiveSpec } from "../src/model-primitive.ts";
 import { eulerOrient } from "../src/mesh-place.ts";
+import { historyLayout, presentedRows } from "../src/model-history.ts";
+import { loadedTree, readSavedTree, withSavedNames } from "../src/model-tree-file.ts";
 
 const workspace = mkdtempSync(join(tmpdir(), "lime-mcp-compose-"));
 process.env.LIME_MCP_WORKSPACE = workspace;
@@ -208,9 +210,13 @@ const windows = await call("model_apply", {
   object,
   op: { kind: "mirror", plane: "x", label: "front windows", op: { kind: "pocket", faceIndex: 5, at: { u: 18, v: 2.5 }, width: 10, height: 10, depth: 1.5, bars: { vertical: 1, horizontal: 1 } } },
 });
-check("a mirrored barred window applies six steps", windows.ok === true && windows.applied === 6, JSON.stringify(windows));
+check("a mirrored barred window is one group", windows.ok === true && windows.applied === 1 && windows.label === "front windows", JSON.stringify(windows));
 const historyAfter = (await call("model_history", { object })).nodes as { id: string; label: string }[];
-check("composite steps carry the label", historyAfter.length === historyBefore + 6 && historyAfter.some((node) => node.label === "front windows 1/6"), JSON.stringify(historyAfter.map((n) => n.label)));
+check("the composite is one labelled row", historyAfter.length === historyBefore + 1 && historyAfter.some((node) => node.label === "front windows"), JSON.stringify(historyAfter.map((n) => n.label)));
+const windowFile = await call("project_save", { name: "windows.lime" });
+const windowDoc = windowFile.ok === true ? JSON.parse(readFileSync(join(workspace, "windows.lime"), "utf8")) as { objects?: { modelTree?: { nodes?: { op?: { kind?: string; steps?: unknown[]; source?: { kind?: string } } | null }[] } }[] } : {};
+const windowGroup = windowDoc.objects?.[0]?.modelTree?.nodes?.map((node) => node.op).find((op) => op?.kind === "group");
+check("the window group keeps the six pieces and the mirror that was typed", windowGroup?.steps?.length === 6 && windowGroup.source?.kind === "mirror", JSON.stringify(windowGroup?.source));
 const undone = await call("model_undo", { object });
 check("one undo takes the whole composite back", undone.ok === true && undone.node === roofed.node && undone.group === "front windows", JSON.stringify(undone));
 const redone = await call("model_redo", { object });
@@ -247,7 +253,7 @@ check("an unknown selector field is refused", noFace.ok === false && JSON.string
 const gable = await call("model_apply", { object, probe: true, op: { kind: "extrude", op: "fuse", face: { normal: [0, -1, 0] }, from: "corner", profile: [[0, 0], [20, 0], [10, 8]], depth: 2, label: "gable" } });
 const gableOp = gable.stored as { kind?: string; origin?: number[]; profile?: number[][]; depth?: number };
 check("an extrude on a face from its corner applies", gable.ok === true && gableOp.kind === "extrude" && gableOp.profile?.length === 3 && gableOp.depth === 2, JSON.stringify(gable));
-check("from: corner puts the profile origin at the face's min corner", nearAll(gableOp.origin ?? [], [0, 0, 0], 1e-6), JSON.stringify(gableOp.origin));
+check("from: corner puts the profile origin at the face's min corner", nearAll(gableOp.origin ?? [], [-30, -20, 0], 1e-6), JSON.stringify(gableOp.origin));
 const knob = await call("model_apply", { object, probe: true, op: { kind: "revolve", op: "fuse", profile: [[0, 0], [2, 0], [2, 3], [0, 3]], angleDeg: 360 } });
 check("a revolve applies", knob.ok === true && (knob.stored as { kind?: string }).kind === "revolve", JSON.stringify(knob));
 const hollow = await call("model_apply", { object, probe: true, op: { kind: "shell", thickness: 2, openFaces: [{ normal: [0, 0, -1] }] } });
@@ -258,16 +264,16 @@ check("a fillet takes the edges a labelled step made", rounded.ok === true && ro
 const shortProfile = await call("model_apply", { object, probe: true, op: { kind: "extrude", profile: [[0, 0], [1, 0], [1, 1]], depth: 0 } });
 check("an extrude with no depth is a sentence", shortProfile.ok === false && String(shortProfile.reason).includes("depth"), JSON.stringify(shortProfile));
 const studded = await call("model_apply", { object, op: { kind: "array", face: { normal: [0, 0, 1] }, cell: { shape: "circle", diameter: 3 }, pitch: [5, 5], fit: "inside", depth: 1.5, margin: 1, label: "studs" } });
-check("an array through the session applies each cell as one undo step", studded.ok === true && (studded.applied as number) >= 4 && studded.label === "studs", JSON.stringify(studded));
+check("an array through the session is one group and one undo step", studded.ok === true && studded.applied === 1 && studded.label === "studs", JSON.stringify(studded));
 const ribbed = await call("model_apply", { object, op: { kind: "ribs", face: { normal: [0, -1, 0] }, along: "v", width: 1.5, pitch: 6, depth: 2, label: "ribs" } });
-check("ribs through the session apply", ribbed.ok === true && (ribbed.applied as number) >= 2, JSON.stringify(ribbed));
+check("ribs through the session are one group", ribbed.ok === true && ribbed.applied === 1 && ribbed.label === "ribs", JSON.stringify(ribbed));
 const undoRibs = await call("model_undo", { object });
 check("one undo takes all the ribs back", undoRibs.ok === true && undoRibs.group === "ribs", JSON.stringify(undoRibs));
 const params = await call("model_params", { set: { wallW: 60, half: "wallW / 2" } });
 check("model_params evaluates in order", (params.params as Record<string, number>).half === 30, JSON.stringify(params));
 const badParam = await call("model_params", { set: { "2bad": 1 } });
 check("a bad parameter name is refused", badParam.ok === false);
-// The stand-in engine answers model_goto with a 20 mm cube from the origin, so this cut sits inside that.
+// model_goto restores the step's solid. This cut is typed with parameters; the check is the numbers, not the mesh.
 const exprApply = await call("model_apply", { object, probe: true, op: { kind: "boolean", op: "cut", primitive: "box", origin: ["half - 25", 1, 1], dx: "wallW / 10", dy: 2, dz: 1 } });
 check("op numbers may be expressions", exprApply.ok === true && JSON.stringify(exprApply.typed).includes("[5,1,1]") && JSON.stringify(exprApply.typed).includes("[6,2,1]"), JSON.stringify(exprApply));
 const badExpr = await call("model_apply", { object, probe: true, op: { kind: "boolean", op: "cut", primitive: "box", dx: "nope * 2" } });
@@ -282,7 +288,30 @@ const built = await call("model_build", {
     { kind: "texture", faceIndex: 4, pattern: "lines", pitch: [5, 5], label: "siding" },
   ],
 });
-check("model_build makes, edits, and commits in one call", built.ok === true && built.committed === true && typeof built.object === "string" && (built.applied as number) > 2, JSON.stringify(built));
+check("model_build makes, edits, and commits in one call", built.ok === true && built.committed === true && typeof built.object === "string" && built.applied === 2, JSON.stringify(built));
+
+// A fountain-sized build: many composites, about 325 pieces, opening in the app as about 25 rows.
+const fountainOps = Array.from({ length: 24 }, (_, i) => ({
+  kind: "pattern",
+  label: `band ${i + 1}`,
+  linear: { step: [0.4, 0, 0], count: i < 13 ? 14 : 13 },
+  op: { kind: "boolean", op: "cut", primitive: "box", origin: [-8, -8, 18], dx: 0.3, dy: 0.3, dz: 0.3 },
+}));
+const fountain = await call("model_build", { name: "fountain", base: { primitive: "box", dx: 40, dy: 40, dz: 20 }, ops: fountainOps });
+const fountainHistory = ((await call("model_history", { object: fountain.object, limit: 100 })).nodes as { label: string }[]) ?? [];
+const fountainSave = await call("project_save", { name: "fountain.lime" });
+const fountainDoc = fountainSave.ok === true ? JSON.parse(readFileSync(join(workspace, "fountain.lime"), "utf8")) as { objects?: { name?: string; modelTree?: unknown }[] } : {};
+const fountainRaw = fountainDoc.objects?.find((row) => row.name === "fountain")?.modelTree;
+const fountainSaved = readSavedTree(fountainRaw);
+const fountainRoot = fountainSaved?.rootPrimitive ? { kind: "primitive" as const, solid: fountainSaved.rootPrimitive } : null;
+const fountainTree = fountainSaved && fountainRoot ? withSavedNames(loadedTree(fountainSaved, "fountain", fountainRoot, "fountain", null, () => undefined)) : null;
+const fountainRows = fountainTree ? presentedRows(historyLayout(fountainTree).rows, new Set()) : [];
+const fountainPieces = fountainTree ? [...fountainTree.nodes.values()].reduce((sum, node) => sum + (node.op?.kind === "group" ? node.op.steps.length : 0), 0) : 0;
+check(
+  "a fountain of composites opens as about 25 rows, not one per piece",
+  fountain.ok === true && fountain.applied === 24 && fountainHistory.length === 25 && fountainRows.length >= 20 && fountainRows.length <= 35 && fountainPieces === 325 && fountainRows.every((row) => !/ \d+\/\d+$/.test(row.label)),
+  JSON.stringify({ applied: fountain.applied, history: fountainHistory.length, rows: fountainRows.length, pieces: fountainPieces, labels: fountainRows.map((row) => row.label) }),
+);
 
 // A join without keepTool takes the tool off the plate, as the desktop does, and the save keeps its tree.
 const host = await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });

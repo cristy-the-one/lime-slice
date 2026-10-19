@@ -121,6 +121,17 @@ check("object rebuilds an earlier build in place, reusing its ops", rebuilt.ok =
 const otherBase = await call("model_build", { object: second.object, base: { primitive: "box", dx: 9, dy: 9, dz: 9 }, ops: [] });
 check("a rebuild with another base is refused", otherBase.ok === false && String(otherBase.reason).includes("base"), JSON.stringify(otherBase));
 
+const vents = { kind: "pattern", label: "vents", linear: { step: [3, 0, 0], count: 4 }, op: { kind: "boolean", op: "cut", primitive: "box", origin: [-8, -8, 18], dx: 1, dy: 1, dz: 1 } };
+const vented = await call("model_build", { name: "vented", base, ops: [vents, wide] });
+check("a refused build after a composite keeps the group", vented.ok === false && (vented.failed as { index?: number; failedStep?: number })?.index === 1, JSON.stringify(vented));
+const ventedAgain = await call("model_build", { name: "vented", base, ops: [vents, narrow] });
+const ventedHistory = ((await call("model_history", { object: ventedAgain.object })).nodes as { label: string }[]).map((row) => row.label);
+check(
+  "a resumed composite is one checkpoint, not one node per piece",
+  ventedAgain.ok === true && ventedAgain.object === vented.object && (ventedAgain.resumed as { reusedOps?: number })?.reusedOps === 1 && ventedHistory.length === 3 && ventedHistory.includes("vents") && ventedHistory.filter((label) => label.startsWith("Hole")).length === 1,
+  JSON.stringify({ ventedAgain, ventedHistory }),
+);
+
 const loftObj = await call("model_build", { name: "horn", base, ops: [
   { kind: "sweep", path: [[0, 0, 19], [0, 3, 26], [0, 9, 30]], radius: [3, 2, 0.8], label: "horn" },
   { kind: "loft", op: "fuse", sections: [{ origin: [5, 5, 19], radius: 2 }, { origin: [5, 5, 24], turn: [0, 0, 45], profile: [[-1, -1], [1, -1], [1, 1], [-1, 1]], smooth: true, corners: [0, 1] }] },

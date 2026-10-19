@@ -508,8 +508,16 @@ interface KeptSolid {
   max: number[];
 }
 
-/** What the stand-in makes of an op: a scale, a hole's mark, or a box cut that cleaves the part in two. */
-function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: string; primitive?: string; origin?: number[]; size?: number[] } | undefined): KeptSolid {
+/** What the stand-in makes of an op: a scale, a hole's mark, a box cut that cleaves the part in two, or a group's steps in order. */
+function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: string; primitive?: string; origin?: number[]; size?: number[]; steps?: unknown[] } | undefined): KeptSolid {
+  // --- A9. A group is the steps that landed, walked from the shape before them. Touch and lost-fuse checks stay on the outer op. ---
+  if (op?.kind === "group" && Array.isArray(op.steps)) {
+    let solid = prior;
+    for (const step of op.steps) {
+      if (step && typeof step === "object") solid = applied(solid, step as { kind?: string });
+    }
+    return solid;
+  }
   const next: KeptSolid = { volume: prior.volume, positions: new Float32Array(prior.positions), min: [...prior.min], max: [...prior.max] };
   if (op?.kind === "scale" && typeof op.factor === "number") {
     const factor = op.factor;
@@ -551,6 +559,17 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
 export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; opens: Record<string, unknown>[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number } {
   const jobs = new Map<number, { status: string; body: string; polls: number }>();
   const kept = new Map<string, KeptSolid>();
+  // --- A9. One solid per history node, so goto restores that step instead of a fresh cube. ---
+  const atNode = new Map<string, Map<number, KeptSolid>>();
+  const cloneSolid = (solid: KeptSolid): KeptSolid => ({ volume: solid.volume, positions: new Float32Array(solid.positions), min: [...solid.min], max: [...solid.max] });
+  const keepNode = (key: string, id: number, solid: KeptSolid) => {
+    let map = atNode.get(key);
+    if (!map) {
+      map = new Map();
+      atNode.set(key, map);
+    }
+    map.set(id, cloneSolid(solid));
+  };
   let next = 0;
   const remember = (key: string, solid: KeptSolid, id = 0) => {
     kept.set(key, solid);
@@ -716,6 +735,8 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
           both.set(touching, nextSolid.positions.length);
           nextSolid.positions = both;
         }
+        // --- A9. Snapshot after the volume changes, so a later goto of this node is this solid. ---
+        keepNode(key, req.node ?? 1, nextSolid);
         const wire = remember(key, nextSolid);
         wire.id = req.node ?? 1;
         if (req.op?.kind === "split" && req.otherKey) {
@@ -730,7 +751,9 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         const prior = kept.get(key);
         const volume = prior ? Math.max(1, prior.volume / 2) : 500;
         const base = prior ?? { volume, positions: boxSolid([0, 0, 0], [20, 20, 20], volume).positions, min: [0, 0, 0], max: [20, 20, 20] };
-        const wire = remember(key, { ...base, volume });
+        const edited = { ...base, volume, positions: new Float32Array(base.positions) };
+        keepNode(key, steps[steps.length - 1]?.id ?? 1, edited);
+        const wire = remember(key, edited);
         wire.id = steps[steps.length - 1]?.id ?? 1;
         wire.volumeMm3 = volume;
         wire.fingerprint = { volumeMm3: volume, faces: 6, edges: 12 };
@@ -749,13 +772,26 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         return JSON.stringify({ bytesBase64: bytes.toString("base64"), byteLength: bytes.length });
       }
       if (req.call === "close") return JSON.stringify({ ok: true });
+      // --- A9. goto returns the solid that node held. A node with no snapshot keeps the current solid. ---
+      if (req.call === "goto") {
+        const id = typeof req.node === "number" ? req.node : 0;
+        const saved = atNode.get(key)?.get(id) ?? kept.get(key);
+        const solid = saved ?? { volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] };
+        return JSON.stringify(remember(key, cloneSolid(solid), id));
+      }
       const spec = req.primitive;
       const origin = spec?.origin ?? [0, 0, 0];
       const size = spec?.size && spec.size.some((value) => value > 0) ? spec.size : [20, 20, 20];
       const min = [origin[0] ?? 0, origin[1] ?? 0, origin[2] ?? 0];
       const max = [min[0]! + (size[0] ?? 20), min[1]! + (size[1] ?? 20), min[2]! + (size[2] ?? 20)];
       const volume = Math.abs((max[0]! - min[0]!) * (max[1]! - min[1]!) * (max[2]! - min[2]!)) || 8000;
-      return JSON.stringify(remember(key, { volume, positions: boxSolid(min, max, volume).positions, min, max }));
+      const solid = { volume, positions: boxSolid(min, max, volume).positions, min, max };
+      // --- A9. A fresh open replaces that tree's snapshots. The root is node 0. ---
+      if (!req.call || req.call === "open") {
+        atNode.delete(key);
+        keepNode(key, 0, solid);
+      }
+      return JSON.stringify(remember(key, solid));
     },
     sliceStart: (body: string, bytes?: Uint8Array) => {
       engine.lastSlice = withMesh(body, bytes);
