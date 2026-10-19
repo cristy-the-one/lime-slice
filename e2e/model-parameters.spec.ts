@@ -79,6 +79,15 @@ test("parameters panel and an expression in a number field", async ({ page }) =>
   await expect(page.locator("#modelParamsRebuild")).toHaveText("Rebuild 1 step");
   await page.locator("#modelParamsRebuild").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
+  await expect(page.locator("#modelParamsRebuild")).toBeHidden();
+
+  // Undo shows the 30 tall step again: it is out of date at wallH 40, and Rebuild brings it back.
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 3000 mm³");
+  await expect(page.locator("#modelParamsRebuild")).toHaveText("Rebuild 1 step");
+  await page.locator("#modelParamsRebuild").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
+  await expect(page.locator("#modelParamsRebuild")).toBeHidden();
 });
 
 test("a repaint keeps every row valid, and a row that names an edited parameter follows it", async ({ page }) => {

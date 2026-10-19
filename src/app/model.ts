@@ -532,10 +532,6 @@ export function bindModelView() {
     table: () => session.parameters,
     setTable(table) {
       session.parameters = table;
-      if (paramsInDate()) {
-        builtParams = { ...currentParams() };
-        paramsTrusted = true;
-      }
       markProjectDirty();
     },
     usedBy: usedByName,
@@ -2153,7 +2149,10 @@ async function step(way: "undo" | "redo") {
   const done = viaEdit ? (way === "undo" ? "Edit of the step undone." : "Edit of the step redone.") : viaFold && foldLabel ? `${foldLabel} ${way === "undo" ? "undone" : "redone"}.` : way === "undo" ? "Edit undone." : "Edit redone.";
   const shown = await showNode(ticket, at.objectId, at.key, node, (solid) => `${about(solid)} ${done}`);
   if (shown && viaEdit && editBack === back) back!.undone = way === "undo";
-  if (shown) syncUndo();
+  if (!shown) return;
+  syncUndo();
+  // The shown branch changed, so the Rebuild count does too.
+  noteParametersBuilt();
 }
 
 /** A row of the History panel: show that step. A jump still on its way to another step gives way to this one. */
@@ -2166,7 +2165,7 @@ async function jumpTo(node: NodeId) {
   editBack = null;
   // A step picked in the history ends an edit: the view goes there, not back.
   dropEdit();
-  await showNode(ticket, at.objectId, at.key, node, about);
+  if (await showNode(ticket, at.objectId, at.key, node, about)) noteParametersBuilt();
 }
 
 /** The open solid's own step a History row names, or null for a tool's step. */
@@ -2926,26 +2925,12 @@ function currentParams(): Params {
   return evaluateTable(session.parameters).values;
 }
 
-/** The table the open solid's numbers were last in step with. */
-let builtParams: Params = {};
-/** False when a file's numbers and its parameter table do not agree, so a rebuild writes the expressions. */
-let paramsTrusted = true;
-
-/** Every open history agrees with the parameter table. A file can disagree before Model is showing. */
-function paramsInDate(): boolean {
-  const after = currentParams();
-  for (const tree of modelTrees.values()) {
-    if (branchHits(tree, after).length > 0) return false;
-  }
-  return true;
-}
-
-/** The open solid now agrees with the parameter table, or it does not and the next rebuild writes the expressions. */
+/**
+ * The history or the table changed (a rebuild, an undo, a redo, a jump, a file): the Parameters panel and its
+ * Rebuild count follow. A step is out of date when a stored number differs from its expression at the table, so
+ * nothing needs to remember which table the numbers were built at.
+ */
 export function noteParametersBuilt() {
-  if (paramsInDate()) {
-    builtParams = { ...currentParams() };
-    paramsTrusted = true;
-  } else paramsTrusted = false;
   syncParameters();
 }
 
@@ -2990,7 +2975,7 @@ function affectedNodeIds(): NodeId[] {
   return tree ? branchHits(tree, currentParams()) : [];
 }
 
-function refreshStored(op: ModelOp, before: Params, after: Params, tree: ModelTree, parent: NodeId): { op: ModelOp; error?: string } {
+function refreshStored(op: ModelOp, after: Params, tree: ModelTree, parent: NodeId): { op: ModelOp; error?: string } {
   const pose = openPose();
   const cached = recentSolid(tree.key, parent, state.stepTolerance);
   const solid = cached ?? (open?.key === tree.key && open.solid.id === parent ? open.solid : null);
@@ -3007,7 +2992,7 @@ function refreshStored(op: ModelOp, before: Params, after: Params, tree: ModelTr
       }
     }
   }
-  const next = refreshOp(op, before, after, { pose, solid, repeated, absolute: !paramsTrusted });
+  const next = refreshOp(op, after, { pose, solid, repeated });
   if (next.error || !next.toSolid) return next;
   return { op: toSolidOp(next.op, pose) };
 }
@@ -3032,7 +3017,6 @@ async function rebuildFromParameters() {
     readout("This step is no longer in the history.");
     return;
   }
-  const before = { ...builtParams };
   const after = { ...currentParams() };
   const from = tree.current;
   const parent = node.parent ?? ROOT;
@@ -3043,7 +3027,7 @@ async function rebuildFromParameters() {
     return;
   }
   const supplied: ModelOp[] = [];
-  const first = refreshStored(startOp, before, after, tree, parent);
+  const first = refreshStored(startOp, after, tree, parent);
   if (first.error) {
     readout(first.error);
     return;
@@ -3055,7 +3039,7 @@ async function rebuildFromParameters() {
       readout("This step is no longer in the history.");
       return;
     }
-    const next = refreshStored(step, before, after, tree, tree.nodes.get(id)?.parent ?? ROOT);
+    const next = refreshStored(step, after, tree, tree.nodes.get(id)?.parent ?? ROOT);
     if (next.error) {
       readout(next.error);
       return;

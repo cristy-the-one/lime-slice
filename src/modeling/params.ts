@@ -81,16 +81,6 @@ export function expressionMentions(text: string, name: string): boolean {
   return false;
 }
 
-/** True when `text` names a parameter whose value differs. */
-export function expressionChanged(text: string, before: Params, after: Params): boolean {
-  const names = new Set([...Object.keys(before), ...Object.keys(after)]);
-  for (const name of names) {
-    if (before[name] === after[name]) continue;
-    if (expressionMentions(text, name)) return true;
-  }
-  return false;
-}
-
 function sketchesOf(op: ModelOp): SketchData[] {
   const found: SketchData[] = [];
   const take = (sketch: SketchData | null | undefined) => {
@@ -143,10 +133,6 @@ export function usedByCount(name: string, ops: readonly (ModelOp | null)[], root
 }
 
 const NEAR = 1e-6;
-
-function blend(current: number, oldValue: number, newValue: number, absolute: boolean): number {
-  return absolute || Math.abs(current - oldValue) <= NEAR ? newValue : current + (newValue - oldValue);
-}
 
 type Path = readonly (string | number)[];
 
@@ -229,59 +215,55 @@ function writePath(value: unknown, path: Path, next: number): unknown {
   return value;
 }
 
-function patchRecord(record: Record<string, unknown>, path: Path, oldValue: number, newValue: number, absolute: boolean): Record<string, unknown> {
-  const current = readPath(record, path);
-  if (current == null) return record;
-  return writePath(record, path, blend(current, oldValue, newValue, absolute)) as Record<string, unknown>;
+function patchRecord(record: Record<string, unknown>, path: Path, value: number): Record<string, unknown> {
+  if (readPath(record, path) == null) return record;
+  return writePath(record, path, value) as Record<string, unknown>;
 }
 
 /**
- * The op with each expression's number brought up to `after`. A stored number that still equals
- * the old evaluation is replaced. One that was edited by hand moves by the same delta.
- * Sketch geometry is left for the caller that can re-solve it.
+ * The op with each expression's number set to the expression's value at `after`, as a CAD parameter drives a
+ * dimension: a step is out of date exactly when a stored number differs from its expression (`stepOutOfDate`),
+ * whatever table it was built at, so a rebuild after Undo still finds the steps. An op that is already in date is
+ * returned as the same object. Sketch geometry is left for the caller that can re-solve it.
  */
-export function patchOpNumbers(op: ModelOp, before: Params, after: Params, absolute = false): { op: ModelOp; error?: string } {
+export function patchOpNumbers(op: ModelOp, after: Params): { op: ModelOp; error?: string } {
   let next = op;
   const apply = (target: ModelOp, key: string, text: string, spread: boolean): ModelOp | { error: string } => {
-    if (!expressionChanged(text, before, after)) return target;
-    let oldValue: number;
     let newValue: number;
     try {
       newValue = evaluate(text, after);
-      oldValue = absolute ? newValue : evaluate(text, before);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { error: message };
     }
-    if (!Number.isFinite(oldValue) || !Number.isFinite(newValue)) return { error: `"${text}" is not a finite number.` };
+    if (!Number.isFinite(newValue)) return { error: `"${text}" is not a finite number.` };
     let patched = target as Record<string, unknown>;
     const pull = key === "distance" || key === "modelPull";
     if (pull && target.kind === "extrude" && typeof target.depth === "number") {
-      patched = { ...patched, depth: blend(target.depth, Math.abs(oldValue), Math.abs(newValue), absolute) };
+      patched = { ...patched, depth: Math.abs(newValue) };
     } else if (pull && target.kind === "faceExtrude") {
-      patched = { ...patched, distance: blend(target.distance, oldValue, newValue, absolute) };
+      patched = { ...patched, distance: newValue };
     } else if (pull && target.kind === "moveFaces") {
       patched = {
         ...patched,
-        faces: target.faces.map((face) => ({ ...face, distance: blend(face.distance, oldValue, newValue, absolute) })),
+        faces: target.faces.map((face) => ({ ...face, distance: newValue })),
       };
     } else if (key === "modelBlend" && (target.kind === "fillet" || target.kind === "chamfer")) {
-      patched = { ...patched, size: blend(target.size, oldValue, newValue, absolute) };
+      patched = { ...patched, size: newValue };
     } else {
       const direct = FIELD_PATH[key];
       if (direct && target.kind !== "group" && key !== "distance" && key !== "modelPull") {
-        patched = patchRecord(patched, direct, oldValue, newValue, absolute);
+        patched = patchRecord(patched, direct, newValue);
       }
     }
     if (target.kind === "group" && target.source && typeof target.source === "object") {
       const sourcePath = SOURCE_PATH[key];
       if (sourcePath) {
-        patched = { ...patched, source: patchRecord(target.source as Record<string, unknown>, sourcePath, oldValue, newValue, absolute) };
+        patched = { ...patched, source: patchRecord(target.source as Record<string, unknown>, sourcePath, newValue) };
       }
     }
     if (key === "scale" && target.kind === "loft" && target.drawing?.sweep && typeof target.drawing.sweep.scale === "number") {
-      const scale = blend(target.drawing.sweep.scale, oldValue, newValue, absolute);
-      patched = { ...patched, drawing: { ...target.drawing, sweep: { ...target.drawing.sweep, scale } } };
+      patched = { ...patched, drawing: { ...target.drawing, sweep: { ...target.drawing.sweep, scale: newValue } } };
     }
     if (spread && target.kind === "group") {
       const steps = ((patched.steps as ModelOp[] | undefined) ?? target.steps).map((step) => {
@@ -291,7 +273,8 @@ export function patchOpNumbers(op: ModelOp, before: Params, after: Params, absol
       });
       patched = { ...patched, steps };
     }
-    return patched as ModelOp;
+    // In date already: the same object, so a caller can tell nothing changed.
+    return JSON.stringify(patched) === JSON.stringify(target) ? target : (patched as ModelOp);
   };
   if (next.exprs) {
     for (const [key, text] of Object.entries(next.exprs)) {
@@ -304,7 +287,7 @@ export function patchOpNumbers(op: ModelOp, before: Params, after: Params, absol
     const group = next;
     const steps: ModelOp[] = [];
     for (const step of group.steps) {
-      const child = patchOpNumbers(step, before, after, absolute);
+      const child = patchOpNumbers(step, after);
       if (child.error) return { op, error: child.error };
       steps.push(child.op);
     }
