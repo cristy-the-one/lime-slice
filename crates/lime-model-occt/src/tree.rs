@@ -535,7 +535,7 @@ pub fn set_limits(limits: Limits) {
     lock().limits = limits;
 }
 
-//// --- D4. How long a new group (an Apply or a probe) may build before it stops at the next step. Every tree
+/// --- D4. How long a new group (an Apply or a probe) may build before it stops at the next step. Every tree
 /// shares one store lock, so a group of hundreds of Booleans on a large part would hold up every other part.
 /// A replay (open, goto, edit) has no budget: a saved part must open the same on a slower machine.
 static GROUP_BUDGET_MS: AtomicU64 = AtomicU64::new(60_000);
