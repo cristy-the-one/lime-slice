@@ -402,6 +402,24 @@ Sketches, push/pull, and the idle edge drag share helpers in `src/interact/`. Pu
 
 `src/interact/interact.test.ts` checks the snap order, the drag mapping, and the ghost volumes. `src/interact/edge-drag.test.ts` checks the bisector, which edges move together, the clamp, and the readout sentences.
 
+### Sketch
+
+Sketch (S in Model) draws Line and Rectangle on a plane. S in Prepare is still Scale. The button has no `data-tool`: it is not a dock-handle tool, and it does not join the drag checklist. It is an icon, and icon buttons use 1 px of padding, so the bar still fits at 1440 px with a pick's chip. It stays visible on an empty plate, next to New solid.
+
+Click Sketch, then a flat face, one of the three origin planes at the part origin, or the workplane. The card under the toolbar has the same planes, so the choice does not depend on a ray. Double-click a flat face to start there when Push/Pull is not the gesture under the pointer. In Face mode, double-click still repeats the last push or pull. On an empty plate the card's Sketch on the bed starts on XY at Z = 0.
+
+The camera turns onto the plane in 250 ms and then stays on the normal. Middle-drag pans, the wheel zooms along the normal, and right-drag rolls about the normal. Look around (O) gives the left button back to orbit; O again locks the view for drawing. The solid is dimmed. Edges that lie in the plane, the face outline, and edges that cross the plane are faint reference lines. They snap. They are not sketch entities, and Use is not in this step.
+
+The grid is 1, 2 or 5 times a power of ten, never closer than 12 px. Entities are fat lines, lifted 2 px toward the camera. Points are screen-size dots.
+
+Line (L): click each point. Double-click or Esc ends the chain. Click the start point to close it. The heads-up box shows length and angle. Rectangle (R): two corners. Ctrl on the first corner draws from the centre. The box shows width and height. Tab moves between the sizes, Enter sets them, Esc cancels the size. Both tools also take the mouse.
+
+Click selects. A box dragged left to right keeps what it encloses; right to left also keeps what it crosses. Drag a point or a line to move it. A corner shared by two lines moves both. Delete removes the selection.
+
+Ctrl+Z and Ctrl+Y (and Ctrl+Shift+Z) undo inside the open sketch, and the History buttons do too. They do not step the solid's history until the sketch is closed. Esc ends the current line or rectangle; Esc again finishes. Finish keeps the sketch as a card until it is discarded. A sketch with nothing in it is dropped. Nothing is written to the file: a sketch with no feature is not saved, and reopening the card starts a fresh undo stack. Circle, arc, polygon, slot, spline, trim, offset, constraints, and extrude from the sketch are later steps.
+
+`src/sketch/shell.test.ts` covers the plane camera, the grid, reference projection, both tools with the mouse and with typed sizes, shared-point drag, box select, and finish, discard, and undo.
+
 ## STEP save
 
 Model mode writes the open solid as AP214 IS, a manifold solid B-rep, through `STEPControl_Writer`, only for the STEP button (the shown node) and the MCP server's `model_export_step`. The STEP button downloads that file and keeps nothing.

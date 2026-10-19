@@ -623,8 +623,8 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   white-space: nowrap;
 }
 .model-tool .ico { flex: 0 0 auto; }
-/* A pixel tighter than a labelled tool. Push/Pull is one more icon, and the pick chip still fits at 1440 px. */
-.model-tool.is-icon { padding-inline: 3px; }
+/* One pixel, the same as a labelled tool. Sketch is one more icon, and the pick chip still fits at 1440 px. */
+.model-tool.is-icon { padding-inline: 1px; }
 /* Icon only, its name in the tip, so the bar fits beside Bed at 1440 px: STEP, Undo, Redo and Bed always, New solid while a solid's tools show, and Push/Pull. */
 .model-tool.is-icon .model-tool-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .model-tool:disabled { opacity: 0.4; }
@@ -825,6 +825,37 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-empty-title { margin: 0 0 var(--space-1); color: var(--text); font-size: var(--fs-4); font-weight: 600; }
 .model-empty-text { margin: 0 0 var(--space-3); color: var(--text-dim); font-size: var(--fs-3); line-height: 1.4; }
 .model-empty-actions { display: flex; justify-content: center; gap: var(--space-2); flex-wrap: wrap; }
+/* --- S2 sketch --- */
+.sketch-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: auto;
+  max-width: min(520px, calc(100% - 20px));
+}
+.sketch-cards[hidden] { display: none; }
+.sketch-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: var(--fs-2);
+}
+.sketch-card p { margin: 0 6px 0 0; }
+.sketch-card .btn[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+.sketch-box {
+  position: fixed;
+  z-index: 4;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  pointer-events: none;
+}
+.sketch-box[data-cross="1"] { border-style: dashed; background: transparent; }
 /* Beside the readout, in its column, so the toolbar, the dock, and the view cube never reach it and History keeps its height. */
 .model-foot-row {
   display: flex;

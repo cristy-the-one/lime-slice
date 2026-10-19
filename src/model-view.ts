@@ -21,6 +21,7 @@ import { outwardFromMesh } from "./model-blend";
 import { framePose, localPoint, sameWorkplane, type Workplane } from "./workplane";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
+import { lerpPose, mmPerPixel, type CameraPose } from "./sketch/frame";
 
 export interface ModelPick {
   kind: "face" | "edge";
@@ -166,6 +167,66 @@ export interface ModelView {
   setCheckBox(box: Bounds | null): void;
   // --- A2 shell: picked faces that the shell will remove, drawn in the danger colour with a dashed outline. ---
   setRemovedFaces(on: boolean): void;
+  // --- S2 sketch ---
+  /** While on, the left button draws on the sketch instead of orbiting or pushing a face. */
+  setSketchCapture(on: boolean): void;
+  onSketchPointer(cb: (pointer: SketchViewPointer) => void): void;
+  /** Dim the solid while a sketch is being chosen or edited. */
+  setSketchDim(on: boolean): void;
+  /** Grid, reference, entities, and the origin planes. Null clears them. */
+  setSketchDraw(mesh: SketchDraw | null): void;
+  /**
+   * Turn the camera onto the sketch plane. Null puts back the camera from before the sketch.
+   * `lock` keeps the camera on the plane normal: middle-drag pans, the wheel zooms, right-drag rolls.
+   */
+  setSketchCamera(command: SketchCameraCommand | null): void;
+  /** Lock or unlock without moving. A turn already in flight locks when it lands. */
+  setSketchLock(on: boolean): void;
+  /** The camera, for the grid spacing and for a point projected back onto the plane. */
+  sketchView(): SketchViewState;
+  /** Roll the locked view about the plane normal. `dx` is pixels. */
+  rollSketch(dx: number): void;
+  /** The solid face under the pointer, and how far along the ray it is. */
+  pickSolid(x: number, y: number): { face: number; t: number } | null;
+  /** The camera moved while a sketch is drawn. */
+  onSketchView(cb: () => void): void;
+}
+
+/** --- S2 sketch --- What the view draws. Positions are in model space. */
+export interface SketchDraw {
+  strokes: { xyz: number[]; role: string }[];
+  dots: { at: Vec3; role: string }[];
+  quads: { corners: [Vec3, Vec3, Vec3, Vec3]; hot: boolean }[];
+}
+
+export interface SketchViewPointer {
+  phase: "down" | "move" | "up";
+  x: number;
+  y: number;
+  button: number;
+  shift: boolean;
+  ctrl: boolean;
+  alt: boolean;
+  meta: boolean;
+  double: boolean;
+}
+
+export interface SketchCameraCommand {
+  position: Vec3;
+  target: Vec3;
+  up: Vec3;
+  animateMs: number;
+  lock: boolean;
+}
+
+export interface SketchViewState {
+  fov: number;
+  width: number;
+  height: number;
+  position: Vec3;
+  target: Vec3;
+  up: Vec3;
+  mmPerPx: number;
 }
 
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
@@ -227,6 +288,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** --- A7 model check --- outlines in model space, so a solid's pose and a mesh's pose share one draw. */
   const marks = new THREE.Group();
   scene.add(alignLine, marks);
+  // --- S2 sketch: grid, reference, and entities, lifted toward the camera so they clear the solid. ---
+  const sketchGroup = new THREE.Group();
+  sketchGroup.visible = false;
+  scene.add(sketchGroup);
 
   let solid: ModelSolid | null = null;
   /** The open solid's box in model space. */
@@ -288,6 +353,24 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let faceCb: (pointer: FacePointer) => void = () => {};
   let faceDown: { x: number; y: number; pointerId: number; moved: boolean; hit: FaceHit } | null = null;
   const FACE_SLOP = 4;
+  // --- S2 sketch ---
+  let sketchCapture = false;
+  let sketchLock = false;
+  let sketchCb: (pointer: SketchViewPointer) => void = () => {};
+  let sketchViewCb: () => void = () => {};
+  let sketchPointerId: number | null = null;
+  let sketchRoll: { pointerId: number; x: number } | null = null;
+  let sketchLastUp = { t: 0, x: 0, y: 0 };
+  let sketchAnim: { from: CameraPose; to: CameraPose; start: number; ms: number; lock: boolean } | null = null;
+  let sketchSaved: {
+    pose: CameraPose;
+    middle: (typeof controls.mouseButtons)["MIDDLE"];
+    right: (typeof controls.mouseButtons)["RIGHT"];
+  } | null = null;
+  const sketchNormal = new THREE.Vector3(0, 0, 1);
+  let sketchViewCamera = "";
+  let sketchViewing = false;
+  let solidDimmed = false;
   const tip = document.createElement("div");
   tip.className = "model-drag-tip";
   tip.hidden = true;
@@ -1034,6 +1117,16 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const t = controls.target;
     const text = `${[p.x, p.y, p.z].map((value) => value.toFixed(1)).join(",")};${[t.x, t.y, t.z].map((value) => value.toFixed(1)).join(",")}`;
     if (canvas.dataset.camera !== text) canvas.dataset.camera = text;
+    // --- S2: the grid follows the camera, and only when the camera actually moved. ---
+    if (sketchGroup.visible && text !== sketchViewCamera && !sketchViewing) {
+      sketchViewCamera = text;
+      sketchViewing = true;
+      try {
+        sketchViewCb();
+      } finally {
+        sketchViewing = false;
+      }
+    } else sketchViewCamera = text;
   }
 
   /**
@@ -1059,9 +1152,24 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       if (viewHelper.animating) {
         controls.enabled = false;
         viewHelper.update(dt);
-        if (!viewHelper.animating) controls.enabled = true;
+        if (!viewHelper.animating && sketchPointerId == null) controls.enabled = true;
       }
-      const moved = controls.update();
+      let moved = false;
+      // --- S2: a turn onto the plane is ours. OrbitControls would fight a new up vector. ---
+      if (sketchAnim) {
+        const t = (now - sketchAnim.start) / Math.max(1, sketchAnim.ms);
+        applySketchPose(lerpPose(sketchAnim.from, sketchAnim.to, t));
+        if (t >= 1) {
+          const lock = sketchAnim.lock;
+          sketchAnim = null;
+          applySketchLock(lock);
+        }
+        moved = true;
+      } else {
+        moved = controls.update();
+        if (sketchLock) holdSketchAxis();
+      }
+      placeSketchOffset();
       publishCamera();
       sizeHandles();
       viewHelper.center.copy(controls.target);
@@ -1222,12 +1330,30 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   canvas.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0 || drag || edgeDrag || edgePress) return;
+    if (ev.button !== 0 || drag || edgeDrag || edgePress) {
+      // --- S2: right-drag rolls about the plane normal while the sketch view is locked. ---
+      if (sketchLock && ev.button === 2 && !drag && !edgeDrag) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        sketchRoll = { pointerId: ev.pointerId, x: ev.clientX };
+      }
+      return;
+    }
     down = null;
     if (viewHelperHit(viewHelper, canvas, ev)) {
       ev.preventDefault();
       ev.stopPropagation();
       kick();
+      return;
+    }
+    // --- S2: drawing owns the left button before a face push or an orbit. ---
+    if (sketchCapture) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      controls.enabled = false;
+      canvas.setPointerCapture(ev.pointerId);
+      sketchPointerId = ev.pointerId;
+      sketchCb(sketchPointerEvent("down", ev));
       return;
     }
     const part = handleAt(ev.clientX, ev.clientY);
@@ -1254,6 +1380,20 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     down = { x: ev.clientX, y: ev.clientY };
   }, { capture: true });
   canvas.addEventListener("pointermove", (ev) => {
+    // --- S2 ---
+    if (sketchRoll && ev.pointerId === sketchRoll.pointerId) {
+      rollSketch(ev.clientX - sketchRoll.x);
+      sketchRoll = { pointerId: ev.pointerId, x: ev.clientX };
+      return;
+    }
+    if (sketchPointerId != null && ev.pointerId === sketchPointerId) {
+      sketchCb(sketchPointerEvent("move", ev));
+      return;
+    }
+    if (sketchCapture && ev.buttons === 0) {
+      sketchCb(sketchPointerEvent("move", ev));
+      return;
+    }
     if (edgePress && ev.pointerId === edgePress.pointerId) {
       const moved = (ev.clientX - edgePress.x) ** 2 + (ev.clientY - edgePress.y) ** 2;
       if (moved <= 16) return;
@@ -1311,6 +1451,18 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setHover(pickAt(ev));
   });
   const finishDrag = (ev: PointerEvent) => {
+    // --- S2 ---
+    if (sketchRoll && ev.pointerId === sketchRoll.pointerId) {
+      sketchRoll = null;
+      return;
+    }
+    if (sketchPointerId != null && ev.pointerId === sketchPointerId) {
+      sketchCb(sketchPointerEvent("up", ev));
+      sketchPointerId = null;
+      if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+      if (!sketchAnim && !viewHelper.animating) controls.enabled = true;
+      return;
+    }
     // --- P1 ---
     if (faceDown && ev.pointerId === faceDown.pointerId) {
       finishFace(ev);
@@ -1379,6 +1531,23 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const id = hit?.object.userData.id;
     return typeof id === "string" ? id : null;
   }
+
+  // --- S2: zoom along the normal while the sketch view is locked. OrbitControls would dolly in screen space. ---
+  canvas.addEventListener("wheel", (ev) => {
+    if (!sketchLock) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    const offset = camera.position.clone().sub(controls.target);
+    const dist = Math.min(4000, Math.max(8, offset.length() * Math.exp(ev.deltaY * 0.001)));
+    if (offset.lengthSq() < 1e-8) return;
+    offset.setLength(dist);
+    camera.position.copy(controls.target).add(offset);
+    holdSketchAxis();
+    kick();
+  }, { capture: true, passive: false });
+  canvas.addEventListener("contextmenu", (ev) => {
+    if (sketchLock || sketchCapture) ev.preventDefault();
+  });
 
   return {
     setSolid(next, at) {
@@ -1494,6 +1663,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       drawDatum();
       rebuildGhost();
       paintMarks();
+      sketchViewCb();
       kick();
     },
     resize,
@@ -1628,7 +1798,288 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       paintLines();
       kick();
     },
+    // --- S2 sketch ---
+    setSketchCapture(on) {
+      sketchCapture = on;
+      if (!on) sketchPointerId = null;
+      paintHandles();
+    },
+    onSketchPointer(cb) {
+      sketchCb = cb;
+    },
+    setSketchDim(on) {
+      if (solidDimmed === on) return;
+      solidDimmed = on;
+      solidMaterial.transparent = on || solidMaterial.opacity < 1;
+      solidMaterial.opacity = on ? 0.35 : 1;
+      solidMaterial.needsUpdate = true;
+      edgeMaterial.transparent = on;
+      edgeMaterial.opacity = on ? 0.35 : 1;
+      edgeMaterial.needsUpdate = true;
+      kick();
+    },
+    setSketchDraw(mesh) {
+      clearSketchDraw();
+      if (!mesh) {
+        sketchGroup.visible = false;
+        kick();
+        return;
+      }
+      sketchGroup.visible = true;
+      const buckets = new Map<string, number[]>();
+      for (const stroke of mesh.strokes) {
+        const pairs = polylinePairs(stroke.xyz);
+        if (pairs.length < 6) continue;
+        const bag = buckets.get(stroke.role) ?? [];
+        bag.push(...pairs);
+        buckets.set(stroke.role, bag);
+      }
+      for (const [role, positions] of buckets) {
+        const style = sketchStrokeStyle(role);
+        const line = fatLine(positions, style.width, style.opacity, style.color);
+        if (line) sketchGroup.add(line);
+      }
+      const dots = new Map<string, Vec3[]>();
+      for (const dot of mesh.dots) {
+        const bag = dots.get(dot.role) ?? [];
+        bag.push(dot.at);
+        dots.set(dot.role, bag);
+      }
+      for (const [role, points] of dots) addSketchDots(points, role);
+      for (const quad of mesh.quads) addSketchQuad(quad.corners, quad.hot);
+      placeSketchOffset();
+      kick();
+    },
+    setSketchCamera(command) {
+      if (!command) {
+        sketchAnim = null;
+        if (sketchSaved) {
+          applySketchPose(sketchSaved.pose);
+          controls.mouseButtons.MIDDLE = sketchSaved.middle;
+          controls.mouseButtons.RIGHT = sketchSaved.right;
+          controls.enableRotate = true;
+          controls.enableZoom = true;
+          controls.enablePan = true;
+          sketchSaved = null;
+        }
+        applySketchLock(false);
+        canvas.dataset.sketchCamera = "free";
+        kick();
+        return;
+      }
+      if (!sketchSaved) {
+        sketchSaved = {
+          pose: currentSketchPose(),
+          middle: controls.mouseButtons.MIDDLE,
+          right: controls.mouseButtons.RIGHT,
+        };
+      }
+      const to: CameraPose = { position: command.position, target: command.target, up: command.up };
+      if (!(command.animateMs > 0)) {
+        sketchAnim = null;
+        applySketchPose(to);
+        applySketchLock(command.lock);
+        kick();
+        return;
+      }
+      sketchAnim = { from: currentSketchPose(), to, start: performance.now(), ms: command.animateMs, lock: command.lock };
+      controls.enableRotate = false;
+      controls.enableZoom = false;
+      canvas.dataset.sketchCamera = "anim";
+      kick();
+    },
+    setSketchLock(on) {
+      if (sketchAnim) sketchAnim.lock = on;
+      else applySketchLock(on);
+      kick();
+    },
+    sketchView() {
+      const rect = canvas.getBoundingClientRect();
+      const dist = Math.max(1, camera.position.distanceTo(controls.target));
+      return {
+        fov: camera.fov,
+        width: rect.width,
+        height: rect.height,
+        position: [camera.position.x, camera.position.y, camera.position.z],
+        target: [controls.target.x, controls.target.y, controls.target.z],
+        up: [camera.up.x, camera.up.y, camera.up.z],
+        mmPerPx: mmPerPixel(dist, camera.fov, Math.max(1, rect.height)),
+      };
+    },
+    rollSketch,
+    pickSolid(x, y) {
+      if (!mesh || !solid) return null;
+      rayAt(x, y);
+      const hit = raycaster.intersectObject(mesh, false)[0];
+      if (!hit || hit.faceIndex == null) return null;
+      const face = solid.triangles[hit.faceIndex];
+      if (face == null) return null;
+      return { face, t: hit.distance };
+    },
+    onSketchView(cb) {
+      sketchViewCb = cb;
+    },
   };
+
+  // --- S2 sketch camera and drawing ---
+  function currentSketchPose(): CameraPose {
+    return {
+      position: [camera.position.x, camera.position.y, camera.position.z],
+      target: [controls.target.x, controls.target.y, controls.target.z],
+      up: [camera.up.x, camera.up.y, camera.up.z],
+    };
+  }
+
+  function applySketchPose(pose: CameraPose) {
+    camera.position.set(pose.position[0], pose.position[1], pose.position[2]);
+    controls.target.set(pose.target[0], pose.target[1], pose.target[2]);
+    camera.up.set(pose.up[0], pose.up[1], pose.up[2]);
+    camera.lookAt(controls.target);
+  }
+
+  function applySketchLock(on: boolean) {
+    sketchLock = on;
+    if (on) {
+      const offset = camera.position.clone().sub(controls.target);
+      if (offset.lengthSq() > 1e-8) sketchNormal.copy(offset.normalize());
+      controls.enableRotate = false;
+      controls.enableZoom = false;
+      controls.enablePan = true;
+      controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
+      controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
+      canvas.dataset.sketchCamera = "locked";
+      return;
+    }
+    controls.enableRotate = true;
+    controls.enableZoom = true;
+    controls.enablePan = true;
+    if (sketchSaved) {
+      controls.mouseButtons.MIDDLE = sketchSaved.middle;
+      controls.mouseButtons.RIGHT = sketchSaved.right;
+    }
+    canvas.dataset.sketchCamera = "free";
+  }
+
+  /** Keep the eye on the plane normal after a pan. The target may move; the eye follows along the normal. */
+  function holdSketchAxis() {
+    if (!sketchLock) return;
+    const offset = camera.position.clone().sub(controls.target);
+    const dist = offset.length();
+    if (!(dist > 1)) return;
+    const along = offset.dot(sketchNormal);
+    const lateral = Math.sqrt(Math.max(0, dist * dist - along * along));
+    if (lateral < 0.05) return;
+    const sign = along >= 0 ? 1 : -1;
+    camera.position.copy(controls.target).addScaledVector(sketchNormal, sign * dist);
+    const up = camera.up.clone().addScaledVector(sketchNormal, -camera.up.dot(sketchNormal));
+    if (up.lengthSq() > 1e-8) camera.up.copy(up.normalize());
+  }
+
+  function rollSketch(dx: number) {
+    if (!sketchLock || !Number.isFinite(dx) || dx === 0) return;
+    camera.up.applyAxisAngle(sketchNormal, -dx * 0.008);
+    holdSketchAxis();
+    kick();
+  }
+
+  /** Two pixels toward the camera, so a line on the solid does not fight the surface. */
+  function placeSketchOffset() {
+    if (!sketchGroup.visible) {
+      sketchGroup.position.set(0, 0, 0);
+      return;
+    }
+    const dist = Math.max(1, camera.position.distanceTo(controls.target));
+    const mm = mmPerPixel(dist, camera.fov, Math.max(1, canvas.clientHeight));
+    const toward = camera.position.clone().sub(controls.target);
+    if (toward.lengthSq() < 1e-8) return;
+    toward.normalize().multiplyScalar(2 * mm);
+    sketchGroup.position.copy(toward);
+  }
+
+  function sketchPointerEvent(phase: SketchViewPointer["phase"], ev: PointerEvent): SketchViewPointer {
+    let double = false;
+    if (phase === "up") {
+      const now = performance.now();
+      double = now - sketchLastUp.t < 400 && (ev.clientX - sketchLastUp.x) ** 2 + (ev.clientY - sketchLastUp.y) ** 2 < 36;
+      sketchLastUp = { t: now, x: ev.clientX, y: ev.clientY };
+    }
+    return {
+      phase,
+      x: ev.clientX,
+      y: ev.clientY,
+      button: ev.button,
+      shift: ev.shiftKey,
+      ctrl: ev.ctrlKey || ev.metaKey,
+      alt: ev.altKey,
+      meta: ev.metaKey,
+      double,
+    };
+  }
+
+  function clearSketchDraw() {
+    for (const child of [...sketchGroup.children]) {
+      sketchGroup.remove(child);
+      const material = (child as THREE.Mesh).material;
+      const list = Array.isArray(material) ? material : material ? [material] : [];
+      for (const item of list) {
+        const index = fatLines.indexOf(item as LineMaterial);
+        if (index >= 0) fatLines.splice(index, 1);
+      }
+      disposeObject(child);
+    }
+  }
+
+  function polylinePairs(xyz: number[]): number[] {
+    const out: number[] = [];
+    for (let i = 0; i + 5 < xyz.length; i += 3) out.push(xyz[i]!, xyz[i + 1]!, xyz[i + 2]!, xyz[i + 3]!, xyz[i + 4]!, xyz[i + 5]!);
+    return out;
+  }
+
+  function sketchStrokeStyle(role: string): { width: number; opacity: number; color: number } {
+    if (role === "grid") return { width: 1, opacity: 0.35, color: 0x8a93a3 };
+    if (role === "ref") return { width: 1, opacity: 0.55, color: hexToThree(colors.teal) };
+    if (role === "selected") return { width: 2.5, opacity: 1, color: 0xffd166 };
+    if (role === "construction") return { width: 1, opacity: 0.7, color: 0x8a93a3 };
+    if (role === "rubber") return { width: 1.5, opacity: 0.95, color: accent };
+    if (role === "hint") return { width: 1, opacity: 0.7, color: hexToThree(colors.teal) };
+    return { width: 2, opacity: 1, color: accent };
+  }
+
+  function addSketchDots(points: Vec3[], role: string) {
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(points.length * 3);
+    points.forEach((at, index) => positions.set(at, index * 3));
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const selected = role === "selected" || role === "hover";
+    const material = new THREE.PointsMaterial({
+      color: role === "selected" ? 0xffd166 : role === "hover" ? 0xffffff : accent,
+      size: selected ? 8 : 6,
+      sizeAttenuation: false,
+      depthTest: false,
+      transparent: true,
+    });
+    const cloud = new THREE.Points(geometry, material);
+    cloud.renderOrder = 6;
+    cloud.raycast = () => undefined;
+    sketchGroup.add(cloud);
+  }
+
+  function addSketchQuad(corners: [Vec3, Vec3, Vec3, Vec3], hot: boolean) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(corners.flat(), 3));
+    geometry.setIndex([0, 1, 2, 0, 2, 3]);
+    const material = new THREE.MeshBasicMaterial({
+      color: hot ? hexToThree(colors.teal) : 0x9eb0c4,
+      transparent: true,
+      opacity: hot ? 0.28 : 0.1,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const quad = new THREE.Mesh(geometry, material);
+    quad.raycast = () => undefined;
+    quad.renderOrder = 1;
+    sketchGroup.add(quad);
+  }
 
   /**
    * The datum in its own U, V, W: a square in the UV plane, the solid's size, lifted a hair along W off the face it
@@ -1747,7 +2198,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const on = drag?.handle.id === part.handle.id || (edgeDrag != null && part.handle.id === EDGE_KNOB_ID) || (!drag && !edgeDrag && overHandle === part.handle.id);
       part.material.color.setHex(on ? hot : handleColor(part.handle.color));
     }
-    canvas.style.cursor = drag || edgeDrag || faceDown?.moved ? "grabbing" : overHandle || (faceDrag && hover?.kind === "face") ? "grab" : "";
+    canvas.style.cursor = sketchCapture ? "crosshair" : drag || edgeDrag || faceDown?.moved ? "grabbing" : overHandle || (faceDrag && hover?.kind === "face") ? "grab" : "";
     setEmphasis(handleParts.some((part) => part.handle.seat.at === "dock" && part.handle.id === (drag?.handle.id ?? overHandle)));
     kick();
   }
