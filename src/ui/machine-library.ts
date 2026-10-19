@@ -1063,7 +1063,7 @@ const IR3_V2_START = [
 ].join("\n");
 
 const IR3_V2_LIMITS: KlipperLimits = {
-  squareCornerVelocity: 5,
+  squareCornerVelocity: 8,
   minimumCruiseRatio: 0.5,
   extruderCornerVelocity: 1,
   maxVelocity: 400,

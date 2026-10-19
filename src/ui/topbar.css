@@ -51,7 +51,10 @@
 }
 .popover select { width: 100%; }
 
-.title-tabs { flex: 0 1 auto; margin: 0 auto; min-width: 0; }
+/* The stage tabs never shrink under the estimate; the printer chip and the estimate give way first. */
+.title-tabs { flex: 0 0 auto; margin: 0 auto; }
+#printerChip { flex: 0 1 auto; min-width: 96px; }
+#printerChip > .btn.chip { max-width: min(260px, 100%); }
 .title-tabs .btn.mode { padding: 0 var(--space-3); gap: var(--space-2); }
 .title-tabs .btn.mode[data-key]::after,
 .action-row .btn[data-key]::after {
@@ -103,6 +106,7 @@
 
 .status { padding: 0 var(--space-3); font-size: var(--fs-1); }
 .status-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
+.status-hint { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--accent-text); }
 /* The estimate opens the results dock; the icon says so. */
 .estimate[aria-expanded] { display: inline-flex; align-items: center; gap: var(--space-2); }
 .estimate[aria-expanded]::after {
@@ -121,4 +125,8 @@
 .action-row .btn { font-weight: 600; }
 .estimate:empty { width: var(--control-h); padding: 0; justify-content: center; }
 /* Below 1200 the stage tabs need the room; the window title still names the project. */
-@media (max-width: 1200px) and (min-width: 961px) { .project-title { display: none; } }
+@media (max-width: 1200px) and (min-width: 961px) {
+  .project-title { display: none; }
+  /* The number keys stay in the tooltips and the shortcut sheet. */
+  .title-tabs .btn.mode[data-key]::after { display: none; }
+}

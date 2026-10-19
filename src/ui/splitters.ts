@@ -1,5 +1,7 @@
 import { ChevronLeft, ChevronRight, createElement } from "lucide";
 import {
+  dockMode,
+  DRAWER_PX,
   dragMax,
   fitDocks,
   LEFT_MAX,
@@ -8,6 +10,7 @@ import {
   RIGHT_MAX,
   RIGHT_MIN,
   type DockFit,
+  type DockMode,
   type DockSide,
 } from "./panel-budget";
 
@@ -20,6 +23,13 @@ const NAME: Record<DockSide, string> = { left: "settings", right: "results" };
 const OPENER: Record<DockSide, string> = { left: "#leftToggle", right: "#timing" };
 const LAST_KEY = "lime-slice-dock-last";
 let fitting = false;
+/** Drawers (961–1200 px) start closed each visit and are not stored, so a narrow window never rewrites the docks. */
+const drawerOpen: Record<DockSide, boolean> = { left: false, right: false };
+let shownMode: DockMode | "compact" | null = null;
+
+function mode(): DockMode | "compact" {
+  return compact() ? "compact" : dockMode(window.innerWidth);
+}
 
 function read(key: string): string | null {
   try {
@@ -72,7 +82,7 @@ export function toggleDock(side: DockSide) {
   // The phone layout has its own sheets.
   if (!ws || compact()) return;
   // A narrow window stacks a dock over the stage on demand; the top bar's Settings and Results buttons do the same.
-  if (window.innerWidth <= 960) {
+  if (mode() === "narrow") {
     ws.classList.toggle(side === "left" ? "show-left" : "show-right");
     paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
     return;
@@ -83,10 +93,33 @@ export function toggleDock(side: DockSide) {
 export function setDock(side: DockSide, open: boolean) {
   const dock = document.querySelector(DOCK_ID[side]);
   const hadFocus = !!dock?.contains(document.activeElement);
-  if (open) write(LAST_KEY, side);
-  write(CLOSED_KEY[side], open ? "0" : "1");
+  const other: DockSide = side === "left" ? "right" : "left";
+  const otherHadFocus = !!document.querySelector(DOCK_ID[other])?.contains(document.activeElement);
+  const drawers = mode() === "drawer";
+  if (drawers) {
+    // One drawer at a time, over the view.
+    drawerOpen[side] = open;
+    if (open) drawerOpen[other] = false;
+  } else {
+    if (open) write(LAST_KEY, side);
+    write(CLOSED_KEY[side], open ? "0" : "1");
+  }
   applyFit();
   if (hadFocus && !dockShown(side)) document.querySelector<HTMLElement>(OPENER[side])?.focus();
+  // A drawer that takes the other's place takes its focus too, rather than leaving it on the rail.
+  if (drawers && open && otherHadFocus) document.querySelector<HTMLElement>(`${DOCK_ID[side]} .dock-close`)?.focus();
+}
+
+/** Escape closes an open drawer from inside it, unless a field or menu in it used the key. */
+function bindDrawerEscape(side: DockSide) {
+  document.querySelector(DOCK_ID[side])?.addEventListener("keydown", (ev) => {
+    const e = ev as KeyboardEvent;
+    if (e.key !== "Escape" || e.defaultPrevented || mode() !== "drawer" || !drawerOpen[side]) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("textarea, select, [contenteditable=true], input:not([type=checkbox]):not([type=radio]):not([type=range])")) return;
+    e.preventDefault();
+    setDock(side, false);
+  });
 }
 
 function lastOpened(): DockSide {
@@ -102,6 +135,7 @@ export function mountSplitters() {
     close?.append(createElement(side === "left" ? ChevronLeft : ChevronRight, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
     close?.addEventListener("click", () => setDock(side, false));
     bindDrag(ws, handles[side], side);
+    bindDrawerEscape(side);
   }
   applyFit();
   window.addEventListener("resize", () => {
@@ -153,11 +187,17 @@ function bindDrag(ws: HTMLElement, handle: HTMLElement, side: DockSide) {
   });
 }
 
-/** Widths and folds for the current window. Below the desktop width the docks keep the stylesheet's narrow layout. */
+/**
+ * Widths and folds for the current window: docks beside the stage, drawers over it from 961 to 1200 px, and below
+ * that the stylesheet's stacked layout.
+ */
 function currentFit(): DockFit {
+  if (mode() === "drawer") {
+    return { left: drawerOpen.left ? DRAWER_PX : 0, right: drawerOpen.right ? DRAWER_PX : 0 };
+  }
   const leftOpen = wantsOpen("left");
   const rightOpen = wantsOpen("right");
-  const fit = compact()
+  const fit = mode() === "compact"
     ? null
     : fitDocks({
       width: window.innerWidth,
@@ -185,13 +225,19 @@ function applyFit() {
     if (closed && document.querySelector(DOCK_ID[side])?.contains(document.activeElement)) document.querySelector<HTMLElement>(OPENER[side])?.focus();
   }
   paintToggles(!leftClosed, !rightClosed);
+  const now = mode();
+  const drawers = now === "drawer";
+  const modeChanged = now !== shownMode;
+  shownMode = now;
   if (
-    ws.style.getPropertyValue("--panel-left") === next.left
+    !modeChanged
+    && ws.style.getPropertyValue("--panel-left") === next.left
     && ws.style.getPropertyValue("--panel-right") === next.right
     && ws.classList.contains("is-left-collapsed") === leftClosed
     && ws.classList.contains("is-right-collapsed") === rightClosed
   ) return;
   fitting = true;
+  ws.classList.toggle("is-drawers", drawers);
   ws.classList.toggle("is-left-collapsed", leftClosed);
   ws.classList.toggle("is-right-collapsed", rightClosed);
   for (const side of ["left", "right"] as const) {
@@ -199,8 +245,19 @@ function applyFit() {
     if (next[side]) ws.style.setProperty(prop, next[side]);
     else ws.style.removeProperty(prop);
   }
-  window.dispatchEvent(new Event("resize"));
+  // A drawer opens over the view, so the canvas keeps its size and nothing needs to fit again.
+  if (!drawers || modeChanged) window.dispatchEvent(new Event("resize"));
   fitting = false;
+  paintDrawerHint(drawers && leftClosed);
+}
+
+/**
+ * While settings sit in a closed drawer (961–1200 px) the status line says where they are. The hint is its own span,
+ * outside the live status text, so opening and closing a drawer is not read out again.
+ */
+function paintDrawerHint(show: boolean) {
+  const hint = document.querySelector<HTMLElement>("#statusHint");
+  if (hint && hint.hidden === show) hint.hidden = !show;
 }
 
 function paintToggles(leftShown: boolean, rightShown: boolean) {
