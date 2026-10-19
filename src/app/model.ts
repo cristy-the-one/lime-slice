@@ -80,6 +80,9 @@ import {
   fieldNumber,
   fieldPrimitive,
   holeBoxes,
+  openSketchHolePanel,
+  sketchHoleCount,
+  sketchHolesArmed,
   joinOpen,
   joinPick,
   mountModelChrome,
@@ -131,6 +134,8 @@ import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { mountEdgeDrag } from "./edge-drag";
 import { closeSketchSession, mountSketch, openSketchFeature, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
+import { holeMarks, holesInModel, isSketchHoleGroup, pointsFromSource, sketchHoleSource, type HoleSizes, type HoleTarget } from "../sketch/holes.ts";
+import { sketchJson, type SketchData } from "../sketch/model.ts";
 import { opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
 import { revolvePresetOf, sketchForRevolve } from "../sketch/revolve";
 import { freshTreeKey, modelTrees } from "./model-trees";
@@ -290,6 +295,10 @@ let extrudeGen = 0;
 let edgeDrag: { sync(): void; picksChanged(): void; holding(): boolean } | null = null;
 /** --- S2 sketch --- redraws the grid when the solid on screen changes. */
 let sketchUi: { sync(): void } | null = null;
+/** --- F4. The points H snapped, and the sketch as it was then. Held while the Hole panel is that layout. --- */
+let sketchHoleDraft: { sketch: SketchData; points: HoleTarget[] } | null = null;
+/** Set while the panel is opening, so closing the previous tool does not drop the draft. */
+let holdSketchHoles = false;
 /** P1's face-drag sync, so a sketch can arm it again on the way out. */
 let syncPullDrag: (() => void) | null = null;
 
@@ -366,6 +375,8 @@ export function bindModelView() {
       return splitLegal();
     },
     paramsChanged(typed) {
+      // --- F4. The draft lives only while the Hole panel is the points layout. ---
+      if (sketchHoleDraft && openModelTool() !== "hole" && !holdSketchHoles) sketchHoleDraft = null;
       // Place closed while a typed move was settling: that move is its step now, before Undo means the solid again.
       if (placeBefore && openModelTool() !== "place") endPlace();
       if (wpBefore && openModelTool() !== "workplane") endWorkplane();
@@ -413,6 +424,22 @@ export function bindModelView() {
       // In the solid's own frame, from its own box, read once per solid, as the kernel measures it.
       const back = inversePose(openPose());
       return throughLength(boxOf(solid.positions), applyPose(back, origin), turnDir(back, dir));
+    },
+    // --- F4. The cylinders for the points H snapped. ---
+    sketchHoleView() {
+      const draft = sketchHoleDraft;
+      if (!draft) return null;
+      const sizes = holeSizesNow();
+      const pose = openPose();
+      const built = holesInModel({ sketch: draft.sketch, points: draft.points, pose, sizes });
+      if (!("op" in built)) return null;
+      const solid = viewed();
+      const marks = holeMarks(toSolidOp(built.op, pose), pose, (origin, axis) => {
+        if (!solid) return sizes.depth;
+        const back = inversePose(pose);
+        return throughLength(boxOf(solid.positions), applyPose(back, origin), turnDir(back, axis)) ?? sizes.depth;
+      });
+      return { marks };
     },
     placeFields() {
       return open ? placeFields(objectPose(), pivotOf(open.solid)) : null;
@@ -649,6 +676,24 @@ export function bindModelView() {
       clearExtrudePreview() {
         clearExtrudePreview();
       },
+      // --- F4. H in a face sketch opens the Hole panel on these points. ---
+      beginSketchHoles(sketch, targets) {
+        holdSketchHoles = true;
+        sketchHoleDraft = {
+          sketch: sketchJson(sketch),
+          points: targets.map((point) => ({ id: point.id, at: [point.at[0], point.at[1]] })),
+        };
+        openSketchHolePanel(targets.length);
+        holdSketchHoles = false;
+        if (openModelTool() !== "hole") sketchHoleDraft = null;
+      },
+      endSketchHoles() {
+        holdSketchHoles = false;
+        if (sketchHolesArmed()) closeModelTool();
+        else sketchHoleDraft = null;
+      },
+      sketchHolesArmed,
+      sketchHoleCount,
       cancelFeatureEdit() {
         cancelSketchFeature();
       },
@@ -1211,6 +1256,18 @@ function toolOp(tool: string | null | undefined): ModelOp | null {
   return op && toSolidOp(op, openPose());
 }
 
+/** --- F4. Radius, depth, Through all, and the counterbore, shared by every point. --- */
+function holeSizesNow(): HoleSizes {
+  const { through, counterbore } = holeBoxes();
+  return {
+    radius: num("#modelHoleR"),
+    depth: num("#modelHoleD"),
+    through,
+    counterboreRadius: counterbore ? num("#modelBoreR") : null,
+    counterboreDepth: counterbore ? num("#modelBoreD") : null,
+  };
+}
+
 /** The open tool's edit as its fields say it, in model space. */
 function fieldOp(tool: string | null | undefined): ModelOp | null {
   // --- A3 composite features: the group is expanded in model space, then toolOp stores it in the solid's frame. ---
@@ -1233,6 +1290,11 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       return edges.length === 0 ? null : { kind: tool, edges, size: num("#modelBlend") };
     }
     case "hole": {
+      // --- F4. One group, one hole per point snapped when the panel opened. ---
+      if (sketchHoleDraft) {
+        const built = holesInModel({ sketch: sketchHoleDraft.sketch, points: sketchHoleDraft.points, pose: openPose(), sizes: holeSizesNow() });
+        return "op" in built ? built.op : null;
+      }
       const { through, counterbore } = holeBoxes();
       return {
         kind: "hole",
@@ -2718,9 +2780,19 @@ function openEditPanel(run: Editing, head: string) {
   const solid = viewed()!;
   const box = openBox();
   const center: Vec3 = box ? [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2] : [0, 0, 0];
+  // --- F4. The draft is in place before the panel opens, so the snapshot is the group. ---
+  const holeSource = isSketchHoleGroup(run.op) ? sketchHoleSource(run.op) : null;
+  const holePoints = holeSource ? pointsFromSource(holeSource) : [];
+  if (holeSource && holePoints.length > 0) {
+    holdSketchHoles = true;
+    sketchHoleDraft = { sketch: holeSource.sketch, points: holePoints };
+  }
   const panel = editPanel(run.op, openPose(), center);
   run.panel = panel;
   openEditTool(panel, head);
+  if (holePoints.length > 0) openSketchHolePanel(holePoints.length);
+  holdSketchHoles = false;
+  if (holePoints.length > 0 && openModelTool() !== "hole") sketchHoleDraft = null;
   let said = `${about(solid)} Change the numbers, then Update.`;
   // --- A5. A step's edges open on that step. The line names the row once the panel has filled it. ---
   if (panel.step) {
