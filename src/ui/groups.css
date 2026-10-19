@@ -357,6 +357,12 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
  * feature rows; narrow, tiles stacked and each feature row on two lines. A number is never cut.
  */
 #left { container: left / inline-size; }
+/* A settings dock wide enough for two columns (3000 px windows) flows the group cards into them. */
+@container left (min-width: 560px) {
+  #leftBody { column-count: 2; column-gap: var(--space-2); }
+  #leftBody > .panel-head { column-span: all; }
+  #leftBody > .group { break-inside: avoid; }
+}
 #right { container: right / inline-size; }
 
 .big { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }

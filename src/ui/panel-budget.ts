@@ -8,11 +8,29 @@ export type DockSide = "left" | "right";
 
 export const RAIL_PX = 48;
 export const LEFT_MIN = 240;
-export const LEFT_MAX = 480;
+export const LEFT_MAX = 600;
 export const RIGHT_MIN = 240;
 export const RIGHT_MAX = 560;
-/** At and below this width the docks leave the row beside the stage. */
+/** At and below this width the docks leave the row beside the stage and open as drawers over it. */
 export const DESKTOP_MIN_PX = 1200;
+/** At and below this width the docks stack over the stage on demand, as before the drawers. */
+export const NARROW_MAX_PX = 960;
+/** From this width both docks open by themselves. */
+export const WIDE_PX = 2400;
+/** From this width settings take two columns. */
+export const ULTRA_PX = 3000;
+/** A drawer's width, leaving the stage a strip to click back into. */
+export function drawerWidth(width: number): number {
+  return Math.min(320, width - 120);
+}
+
+export type DockMode = "dock" | "drawer" | "narrow";
+
+/** How the docks sit for a window width outside the phone layout. */
+export function dockMode(width: number): DockMode {
+  if (width <= NARROW_MAX_PX) return "narrow";
+  return width <= DESKTOP_MIN_PX ? "drawer" : "dock";
+}
 
 export interface DockWish {
   width: number;
@@ -31,14 +49,16 @@ export interface DockFit {
   right: number;
 }
 
-/** Settings and results widths for a window that has room for both. */
+/** Settings and results widths for the window: wider on large screens, two settings columns from 3000 px. */
 export function dockDefaults(width: number): DockFit {
+  if (width >= ULTRA_PX) return { left: 600, right: 340 };
+  if (width >= WIDE_PX) return { left: 360, right: 340 };
   return width >= 1600 ? { left: 320, right: 280 } : { left: 288, right: 300 };
 }
 
-/** Whether results start open when the user has not chosen. No width opens them by itself yet. */
-export function resultsOpenByDefault(_width: number): boolean {
-  return false;
+/** Whether results start open when the user has not chosen: only where both docks fit beside a large stage. */
+export function resultsOpenByDefault(width: number): boolean {
+  return width >= WIDE_PX;
 }
 
 /** What the rail and the two docks may take, or null when the window is not a desktop layout. */

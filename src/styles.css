@@ -1521,12 +1521,18 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
 .stage.tab-gcode .stage-body { display: none; }
 
 .panel-toggle { display: none; }
-@media (max-width: 1200px) {
-  .workspace { grid-template-columns: 48px var(--panel-left, 240px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 220px); }
-  .workspace.is-left-collapsed { --panel-left: 0px; }
-  .workspace.is-right-collapsed { grid-template-rows: minmax(0, 1fr) 0; }
-  #rightDock { grid-column: 1 / -1; grid-row: 2; border-left: 0; border-top: 1px solid var(--line); }
+/* 961–1200 px: the docks open as drawers over the view, so the canvas and its camera stay put. */
+.workspace.is-drawers { grid-template-columns: 48px minmax(0, 1fr); }
+.workspace.is-drawers #stage { grid-column: 2; }
+.workspace.is-drawers .dock {
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  bottom: 0;
+  box-shadow: var(--shadow-pop);
 }
+.workspace.is-drawers #leftDock { left: 48px; width: var(--panel-left); }
+.workspace.is-drawers #rightDock { right: 0; width: var(--panel-right); }
 @media (max-width: 960px) {
   .panel-toggle { display: inline-flex; }
   .workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }

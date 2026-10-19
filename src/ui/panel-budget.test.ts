@@ -1,4 +1,4 @@
-import { dockBudget, dockDefaults, dragMax, fitDocks, LEFT_MIN, RAIL_PX, resultsOpenByDefault, stageWidth, type DockWish } from "./panel-budget.ts";
+import { dockBudget, dockDefaults, dockMode, drawerWidth, dragMax, fitDocks, LEFT_MIN, RAIL_PX, resultsOpenByDefault, stageWidth, type DockWish } from "./panel-budget.ts";
 
 let failed = 0;
 
@@ -51,6 +51,21 @@ eq("the budget leaves the rail its column", (dockBudget(1440) ?? 0) + RAIL_PX, M
 check("1200 is not a desktop budget", fitDocks({ width: 1200, leftOpen: true, rightOpen: true, leftDesired: null, rightDesired: null, last: "left" }) === null);
 eq("1600 picks the wider settings default", dockDefaults(1600).left, 320);
 check("results never open by themselves below 2400", !resultsOpenByDefault(1920) && !resultsOpenByDefault(2399));
+check("from 2400 both docks open", resultsOpenByDefault(2400) && resultsOpenByDefault(3440));
+
+const big = fit(2560, { rightOpen: true });
+eq("2560: settings 360", big.left, 360);
+eq("2560: results 340", big.right, 340);
+const ultra = fit(3440, { rightOpen: true });
+eq("3440: settings take 600 for two columns", ultra.left, 600);
+eq("3440: results 340", ultra.right, 340);
+const edge = fit(2400, { rightOpen: true });
+check("2400 keeps both docks, settings yielding a little", edge.right === 340 && edge.left === (dockBudget(2400) ?? 0) - 340, JSON.stringify(edge));
+
+check("961 to 1200 are drawers", dockMode(961) === "drawer" && dockMode(1200) === "drawer");
+check("960 and under stack", dockMode(960) === "narrow");
+check("1201 docks", dockMode(1201) === "dock");
+eq("a drawer is 320 wide", drawerWidth(1100), 320);
 
 eq("a settings drag stops where results begin", dragMax("left", 1920, 280), (dockBudget(1920) ?? 0) - 280);
 eq("a results drag leaves settings their floor", dragMax("right", 1920, 248), (dockBudget(1920) ?? 0) - LEFT_MIN);
