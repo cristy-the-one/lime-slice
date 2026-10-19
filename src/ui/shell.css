@@ -137,10 +137,7 @@ html[data-chrome="custom"] .win-controls { display: flex; }
 .app.dropping .empty-drop { border-color: var(--accent); color: var(--on-stage); }
 
 
-@media (max-width: 1200px) {
-  .splitter-left { left: calc(48px + var(--panel-left, 240px) - 4px); }
-  .splitter-right { display: none; }
-}
+.workspace.is-drawers .splitter { display: none; }
 @media (max-width: 960px) {
   .splitter { display: none; }
   .workspace.show-left #leftDock,

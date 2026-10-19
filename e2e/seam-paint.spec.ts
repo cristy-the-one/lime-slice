@@ -64,6 +64,8 @@ test.describe("the seam brush stays in the sheet", () => {
     await expect(page.locator("html")).toHaveClass(/layout-compact/);
     await page.locator("#compactTabs [data-tab=prepare]").click();
     await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+    // The brush stays off until the sample has loaded, as a user sees from its greyed button.
+    await expect(page.locator('[data-tool="seam"]')).not.toHaveClass(/is-disabled/);
     await page.locator('[data-tool="seam"]').click();
     await expect(page.locator("#seamBar")).toBeVisible();
     await page.waitForTimeout(250);
