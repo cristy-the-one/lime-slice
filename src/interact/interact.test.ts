@@ -16,7 +16,7 @@ import {
   type PlaneFrame,
 } from "./ghosts.ts";
 import { emptyHud, formatDimension, hudKey, hudSetValues, hudText, HUD_MAX_FIELDS, placeHud } from "./hud.ts";
-import { ARROW_CLEARANCE, arrowShaftStart, inPlaceArrow } from "./in-place-arrow.ts";
+import { inPlaceArrow } from "./in-place-arrow.ts";
 import { GRID_MIN_PX, gridSpacing, SNAP_PX, snapHint, snapPoint, type Pt } from "./snap.ts";
 
 let failed = 0;
@@ -198,12 +198,6 @@ const faced = dragAxis({ origin: [9.4, 5, 0], direction: [0, -1, 0] }, line, {
 eq("without Ctrl the nearest face height wins", faced && [faced.snap, faced.distance, faced.face?.id], ["face", 10, 3]);
 check("the dotted line runs from the axis to that face", !!faced?.align && nearPt(faced.align[0], [10, 0, 0]) && nearPt(faced.align[1], [10, 0, 5]));
 
-const repeat = dragAxis(ray, line, { repeat: true, previous: 5, faces: [{ distance: 4, at: [4, 0, 0] }], round: true });
-eq("a double-click repeats the previous distance", repeat && [repeat.snap, repeat.distance], ["repeat", 5]);
-
-const noPrevious = dragAxis(ray, line, { repeat: true, previous: null });
-eq("a repeat with no previous distance drags instead", noPrevious && noPrevious.snap, "none");
-
 const clamped = dragAxis({ origin: [25, 1, 0], direction: [0, -1, 0] }, line, { min: 0, max: 20 });
 eq("a drag stops at its maximum", clamped && clamped.distance, 20);
 const pushed = dragAxis({ origin: [-4, 1, 0], direction: [0, -1, 0] }, line, { min: 0 });
@@ -229,9 +223,6 @@ const arrow = inPlaceArrow({ at: [1, 2, 3], dir: [0, 0, -2], outward: [0, 0, 1],
 eq("the arrow sits on the feature, not the dock", arrow.seat, { at: "feature", origin: [1, 2, 3] });
 eq("a direction into the solid is turned outward", arrow.dir, [0, 0, 1]);
 eq("the arrow is a single axis handle", [arrow.kind, arrow.look, arrow.color, arrow.values], ["axis", "arrow", "accent", [4]]);
-const shaft = arrowShaftStart([0, 0, 0], arrow.dir, 10);
-eq("the shaft starts clear of the face, along the outward normal", shaft, [0, 0, ARROW_CLEARANCE * 10]);
-check("that clearance is in front of the face", shaft[2]! > 0);
 
 const arrowSource = readFileSync(new URL("./in-place-arrow.ts", import.meta.url), "utf8");
 check("the in-place arrow does not build a dock handle", !arrowSource.includes("dockSeat") && !arrowSource.includes('at: "dock"'));

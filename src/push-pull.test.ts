@@ -70,8 +70,6 @@ eq("the face being dragged is not a snap", levels.some((level) => level.id === t
 const ray = { origin: [10, -40, 25] as [number, number, number], direction: [0, 1, 0] as [number, number, number] };
 const dragged = pullDrag(ray, [10, 10, 20], [0, 0, 1], { faces: levels, mmPerPx: 0.01 });
 check("a ray above the face pulls it out", dragged != null && dragged.distance > 0, JSON.stringify(dragged));
-const repeated = pullDrag(ray, top.at, top.normal, { repeat: true, previous: 5 });
-eq("a double-click repeats the last distance", repeated && [repeated.distance, repeated.snap], [5, "repeat"]);
 
 const positions = [0, 0, 20, 20, 0, 20, 20, 20, 20, 0, 0, 20, 20, 20, 20, 0, 20, 20];
 const triangles = [1, 1];

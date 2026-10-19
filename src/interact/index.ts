@@ -5,8 +5,6 @@
  */
 
 export {
-  ARROW_CLEARANCE,
-  arrowShaftStart,
   inPlaceArrow,
   type InPlaceArrowHandle,
   type InPlaceArrowSpec,
@@ -73,7 +71,6 @@ export {
 export {
   blendDirection,
   blendRadius,
-  clampBlendSize,
   EDGE_EDIT_MS,
   EDGE_FACE_MM,
   EDGE_KNOB_ID,

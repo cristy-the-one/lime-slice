@@ -133,8 +133,6 @@ export function pullDrag(
     fine?: boolean;
     faces?: readonly FaceLevel[];
     mmPerPx?: number;
-    previous?: number | null;
-    repeat?: boolean;
   } = {},
 ): PullDrag | null {
   const dragged = dragAxis(ray, { origin, direction }, input);

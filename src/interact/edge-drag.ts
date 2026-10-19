@@ -287,13 +287,6 @@ export function blendRadius(
   return drag ? drag.distance : null;
 }
 
-/** `maxMm` from a blend probe, when the drag has gone past the largest size that fits. */
-export function clampBlendSize(size: number, maxMm: number | null): { size: number; clamped: boolean } {
-  if (!Number.isFinite(size) || size < 0) return { size: 0, clamped: false };
-  if (maxMm != null && Number.isFinite(maxMm) && maxMm > 0 && size > maxMm) return { size: maxMm, clamped: true };
-  return { size, clamped: false };
-}
-
 export function edgeDragOp(kind: BlendKind, edges: readonly number[], size: number): { kind: BlendKind; edges: number[]; size: number } {
   return { kind, edges: [...edges], size };
 }

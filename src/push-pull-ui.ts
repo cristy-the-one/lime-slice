@@ -332,7 +332,6 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
       fine: ev.shift,
       faces: drag.levels,
       mmPerPx: mmPerPx(drag.origin, drag.dir),
-      previous: repeatable(),
     });
     if (!dragged) return;
     if (typed == null) dragDistance = dragged.distance;

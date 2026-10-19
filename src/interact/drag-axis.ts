@@ -1,7 +1,6 @@
 /**
  * One distance along a 3D line, from a pointer ray. The same closest approach as a dock arrow
- * (`lineParam`), then a snap: a double-click repeats the last distance, Ctrl snaps to a step,
- * and otherwise a nearby face height wins so the view can draw a dotted line to that face.
+ * (`lineParam`), then a snap: Ctrl snaps to a step, and otherwise a nearby face height wins so the view can draw a dotted line to that face.
  */
 
 import { add, dragValue, lineParam, scale, type Vec3 } from "../model-drag.ts";
@@ -39,10 +38,6 @@ export interface AxisDragInput {
    */
   toleranceMm?: number;
   mmPerPx?: number;
-  /** The distance a double-click repeats. */
-  previous?: number | null;
-  /** The gesture is that double-click. */
-  repeat?: boolean;
   min?: number;
   max?: number;
 }
@@ -51,7 +46,7 @@ export interface AxisDrag {
   /** The line parameter before any snap. */
   raw: number;
   distance: number;
-  snap: "none" | "round" | "face" | "repeat";
+  snap: "none" | "round" | "face";
   /** The face the distance aligned to, when `snap` is "face". */
   face: FaceLevel | null;
   /** Ends of the dotted line from the axis to that face. */
@@ -92,10 +87,6 @@ export function dragAxis(ray: Ray, line: AxisLine, input: AxisDragInput = {}): A
 
   const step = input.step ?? 1;
   const limits = { rate: 1, step, min: input.min, max: input.max };
-  if (input.repeat && input.previous != null && Number.isFinite(input.previous)) {
-    const distance = clamp(input.previous, input.min, input.max);
-    return { raw, distance, snap: "repeat", face: null, align: null };
-  }
   if (input.round) {
     const distance = dragValue(limits, 0, raw, true, input.fine ?? false);
     return { raw, distance, snap: "round", face: null, align: null };

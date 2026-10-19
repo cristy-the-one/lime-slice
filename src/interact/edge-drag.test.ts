@@ -2,7 +2,7 @@
  * The edge drag's geometry and wording, without WebGL: which faces an edge belongs to, which way
  * the knob points, which edges move together, and how a probe's largest size clamps the radius.
  */
-import { blendDirection, blendRadius, clampBlendSize, edgeAppliedNote, edgeDragEdges, edgeDragKind, edgeDragNote, edgeDragOp, edgeDragRefusal, edgeFrame, edgeHoverHint, edgeIsSmooth, edgeSides, edgeSizeRefusal, facesOnEdge, knobAt, tabStillOpen, EDGE_EDIT_MS } from "./edge-drag.ts";
+import { blendDirection, blendRadius, edgeAppliedNote, edgeDragEdges, edgeDragKind, edgeDragNote, edgeDragOp, edgeDragRefusal, edgeFrame, edgeHoverHint, edgeIsSmooth, edgeSides, edgeSizeRefusal, facesOnEdge, knobAt, tabStillOpen, EDGE_EDIT_MS } from "./edge-drag.ts";
 import type { Vec3 } from "../model-drag.ts";
 
 let failed = 0;
@@ -62,10 +62,6 @@ eq("a size past the largest that fits is clamped", blendRadius({ origin: [4, 5, 
 eq("the far side of the edge is no radius", blendRadius({ origin: [-2, 5, 0], direction: [0, -1, 0] }, [0, 0, 0], [1, 0, 0]), 0);
 eq("a ray along the bisector has no radius", blendRadius({ origin: [0, 0, 5], direction: [1, 0, 0] }, [0, 0, 0], [1, 0, 0]), null);
 
-eq("a size inside the limit is kept", clampBlendSize(1, 2.5), { size: 1, clamped: false });
-eq("a size past the limit takes the limit", clampBlendSize(10, 2.5), { size: 2.5, clamped: true });
-eq("no limit leaves the size", clampBlendSize(4, null), { size: 4, clamped: false });
-eq("a negative drag is no radius", clampBlendSize(-1, 2), { size: 0, clamped: false });
 
 eq("the op names the edges and the size", edgeDragOp("chamfer", [1, 4], 0.5), { kind: "chamfer", edges: [1, 4], size: 0.5 });
 eq("the hover hint names one edge", edgeHoverHint(1), "Drag to fillet · Alt: chamfer · type a size");
