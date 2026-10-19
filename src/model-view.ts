@@ -63,9 +63,9 @@ export type ModelGhost =
   /** P1. A face prism in the solid's own frame, drawn with the solid. */
   | { kind: "soup"; positions: Float32Array };
 
-/** P1. A pointer event on a face, in model space. `local` is the solid's own frame. */
+/** P1. A pointer event on a face, in model space. `local` is the solid's own frame. `cancel` is a press the system took away. */
 export interface FacePointer {
-  phase: "hover" | "down" | "move" | "up" | "click";
+  phase: "hover" | "down" | "move" | "up" | "click" | "cancel";
   face: number | null;
   point: Vec3 | null;
   local: Vec3 | null;
@@ -1408,7 +1408,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     controls.enabled = true;
     if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
     const hit = faceHit(ev) ?? done.hit;
-    if (done.moved) faceCb(faceEvent("up", ev, hit));
+    if (ev.type === "pointercancel") faceCb(faceEvent("cancel", ev, hit));
+    else if (done.moved) faceCb(faceEvent("up", ev, hit));
     else {
       faceCb(faceEvent("click", ev, hit));
       pickCb({ kind: "face", index: hit.face, at: hit.point }, ev.shiftKey, { x: ev.clientX, y: ev.clientY });

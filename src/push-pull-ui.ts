@@ -175,6 +175,13 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
       else hooks.readout(pullHint(previous));
       return;
     }
+    if (ev.phase === "cancel") {
+      // The system took the pointer (a touch turned into a scroll, a window lost focus): nothing is applied.
+      armed = null;
+      if (dragging) stopGesture();
+      hooks.readout(pullHint(previous));
+      return;
+    }
     if (ev.phase === "click") {
       armed = null;
       if (dragging) stopGesture();

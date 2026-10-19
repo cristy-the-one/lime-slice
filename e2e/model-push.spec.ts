@@ -291,3 +291,25 @@ async function pressAndPull(page: Page, at: { x: number; y: number }, px: number
   await page.mouse.down();
   for (let step = 8; step <= px; step += 8) await page.mouse.move(at.x + (dx / length) * step, at.y + (dy / length) * step);
 }
+
+test("a pointer the system cancels mid-drag applies nothing", async ({ page }) => {
+  const { applied } = await openPushBox(page);
+  await page.evaluate(() => {
+    window.addEventListener("pointerdown", (ev) => {
+      (window as unknown as { lastPointer: number }).lastPointer = ev.pointerId;
+    }, { capture: true });
+  });
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await pressAndPull(page, top, 40);
+  await expect(page.locator(".interact-hud input").first()).toBeVisible();
+  await page.locator("#model").evaluate((canvas) => {
+    const pointerId = (window as unknown as { lastPointer: number }).lastPointer;
+    canvas.dispatchEvent(new PointerEvent("pointercancel", { pointerId, bubbles: true }));
+  });
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  await expect(page.locator(".interact-hud input").first()).toBeHidden();
+  await page.waitForTimeout(400);
+  expect(applied, "the cancelled push is not applied").toHaveLength(0);
+  await expect(page.locator("#modelHistoryTree")).not.toContainText("Pull face");
+});
