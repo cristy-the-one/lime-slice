@@ -269,6 +269,7 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
 .stage-chip .btn:hover:not(:disabled) { background: var(--stage-chip-on); color: var(--on-stage); border-color: var(--stage-chip-line); }
 .stage-chip.modes .btn { border: 0; background: transparent; }
 .view-presets { top: var(--space-2); right: var(--space-2); }
+.view-presets .btn { height: 22px; padding: 0 var(--space-2); }
 .section-chip { top: var(--space-2); left: calc(var(--vslider-w) + var(--space-2)); padding: 2px 2px 2px var(--space-2); }
 .chip-field { display: flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
 .chip-field select, .chip-field input[type="number"] {
