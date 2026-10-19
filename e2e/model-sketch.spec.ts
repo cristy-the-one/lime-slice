@@ -222,3 +222,70 @@ test("constraints live in the sketch card and a typed length drives the line", a
   expect(await fits(), "the toolbar still fits at 1440 px with constraints in the card").toBe(true);
   await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
 });
+
+/** Open a sketch on XY and draw a 12 x 5 rectangle at the canvas centre. Returns that centre. */
+async function sketchRectangle(page: Page) {
+  const canvas = page.locator("#model");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await page.keyboard.press("r");
+  await expect(canvas).toHaveAttribute("data-sketch-tool", "rectangle");
+  const box = (await canvas.boundingBox())!;
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.click(centre.x, centre.y);
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await hud.locator("input").nth(0).fill("12");
+  await hud.locator("input").nth(0).press("Tab");
+  await hud.locator("input").nth(1).fill("5");
+  await hud.locator("input").nth(1).press("Enter");
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "4");
+  return centre;
+}
+
+test("sketch keys leave text fields alone and stop when Model closes", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await sketchRectangle(page);
+
+  // Any other text field types its own letters and keeps its own undo.
+  await page.evaluate(() => {
+    const field = document.createElement("input");
+    field.id = "zzField";
+    field.type = "text";
+    document.body.append(field);
+  });
+  const field = page.locator("#zzField");
+  await field.focus();
+  await page.keyboard.type("we");
+  await page.keyboard.press("Control+z");
+  await page.keyboard.press("Escape");
+  await expect(canvas).toHaveAttribute("data-extrude", "off");
+  await expect(canvas).toHaveAttribute("data-sweep", "off");
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "4");
+  await field.evaluate((node) => (node as HTMLElement).blur());
+
+  // The extrude's size box takes an expression with W, E, M and V in it.
+  await page.keyboard.press("e");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  const size = page.locator(".interact-hud:not([hidden]) input").nth(0);
+  await expect(size).toBeFocused();
+  await page.keyboard.type("wallH * 2 - Mev");
+  await expect(canvas).toHaveAttribute("data-sweep", "off");
+  await expect(canvas).toHaveAttribute("data-revolve", "off");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await expect(size).toHaveValue(/wallH \* 2 - Mev$/);
+  await page.keyboard.press("Escape");
+  await expect(canvas).toHaveAttribute("data-extrude", "off");
+
+  // Leaving Model keeps the sketch as a card; Prepare's keys do not reach it.
+  await page.locator("#tabPrepare").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "pinned");
+  await page.keyboard.press("Control+z");
+  await page.keyboard.press("r");
+  await page.keyboard.press("w");
+  await expect(canvas).toHaveAttribute("data-sketch", "pinned");
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "4");
+  await expect(canvas).toHaveAttribute("data-sweep", "off");
+});

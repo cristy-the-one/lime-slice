@@ -1824,6 +1824,8 @@ export function leaveModel() {
   forgetWorkplaneSteps();
   commitModel();
   dropEdit();
+  // An open sketch is finished and kept as a card, so its keys and its view do not follow into Prepare.
+  closeSketchSession();
   endModelVisit();
   void writeSteps();
 }

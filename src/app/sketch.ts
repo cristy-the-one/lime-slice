@@ -78,6 +78,7 @@ import { isPlainNumber, withExprs } from "../modeling/params.ts";
 import type { Params } from "../modeling/expr.ts";
 import { parseConstraints } from "../sketch/solve";
 import { workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
+import { state } from "./state";
 import {
   buildSketchExtrude,
   chooseRegions,
@@ -365,14 +366,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let probeTimer = 0;
 
   window.addEventListener("keydown", (ev) => {
-    if (editor.phase !== "editing" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (state.stage !== "model" || editor.phase !== "editing" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const drawing = sketchDimensions(editor) != null;
-    const dimField = ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null;
-    const typing = ev.target instanceof HTMLElement && (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT" || ev.target.tagName === "TEXTAREA" || ev.target.isContentEditable);
+    // A letter typed in any field is text: "wallH / 2" in the size box, or a search. Only the size box's Tab and Esc are the gesture's.
+    const field = typingTarget(ev.target);
+    if (field && !(field.closest(".interact-hud") && (ev.key === "Tab" || ev.key === "Escape"))) return;
     // --- F3. Shift+L is the loft while a sketch is open. L alone stays the Line tool.
     // With the sketch closed, Shift+L is still Chamfer. ---
     if (ev.shiftKey && (ev.key === "l" || ev.key === "L")) {
-      if (dimField) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (drawing) return;
@@ -385,7 +386,6 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     // --- F3. W sweeps while a sketch is open. With the sketch closed, W still picks edges. ---
     if ((ev.key === "w" || ev.key === "W") && !ev.shiftKey) {
-      if (dimField) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (drawing) return;
@@ -398,7 +398,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     // --- F4. H places a hole at each selected point. It is taken only while the sketch is open. ---
     if (ev.key === "h" || ev.key === "H") {
-      if (drawing || typing) return;
+      if (drawing) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (gesture || host.sketchHolesArmed()) return;
@@ -429,8 +429,6 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     // --- F2. V revolves only while this sketch is open. A size box keeps V for the view. ---
     if (ev.key === "v" || ev.key === "V") {
       if (drawing) return;
-      // A driving-dimension field is a real text box. The size HUD is not, so V still starts a revolve from there.
-      if (ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (host.sketchHolesArmed()) host.endSketchHoles();
@@ -811,12 +809,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     enterFace(hit.face);
   });
   window.addEventListener("keydown", (ev) => {
-    if (!sketchBusy(editor) || ev.defaultPrevented) return;
+    if (state.stage !== "model" || !sketchBusy(editor) || ev.defaultPrevented) return;
     const mods = { ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey };
     const history = (ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z" || ev.key === "y" || ev.key === "Y");
     if (!sketchHandlesKey(ev.key, mods) && !history) return;
-    const typing = ev.target instanceof HTMLElement && (ev.target.tagName === "INPUT" || ev.target.tagName === "TEXTAREA" || ev.target.isContentEditable);
-    if (typing && ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) {
+    const field = typingTarget(ev.target);
+    if (field?.dataset.sketchDimInput != null) {
       if (ev.key === "Escape") {
         ev.preventDefault();
         ev.stopPropagation();
@@ -825,7 +823,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       }
       return;
     }
-    if (typing && !history && ev.key !== "Escape") return;
+    // Ctrl+Z in the size box steps the sketch the box belongs to. In any other field it is that field's own
+    // undo: the app's Undo command would otherwise take it and step the sketch.
+    if (field && !(history && field.closest(".interact-hud"))) {
+      if (history) ev.stopPropagation();
+      return;
+    }
     ev.preventDefault();
     ev.stopPropagation();
     const next = sketchKey(editor, ev.key, mods);
@@ -2746,6 +2749,12 @@ function unit3(value: Vec3): Vec3 | null {
   const length = Math.hypot(value[0], value[1], value[2]);
   if (!(length > 1e-9)) return null;
   return [value[0] / length, value[1] / length, value[2] / length];
+}
+
+/** A text field, a list, or editable content: a key there is typing, not a sketch command. */
+function typingTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof HTMLElement)) return null;
+  return target.tagName === "INPUT" || target.tagName === "SELECT" || target.tagName === "TEXTAREA" || target.isContentEditable ? target : null;
 }
 
 function framesMatch(a: SketchFrame, b: SketchFrame): boolean {
