@@ -22,7 +22,7 @@ import { loadMachineLibrary } from "./machine-library.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
-import { adoptSavedTrees, captureOpenSolid, historyToSave } from "./model.ts";
+import { adoptSavedTrees, captureOpenSolid, historyToSave, noteParametersBuilt } from "./model.ts";
 import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
 import { copyWorkplane } from "../workplane.ts";
 import { solidFileName } from "../model-request.ts";
@@ -72,6 +72,7 @@ export async function saveCurrentProject() {
   if (state.layerActions.length > 0) project.layerActions = state.layerActions.map((action) => ({ ...action }));
   // --- A8. The record opened with the project, so a later save still carries its recipes. ---
   if (session.mcpModel) project.mcpModel = session.mcpModel;
+  if (Object.keys(session.parameters).length > 0) project.parameters = { ...session.parameters };
   if (project.version === 2 && state.printOrder === "sequential") {
     project.printOrder = "sequential";
     if (state.sequentialClearance > 0) project.sequentialClearanceMm = state.sequentialClearance;
@@ -152,6 +153,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   session.projectRestoring = true;
   // --- A8. Kept before the meshes load, and still there if that load is replaced by a later open. ---
   session.mcpModel = project.mcpModel;
+  session.parameters = project.parameters ? { ...project.parameters } : {};
   const unread = [...(project.unreadHistory ?? [])];
   const doc = session.docEpoch;
   try {
@@ -200,6 +202,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     }
     const custom = customGcodeNotice(state.layerActions);
     if (custom) pushToast(custom, "info");
+    noteParametersBuilt();
     return true;
   } finally {
     session.projectRestoring = false;

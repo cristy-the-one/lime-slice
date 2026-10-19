@@ -5,6 +5,7 @@
  */
 
 import { evaluate, ExprError, type Params } from "../../mcp/expr.ts";
+import { isPlainNumber } from "../modeling/params.ts";
 
 export type { Params };
 
@@ -220,11 +221,16 @@ export function mountHud(parent: HTMLElement): HudMount {
     inputs.forEach((input, index) => {
       const field = model.fields[index];
       if (!field) return;
-      const text = index === model.active && model.draft != null ? model.draft : formatNumber(field.value, field.places ?? 1);
-      if (input.value !== text) input.value = text;
+      const stored = model.texts[index];
+      const expression = typeof stored === "string" && stored.trim() !== "" && !isPlainNumber(stored);
+      const focused = document.activeElement === input;
+      const text = index === model.active && model.draft != null ? model.draft : focused && expression && stored ? stored.trim() : formatNumber(field.value, field.places ?? 1);
+      if (!(focused && model.draft != null) && input.value !== text) input.value = text;
       input.style.width = `${Math.min(24, Math.max(4, text.length + 1))}ch`;
       input.classList.toggle("is-active", index === model.active);
       input.setAttribute("aria-invalid", model.error && index === model.active ? "true" : "false");
+      const mark = input.parentElement?.querySelector<HTMLElement>(":scope > .expr-mark");
+      if (mark) mark.hidden = !expression || focused;
     });
     if (shown) place();
   };
@@ -293,7 +299,12 @@ export function mountHud(parent: HTMLElement): HudMount {
       const unit = document.createElement("span");
       unit.className = "interact-hud-unit";
       unit.textContent = field.unit;
-      label.append(input, unit);
+      const mark = document.createElement("span");
+      mark.className = "expr-mark";
+      mark.textContent = "ƒ";
+      mark.hidden = true;
+      mark.setAttribute("aria-hidden", "true");
+      label.append(input, mark, unit);
       fields.append(label);
       inputs.push(input);
     });

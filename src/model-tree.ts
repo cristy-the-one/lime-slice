@@ -67,7 +67,7 @@ export type BooleanKind = "fuse" | "cut" | "common";
 export type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
 /** One edit, in the solid's own frame. A fresh fillet or chamfer names edges by index. */
-export type ModelOp =
+type ModelOpBase =
   | ({ kind: "boolean"; op: BooleanKind } & PrimitiveSpec)
   | HoleOp
   | { kind: "split"; origin: Vec3; normal: Vec3 }
@@ -84,6 +84,13 @@ export type ModelOp =
   | GroupOp
   | FaceExtrudeOp
   | MoveFacesOp;
+
+/**
+ * --- A6. `exprs` is the expression text for a panel field (`modelDz` → `"wallH / 2"`).
+ * The op's numbers stay the evaluated values. Absent when every number was typed as a number.
+ * Stripped before the engine sees the op.
+ */
+export type ModelOp = ModelOpBase & { exprs?: Record<string, string> };
 
 /** One edge of a loop, from the previous end (the loop's start, for the first) to `to`. */
 export type ProfileSegment =
@@ -310,7 +317,7 @@ export function isFeatureOp(op: ModelOp): op is FeatureOp {
 /** Where the root solid comes from: STEP bytes, a primitive built from its numbers, a feature built against nothing, or the piece a split cut off in another tree. */
 export type ModelRoot =
   | { kind: "step"; name: string; bytes: ArrayBuffer }
-  | { kind: "primitive"; solid: PrimitiveSpec }
+  | { kind: "primitive"; solid: PrimitiveSpec; exprs?: Record<string, string> }
   | { kind: "feature"; op: FeatureOp }
   | { kind: "piece"; tree: string; node: NodeId };
 

@@ -807,6 +807,50 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-hole-opts { display: flex; flex-wrap: wrap; column-gap: var(--space-4); }
 .model-hole-opts[hidden] { display: none !important; }
 .model-fields input:disabled { color: var(--text-faint); background: transparent; }
+.expr-mark {
+  font-size: 0.75em;
+  color: var(--accent);
+  margin-left: 2px;
+  pointer-events: none;
+}
+.model-fields input.is-bad,
+.model-panel input.is-bad,
+.interact-hud input.is-bad {
+  outline: 1px solid var(--danger);
+}
+.model-params {
+  width: min(420px, 100%);
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.model-params[hidden] { display: none !important; }
+.model-params-head, .model-params-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.model-params-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.model-params-table { width: 100%; border-collapse: collapse; }
+.model-params-table th, .model-params-table td {
+  text-align: left;
+  padding: 2px 4px;
+  font-size: 12px;
+  vertical-align: top;
+}
+.model-params-table input { width: 100%; min-width: 0; }
+.model-param-error { color: var(--danger); margin: 2px 0 0; font-size: 11px; }
+.model-params-actions { white-space: nowrap; }
+.sketch-dim .expr-mark, .interact-hud .expr-mark { margin-left: 3px; }
 /* No solid to show: a plain card in the middle of the view. An open tool, New solid's included, takes its place. */
 .model-empty {
   position: absolute;
