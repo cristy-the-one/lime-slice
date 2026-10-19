@@ -58,7 +58,19 @@ async function openSolid(page: Page, probes: Record<string, unknown>[], solid = 
   await page.goto("/");
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  // From 961 to 1200 px settings start in a closed drawer: open it from the rail, as a user would, then close it so
+  // the view is clear again.
+  const width = page.viewportSize()?.width ?? 1280;
+  const drawers = width > 960 && width <= 1200;
+  if (drawers) {
+    await expect(page.locator("#leftToggle")).toHaveAttribute("aria-expanded", "false");
+    await page.locator("#leftToggle").click();
+  }
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  if (drawers) {
+    await page.locator("#leftToggle").click();
+    await expect(page.locator("#leftDock")).toBeHidden();
+  }
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume");
 }

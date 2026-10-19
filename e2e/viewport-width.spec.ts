@@ -144,3 +144,75 @@ for (const width of [1280, 1600]) {
     await page.screenshot({ path: path.join(shots, `after-slice-${width}.png`) });
   });
 }
+
+for (const { width, left, right, columns } of [
+  { width: 2560, left: 360, right: 340, columns: "auto" },
+  // From 3000 the results give way first, so settings keep their two columns.
+  { width: 3000, left: 600, right: 252, columns: "2" },
+  { width: 3440, left: 600, right: 340, columns: "2" },
+]) {
+  test(`${width} opens both docks by default, settings ${left} wide in ${columns === "2" ? "two columns" : "one column"}`, async ({ page }) => {
+    await quiet(page);
+    await page.setViewportSize({ width, height: 1440 });
+    await page.goto("/");
+    await autoSliceOff(page);
+    await loadCube(page);
+    const workspace = page.locator(".workspace");
+    await expect(workspace).not.toHaveClass(/is-left-collapsed/);
+    await expect(workspace).not.toHaveClass(/is-right-collapsed/);
+    await expect(page.locator("#timing")).toHaveAttribute("aria-expanded", "true");
+    // Nothing is stored until the user chooses: the width alone opened the results.
+    expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBeNull();
+    const docks = await page.evaluate(() => ({
+      left: document.querySelector("#leftDock")!.getBoundingClientRect().width,
+      right: document.querySelector("#rightDock")!.getBoundingClientRect().width,
+      columns: getComputedStyle(document.querySelector("#leftBody")!).columnCount,
+    }));
+    expect(docks.left).toBe(left);
+    expect(docks.right).toBe(right);
+    expect(docks.columns).toBe(columns);
+
+    await page.locator("#slice").click();
+    await expect(page.locator("#estimate")).toContainText("g");
+    await page.locator("#tabPreview").click();
+    // Both docks open still leave the preview a large view.
+    const view = await page.evaluate(() => document.querySelector("#previewBody")!.getBoundingClientRect().width);
+    expect(view).toBeGreaterThanOrEqual(1764);
+    await page.screenshot({ path: path.join(shots, `wide-${width}.png`) });
+
+    // A user's close is remembered over the width's default.
+    await page.locator("#rightDock .dock-close").click();
+    await expect(workspace).toHaveClass(/is-right-collapsed/);
+    expect(await page.evaluate((key) => localStorage.getItem(key), RIGHT_COLLAPSE)).toBe("1");
+    await page.reload();
+    await expect(workspace).toHaveClass(/is-right-collapsed/);
+    await expect(workspace).not.toHaveClass(/is-left-collapsed/);
+  });
+}
+
+test("after a slice the stage tabs stay whole beside the estimate, from 961 to 1440 px", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1440, height: 800 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#objectList .obj").first()).toBeAttached();
+  await page.locator("#slice").click();
+  await expect(page.locator("#estimate")).toContainText("g");
+  await page.locator("#tabPreview").click();
+  for (const width of [961, 1100, 1200, 1280, 1366, 1440]) {
+    await page.setViewportSize({ width, height: 800 });
+    const bar = await page.evaluate(() => {
+      const tabs = document.querySelector<HTMLElement>(".title-tabs")!;
+      return {
+        clipped: tabs.scrollWidth - tabs.clientWidth,
+        modelRight: document.querySelector("#tabModel")!.getBoundingClientRect().right,
+        slotLeft: document.querySelector(".estimate-slot")!.getBoundingClientRect().left,
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+      };
+    });
+    expect(bar.clipped, `${width}: the tabs are cut`).toBeLessThanOrEqual(0);
+    expect(bar.modelRight, `${width}: Model runs under the estimate`).toBeLessThanOrEqual(bar.slotLeft);
+    expect(bar.overflow, `${width}: the page scrolls sideways`).toBe(0);
+  }
+});

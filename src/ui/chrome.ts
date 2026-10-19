@@ -158,6 +158,12 @@ function mountToolRail(hooks: ChromeHooks) {
   leftToggle.id = "leftToggle";
   leftToggle.setAttribute("aria-controls", "leftDock");
   leftToggle.setAttribute("aria-expanded", "true");
+  // Shown only while settings sit in a closed drawer (961–1200 px), so the one way to them is labelled.
+  const label = document.createElement("span");
+  label.className = "rail-label";
+  label.setAttribute("aria-hidden", "true");
+  label.textContent = "Settings";
+  leftToggle.append(label);
   foot.append(leftToggle);
 
   rail.append(place, look, bed, shared, paints, edits, gizmoNudge(), foot);

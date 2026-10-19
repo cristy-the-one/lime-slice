@@ -532,7 +532,7 @@ export function mountMarkup(root: HTMLElement) {
         <div class="panel right" id="right"></div>
       </aside>
     </div>
-    <footer class="status"><span class="status-text" id="statusText" aria-live="polite"></span><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
+    <footer class="status"><span class="status-text" id="statusText" aria-live="polite"></span><span class="status-hint" id="statusHint" hidden>Settings are in the drawer (Ctrl+B)</span><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
   </div>
   <div id="calibrate" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="calibrateTitle">
     <div class="sheet-card cal-card">
