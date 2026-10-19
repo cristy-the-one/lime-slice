@@ -4,6 +4,8 @@
  * --- A7 model check ---
  */
 import { boxOf } from "../mcp/inspect.ts";
+import type { Mat3 } from "./mesh-place.ts";
+import { inversePose, type Affine } from "./model-space.ts";
 import type { ThinRegion } from "./modeling/thin.ts";
 
 export type Vec3 = [number, number, number];
@@ -15,6 +17,29 @@ export interface MmBox {
 
 /** A hollow or a loose piece, in the solid's own frame, as the kernel names it. */
 export type LocatedBox = MmBox;
+
+/**
+ * The mesh as it prints: turned and scaled as the plate places it (`orient`, row-major, and `scale`), and lowered so
+ * its lowest point is on the bed. Overhangs, ceilings, islands and the fit read this frame, since a part laid on its
+ * side overhangs elsewhere. A move on the bed changes none of them, so X and Y stay. `toSource` maps it back.
+ */
+export function printFrame(positions: Float32Array, orient: readonly number[], scale: number): { positions: Float32Array; toSource: Affine } {
+  const m = orient.map((value) => value * scale) as Mat3;
+  const out = new Float32Array(positions.length);
+  let floor = Infinity;
+  for (let i = 0; i + 2 < positions.length; i += 3) {
+    const x = positions[i]!;
+    const y = positions[i + 1]!;
+    const z = positions[i + 2]!;
+    out[i] = m[0] * x + m[1] * y + m[2] * z;
+    out[i + 1] = m[3] * x + m[4] * y + m[5] * z;
+    out[i + 2] = m[6] * x + m[7] * y + m[8] * z;
+    floor = Math.min(floor, out[i + 2]!);
+  }
+  if (!Number.isFinite(floor)) floor = 0;
+  for (let i = 2; i < out.length; i += 3) out[i] = out[i]! - floor;
+  return { positions: out, toSource: inversePose({ m, t: [0, 0, -floor] }) };
+}
 
 /** The overhang `model_check` uses when the caller does not name one. */
 export const OVERHANG_DEG = 45;

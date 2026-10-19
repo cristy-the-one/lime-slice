@@ -62,7 +62,8 @@ import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { layerPaths, pathsPng, pathsSvg } from "./layer-out.ts";
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { pngImage, withImages, type InlineImage } from "./inline.ts";
-import { printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
+import { printFrame } from "../src/model-check.ts";
+import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
 import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { reviewGcode } from "./review.ts";
@@ -2892,7 +2893,9 @@ export class Session {
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid || obj.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };
     const printer = this.printer();
-    const checked = printCheck({ positions: obj.solid.positions, overhangDeg: typeof input.overhangDeg === "number" ? input.overhangDeg : 45, buildMm: [printer.bedX, printer.bedY, printer.bedZ] });
+    // As it prints: the plate's turn and scale, lowest point on the bed. Places come back in the solid's frame.
+    const printed = printFrame(obj.solid.positions, obj.orient, obj.scale);
+    const checked = checkInSource(printCheck({ positions: printed.positions, overhangDeg: typeof input.overhangDeg === "number" ? input.overhangDeg : 45, buildMm: [printer.bedX, printer.bedY, printer.bedZ] }), printed.toSource);
     // Two lines of the nozzle's width is the thinnest wall a slicer fills; thinner prints as one line or not at all.
     const nozzle = this.library.nozzleMm || 0.4;
     const minWallMm = typeof input.minWallMm === "number" ? input.minWallMm : Math.round(nozzle * 2 * 100) / 100;

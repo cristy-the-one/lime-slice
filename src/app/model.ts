@@ -29,7 +29,7 @@ import { throughLength } from "../model-hole";
 import { faceBoundarySegments, lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
-import { locatedBoxes } from "../model-check.ts";
+import { locatedBoxes, printFrame } from "../model-check.ts";
 import { emptyFeature, expandFeature, isFeatureTool, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
 import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
@@ -413,11 +413,19 @@ export function bindModelView() {
       return openBox();
     },
     // --- A7 model check ---
+    // --- D13. The check reads the part as it prints: the plate's turn and scale, lowered to the bed.
     checkSource() {
       const solid = viewed();
-      if (solid && solid.positions.length >= 9) return { positions: solid.positions, toModel: openPose() };
+      const shown = solid ? state.plate.objects.find((item) => item.id === open?.objectId) : undefined;
+      if (solid && shown && solid.positions.length >= 9) {
+        const printed = printFrame(solid.positions, shown.orient, shown.partScale);
+        return { positions: printed.positions, toModel: thenPose(printed.toSource, openPose()) };
+      }
       const obj = state.plate.objects.find((item) => item.id === state.plate.selectedId);
-      if (obj && obj.sourcePos.length >= 9) return { positions: obj.sourcePos, toModel: meshToModel(obj) };
+      if (obj && obj.sourcePos.length >= 9) {
+        const printed = printFrame(obj.sourcePos, obj.orient, obj.partScale);
+        return { positions: printed.positions, toModel: thenPose(printed.toSource, meshToModel(obj)) };
+      }
       return null;
     },
     edgePoints(edge) {

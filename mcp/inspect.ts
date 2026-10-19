@@ -6,6 +6,7 @@
 import { shellCount, shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { eulerOrient } from "../src/mesh-place.ts";
 import { primitiveMesh, turnCentre, type PrimitiveSpec } from "../src/model-primitive.ts";
+import { applyPose, boxUnder, type Affine } from "../src/model-space.ts";
 
 type Vec = [number, number, number];
 export interface Box {
@@ -230,6 +231,27 @@ function mergedCells(cells: ReadonlyMap<string, OverhangCell>): OverhangCell[] {
     merged.set(root, into);
   }
   return [...merged.values()];
+}
+
+/**
+ * `printCheck` of the part in its print frame (`printFrame`), with each place mapped back into the solid's frame
+ * through `toSource`, where the caller aims an edit. A height (`zMm`, `floatsMm`) and the fit stay as printed.
+ */
+export function checkInSource(checked: Record<string, unknown>, toSource: Affine): Record<string, unknown> {
+  const back = (point: readonly number[]) => roundVec(applyPose(toSource, point));
+  const backBox = (box: { min: readonly number[]; max: readonly number[] }) => {
+    const mapped = boxUnder({ min: [box.min[0]!, box.min[1]!, box.min[2]!], max: [box.max[0]!, box.max[1]!, box.max[2]!] }, toSource);
+    return { min: roundVec(mapped.min), max: roundVec(mapped.max) };
+  };
+  const overhang = checked.overhang as { regions: { centre: Vec; min: Vec; max: Vec }[] };
+  const ceilings = checked.ceilings as { centre: Vec }[];
+  const islands = checked.islands as { bbox: { min: Vec; max: Vec } }[];
+  return {
+    ...checked,
+    overhang: { ...overhang, regions: overhang.regions.map((region) => ({ ...region, centre: back(region.centre), ...backBox(region) })) },
+    ceilings: ceilings.map((row) => ({ ...row, centre: back(row.centre) })),
+    islands: islands.map((island) => ({ ...island, bbox: backBox(island.bbox) })),
+  };
 }
 
 /** model_check: the printability of the solid as it stands, lowest point on the bed. */

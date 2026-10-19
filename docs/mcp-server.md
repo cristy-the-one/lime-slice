@@ -444,7 +444,7 @@ The engine's probe answers `{ok: true}` and, with `preview`, the built shape's s
 
 `surface_at` casts a ray on the current solid's mesh in the part frame, the frame of `faces_find`. Give `point` and `direction`, or `x` and `y` for a ray straight down from 1 mm above the part ("roof height at this XY"). It returns the first hit as `point`, `normal` (outward), `distanceMm` from the ray's start, and `faceIndex` as `faces_find` lists it. `fromInside: true` marks a ray that starts inside the solid. A miss is ok with `hit: false`. The chord tolerance is 0.05 mm, so a height is good to about that.
 
-`model_check` reads the same mesh with the lowest point on the bed and Z up, the way the part would print now. Turn it first with `workplane_print_up` to check another way up. It returns:
+`model_check` reads the same mesh as the plate places it, turned and scaled by the plate with its lowest point on the bed, the way the part would print now; the app's Check does the same. Places (region centres and boxes, ceiling centres, island boxes) come back in the solid's frame; heights and the fit are as printed. Turn it first with `workplane_print_up` to check another way up. It returns:
 
 - `overhang`: area past `overhangDeg` (default 45, from vertical), its share of the surface, and up to six `regions` (area, centre, box). A region is the overhang triangles of neighbouring 10 mm cells that meet, so one slope is one region. A flat face pointing down is listed under `ceilings` only, though its area counts in `areaMm2`.
 - `ceilings`: flat faces that point down above the bed, by Z, with area and centre.
