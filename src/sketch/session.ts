@@ -991,6 +991,38 @@ function rectCorner(anchor: Pt, cursor: Pt, width: number, height: number, fromC
   return [anchor[0] + dirU * Math.abs(width), anchor[1] + dirV * Math.abs(height)];
 }
 
+/**
+ * --- F1/E1. Open `sketch` for editing. History Edit uses this to draw an extrude's sketch again.
+ * The card is named when the sketch is finished.
+ */
+export function enterSketchData(editor: SketchEditor, sketch: SketchData): SketchEditor {
+  const left = editor.phase === "editing" ? finishSketch(editor) : editor.phase === "choosing" ? { ...editor, phase: editor.pinned.length ? "pinned" as const : "off" as const, hotPlane: null, esc: 0 as const } : editor;
+  const id = left.nextName;
+  const card: PinnedSketch = { id, name: "Sketch", sketch: sketchJson(sketch) };
+  return {
+    ...left,
+    phase: "editing",
+    pinned: [...left.pinned, card],
+    active: id,
+    tool: "select",
+    lookAround: false,
+    selection: { entities: [], points: [] },
+    chain: null,
+    rect: null,
+    cursor: null,
+    snap: null,
+    hover: { point: null, entity: null },
+    typed: null,
+    drag: null,
+    box: null,
+    esc: 0,
+    undo: [],
+    redo: [],
+    hotPlane: null,
+    nextName: id,
+  };
+}
+
 /** Four corners, first is the anchor (or the opposite of the cursor when drawing from the centre). */
 export function rectangleCorners(anchor: Pt, at: Pt, fromCentre: boolean): [Pt, Pt, Pt, Pt] {
   if (fromCentre) {
