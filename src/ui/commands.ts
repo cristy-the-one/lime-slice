@@ -72,7 +72,7 @@ export const COMMANDS: CommandSpec[] = [
   // --- P1: Push/Pull takes P, which Split had. Split is D. P is also the gesture when no model tool is open. ---
   { id: "model-pushpull", label: "Push/Pull", group: "Model", keys: ["P"], when: "model", target: "#modelToolPull", keywords: "push pull face extrude offset move faces" },
   // --- S2 sketch --- S in Model. S in Prepare is still Scale. ---
-  { id: "model-sketch", label: "Sketch", group: "Model", keys: ["S"], when: "model", target: "#modelToolSketch", keywords: "line rectangle plane draw" },
+  { id: "model-sketch", label: "Sketch", group: "Model", keys: ["S"], when: "model", target: "#modelToolSketch", keywords: "line rectangle circle arc polygon slot spline trim offset fillet construction use plane draw" },
   { id: "model-fillet", label: "Fillet", group: "Model", keys: ["L"], when: "model", target: "#modelToolFillet", keywords: "round edge" },
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
