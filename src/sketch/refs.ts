@@ -12,6 +12,8 @@ import type { Pt, Vec3 } from "./model.ts";
 export interface RefSegment {
   a: Pt;
   b: Pt;
+  /** Which solid line this is. Absent on a segment built before that tag existed. */
+  source?: "edge" | "outline";
 }
 
 export interface RefGeom {
@@ -40,12 +42,12 @@ export function projectReferences(
     seen.add(key);
     vertices.push(at);
   };
-  const addSegment = (a: Pt, b: Pt) => {
+  const addSegment = (a: Pt, b: Pt, source: "edge" | "outline") => {
     if (Math.hypot(a[0] - b[0], a[1] - b[1]) <= 1e-6) {
       addVertex(a);
       return;
     }
-    segments.push({ a, b });
+    segments.push({ a, b, source });
     addVertex(a);
     addVertex(b);
     addVertex([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
@@ -54,7 +56,7 @@ export function projectReferences(
     for (let i = 0; i + 5 < outline.length; i += 6) {
       const a = project(frame, [outline[i]!, outline[i + 1]!, outline[i + 2]!]);
       const b = project(frame, [outline[i + 3]!, outline[i + 4]!, outline[i + 5]!]);
-      addSegment(a, b);
+      addSegment(a, b, "outline");
     }
   }
   for (const edge of edges) {
@@ -67,11 +69,11 @@ export function projectReferences(
       const onA = Math.abs(ha) <= ON_MM;
       const onB = Math.abs(hb) <= ON_MM;
       if (onA && onB) {
-        addSegment(project(frame, a), project(frame, b));
+        addSegment(project(frame, a), project(frame, b), "edge");
         continue;
       }
       if (onA || onB || ha * hb < 0) {
-        addSegment(project(frame, a), project(frame, b));
+        addSegment(project(frame, a), project(frame, b), "edge");
         if (ha * hb < 0) {
           const t = ha / (ha - hb);
           addVertex(project(frame, [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]));

@@ -848,6 +848,25 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 }
 .sketch-card p { margin: 0 6px 0 0; }
 .sketch-card .btn[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+/* --- S3 drawing tools. The menu is in the sketch card, so the Model toolbar stays one row at 1440 px. --- */
+.sketch-menu { position: relative; }
+.sketch-menu-list {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 11rem;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 36%, transparent);
+}
+.sketch-menu-list[hidden] { display: none; }
+.sketch-menu-list .btn { justify-content: flex-start; width: 100%; text-align: left; }
 .sketch-box {
   position: fixed;
   z-index: 4;

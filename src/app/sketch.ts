@@ -42,6 +42,7 @@ import {
   reopenSketch,
   sketchBusy,
   sketchDimensions,
+  sketchHandlesKey,
   sketchKey,
   sketchOff,
   sketchPointer,
@@ -51,7 +52,9 @@ import {
   withRefs,
   withTool,
   type SketchEditor,
+  type SketchTool,
 } from "../sketch/session";
+import { DRAW_MENU, isDrawTool } from "../sketch/tools";
 import { workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 
 export interface SketchHost {
@@ -158,6 +161,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   let aimKey = "";
   let refsKey = "";
+  let drawOpen = false;
   let shownPlanes: OriginPlane[] = [];
   let chooseDown: { x: number; y: number } | null = null;
   let lastClient = { x: 0, y: 0 };
@@ -202,9 +206,16 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const tool = target.dataset.sketchTool;
-    if (tool === "line" || tool === "rectangle" || tool === "select") {
-      editor = withTool(editor, tool);
+    const picked = tool === "line" || tool === "rectangle" || tool === "select" || (typeof tool === "string" && isDrawTool(tool)) ? tool : null;
+    if (picked) {
+      drawOpen = false;
+      editor = withTool(editor, picked);
       publish("open");
+      return;
+    }
+    if (target.dataset.sketchMenu != null) {
+      drawOpen = !drawOpen;
+      publish("skip");
       return;
     }
     if (target.dataset.sketchLook != null) {
@@ -249,14 +260,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   });
   window.addEventListener("keydown", (ev) => {
     if (!sketchBusy(editor) || ev.defaultPrevented) return;
-    const owned = ev.key === "l" || ev.key === "L" || ev.key === "r" || ev.key === "R" || ev.key === "o" || ev.key === "O" || ev.key === "Escape" || ev.key === "Delete" || ev.key === "Backspace";
+    const mods = { ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey };
     const history = (ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z" || ev.key === "y" || ev.key === "Y");
-    if (!owned && !history) return;
+    if (!sketchHandlesKey(ev.key, mods) && !history) return;
     const typing = ev.target instanceof HTMLElement && (ev.target.tagName === "INPUT" || ev.target.tagName === "TEXTAREA" || ev.target.isContentEditable);
     if (typing && !history && ev.key !== "Escape") return;
     ev.preventDefault();
     ev.stopPropagation();
-    const next = sketchKey(editor, ev.key, { ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey });
+    const next = sketchKey(editor, ev.key, mods);
     if (!next || next === editor) return;
     editor = next;
     publish("open");
@@ -279,6 +290,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       publish("skip");
       return;
     }
+    if (ev.phase === "down") drawOpen = false;
     if (editor.phase !== "editing" || editor.lookAround) return;
     const frame = drawingFrame();
     if (!frame) return;
@@ -310,6 +322,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.canvas.dataset.sketchEntities = "0";
   host.canvas.dataset.sketchPlane = "";
   host.canvas.dataset.sketchLook = "0";
+  host.canvas.dataset.sketchKinds = "";
+  host.canvas.dataset.sketchConstruction = "0";
 
   function enterNamed(name: "XY" | "XZ" | "YZ" | "workplane") {
     const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : originFrame(name, host.origin());
@@ -458,6 +472,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.sketchEntities = String(sketch?.entities.length ?? 0);
     host.canvas.dataset.sketchPlane = on?.kind === "plane" ? on.name : on?.kind === "face" ? `face ${on.face.index}` : on?.kind === "workplane" ? "workplane" : "";
     host.canvas.dataset.sketchLook = editor.lookAround ? "1" : "0";
+    host.canvas.dataset.sketchKinds = sketch?.entities.map((entity) => entity.kind).join(",") ?? "";
+    host.canvas.dataset.sketchConstruction = String(sketch?.entities.filter((entity) => entity.construction).length ?? 0);
   }
 
   function paintBox() {
@@ -506,10 +522,43 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return [
       toolButton("line", "Line"),
       toolButton("rectangle", "Rectangle"),
+      // --- S3. Drawing tools live in this menu, not on the Model toolbar. ---
+      drawMenu(),
       toolButton("select", "Select"),
       textButton(editor.lookAround ? "Lock view" : "Look around", { sketchLook: editor.lookAround ? "1" : "0" }),
       textButton("Finish sketch", { sketchFinish: "" }),
     ];
+  }
+
+  function drawMenu(): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "sketch-menu";
+    const current = isDrawTool(editor.tool) ? DRAW_MENU.find((item) => item.tool === editor.tool) : undefined;
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "btn";
+    open.dataset.sketchMenu = "draw";
+    open.textContent = current?.label ?? "Draw";
+    open.setAttribute("aria-haspopup", "menu");
+    open.setAttribute("aria-expanded", drawOpen ? "true" : "false");
+    open.setAttribute("aria-pressed", current ? "true" : "false");
+    const menu = document.createElement("div");
+    menu.className = "sketch-menu-list";
+    menu.setAttribute("role", "menu");
+    menu.hidden = !drawOpen;
+    for (const item of DRAW_MENU) {
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = "btn";
+      node.setAttribute("role", "menuitem");
+      node.dataset.sketchTool = item.tool;
+      node.textContent = item.label;
+      node.title = item.shortcut;
+      node.setAttribute("aria-pressed", editor.tool === item.tool ? "true" : "false");
+      menu.append(node);
+    }
+    wrap.append(open, menu);
+    return wrap;
   }
 
   function pinnedRow(id: number, name: string): Node[] {
@@ -541,7 +590,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return node;
   }
 
-  function toolButton(tool: "line" | "rectangle" | "select", label: string): HTMLButtonElement {
+  function toolButton(tool: SketchTool, label: string): HTMLButtonElement {
     const node = document.createElement("button");
     node.type = "button";
     node.className = "btn";
