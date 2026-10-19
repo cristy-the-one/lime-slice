@@ -135,7 +135,7 @@ import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, ne
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { mountEdgeDrag } from "./edge-drag";
-import { closeSketchSession, forgetSketches, holdSketchForApply, mountSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
+import { closeSketchSession, forgetSketches, holdSketchForApply, mountSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchTakesPick, sketchUndo } from "./sketch";
 import { holeMarks, holeSizeRefusal, holesInModel, isSketchHoleGroup, pointsFromSource, sketchHoleSource, type HoleSizes, type HoleTarget } from "../sketch/holes.ts";
 import { sketchJson, type SketchData } from "../sketch/model.ts";
 import { featureOutlines, opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
@@ -4523,6 +4523,8 @@ let contextClick: { x: number; y: number; empty: boolean } | null = null;
 let contextFromPick = false;
 
 async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: number; y: number }) {
+  // --- B13. A loft or sweep in Look around takes the click as a section or a profile. ---
+  if (sketchTakesPick(pointer.x, pointer.y)) return;
   const at = open;
   const tree = treeOf(at);
   const solid = viewed();

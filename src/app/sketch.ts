@@ -187,6 +187,7 @@ interface SketchApi {
   undo(): void;
   redo(): void;
   sync(): void;
+  takePick(x: number, y: number): boolean;
 }
 
 let editor: SketchEditor = sketchOff();
@@ -265,6 +266,7 @@ let api: SketchApi = {
   undo: () => {},
   redo: () => {},
   sync: () => {},
+  takePick: () => false,
 };
 
 /** Choosing or editing. Pinned cards do not take the view, so push/pull and the edge knob stay. */
@@ -278,6 +280,14 @@ export function sketchOwnsHistory(): boolean {
 
 export function sketchHistoryButtons(): { undo: boolean; redo: boolean } | null {
   return api.history();
+}
+
+/**
+ * A click the view gave the Model picks, at client pixels. While Look around is on during a loft or a sweep the
+ * click picks a section or a profile, as it does with the view locked. True when the sketch took it.
+ */
+export function sketchTakesPick(x: number, y: number): boolean {
+  return api.takePick(x, y);
 }
 
 export function sketchUndo(): void {
@@ -679,6 +689,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   api = {
     occupies: () => sketchBusy(editor),
     ownsHistory: () => editor.phase === "editing",
+    takePick(x, y) {
+      if (editor.phase !== "editing" || !editor.lookAround || committing || !(loft || sweep)) return false;
+      if (loft) loftPointer({ phase: "up", x, y });
+      else pickSweepAt(x, y);
+      return true;
+    },
     history: () => (editor.phase === "editing" ? { undo: canUndoSketch(editor), redo: canRedoSketch(editor) } : null),
     undo() {
       editor = undoSketch(editor);
@@ -1205,7 +1221,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     hud.setParams(host.parameters());
     if (mode === "skip") return;
     if (sweep && editor.phase === "editing") {
-      const fields: HudField[] = [{ id: "scale", label: "Scale", unit: "×", value: scaleOf(sweep.scale) }];
+      const fields: HudField[] = [{ id: "scale", label: "End scale", unit: "×", value: scaleOf(sweep.scale) }];
       const at = pointerAt();
       if (mode === "open" || !hud.shown) hud.open(fields, at, host.parameters());
       else hud.setValues(fields.map((field) => field.value));
@@ -2638,7 +2654,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!item) return;
     const region = chooseRegions(item.sketch, [], null)[0];
     if (!region) {
-      loft = { ...loft, note: "That sketch has no region to loft." };
+      loft = { ...loft, note: sketchRegions(item.sketch).length > 1 ? "That sketch has more than one region. Click the one to loft in the view." : "That sketch has no region to loft." };
       publish("open");
       return;
     }
@@ -2658,7 +2674,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const region = chooseRegions(item.sketch, [], null)[0] ?? null;
     const chain = openChain(item.sketch);
     if (!region && !chain) {
-      sweep = { ...sweep, note: "That sketch needs a region or an open path." };
+      sweep = { ...sweep, note: sketchRegions(item.sketch).length > 1 ? "That sketch has more than one region. Click the one to sweep in the view." : "That sketch needs a region or an open path." };
       publish("open");
       return;
     }
@@ -2699,7 +2715,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const regions: Region[] = [];
     if (loft) {
       for (const pick of loft.picks) {
-        if (pick.sketchId === editor.active && pick.sketch) regions.push(...chooseRegions(pick.sketch, [], null));
+        const region = pick.sketchId === editor.active && pick.sketch ? sameRegionIn(pick.sketch, pick.section.loops as ProfileLoop[] | undefined) : null;
+        if (region) regions.push(region);
       }
     } else if (sweep?.profile) regions.push(sweep.profile);
     return !!sketch && !!frame && regions.length > 0 && sketchTouchesSolid(frame, regions, host.bounds(), sketch.on?.kind === "face");
@@ -2712,7 +2729,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       const live = pick.sketchId === editor.active ? activeSketch(editor) : editor.pinned.find((item) => item.id === pick.sketchId)?.sketch;
       if (!live) return pick;
       if (pick.sketch && JSON.stringify(sketchJson(live)) === JSON.stringify(sketchJson(pick.sketch))) return { ...pick, sketch: sketchJson(live) };
-      const region = chooseRegions(live, [], null)[0];
+      const region = sameRegionIn(live, pick.section.loops as ProfileLoop[] | undefined);
       if (!region) return { ...pick, sketch: sketchJson(live) };
       return { ...pick, sketch: sketchJson(live), section: sectionFromRegion(live, region) };
     });
@@ -2771,17 +2788,22 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const ray = host.view.pointerRay(ev.x, ev.y);
     const plane = frame ? rayOnPlane(frame, ray.origin, ray.direction) : null;
     const face = host.view.pickSolid(ev.x, ev.y);
-    if (face && (!plane || face.t + 0.05 < plane.t)) {
+    const sketch = activeSketch(editor);
+    if (!sketch || editor.active == null) return;
+    // The region under the click: on the sketch being drawn, or on a pinned one, the nearest first.
+    const own = plane ? regionAt(sketchRegions(sketch), plane.uv) : null;
+    const pinned = pinnedRegionAt(ev.x, ev.y);
+    const hit = own && (!pinned || plane!.t <= pinned.t) ? { id: editor.active, sketch, region: own, t: plane!.t } : pinned;
+    // A face in front of the region wins. A face behind the sketch plane is picked when the click is on no region.
+    if (face && (!hit || face.t + 0.05 < hit.t)) {
       void addFaceSection(face.face);
       return;
     }
-    const sketch = activeSketch(editor);
-    if (!sketch || !plane || editor.active == null) return;
-    const region = regionAt(sketchRegions(sketch), plane.uv);
-    if (!region) return;
-    const key = regionKey(editor.active, region);
-    const pick: LoftPick = { key, sketchId: editor.active, sketch: sketchJson(sketch), section: sectionFromRegion(sketch, region) };
-    const at = loft.picks.findIndex((item) => item.key === key || item.key === `sketch:${editor.active}`);
+    if (!hit) return;
+    const { id, region } = hit;
+    const key = regionKey(id, region);
+    const pick: LoftPick = { key, sketchId: id, sketch: sketchJson(hit.sketch), section: sectionFromRegion(hit.sketch, region) };
+    const at = loft.picks.findIndex((item) => item.key === key || item.key === `sketch:${id}`);
     const picks = at >= 0 ? loft.picks.filter((_, index) => index !== at) : [...loft.picks, pick];
     loft = { ...loft, picks, note: "" };
     publish("open");
@@ -2804,6 +2826,27 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     loft = { ...loft, picks, note: "" };
     publish("open");
     armLoftProbe();
+  }
+
+  /** The region of a pinned sketch, not the one being drawn, under the pointer: the nearest one along the ray. */
+  function pinnedRegionAt(x: number, y: number): { id: number; sketch: SketchData; region: Region; t: number } | null {
+    const ray = host.view.pointerRay(x, y);
+    let best: { id: number; sketch: SketchData; region: Region; t: number } | null = null;
+    for (const item of editor.pinned) {
+      if (item.id === editor.active) continue;
+      const frame = frameFromWorkplane(workplaneIn({ source: "global", origin: item.sketch.plane.origin, turn: item.sketch.plane.turn }, host.pose()));
+      const hit = rayOnPlane(frame, ray.origin, ray.direction);
+      if (!hit || (best && hit.t >= best.t)) continue;
+      const region = regionAt(sketchRegions(item.sketch), hit.uv);
+      if (region) best = { id: item.id, sketch: item.sketch, region, t: hit.t };
+    }
+    return best;
+  }
+
+  /** `region` found again in `sketch` after the drawing changed, by its outline or a point inside it. */
+  function sameRegionIn(sketch: SketchData, loops: readonly ProfileLoop[] | undefined): Region | null {
+    const outer = loops?.[0];
+    return outer ? regionsOfOutlines(sketch, [outer])[0] ?? null : null;
   }
 
   function paintLoft() {
@@ -2845,7 +2888,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const profileSketch = sweep.profileSketch;
-    const profile = chooseRegions(profileSketch, [], null)[0] ?? sweep.profile;
+    const profile = sameRegionIn(profileSketch, toLoops(sweep.profile)) ?? sweep.profile;
     const built = buildSketchSweep({
       profileSketch,
       profile,
@@ -2893,7 +2936,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const mode = modeLabel(resolvedSweepMode());
     const profile = sweep.profile ? "profile" : "no profile";
     const path = sweep.path.length >= 2 ? "path" : "no path";
-    return `Sweep, ${profile}, ${path}, scale ${scaleOf(sweep.scale)}, ${mode}. Drag or type the scale. Pick an open chain, or Shift-click edges that meet. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
+    return `Sweep, ${profile}, ${path}, end scale ${scaleOf(sweep.scale)}, ${mode}. Drag or type the size at the end of the path. Click a region for the profile. Pick an open chain, or Shift-click edges that meet. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
   }
 
   function sweepPointer(ev: { phase: "down" | "move" | "up"; x: number; y: number; shift: boolean; ctrl: boolean }, _frame: ReturnType<typeof drawingFrame>) {
@@ -2979,11 +3022,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!frame || !sketch) return;
     const ray = host.view.pointerRay(x, y);
     const plane = rayOnPlane(frame, ray.origin, ray.direction);
-    if (!plane) return;
-    const region = regionAt(sketchRegions(sketch), plane.uv);
+    // A click on a region, on this sketch or a pinned one, makes it the profile in place of the last one.
+    const own = plane ? regionAt(sketchRegions(sketch), plane.uv) : null;
+    const pinned = pinnedRegionAt(x, y);
+    const hit = own && (!pinned || plane!.t <= pinned.t) ? { sketch, region: own } : pinned;
     const chain = openChain(sketch);
-    if (region && !sweep.profile) {
-      sweep = { ...sweep, profile: region, profileSketch: sketch, note: "" };
+    if (hit) {
+      sweep = { ...sweep, profile: hit.region, profileSketch: hit.sketch, note: "" };
     } else if (chain && sweep.path.length < 2) {
       sweep = { ...sweep, path: chain.path, check: chain.check, pathSketch: sketch, edges: [], note: "" };
     }
@@ -3009,18 +3054,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     for (const item of editor.pinned) {
       if (item.id === editor.active) continue;
       const frame = frameFromWorkplane(workplaneIn({ source: "global", origin: item.sketch.plane.origin, turn: item.sketch.plane.turn }, host.pose()));
-      for (const entity of item.sketch.entities) {
-        if (entity.construction) continue;
-        const region = chooseRegions(item.sketch, [entity.id], null)[0];
-        if (!region) continue;
-        const loop = sampleLoop(toLoops(region)[0] ?? region.outer);
+      // Every region of a pinned sketch is drawn, so each one can be clicked as a section or a profile.
+      for (const region of sketchRegions(item.sketch)) {
         const xyz: number[] = [];
-        for (const point of loop) {
+        for (const point of sampleLoop(region.outer)) {
           const at = toWorld(frame, point);
           xyz.push(at[0], at[1], at[2]);
         }
         if (xyz.length >= 6) strokes.push({ xyz, role: "hint" });
-        break;
       }
     }
     if (sweep && sweep.path.length >= 2) {

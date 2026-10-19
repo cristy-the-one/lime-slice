@@ -1,17 +1,18 @@
 /**
  * --- F3. Sweep a region along an open path by lofting copies of it (option a). ---
  *
- * The path is sampled and `sweepSections` places the profile, centred, on planes square to the
- * path. U is carried forward, so the profile does not twist. `scale` is the MCP field: one
- * number, or one per path point. A corner that turns more than `SHARP_DEG` is refused. A kernel
- * pipe along the real wire is a follow-up, noted in `docs/step-modeler.md`.
+ * The profile stays where it was drawn, on its own plane, holes included. Each copy is the profile
+ * carried along the path by the frame `sweepSections` moves along it, so it does not twist. A number
+ * `scale` is the size at the path's end, reached evenly along it (1 at the start); a list is one
+ * factor per path point, as the MCP field. A corner that turns more than `SHARP_DEG` is refused. A
+ * kernel pipe along the real wire is a follow-up, noted in `docs/step-modeler.md`.
  */
-import type { LoftOp, LoftSection, Vec3 } from "../model-tree.ts";
+import type { LoftOp, LoftSection, ProfileLoop, Vec3 } from "../model-tree.ts";
 import { sweepSections } from "../modeling/sweep.ts";
-import { frameOf, toWorld } from "./frame.ts";
+import { frameOf, planeOf, toWorld, type SketchFrame } from "./frame.ts";
 import { arcPoint, curveOf, sampleSpline, type Curve } from "./geom.ts";
 import { sketchJson, type Pt, type SketchData } from "./model.ts";
-import type { Region } from "./regions.ts";
+import { toLoops, type Region } from "./regions.ts";
 import { regionCentroid, sampleLoop, type ModeChoice, type ResolvedMode } from "./extrude.ts";
 import { buildSketchLoft, type LoftPickInput } from "./loft.ts";
 
@@ -21,6 +22,7 @@ export const SHARP_CORNER = "This path has a sharp corner. Fillet the corner, or
 export const EDGE_MEET = "Pick an edge that meets the path.";
 export const PATH_REFUSAL = "Pick an open path: a chain in a sketch, or solid edges with Shift.";
 export const PROFILE_REFUSAL = "Pick a region to sweep.";
+export const ALONG_REFUSAL = "The profile lies along the path. Draw it on a plane across the path's start, such as a workplane square to it.";
 
 /** How many samples a smooth path keeps. Sharp corners are judged before this. */
 const MAX_SAMPLES = 16;
@@ -202,26 +204,27 @@ export function extendPath(path: readonly Vec3[], check: readonly boolean[], edg
   }
 }
 
-/** The profile centred on its area, so the section sits on the path. The outer outline only. */
-export function centredProfile(region: Region): [number, number][] | null {
-  const loop = sampleLoop(region.outer);
-  if (loop.length < 3) return null;
-  const centre = regionCentroid(region);
-  return loop.map((point) => [round(point[0] - centre[0]), round(point[1] - centre[1])]);
-}
-
-/** A loft through profile copies along `path`. A sharp corner is refused and nothing is sent. */
+/** A loft through copies of the profile carried along `path`. A sharp corner is refused and nothing is sent. */
 export function buildSketchSweep(draft: SweepDraft): { op: LoftOp } | { error: string } {
   if (draft.path.length < 2) return { error: PATH_REFUSAL };
   const sharp = sharpCorner(draft.path, draft.check);
   if (sharp) return { error: sharp };
-  const profile = centredProfile(draft.profile);
-  if (!profile) return { error: PROFILE_REFUSAL };
+  if (sampleLoop(draft.profile.outer).length < 3) return { error: PROFILE_REFUSAL };
   const scaleIsList = Array.isArray(draft.scale);
   const path = scaleIsList ? draft.path.map(copy) : decimate(draft.path, MAX_SAMPLES);
-  const swept = sweepSections({ path, profile, scale: draft.scale, steps: 1 });
+  const plane = frameOf(draft.profileSketch.plane);
+  const start = path[0]!;
+  const ahead = sub(path[1]!, start);
+  if (Math.abs(dot(plane.w, ahead)) < Math.sin((10 * Math.PI) / 180) * Math.hypot(...ahead)) return { error: ALONG_REFUSAL };
+  const factors = scaleIsList ? (draft.scale as number[]) : endScale(path, draft.scale as number);
+  // A circle as far out as the profile reaches is swept first, so a bend too tight for the profile is refused.
+  const reach = Math.max(...sampleLoop(draft.profile.outer).map((point) => Math.hypot(...sub(toWorld(plane, point), start))), 1e-3);
+  const swept = sweepSections({ path, radius: factors.map((k) => reach * k), steps: 1 });
   if (!Array.isArray(swept)) return { error: sentence(swept.reason) };
-  const picks: LoftPickInput[] = swept.map((section) => ({ sketch: null, section: section as LoftSection }));
+  const frames = pathFrames(path);
+  const centre = regionCentroid(draft.profile);
+  const loops = toLoops(draft.profile);
+  const picks: LoftPickInput[] = frames.map((at, index) => ({ sketch: null, section: carried(plane, frames[0]!, at, loops, centre, factors[index]!) }));
   const built = buildSketchLoft({ picks, ruled: false, mode: draft.mode });
   if ("error" in built) return built;
   const { sketches: _sketches, ...rest } = built.op.drawing ?? {};
@@ -240,6 +243,88 @@ export function buildSketchSweep(draft: SweepDraft): { op: LoftOp } | { error: s
       },
     },
   };
+}
+
+/**
+ * A frame at each path point with W along the path and U carried from the point before, so it does not twist. The
+ * ends take a three-point tangent, so a sampled arc's end section stands square to the arc, not to its last chord.
+ */
+function pathFrames(path: readonly Vec3[]): SketchFrame[] {
+  const n = path.length;
+  const p = (i: number) => path[Math.max(0, Math.min(n - 1, i))]!;
+  const tangent = (i: number): Vec3 => {
+    if (n >= 3 && i === 0) return unit3([-3 * p(0)[0] + 4 * p(1)[0] - p(2)[0], -3 * p(0)[1] + 4 * p(1)[1] - p(2)[1], -3 * p(0)[2] + 4 * p(1)[2] - p(2)[2]]);
+    if (n >= 3 && i === n - 1) return unit3([3 * p(i)[0] - 4 * p(i - 1)[0] + p(i - 2)[0], 3 * p(i)[1] - 4 * p(i - 1)[1] + p(i - 2)[1], 3 * p(i)[2] - 4 * p(i - 1)[2] + p(i - 2)[2]]);
+    return unit3(sub(p(i + 1), p(i - 1)));
+  };
+  const w0 = tangent(0);
+  const up: Vec3 = Math.abs(w0[2]) > 0.95 ? [0, 1, 0] : [0, 0, 1];
+  let u = unit3(cross3(up, w0));
+  const out: SketchFrame[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const w = tangent(i);
+    if (i > 0) {
+      const along = dot(u, w);
+      u = unit3([u[0] - w[0] * along, u[1] - w[1] * along, u[2] - w[2] * along]);
+    }
+    out.push({ origin: copy(path[i]!), u, v: cross3(w, u), w });
+  }
+  return out;
+}
+
+function cross3(a: Vec3, b: Vec3): Vec3 {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+function unit3(a: Vec3): Vec3 {
+  const size = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / size, a[1] / size, a[2] / size];
+}
+
+/** 1 at the path's start to `end` at its end, by length along it. */
+function endScale(path: readonly Vec3[], end: number): number[] {
+  const total = lengthOf(path) || 1;
+  let along = 0;
+  return path.map((point, index) => {
+    if (index > 0) along += dist(path[index - 1]!, point);
+    return round(1 + ((end - 1) * along) / total);
+  });
+}
+
+/**
+ * The profile's section where the path frame `from` has moved to `to`: its plane turned and moved with the frame, its
+ * loops scaled by `k` about `centre`.
+ */
+function carried(plane: SketchFrame, from: SketchFrame, to: SketchFrame, loops: readonly ProfileLoop[], centre: Pt, k: number): LoftSection {
+  const turn = (vector: Vec3): Vec3 => {
+    const a = dot(vector, from.u);
+    const b = dot(vector, from.v);
+    const c = dot(vector, from.w);
+    return [to.u[0] * a + to.v[0] * b + to.w[0] * c, to.u[1] * a + to.v[1] * b + to.w[1] * c, to.u[2] * a + to.v[2] * b + to.w[2] * c];
+  };
+  const offset = turn(sub(plane.origin, from.origin));
+  const moved = planeOf({ origin: [to.origin[0] + offset[0], to.origin[1] + offset[1], to.origin[2] + offset[2]], u: turn(plane.u), v: turn(plane.v), w: turn(plane.w) });
+  const scale = (point: readonly number[]): [number, number] => [round(centre[0] + (point[0]! - centre[0]) * k), round(centre[1] + (point[1]! - centre[1]) * k)];
+  return {
+    origin: moved.origin.map(round) as Vec3,
+    turn: moved.turn.map(round) as Vec3,
+    loops: loops.map((loop) => ({
+      start: scale(loop.start),
+      segments: loop.segments.map((segment) =>
+        segment.kind === "line" ? { kind: "line", to: scale(segment.to) }
+        : segment.kind === "arc" ? { kind: "arc", through: scale(segment.through), to: scale(segment.to) }
+        : { kind: "spline", through: segment.through.map(scale), to: scale(segment.to) },
+      ),
+    })),
+  };
+}
+
+function sub(a: readonly number[], b: readonly number[]): Vec3 {
+  return [a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!];
+}
+
+function dot(a: readonly number[], b: readonly number[]): number {
+  return a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
 }
 
 function segmentOf(curve: Exclude<Curve, { kind: "circle" }>): { pts: Pt[]; check: boolean[] } {

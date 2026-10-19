@@ -130,7 +130,8 @@ export function regionsOfOutlines(sketch: SketchData, outlines: readonly Profile
 
 /**
  * Regions to extrude. Selected entities win, then the region under the pointer, then the only
- * region. A hole is dropped when its ring is selected too: the ring's loops already include it.
+ * outer region: a washer's ring, not its hole. A hole is dropped when its ring is selected too:
+ * the ring's loops already include it.
  */
 export function chooseRegions(sketch: SketchData, selected: readonly number[], cursor: Pt | null): Region[] {
   const regions = sketchRegions(sketch);
@@ -144,7 +145,10 @@ export function chooseRegions(sketch: SketchData, selected: readonly number[], c
     const hit = regionAt(regions, cursor) ?? regions.find((region) => distToLoop(region.outer, cursor) <= NEAR_MM) ?? null;
     if (hit) chosen = [hit];
   }
-  if (chosen.length === 0 && regions.length === 1) chosen = [regions[0]!];
+  if (chosen.length === 0) {
+    const outer = dropHoles(regions);
+    if (outer.length === 1) chosen = outer;
+  }
   return dropHoles(chosen);
 }
 

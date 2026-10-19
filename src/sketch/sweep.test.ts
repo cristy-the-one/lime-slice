@@ -3,9 +3,11 @@
  */
 import { keepSketch, withoutSketch } from "../model-request.ts";
 import { opLabel } from "../model-tree.ts";
+import type { LoftSection, ProfileLoop, Vec3 } from "../model-tree.ts";
+import { frameOf, toWorld } from "./frame.ts";
 import { addArc, addLine, emptySketch, type SketchData } from "./model.ts";
-import { sketchRegions } from "./regions.ts";
-import { SHARP_CORNER, buildSketchSweep, extendPath, openChain, sharpCorner, sweepEditOf, turningDeg } from "./sweep.ts";
+import { sketchRegions, toLoops } from "./regions.ts";
+import { ALONG_REFUSAL, SHARP_CORNER, buildSketchSweep, extendPath, openChain, sharpCorner, sweepEditOf, turningDeg } from "./sweep.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -24,13 +26,40 @@ function near(a: number, b: number, tol = 1e-3) {
   return Math.abs(a - b) < tol;
 }
 
+function square(sketch: SketchData, at: number, size: number): SketchData {
+  let out = sketch;
+  out = addLine(out, [at, at], [at + size, at]).sketch;
+  out = addLine(out, [at + size, at], [at + size, at + size]).sketch;
+  out = addLine(out, [at + size, at + size], [at, at + size]).sketch;
+  out = addLine(out, [at, at + size], [at, at]).sketch;
+  return out;
+}
+
 function squareSketch(): SketchData {
-  let sketch = emptySketch();
-  sketch = addLine(sketch, [0, 0], [4, 0]).sketch;
-  sketch = addLine(sketch, [4, 0], [4, 4]).sketch;
-  sketch = addLine(sketch, [4, 4], [0, 4]).sketch;
-  sketch = addLine(sketch, [0, 4], [0, 0]).sketch;
-  return sketch;
+  return square(emptySketch(), 0, 4);
+}
+
+/** Every loop point of a section, in model space. */
+function sectionPoints(section: LoftSection): Vec3[] {
+  const frame = frameOf(section);
+  return (section.loops ?? []).flatMap((loop) => [loop.start, ...loop.segments.map((segment) => segment.to)].map((point) => toWorld(frame, [point[0], point[1]])));
+}
+
+/** How far a section's outline reaches from the square's centre (2, 2), on its own plane. */
+function reachOf(section: LoftSection | undefined): number {
+  const loop = section?.loops?.[0] as ProfileLoop | undefined;
+  if (!loop) return 0;
+  return Math.max(...[loop.start, ...loop.segments.map((segment) => segment.to)].map((point) => Math.hypot(point[0] - 2, point[1] - 2)));
+}
+
+/** A quarter circle of radius 20 that rises from the bed at (2, 2, 0), straight up at first, and bends toward +X. */
+function risingArc(): { path: Vec3[]; check: boolean[] } {
+  const path: Vec3[] = [];
+  for (let k = 0; k <= 6; k += 1) {
+    const angle = (k / 6) * (Math.PI / 2);
+    path.push([2 + 20 * (1 - Math.cos(angle)), 2, 20 * Math.sin(angle)]);
+  }
+  return { path, check: path.map((_, index) => index === 0 || index === path.length - 1) };
 }
 
 const profileSketch = squareSketch();
@@ -54,11 +83,14 @@ if (profile) {
   check("a quarter-circle arc is an open path", !!chain && chain.path.length >= 4);
   if (chain) {
     eq("samples inside the arc are not corners", sharpCorner(chain.path, chain.check), null);
+    const along = buildSketchSweep({ profileSketch, profile, path: chain.path, check: chain.check, pathSketch: arc, scale: 1, mode: "new" });
+    eq("a profile drawn on the path's own plane is refused in words", "error" in along ? along.error : "", ALONG_REFUSAL);
+    const rising = risingArc();
     const swept = buildSketchSweep({
       profileSketch,
       profile,
-      path: chain.path,
-      check: chain.check,
+      path: rising.path,
+      check: rising.check,
       pathSketch: arc,
       scale: 1,
       mode: "new",
@@ -66,7 +98,13 @@ if (profile) {
     check("the arc sweeps", "op" in swept);
     if ("op" in swept) {
       check("the sweep is a loft of at least two sections", swept.op.kind === "loft" && swept.op.sections.length >= 2);
-      check("each section is a point profile", swept.op.sections.every((section) => (section.profile?.length ?? 0) >= 3));
+      const first = swept.op.sections[0]!;
+      eq("the first section is the profile where it was drawn: its plane", [first.origin, first.turn], [[0, 0, 0], [0, 0, 0]]);
+      eq("and its loops", first.loops, toLoops(profile));
+      const last = swept.op.sections.at(-1)!;
+      const ends = sectionPoints(last);
+      check("the last section stands at the arc's end, square to it", ends.every((point) => near(point[0], 22, 0.05)) && ends.every((point) => point[2] > 17.9 && point[2] < 22.1));
+      check("no section goes below the bed", swept.op.sections.every((section) => sectionPoints(section).every((point) => point[2] > -1e-6)));
       const sent = withoutSketch(swept.op);
       check("the engine op has no drawing", !("drawing" in sent));
       eq("the drawing comes back on the echo", keepSketch(sent, swept.op), swept.op);
@@ -85,13 +123,24 @@ if (profile) {
   });
   check("a scale per point is accepted", "op" in scaled);
   if ("op" in scaled && scaled.op.kind === "loft") {
-    const middle = scaled.op.sections[1]?.profile ?? [];
-    const reach = Math.max(...middle.map(([u, v]) => Math.hypot(u, v)));
-    const end = scaled.op.sections[0]?.profile ?? [];
-    const endReach = Math.max(...end.map(([u, v]) => Math.hypot(u, v)));
-    check("the middle section is twice the end", near(reach, endReach * 2, 0.05));
+    check("the middle section is twice the end", near(reachOf(scaled.op.sections[1]), reachOf(scaled.op.sections[0]) * 2, 0.05));
     eq("the stored scale is the list", scaled.op.drawing?.sweep?.scale, [1, 2, 1]);
   }
+
+  // One number is the size at the end: the start is the profile as drawn, and the size grows evenly along the path.
+  const tapered = buildSketchSweep({ profileSketch, profile, path: [[0, 0, 0], [0, 0, 10], [0, 0, 20]], scale: 2, mode: "fuse" });
+  if ("op" in tapered) {
+    const sections = tapered.op.sections;
+    check("an end scale keeps the start as drawn", near(reachOf(sections[0]), Math.hypot(2, 2)));
+    check("and ends at twice the size", near(reachOf(sections.at(-1)), 2 * Math.hypot(2, 2)));
+    check("halfway along it is 1.5 times", near(reachOf(sections[1]), 1.5 * Math.hypot(2, 2)));
+  } else check("an end scale sweeps", false);
+
+  // A ring keeps its hole along the sweep.
+  const ringSketch = square(square(emptySketch(), 0, 4), 1, 2);
+  const ring = sketchRegions(ringSketch).reduce((big, region) => (region.area > big.area ? region : big));
+  const piped = buildSketchSweep({ profileSketch: ringSketch, profile: ring, path: [[0, 0, 0], [0, 0, 10]], scale: 1, mode: "new" });
+  check("a ring sweeps with its hole on every section", "op" in piped && piped.op.sections.every((section) => section.loops?.length === 2));
 }
 
 const closed = openChain(profileSketch);
