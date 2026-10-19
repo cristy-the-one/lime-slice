@@ -209,6 +209,7 @@ export function edgeSides(positions: ArrayLike<number>, triangles: ArrayLike<num
       w2: into(other.centre, other.normal),
       // Convex when the second face runs below the first face's plane.
       convex: dot3(first.normal, sub3(other.centre, at)) < 0,
+      step: index,
     });
   });
   return out;

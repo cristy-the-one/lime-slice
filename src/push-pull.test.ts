@@ -122,6 +122,7 @@ eq("a huge pull is refused", pullRefusal("move", 1e6, [20], 3000), "1000000 mm i
 eq("an ordinary pull is not", pullRefusal("move", 10, [20], 3000), null);
 eq("a push as deep as the part goes through it", pullRefusal("move", -20, [20], 3000), "That push goes through the part: it is 20 mm deep there. Push less, or hold Alt to cut through.");
 eq("a shallower push is kept", pullRefusal("move", -19.5, [20], 3000), null);
+eq("several faces are not offered Alt", pullRefusal("move", -20, [20], 3000, false), "That push goes through the part: it is 20 mm deep there. Push less.");
 eq("a prism may cut through", pullRefusal("extrude", -25, [20], 3000), null);
 eq("a curved face's depth is not known", pullRefusal("move", -25, [null], 3000), null);
 const cube = [0, 0, 0, 20, 0, 0, 20, 20, 0, 0, 0, 20, 20, 20, 20, 0, 20, 20];

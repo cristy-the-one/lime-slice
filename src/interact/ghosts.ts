@@ -181,6 +181,8 @@ export interface BlendSide {
   w1: Vec3;
   w2: Vec3;
   convex: boolean;
+  /** The point's place along the edge. Sides whose steps are not next to each other leave a gap, over a smooth stretch. */
+  step?: number;
 }
 
 /**
@@ -193,6 +195,9 @@ export function blendGhost(sides: readonly BlendSide[], radius: number, chamfer:
   const profiles = sides.map((side) => (chamfer ? chamferProfile(side, radius) : filletProfile(side, radius, steps)));
   const out: number[] = [];
   for (let i = 0; i + 1 < profiles.length; i += 1) {
+    const from = sides[i]!.step;
+    const to = sides[i + 1]!.step;
+    if (from != null && to != null && to - from !== 1) continue;
     const a = profiles[i]!;
     const b = profiles[i + 1]!;
     for (let k = 0; k + 1 < a.length && k + 1 < b.length; k += 1) pushQuad(out, a[k]!, a[k + 1]!, b[k + 1]!, b[k]!);

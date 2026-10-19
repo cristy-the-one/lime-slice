@@ -589,8 +589,10 @@ export function bindModelView() {
     pullPanel = pull;
     // A typed diameter is the distance that reaches it: Distance follows, and the panel checks that as it would a typed distance.
     document.querySelector<HTMLInputElement>("#modelPullDiameter")?.addEventListener("input", (ev) => {
-      const typed = Number((ev.currentTarget as HTMLInputElement).value);
-      const distance = Number.isFinite(typed) ? pull.pickedDistance(typed) : null;
+      // An emptied field is not a diameter of 0: Distance waits for a number.
+      const text = (ev.currentTarget as HTMLInputElement).value.trim();
+      const typed = Number(text);
+      const distance = text !== "" && Number.isFinite(typed) && typed > 0 ? pull.pickedDistance(typed) : null;
       const field = document.querySelector<HTMLInputElement>("#modelPull");
       if (distance == null || !field) return;
       field.value = pullFieldText(distance);
@@ -1268,9 +1270,10 @@ async function sendPullProbe(gen: number, key: string, treeKey: string, node: No
 
 /**
  * P1. Why a push or pull is refused before the kernel is asked: a distance past ten bed or part diagonals, or a move
- * that pushes a planar face as deep as the part. Null lets the kernel decide. Each face is read on the solid on screen.
+ * that pushes a planar face as deep as the part. Null lets the kernel decide. Each face is read on the solid on screen,
+ * so `depths` is false where that solid is the step's own result (a Tab edit), not the one it is built on.
  */
-function pullGuard(op: ModelOp): string | null {
+function pullGuard(op: ModelOp, depths = true): string | null {
   if (op.kind !== "moveFaces" && op.kind !== "faceExtrude") return null;
   const solid = viewed();
   if (!solid) return null;
@@ -1285,8 +1288,8 @@ function pullGuard(op: ModelOp): string | null {
     const info = solid.faces[index];
     const normal = info && !info.surface ? info.normal ?? null : null;
     const centre = table.get(index)?.centre;
-    const depth = normal && centre ? depthBehind(solid.positions, centre, normal) : null;
-    const said = pullRefusal(op.kind === "moveFaces" ? "move" : "extrude", row.distance, [depth], limit);
+    const depth = depths && normal && centre ? depthBehind(solid.positions, centre, normal) : null;
+    const said = pullRefusal(op.kind === "moveFaces" ? "move" : "extrude", row.distance, [depth], limit, rows.length === 1);
     if (said) return said;
   }
   return null;
@@ -1316,7 +1319,8 @@ function pullLiveNow(): boolean {
   if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") return false;
   const solid = viewed();
   if (!solid?.editable) return false;
-  if (lens && !editing) return false;
+  // A History edit, Push/Pull's own included, is typed in its panel: a drag would add a step beside the one edited.
+  if (lens || editing) return false;
   return true;
 }
 
@@ -3296,7 +3300,8 @@ async function editPull(parent: NodeId, node: NodeId, op: ModelOp): Promise<bool
   if (!old || old.parent !== parent || !old.op) return false;
   // An undone step is off the path on screen: editing it would bring it back.
   if (!pathTo(tree, tree.current).includes(node)) return false;
-  const said = pullGuard(op);
+  // The solid on screen is this step's result: its faces have already moved, so only the distance bound is checked here.
+  const said = pullGuard(op, tree.current === parent);
   if (said) {
     readout(said);
     return false;

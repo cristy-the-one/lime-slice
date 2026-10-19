@@ -357,7 +357,7 @@ function followStage() {
   const stage = document.querySelector<HTMLElement>("#tabModel[aria-selected=true]") ? "model"
     : document.querySelector<HTMLElement>("#tabPreview[aria-selected=true]") ? "preview"
     : "prepare";
-  const want: CompactTab = stage !== "prepare" ? stage : tab === "settings" ? "settings" : "prepare";
+  const want: CompactTab = stage !== "prepare" ? stage : tab === "settings" || tab === "device" ? tab : "prepare";
   if (want !== tab) selectTab(want, true);
 }
 

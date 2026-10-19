@@ -83,10 +83,11 @@ export function depthBehind(positions: ArrayLike<number>, at: Vec3, normal: Vec3
 /**
  * Why a push or pull is refused before the kernel is asked, or null. A distance past `limitMm` would build a part no
  * printer holds. A move that pushes a face as deep as the part goes through it, where the kernel can only say the
- * neighbours cannot follow; a prism (Alt) may cut through, so the sentence offers that. `depths` are the faces' depths
- * behind them, null where unknown (a curved face).
+ * neighbours cannot follow; a prism (Alt) may cut through, so the sentence offers that for one face. `depths` are the
+ * faces' depths behind them, null where unknown (a curved face). The depth is a coarse bound, to the part's farthest
+ * corner behind the face's plane: it never refuses a push that fits, and a thin wall of an L or a U is left to the kernel.
  */
-export function pullRefusal(kind: PullKind, distance: number, depths: readonly (number | null)[], limitMm: number): string | null {
+export function pullRefusal(kind: PullKind, distance: number, depths: readonly (number | null)[], limitMm: number, single = true): string | null {
   if (!Number.isFinite(distance)) return "Type a distance in millimetres.";
   if (Math.abs(distance) > limitMm) {
     return `${formatNumber(Math.abs(distance), 1)} mm is farther than any printer reaches. A push or pull goes up to ${formatNumber(limitMm, 0)} mm here.`;
@@ -95,7 +96,9 @@ export function pullRefusal(kind: PullKind, distance: number, depths: readonly (
     const through = depths.filter((depth): depth is number => depth != null && -distance >= depth - 1e-6);
     if (through.length > 0) {
       const depth = Math.min(...through);
-      return `That push goes through the part: it is ${formatNumber(depth, 1)} mm deep there. Push less, or hold Alt to cut through.`;
+      // Alt makes a prism on one face only, so several faces are only told to push less.
+      const alt = single ? ", or hold Alt to cut through" : "";
+      return `That push goes through the part: it is ${formatNumber(depth, 1)} mm deep there. Push less${alt}.`;
     }
   }
   return null;

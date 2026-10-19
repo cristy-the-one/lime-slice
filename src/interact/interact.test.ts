@@ -394,6 +394,7 @@ const inside = blendGhost([{ ...side(0), convex: false }, { ...side(10), convex:
 let insideOk = inside.length > 0;
 for (let i = 0; i < inside.length; i += 3) if (!near(Math.hypot(inside[i + 1]! + 1, inside[i + 2]! - 1), 1, 1e-6)) insideOk = false;
 check("a concave corner's fillet arcs about a centre out in the air", insideOk);
+eq("a gap in the steps, over a smooth stretch, is not bridged", blendGhost([{ ...side(0), step: 0 }, { ...side(5), step: 1 }, { ...side(10), step: 3 }], 1, false).length, 8 * 2 * 9);
 check("a fillet with no radius draws nothing", blendGhost([side(0), side(1)], 0, false).length === 0);
 
 const loftRing = (z: number): [number, number, number][] => [[0, 0, z], [10, 0, z], [10, 10, z], [0, 10, z]];

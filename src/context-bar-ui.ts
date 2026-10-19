@@ -133,12 +133,13 @@ function pressToolbar(selector: string | undefined): void {
   button.click();
 }
 
-function activate(toolbar: string | undefined, then: string | undefined, run: (() => void) | undefined): void {
+/** `keyboard` is an activation from Enter or Space (a click with no pointer detail): only then the focus follows. */
+function activate(toolbar: string | undefined, then: string | undefined, run: (() => void) | undefined, keyboard = false): void {
   pressToolbar(toolbar);
   if (then) document.querySelector<HTMLButtonElement>(then)?.click();
   run?.();
   closeMenu();
-  focusPanel();
+  if (keyboard) focusPanel();
 }
 
 /**
@@ -150,10 +151,10 @@ function focusPanel() {
   if (!panel || panel.hidden) return;
   const active = document.activeElement;
   if (active instanceof HTMLElement && active !== document.body && !bar?.contains(active) && !menu?.contains(active)) return;
-  const field = [...panel.querySelectorAll<HTMLElement>("input:not([type=hidden]), select, textarea, button")].find((node) => {
-    if (node.closest("[hidden]") || (node as HTMLInputElement).disabled) return false;
-    return node.getClientRects().length > 0;
-  });
+  const shown = (node: HTMLElement) => !node.closest("[hidden]") && !(node as HTMLInputElement).disabled && node.getClientRects().length > 0;
+  // A size field first (Fillet's Size, not its Picked mode button), then any control.
+  const field = [...panel.querySelectorAll<HTMLElement>("input:not([type=hidden]):not([type=checkbox]), select, textarea")].find(shown)
+    ?? [...panel.querySelectorAll<HTMLElement>("input, button")].find(shown);
   field?.focus();
   if (field instanceof HTMLInputElement && field.type !== "checkbox") field.select();
 }
@@ -244,7 +245,7 @@ function openMenu(action: ContextAction, anchor: HTMLButtonElement) {
     button.role = "menuitem";
     button.dataset.action = item.id;
     button.textContent = item.label;
-    button.addEventListener("click", () => activate(item.toolbar ?? action.toolbar, item.then, item.run));
+    button.addEventListener("click", (ev) => activate(item.toolbar ?? action.toolbar, item.then, item.run, ev.detail === 0));
     menu.append(button);
   }
   menu.hidden = false;
@@ -279,14 +280,14 @@ function renderButtons(actions: ContextAction[]) {
   for (const action of actions) {
     if (!action.menu?.length) {
       const button = buttonOf(action, null, "context-bar-btn");
-      button.addEventListener("click", () => activate(action.toolbar, undefined, action.run));
+      button.addEventListener("click", (ev) => activate(action.toolbar, undefined, action.run, ev.detail === 0));
       bar.append(button);
       continue;
     }
     const group = document.createElement("span");
     group.className = "context-bar-split";
     const main = buttonOf(action, null, "context-bar-btn");
-    main.addEventListener("click", () => activate(action.toolbar, undefined, action.run));
+    main.addEventListener("click", (ev) => activate(action.toolbar, undefined, action.run, ev.detail === 0));
     const caret = document.createElement("button");
     caret.type = "button";
     caret.className = "context-bar-caret";

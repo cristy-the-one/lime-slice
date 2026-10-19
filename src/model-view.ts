@@ -1840,6 +1840,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setSolid(next, at) {
       clearBody();
       solid = next;
+      // The arrow's face hit was on the solid just replaced: a press must not drag from where that face was.
+      seatHit = null;
       picks = [];
       hover = null;
       edgeLit = null;
@@ -1888,6 +1890,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     },
     setPose(next) {
       setPosedMatrix(next);
+      seatHit = null;
       rebuildGhost();
       kick();
     },

@@ -286,7 +286,11 @@ test("a smooth edge, between faces that carry on flat, offers no knob", async ({
     solid.triangles[tri] = tri === 2 ? 1 : 6;
   });
   solid.faces.push({ id: 6, areaMm2: 0 });
-  solid.edges = [{ id: 0, lengthMm: Math.hypot(20, 20), points: [0, 0, 10, 20, 20, 10] }];
+  // The diagonal is smooth; edge 1, the top's front edge, is a real corner and lights as a control.
+  solid.edges = [
+    { id: 0, lengthMm: Math.hypot(20, 20), points: [0, 0, 10, 20, 20, 10] },
+    { id: 1, lengthMm: 20, points: [0, 0, 10, 20, 0, 10] },
+  ];
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
   await mockModelTree(page, { open: () => solid, probe: () => ({ ok: true }) });
@@ -299,15 +303,16 @@ test("a smooth edge, between faces that carry on flat, offers no knob", async ({
   const canvas = page.locator("#model");
   const lit = await canvas.evaluate((node) => {
     const rect = node.getBoundingClientRect();
+    const seen = new Set<string>();
     for (let y = rect.top + rect.height * 0.12; y <= rect.top + rect.height * 0.88; y += 6) {
       for (let x = rect.left + rect.width * 0.12; x <= rect.left + rect.width * 0.88; x += 6) {
         node.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, bubbles: true, pointerId: 1, pointerType: "mouse" }));
-        if (node.dataset.edgeDrag === "hover") return true;
+        if (node.dataset.edgeDrag === "hover") seen.add(node.dataset.edgeEdges ?? "");
       }
     }
-    return false;
+    return [...seen].sort();
   });
-  expect(lit, "no knob on a smooth edge").toBe(false);
+  expect(lit, "the corner lights, the smooth diagonal never does").toEqual(["1"]);
 });
 
 test("the drag's ghost is the fillet's own surface, inside the corner it rounds", async ({ page }) => {

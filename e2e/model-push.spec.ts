@@ -541,3 +541,43 @@ test("the push arrow stays put while the pointer walks to its tip, and grabbing 
   expect(applied[0]?.kind).toBe("moveFaces");
   expect(applied[0]?.faces?.[0]?.face).toBe(1);
 });
+
+test("a Tab edit of a push is not refused for the depth its own push already took", async ({ page }) => {
+  const { applied, tree } = await openPushBox(page);
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await dragFace(page, top, -5);
+  await expect(page.locator("#modelHistoryTree")).toContainText("Push face 5 mm");
+  await expect.poll(async () => height(page)).toBeCloseTo(15, 0);
+  await page.keyboard.press("Tab");
+  const hud = page.locator(".interact-hud input").first();
+  await expect(hud).toBeVisible();
+  // From the 20 mm box this leaves 2 mm, though the 15 mm on screen is less than 18.
+  await page.keyboard.type("-18");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).not.toContainText("goes through the part");
+  await expect.poll(() => tree.of("edit").length).toBe(1);
+  expect(applied.at(-1)?.faces?.[0]?.distance).toBe(-18);
+  await expect.poll(async () => height(page)).toBeCloseTo(2, 0);
+});
+
+test("while History edits a push, a face drag adds no step", async ({ page }) => {
+  const { applied } = await openPushBox(page);
+  const history = page.locator("#modelHistoryTree");
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  // The edit shows the box before the pull, and the face list is off while it is open: the side is read now.
+  const side = await facePoint(page, (normal) => normal[0]! > 0.5);
+  await dragFace(page, top, 10);
+  await expect(history).toContainText("Pull face 10 mm");
+  const row = page.getByRole("treeitem", { name: /^Pull face 10 mm/ });
+  await row.hover();
+  await row.locator(".mh-edit").click();
+  await expect(page.locator("#modelEditHead")).toHaveText("Editing step 1: Pull face 10 mm");
+  const count = applied.length;
+  await page.mouse.move(side.x, side.y);
+  await page.mouse.down();
+  for (let step = 8; step <= 80; step += 8) await page.mouse.move(side.x + step, side.y);
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+  expect(applied, "the drag during the edit applied nothing").toHaveLength(count);
+  await expect(page.locator("#modelEditHead")).toBeVisible();
+});
