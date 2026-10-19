@@ -323,12 +323,15 @@ function readOp(value: unknown): SavedOp | undefined {
       const axisOrigin = value.axisOrigin === undefined ? undefined : pair(value.axisOrigin);
       const axisDir = value.axisDir === undefined ? undefined : pair(value.axisDir);
       if (axisOrigin === null || axisDir === null || (value.angleDeg !== undefined && !finite(value.angleDeg))) return undefined;
+      // --- F2. `sketch` is optional. A bad drawing is dropped and the revolve still opens. ---
+      const sketch = value.sketch === undefined ? undefined : readSketch(value.sketch) ?? undefined;
       return {
         kind: "revolve",
         ...plane,
         ...(axisOrigin ? { axisOrigin } : {}),
         ...(axisDir ? { axisDir } : {}),
         ...(finite(value.angleDeg) ? { angleDeg: value.angleDeg } : {}),
+        ...(sketch ? { sketch } : {}),
       };
     }
     case "loft": {

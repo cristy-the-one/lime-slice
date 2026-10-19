@@ -2264,6 +2264,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (role === "construction") return { width: 1, opacity: 0.7, color: 0x8a93a3 };
     if (role === "rubber") return { width: 1.5, opacity: 0.95, color: accent };
     if (role === "hint") return { width: 1, opacity: 0.7, color: hexToThree(colors.teal) };
+    // --- F2. The plane axes are dashed; a region that crosses the revolve axis is red. ---
+    if (role === "axis") return { width: 1, opacity: 0.85, color: 0x8a93a3 };
+    if (role === "refuse") return { width: 2.5, opacity: 1, color: hexToThree(colors.danger) };
     return { width: 2, opacity: 1, color: accent };
   }
 

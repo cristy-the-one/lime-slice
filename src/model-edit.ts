@@ -12,7 +12,7 @@ import { tiltOf } from "./model-plane.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
 import { storedEdgeStep } from "./model-edge-step.ts";
-import { ROOT, isSketchExtrudeGroup, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
+import { ROOT, isSketchExtrudeGroup, isSketchRevolveGroup, type JoinOp, childrenOf, childrenWithOp, isEdgeStep, opLabel, pathTo, renumberedSteps, toolUser, type BooleanKind, type EdgeFilter, type EdgeRef, type FaceRef, type Fingerprint, type ModelOp, type ModelTree, type NodeId, type Vec3 } from "./model-tree.ts";
 import { isSketchHoleGroup, sketchHolePanel } from "./sketch/holes.ts";
 
 /**
@@ -82,8 +82,8 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
 }
 
 /**
- * Edit step on a revolve or loft that started the solid. An extrude root reopens its sketch (E1).
- * Until those editors land, the pencil stays and the readout says this.
+ * Edit step on a loft that started the solid. An extrude or a revolve root reopens its sketch.
+ * Until a loft editor lands, the pencil stays and the readout says this.
  */
 export const FEATURE_ROOT_EDIT = "This solid started from a sketch. Open the sketch to change it.";
 
@@ -101,16 +101,17 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   return null;
 }
 
-/** Whether the app has a panel for `op`: not yet for a revolve, a loft, a face extrude, a face move, or a group that is not a feature, a pattern, a mirror, a sketch extrude, or holes from a sketch. An extrude reopens its sketch. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
+/** Whether the app has a panel for `op`: not yet for a loft, a face extrude, a face move, or a group that is not a feature, a pattern, a mirror, a sketch extrude or revolve, or holes from a sketch. An extrude or a revolve reopens its sketch. A shell opens in the Shell panel. A blend that takes an earlier step's edges opens on that step. */
 function hasPanel(op: ModelOp): boolean {
   // --- A3 composite features: a pocket, boss, texture, array, ribs, or text group reopens its panel. ---
   // --- A4. A pattern or a mirror group reopens that panel too. ---
   // --- F1/E1. A group of sketch extrudes reopens the sketch, not a feature panel. ---
+  // --- F2. A group of sketch revolves does too. ---
   // --- F4. Holes from a sketch reopen the Hole panel. ---
-  if (op.kind === "group") return featureSource(op) != null || repeatSource(op) != null || isSketchExtrudeGroup(op) || isSketchHoleGroup(op);
+  if (op.kind === "group") return featureSource(op) != null || repeatSource(op) != null || isSketchExtrudeGroup(op) || isSketchRevolveGroup(op) || isSketchHoleGroup(op);
   // --- end A3 ---
-  if (op.kind === "extrude") return true;
-  return !(op.kind === "revolve" || op.kind === "loft" || op.kind === "faceExtrude" || op.kind === "moveFaces");
+  if (op.kind === "extrude" || op.kind === "revolve") return true;
+  return !(op.kind === "loft" || op.kind === "faceExtrude" || op.kind === "moveFaces");
 }
 
 /** The op an edit of `id` starts from: its own, the primitive a new solid's root is, or the feature a sketch-started root is. */

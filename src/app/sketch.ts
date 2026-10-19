@@ -2,13 +2,14 @@
  * --- S2 sketch editor ---
  * Enter and leave a sketch, the plane camera, the grid, reference lines, Line and Rectangle.
  * --- F1. Extrude copies the sketch onto the op. A sketch with no feature is still not saved.
+ * --- F2. Revolve copies the sketch onto the op the same way. V is taken only while a sketch is open.
  * Undo here is the sketch's own stack (`docs/plan-gui-cad-modeling.md` §4.3).
  */
 import { Pencil, createElement } from "lucide";
 import { mountHud, type HudField } from "../interact/hud";
 import { gridSpacing } from "../interact/snap";
 import { dragAxis } from "../interact/drag-axis";
-import { GHOST_PROBE_WAIT_MS, regionExtrude } from "../interact/ghosts";
+import { GHOST_PROBE_WAIT_MS, regionExtrude, revolveGhost } from "../interact/ghosts";
 import { inPlaceArrow } from "../interact/in-place-arrow";
 import { registerContextAction } from "../context-bar";
 import type { ParsedSolid } from "../model-reply";
@@ -19,7 +20,7 @@ import type { ModelOp } from "../model-tree";
 import type { ModelView } from "../model-view";
 import type { FaceRef, SketchData, SketchOn, Vec3 } from "../sketch/model";
 import { FACE_REFUSAL, POINT_REFUSAL, holeTargets, sketchOnFace, type HoleTarget } from "../sketch/holes.ts";
-import { sketchMesh, type OriginPlane } from "../sketch/draw";
+import { sketchMesh, type OriginPlane, type SketchStroke } from "../sketch/draw";
 import {
   frameFromWorkplane,
   lookAtFrame,
@@ -81,11 +82,32 @@ import {
   regionsCentroid,
   resolveExtrudeMode,
   sketchTouchesSolid,
+  sampleLoop,
   solidFrameOf,
   type ExtrudePreset,
   type ModeChoice,
 } from "../sketch/extrude";
-import type { Region } from "../sketch/regions";
+import { toLoops, type Region } from "../sketch/regions";
+import {
+  CROSS_REFUSAL,
+  axisWorld,
+  buildSketchRevolve,
+  clipAxis,
+  dashSegment,
+  defaultAxis,
+  dragAngle,
+  edgeAxes,
+  pickAxis,
+  planeAxes,
+  regionCrossesAxis,
+  regionsForEdit,
+  perpPixels,
+  revolveRing,
+  sketchAxes,
+  typedAngle,
+  type RevolveAxis,
+  type RevolvePreset,
+} from "../sketch/revolve";
 
 export interface SketchHost {
   view: ModelView;
@@ -152,6 +174,12 @@ let enterBedAction: () => void = () => {};
 /** Reopen a sketch and its extrude drag. E1 calls this from History Edit. */
 export function openSketchFeature(sketch: SketchData, preset: ExtrudePreset) {
   openFeatureImpl(sketch, preset);
+}
+
+/** --- F2. Reopen a sketch and its revolve drag. History Edit calls this. --- */
+let openRevolveImpl: (sketch: SketchData, preset: RevolvePreset) => void = () => {};
+export function openSketchRevolve(sketch: SketchData, preset: RevolvePreset) {
+  openRevolveImpl(sketch, preset);
 }
 
 /** Leave the sketch without applying. A history jump uses this so the editor does not stay up. */
@@ -243,6 +271,19 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     down: { x: number; y: number; distance: number } | null;
   }
   let gesture: ExtrudeGesture | null = null;
+  // --- F2. The axis stays live until a click or a drag locks it. ---
+  interface RevolveGesture {
+    angle: number;
+    axis: RevolveAxis;
+    follow: boolean;
+    choice: ModeChoice;
+    regions: Region[];
+    dragging: boolean;
+    crossing: boolean;
+    down: { x: number; y: number; angle: number } | null;
+  }
+  let revolve: RevolveGesture | null = null;
+  let revolveNote = "";
   let editSession = false;
   let committing = false;
   let probeTimer = 0;
@@ -257,6 +298,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (gesture || host.sketchHolesArmed()) return;
+      if (revolve) endRevolve();
       beginHoles();
       return;
     }
@@ -272,8 +314,36 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (host.sketchHolesArmed()) host.endSketchHoles();
+      if (revolve) endRevolve();
       if (!gesture) beginExtrude();
       return;
+    }
+    // --- F2. V revolves only while this sketch is open. A size box keeps V for the view. ---
+    if (ev.key === "v" || ev.key === "V") {
+      if (drawing) return;
+      // A driving-dimension field is a real text box. The size HUD is not, so V still starts a revolve from there.
+      if (ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      if (host.sketchHolesArmed()) host.endSketchHoles();
+      if (gesture) endExtrude();
+      if (!revolve) beginRevolve();
+      return;
+    }
+    if (revolve) {
+      if (ev.key === "m" || ev.key === "M") {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        revolve = { ...revolve, choice: cycleMode(revolve.choice, host.featureEdit()) };
+        publish("open");
+        return;
+      }
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        endRevolve();
+        return;
+      }
     }
     if (!gesture) return;
     if (ev.key === "m" || ev.key === "M") {
@@ -312,6 +382,16 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   box.hidden = true;
   document.body.append(box);
   hud.onCommit((commit) => {
+    if (revolve) {
+      const typed = typedAngle(commit.values[0] ?? Number.NaN);
+      if ("error" in typed) {
+        host.readout(typed.error);
+        return;
+      }
+      revolve = { ...revolve, angle: typed.angle, follow: false };
+      void commitRevolve();
+      return;
+    }
     if (gesture) {
       takeValues(commit.values);
       void commitExtrude();
@@ -321,6 +401,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     publish("open");
   });
   hud.onCancel(() => {
+    if (revolve) {
+      endRevolve();
+      return;
+    }
     if (gesture) {
       endExtrude();
       return;
@@ -330,6 +414,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     leaveEditing(next);
   });
   hud.onEdit((values) => {
+    if (revolve) {
+      takeRevolveAngle(values[0] ?? revolve.angle);
+      publish("skip");
+      armRevolveProbe();
+      return;
+    }
     if (gesture) {
       takeValues(values);
       publish("skip");
@@ -394,6 +484,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const picked = tool === "line" || tool === "rectangle" || tool === "select" || (typeof tool === "string" && isDrawTool(tool)) ? tool : null;
     if (picked) {
       if (gesture) endExtrude();
+      if (revolve) endRevolve();
       menuOpen = null;
       editor = withTool(editor, picked);
       publish("open");
@@ -403,6 +494,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const constrain = target.dataset.sketchConstrain;
     if (constrain && (constrain === "remove" || isConstrainTool(constrain))) {
       if (gesture) endExtrude();
+      if (revolve) endRevolve();
       menuOpen = null;
       editor = applyConstraint(editor, constrain);
       publish("open");
@@ -416,23 +508,34 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (target.dataset.sketchExtrude != null) {
       if (host.sketchHolesArmed()) host.endSketchHoles();
+      if (revolve) endRevolve();
       if (gesture) void commitExtrude();
       else beginExtrude();
       return;
     }
+    // --- F2. The card's Revolve button. A second click applies, the same as Extrude. ---
+    if (target.dataset.sketchRevolve != null) {
+      if (gesture) endExtrude();
+      if (host.sketchHolesArmed()) host.endSketchHoles();
+      if (revolve) void commitRevolve();
+      else beginRevolve();
+      return;
+    }
     // --- F4. The card button does what H does. It is not a toolbar button. ---
     if (target.dataset.sketchHoles != null) {
-      if (gesture) return;
+      if (gesture || revolve) return;
       beginHoles();
       return;
     }
-    if (target.dataset.sketchMode != null && gesture) {
-      gesture = { ...gesture, choice: cycleMode(gesture.choice, host.featureEdit()) };
+    if (target.dataset.sketchMode != null && (gesture || revolve)) {
+      if (revolve) revolve = { ...revolve, choice: cycleMode(revolve.choice, host.featureEdit()) };
+      else if (gesture) gesture = { ...gesture, choice: cycleMode(gesture.choice, host.featureEdit()) };
       publish("open");
       return;
     }
     if (target.dataset.sketchApply != null) {
-      void commitExtrude();
+      if (revolve) void commitRevolve();
+      else void commitExtrude();
       return;
     }
     if (target.dataset.sketchLook != null) {
@@ -442,11 +545,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (target.dataset.sketchFinish != null) {
       endExtrude();
+      endRevolve();
       leaveEditing(finishSketch(editor));
       return;
     }
     if (target.dataset.sketchCancel != null) {
-      if (gesture) endExtrude();
+      if (revolve) endRevolve();
+      else if (gesture) endExtrude();
       else leaveEditing(sketchKey(editor, "Escape", { ctrl: false, meta: false, shift: false }) ?? editor);
       return;
     }
@@ -495,6 +600,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     ev.stopPropagation();
     const next = sketchKey(editor, ev.key, mods);
     if (!next || next === editor) return;
+    if (revolve && editor.phase === "editing" && next.phase === "editing" && next.tool !== editor.tool) {
+      revolve = null;
+      window.clearTimeout(probeTimer);
+      host.view.setHandles([]);
+      host.view.setGhost(null);
+      host.clearExtrudePreview();
+    }
     leaveEditing(next);
   }, true);
   host.view.onSketchPointer((ev) => {
@@ -519,6 +631,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (editor.phase !== "editing" || editor.lookAround) return;
     const frame = drawingFrame();
     if (!frame) return;
+    if (revolve) {
+      revolvePointer(ev, frame);
+      return;
+    }
     if (gesture) {
       extrudePointer(ev, frame);
       return;
@@ -561,6 +677,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.canvas.dataset.extrudeMode = "";
   host.canvas.dataset.extrudeDepth = "";
   host.canvas.dataset.extrudeRegions = "0";
+  // --- F2 ---
+  host.canvas.dataset.revolve = "off";
+  host.canvas.dataset.revolveMode = "";
+  host.canvas.dataset.revolveAngle = "";
+  host.canvas.dataset.revolveAxis = "";
+  host.canvas.dataset.revolveRegions = "0";
+  host.canvas.dataset.revolveCross = "0";
 
   function enterNamed(name: "XY" | "XZ" | "YZ" | "workplane") {
     const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : originFrame(name, host.origin());
@@ -634,6 +757,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     paintDataset();
     paintLabels();
     if (editor.phase === "off") host.readout(host.idleReadout());
+    else if (revolve && editor.phase === "editing") host.readout(revolveNote || revolveReadout());
     else if (gesture && editor.phase === "editing") host.readout(extrudeReadout());
     else host.readout(sketchReadout(editor));
     syncHud(hudMode);
@@ -642,6 +766,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.syncPull();
     host.syncEdge();
     paintExtrude();
+    paintRevolve();
     // --- F1. The empty-plate card sits on the plane. Hide it while drawing so a click reaches the sketch. ---
     const empty = document.querySelector<HTMLElement>("#modelEmpty");
     if (empty) empty.hidden = sketchBusy(editor) || host.solid() != null;
@@ -676,6 +801,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const grid = frame ? gridFor(frame) : [];
     const mesh = sketchMesh(editor, frame, grid, shownPlanes);
     if (gesture?.guide) mesh.strokes.push({ xyz: [...gesture.guide[0], ...gesture.guide[1]], role: "hint" });
+    if (revolve && frame) mesh.strokes.push(...revolveStrokes(frame));
     host.view.setSketchDraw(mesh);
   }
 
@@ -693,6 +819,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   function syncHud(mode: "open" | "values" | "skip") {
     if (mode === "skip") return;
+    if (revolve && editor.phase === "editing") {
+      const fields: HudField[] = [{ id: "angle", label: "Angle", unit: "°", value: revolve.angle }];
+      const at = pointerAt();
+      if (mode === "open" || !hud.shown) hud.open(fields, at);
+      else hud.setValues(fields.map((field) => field.value));
+      hud.move(at);
+      return;
+    }
     if (gesture && editor.phase === "editing") {
       const fields = extrudeFields();
       const at = pointerAt();
@@ -741,6 +875,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.extrudeMode = shown ? resolvedMode() : "";
     host.canvas.dataset.extrudeDepth = shown ? String(shown.distance) : "";
     host.canvas.dataset.extrudeRegions = shown ? String(shown.regions.length) : "0";
+    const spun = revolve && editor.phase === "editing" ? revolve : null;
+    host.canvas.dataset.revolve = spun ? (spun.dragging ? "drag" : "aim") : "off";
+    host.canvas.dataset.revolveMode = spun ? resolvedRevolveMode() : "";
+    host.canvas.dataset.revolveAngle = spun ? String(spun.angle) : "";
+    host.canvas.dataset.revolveAxis = spun ? spun.axis.kind : "";
+    host.canvas.dataset.revolveRegions = spun ? String(spun.regions.length) : "0";
+    host.canvas.dataset.revolveCross = spun && spun.crossing ? "1" : "0";
     // --- F4. Off unless the Hole panel is placing one hole per point. Hits are client pixels, for tests. ---
     const holeCount = host.sketchHoleCount();
     host.canvas.dataset.sketchHoles = holeCount == null ? "off" : String(holeCount);
@@ -814,12 +955,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       constrainMenu(),
       toolButton("select", "Select"),
       textButton("Extrude (E)", { sketchExtrude: "" }),
+      textButton("Revolve (V)", { sketchRevolve: "" }),
     ];
     // --- F4. Only a sketch on a face has a solid to drill. ---
     if (activeSketch(editor)?.on?.kind === "face") row.push(textButton("Holes (H)", { sketchHoles: "" }));
-    if (gesture) {
-      const mode = resolvedMode();
-      const auto = gesture.choice === "auto" ? "Auto · " : "";
+    if (gesture || revolve) {
+      const mode = revolve ? resolvedRevolveMode() : resolvedMode();
+      const choice = revolve ? revolve.choice : gesture?.choice ?? "auto";
+      const auto = choice === "auto" ? "Auto · " : "";
       row.push(textButton(`${auto}${modeLabel(mode)} (M)`, { sketchMode: mode }));
       row.push(textButton("Apply", { sketchApply: "" }));
     }
@@ -1038,6 +1181,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     editor = enterSketchData(editor, sketch);
     editSession = true;
     const slots: 1 | 2 | 3 = preset.draftDeg != null && preset.draftDeg !== 0 ? 3 : preset.depth2 != null && preset.depth2 > 0 ? 2 : 1;
+    revolve = null;
     gesture = {
       slots,
       distance: preset.distance,
@@ -1054,14 +1198,38 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     refsKey = "";
     publish("open");
   };
+  openRevolveImpl = (sketch, preset) => {
+    host.closeTool();
+    editor = enterSketchData(editor, sketch);
+    editSession = true;
+    gesture = null;
+    const drawn = activeSketch(editor) ?? sketch;
+    const regions = regionsForEdit(drawn);
+    revolveNote = "";
+    revolve = {
+      angle: preset.angleDeg,
+      axis: preset.axis,
+      follow: false,
+      choice: preset.choice,
+      regions,
+      dragging: false,
+      crossing: regions.some((region) => regionCrossesAxis(region, preset.axis)),
+      down: null,
+    };
+    aimKey = "";
+    refsKey = "";
+    publish("open");
+  };
   closeFeatureImpl = () => {
     editSession = false;
     if (host.sketchHolesArmed()) host.endSketchHoles();
     if (editor.phase !== "editing" && editor.phase !== "choosing") {
       gesture = null;
+      revolve = null;
       return;
     }
     gesture = null;
+    revolve = null;
     window.clearTimeout(probeTimer);
     host.view.setHandles([]);
     host.view.setGhost(null);
@@ -1094,6 +1262,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       editSession = false;
       if (host.sketchHolesArmed()) host.endSketchHoles();
       gesture = null;
+      revolve = null;
       window.clearTimeout(probeTimer);
       host.view.setHandles([]);
       host.view.setGhost(null);
@@ -1121,6 +1290,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   function beginExtrude() {
     if (host.sketchHolesArmed()) host.endSketchHoles();
+    if (revolve) endRevolve();
     const sketch = activeSketch(editor);
     if (!sketch || editor.phase !== "editing") return;
     const chosen = chooseRegions(sketch, editor.selection.entities, editor.cursor);
@@ -1372,6 +1542,279 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const parts: number[] = [];
     for (const region of gesture.regions) {
       const soup = regionExtrude(shifted, regionSamples(region), span.to - span.from);
+      parts.push(...soup);
+    }
+    host.view.setGhost(parts.length > 0 ? { kind: "soup", positions: new Float32Array(parts) } : null);
+  }
+
+  // --- F2. Revolve from the open sketch. The ring is drawn; the angle is this pointer, because the
+  // sketch camera looks along the plane and a view-ring drag cannot measure a turn in that plane. ---
+  function beginRevolve(preset?: RevolvePreset) {
+    if (host.sketchHolesArmed()) host.endSketchHoles();
+    if (gesture) endExtrude();
+    const sketch = activeSketch(editor);
+    const frame = drawingFrame();
+    if (!sketch || !frame || editor.phase !== "editing") return;
+    const regions = preset ? regionsForEdit(sketch) : chooseRegions(sketch, editor.selection.entities, editor.cursor);
+    if (regions.length === 0) {
+      host.readout("Select a region to revolve.");
+      return;
+    }
+    const axis = preset?.axis ?? axisUnderPointer(sketch, frame) ?? defaultAxis();
+    revolveNote = "";
+    revolve = {
+      angle: preset?.angleDeg ?? 360,
+      axis,
+      follow: !preset,
+      choice: preset?.choice ?? (host.featureEdit() === "root" ? "new" : "auto"),
+      regions,
+      dragging: false,
+      crossing: regions.some((region) => regionCrossesAxis(region, axis)),
+      down: null,
+    };
+    publish("open");
+    armRevolveProbe();
+  }
+
+  function endRevolve() {
+    if (!revolve) return;
+    revolve = null;
+    revolveNote = "";
+    window.clearTimeout(probeTimer);
+    host.view.setHandles([]);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    publish("open");
+  }
+
+  function takeRevolveAngle(value: number) {
+    if (!revolve) return;
+    const typed = typedAngle(value);
+    if ("error" in typed) {
+      revolveNote = typed.error;
+      return;
+    }
+    revolveNote = "";
+    revolve = { ...revolve, angle: typed.angle, follow: false };
+  }
+
+  function resolvedRevolveMode() {
+    const sketch = activeSketch(editor);
+    const frame = drawingFrame();
+    const touches = !!sketch && !!frame && !!revolve && sketchTouchesSolid(frame, revolve.regions, host.bounds(), sketch.on?.kind === "face");
+    return resolveExtrudeMode({
+      choice: revolve?.choice ?? "auto",
+      hasSolid: host.solid() != null,
+      touches,
+      distance: 1,
+      lockNew: host.featureEdit() === "root",
+    });
+  }
+
+  function currentRevolveOp(): ModelOp | null {
+    const sketch = activeSketch(editor);
+    if (!sketch || !revolve || revolve.regions.length === 0 || revolve.crossing) return null;
+    const built = buildSketchRevolve({
+      sketch,
+      regions: revolve.regions,
+      axis: revolve.axis,
+      angleDeg: revolve.angle,
+      mode: resolvedRevolveMode(),
+    });
+    return "op" in built ? built.op : null;
+  }
+
+  async function commitRevolve() {
+    const sketch = activeSketch(editor);
+    if (!sketch || !revolve || committing) return;
+    const built = buildSketchRevolve({
+      sketch,
+      regions: revolve.regions,
+      axis: revolve.axis,
+      angleDeg: revolve.angle,
+      mode: resolvedRevolveMode(),
+    });
+    if ("error" in built) {
+      host.readout(built.error);
+      return;
+    }
+    committing = true;
+    const mode = resolvedRevolveMode();
+    const error = await host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid");
+    committing = false;
+    if (!revolve) return;
+    if (error) {
+      host.readout(error);
+      return;
+    }
+    editSession = false;
+    revolve = null;
+    window.clearTimeout(probeTimer);
+    host.view.setHandles([]);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    editor = finishSketch(editor);
+    publish("open");
+    host.frameSolid();
+  }
+
+  function armRevolveProbe() {
+    window.clearTimeout(probeTimer);
+    if (!revolve || revolve.dragging || revolve.crossing) {
+      if (revolve?.dragging || revolve?.crossing) host.clearExtrudePreview();
+      return;
+    }
+    if (resolvedRevolveMode() === "new" || !host.solid()) {
+      host.clearExtrudePreview();
+      return;
+    }
+    probeTimer = window.setTimeout(() => {
+      const op = currentRevolveOp();
+      if (op) host.probeExtrude(op);
+    }, GHOST_PROBE_WAIT_MS);
+  }
+
+  function revolveReadout(): string {
+    if (!revolve) return "";
+    if (revolve.crossing) return `${CROSS_REFUSAL} Move the axis, or pick a region on one side of it.`;
+    const mode = modeLabel(resolvedRevolveMode());
+    return `Revolve ${revolve.angle}°, ${mode}. Drag the ring or type the angle. Typing 360 is a full turn. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
+  }
+
+  function axisUnderPointer(sketch: SketchData, frame: NonNullable<ReturnType<typeof drawingFrame>>): RevolveAxis | null {
+    const ray = host.view.pointerRay(lastClient.x, lastClient.y);
+    const hit = rayOnPlane(frame, ray.origin, ray.direction);
+    if (!hit) return null;
+    const tol = Math.max(host.view.sketchView().mmPerPx, 1e-4) * 8;
+    return pickAxis([...sketchAxes(sketch), ...edgeAxes(editor.refs.segments), ...planeAxes()], hit.uv, tol);
+  }
+
+  function revolvePointer(ev: { phase: "down" | "move" | "up"; x: number; y: number; shift: boolean; ctrl: boolean }, frame: ReturnType<typeof drawingFrame>) {
+    if (!revolve || !frame) return;
+    if (ev.phase === "down") {
+      revolve = { ...revolve, down: { x: ev.x, y: ev.y, angle: revolve.angle }, dragging: false };
+      return;
+    }
+    if (ev.phase === "move" && revolve.down) {
+      const moved = Math.hypot(ev.x - revolve.down.x, ev.y - revolve.down.y);
+      if (moved < 3 && !revolve.dragging) return;
+      const delta: [number, number] = [ev.x - revolve.down.x, ev.y - revolve.down.y];
+      const snap = ev.ctrl ? "step" : ev.shift ? "fine" : "none";
+      const angle = dragAngle(revolve.down.angle, perpOf(frame, revolve.axis, delta), snap);
+      revolve = { ...revolve, dragging: true, follow: false, angle };
+      host.clearExtrudePreview();
+      publish("values");
+      return;
+    }
+    if (ev.phase === "move") {
+      if (revolve.follow) {
+        const sketch = activeSketch(editor);
+        const picked = sketch ? axisUnderPointer(sketch, frame) : null;
+        const axis = picked ?? revolve.axis;
+        let regions = revolve.regions;
+        if (sketch && editor.selection.entities.length === 0) {
+          const ray = host.view.pointerRay(ev.x, ev.y);
+          const hit = rayOnPlane(frame, ray.origin, ray.direction);
+          const chosen = chooseRegions(sketch, [], hit?.uv ?? null);
+          if (chosen.length > 0) regions = chosen;
+        }
+        revolve = { ...revolve, axis, regions, crossing: regions.some((region) => regionCrossesAxis(region, axis)) };
+      }
+      publish("skip");
+      return;
+    }
+    if (ev.phase === "up" && revolve.down) {
+      const moved = Math.hypot(ev.x - revolve.down.x, ev.y - revolve.down.y);
+      const wasFollow = revolve.follow;
+      revolve = { ...revolve, down: null, dragging: false };
+      if (moved < 4) {
+        if (wasFollow) {
+          revolve = { ...revolve, follow: false };
+          publish("open");
+          armRevolveProbe();
+        } else void commitRevolve();
+      } else {
+        publish("open");
+        armRevolveProbe();
+      }
+    }
+  }
+
+  function perpOf(frame: NonNullable<ReturnType<typeof drawingFrame>>, axis: RevolveAxis, delta: [number, number]): number {
+    const origin = toWorld(frame, axis.origin);
+    const world = axisWorld(frame, axis);
+    const tip: Vec3 = [origin[0] + world[0], origin[1] + world[1], origin[2] + world[2]];
+    const start = host.view.projectPoint(origin);
+    const end = host.view.projectPoint(tip);
+    const screen: [number, number] = start && end ? [end.x - start.x, end.y - start.y] : [0, -1];
+    return perpPixels(screen, delta);
+  }
+
+  function revolveStrokes(frame: NonNullable<ReturnType<typeof drawingFrame>>): SketchStroke[] {
+    if (!revolve) return [];
+    const view = host.view.sketchView();
+    const bounds = planeWindow(frame, {
+      position: view.position,
+      target: view.target,
+      up: view.up,
+      fovDeg: view.fov,
+      aspect: view.height > 0 ? view.width / view.height : 1,
+    });
+    const mm = Math.max(view.mmPerPx, 1e-4);
+    const dash = Math.max(mm * 8, 0.4);
+    const out: SketchStroke[] = [];
+    for (const axis of planeAxes()) {
+      const clipped = clipAxis(axis, bounds);
+      if (!clipped) continue;
+      for (const [a, b] of dashSegment(clipped[0], clipped[1], dash, dash * 0.65)) {
+        out.push({ xyz: [...toWorld(frame, a), ...toWorld(frame, b)], role: "axis" });
+      }
+    }
+    const hot = clipAxis(revolve.axis, bounds);
+    if (hot) out.push({ xyz: [...toWorld(frame, hot[0]), ...toWorld(frame, hot[1])], role: "hint" });
+    if (revolve.crossing) {
+      for (const region of revolve.regions) {
+        if (!regionCrossesAxis(region, revolve.axis)) continue;
+        for (const loop of toLoops(region)) {
+          const samples = sampleLoop(loop);
+          if (samples.length < 2) continue;
+          const closed = [...samples, samples[0]!];
+          const xyz: number[] = [];
+          for (const point of closed) xyz.push(...toWorld(frame, point));
+          out.push({ xyz, role: "refuse" });
+        }
+      }
+    }
+    return out;
+  }
+
+  function paintRevolve() {
+    if (!revolve || editor.phase !== "editing") return;
+    const frame = drawingFrame();
+    const sketch = activeSketch(editor);
+    if (!frame || !sketch || revolve.regions.length === 0) {
+      host.view.setHandles([]);
+      host.view.setGhost(null);
+      return;
+    }
+    const centre = toWorld(frame, regionsCentroid(revolve.regions));
+    host.view.setHandles([revolveRing(centre, axisWorld(frame, revolve.axis), revolve.angle)]);
+    if (revolve.crossing) {
+      host.view.setGhost(null);
+      return;
+    }
+    const solid = solidFrameOf(sketch);
+    const parts: number[] = [];
+    for (const region of revolve.regions) {
+      const outer = toLoops(region)[0];
+      if (!outer) continue;
+      const soup = revolveGhost({
+        plane: { origin: solid.origin, u: solid.u, v: solid.v },
+        axisOrigin: revolve.axis.origin,
+        axisDir: revolve.axis.dir,
+        outline: sampleLoop(outer),
+        angleDeg: revolve.angle,
+      });
       parts.push(...soup);
     }
     host.view.setGhost(parts.length > 0 ? { kind: "soup", positions: new Float32Array(parts) } : null);
