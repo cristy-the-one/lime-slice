@@ -139,7 +139,7 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
       if (size != null && Number.isFinite(size)) live.size = Math.max(0, size);
       live.expr = text && !isPlainNumber(text) ? text.trim() : undefined;
       live.proved = null;
-      void commitSession();
+      void commitSession(true);
     });
     hud.onCancel(() => cancel(!!live?.editing));
     hud.onEdit((values) => {
@@ -377,7 +377,8 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     window.clearTimeout(timer);
     const gen = ++probeGen;
     timer = window.setTimeout(() => {
-      void check(gen, true);
+      // A drag stops at the largest size that fits. A typed size is the user's number: it is refused, not changed.
+      void check(gen, !live?.typing);
     }, GHOST_PROBE_WAIT_MS);
   }
 
@@ -411,14 +412,22 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     return false;
   }
 
-  async function commitSession() {
+  /**
+   * Apply the session. A drag that went past the largest size that fits applies that size. A typed size is never changed
+   * behind the user's back: it is refused with the largest size, and the box stays open for another number.
+   */
+  async function commitSession(typed = false) {
     if (!live || committing) return;
     committing = true;
     const session = live;
     try {
       const gen = ++probeGen;
       window.clearTimeout(timer);
-      const ok = await check(gen, true);
+      const ok = await check(gen, !typed);
+      if (!ok && typed && live === session) {
+        session.typing = true;
+        return;
+      }
       if (!ok || live !== session) return;
       const made = edgeDragOp(session.kind, session.edges, session.size);
       const op = session.expr ? { ...made, exprs: { modelBlend: session.expr } } : made;

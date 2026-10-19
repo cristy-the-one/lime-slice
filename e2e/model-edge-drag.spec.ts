@@ -174,22 +174,28 @@ test("a typed size fillets the hovered edge", async ({ page }) => {
   expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 2 });
 });
 
-test("maxMm clamps a typed size and the readout says why", async ({ page }) => {
+test("a typed size too big for the edge is refused with the largest that fits, and the box stays open", async ({ page }) => {
   const applied: Op[] = [];
   await openBox(page, (op) => {
     if ((op.size ?? 0) > 1) return { ok: false, error: "The fillet is too big.", maxMm: 1 };
     return { ok: true };
   }, applied);
   await knobAt(page);
-  // Typing asks the kernel once the box has a number. A drag can be clamped mid-gesture, before
-  // the pointer has travelled far enough for a screen test to see a size past the limit.
+  // Typing asks the kernel once the box has a number. It says the largest size, and keeps the number typed.
   await page.keyboard.press("5");
-  await expect(page.locator("#model")).toHaveAttribute("data-edge-clamp", "1", { timeout: 2000 });
-  await expect(page.locator("#modelReadout")).toContainText("The largest that fits is 1 mm.");
-  await expect(page.locator("#model")).toHaveAttribute("data-edge-size", "1");
+  await expect(page.locator("#modelReadout")).toContainText("The largest that fits is 1 mm.", { timeout: 2000 });
+  await expect(page.locator("#model")).toHaveAttribute("data-edge-size", "5");
   await page.keyboard.press("Enter");
-  await expect(page.locator("#modelReadout")).toContainText("Fillet 1 mm · Tab to edit");
-  expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 1 });
+  await expect(page.locator("#modelReadout")).toContainText("The fillet is too big. The largest that fits is 1 mm.");
+  const box = page.locator(".interact-hud:not([hidden]) input");
+  await expect(box, "the box stays open for another number").toBeVisible();
+  await page.waitForTimeout(300);
+  expect(applied, "nothing is applied at a size nobody typed").toHaveLength(0);
+  await page.keyboard.type("0.8");
+  await expect(box).toHaveValue("0.8");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("Fillet 0.8 mm · Tab to edit");
+  expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 0.8 });
 });
 
 test("Tab reopens the fillet, Esc cancels, and Enter edits it", async ({ page }) => {
