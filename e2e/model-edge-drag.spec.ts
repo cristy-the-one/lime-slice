@@ -167,7 +167,7 @@ test("a typed size fillets the hovered edge", async ({ page }) => {
   await knobAt(page);
   await page.keyboard.press("2");
   await expect(page.locator("#tabModel")).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator(".interact-hud")).toBeVisible();
+  await expect(page.locator(".interact-hud:not([hidden])")).toBeVisible();
   await expect(page.locator("#model")).toHaveAttribute("data-edge-drag", "type");
   await page.keyboard.press("Enter");
   await expect(page.locator("#modelReadout")).toContainText("Fillet 2 mm · Tab to edit");
@@ -201,25 +201,29 @@ test("Tab reopens the fillet, Esc cancels, and Enter edits it", async ({ page })
   await expect(page.locator("#modelReadout")).toContainText("Tab to edit");
   await page.keyboard.press("Tab");
   await expect(page.locator("#model")).toHaveAttribute("data-edge-drag", "edit");
-  await expect(page.locator(".interact-hud")).toBeVisible();
-  const input = page.locator(".interact-hud input");
+  await expect(page.locator(".interact-hud:not([hidden])")).toBeVisible();
+  const input = page.locator(".interact-hud:not([hidden]) input");
   await input.fill("3");
   await input.press("Enter");
   await expect(page.locator("#modelReadout")).toContainText("Fillet 3 mm · Tab to edit");
   expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 3 });
 
   await page.keyboard.press("Tab");
-  await expect(page.locator(".interact-hud")).toBeVisible();
+  await expect(page.locator(".interact-hud:not([hidden])")).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(page.locator(".interact-hud")).toBeHidden();
+  await expect(page.locator(".interact-hud:not([hidden])")).toBeHidden();
   await expect(page.locator("#model")).not.toHaveAttribute("data-edge-drag", /./);
 });
 
-test("P is still Split, and L still opens Fillet", async ({ page }) => {
+test("P opens Push/Pull, D opens Split, and L still opens Fillet", async ({ page }) => {
   await openBox(page, () => ({ ok: true }), []);
   await page.keyboard.press("p");
-  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "split");
+  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "pushpull");
   await page.keyboard.press("p");
+  await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
+  await page.keyboard.press("d");
+  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "split");
+  await page.keyboard.press("d");
   await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
   // Fillet's button waits for an edge. Enabling it and pressing L is the same click the shortcut sends.
   await page.locator("#modelToolFillet").evaluate((button) => button.removeAttribute("disabled"));

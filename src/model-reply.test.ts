@@ -41,6 +41,13 @@ eq("positions round-trip within f32", Array.from(back.positions), sent.positions
 check("face ids are u32", back.triangles instanceof Uint32Array);
 eq("face ids round-trip", Array.from(back.triangles), [1, 0]);
 eq("faces by index, the normal only where sent", back.faces, [{ id: 0, areaMm2: 0.5, normal: [0, 0, 1] }, { id: 1, areaMm2: 0.25 }]);
+const curved = solid({
+  ...encodeSolid({
+    ...sent,
+    faces: [{ areaMm2: 1, surface: "cylinder", radiusMm: 10, axisPoint: [0, 0, 0], axis: [0, 0, 1] }, { areaMm2: 0.25 }],
+  }),
+});
+eq("a cylinder face keeps its radius", curved.faces[0], { id: 0, areaMm2: 1, surface: "cylinder", radiusMm: 10, axisPoint: [0, 0, 0], axis: [0, 0, 1] });
 eq("edges by index", back.edges.map((edge) => [edge.id, edge.lengthMm, Array.from(edge.points)]), [
   [0, 1, [0, 0, 0, 1, 0, 0]],
   [1, 2.5, [0, 0, 0, 0, 1, 0, 0, 1, 1]],
