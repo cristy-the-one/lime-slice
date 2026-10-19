@@ -27,8 +27,7 @@ function boxSolid(volumeMm3 = 4000): MockSolid {
 }
 
 /**
- * Cylinder cuts, a pocket, or a mirror. A pattern's first copy sits on the source step, which the parent already
- * cut, so only the further copies change the volume.
+ * Cylinder cuts, a pocket, or a mirror. A pattern's group holds only the new copies; the source step is its own row.
  */
 function cutVolume(parent: MockSolid, op: Body): number {
   const source = (op.source ?? {}) as { kind?: string; width?: number; height?: number; depth?: number };
@@ -44,7 +43,7 @@ function cutVolume(parent: MockSolid, op: Body): number {
     const seen = new Set(steps.map((step) => (step.origin as number[]).map((value) => value.toFixed(3)).join(",")));
     const radius = (steps[0]?.radius as number) ?? 0;
     const height = (steps[0]?.height as number) ?? 0;
-    return Math.round(parent.volumeMm3 - Math.max(0, seen.size - 1) * Math.PI * radius * radius * height);
+    return Math.round(parent.volumeMm3 - seen.size * Math.PI * radius * radius * height);
   }
   return parent.volumeMm3;
 }
@@ -120,7 +119,7 @@ test("a polar pattern of a cylinder is one row of six cuts", async ({ page }) =>
   expect(op.source.kind).toBe("pattern");
   expect(op.source.of).toEqual([1]);
   expect(op.source.polar.count).toBe(6);
-  expect(op.steps).toHaveLength(6);
+  expect(op.steps, "five copies; the original stays its own row").toHaveLength(5);
 
   await page.keyboard.press("Shift+E");
   await expect(page.locator("#modelApply")).toHaveText("Update");
@@ -131,7 +130,7 @@ test("a polar pattern of a cylinder is one row of six cuts", async ({ page }) =>
   await expect(page.locator("#modelHistoryTree [role=treeitem]").filter({ hasText: "Pattern × 4" })).toHaveCount(1);
   const edited = tree.of("edit").at(-1)!.op as { source: { polar: { count: number } }; steps: unknown[] };
   expect(edited.source.polar.count).toBe(4);
-  expect(edited.steps).toHaveLength(4);
+  expect(edited.steps).toHaveLength(3);
 });
 
 test("a step arrow drags the pattern distance", async ({ page }) => {
@@ -150,7 +149,7 @@ test("a step arrow drags the pattern distance", async ({ page }) => {
   await expect.poll(async () => Number(await page.locator("#modelPatSx").inputValue())).not.toBe(10);
 });
 
-test("a mirror of a pocket is one row and keeps the original", async ({ page }) => {
+test("a mirror of a pocket is one row of the reflection; the pocket stays its own row", async ({ page }) => {
   const tree = await openModel(page);
   await page.locator("#modelToolFeatures").click();
   const [x, y, w, h] = ((await page.locator("#model").getAttribute("data-solid-screen")) ?? "").split(",").map(Number);
@@ -166,7 +165,6 @@ test("a mirror of a pocket is one row and keeps the original", async ({ page }) 
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuMirror").click();
   await page.locator("#modelMirPlane [data-plane=x]").click();
-  await expect(page.locator("#modelMirKeep")).toBeChecked();
   await expect(page.locator("#modelMirX")).toHaveValue("10");
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
@@ -176,5 +174,36 @@ test("a mirror of a pocket is one row and keeps the original", async ({ page }) 
   expect(op.source.kind).toBe("mirror");
   expect(op.source.keepOriginal).toBeUndefined();
   expect(op.source.of).toEqual([1]);
-  expect(op.steps).toHaveLength(2);
+  expect(op.steps, "the reflection only").toHaveLength(1);
+  await expect(page.locator("#modelMirKeep"), "Mirror always keeps the pocket").toHaveCount(0);
+});
+
+test("editing the patterned step moves the copies with it", async ({ page }) => {
+  const tree = await openModel(page);
+  await cutCylinder(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuPattern").click();
+  const rows = page.locator("#modelHistoryTree [role=treeitem]");
+  await expect(rows.nth(1), "the step on screen is the source").toHaveAttribute("data-repeat", "");
+  await page.locator("#modelPatMode [data-pat=linear]").click();
+  await setField(page, "modelPatSx", "5");
+  await setField(page, "modelPatSy", "0");
+  await setField(page, "modelPatSz", "0");
+  await setField(page, "modelPatCount", "3");
+  await setField(page, "modelPatCount2", "1");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(rows.filter({ hasText: "Pattern × 3" })).toHaveCount(1);
+
+  await rows.nth(1).click();
+  await page.keyboard.press("Shift+E");
+  await expect(page.locator("#modelApply")).toHaveText("Update");
+  await setField(page, "modelX", "12");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(rows.filter({ hasText: "Pattern × 3" })).toHaveCount(2);
+  const edit = tree.of("edit").at(-1)!;
+  const replayed = (edit.replay as { op: { source: { of: number[] }; steps: { origin: number[] }[] } }[])[0]!.op;
+  expect(replayed.source.of, "the pattern names the edited step's new id").toEqual([edit.node]);
+  expect(replayed.steps.map((step) => step.origin[0]), "the copies follow the source to X 12").toEqual([17, 22]);
 });

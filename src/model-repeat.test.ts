@@ -2,13 +2,16 @@ import { actionsFor } from "./context-bar.ts";
 import { eulerOrient } from "./mesh-place.ts";
 import { editPanel } from "./model-edit.ts";
 import { IDENTITY_POSE } from "./model-space.ts";
-import type { ModelOp } from "./model-tree.ts";
+import { renumberedSteps, type ModelOp } from "./model-tree.ts";
 import {
   HOLES_NOT_YET,
+  MIRROR_KEEPS,
+  REPEAT_NOTHING,
   REPEAT_DELETED,
   REPEAT_ONLY,
   REPEAT_PICK,
   expandRepeat,
+  followRepeatSources,
   piecesOfStep,
   readRepeatSpec,
   repeatLabel,
@@ -41,7 +44,6 @@ const choices = (over: Partial<RepeatChoices> = {}): RepeatChoices => ({
   align: true,
   plane: "z",
   normal: null,
-  keep: true,
   points: [],
   of: [1],
   ...over,
@@ -69,9 +71,9 @@ const polar = readRepeatSpec("pattern", read({
 }), choices({ mode: "polar", axis: "z" }));
 check("a polar pattern is a spec", !("reason" in polar));
 const spun = "reason" in polar ? null : expandRepeat(polar, [{ id: 1, op: cylinder }], IDENTITY_POSE);
-check("six copies, the count including the original", spun?.pieces?.length === 6);
-check("the first copy is the hole where it already is", !!spun?.pieces && JSON.stringify(spun.pieces[0]!.spec.origin) === JSON.stringify([10, 14, 0]) && spun.pieces[0]!.spec.turn.every((value) => value === 0));
-const origins = spun?.pieces?.map((piece) => piece.spec.origin) ?? [];
+eq("a count of 6 adds five copies; the original stays its own step", spun?.pieces?.length, 5);
+check("no copy sits on the original", !!spun?.pieces && spun.pieces.every((piece) => JSON.stringify(piece.spec.origin) !== JSON.stringify([10, 14, 0])));
+const origins = [[10, 14, 0], ...(spun?.pieces?.map((piece) => piece.spec.origin) ?? [])];
 check("every copy is 4 mm from the axis", origins.every((origin) => near(Math.hypot(origin[0] - 10, origin[1] - 10), 4) && near(origin[2], 0)));
 let separated = true;
 for (let i = 0; i < origins.length; i += 1) {
@@ -82,7 +84,7 @@ for (let i = 0; i < origins.length; i += 1) {
 }
 check("the six holes do not meet", separated);
 const removed = (spun?.pieces ?? []).reduce((sum, piece) => sum + Math.PI * piece.spec.radius * piece.spec.radius * piece.spec.height, 0);
-eq("the volume matches six single cuts", removed, 6 * Math.PI * 1.5 * 1.5 * 10);
+eq("with the original, the volume matches six single cuts", removed + Math.PI * 1.5 * 1.5 * 10, 6 * Math.PI * 1.5 * 1.5 * 10);
 eq("one history row", spun?.group?.kind, "group");
 eq("the row names the turn", repeatLabel(polar as Record<string, unknown>), "Pattern × 6 around Z");
 check("the group remembers the steps", Array.isArray((spun?.group?.source as { of?: unknown })?.of) && ((spun?.group?.source as { of: number[] }).of).length === 1);
@@ -97,16 +99,14 @@ const box: ModelOp = {
   height: 0,
   turn: [0, 0, 0],
 };
-const mirror = readRepeatSpec("mirror", read({ modelMirX: 10, modelMirY: 10, modelMirZ: 5 }), choices({ plane: "x", keep: true }));
+const mirror = readRepeatSpec("mirror", read({ modelMirX: 10, modelMirY: 10, modelMirZ: 5 }), choices({ plane: "x" }));
 const mirrored = "reason" in mirror ? null : expandRepeat(mirror, [{ id: 2, op: box }], IDENTITY_POSE);
-eq("a mirror keeps the original and adds the reflection", mirrored?.pieces?.length, 2);
-check("the reflection sits across X", !!mirrored?.pieces && mirrored.pieces[0]!.spec.origin[0] !== mirrored.pieces[1]!.spec.origin[0]);
-const dropped = readRepeatSpec("mirror", read({ modelMirX: 10, modelMirY: 10, modelMirZ: 5 }), choices({ plane: "x", keep: false }));
-const undone = "reason" in dropped ? null : expandRepeat(dropped, [{ id: 2, op: box }], IDENTITY_POSE);
-eq("turning Keep off undoes the cut, then mirrors", undone?.pieces?.map((piece) => piece.op), ["fuse", "cut"]);
-const shared: ModelOp = { ...box, op: "common" };
-const common = readRepeatSpec("mirror", read({ modelMirX: 0, modelMirY: 0, modelMirZ: 0 }), choices({ plane: "x", keep: false }));
-eq("a common stays while Keep is off", "reason" in common ? null : expandRepeat(common, [{ id: 2, op: shared }], IDENTITY_POSE).note, "Keep the original on for a common.");
+eq("a mirror's group holds only the reflection; the original stays its own step", mirrored?.pieces?.map((piece) => [piece.op, piece.spec.origin]), [["cut", [10, 8, 8]]]);
+eq("a spec never turns Keep the original off", "keepOriginal" in (mirror as Record<string, unknown>), false);
+const dropped = { ...(mirror as Record<string, unknown>), keepOriginal: false };
+eq("an old spec without the original is refused, not undone with the opposite Boolean", expandRepeat(dropped, [{ id: 2, op: box }], IDENTITY_POSE).note, MIRROR_KEEPS);
+const single = readRepeatSpec("pattern", read({ modelPatSx: 10, modelPatCount: 1, modelPatCount2: 1 }), choices());
+eq("a count of 1 adds nothing", "reason" in single ? null : expandRepeat(single, [{ id: 1, op: cylinder }], IDENTITY_POSE).note, REPEAT_NOTHING);
 
 const wedge: ModelOp = { ...box, primitive: "wedge", topX: 2 };
 const wedgeMirror = readRepeatSpec("mirror", read({ modelMirX: 0, modelMirY: 0, modelMirZ: 0 }), choices({ plane: "z" }));
@@ -137,7 +137,7 @@ eq("a fillet is not repeated", piecesOfStep({ kind: "fillet", edges: [1], size: 
 const pair: ModelOp = { kind: "group", label: "Two", steps: [cylinder, box] };
 const linear = readRepeatSpec("pattern", read({ modelPatSx: 10, modelPatSy: 0, modelPatSz: 0, modelPatCount: 2, modelPatCount2: 1 }), choices());
 const doubled = "reason" in linear ? null : expandRepeat(linear, [{ id: 4, op: pair }], IDENTITY_POSE);
-eq("a group contributes each of its booleans", doubled?.pieces?.length, 4);
+eq("a group contributes each of its booleans, once per new copy", doubled?.pieces?.length, 2);
 
 eq("no step yet asks for a Ctrl-click", repeatTargets([], () => true), REPEAT_PICK);
 eq("a deleted step says so", repeatTargets([1, 9], (id) => id === 1), REPEAT_DELETED);
@@ -157,6 +157,25 @@ const faces = actionsFor("faces").map((action) => action.id);
 check("several faces offer Pattern", faces.includes("pattern"));
 check("several faces offer Mirror", faces.includes("mirror"));
 eq("one face does not offer Pattern", actionsFor("flat-face").some((action) => action.id === "pattern"), false);
+
+// --- D3. A pattern follows its source step when that step is edited, and names the source's new id. ---
+const seedPattern = readRepeatSpec("pattern", read({ modelPatSx: 10, modelPatCount: 3, modelPatCount2: 1 }), choices({ of: [1] }));
+const seedGroup = "reason" in seedPattern ? null : expandRepeat(seedPattern, [{ id: 1, op: cylinder }], IDENTITY_POSE).group;
+const moved: ModelOp = { ...cylinder, origin: [20, 14, 0] } as ModelOp;
+const stored = new Map<number, ModelOp>([[1, cylinder], [2, seedGroup!]]);
+const followed = followRepeatSources([{ id: 1, op: moved }, { id: 2, op: seedGroup! }], (id) => stored.get(id) ?? null, IDENTITY_POSE);
+eq(
+  "the copies follow the moved source",
+  "ops" in followed ? (followed.ops[1] as { steps: { origin: number[] }[] }).steps.map((step) => step.origin) : followed,
+  [[30, 14, 0], [40, 14, 0]],
+);
+const same = followRepeatSources([{ id: 1, op: cylinder }, { id: 2, op: seedGroup! }], (id) => stored.get(id) ?? null, IDENTITY_POSE);
+check("an unchanged source leaves the group as stored", "ops" in same && same.ops[1] === seedGroup);
+const asFillet = followRepeatSources([{ id: 1, op: { kind: "fillet", edges: [1], size: 1 } }, { id: 2, op: seedGroup! }], (id) => stored.get(id) ?? null, IDENTITY_POSE);
+eq("a source that can no longer be repeated names the pattern", asFillet, { error: REPEAT_ONLY, at: 1 });
+const renamed = renumberedSteps(seedGroup!, new Map([[1, 7]]));
+eq("a replayed source step's new id is the one the pattern names", (renamed as { source: { of: number[] } }).source.of, [7]);
+check("a pattern whose sources are not replayed is unchanged", renumberedSteps(seedGroup!, new Map([[5, 9]])) === seedGroup);
 
 if (failed > 0) {
   console.error(`${failed} failed`);

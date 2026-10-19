@@ -31,7 +31,7 @@ import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes } from "../model-check.ts";
 import { expandFeature, isFeatureTool, panelChoices, readFeatureSpec, type FeatureTool } from "../model-features";
-import { expandRepeat, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
+import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
@@ -3125,7 +3125,19 @@ async function runEdit(run: Editing) {
     readout("This step is no longer in the history.");
     return;
   }
-  const replayOps = supplied ? supplied.slice(1) : run.replay.map((id) => tree.nodes.get(id)!.op!);
+  const storedOps = supplied ? supplied.slice(1) : run.replay.map((id) => tree.nodes.get(id)!.op!);
+  // A pattern or mirror below an edited source step is expanded again, so its copies follow the source.
+  const followed = followRepeatSources(
+    [{ id: run.node, op }, ...run.replay.map((id, i) => ({ id, op: storedOps[i]! }))],
+    (id) => opForRepeat(tree, id),
+    openPose(),
+  );
+  if ("error" in followed) {
+    const row = tree.nodes.get(run.replay[followed.at - 1]!)!;
+    readout(`Step ${pathTo(tree, row.id).length - 1}, “${stepLabel(row)}”, repeats the edited step and cannot follow it: ${sentence(followed.error)}`);
+    return;
+  }
+  const replayOps = followed.ops.slice(1);
   const twin = builtBranch(tree, run.parent, op, replayOps);
   if (twin != null) {
     // These numbers already built this branch, in an earlier edit: show it rather than build it again.
