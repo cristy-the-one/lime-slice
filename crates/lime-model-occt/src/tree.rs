@@ -890,6 +890,8 @@ struct Node {
     piece: Option<String>,
     /// The edges this step made or changed, read once from its solid when a later blend first picks them.
     created: Option<Vec<EdgeRef>>,
+    /// --- A10. The node that made each face of this solid, in the kernel's face order. Empty until the solid is held.
+    face_owners: Vec<NodeId>,
     /// Its solid came from a saved copy (`open`'s `seed`), not from a replay. It is never evicted, since
     /// building it again means replaying every step above it.
     seeded: bool,
@@ -940,16 +942,20 @@ impl Doc {
                 broken: None,
                 piece: None,
                 created: None,
+                face_owners: Vec::new(),
                 seeded: false,
                 depth: 0,
                 used,
             },
         );
-        Doc {
+        let mut doc = Doc {
             nodes,
             current: ROOT,
             probe: None,
-        }
+        };
+        // --- A10. A root made every face it has.
+        stamp_faces(&mut doc, ROOT);
+        doc
     }
 
     fn node(&self, id: NodeId) -> Result<&Node, Failure> {
@@ -967,6 +973,7 @@ impl Doc {
             broken: None,
             piece: None,
             created: None,
+            face_owners: Vec::new(),
             seeded: false,
             depth,
             used: 0,
@@ -1146,6 +1153,8 @@ impl Doc {
             node.op = Some(built.op);
             node.shape = Some(built.kept);
             node.used = *clock;
+            // --- A10. Faces this replay made belong to this step; the rest keep the node that made them.
+            stamp_faces(self, step);
         }
         *clock += 1;
         if let Some(node) = self.nodes.get_mut(&id) {
@@ -1693,7 +1702,17 @@ impl Store {
             return Ok(text);
         }
         let doc = doc_in(&mut self.docs, key)?;
-        let text = Arc::new(doc.shape(id).reply(id, chord)?);
+        // --- A10. `stepFaces` rides on the cached solid reply. A face's node is the one that made it.
+        let owners = doc
+            .nodes
+            .get(&id)
+            .map(|node| node.face_owners.clone())
+            .unwrap_or_default();
+        let mut text = doc.shape(id).reply(id, chord)?;
+        if !owners.is_empty() {
+            text = with_fields(&text, &[("stepFaces", Part::Json(json!(owners).to_string()))]);
+        }
+        let text = Arc::new(text);
         self.remember(key, id, chord, Arc::clone(&text));
         Ok(text)
     }
@@ -1776,6 +1795,8 @@ impl Store {
         node.piece = other_key.clone();
         node.used = self.clock;
         doc.current = id;
+        // --- A10.
+        stamp_faces(doc, id);
         // The other piece is sent only to start its own tree. A split replayed without `otherKey`
         // drops it unseen.
         let rendered = self.reply(&key, id, chord).and_then(|text| {
@@ -1804,9 +1825,14 @@ impl Store {
         if let (Some(piece), Some(other_key), Some(other)) = (built.other, other_key, other) {
             self.clock += 1;
             self.replies.retain(|reply| reply.key != other_key);
+            // --- A10. The split piece starts its own tree, so every face it keeps belongs to that root.
+            let owners = vec![ROOT; piece.fingerprint().faces.max(0) as usize];
             self.docs
                 .insert(other_key.clone(), Doc::new(piece, self.clock));
-            let other = Arc::new(other);
+            let other = Arc::new(with_fields(
+                &other,
+                &[("stepFaces", Part::Json(json!(owners).to_string()))],
+            ));
             self.remember(&other_key, ROOT, chord, Arc::clone(&other));
             let key_field = ("key", Part::Json(json!(other_key).to_string()));
             fields.push(("other", Part::Object(other, vec![key_field])));
@@ -1837,6 +1863,12 @@ impl Store {
             Err(failure) => return Err(failure),
         };
         let doc = doc_in(&mut self.docs, key)?;
+        // --- A10. Clone before the shape is borrowed: a preview face keeps its parent's node, and a new face is null.
+        let parent_owners = doc
+            .nodes
+            .get(&id)
+            .map(|node| node.face_owners.clone())
+            .unwrap_or_default();
         let from = doc.shape(id);
         let result = tool
             .and_then(|tool| steps.map(|found| (tool, found)))
@@ -1851,7 +1883,15 @@ impl Store {
         match result {
             Ok(mut built) => {
                 // The shape keeps what its reply measured and meshed, so an Apply that takes it meshes nothing again.
-                let shown = preview.and_then(|chord| built.kept.reply(id, chord).ok());
+                let shown = preview.and_then(|chord| {
+                    let faces = preview_step_faces(&parent_owners, &built.kept.face_from());
+                    let mut text = built.kept.reply(id, chord).ok()?;
+                    // --- A10.
+                    if let Some(faces) = faces {
+                        text = with_fields(&text, &[("stepFaces", Part::Json(faces))]);
+                    }
+                    Some(text)
+                });
                 // --- A1 group: the same measures as one op, plus how many steps missed the solid. ---
                 let skipped = matches!(built.op, Op::Group { .. }).then_some(built.skipped);
                 let metrics = probe_metrics(from, &built.kept, skipped);
@@ -2158,6 +2198,9 @@ impl Store {
         node.fingerprint = Some(fingerprint);
         node.shape = Some(built.kept);
         node.used = self.clock;
+        // --- A10.
+        let doc = doc_in(&mut self.docs, key)?;
+        stamp_faces(doc, id);
         Ok(stored)
     }
 
@@ -2299,7 +2342,62 @@ fn seed_node(doc: &mut Doc, seed: SeedSolid, used: u64) -> Result<(), String> {
     node.shape = Some(shape);
     node.seeded = true;
     node.used = used;
+    // --- A10. A seeded tip has no per-face history in the saved bytes, so every face is this step's until replayed.
+    stamp_faces(doc, seed.node);
     Ok(())
+}
+
+/// --- A10. Each face's node. A face whose `from_face` names a parent face keeps that face's node.
+/// A face this step made (`-1`), or one whose parent has no record, belongs to `id`.
+fn stamp_faces(doc: &mut Doc, id: NodeId) {
+    let (parent, from_face) = {
+        let Some(node) = doc.nodes.get(&id) else {
+            return;
+        };
+        let Some(shape) = node.shape.as_ref() else {
+            return;
+        };
+        (node.parent, shape.face_from())
+    };
+    let parent_owners = parent
+        .and_then(|parent| doc.nodes.get(&parent).map(|node| node.face_owners.clone()))
+        .unwrap_or_default();
+    let owners: Vec<NodeId> = from_face
+        .iter()
+        .map(|&src| {
+            if src >= 0 {
+                parent_owners.get(src as usize).copied().unwrap_or(id)
+            } else {
+                id
+            }
+        })
+        .collect();
+    if let Some(node) = doc.nodes.get_mut(&id) {
+        node.face_owners = owners;
+    }
+}
+
+/// --- A10. A probe's preview has no node of its own yet. Inherited faces keep the parent's node; new faces are null.
+fn preview_step_faces(parent: &[NodeId], from_face: &[c_int]) -> Option<String> {
+    if from_face.is_empty() {
+        return None;
+    }
+    let mut out = String::from("[");
+    for (index, &src) in from_face.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        if src >= 0 {
+            match parent.get(src as usize) {
+                Some(owner) => out.push_str(&owner.to_string()),
+                None => out.push_str("null"),
+            }
+        } else {
+            out.push_str("null");
+        }
+    }
+    out.push(']');
+    Some(out)
 }
 
 /// An unknown tree reads as a missing root: the client resends the root and the ops.
@@ -3017,6 +3115,9 @@ fn build_group(
             return Err(step_failed(index, count, message, None));
         }
     }
+    let parent_faces = from.fingerprint().faces;
+    // --- A10. `back[i]` is the original parent's face that the shape in hand still carries as face `i`.
+    let mut back: Vec<c_int> = (0..parent_faces).collect();
     let mut current: Option<Shape> = None;
     let mut skipped = 0u32;
     let mut stored: Vec<Op> = Vec::with_capacity(count);
@@ -3031,13 +3132,27 @@ fn build_group(
             build(shape, resolved, probe, None, edge_steps)
         };
         match outcome {
-            Ok(built) => {
+            Ok(mut built) => {
                 let before = current.as_ref().map_or(&*from, |shape| shape);
                 let silent = matches!(step, Op::Boolean { .. }) && volume_unchanged(before, &built.kept);
                 if silent {
                     skipped += 1;
                     stored.push(step.clone());
                 } else {
+                    // --- A10. Compose lineage so the group's faces index the solid the group started from.
+                    let lineage = built.kept.face_from();
+                    let next: Vec<c_int> = lineage
+                        .iter()
+                        .map(|&src| {
+                            if src >= 0 {
+                                back.get(src as usize).copied().unwrap_or(-1)
+                            } else {
+                                -1
+                            }
+                        })
+                        .collect();
+                    built.kept.set_face_from(&next);
+                    back = next;
                     stored.push(built.op);
                     current = Some(built.kept);
                 }
@@ -3054,7 +3169,11 @@ fn build_group(
         Some(kept) => kept,
         None => {
             let bytes = from.brep_bytes().map_err(BuildFail::plain)?;
-            Shape::read_brep(&bytes, false).map_err(BuildFail::plain)?
+            let mut kept = Shape::read_brep(&bytes, false).map_err(BuildFail::plain)?;
+            // --- A10. Nothing in the group changed a face, so each face is still the parent's.
+            let identity: Vec<c_int> = (0..parent_faces).collect();
+            kept.set_face_from(&identity);
+            kept
         }
     };
     Ok(Built {
@@ -3634,6 +3753,9 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> *mut c_char;
     fn lime_tree_created(shape: *const RawShape, out: *mut *const c_int) -> c_int;
+    // --- A10.
+    fn lime_tree_face_from(shape: *const RawShape, out: *mut *const c_int) -> c_int;
+    fn lime_tree_set_face_from(shape: *mut RawShape, indexes: *const c_int, count: c_int);
     fn lime_tree_edge_kinds(
         shape: *const RawShape,
         edges: *const c_int,
@@ -4397,6 +4519,22 @@ impl Shape {
         }
         // SAFETY: the kernel keeps `count` ints there for as long as the shape lives; they are copied here.
         unsafe { std::slice::from_raw_parts(ptr, count as usize) }.to_vec()
+    }
+
+    /// --- A10. For each face, the parent face it descends from, or -1 when this step made it.
+    fn face_from(&self) -> Vec<c_int> {
+        let mut ptr: *const c_int = std::ptr::null();
+        let count = unsafe { lime_tree_face_from(self.raw(), &mut ptr) };
+        if count <= 0 || ptr.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: the kernel keeps `count` ints there for as long as the shape lives; they are copied here.
+        unsafe { std::slice::from_raw_parts(ptr, count as usize) }.to_vec()
+    }
+
+    /// --- A10. A group writes the lineage it composed, indexed by the solid the group started from.
+    fn set_face_from(&mut self, indexes: &[c_int]) {
+        unsafe { lime_tree_set_face_from(self.0.as_ptr(), indexes.as_ptr(), indexes.len() as c_int) }
     }
 
     /// The edges the op that built this solid made or changed, those it could measure.

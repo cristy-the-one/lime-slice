@@ -126,7 +126,7 @@ export function mountMarkup(root: HTMLElement) {
               <div class="model-tools" role="toolbar" aria-label="Model">
                 <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="Start a new solid from a box, cylinder, cone, or another primitive">New solid</button>
                 <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
-                <button class="model-tool is-icon" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. Line and rectangle.">Sketch</button>
+                <button class="model-tool is-icon" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. Drawing tools are in the sketch card.">Sketch</button>
                 <span class="model-sep"></span>
                 <div class="modes" role="group" aria-label="Pick">
                   <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
@@ -439,6 +439,23 @@ export function mountMarkup(root: HTMLElement) {
               <div class="model-foot" id="modelFoot">
                 <div class="model-foot-row">
                   <button class="model-view-reset" id="modelResetView" type="button" aria-label="Reset view" data-tip="Reset view. Shift: every object"></button>
+                  <!-- --- A10. View menu: section and colour by step. In the foot, so the toolbar stays the width the fit test measures. -->
+                  <div class="model-look" id="modelLook">
+                    <button class="model-look-open" id="modelLookOpen" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="modelLookPanel">View</button>
+                    <div class="model-look-panel" id="modelLookPanel" hidden>
+                      <label class="model-keep"><input id="modelSection" type="checkbox"> Section</label>
+                      <div class="model-look-axis" id="modelSectionAxis" role="group" aria-label="Section plane">
+                        <button type="button" data-axis="x" aria-pressed="false">X</button>
+                        <button type="button" data-axis="y" aria-pressed="false">Y</button>
+                        <button type="button" data-axis="z" aria-pressed="true">Z</button>
+                        <button type="button" data-axis="face" aria-pressed="false">Face</button>
+                      </div>
+                      <label class="model-look-offset">Offset <input id="modelSectionOffset" type="number" step="0.1" value="0" aria-label="Section offset"></label>
+                      <label class="model-keep"><input id="modelSectionFlip" type="checkbox"> Flip</label>
+                      <label class="model-keep"><input id="modelColourSteps" type="checkbox"> Colour by step</label>
+                      <p class="model-note" id="modelSectionNote" hidden></p>
+                    </div>
+                  </div>
                   <div id="modelReadout" class="model-readout"></div>
                 </div>
               </div>

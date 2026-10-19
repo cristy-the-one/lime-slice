@@ -110,3 +110,59 @@ test("a sketch draws a line and a rectangle, then pins", async ({ page }) => {
   await expect(canvas).toHaveAttribute("data-sketch", "off");
   await expect(page.locator("#modelToolPull")).toBeVisible();
 });
+
+test("drawing tools stay in the sketch card and take a typed size", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openBox(page);
+  const canvas = page.locator("#model");
+  const fits = () => page.locator(".model-tools").evaluate((bar) => bar.scrollWidth <= bar.clientWidth);
+  expect(await fits(), "the toolbar fits before the sketch opens").toBe(true);
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  expect(await fits(), "drawing tools are not on the Model toolbar").toBe(true);
+  await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
+
+  await page.locator("[data-sketch-menu=draw]").click();
+  await expect(page.locator(".sketch-menu-list")).toBeVisible();
+  for (const label of ["Circle", "Arc", "Polygon", "Slot", "Spline", "Trim", "Offset", "Fillet corner", "Construction", "Use"]) {
+    await expect(page.locator(`.sketch-menu-list [data-sketch-tool]`, { hasText: label })).toBeVisible();
+  }
+  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  await expect(canvas).toHaveAttribute("data-sketch-tool", "circle");
+  await expect(page.locator("#modelReadout")).toContainText("Type a diameter");
+
+  const box = (await canvas.boundingBox())!;
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.click(centre.x, centre.y);
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await expect(hud).toBeVisible();
+  await hud.locator("input").nth(0).fill("20");
+  await hud.locator("input").nth(0).press("Enter");
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "1");
+  await expect(canvas).toHaveAttribute("data-sketch-kinds", "circle");
+
+  await page.keyboard.press("N");
+  await expect(canvas).toHaveAttribute("data-sketch-tool", "polygon");
+  await expect(page.locator("#modelReadout")).toContainText("across corners");
+  await page.mouse.click(centre.x, centre.y);
+  await expect(hud).toBeVisible();
+  await hud.locator("input").nth(0).fill("20");
+  await hud.locator("input").nth(0).press("Tab");
+  await hud.locator("input").nth(2).fill("4");
+  await hud.locator("input").nth(2).press("Enter");
+  await expect(canvas).toHaveAttribute("data-sketch-kinds", "circle,line,line,line,line");
+
+  await page.keyboard.press("T");
+  await expect(page.locator("#modelReadout")).toContainText("Trim");
+  await page.keyboard.press("F");
+  await expect(canvas).toHaveAttribute("data-sketch-tool", "offset");
+  await page.keyboard.press("G");
+  await expect(page.locator("#modelReadout")).toContainText("Fillet corner");
+  await page.keyboard.press("U");
+  await expect(page.locator("#modelReadout")).toContainText("faint edge");
+  await page.keyboard.press("X");
+  await expect(canvas).toHaveAttribute("data-sketch-tool", "construction");
+  expect(await fits(), "the toolbar still fits at 1440 px while a sketch is open").toBe(true);
+  await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
+});

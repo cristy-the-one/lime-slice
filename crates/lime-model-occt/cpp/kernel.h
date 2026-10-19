@@ -13,6 +13,8 @@
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 
+#include <BRepTools_History.hxx>
+
 namespace lime_occt {
 
 /// One shape with what was computed from it once. A shape never changes, so its volume, its face
@@ -102,12 +104,15 @@ struct PrimitiveSpec {
 /// The primitive, built and turned. Null, with `error` in plain words, when a size is out of range.
 TopoDS_Shape make_solid(const PrimitiveSpec& spec, std::string& error);
 
+/// `history`, when set, receives the boolean's face history (`Modified` / `Generated`) so a later step can
+/// tell a face this boolean only trimmed from a face it created. Null leaves the history unfilled, as before.
 TopoDS_Shape build_boolean(
     const TopoDS_Shape& current,
     const std::string& which,
     const PrimitiveSpec& tool,
     double& volume,
-    std::string& error);
+    std::string& error,
+    Handle(BRepTools_History)* history = nullptr);
 /// Another solid, placed by a rigid matrix, fused with, cut from, or intersected with `current`.
 /// `place` is the 3×3 turn row by row, then the move: twelve numbers.
 TopoDS_Shape build_join(
@@ -116,7 +121,8 @@ TopoDS_Shape build_join(
     const std::string& which,
     const double* place,
     double& volume,
-    std::string& error);
+    std::string& error,
+    Handle(BRepTools_History)* history = nullptr);
 /// A hole as its op stores it, in the solid's own frame.
 struct HoleSpec {
     double x = 0;

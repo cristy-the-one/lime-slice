@@ -93,5 +93,11 @@ eq("offsets that run backwards", decodeSolid({ ...body, edgeOffsets: words([0, 3
 eq("one offset short", decodeSolid({ ...body, edgeOffsets: words([0, 2], "u32") }), DAMAGED);
 eq("a face with no area", decodeSolid({ ...body, faces: [{ areaMm2: 0.5 }, {}] }), DAMAGED);
 
+const coloured = solid({ ...body, stepFaces: [0, null] });
+eq("step faces round-trip when they match", coloured.stepFaces, [0, null]);
+eq("step faces are written only when sent", "stepFaces" in encodeSolid(sent), false);
+eq("a short step face list is ignored", solid({ ...body, stepFaces: [0] }).stepFaces, undefined);
+eq("a step face that is not a node is ignored", solid({ ...body, stepFaces: [0, "nope"] }).stepFaces, undefined);
+
 if (failed) throw new Error(`${failed} model reply checks failed`);
 console.log("model-reply: ok");

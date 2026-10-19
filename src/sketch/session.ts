@@ -22,8 +22,28 @@ import {
   type SketchPlane,
 } from "./model.ts";
 import type { RefGeom } from "./refs.ts";
+// --- S3 drawing tools. Gesture state and geometry live in tools.ts. ---
+import {
+  drawAnchor,
+  drawCommit,
+  drawDimensions,
+  drawPointer,
+  drawPreview,
+  drawReadout,
+  drawRubber,
+  freshDraw,
+  hitReference,
+  idleDraw,
+  isDrawTool,
+  tangentGesture,
+  toggleConstruction,
+  type DrawState,
+  type DrawTool,
+} from "./tools.ts";
 
-export type SketchTool = "select" | "line" | "rectangle";
+export type SketchTool = "select" | "line" | "rectangle" | DrawTool;
+
+export type { DrawTool };
 export type SketchPhase = "off" | "choosing" | "editing" | "pinned";
 
 export interface SketchSelection {
@@ -41,6 +61,8 @@ interface Mark {
   sketch: SketchData;
   chain: number[] | null;
   selection: SketchSelection;
+  /** S3 gesture, so undo puts a half-drawn spline or circle back as well. */
+  draw: DrawState;
 }
 
 interface Drag {
@@ -84,6 +106,8 @@ export interface SketchEditor {
   undo: Mark[];
   redo: Mark[];
   refs: RefGeom;
+  /** S3 tools: circle, arc, polygon, slot, spline, trim, offset, fillet, construction, use. */
+  draw: DrawState;
   /** Which origin plane the pointer is over, while choosing. */
   hotPlane: "XY" | "XZ" | "YZ" | "workplane" | null;
   nextName: number;
@@ -129,6 +153,7 @@ export function sketchOff(): SketchEditor {
     undo: [],
     redo: [],
     refs: EMPTY_REFS,
+    draw: freshDraw(),
     hotPlane: null,
     nextName: 1,
   };
@@ -173,6 +198,7 @@ export function enterSketch(editor: SketchEditor, plane: SketchPlane, on?: Sketc
     esc: 0,
     undo: [],
     redo: [],
+    draw: freshDraw(),
     hotPlane: null,
     nextName: id,
   };
@@ -229,6 +255,7 @@ export function reopenSketch(editor: SketchEditor, id: number): SketchEditor {
     esc: 0,
     undo: [],
     redo: [],
+    draw: idleDraw(left.draw),
   };
 }
 
@@ -247,8 +274,8 @@ export function withLook(editor: SketchEditor, on: boolean): SketchEditor {
 }
 
 export interface SketchDimensions {
-  kind: "line" | "rectangle";
-  fields: { id: string; label: string; unit: string; value: number }[];
+  kind: "line" | "rectangle" | DrawTool;
+  fields: { id: string; label: string; unit: string; value: number; places?: number }[];
 }
 
 /** The sizes under the pointer, while a line segment or a rectangle is in progress. */
@@ -277,6 +304,8 @@ export function sketchDimensions(editor: SketchEditor): SketchDimensions | null 
       ],
     };
   }
+  // --- S3 ---
+  if (isDrawTool(editor.tool)) return drawDimensions(editor.draw, editor.tool, at);
   return null;
 }
 
@@ -302,6 +331,8 @@ export function commitSizes(editor: SketchEditor, values: readonly number[]): Sk
     const at = rectCorner(editor.rect.at, cursor, width, height, editor.rect.fromCentre);
     return placeRectangle(editor, sketch, editor.rect.at, at, editor.rect.fromCentre);
   }
+  // --- S3. Enter on a typed diameter, radius, distance, or the piece under the pointer. ---
+  if (isDrawTool(editor.tool)) return commitDraw(editor, sketch, values);
   return editor;
 }
 
@@ -323,6 +354,10 @@ export function previewSizes(editor: SketchEditor, values: readonly number[]): S
     const cursor = editor.cursor ?? editor.rect.at;
     return { ...editor, typed: rectCorner(editor.rect.at, cursor, width, height, editor.rect.fromCentre) };
   }
+  if (isDrawTool(editor.tool)) {
+    const preview = drawPreview(editor.draw, values, editor.cursor);
+    return { ...editor, draw: preview.state, typed: preview.typed };
+  }
   return editor;
 }
 
@@ -336,6 +371,8 @@ export function sketchPointer(editor: SketchEditor, ev: SketchPointer, env: Sket
   if (next.tool === "select") return selectPointer(next, sketch, ev, env, snapped.at);
   if (next.tool === "line" && ev.phase === "up") return lineClick(next, sketch, snapped.at, ev);
   if (next.tool === "rectangle") return rectPointer(next, sketch, ev, snapped.at);
+  // --- S3 ---
+  if (isDrawTool(next.tool)) return applyDrawPointer(next, sketch, ev, env, snapped.at);
   return next;
 }
 
@@ -353,9 +390,34 @@ export function sketchKey(editor: SketchEditor, key: string, mods: { ctrl: boole
   if (key === "l" || key === "L") return withTool(editor, "line");
   if (key === "r" || key === "R") return withTool(editor, "rectangle");
   if (key === "o" || key === "O") return withLook(editor, !editor.lookAround);
+  if (key === "c" || key === "C") return withTool(editor, "circle");
+  if (key === "a" || key === "A") {
+    const next = withTool(editor, "arc");
+    if (!mods.shift) return next;
+    const sketch = activeSketch(next);
+    const gesture = sketch ? tangentGesture(sketch) : null;
+    if (!gesture) return { ...next, draw: { ...next.draw, tangentArm: true, note: "Draw a line first. A tangent arc starts at its end." } };
+    return { ...next, draw: { ...next.draw, gesture, note: null } };
+  }
+  if (key === "n" || key === "N") return withTool(editor, "polygon");
+  if ((key === "s" || key === "S") && mods.shift) return withTool(editor, "slot");
+  if (key === "s" || key === "S") return editor;
+  if (key === "b" || key === "B") return withTool(editor, "spline");
+  if (key === "t" || key === "T") return withTool(editor, "trim");
+  if (key === "f" || key === "F") return withTool(editor, "offset");
+  if (key === "g" || key === "G") return withTool(editor, "fillet");
+  if (key === "u" || key === "U") return withTool(editor, "use");
+  if (key === "x" || key === "X") return constructionKey(editor);
+  if (key === "Enter") return enterKey(editor);
   if (key === "Escape") return onEsc(editor);
   if (key === "Delete" || key === "Backspace") return deleteSelection(editor);
   return null;
+}
+
+/** Keys the sketch takes while it is open, so Model shortcuts (Scale, Boolean, views) wait. */
+export function sketchHandlesKey(key: string, mods: { ctrl: boolean; meta: boolean; shift: boolean }): boolean {
+  if (mods.ctrl || mods.meta) return key === "z" || key === "Z" || key === "y" || key === "Y";
+  return ["l", "L", "r", "R", "o", "O", "c", "C", "a", "A", "n", "N", "s", "S", "b", "B", "t", "T", "f", "F", "g", "G", "x", "X", "u", "U", "Enter", "Escape", "Delete", "Backspace"].includes(key);
 }
 
 export function canUndoSketch(editor: SketchEditor): boolean {
@@ -387,13 +449,17 @@ export function sketchReadout(editor: SketchEditor): string {
   if (editor.phase !== "editing") return "";
   const snap = editor.snap && editor.snap.kind !== "none" ? snapHint(editor.snap.kind) : "";
   const tail = snap ? ` ${snap}.` : "";
-  if (editor.esc === 1 && !editor.chain && !editor.rect) return `Esc again finishes the sketch.${tail}`;
+  if (editor.esc === 1 && !editor.chain && !editor.rect && !editor.draw.gesture) return `Esc again finishes the sketch.${tail}`;
   if (editor.lookAround) return `Look around is on. O locks the view for drawing.${tail}`;
   if (editor.tool === "line") {
     return `Line. Click each point. Double-click or Esc ends it. Click the start point to close. Type a length and an angle.${tail}`;
   }
   if (editor.tool === "rectangle") {
     return `Rectangle. Click two corners. Hold Ctrl to start from the centre. Type a width and a height.${tail}`;
+  }
+  if (isDrawTool(editor.tool)) {
+    const note = editor.draw.note ? ` ${editor.draw.note}` : "";
+    return `${drawReadout(editor.tool)}${note}${tail}`;
   }
   return `Select. Click a line or a point. Drag a point to move it. Drag empty space to box-select. L line, R rectangle.${tail}`;
 }
@@ -412,6 +478,7 @@ export function rubber(editor: SketchEditor): Pt[] | null {
     const corners = rectangleCorners(editor.rect.at, at, editor.rect.fromCentre);
     return [...corners, corners[0]!];
   }
+  if (isDrawTool(editor.tool)) return drawRubber(sketch, editor.draw, editor.tool, at);
   return null;
 }
 
@@ -441,7 +508,7 @@ function selectPointer(editor: SketchEditor, sketch: SketchData, ev: SketchPoint
     const done = { ...editor, drag: null };
     if (!drag.active) return done;
     const moved = editor.undo;
-    return { ...done, undo: [...moved, { sketch: drag.base, chain: editor.chain, selection: editor.selection }].slice(-100), redo: [] };
+    return { ...done, undo: [...moved, { sketch: drag.base, chain: editor.chain, selection: editor.selection, draw: cloneDraw(editor.draw) }].slice(-100), redo: [] };
   }
   if (ev.phase === "up" && editor.box) {
     const box = editor.box;
@@ -528,7 +595,7 @@ function placeRectangle(editor: SketchEditor, sketch: SketchData, anchor: Pt, at
 }
 
 function onEsc(editor: SketchEditor): SketchEditor {
-  if (editor.chain || editor.rect || editor.drag || editor.box) return { ...clearGesture(editor), esc: 1 };
+  if (editor.chain || editor.rect || editor.drag || editor.box || editor.draw.gesture) return { ...clearGesture(editor), esc: 1 };
   if (editor.esc === 1) return finishSketch(editor);
   return { ...editor, esc: 1 };
 }
@@ -544,7 +611,7 @@ function clearGesture(editor: SketchEditor): SketchEditor {
   const sketch = activeSketch(editor);
   const pruned = sketch ? prunePoints(sketch) : null;
   const next = pruned ? replaceSketch(editor, pruned) : editor;
-  return { ...next, chain: null, rect: null, typed: null, drag: null, box: null };
+  return { ...next, chain: null, rect: null, typed: null, drag: null, box: null, draw: idleDraw(editor.draw) };
 }
 
 function deleteSelection(editor: SketchEditor): SketchEditor {
@@ -565,10 +632,12 @@ function deleteSelection(editor: SketchEditor): SketchEditor {
 function snapAt(editor: SketchEditor, sketch: SketchData, at: Pt, mmPerPx: number): SnapHit {
   const chain = editor.chain;
   const fromId = chain && chain.length >= 1 ? chain[chain.length - 1]! : null;
-  const from = fromId != null ? sketchPoint(sketch, fromId)?.at : undefined;
+  const chained = fromId != null ? sketchPoint(sketch, fromId)?.at : undefined;
+  const anchor = isDrawTool(editor.tool) ? drawAnchor(sketch, editor.draw, editor.tool) : {};
+  const from = chained ?? anchor.from;
   const prevId = chain && chain.length >= 2 ? chain[chain.length - 2]! : null;
   const prev = prevId != null ? sketchPoint(sketch, prevId)?.at : undefined;
-  const lastDir = from && prev ? [from[0] - prev[0], from[1] - prev[1]] as Pt : undefined;
+  const lastDir = (from && prev ? [from[0] - prev[0], from[1] - prev[1]] as Pt : undefined) ?? anchor.dir;
   const sketchEntities: SnapEntity[] = [];
   for (const entity of sketch.entities) {
     const curve = curveOf(sketch, entity);
@@ -608,11 +677,86 @@ function currentMark(editor: SketchEditor): Mark {
     sketch: sketchJson(sketch ?? emptySketch()),
     chain: editor.chain ? [...editor.chain] : null,
     selection: { entities: [...editor.selection.entities], points: [...editor.selection.points] },
+    draw: cloneDraw(editor.draw),
   };
 }
 
 function applyMark(editor: SketchEditor, mark: Mark): SketchEditor {
-  return replaceSketch({ ...clearGesture(editor), chain: mark.chain ? [...mark.chain] : null, selection: { entities: [...mark.selection.entities], points: [...mark.selection.points] } }, sketchJson(mark.sketch));
+  return replaceSketch(
+    {
+      ...clearGesture(editor),
+      chain: mark.chain ? [...mark.chain] : null,
+      selection: { entities: [...mark.selection.entities], points: [...mark.selection.points] },
+      draw: cloneDraw(mark.draw ?? freshDraw()),
+    },
+    sketchJson(mark.sketch),
+  );
+}
+
+function applyDrawPointer(editor: SketchEditor, sketch: SketchData, ev: SketchPointer, env: SketchEnv, at: Pt): SketchEditor {
+  const tol = env.mmPerPx * 8;
+  const edit = editor.tool === "trim" || editor.tool === "offset" || editor.tool === "fillet" || editor.tool === "construction" || editor.tool === "use";
+  const output = drawPointer(sketch, editor.draw, editor.tool as DrawTool, {
+    phase: ev.phase,
+    at,
+    raw: ev.uv,
+    sx: ev.sx,
+    sy: ev.sy,
+    shift: ev.shift,
+    double: ev.double,
+    hit: edit ? hitSketch(sketch, ev.uv, tol) : hitSketch(sketch, at, tol),
+    ref: hitReference(editor.refs, edit ? ev.uv : at, tol),
+    tolMm: tol,
+    selection: editor.selection,
+  }, editor.refs);
+  return applyDrawResult(editor, sketch, output);
+}
+
+function commitDraw(editor: SketchEditor, sketch: SketchData, values: readonly number[]): SketchEditor {
+  const at = editor.typed ?? editor.cursor;
+  const tol = 1e-4;
+  const hit = at ? hitSketch(sketch, at, Math.max(tol, 0.5)) : { point: null, entity: null };
+  const output = drawCommit(sketch, editor.draw, editor.tool as DrawTool, values, at, editor.hover.entity != null ? editor.hover : hit, hitReference(editor.refs, at ?? [0, 0], 0.5), editor.refs, editor.selection);
+  return applyDrawResult(editor, sketch, output);
+}
+
+function applyDrawResult(editor: SketchEditor, sketch: SketchData, output: { sketch: SketchData; state: DrawState; selection: SketchSelection; committed: boolean }): SketchEditor {
+  let next: SketchEditor = { ...editor, draw: output.state, selection: output.selection, typed: null };
+  if (output.sketch !== sketch) next = replaceSketch(next, output.sketch);
+  if (!output.committed) return next;
+  const before = currentMark(editor);
+  return { ...next, undo: [...editor.undo, before].slice(-100), redo: [], esc: 0 };
+}
+
+function constructionKey(editor: SketchEditor): SketchEditor {
+  const next = withTool(editor, "construction");
+  const sketch = activeSketch(next);
+  if (!sketch || editor.selection.entities.length === 0) return next;
+  const before = currentMark(editor);
+  const toggled = toggleConstruction(sketch, editor.selection.entities);
+  return { ...replaceSketch(next, toggled), undo: [...editor.undo, before].slice(-100), redo: [], selection: { entities: [...editor.selection.entities], points: [] } };
+}
+
+function enterKey(editor: SketchEditor): SketchEditor | null {
+  if (!isDrawTool(editor.tool)) return null;
+  const sketch = activeSketch(editor);
+  if (!sketch) return null;
+  if (editor.tool === "spline" || editor.tool === "trim" || editor.tool === "use" || editor.tool === "construction") {
+    return commitDraw(editor, sketch, []);
+  }
+  const dims = drawDimensions(editor.draw, editor.tool, editor.typed ?? editor.cursor);
+  if (!dims) return null;
+  return commitDraw(editor, sketch, dims.fields.map((field) => field.value));
+}
+
+function cloneDraw(state: DrawState): DrawState {
+  return {
+    sides: state.sides,
+    note: state.note,
+    tangentArm: state.tangentArm,
+    hud: state.hud ? [...state.hud] : null,
+    gesture: state.gesture ? structuredClone(state.gesture) : null,
+  };
 }
 
 function finishOpen(editor: SketchEditor): SketchEditor {

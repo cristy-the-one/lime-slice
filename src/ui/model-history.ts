@@ -28,11 +28,23 @@ interface ModelHistoryHooks {
   openPlace(): void;
   /** The Position row's Reset: the open object goes back to where its file put it, as one Place step. */
   resetPosition(): void;
+  /** --- A10. The row under the pointer or focus, so its faces can tint. Null when neither is on a row. */
+  highlight?(id: number | null): void;
   /**
    * --- A4. Ctrl-click (Cmd-click) a row while Pattern or Mirror is open. True consumes the click, so the view stays.
    * Absent, a Ctrl-click jumps as any other click does.
    */
   pickSource?(row: RowKey): boolean;
+}
+
+/** --- A10. Colour by step paints a swatch on each row. Off, the swatches go and the rows repaint. */
+let stepColourOf: ((id: number) => string) | null = null;
+
+export function syncStepColours(on: boolean, colour: (id: number) => string) {
+  stepColourOf = on ? colour : null;
+  rowSigs.clear();
+  drawn = null;
+  sync();
 }
 
 /** Arrow keys show their step after this pause, so a run of presses asks for the last one only. */
@@ -162,6 +174,14 @@ export function mountModelHistory(next: ModelHistoryHooks) {
   list.addEventListener("focusin", (ev) => {
     const row = rowOf(ev.target);
     if (row != null && row !== focusId) setFocus(row, false);
+    // --- A10.
+    hooks?.highlight?.(rowNode(ev.target));
+  });
+  const rows = list;
+  rows.addEventListener("pointerover", (ev) => hooks?.highlight?.(rowNode(ev.target)));
+  rows.addEventListener("pointerleave", () => hooks?.highlight?.(rows.contains(document.activeElement) ? rowNode(document.activeElement) : null));
+  rows.addEventListener("focusout", (ev) => {
+    if (!rows.contains(ev.relatedTarget as Node) && !rows.matches(":hover")) hooks?.highlight?.(null);
   });
   window.addEventListener("lime-layout", () => {
     if (!isMobileLayout()) setSheet(false, false);
@@ -340,7 +360,8 @@ function render() {
       el.id = rowElementId(row.key);
       rowEls.set(row.key, el);
     }
-    const sig = JSON.stringify([row, layout!.lanes]);
+    // --- A10. The swatch colour is part of the signature, so turning colour by step on repaints the rows.
+    const sig = JSON.stringify([row, layout!.lanes, stepColourOf?.(row.id) ?? ""]);
     // A row being renamed keeps its field; it is painted when the name is done.
     if (row.key !== renaming && rowSigs.get(row.key) !== sig) {
       paintRow(el, row, layout!.lanes);
@@ -479,8 +500,16 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   // A folded run is not one step. A step that cannot be edited shows no pencil; its menu says why.
   edit.hidden = (!!row.fold && !row.fold.expanded) || !!hooks?.editRefusal(row.key);
   edit.setAttribute("aria-label", `Edit step: ${row.label}`);
-  el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate, :scope > .mh-tool").forEach((node) => node.remove());
+  el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate, :scope > .mh-tool, :scope > .mh-swatch").forEach((node) => node.remove());
   label.before(railSvg(row, lanes));
+  // --- A10. The swatch sits after the rail and before the label, and only while colour by step is on.
+  if (stepColourOf) {
+    const swatch = document.createElement("span");
+    swatch.className = "mh-swatch";
+    swatch.style.background = stepColourOf(row.id);
+    swatch.setAttribute("aria-hidden", "true");
+    label.before(swatch);
+  }
   if (row.toolStart && row.tool != null && row.tool !== row.label) {
     // The lane's first row names whose steps these are, so the merge reads at a glance.
     const chip = document.createElement("span");
@@ -545,6 +574,15 @@ function applyTabIndex() {
 function rowOf(target: EventTarget | null): RowKey | null {
   const el = target instanceof Element ? target.closest<HTMLElement>(".mh-row") : null;
   return el?.dataset.row ?? null;
+}
+
+/** --- A10. The history node of the row under `target`. */
+function rowNode(target: EventTarget | null): number | null {
+  const el = target instanceof Element ? target.closest<HTMLElement>(".mh-row") : null;
+  const id = el?.dataset.id;
+  if (id == null || id === "") return null;
+  const node = Number(id);
+  return Number.isFinite(node) ? node : null;
 }
 
 function setFocus(id: RowKey, move: boolean) {

@@ -67,9 +67,11 @@ fn cut() -> Value {
 }
 
 /// What a reply says of a solid, but for its id and the nodes held: two solids that answer the same are the same.
+/// `stepFaces` names history nodes. A brep has none of that, so a solid read back as a root or a seed
+/// owns its faces itself, and that list is not part of the solid.
 fn shape_of(reply: &Value) -> Value {
     let mut out = reply.clone();
-    for key in ["id", "held", "replayed", "op", "seedRefused"] {
+    for key in ["id", "held", "replayed", "op", "seedRefused", "stepFaces"] {
         out.as_object_mut().expect("object").remove(key);
     }
     out

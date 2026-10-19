@@ -217,7 +217,21 @@ test("a rectangle on the bed extrudes 20 into a new object, and History Edit cha
   expect(again.sketch).toBeUndefined();
 });
 
-test("a rectangle on the top face, pushed in with the mouse, cuts 5", async ({ page }) => {
+async function drawTypedCircle(page: Page) {
+  await page.locator("[data-sketch-menu=draw]").click();
+  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  const canvas = page.locator("#model");
+  await expect(canvas).toHaveAttribute("data-sketch-tool", "circle");
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await expect(hud).toBeVisible();
+  await hud.locator("input").nth(0).fill("8");
+  await hud.locator("input").nth(0).press("Enter");
+  await expect(canvas).toHaveAttribute("data-sketch-kinds", "circle");
+}
+
+test("a circle on the top face, pushed in with the mouse, cuts 5", async ({ page }) => {
   const tree = await start(page);
   await extrudeOnBed(page, "20");
   await expect.poll(() => height(page)).toBeCloseTo(20, 0);
@@ -228,7 +242,7 @@ test("a rectangle on the top face, pushed in with the mouse, cuts 5", async ({ p
   await expect(canvas).toHaveAttribute("data-sketch", "editing");
   await expect(canvas).toHaveAttribute("data-sketch-plane", "face 1");
   await expect(canvas).toHaveAttribute("data-sketch-camera", "locked");
-  await drawTypedRectangle(page);
+  await drawTypedCircle(page);
   await page.keyboard.press("E");
   await expect(canvas).toHaveAttribute("data-extrude-mode", /fuse|cut/);
   await dragExtrude(page, -5);
