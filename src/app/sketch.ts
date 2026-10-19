@@ -676,6 +676,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let historyKey = "";
   /** A card button to focus once the cards are painted: a menu's first item when it opens, its button when it closes. */
   let cardFocus: string[] = [];
+  /** --- B14. How far the chosen origin plane is moved along its normal, typed on the "Sketch on" card. --- */
+  let chooseOffset = 0;
   let shownPlanes: OriginPlane[] = [];
   let chooseDown: { x: number; y: number } | null = null;
   let lastClient = { x: 0, y: 0 };
@@ -1069,7 +1071,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.canvas.dataset.sweepProfile = "0";
 
   function enterNamed(name: "XY" | "XZ" | "YZ" | "workplane") {
-    const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : originFrame(name, host.origin());
+    const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : offsetFrame(originFrame(name, host.origin()));
     const own = workplaneOwn({ source: "global", origin: frame.origin, turn: planeOf(frame).turn }, host.pose());
     const on: SketchOn = name === "workplane" ? { kind: "workplane" } : { kind: "plane", name };
     startDrawing(own.origin, own.turn, on);
@@ -1086,6 +1088,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function startDrawing(origin: Vec3, turn: Vec3, on: SketchOn) {
+    chooseOffset = 0;
     const base = editor.phase === "choosing" ? editor : beginChoose(editor);
     editor = enterSketch(base, { origin, turn }, on);
     aimKey = "";
@@ -1099,10 +1102,16 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return frameFromWorkplane(workplaneIn({ source: "global", origin: sketch.plane.origin, turn: sketch.plane.turn }, host.pose()));
   }
 
+  /** An origin plane moved by the card's Offset along its normal, so a sketch can start above the bed with no solid. */
+  function offsetFrame(frame: SketchFrame): SketchFrame {
+    if (chooseOffset === 0) return frame;
+    return { ...frame, origin: [0, 1, 2].map((i) => frame.origin[i]! + frame.w[i]! * chooseOffset) as Vec3 };
+  }
+
   function chooserPlanes(): OriginPlane[] {
     const origin = host.origin();
     const half = Math.max(host.extent(), 20) * 0.75;
-    const planes: OriginPlane[] = (["XY", "XZ", "YZ"] as const).map((name) => ({ name, frame: originFrame(name, origin), half }));
+    const planes: OriginPlane[] = (["XY", "XZ", "YZ"] as const).map((name) => ({ name, frame: offsetFrame(originFrame(name, origin)), half }));
     const work = frameFromWorkplane(host.workplane());
     const same = planes.some((plane) => framesMatch(plane.frame, work));
     if (!same) planes.push({ name: "workplane", frame: work, half });
@@ -1422,8 +1431,35 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       planeButton("XZ", "XZ plane"),
       planeButton("YZ", "YZ plane"),
       planeButton("workplane", "Workplane"),
+      offsetField(),
       textButton("Cancel", { sketchCancel: "" }),
     ];
+  }
+
+  function offsetField(): HTMLElement {
+    const label = document.createElement("label");
+    label.className = "sketch-offset";
+    label.append("Offset ");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.size = 5;
+    input.value = String(chooseOffset);
+    input.dataset.sketchOffset = "";
+    input.setAttribute("aria-label", "Offset of the origin plane, mm");
+    input.title = "Move XY, XZ or YZ along its normal before sketching on it.";
+    input.addEventListener("input", () => {
+      const value = Number(input.value.trim().replace(",", "."));
+      input.setAttribute("aria-invalid", Number.isFinite(value) ? "false" : "true");
+      if (!Number.isFinite(value)) {
+        host.readout("Type the offset in millimetres, such as 30 or -5.");
+        return;
+      }
+      chooseOffset = value;
+      publish("skip");
+    });
+    label.append(input, " mm");
+    return label;
   }
 
   function editingRow(): Node[] {

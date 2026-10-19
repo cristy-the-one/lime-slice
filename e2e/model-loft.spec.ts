@@ -310,6 +310,31 @@ test("a washer sweeps where it was drawn with its hole, and a loft takes a two-r
   await expect(canvas).toHaveAttribute("data-loft-sections", "2");
 });
 
+test("on an empty plate a loft starts from the bed and an origin plane offset 30 above it", async ({ page }) => {
+  const tree = await start(page);
+  const canvas = page.locator("#model");
+  await page.locator("#modelEmptySketch").click();
+  await drawTypedRectangle(page, "10", "10");
+  await page.locator("[data-sketch-finish]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "pinned");
+  await page.locator("#modelToolSketch").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "choosing");
+  const offset = page.locator("[data-sketch-offset]");
+  await offset.click();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("30");
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await drawTypedCircle(page, "6");
+  await page.keyboard.press("Shift+L");
+  await page.locator("[data-sketch-open]").filter({ hasText: "Sketch 1" }).click();
+  await expect(canvas).toHaveAttribute("data-loft-sections", "2");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#objectList .obj").filter({ hasText: "Loft 1" })).toHaveCount(1);
+  const sections = ((tree.of("open").at(-1)!.feature as { sections?: LoftSection[] }).sections ?? []).map((section) => section.origin[2]).sort((a, b) => a - b);
+  expect(sections, "the circle is 30 above the bed").toEqual([0, 30]);
+});
+
 test("an L path is refused instead of sweeping a sharp corner", async ({ page }) => {
   await start(page);
   const canvas = page.locator("#model");

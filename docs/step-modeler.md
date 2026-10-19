@@ -418,7 +418,7 @@ Sketches, push/pull, and the idle edge drag share helpers in `src/interact/`. Pu
 
 Sketch (S in Model) draws on a plane. Line and Rectangle sit on the sketch card; the other drawing tools are in its Draw menu. S in Prepare is still Scale. The button has no `data-tool`: it is not a dock-handle tool, and it does not join the drag checklist. It is an icon, and icon buttons use 1 px of padding, so the bar still fits at 1440 px with a pick's chip. It stays visible on an empty plate, next to New solid.
 
-Click Sketch, then a flat face, one of the three origin planes at the part origin, or the workplane. The card under the toolbar has the same planes, so the choice does not depend on a ray. Double-click a flat face to start there when Push/Pull is not the gesture under the pointer. In Face mode, double-click still repeats the last push or pull. On an empty plate the card's Sketch on the bed starts on XY at Z = 0.
+Click Sketch, then a flat face, one of the three origin planes at the part origin, or the workplane. The card under the toolbar has the same planes, so the choice does not depend on a ray. Its Offset field moves XY, XZ or YZ along the plane's normal before sketching on it (Fusion's offset plane), so a loft can start from the bed and a plane above it with no solid and no workplane. Double-click a flat face to start there when Push/Pull is not the gesture under the pointer. In Face mode, double-click still repeats the last push or pull. On an empty plate the card's Sketch on the bed starts on XY at Z = 0.
 
 The camera turns onto the plane in 250 ms and then stays on the normal. Middle-drag pans, the wheel zooms along the normal, and right-drag rolls about the normal. Look around (O) gives the left button back to orbit; O again locks the view for drawing. The solid is dimmed. Edges that lie in the plane, the face outline, and edges that cross the plane are faint reference lines. They snap. They are not sketch entities until Use copies the one that was clicked.
 
@@ -437,7 +437,7 @@ The other drawing tools are in the sketch card's Draw menu, not on the Model too
 - **Offset (F).** Click a line or a connected chain and drag, or type a distance. Positive is to the left of the chain. The original stays.
 - **Fillet corner (G).** Click two lines that meet and drag the radius, or type it. The lines shorten and an arc fills the corner.
 - **Construction (X).** Click a line to toggle it, or press X with a selection. A construction line still snaps and still cuts a trim, and it is not part of a region.
-- **Use (U).** Click a faint reference edge to copy that edge into the sketch, or click the face outline to copy the whole outline. A second use of the same edge says it is already there.
+- **Use (U).** Click a faint reference edge to copy that whole solid edge into the sketch, or click the face outline to copy the loop that was clicked (the outer outline, or one hole). The view's edges are tessellated, so runs that lie on one circle within 0.02 mm come back as a circle or an arc, and straight runs as one line each. A second use of the same edge says it is already there.
 
 Click selects. A box dragged left to right keeps what it encloses; right to left also keeps what it crosses. Drag a point or a line to move it. A corner shared by two lines moves both. Delete removes the selection.
 
