@@ -499,6 +499,8 @@ export function syncModelSolid() {
     writeFields(["modelTiltA", "modelTiltB"], [0, 0]);
     applySplitDefaults();
   }
+  // --- D19. Undo, Redo or a jump changed the steps a blend can take its edges from.
+  if (tool === "fillet" || tool === "chamfer") fillEdgeStepList();
   refreshTools();
   refreshApply();
   refreshNote();
