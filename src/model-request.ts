@@ -209,6 +209,14 @@ export function stepEdges(fromNode: NodeId, filter?: EdgeFilter): EdgeStep {
 }
 
 /**
+ * --- A5. The edges step `node` made, as indexes on the tree's current solid. `filter` is sent only when it narrows,
+ * as `stepEdges` stores it. The caller shows that solid first, so the indexes are the ones on screen.
+ */
+export function stepEdgesRequest(key: string, node: NodeId, filter?: EdgeFilter): TreeRequest {
+  return { call: "stepEdges", key, node, ...(filter && filter !== "all" ? { filter } : {}) };
+}
+
+/**
  * An edited step: `op` built on `parent` as the new `node`, a sibling of the step edited, then each of `replay` on the one
  * before it. The engine keeps the steps that built, and the first that did not as broken with the rest under it.
  */

@@ -40,6 +40,7 @@ import {
   newTree,
   nodeWithMesh,
   opLabel,
+  isEdgeStep,
   pathTo,
   reachableTrees,
   renumberedSteps,
@@ -64,7 +65,8 @@ import {
   type Vec3,
 } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
-import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, newSolidRequest, openRequest, probeRequest, shellOp, wholeTreeRequest } from "../model-request";
+import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
+import { edgeOfText, remapBlendFromNode, storedEdgeStep } from "../model-edge-step";
 import {
   closeModelTool,
   editedPanel,
@@ -79,6 +81,14 @@ import {
   refreshJoinChoices,
   resetKeepTool,
   openModelTool,
+  // --- A5. Fillet and chamfer: picked edges, or the edges one history step made. ---
+  edgeFilterChoice,
+  edgeMode,
+  edgeStepId,
+  edgeStepKnown,
+  setEdgeStep,
+  setStepEdgeIndexes,
+  stepEdgesOnSolid,
   refreshModelCheck,
   refreshModelGhost,
   setModelEditable,
@@ -296,7 +306,7 @@ export function bindModelView() {
         return;
       }
       picks = [];
-      fx.model?.highlight([]);
+      paintBlendHighlight();
       syncModelChrome([]);
       const solid = viewed();
       if (solid) readout(`${about(solid)} Pick a face or an edge.`);
@@ -313,6 +323,8 @@ export function bindModelView() {
       if (wpBefore && openModelTool() !== "workplane") endWorkplane();
       if (ghostId() !== ghosted) refreshModelContext();
       sayJoin();
+      // --- A5. Outline the step's edges, and ask the engine when the step or the filter changed. ---
+      void refreshStepEdges();
       scheduleProbe(typed ? PROBE_WAIT_MS : 0);
       syncUndo();
       // P2. A tool opening or closing arms or disarms the idle edge knob.
@@ -391,6 +403,13 @@ export function bindModelView() {
     editClosed: cancelEdit,
     editJoinGhost,
     editUnchanged: editUntouched,
+    // --- A5. The blend is built on the step on screen, and can take edges from it or a step above it. ---
+    shownNode() {
+      return blendTarget()?.node ?? null;
+    },
+    edgeSteps() {
+      return edgeStepChoices();
+    },
     // --- A2 shell ---
     shellSeat() {
       return shellSeat();
@@ -446,6 +465,8 @@ export function bindModelView() {
   edgeDrag.sync();
   mountModelHistory({
     jump(row) {
+      // --- A5. While Fillet or Chamfer takes a step's edges, a history row chooses that step. ---
+      if (takeEdgeStep(row)) return;
       const step = ownStep(row);
       if (step != null) void jumpTo(step);
       else void peekTool(row);
@@ -478,6 +499,153 @@ function editUntouched(): boolean {
 
 function treeOf(at: Opened | null): ModelTree | null {
   return at ? modelTrees.get(at.key) ?? null : null;
+}
+
+/**
+ * --- A5. The solid a blend is built on: the edited step's parent, a tool's step on screen, or the open solid's
+ * current step. Edges may come from that step or one above it.
+ */
+function blendTarget(): { key: string; node: NodeId; tree: ModelTree } | null {
+  if (editing) {
+    const tree = modelTrees.get(editing.key);
+    return tree ? { key: editing.key, node: editing.parent, tree } : null;
+  }
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree) return null;
+  if (lens) {
+    const shown = modelTrees.get(lens.key);
+    return shown ? { key: lens.key, node: lens.node, tree: shown } : null;
+  }
+  return { key: at.key, node: tree.current, tree };
+}
+
+/** The step on screen and the steps above it, root first, as the step list shows them. */
+function edgeStepChoices(): { id: number; label: string }[] {
+  const target = blendTarget();
+  if (!target) return [];
+  return pathTo(target.tree, target.node).flatMap((id) => {
+    const node = target.tree.nodes.get(id);
+    return node ? [{ id, label: stepLabel(node) }] : [];
+  });
+}
+
+/**
+ * A history row chooses the step whose edges the blend takes. It does not jump. A row of another solid, or a step
+ * that is not on this solid or above it, is said and left.
+ */
+function takeEdgeStep(row: RowKey): boolean {
+  const tool = openModelTool();
+  if ((tool !== "fillet" && tool !== "chamfer") || edgeMode() !== "step") return false;
+  const at = open;
+  const openTree = treeOf(at);
+  const target = blendTarget();
+  if (!at || !openTree || !target) return true;
+  const step = rowStep(modelTrees, openTree, row);
+  if (!step || step.tree.key !== target.key) {
+    readout("A blend takes edges from a step of this solid.");
+    return true;
+  }
+  if (!pathTo(target.tree, target.node).includes(step.id)) {
+    readout("A blend can only take edges from this step's parent or a step above it.");
+    return true;
+  }
+  setEdgeStep(step.id);
+  return true;
+}
+
+/** Outline the step's edges while the blend takes them, and the picks otherwise. */
+function paintBlendHighlight() {
+  const tool = openModelTool();
+  if ((tool === "fillet" || tool === "chamfer") && edgeMode() === "step") {
+    fx.model?.highlight(stepEdgesOnSolid().map((index) => ({ kind: "edge", index })));
+    return;
+  }
+  fx.model?.highlight(picks);
+}
+
+/** Which step and filter the edge query last answered, so a size change does not ask again. */
+let stepEdgeKey = "";
+let stepEdgeSerial = 0;
+/** One rebuild of a seeded history, shared by the edge query and the dry-run, including the jump back to the step on screen. */
+const edgeHistory = new Map<string, Promise<string | null>>();
+
+/**
+ * A saved solid stands in for the plate's step, so a step above it is not in the engine until the history is rebuilt.
+ * The edge indexes are then read on the step on screen. A step the engine already holds needs nothing.
+ */
+function ensureEdgeHistory(key: string, viewed: NodeId, steps: readonly NodeId[]): Promise<string | null> {
+  const seed = seeds.get(key);
+  if (!seed?.live || steps.every((id) => seed.held.has(id))) return Promise.resolve(null);
+  const running = edgeHistory.get(key);
+  if (running) return running;
+  const run = (async () => {
+    const problem = await openWhole(key, viewed);
+    if (problem) return problem;
+    const body = await post(gotoRequest(key, viewed, state.stepTolerance));
+    noteHeld(key, body);
+    return text(body.error) || null;
+  })().finally(() => {
+    if (edgeHistory.get(key) === run) edgeHistory.delete(key);
+  });
+  edgeHistory.set(key, run);
+  return run;
+}
+
+/** The engine's root is the plate's step while a saved solid stands in for it. */
+function sameShownSolid(key: string, viewed: NodeId, engineId: number): boolean {
+  if (engineId === viewed) return true;
+  const seed = seeds.get(key);
+  return !!seed?.live && viewed === seed.node && engineId === ROOT;
+}
+
+/** Ask which edges the chosen step left on the solid on screen, and outline them. */
+async function refreshStepEdges() {
+  const tool = openModelTool();
+  if ((tool !== "fillet" && tool !== "chamfer") || edgeMode() !== "step") {
+    const stale = stepEdgeKey !== "" || stepEdgesOnSolid().length > 0;
+    stepEdgeKey = "";
+    stepEdgeSerial += 1;
+    if (stepEdgesOnSolid().length > 0) setStepEdgeIndexes([]);
+    // The outline goes back to the picked edges once a step's edges are no longer what the blend takes.
+    if (stale) paintBlendHighlight();
+    return;
+  }
+  const target = blendTarget();
+  const step = edgeStepId();
+  if (!target || step == null || !edgeStepKnown()) {
+    stepEdgeKey = "";
+    stepEdgeSerial += 1;
+    setStepEdgeIndexes([]);
+    paintBlendHighlight();
+    return;
+  }
+  const filter = edgeFilterChoice();
+  const key = `${target.key}|${target.node}|${step}|${filter}`;
+  if (key === stepEdgeKey) {
+    paintBlendHighlight();
+    return;
+  }
+  const serial = ++stepEdgeSerial;
+  stepEdgeKey = key;
+  const problem = await ensureEdgeHistory(target.key, target.node, [step]);
+  if (serial !== stepEdgeSerial || edgeMode() !== "step") return;
+  if (problem) {
+    stepEdgeKey = "";
+    setStepEdgeIndexes([]);
+    paintBlendHighlight();
+    return;
+  }
+  const body = await treeCall(target.key, target.node, stepEdgesRequest(target.key, step, filter));
+  if (serial !== stepEdgeSerial || edgeMode() !== "step") return;
+  const now = blendTarget();
+  if (!now || `${now.key}|${now.node}|${edgeStepId()}|${edgeFilterChoice()}` !== key) return;
+  const id = body.id;
+  const indexes = typeof body.error === "string" || (typeof id === "number" && !sameShownSolid(target.key, target.node, id))
+    ? []
+    : Array.isArray(body.edges) ? body.edges.filter((index): index is number => typeof index === "number" && Number.isInteger(index) && index >= 0) : [];
+  setStepEdgeIndexes(indexes);
+  paintBlendHighlight();
 }
 
 /** The engine's name for one node's shape, which never changes. */
@@ -685,6 +853,17 @@ async function sendProbe(serial: number, key: string, tree: string, node: NodeId
     setModelPreview(previewOf(key));
     return;
   }
+  // --- A5. A step above a saved solid is not in the engine until that history is rebuilt. ---
+  const fromSteps = op.kind === "fillet" || op.kind === "chamfer" ? op.edges.flatMap((edge) => (isEdgeStep(edge) ? [edge.fromNode] : [])) : [];
+  if (fromSteps.length > 0) {
+    const problem = await ensureEdgeHistory(tree, node, fromSteps);
+    if (serial !== probeSerial || state.stage !== "model") return;
+    if (problem) {
+      setModelProbe({ phase: "done", ok: false, error: problem });
+      setModelPreview(null);
+      return;
+    }
+  }
   const body = await treeCall(tree, node, probeRequest(tree, node, op, state.stepTolerance));
   const view = probeFromBody(body);
   if (typeof body.ok === "boolean") remember(key, view);
@@ -762,6 +941,12 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
   switch (tool) {
     case "fillet":
     case "chamfer": {
+      // --- A5. One step's edges, or the edges picked on the solid. ---
+      if (edgeMode() === "step") {
+        const id = edgeStepId();
+        if (id == null || !edgeStepKnown()) return null;
+        return { kind: tool, edges: [stepEdges(id, edgeFilterChoice())], size: num("#modelBlend") };
+      }
       const edges = selectedEdges(picks);
       return edges.length === 0 ? null : { kind: tool, edges, size: num("#modelBlend") };
     }
@@ -1571,6 +1756,19 @@ function keepSolid(key: string, node: NodeId, chord: number, solid: ParsedSolid)
   while (solids.size > SOLID_CACHE) solids.delete(solids.keys().next().value!);
 }
 
+/** What Apply says while a fillet or a chamfer is built: one step's edges, or the edges that were picked. */
+function blendWorking(kind: "fillet" | "chamfer", op: ModelOp): string {
+  const verb = kind === "fillet" ? "Filleting" : "Chamfering";
+  if (op.kind !== kind) return `${verb}…`;
+  const step = storedEdgeStep(op.edges);
+  if (step) {
+    const which = step.filter === "all" ? "sharp" : step.filter;
+    return `${verb} the ${which} edges of step ${step.fromNode}…`;
+  }
+  const count = op.edges.length === 1 ? "the edge" : `${op.edges.length} edges`;
+  return `${verb} ${count}…`;
+}
+
 async function applyTool() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   const tool = modelTool();
@@ -1596,11 +1794,10 @@ async function applyTool() {
       return;
     }
   }
-  const count = op.kind === "fillet" || op.kind === "chamfer" ? (op.edges.length === 1 ? "the edge" : `${op.edges.length} edges`) : "";
   const working: Partial<Record<ModelOp["kind"], string>> = {
     split: "Splitting the solid…",
-    fillet: `Filleting ${count}…`,
-    chamfer: `Chamfering ${count}…`,
+    fillet: blendWorking("fillet", op),
+    chamfer: blendWorking("chamfer", op),
     hole: "Cutting the hole…",
     shell: "Hollowing the solid…",
     scale: "Scaling the solid…",
@@ -1652,8 +1849,9 @@ async function applyOp(op: ModelOp, working: string) {
       if (mine === ticket && state.stage === "model") await resume(mine, at.objectId, at.key, parent);
       return;
     }
-    // Edge and face numbers of the read solid may not be the rebuilt one's. A closed shell names no face, so it can build.
-    if (op.kind === "fillet" || op.kind === "chamfer" || (op.kind === "shell" && (op.openFaces?.length ?? 0) > 0)) {
+    // Edge and face numbers of the read solid may not be the rebuilt one's. A blend that names a step's
+    // edges finds them again, and a closed shell names no face, so both go on.
+    if (((op.kind === "fillet" || op.kind === "chamfer") && op.edges.some((edge) => !isEdgeStep(edge))) || (op.kind === "shell" && (op.openFaces?.length ?? 0) > 0)) {
       const what = op.kind === "shell" ? "faces" : "edges";
       readout(`${about(open!.solid)} The step was rebuilt from its history: pick the ${what} again.`);
       return;
@@ -1866,7 +2064,13 @@ function openEditPanel(run: Editing, head: string) {
   run.panel = panel;
   openEditTool(panel, head);
   let said = `${about(solid)} Change the numbers, then Update.`;
-  if (panel.edges) {
+  // --- A5. A step's edges open on that step. The line names the row once the panel has filled it. ---
+  if (panel.step) {
+    const node = modelTrees.get(run.key)?.nodes.get(panel.step.fromNode);
+    const row = node ? stepLabel(node) : `step ${panel.step.fromNode}`;
+    said = `${about(solid)} ${edgeOfText(row, panel.step.filter)} Change the numbers, then Update.`;
+    picks = [];
+  } else if (panel.edges && panel.edges.length > 0) {
     const { picked, missing } = matchEdges(solid.edges, panel.edges, state.stepTolerance);
     picks = picked.map((index) => ({ kind: "edge", index }));
     fx.model?.highlight(picks);
@@ -3144,7 +3348,7 @@ async function onPick(pick: ModelPick | null, shift: boolean) {
   // A tool's step looked at is read-only; while one is edited, picks are on it.
   if (!at || !tree || !solid || (lens && !editing)) return;
   picks = nextModelPicks(picks, pick, shift);
-  fx.model?.highlight(picks);
+  paintBlendHighlight();
   syncModelChrome(picks);
   const seq = ++measureSeq;
   if (picks.length === 0) {
@@ -3381,7 +3585,18 @@ async function seededCall(key: string, node: NodeId, request: Body): Promise<Bod
 /** `request` with the plate's step of a live seed as the engine's root. */
 function engineNumbered(seed: Seed, request: Body): Body {
   const local = (id: unknown) => (id === seed.node ? ROOT : id);
-  return { ...request, node: local(request.node), ...("parent" in request ? { parent: local(request.parent) } : {}) };
+  const asNode = (id: NodeId) => (id === seed.node ? ROOT : id);
+  const numbered: Body = { ...request, node: local(request.node), ...("parent" in request ? { parent: local(request.parent) } : {}) };
+  // --- A5. A blend's fromNode is a history step. The plate's step is the engine's root. ---
+  if (isOp(numbered.op)) numbered.op = remapBlendFromNode(numbered.op, asNode);
+  if (Array.isArray(numbered.replay)) {
+    numbered.replay = numbered.replay.map((step) => {
+      if (!step || typeof step !== "object") return step;
+      const op = (step as { op?: unknown }).op;
+      return isOp(op) ? { ...(step as object), op: remapBlendFromNode(op, asNode) } : step;
+    });
+  }
+  return numbered;
 }
 
 /** Drop the branch from `node` in the engine, once it has one: a seeded tree's engine holds only the steps built on its seed. */
