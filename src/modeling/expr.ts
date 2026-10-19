@@ -3,6 +3,9 @@
  * named parameters, and a few functions in degrees. Nothing is evaluated as code: a small parser reads the text.
  */
 
+/** The evaluator's own hint for a name it does not know; the app swaps it for its own words (`appParamMessage`). */
+export const UNKNOWN_NAME_HINT = "Set it with model_params first.";
+
 export type Params = Readonly<Record<string, number>>;
 
 const FUNCTIONS: Record<string, (x: number) => number> = {
@@ -68,7 +71,7 @@ export function evaluate(text: string, params: Params): number {
       }
       if (Object.hasOwn(params, word)) return params[word]!;
       if (Object.hasOwn(CONSTANTS, word)) return CONSTANTS[word]!;
-      return fail(`"${word}" is not a parameter. Set it with model_params first.`);
+      return fail(`"${word}" is not a parameter. ${UNKNOWN_NAME_HINT}`);
     }
     return fail(`"${text}" is not a number or an expression.`);
   };

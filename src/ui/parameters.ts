@@ -4,7 +4,7 @@
  * told to add it above this row; the evaluator's own sentence stays for model_params.
  */
 import { PARAM_NAME } from "../modeling/expr.ts";
-import { evaluateTable, isPlainNumber, type ParamTable } from "../modeling/params.ts";
+import { appParamMessage, evaluateTable, isPlainNumber, type ParamTable } from "../modeling/params.ts";
 
 export interface ParameterHooks {
   table(): ParamTable;
@@ -20,7 +20,7 @@ let hooks: ParameterHooks | null = null;
 
 /** The panel never names the MCP tool. Other evaluator sentences pass through. */
 export function panelParamMessage(message: string): string {
-  return message.replace("Set it with model_params first.", "Add it in Parameters above this row, or type a number.");
+  return appParamMessage(message, "Add it in Parameters above this row, or type a number.");
 }
 
 export function mountParameters(next: ParameterHooks) {

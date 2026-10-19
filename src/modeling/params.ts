@@ -3,7 +3,7 @@
  * Parameters evaluate in order, as `mergeParams` does: a later name may use an earlier one.
  * A bad row keeps its sentence and does not enter the table the later rows see.
  */
-import { evaluate, ExprError, PARAM_NAME, type Params } from "./expr.ts";
+import { evaluate, ExprError, PARAM_NAME, UNKNOWN_NAME_HINT, type Params } from "./expr.ts";
 import type { ModelOp } from "../model-tree.ts";
 import type { SketchData } from "../sketch/model.ts";
 
@@ -21,6 +21,14 @@ export interface EvaluatedTable {
   /** Successful names, in order. Later rows were evaluated against these. */
   values: Params;
   rows: ParamRow[];
+}
+
+/** --- D27. The app's words for a name the table lacks: the MCP tool is never named in the app. */
+export const APP_UNKNOWN_HINT = "Add it in Parameters, or type a number.";
+
+/** An evaluator sentence as the app shows it. Other sentences pass through. */
+export function appParamMessage(message: string, hint: string = APP_UNKNOWN_HINT): string {
+  return message.replace(UNKNOWN_NAME_HINT, hint);
 }
 
 /** "12", "-3.5" and "1e-2" are plain numbers. An expression is anything else with text. */

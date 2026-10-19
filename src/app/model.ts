@@ -101,6 +101,7 @@ import {
   setEdgeStep,
   setStepEdgeIndexes,
   stepEdgesOnSolid,
+  followParameters,
   refreshModelCheck,
   refreshModelGhost,
   setModelEditable,
@@ -147,7 +148,7 @@ import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
 import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
-import { evaluateTable, stepOutOfDate, usedByCount } from "../modeling/params.ts";
+import { appParamMessage, evaluateTable, stepOutOfDate, usedByCount } from "../modeling/params.ts";
 import { refreshOp } from "../param-rebuild.ts";
 import { mountParameters, syncParameters } from "../ui/parameters.ts";
 import { closeCracks } from "../mesh-check";
@@ -541,6 +542,8 @@ export function bindModelView() {
     setTable(table) {
       session.parameters = table;
       markProjectDirty();
+      // --- D17. An open tool's expression fields and its dry-run follow the table.
+      followParameters();
     },
     usedBy: usedByName,
     affected: () => affectedNodeIds().length,
@@ -3068,7 +3071,7 @@ async function rebuildFromParameters() {
   const supplied: ModelOp[] = [];
   const first = refreshStored(startOp, after, tree, parent);
   if (first.error) {
-    readout(first.error);
+    readout(appParamMessage(first.error));
     return;
   }
   supplied.push(first.op);
@@ -3080,7 +3083,7 @@ async function rebuildFromParameters() {
     }
     const next = refreshStored(step, after, tree, tree.nodes.get(id)?.parent ?? ROOT);
     if (next.error) {
-      readout(next.error);
+      readout(appParamMessage(next.error));
       return;
     }
     supplied.push(next.op);

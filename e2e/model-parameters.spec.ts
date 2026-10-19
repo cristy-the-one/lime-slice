@@ -38,7 +38,7 @@ async function openModel(page: Page) {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: boxSolid(4000).positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
-  await mockModelTree(page, {
+  const tree = await mockModelTree(page, {
     open: (request) => boxSolid(volumeOf(request)),
     apply: (request) => boxSolid(volumeOf(request)),
     probe: () => ({ ok: true }),
@@ -49,6 +49,7 @@ async function openModel(page: Page) {
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
+  return tree;
 }
 
 test("parameters panel and an expression in a number field", async ({ page }) => {
@@ -116,4 +117,38 @@ test("a repaint keeps every row valid, and a row that names an edited parameter 
   await rows.nth(0).locator("[data-param-value]").selectText();
   await page.keyboard.type("5");
   await expect(rows.nth(1).locator("[data-param-eval]"), "b = a * 3 follows a").toHaveText("15");
+});
+
+test("an open tool's expression field and its dry-run follow a changed parameter", async ({ page }) => {
+  const tree = await openModel(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuParameters").click();
+  const row = page.locator("#modelParams [data-param-row]").first();
+  await row.locator("[data-param-name]").click();
+  await page.keyboard.type("w");
+  await row.locator("[data-param-value]").click();
+  await page.keyboard.type("6");
+
+  await page.locator("#modelToolFeatures").click();
+  const [x, y, w, h] = ((await page.locator("#model").getAttribute("data-solid-screen")) ?? "").split(",").map(Number);
+  const box = (await page.locator("#model").boundingBox())!;
+  await page.mouse.click(box.x + x! + w! * 0.5, box.y + y! + h! * 0.5);
+  const width = page.locator("#modelFeatW");
+  await width.click();
+  await page.keyboard.type("w");
+  await page.keyboard.press("Tab");
+  await expect(width).toHaveValue("6");
+  await expect.poll(() => (tree.of("probe").at(-1)?.op as { source?: { width?: number } } | undefined)?.source?.width).toBe(6);
+
+  await row.locator("[data-param-value]").selectText();
+  await page.keyboard.type("8");
+  await expect(width, "the field shows the new value").toHaveValue("8");
+  await expect.poll(() => (tree.of("probe").at(-1)?.op as { source?: { width?: number } } | undefined)?.source?.width, "the dry-run asks again").toBe(8);
+
+  // A name the table does not have is told in the app's words.
+  await width.click();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("nope");
+  await page.keyboard.press("Tab");
+  await expect(width).toHaveAttribute("title", '"nope" is not a parameter. Add it in Parameters, or type a number.');
 });

@@ -28,7 +28,7 @@ import { fx } from "../app/fx";
 import { state } from "../app/state";
 import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queueModelCheck, refreshModelCheck as rerunModelCheck } from "./model-check-panel.ts";
 import { evaluate, type Params } from "../modeling/expr.ts";
-import { isPlainNumber } from "../modeling/params.ts";
+import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
 import { toggleParameters } from "./parameters.ts";
 
 export type { ModelTool } from "../model-drag";
@@ -2027,6 +2027,42 @@ export function restoreFieldExprs(exprs: Record<string, string> | undefined) {
   }
 }
 
+/**
+ * --- D17. The table changed while a tool is open: every field written as an expression shows its new value, and the
+ * panel reacts as it does to a typed number (its ghost, its dry-run). A field being typed in is left alone; a name the
+ * table no longer has marks the field bad, as typing it would.
+ */
+export function followParameters() {
+  if (!tool) return;
+  let moved: HTMLInputElement | null = null;
+  for (const input of document.querySelectorAll<HTMLInputElement>("#modelPanel input[data-expr]")) {
+    const text = input.dataset.expr;
+    if (!text || document.activeElement === input) continue;
+    let value: number;
+    try {
+      value = evaluate(text, fieldParams());
+      if (!Number.isFinite(value)) throw new Error(`"${text}" is not a finite number.`);
+    } catch (err) {
+      input.classList.add("is-bad");
+      input.setAttribute("aria-invalid", "true");
+      input.title = appParamMessage(err instanceof Error ? err.message : String(err));
+      showExprMark(input, false);
+      continue;
+    }
+    input.classList.remove("is-bad");
+    input.removeAttribute("aria-invalid");
+    input.title = text;
+    showExprMark(input, true);
+    const shown = fieldText(value);
+    if (input.value === shown) continue;
+    input.value = shown;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    moved = input;
+  }
+  // As Tab after typing: the dry-run goes now.
+  moved?.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function fieldParams(): Params {
   return hooks?.parameters() ?? {};
 }
@@ -2118,7 +2154,7 @@ function settleExpression(input: HTMLInputElement) {
   } catch (err) {
     input.classList.add("is-bad");
     input.setAttribute("aria-invalid", "true");
-    input.title = err instanceof Error ? err.message : String(err);
+    input.title = appParamMessage(err instanceof Error ? err.message : String(err));
     input.type = "text";
     showExprMark(input, false);
   }
