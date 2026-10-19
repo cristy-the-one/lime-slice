@@ -266,6 +266,8 @@ test("a typed distance replaces the live one, with Ctrl held through the drag, a
   await page.keyboard.press("Enter");
   await expect(page.locator("#modelHistoryTree")).toContainText("Pull face 4 mm");
   expect(applied.at(-1)?.faces?.[0]?.distance).toBe(4);
+  // History names the step before the view has the rebuilt solid: the top's point is read off the new one.
+  await expect.poll(async () => height(page)).toBeCloseTo(24, 0);
 
   const count = applied.length;
   const again = await facePoint(page, (normal) => normal[2]! > 0.5);
