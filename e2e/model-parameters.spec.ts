@@ -80,3 +80,31 @@ test("parameters panel and an expression in a number field", async ({ page }) =>
   await page.locator("#modelParamsRebuild").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
 });
+
+test("a repaint keeps every row valid, and a row that names an edited parameter follows it", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuParameters").click();
+  const rows = page.locator("#modelParams [data-param-row]");
+  await rows.nth(0).locator("[data-param-name]").click();
+  await page.keyboard.type("a");
+  await rows.nth(0).locator("[data-param-value]").click();
+  await page.keyboard.type("2");
+  await page.locator("#modelParamsAdd").click();
+  await rows.nth(1).locator("[data-param-name]").click();
+  await page.keyboard.type("b");
+  await rows.nth(1).locator("[data-param-value]").click();
+  await page.keyboard.type("a * 3");
+  await expect(rows.nth(1).locator("[data-param-eval]")).toHaveText("6");
+
+  await page.keyboard.press("Control+Alt+p");
+  await page.keyboard.press("Control+Alt+p");
+  await expect(rows).toHaveCount(2);
+  await expect(page.locator("#modelParams [data-param-error]:not([hidden])"), "a repaint marks no row a duplicate").toHaveCount(0);
+  await expect(rows.nth(0).locator("[data-param-eval]")).toHaveText("2");
+  await expect(rows.nth(1).locator("[data-param-eval]")).toHaveText("6");
+
+  await rows.nth(0).locator("[data-param-value]").selectText();
+  await page.keyboard.type("5");
+  await expect(rows.nth(1).locator("[data-param-eval]"), "b = a * 3 follows a").toHaveText("15");
+});
