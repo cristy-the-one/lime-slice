@@ -148,7 +148,9 @@ eq("a group saved without source still opens", readSavedTree(withoutSource)?.nod
 eq("the same steps are the group already built, whatever its source or label", childWithOp(grouped, 0, { ...pocket, label: "other", source: { kind: "pocket", width: 99 } }), 1);
 const blendGroup: ModelOp = { kind: "group", label: "Edges", steps: [blend] };
 eq("a group renumbers a blend inside it", renumberedSteps(blendGroup, ids), { kind: "group", label: "Edges", steps: [renumberedSteps(blend, ids)] });
-eq("a group has no edit panel yet", editRefusal(grouped, 1), "This step has no edit panel yet. Delete it and apply it again with new numbers.");
+eq("a pocket group reopens its feature panel", editRefusal(grouped, 1), null);
+const plainGroup = withChild(newTree("plain", root, "Box", fp(1)), 0, { id: 1, op: blendGroup, label: blendGroup.label, fingerprint: fp(2) });
+eq("a group without a feature source has no edit panel yet", editRefusal(plainGroup, 1), "This step has no edit panel yet. Delete it and apply it again with new numbers.");
 const turned: Affine = { m: eulerOrient(0, 0, 90), t: [10, 5, 0] };
 const solidGroup = toSolidOp(pocket, turned);
 eq("a turned pose moves each step of a group and keeps the composite", solidGroup, { ...pocket, steps: pocket.steps.map((step) => toSolidOp(step, turned)) });
