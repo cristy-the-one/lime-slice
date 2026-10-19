@@ -1,8 +1,9 @@
+import { faceTable } from "./interact/face-table.ts";
 import { facePrism } from "./interact/ghosts.ts";
+import { outwardFromMesh } from "./model-blend.ts";
 import {
   cylinderDiameter,
   distanceForDiameter,
-  faceCentre,
   faceTriangles,
   pullDone,
   pullDrag,
@@ -68,7 +69,10 @@ const positions = [0, 0, 20, 20, 0, 20, 20, 20, 20, 0, 0, 20, 20, 20, 20, 0, 20,
 const triangles = [1, 1];
 eq("the face's triangles are that face only", [...faceTriangles(positions, triangles, 1)], [...positions]);
 eq("another face is empty", faceTriangles(positions, triangles, 0).length, 0);
-eq("the centre is the mean of the corners", faceCentre(positions, triangles, 1), [10, 10, 20]);
+eq("the centre is the mean of the corners", faceTable(positions, triangles).get(1)?.centre, [10, 10, 20]);
+eq("the table's normal is the one read face by face", faceTable(positions, triangles).get(1)?.normal, outwardFromMesh(positions, triangles, 1));
+check("the same mesh answers the same table, read once", faceTable(positions, triangles) === faceTable(positions, triangles));
+eq("another face is not in the table", faceTable(positions, triangles).has(0), false);
 const ghost = pullGhost(positions, triangles, [top], 10);
 check("a pull draws a prism", ghost.length >= 9 && ghost.some((value, i) => i % 3 === 2 && value > 20));
 eq("a zero pull draws nothing", pullGhost(positions, triangles, [top], 0).length, 0);

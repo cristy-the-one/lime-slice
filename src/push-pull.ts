@@ -216,24 +216,3 @@ function unit(v: Vec3): Vec3 | null {
   if (!(length > 1e-12)) return null;
   return [v[0] / length, v[1] / length, v[2] / length];
 }
-
-/** The area-weighted centre is not here. The mean of the face's triangle corners is enough to seat a snap. */
-export function faceCentre(positions: ArrayLike<number>, triangles: ArrayLike<number>, face: number): Vec3 | null {
-  let x = 0;
-  let y = 0;
-  let z = 0;
-  let count = 0;
-  const tris = Math.min(triangles.length, Math.floor(positions.length / 9));
-  for (let tri = 0; tri < tris; tri += 1) {
-    if (triangles[tri] !== face) continue;
-    const base = tri * 9;
-    for (let corner = 0; corner < 3; corner += 1) {
-      x += positions[base + corner * 3] ?? 0;
-      y += positions[base + corner * 3 + 1] ?? 0;
-      z += positions[base + corner * 3 + 2] ?? 0;
-      count += 1;
-    }
-  }
-  if (count === 0) return null;
-  return [x / count, y / count, z / count];
-}

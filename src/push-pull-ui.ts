@@ -8,7 +8,8 @@
 import { GHOST_PROBE_WAIT_MS } from "./interact/ghosts.ts";
 import { mountHud, type HudCommit, type Params } from "./interact/hud.ts";
 import { repeatClick, type ClickAt } from "./interact/drag-axis.ts";
-import { outwardFromMesh } from "./model-blend.ts";
+import type { FaceLevel } from "./interact/drag-axis.ts";
+import { faceTable } from "./interact/face-table.ts";
 import { fieldText, handlesFor, type Vec3 } from "./model-drag.ts";
 import { applyPose, turnDir, type Affine } from "./model-space.ts";
 import type { FaceExtrudeOp, MoveFacesOp } from "./model-tree.ts";
@@ -16,7 +17,6 @@ import { isPlainNumber, withExprs } from "./modeling/params.ts";
 import type { FacePointer, ModelView } from "./model-view.ts";
 import {
   distanceForDiameter,
-  faceCentre,
   pullDone,
   pullDrag,
   pullFields,
@@ -79,6 +79,8 @@ interface Dragging {
   alt: boolean;
   origin: Vec3;
   dir: Vec3;
+  /** The other faces' levels along the drag, read once when it begins. */
+  levels: FaceLevel[];
 }
 
 interface Remember {
@@ -112,6 +114,7 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
   let editing = false;
   let applying = false;
   let timer = 0;
+  const faceRows = new WeakMap<PullSolid, Map<number, PullSolid["faces"][number]>>();
 
   hud.onCommit((commit) => {
     const distance = commitDistance(commit);
@@ -234,7 +237,9 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     const under = faces.find((face) => face.index === grab.face) ?? faces[0];
     if (!under) return;
     const pose = hooks.pose();
-    dragging = { faces, alt: grab.alt && faces.length === 1, origin: grab.point, dir: turnDir(pose, under.normal) };
+    const dir = turnDir(pose, under.normal);
+    const levels = pullLevels(worldFaces(solid, pose), grab.point, dir, new Set(faces.map((face) => face.index)));
+    dragging = { faces, alt: grab.alt && faces.length === 1, origin: grab.point, dir, levels };
     dragDistance = 0;
     typed = null;
     editing = false;
@@ -251,13 +256,10 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     if (!drag) return;
     window.clearTimeout(timer);
     hooks.clearPreview();
-    const solid = hooks.solid();
-    const pose = hooks.pose();
-    const levels = solid ? pullLevels(worldFaces(solid, pose), drag.origin, drag.dir, new Set(drag.faces.map((face) => face.index))) : [];
     const dragged = pullDrag(ev.ray, drag.origin, drag.dir, {
       round: ev.ctrl,
       fine: ev.shift,
-      faces: levels,
+      faces: drag.levels,
       mmPerPx: mmPerPx(drag.origin, drag.dir),
       previous,
     });
@@ -404,10 +406,11 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
   }
 
   function describe(solid: PullSolid, index: number, local: Vec3 | null): PullFace | null {
-    const row = solid.faces.find((face) => face.id === index);
-    const normal = row?.normal ?? outwardFromMesh(solid.positions, solid.triangles, index);
+    const row = rowsOf(solid).get(index);
+    const table = faceTable(solid.positions, solid.triangles).get(index);
+    const normal = row?.normal ?? table?.normal;
     if (!normal) return null;
-    const at = local ?? faceCentre(solid.positions, solid.triangles, index);
+    const at = local ?? table?.centre;
     if (!at) return null;
     return {
       index,
@@ -421,13 +424,19 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     };
   }
 
+  /** The kernel's face rows by id, read once per solid. */
+  function rowsOf(solid: PullSolid): Map<number, PullSolid["faces"][number]> {
+    let rows = faceRows.get(solid);
+    if (!rows) faceRows.set(solid, (rows = new Map(solid.faces.map((face) => [face.id, face]))));
+    return rows;
+  }
+
+  /** Every face in model space, for the snap levels. Read once per drag: the solid and its pose hold still while it runs. */
   function worldFaces(solid: PullSolid, pose: Affine): PullFace[] {
-    const ids = new Set<number>();
-    for (let i = 0; i < solid.triangles.length; i += 1) ids.add(solid.triangles[i] ?? 0);
     const faces: PullFace[] = [];
-    for (const index of ids) {
+    for (const index of faceTable(solid.positions, solid.triangles).keys()) {
       const face = describe(solid, index, null);
-      if (face) faces.push({ ...face, at: applyPose(pose, face.at) });
+      if (face) faces.push({ ...face, at: applyPose(pose, face.at), normal: turnDir(pose, face.normal) });
     }
     return faces;
   }

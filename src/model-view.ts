@@ -19,7 +19,7 @@ import { boxUnder, posedBounds, type Affine } from "./model-space";
 import { facePaint, idleLook, sectionPlane, type LookState } from "./model-look";
 import { faceBoundarySegments } from "./model-select";
 import { sectionCap } from "./section-cap";
-import { outwardFromMesh } from "./model-blend";
+import { faceTable } from "./interact/face-table";
 import { framePose, localPoint, sameWorkplane, type Workplane } from "./workplane";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
@@ -380,6 +380,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let faceDrag = false;
   let faceCb: (pointer: FacePointer) => void = () => {};
   let faceDown: { x: number; y: number; pointerId: number; moved: boolean; hit: FaceHit } | null = null;
+  /** What `data-faces` was last written for, so a still view does not redo it. */
+  let facesSolid: ModelSolid | null = null;
+  let facesKey = "";
   const FACE_SLOP = 4;
   // --- S2 sketch ---
   let sketchCapture = false;
@@ -1966,6 +1969,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       faceDrag = on;
       if (!on) {
         faceDown = null;
+        facesKey = "";
         delete canvas.dataset.faces;
       }
       paintHandles();
@@ -2483,37 +2487,31 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     else if (canvas.dataset.solidScreen !== solidText) canvas.dataset.solidScreen = solidText;
   }
 
-  /** P1. Each face's centre on the canvas and its outward normal in model space: `index:x,y:nx,ny,nz`. */
+  /**
+   * P1. Each face's centre on the canvas and its outward normal in model space: `index:x,y:nx,ny,nz`.
+   * The centres and normals are read once per solid; the text is redone only when the camera, the pose or the canvas changed.
+   */
   function publishFaces(width: number, height: number) {
     if (!faceDrag || !solid) {
+      facesKey = "";
       if (canvas.dataset.faces) delete canvas.dataset.faces;
       return;
     }
-    const totals = new Map<number, { x: number; y: number; z: number; n: number }>();
-    const pos = solid.positions;
-    const tris = solid.triangles;
-    for (let tri = 0; tri < tris.length; tri += 1) {
-      const face = tris[tri] ?? 0;
-      let bag = totals.get(face);
-      if (!bag) totals.set(face, (bag = { x: 0, y: 0, z: 0, n: 0 }));
-      const base = tri * 9;
-      for (let corner = 0; corner < 3; corner += 1) {
-        bag.x += pos[base + corner * 3] ?? 0;
-        bag.y += pos[base + corner * 3 + 1] ?? 0;
-        bag.z += pos[base + corner * 3 + 2] ?? 0;
-        bag.n += 1;
-      }
-    }
-    const parts: string[] = [];
     body.updateMatrixWorld(true);
-    for (const [face, bag] of totals) {
-      if (bag.n === 0) continue;
-      const world = body.localToWorld(new THREE.Vector3(bag.x / bag.n, bag.y / bag.n, bag.z / bag.n));
+    const key = `${width},${height};${camera.matrixWorld.elements.join(",")};${camera.projectionMatrix.elements.join(",")};${body.matrixWorld.elements.join(",")}`;
+    if (facesSolid === solid && key === facesKey) return;
+    facesSolid = solid;
+    facesKey = key;
+    const parts: string[] = [];
+    const world = new THREE.Vector3();
+    const normal = new THREE.Vector3();
+    for (const [face, row] of faceTable(solid.positions, solid.triangles)) {
+      world.set(...row.centre);
+      body.localToWorld(world);
       const p = world.project(camera);
       const x = Math.round((p.x * 0.5 + 0.5) * width);
       const y = Math.round((-p.y * 0.5 + 0.5) * height);
-      const solidNormal = outwardFromMesh(pos, tris, face) ?? [0, 0, 1];
-      const normal = new THREE.Vector3(...solidNormal).transformDirection(body.matrixWorld);
+      normal.set(...(row.normal ?? [0, 0, 1])).transformDirection(body.matrixWorld);
       parts.push(`${face}:${x},${y}:${normal.x.toFixed(3)},${normal.y.toFixed(3)},${normal.z.toFixed(3)}`);
     }
     const text = parts.join(" ");

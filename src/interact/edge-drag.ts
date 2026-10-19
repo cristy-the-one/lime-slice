@@ -7,7 +7,8 @@
  */
 
 import { dragAxis, type Ray } from "./drag-axis.ts";
-import { outwardFromMesh, type Vec3 } from "../model-blend.ts";
+import type { Vec3 } from "../model-blend.ts";
+import { faceTable } from "./face-table.ts";
 import { add, edgeAnchor, normalize, scale } from "../model-drag.ts";
 import { faceBoundarySegments } from "../model-select.ts";
 import { formatMm } from "../model-plane.ts";
@@ -68,7 +69,7 @@ export function blendDirection(normals: readonly Vec3[]): Vec3 | null {
 export function facesOnEdge(positions: ArrayLike<number>, triangles: ArrayLike<number>, points: ArrayLike<number>): number[] {
   const mid = edgeAnchor(points, [0, 0, 0])?.point;
   if (!mid) return [];
-  const boundary = faceBoundarySegments(positions, triangles);
+  const boundary = boundaryOf(positions, triangles);
   const hits: { face: number; dist: number }[] = [];
   for (const [face, flat] of boundary) {
     let dist = Infinity;
@@ -81,6 +82,18 @@ export function facesOnEdge(positions: ArrayLike<number>, triangles: ArrayLike<n
   }
   hits.sort((a, b) => a.dist - b.dist || a.face - b.face);
   return hits.slice(0, 2).map((hit) => hit.face);
+}
+
+const boundaries = new WeakMap<object, { triangles: ArrayLike<number>; segments: Map<number, number[]> }>();
+
+/** Each face's outline, read once per mesh: every hovered edge asks for it. */
+function boundaryOf(positions: ArrayLike<number>, triangles: ArrayLike<number>): Map<number, number[]> {
+  const key = positions as unknown as object;
+  const kept = boundaries.get(key);
+  if (kept && kept.triangles === triangles) return kept.segments;
+  const segments = faceBoundarySegments(positions, triangles);
+  boundaries.set(key, { triangles, segments });
+  return segments;
 }
 
 /**
@@ -97,8 +110,9 @@ export function edgeFrame(
   const anchor = edgeAnchor(points, center);
   if (!anchor) return null;
   const normals: Vec3[] = [];
+  const table = faceTable(positions, triangles);
   for (const face of facesOnEdge(positions, triangles, points)) {
-    const normal = outwardFromMesh(positions, triangles, face);
+    const normal = table.get(face)?.normal;
     if (normal) normals.push(normal);
   }
   return { point: anchor.point, dir: blendDirection(normals) ?? anchor.out };
