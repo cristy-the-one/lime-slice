@@ -354,6 +354,66 @@ test("Esc waits for an Apply, one Esc leaves a History Edit, and an edit leaves 
   await expect(cards.first()).toHaveText("Sketch 1");
 });
 
+
+/** Each drawn rectangle's centre on screen, from the canvas's point hits (four points a rectangle, in drawing order). */
+async function rectangleCentres(page: Page): Promise<{ x: number; y: number }[]> {
+  const hits = ((await page.locator("#model").getAttribute("data-sketch-hits")) ?? "").split(" ").filter(Boolean);
+  const points = hits.map((hit) => hit.split(":")[1]!.split(",").map(Number) as [number, number]);
+  const out: { x: number; y: number }[] = [];
+  for (let at = 0; at + 4 <= points.length; at += 4) {
+    const four = points.slice(at, at + 4);
+    out.push({ x: four.reduce((sum, p) => sum + p[0], 0) / 4, y: four.reduce((sum, p) => sum + p[1], 0) / 4 });
+  }
+  return out;
+}
+
+test("a click during an extrude picks the region under it, Shift-click adds or drops one, and only Apply keeps it", async ({ page }) => {
+  const tree = await start(page);
+  await page.locator("#modelEmptySketch").click();
+  const canvas = page.locator("#model");
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  const box = (await canvas.boundingBox())!;
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await page.locator("[data-sketch-tool=rectangle]").click();
+  for (const dx of [-120, 60]) {
+    await page.mouse.click(centre.x + dx, centre.y);
+    await hud.locator("input").nth(0).fill("10");
+    await hud.locator("input").nth(0).press("Tab");
+    await hud.locator("input").nth(1).fill("10");
+    await hud.locator("input").nth(1).press("Enter");
+  }
+  await page.locator("[data-sketch-tool=select]").click();
+  const [a, b] = await rectangleCentres(page);
+  await page.mouse.move(a!.x, a!.y);
+  await page.keyboard.press("E");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await expect(canvas).toHaveAttribute("data-extrude-regions", "1");
+
+  await page.mouse.click(b!.x, b!.y);
+  await expect(canvas, "a click picks, it does not apply").toHaveAttribute("data-extrude", "aim");
+  await expect(canvas).toHaveAttribute("data-extrude-regions", "1");
+  await page.mouse.move(a!.x, a!.y);
+  await page.keyboard.down("Shift");
+  await page.mouse.click(a!.x, a!.y);
+  await page.keyboard.up("Shift");
+  await expect(canvas, "Shift-click adds the other region, and the pointer no longer picks").toHaveAttribute("data-extrude-regions", "2");
+  await page.keyboard.down("Shift");
+  await page.mouse.click(b!.x, b!.y);
+  await page.keyboard.up("Shift");
+  await expect(canvas, "Shift-click on a picked region drops it").toHaveAttribute("data-extrude-regions", "1");
+  await page.mouse.click(box.x + box.width - 30, box.y + box.height - 30);
+  await expect(canvas, "a click on no region keeps the pick").toHaveAttribute("data-extrude-regions", "1");
+  await page.keyboard.down("Shift");
+  await page.mouse.click(b!.x, b!.y);
+  await page.keyboard.up("Shift");
+  await expect(canvas).toHaveAttribute("data-extrude-regions", "2");
+  expect(tree.of("open"), "nothing was applied by a click").toHaveLength(0);
+  await page.locator("[data-sketch-apply]").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  await expect(canvas).toHaveAttribute("data-extrude", "off");
+});
+
 test("two regions on an empty bed make two objects, and Undo takes them back as one step", async ({ page }) => {
   const tree = await start(page);
   await page.locator("#modelEmptySketch").click();

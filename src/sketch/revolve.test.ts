@@ -20,6 +20,7 @@ import {
   dragAngle,
   edgeAxes,
   featureRevolve,
+  flipAxis,
   perpPixels,
   pickAxis,
   planeAxes,
@@ -194,6 +195,14 @@ broken.nodes[1].op.sketch = { v: 2 };
 eq("a sketch this app cannot read is dropped", readSavedTree(broken)?.nodes[1]?.op, withoutSketch(withSketch));
 const loaded = read && loadedTree(read, "k2", root, "Box", null, () => undefined);
 eq("the loaded step still carries the sketch", loaded?.nodes.get(1)?.op, withSketch);
+
+// Flip turns a line axis end for end over the same stretch: a point at 2 along it is at -2 along the flipped one.
+const line = { origin: [1, 1] as [number, number], dir: [0, 1] as [number, number], kind: "line" as const, from: 0, to: 5 };
+const turned = flipAxis(line);
+eq("flip reverses the direction", turned.dir, [-0, -1]);
+eq("flip keeps the origin", turned.origin, [1, 1]);
+eq("flip covers the same stretch", [turned.from, turned.to], [-5, -0]);
+eq("two flips are the axis again", flipAxis(turned).dir, [0, 1]);
 
 if (failed > 0) {
   console.error(`${failed} failed`);

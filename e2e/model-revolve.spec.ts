@@ -142,6 +142,37 @@ test("a rectangle off the axis revolves, the ring drag sets the angle, and Histo
   expect(edited.sketch).toBeUndefined();
 });
 
+test("a click after the axis locks picks a region instead of applying, and Flip turns the revolve the other way", async ({ page }) => {
+  const tree = await start(page);
+  await page.locator("#modelEmptySketch").click();
+  const canvas = page.locator("#model");
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  const box = (await canvas.boundingBox())!;
+  const corner = { x: box.x + box.width * 0.62, y: box.y + box.height * 0.45 };
+  await drawRectangle(page, corner, "10", "6", false);
+  await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.55);
+  await page.keyboard.press("V");
+  await expect(canvas).toHaveAttribute("data-revolve-axis", "v");
+  await page.mouse.click(box.x + box.width * 0.35, box.y + box.height * 0.55);
+  const hits = ((await canvas.getAttribute("data-sketch-hits")) ?? "").split(" ").filter(Boolean);
+  const points = hits.map((hit) => hit.split(":")[1]!.split(",").map(Number));
+  const inside = { x: points.reduce((sum, p) => sum + p[0]!, 0) / points.length, y: points.reduce((sum, p) => sum + p[1]!, 0) / points.length };
+  await page.mouse.click(inside.x, inside.y);
+  await expect(canvas, "the second click picks the region; it does not apply").toHaveAttribute("data-revolve", "aim");
+  await expect(canvas).toHaveAttribute("data-revolve-regions", "1");
+  expect(tree.of("open")).toHaveLength(0);
+
+  await page.locator("[data-sketch-flip]").click();
+  await expect(canvas).toHaveAttribute("data-revolve-axis", "v");
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await hud.locator("input").first().fill("90");
+  await hud.locator("input").first().press("Enter");
+  await expect(page.locator("#objectList .obj")).toHaveCount(1);
+  const feature = tree.of("open")[0]!.feature as { angleDeg?: number; axisDir?: number[] };
+  expect(feature.angleDeg).toBe(90);
+  expect(feature.axisDir, "Flip turns the axis end for end").toEqual([0, -1]);
+});
+
 test("a region that crosses the axis is refused and the sketch stays open", async ({ page }) => {
   await start(page);
   await page.locator("#modelEmptySketch").click();

@@ -42,6 +42,16 @@ export interface RevolveAxis {
   to?: number;
 }
 
+/** The same axis turned end for end, so the revolve turns the other way. It covers the same stretch of line. */
+export function flipAxis(axis: RevolveAxis): RevolveAxis {
+  const flipped: RevolveAxis = { ...axis, dir: [-axis.dir[0], -axis.dir[1]] };
+  if (axis.from != null && axis.to != null) {
+    flipped.from = -axis.to;
+    flipped.to = -axis.from;
+  }
+  return flipped;
+}
+
 export interface RevolveDraft {
   sketch: SketchData;
   regions: readonly Region[];

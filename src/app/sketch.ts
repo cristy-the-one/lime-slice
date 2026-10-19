@@ -104,6 +104,7 @@ import {
   dashSegment,
   defaultAxis,
   dragAngle,
+  flipAxis,
   edgeAxes,
   pickAxis,
   planeAxes,
@@ -326,6 +327,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     dragging: boolean;
     guide: [Vec3, Vec3] | null;
     down: { x: number; y: number; distance: number } | null;
+    /** A click picked the regions: the pointer no longer picks the one under it. */
+    picked?: boolean;
     /** Heads-up text for distance, the other side, and draft. */
     texts?: Record<string, string>;
   }
@@ -340,6 +343,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     dragging: boolean;
     crossing: boolean;
     down: { x: number; y: number; angle: number } | null;
+    /** A click picked the regions: the pointer no longer picks the one under it. */
+    picked?: boolean;
     /** The angle as typed, when it was an expression. */
     angleText?: string;
   }
@@ -800,6 +805,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (sweep) void commitSweep();
       else beginSweep();
+      return;
+    }
+    // --- B20. A revolve turns the other way about the same axis. ---
+    if (target.dataset.sketchFlip != null && revolve) {
+      revolve = { ...revolve, axis: flipAxis(revolve.axis), follow: false };
+      publish("open");
+      armRevolveProbe();
       return;
     }
     if (target.dataset.sketchRuled != null && loft) {
@@ -1403,6 +1415,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       const auto = choice === "auto" ? "Auto · " : "";
       row.push(textButton(`${auto}${modeLabel(mode)} (M)`, { sketchMode: mode }));
       if (loft) row.push(textButton(loft.ruled ? "Ruled" : "Smooth", { sketchRuled: loft.ruled ? "1" : "0" }));
+      if (revolve) row.push(textButton("Flip", { sketchFlip: "" }));
       row.push(textButton("Apply", { sketchApply: "" }));
     }
     row.push(textButton(editor.lookAround ? "Lock view" : "Look around", { sketchLook: editor.lookAround ? "1" : "0" }));
@@ -2091,7 +2104,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!gesture) return "";
     const mode = modeLabel(resolvedMode());
     const where = gesture.upTo != null ? `Up to face ${typeof gesture.upTo === "number" ? gesture.upTo : gesture.upTo.index}. ` : "";
-    return `${where}Extrude ${gesture.distance} mm, ${mode}. Drag the arrow or type the distance. M changes join, cut, or new object. Tab adds the other side, then a draft. Enter or Apply keeps it. Esc returns to the sketch.`;
+    return `${where}Extrude ${gesture.distance} mm, ${mode}. Drag the arrow or type the distance. Click a region to extrude it, Shift-click to add one. M changes join, cut, or new object. Tab adds the other side, then a draft. Enter or Apply keeps it. Esc returns to the sketch.`;
   }
 
   function extrudePointer(ev: { phase: "down" | "move" | "up"; x: number; y: number; shift: boolean; ctrl: boolean; alt: boolean }, frame: ReturnType<typeof drawingFrame>) {
@@ -2113,7 +2126,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (ev.phase === "move") {
       const sketch = activeSketch(editor);
-      if (sketch && editor.selection.entities.length === 0 && !editSession) {
+      if (sketch && editor.selection.entities.length === 0 && !editSession && !gesture.picked) {
         const hit = rayOnPlane(frame, host.view.pointerRay(ev.x, ev.y).origin, host.view.pointerRay(ev.x, ev.y).direction);
         const chosen = chooseRegions(sketch, [], hit?.uv ?? null);
         if (chosen.length > 0) gesture = { ...gesture, regions: chosen };
@@ -2124,12 +2137,31 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (ev.phase === "up" && gesture.down) {
       const moved = Math.hypot(ev.x - gesture.down.x, ev.y - gesture.down.y);
       gesture = { ...gesture, down: null, dragging: false };
-      if (moved < 4) void commitExtrude();
-      else {
-        publish("open");
-        armProbe();
+      if (moved < 4) {
+        // A click picks the region under it, as in Fusion. Shift or Ctrl adds or drops one. Enter or Apply keeps the extrude.
+        const regions = clickedRegions(ev, frame, gesture.regions);
+        if (regions) gesture = { ...gesture, regions, picked: true };
       }
+      publish("open");
+      armProbe();
     }
+  }
+
+  /**
+   * The regions after a click during an extrude or revolve: the one under the pointer, or with Shift or Ctrl the
+   * current ones with it added or dropped. Null when the click is on no region, so the pick stays.
+   */
+  function clickedRegions(ev: { x: number; y: number; shift: boolean; ctrl: boolean }, frame: SketchFrame, current: readonly Region[]): Region[] | null {
+    const sketch = activeSketch(editor);
+    if (!sketch) return null;
+    const ray = host.view.pointerRay(ev.x, ev.y);
+    const hit = rayOnPlane(frame, ray.origin, ray.direction);
+    const region = hit ? regionAt(sketchRegions(sketch), hit.uv) : null;
+    if (!region) return null;
+    if (!(ev.shift || ev.ctrl)) return [region];
+    const kept = current.filter((item) => item !== region);
+    if (kept.length === current.length) return [...current, region];
+    return kept.length > 0 ? kept : null;
   }
 
   function dragDistance(ev: { x: number; y: number; ctrl: boolean; shift: boolean }, frame: NonNullable<ReturnType<typeof drawingFrame>>, down: { x: number; y: number; distance: number }): number | null {
@@ -2340,7 +2372,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!revolve) return "";
     if (revolve.crossing) return `${CROSS_REFUSAL} Move the axis, or pick a region on one side of it.`;
     const mode = modeLabel(resolvedRevolveMode());
-    return `Revolve ${revolve.angle}°, ${mode}. Drag the ring or type the angle. Typing 360 is a full turn. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
+    return `Revolve ${revolve.angle}°, ${mode}. Drag the ring or type the angle. Typing 360 is a full turn. Click a region to revolve it, Shift-click to add one. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
   }
 
   function axisUnderPointer(sketch: SketchData, frame: NonNullable<ReturnType<typeof drawingFrame>>): RevolveAxis | null {
@@ -2390,15 +2422,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       const wasFollow = revolve.follow;
       revolve = { ...revolve, down: null, dragging: false };
       if (moved < 4) {
-        if (wasFollow) {
-          revolve = { ...revolve, follow: false };
-          publish("open");
-          armRevolveProbe();
-        } else void commitRevolve();
-      } else {
-        publish("open");
-        armRevolveProbe();
+        // The first click locks the axis. A later one picks the region under it; Enter or Apply keeps the revolve.
+        if (wasFollow) revolve = { ...revolve, follow: false };
+        else {
+          const regions = clickedRegions(ev, frame, revolve.regions);
+          if (regions) revolve = { ...revolve, regions, picked: true, crossing: regions.some((region) => regionCrossesAxis(region, revolve!.axis)) };
+        }
       }
+      publish("open");
+      armRevolveProbe();
     }
   }
 
