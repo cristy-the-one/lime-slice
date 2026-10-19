@@ -226,6 +226,34 @@ eq("using the outline copies every outline segment", activeSketch(editor)?.entit
 editor = click(editor, [3, 0]);
 check("using the same edge again says so", sketchReadout(editor).includes("already in the sketch"));
 
+// Use on a curved edge copies the curve, and on the outline only the loop that was clicked.
+{
+  type P = [number, number];
+  const ring = (cx: number, cy: number, r: number, from: number, to: number, count: number): P[] => Array.from({ length: count + 1 }, (_, k) => [cx + r * Math.cos(from + ((to - from) * k) / count), cy + r * Math.sin(from + ((to - from) * k) / count)] as P);
+  const pieces = (points: P[], extra: Record<string, unknown>) => points.slice(1).map((b, i) => ({ a: points[i]!, b, ...extra }));
+  const square = (x: number, size: number): P[] => [[x, x], [x + size, x], [x + size, x + size], [x, x + size], [x, x]];
+  const curved = {
+    segments: [
+      ...pieces(ring(30, 0, 5, 0, 2 * Math.PI, 32), { source: "edge" as const, edge: 0 }),
+      ...pieces(ring(60, 0, 8, 0, Math.PI / 2, 8), { source: "edge" as const, edge: 1 }),
+      ...pieces(square(0, 20), { source: "outline" as const }),
+      ...pieces(square(5, 4), { source: "outline" as const }),
+    ],
+    vertices: [],
+  };
+  let used = withRefs(open("use"), curved);
+  used = click(used, [35, 0]);
+  const circles = activeSketch(used)!.entities.filter((entity) => entity.kind === "circle");
+  eq("a circular edge is one circle, not 32 lines", activeSketch(used)!.entities.map((entity) => entity.kind), ["circle"]);
+  near("of the edge's radius", circles[0]?.kind === "circle" ? circles[0].radius : 0, 5, 1e-6);
+  used = click(used, [60 + 8 * Math.cos(Math.PI / 4), 8 * Math.sin(Math.PI / 4)]);
+  eq("a quarter-circle edge is one arc", activeSketch(used)!.entities.map((entity) => entity.kind), ["circle", "arc"]);
+  used = click(used, [10, 0]);
+  eq("the outer outline is its four sides, not the hole's too", activeSketch(used)!.entities.map((entity) => entity.kind), ["circle", "arc", "line", "line", "line", "line"]);
+  used = click(used, [5, 7]);
+  eq("and a click on the hole copies the hole", activeSketch(used)!.entities.length, 10);
+}
+
 editor = open("line");
 eq("C switches to the circle without leaving the sketch", sketchKey(editor, "c", { ctrl: false, meta: false, shift: false })?.tool, "circle");
 check("plain S does not start a second sketch", sketchKey(editor, "s", { ctrl: false, meta: false, shift: false }) === editor);
