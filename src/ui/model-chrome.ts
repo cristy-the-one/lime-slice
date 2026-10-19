@@ -577,6 +577,8 @@ function toggleTool(next: ModelTool, editing = false) {
   if (tool === "check") closeModelCheck();
   if (edit && !editing) closeTool();
   tool = next;
+  // --- D29. History stops picking steps to repeat once another tool is open.
+  if (!isRepeatTool(next)) paintRepeatSources([]);
   // --- A3 composite features: the button shows the feature just opened, and a click picks a face. ---
   // --- A4. Pattern and Mirror share that button. A click picks a face, for a path point or a mirror face. ---
   if (isFeatureTool(next) || isRepeatTool(next)) {
@@ -750,10 +752,10 @@ function closeTool() {
     document.querySelector("#modelPanel")?.removeAttribute("aria-labelledby");
     paintPrimRow();
   }
-  // --- A4. A closed tool repeats nothing. ---
-  paintRepeatSources([]);
   if (!ended) resetRepeatDraft();
   tool = null;
+  // --- A4. A closed tool repeats nothing. --- D29: painted once closed, so History shows the step on screen again.
+  paintRepeatSources([]);
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) delete bar.dataset.tool;
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]").forEach((button) => {

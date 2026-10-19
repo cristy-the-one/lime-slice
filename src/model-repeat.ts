@@ -28,8 +28,8 @@ export const REPEAT_ONLY = "Only a Boolean, a hole, or a feature can be repeated
 /** Shown when the steps named in `source.of` are no longer in the history. */
 export const REPEAT_DELETED = "A step this repeats was deleted.";
 
-/** Shown until a history row is chosen. Ctrl-click adds another; the last step is the one the tool opens on. */
-export const REPEAT_PICK = "Ctrl-click history rows to choose steps.";
+/** Shown until a history row is chosen. A click on a row adds it or takes it out; the tool opens on the step on screen. */
+export const REPEAT_PICK = "Click history rows to choose steps.";
 
 export const REPEAT_AXIS = "Pick an edge or a round face for the axis, or choose X, Y, or Z.";
 

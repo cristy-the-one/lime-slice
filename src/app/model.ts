@@ -779,6 +779,7 @@ export function bindModelView() {
       fx.model?.setStepHighlight(id);
     },
     // --- A4. Ctrl-click adds or removes a step of this solid. A tool's step is not one of those. ---
+    picking: () => isRepeatTool(openModelTool()) && !lens,
     pickSource(row) {
       if (!isRepeatTool(openModelTool())) return false;
       const parsed = readRow(row);

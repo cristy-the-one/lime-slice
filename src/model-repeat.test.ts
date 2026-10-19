@@ -140,7 +140,7 @@ const linear = readRepeatSpec("pattern", read({ modelPatSx: 10, modelPatSy: 0, m
 const doubled = "reason" in linear ? null : expandRepeat(linear, [{ id: 4, op: pair }], IDENTITY_POSE);
 eq("a group contributes each of its booleans, once per new copy", doubled?.pieces?.length, 2);
 
-eq("no step yet asks for a Ctrl-click", repeatTargets([], () => true), REPEAT_PICK);
+eq("no step yet asks for a click", repeatTargets([], () => true), REPEAT_PICK);
 eq("a deleted step says so", repeatTargets([1, 9], (id) => id === 1), REPEAT_DELETED);
 
 if (spun?.group) {

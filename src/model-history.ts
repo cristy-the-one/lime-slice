@@ -389,7 +389,9 @@ export type HistoryAction =
   /** Fold a composite back into one row. */
   | { kind: "collapse"; id: string }
   /** Back to the canvas. */
-  | { kind: "leave" };
+  | { kind: "leave" }
+  /** --- D29. Add the row to the steps Pattern or Mirror repeats, or take it out. */
+  | { kind: "pick"; id: RowKey };
 
 export interface HistoryKey {
   key: string;
@@ -402,9 +404,10 @@ export interface HistoryKey {
 /**
  * What a key does on the focused row. Null for keys the panel leaves alone. Right on a join goes into its tool's lane,
  * to the step the join takes, and Left on a tool's step comes back to the join, as a tree item's children are reached;
- * elsewhere Left and Right switch branches.
+ * elsewhere Left and Right switch branches. `picking`: Pattern or Mirror is open, so Enter and Space choose the row as a
+ * step to repeat instead of showing it (the panel moves focus without showing a step then too).
  */
-export function historyKey(ev: HistoryKey, tree: ModelTree, layout: HistoryLayout, focused: RowKey): HistoryAction | null {
+export function historyKey(ev: HistoryKey, tree: ModelTree, layout: HistoryLayout, focused: RowKey, picking = false): HistoryAction | null {
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return null;
   const keys = layout.rows.map((row) => row.key);
   const at = keys.indexOf(focused);
@@ -433,6 +436,7 @@ export function historyKey(ev: HistoryKey, tree: ModelTree, layout: HistoryLayou
       return move(row.owns.length > 0 ? row.owns.at(-1) : branch(1));
     case "Enter":
     case " ":
+      if (picking) return { kind: "pick", id: focused };
       return { kind: "jump", to: row.fold && !row.fold.expanded ? row.fold.lastKey : focused };
     case "F2":
       if (row.fold && !row.fold.expanded) return null;

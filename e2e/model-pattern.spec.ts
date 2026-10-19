@@ -237,3 +237,39 @@ test("a polar pattern about an edge turns about that edge, where it is", async (
   const onEdge = [centre[0] === 0 || centre[0] === 20, centre[1] === 0 || centre[1] === 20, centre[2] === 0 || centre[2] === 10].filter(Boolean).length;
   expect(onEdge, `centre ${centre.join(", ")} lies on an edge`).toBe(2);
 });
+
+test("while Pattern is open, History rows are chosen by a click or Space, and the arrows show no step", async ({ page }) => {
+  const tree = await openModel(page);
+  await cutCylinder(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuPattern").click();
+  const list = page.locator("#modelHistoryTree");
+  const rows = list.locator("[role=treeitem]");
+  await expect(list).toHaveAttribute("aria-multiselectable", "true");
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(rows.nth(1)).toHaveAttribute("aria-current", "step");
+
+  // A plain click takes the row out, and the solid on screen stays.
+  const gotos = tree.of("goto").length;
+  await rows.nth(1).click();
+  await expect(rows.nth(1)).not.toHaveAttribute("data-repeat", "");
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "false");
+  await expect(page.locator("#modelNote")).toHaveText("Click history rows to choose steps.");
+  // Up moves to the root without showing it; Down and Space choose the cut again.
+  await page.keyboard.press("ArrowUp");
+  await expect(rows.nth(0)).toBeFocused();
+  await page.waitForTimeout(400);
+  await expect(rows.nth(1)).toHaveAttribute("data-state", "current");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Space");
+  await expect(rows.nth(1)).toHaveAttribute("data-repeat", "");
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+  expect(tree.of("goto").length, "no step was asked for").toBe(gotos);
+
+  // Closed, History shows the step on screen again.
+  await page.locator("#modelCancel").click();
+  await expect(list).toHaveAttribute("aria-multiselectable", "false");
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(rows.nth(0)).toHaveAttribute("aria-selected", "false");
+  await expect(rows.nth(1)).not.toHaveAttribute("aria-current", /.*/);
+});

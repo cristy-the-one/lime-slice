@@ -35,6 +35,11 @@ interface ModelHistoryHooks {
    * Absent, a Ctrl-click jumps as any other click does.
    */
   pickSource?(row: RowKey): boolean;
+  /**
+   * --- D29. Whether Pattern or Mirror is open. Then a click or a tap, Ctrl or not, and Enter or Space choose rows to
+   * repeat, the arrows move without showing a step, and each row's `aria-selected` says whether it is chosen.
+   */
+  picking?(): boolean;
 }
 
 /** --- A10. Colour by step paints a swatch on each row. Off, the swatches go and the rows repaint. */
@@ -97,8 +102,24 @@ export function paintRepeatSources(ids: readonly number[]) {
   repeatIds = new Set(ids);
   if (!layout) return;
   for (const row of layout.rows) {
-    rowEls.get(row.key)?.toggleAttribute("data-repeat", row.via.length === 0 && repeatIds.has(row.id));
+    const el = rowEls.get(row.key);
+    if (el) paintChosen(el, row);
   }
+}
+
+function picking(): boolean {
+  return hooks?.picking?.() ?? false;
+}
+
+/** --- D29. A row chosen to repeat, and what `aria-selected` says: the chosen rows while picking, else the shown step. */
+function paintChosen(el: HTMLElement, row: HistoryRow) {
+  const chosen = row.via.length === 0 && repeatIds.has(row.id);
+  el.toggleAttribute("data-repeat", chosen);
+  const on = picking();
+  el.setAttribute("aria-selected", (on ? chosen : row.state === "current") ? "true" : "false");
+  if (on) el.setAttribute("aria-current", row.state === "current" ? "step" : "false");
+  else el.removeAttribute("aria-current");
+  list?.setAttribute("aria-multiselectable", on ? "true" : "false");
 }
 
 function readCollapsed(): boolean {
@@ -443,11 +464,10 @@ export function syncModelRecipe(note: RecipeNote | null) {
 
 function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   el.dataset.state = row.state;
-  el.toggleAttribute("data-repeat", row.via.length === 0 && repeatIds.has(row.id));
+  paintChosen(el, row);
   el.toggleAttribute("data-broken", !!row.broken);
   el.toggleAttribute("data-blocked", row.blocked);
   el.setAttribute("aria-level", String(row.level));
-  el.setAttribute("aria-selected", row.state === "current" ? "true" : "false");
   // A folded composite hides its steps. A fork, and a join with its tool's lane, stay expanded: their rows are drawn.
   if (row.fold?.head) el.setAttribute("aria-expanded", row.fold.expanded ? "true" : "false");
   else if (row.fork || row.owns.length > 0) el.setAttribute("aria-expanded", "true");
@@ -665,8 +685,9 @@ function onClick(ev: MouseEvent) {
   }
   if ((ev.target as Element).closest(".mh-rename")) return;
   setFocus(id, true);
-  // --- A4. Ctrl-click chooses a step to repeat and leaves the solid on screen where it is. ---
-  if ((ev.ctrlKey || ev.metaKey) && hooks?.pickSource?.(id)) return;
+  // --- A4, D29. While Pattern or Mirror is open, a click or a tap chooses a step to repeat and leaves the solid on
+  // screen where it is. Ctrl-click does too, as before.
+  if ((picking() || ev.ctrlKey || ev.metaKey) && hooks?.pickSource?.(id)) return;
   jumpNow(id);
 }
 
@@ -689,7 +710,7 @@ function onContextMenu(ev: MouseEvent) {
 function onKey(ev: KeyboardEvent) {
   if (!tree || !layout || (ev.target as Element).closest(".mh-rename")) return;
   const focused = rowOf(ev.target) ?? focusId ?? shownKey();
-  const action = historyKey(ev, tree, layout, focused);
+  const action = historyKey(ev, tree, layout, focused, picking());
   if (!action) {
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key) && !ev.ctrlKey && !ev.metaKey && !ev.altKey) ev.preventDefault();
     return;
@@ -700,7 +721,10 @@ function onKey(ev: KeyboardEvent) {
   switch (action.kind) {
     case "move":
       setFocus(action.to, true);
-      jumpSoon(action.to);
+      if (!picking()) jumpSoon(action.to);
+      return;
+    case "pick":
+      hooks?.pickSource?.(action.id);
       return;
     case "jump":
       jumpNow(action.to);
