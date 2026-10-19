@@ -88,6 +88,8 @@ export {
   edgeDragRefusal,
   edgeFrame,
   edgeHoverHint,
+  edgeIsSmooth,
+  edgeSizeRefusal,
   facesOnEdge,
   knobAt,
   tabStillOpen,

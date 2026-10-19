@@ -17,6 +17,8 @@ import {
   edgeDragRefusal,
   edgeFrame,
   edgeHoverHint,
+  edgeIsSmooth,
+  edgeSizeRefusal,
   EDGE_KNOB_ID,
   EDGE_MIN_MM,
   EDGE_STEP_MM,
@@ -105,6 +107,7 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
   let live: Session | null = null;
   let shown: Target | null = null;
   let hoverEdge: number | null = null;
+  const smoothEdges = new WeakMap<object, Map<number, boolean>>();
   let hinting = false;
   let lastAt: { x: number; y: number } | null = null;
   let tab: { at: number; node: number } | null = null;
@@ -136,7 +139,14 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
       const text = commit.texts[0];
       live.typing = false;
       live.dragging = false;
-      if (size != null && Number.isFinite(size)) live.size = Math.max(0, size);
+      // 0, a negative size, or one too small is refused in a sentence, and the box stays open for another number.
+      const said = edgeSizeRefusal(live.kind, size ?? Number.NaN);
+      if (said) {
+        live.typing = true;
+        host.readout(said);
+        return;
+      }
+      live.size = size!;
       live.expr = text && !isPlainNumber(text) ? text.trim() : undefined;
       live.proved = null;
       void commitSession(true);
@@ -223,6 +233,22 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     else delete canvas.dataset.edgeClamp;
   }
 
+  /** Whether the edge is tangent, read once per edge of each mesh: a smooth edge offers no knob. */
+  function smooth(edge: number): boolean {
+    const solid = host.solid();
+    if (!solid) return false;
+    const key = solid.positions as unknown as object;
+    let known = smoothEdges.get(key);
+    if (!known) smoothEdges.set(key, (known = new Map()));
+    let answer = known.get(edge);
+    if (answer == null) {
+      const found = solid.edges.find((item) => item.id === edge);
+      answer = !!found && edgeIsSmooth(solid.positions, solid.triangles, found.points);
+      known.set(edge, answer);
+    }
+    return answer;
+  }
+
   function targetOf(edge: number): Omit<Target, "edge"> | null {
     const solid = host.solid();
     if (!solid) return null;
@@ -252,7 +278,7 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
       }
       return;
     }
-    const target = targetOf(edge);
+    const target = smooth(edge) ? null : targetOf(edge);
     if (!target) {
       shown = null;
       view?.setEdgeKnob(null);
@@ -516,9 +542,9 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
       return;
     }
     if (live || !shown || ev.repeat) return;
-    // A digit, a decimal or an opening parenthesis starts the size. Letters stay with the tool keys
-    // (Fillet is L, Chamfer is Shift+L) until the box is open, and then the box takes them.
-    if (!/^[0-9.(]$/.test(ev.key)) return;
+    // A digit, a decimal, a minus or an opening parenthesis starts the size, so "-2" is refused rather than read as 2.
+    // Letters stay with the tool keys (Fillet is L, Chamfer is Shift+L) until the box is open, and then the box takes them.
+    if (!/^[0-9.(-]$/.test(ev.key)) return;
     ev.preventDefault();
     ev.stopPropagation();
     startTyping(ev.key);

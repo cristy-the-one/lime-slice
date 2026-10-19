@@ -25,6 +25,8 @@ export const EDGE_STEP_MM = 0.5;
 export const EDGE_FACE_MM = 0.05;
 /** Tab reopens the drag on the step just made, for this long. */
 export const EDGE_EDIT_MS = 3000;
+/** Faces meeting at an edge closer than this to flat (cos 3°) are tangent: there is no corner to round. */
+export const EDGE_SMOOTH_COS = Math.cos((3 * Math.PI) / 180);
 
 export type BlendKind = "fillet" | "chamfer";
 
@@ -82,6 +84,55 @@ export function facesOnEdge(positions: ArrayLike<number>, triangles: ArrayLike<n
   }
   hits.sort((a, b) => a.dist - b.dist || a.face - b.face);
   return hits.slice(0, 2).map((hit) => hit.face);
+}
+
+/**
+ * Whether the edge is smooth: every triangle that touches its midpoint along a side faces the same way, as on a
+ * fillet's own edges or a cylinder's seam. A fillet or a chamfer there has no corner to work on.
+ */
+export function edgeIsSmooth(positions: ArrayLike<number>, triangles: ArrayLike<number>, points: ArrayLike<number>): boolean {
+  const mid = edgeAnchor(points, [0, 0, 0])?.point;
+  if (!mid) return false;
+  const normals: Vec3[] = [];
+  const count = Math.min(triangles.length, Math.floor(positions.length / 9));
+  for (let tri = 0; tri < count; tri += 1) {
+    const base = tri * 9;
+    // Most triangles are nowhere near the midpoint: a box test leaves the few that may touch it.
+    let far = false;
+    for (let axis = 0; axis < 3 && !far; axis += 1) {
+      const p0 = positions[base + axis] ?? 0;
+      const p1 = positions[base + 3 + axis] ?? 0;
+      const p2 = positions[base + 6 + axis] ?? 0;
+      far = mid[axis]! < Math.min(p0, p1, p2) - EDGE_FACE_MM || mid[axis]! > Math.max(p0, p1, p2) + EDGE_FACE_MM;
+    }
+    if (far) continue;
+    const corner = (i: number): Vec3 => [positions[base + i * 3] ?? 0, positions[base + i * 3 + 1] ?? 0, positions[base + i * 3 + 2] ?? 0];
+    const a = corner(0);
+    const b = corner(1);
+    const c = corner(2);
+    const touches = segmentDistance(mid, a, b) <= EDGE_FACE_MM || segmentDistance(mid, b, c) <= EDGE_FACE_MM || segmentDistance(mid, c, a) <= EDGE_FACE_MM;
+    if (!touches) continue;
+    const u: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const v: Vec3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const n: Vec3 = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    const length = Math.hypot(n[0], n[1], n[2]);
+    if (length > 1e-12) normals.push([n[0] / length, n[1] / length, n[2] / length]);
+  }
+  if (normals.length < 2) return false;
+  for (let i = 0; i < normals.length; i += 1) {
+    for (let j = i + 1; j < normals.length; j += 1) {
+      const p = normals[i]!;
+      const q = normals[j]!;
+      if (p[0] * q[0] + p[1] * q[1] + p[2] * q[2] < EDGE_SMOOTH_COS) return false;
+    }
+  }
+  return true;
+}
+
+/** A typed size a fillet or a chamfer can be: a refusal sentence for 0, a negative number, or a size too small. */
+export function edgeSizeRefusal(kind: BlendKind, size: number): string | null {
+  if (Number.isFinite(size) && size >= EDGE_MIN_MM) return null;
+  return kind === "fillet" ? `A fillet needs a radius of at least ${EDGE_MIN_MM} mm.` : `A chamfer needs a distance of at least ${EDGE_MIN_MM} mm.`;
 }
 
 const boundaries = new WeakMap<object, { triangles: ArrayLike<number>; segments: Map<number, number[]> }>();

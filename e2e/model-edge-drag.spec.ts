@@ -254,3 +254,58 @@ test("after Undo, Tab leaves the undone fillet alone", async ({ page }) => {
   await expect(page.locator("#model"), "Tab does not reopen an undone step").not.toHaveAttribute("data-edge-drag", "edit");
   await expect(page.locator(".interact-hud:not([hidden])")).toBeHidden();
 });
+
+test("a typed 0 or negative size is refused in a sentence, and the box stays open", async ({ page }) => {
+  const applied: Op[] = [];
+  await openBox(page, () => ({ ok: true }), applied);
+  await knobAt(page);
+  const box = page.locator(".interact-hud:not([hidden]) input");
+  await page.keyboard.type("-2");
+  await expect(box, "a minus starts the box, so the size is not read as 2").toHaveValue("-2");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("A fillet needs a radius of at least 0.05 mm.");
+  await expect(box).toBeVisible();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("0");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("A fillet needs a radius of at least 0.05 mm.");
+  await page.waitForTimeout(300);
+  expect(applied, "nothing is applied").toHaveLength(0);
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("1.5");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelReadout")).toContainText("Fillet 1.5 mm · Tab to edit");
+  expect(applied.at(-1)).toMatchObject({ kind: "fillet", size: 1.5 });
+});
+
+test("a smooth edge, between faces that carry on flat, offers no knob", async ({ page }) => {
+  const solid = boxSolid();
+  // The top's two triangles are two faces in one plane, and the diagonal between them is the only edge.
+  const top = [2, 3];
+  top.forEach((tri) => {
+    solid.triangles[tri] = tri === 2 ? 1 : 6;
+  });
+  solid.faces.push({ id: 6, areaMm2: 0 });
+  solid.edges = [{ id: 0, lengthMm: Math.hypot(20, 20), points: [0, 0, 10, 20, 20, 10] }];
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
+  await mockModelTree(page, { open: () => solid, probe: () => ({ ok: true }) });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  const canvas = page.locator("#model");
+  const lit = await canvas.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    for (let y = rect.top + rect.height * 0.12; y <= rect.top + rect.height * 0.88; y += 6) {
+      for (let x = rect.left + rect.width * 0.12; x <= rect.left + rect.width * 0.88; x += 6) {
+        node.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, bubbles: true, pointerId: 1, pointerType: "mouse" }));
+        if (node.dataset.edgeDrag === "hover") return true;
+      }
+    }
+    return false;
+  });
+  expect(lit, "no knob on a smooth edge").toBe(false);
+});

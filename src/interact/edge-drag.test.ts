@@ -2,7 +2,7 @@
  * The edge drag's geometry and wording, without WebGL: which faces an edge belongs to, which way
  * the knob points, which edges move together, and how a probe's largest size clamps the radius.
  */
-import { blendDirection, blendRadius, clampBlendSize, edgeAppliedNote, edgeDragEdges, edgeDragKind, edgeDragNote, edgeDragOp, edgeDragRefusal, edgeFrame, edgeHoverHint, facesOnEdge, knobAt, tabStillOpen, EDGE_EDIT_MS } from "./edge-drag.ts";
+import { blendDirection, blendRadius, clampBlendSize, edgeAppliedNote, edgeDragEdges, edgeDragKind, edgeDragNote, edgeDragOp, edgeDragRefusal, edgeFrame, edgeHoverHint, edgeIsSmooth, edgeSizeRefusal, facesOnEdge, knobAt, tabStillOpen, EDGE_EDIT_MS } from "./edge-drag.ts";
 import type { Vec3 } from "../model-drag.ts";
 
 let failed = 0;
@@ -77,6 +77,22 @@ eq("a refusal keeps the probe's sentence and its largest size", edgeDragRefusal(
 eq("the applied note offers Tab", edgeAppliedNote("fillet", 2), "Fillet 2 mm · Tab to edit");
 check("Tab still reaches a step inside the window", tabStillOpen(1000, 1000 + EDGE_EDIT_MS));
 check("Tab misses a step once the window has passed", !tabStillOpen(1000, 1000 + EDGE_EDIT_MS + 1));
+
+// A tangent edge offers no knob: the faces either side of it face the same way.
+const edgeLine = [0, 0, 0, 10, 0, 0];
+const square = [0, 0, 0, 10, 0, 0, 0, 10, 0, /* the other face, at 90° */ 0, 0, 0, 0, 0, 10, 10, 0, 0];
+eq("a square corner is not smooth", edgeIsSmooth(square, [0, 1], edgeLine), false);
+const flat = [0, 0, 0, 10, 0, 0, 0, 10, 0, /* the other face, on in the same plane */ 0, 0, 0, 10, -10, 0, 10, 0, 0];
+eq("faces that carry on flat across the edge are smooth", edgeIsSmooth(flat, [0, 1], edgeLine), true);
+const tangent = [0, 0, 0, 10, 0, 0, 0, 10, 0, /* 2° off flat, as a fillet meets its face */ 0, 0, 0, 10, -10, -Math.tan((2 * Math.PI) / 180) * 10, 10, 0, 0];
+eq("faces 2° off flat are smooth", edgeIsSmooth(tangent, [0, 1], edgeLine), true);
+const bent = [0, 0, 0, 10, 0, 0, 0, 10, 0, /* 10° off flat */ 0, 0, 0, 10, -10, -Math.tan((10 * Math.PI) / 180) * 10, 10, 0, 0];
+eq("faces 10° off flat are a corner", edgeIsSmooth(bent, [0, 1], edgeLine), false);
+eq("one face alone is not judged smooth", edgeIsSmooth(square.slice(0, 9), [0], edgeLine), false);
+
+eq("a typed 0 is refused", edgeSizeRefusal("fillet", 0), "A fillet needs a radius of at least 0.05 mm.");
+eq("a typed negative chamfer is refused", edgeSizeRefusal("chamfer", -2), "A chamfer needs a distance of at least 0.05 mm.");
+eq("a typed 2 is taken", edgeSizeRefusal("fillet", 2), null);
 
 if (failed > 0) {
   console.error(`${failed} failed`);
