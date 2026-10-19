@@ -130,6 +130,7 @@ test("a face click opens Push/Pull, Hole, and Shell off the solid, and Enter typ
   await expect(distance).toBeVisible();
   await distance.fill("7");
   await expect(distance).toHaveValue("7");
+  await expect(page.locator("#modelPullDiameter"), "a flat face has no diameter").toBeHidden();
   await expect(bar).toBeHidden();
 });
 
@@ -178,6 +179,13 @@ test("a cylinder offers Change diameter, and empty space offers a typed primitiv
   await expect(bar.locator("[data-action='change-diameter']")).toBeVisible();
   await bar.locator("[data-action='change-diameter']").click();
   await expect(page.locator("#modelPull")).toBeVisible();
+  // One cylinder: the panel types its diameter too, and Distance is the offset that reaches it.
+  const diameter = page.locator("#modelPullDiameter");
+  await expect(diameter).toBeVisible();
+  await expect(diameter).toHaveValue("20");
+  await diameter.selectText();
+  await page.keyboard.type("12");
+  await expect(page.locator("#modelPull")).toHaveValue(/^-?4$/);
   await page.keyboard.press("Escape");
 
   const canvasBox = (await page.locator("#model").boundingBox())!;

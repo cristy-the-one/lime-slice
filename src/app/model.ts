@@ -72,7 +72,7 @@ import {
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
 import { applyRequest, crossEditRequest, editRequest, exportRequest, faceLoopsRequest, gotoRequest, isBrep, joinOp, keepSketch, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
 import { edgeOfText, remapBlendFromNode, storedEdgeStep } from "../model-edge-step";
-import { mountPull, pullFieldText, type PullMade } from "../push-pull-ui";
+import { mountPull, pullFieldText, type PullController, type PullMade } from "../push-pull-ui";
 import { depthBehind, pullLimit, pullRefusal } from "../push-pull";
 import { faceTable } from "../interact/face-table";
 import { averagePoint, contextKind, polylineMid } from "../context-bar";
@@ -317,6 +317,8 @@ let holdSketchHoles = false;
 /** P1's face-drag sync, so a sketch can arm it again on the way out. */
 let syncPullDrag: (() => void) | null = null;
 let endPullDrag: (() => void) | null = null;
+/** P1. The face push, for the panel's Diameter field on one picked cylinder. */
+let pullPanel: PullController | null = null;
 
 /**
  * A tool's step on screen in place of the open solid's: what a click on a tool's row in History shows, read-only, and
@@ -582,7 +584,18 @@ export function bindModelView() {
     });
     syncPullDrag = () => {
       pull.sync();
+      syncPullDiameter();
     };
+    pullPanel = pull;
+    // A typed diameter is the distance that reaches it: Distance follows, and the panel checks that as it would a typed distance.
+    document.querySelector<HTMLInputElement>("#modelPullDiameter")?.addEventListener("input", (ev) => {
+      const typed = Number((ev.currentTarget as HTMLInputElement).value);
+      const distance = Number.isFinite(typed) ? pull.pickedDistance(typed) : null;
+      const field = document.querySelector<HTMLInputElement>("#modelPull");
+      if (distance == null || !field) return;
+      field.value = pullFieldText(distance);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     endPullDrag = () => pull.end();
     setPullLive(() => pull.sync());
   }
@@ -1277,6 +1290,20 @@ function pullGuard(op: ModelOp): string | null {
     if (said) return said;
   }
   return null;
+}
+
+/**
+ * P1. The panel's Diameter beside Distance, while Push/Pull is open on exactly one cylinder: "Change diameter" then
+ * types a diameter, as Shapr3D and Fusion show one for a cylindrical face. Distance stays the offset either way.
+ */
+function syncPullDiameter() {
+  const row = document.querySelector<HTMLElement>("#modelPullDiameterRow");
+  const input = document.querySelector<HTMLInputElement>("#modelPullDiameter");
+  if (!row || !input) return;
+  const distance = num("#modelPull");
+  const diameter = openModelTool() === "pushpull" && pullPanel ? pullPanel.pickedDiameter(Number.isFinite(distance) ? distance : 0) : null;
+  row.hidden = diameter == null;
+  if (diameter != null && document.activeElement !== input) input.value = pullFieldText(diameter);
 }
 
 /** P1. Face drag is on in Face mode, on an editable solid, when no other tool is open. */

@@ -105,6 +105,10 @@ export interface PullController {
   sync(): boolean;
   /** Model is closing: drop a drag and a Tab edit, so no hidden box keeps the keys. */
   end(): void;
+  /** The diameter `distance` gives the one picked cylinder, or null when the picks are not one cylinder. */
+  pickedDiameter(distance: number): number | null;
+  /** The distance that gives the one picked cylinder `diameter`, or null. */
+  pickedDistance(diameter: number): number | null;
 }
 
 export function mountPull(view: ModelView, hooks: PullHooks): PullController {
@@ -204,7 +208,21 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
 
   window.addEventListener("keydown", onTab, true);
 
-  return { sync, end };
+  return { sync, end, pickedDiameter, pickedDistance };
+
+  function pickedFaces(): PullFace[] {
+    const solid = hooks.solid();
+    if (!solid) return [];
+    return hooks.selectedFaces().map((index) => describe(solid, index, null)).filter((face): face is PullFace => face != null);
+  }
+
+  function pickedDiameter(distance: number): number | null {
+    return pullFields(distance, pickedFaces()).find((field) => field.id === "diameter")?.value ?? null;
+  }
+
+  function pickedDistance(diameter: number): number | null {
+    return distanceForDiameter(pickedFaces(), diameter);
+  }
 
   function end() {
     if (dragging) stopGesture();

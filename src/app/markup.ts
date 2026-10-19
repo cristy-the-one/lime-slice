@@ -238,6 +238,7 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
                   <!-- P1: the distance, typed. A drag writes the same field. -->
                   <label data-for="pushpull" data-snap="1"><span class="scrub-label" data-scrub>Distance</span><input id="modelPull" type="number" step="0.1" value="0" aria-label="Push or pull distance, mm"></label>
+                  <label id="modelPullDiameterRow" hidden><span>Diameter</span><input id="modelPullDiameter" type="number" step="0.1" min="0" aria-label="Cylinder diameter, mm"></label>
                   <!-- A5: the step, by its row or by its number. The number has no data-for, so the drag checklist stays on Size. -->
                   <label data-for="fillet chamfer" data-when="step" data-wide><span>Step</span><select id="modelEdgeStep" aria-label="History step"></select></label>
                   <label data-when="step" data-snap="1"><span class="scrub-label" data-scrub>Step number</span><input id="modelEdgeNode" type="number" step="1" min="0" value="0" data-whole aria-label="Step number"></label>
