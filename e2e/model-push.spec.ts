@@ -113,7 +113,7 @@ test("dragging a face pulls it, Alt adds a prism, and Tab edits the distance", a
   await page.keyboard.press("Tab");
   const typed = page.locator(".interact-hud input").first();
   await expect(typed).toBeVisible();
-  await typed.fill("12");
+  await page.keyboard.type("12");
   await page.keyboard.press("Enter");
   await expect(page.locator("#modelHistoryTree")).toContainText("Pull face 12 mm");
   const edited = await extent(page);
@@ -209,4 +209,85 @@ async function height(page: Page): Promise<number> {
 async function extent(page: Page): Promise<V> {
   const box = await solidBox(page);
   return [box[3]! - box[0]!, box[4]! - box[1]!, box[5]! - box[2]!];
+}
+
+/** A box on a mocked engine. Each Apply grows it by the pulled distance. */
+async function openPushBox(page: Page) {
+  const applied: { kind?: string; faces?: { face: number; distance: number }[]; face?: number; distance?: number }[] = [];
+  const solid = boxSolid();
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: solid.positions } }));
+  const tree = await mockModelTree(page, {
+    open: () => solid,
+    apply: (request, parent) => {
+      const op = request.op as { kind?: string; faces?: { face: number; distance: number }[]; face?: number; distance?: number };
+      applied.push(op);
+      const row = op.kind === "moveFaces" ? op.faces?.[0] : { face: op.face ?? 0, distance: op.distance ?? 0 };
+      return pulled(parent as ReturnType<typeof boxSolid>, row?.face ?? 0, row?.distance ?? 0);
+    },
+    probe: () => ({ ok: true }),
+  });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  return { applied, tree };
+}
+
+test("a typed distance replaces the live one, with Ctrl held through the drag, and Esc cancels with Ctrl held", async ({ page }) => {
+  const { applied } = await openPushBox(page);
+  const hud = page.locator(".interact-hud input").first();
+
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await pressAndPull(page, top, 40);
+  await expect(hud).toBeVisible();
+  await expect(hud).not.toHaveValue("0");
+  await page.keyboard.type("7");
+  await expect(hud, "the first key replaces the live distance").toHaveValue("7");
+  await page.keyboard.press("Enter");
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Pull face 7 mm");
+  expect(applied.at(-1)?.faces?.[0]?.distance).toBe(7);
+
+  await page.keyboard.press("Tab");
+  await expect(hud).toHaveValue("7");
+  await page.keyboard.type("4");
+  await expect(hud, "a Tab edit starts from an empty box too").toHaveValue("4");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Pull face 4 mm");
+  expect(applied.at(-1)?.faces?.[0]?.distance).toBe(4);
+
+  const count = applied.length;
+  const again = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await pressAndPull(page, again, 40);
+  await expect(hud).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(hud, "Esc closes the box with Ctrl still down").toBeHidden();
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  await page.waitForTimeout(300);
+  expect(applied, "a cancelled drag applies nothing").toHaveLength(count);
+});
+
+/** Press a face with Ctrl held and move `px` along its arrow. The button and Ctrl stay down. */
+async function pressAndPull(page: Page, at: { x: number; y: number }, px: number) {
+  const canvas = page.locator("#model");
+  let nudge = 0;
+  // A hover that lands while the solid is being replaced is redrawn on the next move, so each try moves a pixel.
+  await expect.poll(async () => {
+    nudge = (nudge + 1) % 3;
+    await page.mouse.move(at.x + nudge, at.y);
+    return canvas.getAttribute("data-handles") ?? "";
+  }).toContain("pull:");
+  const box = (await canvas.boundingBox())!;
+  const grip = /pull:(-?\d+),(-?\d+)/.exec((await canvas.getAttribute("data-handles")) ?? "")!;
+  const dx = box.x + Number(grip[1]) - at.x;
+  const dy = box.y + Number(grip[2]) - at.y;
+  const length = Math.hypot(dx, dy);
+  await page.keyboard.down("Control");
+  await page.mouse.down();
+  for (let step = 8; step <= px; step += 8) await page.mouse.move(at.x + (dx / length) * step, at.y + (dy / length) * step);
 }
