@@ -83,3 +83,14 @@ test("Check lists the solid and frames the row that was clicked", async ({ page 
   await expect(canvas).toHaveAttribute("data-check-box", /0\.00,0\.00,0\.00,20\.00,20\.00,10\.00/);
   await expect(canvas).not.toHaveAttribute("data-camera", zoomed ?? "");
 });
+
+test("Enter on a focused Model button presses that button, not Apply", async ({ page }) => {
+  await openModel(page, () => ({ ok: true }));
+  await page.locator("#modelToolCheck").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "check");
+  await page.locator("#modelCancel").click();
+  await page.locator("#modelFeatureMore").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelFeatureMenu")).toBeVisible();
+});
