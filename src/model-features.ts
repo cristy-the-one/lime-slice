@@ -451,10 +451,6 @@ function noNestedPart(): { reason: string } {
 }
 
 /**
- * Expand `spec` on `solid` at `pose`. `faceIndex` null, or a curved face, is the panel's "Pick one flat face."
- * Other refusals keep the expander's own sentence.
- */
-/**
  * --- D36. The context of the last solid and pose, with each face's frame read once: a drag that moves only `at`
  * reads the whole mesh once, not on every move. A new solid or pose builds it again.
  */
@@ -481,6 +477,10 @@ function posedContext(solid: FeatureSolid, pose: Affine): ReturnType<typeof feat
   return ctx;
 }
 
+/**
+ * Expand `spec` on `solid` at `pose`. `faceIndex` null, or a curved face, is the panel's "Pick one flat face."
+ * Other refusals keep the expander's own sentence.
+ */
 export function expandFeature(spec: Record<string, unknown>, solid: FeatureSolid | null, pose: Affine, faceIndex: number | null): ExpandedFeature {
   if (!solid || faceIndex == null || faceIndex < 0 || faceIndex >= solid.faces.length) return emptyFeature(PICK_ONE_FLAT_FACE);
   const ctx = posedContext(solid, pose);

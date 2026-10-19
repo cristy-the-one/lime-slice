@@ -193,3 +193,18 @@ test("Rebuild re-expands a feature whose parent solid is no longer kept", async 
   await expect(page.locator("#modelReadout")).not.toContainText("Show the step");
   await expect(page.locator("#modelParamsRebuild")).toBeHidden();
 });
+
+test("a texture starts at its own groove depth, and the other features keep theirs", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelToolFeatures").click();
+  await expect(page.locator("#modelFeatDepth")).toHaveValue("2");
+  await page.locator("#modelFeatDepth").selectText();
+  await page.keyboard.type("3");
+  await page.keyboard.press("Tab");
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelFeatureMenu [data-tool=texture]").click();
+  await expect(page.locator("#modelFeatDepth"), "a groove is 0.6 deep, as the MCP's").toHaveValue("0.6");
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelFeatureMenu [data-tool=boss]").click();
+  await expect(page.locator("#modelFeatDepth"), "the pocket's depth comes back").toHaveValue("3");
+});
