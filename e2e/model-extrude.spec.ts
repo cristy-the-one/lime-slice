@@ -65,13 +65,16 @@ function bounds(positions: number[]): { min: V; max: V } {
   return { min, max };
 }
 
-async function start(page: Page): Promise<TreeMock> {
+async function start(page: Page, refuseOpen?: (count: number) => boolean): Promise<TreeMock> {
+  let opens = 0;
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: boxSolid().positions, seatMm: 0 } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   const tree = await mockModelTree(page, {
     open: (request) => {
+      opens += 1;
+      if (refuseOpen?.(opens)) return { error: "The second region could not be built" };
       const feature = request.feature as { depth?: number } | undefined;
       const height = feature ? depthOf(feature) : 10;
       return boxSolid([0, 0, 0], [20, 20, height]);
@@ -481,6 +484,38 @@ test("two regions on an empty bed make two objects, and Undo takes them back as 
   await page.keyboard.press("Control+y");
   await expect(objects).toHaveCount(2);
   await expect(page.locator("#modelReadout")).toContainText("Volume");
+});
+
+test("when one of two regions cannot be built, the other object goes too, and Apply again makes both once", async ({ page }) => {
+  let refuse = true;
+  await start(page, (count) => refuse && count === 2);
+  await page.locator("#modelEmptySketch").click();
+  const canvas = page.locator("#model");
+  const box = (await canvas.boundingBox())!;
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await page.locator("[data-sketch-tool=rectangle]").click();
+  for (const dx of [-120, 60]) {
+    await page.mouse.click(centre.x + dx, centre.y);
+    await hud.locator("input").nth(0).fill("10");
+    await hud.locator("input").nth(0).press("Tab");
+    await hud.locator("input").nth(1).fill("10");
+    await hud.locator("input").nth(1).press("Enter");
+  }
+  await page.locator("[data-sketch-tool=select]").click();
+  await page.mouse.move(box.x + 8, box.y + 120);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 8, box.y + box.height - 8, { steps: 4 });
+  await page.mouse.up();
+  await page.keyboard.press("E");
+  await expect(canvas).toHaveAttribute("data-extrude-regions", "2");
+  await page.locator("[data-sketch-apply]").click();
+  await expect(page.locator("#modelReadout")).toContainText("could not be built");
+  await expect(page.locator("#objectList .obj"), "the region that was built is taken back").toHaveCount(0);
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  refuse = false;
+  await page.locator("[data-sketch-apply]").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
 });
 
 test("Auto makes a new object of a sketch beside the part, and the face sketch's new object stays on the face", async ({ page }) => {

@@ -589,19 +589,32 @@ function keptSpline(curve: Extract<Curve, { kind: "spline" }>, t0: number, t1: n
     picked.add(nearest);
   }
   const points = () => [...picked].sort((a, b) => a - b).map((index) => [span[index]![0], span[index]![1]] as Pt);
-  while (picked.size < Math.min(span.length, SPLINE_THROUGH_MAX + 2)) {
+  // Each pass adds the sample farthest off between every two kept points, so a long wave settles in a few passes.
+  for (let pass = 0; pass < 12 && picked.size < Math.min(span.length, SPLINE_THROUGH_MAX + 2); pass += 1) {
     const redrawn = sampleSpline(points(), false);
-    let worst = -1;
-    let worstGap = 0.02;
-    span.forEach((point, index) => {
-      const gap = projectToSpline(redrawn, point)?.distance ?? Infinity;
-      if (gap > worstGap && !picked.has(index)) {
-        worst = index;
-        worstGap = gap;
+    const kept = [...picked].sort((a, b) => a - b);
+    let added = false;
+    for (let k = 1; k < kept.length; k += 1) {
+      let worst = -1;
+      let worstGap = 0.02;
+      // Only the redrawn samples near this stretch can be nearest, so a long wave is not searched end to end.
+      const stretch = span.slice(kept[k - 1]!, kept[k]! + 1);
+      const lo = [Math.min(...stretch.map((p) => p[0])) - 1, Math.min(...stretch.map((p) => p[1])) - 1];
+      const hi = [Math.max(...stretch.map((p) => p[0])) + 1, Math.max(...stretch.map((p) => p[1])) + 1];
+      const near = redrawn.filter((p) => p[0] >= lo[0]! && p[0] <= hi[0]! && p[1] >= lo[1]! && p[1] <= hi[1]!);
+      for (let index = kept[k - 1]! + 1; index < kept[k]!; index += 1) {
+        const gap = near.length >= 2 ? projectToSpline(near, span[index]!)?.distance ?? Infinity : Infinity;
+        if (gap > worstGap) {
+          worst = index;
+          worstGap = gap;
+        }
       }
-    });
-    if (worst < 0) break;
-    picked.add(worst);
+      if (worst >= 0 && picked.size < SPLINE_THROUGH_MAX + 2) {
+        picked.add(worst);
+        added = true;
+      }
+    }
+    if (!added) break;
   }
   return points();
 }

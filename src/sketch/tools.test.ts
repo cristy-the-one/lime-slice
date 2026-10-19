@@ -252,6 +252,9 @@ check("using the same edge again says so", sketchReadout(editor).includes("alrea
   eq("the outer outline is its four sides, not the hole's too", activeSketch(used)!.entities.map((entity) => entity.kind), ["circle", "arc", "line", "line", "line", "line"]);
   used = click(used, [5, 7]);
   eq("and a click on the hole copies the hole", activeSketch(used)!.entities.length, 10);
+  const decagon = { segments: pieces(ring(0, 0, 10, 0, 2 * Math.PI, 10), { source: "outline" as const }), vertices: [] };
+  const sides = click(withRefs(open("use"), decagon), [(10 + 10 * Math.cos(Math.PI / 5)) / 2, (10 * Math.sin(Math.PI / 5)) / 2]);
+  eq("a decagon outline stays ten sides, not a circle", activeSketch(sides)!.entities.map((entity) => entity.kind), Array(10).fill("line"));
 }
 
 editor = open("line");

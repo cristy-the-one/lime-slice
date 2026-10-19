@@ -59,7 +59,8 @@ export function sweepEditOf(op: { kind: string }, root: boolean): SweepPreset | 
     profile: sketchJson(sweep.profile),
     pathSketch: sweep.pathSketch ? sketchJson(sweep.pathSketch) : null,
     path: sweep.path.map(copy),
-    scale: Array.isArray(sweep.scale) ? [...sweep.scale] : sweep.scale,
+    // An older sweep's single scale was its whole size: as one factor per path point it rebuilds the same.
+    scale: Array.isArray(sweep.scale) ? [...sweep.scale] : sweep.scaleAtEnd || sweep.scale === 1 ? sweep.scale : sweep.path.map(() => sweep.scale as number),
     edges: sweep.edges ? [...sweep.edges] : [],
   };
 }
@@ -239,6 +240,7 @@ export function buildSketchSweep(draft: SweepDraft): { op: LoftOp } | { error: s
           ...(draft.pathSketch ? { pathSketch: sketchJson(draft.pathSketch) } : {}),
           path: draft.path.map(copy),
           scale: Array.isArray(draft.scale) ? [...draft.scale] : draft.scale,
+          ...(Array.isArray(draft.scale) ? {} : { scaleAtEnd: true as const }),
           ...(draft.edges && draft.edges.length > 0 ? { edges: [...draft.edges] } : {}),
         },
       },

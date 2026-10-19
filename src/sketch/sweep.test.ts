@@ -134,6 +134,10 @@ if (profile) {
     check("an end scale keeps the start as drawn", near(reachOf(sections[0]), Math.hypot(2, 2)));
     check("and ends at twice the size", near(reachOf(sections.at(-1)), 2 * Math.hypot(2, 2)));
     check("halfway along it is 1.5 times", near(reachOf(sections[1]), 1.5 * Math.hypot(2, 2)));
+    eq("an end scale is marked so", tapered.op.drawing?.sweep?.scaleAtEnd, true);
+    const older = { ...tapered.op, drawing: { ...tapered.op.drawing, sweep: { ...tapered.op.drawing!.sweep!, scaleAtEnd: undefined } } };
+    eq("a sweep from before keeps its whole-size scale on Edit, as one per path point", sweepEditOf(older, false)?.scale, [2, 2, 2]);
+    eq("a marked one keeps its end scale", sweepEditOf(tapered.op, false)?.scale, 2);
   } else check("an end scale sweeps", false);
 
   // A ring keeps its hole along the sweep.

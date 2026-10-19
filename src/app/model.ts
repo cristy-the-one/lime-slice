@@ -2814,16 +2814,25 @@ async function commitSketchExtrude(op: ModelOp, placement: "new" | "on-solid"): 
     const drawing = parts.find((step) => step.sketch)?.sketch;
     const batch: MadeObject[] = [];
     makingBatch = batch;
+    let failed: string | null = null;
     try {
       for (const part of parts) {
         const root = drawing && !part.sketch ? { ...part, sketch: drawing } : part;
-        if (!(await createFeatureSolid(root, pose))) return readoutText || "The solid was not created.";
+        if (!(await createFeatureSolid(root, pose))) {
+          failed = readoutText || "The solid was not created.";
+          break;
+        }
       }
     } finally {
       makingBatch = null;
       if (batch.length > 0) madeBatches = [...madeBatches, batch].slice(-MADE_KEPT);
     }
-    return null;
+    // One region failed: the objects the others made go too, so the sketch can be applied again without copies.
+    if (failed && batch.length > 0) {
+      newObjectStep("undo");
+      readout(failed);
+    }
+    return failed;
   }
   if (editing?.sketch) {
     const run: Editing = { ...editing, featureOp: op };

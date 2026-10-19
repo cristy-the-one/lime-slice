@@ -859,7 +859,7 @@ export function applyConstraint(editor: SketchEditor, action: ConstrainAction): 
   const sketch = activeSketch(editor);
   if (!sketch) return editor;
   const built = applyConstrainAction(sketch, action, editor.selection, editor.constrain.selected);
-  if (built.sketch) return rememberConstraint(editor, built.sketch, built.focus ?? null, null);
+  if (built.sketch) return rememberConstraint(editor, built.sketch, built.focus ?? null, built.hint ?? null);
   if (action === "remove" || !isConstrainTool(action)) {
     return { ...editor, constrain: { ...editor.constrain, note: built.error ?? built.hint ?? null } };
   }

@@ -166,7 +166,10 @@ export function applyConstrainAction(sketch: SketchData, action: ConstrainAction
     if (next !== sketch) return { sketch: next, focus: null };
     // With nothing chosen, the constraints that cannot be met go, so a sketch that conflicts can be freed in one step.
     const unmet = selection.entities.length === 0 && selection.points.length === 0 && selectedDim == null ? constraintStatus(sketch)?.conflicting ?? [] : [];
-    if (unmet.length > 0) return { sketch: dropDimIds(sketch, new Set(unmet)), focus: null };
+    if (unmet.length > 0) {
+      const count = unmet.length === 1 ? "the constraint" : `${unmet.length} constraints`;
+      return { sketch: dropDimIds(sketch, new Set(unmet)), focus: null, hint: `Removed ${count} that could not be met.` };
+    }
     return { error: "Select a constraint, or the geometry it is on." };
   }
   return finishDraft(sketch, fromSelection(sketch, action, selection), false);
@@ -556,13 +559,35 @@ function draftOf(constraint: SketchConstraint | null, error: string): Draft {
 }
 
 function commitAdded(sketch: SketchData, constraint: SketchConstraint, extras: readonly number[], more: readonly SketchConstraint[] = []): ConstrainBuild {
-  let next = addOne(sketch, constraint);
+  // A point put on a curve moves onto it first, so the solve starts met and the curve stays where it is.
+  let next = addOne(constraint.kind === "coincident" ? ontoCurve(sketch, constraint.point, constraint.entity) : sketch, constraint);
   const focus = "value" in constraint ? next.id : null;
   for (const point of extras) next = { sketch: addOne(next.sketch, { id: 0, kind: "fixed", point }).sketch, id: next.id };
   for (const extra of more) next = { sketch: addOne(next.sketch, extra).sketch, id: next.id };
   const solved = solveOrRefuse(sketch, next.sketch);
   if (!solved) return { error: ADD_CONFLICT };
   return { sketch: solved, focus };
+}
+
+/** `point` moved to the nearest place on the line through `entity`, or on its circle. */
+function ontoCurve(sketch: SketchData, point: number, entity: number): SketchData {
+  const at = sketchPoint(sketch, point)?.at;
+  if (!at || sketchPoint(sketch, point)?.fixed) return sketch;
+  let to: Pt | null = null;
+  const ends = lineEnds(sketch, entity);
+  if (ends) {
+    const dir = unit(sub(ends[1], ends[0]));
+    if (dir) {
+      const along = (at[0] - ends[0][0]) * dir[0] + (at[1] - ends[0][1]) * dir[1];
+      to = [ends[0][0] + dir[0] * along, ends[0][1] + dir[1] * along];
+    }
+  } else {
+    const circle = entityCircle(sketch, entity);
+    const dir = circle ? unit(sub(at, circle.centre)) : null;
+    if (circle && dir) to = [circle.centre[0] + dir[0] * circle.radius, circle.centre[1] + dir[1] * circle.radius];
+  }
+  if (!to) return sketch;
+  return { ...sketch, points: sketch.points.map((item) => (item.id === point ? { ...item, at: to! } : item)) };
 }
 
 function addOne(sketch: SketchData, constraint: SketchConstraint): { sketch: SketchData; id: number } {

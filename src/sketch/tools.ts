@@ -1059,15 +1059,19 @@ function onLine(run: readonly Pt[], from: number, to: number): boolean {
 
 /**
  * The circle through every point within `FIT_MM`, from the first, a middle and a late point; null when there is none.
- * Each piece turns at most 40° about the centre, as a tessellated curve does, so a square is not a circle.
+ * Each piece turns at most 20° about the centre and the pieces are near one length, as a tessellated curve's are, so
+ * a square, or a decagon pocket on the face outline, stays straight sides.
  */
 function circleThrough(points: readonly Pt[]): { centre: Pt; radius: number } | null {
   if (points.length < 4) return null;
   const arc = arcFrom3(points[0]!, points[Math.floor(points.length / 3)]!, points[Math.floor((2 * points.length) / 3)]!);
   if (!arc || !(arc.radius < 1e4)) return null;
   if (!points.every((point) => Math.abs(dist(point, arc.centre) - arc.radius) <= FIT_MM)) return null;
-  const most = 2 * arc.radius * Math.sin((20 * Math.PI) / 180);
-  for (let i = 1; i < points.length; i += 1) if (dist(points[i - 1]!, points[i]!) > most) return null;
+  const most = 2 * arc.radius * Math.sin((10 * Math.PI) / 180);
+  const chords = points.slice(1).map((point, i) => dist(points[i]!, point));
+  if (chords.some((chord) => chord > most)) return null;
+  const longest = Math.max(...chords);
+  if (chords.some((chord) => chord < longest * 0.85)) return null;
   return { centre: arc.centre, radius: arc.radius };
 }
 

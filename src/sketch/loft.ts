@@ -226,7 +226,7 @@ export function readLoftDrawing(value: unknown): LoftDrawing | undefined {
       if (!Array.isArray(value.sweep.edges) || value.sweep.edges.some((edge) => typeof edge !== "number" || !Number.isInteger(edge) || edge < 0)) return undefined;
       edges = [...value.sweep.edges];
     }
-    drawing.sweep = { profile, path, scale, ...(pathSketch ? { pathSketch } : {}), ...(edges && edges.length > 0 ? { edges } : {}) };
+    drawing.sweep = { profile, path, scale, ...(value.sweep.scaleAtEnd === true ? { scaleAtEnd: true as const } : {}), ...(pathSketch ? { pathSketch } : {}), ...(edges && edges.length > 0 ? { edges } : {}) };
   }
   if (!drawing.sketches && !drawing.sweep) return undefined;
   return drawing;

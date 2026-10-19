@@ -261,6 +261,20 @@ eq("the sketch that was copied is unchanged", polarCopy(spoke.sketch, [spoke.id]
   check("the trim keeps a spline", !kept.error && !!spline);
   const count = spline && spline.kind === "spline" ? spline.through.length : 0;
   check(`the kept spline has a few points (${count}), not hundreds`, count >= 3 && count <= 40);
+  const kept2 = spline && spline.kind === "spline" ? spline.through.map((id) => sketchPoint(kept.sketch, id)!.at) : [];
+  check("and they lie on the old wave", kept2.every((at) => Math.abs(at[1] - 6 * Math.sin(at[0] / 15)) < 0.5));
+}
+
+// A trim of a long wave stays quick.
+{
+  const controls: [number, number][] = [];
+  for (let x = 0; x <= 600; x += 15) controls.push([x, 8 * Math.sin(x / 9)]);
+  const wave = addSpline(emptySketch(), controls);
+  const cutter = addLine(wave.sketch, [590, -20], [590, 20]);
+  const started = performance.now();
+  const kept = trim(cutter.sketch, wave.id, [595, 8 * Math.sin(595 / 9)]);
+  const took = performance.now() - started;
+  check(`trimming a 600 mm wave takes under a second (${took.toFixed(0)} ms)`, !kept.error && took < 1000);
 }
 if (failed) {
   console.error(`edit: ${failed} failed`);

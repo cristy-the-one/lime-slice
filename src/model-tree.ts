@@ -195,6 +195,8 @@ export interface SweepDrawing {
   pathSketch?: SketchData;
   path: Vec3[];
   scale: number | number[];
+  /** A number `scale` is the size at the path's end. Absent on a sweep from before 3.0.1, where it was the whole size. */
+  scaleAtEnd?: true;
   /** Solid edges the path was picked from, when it was. */
   edges?: number[];
 }

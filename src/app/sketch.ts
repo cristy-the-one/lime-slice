@@ -15,7 +15,7 @@ import { inPlaceArrow } from "../interact/in-place-arrow";
 import { registerContextAction } from "../context-bar";
 import type { ParsedSolid } from "../model-reply";
 import type { FacePlane } from "../model-plane";
-import type { Affine } from "../model-space";
+import { applyPose, inversePose, type Affine } from "../model-space";
 import type { Bounds } from "../mesh-place";
 import type { LoftSection, ModelOp, ProfileLoop } from "../model-tree";
 import type { ModelView } from "../model-view";
@@ -396,7 +396,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let editSession = false;
   /** The outlines a History Edit's feature was applied to: Extrude or Revolve again in the edit picks those regions. */
   let editOutlines: ProfileLoop[] = [];
-  let committing = false;
+  let applying = false;
+  // The Hole panel holds the sketch while its own Apply runs. Two owners, so each has its own flag.
+  let holding = false;
   /** The cards a History Edit opened: its sketch, and a loft's other sections. They go when the edit ends. */
   let editCards: number[] = [];
   /** An Apply just closed the sketch: the readout keeps what the apply said about the solid. */
@@ -407,8 +409,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   window.addEventListener("keydown", (ev) => {
     if (state.stage !== "model" || editor.phase !== "editing" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
-    if (committing) {
+    if (applying || holding) {
       // An Apply is on its way. Its keys wait for it, so an Esc cannot leave the step applied and the sketch open.
+      // A field outside the sketch (Parameters, a search) still takes its own typing.
+      const outside = typingTarget(ev.target);
+      if (outside && !outside.closest(".interact-hud, #sketchCards, .sketch-dims")) return;
       if (ev.key === "Escape" || ev.key === "Enter" || ev.key === "Tab" || ev.key.length === 1) {
         ev.preventDefault();
         ev.stopImmediatePropagation();
@@ -622,7 +627,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     publish("open");
   });
   hud.onCancel(() => {
-    if (committing) return;
+    if (applying || holding) return;
     if (sweep) {
       escapeFeature(endSweep);
       return;
@@ -702,7 +707,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     occupies: () => sketchBusy(editor),
     ownsHistory: () => editor.phase === "editing",
     takePick(x, y) {
-      if (editor.phase !== "editing" || !editor.lookAround || committing || !(loft || sweep)) return false;
+      if (editor.phase !== "editing" || !editor.lookAround || (applying || holding) || !(loft || sweep)) return false;
       if (loft) loftPointer({ phase: "up", x, y });
       else pickSweepAt(x, y);
       return true;
@@ -756,7 +761,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   cards?.addEventListener("click", (ev) => {
     // The card waits while an Apply is on its way, as the keys do.
-    if (committing) return;
+    if (applying || holding) return;
     const target = ev.target instanceof HTMLElement ? ev.target.closest("button") : null;
     if (!(target instanceof HTMLButtonElement)) return;
     const plane = target.dataset.sketchPlane;
@@ -928,7 +933,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const mods = { ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey };
     const history = (ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z" || ev.key === "y" || ev.key === "Y");
     if (!sketchHandlesKey(ev.key, mods) && !history) return;
-    if (committing) {
+    if (applying || holding) {
+      const outside = typingTarget(ev.target);
+      if (outside && !outside.closest(".interact-hud, #sketchCards, .sketch-dims")) return;
       ev.preventDefault();
       ev.stopPropagation();
       return;
@@ -971,7 +978,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }, true);
   host.view.onSketchPointer((ev) => {
     lastClient = { x: ev.x, y: ev.y };
-    if (committing) return;
+    if (applying || holding) return;
     if (editor.phase === "choosing") {
       const hit = chooseAt(ev.x, ev.y);
       editor = { ...editor, hotPlane: hit?.kind === "plane" ? hit.name : null };
@@ -1175,7 +1182,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
    * own sentences alone, so a later sync does not write over "Edit undone." or a volume.
    */
   function paintReadout() {
-    if (keepReadout || committing || host.sketchHolesArmed()) {
+    if (keepReadout || (applying || holding) || host.sketchHolesArmed()) {
       saidLast = false;
       return;
     }
@@ -1942,7 +1949,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) {
     new MutationObserver(() => {
-      if (!bar.dataset.tool || !sketchBusy(editor) || host.sketchHolesArmed() || committing) return;
+      if (!bar.dataset.tool || !sketchBusy(editor) || host.sketchHolesArmed() || (applying || holding)) return;
       if (editor.phase === "choosing") {
         editor = finishSketch(editor);
         publish("open");
@@ -1953,7 +1960,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }).observe(bar, { attributes: true, attributeFilter: ["data-tool"] });
   }
   holdImpl = (on) => {
-    committing = on && sketchBusy(editor);
+    holding = on && sketchBusy(editor);
   };
   forgetImpl = () => {
     if (editor.phase === "off" && editor.pinned.length === 0 && !editSession) return;
@@ -2121,7 +2128,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   async function commitExtrude() {
     const sketch = activeSketch(editor);
-    if (!sketch || !gesture || committing) return;
+    if (!sketch || !gesture || (applying || holding)) return;
     const built = buildSketchExtrude({
       sketch,
       regions: gesture.regions,
@@ -2147,17 +2154,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   /**
-   * Await an Apply. Keys, clicks, and pointer picks wait while it runs (`committing`), so an Esc cannot leave the
+   * Await an Apply. Keys, clicks, and pointer picks wait while it runs (`applying`), so an Esc cannot leave the
    * step applied with the sketch still open. Undefined when the sketch closed meanwhile (Model was left, or the
    * history jumped), so the caller does nothing more.
    */
   async function committed(apply: Promise<string | null>): Promise<string | null | undefined> {
-    committing = true;
+    applying = true;
     let error: string | null;
     try {
       error = await apply;
     } finally {
-      committing = false;
+      applying = false;
     }
     return editor.phase === "editing" ? error : undefined;
   }
@@ -2468,7 +2475,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   async function commitRevolve() {
     const sketch = activeSketch(editor);
-    if (!sketch || !revolve || committing) return;
+    if (!sketch || !revolve || (applying || holding)) return;
     const built = buildSketchRevolve({
       sketch,
       regions: revolve.regions,
@@ -2865,7 +2872,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   async function commitLoft() {
-    if (!loft || committing) return;
+    if (!loft || (applying || holding)) return;
     const built = buildSketchLoft({ picks: freshLoftPicks(), ruled: loft.ruled, mode: resolvedLoftMode() });
     if ("error" in built) {
       loft = { ...loft, note: built.error };
@@ -3004,7 +3011,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   async function commitSweep() {
-    if (!sweep || committing) return;
+    if (!sweep || (applying || holding)) return;
     if (!sweep.profile || !sweep.profileSketch) {
       sweep = { ...sweep, note: "Pick a region to sweep." };
       host.readout(sweep.note);
@@ -3104,7 +3111,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       host.readout(EDGE_MEET);
       return;
     }
-    const extended = extendPath(sweep.path, sweep.check, hit.points);
+    // The view's edges are where the solid stands. The path, like the profile's plane, is in the solid's own frame.
+    const back = inversePose(host.pose());
+    const extended = extendPath(sweep.path, sweep.check, hit.points.map((point) => applyPose(back, point)));
     if ("error" in extended) {
       sweep = { ...sweep, note: extended.error };
       host.readout(extended.error);
@@ -3189,7 +3198,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (sweep && sweep.path.length >= 2) {
       const xyz: number[] = [];
-      for (const point of sweep.path) xyz.push(point[0], point[1], point[2]);
+      // The path is in the solid's own frame, as the op is; the view draws it where the solid stands.
+      for (const point of sweep.path) xyz.push(...applyPose(host.pose(), point));
       strokes.push({ xyz, role: "hint" });
     }
     return strokes;
