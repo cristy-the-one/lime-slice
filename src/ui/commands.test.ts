@@ -140,6 +140,7 @@ eq("/ and Ctrl+F search, but not from a field", [press("/"), press("Ctrl+F"), pr
 eq("Ctrl+F stays the browser's in the G-code pane", press("Ctrl+F", { stage: "gcode", inGcode: true }), null);
 eq("a letter does nothing in a field", ["M", "R", "S", "F", "C", "E", "B", "K", "T", "Y", "I", "A", "V", "1"].map((chord) => press(chord, { typing: true })), Array(14).fill(null));
 eq("tools", ["M", "R", "S", "F", "C", "E", "B", "K"].map((chord) => press(chord)), ["tool-move", "tool-rotate", "tool-scale", "tool-layflat", "tool-section", "edit-supports", "paint-supports", "paint-seam"]);
+eq("S in Model starts a sketch", press("S", { stage: "model" }), "model-sketch");
 eq("camera presets", ["T", "Y", "I"].map((chord) => press(chord)), ["view-top", "view-front", "view-iso"]);
 eq("Ctrl+E exports", press("Ctrl+E"), "export");
 eq("a bare letter ignores Ctrl", press("Ctrl+M"), null);

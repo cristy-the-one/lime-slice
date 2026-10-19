@@ -71,6 +71,8 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-split", label: "Split with a plane", group: "Model", keys: ["D"], when: "model", target: "#modelToolSplit", keywords: "plane" },
   // --- P1: Push/Pull takes P, which Split had. Split is D. P is also the gesture when no model tool is open. ---
   { id: "model-pushpull", label: "Push/Pull", group: "Model", keys: ["P"], when: "model", target: "#modelToolPull", keywords: "push pull face extrude offset move faces" },
+  // --- S2 sketch --- S in Model. S in Prepare is still Scale. ---
+  { id: "model-sketch", label: "Sketch", group: "Model", keys: ["S"], when: "model", target: "#modelToolSketch", keywords: "line rectangle plane draw" },
   { id: "model-fillet", label: "Fillet", group: "Model", keys: ["L"], when: "model", target: "#modelToolFillet", keywords: "round edge" },
   { id: "model-chamfer", label: "Chamfer", group: "Model", keys: ["Shift+L"], when: "model", target: "#modelToolChamfer", keywords: "bevel edge" },
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
@@ -107,7 +109,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "plate-remove", label: "Remove object", group: "Plate", keys: ["Del", "Backspace"], when: "objects", keywords: "delete" },
   { id: "tool-move", label: "Move", group: "Tools", keys: ["M"], target: '#toolRail [data-tool="move"]', keywords: "translate gizmo" },
   { id: "tool-rotate", label: "Rotate", group: "Tools", keys: ["R"], target: '#toolRail [data-tool="rotate"]', keywords: "gizmo" },
-  { id: "tool-scale", label: "Scale", group: "Tools", keys: ["S"], target: '#toolRail [data-tool="scale"]', keywords: "percent gizmo" },
+  { id: "tool-scale", label: "Scale", group: "Tools", keys: ["S"], when: "prepare", target: '#toolRail [data-tool="scale"]', keywords: "percent gizmo" },
   { id: "tool-layflat", label: "Lay flat", group: "Tools", keys: ["F"], target: '#layflat, #toolRail [data-tool="layflat"]', keywords: "bed face" },
   { id: "tool-section", label: "Section", group: "Tools", keys: ["C"], target: '#toolRail [data-tool="section"]', keywords: "clip cut" },
   { id: "edit-supports", label: "Edit supports", group: "Tools", keys: ["E"], target: '#toolRail [data-tool="supports"]', keywords: "tree branch delete prune regrow" },

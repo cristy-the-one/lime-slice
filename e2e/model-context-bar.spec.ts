@@ -65,12 +65,14 @@ async function facePoint(page: Page, want: (normal: number[]) => boolean): Promi
   await expect.poll(async () => {
     const text = (await page.locator("#model").getAttribute("data-faces")) ?? "";
     const box = await page.locator("#model").boundingBox();
+    found = null;
     if (!box || text === "") return "";
     for (const item of text.split(" ").filter(Boolean)) {
       const [, xy, normalText] = item.split(":");
-      const normal = normalText!.split(",").map(Number);
+      if (!xy || !normalText) continue;
+      const normal = normalText.split(",").map(Number);
       if (!want(normal)) continue;
-      const [x, y] = xy!.split(",").map(Number);
+      const [x, y] = xy.split(",").map(Number);
       found = { x: box.x + x!, y: box.y + y! };
       return text;
     }

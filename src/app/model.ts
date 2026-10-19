@@ -26,7 +26,7 @@ import type { ModelPick } from "../model-view";
 import { DAMAGED, decodeSolid, readFingerprint, type ParsedSolid } from "../model-reply";
 import { holeAxis, lastFace, outwardFromMesh, selectedEdges, selectedFaces } from "../model-blend";
 import { throughLength } from "../model-hole";
-import { lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
+import { faceBoundarySegments, lastEdge, nextModelPicks, selectionCountLabel } from "../model-select";
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes } from "../model-check.ts";
@@ -128,6 +128,7 @@ import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, no
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { mountEdgeDrag } from "./edge-drag";
+import { mountSketch, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { apiBase, apiToken, isStepName } from "./settings";
@@ -273,6 +274,10 @@ interface Editing {
 let editing: Editing | null = null;
 /** P2. The idle edge knob. Null until the view is bound. */
 let edgeDrag: { sync(): void; picksChanged(): void; holding(): boolean } | null = null;
+/** --- S2 sketch --- redraws the grid when the solid on screen changes. */
+let sketchUi: { sync(): void } | null = null;
+/** P1's face-drag sync, so a sketch can arm it again on the way out. */
+let syncPullDrag: (() => void) | null = null;
 
 /**
  * A tool's step on screen in place of the open solid's: what a click on a tool's row in History shows, read-only, and
@@ -303,11 +308,20 @@ export function bindModelView() {
   document.querySelector("#modelStep")?.addEventListener("click", () => void runExport());
   // While Place is open, Undo and Redo step its moves; the solid's history waits until it closes.
   document.querySelector("#modelUndo")?.addEventListener("click", () => {
+    // --- S2: an open sketch has its own undo, separate from the solid. ---
+    if (sketchHistoryButtons()) {
+      sketchUndo();
+      return;
+    }
     if (openModelTool() === "place") placeStep("undo");
     else if (openModelTool() === "workplane") workplaneStep("undo");
     else void step("undo");
   });
   document.querySelector("#modelRedo")?.addEventListener("click", () => {
+    if (sketchHistoryButtons()) {
+      sketchRedo();
+      return;
+    }
     if (openModelTool() === "place") placeStep("redo");
     else if (openModelTool() === "workplane") workplaneStep("redo");
     else void step("redo");
@@ -349,6 +363,8 @@ export function bindModelView() {
       syncUndo();
       // P2. A tool opening or closing arms or disarms the idle edge knob.
       edgeDrag?.sync();
+      // --- S2 sketch ---
+      sketchUi?.sync();
     },
     probeNow() {
       if (!pendingProbe) return;
@@ -486,6 +502,9 @@ export function bindModelView() {
       edit: editPull,
       busy: () => busy || jumping,
     });
+    syncPullDrag = () => {
+      pull.sync();
+    };
     setPullLive(() => pull.sync());
   }
   // P2. Hover an edge and drag its knob: a fillet, or a chamfer while Alt is held. No toolbar tool.
@@ -536,6 +555,71 @@ export function bindModelView() {
     params: () => ({}),
   });
   edgeDrag.sync();
+  // --- S2 sketch ---
+  const sketchCanvas = document.querySelector<HTMLCanvasElement>("#model");
+  if (fx.model && sketchCanvas) {
+    sketchUi = mountSketch({
+      view: fx.model,
+      canvas: sketchCanvas,
+      readout,
+      idleReadout() {
+        const solid = viewed();
+        return solid ? `${about(solid)} Pick a face or an edge.` : "";
+      },
+      closeTool() {
+        if (openModelTool()) closeModelTool();
+      },
+      solid: viewed,
+      pose: openPose,
+      origin() {
+        const t = openPose().t;
+        return [t[0], t[1], t[2]];
+      },
+      focus() {
+        const box = openBox();
+        if (!box) return [openPose().t[0], openPose().t[1], openPose().t[2]];
+        return [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
+      },
+      extent() {
+        const box = openBox();
+        if (!box) return 80;
+        return Math.max(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2], 20);
+      },
+      workplane: workplaneOfOpen,
+      faceInfo(face) {
+        const solid = viewed();
+        if (!solid) return null;
+        const own = flatFace(solid, face);
+        const posed = posedFace(own);
+        if (!own || !posed) return null;
+        const mid = faceCentre(solid.positions, solid.triangles, face) ?? own.point;
+        const info = solid.faces.find((item) => item.id === face);
+        return { ref: { index: face, mid, areaMm2: info?.areaMm2 ?? 0 }, plane: posed };
+      },
+      edges() {
+        const solid = viewed();
+        if (!solid) return [];
+        const pose = openPose();
+        return solid.edges.map((edge) => ({ points: posePoints(edge.points, pose) }));
+      },
+      outline(face) {
+        const solid = viewed();
+        if (!solid || face == null) return [];
+        const raw = faceBoundarySegments(solid.positions, solid.triangles).get(face) ?? [];
+        return posePoints(raw, openPose());
+      },
+      pullArmed: pullLiveNow,
+      syncPull() {
+        syncPullDrag?.();
+      },
+      syncEdge() {
+        edgeDrag?.sync();
+      },
+      onHistory() {
+        syncUndo();
+      },
+    });
+  }
   mountModelHistory({
     jump(row) {
       // --- A5. While Fillet or Chamfer takes a step's edges, a history row chooses that step. ---
@@ -1019,6 +1103,8 @@ async function probePull(op: ModelOp) {
 
 /** P1. Face drag is on in Face mode, on an editable solid, when no other tool is open. */
 function pullLiveNow(): boolean {
+  // --- S2: a sketch being chosen or edited owns the left button. ---
+  if (sketchOccupiesView()) return false;
   if (state.stage !== "model" || busy || jumping) return false;
   const tool = openModelTool();
   if (tool && tool !== "pushpull") return false;
@@ -3111,7 +3197,8 @@ async function saveStepFile(bytes: ArrayBuffer, name: string) {
 
 /** P2. The idle edge knob is armed when no other tool is using the view and the solid can be edited. */
 function edgeArmed(): boolean {
-  return state.stage === "model" && !openModelTool() && !(lens && !editing) && !!viewed()?.editable && !busy && !jumping;
+  // --- S2: the edge knob waits while a sketch is open. ---
+  return state.stage === "model" && !openModelTool() && !sketchOccupiesView() && !(lens && !editing) && !!viewed()?.editable && !busy && !jumping;
 }
 
 /** P2. Dry-run a fillet or chamfer on the solid on screen. The shape is drawn by the drag, not by the panel. */
@@ -3232,6 +3319,8 @@ function present(parsed: ParsedSolid, message: string, view: Lens | null = null)
   readout(message);
   // P2. The solid or the tool changed: the edge knob follows.
   edgeDrag?.sync();
+  // --- S2 sketch ---
+  sketchUi?.sync();
   // --- A7 model check --- a queued Check opens after the solid is on screen; one already open measures this solid.
   if (checkQueued) openQueuedCheck();
   else if (openModelTool() === "check") refreshModelCheck();
@@ -3300,6 +3389,14 @@ function objectPose(): Affine {
 /** The pose of the solid on screen: a tool's step where its joins put it, else the open object's. */
 function openPose(): Affine {
   return lens?.pose ?? objectPose();
+}
+
+/** --- S2 --- xyz in the solid's frame, posed into model space. */
+function posePoints(points: ArrayLike<number>, pose: Affine): number[] {
+  if (isIdentity(pose)) return Array.from(points);
+  const out: number[] = [];
+  for (let i = 0; i + 2 < points.length; i += 3) out.push(...applyPose(pose, [points[i]!, points[i + 1]!, points[i + 2]!]));
+  return out;
 }
 
 /** The solid on screen: a tool's step, else the open solid's shown step. Every tool, pick and handle reads this one. */
@@ -3572,13 +3669,25 @@ function syncUndo() {
   const framing = openModelTool() === "workplane";
   // While a step is edited, Cancel is the way back.
   const held = busy || jumping || !tree || !!editing;
+  // --- S2: Undo and Redo step the sketch while one is open. ---
+  const sketchHist = sketchHistoryButtons();
   if (undo) {
-    undo.disabled = held || (placing ? placeUndo.length === 0 && !placeBefore : framing ? wpUndo.length === 0 && !wpBefore : undoNode(tree!) == null);
-    undo.dataset.tip = placing ? "Undo the last move" : framing ? "Undo the last workplane move" : "Undo the last solid edit";
+    if (sketchHist) {
+      undo.disabled = !sketchHist.undo;
+      undo.dataset.tip = "Undo the last sketch edit";
+    } else {
+      undo.disabled = held || (placing ? placeUndo.length === 0 && !placeBefore : framing ? wpUndo.length === 0 && !wpBefore : undoNode(tree!) == null);
+      undo.dataset.tip = placing ? "Undo the last move" : framing ? "Undo the last workplane move" : "Undo the last solid edit";
+    }
   }
   if (redo) {
-    redo.disabled = held || (placing ? placeRedo.length === 0 : framing ? wpRedo.length === 0 : redoNode(tree!) == null);
-    redo.dataset.tip = placing ? "Redo the last move" : framing ? "Redo the last workplane move" : "Redo the last solid edit";
+    if (sketchHist) {
+      redo.disabled = !sketchHist.redo;
+      redo.dataset.tip = "Redo the last sketch edit";
+    } else {
+      redo.disabled = held || (placing ? placeRedo.length === 0 : framing ? wpRedo.length === 0 : redoNode(tree!) == null);
+      redo.dataset.tip = placing ? "Redo the last move" : framing ? "Redo the last workplane move" : "Redo the last solid edit";
+    }
   }
   const stepButton = document.querySelector<HTMLButtonElement>("#modelStep");
   if (stepButton) stepButton.disabled = busy || jumping || !tree;
