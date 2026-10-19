@@ -142,3 +142,5 @@ src/model-features.test.ts
 src/model-repeat.test.ts
 src/model-look.test.ts
 src/section-cap.test.ts
+src/modeling/params.test.ts
+mcp/params.test.ts

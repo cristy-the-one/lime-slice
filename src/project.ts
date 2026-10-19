@@ -36,6 +36,7 @@ import { readSeamPaint } from "./seam-paint.ts";
 import { readPaint } from "./support-paint.ts";
 import type { SiteSpec } from "./support-edits.ts";
 import { readSummary, readThumbnail, summaryForWire, thumbnailForWire, type ProjectSummary, type ProjectThumbnail } from "./project-thumb.ts";
+import { PARAM_NAME } from "./modeling/expr.ts";
 
 export const PROJECT_VERSION = 3;
 
@@ -101,6 +102,12 @@ export interface LimeProject {
    * Omitted when there is none.
    */
   mcpModel?: Record<string, unknown>;
+  /**
+   * --- A6. Named parameters, in evaluation order: a number, or an expression such as "wallH / 2".
+   * Omitted when there are none. Older files keep the numbers under `mcpModel.params`; the MCP
+   * still reads that, and writes this field.
+   */
+  parameters?: Record<string, string | number>;
   /** Read only: the names of objects whose Model history was damaged and left out. */
   unreadHistory?: string[];
   /**
@@ -156,6 +163,8 @@ export function serializeProject(project: LimeProject): string {
     if (project.modelTools?.length) wire.modelTools = shared.slice(objects.length);
     // --- A8. The MCP record rides along, including each object's recipe. ---
     if (project.mcpModel) wire.mcpModel = project.mcpModel;
+    const parameters = parametersForWire(project.parameters);
+    if (parameters) wire.parameters = parameters;
     if (overrides) wire.overrides = overrides;
     if (project.layerActions?.length) wire.layerActions = project.layerActions;
     if (project.printOrder === "sequential") {
@@ -183,6 +192,8 @@ export function serializeProject(project: LimeProject): string {
   if (project.layerActions?.length) wire.layerActions = project.layerActions;
   // --- A8. A one-object file keeps the MCP record too, so a recipe is not dropped on save. ---
   if (project.mcpModel) wire.mcpModel = project.mcpModel;
+  const parameters = parametersForWire(project.parameters);
+  if (parameters) wire.parameters = parameters;
   return JSON.stringify(withPreview(project, wire), null, 2);
 }
 
@@ -348,6 +359,8 @@ function readVersion1(doc: Record<string, unknown>): ProjectResult {
   const actions = readLayerActions(doc.layerActions);
   if (typeof actions === "string") return { ok: false, message: actions };
   if (actions.length > 0) project.layerActions = actions;
+  const parameters = readParameters(doc.parameters);
+  if (parameters) project.parameters = parameters;
   takePreview(doc, project);
   return { ok: true, project };
 }
@@ -382,6 +395,8 @@ function readPlate(doc: Record<string, unknown>): ProjectResult {
   if (modelTools.length > 0) project.modelTools = modelTools;
   if (unreadHistory.length > 0) project.unreadHistory = unreadHistory;
   if (doc.mcpModel && typeof doc.mcpModel === "object" && !Array.isArray(doc.mcpModel)) project.mcpModel = doc.mcpModel as Record<string, unknown>;
+  const parameters = readParameters(doc.parameters);
+  if (parameters) project.parameters = parameters;
   if (doc.overrides !== undefined) {
     const overrides = parseOverrides(doc.overrides);
     if (!overrides.ok) return overrides;
@@ -401,6 +416,27 @@ function readPlate(doc: Record<string, unknown>): ProjectResult {
   }
   takePreview(doc, project);
   return { ok: true, project };
+}
+
+/** Named parameters worth writing. An empty table is omitted, so an older file stays as it was. */
+function parametersForWire(table: Record<string, string | number> | undefined): Record<string, string | number> | undefined {
+  const read = readParameters(table);
+  return read && Object.keys(read).length > 0 ? read : undefined;
+}
+
+/**
+ * A parameter table as the file keeps it. A number is a plain value. A string is an expression.
+ * A bad name or value is left out, and a missing or damaged field does not refuse the file.
+ */
+function readParameters(value: unknown): Record<string, string | number> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string | number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!PARAM_NAME.test(key)) continue;
+    if (typeof raw === "number" && Number.isFinite(raw)) out[key] = raw;
+    else if (typeof raw === "string" && raw.trim()) out[key] = raw;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function takePreview(doc: Record<string, unknown>, project: LimeProject) {

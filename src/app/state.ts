@@ -388,6 +388,11 @@ export const session = {
    * it back. A mesh that replaces the plate, or File > New, clears it.
    */
   mcpModel: undefined as Record<string, unknown> | undefined,
+  /**
+   * --- A6. The open project's parameters, name → number or expression, in evaluation order.
+   * Empty when the project has none. File > New and a mesh that replaces the plate clear it.
+   */
+  parameters: {} as Record<string, string | number>,
   playTimer: 0,
   drag2d: false,
   geomReady: null as { id: number; geom: PreviewGeometry } | null,

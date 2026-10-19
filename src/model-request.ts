@@ -242,52 +242,56 @@ export function probeRequest(key: string, node: NodeId, op: ModelOp, previewMm?:
 /**
  * --- F1. Drop `sketch` before an engine call. An op with no sketch is returned as the same object,
  * so a request that never had one stays byte-for-byte what it was.
+ * --- A6. `exprs` is dropped the same way. An op with neither is still the same object.
  */
 export function withoutSketch(op: ModelOp): ModelOp {
+  let next = op;
   // --- F2. A revolve keeps its sketch the same way an extrude does. ---
   if (op.kind === "extrude" || op.kind === "revolve") {
-    if (!op.sketch) return op;
-    const { sketch: _sketch, ...rest } = op;
-    return rest;
-  }
-  // --- F3. A loft's drawing is the same kind of client field. No drawing leaves the op as it was. ---
-  if (op.kind === "loft") {
-    if (!op.drawing) return op;
-    const { drawing: _drawing, ...rest } = op;
-    return rest;
-  }
-  if (op.kind === "group") {
+    if (op.sketch) {
+      const { sketch: _sketch, ...rest } = op;
+      next = rest;
+    }
+  } else if (op.kind === "loft") {
+    // --- F3. A loft's drawing is the same kind of client field. No drawing leaves the op as it was. ---
+    if (op.drawing) {
+      const { drawing: _drawing, ...rest } = op;
+      next = rest;
+    }
+  } else if (op.kind === "group") {
     let changed = false;
     const steps = op.steps.map((step) => {
-      const next = withoutSketch(step);
-      if (next !== step) changed = true;
-      return next;
+      const child = withoutSketch(step);
+      if (child !== step) changed = true;
+      return child;
     });
-    return changed ? { ...op, steps } : op;
+    if (changed) next = { ...op, steps };
   }
-  return op;
+  if (!next.exprs) return next;
+  const { exprs: _exprs, ...rest } = next;
+  return rest;
 }
 
-/** Put `source`'s sketch back on `stored`. The engine's echo has none. `stored` itself when there is nothing to put back. */
+/** Put `source`'s sketch and expression text back on `stored`. The engine's echo has neither. `stored` itself when there is nothing to put back. */
 export function keepSketch(stored: ModelOp, source: ModelOp): ModelOp {
+  let next = stored;
   // --- F2. The engine's echo of a revolve has no sketch either. ---
   if ((stored.kind === "extrude" || stored.kind === "revolve") && stored.kind === source.kind && source.sketch && !stored.sketch) {
-    return { ...stored, sketch: source.sketch };
-  }
-  // --- F3. The engine's echo of a loft has no drawing either. ---
-  if (stored.kind === "loft" && source.kind === "loft" && source.drawing && !stored.drawing) {
-    return { ...stored, drawing: source.drawing };
-  }
-  if (stored.kind === "group" && source.kind === "group") {
+    next = { ...stored, sketch: source.sketch };
+  } else if (stored.kind === "loft" && source.kind === "loft" && source.drawing && !stored.drawing) {
+    // --- F3. The engine's echo of a loft has no drawing either. ---
+    next = { ...stored, drawing: source.drawing };
+  } else if (stored.kind === "group" && source.kind === "group") {
     let changed = false;
     const steps = stored.steps.map((step, index) => {
-      const next = keepSketch(step, source.steps[index] ?? step);
-      if (next !== step) changed = true;
-      return next;
+      const child = keepSketch(step, source.steps[index] ?? step);
+      if (child !== step) changed = true;
+      return child;
     });
-    return changed ? { ...stored, steps } : stored;
+    if (changed) next = { ...stored, steps };
   }
-  return stored;
+  if (source.exprs && !next.exprs) return { ...next, exprs: source.exprs };
+  return next;
 }
 
 /** Saved nodes with sketches removed. The same array when none of them has one. */

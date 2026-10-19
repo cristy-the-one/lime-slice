@@ -91,9 +91,14 @@ export interface DimLabel {
   text: string;
   at: Pt;
   title: string;
+  /** The expression, when the dimension was not typed as a plain number. */
+  expr?: string;
 }
 
-type DrivingEval = (text: string) => number | null;
+/** A number, a refusal in the evaluator's words, or null when the text is not an expression this hook accepts. */
+export type DrivingResult = number | { error: string } | null;
+
+type DrivingEval = (text: string) => DrivingResult;
 
 let drivingEval: DrivingEval = plainDrivingValue;
 
@@ -106,14 +111,14 @@ export function plainDrivingValue(text: string): number | null {
 }
 
 /**
- * Plan A A6 can replace this with the project's expression evaluator. Until then a driving
- * dimension accepts only a plain number.
+ * The project's expression evaluator. A hook that returns only a number still works.
+ * The app installs one that reads Parameters.
  */
 export function setDrivingEvaluator(evaluate: DrivingEval): void {
   drivingEval = evaluate;
 }
 
-export function drivingValue(text: string): number | null {
+export function drivingValue(text: string): DrivingResult {
   return drivingEval(text);
 }
 
@@ -176,7 +181,7 @@ function finishDraft(sketch: SketchData, built: Draft, strict: boolean): Constra
   return { hint: built.hint ?? built.error };
 }
 
-export function commitDriving(sketch: SketchData, id: number, value: number): ConstrainBuild {
+export function commitDriving(sketch: SketchData, id: number, value: number, expr?: string | null): ConstrainBuild {
   const current = parseConstraints(sketch).find((item) => item.id === id);
   if (!current || !("value" in current)) return { error: "That label is not a driving dimension." };
   if (!Number.isFinite(value)) return { error: "Type a number." };
@@ -184,7 +189,14 @@ export function commitDriving(sketch: SketchData, id: number, value: number): Co
     return { error: "Type a distance greater than zero." };
   }
   if (current.kind === "distance" && value < 0) return { error: "Type a distance of zero or more." };
-  const dims = (sketch.dims ?? []).map((dim) => (dim.id === id ? { ...dim, value } : dim));
+  const kept = expr != null && plainDrivingValue(expr) == null && expr.trim() ? expr.trim() : "";
+  const dims = (sketch.dims ?? []).map((dim) => {
+    if (dim.id !== id) return dim;
+    const next: Dimension = { ...dim, value };
+    if (kept) next.expr = kept;
+    else delete next.expr;
+    return next;
+  });
   const solved = solveKeeping(sketch, { ...sketch, dims });
   return { sketch: solved, focus: null };
 }
@@ -195,7 +207,9 @@ export function dimensionLabels(sketch: SketchData): DimLabel[] {
     if (!("value" in constraint)) continue;
     const at = labelAnchor(sketch, constraint);
     if (!at) continue;
-    labels.push({ id: constraint.id, text: labelText(constraint), at, title: labelTitle(constraint) });
+    const raw = sketch.dims?.find((dim) => dim.id === constraint.id);
+    const expr = typeof raw?.expr === "string" && raw.expr.trim() ? raw.expr : undefined;
+    labels.push({ id: constraint.id, text: labelText(constraint), at, title: labelTitle(constraint), ...(expr ? { expr } : {}) });
   }
   return labels;
 }

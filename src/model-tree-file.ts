@@ -43,11 +43,16 @@ export interface SavedTreeBody {
   current: NodeId;
   committed: NodeId;
   nextId: NodeId;
+  /**
+   * --- A6. Expressions on a new solid's primitive root. Absent on a STEP or feature root,
+   * and on a primitive whose sizes were all typed as numbers. A bad value is left out.
+   */
+  rootExprs?: Record<string, string>;
 }
 
-/** The tree without its root, to give it another. */
-export function treeBody({ nodes, current, committed, nextId }: SavedTreeBody): SavedTreeBody {
-  return { nodes, current, committed, nextId };
+/** The tree without its root, to give it another. `rootExprs` rides along when the primitive has any. */
+export function treeBody({ nodes, current, committed, nextId, rootExprs }: SavedTreeBody): SavedTreeBody {
+  return { nodes, current, committed, nextId, ...(rootExprs && Object.keys(rootExprs).length > 0 ? { rootExprs } : {}) };
 }
 
 /**
@@ -181,7 +186,9 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
   if (value.rootPrimitive != null) {
     // A primitive the app would not build is as damaged as a missing STEP: the part opens from its mesh.
     const solid = value.rootStep === undefined ? readPrimitive(value.rootPrimitive) : undefined;
-    return solid && primitiveMesh(solid).length > 0 ? { ...body, rootPrimitive: solid } : null;
+    if (!solid || primitiveMesh(solid).length === 0) return null;
+    const rootExprs = readExprs(value.rootExprs);
+    return { ...body, rootPrimitive: solid, ...(rootExprs ? { rootExprs } : {}) };
   }
   if (value.rootStep === undefined) return null;
   return { ...body, rootStep: value.rootStep };
@@ -208,8 +215,26 @@ function readNode(value: unknown): SavedNode | null {
   };
 }
 
-/** An op as the engine stores it. Fields the engine defaults may be absent, as there. */
+/** An op as the engine stores it, plus its expression text when that text is a record of strings. */
 function readOp(value: unknown): SavedOp | undefined {
+  const op = readOpBody(value);
+  if (!op || !isRecord(value)) return op;
+  const exprs = readExprs(value.exprs);
+  return exprs ? { ...op, exprs } : op;
+}
+
+/** Field id → expression. Anything else is dropped, and the op still opens. */
+function readExprs(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof key === "string" && key && typeof raw === "string" && raw.trim()) out[key] = raw;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** An op as the engine stores it. Fields the engine defaults may be absent, as there. */
+function readOpBody(value: unknown): SavedOp | undefined {
   if (!isRecord(value)) return undefined;
   const origin = vec(value.origin);
   switch (value.kind) {

@@ -14,6 +14,7 @@ import type { SliceResponse } from "./state";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
 import { confirmDiscard, markProjectDirty } from "../project-dirty";
+import { noteParametersBuilt } from "./model.ts";
 import { setProjectTitle } from "./project-title";
 import { pushToast } from "../ui/toasts";
 import { clearEdits } from "../support-edit-list";
@@ -42,6 +43,8 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     setProjectTitle(name);
     // --- A8. A mesh that replaces the plate is not the project whose recipe was showing. ---
     session.mcpModel = undefined;
+    session.parameters = {};
+    noteParametersBuilt();
   }
   state.mesh = { name, bytes };
   state.error = "";

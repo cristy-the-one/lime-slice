@@ -120,7 +120,7 @@ export function editedOp(tree: ModelTree, id: NodeId): ModelOp | null {
   const node = tree.nodes.get(id);
   if (node?.op) return node.op;
   if (!node) return null;
-  if (tree.root.kind === "primitive") return { kind: "root", ...tree.root.solid };
+  if (tree.root.kind === "primitive") return { kind: "root", ...tree.root.solid, ...(tree.root.exprs ? { exprs: tree.root.exprs } : {}) };
   if (tree.root.kind === "feature") return tree.root.op;
   return null;
 }
@@ -305,6 +305,8 @@ export interface EditPanel {
   // --- end A3 ---
   // --- A4. The choices a pattern or mirror group reopens with, including the steps it repeats. ---
   repeat?: RepeatChoices;
+  /** --- A6. Expression text for the fields this panel fills. --- */
+  exprs?: Record<string, string>;
 }
 
 /**
@@ -312,6 +314,11 @@ export interface EditPanel {
  * `center`. Numbers come back into model space by `fromSolidOp`, so an untouched panel sends the stored op again.
  */
 export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
+  const panel = panelForEdit(op, pose, center);
+  return op.exprs && Object.keys(op.exprs).length > 0 ? { ...panel, exprs: { ...op.exprs } } : panel;
+}
+
+function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
   switch (op.kind) {
     case "root":
       return { tool: "create", fields: sizeFields(op), primitive: op.primitive, ...(op.primitive === "polygon" ? { flats: op.flats ?? false } : {}) };

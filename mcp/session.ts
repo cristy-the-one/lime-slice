@@ -94,6 +94,23 @@ const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the
  * Whether a tool can change what the autosave holds: the plate, its objects, their histories and paint. Settings,
  * slices, exports, and machines are not in it, so they never cost a save.
  */
+/** The parameter table as `.lime` writes it. Empty is omitted. */
+function parametersForSave(table: Record<string, string | number>): Record<string, string | number> | undefined {
+  const read = readParamText(table);
+  return Object.keys(read).length > 0 ? read : undefined;
+}
+
+/** Names the file can keep: a finite number, or expression text. */
+function readParamText(value: Record<string, unknown>): Record<string, string | number> {
+  const out: Record<string, string | number> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (!PARAM_NAME.test(key)) continue;
+    if (typeof raw === "number" && Number.isFinite(raw)) out[key] = raw;
+    else if (typeof raw === "string" && raw.trim()) out[key] = raw;
+  }
+  return out;
+}
+
 function changesPlate(name: string): boolean {
   if (name === "model_export_step" || name === "model_check" || name === "model_params" || name === "model_define") return false;
   return /^(model_|object_|plate_|paint_|workplane_|support_edit|reinforce_|modifier_|range_|override_)/.test(name) || name === "solid_new" || name === "mesh_import" || name === "project_open" || name === "project_create";
@@ -551,8 +568,13 @@ export class Session {
   clearanceMm = 0;
   gantryMm = 0;
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
-  /** Names model ops may use in place of numbers. Set with model_params; saved with the project's recipes. */
+  /** Names model ops may use in place of numbers. Set with model_params; the evaluated values. */
   params: Record<string, number> = {};
+  /**
+   * --- A6. The same table as typed: a number, or an expression. Saved as the project's `parameters`.
+   * `params` is this table evaluated, which is what ops and `model_params` return.
+   */
+  private paramText: Record<string, string | number> = {};
   /** Parts model_define stored, which an op list places with {kind: "use"}. */
   parts = new Map<string, PartDef>();
   /**
@@ -1210,6 +1232,7 @@ export class Session {
       const note = obj ? await this.adoptHistory(obj, row.modelTree) : null;
       if (note) historyNotes.push(note);
     }
+    this.adoptParameters(parsed.project);
     this.adoptMcpModel(parsed.project.mcpModel);
     const skipped = this.notSliced();
     return {
@@ -1493,6 +1516,9 @@ export class Session {
     const mcpModel = this.mcpModelRecord();
     if (mcpModel) doc.mcpModel = mcpModel;
     else delete doc.mcpModel;
+    const parameters = parametersForSave(this.paramText);
+    if (parameters) doc.parameters = parameters;
+    else delete doc.parameters;
     const tools = this.toolsOffPlate.flatMap((tool) => {
       const modelTree = this.savedModelTree(tool);
       return modelTree ? [{ id: tool.id, name: tool.name, modelTree }] : [];
@@ -4261,7 +4287,6 @@ export class Session {
     const recipes: Record<string, unknown> = {};
     for (const obj of this.objects) if (obj.recipe) recipes[obj.id] = { recipe: obj.recipe, ...(obj.buildLog ? { buildLog: obj.buildLog } : {}) };
     const record = {
-      ...(Object.keys(this.params).length ? { params: { ...this.params } } : {}),
       ...(this.parts.size ? { parts: Object.fromEntries(this.parts) } : {}),
       ...(Object.keys(recipes).length ? { recipes } : {}),
     };
@@ -4272,10 +4297,6 @@ export class Session {
   private adoptMcpModel(value: Record<string, unknown> | undefined): void {
     this.parts.clear();
     if (!value) return;
-    const params = value.params;
-    if (params && typeof params === "object") {
-      for (const [key, n] of Object.entries(params)) if (PARAM_NAME.test(key) && typeof n === "number" && Number.isFinite(n)) this.params[key] = n;
-    }
     const parts = value.parts;
     if (parts && typeof parts === "object") {
       for (const [name, part] of Object.entries(parts)) {
@@ -4319,18 +4340,65 @@ export class Session {
 
   /** Session parameters: names model ops may use in place of numbers, as text such as "wallH + 2". */
   private paramsTool(input: Record<string, unknown>): Record<string, unknown> {
-    if (input.clear === true) this.params = {};
     const set = (input.set ?? {}) as Record<string, unknown>;
-    const merged = this.mergeParams(set);
+    const next: Record<string, string | number> = input.clear === true ? {} : { ...this.paramText };
+    for (const [name, value] of Object.entries(set)) {
+      if (!PARAM_NAME.test(name)) return { ok: false, reason: `"${name}" is not a parameter name. Use letters, digits, and underscores.` };
+      next[name] = typeof value === "number" && Number.isFinite(value) ? value : String(value);
+    }
+    const merged = this.evaluateParams(next);
     if ("reason" in merged) return { ok: false, reason: merged.reason };
+    this.paramText = next;
     this.params = merged;
     return { ok: true, params: { ...this.params } };
   }
 
-  /** `set` evaluated in order on top of the session's parameters: a later name may use an earlier one. */
+  /**
+   * The project's parameter table. `parameters` wins. An older file's `mcpModel.params` is the
+   * fallback, and those values are numbers.
+   */
+  private adoptParameters(project: { parameters?: Record<string, string | number>; mcpModel?: Record<string, unknown> }): void {
+    this.params = {};
+    this.paramText = {};
+    const top = project.parameters;
+    if (top && typeof top === "object" && !Array.isArray(top)) {
+      this.paramText = readParamText(top);
+    } else {
+      const legacy = project.mcpModel?.params;
+      if (legacy && typeof legacy === "object" && !Array.isArray(legacy)) {
+        const numbers: Record<string, number> = {};
+        for (const [key, n] of Object.entries(legacy as Record<string, unknown>)) {
+          if (PARAM_NAME.test(key) && typeof n === "number" && Number.isFinite(n)) numbers[key] = n;
+        }
+        this.paramText = numbers;
+      }
+    }
+    const merged = this.evaluateParams(this.paramText);
+    this.params = "reason" in merged ? {} : merged;
+  }
+
+  /**
+   * A call's `params` evaluated in order on top of the session's numbers. A later name may use an
+   * earlier one. The session table is unchanged.
+   */
   private mergeParams(set: Record<string, unknown>): Record<string, number> | { reason: string } {
     const out: Record<string, number> = { ...this.params };
     for (const [name, value] of Object.entries(set)) {
+      if (!PARAM_NAME.test(name)) return { reason: `"${name}" is not a parameter name. Use letters, digits, and underscores.` };
+      try {
+        out[name] = typeof value === "number" ? value : evaluate(String(value), out);
+      } catch (err) {
+        return { reason: `${name}: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      if (!Number.isFinite(out[name])) return { reason: `${name} is not a finite number.` };
+    }
+    return out;
+  }
+
+  /** The whole table, in order. The first bad row refuses the set and changes nothing. */
+  private evaluateParams(table: Record<string, string | number>): Record<string, number> | { reason: string } {
+    const out: Record<string, number> = {};
+    for (const [name, value] of Object.entries(table)) {
       if (!PARAM_NAME.test(name)) return { reason: `"${name}" is not a parameter name. Use letters, digits, and underscores.` };
       try {
         out[name] = typeof value === "number" ? value : evaluate(String(value), out);
