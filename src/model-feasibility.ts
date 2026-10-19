@@ -44,6 +44,8 @@ export type ProbeView =
       failedStep?: number;
       /** Steps of a group whose tool missed the solid. */
       skipped?: number;
+      /** How many steps the group has, when some of them missed. */
+      steps?: number;
       measure?: ProbeMeasure & { before: ProbeMeasure };
       /** Hollows and loose pieces, in the solid's frame. Drawn only when the reply named them. */
       located?: LocatedBox[];
@@ -79,7 +81,8 @@ function readMeasure(value: unknown): ProbeMeasure | null {
   return { volumeMm3, solids: solids as number, shells: shells as number };
 }
 
-export function probeFromBody(body: { ok?: unknown; error?: unknown; maxMm?: unknown; volumeMm3?: unknown; solids?: unknown; shells?: unknown; before?: unknown; failedStep?: unknown; skipped?: unknown; voids?: unknown; pieces?: unknown }): ProbeView {
+/** `steps`: how many steps a probed group has, so a note can say how many of them missed. */
+export function probeFromBody(body: { ok?: unknown; error?: unknown; maxMm?: unknown; volumeMm3?: unknown; solids?: unknown; shells?: unknown; before?: unknown; failedStep?: unknown; skipped?: unknown; voids?: unknown; pieces?: unknown }, steps?: number): ProbeView {
   const failedStep = Number.isInteger(body.failedStep) ? (body.failedStep as number) : undefined;
   const skipped = Number.isInteger(body.skipped) ? (body.skipped as number) : undefined;
   // --- A7 model check --- present only when the reply named a box, so an ordinary probe stays the same object.
@@ -88,7 +91,7 @@ export function probeFromBody(body: { ok?: unknown; error?: unknown; maxMm?: unk
   if (body.ok === true) {
     const after = readMeasure(body);
     const before = readMeasure(body.before);
-    const extra = skipped != null ? { skipped } : {};
+    const extra = skipped != null ? { skipped, ...(skipped > 0 && steps != null ? { steps } : {}) } : {};
     return after && before ? { phase: "done", ok: true, measure: { ...after, before }, ...extra, ...where } : { phase: "done", ok: true, ...extra, ...where };
   }
   const error = typeof body.error === "string" && body.error.length > 0 ? body.error : "This does not fit.";
@@ -150,7 +153,11 @@ const FITS: Record<ProbedTool, string> = {
 
 export function probeNote(tool: ProbedTool, probe: ProbeView): { text: string; bad: boolean } | null {
   if (probe?.phase === "checking") return { text: CHECKING[tool], bad: false };
-  if (probe?.phase === "done" && probe.ok) return { text: FITS[tool], bad: false };
+  if (probe?.phase === "done" && probe.ok) {
+    // --- D20. Copies or grooves that miss the part are left out, and the note says how many.
+    const missed = probe.skipped && probe.steps ? ` ${probe.skipped} of ${probe.steps} steps miss the part and are left out.` : "";
+    return { text: `${FITS[tool]}${missed}`, bad: false };
+  }
   if (probe?.phase === "done" && !probe.ok) {
     const reason = plainModelError(probe.error ?? "This does not fit.", tool);
     const sentence = reason.endsWith(".") ? reason : `${reason}.`;

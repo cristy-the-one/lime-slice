@@ -56,6 +56,22 @@ eq(
   probeFromBody({ ok: true, volumeMm3: 800, solids: 1, shells: 1, before: { volumeMm3: 1000, solids: 1, shells: 1 }, skipped: 1 }),
   { phase: "done", ok: true, measure: { volumeMm3: 800, solids: 1, shells: 1, before: { volumeMm3: 1000, solids: 1, shells: 1 } }, skipped: 1 },
 );
+// --- D20. The note says how many steps of a group missed the part.
+eq(
+  "a pattern whose copies partly miss says how many",
+  probeNote("pattern", probeFromBody({ ok: true, volumeMm3: 800, solids: 1, shells: 1, before: { volumeMm3: 1000, solids: 1, shells: 1 }, skipped: 2 }, 6)),
+  { text: "This pattern changes the solid. 2 of 6 steps miss the part and are left out.", bad: false },
+);
+eq(
+  "a group that misses nowhere says only that it fits",
+  probeNote("pattern", probeFromBody({ ok: true, skipped: 0 }, 6)),
+  { text: "This pattern changes the solid.", bad: false },
+);
+eq(
+  "the engine's refusal of a group that misses everywhere is the note",
+  probeNote("pattern", probeFromBody({ ok: false, error: "None of its 6 steps changes the part." }, 6)),
+  { text: "None of its 6 steps changes the part.", bad: true },
+);
 eq(
   "a failed probe keeps the void it named",
   probeFromBody({ ok: false, error: "This would seal off a hollow inside the part.", voids: [{ min: [2, 2, 2], max: [8, 8, 6] }] }),

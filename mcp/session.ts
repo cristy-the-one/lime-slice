@@ -3737,7 +3737,7 @@ export class Session {
       if (lost) return lost;
       throw err;
     }
-    const view = probeFromBody(reply);
+    const view = probeFromBody(reply, baked.op.kind === "group" ? baked.op.steps.length : undefined);
     this.lastPreview = reply.preview && typeof reply.preview === "object" ? rememberSolid(reply.preview as Record<string, unknown>) : null;
     const note = probeNote(tool, view);
     // --- A9. A group probe names the step that failed, counting from 1. ---

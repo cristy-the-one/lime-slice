@@ -550,6 +550,24 @@ pub fn set_group_budget(budget: Duration) {
 thread_local! {
     /// When the new group being built on this thread must stop; none outside an Apply or a probe.
     static GROUP_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// --- D20. A group built for an Apply, a probe or an edited step, not one replayed: it is refused when every step misses.
+    static NEW_GROUP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks the op of one Apply, probe or edit as new while it is built, and clears the mark however the call ends.
+struct NewGroup;
+
+impl NewGroup {
+    fn start() -> NewGroup {
+        NEW_GROUP.set(true);
+        NewGroup
+    }
+}
+
+impl Drop for NewGroup {
+    fn drop(&mut self) {
+        NEW_GROUP.set(false);
+    }
 }
 
 /// Holds the group deadline for one Apply or probe, and clears it however the call ends.
@@ -1833,6 +1851,7 @@ impl Store {
                 let tool = self.join_tool(&key, &op.op)?;
                 let from = doc_in(&mut self.docs, &key)?.shape(parent);
                 let _budget = GroupBudget::start();
+                let _new = NewGroup::start();
                 build(from, op, false, tool, &steps).map_err(Failure::from)?
             }
         };
@@ -1932,6 +1951,7 @@ impl Store {
             })
             .and_then(|(resolved, tool, found)| {
                 let _budget = GroupBudget::start();
+                let _new = NewGroup::start();
                 build(from, resolved, true, tool, &found)
             });
         match result {
@@ -2173,6 +2193,7 @@ impl Store {
             None => {
                 let tool = self.join_tool(key, &op.op)?;
                 let from = doc_in(&mut self.docs, key)?.shape(parent);
+                let _new = NewGroup::start();
                 build(from, op, false, tool, &steps).map_err(Failure::from)
             }
         }
@@ -3221,7 +3242,16 @@ fn build_group(
             Err(fail) => return Err(step_failed(index, count, fail.message, fail.max_mm)),
         }
     }
-    // Every step missed: the group keeps the solid it started from. A copy, so the parent keeps its own.
+    // --- D20. A new group that changes nothing is refused: Apply would store a step that does nothing.
+    if current.is_none() && NEW_GROUP.get() {
+        let message = if count == 1 {
+            "Its one step does not change the part.".to_owned()
+        } else {
+            format!("None of its {count} steps changes the part.")
+        };
+        return Err(BuildFail::plain(message));
+    }
+    // Every step of a replayed group missed: it keeps the solid it started from. A copy, so the parent keeps its own.
     let kept = match current {
         Some(kept) => kept,
         None => {

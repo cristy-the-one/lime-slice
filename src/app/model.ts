@@ -1182,7 +1182,7 @@ async function sendProbe(serial: number, key: string, tree: string, node: NodeId
     }
   }
   const body = await treeCall(tree, node, probeRequest(tree, node, op, state.stepTolerance));
-  const view = probeFromBody(body);
+  const view = probeFromBody(body, op.kind === "group" ? op.steps.length : undefined);
   if (typeof body.ok === "boolean") remember(key, view);
   // The shape the check built, as Apply would commit it: the engine keeps what it meshed for it, so Apply meshes nothing again.
   const shape = body.ok === true && body.preview && typeof body.preview === "object" ? decodeSolid(body.preview as Body) : null;
