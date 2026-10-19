@@ -49,7 +49,7 @@ import type { ColorMode } from "../src/colors.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { orderFields, sequentialClearance, settingsRules, tallestLast, type PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
-import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
+import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, workplaneIn, workplaneOwn, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
 import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
 import { plateFileIsVersion2 } from "../src/plate.ts";
 import { advanceFor, builtinLibrary, adoptProfile, enginePrinter, fileFromSelection, heatFor, parseMachineFile, serializeMachineFile, setAdvance, setFlow, setGcode, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
@@ -3393,25 +3393,33 @@ export class Session {
     return { reason: empty };
   }
 
+  /**
+   * --- D24. A frame is typed and answered in model space, and kept in the part's own frame, as the app and the file keep
+   * it, so it moves with the part when model_place moves the part.
+   */
   private async workplaneSet(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const source = input.source === "global" || input.source === "bed" || input.source === "face" ? input.source : "face";
     const origin = Array.isArray(input.origin) && input.origin.length >= 3 ? input.origin.slice(0, 3) as [number, number, number] : null;
     const turn = Array.isArray(input.turn) && input.turn.length >= 3 ? input.turn.slice(0, 3) as [number, number, number] : null;
+    const answer = () => {
+      const plane = this.typedPlane(obj);
+      return { ok: true, source: plane.source, origin: plane.origin, turn: plane.turn };
+    };
     if (origin && turn && origin.every((value) => typeof value === "number") && turn.every((value) => typeof value === "number")) {
-      obj.workplane = { source, origin, turn };
-      return { ok: true, source: obj.workplane.source, origin: obj.workplane.origin, turn: obj.workplane.turn };
+      obj.workplane = workplaneOwn({ source, origin, turn }, obj.modelPose);
+      return answer();
     }
     if (source === "global") {
       obj.workplane = { ...GLOBAL_WORKPLANE };
-      return { ok: true, source: obj.workplane.source, origin: obj.workplane.origin, turn: obj.workplane.turn };
+      return answer();
     }
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (source === "bed") {
-      // --- D24. Ops are typed in model space, so a moved part's planes are read there too.
+      // Under the middle of the part as it stands, W up in model space.
       const box = obj.solid ? (isIdentity(obj.modelPose) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, obj.modelPose).positions)) : { min: [0, 0, 0], max: [0, 0, 0] };
-      obj.workplane = workplaneOnBed(box);
-      return { ok: true, source: obj.workplane.source, origin: obj.workplane.origin, turn: obj.workplane.turn };
+      obj.workplane = workplaneOwn(workplaneOnBed(box), obj.modelPose);
+      return answer();
     }
     const faceIndex = Number(input.faceIndex);
     const face = obj.solid?.faces[faceIndex];
@@ -3419,8 +3427,8 @@ export class Session {
     if (!face.normal || !obj.solid) return { ok: false, reason: CURVED_FACE };
     const plane = facePlane(obj.solid.positions, obj.solid.triangles, faceIndex, face.normal);
     if (!plane) return { ok: false, reason: CURVED_FACE };
-    obj.workplane = workplaneOnFace({ point: applyPose(obj.modelPose, plane.point), normal: turnDir(obj.modelPose, plane.normal) });
-    return { ok: true, source: obj.workplane.source, origin: obj.workplane.origin, turn: obj.workplane.turn };
+    obj.workplane = workplaneOnFace(plane);
+    return answer();
   }
 
   private printUp(obj: PlateObject): Record<string, unknown> {
@@ -3482,9 +3490,10 @@ export class Session {
       const at = spec.at as { u?: number; v?: number } | undefined;
       let origin: [number, number, number];
       let axis: [number, number, number];
-      if (at && typeof at.u === "number" && typeof at.v === "number" && !isGlobalFrame(obj.workplane)) {
-        origin = planePoint(obj.workplane, [at.u, at.v, 0]);
-        axis = drillDown(obj.workplane);
+      const typedIn = this.typedPlane(obj);
+      if (at && typeof at.u === "number" && typeof at.v === "number" && !isGlobalFrame(typedIn)) {
+        origin = planePoint(typedIn, [at.u, at.v, 0]);
+        axis = drillDown(typedIn);
       } else if (at && typeof at.u === "number" && typeof at.v === "number") {
         origin = [at.u, at.v, obj.solid?.bounds.max[2] ?? 0];
         axis = [0, 0, -1];
@@ -3662,7 +3671,7 @@ export class Session {
       const booleanOp = spec.op === "fuse" || spec.op === "common" ? spec.op : "cut";
       const local = primitiveFrom(spec, "box");
       if ("reason" in local) return local;
-      const solid = planePrimitive(local, obj.workplane);
+      const solid = planePrimitive(local, this.typedPlane(obj));
       const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid }, obj.modelPose);
       return { op, typed: { kind: "boolean", op: booleanOp, ...solid } };
     }
@@ -3933,7 +3942,7 @@ export class Session {
    */
   private expandContext(obj: PlateObject): ExpandContext {
     // --- D24. A moved part is read in model space, as the app reads it, since every op goes through toSolidOp once.
-    if (obj.solid && !isIdentity(obj.modelPose)) return featureExpandContext(featureSolidInModel(obj.solid, obj.modelPose), obj.workplane);
+    if (obj.solid && !isIdentity(obj.modelPose)) return featureExpandContext(featureSolidInModel(obj.solid, obj.modelPose), this.typedPlane(obj));
     // --- A3 composite features: one context builder for the session and the panel. ---
     return expandContextFromSolid(
       obj.solid ? { positions: obj.solid.positions, triangles: obj.solid.triangles, faces: obj.solid.faces as FrameFace[] } : null,
@@ -3965,7 +3974,10 @@ export class Session {
    */
   private profilePlane(obj: PlateObject, spec: Record<string, unknown>): { origin: [number, number, number]; turn: [number, number, number] } | { reason: string } {
     if (spec.origin !== undefined || spec.turn !== undefined) return { origin: readVec3(spec.origin, [0, 0, 0]), turn: readVec3(spec.turn, [0, 0, 0]) };
-    if (spec.face === undefined && spec.faceIndex === undefined) return { origin: [...obj.workplane.origin], turn: [...obj.workplane.turn] };
+    if (spec.face === undefined && spec.faceIndex === undefined) {
+      const plane = this.typedPlane(obj);
+      return { origin: [...plane.origin], turn: [...plane.turn] };
+    }
     const frame = faceFrame(spec, this.expandContext(obj));
     if ("reason" in frame) return frame;
     const shift = anchorOf(spec.from, frame.extent);
@@ -3978,7 +3990,7 @@ export class Session {
     const local = primitiveFrom(raw, "box");
     if ("reason" in local) return local;
     const op = raw.op === "fuse" || raw.op === "common" ? raw.op : "cut";
-    return { op, spec: planePrimitive(local, obj.workplane) };
+    return { op, spec: planePrimitive(local, this.typedPlane(obj)) };
   }
 
   /**
@@ -4349,9 +4361,19 @@ export class Session {
     return box;
   }
 
+  /**
+   * --- D24. The workplane in model space, where ops are typed. It is stored in the part's own frame, as the app and
+   * the file keep it, so it moves with the part when model_place moves the part.
+   */
+  private typedPlane(obj: PlateObject): Workplane {
+    // Global is model space itself, on any pose.
+    if (isIdentity(obj.modelPose) || isGlobalFrame(obj.workplane)) return obj.workplane;
+    return workplaneIn(obj.workplane, obj.modelPose);
+  }
+
   /** A part-frame point in the object's workplane, the frame its ops are typed in. */
   private typedPoint(obj: PlateObject, p: [number, number, number]): [number, number, number] {
-    const plane = obj.workplane;
+    const plane = this.typedPlane(obj);
     if (isGlobalFrame(plane)) return p;
     const m = eulerOrient(plane.turn[0], plane.turn[1], plane.turn[2]);
     const d = [p[0] - plane.origin[0], p[1] - plane.origin[1], p[2] - plane.origin[2]];
@@ -4933,8 +4955,9 @@ export class Session {
       return { ok: false, reason: "Name two points, or two faces from the solid." };
     }
     const frame = input.frame === "workplane" ? "workplane" : "model";
-    const left = frame === "workplane" ? localPoint(obj.workplane, a as [number, number, number]) : a as [number, number, number];
-    const right = frame === "workplane" ? localPoint(obj.workplane, b as [number, number, number]) : b as [number, number, number];
+    const plane = this.typedPlane(obj);
+    const left = frame === "workplane" ? localPoint(plane, a as [number, number, number]) : a as [number, number, number];
+    const right = frame === "workplane" ? localPoint(plane, b as [number, number, number]) : b as [number, number, number];
     return this.span(left, right, frame);
   }
 

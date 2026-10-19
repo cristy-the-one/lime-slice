@@ -357,11 +357,12 @@ const still = await pocketSteps(null, "pocket-still.lime");
 const moved = await pocketSteps({ x: 40, y: -15, z: 5, turnZ: 90 }, "pocket-moved.lime");
 check("a pocket on a moved part is stored as on the part where it was", still.length > 0 && still.length === moved.length && still.every((row, i) => nearAll(row, moved[i]!, 1e-3)), JSON.stringify({ still, moved }));
 
-async function faceBox(place: Record<string, unknown> | null, name: string): Promise<unknown> {
+async function faceBox(place: Record<string, unknown> | null, name: string, placeAfter = false): Promise<unknown> {
   const own = new Session(fakeEngine());
   const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
-  if (place) await own.call("model_place", { object: made.object, ...place });
+  if (place && !placeAfter) await own.call("model_place", { object: made.object, ...place });
   await own.call("workplane_set", { object: made.object, faceIndex: 5 });
+  if (place && placeAfter) await own.call("model_place", { object: made.object, ...place });
   const hole = await own.call("model_apply", { object: made.object, op: { kind: "boolean", op: "cut", primitive: "box", dx: 4, dy: 4, dz: 2 }, probe: true });
   check(`the box applies (${name})`, hole.ok === true, JSON.stringify(hole));
   await own.call("project_save", { name });
@@ -371,6 +372,12 @@ async function faceBox(place: Record<string, unknown> | null, name: string): Pro
 }
 const boxStill = (await faceBox(null, "box-still.lime")) as number[] | null;
 const boxMoved = (await faceBox({ x: 40, y: -15, z: 5, turnZ: 90 }, "box-moved.lime")) as number[] | null;
+const boxMovedAfter = (await faceBox({ x: 40, y: -15, z: 5, turnZ: 90 }, "box-moved-after.lime", true)) as number[] | null;
+check("a face workplane moves with its part when the part is moved after it", !!boxStill && !!boxMovedAfter && nearAll(boxStill, boxMovedAfter, 1e-3), JSON.stringify({ boxStill, boxMovedAfter }));
+{
+  const doc = (name: string) => JSON.parse(readFileSync(join(workspace, name), "utf8")) as { objects?: { workplane?: unknown }[] };
+  check("the file keeps the face workplane in the part's own frame, moved or not", JSON.stringify(doc("box-still.lime").objects?.[0]?.workplane) === JSON.stringify(doc("box-moved.lime").objects?.[0]?.workplane), JSON.stringify([doc("box-still.lime").objects?.[0]?.workplane, doc("box-moved.lime").objects?.[0]?.workplane]));
+}
 check("a box on a moved part's face workplane is stored as on the part where it was", !!boxStill && !!boxMoved && nearAll(boxStill, boxMoved, 1e-3), JSON.stringify({ boxStill, boxMoved }));
 
 // --- D20. A composite whose every step misses the part is refused, not applied as nothing.
