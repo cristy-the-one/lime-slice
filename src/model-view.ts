@@ -11,6 +11,9 @@ import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { onMeasureChange } from "./measure-pref";
 import { EDGE_KNOB_ID } from "./interact/edge-drag";
+
+/** P1. The push/pull arrow's handle id (`pullHandles` in `model-drag.ts`). */
+const PULL_HANDLE_ID = "pull";
 import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { contextMaterial } from "./context-look";
 import type { ContextPart } from "./model-context";
@@ -384,6 +387,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let faceDrag = false;
   let faceCb: (pointer: FacePointer) => void = () => {};
   let faceDown: { x: number; y: number; pointerId: number; moved: boolean; hit: FaceHit } | null = null;
+  /** P1. The face hit the push arrow is seated on, so a press on the arrow drags that face. */
+  let seatHit: FaceHit | null = null;
   /** What `data-faces` was last written for, so a still view does not redo it. */
   let facesSolid: ModelSolid | null = null;
   let facesKey = "";
@@ -1430,9 +1435,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   /** P1. Take the press when it lands on a face. False leaves the press for a handle or the orbit. */
-  function beginFace(ev: PointerEvent): boolean {
+  function beginFace(ev: PointerEvent, onArrow = false): boolean {
     if (!faceDrag || mode !== "face" || ev.button !== 0) return false;
-    const hit = faceHit(ev);
+    // A press on the arrow grabs the face it sits on, as the edge knob grabs its edge.
+    const hit = (onArrow ? seatHit : null) ?? faceHit(ev);
     if (!hit) return false;
     ev.stopImmediatePropagation();
     ev.preventDefault();
@@ -1613,7 +1619,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       }
     }
     // --- P1: a face press is a push, before a handle or an orbit can take it. Empty space still orbits. ---
-    if (beginFace(ev)) return;
+    if (beginFace(ev, part?.handle.id === PULL_HANDLE_ID)) return;
     if (part) {
       ev.stopImmediatePropagation();
       ev.preventDefault();
@@ -1678,8 +1684,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (edgeHoverOn) updateEdgeHover(ev, over);
     // --- P1: a face hover still runs while an edge can light, so both idle gestures share the view. ---
     if (faceDrag && mode === "face") {
+      // The arrow stays seated while the pointer is on it, so its tip can be reached and grabbed.
+      if (over?.handle.id === PULL_HANDLE_ID && seatHit) {
+        setOverHandle(PULL_HANDLE_ID);
+        tip.hidden = true;
+        return;
+      }
       const knob = over?.handle.id === EDGE_KNOB_ID;
       const hit = knob ? null : faceHit(ev);
+      seatHit = hit;
       setOverHandle(knob ? EDGE_KNOB_ID : null);
       tip.hidden = true;
       setHover(hit ? { kind: "face", index: hit.face } : null);
@@ -1755,6 +1768,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   canvas.addEventListener("pointercancel", finishDrag, { capture: true });
   canvas.addEventListener("pointerleave", (ev) => {
     setHover(null);
+    seatHit = null;
     if (faceDrag && !faceDown) faceCb(faceEvent("hover", ev, null));
     if (drag || edgeDrag || edgePress) return;
     if (edgeLit != null) {
@@ -2022,6 +2036,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     // --- P1 ---
     setFaceDrag(on) {
       faceDrag = on;
+      if (!on) seatHit = null;
       if (!on) {
         faceDown = null;
         facesKey = "";

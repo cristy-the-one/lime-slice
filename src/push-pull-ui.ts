@@ -10,7 +10,7 @@ import { mountHud, type HudCommit, type Params } from "./interact/hud.ts";
 import { repeatClick, type ClickAt } from "./interact/drag-axis.ts";
 import type { FaceLevel } from "./interact/drag-axis.ts";
 import { faceTable, triangleAt } from "./interact/face-table.ts";
-import { fieldText, handlesFor, type Vec3 } from "./model-drag.ts";
+import { add, fieldText, handlesFor, lineParam, normalize, scale, type Vec3 } from "./model-drag.ts";
 import { applyPose, turnDir, type Affine } from "./model-space.ts";
 import type { FaceExtrudeOp, MoveFacesOp } from "./model-tree.ts";
 import { isPlainNumber, withExprs } from "./modeling/params.ts";
@@ -84,6 +84,11 @@ interface Dragging {
   dir: Vec3;
   /** The other faces' levels along the drag, read once when it begins. */
   levels: FaceLevel[];
+  /**
+   * How far along the drag the press was, in mm: 0 on the face, the arrow's length when its tip was grabbed. Each move
+   * takes it off, so grabbing the arrow does not jump the distance to where the arrow was held.
+   */
+  lead: number;
 }
 
 interface Remember {
@@ -283,7 +288,8 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     const pose = hooks.pose();
     const dir = turnDir(pose, under.normal);
     const levels = pullLevels(worldFaces(solid, pose), grab.point, dir, new Set(faces.map((face) => face.index)));
-    dragging = { faces, alt: grab.alt && faces.length === 1, origin: grab.point, dir, levels };
+    const lead = lineParam(grab.point, normalize(dir), grab.ray.origin, normalize(grab.ray.direction)) ?? 0;
+    dragging = { faces, alt: grab.alt && faces.length === 1, origin: grab.point, dir, levels, lead: Number.isFinite(lead) ? lead : 0 };
     dragDistance = 0;
     typed = null;
     editing = false;
@@ -300,7 +306,9 @@ export function mountPull(view: ModelView, hooks: PullHooks): PullController {
     if (!drag) return;
     window.clearTimeout(timer);
     hooks.clearPreview();
-    const dragged = pullDrag(ev.ray, drag.origin, drag.dir, {
+    // The ray moved back along the drag by the lead: its distance along the line is then counted from the press.
+    const ray = { origin: add(ev.ray.origin, scale(normalize(drag.dir), -drag.lead)), direction: ev.ray.direction };
+    const dragged = pullDrag(ray, drag.origin, drag.dir, {
       round: ev.ctrl,
       fine: ev.shift,
       faces: drag.levels,

@@ -500,3 +500,39 @@ test("with a section on, the half it hides is neither hovered nor picked", async
   await page.mouse.click(side.x, side.y + 20);
   await expect(canvas, "the shown half of a side is still picked").toHaveAttribute("data-selection-bar", "flat-face");
 });
+
+test("the push arrow stays put while the pointer walks to its tip, and grabbing the tip starts from 0", async ({ page }) => {
+  const { applied } = await openPushBox(page);
+  const canvas = page.locator("#model");
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  let nudge = 0;
+  await expect.poll(async () => {
+    nudge = (nudge + 1) % 3;
+    await page.mouse.move(top.x + nudge, top.y);
+    return canvas.getAttribute("data-handles") ?? "";
+  }).toContain("pull:");
+  const box = (await canvas.boundingBox())!;
+  const grip = /pull:(-?\d+),(-?\d+)/.exec((await canvas.getAttribute("data-handles")) ?? "")!;
+  const tip = { x: box.x + Number(grip[1]), y: box.y + Number(grip[2]) };
+  const from = { x: top.x + nudge, y: top.y };
+  const length = Math.hypot(tip.x - from.x, tip.y - from.y);
+  expect(length, "the arrow has a length on screen").toBeGreaterThan(10);
+  for (let t = 0.2; t <= 1.001; t += 0.2) {
+    await page.mouse.move(from.x + (tip.x - from.x) * t, from.y + (tip.y - from.y) * t);
+    await expect(canvas, `the arrow is still at its seat ${Math.round(t * 100)}% of the way`).toHaveAttribute("data-handles", new RegExp(`pull:${grip[1]},${grip[2]}`));
+  }
+  const ux = (tip.x - from.x) / length;
+  const uy = (tip.y - from.y) / length;
+  await page.mouse.down();
+  await page.mouse.move(tip.x + ux * 6, tip.y + uy * 6);
+  await expect(page.locator(".interact-hud input").first()).toBeVisible();
+  const start = Number(await canvas.getAttribute("data-pull"));
+  expect(Math.abs(start), `6 px past the grabbed tip is close to 0 mm, not the arrow's length (${start})`).toBeLessThan(2);
+  for (let step = 12; step <= 60; step += 12) await page.mouse.move(tip.x + ux * step, tip.y + uy * step);
+  const pulled = Number(await canvas.getAttribute("data-pull"));
+  expect(pulled, "dragging on along the arrow pulls").toBeGreaterThan(start + 1);
+  await page.mouse.up();
+  await expect.poll(() => applied.length).toBe(1);
+  expect(applied[0]?.kind).toBe("moveFaces");
+  expect(applied[0]?.faces?.[0]?.face).toBe(1);
+});
