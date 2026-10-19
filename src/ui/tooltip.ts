@@ -57,10 +57,10 @@ export function mountTooltips(root: ParentNode = document) {
     const inHistory = el.closest("#modelHistoryTree") != null;
     void computePosition(el, tip, {
       strategy: "fixed",
-      placement: inRail ? "left" : inHistory ? "right" : "bottom",
+      placement: inRail || inHistory ? "right" : "bottom",
       middleware: [
         offset(8),
-        flip({ padding: 8, fallbackPlacements: inRail ? ["top", "right"] : undefined }),
+        flip({ padding: 8, fallbackPlacements: inRail ? ["top", "bottom"] : undefined }),
         shift({ padding: 8 }),
       ],
     }).then(({ x, y }) => {

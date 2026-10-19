@@ -60,7 +60,8 @@ test("model mode shows the bed, the outer size, and measure callouts", async ({ 
   await page.locator("#modelToolScale").click();
   await expect(fit).toHaveText("40.0 × 40.0 × 20.0 mm");
 
-  await page.locator("#measureOn").uncheck();
+  await page.locator("#measureField").click();
+  await expect(page.locator("#measureField")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#modelBody .measure svg")).toHaveCount(0);
   await expect(fit).toHaveText("40.0 × 40.0 × 20.0 mm");
 });
@@ -79,9 +80,10 @@ test("model tool panels stay clear of the size chip, the measure control, and ra
   const toolsBox = await tools.boundingBox();
   const railBox = await rail.boundingBox();
   expect(measureBox && toolsBox && railBox).toBeTruthy();
+  // Measure is a rail button now, off the floating model toolbar.
   expect(overlaps(measureBox!, toolsBox!)).toBe(false);
-  expect(overlaps(measureBox!, railBox!)).toBe(false);
-  expect(measureBox!.x).toBeGreaterThan(toolsBox!.x);
+  expect(measureBox!.x + measureBox!.width).toBeLessThanOrEqual(railBox!.x + railBox!.width);
+  expect(measureBox!.x).toBeLessThan(toolsBox!.x);
 
   await page.locator("#modelToolBoolean").click();
   await expect(page.locator("#modelPanel")).toBeVisible();

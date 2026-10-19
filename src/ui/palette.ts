@@ -23,6 +23,7 @@ import { scrub, setView } from "../app/viewer";
 import { pickModelFile } from "../platform";
 import { nudgeBrushRadius } from "./brush-radius";
 import { chordMatches, COMMANDS, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, shortcutOf, type CommandSpec } from "./commands";
+import { toggleDock } from "./splitters";
 import { pushToast } from "./toasts";
 import "./phase2.css";
 
@@ -228,18 +229,6 @@ function escapeHtml(text: string) {
 
 function click(selector: string) {
   document.querySelector<HTMLElement>(selector)?.click();
-}
-
-function visible(selector: string) {
-  const el = document.querySelector<HTMLElement>(selector);
-  return !!el && getComputedStyle(el).display !== "none" && getComputedStyle(el).visibility !== "hidden";
-}
-
-function togglePanel(side: "left" | "right") {
-  const collapse = side === "left" ? ".panel-collapse-left" : ".panel-collapse-right";
-  const toggle = side === "left" ? "#toggleLeft" : "#toggleRight";
-  if (visible(collapse)) click(collapse);
-  else click(toggle);
 }
 
 function setTheme(value: string) {
@@ -452,10 +441,10 @@ export function runCommand(id: string) {
       openProfileFile();
       return;
     case "panel-left":
-      togglePanel("left");
+      toggleDock("left");
       return;
     case "panel-right":
-      togglePanel("right");
+      toggleDock("right");
       return;
     default: {
       const target = COMMANDS.find((command) => command.id === id)?.target;

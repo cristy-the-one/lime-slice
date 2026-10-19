@@ -111,11 +111,10 @@ test("zoom keeps the gizmo the same size and an arrow move is what gets sliced",
     const bounds = body.pose ? posedBounds(buf, body.pose) : stlBounds(buf);
     await route.fulfill({ json: fakeSlice(bounds.min, bounds.max) });
   });
-  await page.setViewportSize({ width: 1440, height: 900 });
+  // The arrow drags below were tuned on a 1008 x 794 stage: 1440 x 900 with both side panels docked before the 40 px band.
+  await page.setViewportSize({ width: 1344, height: 894 });
   await page.goto("/");
   await autoSliceOff(page);
-  // The arrow drag below was tuned with the results column open. It starts folded so the viewport stays wide.
-  await page.locator(".panel-collapse-right").click();
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.getByRole("button", { name: "20 mm cube" }).click();

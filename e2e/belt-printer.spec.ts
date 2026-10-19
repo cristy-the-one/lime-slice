@@ -143,10 +143,11 @@ test("a belt hides the settings it forces off or cannot use, and sends none of t
     bodies.push(body);
     await route.fulfill({ json: body.belt ? beltCube : cube });
   });
+  // Settings and results both stay docked from about 1900 px; Compare lives in the results, which open on demand.
+  await page.setViewportSize({ width: 1920, height: 1080 });
   await page.goto("/");
   await autoSliceOff(page);
-  // The results column starts folded, and Compare lives in it.
-  await page.locator(".panel-collapse-right").click();
+  await page.locator("#timing").click();
   // On a flat printer every one of them is on the page.
   await expect(page.locator("#zhop")).toBeVisible();
   await expect(page.locator("#scarf")).toBeVisible();

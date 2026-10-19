@@ -13,16 +13,15 @@ async function outerOverflow(page: Page) {
   return page.evaluate(() => {
     const root = document.scrollingElement ?? document.documentElement;
     const status = document.querySelector(".status")?.getBoundingClientRect();
-    const legend = document.querySelector(".legend");
-    const legendBox = legend && getComputedStyle(legend).display !== "none" ? legend.getBoundingClientRect() : null;
+    const stage = document.querySelector("#stage")?.getBoundingClientRect();
     const left = document.querySelector<HTMLElement>("#left");
     return {
       delta: root.scrollHeight - root.clientHeight,
       deltaW: root.scrollWidth - root.clientWidth,
       statusBottom: status?.bottom ?? -1,
       statusTop: status?.top ?? -1,
-      legendBottom: legendBox?.bottom ?? null,
-      legendHeight: legendBox?.height ?? null,
+      stageBottom: stage?.bottom ?? null,
+      stageHeight: stage?.height ?? null,
       innerHeight: window.innerHeight,
       leftScroll: left && getComputedStyle(left).display !== "none" ? left.scrollHeight - left.clientHeight : 0,
     };
@@ -44,9 +43,10 @@ for (const engine of ["running", "down"] as const) test(`desktop shell fits the 
     expect(fit.deltaW, `${viewport.width}x${viewport.height} horizontal`).toBe(0);
     expect(fit.statusBottom).toBeLessThanOrEqual(fit.innerHeight + 0.5);
     expect(fit.statusTop).toBeGreaterThanOrEqual(0);
-    expect(fit.legendBottom).not.toBeNull();
-    expect(fit.legendBottom!).toBeLessThanOrEqual(fit.innerHeight + 0.5);
-    expect(fit.legendHeight!).toBeGreaterThan(8);
+    // The stage, and the playback strip at its foot, end above the status line.
+    expect(fit.stageBottom).not.toBeNull();
+    expect(fit.stageBottom!).toBeLessThanOrEqual(fit.statusTop + 0.5);
+    expect(fit.stageHeight!).toBeGreaterThan(200);
   }
 
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -61,6 +61,10 @@ for (const engine of ["running", "down"] as const) test(`desktop shell fits the 
   expect(settings.deltaW).toBe(0);
   expect(settings.leftScroll).toBeGreaterThan(0);
   expect(settings.statusBottom).toBeLessThanOrEqual(settings.innerHeight + 0.5);
-  expect(settings.legendBottom).not.toBeNull();
-  expect(settings.legendBottom!).toBeLessThanOrEqual(settings.innerHeight + 0.5);
+  expect(settings.stageBottom).not.toBeNull();
+  expect(settings.stageBottom!).toBeLessThanOrEqual(settings.statusTop + 0.5);
+  // Results start folded on a desktop width; the narrow window's Results button still shows them.
+  await page.locator("#toggleRight").click();
+  await expect(page.locator("#right")).toBeVisible();
+  expect((await outerOverflow(page)).delta).toBe(0);
 });

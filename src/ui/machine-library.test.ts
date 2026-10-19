@@ -72,9 +72,9 @@ check(
   JSON.stringify(ir3),
 );
 check(
-  "the IR3 V2 carries its printer.cfg limits: 400 mm/s, scv 5, cruise ratio 0.5, extruder corner 1, belt 20 mm/s at 500 mm/s²",
+  "the IR3 V2 carries its printer.cfg limits: 400 mm/s, scv 8, cruise ratio 0.5, extruder corner 1, belt 20 mm/s at 500 mm/s²",
   ir3 !== undefined &&
-    JSON.stringify([ir3.maxVelocity, ir3.squareCornerVelocity, ir3.minimumCruiseRatio, ir3.extruderCornerVelocity, ir3.maxZVelocity, ir3.maxZAccel]) === JSON.stringify([400, 5, 0.5, 1, 20, 500]),
+    JSON.stringify([ir3.maxVelocity, ir3.squareCornerVelocity, ir3.minimumCruiseRatio, ir3.extruderCornerVelocity, ir3.maxZVelocity, ir3.maxZAccel]) === JSON.stringify([400, 8, 0.5, 1, 20, 500]),
   JSON.stringify(ir3),
 );
 check(

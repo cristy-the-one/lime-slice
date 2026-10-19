@@ -17,7 +17,7 @@ test("thin wall and gap fill use different legend colors, and the preview reads 
   expect(contrastOnDark(GAP)).toBeGreaterThan(4.5);
 });
 
-test("thin-wall time sits with inner walls; gap fill stays with infill", () => {
+test("the MCP summary groups thin-wall time with inner walls and gap fill with infill", () => {
   const groups = groupFeatures(
     [
       { kind: "outer", seconds: 10, filamentMm: 20 },
@@ -133,7 +133,8 @@ test("legend toggles and the estimate table keep thin wall and gap fill apart", 
   const estimate = await page.locator("#estimate .est-row").evaluateAll((rows) =>
     rows.map((row) => `${row.querySelector(".est-label")!.textContent} ${row.querySelector(".est-time")!.textContent}`),
   );
-  expect(estimate).toEqual(["Outer wall 10 s", "Inner wall 35 s", "Infill 15 s", "Other 3.0 s"]);
+  // One row per feature, longest first, the same rows the Features flyout toggles: thin wall and gap fill keep their own time.
+  expect(estimate).toEqual(["Inner wall 20 s", "Thin wall 15 s", "Outer wall 10 s", "Gap fill 8.0 s", "Sparse infill 7.0 s", "Skirt 3.0 s"]);
 
   const swatch = (label: string) =>
     page.locator("#legend label", { hasText: new RegExp(`^${label}`) }).locator(".swatch").evaluate((el) => getComputedStyle(el).backgroundColor);
@@ -162,8 +163,12 @@ test("legend toggles and the estimate table keep thin wall and gap fill apart", 
   const both2d = await settled("#view");
   const both3d = await settled("#view3d");
 
+  await page.locator('#toolRail [data-fly="flyFeatures"]').click();
   await legend(page, "Thin wall").uncheck();
   await expect(legend(page, "Gap fill")).toBeChecked();
+  // The results row is the same switch.
+  await expect(page.locator('#right input[data-kind="thin-wall"]')).not.toBeChecked();
+  await expect(page.locator('#right input[data-kind="gap-fill"]')).toBeChecked();
   const thinOff2d = await settled("#view");
   const thinOff3d = await settled("#view3d");
   expect(thinOff2d.equals(both2d)).toBe(false);

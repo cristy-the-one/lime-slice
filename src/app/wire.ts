@@ -7,14 +7,14 @@ import { applyTheme, type ThemeChoice } from "../theme";
 import { axisNormal, clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
-import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, setView, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
+import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
 import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
 import { mountProjectFiles, openPickedFile, saveCurrentProject } from "./project-io";
 import { newProject } from "./new-project";
 import { pickModelFile } from "../platform";
-import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, revealResults, setCalibrate, syncFindStuck, touch } from "./settings";
+import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, setCalibrate, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
 import { bindPlaceScrub } from "./place-scrub";
 import { bindFieldScrub } from "../ui/field-scrub";
@@ -43,6 +43,7 @@ import {
   setModifierTool,
 } from "./override-actions";
 import { setModifierOpen } from "../ui/overrides-panel";
+import { toggleDock } from "../ui/splitters";
 import { pushToast } from "../ui/toasts";
 import { currentRules } from "./rules";
 import { turnOnSupports } from "./support-actions";
@@ -374,7 +375,7 @@ export function wireApp() {
     if (chip) chip.open = false;
     revealPrinterDetails();
   });
-  document.querySelector("#timing")!.addEventListener("click", () => revealResults());
+  document.querySelector("#timing")!.addEventListener("click", () => toggleDock("right"));
   // A menu stays open until a click lands outside it, as its own summary toggles it.
   document.addEventListener("pointerdown", (ev) => {
     const target = ev.target as Element | null;
@@ -431,10 +432,6 @@ export function wireApp() {
     if (t.id === "retractexport" && state.retractGcode) void saveText(withPrinterGcode(state.retractGcode), "retraction-calibration.gcode", "gcode");
   });
   document.querySelector(".top")!.addEventListener("input", onSettings);
-  document.querySelectorAll<HTMLButtonElement>(".mode:not(.tab)").forEach((button) => {
-    if (!button.dataset.mode) return;
-    button.addEventListener("click", () => setView(button.dataset.mode as typeof state.viewMode, "user"));
-  });
   document.querySelector("#theme")!.addEventListener("change", (ev) => {
     applyTheme((ev.target as HTMLSelectElement).value as ThemeChoice);
     view3d.setTheme();
@@ -505,10 +502,13 @@ export function wireApp() {
     paintSectionChrome();
     draw();
   });
-  document.querySelector("#legend")!.addEventListener("change", (ev) => {
+  document.addEventListener("change", (ev) => {
     const input = ev.target as HTMLInputElement;
     const kind = input.dataset.kind;
-    if (!kind) return;
+    if (!kind || !input.closest("#legend, #right")) return;
+    document.querySelectorAll<HTMLInputElement>(`#legend input[data-kind="${CSS.escape(kind)}"], #right input[data-kind="${CSS.escape(kind)}"]`).forEach((box) => {
+      box.checked = input.checked;
+    });
     if (input.checked) state.hidden.delete(kind);
     else state.hidden.add(kind);
     if (kind === "travel") state.showTravel = input.checked;

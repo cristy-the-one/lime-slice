@@ -1,225 +1,209 @@
-import { ChevronLeft, ChevronRight, createElement, type IconNode } from "lucide";
+import { ChevronLeft, ChevronRight, createElement } from "lucide";
 import {
-  allocatePanels,
-  LEFT_DEFAULT,
+  dragMax,
+  fitDocks,
   LEFT_MAX,
   LEFT_MIN,
-  panelBudget,
-  PANEL_COLLAPSED_PX,
-  RIGHT_DEFAULT,
+  resultsOpenByDefault,
   RIGHT_MAX,
   RIGHT_MIN,
-  type PanelFit,
+  type DockFit,
+  type DockSide,
 } from "./panel-budget";
 
-const LEFT_KEY = "lime-slice-panel-left";
-const RIGHT_KEY = "lime-slice-panel-right";
-const LEFT_COLLAPSE = "lime-slice-panel-left-collapsed";
-const RIGHT_COLLAPSE = "lime-slice-panel-right-collapsed";
-
-let leftDesired = LEFT_DEFAULT;
-let rightDesired = RIGHT_DEFAULT;
-/** Which open panel holds its width when the 70% stage budget is tight. */
-let keep: "left" | "right" = "right";
+const WIDTH_KEY: Record<DockSide, string> = { left: "lime-slice-panel-left", right: "lime-slice-panel-right" };
+/** "1" closed, "0" open; unset follows the window's default. */
+const CLOSED_KEY: Record<DockSide, string> = { left: "lime-slice-panel-left-collapsed", right: "lime-slice-panel-right-collapsed" };
+const DOCK_ID: Record<DockSide, string> = { left: "#leftDock", right: "#rightDock" };
+const NAME: Record<DockSide, string> = { left: "settings", right: "results" };
+/** The control that opens each dock; a closing dock hands it the focus. */
+const OPENER: Record<DockSide, string> = { left: "#leftToggle", right: "#timing" };
+const LAST_KEY = "lime-slice-dock-last";
 let fitting = false;
 
-export function mountSplitters() {
-  const workspace = document.querySelector<HTMLElement>(".workspace");
-  if (!workspace || workspace.querySelector(".splitter")) return;
-
-  const left = mountHandle(workspace, "left", "Resize settings");
-  const right = mountHandle(workspace, "right", "Resize blend");
-  const collapseLeft = mountCollapse(workspace, "left", "Collapse settings", ChevronLeft);
-  const collapseRight = mountCollapse(workspace, "right", "Collapse blend", ChevronRight);
-
-  const storedLeft = readWidth(LEFT_KEY);
-  const storedRight = readWidth(RIGHT_KEY);
-  if (storedLeft) leftDesired = storedLeft;
-  if (storedRight) rightDesired = storedRight;
-  if (localStorage.getItem(LEFT_COLLAPSE) === "1") setCollapsed(workspace, "left", true, collapseLeft);
-  // A wide window starts with the results panel folded, so the viewport is at least 70% of the width.
-  // Nothing is written until the user folds it. A narrow window keeps the panel in the bottom row.
-  if (window.innerWidth > 1200 && localStorage.getItem(RIGHT_COLLAPSE) !== "0") setCollapsed(workspace, "right", true, collapseRight);
-
-  applyFit();
-  bindDrag(workspace, left, "left", collapseLeft);
-  bindDrag(workspace, right, "right", collapseRight);
-  collapseLeft.addEventListener("click", () => toggleCollapsed(workspace, "left", collapseLeft));
-  collapseRight.addEventListener("click", () => toggleCollapsed(workspace, "right", collapseRight));
-  window.addEventListener("resize", () => {
-    if (fitting) return;
-    applyFit();
-  });
+function read(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
 }
 
-function mountHandle(workspace: HTMLElement, side: "left" | "right", label: string) {
+function write(key: string, value: string | null) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    /* storage off: the docks still work for this visit */
+  }
+}
+
+function storedWidth(side: DockSide): number | null {
+  const value = Number(read(WIDTH_KEY[side]));
+  const [min, max] = side === "left" ? [LEFT_MIN, LEFT_MAX] : [RIGHT_MIN, RIGHT_MAX];
+  return Number.isFinite(value) && value >= min && value <= max ? value : null;
+}
+
+/** Whether the user wants this dock open, before the window's room is counted. */
+function wantsOpen(side: DockSide): boolean {
+  const stored = read(CLOSED_KEY[side]);
+  if (stored === "1") return false;
+  if (stored === "0") return true;
+  return side === "left" || resultsOpenByDefault(window.innerWidth);
+}
+
+function workspace() {
+  return document.querySelector<HTMLElement>(".workspace");
+}
+
+function compact() {
+  return document.documentElement.classList.contains("layout-compact");
+}
+
+/** The dock is on screen: open and not folded for room. */
+export function dockShown(side: DockSide): boolean {
+  const ws = workspace();
+  return !!ws && !ws.classList.contains(side === "left" ? "is-left-collapsed" : "is-right-collapsed");
+}
+
+/** Open or close a dock, as its chevron, the rail foot, the estimate, Ctrl+B and Ctrl+Alt+B do. Remembered. */
+export function toggleDock(side: DockSide) {
+  const ws = workspace();
+  // The phone layout has its own sheets.
+  if (!ws || compact()) return;
+  // A narrow window stacks a dock over the stage on demand; the top bar's Settings and Results buttons do the same.
+  if (window.innerWidth <= 960) {
+    ws.classList.toggle(side === "left" ? "show-left" : "show-right");
+    paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
+    return;
+  }
+  setDock(side, !dockShown(side));
+}
+
+export function setDock(side: DockSide, open: boolean) {
+  const dock = document.querySelector(DOCK_ID[side]);
+  const hadFocus = !!dock?.contains(document.activeElement);
+  if (open) write(LAST_KEY, side);
+  write(CLOSED_KEY[side], open ? "0" : "1");
+  applyFit();
+  if (hadFocus && !dockShown(side)) document.querySelector<HTMLElement>(OPENER[side])?.focus();
+}
+
+function lastOpened(): DockSide {
+  return read(LAST_KEY) === "left" ? "left" : "right";
+}
+
+export function mountSplitters() {
+  const ws = workspace();
+  if (!ws || ws.querySelector(".splitter")) return;
+  const handles = { left: mountHandle(ws, "left"), right: mountHandle(ws, "right") };
+  for (const side of ["left", "right"] as const) {
+    const close = document.querySelector(`${DOCK_ID[side]} .dock-close`);
+    close?.append(createElement(side === "left" ? ChevronLeft : ChevronRight, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
+    close?.addEventListener("click", () => setDock(side, false));
+    bindDrag(ws, handles[side], side);
+  }
+  applyFit();
+  window.addEventListener("resize", () => {
+    if (!fitting) applyFit();
+  });
+  window.addEventListener("lime-layout", () => applyFit());
+}
+
+function mountHandle(ws: HTMLElement, side: DockSide) {
   const handle = document.createElement("div");
   handle.className = `splitter splitter-${side}`;
   handle.setAttribute("role", "separator");
   handle.setAttribute("aria-orientation", "vertical");
-  handle.setAttribute("aria-label", label);
-  workspace.append(handle);
+  handle.setAttribute("aria-label", `Resize ${NAME[side]}`);
+  ws.append(handle);
   return handle;
 }
 
-function mountCollapse(workspace: HTMLElement, side: "left" | "right", label: string, icon: IconNode) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = `btn panel-collapse panel-collapse-${side}`;
-  button.setAttribute("aria-label", label);
-  button.append(createElement(icon, { width: 14, height: 14, "aria-hidden": "true", class: "ico" }));
-  workspace.append(button);
-  return button;
-}
-
-function bindDrag(
-  workspace: HTMLElement,
-  handle: HTMLElement,
-  side: "left" | "right",
-  collapse: HTMLButtonElement,
-) {
+function bindDrag(ws: HTMLElement, handle: HTMLElement, side: DockSide) {
   handle.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0 || workspace.classList.contains(side === "left" ? "is-left-collapsed" : "is-right-collapsed")) return;
+    if (ev.button !== 0 || !dockShown(side)) return;
     ev.preventDefault();
     handle.classList.add("is-drag");
     handle.setPointerCapture(ev.pointerId);
+    const other = side === "left" ? "right" : "left";
     const move = (e: PointerEvent) => {
-      const rect = workspace.getBoundingClientRect();
-      const px = side === "left"
-        ? clamp(e.clientX - rect.left, LEFT_MIN, LEFT_MAX)
-        : clamp(rect.right - e.clientX, RIGHT_MIN, RIGHT_MAX);
-      if (side === "left") {
-        leftDesired = px;
-        keep = "left";
-      } else {
-        rightDesired = px;
-        keep = "right";
-      }
-      localStorage.setItem(side === "left" ? LEFT_KEY : RIGHT_KEY, String(px));
+      const rect = ws.getBoundingClientRect();
+      const dock = document.querySelector<HTMLElement>(DOCK_ID[side])?.getBoundingClientRect();
+      const raw = side === "left" ? e.clientX - (dock?.left ?? rect.left) : rect.right - e.clientX;
+      const shownOther = dockShown(other) ? (document.querySelector<HTMLElement>(DOCK_ID[other])?.offsetWidth ?? 0) : 0;
+      const max = dragMax(side, window.innerWidth, shownOther);
+      const px = Math.round(Math.min(max, Math.max(side === "left" ? LEFT_MIN : RIGHT_MIN, raw)));
+      write(WIDTH_KEY[side], String(px));
       applyFit();
     };
     const up = () => {
       handle.classList.remove("is-drag");
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
     };
     handle.addEventListener("pointermove", move);
     handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
   });
   handle.addEventListener("dblclick", () => {
-    localStorage.removeItem(side === "left" ? LEFT_KEY : RIGHT_KEY);
-    if (side === "left") leftDesired = LEFT_DEFAULT;
-    else rightDesired = RIGHT_DEFAULT;
-    keep = "right";
-    setCollapsed(workspace, side, false, collapse);
-    localStorage.setItem(side === "left" ? LEFT_COLLAPSE : RIGHT_COLLAPSE, "0");
+    write(WIDTH_KEY[side], null);
     applyFit();
   });
 }
 
-/**
- * Open the results column after a slice. A user who stored a collapse stays collapsed.
- * The automatic open does not become the stored default, so the next fresh window folds again.
- * Opening it slims both panels so the stage stays at least 70% of the window.
- */
-export function openResultsAfterSlice() {
-  if (window.innerWidth <= 1200) return;
-  if (localStorage.getItem(RIGHT_COLLAPSE) === "1") return;
-  const workspace = document.querySelector<HTMLElement>(".workspace");
-  if (!workspace?.classList.contains("is-right-collapsed")) return;
-  const pref = localStorage.getItem(RIGHT_COLLAPSE);
-  document.querySelector<HTMLButtonElement>(".panel-collapse-right")?.click();
-  if (pref === null) localStorage.removeItem(RIGHT_COLLAPSE);
-}
-
-function toggleCollapsed(workspace: HTMLElement, side: "left" | "right", button: HTMLButtonElement) {
-  const collapsed = !workspace.classList.contains(side === "left" ? "is-left-collapsed" : "is-right-collapsed");
-  setCollapsed(workspace, side, collapsed, button);
-  localStorage.setItem(side === "left" ? LEFT_COLLAPSE : RIGHT_COLLAPSE, collapsed ? "1" : "0");
-  applyFit();
-}
-
-function setCollapsed(workspace: HTMLElement, side: "left" | "right", collapsed: boolean, button: HTMLButtonElement) {
-  workspace.classList.toggle(side === "left" ? "is-left-collapsed" : "is-right-collapsed", collapsed);
-  button.setAttribute(
-    "aria-label",
-    collapsed
-      ? side === "left" ? "Expand settings" : "Expand blend"
-      : side === "left" ? "Collapse settings" : "Collapse blend",
-  );
+/** Widths and folds for the current window. Below the desktop width the docks keep the stylesheet's narrow layout. */
+function currentFit(): DockFit {
+  const leftOpen = wantsOpen("left");
+  const rightOpen = wantsOpen("right");
+  const fit = compact()
+    ? null
+    : fitDocks({
+      width: window.innerWidth,
+      leftOpen,
+      rightOpen,
+      leftDesired: storedWidth("left"),
+      rightDesired: storedWidth("right"),
+      last: lastOpened(),
+    });
+  if (fit) return fit;
+  return { left: leftOpen ? (storedWidth("left") ?? -1) : 0, right: rightOpen ? (storedWidth("right") ?? -1) : 0 };
 }
 
 function applyFit() {
-  const workspace = document.querySelector<HTMLElement>(".workspace");
-  if (!workspace || fitting) return;
-  const compact = document.documentElement.classList.contains("layout-compact");
-  const budget = compact ? null : panelBudget(window.innerWidth);
-  // Below the desktop breakpoint the results panel is a bottom row. Leave the stylesheet widths alone
-  // unless the user stored one or a panel is folded, so a narrow window does not inherit a desktop clamp.
-  if (budget === null) {
-    restoreFlexible(workspace);
-    return;
+  const ws = workspace();
+  if (!ws || fitting) return;
+  const fit = currentFit();
+  const next = {
+    left: fit.left > 0 ? `${fit.left}px` : fit.left === 0 ? "0px" : "",
+    right: fit.right > 0 ? `${fit.right}px` : fit.right === 0 ? "0px" : "",
+  };
+  const leftClosed = fit.left === 0;
+  const rightClosed = fit.right === 0;
+  for (const [side, closed] of [["left", leftClosed], ["right", rightClosed]] as const) {
+    if (closed && document.querySelector(DOCK_ID[side])?.contains(document.activeElement)) document.querySelector<HTMLElement>(OPENER[side])?.focus();
   }
-  const fit = allocatePanels({
-    budget,
-    leftCollapsed: workspace.classList.contains("is-left-collapsed"),
-    rightCollapsed: workspace.classList.contains("is-right-collapsed"),
-    leftDesired,
-    rightDesired,
-    keep,
-  });
-  const slim = !fit.hud && !workspace.classList.contains("is-right-collapsed") && fit.right > 0 && fit.right < RIGHT_DEFAULT;
+  paintToggles(!leftClosed, !rightClosed);
   if (
-    workspace.classList.contains("is-right-hud") === fit.hud
-    && workspace.classList.contains("is-slim-results") === slim
-    && readPx(workspace, "--panel-left") === fit.left
-    && readPx(workspace, "--panel-right") === fit.right
+    ws.style.getPropertyValue("--panel-left") === next.left
+    && ws.style.getPropertyValue("--panel-right") === next.right
+    && ws.classList.contains("is-left-collapsed") === leftClosed
+    && ws.classList.contains("is-right-collapsed") === rightClosed
   ) return;
   fitting = true;
-  workspace.classList.toggle("is-right-hud", fit.hud);
-  workspace.classList.toggle("is-slim-results", slim);
-  writeFit(workspace, fit);
+  ws.classList.toggle("is-left-collapsed", leftClosed);
+  ws.classList.toggle("is-right-collapsed", rightClosed);
+  for (const side of ["left", "right"] as const) {
+    const prop = side === "left" ? "--panel-left" : "--panel-right";
+    if (next[side]) ws.style.setProperty(prop, next[side]);
+    else ws.style.removeProperty(prop);
+  }
   window.dispatchEvent(new Event("resize"));
   fitting = false;
 }
 
-function restoreFlexible(workspace: HTMLElement) {
-  const leftCollapsed = workspace.classList.contains("is-left-collapsed");
-  const rightCollapsed = workspace.classList.contains("is-right-collapsed");
-  const nextLeft = leftCollapsed ? `${PANEL_COLLAPSED_PX}px` : (readWidth(LEFT_KEY) ? `${leftDesired}px` : "");
-  const nextRight = rightCollapsed ? `${PANEL_COLLAPSED_PX}px` : (readWidth(RIGHT_KEY) ? `${rightDesired}px` : "");
-  const same = workspace.style.getPropertyValue("--panel-left") === nextLeft
-    && workspace.style.getPropertyValue("--panel-right") === nextRight
-    && !workspace.classList.contains("is-right-hud")
-    && !workspace.classList.contains("is-slim-results");
-  if (same) return;
-  fitting = true;
-  workspace.classList.remove("is-right-hud", "is-slim-results");
-  if (nextLeft) workspace.style.setProperty("--panel-left", nextLeft);
-  else workspace.style.removeProperty("--panel-left");
-  if (nextRight) workspace.style.setProperty("--panel-right", nextRight);
-  else workspace.style.removeProperty("--panel-right");
-  window.dispatchEvent(new Event("resize"));
-  fitting = false;
-}
-
-function writeFit(workspace: HTMLElement, fit: PanelFit) {
-  workspace.style.setProperty("--panel-left", `${fit.left}px`);
-  workspace.style.setProperty("--panel-right", `${fit.right}px`);
-}
-
-function readPx(workspace: HTMLElement, prop: "--panel-left" | "--panel-right") {
-  const value = Number.parseFloat(workspace.style.getPropertyValue(prop));
-  return Number.isFinite(value) ? value : -1;
-}
-
-function readWidth(key: string) {
-  const value = Number(localStorage.getItem(key));
-  if (!Number.isFinite(value)) return 0;
-  if (key === LEFT_KEY) return value >= LEFT_MIN && value <= LEFT_MAX ? value : 0;
-  return value >= RIGHT_MIN && value <= RIGHT_MAX ? value : 0;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
+function paintToggles(leftShown: boolean, rightShown: boolean) {
+  document.querySelector("#leftToggle")?.setAttribute("aria-expanded", String(leftShown));
+  document.querySelector("#timing")?.setAttribute("aria-expanded", String(rightShown));
 }

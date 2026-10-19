@@ -5,14 +5,14 @@ import { createModelView, type ModelView } from "../model-view";
 import { bindModelView, leaveModel, showModel } from "./model";
 import { createSliceView, type SliceView3d } from "../view3d";
 import { setPlateThumbnailCapture } from "./thumb-capture";
-import { FEATURE_LABEL, FEATURE_COLOR, colorForPath } from "../colors";
+import { FEATURE_LABEL, colorForPath } from "../colors";
 import { legendMarkup } from "../ui/legend";
 import { formatDuration } from "../format";
 import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
-import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch, stale } from "./settings";
+import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch, stale, previewFeatureRows } from "./settings";
 import { cycleLayerAction, layerMarkerText } from "../layer-actions";
 import { beginModelVisit, flushEdit, noteEdit } from "./history";
 import { currentRules } from "./rules";
@@ -24,6 +24,7 @@ import type { PreviewGeometry } from "../preview-geom";
 import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
+import { paintRailStage, syncSection } from "../ui/chrome";
 import { clampPartPercent } from "../gizmo-math";
 import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
 import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, wheelKind, wheelZoomFactor, zoomFlat, type FlatView, type XyBounds } from "../ui/flat-view";
@@ -36,24 +37,9 @@ import { measureOn, onMeasureChange } from "../measure-pref";
 import { type Vec3, sectionAxis, sectionReach, type SectionSpec, keepsPoint, clipPolyline, layerCut } from "../section-plane";
 
 export function paintLegend() {
-  const kinds = new Set<string>();
-  for (const layer of state.result?.layers ?? []) for (const kind of layer.paths.kinds) kinds.add(kind);
-  const legend = document.querySelector("#legend")!;
-  const est = state.result?.estimate;
-  const total = Math.max(0.001, est?.seconds ?? 1);
-  const by = new Map((est?.byFeature ?? []).map((row) => [row.kind, row.seconds]));
-  const rows = [...kinds].sort().map((kind) => {
-    const seconds = by.has(kind) ? by.get(kind)! : null;
-    return {
-      kind,
-      label: FEATURE_LABEL[kind] ?? kind,
-      color: FEATURE_COLOR[kind] ?? "#ccc",
-      seconds,
-      sharePct: seconds == null ? null : (seconds / total) * 100,
-      shown: kind === "travel" ? state.showTravel : !state.hidden.has(kind),
-    };
-  });
-  legend.innerHTML = legendMarkup(rows, (est?.scarfedLoops ?? 0) > 0);
+  const legend = document.querySelector("#legend");
+  if (!legend) return;
+  legend.innerHTML = legendMarkup(previewFeatureRows(), (state.result?.estimate?.scarfedLoops ?? 0) > 0) || `<p class="fly-note">Slice to list the features.</p>`;
 }
 
 export function paintSlider() {
@@ -92,6 +78,33 @@ export function paintSlider() {
   paintRangeBands();
   prepare?.setModifiers(state.overrides, state.selectedVolumeId, state.modifierTool);
   syncLayerTip();
+  paintStatus();
+}
+
+/** The status line names where the stage is: the layer in Preview and G-code, the part and its size in Prepare. */
+export function paintStatus() {
+  const el = document.querySelector("#statusText");
+  if (!el) return;
+  const text = statusLine();
+  if (el.textContent === text) return;
+  // A layer step would read the line on top of the slider's own value, so layer lines stay quiet.
+  const live = state.stage === "preview" || state.stage === "gcode" ? "off" : "polite";
+  if (el.getAttribute("aria-live") !== live) el.setAttribute("aria-live", live);
+  el.textContent = text;
+}
+
+function statusLine(): string {
+  if (state.stage === "preview" || state.stage === "gcode") {
+    const layers = state.result?.layers ?? [];
+    const layer = layers[state.layer];
+    return layer ? `Layer ${state.layer + 1} / ${layers.length} · Z ${layer.z.toFixed(2)} mm` : "";
+  }
+  if (state.stage === "prepare" && state.mesh && state.placed) {
+    const { min, max } = state.placed.bounds;
+    const size = [0, 1, 2].map((axis) => (max[axis] - min[axis]).toFixed(1)).join(" × ");
+    return `${state.mesh.name} · ${size} mm`;
+  }
+  return "";
 }
 
 function paintLayerActions(max: number) {
@@ -443,11 +456,8 @@ export function setView(mode: typeof state.viewMode, source: "user" | "auto" = "
   const stage = document.querySelector("#stage")!;
   stage.classList.remove("mode-flat", "mode-split", "mode-solid");
   stage.classList.add(`mode-${mode}`);
-  document.querySelectorAll<HTMLButtonElement>(".mode:not(.tab)").forEach((el) => {
-    if (!el.dataset.mode) return;
-    const on = el.dataset.mode === mode;
-    el.classList.toggle("on", on);
-    el.setAttribute("aria-pressed", on ? "true" : "false");
+  document.querySelectorAll<HTMLButtonElement>("#toolRail [data-mode]").forEach((el) => {
+    el.setAttribute("aria-pressed", el.dataset.mode === mode ? "true" : "false");
   });
   resize();
 }
@@ -464,16 +474,11 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
     beginModelVisit();
   }
   state.stage = stage;
+  paintRailStage(stage);
   document.querySelector<HTMLElement>("#prepareBody")!.hidden = stage !== "prepare";
   document.querySelector<HTMLElement>("#modelBody")!.hidden = stage !== "model";
   document.querySelector<HTMLElement>("#previewBody")!.hidden = stage !== "preview";
-  document.querySelector("#legend")?.toggleAttribute("hidden", stage !== "preview");
-  document.querySelector("#viewModes")?.toggleAttribute("hidden", stage !== "preview");
   document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare" || stage === "model");
-  document.querySelector("#colorBy")?.closest("label")?.toggleAttribute("hidden", stage === "model");
-  document.querySelector("#bedOpacity")?.closest("label")?.toggleAttribute("hidden", stage === "model");
-  document.querySelector("#measureField")?.toggleAttribute("hidden", false);
-  document.querySelector<HTMLElement>("#viewPresets")?.toggleAttribute("hidden", stage !== "prepare");
   if (stage !== "prepare") {
     session.paintUi?.stop();
     session.seamUi?.stop();
@@ -486,6 +491,7 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
   syncEmptyState(!!state.mesh);
   paintSectionChrome();
   paintGcode();
+  paintStatus();
   resize();
   paintSpark();
   if (stage === "model") showModel();
@@ -920,11 +926,9 @@ export function sectionKeeps(x: number, y: number, z: number) {
 export function paintSectionChrome() {
   const preview = state.stage === "preview";
   const on = state.sectionOn;
-  document.querySelector<HTMLElement>("#sectionField")!.hidden = !preview;
-  document.querySelector<HTMLElement>("#sectionAxisField")!.hidden = !(preview && on);
-  document.querySelector<HTMLElement>("#sectionOffsetField")!.hidden = !(preview && on);
-  document.querySelector<HTMLElement>("#sectionFlip")!.hidden = !(preview && on);
+  document.querySelector<HTMLElement>("#sectionChip")!.hidden = !(preview && on);
   document.querySelector<HTMLInputElement>("#sectionOn")!.checked = on;
+  syncSection();
   const axis = document.querySelector<HTMLSelectElement>("#sectionAxis")!;
   if (document.activeElement !== axis) axis.value = sectionAxis(state.sectionNormal);
   const slider = document.querySelector<HTMLInputElement>("#sectionOffset")!;

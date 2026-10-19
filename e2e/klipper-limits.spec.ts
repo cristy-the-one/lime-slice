@@ -40,7 +40,7 @@ test("the IR3 V2 shows its printer.cfg limits at Expert and sends them with its 
   await expect(group.locator("#scv")).toBeHidden();
   await page.locator("#levelPick").selectOption("expert");
   await expect(group.locator("#vmax")).toHaveValue("400");
-  await expect(group.locator("#scv")).toHaveValue("5");
+  await expect(group.locator("#scv")).toHaveValue("8");
   await expect(group.locator("#mcr")).toHaveValue("0.5");
   await expect(group.locator("#ecv")).toHaveValue("1");
   await expect(group.locator("#zvmax")).toHaveValue("20");
@@ -54,19 +54,19 @@ test("the IR3 V2 shows its printer.cfg limits at Expert and sends them with its 
     firmware: "klipper",
     maxAccel: 20000,
     maxVelocity: 400,
-    squareCornerVelocity: 5,
+    squareCornerVelocity: 8,
     minimumCruiseRatio: 0.5,
     extruderCornerVelocity: 1,
     maxZVelocity: 20,
     maxZAccel: 500,
   });
 
-  await page.locator("#scv").fill("8");
+  await page.locator("#scv").fill("10");
   await page.locator("#scv").blur();
   await expect(page.locator("#stage")).toHaveClass(/stale/);
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(2);
-  expect(bodies[1]!.printer).toMatchObject({ firmware: "klipper", squareCornerVelocity: 8 });
+  expect(bodies[1]!.printer).toMatchObject({ firmware: "klipper", squareCornerVelocity: 10 });
 });
 
 test("a Marlin printer hides the limits and sends none of them", async ({ page }) => {

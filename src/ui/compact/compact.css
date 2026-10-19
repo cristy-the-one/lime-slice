@@ -36,9 +36,12 @@ html.layout-compact .app {
 html.layout-compact .top,
 html.layout-compact .status,
 html.layout-compact .win-controls,
-html.layout-compact #right,
-html.layout-compact .viewbar,
-html.layout-compact .legend,
+html.layout-compact .dock,
+html.layout-compact .splitter,
+html.layout-compact #viewPresets,
+html.layout-compact .rail-fly,
+html.layout-compact #toolRail [data-fly],
+html.layout-compact #toolRail [data-tool="rulers"],
 html.layout-compact .gizmo-readout,
 html.layout-compact #gizmoNudge { display: none !important; }
 html.layout-compact .layer-step {
@@ -78,7 +81,7 @@ html.layout-compact .stage-body:not([hidden]) {
   min-height: 0;
   height: 100%;
 }
-/* The desktop preview body is a 72px + 1fr grid. Once the scrubber is
+/* The desktop preview body is a 48px + 1fr grid. Once the scrubber is
    position:absolute it would occupy that first column alone, so the 3D
    pane must leave the grid and fill the stage. */
 html.layout-compact #previewBody {
@@ -278,6 +281,8 @@ html.layout-compact #toolRail {
   border: 0;
 }
 html.layout-compact #toolRail .rail-sep,
+html.layout-compact #toolRail .rail-caption,
+html.layout-compact #toolRail .rail-foot,
 html.layout-compact #toolRail [data-tool="section"] { display: none; }
 html.layout-compact #toolRail button {
   width: 44px;
@@ -396,8 +401,11 @@ html.layout-compact .track input[type="range"]::-moz-range-thumb {
   white-space: nowrap;
 }
 
+html.layout-compact .stage { --vslider-w: 0px; }
 html.layout-compact .stage-tools {
   display: block !important;
+  height: auto;
+  border-top: 0;
   position: absolute;
   left: 12px;
   bottom: 8px;
@@ -407,7 +415,8 @@ html.layout-compact .stage-tools {
   padding: 0;
   background: transparent;
 }
-html.layout-compact .spark-wrap { display: none; }
+html.layout-compact #spark { display: none; }
+html.layout-compact .scrub { flex: 1 1 auto; min-width: 96px; height: 36px; }
 html.layout-compact .playback {
   display: flex;
   align-items: center;
@@ -419,7 +428,7 @@ html.layout-compact .playback {
   box-shadow: var(--shadow-pop);
 }
 html.layout-compact #play { flex: 0 0 auto; width: auto; min-width: 56px; height: 36px; border: 0; border-radius: 999px; background: transparent; color: var(--text); }
-html.layout-compact .playback input[type="range"] { flex: 1 1 auto; width: auto; min-width: 96px; }
+html.layout-compact .scrub input[type="range"] { top: 0; bottom: 0; height: 100%; }
 html.layout-compact #playReadout { display: none; }
 
 #compactDevice {
