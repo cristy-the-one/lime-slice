@@ -102,6 +102,13 @@ check("a boss is one fuse", sill.length === 1 && sill[0]!.op === "fuse");
 const tiles = expand({ kind: "texture", faceIndex: 5, pattern: "brick", pitch: [10, 7] }, faceCtx, toPart) as Piece[];
 const lines = tiles.filter((piece) => Math.max(...piece.spec.size) >= 59);
 check("a brick texture has row grooves and staggered joints", lines.length === 4 && tiles.length > lines.length, `${tiles.length} ${lines.length}`);
+// D4. A small pitch is refused before any groove is made, and a groove as wide as the pitch is refused.
+const fine = expand({ kind: "texture", faceIndex: 5, pattern: "lines", pitch: [0.02, 0.02], grooveWidth: 0.01 }, faceCtx, toPart);
+check("a texture of thousands of grooves is refused before it is made", "reason" in fine && /about \d+ grooves, more than 400/.test(fine.reason), JSON.stringify(fine).slice(0, 120));
+const wide = expand({ kind: "texture", faceIndex: 5, pattern: "lines", pitch: [5, 1], grooveWidth: 1 }, faceCtx, toPart);
+check("a groove as wide as the pitch is refused", "reason" in wide && wide.reason === "A groove must be narrower than the pitch.", JSON.stringify(wide).slice(0, 120));
+const crowd = expand({ kind: "pattern", linear: { step: [1, 0, 0], count: 100000 }, op: { kind: "boolean", op: "cut", primitive: "box", dx: 1, dy: 1, dz: 1 } }, globalCtx, toPart);
+check("a pattern of 100000 copies is refused before its motions are made", "reason" in crowd && crowd.reason === "A pattern makes at most 400 copies.", JSON.stringify(crowd).slice(0, 120));
 check("a texture without a face or region is refused", "reason" in (expand({ kind: "texture", pitch: [5, 5] }, globalCtx, toPart) as object));
 const picked = expand({ kind: "pocket", face: { normal: [0, -1, 0] }, at: { u: 18, v: 2.5 }, width: 10, height: 10, depth: 1.5 }, faceCtx, toPart) as Piece[];
 check("a face selector picks the face", Array.isArray(picked) && JSON.stringify(picked[0]!.spec) === JSON.stringify(window[0]!.spec));

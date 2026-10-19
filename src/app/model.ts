@@ -30,7 +30,7 @@ import { faceBoundarySegments, lastEdge, nextModelPicks, selectionCountLabel } f
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes } from "../model-check.ts";
-import { expandFeature, isFeatureTool, panelChoices, readFeatureSpec, type FeatureTool } from "../model-features";
+import { emptyFeature, expandFeature, isFeatureTool, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
 import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
@@ -1392,7 +1392,8 @@ function featureNow(tool: FeatureTool) {
   const pose = openPose();
   const key = JSON.stringify({ spec, face, id: solid?.id ?? null, pose });
   if (featureMemo?.key === key) return featureMemo.value;
-  const value = expandFeature(spec, solid, pose, face);
+  const range = rangeNote(tool, (id) => num(`#${id}`));
+  const value = range ? emptyFeature(range) : expandFeature(spec, solid, pose, face);
   featureMemo = { key, value };
   return value;
 }

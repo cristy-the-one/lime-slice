@@ -410,8 +410,32 @@ export interface ExpandedFeature {
   outward: [number, number, number] | null;
 }
 
-function emptyFeature(note: string): ExpandedFeature {
+export function emptyFeature(note: string): ExpandedFeature {
   return { note, pieces: null, group: null, frame: null, outward: null };
+}
+
+function trimmed(value: number): string {
+  return String(Math.round(value * 1000) / 1000);
+}
+
+/**
+ * The first shown number field of `tool` whose value (`read`, which also evaluates an expression) is outside its
+ * `min` or `max`, as a sentence; null when all are in range. A typed value is not clamped: the user sees why.
+ */
+export function rangeNote(tool: FeatureTool, read: (id: string) => number): string | null {
+  if (typeof document === "undefined") return null;
+  // A field that takes an expression is a text input, so the range is read from its attributes.
+  for (const input of document.querySelectorAll<HTMLInputElement>("#modelPanel label[data-for] input:is([min], [max])")) {
+    const label = input.closest<HTMLElement>("label");
+    if (!input.id || !label || label.closest("[hidden]") || !(label.dataset.for ?? "").split(" ").includes(tool)) continue;
+    const value = read(input.id);
+    const name = input.getAttribute("aria-label")?.split(",")[0] ?? input.id;
+    const min = Number(input.getAttribute("min") ?? NaN);
+    const max = Number(input.getAttribute("max") ?? NaN);
+    if (Number.isFinite(min) && value < min) return `${name} is at least ${trimmed(min)}.`;
+    if (Number.isFinite(max) && value > max) return `${name} is at most ${trimmed(max)}.`;
+  }
+  return null;
 }
 
 /** A plain boolean, for a nested pattern. Feature tools do not call it. */

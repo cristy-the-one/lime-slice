@@ -110,3 +110,33 @@ test("the Features menu keeps the last choice on the button", async ({ page }) =
   await expect(page.locator("#modelToolFeatures")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#modelNote")).toHaveText("Pick one flat face.");
 });
+
+test("a texture pitch typed below its minimum, or one too small for the face, is refused before the engine sees it", async ({ page }) => {
+  const tree = await openModel(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelFeatureMenu [data-tool=texture]").click();
+  await pickFace(page);
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  const probes = tree.of("probe").length;
+
+  await page.locator("#modelTexPitchU").selectText();
+  await page.keyboard.type("0.02");
+  await expect(page.locator("#modelNote")).toHaveText("Pitch along U is at least 0.1.");
+  await expect(page.locator("#modelApply")).toBeDisabled();
+  await page.waitForTimeout(500);
+  expect(tree.of("probe").length, "no dry-run of a value below the field's minimum").toBe(probes);
+
+  await page.locator("#modelTexPattern [data-pattern=brick]").click();
+  await page.locator("#modelTexGroove").selectText();
+  await page.keyboard.type("0.1");
+  await page.locator("#modelTexPitchU").selectText();
+  await page.keyboard.type("0.5");
+  await page.locator("#modelTexPitchV").selectText();
+  await page.keyboard.type("0.5");
+  await expect(page.locator("#modelNote")).toHaveText(/This texture makes about \d+ grooves, more than 400\./);
+  await expect(page.locator("#modelApply")).toBeDisabled();
+
+  await page.locator("#modelTexPitchV").selectText();
+  await page.keyboard.type("0.1");
+  await expect(page.locator("#modelNote")).toHaveText("A groove must be narrower than the pitch.");
+});
