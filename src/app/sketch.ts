@@ -25,6 +25,7 @@ import { sketchMesh, type OriginPlane, type SketchStroke } from "../sketch/draw"
 import {
   frameFromWorkplane,
   lookAtFrame,
+  tiltedAtFrame,
   originFrame,
   planeOf,
   planeWindow,
@@ -81,6 +82,7 @@ import type { Params } from "../modeling/expr.ts";
 import { parseConstraints } from "../sketch/solve";
 import { workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 import { state } from "./state";
+import { formatMm } from "../model-plane";
 import {
   buildSketchExtrude,
   chooseRegions,
@@ -1131,7 +1133,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     host.view.setSketchCapture(sketchBusy(editor) && !editor.lookAround && !host.sketchHolesArmed());
     host.view.setSketchDim(sketchBusy(editor));
-    if (editor.phase === "editing" && aimKey) host.view.setSketchLock(!editor.lookAround);
+    if (editor.phase === "editing" && aimKey) host.view.setSketchLock(!editor.lookAround && !featureTilt());
     draw();
     paintCards();
     paintBox();
@@ -1183,12 +1185,19 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   function aim(frame: SketchFrame | null) {
     if (!frame) return;
-    const key = `${editor.active}:${frame.origin.map((value) => value.toFixed(3)).join()}:${frame.w.map((value) => value.toFixed(3)).join()}`;
+    const tilt = featureTilt();
+    const key = `${editor.active}:${frame.origin.map((value) => value.toFixed(3)).join()}:${frame.w.map((value) => value.toFixed(3)).join()}:${tilt ? "tilt" : "plan"}`;
     if (key === aimKey) return;
     aimKey = key;
     const view = host.view.sketchView();
-    const pose = lookAtFrame(frame, host.focus(), host.extent(), view.fov);
-    host.view.setSketchCamera({ ...pose, animateMs: SKETCH_ANIM_MS, lock: !editor.lookAround });
+    // --- B15. An extrude or a revolve tilts the view so its depth shows; back in the sketch the view is the plan again.
+    const pose = (tilt ? tiltedAtFrame : lookAtFrame)(frame, host.focus(), host.extent(), view.fov);
+    host.view.setSketchCamera({ ...pose, animateMs: SKETCH_ANIM_MS, lock: !editor.lookAround && !tilt });
+  }
+
+  /** An extrude or a revolve is being aimed. */
+  function featureTilt(): boolean {
+    return !!(gesture || revolve);
   }
 
   function ensureRefs(frame: SketchFrame) {
@@ -2187,7 +2196,18 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!gesture) return "";
     const mode = modeLabel(resolvedMode());
     const where = gesture.upTo != null ? `Up to face ${typeof gesture.upTo === "number" ? gesture.upTo : gesture.upTo.index}. ` : "";
-    return `${where}Extrude ${gesture.distance} mm, ${mode}. Drag the arrow or type the distance. Click a region to extrude it, Shift-click to add one. M changes join, cut, or new object. Tab adds the other side, then a draft. Enter or Apply keeps it. Esc returns to the sketch.`;
+    return `${where}${tooBig()}Extrude ${gesture.distance} mm, ${mode}. Drag the arrow or type the distance. Click a region to extrude it, Shift-click to add one. M changes join, cut, or new object. Tab adds the other side, then a draft. Enter or Apply keeps it. Esc returns to the sketch.`;
+  }
+
+  /** --- B28. A depth past the printer's build volume along the extrude is said first; it is not refused. --- */
+  function tooBig(): string {
+    const frame = drawingFrame();
+    if (!gesture || !frame || gesture.upTo != null) return "";
+    const span = Math.abs(gesture.distance) + (gesture.slots >= 2 && gesture.depth2 != null ? gesture.depth2 : 0);
+    const upright = Math.abs(frame.w[2]) > 0.7;
+    const limit = upright ? state.profile.bedZ : Math.max(state.profile.bedX, state.profile.bedY);
+    if (!(limit > 0) || span <= limit) return "";
+    return `${formatMm(span)} mm is more than the printer's ${formatMm(limit)} mm build ${upright ? "height" : "width"}. `;
   }
 
   function extrudePointer(ev: { phase: "down" | "move" | "up"; x: number; y: number; shift: boolean; ctrl: boolean; alt: boolean }, frame: ReturnType<typeof drawingFrame>) {

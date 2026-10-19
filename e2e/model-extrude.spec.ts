@@ -384,11 +384,15 @@ test("a click during an extrude picks the region under it, Shift-click adds or d
     await hud.locator("input").nth(1).press("Enter");
   }
   await page.locator("[data-sketch-tool=select]").click();
-  const [a, b] = await rectangleCentres(page);
-  await page.mouse.move(a!.x, a!.y);
+  const [first] = await rectangleCentres(page);
+  await page.mouse.move(first!.x, first!.y);
   await page.keyboard.press("E");
   await expect(canvas).toHaveAttribute("data-extrude", "aim");
   await expect(canvas).toHaveAttribute("data-extrude-regions", "1");
+  // The view tilts when the extrude starts. Once it settles, a move repaints where the corners are now.
+  await expect(canvas).toHaveAttribute("data-sketch-camera", "free");
+  await page.mouse.move(first!.x + 1, first!.y + 1);
+  const [a, b] = await rectangleCentres(page);
 
   await page.mouse.click(b!.x, b!.y);
   await expect(canvas, "a click picks, it does not apply").toHaveAttribute("data-extrude", "aim");
@@ -412,6 +416,32 @@ test("a click during an extrude picks the region under it, Shift-click adds or d
   await page.locator("[data-sketch-apply]").click();
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   await expect(canvas).toHaveAttribute("data-extrude", "off");
+});
+
+test("an extrude tilts the view to show its depth, says when it is past the build volume, and the sketch is the plan again", async ({ page }) => {
+  await start(page);
+  await page.locator("#modelEmptySketch").click();
+  const canvas = page.locator("#model");
+  await expect(canvas).toHaveAttribute("data-sketch-camera", "locked");
+  const plan = (await canvas.getAttribute("data-camera")) ?? "";
+  await drawTypedRectangle(page);
+  await page.keyboard.press("E");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await expect(canvas, "the view is free while the extrude is aimed").toHaveAttribute("data-sketch-camera", "free");
+  const [eye, target] = ((await canvas.getAttribute("data-camera")) ?? "").split(";").map((part) => part.split(",").map(Number));
+  const along = Math.hypot(eye![0]! - target![0]!, eye![1]! - target![1]!, eye![2]! - target![2]!);
+  const rise = (eye![2]! - target![2]!) / along;
+  expect(rise, "seen from above the bed at a tilt, not straight down").toBeGreaterThan(0.6);
+  expect(rise).toBeLessThan(0.95);
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await hud.locator("input").first().fill("100000");
+  await expect(page.locator("#modelReadout")).toContainText(/^100000 mm is more than the printer's \d+ mm build height\. Extrude 100000 mm/);
+  await hud.locator("input").first().fill("5");
+  await expect(page.locator("#modelReadout")).toContainText(/^Extrude 5 mm/);
+  await page.keyboard.press("Escape");
+  await expect(canvas).toHaveAttribute("data-extrude", "off");
+  await expect(canvas, "back in the sketch the view is the plan again").toHaveAttribute("data-sketch-camera", "locked");
+  await expect.poll(async () => (await canvas.getAttribute("data-camera")) ?? "").toBe(plan);
 });
 
 test("two regions on an empty bed make two objects, and Undo takes them back as one step", async ({ page }) => {
