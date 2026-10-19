@@ -244,12 +244,16 @@ function unit(value: Vec3): Vec3 | null {
   return length > 1e-9 ? [value[0] / length, value[1] / length, value[2] / length] : null;
 }
 
-/** A cylinder whose local +Z follows `axis`, starting at `origin`. */
+/**
+ * A cylinder whose local +Z follows `axis`, starting at `origin`, as the engine drills a hole. A primitive turns about
+ * the middle of its axis, so the stored origin is that middle less half the height along local Z.
+ */
 function cylinderCut(origin: Vec3, radius: number, height: number, axis: Vec3): Piece {
   const euler = orientEuler(align([0, 0, 1], axis));
+  const half = height / 2;
   const spec: PrimitiveSpec = {
     primitive: "cylinder",
-    origin: [...origin],
+    origin: [round6(origin[0] + axis[0] * half), round6(origin[1] + axis[1] * half), round6(origin[2] + axis[2] * half - half)],
     size: [0, 0, 0],
     radius,
     height,

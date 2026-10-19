@@ -1,4 +1,5 @@
 import { actionsFor } from "./context-bar.ts";
+import { eulerOrient } from "./mesh-place.ts";
 import { editPanel } from "./model-edit.ts";
 import { IDENTITY_POSE } from "./model-space.ts";
 import type { ModelOp } from "./model-tree.ts";
@@ -114,7 +115,20 @@ check("a wedge cannot be mirrored", !("reason" in wedgeMirror) && !!expandRepeat
 const hole: ModelOp = { kind: "hole", origin: [10, 14, 0], axis: [0, 0, -1], radius: 1.5, depth: 10 };
 const blind = piecesOfStep(hole);
 check("a blind hole is the cylinder it cuts", Array.isArray(blind) && blind.length === 1 && blind[0]!.spec.primitive === "cylinder" && blind[0]!.op === "cut");
+/** Where a cylinder piece's axis starts and ends, after its turn about the middle of its axis. */
+function axisEnds(spec: { origin: number[]; height: number; turn: number[] }): number[][] {
+  const r = eulerOrient(spec.turn[0]!, spec.turn[1]!, spec.turn[2]!);
+  const mid = [spec.origin[0]!, spec.origin[1]!, spec.origin[2]! + spec.height / 2];
+  const half = [r[2] * spec.height / 2, r[5] * spec.height / 2, r[8] * spec.height / 2];
+  const round = (v: number) => Math.round(v * 1e4) / 1e4 + 0;
+  return [[0, 1, 2].map((i) => round(mid[i]! - half[i]!)), [0, 1, 2].map((i) => round(mid[i]! + half[i]!))];
+}
+eq("a blind hole's cylinder runs from the entry point into the part", Array.isArray(blind) ? axisEnds(blind[0]!.spec) : null, [[10, 14, 0], [10, 14, -10]]);
+const sideways = piecesOfStep({ kind: "hole", origin: [0, 5, 3], axis: [1, 0, 0], radius: 1, depth: 4 });
+eq("a hole along +X runs 4 mm from its entry", Array.isArray(sideways) ? axisEnds(sideways[0]!.spec) : null, [[0, 5, 3], [4, 5, 3]]);
 const bored: ModelOp = { ...hole, counterboreRadius: 2.5, counterboreDepth: 3 };
+const boreEnds = piecesOfStep(bored);
+eq("a counterbore runs 3 mm down from the entry", Array.isArray(boreEnds) ? axisEnds(boreEnds[1]!.spec) : null, [[10, 14, 0], [10, 14, -3]]);
 const bore = piecesOfStep(bored);
 check("a counterbore is a second cylinder", Array.isArray(bore) && bore.length === 2 && bore[1]!.spec.radius === 2.5);
 eq("a through hole is not a fixed cylinder", piecesOfStep({ ...hole, through: true }), { reason: HOLES_NOT_YET });
