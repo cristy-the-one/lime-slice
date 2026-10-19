@@ -4084,6 +4084,7 @@ export class Session {
       }
       if ((made += pieces.length) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
       let refused: Record<string, unknown> | null = null;
+      const touchingBefore = touching;
       // --- A9. The pieces that landed, in the solid's frame, become the group's steps. ---
       const steps: ModelOp[] = [];
       for (let k = 0; k < pieces.length; k += 1) {
@@ -4131,7 +4132,8 @@ export class Session {
         steps.push(op);
       }
       // --- D20. A composite whose every step missed changes nothing: refused, as the engine refuses such a group.
-      if (!refused && ownNodes.length === 0 && pieces.length > 0) {
+      // A step left out because it would only touch along an edge is reported as leftOut instead.
+      if (!refused && ownNodes.length === 0 && pieces.length > 0 && touching === touchingBefore) {
         refused = { reason: pieces.length === 1 ? "Its one step does not change the part." : `None of its ${pieces.length} steps changes the part.` };
       }
       if (refused) {
