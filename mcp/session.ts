@@ -79,6 +79,7 @@ import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./sche
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "./compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
+import { evaluateTable } from "../src/modeling/params.ts";
 import { featureLabel, isFeatureTool } from "../src/model-features.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
@@ -4349,11 +4350,15 @@ export class Session {
       if (!PARAM_NAME.test(name)) return { ok: false, reason: `"${name}" is not a parameter name. Use letters, digits, and underscores.` };
       next[name] = typeof value === "number" && Number.isFinite(value) ? value : String(value);
     }
-    const merged = this.evaluateParams(next);
-    if ("reason" in merged) return { ok: false, reason: merged.reason };
+    // --- D22. A row this call sets must evaluate; a bad row it does not touch stays, as the app's panel keeps it.
+    const table = evaluateTable(next);
+    const bad = table.rows.filter((row) => row.error);
+    const refused = bad.find((row) => Object.hasOwn(set, row.name));
+    if (refused) return { ok: false, reason: `${refused.name}: ${refused.error}` };
     this.paramText = next;
-    this.params = merged;
-    return { ok: true, params: { ...this.params } };
+    this.params = { ...table.values };
+    const errors = bad.length > 0 ? { errors: Object.fromEntries(bad.map((row) => [row.name, row.error])) } : {};
+    return { ok: true, params: { ...this.params }, ...errors };
   }
 
   /**
@@ -4376,8 +4381,7 @@ export class Session {
         this.paramText = numbers;
       }
     }
-    const merged = this.evaluateParams(this.paramText);
-    this.params = "reason" in merged ? {} : merged;
+    this.params = { ...evaluateTable(this.paramText).values };
   }
 
   /**
@@ -4399,20 +4403,6 @@ export class Session {
   }
 
   /** The whole table, in order. The first bad row refuses the set and changes nothing. */
-  private evaluateParams(table: Record<string, string | number>): Record<string, number> | { reason: string } {
-    const out: Record<string, number> = {};
-    for (const [name, value] of Object.entries(table)) {
-      if (!PARAM_NAME.test(name)) return { reason: `"${name}" is not a parameter name. Use letters, digits, and underscores.` };
-      try {
-        out[name] = typeof value === "number" ? value : evaluate(String(value), out);
-      } catch (err) {
-        return { reason: `${name}: ${err instanceof Error ? err.message : String(err)}` };
-      }
-      if (!Number.isFinite(out[name])) return { reason: `${name} is not a finite number.` };
-    }
-    return out;
-  }
-
   /** A history step from a handle (node_3), its label, or a composite edit's label (its last step). */
   private nodeOf(obj: PlateObject, value: unknown): number | null {
     const parsed = parseNode(value);

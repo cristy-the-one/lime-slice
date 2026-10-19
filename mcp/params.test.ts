@@ -56,6 +56,23 @@ const opened = await old.call("project_open", { path: legacyPath });
 const listed = await old.call("model_params", {});
 check("an older file's mcpModel.params still opens", opened.ok === true && listed.ok === true && numbers(listed)?.wallH === 30, JSON.stringify(listed));
 
+// --- D22. One bad row, as the app's panel keeps it, does not refuse the rest of the table.
+const badPath = join(workspace, "bad-row.lime");
+const bad = JSON.parse(readFileSync(String(saved.path), "utf8")) as { parameters?: Record<string, unknown> };
+bad.parameters = { wallW: 60, oops: "nope * 2", half: "wallW / 2" };
+writeFileSync(badPath, JSON.stringify(bad));
+const badSession = new Session(engine);
+await badSession.call("project_open", { path: badPath });
+const kept = await badSession.call("model_params", {});
+check("a file with one bad row keeps the good ones", kept.ok === true && numbers(kept)?.wallW === 60 && numbers(kept)?.half === 30 && numbers(kept)?.oops === undefined, JSON.stringify(kept));
+check("the bad row is named", JSON.stringify(kept.errors) === JSON.stringify({ oops: '"nope" is not a parameter. Set it with model_params first.' }), JSON.stringify(kept));
+const other = await badSession.call("model_params", { set: { depth: "half + 1" } });
+check("a row set beside a bad one still sets", other.ok === true && numbers(other)?.depth === 31, JSON.stringify(other));
+const refused = await badSession.call("model_params", { set: { more: "nope + 1" } });
+check("a bad row this call sets is refused", refused.ok === false && refused.reason === 'more: "nope" is not a parameter. Set it with model_params first.', JSON.stringify(refused));
+const after = await badSession.call("model_params", {});
+check("a refused set changes nothing", numbers(after)?.more === undefined && numbers(after)?.depth === 31, JSON.stringify(after));
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
