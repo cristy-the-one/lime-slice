@@ -6,6 +6,7 @@
 import { formatMm, splitLabel } from "./model-plane.ts";
 import { primitiveLabel, type PrimitiveSpec } from "./model-primitive.ts";
 import type { Affine } from "./model-space.ts";
+import type { SketchData } from "./sketch/model.ts";
 import type { ReinforceRegion } from "./reinforcement.ts";
 import type { SeamDisk } from "./seam-paint.ts";
 import type { EditEntry } from "./support-edit-list.ts";
@@ -134,6 +135,11 @@ export interface ExtrudeOp {
   upTo?: number | FaceRef;
   /** K1: closed loops in place of `profile`. Absent for a point profile. */
   loops?: ProfileLoop[];
+  /**
+   * --- F1. The sketch this extrude was edited as. The kernel never reads it.
+   * Absent on an extrude from before sketches, and on one typed without a drawing.
+   */
+  sketch?: SketchData;
 }
 
 /** Turned `angleDeg` (360 when absent) about the line through `axisOrigin` ([0, 0]) along `axisDir` (V, [0, 1]). */
@@ -585,6 +591,14 @@ function primitiveTitle(spec: PrimitiveSpec): string {
 }
 
 const FEATURE_NAMES = { extrude: "Extrude", revolve: "Revolve", loft: "Loft" } as const;
+
+/**
+ * --- F1/E1. A group of extrudes that came from one sketch: no composite `source`, so it is not a pocket,
+ * a pattern, or a mirror. Edit reopens that sketch. Any other group stays what it was.
+ */
+export function isSketchExtrudeGroup(op: ModelOp): op is GroupOp {
+  return op.kind === "group" && op.source == null && op.steps.length > 0 && op.steps.every((step) => step.kind === "extrude");
+}
 
 /** The plate name of a solid that started from a sketch: "Extrude 1", and the first number no object of that kind has yet. */
 export function featureObjectName(names: Iterable<string>, kind: FeatureOp["kind"]): string {

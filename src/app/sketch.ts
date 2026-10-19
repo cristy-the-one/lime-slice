@@ -1,17 +1,23 @@
 /**
  * --- S2 sketch editor ---
  * Enter and leave a sketch, the plane camera, the grid, reference lines, Line and Rectangle.
- * The sketch stays in this module until a feature copies it. It is not written into the file.
+ * --- F1. Extrude copies the sketch onto the op. A sketch with no feature is still not saved.
  * Undo here is the sketch's own stack (`docs/plan-gui-cad-modeling.md` §4.3).
  */
 import { Pencil, createElement } from "lucide";
-import { mountHud } from "../interact/hud";
+import { mountHud, type HudField } from "../interact/hud";
 import { gridSpacing } from "../interact/snap";
+import { dragAxis } from "../interact/drag-axis";
+import { GHOST_PROBE_WAIT_MS, regionExtrude } from "../interact/ghosts";
+import { inPlaceArrow } from "../interact/in-place-arrow";
+import { registerContextAction } from "../context-bar";
 import type { ParsedSolid } from "../model-reply";
 import type { FacePlane } from "../model-plane";
 import type { Affine } from "../model-space";
+import type { Bounds } from "../mesh-place";
+import type { ModelOp } from "../model-tree";
 import type { ModelView } from "../model-view";
-import type { FaceRef, SketchOn, Vec3 } from "../sketch/model";
+import type { FaceRef, SketchData, SketchOn, Vec3 } from "../sketch/model";
 import { sketchMesh, type OriginPlane } from "../sketch/draw";
 import {
   frameFromWorkplane,
@@ -36,6 +42,7 @@ import {
   commitSizes,
   discardSketch,
   enterSketch,
+  enterSketchData,
   finishSketch,
   previewSizes,
   redoSketch,
@@ -56,6 +63,20 @@ import {
 } from "../sketch/session";
 import { DRAW_MENU, isDrawTool } from "../sketch/tools";
 import { workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
+import {
+  buildSketchExtrude,
+  chooseRegions,
+  cycleMode,
+  modeLabel,
+  regionSamples,
+  regionsCentroid,
+  resolveExtrudeMode,
+  sketchTouchesSolid,
+  solidFrameOf,
+  type ExtrudePreset,
+  type ModeChoice,
+} from "../sketch/extrude";
+import type { Region } from "../sketch/regions";
 
 export interface SketchHost {
   view: ModelView;
@@ -84,6 +105,17 @@ export interface SketchHost {
   syncPull(): void;
   syncEdge(): void;
   onHistory(): void;
+  /** --- F1/E1. The solid's box in model space, the selected face, and where an extrude is applied. --- */
+  bounds(): Bounds | null;
+  selectedFace(): number | null;
+  /** A history edit of the feature root, of a later extrude, or a sketch that is not an edit. */
+  featureEdit(): "root" | "step" | null;
+  commitExtrude(op: ModelOp, placement: "new" | "on-solid"): Promise<string | null>;
+  probeExtrude(op: ModelOp): void;
+  clearExtrudePreview(): void;
+  cancelFeatureEdit(): void;
+  /** The solid just built should fill the view. Closing the sketch restores the camera from before it. */
+  frameSolid(): void;
 }
 
 interface SketchApi {
@@ -96,6 +128,50 @@ interface SketchApi {
 }
 
 let editor: SketchEditor = sketchOff();
+/** --- F1. Set by mountSketch. History Edit calls these. --- */
+let openFeatureImpl: (sketch: SketchData, preset: ExtrudePreset) => void = () => {};
+let closeFeatureImpl: () => void = () => {};
+let faceForSketch: () => number | null = () => null;
+let enterFaceAction: (face: number) => void = () => {};
+let enterBedAction: () => void = () => {};
+
+/** Reopen a sketch and its extrude drag. E1 calls this from History Edit. */
+export function openSketchFeature(sketch: SketchData, preset: ExtrudePreset) {
+  openFeatureImpl(sketch, preset);
+}
+
+/** Leave the sketch without applying. A history jump uses this so the editor does not stay up. */
+export function closeSketchSession() {
+  closeFeatureImpl();
+}
+
+// --- F1. Sketch on a face, and on the bed. Order 35 sits between Hole and Shell, so the face bar's arrow keys stay. ---
+registerContextAction({
+  id: "sketch-on-face",
+  label: "Sketch on face",
+  when: ["flat-face"],
+  order: 35,
+  tip: "Draw on this face",
+  command: "model-sketch",
+  toolbar: "#modelToolSketch",
+  run() {
+    const face = faceForSketch();
+    if (face != null) enterFaceAction(face);
+  },
+});
+registerContextAction({
+  id: "sketch-on-bed",
+  label: "Sketch on bed",
+  when: ["empty"],
+  order: 18,
+  tip: "Draw on the bed",
+  command: "model-sketch",
+  toolbar: "#modelToolSketch",
+  run() {
+    enterBedAction();
+  },
+});
+
 let api: SketchApi = {
   occupies: () => false,
   ownsHistory: () => false,
@@ -139,22 +215,95 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     button.append(text);
     button.classList.add("is-icon");
   }
+  // --- F1. Extrude state. The key listener is registered before the HUD so E, M, and Esc are taken first. ---
+  interface ExtrudeGesture {
+    slots: 1 | 2 | 3;
+    distance: number;
+    depth2: number | null;
+    draft: number | null;
+    upTo: number | FaceRef | null;
+    choice: ModeChoice;
+    regions: Region[];
+    dragging: boolean;
+    guide: [Vec3, Vec3] | null;
+    down: { x: number; y: number; distance: number } | null;
+  }
+  let gesture: ExtrudeGesture | null = null;
+  let editSession = false;
+  let committing = false;
+  let probeTimer = 0;
+
+  window.addEventListener("keydown", (ev) => {
+    if (editor.phase !== "editing" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const drawing = sketchDimensions(editor) != null;
+    if (ev.key === "e" || ev.key === "E") {
+      if (drawing) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      if (!gesture) beginExtrude();
+      return;
+    }
+    if (!gesture) return;
+    if (ev.key === "m" || ev.key === "M") {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      gesture = { ...gesture, choice: cycleMode(gesture.choice, host.featureEdit()) };
+      publish("open");
+      return;
+    }
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      endExtrude();
+      return;
+    }
+    if (ev.key === "Tab" && !ev.shiftKey && gesture.slots < 3) {
+      const inputs = [...document.querySelectorAll<HTMLInputElement>(".interact-hud input")];
+      const last = inputs.length > 0 && document.activeElement === inputs[inputs.length - 1];
+      if (!last) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      const typed = inputs.map((input) => Number(input.value));
+      if (typed.every((value) => Number.isFinite(value))) takeValues(typed);
+      gesture = { ...gesture, slots: (gesture.slots + 1) as 2 | 3 };
+      if (gesture.slots === 2 && !(gesture.depth2 != null && gesture.depth2 > 0)) gesture = { ...gesture, depth2: Math.abs(gesture.distance) };
+      if (gesture.slots === 3 && gesture.draft == null) gesture = { ...gesture, draft: 0 };
+      publish("open");
+      const next = document.querySelectorAll<HTMLInputElement>(".interact-hud input");
+      next[next.length - 1]?.focus();
+    }
+  }, true);
+
   const hud = mountHud(host.canvas.parentElement ?? document.body);
   const box = document.createElement("div");
   box.className = "sketch-box";
   box.hidden = true;
   document.body.append(box);
   hud.onCommit((commit) => {
+    if (gesture) {
+      takeValues(commit.values);
+      void commitExtrude();
+      return;
+    }
     editor = commitSizes(editor, commit.values);
     publish("open");
   });
   hud.onCancel(() => {
+    if (gesture) {
+      endExtrude();
+      return;
+    }
     const next = sketchKey(editor, "Escape", { ctrl: false, meta: false, shift: false });
     if (!next) return;
-    editor = next;
-    publish("open");
+    leaveEditing(next);
   });
   hud.onEdit((values) => {
+    if (gesture) {
+      takeValues(values);
+      publish("skip");
+      armProbe();
+      return;
+    }
     editor = previewSizes(editor, values);
     publish("skip");
   });
@@ -208,6 +357,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const tool = target.dataset.sketchTool;
     const picked = tool === "line" || tool === "rectangle" || tool === "select" || (typeof tool === "string" && isDrawTool(tool)) ? tool : null;
     if (picked) {
+      if (gesture) endExtrude();
       drawOpen = false;
       editor = withTool(editor, picked);
       publish("open");
@@ -218,19 +368,33 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       publish("skip");
       return;
     }
+    if (target.dataset.sketchExtrude != null) {
+      if (gesture) void commitExtrude();
+      else beginExtrude();
+      return;
+    }
+    if (target.dataset.sketchMode != null && gesture) {
+      gesture = { ...gesture, choice: cycleMode(gesture.choice, host.featureEdit()) };
+      publish("open");
+      return;
+    }
+    if (target.dataset.sketchApply != null) {
+      void commitExtrude();
+      return;
+    }
     if (target.dataset.sketchLook != null) {
       editor = withLook(editor, !editor.lookAround);
       publish("open");
       return;
     }
     if (target.dataset.sketchFinish != null) {
-      editor = finishSketch(editor);
-      publish("open");
+      endExtrude();
+      leaveEditing(finishSketch(editor));
       return;
     }
     if (target.dataset.sketchCancel != null) {
-      editor = sketchKey(editor, "Escape", { ctrl: false, meta: false, shift: false }) ?? editor;
-      publish("open");
+      if (gesture) endExtrude();
+      else leaveEditing(sketchKey(editor, "Escape", { ctrl: false, meta: false, shift: false }) ?? editor);
       return;
     }
     const openId = target.dataset.sketchOpen;
@@ -269,8 +433,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     ev.stopPropagation();
     const next = sketchKey(editor, ev.key, mods);
     if (!next || next === editor) return;
-    editor = next;
-    publish("open");
+    leaveEditing(next);
   }, true);
   host.view.onSketchPointer((ev) => {
     lastClient = { x: ev.x, y: ev.y };
@@ -294,6 +457,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (editor.phase !== "editing" || editor.lookAround) return;
     const frame = drawingFrame();
     if (!frame) return;
+    if (gesture) {
+      extrudePointer(ev, frame);
+      return;
+    }
     const ray = host.view.pointerRay(ev.x, ev.y);
     const hit = rayOnPlane(frame, ray.origin, ray.direction);
     const uv = hit?.uv ?? editor.cursor ?? [0, 0];
@@ -324,6 +491,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.canvas.dataset.sketchLook = "0";
   host.canvas.dataset.sketchKinds = "";
   host.canvas.dataset.sketchConstruction = "0";
+  host.canvas.dataset.extrude = "off";
+  host.canvas.dataset.extrudeMode = "";
+  host.canvas.dataset.extrudeDepth = "";
+  host.canvas.dataset.extrudeRegions = "0";
 
   function enterNamed(name: "XY" | "XZ" | "YZ" | "workplane") {
     const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : originFrame(name, host.origin());
@@ -396,11 +567,16 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     paintBox();
     paintDataset();
     if (editor.phase === "off") host.readout(host.idleReadout());
+    else if (gesture && editor.phase === "editing") host.readout(extrudeReadout());
     else host.readout(sketchReadout(editor));
     syncHud(hudMode);
     if (button) button.setAttribute("aria-pressed", sketchBusy(editor) ? "true" : "false");
     host.syncPull();
     host.syncEdge();
+    paintExtrude();
+    // --- F1. The empty-plate card sits on the plane. Hide it while drawing so a click reaches the sketch. ---
+    const empty = document.querySelector<HTMLElement>("#modelEmpty");
+    if (empty) empty.hidden = sketchBusy(editor) || host.solid() != null;
     host.onHistory();
   }
 
@@ -430,7 +606,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     const frame = drawingFrame();
     const grid = frame ? gridFor(frame) : [];
-    host.view.setSketchDraw(sketchMesh(editor, frame, grid, shownPlanes));
+    const mesh = sketchMesh(editor, frame, grid, shownPlanes);
+    if (gesture?.guide) mesh.strokes.push({ xyz: [...gesture.guide[0], ...gesture.guide[1]], role: "hint" });
+    host.view.setSketchDraw(mesh);
   }
 
   function gridFor(frame: SketchFrame) {
@@ -447,6 +625,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   function syncHud(mode: "open" | "values" | "skip") {
     if (mode === "skip") return;
+    if (gesture && editor.phase === "editing") {
+      const fields = extrudeFields();
+      const at = pointerAt();
+      if (mode === "open" || !hud.shown) hud.open(fields, at);
+      else hud.setValues(fields.map((field) => field.value));
+      hud.move(at);
+      return;
+    }
     const dims = sketchDimensions(editor);
     if (!dims) {
       hud.close();
@@ -474,6 +660,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.sketchLook = editor.lookAround ? "1" : "0";
     host.canvas.dataset.sketchKinds = sketch?.entities.map((entity) => entity.kind).join(",") ?? "";
     host.canvas.dataset.sketchConstruction = String(sketch?.entities.filter((entity) => entity.construction).length ?? 0);
+    const shown = gesture && editor.phase === "editing" ? gesture : null;
+    host.canvas.dataset.extrude = shown ? (shown.dragging ? "drag" : "aim") : "off";
+    host.canvas.dataset.extrudeMode = shown ? resolvedMode() : "";
+    host.canvas.dataset.extrudeDepth = shown ? String(shown.distance) : "";
+    host.canvas.dataset.extrudeRegions = shown ? String(shown.regions.length) : "0";
   }
 
   function paintBox() {
@@ -519,15 +710,23 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function editingRow(): Node[] {
-    return [
+    const row: Node[] = [
       toolButton("line", "Line"),
       toolButton("rectangle", "Rectangle"),
       // --- S3. Drawing tools live in this menu, not on the Model toolbar. ---
       drawMenu(),
       toolButton("select", "Select"),
-      textButton(editor.lookAround ? "Lock view" : "Look around", { sketchLook: editor.lookAround ? "1" : "0" }),
-      textButton("Finish sketch", { sketchFinish: "" }),
+      textButton("Extrude (E)", { sketchExtrude: "" }),
     ];
+    if (gesture) {
+      const mode = resolvedMode();
+      const auto = gesture.choice === "auto" ? "Auto · " : "";
+      row.push(textButton(`${auto}${modeLabel(mode)} (M)`, { sketchMode: mode }));
+      row.push(textButton("Apply", { sketchApply: "" }));
+    }
+    row.push(textButton(editor.lookAround ? "Lock view" : "Look around", { sketchLook: editor.lookAround ? "1" : "0" }));
+    row.push(textButton("Finish sketch", { sketchFinish: "" }));
+    return row;
   }
 
   function drawMenu(): HTMLElement {
@@ -609,7 +808,351 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return node;
   }
 
+  openFeatureImpl = (sketch, preset) => {
+    host.closeTool();
+    editor = enterSketchData(editor, sketch);
+    editSession = true;
+    const slots: 1 | 2 | 3 = preset.draftDeg != null && preset.draftDeg !== 0 ? 3 : preset.depth2 != null && preset.depth2 > 0 ? 2 : 1;
+    gesture = {
+      slots,
+      distance: preset.distance,
+      depth2: preset.depth2,
+      draft: preset.draftDeg,
+      upTo: preset.upTo,
+      choice: preset.choice,
+      regions: chooseRegions(editor && activeSketch(editor) ? activeSketch(editor)! : sketch, [], null),
+      dragging: false,
+      guide: null,
+      down: null,
+    };
+    aimKey = "";
+    refsKey = "";
+    publish("open");
+  };
+  closeFeatureImpl = () => {
+    editSession = false;
+    if (editor.phase !== "editing" && editor.phase !== "choosing") {
+      gesture = null;
+      return;
+    }
+    gesture = null;
+    window.clearTimeout(probeTimer);
+    host.view.setHandles([]);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    editor = finishSketch(editor);
+    publish("open");
+  };
+  faceForSketch = () => host.selectedFace();
+  enterFaceAction = (face) => {
+    if (!sketchBusy(editor)) {
+      host.closeTool();
+      editor = beginChoose(editor);
+    }
+    enterFace(face);
+  };
+  enterBedAction = () => {
+    if (!sketchBusy(editor)) {
+      host.closeTool();
+      editor = beginChoose(editor);
+    }
+    enterNamed("XY");
+  };
+
   return { sync };
+
+  function leaveEditing(next: SketchEditor) {
+    const left = editor.phase === "editing" && next.phase !== "editing";
+    const session = editSession;
+    if (left) {
+      editSession = false;
+      gesture = null;
+      window.clearTimeout(probeTimer);
+      host.view.setHandles([]);
+      host.view.setGhost(null);
+      host.clearExtrudePreview();
+    }
+    editor = next;
+    publish("open");
+    if (left && session) host.cancelFeatureEdit();
+  }
+
+  function beginExtrude() {
+    const sketch = activeSketch(editor);
+    if (!sketch || editor.phase !== "editing") return;
+    const chosen = chooseRegions(sketch, editor.selection.entities, editor.cursor);
+    if (chosen.length === 0) {
+      host.readout("Select a region to extrude.");
+      return;
+    }
+    gesture = {
+      slots: 1,
+      distance: 10,
+      depth2: null,
+      draft: null,
+      upTo: null,
+      choice: host.featureEdit() === "root" ? "new" : "auto",
+      regions: chosen,
+      dragging: false,
+      guide: null,
+      down: null,
+    };
+    publish("open");
+    armProbe();
+  }
+
+  function endExtrude() {
+    if (!gesture) return;
+    gesture = null;
+    window.clearTimeout(probeTimer);
+    host.view.setHandles([]);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    publish("open");
+  }
+
+  function takeValues(values: readonly number[]) {
+    if (!gesture) return;
+    const distance = values[0];
+    if (distance != null && Number.isFinite(distance)) gesture = { ...gesture, distance, upTo: null, guide: null };
+    if (gesture.slots >= 2) gesture = { ...gesture, depth2: values[1] ?? gesture.depth2 };
+    if (gesture.slots >= 3) gesture = { ...gesture, draft: values[2] ?? gesture.draft };
+  }
+
+  function resolvedMode() {
+    const sketch = activeSketch(editor);
+    const frame = drawingFrame();
+    const touches = !!sketch && !!frame && !!gesture && sketchTouchesSolid(frame, gesture.regions, host.bounds(), sketch.on?.kind === "face");
+    return resolveExtrudeMode({
+      choice: gesture?.choice ?? "auto",
+      hasSolid: host.solid() != null,
+      touches,
+      distance: gesture?.distance ?? 0,
+      lockNew: host.featureEdit() === "root",
+    });
+  }
+
+  function currentOp(): ModelOp | null {
+    const sketch = activeSketch(editor);
+    if (!sketch || !gesture || gesture.regions.length === 0) return null;
+    const built = buildSketchExtrude({
+      sketch,
+      regions: gesture.regions,
+      distance: gesture.distance,
+      depth2: gesture.slots >= 2 ? gesture.depth2 : null,
+      draftDeg: gesture.slots >= 3 ? gesture.draft : null,
+      upTo: gesture.upTo,
+      mode: resolvedMode(),
+    });
+    return "op" in built ? built.op : null;
+  }
+
+  async function commitExtrude() {
+    const sketch = activeSketch(editor);
+    if (!sketch || !gesture || committing) return;
+    const built = buildSketchExtrude({
+      sketch,
+      regions: gesture.regions,
+      distance: gesture.distance,
+      depth2: gesture.slots >= 2 ? gesture.depth2 : null,
+      draftDeg: gesture.slots >= 3 ? gesture.draft : null,
+      upTo: gesture.upTo,
+      mode: resolvedMode(),
+    });
+    if ("error" in built) {
+      host.readout(built.error);
+      return;
+    }
+    committing = true;
+    const mode = resolvedMode();
+    const error = await host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid");
+    committing = false;
+    if (!gesture) return;
+    if (error) {
+      host.readout(error);
+      return;
+    }
+    editSession = false;
+    gesture = null;
+    window.clearTimeout(probeTimer);
+    host.view.setHandles([]);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    editor = finishSketch(editor);
+    publish("open");
+    // The sketch camera is put back, which would hide a solid this extrude just made. Frame it.
+    host.frameSolid();
+  }
+
+  function armProbe() {
+    window.clearTimeout(probeTimer);
+    if (!gesture || gesture.dragging) return;
+    if (resolvedMode() === "new" || !host.solid()) {
+      host.clearExtrudePreview();
+      return;
+    }
+    probeTimer = window.setTimeout(() => {
+      const op = currentOp();
+      if (op) host.probeExtrude(op);
+    }, GHOST_PROBE_WAIT_MS);
+  }
+
+  function extrudeFields(): HudField[] {
+    const gestureNow = gesture;
+    if (!gestureNow) return [];
+    const fields: HudField[] = [{ id: "distance", label: "Distance", unit: "mm", value: gestureNow.distance }];
+    if (gestureNow.slots >= 2) fields.push({ id: "depth2", label: "Other side", unit: "mm", value: gestureNow.depth2 ?? 0 });
+    if (gestureNow.slots >= 3) fields.push({ id: "draft", label: "Draft", unit: "°", value: gestureNow.draft ?? 0 });
+    return fields;
+  }
+
+  function extrudeReadout(): string {
+    if (!gesture) return "";
+    const mode = modeLabel(resolvedMode());
+    const where = gesture.upTo != null ? `Up to face ${typeof gesture.upTo === "number" ? gesture.upTo : gesture.upTo.index}. ` : "";
+    return `${where}Extrude ${gesture.distance} mm, ${mode}. Drag the arrow or type the distance. M changes join, cut, or new object. Tab adds the other side, then a draft. Enter or Apply keeps it. Esc returns to the sketch.`;
+  }
+
+  function extrudePointer(ev: { phase: "down" | "move" | "up"; x: number; y: number; shift: boolean; ctrl: boolean; alt: boolean }, frame: ReturnType<typeof drawingFrame>) {
+    if (!gesture || !frame) return;
+    if (ev.phase === "down") {
+      gesture = { ...gesture, down: { x: ev.x, y: ev.y, distance: gesture.distance }, dragging: false };
+      return;
+    }
+    if (ev.phase === "move" && gesture.down) {
+      const moved = Math.hypot(ev.x - gesture.down.x, ev.y - gesture.down.y);
+      if (moved < 3 && !gesture.dragging) return;
+      const distance = dragDistance(ev, frame, gesture.down);
+      if (distance == null) return;
+      gesture = { ...gesture, dragging: true, distance, upTo: null, guide: null };
+      snapFace(ev, frame);
+      host.clearExtrudePreview();
+      publish("values");
+      return;
+    }
+    if (ev.phase === "move") {
+      const sketch = activeSketch(editor);
+      if (sketch && editor.selection.entities.length === 0) {
+        const hit = rayOnPlane(frame, host.view.pointerRay(ev.x, ev.y).origin, host.view.pointerRay(ev.x, ev.y).direction);
+        const chosen = chooseRegions(sketch, [], hit?.uv ?? null);
+        if (chosen.length > 0) gesture = { ...gesture, regions: chosen };
+      }
+      publish("skip");
+      return;
+    }
+    if (ev.phase === "up" && gesture.down) {
+      const moved = Math.hypot(ev.x - gesture.down.x, ev.y - gesture.down.y);
+      gesture = { ...gesture, down: null, dragging: false };
+      if (moved < 4) void commitExtrude();
+      else {
+        publish("open");
+        armProbe();
+      }
+    }
+  }
+
+  function dragDistance(ev: { x: number; y: number; ctrl: boolean; shift: boolean }, frame: NonNullable<ReturnType<typeof drawingFrame>>, down: { x: number; y: number; distance: number }): number | null {
+    const centre = regionsCentroid(gesture?.regions ?? []);
+    const origin = toWorld(frame, centre);
+    const dir = frame.w;
+    const ray = host.view.pointerRay(ev.x, ev.y);
+    const rayDir = unit3(ray.direction);
+    const axis = unit3(dir);
+    const parallel = rayDir && axis ? Math.abs(rayDir[0] * axis[0] + rayDir[1] * axis[1] + rayDir[2] * axis[2]) : 1;
+    const mm = host.view.sketchView().mmPerPx;
+    const endOn = axisOnScreen(origin, dir, mm);
+    let distance: number | null = null;
+    // A ray along W cannot measure a distance on W. The screen mapping is the drag then.
+    if (!endOn && parallel < 0.85) {
+      distance = dragAxis(ray, { origin, direction: dir }, { round: ev.ctrl, fine: ev.shift, mmPerPx: mm })?.distance ?? null;
+    }
+    if (distance == null) {
+      const delta = screenAlong(origin, dir, down, ev, mm);
+      distance = down.distance + delta;
+      if (ev.ctrl) distance = Math.round(distance);
+      else if (ev.shift) distance = Math.round(distance * 100) / 100;
+      else distance = Math.round(distance * 10) / 10;
+    }
+    return Number.isFinite(distance) ? distance : null;
+  }
+
+  /** True when 1 mm of `dir` is plainly across the screen, so the pointer can drag along it. */
+  function axisOnScreen(origin: Vec3, dir: Vec3, mmPerPx: number): boolean {
+    const start = host.view.projectPoint(origin);
+    const end = host.view.projectPoint([origin[0] + dir[0], origin[1] + dir[1], origin[2] + dir[2]]);
+    if (!start || !end) return false;
+    const across = mmPerPx > 1e-6 ? 1 / mmPerPx : 0;
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    return length >= 2 && length >= across * 0.35;
+  }
+
+  function screenAlong(origin: Vec3, dir: Vec3, down: { x: number; y: number }, ev: { x: number; y: number }, mmPerPx: number): number {
+    const start = host.view.projectPoint(origin);
+    const end = host.view.projectPoint([origin[0] + dir[0], origin[1] + dir[1], origin[2] + dir[2]]);
+    if (!start || !end || !axisOnScreen(origin, dir, mmPerPx)) return (down.y - ev.y) * mmPerPx;
+    const sx = end.x - start.x;
+    const sy = end.y - start.y;
+    const length = Math.hypot(sx, sy);
+    const pixels = ((ev.x - down.x) * sx + (ev.y - down.y) * sy) / Math.max(length, 1e-6);
+    return pixels * mmPerPx;
+  }
+
+  function snapFace(ev: { x: number; y: number }, frame: NonNullable<ReturnType<typeof drawingFrame>>) {
+    if (!gesture) return;
+    const hit = host.view.pickSolid(ev.x, ev.y);
+    const own = activeSketch(editor)?.on;
+    if (!hit || (own?.kind === "face" && own.face.index === hit.face)) return;
+    const info = host.faceInfo(hit.face);
+    if (!info) return;
+    const centre = toWorld(frame, regionsCentroid(gesture.regions));
+    const height = (info.plane.point[0] - centre[0]) * frame.w[0] + (info.plane.point[1] - centre[1]) * frame.w[1] + (info.plane.point[2] - centre[2]) * frame.w[2];
+    // A fat pixel tolerance swallowed the whole drag when the camera was close to the face.
+    if (Math.abs(height - gesture.distance) > 0.75) return;
+    const at: Vec3 = [centre[0] + frame.w[0] * height, centre[1] + frame.w[1] * height, centre[2] + frame.w[2] * height];
+    gesture = { ...gesture, distance: height, upTo: info.ref, depth2: null, guide: [at, info.plane.point] };
+  }
+
+  function paintExtrude() {
+    if (!gesture || editor.phase !== "editing") return;
+    const frame = drawingFrame();
+    const sketch = activeSketch(editor);
+    if (!frame || !sketch || gesture.regions.length === 0) {
+      host.view.setHandles([]);
+      host.view.setGhost(null);
+      return;
+    }
+    const centre = toWorld(frame, regionsCentroid(gesture.regions));
+    host.view.setHandles([inPlaceArrow({ at: centre, dir: frame.w, outward: frame.w, distance: gesture.distance, id: "extrude", label: "Distance" })]);
+    const solid = solidFrameOf(sketch);
+    const span = ghostSpan(gesture.distance, gesture.slots >= 2 ? gesture.depth2 : null);
+    const shifted = { origin: add3(solid.origin, scale3(solid.w, span.from)) as Vec3, u: solid.u, v: solid.v };
+    const parts: number[] = [];
+    for (const region of gesture.regions) {
+      const soup = regionExtrude(shifted, regionSamples(region), span.to - span.from);
+      parts.push(...soup);
+    }
+    host.view.setGhost(parts.length > 0 ? { kind: "soup", positions: new Float32Array(parts) } : null);
+  }
+}
+
+function ghostSpan(distance: number, depth2: number | null): { from: number; to: number } {
+  if (depth2 != null && depth2 > 0 && Math.abs(depth2 - Math.abs(distance)) <= 1e-4) return { from: -Math.abs(distance), to: Math.abs(distance) };
+  if (depth2 != null && depth2 > 0) return distance >= 0 ? { from: -depth2, to: distance } : { from: distance, to: depth2 };
+  return distance >= 0 ? { from: 0, to: distance } : { from: distance, to: 0 };
+}
+
+function add3(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+}
+
+function scale3(a: Vec3, k: number): Vec3 {
+  return [a[0] * k, a[1] * k, a[2] * k];
+}
+
+function unit3(value: Vec3): Vec3 | null {
+  const length = Math.hypot(value[0], value[1], value[2]);
+  if (!(length > 1e-9)) return null;
+  return [value[0] / length, value[1] / length, value[2] / length];
 }
 
 function framesMatch(a: SketchFrame, b: SketchFrame): boolean {

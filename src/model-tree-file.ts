@@ -4,6 +4,7 @@
  * tree for one page load. A split names its piece, and a join its tool, by that plate object's id instead.
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
+import { readSketch } from "./sketch/model.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
 
@@ -306,6 +307,8 @@ function readOp(value: unknown): SavedOp | undefined {
         if (value.draftDeg !== undefined && !finite(value.draftDeg)) return undefined;
         const upTo = readUpTo(value.upTo);
         if (upTo === null) return undefined;
+        // --- F1. `sketch` is optional. A bad drawing is dropped and the extrude still opens. ---
+        const sketch = value.sketch === undefined ? undefined : readSketch(value.sketch) ?? undefined;
         return {
           kind: "extrude",
           ...plane,
@@ -314,6 +317,7 @@ function readOp(value: unknown): SavedOp | undefined {
           ...(finite(value.depth2) ? { depth2: value.depth2 } : {}),
           ...(finite(value.draftDeg) ? { draftDeg: value.draftDeg } : {}),
           ...(upTo !== undefined ? { upTo } : {}),
+          ...(sketch ? { sketch } : {}),
         };
       }
       const axisOrigin = value.axisOrigin === undefined ? undefined : pair(value.axisOrigin);
