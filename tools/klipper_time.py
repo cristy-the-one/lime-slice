@@ -451,7 +451,7 @@ def main():
     ap.add_argument("files", nargs="+")
     ap.add_argument("--max-velocity", type=float, default=400.0)
     ap.add_argument("--max-accel", type=float, default=20000.0)
-    ap.add_argument("--square-corner-velocity", type=float, default=5.0)
+    ap.add_argument("--square-corner-velocity", type=float, default=8.0)
     ap.add_argument("--minimum-cruise-ratio", type=float, default=0.5)
     ap.add_argument("--max-z-velocity", type=float, default=20.0)
     ap.add_argument("--max-z-accel", type=float, default=500.0)
