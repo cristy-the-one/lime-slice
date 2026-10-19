@@ -113,7 +113,8 @@ test("a section face is taken only right after Face, and another object starts t
   await expect(page.locator("#modelSectionNote")).toBeHidden();
 
   // A later face pick is for another tool: the plane stays.
-  const other = { x: box.x + x! + w! * 0.5, y: box.y + y! + h! * 0.97 };
+  // The top face, clear of the View panel and the History card.
+  const other = { x: box.x + x! + w! * 0.5, y: box.y + y! + h! * 0.12 };
   await page.mouse.click(other.x, other.y);
   await expect(page.locator("#model")).toHaveAttribute("data-section", plane!);
   // Face again arms the pick: the same click now moves the plane, so it was another face.
