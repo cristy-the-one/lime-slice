@@ -95,9 +95,9 @@ const built = await call("model_build", { name: "sign", base: { primitive: "box"
   { kind: "text", text: "LIME", height: 4, depth: 0.6, face: { normal: [0, 0, 1] }, label: "title" },
   { kind: "pattern", path: { points: [[-8, -9.5, 2], [0, -9.5, 10], [8, -9.5, 18]], count: 4 }, op: { kind: "boolean", op: "cut", primitive: "sphere", radius: 0.8, centre: [-8, -9.5, 2] }, label: "dimples" },
 ] });
-check("text and a path pattern build", built.ok === true && (built.applied as number) >= 14, JSON.stringify(built));
+check("text and a path pattern build as two groups", built.ok === true && built.applied === 2, JSON.stringify(built));
 const history = ((await call("model_history", { object: built.object, limit: 50 })).nodes as { label: string }[]).map((row) => row.label);
-check("each stroke and copy is a labelled step", history.some((label) => /^title \d+\/\d+$/.test(label)) && history.filter((label) => label.startsWith("dimples")).length === 4, JSON.stringify(history));
+check("each composite is one labelled row", history.filter((label) => label === "title").length === 1 && history.filter((label) => label === "dimples").length === 1, JSON.stringify(history));
 const looked = await call("render_view", { object: built.object, turntable: 4, highlight: "title", colours: { dimples: "#3070c0" }, section: { normal: [1, 0, 0] }, longEdge: 64, inline: false });
 check("a turntable renders all round, with a legend of colours", looked.ok === true && (looked.views as unknown[]).length === 4 && (looked.colours as unknown[]).length === 2, JSON.stringify(looked));
 const badColour = await call("render_view", { object: built.object, colours: { title: "orange" }, inline: false });

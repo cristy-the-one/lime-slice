@@ -469,7 +469,7 @@ export function positionText(fields: PlaceFields): string {
   return parts.length === 0 ? "At file position" : parts.join(" · ");
 }
 
-// --- A8. MCP composites arrive as many rows named "prefix k/n" until they are stored as one group.
+// --- A8. Files that still have rows named "prefix k/n" fold those runs. A9 stores a new MCP composite as one group, already one row.
 // Consecutive rows that run 1/n … n/n fold into one collapsible row. The shown step stays a node. ---
 
 /** "rim leaves 3/12" → { prefix: "rim leaves", k: 3, n: 12 }. A single step (n < 2) is not a run. */
