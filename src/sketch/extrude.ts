@@ -22,6 +22,14 @@ export const LOOP_EXTENT_REFUSAL = "A second depth, a draft, or a face to stop a
 export const DRAFT_UP_TO_REFUSAL = "A draft up to a face is not available yet. Drop the draft, or drop the face and set a depth.";
 export const UP_TO_SECOND_REFUSAL = "An extrude up to a face starts at the profile. Drop the second depth.";
 export const DEPTH_REFUSAL = "An extrude needs a depth other than 0.";
+/** The engine takes a profile of at most this many loops: the outline and its holes. */
+export const PROFILE_LOOPS_MAX = 32;
+
+/** Null when `loops` fit one profile; otherwise what to do, in words. */
+export function tooManyHoles(loops: number): string | null {
+  if (loops <= PROFILE_LOOPS_MAX) return null;
+  return `This region has ${loops - 1} holes, and one profile takes ${PROFILE_LOOPS_MAX - 1}. Apply it with ${PROFILE_LOOPS_MAX - 1} or fewer holes, then cut the rest from a second sketch.`;
+}
 
 export type ModeChoice = "auto" | "new" | "fuse" | "cut" | "common";
 export type ResolvedMode = "new" | BooleanKind;
@@ -230,6 +238,8 @@ export function buildSketchExtrude(draft: ExtrudeDraft): { op: ModelOp } | { err
   const symmetric = !upTo && depth2 != null && Math.abs(depth2 - Math.abs(distance)) <= EQUAL_MM;
   const steps: ExtrudeOp[] = [];
   for (const region of draft.regions) {
+    const crowded = tooManyHoles(1 + region.holes.length);
+    if (crowded) return { error: crowded };
     const built = oneExtrude(draft.sketch, region, {
       distance,
       depth2: symmetric ? null : depth2,

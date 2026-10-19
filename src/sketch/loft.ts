@@ -12,7 +12,7 @@ import { frameOf, toWorld } from "./frame.ts";
 import { arcFrom3, arcPoint } from "./geom.ts";
 import { addArc, addCircle, addLine, addSpline, emptySketch, readSketch, sketchJson, type Pt, type SketchData } from "./model.ts";
 import { loopSignedArea, toLoops, type ProfileLoop, type Region } from "./regions.ts";
-import type { ModeChoice, ResolvedMode } from "./extrude.ts";
+import { tooManyHoles, type ModeChoice, type ResolvedMode } from "./extrude.ts";
 
 export const COPLANAR_REFUSAL = "The loft has no volume: its sections lie in one plane.";
 export const SECTIONS_REFUSAL = "A loft needs two or more sections.";
@@ -108,6 +108,10 @@ export function buildSketchLoft(input: { picks: readonly LoftPickInput[]; ruled:
   if (input.picks.length < 2) return { error: SECTIONS_REFUSAL };
   const sections = input.picks.map((pick) => pick.section);
   if (sectionsCoplanar(sections)) return { error: COPLANAR_REFUSAL };
+  for (const section of sections) {
+    const crowded = tooManyHoles(section.loops?.length ?? 1);
+    if (crowded) return { error: crowded };
+  }
   const boolean: BooleanKind = input.mode === "new" ? "fuse" : input.mode;
   const drawing: LoftDrawing = { sketches: input.picks.map((pick) => (pick.sketch ? sketchJson(pick.sketch) : null)) };
   return { op: { ...loftOp(boolean, sections, input.ruled), drawing } };

@@ -13,7 +13,7 @@ import { arcFrom3, arcPoint, curveOf, dist, sampleSpline, unit } from "./geom.ts
 import type { ArcGeom, Pt } from "./geom.ts";
 import { addArc, addLine, addSpline, emptySketch, sketchJson, type SketchData } from "./model.ts";
 import { toLoops, type ProfileLoop, type ProfileSegment, type Region } from "./regions.ts";
-import { chooseRegions, cycleMode, modeLabel, outlinesOf, regionsOfOutlines, resolveExtrudeMode, sketchTouchesSolid, type ModeChoice, type ResolvedMode } from "./extrude.ts";
+import { chooseRegions, cycleMode, modeLabel, outlinesOf, regionsOfOutlines, resolveExtrudeMode, sketchTouchesSolid, tooManyHoles, type ModeChoice, type ResolvedMode } from "./extrude.ts";
 import type { RefSegment } from "./refs.ts";
 
 /** The kernel's full turn. Typing this snaps to it. */
@@ -219,6 +219,8 @@ export function buildSketchRevolve(draft: RevolveDraft): { op: ModelOp } | { err
   if (draft.regions.some((region) => regionCrossesAxis(region, draft.axis))) return { error: CROSS_REFUSAL };
   const steps: RevolveOp[] = [];
   for (const region of draft.regions) {
+    const crowded = tooManyHoles(1 + region.holes.length);
+    if (crowded) return { error: crowded };
     const built = oneRevolve(draft.sketch, region, draft.axis, angle.angle, draft.mode);
     if ("error" in built) return built;
     steps.push(built.op);

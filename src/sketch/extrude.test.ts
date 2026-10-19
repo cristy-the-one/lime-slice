@@ -187,6 +187,24 @@ const loaded = read && loadedTree(read, "k2", root, "Box", null, () => undefined
 eq("the loaded step still carries the sketch", loaded?.nodes.get(1)?.op, withSketch);
 check("the first extrude of a group is the one an edit opens", featureExtrude(withSketch)?.kind === "extrude");
 
+// A plate with more holes than one profile takes is refused before the engine, with what to do.
+function perforated(holes: number): SketchData {
+  let plate = emptySketch();
+  plate = addLine(plate, [0, 0], [100, 0]).sketch;
+  plate = addLine(plate, [100, 0], [100, 100]).sketch;
+  plate = addLine(plate, [100, 100], [0, 100]).sketch;
+  plate = addLine(plate, [0, 100], [0, 0]).sketch;
+  for (let k = 0; k < holes; k += 1) plate = addCircle(plate, [6 + (k % 8) * 12, 6 + Math.floor(k / 8) * 12], 2).sketch;
+  return plate;
+}
+for (const holes of [31, 32]) {
+  const plate = perforated(holes);
+  const outer = sketchRegions(plate).reduce((big, region) => (region.area > big.area ? region : big));
+  const made = buildSketchExtrude({ sketch: plate, regions: [outer], distance: 3, depth2: null, draftDeg: null, upTo: null, mode: "new" });
+  if (holes === 31) eq("a plate with 31 holes extrudes", "op" in made, true);
+  else eq("a plate with 32 holes says what to do", "error" in made ? made.error : "", "This region has 32 holes, and one profile takes 31. Apply it with 31 or fewer holes, then cut the rest from a second sketch.");
+}
+
 if (failed > 0) {
   console.error(`${failed} failed`);
   process.exit(1);
