@@ -59,6 +59,7 @@ import {
   type ConstrainAction,
   type ConstrainState,
   type ConstrainTool,
+  withRectangleConstraints,
 } from "./constrain.ts";
 import { dragSketch } from "./solve.ts";
 
@@ -669,10 +670,13 @@ function placeRectangle(editor: SketchEditor, sketch: SketchData, anchor: Pt, at
     next = point.sketch;
     ids.push(point.id);
   }
+  const sides: number[] = [];
   for (let i = 0; i < 4; i += 1) {
     const line = addLine(next, ids[i]!, ids[(i + 1) % 4]!);
     next = line.sketch;
+    sides.push(line.id);
   }
+  next = withRectangleConstraints(next, sides as [number, number, number, number]);
   const placed = replaceSketch({ ...editor, rect: null, typed: null, tool: editor.tool }, next);
   return { ...placed, undo: [...editor.undo, before].slice(-100), redo: [] };
 }
@@ -905,6 +909,13 @@ export function cancelDimensionEdit(editor: SketchEditor): SketchEditor {
 export function editDimension(editor: SketchEditor, id: number): SketchEditor {
   if (editor.phase !== "editing") return editor;
   return { ...editor, constrain: { ...editor.constrain, selected: id, hud: id, focus: id, note: null }, esc: 0 };
+}
+
+/** A click on a constraint's mark selects that constraint: Delete or Remove constraint then takes it away. */
+export function selectConstraint(editor: SketchEditor, id: number): SketchEditor {
+  if (editor.phase !== "editing") return editor;
+  const selected = editor.constrain.selected === id ? null : id;
+  return { ...editor, selection: freshSelection(), constrain: { ...editor.constrain, selected, hud: null, focus: null, note: null }, esc: 0 };
 }
 
 /** The view focused the label, so the next paint must not steal the cursor. */

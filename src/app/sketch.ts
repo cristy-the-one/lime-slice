@@ -63,6 +63,7 @@ import {
   withRefs,
   withTool,
   acknowledgeDimensionFocus,
+  selectConstraint,
   applyConstraint,
   cancelDimensionEdit,
   commitDimensionText,
@@ -73,7 +74,7 @@ import {
 } from "../sketch/session";
 import { DRAW_MENU, isDrawTool } from "../sketch/tools";
 // --- S4. Constraints live in the sketch card menu, not on the Model toolbar. ---
-import { CONSTRAIN_MENU, dimensionLabels, firstLineMeasure, isConstrainTool, placedStatus, plainDrivingValue, setDrivingEvaluator } from "../sketch/constrain";
+import { CONSTRAIN_MENU, constraintGlyphs, dimensionLabels, firstLineMeasure, type ConstraintGlyph, isConstrainTool, placedStatus, plainDrivingValue, setDrivingEvaluator } from "../sketch/constrain";
 import { evaluate, ExprError } from "../modeling/expr.ts";
 import { isPlainNumber, withExprs } from "../modeling/params.ts";
 import type { Params } from "../modeling/expr.ts";
@@ -680,6 +681,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   labels.className = "sketch-dims";
   labels.hidden = true;
   document.body.append(labels);
+  // --- A16. Each geometric constraint's mark beside its geometry. A click selects it; Delete removes it. ---
+  const glyphs = document.createElement("div");
+  glyphs.className = "sketch-dims sketch-glyphs";
+  glyphs.hidden = true;
+  document.body.append(glyphs);
+  let glyphsKey = "";
+  const glyphsOf = new WeakMap<SketchData, ConstraintGlyph[]>();
 
   const sync = () => {
     if (editor.phase === "off") return;
@@ -1129,6 +1137,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     paintBox();
     paintDataset();
     paintLabels();
+    paintGlyphs();
     paintReadout();
     syncHud(hudMode);
     focusDimensionLabel();
@@ -1558,6 +1567,64 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       node.dataset.conflict = status?.conflicting.includes(item.id) ? "1" : "0";
       node.title = item.title;
     }
+  }
+
+  function paintGlyphs() {
+    const sketch = activeSketch(editor);
+    const frame = drawingFrame();
+    if (!sketch || !frame || editor.phase !== "editing") {
+      glyphs.hidden = true;
+      return;
+    }
+    let marks = glyphsOf.get(sketch);
+    if (!marks) {
+      marks = constraintGlyphs(sketch);
+      glyphsOf.set(sketch, marks);
+    }
+    if (marks.length === 0) {
+      glyphs.hidden = true;
+      return;
+    }
+    glyphs.hidden = false;
+    const status = placedStatus(sketch);
+    const key = marks.map((mark) => `${mark.id}:${mark.text}:${mark.slot}`).join(" ") + `|${editor.constrain.selected ?? ""}|${status?.conflicting.join(",") ?? ""}`;
+    if (key !== glyphsKey) {
+      glyphsKey = key;
+      glyphs.replaceChildren(
+        ...marks.map((mark) => {
+          const node = document.createElement("button");
+          node.type = "button";
+          node.className = "sketch-dim sketch-glyph";
+          node.dataset.glyphId = String(mark.id);
+          node.textContent = mark.text;
+          node.title = mark.title;
+          node.setAttribute("aria-label", mark.title);
+          const selected = editor.constrain.selected === mark.id;
+          node.setAttribute("aria-pressed", selected ? "true" : "false");
+          node.dataset.conflict = status?.conflicting.includes(mark.id) ? "1" : "0";
+          node.style.fontSize = "10px";
+          node.style.padding = "0 3px";
+          if (selected) node.style.outline = "2px solid var(--accent)";
+          node.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            ev.preventDefault();
+            editor = selectConstraint(editor, mark.id);
+            publish("open");
+          });
+          return node;
+        }),
+      );
+    }
+    marks.forEach((mark, index) => {
+      const node = glyphs.children[index] as HTMLElement | undefined;
+      if (!node) return;
+      const screen = host.view.projectPoint(toWorld(frame, mark.at));
+      node.hidden = !screen;
+      if (screen) {
+        node.style.left = `${screen.x + 12 + mark.slot * 16}px`;
+        node.style.top = `${screen.y - 12}px`;
+      }
+    });
   }
 
   /** The heads-up box focuses itself on open. Put the caret back in the dimension label. */

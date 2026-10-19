@@ -302,6 +302,22 @@ async function sketchRectangle(page: Page) {
   return centre;
 }
 
+test("a rectangle keeps square sides, its constraints show as marks, and a mark is picked and deleted", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await sketchRectangle(page);
+  await expect(canvas, "a rectangle carries two horizontal and two vertical sides").toHaveAttribute("data-sketch-constraints", "4");
+  const marks = page.locator(".sketch-glyph");
+  await expect(marks).toHaveText(["H", "V", "H", "V"]);
+  await expect(marks.first()).toHaveAttribute("aria-label", /^Horizontal\./);
+  await marks.first().click();
+  await expect(page.locator(".sketch-glyph[aria-pressed=true]")).toHaveCount(1);
+  await page.keyboard.press("Delete");
+  await expect(canvas).toHaveAttribute("data-sketch-constraints", "3");
+  await expect(marks).toHaveText(["V", "H", "V"]);
+  await expect(canvas, "Delete took the constraint, not the rectangle").toHaveAttribute("data-sketch-entities", "4");
+});
+
 test("sketch keys leave text fields alone and stop when Model closes", async ({ page }) => {
   await openBox(page);
   const canvas = page.locator("#model");

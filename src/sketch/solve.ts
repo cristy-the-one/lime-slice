@@ -23,6 +23,8 @@ export type SketchConstraint =
   | { id: number; kind: "tangent"; a: number; b: number; side?: 1 | -1; inner?: boolean }
   | { id: number; kind: "fixed"; point: number }
   | { id: number; kind: "midpoint"; point: number; line: number }
+  /** A point on a line (anywhere along it), or on a circle or an arc's circle. */
+  | { id: number; kind: "coincident"; point: number; entity: number }
   | { id: number; kind: "distance"; a: number; b: number; value: number }
   | { id: number; kind: "distance"; point: number; line: number; value: number; side: 1 | -1 }
   | { id: number; kind: "length"; line: number; value: number }
@@ -167,6 +169,12 @@ function parseConstraint(raw: Dimension): SketchConstraint | null {
     const point = num("point");
     if (point == null || !Number.isInteger(point)) return null;
     return { id, kind, point };
+  }
+  if (kind === "coincident") {
+    const point = num("point");
+    const entity = num("entity");
+    if (point == null || entity == null || !Number.isInteger(point) || !Number.isInteger(entity)) return null;
+    return { id, kind, point, entity };
   }
   if (kind === "midpoint") {
     const point = num("point");
@@ -358,7 +366,10 @@ function referencedPoints(sketch: SketchData, constraints: readonly SketchConstr
         take(constraint.b);
       }
     } else if (constraint.kind === "fixed") take(constraint.point);
-    else if (constraint.kind === "midpoint") {
+    else if (constraint.kind === "coincident") {
+      take(constraint.point);
+      takeEntity(constraint.entity);
+    } else if (constraint.kind === "midpoint") {
       take(constraint.point);
       takeEntity(constraint.line);
     } else if (constraint.kind === "distance" && "point" in constraint) {
@@ -386,7 +397,7 @@ function radiusUsers(sketch: SketchData, constraint: SketchConstraint): number[]
   if (constraint.kind === "equal" || constraint.kind === "tangent") {
     consider(constraint.a);
     consider(constraint.b);
-  } else if ((constraint.kind === "radius" || constraint.kind === "diameter") && sketchEntity(sketch, constraint.entity)?.kind === "circle") {
+  } else if ((constraint.kind === "radius" || constraint.kind === "diameter" || constraint.kind === "coincident") && sketchEntity(sketch, constraint.entity)?.kind === "circle") {
     out.push(constraint.entity);
   }
   return out;
@@ -400,7 +411,7 @@ function arcUsers(sketch: SketchData, constraint: SketchConstraint): number[] {
   if (constraint.kind === "equal" || constraint.kind === "tangent" || constraint.kind === "concentric") {
     consider(constraint.a);
     consider(constraint.b);
-  } else if (constraint.kind === "radius" || constraint.kind === "diameter") consider(constraint.entity);
+  } else if (constraint.kind === "radius" || constraint.kind === "diameter" || constraint.kind === "coincident") consider(constraint.entity);
   return out;
 }
 
@@ -482,6 +493,19 @@ function pushResidual(sketch: SketchData, geom: Geom, constraint: SketchConstrai
   }
   if (constraint.kind === "tangent") {
     pushTangent(sketch, geom, constraint, rows, lineEnds, circleAt);
+    return;
+  }
+  if (constraint.kind === "coincident") {
+    const point = geom.point(constraint.point);
+    if (!point) return;
+    const line = lineEnds(constraint.entity);
+    if (line) {
+      const signed = signedDistance(line[0], line[1], point);
+      if (signed != null) rows.push(signed);
+      return;
+    }
+    const circle = circleAt(constraint.entity);
+    if (circle) rows.push(dist(point, circle.centre) - circle.radius);
     return;
   }
   if (constraint.kind === "midpoint") {
@@ -672,7 +696,12 @@ function dampStep(j: number[][], r: number[], lambda: number): number[] | null {
       for (let other = 0; other < n; other += 1) a[col]![other] += (jr[col] ?? 0) * (jr[other] ?? 0);
     }
   }
-  for (let col = 0; col < n; col += 1) a[col]![col] += lambda * Math.max(a[col]![col] ?? 0, 1e-8);
+  // Each column is damped by at least the mean of the diagonal. A slot one constraint barely reads (a point's y on a
+  // nearly level radius) otherwise takes a huge step, and the solve stalls short of a point on a circle.
+  let trace = 0;
+  for (let col = 0; col < n; col += 1) trace += a[col]![col] ?? 0;
+  const floor = Math.max(trace / n, 1e-8);
+  for (let col = 0; col < n; col += 1) a[col]![col] += lambda * Math.max(a[col]![col] ?? 0, floor);
   const solved = solveLinear(a, g.map((value) => -value));
   return solved;
 }
