@@ -9,12 +9,15 @@
 //! Every call holds the store lock from start to end, so the kernel never sees one solid from two
 //! threads.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fmt::Write as _;
 use std::os::raw::{c_char, c_int};
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -532,7 +535,54 @@ pub fn set_limits(limits: Limits) {
     lock().limits = limits;
 }
 
-/// Answer one JSON request. See `docs/step-modeler.md` for the calls.
+//// --- D4. How long a new group (an Apply or a probe) may build before it stops at the next step. Every tree
+/// shares one store lock, so a group of hundreds of Booleans on a large part would hold up every other part.
+/// A replay (open, goto, edit) has no budget: a saved part must open the same on a slower machine.
+static GROUP_BUDGET_MS: AtomicU64 = AtomicU64::new(60_000);
+
+pub fn set_group_budget(budget: Duration) {
+    GROUP_BUDGET_MS.store(
+        budget.as_millis().try_into().unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+}
+
+thread_local! {
+    /// When the new group being built on this thread must stop; none outside an Apply or a probe.
+    static GROUP_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Holds the group deadline for one Apply or probe, and clears it however the call ends.
+struct GroupBudget;
+
+impl GroupBudget {
+    fn start() -> GroupBudget {
+        let budget = Duration::from_millis(GROUP_BUDGET_MS.load(Ordering::Relaxed));
+        GROUP_DEADLINE.set(Instant::now().checked_add(budget));
+        GroupBudget
+    }
+}
+
+impl Drop for GroupBudget {
+    fn drop(&mut self) {
+        GROUP_DEADLINE.set(None);
+    }
+}
+
+/// The refusal for a group past its deadline, before step `index` of `count`.
+fn group_overran(index: usize, count: usize) -> Option<String> {
+    let deadline = GROUP_DEADLINE.get()?;
+    if Instant::now() < deadline {
+        return None;
+    }
+    let seconds = GROUP_BUDGET_MS.load(Ordering::Relaxed).div_ceil(1000);
+    Some(format!(
+        "This group stopped after {seconds} s, before step {} of {count}. Use fewer steps, a larger pitch, or a smaller region.",
+        index + 1
+    ))
+}
+
+// Answer one JSON request. See `docs/step-modeler.md` for the calls.
 pub fn call(request: &str) -> String {
     let request: Request = match serde_json::from_str(request) {
         Ok(request) => request,
@@ -1782,6 +1832,7 @@ impl Store {
             None => {
                 let tool = self.join_tool(&key, &op.op)?;
                 let from = doc_in(&mut self.docs, &key)?.shape(parent);
+                let _budget = GroupBudget::start();
                 build(from, op, false, tool, &steps).map_err(Failure::from)?
             }
         };
@@ -1879,7 +1930,10 @@ impl Store {
                     .map(|resolved| (resolved, tool, found))
                     .map_err(BuildFail::plain)
             })
-            .and_then(|(resolved, tool, found)| build(from, resolved, true, tool, &found));
+            .and_then(|(resolved, tool, found)| {
+                let _budget = GroupBudget::start();
+                build(from, resolved, true, tool, &found)
+            });
         match result {
             Ok(mut built) => {
                 // The shape keeps what its reply measured and meshed, so an Apply that takes it meshes nothing again.
@@ -3122,6 +3176,9 @@ fn build_group(
     let mut skipped = 0u32;
     let mut stored: Vec<Op> = Vec::with_capacity(count);
     for (index, step) in steps.iter().enumerate() {
+        if let Some(message) = group_overran(index, count) {
+            return Err(BuildFail::plain(message));
+        }
         let outcome = {
             let shape = match current.as_mut() {
                 Some(shape) => shape,
