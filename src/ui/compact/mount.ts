@@ -36,6 +36,12 @@ export function mountCompact() {
   stage?.append(isoButton(), progressLine());
   const preview = document.querySelector("#previewBody");
   preview?.append(layerTip());
+  // A stage key (1 to 4) clicks the stage's own tab: the nav and the sheet follow it, so Model never keeps Prepare's sheet.
+  const follow = new MutationObserver(followStage);
+  for (const id of ["#tabPrepare", "#tabPreview", "#tabModel"]) {
+    const node = document.querySelector(id);
+    if (node) follow.observe(node, { attributes: true, attributeFilter: ["aria-selected"] });
+  }
   mountCompactTouch({
     toggleChrome,
     onFit: () => document.querySelector<HTMLButtonElement>("#viewPresets button:last-child")?.click(),
@@ -345,7 +351,18 @@ function toggleChrome() {
   haptic("tap");
 }
 
-function selectTab(next: CompactTab) {
+/** The stage changed without the nav: take the nav tab that shows it, leaving Settings and Device on Prepare alone. */
+function followStage() {
+  if (!active) return;
+  const stage = document.querySelector<HTMLElement>("#tabModel[aria-selected=true]") ? "model"
+    : document.querySelector<HTMLElement>("#tabPreview[aria-selected=true]") ? "preview"
+    : "prepare";
+  const want: CompactTab = stage !== "prepare" ? stage : tab === "settings" ? "settings" : "prepare";
+  if (want !== tab) selectTab(want, true);
+}
+
+/** `following` is a stage that already changed: the nav and the sheet catch up, and no stage tab is clicked again. */
+function selectTab(next: CompactTab, following = false) {
   tab = next;
   if (next !== "preview") window.dispatchEvent(new CustomEvent("lime-support-edit-close"));
   document.documentElement.dataset.compactTab = next;
@@ -355,18 +372,21 @@ function selectTab(next: CompactTab) {
     button.tabIndex = on ? 0 : -1;
   });
   document.querySelector("#compactSheetHandle")?.setAttribute("aria-valuetext", detent);
+  const click = (selector: string) => {
+    if (!following) document.querySelector<HTMLButtonElement>(selector)?.click();
+  };
   if (next === "prepare") {
     detent = "peek";
-    document.querySelector<HTMLButtonElement>("#tabPrepare")?.click();
+    click("#tabPrepare");
   } else if (next === "settings") {
     detent = "half";
-    document.querySelector<HTMLButtonElement>("#tabPrepare")?.click();
+    click("#tabPrepare");
   } else if (next === "preview") {
-    document.querySelector<HTMLButtonElement>("#tabPreview")?.click();
-    document.querySelector<HTMLButtonElement>('[data-mode="solid"]')?.click();
+    click("#tabPreview");
+    click('[data-mode="solid"]');
   } else if (next === "model") {
     detent = "peek";
-    document.querySelector<HTMLButtonElement>("#tabModel")?.click();
+    click("#tabModel");
   }
   const sheetEl = document.querySelector<HTMLElement>("#compactSheet");
   if (sheetEl) {
@@ -374,8 +394,8 @@ function selectTab(next: CompactTab) {
     sheetEl.dataset.detent = keepSheet ? detent : next === "preview" || next === "device" || next === "model" ? "closed" : detent;
   }
   applyHeights(sheetHeight(detent, window.innerHeight), true);
-  if (next === "settings") document.querySelector<HTMLInputElement>("#find")?.focus();
-  haptic("tap");
+  if (next === "settings" && !following) document.querySelector<HTMLInputElement>("#find")?.focus();
+  if (!following) haptic("tap");
   window.dispatchEvent(new Event("resize"));
 }
 
