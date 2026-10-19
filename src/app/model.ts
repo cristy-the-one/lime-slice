@@ -125,7 +125,7 @@ import {
   type PlacePhase,
 } from "../ui/model-chrome";
 import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
-import { mountModelLook, sectionFacePicked } from "../ui/model-look";
+import { lookPoseChanged, mountModelLook, resetModelLook, sectionFacePicked } from "../ui/model-look";
 import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
@@ -786,6 +786,10 @@ export function bindModelView() {
     mountModelLook({
       setLook: (state) => fx.model?.setLook(state),
       onSectionDrag: (cb) => fx.model?.onSectionDrag(cb),
+      posed(plane) {
+        const at = posedFace({ point: plane.origin, normal: plane.normal })!;
+        return { origin: at.point, normal: at.normal };
+      },
     });
   }
 }
@@ -1826,7 +1830,19 @@ export function leaveModel() {
 }
 
 /** The file's plate is gone: so are its trees. */
+/** The object whose View settings (section, colour by step) are showing. */
+let lookObject: string | null = null;
+
+/** --- D11. The View menu belongs to one object: another object starts it over. */
+function lookFor(objectId: string) {
+  if (lookObject === objectId) return;
+  lookObject = objectId;
+  resetModelLook();
+}
+
 export function forgetModelTrees() {
+  lookObject = null;
+  resetModelLook();
   void closeInEngine(closeOrder(modelTrees, modelTrees.keys()));
   plateEra += 1;
   modelTrees.clear();
@@ -2036,6 +2052,7 @@ async function openTree(mine: number, objectId: string, label: string, from: Exc
   keepSolid(started.key, ROOT, state.stepTolerance, started.parsed);
   if (mine !== ticket || state.stage !== "model") return;
   open = { objectId, key: started.key, solid: started.parsed };
+  lookFor(objectId);
   present(started.parsed, `${about(started.parsed)} Pick a face or an edge.`);
 }
 
@@ -2111,6 +2128,7 @@ async function showNode(mine: number, objectId: string, key: string, node: NodeI
   if (!latest) return false;
   modelTrees.set(key, jumped(latest, node));
   open = { objectId, key, solid };
+  lookFor(objectId);
   const note = seedNotes.get(key);
   seedNotes.delete(key);
   present(solid, note ? `${message(solid)} ${note}` : message(solid));
@@ -4005,6 +4023,7 @@ function placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase) 
 function putPose(objectId: string, pose: Affine) {
   state.plate = withModelPose(state.plate, objectId, pose);
   fx.model?.setPose(objectPose());
+  lookPoseChanged();
   refreshModelGhost();
   markProjectDirty();
 }
@@ -4407,11 +4426,10 @@ async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: numb
   contextFromPick = true;
   picks = nextModelPicks(picks, pick, shift);
   paintBlendHighlight();
-  // --- A10. While the section axis is a face, the pick is that plane too. A curved face is refused in the menu.
+  // --- A10. Right after the section axis became Face, the pick is that plane too, kept in the solid's frame. A curved face is refused in the menu.
   if (pick?.kind === "face") {
     const own = flatFace(solid, pick.index);
-    const posed = own ? posedFace(own) : null;
-    sectionFacePicked(posed ? { origin: posed.point, normal: posed.normal } : "curved");
+    sectionFacePicked(own ? { origin: own.point, normal: own.normal } : "curved");
   }
   syncModelChrome(picks);
   const seq = ++measureSeq;
