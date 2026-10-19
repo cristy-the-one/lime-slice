@@ -340,6 +340,39 @@ check("project_save can refuse to replace a file", refusedSave.ok === false && S
 const saved = await call("project_save", { name: "fresh.lime", ifExists: "refuse" });
 check("project_save writes a new name", saved.ok === true, JSON.stringify(saved));
 
+// --- D24. A composite on a part moved in model space lands where it does on the unmoved part: the face is read in
+// model space, as the app reads it, and the steps go to the solid's frame once.
+async function pocketSteps(place: Record<string, unknown> | null, name: string): Promise<number[][]> {
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
+  if (place) await own.call("model_place", { object: made.object, ...place });
+  const pocket = await own.call("model_apply", { object: made.object, op: { kind: "pocket", faceIndex: 5, at: { u: 6, v: 3 }, width: 10, height: 8, depth: 2 } });
+  check(`the pocket applies (${name})`, pocket.ok === true, JSON.stringify(pocket));
+  await own.call("project_save", { name });
+  const doc = JSON.parse(readFileSync(join(workspace, name), "utf8")) as { objects?: { modelTree?: { nodes?: { op?: { kind?: string; steps?: { origin?: number[]; turn?: number[] }[] } | null }[] } }[] };
+  const group = doc.objects?.[0]?.modelTree?.nodes?.map((node) => node.op).find((op) => op?.kind === "group");
+  return (group?.steps ?? []).map((step) => [...(step.origin ?? []), ...(step.turn ?? [])]);
+}
+const still = await pocketSteps(null, "pocket-still.lime");
+const moved = await pocketSteps({ x: 40, y: -15, z: 5, turnZ: 90 }, "pocket-moved.lime");
+check("a pocket on a moved part is stored as on the part where it was", still.length > 0 && still.length === moved.length && still.every((row, i) => nearAll(row, moved[i]!, 1e-3)), JSON.stringify({ still, moved }));
+
+async function faceBox(place: Record<string, unknown> | null, name: string): Promise<unknown> {
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 60, dy: 40, dz: 35 });
+  if (place) await own.call("model_place", { object: made.object, ...place });
+  await own.call("workplane_set", { object: made.object, faceIndex: 5 });
+  const hole = await own.call("model_apply", { object: made.object, op: { kind: "boolean", op: "cut", primitive: "box", dx: 4, dy: 4, dz: 2 }, probe: true });
+  check(`the box applies (${name})`, hole.ok === true, JSON.stringify(hole));
+  await own.call("project_save", { name });
+  const doc = JSON.parse(readFileSync(join(workspace, name), "utf8")) as { objects?: { modelTree?: { nodes?: { op?: { kind?: string; origin?: number[]; turn?: number[] } | null }[] } }[] };
+  const op = doc.objects?.[0]?.modelTree?.nodes?.map((node) => node.op).find((row) => row?.kind === "boolean");
+  return op ? [...(op.origin ?? []), ...(op.turn ?? [])] : null;
+}
+const boxStill = (await faceBox(null, "box-still.lime")) as number[] | null;
+const boxMoved = (await faceBox({ x: 40, y: -15, z: 5, turnZ: 90 }, "box-moved.lime")) as number[] | null;
+check("a box on a moved part's face workplane is stored as on the part where it was", !!boxStill && !!boxMoved && nearAll(boxStill, boxMoved, 1e-3), JSON.stringify({ boxStill, boxMoved }));
+
 if (failed > 0) {
   console.error(`compose: ${failed} failed`);
   process.exit(1);

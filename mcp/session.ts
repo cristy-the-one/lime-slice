@@ -29,7 +29,7 @@ import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { thinWalls } from "./thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "./anchors.ts";
 import { expandOps, type PartDef } from "./macro.ts";
-import { applyPose, IDENTITY_POSE, inversePose, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
+import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
 import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
@@ -80,7 +80,7 @@ import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosav
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "./compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable } from "../src/modeling/params.ts";
-import { featureLabel, isFeatureTool } from "../src/model-features.ts";
+import { featureExpandContext, featureLabel, featureSolidInModel, isFeatureTool } from "../src/model-features.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "./expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
 
@@ -3357,7 +3357,8 @@ export class Session {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (source === "bed") {
-      const box = obj.solid?.bounds ?? { min: [0, 0, 0], max: [0, 0, 0] };
+      // --- D24. Ops are typed in model space, so a moved part's planes are read there too.
+      const box = obj.solid ? (isIdentity(obj.modelPose) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, obj.modelPose).positions)) : { min: [0, 0, 0], max: [0, 0, 0] };
       obj.workplane = workplaneOnBed(box);
       return { ok: true, source: obj.workplane.source, origin: obj.workplane.origin, turn: obj.workplane.turn };
     }
@@ -3367,7 +3368,7 @@ export class Session {
     if (!face.normal || !obj.solid) return { ok: false, reason: CURVED_FACE };
     const plane = facePlane(obj.solid.positions, obj.solid.triangles, faceIndex, face.normal);
     if (!plane) return { ok: false, reason: CURVED_FACE };
-    obj.workplane = workplaneOnFace(plane);
+    obj.workplane = workplaneOnFace({ point: applyPose(obj.modelPose, plane.point), normal: turnDir(obj.modelPose, plane.normal) });
     return { ok: true, source: obj.workplane.source, origin: obj.workplane.origin, turn: obj.workplane.turn };
   }
 
@@ -3865,6 +3866,8 @@ export class Session {
    * The builder is shared with the app's feature tools (`src/modeling/frames.ts`).
    */
   private expandContext(obj: PlateObject): ExpandContext {
+    // --- D24. A moved part is read in model space, as the app reads it, since every op goes through toSolidOp once.
+    if (obj.solid && !isIdentity(obj.modelPose)) return featureExpandContext(featureSolidInModel(obj.solid, obj.modelPose), obj.workplane);
     // --- A3 composite features: one context builder for the session and the panel. ---
     return expandContextFromSolid(
       obj.solid ? { positions: obj.solid.positions, triangles: obj.solid.triangles, faces: obj.solid.faces as FrameFace[] } : null,
