@@ -329,6 +329,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let checkBox: Bounds | null = null;
   let selectedEdges: LineSegments2 | null = null;
   let hoverEdges: LineSegments2 | null = null;
+  /** --- A10. The section's clip plane, in world space, while a section is on: the picks and their outlines keep to the side shown. */
+  let sectionClip: THREE.Plane[] = [];
   const fatLines: LineMaterial[] = [];
   let picks: ModelPick[] = [];
   let hover: ModelPick | null = null;
@@ -659,6 +661,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       disposeObject(current);
     }
     const next = fatLine(positions, width, opacity, color);
+    if (next) (next.material as LineMaterial).clippingPlanes = sectionClip;
     if (next) body.add(next);
     return next;
   }
@@ -967,6 +970,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       keep.push(clip);
       off.push(clip);
     }
+    clipHighlights(section ? [keep[keep.length - 1]!] : []);
     offcutMaterial.clippingPlanes = off;
     // The cap lies on the section plane, so that plane must not clip it. A split still does.
     sectionCapMaterial.clippingPlanes = keep.slice(0, plane ? 1 : 0);
@@ -975,6 +979,40 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if ((edgeMaterial.clippingPlanes?.length ?? 0) !== keep.length) edgeMaterial.needsUpdate = true;
     solidMaterial.clippingPlanes = keep;
     edgeMaterial.clippingPlanes = keep;
+  }
+
+  /** The pick outlines are cut where the solid is, so a picked face's outline does not float over the hidden half. */
+  function clipHighlights(planes: THREE.Plane[]) {
+    const count = sectionClip.length;
+    sectionClip = planes;
+    for (const line of [faceOutline, selectedEdges, hoverEdges]) {
+      if (!line) continue;
+      const material = line.material as LineMaterial;
+      material.clippingPlanes = planes;
+      if (count !== planes.length) material.needsUpdate = true;
+    }
+  }
+
+  /** Whether the section hides this world point. */
+  function cutAway(point: THREE.Vector3): boolean {
+    return sectionClip.some((plane) => plane.distanceToPoint(point) < 0);
+  }
+
+  /**
+   * The first hit on the solid that the section leaves on screen. A hit on the hidden side is skipped. A back face
+   * behind it means the ray went in through the cut, so the cap is in front and nothing is picked.
+   */
+  function solidHit(hits: THREE.Intersection[]): THREE.Intersection | null {
+    if (sectionClip.length === 0) return hits[0] ?? null;
+    for (const hit of hits) {
+      if (cutAway(hit.point)) continue;
+      if (hit.face && hit.object instanceof THREE.Mesh) {
+        const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+        if (normal.dot(raycaster.ray.direction) > 0) return null;
+      }
+      return hit;
+    }
+    return null;
   }
 
   /** The section plane in model space, which is world space here. */
@@ -1364,7 +1402,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function faceHit(ev: PointerEvent): FaceHit | null {
     if (!mesh || !solid || mode !== "face") return null;
     rayAt(ev.clientX, ev.clientY);
-    const hit = raycaster.intersectObject(mesh, false)[0];
+    const hit = solidHit(raycaster.intersectObject(mesh, false));
     if (!hit || hit.faceIndex == null) return null;
     const face = solid.triangles[hit.faceIndex];
     if (face == null) return null;
@@ -1428,7 +1466,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     pointer.x = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    const hit = raycaster.intersectObject(mesh, false)[0];
+    const hit = solidHit(raycaster.intersectObject(mesh, false));
     if (!hit || hit.faceIndex == null || !solid) return null;
     const face = solid.triangles[hit.faceIndex];
     if (face == null) return null;
@@ -1454,6 +1492,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     for (const edge of solid.edges) {
       const points = edge.points;
       for (let i = 0; i + 5 < points.length; i += 3) {
+        // A segment the section hides wholly cannot be picked; one it crosses can, as its shown part is drawn.
+        if (sectionClip.length > 0 && cutAwayLocal(points, i) && cutAwayLocal(points, i + 3)) continue;
         const a = project(points[i]!, points[i + 1]!, points[i + 2]!, rect);
         const b = project(points[i + 3]!, points[i + 4]!, points[i + 5]!, rect);
         if (a.z < -1 || a.z > 1 || b.z < -1 || b.z > 1) continue;
@@ -1462,6 +1502,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       }
     }
     return best ? { kind: "edge", index: best.index } : null;
+  }
+
+  const sectionProbe = new THREE.Vector3();
+
+  /** Whether the section hides the solid-frame point at `points[i]`. */
+  function cutAwayLocal(points: ArrayLike<number>, i: number): boolean {
+    sectionProbe.set(points[i]!, points[i + 1]!, points[i + 2]!);
+    body.localToWorld(sectionProbe);
+    return cutAway(sectionProbe);
   }
 
   function pickAt(ev: PointerEvent): ModelPick | null {
@@ -1736,7 +1785,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     pointer.x = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
     pointer.y = -((ev.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    const hit = raycaster.intersectObjects(mesh ? [...context.children, mesh] : context.children, false)[0];
+    // The open solid's hidden half does not stand in front of a grey object.
+    const hit = raycaster.intersectObjects(mesh ? [...context.children, mesh] : context.children, false).find((item) => item.object !== mesh || !cutAway(item.point));
     const id = hit?.object.userData.id;
     return typeof id === "string" ? id : null;
   }
@@ -2141,7 +2191,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     pickSolid(x, y) {
       if (!mesh || !solid) return null;
       rayAt(x, y);
-      const hit = raycaster.intersectObject(mesh, false)[0];
+      const hit = solidHit(raycaster.intersectObject(mesh, false));
       if (!hit || hit.faceIndex == null) return null;
       const face = solid.triangles[hit.faceIndex];
       if (face == null) return null;
@@ -2664,7 +2714,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function surfacePoint(x: number, y: number, snap: boolean): Vec3 | null {
     if (!mesh) return null;
     rayAt(x, y);
-    const hit = raycaster.intersectObject(mesh, false)[0];
+    const hit = solidHit(raycaster.intersectObject(mesh, false));
     if (!hit) return null;
     // A point the user puts down is a model-space number, like every other tool field.
     const point = hit.point.clone();

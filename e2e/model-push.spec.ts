@@ -479,3 +479,24 @@ test("after a tool is closed with Esc or Cancel, the next hover offers the push 
   await dragFace(page, top, 10);
   expect(applied.at(-1)?.kind).toBe("moveFaces");
 });
+
+test("with a section on, the half it hides is neither hovered nor picked", async ({ page }) => {
+  await openPushBox(page);
+  const canvas = page.locator("#model");
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  const side = await facePoint(page, (normal) => normal[0]! > 0.5);
+  await page.locator("#modelLookOpen").click();
+  await page.locator("#modelSection").check();
+  // The section cuts at the box's middle, z = 10, and hides the top half with its top face.
+  await expect(canvas).toHaveAttribute("data-section", "10.00 10.00 10.00 0.00 0.00 1.00");
+  await page.locator("#modelLookOpen").click();
+  await page.mouse.move(top.x, top.y);
+  await page.mouse.move(top.x + 1, top.y);
+  await page.waitForTimeout(200);
+  expect(await canvas.getAttribute("data-handles") ?? "", "no arrow on the hidden top").not.toContain("pull:");
+  await page.mouse.click(top.x + 1, top.y);
+  await expect(canvas, "a click there lands on the cut, not on the hidden top").toHaveAttribute("data-selection-bar", "empty");
+
+  await page.mouse.click(side.x, side.y + 20);
+  await expect(canvas, "the shown half of a side is still picked").toHaveAttribute("data-selection-bar", "flat-face");
+});
