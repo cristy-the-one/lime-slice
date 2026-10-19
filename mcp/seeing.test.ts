@@ -222,7 +222,12 @@ const tableCheck = printCheck({ positions: table, overhangDeg: 45, buildMm: buil
 const ceilings = tableCheck.ceilings as { zMm: number; areaMm2: number }[];
 check("a table top is a flat face pointing down above the bed", ceilings.length === 1 && near(ceilings[0]!.zMm, 10, 0.01) && ceilings[0]!.areaMm2 > 1400, JSON.stringify(tableCheck));
 const overhang = tableCheck.overhang as { areaMm2: number; regions: { centre: number[] }[]; thresholdDeg: number };
-check("its overhang has a place", overhang.areaMm2 > 1400 && overhang.regions.length > 0 && overhang.regions[0]!.centre[2]! > 9.9 && overhang.thresholdDeg === 45);
+check("the table top counts as overhang area but is listed once, as a ceiling", overhang.areaMm2 > 1400 && overhang.regions.length === 0 && overhang.thresholdDeg === 45, JSON.stringify(overhang.regions));
+// A slope 40 mm wide crosses four 10 mm cells, and is still one region.
+const slope = new Float32Array([0, 0, 10, 0, 20, 20, 40, 0, 10, 40, 0, 10, 0, 20, 20, 40, 20, 20]);
+const sloped = printCheck({ positions: join3(box([0, 0, 0], [6, 6, 10]), slope), overhangDeg: 45, buildMm: build });
+const slopeRegions = (sloped.overhang as { regions: { areaMm2: number; min: number[]; max: number[] }[] }).regions;
+check("one slanted overhang over several cells is one region", slopeRegions.length === 1 && near(slopeRegions[0]!.areaMm2, 894.4, 0.1) && slopeRegions[0]!.min[0] === 0 && slopeRegions[0]!.max[0] === 40, JSON.stringify(slopeRegions));
 check("it warns in sentences", (tableCheck.warnings as string[]).some((w) => w.startsWith("Flat faces point down above the bed at Z 10")));
 
 const gentle = printCheck({ positions: box([0, 0, 0], [10, 10, 10]), overhangDeg: 45, buildMm: build });

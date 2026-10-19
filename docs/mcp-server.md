@@ -446,7 +446,7 @@ The engine's probe answers `{ok: true}` and, with `preview`, the built shape's s
 
 `model_check` reads the same mesh with the lowest point on the bed and Z up, the way the part would print now. Turn it first with `workplane_print_up` to check another way up. It returns:
 
-- `overhang`: area past `overhangDeg` (default 45, from vertical), its share of the surface, and up to six `regions` (10 mm cells, area, centre, box).
+- `overhang`: area past `overhangDeg` (default 45, from vertical), its share of the surface, and up to six `regions` (area, centre, box). A region is the overhang triangles of neighbouring 10 mm cells that meet, so one slope is one region. A flat face pointing down is listed under `ceilings` only, though its area counts in `areaMm2`.
 - `ceilings`: flat faces that point down above the bed, by Z, with area and centre.
 - `bedContact`: the area of faces flat on the bed.
 - `islands`: shells that do not touch the bed, with how far they float.
