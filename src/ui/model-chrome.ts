@@ -15,6 +15,7 @@ import { lastFace, selectedEdges, selectedFaces } from "../model-blend";
 import { edgeOfText, isEdgeFilter, type EdgeSource } from "../model-edge-step";
 import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
+import { holePointsSentence, refusedHole } from "../sketch/holes.ts";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { featureName, isFeatureTool, panelChoices, piecesOutlineOnly, type FeatureChoices, type FeatureTool } from "../model-features";
 import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatName, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices, type RepeatTool } from "../model-repeat";
@@ -103,6 +104,8 @@ interface ModelChromeHooks {
   checkSource(): { positions: Float32Array; toModel: Affine } | null;
   // --- A2 shell: the first picked face, in model space, for the thickness knob. Null with none. ---
   shellSeat(): { point: Vec3; inward: Vec3 } | null;
+  /** --- F4. One cylinder per sketch point, in model space. Null when that layout is not open. --- */
+  sketchHoleView(): { marks: { origin: Vec3; axis: Vec3; radius: number; depth: number; bore?: { radius: number; depth: number } }[] } | null;
 }
 
 interface JoinChoice {
@@ -163,6 +166,8 @@ const RADIUS_LABELS: Partial<Record<PrimitiveKind, string>> = { cone: "Bottom ra
 
 let hooks: ModelChromeHooks | null = null;
 let tool: ModelTool | null = null;
+/** --- F4. How many sketch points the open Hole panel drills. Null for a single hole. --- */
+let holePointCount: number | null = null;
 /** The primitive picked last, for Boolean and New solid alike, and whether Boolean is on another object instead. */
 let primKind: PrimitiveKind = "box";
 let withObject = false;
@@ -541,6 +546,8 @@ export function setModelProbe(next: ProbeView) {
 
 /** Open `next`, or close it when it is open. Opening another tool ends an edit, which takes the view back. */
 function toggleTool(next: ModelTool, editing = false) {
+  // --- F4. Leaving Hole drops the one-hole-per-point layout. Opening Hole keeps a count set just before. ---
+  if (next !== "hole") clearSketchHoles();
   if (tool === next && !editing) {
     closeTool();
     return;
@@ -697,6 +704,8 @@ function picksObject(): boolean {
 }
 
 function closeTool() {
+  // --- F4. A closed Hole is a single hole again. ---
+  clearSketchHoles();
   // --- A3 composite features ---
   closeFeatureMenu();
   // --- end A3 ---
@@ -917,7 +926,10 @@ function syncFields() {
     const whenOk = !node.dataset.when || (node.dataset.when === edgeSource && (tool === "fillet" || tool === "chamfer"));
     // --- A4. A pattern mode shows only its own fields. Count stays for every mode. ---
     const modeOk = !node.dataset.mode || node.dataset.mode === (tool === "pattern" ? repeatModeNow() : "");
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && whenOk && modeOk));
+    // --- F4. One hole per point hides the origin and shows the points line. A single hole does the opposite. ---
+    const pointsHoles = document.querySelector<HTMLElement>("#modelPanel")?.dataset.holes === "points";
+    const holeOk = !node.dataset.hole || (node.dataset.hole === "points" ? pointsHoles : !pointsHoles);
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && whenOk && modeOk && holeOk));
   });
   // --- A3 composite features ---
   if (isFeatureTool(tool)) {
@@ -1196,6 +1208,42 @@ function paintAcross(flats: boolean) {
   }
 }
 
+/** --- F4. The Hole panel is placing one hole at each sketch point. --- */
+export function sketchHolesArmed(): boolean {
+  return holePointCount != null && tool === "hole";
+}
+
+/** How many, while that layout is open. */
+export function sketchHoleCount(): number | null {
+  return sketchHolesArmed() ? holePointCount : null;
+}
+
+/** Open the Hole panel for `count` points. Already-open Hole stays open, so H does not toggle it shut. */
+export function openSketchHolePanel(count: number) {
+  holePointCount = count;
+  const panel = document.querySelector<HTMLElement>("#modelPanel");
+  if (panel) panel.dataset.holes = "points";
+  const note = document.querySelector("#modelHolePoints");
+  if (note) note.textContent = holePointsSentence(count);
+  if (tool === "hole") {
+    syncFields();
+    refreshApply();
+    refreshNote();
+    refreshGhost();
+    hooks?.paramsChanged();
+    return;
+  }
+  toggleTool("hole");
+}
+
+function clearSketchHoles() {
+  holePointCount = null;
+  const panel = document.querySelector<HTMLElement>("#modelPanel");
+  if (panel) delete panel.dataset.holes;
+  const note = document.querySelector("#modelHolePoints");
+  if (note) note.textContent = "";
+}
+
 /** A hole that would miss the solid starts on the middle of its top. */
 function applyHoleDefaults() {
   const box = hooks?.solidBox();
@@ -1282,6 +1330,8 @@ function paintScrew() {
 
 /** Where the hole drills, so the face pick is found: into the face clicked last, else as an edited step drilled, else down. */
 function holeLead(): string {
+  // --- F4. The points line is its own note. This one is the group's dry-run. ---
+  if (holePointCount != null) return "";
   if (lastFace(picks) != null) return "Into the picked face.";
   const axis = hooks?.holeAxis() ?? [0, 0, -1];
   const down = Math.abs(axis[0]) < 1e-6 && Math.abs(axis[1]) < 1e-6 && axis[2] < -0.9;
@@ -1477,6 +1527,11 @@ function refreshNote() {
       bad = status?.bad ?? false;
     }
     // --- end A4 ---
+  } else if (tool === "hole" && holePointCount != null) {
+    // --- F4. The group is what the kernel checks, so the note is the group's. ---
+    const status = probeNote("group", probe);
+    text = `${holeLead()} ${status?.text ?? ""}`.trim();
+    bad = status?.bad ?? false;
   } else if (isProbed(tool)) {
     const lead = tool === "hole" ? `${holeLead()} ` : "";
     const status = probeNote(tool, probe);
@@ -1551,6 +1606,8 @@ function dragContext(): DragContext {
     edge: points ? edgeAnchor(points, center) : null,
     holeAxis: hooks?.holeAxis() ?? [0, 0, -1],
     hole: holeBoxes(),
+    // --- F4 ---
+    sketchHoles: holePointCount != null,
     // --- A2 shell ---
     shell: hooks?.shellSeat() ?? null,
     frame: tool === "workplane" ? openPlane() : toolFrame(),
@@ -1827,6 +1884,25 @@ function ghostFor(current: ModelTool): ModelGhost | null {
   if (current === "split") {
     const plan = splitPlan();
     return plan ? { kind: "plane", origin: plan.origin, normal: plan.normal } : null;
+  }
+  // --- F4. One cylinder per point. A refusal paints that hole red. A checked shape replaces them. ---
+  if (current === "hole" && holePointCount != null) {
+    const view = hooks?.sketchHoleView() ?? null;
+    if (!view?.marks.length || previewFresh()) return null;
+    const failed = probe?.phase === "done" && !probe.ok ? refusedHole(probe.failedStep, view.marks.length) : undefined;
+    return {
+      kind: "holes",
+      holes: view.marks.map((mark) => ({
+        x: mark.origin[0],
+        y: mark.origin[1],
+        z: mark.origin[2],
+        radius: mark.radius,
+        depth: mark.depth,
+        dir: mark.axis,
+        ...(mark.bore ? { bore: mark.bore } : {}),
+      })),
+      ...(failed != null ? { failed } : {}),
+    };
   }
   // The checked shape shows the hole or the blend itself; a stand-in drawn over it would only hide it.
   if ((current === "hole" || current === "fillet" || current === "chamfer") && previewFresh()) return null;

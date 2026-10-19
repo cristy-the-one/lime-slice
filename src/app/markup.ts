@@ -226,9 +226,9 @@ export function mountMarkup(root: HTMLElement) {
                   <label data-for="boolean create" data-with="primitive" data-prim="polygon" data-snap="1"><span class="scrub-label" data-scrub>Sides</span><input id="modelSides" type="number" step="1" min="3" max="64" value="6" data-whole aria-label="Sides"></label>
                   <label data-for="boolean create" data-with="primitive" data-prim="polygon" data-snap="1"><span class="scrub-label" id="modelAcrossLabel" data-scrub>Across flats</span><input id="modelAcross" type="number" step="0.1" min="0" value="10" aria-label="Width across flats"></label>
                   <label data-for="boolean create" data-with="primitive" data-prim="cylinder cone polygon tube" data-snap="1"><span class="scrub-label" data-scrub>Height</span><input id="modelHeight" type="number" step="0.1" min="0" value="10" aria-label="Height"></label>
-                  <label data-for="boolean hole" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
-                  <label data-for="boolean hole" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
-                  <label data-for="boolean hole" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
+                  <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
+                  <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
+                  <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
                   <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
                   <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
                   <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
@@ -341,6 +341,8 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="btn mode" id="modelCommon" type="button" aria-pressed="false">Common</button>
                 </div>
                 <label class="model-keep" data-for="boolean" data-with="object"><input id="modelKeepTool" type="checkbox"> Keep the tool object</label>
+                <!-- --- F4. One hole per sketch point. The origin fields stay in the markup for a single hole. --- -->
+                <p class="model-note" id="modelHolePoints" data-for="hole" data-hole="points" hidden></p>
                 <div class="model-hole-opts" data-for="hole">
                   <label class="model-keep"><input id="modelThrough" type="checkbox"> Through all</label>
                   <label class="model-keep"><input id="modelCounterbore" type="checkbox"> Counterbore</label>

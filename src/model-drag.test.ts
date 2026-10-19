@@ -115,6 +115,7 @@ eq("a plain hole drags its origin, radius and depth", holeIds({ through: false, 
 eq("Through all has no depth to drag", holeIds({ through: true, counterbore: false }), ["hole-origin", "hole-move-u", "hole-move-v", "hole-radius"]);
 const bored = handlesFor("hole", context("box", { hole: { through: true, counterbore: true } }));
 eq("a counterbore adds its radius and depth knobs", bored.map((handle) => handle.id), ["hole-origin", "hole-move-u", "hole-move-v", "hole-radius", "bore-radius", "bore-depth"]);
+eq("one hole per sketch point drags radius and depth", handlesFor("hole", context("box", { hole: { through: false, counterbore: false }, sketchHoles: true })).map((handle) => handle.id), ["hole-radius", "hole-depth"]);
 const boreRadius = bored.find((handle) => handle.id === "bore-radius")!;
 const boreDepth = bored.find((handle) => handle.id === "bore-depth")!;
 eq("the bore radius knob takes the next axis, out past the arrows", [boreRadius.dir, reachOf(boreRadius)], [[0, 1, 0], DOCK_KNOB_REACH]);

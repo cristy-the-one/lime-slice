@@ -18,6 +18,7 @@ import type { Bounds } from "../mesh-place";
 import type { ModelOp } from "../model-tree";
 import type { ModelView } from "../model-view";
 import type { FaceRef, SketchData, SketchOn, Vec3 } from "../sketch/model";
+import { FACE_REFUSAL, POINT_REFUSAL, holeTargets, sketchOnFace, type HoleTarget } from "../sketch/holes.ts";
 import { sketchMesh, type OriginPlane } from "../sketch/draw";
 import {
   frameFromWorkplane,
@@ -116,6 +117,11 @@ export interface SketchHost {
   cancelFeatureEdit(): void;
   /** The solid just built should fill the view. Closing the sketch restores the camera from before it. */
   frameSolid(): void;
+  /** --- F4. Open the Hole panel for these points. H only calls this while a sketch is being edited. --- */
+  beginSketchHoles(sketch: SketchData, targets: readonly HoleTarget[]): void;
+  endSketchHoles(): void;
+  sketchHolesArmed(): boolean;
+  sketchHoleCount(): number | null;
 }
 
 interface SketchApi {
@@ -236,10 +242,28 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   window.addEventListener("keydown", (ev) => {
     if (editor.phase !== "editing" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const drawing = sketchDimensions(editor) != null;
+    const typing = ev.target instanceof HTMLElement && (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT" || ev.target.tagName === "TEXTAREA" || ev.target.isContentEditable);
+    // --- F4. H places a hole at each selected point. It is taken only while the sketch is open. ---
+    if (ev.key === "h" || ev.key === "H") {
+      if (drawing || typing) return;
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      if (gesture || host.sketchHolesArmed()) return;
+      beginHoles();
+      return;
+    }
+    if (ev.key === "Escape" && host.sketchHolesArmed()) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      host.endSketchHoles();
+      publish("open");
+      return;
+    }
     if (ev.key === "e" || ev.key === "E") {
       if (drawing) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       if (!gesture) beginExtrude();
       return;
     }
@@ -369,8 +393,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     if (target.dataset.sketchExtrude != null) {
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) void commitExtrude();
       else beginExtrude();
+      return;
+    }
+    // --- F4. The card button does what H does. It is not a toolbar button. ---
+    if (target.dataset.sketchHoles != null) {
+      if (gesture) return;
+      beginHoles();
       return;
     }
     if (target.dataset.sketchMode != null && gesture) {
@@ -559,7 +590,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       aimKey = "";
       host.view.setSketchCamera(null);
     }
-    host.view.setSketchCapture(sketchBusy(editor) && !editor.lookAround);
+    host.view.setSketchCapture(sketchBusy(editor) && !editor.lookAround && !host.sketchHolesArmed());
     host.view.setSketchDim(sketchBusy(editor));
     if (editor.phase === "editing" && aimKey) host.view.setSketchLock(!editor.lookAround);
     draw();
@@ -665,6 +696,25 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.extrudeMode = shown ? resolvedMode() : "";
     host.canvas.dataset.extrudeDepth = shown ? String(shown.distance) : "";
     host.canvas.dataset.extrudeRegions = shown ? String(shown.regions.length) : "0";
+    // --- F4. Off unless the Hole panel is placing one hole per point. Hits are client pixels, for tests. ---
+    const holeCount = host.sketchHoleCount();
+    host.canvas.dataset.sketchHoles = holeCount == null ? "off" : String(holeCount);
+    if (editor.phase === "editing") {
+      const frame = drawingFrame();
+      const drawn = activeSketch(editor);
+      const hits: string[] = [];
+      if (frame && drawn) {
+        for (const point of drawn.points) {
+          const at = host.view.projectPoint(toWorld(frame, point.at));
+          if (at) hits.push(`${point.id}:${at.x.toFixed(1)},${at.y.toFixed(1)}`);
+        }
+      }
+      host.canvas.dataset.sketchHits = hits.join(" ");
+      host.canvas.dataset.sketchSelected = editor.selection.points.join(",");
+    } else {
+      delete host.canvas.dataset.sketchHits;
+      delete host.canvas.dataset.sketchSelected;
+    }
   }
 
   function paintBox() {
@@ -718,6 +768,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       toolButton("select", "Select"),
       textButton("Extrude (E)", { sketchExtrude: "" }),
     ];
+    // --- F4. Only a sketch on a face has a solid to drill. ---
+    if (activeSketch(editor)?.on?.kind === "face") row.push(textButton("Holes (H)", { sketchHoles: "" }));
     if (gesture) {
       const mode = resolvedMode();
       const auto = gesture.choice === "auto" ? "Auto · " : "";
@@ -831,6 +883,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   };
   closeFeatureImpl = () => {
     editSession = false;
+    if (host.sketchHolesArmed()) host.endSketchHoles();
     if (editor.phase !== "editing" && editor.phase !== "choosing") {
       gesture = null;
       return;
@@ -866,6 +919,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const session = editSession;
     if (left) {
       editSession = false;
+      if (host.sketchHolesArmed()) host.endSketchHoles();
       gesture = null;
       window.clearTimeout(probeTimer);
       host.view.setHandles([]);
@@ -877,7 +931,23 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (left && session) host.cancelFeatureEdit();
   }
 
+  function beginHoles() {
+    const sketch = activeSketch(editor);
+    if (!sketch || !sketchOnFace(sketch)) {
+      host.readout(FACE_REFUSAL);
+      return;
+    }
+    const targets = holeTargets(sketch, editor.selection);
+    if (targets.length === 0) {
+      host.readout(POINT_REFUSAL);
+      return;
+    }
+    host.beginSketchHoles(sketch, targets);
+    publish("open");
+  }
+
   function beginExtrude() {
+    if (host.sketchHolesArmed()) host.endSketchHoles();
     const sketch = activeSketch(editor);
     if (!sketch || editor.phase !== "editing") return;
     const chosen = chooseRegions(sketch, editor.selection.entities, editor.cursor);
