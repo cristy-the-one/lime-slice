@@ -106,6 +106,33 @@ async function grips(page: Page): Promise<Record<string, { x: number; y: number 
   return map;
 }
 
+/** Each handle's seat, in page pixels. */
+async function seats(page: Page): Promise<Record<string, { x: number; y: number }>> {
+  const text = (await page.locator("#model").getAttribute("data-handle-seat")) ?? "";
+  const box = (await page.locator("#model").boundingBox())!;
+  const map: Record<string, { x: number; y: number }> = {};
+  for (const item of text.split(" ").filter(Boolean)) {
+    const [id, at] = item.split(":");
+    const [x, y] = at!.split(",").map(Number);
+    map[id!] = { x: box.x + x!, y: box.y + y! };
+  }
+  return map;
+}
+
+/** Boolean and New solid seats stay inside the ghost's screen box, plus 40 px. */
+async function seatsOnGhost(page: Page, what: string) {
+  const box = (await page.locator("#model").boundingBox())!;
+  const [x, y, w, h] = ((await page.locator("#model").getAttribute("data-ghost-screen")) ?? "").split(",").map(Number);
+  const all = await seats(page);
+  expect(Object.keys(all).length, what).toBeGreaterThan(0);
+  for (const [id, at] of Object.entries(all)) {
+    expect(at.x, `${what}: ${id}`).toBeGreaterThanOrEqual(box.x + x! - 40);
+    expect(at.y, `${what}: ${id}`).toBeGreaterThanOrEqual(box.y + y! - 40);
+    expect(at.x, `${what}: ${id}`).toBeLessThanOrEqual(box.x + x! + w! + 40);
+    expect(at.y, `${what}: ${id}`).toBeLessThanOrEqual(box.y + y! + h! + 40);
+  }
+}
+
 /** Where the dock's middle is, in page pixels. */
 async function dock(page: Page): Promise<{ x: number; y: number }> {
   await expect(page.locator("#model")).toHaveAttribute("data-gizmo-at", /\d+,\d+/);
@@ -184,7 +211,7 @@ test("the split plane drags inside the part, Shift is fine, and Ctrl snaps", asy
 
 test("the dock stays put through orbit, zoom, pan, a tool change, and a number typed into a field", async ({ page }) => {
   await openSolid(page, [], boxSolid([-110, -110, 0], [220, 220, 5.1]));
-  await page.locator("#modelToolBoolean").click();
+  await page.locator("#modelToolHole").click();
   const start = await dock(page);
   const canvas = (await page.locator("#model").boundingBox())!;
   const empty = { x: canvas.x + canvas.width * 0.5, y: canvas.y + canvas.height * 0.88 };
@@ -215,8 +242,6 @@ test("the dock stays put through orbit, zoom, pan, a tool change, and a number t
   await page.locator("#modelX").fill("-60");
   await page.locator("#modelX").dispatchEvent("input");
   await still("a typed X");
-  await page.locator("#modelToolHole").click();
-  await still("the Hole tool");
   await page.locator("#modelToolScale").click();
   await still("the Scale tool");
   await page.locator("#modelToolSplit").click();
@@ -245,12 +270,11 @@ for (const [width, height] of [[1440, 900], [1280, 720], [1024, 768]] as const) 
     };
     await page.locator("#modelToolBoolean").click();
     await expect.poll(async () => Object.keys(await grips(page))).toContain("size-0");
-    if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/dock-boolean-${width}x${height}.png` });
-    await inside("the box's arrows, rings, and knobs");
+    await expect(page.locator("#model")).not.toHaveAttribute("data-gizmo-at", /.+/);
+    await seatsOnGhost(page, "boolean");
     await page.locator("#modelToolSplit").click();
     await expect.poll(async () => Object.keys(await grips(page))).toContain("tilt-a");
     await inside("the split's tilt rings");
-    await page.locator("#modelToolBoolean").click();
     const start = await dock(page);
     const empty = { x: canvas.x + canvas.width * 0.4, y: canvas.y + canvas.height * 0.85 };
     await page.mouse.move(empty.x, empty.y);
@@ -265,7 +289,20 @@ for (const [width, height] of [[1440, 900], [1280, 720], [1024, 768]] as const) 
   });
 }
 
-test("a boolean primitive moves, resizes, and turns from the dock, in sync with its numbers", async ({ page }) => {
+test("boolean and new solid handles sit on the ghost", async ({ page }) => {
+  await openSolid(page, []);
+  await page.locator("#modelToolBoolean").click();
+  await expect.poll(async () => Object.keys(await grips(page))).toContain("move-x");
+  await expect(page.locator("#model")).not.toHaveAttribute("data-gizmo-at", /.+/);
+  await seatsOnGhost(page, "boolean");
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/ux06-after-handles.png` });
+  await page.locator("#modelToolNew").click();
+  await expect.poll(async () => Object.keys(await grips(page))).toContain("size-0");
+  await expect(page.locator("#model")).not.toHaveAttribute("data-gizmo-at", /.+/);
+  await seatsOnGhost(page, "new solid");
+});
+
+test("a boolean primitive moves, resizes, and turns from the ghost, in sync with its numbers", async ({ page }) => {
   const probes: Record<string, unknown>[] = [];
   await openSolid(page, probes);
   await page.locator("#modelToolBoolean").click();
@@ -275,7 +312,7 @@ test("a boolean primitive moves, resizes, and turns from the dock, in sync with 
   await page.locator("#modelX").dispatchEvent("input");
   await page.waitForTimeout(300);
   const after = await grip(page, "move-x");
-  expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeLessThanOrEqual(1);
+  expect(Math.hypot(after.x - before.x, after.y - before.y), "the arrow follows the ghost").toBeGreaterThan(8);
 
   const x0 = await value(page, "modelX");
   await drag(page, "move-x", 60, 25);
@@ -299,12 +336,17 @@ test("a 2 mm primitive still has every handle on its own spot, and its Width X k
   await page.locator("#modelToolBoolean").click();
   for (const id of ["modelDx", "modelDy", "modelDz"]) await setField(page, id, "2");
   await expect.poll(async () => (await ghost(page)).size[0]).toBeCloseTo(2, 1);
-  expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
+  const parked = (await page.locator("#model").getAttribute("data-gizmo-at")) != null;
+  if (parked) expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
 
   const start = await grip(page, "size-0");
-  const centre = await dock(page);
+  const centre = parked ? await dock(page) : await (async () => {
+    const box = (await page.locator("#model").boundingBox())!;
+    const [x, y, w, h] = ((await page.locator("#model").getAttribute("data-ghost-screen")) ?? "").split(",").map(Number);
+    return { x: box.x + x! + w! / 2, y: box.y + y! + h! / 2 };
+  })();
   const length = Math.hypot(start.x - centre.x, start.y - centre.y);
-  expect(length, "the knob stands out of the dock's middle").toBeGreaterThan(40);
+  expect(length, parked ? "the knob stands out of the dock's middle" : "the knob stands off the ghost's centre").toBeGreaterThan(parked ? 40 : 4);
   const outward: [number, number] = [((start.x - centre.x) / length) * 10, ((start.y - centre.y) / length) * 10];
   const dx0 = await value(page, "modelDx");
   await drag(page, "size-0", outward[0], outward[1]);
@@ -316,10 +358,10 @@ test("a 2 mm primitive still has every handle on its own spot, and its Width X k
   await page.locator(`#modelPrim [data-kind="cylinder"]`).click();
   for (const id of ["modelRadius", "modelHeight"]) await setField(page, id, "1");
   await expect.poll(async () => Object.keys(await grips(page))).toContain("height");
-  expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
+  if ((await page.locator("#model").getAttribute("data-gizmo-at")) != null) expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
   await page.locator(`#modelPrim [data-kind="sphere"]`).click();
   await expect.poll(async () => Object.keys(await grips(page))).not.toContain("height");
-  expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
+  if ((await page.locator("#model").getAttribute("data-gizmo-at")) != null) expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
 });
 
 test("hovering a size knob lights that axis, its number, and a dimension", async ({ page }) => {

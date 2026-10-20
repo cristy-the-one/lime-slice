@@ -3142,20 +3142,87 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return [minX, minY, maxX - minX, maxY - minY].map(Math.round).join(",");
   }
 
+  function canvasPoint(point: THREE.Vector3, width: number, height: number): { x: number; y: number } {
+    const mark = point.clone().project(camera);
+    return { x: (mark.x * 0.5 + 0.5) * width, y: (-mark.y * 0.5 + 0.5) * height };
+  }
+
+  /** The ghost's centre, its screen box, and a handle size that follows that box. */
+  function readGhost(width: number, height: number): { centre: THREE.Vector3; span: number; hits: boolean; size: number; screen: string } | null {
+    if (ghosts.children.length === 0) return null;
+    ghosts.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(ghosts);
+    if (box.isEmpty()) return null;
+    const centre = box.getCenter(new THREE.Vector3());
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const corner = new THREE.Vector3();
+    for (const x of [box.min.x, box.max.x]) {
+      for (const y of [box.min.y, box.max.y]) {
+        for (const z of [box.min.z, box.max.z]) {
+          const at = canvasPoint(corner.set(x, y, z), width, height);
+          xs.push(at.x);
+          ys.push(at.y);
+        }
+      }
+    }
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const span = Math.max(maxX - minX, maxY - minY);
+    const px = Math.min(96, Math.max(28, span * 0.22));
+    const size = gizmoRadiusForPixels(camera.position.distanceTo(centre), camera.fov, height, px, camera.zoom);
+    const mid = canvasPoint(centre, width, height);
+    return {
+      centre,
+      span,
+      hits: mid.x >= 8 && mid.x <= width - 8 && mid.y >= 8 && mid.y <= height - 8,
+      size,
+      screen: [minX, minY, maxX - minX, maxY - minY].map((value) => Math.round(value)).join(","),
+    };
+  }
+
+  /** The centre of the ghost's face that `dir` points at: the supporting plane through the centre. */
+  function facePoint(centre: THREE.Vector3, dir: THREE.Vector3): THREE.Vector3 {
+    const axis = dir.clone().normalize();
+    let half = 0;
+    const vertex = new THREE.Vector3();
+    ghosts.traverse((obj) => {
+      const geometry = (obj as THREE.Mesh).geometry;
+      const attr = geometry?.getAttribute?.("position");
+      if (!attr) return;
+      obj.updateWorldMatrix(true, false);
+      for (let i = 0; i < attr.count; i += 1) {
+        vertex.fromBufferAttribute(attr, i).applyMatrix4(obj.matrixWorld);
+        half = Math.max(half, vertex.sub(centre).dot(axis));
+      }
+    });
+    return centre.clone().addScaledVector(axis, Math.max(half, 0));
+  }
+
   function sizeHandles() {
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
     publishScreenBoxes(width, height);
     publishFaces(width, height);
+    camera.updateMatrixWorld();
+    const ghostNow = readGhost(width, height);
+    const onGhost = ghostNow != null && ghostNow.hits && ghostNow.span >= 24;
+    if (ghostNow) canvas.dataset.ghostScreen = ghostNow.screen;
+    else delete canvas.dataset.ghostScreen;
+    const wantsDock = handleParts.some((part) => {
+      const seat = part.handle.seat;
+      return seat.at === "dock" || (seat.at === "ghost" && !onGhost);
+    });
     let dockSize = 0;
-    if (handleParts.some((part) => part.handle.seat.at === "dock")) {
-      camera.updateMatrixWorld();
+    if (wantsDock) {
       if (seated?.width !== width || seated.height !== height) seated = { width, height, seat: dockSeat(width, height, camera.fov, HANDLE_PX) };
       const { ndcX, ndcY, handlePx } = seated.seat;
       dockAt.set(ndcX, ndcY, controls.target.clone().project(camera).z).unproject(camera);
       dockSize = gizmoRadiusForPixels(camera.position.distanceTo(dockAt), camera.fov, height, handlePx, camera.zoom);
-      const mark = dockAt.clone().project(camera);
-      const text = `${Math.round((mark.x * 0.5 + 0.5) * width)},${Math.round((-mark.y * 0.5 + 0.5) * height)}`;
+      const mark = canvasPoint(dockAt, width, height);
+      const text = `${Math.round(mark.x)},${Math.round(mark.y)}`;
       if (canvas.dataset.gizmoAt !== text) canvas.dataset.gizmoAt = text;
       if (canvas.dataset.dockPx !== String(handlePx)) canvas.dataset.dockPx = String(handlePx);
     } else {
@@ -3163,19 +3230,31 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       delete canvas.dataset.dockPx;
     }
     const grips: string[] = [];
+    const seats: string[] = [];
     for (const part of drawnHandles()) {
       const seat = part.handle.seat;
+      const dir = new THREE.Vector3(...part.handle.dir).normalize();
       let size = dockSize;
-      if (seat.at === "dock") {
-        part.root.position.copy(dockAt).addScaledVector(new THREE.Vector3(...part.handle.dir).normalize(), seat.reach * dockSize);
-      } else {
+      if (seat.at === "ghost" && onGhost && ghostNow) {
+        const at = seat.role === "face" ? facePoint(ghostNow.centre, dir) : ghostNow.centre.clone();
+        if (seat.role === "face") at.addScaledVector(dir, HANDLE_KNOB_PICK * ghostNow.size);
+        part.root.position.copy(at);
+        size = ghostNow.size;
+      } else if (seat.at === "feature") {
         part.root.position.set(...seat.origin);
         size = gizmoRadiusForPixels(camera.position.distanceTo(part.root.position), camera.fov, height, HANDLE_PX, camera.zoom);
+      } else {
+        const reach = seat.at === "dock" ? seat.reach : seat.fallback;
+        part.root.position.copy(dockAt).addScaledVector(dir, reach * dockSize);
       }
       part.root.scale.setScalar(size);
+      const seatAt = canvasPoint(part.root.position, width, height);
+      seats.push(`${part.handle.id}:${Math.round(seatAt.x)},${Math.round(seatAt.y)}`);
       const at = gripPoint(part.handle, part.root.position, size).project(camera);
       grips.push(`${part.handle.id}:${Math.round((at.x * 0.5 + 0.5) * width)},${Math.round((-at.y * 0.5 + 0.5) * height)}`);
     }
+    const seatText = seats.join(" ");
+    if (canvas.dataset.handleSeat !== seatText) canvas.dataset.handleSeat = seatText;
     const text = grips.join(" ");
     if (canvas.dataset.handles !== text) canvas.dataset.handles = text;
     if (aspectNow) {

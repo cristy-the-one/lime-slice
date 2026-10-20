@@ -273,6 +273,8 @@ Status: done. The HUD anchors to the handle, 16 px along its screen direction, a
 
 ### UX-06 (P1). Boolean and New solid: handles on the ghost, not a gizmo at the side
 
+Status: done. Move arrows and turn rings sit on the ghost's centre, and size knobs sit on its faces. The side gizmo is only the fallback when that centre is off the canvas or the ghost is under 24 px. `data-handle-seat` is inside the ghost's screen box plus 40 px. Screenshots: `before-handle-ghost.png`, `ux06-after-handles.png`.
+
 - **Seen**: `before-handle-ghost.png`. The ghost cube sits on the part while its move/turn gizmo floats at the right
   edge of the view, far from it. This goes against the "drag the thing itself" rule in `docs/plan-gui-cad-modeling.md`
   D6.

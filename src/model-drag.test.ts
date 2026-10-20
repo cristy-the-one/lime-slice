@@ -107,6 +107,7 @@ check("push/pull with no face has no arrow yet", handlesFor("pushpull", context(
 check("no tool, no handles", handlesFor(null, context("box")).length === 0);
 
 const docked = (handle: DragHandle) => handle.seat.at === "dock";
+const ghosted = (handle: DragHandle) => handle.seat.at === "ghost";
 const reachOf = (handle: DragHandle) => (handle.seat.at === "dock" ? handle.seat.reach : null);
 const originOf = (handle: DragHandle) => (handle.seat.at === "feature" ? handle.seat.origin : null);
 
@@ -123,18 +124,22 @@ check("the bore depth knob sits on the drill axis, clear of the dock's middle an
 
 const box = handlesFor("boolean", context("box"));
 const moveX = box.find((handle) => handle.id === "move-x")!;
-eq("a box move arrow is docked at the centre and points along world X", [reachOf(moveX), moveX.dir], [0, [1, 0, 0]]);
+eq("a box move arrow sits at the ghost's centre and points along world X", [moveX.seat, moveX.dir], [{ at: "ghost", role: "centre", fallback: 0 }, [1, 0, 0]]);
 eq("a handle carries its field's value", moveX.values, [2]);
-eq("the box size knobs are docked", box.filter((handle) => handle.id.startsWith("size-")).map(docked), [true, true, true]);
-eq("the box turn rings are docked", box.filter((handle) => handle.kind === "ring").map(docked), [true, true, true]);
+eq("the box size knobs sit on the ghost's faces", box.filter((handle) => handle.id.startsWith("size-")).map((handle) => handle.seat), [
+  { at: "ghost", role: "face", fallback: DOCK_KNOB_REACH },
+  { at: "ghost", role: "face", fallback: DOCK_KNOB_REACH },
+  { at: "ghost", role: "face", fallback: DOCK_KNOB_REACH },
+]);
+eq("the box turn rings sit at the ghost's centre", box.filter((handle) => handle.kind === "ring").every((handle) => handle.seat.at === "ghost" && handle.seat.role === "centre"), true);
 const turnedBox = handlesFor("boolean", context("box", { read: (field) => (field === "modelRz" ? 90 : values[field] ?? 0) }));
 check("a box turned a quarter about Z has its Width X knob along world Y", nearVec(turnedBox.find((handle) => handle.id === "size-0")!.dir, [0, 1, 0]));
 const sizeZ = box.find((handle) => handle.id === "size-2")!;
-eq("the box Z size knob sits out along Z, past the arrows", [sizeZ.dir, reachOf(sizeZ)], [[0, 0, 1], DOCK_KNOB_REACH]);
+eq("the box Z size knob points along Z from its face", [sizeZ.dir, sizeZ.seat], [[0, 0, 1], { at: "ghost", role: "face", fallback: DOCK_KNOB_REACH }]);
 const cylinder = handlesFor("boolean", context("cylinder"));
-eq("the cylinder radius and height knobs are docked", cylinder.filter((handle) => handle.kind === "axis" && handle.look === "knob").map((handle) => [handle.id, docked(handle)]), [["radius", true], ["height", true]]);
+eq("the cylinder radius and height knobs sit on the ghost", cylinder.filter((handle) => handle.kind === "axis" && handle.look === "knob").map((handle) => [handle.id, ghosted(handle)]), [["radius", true], ["height", true]]);
 const ball = handlesFor("boolean", context("sphere"));
-eq("the sphere radius knob is docked", ball.find((handle) => handle.id === "radius")!.seat, { at: "dock", reach: DOCK_KNOB_REACH });
+eq("the sphere radius knob sits on the ghost", ball.find((handle) => handle.id === "radius")!.seat, { at: "ghost", role: "face", fallback: DOCK_KNOB_REACH });
 check("a sphere does not turn", !ball.some((handle) => handle.kind === "ring"));
 eq("box and cylinder turn on three rings", cylinder.filter((handle) => handle.kind === "ring").map((handle) => handle.fields[0]), ["modelRx", "modelRy", "modelRz"]);
 // The newer primitives: every size has a knob of its own on the dock, and no two knobs share a spot.
@@ -142,7 +147,7 @@ for (const { kind } of PRIMITIVES) {
   const knobs = handlesFor("boolean", context(kind)).filter((handle) => handle.look === "knob");
   const spots = new Set(knobs.map((handle) => handle.dir.map((value) => value.toFixed(3)).join(",")));
   eq(`a ${kind}'s size knobs each have a spot of their own`, spots.size, knobs.length);
-  check(`a ${kind}'s size knobs are docked`, knobs.every(docked));
+  check(`a ${kind}'s size knobs sit on the ghost`, knobs.every(ghosted));
 }
 eq("a cone's knobs name its two radii", handlesFor("boolean", context("cone")).filter((handle) => handle.look === "knob").map((handle) => handle.label), ["Bottom radius", "Top radius", "Height"]);
 eq("a torus turns, on three rings", handlesFor("boolean", context("torus")).filter((handle) => handle.kind === "ring").length, 3);
@@ -179,7 +184,8 @@ check("measure has two surface points", handlesFor("measure", context("box")).ev
 
 // Every docked handle sits on the dock; only handles that edit a picked feature stay on the solid.
 const everyTool = MODEL_TOOLS.flatMap((tool) => handlesFor(tool, context("box")));
-eq("the origin dot, the blend knob, the split plane, the measure dots, the pull arrow, the feature dots and the mirror point stay on the feature", everyTool.filter((handle) => !docked(handle)).map((handle) => handle.id), ["plane", "blend", "blend", "hole-origin", "measure-a", "measure-b", "pull", "feat-at", "feat-at", "feat-at", "mir-origin"]);
+eq("the origin dot, the blend knob, the split plane, the measure dots, the pull arrow, the feature dots and the mirror point stay on the feature", everyTool.filter((handle) => handle.seat.at === "feature").map((handle) => handle.id), ["plane", "blend", "blend", "hole-origin", "measure-a", "measure-b", "pull", "feat-at", "feat-at", "feat-at", "mir-origin"]);
+check("boolean and new solid sit on the ghost, and Place stays on the dock", box.every(ghosted) && handlesFor("create", context("box")).every(ghosted) && handlesFor("place", context("box")).every(docked));
 const pocket = handlesFor("pocket", context("box"));
 eq("a pocket's position stays on the face and its depth knob points into it", [pocket.find((handle) => handle.id === "feat-at")!.seat.at, pocket.find((handle) => handle.id === "feat-depth")!.dir], ["feature", [0, 0, -1]]);
 eq("texture pitch knobs are docked", handlesFor("texture", context("box")).filter((handle) => handle.id.startsWith("feat-pitch")).every(docked), true);

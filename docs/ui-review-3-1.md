@@ -213,6 +213,12 @@ An empty Parameters section starts collapsed, so History sits under the tool car
 
 ![Parameters collapsed to one line](screenshots/ui-review-3-1/ux07-after-params.png)
 
+Boolean and New solid no longer park their gizmo on the right. Arrows and rings sit on the ghost's centre, and each size knob sits on the face it grows. The side gizmo comes back only when that centre leaves the canvas, or the ghost is under 24 px on screen.
+
+![The gizmo used to float at the right edge](screenshots/ui-review-3-1/before-handle-ghost.png)
+
+![Arrows, rings, and size knobs on the ghost](screenshots/ui-review-3-1/ux06-after-handles.png)
+
 ## Checks
 
 - `npx tsc --noEmit`
