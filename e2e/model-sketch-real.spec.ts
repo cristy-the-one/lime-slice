@@ -178,6 +178,7 @@ async function closedSpline(page: Page) {
   await page.locator(".sketch-menu-list [data-sketch-tool=spline]").click();
   const r = 60;
   for (const [dx, dy] of [[r, 0], [0, -r], [-r, 0], [0, r]] as const) await page.mouse.click(centre.x + dx, centre.y + dy);
+  await expect(canvas, "four spline points").toHaveAttribute("data-sketch-hits", /^(\S+ ){3}\S+$/);
   const first = ((await canvas.getAttribute("data-sketch-hits")) ?? "").split(" ")[0]!.split(":")[1]!.split(",").map(Number);
   // The hits are page pixels.
   await page.mouse.click(first[0]!, first[1]!);
@@ -199,7 +200,12 @@ for (const which of ["sloped", "flat top"] as const) {
     await page.keyboard.press("E");
     await expect(canvas).toHaveAttribute("data-extrude", "aim");
     // M would be typed into the focused box, as a letter of an expression, so the card's mode button is the way.
-    for (let turn = 0; turn < 5 && (await canvas.getAttribute("data-extrude-mode")) !== "new"; turn += 1) await page.locator("[data-sketch-mode]").click();
+    for (let turn = 0; turn < 5; turn += 1) {
+      const was = await canvas.getAttribute("data-extrude-mode");
+      if (was === "new") break;
+      await page.locator("[data-sketch-mode]").click();
+      await expect(canvas).not.toHaveAttribute("data-extrude-mode", was ?? "");
+    }
     await expect(canvas).toHaveAttribute("data-extrude-mode", "new");
     // The owner's keys: the distance, Tab, the other side, Tab, the draft, Enter.
     await page.keyboard.type("8.2");

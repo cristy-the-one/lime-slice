@@ -349,6 +349,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     refused?: { key: string; text: string };
   }
   let gesture: ExtrudeGesture | null = null;
+  /** The last client refusal worked out for the open extrude, and what it was worked out from. */
+  let noteMemo: { sketch: SketchData; key: string; text: string } | null = null;
   // --- F2. The axis stays live until a click or a drag locks it. ---
   interface RevolveGesture {
     angle: number;
@@ -2157,7 +2159,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   function extrudeKey(): string {
     if (!gesture) return "";
     const fields = [gesture.slots, gesture.distance, gesture.depth2, gesture.draft, gesture.upTo, resolvedMode()];
-    return JSON.stringify([fields, gesture.regions.map((region) => region.area.toFixed(4))]);
+    const regions = gesture.regions.map((region) => [region.area.toFixed(4), region.outer.start.map((value) => value.toFixed(4))]);
+    return JSON.stringify([fields, regions]);
   }
 
   /**
@@ -2166,9 +2169,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
    */
   function extrudeNote(): string {
     if (!gesture) return "";
-    if (gesture.refused && gesture.refused.key === extrudeKey()) return gesture.refused.text;
+    const key = extrudeKey();
+    if (gesture.refused && gesture.refused.key === key) return gesture.refused.text;
+    // A pointer move asks twice (the readout and the box) and changes nothing the op is built from: build once per change.
+    const sketch = activeSketch(editor);
+    if (noteMemo && noteMemo.sketch === sketch && noteMemo.key === key) return noteMemo.text;
     const built = builtExtrude();
-    return built && "error" in built ? built.error : "";
+    const text = built && "error" in built ? built.error : "";
+    noteMemo = sketch ? { sketch, key, text } : null;
+    return text;
   }
 
   /**
