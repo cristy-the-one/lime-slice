@@ -295,6 +295,22 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("a mirror of a fillet is refused with the ops it repeats", String(refused).includes("repeats one of boolean, extrude, revolve") && String(refused).includes("a fillet is applied once per copy"), String(refused));
 }
 
+{
+  // Finding 3: the ops guide says what mirror does now, documents join, and names model space; and what it says holds.
+  const { guideByUri } = await import("./guides.ts");
+  const ops = guideByUri("lime://guide/ops")?.text ?? "";
+  check("the ops guide no longer says mirror keeps the original unless keepOriginal is false", !ops.includes("It keeps the original unless keepOriginal is false") && ops.includes("keepOriginal:false applies only the image"));
+  check("the ops guide documents join and keepTool", ops.includes('join: {kind:"join"') && ops.includes("keepTool"));
+  check("the ops guide reads numbers in model space and names leftOut and jobs", ops.includes("in model space") && ops.includes("leftOut") && ops.includes("slice_wait {job}"));
+  const session = new Session(fakeEngine());
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const part = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 })).object);
+  const image = await call("model_apply", { object: part, op: { kind: "mirror", plane: "x", keepOriginal: false, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [6, -1, 19], dx: 2, dy: 2, dz: 3 } } });
+  const obj = session.objects.find((row) => row.id === part)!;
+  const steps = (obj.tree?.nodes.get(obj.tree.current)?.op as { steps?: { origin?: number[] }[] } | undefined)?.steps ?? [];
+  check("keepOriginal:false applies only the mirror image", image.ok === true && steps.length === 1 && steps[0]?.origin?.[0] === -8, JSON.stringify(steps));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
