@@ -190,13 +190,14 @@ fn a_wall_push_beside_raised_lettering_is_refused_instead_of_crashing() {
     let lettered = ok(apply("wall", 0, 1, text("B", &TEXT_B[..5])));
     let wall = face_of(&lettered, [-1.0, 0.0, 0.0], 600.0);
 
-    // The drag's probe and the Apply both meet the crash, and both refuse.
+    // The drag's probe and the Apply both meet the crash, and both refuse. On Windows the fault becomes an OCCT error
+    // that the move's own handler words; on Linux and macOS the signal guard answers with the internal-error sentence.
     let probed = call(
         json!({ "call": "probe", "key": "wall", "node": 1, "op": push(wall, -0.05), "preview": true }),
     );
-    survived(&probed, &[CANNOT_MOVE]);
+    survived(&probed, &[CANNOT_MOVE, INTERNAL]);
     let applied = apply("wall", 1, 2, push(wall, -0.05));
-    survived(&applied, &[CANNOT_MOVE]);
+    survived(&applied, &[CANNOT_MOVE, INTERNAL]);
 
     // The tree is still whole: the lettered solid is unchanged, and another step builds on it.
     let back = ok(call(json!({ "call": "goto", "key": "wall", "node": 1 })));
