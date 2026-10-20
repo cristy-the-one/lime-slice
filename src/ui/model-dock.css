@@ -273,6 +273,10 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
   pointer-events: auto;
 }
 .model-pick .modes { border: 0; padding: 0; background: transparent; }
+/* The view stays dark in both themes: the filter takes the stage's chip colours, as the other chips on it do. */
+.model-pick .modes .btn { color: var(--on-stage-dim); }
+.model-pick .modes .btn:hover:not(:disabled) { background: var(--stage-chip); color: var(--on-stage); }
+.model-pick .modes .btn.mode[aria-pressed="true"] { background: var(--stage-chip-on); color: var(--on-stage); }
 .model-pick .model-count { margin-left: 0; }
 
 /* A narrow window (601–960 px) stacks the Model dock over the view, with room for a tool's fields. */
