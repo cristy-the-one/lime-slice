@@ -27,6 +27,52 @@ let home: {
   chip: HTMLElement | null;
 } | null = null;
 
+/**
+ * E3. Model on the phone: the Model dock leaves the left dock for the view as its bottom sheet, the readout and its
+ * chips leave the status line for the view under the tool strip, and Inspect goes to the Device tab. Back on leave.
+ */
+const MODEL_STATUS = ["#modelPaused", "#modelReadout", "#modelFitWarn"];
+
+function enterModel() {
+  const body = document.querySelector("#modelBody");
+  const dock = document.querySelector("#modelDock");
+  if (body && dock) body.append(dock);
+  let foot = document.querySelector<HTMLElement>("#compactModelFoot");
+  if (!foot && body) {
+    foot = document.createElement("div");
+    foot.id = "compactModelFoot";
+    body.append(foot);
+  }
+  for (const id of MODEL_STATUS) {
+    const node = document.querySelector(id);
+    if (node && foot) foot.append(node);
+  }
+  const inspect = document.querySelector("#modelInspect");
+  const device = document.querySelector("#compactDevice");
+  if (inspect && device) {
+    let head = device.querySelector<HTMLElement>("#compactModelHead");
+    if (!head) {
+      head = document.createElement("h3");
+      head.id = "compactModelHead";
+      head.textContent = "Model";
+    }
+    device.append(head, inspect);
+  }
+}
+
+function leaveModel() {
+  const left = document.querySelector("#left");
+  const dock = document.querySelector("#modelDock");
+  if (left && dock) left.after(dock);
+  const status = document.querySelector("footer.status");
+  if (status) status.prepend(...MODEL_STATUS.map((id) => document.querySelector(id)).filter((node): node is Element => !!node));
+  document.querySelector("#compactModelFoot")?.remove();
+  document.querySelector("#compactModelHead")?.remove();
+  const right = document.querySelector("#right");
+  const inspect = document.querySelector("#modelInspect");
+  if (right && inspect) right.after(inspect);
+}
+
 export function mountCompact() {
   if (document.querySelector("#compactTop")) return;
   const app = document.querySelector(".app");
@@ -394,6 +440,8 @@ function selectTab(next: CompactTab, following = false) {
     sheetEl.dataset.detent = keepSheet ? detent : next === "preview" || next === "device" || next === "model" ? "closed" : detent;
   }
   applyHeights(sheetHeight(detent, window.innerHeight), true);
+  // E3. Inspect is on the Device tab: it fills as the tab shows.
+  if (next === "device") window.dispatchEvent(new Event("lime-inspect"));
   if (next === "settings" && !following) document.querySelector<HTMLInputElement>("#find")?.focus();
   if (!following) haptic("tap");
   window.dispatchEvent(new Event("resize"));
@@ -447,6 +495,7 @@ function enter() {
   if (connection && host) host.append(connection);
   const printerHost = document.querySelector("#compactPrinter");
   if (printerPick && printerHost) printerHost.append(printerPick);
+  enterModel();
   document.documentElement.dataset.compactTab = tab;
   selectTab(tab);
   observe();
@@ -462,6 +511,7 @@ function leave() {
   else home.action.append(home.slice);
   if (home.connection && home.gear) home.gear.append(home.connection);
   if (home.printerPick && home.chip) home.chip.append(home.printerPick);
+  leaveModel();
   home = null;
   document.documentElement.classList.remove("chrome-hidden");
   delete document.documentElement.dataset.compactTab;

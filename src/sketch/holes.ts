@@ -79,14 +79,14 @@ export function holeTargets(sketch: SketchData, selection: { entities: readonly 
 }
 
 /**
- * Why these sizes cannot drill, checked here rather than sent for the engine to refuse. Null when they can: a radius
+ * Why these sizes cannot drill, checked here rather than sent for the engine to refuse. Null when they can: a size
  * above 0, a depth above 0 unless the hole goes through, and a counterbore wider than the hole and deeper than 0.
  */
 export function holeSizeRefusal(sizes: HoleSizes): string | null {
-  if (!(sizes.radius > 0)) return "A hole needs a radius above 0.";
+  if (!(sizes.radius > 0)) return "A hole needs a diameter above 0.";
   if (!sizes.through && !(sizes.depth > 0)) return "A hole needs a depth above 0, or Through.";
   if (sizes.counterboreRadius != null && sizes.counterboreDepth != null) {
-    if (!(sizes.counterboreRadius > sizes.radius)) return "A counterbore needs a radius larger than the hole's.";
+    if (!(sizes.counterboreRadius > sizes.radius)) return "A counterbore needs a diameter larger than the hole's.";
     if (!(sizes.counterboreDepth > 0)) return "A counterbore needs a depth above 0.";
     if (!sizes.through && !(sizes.counterboreDepth < sizes.depth)) return "A counterbore must be shallower than the hole.";
   }

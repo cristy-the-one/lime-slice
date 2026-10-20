@@ -186,7 +186,7 @@ test("three sketch points become one group of holes, and History Edit changes th
   // A size that cannot drill is said in the app, and the modeler is not asked.
   const before = tree.calls.length;
   await page.locator("#modelHoleR").fill("0");
-  await expect(page.locator("#modelReadout")).toContainText("A hole needs a radius above 0.");
+  await expect(page.locator("#modelReadout")).toContainText("A hole needs a diameter above 0.");
   await page.waitForTimeout(500);
   expect(tree.calls.slice(before).filter((call) => call.call === "probe")).toHaveLength(0);
   await page.locator("#modelHoleR").fill("2");

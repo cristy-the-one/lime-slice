@@ -14,6 +14,7 @@ import {
   Move3d,
   Palette,
   PanelLeft,
+  PanelRight,
   RefreshCw,
   Rotate3d,
   Ruler,
@@ -94,9 +95,10 @@ function iconizeToolbar() {
 const STAGE_NAME: Record<Stage, string> = { prepare: "Prepare", preview: "Preview", gcode: "G-code", model: "Model" };
 
 /**
- * The rail at the far left: one vertical toolbar whose tool sets follow the stage. Prepare's sets also serve Model
- * until Model has its own; Preview and G-code share theirs, which replace the old view bar. Measure and Section show
- * in every stage. The foot holds the settings dock toggle.
+ * The rail at the far left: one vertical toolbar whose tool sets follow the stage. Preview and G-code share theirs,
+ * which replace the old view bar; Measure and Section show in the slicer stages. Model's set comes from the markup
+ * (its buttons keep their ids for the Model code), and its foot holds Undo, Redo, STEP and Inspect. The foot holds the
+ * left dock toggle.
  */
 function mountToolRail(hooks: ChromeHooks) {
   const host = document.querySelector(".workspace");
@@ -133,7 +135,7 @@ function mountToolRail(hooks: ChromeHooks) {
   const section = toolButton("section", SquareSplitHorizontal, "Section", "Clip the preview on a free plane. Does not change the slice.");
   section.setAttribute("aria-pressed", "false");
 
-  const place = railSet("prepare model", "Place");
+  const place = railSet("prepare", "Place");
   place.append(caption("Place"), move, rotate, scale, lay, sep(), caption("View"));
   const look = railSet("preview", "View");
   look.append(
@@ -145,9 +147,9 @@ function mountToolRail(hooks: ChromeHooks) {
   );
   const bed = railSet("prepare preview", "Bed");
   bed.append(flyButton("flyBed", Grid3x3, "Bed opacity"));
-  const shared = railSet("prepare preview gcode model", "Measure and section");
+  const shared = railSet("prepare preview gcode", "Measure and section");
   shared.append(measure, section);
-  const paints = railSet("prepare model", "Paint");
+  const paints = railSet("prepare", "Paint");
   paints.append(sep(), caption("Paint"), paint);
   const edits = railSet("preview gcode", "Edit");
   edits.append(sep(), caption("Edit"), supports);
@@ -164,11 +166,23 @@ function mountToolRail(hooks: ChromeHooks) {
   label.setAttribute("aria-hidden", "true");
   label.textContent = "Settings";
   leftToggle.append(label);
+  // E3. Model's undo, redo, STEP and Inspect sit over the dock toggle.
+  const modelFoot = document.querySelector<HTMLElement>("#railModelFoot");
+  if (modelFoot) foot.append(modelFoot);
+  const inspect = modelFoot?.querySelector<HTMLElement>("#modelInspectToggle");
+  if (inspect) {
+    const label = document.createElement("span");
+    label.className = "model-tool-label";
+    label.textContent = inspect.textContent?.trim() || "Inspect";
+    inspect.replaceChildren(svgIcon(PanelRight), label);
+  }
   foot.append(leftToggle);
 
-  rail.append(place, look, bed, shared, paints, edits, gizmoNudge(), foot);
+  const model = document.querySelector<HTMLElement>("#railModel");
+  rail.append(place, look, bed, shared, paints, edits, ...(model ? [model] : []), gizmoNudge(), foot);
   host?.prepend(rail);
   mountRovingFocus(rail);
+  mountRailFolds(rail);
   flyouts = mountRailFlyouts(rail);
   paintRailStage(hooks.stage());
 
@@ -182,6 +196,7 @@ function mountToolRail(hooks: ChromeHooks) {
     if (id === "layflat") document.querySelector<HTMLButtonElement>("#layflat")?.click();
     if (id === "section") toggleSection();
     if (id === "dock") toggleDock("left");
+    if (button.id === "modelInspectToggle") toggleDock("right");
     const mode = button.dataset.mode;
     if (mode === "flat" || mode === "split" || mode === "solid") hooks.setViewMode(mode);
   });
@@ -245,6 +260,8 @@ let flyouts: { close(): void } | null = null;
 
 /** Show the stage's tool set, and name the toolbar and the stage landmark after it. */
 export function paintRailStage(stage: Stage) {
+  document.documentElement.dataset.stage = stage;
+  paintDockNames(stage);
   const rail = document.querySelector<HTMLElement>("#toolRail");
   if (!rail) return;
   const focused = rail.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
@@ -259,7 +276,150 @@ export function paintRailStage(stage: Stage) {
     const twin = railButtons(rail).find((button) => button.dataset.tool === focused.dataset.tool);
     rovingReset(rail);
     (twin ?? rail.querySelector<HTMLButtonElement>("button[tabindex='0']"))?.focus();
+    fitRail();
     return;
+  }
+  rovingReset(rail);
+  fitRail();
+}
+
+/**
+ * E3. The left dock is Settings in the slicer stages and Model in Model; the right is Results, or Inspect in Model.
+ * Their headings, landmarks, close buttons and openers say so.
+ */
+function paintDockNames(stage: Stage) {
+  const model = stage === "model";
+  const names = { left: model ? "Model" : "Settings", right: model ? "Inspect" : "Results" };
+  for (const side of ["left", "right"] as const) {
+    const dock = document.querySelector<HTMLElement>(side === "left" ? "#leftDock" : "#rightDock");
+    if (!dock) continue;
+    dock.setAttribute("aria-label", names[side]);
+    const heading = dock.querySelector(".dock-head h2");
+    if (heading) heading.textContent = names[side];
+    dock.querySelector(".dock-close")?.setAttribute("aria-label", `Collapse ${model && side === "left" ? "the Model panel" : names[side].toLowerCase()}`);
+    document.querySelector(`.splitter-${side}`)?.setAttribute("aria-label", `Resize ${model && side === "left" ? "the Model panel" : names[side].toLowerCase()}`);
+  }
+  const toggle = document.querySelector<HTMLElement>("#leftToggle");
+  if (toggle) {
+    toggle.dataset.tip = `${names.left} panel`;
+    toggle.setAttribute("aria-label", `${names.left} panel`);
+    const label = toggle.querySelector(".rail-label");
+    if (label) label.textContent = names.left;
+  }
+  const hint = document.querySelector("#statusHint");
+  if (hint) hint.textContent = model ? "The Model panel is in the drawer (Ctrl+B)" : "Settings are in the drawer (Ctrl+B)";
+  const timing = document.querySelector<HTMLElement>("#timing");
+  if (timing) timing.dataset.tip = `${names.right} panel`;
+  // Inspect fills only in Model: it catches up as Model shows.
+  if (model) window.dispatchEvent(new Event("lime-inspect"));
+}
+
+/** E3. Groups fold into one flyout button when the rail is too short for every tool, the least used first. */
+const FOLD_ORDER = ["frame", "inspect", "combine", "feature", "modify", "create"];
+let openFold: HTMLElement | null = null;
+
+function mountRailFolds(rail: HTMLElement) {
+  for (const group of rail.querySelectorAll<HTMLElement>(".rail-group[data-group]")) {
+    const tools = group.querySelector<HTMLElement>(":scope > .rail-tools");
+    if (!tools) continue;
+    const name = group.getAttribute("aria-label") ?? "";
+    tools.id ||= `railTools-${group.dataset.group}`;
+    const fold = document.createElement("button");
+    fold.type = "button";
+    fold.className = "rail-fold more";
+    fold.hidden = true;
+    fold.setAttribute("aria-label", `${name} tools`);
+    fold.setAttribute("aria-haspopup", "true");
+    fold.setAttribute("aria-expanded", "false");
+    fold.setAttribute("aria-controls", tools.id);
+    tools.before(fold);
+  }
+  rail.addEventListener("click", (ev) => {
+    const target = ev.target instanceof Element ? ev.target : null;
+    const fold = target?.closest<HTMLButtonElement>(".rail-fold");
+    if (fold) {
+      const group = fold.closest<HTMLElement>(".rail-group");
+      if (group && group === openFold) closeFold(false);
+      else if (group) showFold(group, (ev as MouseEvent).detail === 0);
+      return;
+    }
+    // A tool picked from an open fold closes it; the tool's own click runs as from the rail.
+    if (openFold && target?.closest("button") && openFold.contains(target) && !target.closest(".model-feature-more")) closeFold(true);
+  });
+  rail.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape" || !openFold || !openFold.contains(ev.target as Node)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeFold(true);
+  });
+  document.addEventListener("pointerdown", (ev) => {
+    if (openFold && !openFold.contains(ev.target as Node)) closeFold(false);
+  }, true);
+  window.addEventListener("resize", () => fitRail());
+  window.addEventListener("lime-layout", () => fitRail());
+  window.addEventListener("lime-rail", () => fitRail());
+  // A drawer's labelled toggle is taller than the plain one.
+  const ws = document.querySelector(".workspace");
+  if (ws) new MutationObserver(() => fitRail()).observe(ws, { attributes: true, attributeFilter: ["class"] });
+}
+
+function showFold(group: HTMLElement, keyboard: boolean) {
+  closeFold(false);
+  const fold = group.querySelector<HTMLElement>(":scope > .rail-fold");
+  const tools = group.querySelector<HTMLElement>(":scope > .rail-tools");
+  const rail = group.closest<HTMLElement>("#toolRail");
+  if (!fold || !tools || !rail) return;
+  openFold = group;
+  group.dataset.open = "";
+  fold.setAttribute("aria-expanded", "true");
+  const at = fold.getBoundingClientRect();
+  tools.style.left = `${rail.getBoundingClientRect().right + 4}px`;
+  tools.style.top = `${Math.max(8, Math.min(at.top - 4, window.innerHeight - tools.offsetHeight - 8))}px`;
+  if (keyboard) tools.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+}
+
+function closeFold(refocus: boolean) {
+  const group = openFold;
+  if (!group) return;
+  openFold = null;
+  delete group.dataset.open;
+  const fold = group.querySelector<HTMLElement>(":scope > .rail-fold");
+  fold?.setAttribute("aria-expanded", "false");
+  if (refocus) fold?.focus();
+}
+
+/**
+ * Fold the Model groups the rail has no room for, least used first, and unfold them again when it has. Runs on a
+ * resize, a stage change, and when a solid's tools come or go; never per frame.
+ */
+export function fitRail() {
+  const rail = document.querySelector<HTMLElement>("#toolRail");
+  if (!rail) return;
+  closeFold(false);
+  const groups = FOLD_ORDER
+    .map((name) => rail.querySelector<HTMLElement>(`.rail-group[data-group="${name}"]`))
+    .filter((group): group is HTMLElement => !!group);
+  const fold = (group: HTMLElement, on: boolean) => {
+    group.toggleAttribute("data-folded", on);
+    const button = group.querySelector<HTMLElement>(":scope > .rail-fold");
+    if (!button) return;
+    if (button.hidden === on) button.hidden = !on;
+    // The group's first icon and its tools' names, taken once the Model code has labelled them.
+    const tools = group.querySelector<HTMLElement>(":scope > .rail-tools");
+    const icon = tools?.querySelector(".ico");
+    if (on && icon && !button.querySelector(".ico")) {
+      button.append(icon.cloneNode(true));
+      const names = [...(tools?.querySelectorAll<HTMLElement>(".model-tool-label") ?? [])].map((label) => label.textContent).join(", ");
+      button.dataset.tip = `${group.getAttribute("aria-label") ?? ""}: ${names}`;
+    }
+  };
+  for (const group of groups) fold(group, false);
+  if (document.documentElement.classList.contains("layout-compact") || rail.querySelector("#railModel")?.closest("[hidden]")) return;
+  for (const group of groups) {
+    if (rail.scrollHeight <= rail.clientHeight + 1) break;
+    // A group is display: contents, so its own box says nothing: a shown tool in it does.
+    if (!group.querySelector<HTMLElement>(":scope > .rail-tools button")?.checkVisibility()) continue;
+    fold(group, true);
   }
   rovingReset(rail);
 }

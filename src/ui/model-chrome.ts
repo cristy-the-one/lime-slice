@@ -2,7 +2,7 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Axis3d, Box, Boxes, CircleDot, Cone, Cylinder, Disc, Download, Egg, Focus, Globe, Grid3x3, Hexagon, Layers, ListChecks, Move3d, MoveVertical, Plus, Redo2, Ruler, Scaling, Spline, SquareSplitHorizontal, Torus, Triangle, TriangleRight, Undo2, createElement, type IconNode } from "lucide";
+import { Axis3d, Box, Boxes, ChevronRight, CircleDot, Cone, Copy, Cylinder, Disc, Download, Egg, Eye, Focus, Globe, Grid2x2, Grid3x3, Hash, Hexagon, Layers, ListChecks, MirrorRectangular, Move3d, MoveVertical, Plus, Redo2, Rows3, Ruler, Scaling, Spline, SquareArrowUp, SquareSplitHorizontal, SquareSquare, SquaresUnite, Torus, Triangle, TriangleRight, Type, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
@@ -18,7 +18,7 @@ import { SCREWS, screwOf } from "../model-hole";
 import { holePointsSentence, refusedHole } from "../sketch/holes.ts";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
-import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatName, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices, type RepeatTool } from "../model-repeat";
+import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices } from "../model-repeat";
 import { paintRepeatSources } from "./model-history";
 import type { Piece } from "../modeling/compose";
 import { lastEdge, modelApplyReady, selectionCountLabel, shellFacesLabel, type ModelPickRef } from "../model-select";
@@ -29,7 +29,9 @@ import { state } from "../app/state";
 import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queueModelCheck, refreshModelCheck as rerunModelCheck } from "./model-check-panel.ts";
 import { evaluate, type Params } from "../modeling/expr.ts";
 import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
-import { toggleParameters } from "./parameters.ts";
+import { revealParameters } from "./parameters.ts";
+import { revealDock } from "./splitters";
+import "./model-dock.css";
 
 export type { ModelTool } from "../model-drag";
 
@@ -123,7 +125,10 @@ export type PlacePhase = "typed" | "drag" | "end";
 
 const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "create", icon: Plus, label: "New" },
-  { id: "boolean", icon: Box, label: "Boolean" },
+  { id: "boolean", icon: SquaresUnite, label: "Boolean" },
+  // --- A4. Their own rail buttons since E3. ---
+  { id: "pattern", icon: Copy, label: "Pattern" },
+  { id: "mirror", icon: MirrorRectangular, label: "Mirror" },
   { id: "split", icon: SquareSplitHorizontal, label: "Split" },
   { id: "fillet", icon: Spline, label: "Fillet" },
   { id: "chamfer", icon: Triangle, label: "Chamfer" },
@@ -139,6 +144,85 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   // --- P1: the button reads Push/Pull; the id is modelToolPull, from this label. ---
   { id: "pushpull", icon: MoveVertical, label: "Pull" },
 ];
+
+/** E3. The open tool's name, at the head of its card in the Model dock. */
+const TOOL_TITLES: Partial<Record<ModelTool, string>> = {
+  create: "New solid",
+  pushpull: "Push/Pull",
+  boolean: "Boolean",
+  split: "Split",
+  fillet: "Fillet",
+  chamfer: "Chamfer",
+  hole: "Hole",
+  shell: "Shell",
+  scale: "Scale",
+  measure: "Measure",
+  place: "Place",
+  workplane: "Workplane",
+  check: "Check",
+  pattern: "Pattern",
+  mirror: "Mirror",
+};
+
+function toolTitle(next: ModelTool): string {
+  return isFeatureTool(next) ? featureName(next) : TOOL_TITLES[next] ?? next;
+}
+
+/** E3. A feature's icon on the Features button, so the rail shows which one it opens. */
+const FEATURE_ICONS: Record<FeatureTool, IconNode> = {
+  pocket: SquareSquare,
+  boss: SquareArrowUp,
+  texture: Hash,
+  array: Grid2x2,
+  ribs: Rows3,
+  text: Type,
+};
+
+/**
+ * B24. Diameter fields over a radius the op stores: CAD names a hole by its diameter, as History does. The field shows
+ * twice the number every reader and writer here works in, so the conversion happens at the field and nowhere else.
+ */
+const DIAMETER_FIELDS: ReadonlySet<string> = new Set(["modelHoleR", "modelBoreR"]);
+
+function shownScale(id: string): number {
+  return DIAMETER_FIELDS.has(id) ? 2 : 1;
+}
+
+/** An expression typed in a diameter field, as the radius the op keeps, and back. Older radius expressions stay radii. */
+function storedExpr(id: string, text: string): string {
+  if (!DIAMETER_FIELDS.has(id)) return text;
+  const back = /^\((.*)\) \* 2$/.exec(text);
+  return back ? back[1]! : `(${text}) / 2`;
+}
+
+function shownExpr(id: string, text: string): string {
+  if (!DIAMETER_FIELDS.has(id)) return text;
+  const back = /^\((.*)\) \/ 2$/.exec(text);
+  return back ? back[1]! : `(${text}) * 2`;
+}
+
+/** The left dock opened for the open tool. It closes again with the tool, unless the user opened or closed it since. */
+let releaseDock: (() => void) | null = null;
+
+/** The open tool on the view's overlay and on the dock (for styles and observers), its card's title, and the dock it needs. */
+function paintOpenTool(next: ModelTool | null) {
+  for (const id of ["#modelBar", "#modelDock"]) {
+    const node = document.querySelector<HTMLElement>(id);
+    if (!node) continue;
+    if (next) node.dataset.tool = next;
+    else delete node.dataset.tool;
+  }
+  const title = document.querySelector("#modelPanelTitle");
+  if (title) title.textContent = next ? toolTitle(next) : "";
+  if (next) {
+    releaseDock ??= revealDock("left");
+    // On the phone's strip the open tool scrolls into sight.
+    if (document.documentElement.classList.contains("layout-compact")) document.querySelector(`#railModel .model-tool[data-tool="${next}"]:not([role=menuitem])`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  } else {
+    releaseDock?.();
+    releaseDock = null;
+  }
+}
 
 const PLACE_FIELDS = ["modelPlaceX", "modelPlaceY", "modelPlaceZ", "modelPlaceRx", "modelPlaceRy", "modelPlaceRz"] as const;
 const PLACE_KEYS = ["x", "y", "z", "rx", "ry", "rz"] as const satisfies readonly (keyof PlaceFields)[];
@@ -228,7 +312,11 @@ function svgIcon(node: IconNode) {
 function iconize(id: string, node: IconNode) {
   const button = document.querySelector<HTMLButtonElement>(id);
   if (!button || button.querySelector(":scope > .ico")) return;
-  const label = button.textContent?.trim() ?? "";
+  labelWithIcon(button, node, button.textContent?.trim() ?? "");
+}
+
+/** An icon and its name: the rail shows the icon and names the button by the text, which a tip and the phone strip show. */
+function labelWithIcon(button: HTMLElement, node: IconNode, label: string) {
   button.replaceChildren(svgIcon(node));
   const text = document.createElement("span");
   text.className = "model-tool-label";
@@ -239,10 +327,6 @@ function iconize(id: string, node: IconNode) {
 export function mountModelChrome(next: ModelChromeHooks) {
   hooks = next;
   for (const entry of TOOLS) iconize(`#modelTool${entry.label}`, entry.icon);
-  // --- A7 model check --- icon only, so the bar still fits at 1440 px beside Bed. The drag checklist reads class="model-tool" in the markup.
-  document.querySelector("#modelToolCheck")?.classList.add("is-icon");
-  // --- P1: icon only, named Push/Pull in its tip. The checklist reads class="model-tool" in the markup. ---
-  document.querySelector("#modelToolPull")?.classList.add("is-icon");
   document.querySelectorAll<HTMLButtonElement>("#modelPrim [data-kind]").forEach((button) => {
     const kind = button.dataset.kind;
     if (button.querySelector(".ico") || !(isPrimitiveKind(kind) || kind === "object")) return;
@@ -253,7 +337,9 @@ export function mountModelChrome(next: ModelChromeHooks) {
   iconize("#modelStep", Download);
   iconize("#modelUndo", Undo2);
   iconize("#modelRedo", Redo2);
+  iconize("#modelLookOpen", Eye);
   iconize("#modelBedToggle", Grid3x3);
+  document.querySelector("#modelFeatureMore")?.replaceChildren(createElement(ChevronRight, { width: 10, height: 10, "aria-hidden": "true", class: "ico" }));
   document.querySelector("#modelResetView")?.replaceChildren(createElement(Focus, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
   setBed(readBedPref());
   document.querySelector("#modelBedToggle")?.addEventListener("click", () => {
@@ -266,8 +352,10 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
   });
 
-  document.querySelector("#modelBar")?.addEventListener("click", (ev) => {
+  // E3. The tools sit in the rail, their panel in the Model dock and the pick filter over the view: one listener for all.
+  document.addEventListener("click", (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;
+    if (!target?.closest("[data-model-ui], #modelBar")) return;
     // --- A3 composite features ---
     if (target?.closest("#modelFeatureMore")) {
       toggleFeatureMenu();
@@ -275,11 +363,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
     if (target?.closest("#modelMenuParameters")) {
       closeFeatureMenu();
-      toggleParameters();
+      revealParameters();
       return;
     }
     const featureItem = target?.closest<HTMLButtonElement>("#modelFeatureMenu [data-tool]");
-    if (featureItem?.dataset.tool && (isFeatureTool(featureItem.dataset.tool) || isRepeatTool(featureItem.dataset.tool))) {
+    if (featureItem?.dataset.tool && isFeatureTool(featureItem.dataset.tool)) {
       chooseFeature(featureItem.dataset.tool);
       return;
     }
@@ -600,8 +688,11 @@ function toggleTool(next: ModelTool, editing = false) {
     depthGroup = group;
   }
   if (isFeatureTool(next) || isRepeatTool(next)) {
-    showFeatureButton(next);
-    rememberFeature(next);
+    // E3. Pattern and Mirror have their own rail buttons; the Features button keeps to the features.
+    if (isFeatureTool(next)) {
+      showFeatureButton(next);
+      rememberFeature(next);
+    }
     if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") document.querySelector<HTMLButtonElement>("#modelPickFace")?.click();
   }
   if (isRepeatTool(next) && !editing) {
@@ -615,8 +706,7 @@ function toggleTool(next: ModelTool, editing = false) {
     hooks?.seedRepeat();
   }
   // --- end A3 ---
-  const bar = document.querySelector<HTMLElement>("#modelBar");
-  if (bar) bar.dataset.tool = next;
+  paintOpenTool(next);
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]:not([role=menuitem])").forEach((button) => {
     button.setAttribute("aria-pressed", button.dataset.tool === next ? "true" : "false");
   });
@@ -774,8 +864,7 @@ function closeTool() {
   tool = null;
   // --- A4. A closed tool repeats nothing. --- D29: painted once closed, so History shows the step on screen again.
   paintRepeatSources([]);
-  const bar = document.querySelector<HTMLElement>("#modelBar");
-  if (bar) delete bar.dataset.tool;
+  paintOpenTool(null);
   document.querySelectorAll<HTMLButtonElement>(".model-tool[data-tool]:not([role=menuitem])").forEach((button) => {
     button.setAttribute("aria-pressed", "false");
   });
@@ -1398,7 +1487,7 @@ function writeFields(fields: readonly string[], values: readonly number[]) {
     const input = document.querySelector<HTMLInputElement>(`#${field}`);
     if (!input) return;
     clearExpression(input);
-    input.value = fieldText(values[i] ?? 0);
+    input.value = fieldText((values[i] ?? 0) * shownScale(field));
   });
 }
 
@@ -2023,9 +2112,9 @@ export function fieldNumber(id: string): number {
   const kept = exact.get(id);
   if (kept && input?.value === kept.text && !input.dataset.expr) return kept.value;
   const live = expressionValue(input);
-  if (live != null) return live;
+  if (live != null) return live / shownScale(id);
   const value = Number(input?.value);
-  return Number.isFinite(value) ? value : 0;
+  return Number.isFinite(value) ? value / shownScale(id) : 0;
 }
 
 /** Expressions on the open panel, for the op that Apply stores. Hidden fields stay out. */
@@ -2034,7 +2123,7 @@ export function panelExprs(): Record<string, string> | undefined {
   document.querySelectorAll<HTMLInputElement>("#modelPanel input[data-expr]").forEach((input) => {
     const label = input.closest("label");
     if (!input.id || !input.dataset.expr || label?.hasAttribute("hidden")) return;
-    out[input.id] = input.dataset.expr;
+    out[input.id] = storedExpr(input.id, input.dataset.expr);
   });
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -2042,9 +2131,10 @@ export function panelExprs(): Record<string, string> | undefined {
 /** Put a stored step's expressions back into the fields that show its numbers. */
 export function restoreFieldExprs(exprs: Record<string, string> | undefined) {
   if (!exprs) return;
-  for (const [id, text] of Object.entries(exprs)) {
+  for (const [id, stored] of Object.entries(exprs)) {
     const input = document.querySelector<HTMLInputElement>(`#${id}`);
-    if (!input || !text.trim()) continue;
+    if (!input || !stored.trim()) continue;
+    const text = shownExpr(id, stored);
     const value = evaluateText(text);
     if (value == null) continue;
     input.dataset.expr = text;
@@ -2269,27 +2359,21 @@ function onScrubUp(ev: PointerEvent) {
 
 // --- A3 composite features ---
 const FEATURE_KEY = "lime-slice-model-feature";
-type MenuTool = FeatureTool | RepeatTool;
+/** E3. Only the features: Pattern and Mirror have had their own rail buttons since E3, so an older saved choice of them reads Pocket. */
+type MenuTool = FeatureTool;
 const FEATURE_TIPS: Record<MenuTool, string> = {
-  pocket: "Cut a rect, circle, or arch into the picked face",
-  boss: "Raise a rect, circle, or arch from the picked face",
-  texture: "Cut a line, grid, brick, or shingle groove over the picked face",
-  array: "Repeat a cell over the picked face, raised or cut",
-  ribs: "Raise or cut ribs along the picked face",
-  text: "Raise or engrave text on the picked face",
-  // --- A4 ---
-  pattern: "Repeat history steps in a line, around an axis, or along a path",
-  mirror: "Mirror history steps across X, Y, Z, or a picked flat face",
+  pocket: "Pocket: cut a rect, circle, or arch into the picked face",
+  boss: "Boss: raise a rect, circle, or arch from the picked face",
+  texture: "Texture: cut a line, grid, brick, or shingle groove over the picked face",
+  array: "Array: repeat a cell over the picked face, raised or cut",
+  ribs: "Ribs: raise or cut ribs along the picked face",
+  text: "Text: raise or engrave text on the picked face",
 };
-
-function menuToolName(next: MenuTool): string {
-  return isRepeatTool(next) ? repeatName(next) : featureName(next);
-}
 
 function rememberedFeature(): MenuTool {
   try {
     const saved = localStorage.getItem(FEATURE_KEY);
-    if (isFeatureTool(saved) || isRepeatTool(saved)) return saved;
+    if (isFeatureTool(saved)) return saved;
   } catch {
     // A blocked store only means the last feature is not remembered.
   }
@@ -2308,7 +2392,7 @@ function showFeatureButton(next: MenuTool) {
   const button = document.querySelector<HTMLButtonElement>("#modelToolFeatures");
   if (!button) return;
   button.dataset.tool = next;
-  button.textContent = menuToolName(next);
+  labelWithIcon(button, FEATURE_ICONS[next], featureName(next));
   button.dataset.tip = FEATURE_TIPS[next];
   button.dataset.tipIdle = FEATURE_TIPS[next];
 }
@@ -2342,9 +2426,16 @@ function toggleFeatureMenu() {
   const more = document.querySelector<HTMLButtonElement>("#modelFeatureMore");
   if (!menu || !more) return;
   const rect = more.getBoundingClientRect();
-  menu.style.top = `${rect.bottom + 4}px`;
-  menu.style.left = `${Math.max(8, rect.left)}px`;
   menu.hidden = false;
+  // E3. Beside the rail, level with the button and kept on screen; under the button on the phone's strip.
+  const rail = more.closest("#toolRail")?.getBoundingClientRect();
+  if (rail && rail.height > rail.width) {
+    menu.style.left = `${rail.right + 6}px`;
+    menu.style.top = `${Math.max(8, Math.min(rect.top - 4, window.innerHeight - menu.offsetHeight - 8))}px`;
+  } else {
+    menu.style.top = `${rect.bottom + 4}px`;
+    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+  }
   more.setAttribute("aria-expanded", "true");
   // --- D33. The menu takes the keys a menu does: focus goes to its first item.
   menuItems()[0]?.focus();

@@ -664,6 +664,11 @@ function plateRows() {
   return { rows, limit };
 }
 
+/** E3. The plate's objects for Model's Inspect: name and size, as the object list says them. */
+export function plateObjectSizes(): { id: string; name: string; size: string }[] {
+  return plateRows().rows.map(({ obj, part }) => ({ id: obj.id, name: obj.name, size: boundsSize(part.bounds) }));
+}
+
 function objectListHtml(): string {
   if (!state.placed) return "";
   const { rows, limit } = plateRows();

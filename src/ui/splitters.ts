@@ -25,6 +25,8 @@ const LAST_KEY = "lime-slice-dock-last";
 let fitting = false;
 /** Drawers (961–1200 px) start closed each visit and are not stored, so a narrow window never rewrites the docks. */
 const drawerOpen: Record<DockSide, boolean> = { left: false, right: false };
+/** E3. A dock a Model tool opened for its panel: shown for now, not remembered, and closed again with the tool. */
+const revealed: Record<DockSide, boolean> = { left: false, right: false };
 let shownMode: DockMode | "compact" | null = null;
 
 function mode(): DockMode | "compact" {
@@ -56,6 +58,7 @@ function storedWidth(side: DockSide): number | null {
 
 /** Whether the user wants this dock open, before the window's room is counted. */
 function wantsOpen(side: DockSide): boolean {
+  if (revealed[side]) return true;
   const stored = read(CLOSED_KEY[side]);
   if (stored === "1") return false;
   if (stored === "0") return true;
@@ -90,7 +93,31 @@ export function toggleDock(side: DockSide) {
   setDock(side, !dockShown(side));
 }
 
+/**
+ * E3. Show a dock for something that needs it now, as a Model tool needs its panel: a closed dock opens without the
+ * choice being remembered (a drawer opens over the view). The returned function closes it again, unless the user
+ * opened or closed that dock in the meantime. A dock already shown, or the phone layout, is left alone.
+ */
+export function revealDock(side: DockSide): () => void {
+  if (compact() || mode() === "narrow" || dockShown(side)) return () => {};
+  const drawers = mode() === "drawer";
+  if (drawers) {
+    drawerOpen[side] = true;
+    drawerOpen[side === "left" ? "right" : "left"] = false;
+  }
+  revealed[side] = true;
+  applyFit();
+  return () => {
+    if (!revealed[side]) return;
+    revealed[side] = false;
+    if (drawers && mode() === "drawer") drawerOpen[side] = false;
+    applyFit();
+  };
+}
+
 export function setDock(side: DockSide, open: boolean) {
+  // The user's own choice ends a reveal: the dock is theirs again.
+  revealed[side] = false;
   const dock = document.querySelector(DOCK_ID[side]);
   const hadFocus = !!dock?.contains(document.activeElement);
   const other: DockSide = side === "left" ? "right" : "left";
@@ -115,6 +142,8 @@ function bindDrawerEscape(side: DockSide) {
   document.querySelector(DOCK_ID[side])?.addEventListener("keydown", (ev) => {
     const e = ev as KeyboardEvent;
     if (e.key !== "Escape" || e.defaultPrevented || mode() !== "drawer" || !drawerOpen[side]) return;
+    // E3. In Model, Esc cancels the open tool first (its own order), so the drawer stays.
+    if (document.querySelector("#tabModel")?.getAttribute("aria-selected") === "true") return;
     const target = e.target as HTMLElement | null;
     if (target?.closest("textarea, select, [contenteditable=true], input:not([type=checkbox]):not([type=radio]):not([type=range])")) return;
     e.preventDefault();
@@ -205,7 +234,8 @@ function currentFit(): DockFit {
       rightOpen,
       leftDesired: storedWidth("left"),
       rightDesired: storedWidth("right"),
-      last: lastOpened(),
+      // A revealed dock stays when both cannot: it is the one the open tool needs.
+      last: revealed.left ? "left" : revealed.right ? "right" : lastOpened(),
     });
   if (fit) return fit;
   return { left: leftOpen ? (storedWidth("left") ?? -1) : 0, right: rightOpen ? (storedWidth("right") ?? -1) : 0 };
@@ -260,7 +290,13 @@ function paintDrawerHint(show: boolean) {
   if (hint && hint.hidden === show) hint.hidden = !show;
 }
 
+let rightWasShown = false;
+
 function paintToggles(leftShown: boolean, rightShown: boolean) {
   document.querySelector("#leftToggle")?.setAttribute("aria-expanded", String(leftShown));
   document.querySelector("#timing")?.setAttribute("aria-expanded", String(rightShown));
+  document.querySelector("#modelInspectToggle")?.setAttribute("aria-expanded", String(rightShown));
+  // E3. Inspect fills its rows only while it is on screen: it catches up when it comes back.
+  if (rightShown && !rightWasShown) queueMicrotask(() => window.dispatchEvent(new Event("lime-inspect")));
+  rightWasShown = rightShown;
 }
