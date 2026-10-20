@@ -335,8 +335,9 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
   await expect(page.locator("#model")).toHaveAttribute("data-aspect-dim", "1");
   await expect(page.locator("#model")).toHaveAttribute("data-solid-opacity", "1");
   await expect(page.locator("#modelDy")).toHaveClass(/is-aspect/);
-  await expect(page.locator(".model-drag-tip")).toContainText("Depth (Y)");
+  await expect(page.locator(".model-drag-tip")).toBeHidden();
   await expect(page.locator(".model-aspect-label")).toContainText("Depth (Y)");
+  await expect(page.getByText("Depth (Y) 10 mm")).toHaveCount(1);
   expect(await page.locator("#model").getAttribute("data-ghost-lit")).not.toBe("1");
   await expect(page.locator("#model")).toHaveAttribute("data-aspect-sample", /-?\d+,-?\d+/);
   const sample = ((await page.locator("#model").getAttribute("data-aspect-sample")) ?? "0,0").split(",").map(Number);
@@ -364,7 +365,7 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
     return pick;
   }, sample);
   expect(deltaE(rgb, [143, 206, 106]), `lit pixel ${rgb.join(",")}`).toBeLessThan(10);
-  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph01-after-axis.png" });
+  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph02-after-dimension.png" });
   await page.mouse.move(at.x - 300, at.y + 200);
   await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
   await expect(page.locator("#modelDy")).not.toHaveClass(/is-aspect/);

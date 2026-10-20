@@ -185,6 +185,10 @@ Those first lit edges were pale and the solid went translucent. The lines are no
 
 ![Axis-coloured edges, solid left opaque](screenshots/ui-review-3-1/ph01-after-axis.png)
 
+A mapped size shows the value once, on the dimension: extension lines, arrowheads, and the label. The knob tooltip is hidden while that dimension is up.
+
+![One dimension for Depth Y](screenshots/ui-review-3-1/ph02-after-dimension.png)
+
 ## Checks
 
 - `npx tsc --noEmit`

@@ -64,7 +64,12 @@ export interface AspectContext {
   /** The other fields' current numbers, so a width can draw the whole rectangle. */
   siblings?: Readonly<Record<string, number>>;
   values?: readonly number[];
+  /** 1 keeps the dimension on its usual side. -1 moves it to the far side when the label would cover the knob. */
+  gapSign?: 1 | -1;
 }
+
+/** Set for the duration of `aspectFor`, so every dimension uses the same side. */
+let dimensionSign = 1;
 
 const SIZE_NAME: Record<string, string> = {
   "Size X": "Width (X)",
@@ -84,6 +89,7 @@ interface LocalAspect {
 
 /** The lines and the dimension for `handle`, from whatever of the shape `ctx` knows. */
 export function aspectFor(handle: DragHandle, ctx: AspectContext = {}): HandleAspect {
+  dimensionSign = ctx.gapSign === -1 ? -1 : 1;
   const values = ctx.values ?? handle.values;
   const tip = aspectTip(handle, values);
   const blank = (): HandleAspect => ({
@@ -615,13 +621,25 @@ function segments(edges: readonly [Vec3, Vec3][]): number[] {
   return lines;
 }
 
-/** The measured run, set off from the edge, with a witness line at each end. */
+/** The measured run, set off from the edge, with witness lines and arrowheads. */
 function withDimension(lines: number[], from: Vec3, to: Vec3, gapDir: Vec3, gap: number, tip: string): LocalAspect {
-  const offset = scale(normalize(gapDir), gap);
+  const offset = scale(normalize(gapDir), gap * dimensionSign);
   const a = add(from, offset);
   const b = add(to, offset);
-  lines.push(...from, ...a, ...to, ...b, ...a, ...b);
+  const span = sub(b, a);
+  const head = Math.min(Math.max(len(span) * 0.22, 1.4), Math.max(len(span) * 0.4, 0.4));
+  lines.push(...from, ...a, ...to, ...b, ...a, ...b, ...arrowHead(a, span, head), ...arrowHead(b, scale(span, -1), head));
   return { lines, dimension: { from: a, to: b, text: tip } };
+}
+
+/** Two barbs at `tip`, opening back along `toward`. */
+function arrowHead(tip: Vec3, toward: Vec3, size: number): number[] {
+  if (!(size > 0) || !(len(toward) > 1e-9)) return [];
+  const dir = normalize(toward);
+  const side = perpendicular(dir);
+  const back = add(tip, scale(dir, size));
+  const wing = size * 0.45;
+  return [...tip, ...add(back, scale(side, wing)), ...tip, ...add(back, scale(side, -wing))];
 }
 
 function circle(center: Vec3, normal: Vec3, radius: number, segments = 40): number[] {

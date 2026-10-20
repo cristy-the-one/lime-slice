@@ -388,6 +388,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** The dock's seat for the canvas size it was worked out for: it changes only when the canvas does. */
   let seated: { width: number; height: number; seat: DockSeat } | null = null;
   let aspectDim = false;
+  /** Which side the live dimension sits on. -1 is the far side, used when the label would cover the knob. */
+  let aspectGapSign: 1 | -1 = 1;
+  let aspectGapFor = "";
   /** Aspect lines, in screen pixels. Full axis colour, thick enough to read on the ghost. */
   const ASPECT_LINE_PX = 4;
   /** The panel or HUD field that has focus, so its handle lights without a pointer. */
@@ -2647,7 +2650,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   function paintAspect() {
     const handle = aspectHandle();
-    const aspect = handle ? aspectFor(handle, aspectContext(handle)) : null;
+    const id = handle?.id ?? "";
+    if (id !== aspectGapFor) {
+      aspectGapSign = 1;
+      aspectGapFor = id;
+    }
+    const aspect = handle ? aspectFor(handle, { ...aspectContext(handle), gapSign: aspectGapSign }) : null;
     aspectNow = aspect;
     const world = aspect?.space === "world" ? aspect.lines : [];
     const bodyLines = aspect?.space === "body" ? aspect.lines : [];
@@ -2859,6 +2867,29 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const y = rect.top + (-projectedAt.y * 0.5 + 0.5) * rect.height - parent.top;
     aspectLabel.style.left = `${Math.round(x)}px`;
     aspectLabel.style.top = `${Math.round(y)}px`;
+    if (aspectGapSign === 1 && labelCoversKnob()) {
+      aspectGapSign = -1;
+      paintAspect();
+    }
+  }
+
+  /** The label's box against the knob's grip, both in canvas pixels. */
+  function labelCoversKnob(): boolean {
+    const handle = aspectHandle();
+    if (!handle || aspectLabel.hidden) return false;
+    const part = drawnHandles().find((item) => item.handle.id === handle.id);
+    if (!part) return false;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const at = gripPoint(handle, part.root.position, part.root.scale.x).project(camera);
+    const kx = (at.x * 0.5 + 0.5) * width;
+    const ky = (-at.y * 0.5 + 0.5) * height;
+    const label = aspectLabel.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    const lx = label.left - canvasRect.left;
+    const ly = label.top - canvasRect.top;
+    const pad = 12;
+    return lx < kx + pad && lx + label.width > kx - pad && ly < ky + pad && ly + label.height > ky - pad;
   }
 
   function fieldOf(target: EventTarget | null): string | null {
@@ -3136,6 +3167,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function showTip(ev: PointerEvent, handle: DragHandle, values: readonly number[]) {
+    if (aspectNow?.mapped && aspectNow.dimension) {
+      tip.hidden = true;
+      return;
+    }
     const parent = canvas.parentElement?.getBoundingClientRect();
     if (!parent) return;
     tip.textContent = aspectTip(handle, values);

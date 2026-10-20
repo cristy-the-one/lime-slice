@@ -57,6 +57,8 @@ Status: done. Aspect lines are 4 px axis colour (`depthTest: false`) with a dash
 
 ### PH-02 (P0). Show the value once, as a real dimension
 
+Status: done. A mapped handle draws extension lines, a dimension line with arrowheads, and one label. The knob tooltip stays hidden while that dimension is up, and the dimension flips to the far side when the label would cover the knob. Screenshot: `ph02-after-dimension.png`.
+
 - **Seen**: two identical labels ("Depth (Y) 10 mm"), one at the knob and one floating mid-face. Neither has
   extension lines or arrows.
 - **Change**:

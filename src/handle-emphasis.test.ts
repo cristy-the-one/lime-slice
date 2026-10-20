@@ -80,6 +80,12 @@ eq("width uses the X colour", width.color, "x");
 check("width has the four edges parallel to X", segments(width.lines).filter((edge) => along(edge, 0) && near(Math.abs(direction(edge)[0]), 20, 0.1)).length >= 4);
 check("width does not thicken an edge parallel to Y", segments(width.lines).filter((edge) => along(edge, 1) && Math.abs(direction(edge)[1]) > 5).length === 0);
 check("the dimension carries the same sentence", width.dimension?.text === "Width (X) 20 mm");
+function meets(lines: number[], point: Vec3) {
+  return segments(lines).filter((edge) => edge.some((end) => near(end[0], point[0], 1e-3) && near(end[1], point[1], 1e-3) && near(end[2], point[2], 1e-3))).length;
+}
+check("the dimension has arrowheads at both ends", width.dimension != null && meets(width.lines, width.dimension.from) >= 3 && meets(width.lines, width.dimension.to) >= 3);
+const flipped = aspectFor(sizeX, { spec: box, gapSign: -1 });
+check("the far side mirrors the dimension", width.dimension != null && flipped.dimension != null && near(flipped.dimension.from[1], -width.dimension.from[1]) && near(flipped.dimension.from[0], width.dimension.from[0]));
 
 const depth = aspectFor(sizeY, { spec: box });
 check("depth has the four edges parallel to Y", segments(depth.lines).filter((edge) => along(edge, 1) && near(Math.abs(direction(edge)[1]), 10, 0.1)).length >= 4);
