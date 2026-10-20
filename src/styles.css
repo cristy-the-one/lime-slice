@@ -380,10 +380,10 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
 .layer-pin.is-filament { background: var(--amber); }
 .layer-action {
   position: absolute;
-  left: 18px;
+  left: 14px;
   z-index: 4;
-  width: 16px;
-  height: 16px;
+  width: 24px;
+  height: 24px;
   margin: 0;
   padding: 0;
   transform: translateY(-50%);
@@ -1117,13 +1117,15 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   font-size: var(--fs-2);
   text-align: left;
 }
-.mh-menu [role="menuitem"]:hover, .mh-menu [role="menuitem"]:focus-visible { background: var(--surface-3); outline: none; }
+.mh-menu [role="menuitem"]:hover, .mh-menu [role="menuitem"]:focus-visible { background: var(--surface-3); }
+.mh-menu [role="menuitem"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .mh-menu [role="menuitem"][aria-disabled="true"] { color: var(--text-faint); }
 .mh-why { grid-column: 1 / -1; color: var(--text-dim); font-size: var(--fs-1); white-space: normal; }
 .mh-why:empty { display: none; }
 /* The readout says why on a desktop; the phone sheet covers it, so there the panel says it. */
 .mh-note { display: none; }
 #model:focus { outline: none; }
+#model:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .model-drag-tip {
   position: absolute;
   z-index: 3;
