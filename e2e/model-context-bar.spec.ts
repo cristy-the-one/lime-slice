@@ -88,15 +88,16 @@ async function layout(page: Page) {
   const bar = (await page.locator("#modelContextBar").boundingBox())!;
   const [x, y, width, height] = ((await page.locator("#model").getAttribute("data-solid-screen")) ?? "").split(",").map(Number);
   const solid = { x: canvas.x + x!, y: canvas.y + y!, width: width!, height: height! };
-  const tools = (await page.locator(".model-tools").boundingBox())!;
+  const tools = (await page.locator("#toolRail").boundingBox())!;
   const readout = (await page.locator("#modelReadout").boundingBox())!;
-  const fit = (await page.locator("#modelFit").boundingBox())!;
+  // E3. The size is in Inspect; over the view sits the pick filter.
+  const fit = (await page.locator("#modelPick").boundingBox())!;
   return { canvas, bar, solid, tools, readout, fit };
 }
 
 test("a face click opens Push/Pull, Hole, and Shell off the solid, and Enter types the distance", async ({ page }) => {
   await openModel(page);
-  const fits = () => page.locator(".model-tools").evaluate((node) => node.scrollWidth <= node.clientWidth + 1);
+  const fits = () => page.locator("#toolRail").evaluate((node) => node.scrollHeight <= node.clientHeight + 1);
   expect(await fits(), "the toolbar still fits at 1440 px").toBe(true);
 
   const top = await facePoint(page, (normal) => normal[2]! > 0.5);
@@ -115,7 +116,7 @@ test("a face click opens Push/Pull, Hole, and Shell off the solid, and Enter typ
   expect(overlaps(placed.bar, { x: top.x - 2, y: top.y - 2, width: 4, height: 4 }), "the bar stays off the pointer").toBe(false);
   expect(overlaps(placed.bar, placed.tools), "the toolbar does not cover the bar").toBe(false);
   expect(overlaps(placed.bar, placed.readout), "the readout does not cover the bar").toBe(false);
-  expect(overlaps(placed.bar, placed.fit), "the size chip does not cover the bar").toBe(false);
+  expect(overlaps(placed.bar, placed.fit), "the pick filter does not cover the bar").toBe(false);
   expect(placed.bar.x).toBeGreaterThanOrEqual(placed.canvas.x);
   expect(placed.bar.y).toBeGreaterThanOrEqual(placed.canvas.y);
   expect(placed.bar.x + placed.bar.width).toBeLessThanOrEqual(placed.canvas.x + placed.canvas.width + 1);
@@ -191,7 +192,7 @@ test("a cylinder offers Change diameter, and empty space offers a typed primitiv
   const canvasBox = (await page.locator("#model").boundingBox())!;
   const [sx, sy, sw, sh] = ((await page.locator("#model").getAttribute("data-solid-screen")) ?? "").split(",").map(Number);
   const solid = { x: canvasBox.x + sx!, y: canvasBox.y + sy!, width: sw!, height: sh! };
-  const tools = (await page.locator(".model-tools").boundingBox())!;
+  const tools = (await page.locator("#modelPick").boundingBox())!;
   const selection = await page.locator("#modelContextBar").boundingBox();
   const blocked = [solid, tools, ...(selection ? [selection] : [])];
   const empty = [

@@ -12,7 +12,9 @@ html:not(.layout-compact):not([data-stage="model"]) #modelInspect { display: non
 
 /* ---------- The rail's Model set ---------- */
 .tool-rail .rail-tools { display: contents; }
-.tool-rail .model-tool { width: 36px; height: 32px; padding: 0; justify-content: center; font-weight: 400; }
+.tool-rail .model-tool:not([role=menuitem]) { width: 36px; height: 32px; padding: 0; justify-content: center; font-weight: 400; }
+/* The Features menu sits in the rail's markup but reads as a menu. */
+.tool-rail .model-feature-menu button { width: 100%; height: 28px; padding: 0 var(--space-2); display: flex; justify-content: flex-start; color: var(--text); }
 .tool-rail .model-tool .ico { width: 16px; height: 16px; }
 .tool-rail .model-tool-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .tool-rail .model-tool:disabled { opacity: 0.35; }
@@ -39,6 +41,14 @@ html:not(.layout-compact):not([data-stage="model"]) #modelInspect { display: non
 .tool-rail .model-feature .model-feature-more[aria-expanded="true"] { background: var(--surface-3); color: var(--text); }
 .model-feature-menu { z-index: var(--z-menu); }
 
+/*
+ * A rail too short for every Model tool gives up the least first (fitRail in chrome.ts): the captions ("bare"), then
+ * 4 px of each button ("dense", which keeps every tool down to about 790 px high), and only then whole groups.
+ */
+.tool-rail[data-fit] .rail-caption { display: none; }
+.tool-rail[data-fit] .rail-sep { margin: 4px 0; }
+.tool-rail[data-fit="dense"] :is(#railModel, #railModelFoot) button:is(.model-tool:not([role=menuitem]), .rail-fold, .model-look-open) { height: 28px; }
+.tool-rail[data-fit="dense"] :is(#railModel, #railModelFoot) .rail-sep { margin: 2px 0; }
 /* A group the rail has no room for folds into one button; its tools open beside the rail. */
 .tool-rail .rail-fold[hidden] { display: none; }
 .tool-rail .rail-group[data-folded]:has(.rail-tools .model-tool[aria-pressed="true"]) > .rail-fold {
@@ -136,6 +146,15 @@ html:not(.layout-compact) .model-dock .sketch-card {
   gap: 6px;
 }
 html:not(.layout-compact) .model-dock .sketch-card + .sketch-card { border-top: 1px solid var(--line); }
+/* The drawing card is headed as the tool card is. */
+html:not(.layout-compact) .model-dock .sketch-card:has([data-sketch-finish])::before {
+  content: "Sketch";
+  flex: 1 1 100%;
+  margin-bottom: 2px;
+  color: var(--text);
+  font-size: var(--fs-3);
+  font-weight: 600;
+}
 html:not(.layout-compact) .model-dock .sketch-card > p { flex: 1 1 100%; margin: 0; color: var(--text-dim); }
 html:not(.layout-compact) .model-dock .sketch-card > .btn,
 html:not(.layout-compact) .model-dock .sketch-card > .sketch-menu { flex: 1 1 calc(33% - 6px); min-width: 0; }
@@ -264,3 +283,8 @@ html[data-stage="model"] .status #statusText { display: none; }
 }
 .model-pick .modes { border: 0; padding: 0; background: transparent; }
 .model-pick .model-count { margin-left: 0; }
+
+/* A narrow window (601–960 px) stacks the Model dock over the view, with room for a tool's fields. */
+@media (max-width: 960px) {
+  html:not(.layout-compact)[data-stage="model"] .workspace.show-left:not(.show-right) { grid-template-rows: minmax(0, 46%) minmax(0, 1fr); }
+}

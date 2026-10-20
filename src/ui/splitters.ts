@@ -1,3 +1,4 @@
+import { installDocks } from "./dock-reveal";
 import { ChevronLeft, ChevronRight, createElement } from "lucide";
 import {
   dockMode,
@@ -99,7 +100,23 @@ export function toggleDock(side: DockSide) {
  * opened or closed that dock in the meantime. A dock already shown, or the phone layout, is left alone.
  */
 export function revealDock(side: DockSide): () => void {
-  if (compact() || mode() === "narrow" || dockShown(side)) return () => {};
+  if (compact()) return () => {};
+  const ws = workspace();
+  if (mode() === "narrow") {
+    // A narrow window stacks the dock over the stage, as its top bar button does.
+    const shown = side === "left" ? "show-left" : "show-right";
+    if (!ws || ws.classList.contains(shown)) return () => {};
+    ws.classList.add(shown);
+    paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
+    window.dispatchEvent(new Event("resize"));
+    return () => {
+      if (mode() !== "narrow" || !ws.classList.contains(shown)) return;
+      ws.classList.remove(shown);
+      paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
+      window.dispatchEvent(new Event("resize"));
+    };
+  }
+  if (dockShown(side)) return () => {};
   const drawers = mode() === "drawer";
   if (drawers) {
     drawerOpen[side] = true;
@@ -158,6 +175,7 @@ function lastOpened(): DockSide {
 export function mountSplitters() {
   const ws = workspace();
   if (!ws || ws.querySelector(".splitter")) return;
+  installDocks({ reveal: revealDock, open: (side) => setDock(side, true) });
   const handles = { left: mountHandle(ws, "left"), right: mountHandle(ws, "right") };
   for (const side of ["left", "right"] as const) {
     const close = document.querySelector(`${DOCK_ID[side]} .dock-close`);
@@ -295,7 +313,6 @@ let rightWasShown = false;
 function paintToggles(leftShown: boolean, rightShown: boolean) {
   document.querySelector("#leftToggle")?.setAttribute("aria-expanded", String(leftShown));
   document.querySelector("#timing")?.setAttribute("aria-expanded", String(rightShown));
-  document.querySelector("#modelInspectToggle")?.setAttribute("aria-expanded", String(rightShown));
   // E3. Inspect fills its rows only while it is on screen: it catches up when it comes back.
   if (rightShown && !rightWasShown) queueMicrotask(() => window.dispatchEvent(new Event("lime-inspect")));
   rightWasShown = rightShown;

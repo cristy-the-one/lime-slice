@@ -881,25 +881,6 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   pointer-events: none;
 }
 .sketch-box[data-cross="1"] { border-style: dashed; background: transparent; }
-/* E3. Reset view sits on the view cube's corner, as a home button does in CAD. */
-.model-view-reset {
-  position: absolute;
-  right: 12px;
-  bottom: 132px;
-  pointer-events: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  color: var(--text-dim);
-}
-.model-view-reset:hover { background: var(--surface-3); color: var(--text); }
-.model-view-reset:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 html:not(.layout-compact) #modelHistoryOpen { display: none; }
 .model-history {
   --mh-position-h: 24px;
@@ -1407,6 +1388,8 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
     bottom: auto;
     width: 40px;
     height: auto;
+    /* E3. Model's groups fold rather than run off a short window. */
+    max-height: calc(100% - 16px);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     background: var(--surface-1);

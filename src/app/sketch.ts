@@ -82,7 +82,7 @@ import type { Params } from "../modeling/expr.ts";
 import { parseConstraints } from "../sketch/solve";
 import { workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 import { state } from "./state";
-import { revealDock } from "../ui/splitters";
+import { revealDock } from "../ui/dock-reveal.ts";
 import { formatMm } from "../model-plane";
 import {
   buildSketchExtrude,

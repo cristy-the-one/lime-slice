@@ -99,6 +99,8 @@ test("Boolean on an object: the other solid is picked by a click in the view, dr
   await expect(page.locator("#modelApply")).toBeDisabled();
   await expect(canvas(page)).toHaveAttribute("data-context-count", "1");
 
+  // E3. Reset view is in the rail's View menu.
+  await page.locator("#modelLookOpen").click();
   await page.locator("#modelResetView").click({ modifiers: ["Shift"] });
   await page.waitForTimeout(300);
   const [gx, gy, gw, gh] = ((await canvas(page).getAttribute("data-context-screen")) ?? "").split(",").map(Number);

@@ -30,7 +30,7 @@ import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queue
 import { evaluate, type Params } from "../modeling/expr.ts";
 import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
 import { revealParameters } from "./parameters.ts";
-import { revealDock } from "./splitters";
+import { revealDock } from "./dock-reveal.ts";
 import "./model-dock.css";
 
 export type { ModelTool } from "../model-drag";
@@ -340,7 +340,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   iconize("#modelLookOpen", Eye);
   iconize("#modelBedToggle", Grid3x3);
   document.querySelector("#modelFeatureMore")?.replaceChildren(createElement(ChevronRight, { width: 10, height: 10, "aria-hidden": "true", class: "ico" }));
-  document.querySelector("#modelResetView")?.replaceChildren(createElement(Focus, { width: 16, height: 16, "aria-hidden": "true", class: "ico" }));
+  iconize("#modelResetView", Focus);
   setBed(readBedPref());
   document.querySelector("#modelBedToggle")?.addEventListener("click", () => {
     const on = document.querySelector("#modelBedToggle")?.getAttribute("aria-pressed") !== "true";

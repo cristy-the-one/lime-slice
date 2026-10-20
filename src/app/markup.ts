@@ -158,11 +158,11 @@ export function mountMarkup(root: HTMLElement) {
         <button class="model-tool" id="modelUndo" type="button" data-solid-only disabled data-tip="Undo the last solid edit">Undo</button>
         <button class="model-tool" id="modelRedo" type="button" data-solid-only disabled data-tip="Redo the last solid edit">Redo</button>
         <button class="model-tool" id="modelStep" type="button" data-solid-only data-tip="Write this solid as AP214 STEP">STEP</button>
-        <button class="model-tool" id="modelInspectToggle" type="button" aria-controls="rightDock" aria-expanded="false" data-tip="Inspect panel: size, volume, Check, and the other objects">Inspect</button>
         <div class="rail-sep"></div>
       </div>
       <div class="rail-fly model-look-panel" id="modelLookPanel" role="dialog" aria-label="View" data-model-ui hidden>
         <h3>View</h3>
+        <button class="btn model-look-toggle" id="modelResetView" type="button" data-tip="Reset view. Shift: every object">Reset view</button>
         <label class="model-keep"><input id="modelSection" type="checkbox"> Section</label>
         <div class="model-look-axis" id="modelSectionAxis" role="group" aria-label="Section plane">
           <button type="button" data-axis="x" aria-pressed="false">X</button>
@@ -479,7 +479,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="stage-body" id="modelBody" role="tabpanel" aria-labelledby="tabModel" hidden>
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
-          <!-- E3. Over the view only the pick filter, the view cube (drawn in the canvas, with Reset view on its corner) and the context bar. -->
+          <!-- E3. Over the view only the pick filter, the view cube (drawn in the canvas) and the context bar. -->
           <div class="model-bar" id="modelBar">
             <div class="model-pick" id="modelPick" role="group" aria-label="Pick">
               <div class="modes" role="group" aria-label="Pick">
@@ -488,7 +488,6 @@ export function mountMarkup(root: HTMLElement) {
               </div>
               <span class="model-count" id="modelCount" hidden></span>
             </div>
-            <button class="model-view-reset" id="modelResetView" type="button" aria-label="Reset view" data-tip="Reset view. Shift: every object"></button>
             <div class="model-empty" id="modelEmpty" hidden>
               <p class="model-empty-title" id="modelEmptyTitle">No solid open</p>
               <p class="model-empty-text" id="modelEmptyText">Start a solid from a primitive, or open a STEP file.</p>

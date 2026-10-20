@@ -532,7 +532,7 @@ export function unlockMirrorFace() {
   mirrorFaceLock = false;
 }
 
-// --- A4. Several faces offer Pattern and Mirror. The bar clicks the Features menu items. ---
+// --- A4. Several faces offer Pattern and Mirror. The bar clicks their rail buttons (E3). ---
 registerContextAction({
   id: "pattern",
   label: "Pattern",
@@ -540,7 +540,7 @@ registerContextAction({
   order: 50,
   tip: "Repeat history steps",
   command: "model-pattern",
-  toolbar: "#modelMenuPattern",
+  toolbar: "#modelToolPattern",
 });
 registerContextAction({
   id: "mirror",
@@ -549,5 +549,5 @@ registerContextAction({
   order: 55,
   tip: "Mirror history steps",
   command: "model-mirror",
-  toolbar: "#modelMenuMirror",
+  toolbar: "#modelToolMirror",
 });

@@ -431,25 +431,32 @@ async function longStack(page: Page) {
   await expect(page.locator("#modelFit")).toHaveAttribute("data-over", "1");
 }
 
-/** No two of the panel, History, the chip, and the readout overlap, all sit on the canvas, and the readout shows all its text. */
+/**
+ * E3. The panel and History share the Model dock and the readout and the size warning share the status line: no two of
+ * them overlap, none sits over the view, each stays in its own place, and the readout shows all its text.
+ */
 async function expectStackClear(page: Page) {
   const canvas = (await page.locator("#model").boundingBox())!;
+  const dock = (await page.locator("#leftDock").boundingBox())!;
+  const status = (await page.locator("footer.status").boundingBox())!;
   const parts = new Map<string, Rect>();
-  for (const id of ["#modelPanel", "#modelHistory", "#modelFit", "#modelReadout"]) {
+  for (const id of ["#modelPanel", "#modelHistory", "#modelFitWarn", "#modelReadout"]) {
     const box = (await page.locator(id).isVisible()) ? await page.locator(id).boundingBox() : null;
     if (box) parts.set(id, box);
   }
-  expect([...parts.keys()]).toEqual(expect.arrayContaining(["#modelHistory", "#modelFit", "#modelReadout"]));
+  expect([...parts.keys()]).toEqual(expect.arrayContaining(["#modelHistory", "#modelFitWarn", "#modelReadout"]));
   const list = [...parts];
   for (let i = 0; i < list.length; i += 1) {
-    expect(inside(list[i]![1], canvas), `${list[i]![0]} stays on the canvas`).toBe(true);
-    for (let j = i + 1; j < list.length; j += 1) expect(meets(list[i]![1], list[j]![1]), `${list[i]![0]} clear of ${list[j]![0]}`).toBe(false);
+    const [id, box] = list[i]!;
+    expect(meets(box, canvas), `${id} stays off the view`).toBe(false);
+    expect(inside(box, id === "#modelPanel" || id === "#modelHistory" ? dock : status), `${id} stays in its place`).toBe(true);
+    for (let j = i + 1; j < list.length; j += 1) expect(meets(box, list[j]![1]), `${id} clear of ${list[j]![0]}`).toBe(false);
   }
-  const clipped = await readout(page).evaluate((el) => el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1);
+  const clipped = await readout(page).locator(".model-readout-text").evaluate((el) => el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1);
   expect(clipped, "the readout shows all its text").toBe(false);
 }
 
-test("History, the size chip, and a long readout stack without overlap, on a tall canvas and a short one", async ({ page }) => {
+test("History, the size warning, and a long readout stay clear of each other and of the view, on a tall window and a short one", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openBig(page);
   await longStack(page);
@@ -509,7 +516,7 @@ test.describe("phone", () => {
     await page.locator("#modelHistoryOpen").click();
     await expect(rows(page)).toHaveCount(4);
     const sheet = (await page.locator("#modelHistory").boundingBox())!;
-    const fit = (await page.locator("#modelFit").boundingBox())!;
+    const fit = (await page.locator("#modelFitWarn").boundingBox())!;
     const text = (await readout(page).boundingBox())!;
     expect(meets(sheet, fit), "the sheet leaves the size warning").toBe(false);
     expect(meets(sheet, text), "and the readout").toBe(false);
@@ -521,7 +528,7 @@ test.describe("phone", () => {
     await openBig(page, "/?layout=compact");
     await longStack(page);
     const canvas = (await page.locator("#model").boundingBox())!;
-    const fit = (await page.locator("#modelFit").boundingBox())!;
+    const fit = (await page.locator("#modelFitWarn").boundingBox())!;
     const text = (await readout(page).boundingBox())!;
     const grips = ((await page.locator("#model").getAttribute("data-handles")) ?? "").split(" ").filter(Boolean).map((item) => canvas.x + Number(item.split(":")[1]!.split(",")[0]));
     expect(grips.length, "the Boolean tool's dock is up").toBeGreaterThan(0);

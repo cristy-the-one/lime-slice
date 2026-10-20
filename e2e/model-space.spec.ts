@@ -263,10 +263,16 @@ test("a split typed along model X on a moved part sends the engine the plane on 
   await expect(page.locator("#modelHistoryTree [role=treeitem]").last()).toContainText("Split at X 5");
 });
 
+/** E3. Bed and Reset view are in the rail's View menu. A click on the view closes it, so this opens it when shut. */
+async function openView(page: Page) {
+  if (await page.locator("#modelLookPanel").isHidden()) await page.locator("#modelLookOpen").click();
+}
+
 test("the bed toggle hides and shows the bed, and the choice stays", async ({ page }) => {
   await openFiles(page, { "box.step": boxSolid([20, 20, 10]) });
   const toggle = page.locator("#modelBedToggle");
   await expect(canvas(page)).toHaveAttribute("data-bed-visible", "1");
+  await openView(page);
   await toggle.click();
   await expect(canvas(page)).toHaveAttribute("data-bed-visible", "0");
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
@@ -284,6 +290,7 @@ test("Reset view and Home go back to the view Model opened with, and an Apply ke
 
   await zoomAndOrbit(page);
   expect(await restingCamera(page)).not.toBe(opening);
+  await openView(page);
   await page.locator("#modelResetView").click();
   expect(await restingCamera(page)).toBe(opening);
 
@@ -296,7 +303,9 @@ test("Reset view and Home go back to the view Model opened with, and an Apply ke
   await page.keyboard.press("Shift+Home");
   const all = await restingCamera(page);
   expect(all.split(";")[1], "Shift+Home looks at the middle of both objects").toBe("120.0,15.0,10.0");
+  await openView(page);
   await page.locator("#modelResetView").click();
+  await openView(page);
   await page.locator("#modelResetView").click({ modifiers: ["Shift"] });
   expect(await restingCamera(page)).toBe(all);
 
@@ -309,16 +318,19 @@ test("Reset view and Home go back to the view Model opened with, and an Apply ke
 });
 
 for (const [width, height] of [[960, 640], [1280, 800], [1440, 900]] as const) {
-  test(`Reset view sits clear of the chip, the readout, History, the dock and the view cube at ${width}×${height}`, async ({ page }) => {
+  test(`Reset view, in the rail's View menu, opens clear of the readout, the dock and the view cube at ${width}×${height}`, async ({ page }) => {
     await openFiles(page, { "box.step": boxSolid([20, 20, 10]) });
     await page.setViewportSize({ width, height });
     await page.locator("#modelToolBoolean").click();
     await expect(canvas(page)).toHaveAttribute("data-handles", /.+/);
+    // E3. Over the view stay only the pick filter, the view cube and the context bar: Reset view is in View.
+    await page.locator("#modelLookOpen").click();
+    await expect(page.locator("#modelResetView")).toBeVisible();
     const reset = (await page.locator("#modelResetView").boundingBox())!;
     const view = (await canvas(page).boundingBox())!;
     const meets = (a: { x: number; y: number; width: number; height: number }, b: typeof a) =>
       a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
-    for (const id of ["#modelFit", "#modelReadout", "#modelHistory", "#modelPanel", ".model-tools"]) {
+    for (const id of ["#modelReadout", "#modelPick", "#toolRail"]) {
       const box = await page.locator(id).boundingBox();
       if (box) expect(meets(reset, box), `clear of ${id}`).toBe(false);
     }

@@ -5,7 +5,7 @@
  */
 import { PARAM_NAME } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, isPlainNumber, type ParamTable } from "../modeling/params.ts";
-import { revealDock } from "./splitters";
+import { revealDock } from "./dock-reveal.ts";
 
 export interface ParameterHooks {
   table(): ParamTable;

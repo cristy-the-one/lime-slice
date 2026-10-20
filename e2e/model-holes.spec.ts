@@ -111,7 +111,7 @@ async function drawTypedCircle(page: Page, at: { x: number; y: number }, diamete
 }
 
 async function toolbarFits(page: Page) {
-  return page.locator(".model-tools").evaluate((bar) => bar.scrollWidth <= bar.clientWidth);
+  return page.locator("#toolRail").evaluate((bar) => bar.scrollHeight <= bar.clientHeight + 1);
 }
 
 test("three sketch points become one group of holes, and History Edit changes the depth", async ({ page }) => {
@@ -189,7 +189,7 @@ test("three sketch points become one group of holes, and History Edit changes th
   await expect(page.locator("#modelReadout")).toContainText("A hole needs a diameter above 0.");
   await page.waitForTimeout(500);
   expect(tree.calls.slice(before).filter((call) => call.call === "probe")).toHaveLength(0);
-  await page.locator("#modelHoleR").fill("2");
+  await page.locator("#modelHoleR").fill("4");
   await page.locator("#modelHoleD").fill("8");
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();

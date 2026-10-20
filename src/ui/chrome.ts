@@ -14,7 +14,6 @@ import {
   Move3d,
   Palette,
   PanelLeft,
-  PanelRight,
   RefreshCw,
   Rotate3d,
   Ruler,
@@ -97,7 +96,7 @@ const STAGE_NAME: Record<Stage, string> = { prepare: "Prepare", preview: "Previe
 /**
  * The rail at the far left: one vertical toolbar whose tool sets follow the stage. Preview and G-code share theirs,
  * which replace the old view bar; Measure and Section show in the slicer stages. Model's set comes from the markup
- * (its buttons keep their ids for the Model code), and its foot holds Undo, Redo, STEP and Inspect. The foot holds the
+ * (its buttons keep their ids for the Model code), and its foot holds Undo, Redo and STEP. The foot holds the
  * left dock toggle.
  */
 function mountToolRail(hooks: ChromeHooks) {
@@ -166,16 +165,9 @@ function mountToolRail(hooks: ChromeHooks) {
   label.setAttribute("aria-hidden", "true");
   label.textContent = "Settings";
   leftToggle.append(label);
-  // E3. Model's undo, redo, STEP and Inspect sit over the dock toggle.
+  // E3. Model's Undo, Redo and STEP sit over the dock toggle.
   const modelFoot = document.querySelector<HTMLElement>("#railModelFoot");
   if (modelFoot) foot.append(modelFoot);
-  const inspect = modelFoot?.querySelector<HTMLElement>("#modelInspectToggle");
-  if (inspect) {
-    const label = document.createElement("span");
-    label.className = "model-tool-label";
-    label.textContent = inspect.textContent?.trim() || "Inspect";
-    inspect.replaceChildren(svgIcon(PanelRight), label);
-  }
   foot.append(leftToggle);
 
   const model = document.querySelector<HTMLElement>("#railModel");
@@ -196,7 +188,6 @@ function mountToolRail(hooks: ChromeHooks) {
     if (id === "layflat") document.querySelector<HTMLButtonElement>("#layflat")?.click();
     if (id === "section") toggleSection();
     if (id === "dock") toggleDock("left");
-    if (button.id === "modelInspectToggle") toggleDock("right");
     const mode = button.dataset.mode;
     if (mode === "flat" || mode === "split" || mode === "solid") hooks.setViewMode(mode);
   });
@@ -389,13 +380,15 @@ function closeFold(refocus: boolean) {
 }
 
 /**
- * Fold the Model groups the rail has no room for, least used first, and unfold them again when it has. Runs on a
- * resize, a stage change, and when a solid's tools come or go; never per frame.
+ * Fit Model's tools to the rail's height, giving up the least first: the group captions, then 4 px of each button,
+ * then whole groups, which fold into one button each, least used first. Everything comes back when there is room.
+ * Runs on a resize, a stage change, and when a solid's tools come or go; never per frame.
  */
 export function fitRail() {
   const rail = document.querySelector<HTMLElement>("#toolRail");
   if (!rail) return;
   closeFold(false);
+  const overflows = () => rail.scrollHeight > rail.clientHeight + 1;
   const groups = FOLD_ORDER
     .map((name) => rail.querySelector<HTMLElement>(`.rail-group[data-group="${name}"]`))
     .filter((group): group is HTMLElement => !!group);
@@ -414,9 +407,12 @@ export function fitRail() {
     }
   };
   for (const group of groups) fold(group, false);
+  delete rail.dataset.fit;
   if (document.documentElement.classList.contains("layout-compact") || rail.querySelector("#railModel")?.closest("[hidden]")) return;
+  if (overflows()) rail.dataset.fit = "bare";
+  if (overflows()) rail.dataset.fit = "dense";
   for (const group of groups) {
-    if (rail.scrollHeight <= rail.clientHeight + 1) break;
+    if (!overflows()) break;
     // A group is display: contents, so its own box says nothing: a shown tool in it does.
     if (!group.querySelector<HTMLElement>(":scope > .rail-tools button")?.checkVisibility()) continue;
     fold(group, true);

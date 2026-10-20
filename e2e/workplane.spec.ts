@@ -96,12 +96,15 @@ async function onSide(page: Page) {
 
 test("the toolbar fits at 1440 px with the Workplane tool, a pick chip and Bed", async ({ page }) => {
   await openModel(page);
-  const fits = () => page.locator(".model-tools").evaluate((bar) => bar.scrollWidth <= bar.clientWidth);
+  const fits = () => page.locator("#toolRail").evaluate((bar) => bar.scrollHeight <= bar.clientHeight + 1);
   expect(await fits()).toBe(true);
   await clickSide(page);
   await expect(page.locator("#modelCount")).toBeVisible();
   expect(await fits(), "a pick's chip still fits").toBe(true);
+  // E3. Bed is in the rail's View menu.
+  await page.locator("#modelLookOpen").click();
   await expect(page.locator("#modelBedToggle")).toBeInViewport();
+  await page.keyboard.press("Escape");
   await expect(page.locator("#modelToolWorkplane")).toHaveText("Workplane");
   await expect(page.locator("#modelUndo"), "an icon button keeps its name").toHaveAccessibleName("Undo");
 });
@@ -190,7 +193,7 @@ test("Edit step opens a hole cut on a face frame with its own model-space number
   const tree = await openModel(page);
   await onSide(page);
   await page.locator("#modelToolHole").click();
-  await page.locator("#modelHoleR").fill("1.5");
+  await page.locator("#modelHoleR").fill("3");
   await page.locator("#modelHoleR").dispatchEvent("input");
   await apply(page).click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 3900 mm³");
@@ -204,7 +207,7 @@ test("Edit step opens a hole cut on a face frame with its own model-space number
   }
   await expect(canvas(page), "the frame is not drawn while the step's own numbers show").not.toHaveAttribute("data-workplane", /./);
   await expect(apply(page), "the step as it is would change nothing").toBeDisabled();
-  await page.locator("#modelHoleR").fill("2");
+  await page.locator("#modelHoleR").fill("4");
   await page.locator("#modelHoleR").dispatchEvent("input");
   await expect(apply(page)).toBeEnabled();
   await apply(page).click();

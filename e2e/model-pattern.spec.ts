@@ -99,8 +99,7 @@ test("a polar pattern of a cylinder is one row of six cuts", async ({ page }) =>
   const one = Math.round(4000 - Math.PI * 1.5 * 1.5 * 10);
   await expect(page.locator("#modelReadout")).toContainText(`Volume ${one} mm³`);
 
-  await page.locator("#modelFeatureMore").click();
-  await page.locator("#modelMenuPattern").click();
+  await page.locator("#modelToolPattern").click();
   await expect(page.locator("#modelToolFeatures")).toHaveText("Pattern");
   const rows = page.locator("#modelHistoryTree [role=treeitem]");
   await expect(rows.nth(1)).toHaveAttribute("data-repeat", "");
@@ -141,8 +140,7 @@ test("a polar pattern of a cylinder is one row of six cuts", async ({ page }) =>
 
 test("a step arrow drags the pattern distance", async ({ page }) => {
   await openModel(page);
-  await page.locator("#modelFeatureMore").click();
-  await page.locator("#modelMenuPattern").click();
+  await page.locator("#modelToolPattern").click();
   await expect(page.locator("#modelPatSx")).toHaveValue("10");
   await expect.poll(async () => page.locator("#model").getAttribute("data-handles")).toContain("pat-step-x");
   const box = (await page.locator("#model").boundingBox())!;
@@ -168,8 +166,7 @@ test("a mirror of a pocket is one row of the reflection; the pocket stays its ow
   await page.locator("#modelApply").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 3968 mm³");
 
-  await page.locator("#modelFeatureMore").click();
-  await page.locator("#modelMenuMirror").click();
+  await page.locator("#modelToolMirror").click();
   await page.locator("#modelMirPlane [data-plane=x]").click();
   await expect(page.locator("#modelMirX")).toHaveValue("10");
   await expect(page.locator("#modelApply")).toBeEnabled();
@@ -187,8 +184,7 @@ test("a mirror of a pocket is one row of the reflection; the pocket stays its ow
 test("editing the patterned step moves the copies with it", async ({ page }) => {
   const tree = await openModel(page);
   await cutCylinder(page);
-  await page.locator("#modelFeatureMore").click();
-  await page.locator("#modelMenuPattern").click();
+  await page.locator("#modelToolPattern").click();
   const rows = page.locator("#modelHistoryTree [role=treeitem]");
   await expect(rows.nth(1), "the step on screen is the source").toHaveAttribute("data-repeat", "");
   await page.locator("#modelPatMode [data-pat=linear]").click();
@@ -217,8 +213,7 @@ test("editing the patterned step moves the copies with it", async ({ page }) => 
 test("a polar pattern about an edge turns about that edge, where it is", async ({ page }) => {
   await openModel(page);
   await cutCylinder(page);
-  await page.locator("#modelFeatureMore").click();
-  await page.locator("#modelMenuPattern").click();
+  await page.locator("#modelToolPattern").click();
   await page.locator("#modelPatMode [data-pat=polar]").click();
   await page.locator("#modelPatAxis [data-axis=pick]").click();
   await expect(page.locator("#modelPickEdge"), "Edge picks edges").toHaveAttribute("aria-pressed", "true");
@@ -241,8 +236,7 @@ test("a polar pattern about an edge turns about that edge, where it is", async (
 test("while Pattern is open, History rows are chosen by a click or Space, and the arrows show no step", async ({ page }) => {
   const tree = await openModel(page);
   await cutCylinder(page);
-  await page.locator("#modelFeatureMore").click();
-  await page.locator("#modelMenuPattern").click();
+  await page.locator("#modelToolPattern").click();
   const list = page.locator("#modelHistoryTree");
   const rows = list.locator("[role=treeitem]");
   await expect(list).toHaveAttribute("aria-multiselectable", "true");

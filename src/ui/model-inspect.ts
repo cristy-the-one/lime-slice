@@ -3,8 +3,8 @@
  * against, the last Check, and the objects on the plate. It fills only while it is on screen in Model, and catches up
  * when it comes back, so a hidden Inspect costs nothing.
  */
-import { state } from "../app/state";
-import { setDock } from "./splitters";
+import { state } from "../app/state.ts";
+import { openDock } from "./dock-reveal.ts";
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]!);
@@ -40,7 +40,7 @@ export function mountModelInspect(next: ModelInspectHooks) {
   hooks = next;
   document.querySelector("#modelInspectCheckRun")?.addEventListener("click", () => hooks?.check());
   // The status line's "Too large" opens Inspect, where the size says by how much.
-  document.querySelector("#modelFitWarn")?.addEventListener("click", () => setDock("right", true));
+  document.querySelector("#modelFitWarn")?.addEventListener("click", () => openDock("right"));
   document.querySelector("#modelInspectObjects")?.addEventListener("click", (ev) => {
     const row = (ev.target as Element | null)?.closest<HTMLElement>("[data-inspect-open]");
     const id = row?.dataset.inspectOpen;

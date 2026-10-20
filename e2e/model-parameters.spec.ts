@@ -56,11 +56,11 @@ test("parameters panel and an expression in a number field", async ({ page }) =>
   await openModel(page);
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuParameters").click();
-  await expect(page.locator("#modelParams")).toBeVisible();
+  await expect(page.locator("#modelParamsMain")).toBeVisible();
   await page.keyboard.press("Control+Alt+p");
-  await expect(page.locator("#modelParams")).toBeHidden();
+  await expect(page.locator("#modelParamsMain")).toBeHidden();
   await page.keyboard.press("Control+Alt+p");
-  await expect(page.locator("#modelParams")).toBeVisible();
+  await expect(page.locator("#modelParamsMain")).toBeVisible();
 
   await page.locator("#modelParams [data-param-name]").fill("wallH");
   await page.locator("#modelParams [data-param-value]").fill("30");
@@ -160,7 +160,7 @@ test("an open tool's expression field and its dry-run follow a changed parameter
   await expect(width).toHaveAttribute("title", '"nope" is not a parameter. Add it in Parameters, or type a number.');
 });
 
-test("Parameters closes on Escape, Add focuses the new row, and the Features menu takes arrow keys", async ({ page }) => {
+test("Parameters folds on Escape, Add focuses the new row, and the Features menu takes arrow keys", async ({ page }) => {
   await openModel(page);
   await page.locator("#modelFeatureMore").click();
   const items = page.locator("#modelFeatureMenu [role=menuitem]");
@@ -179,13 +179,13 @@ test("Parameters closes on Escape, Add focuses the new row, and the Features men
   await page.keyboard.press("Enter");
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
-  await expect(page.locator("#modelParams")).toBeVisible();
+  await expect(page.locator("#modelParamsMain")).toBeVisible();
   await expect(page.locator("#modelParams th").last()).toHaveText("Order and delete");
   await page.locator("#modelParams [data-param-name]").first().click();
   await page.keyboard.type("a");
   await page.locator("#modelParamsAdd").click();
   await expect(page.locator("#modelParams [data-param-name]").nth(1)).toBeFocused();
   await page.keyboard.press("Escape");
-  await expect(page.locator("#modelParams")).toBeHidden();
-  await expect(page.locator("#modelFeatureMore")).toBeFocused();
+  await expect(page.locator("#modelParamsMain")).toBeHidden();
+  await expect(page.locator("#modelParamsToggle")).toBeFocused();
 });

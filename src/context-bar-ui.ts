@@ -33,8 +33,8 @@ interface ContextBarHooks {
 }
 
 const VIEW_CUBE_PX = 128;
-// E3. Over the view sit only the pick filter, Reset view by the cube, the empty card and a drag's sizes; a drawer covers the view too.
-const OBSTACLES = ["#modelPick", "#modelResetView", "#modelEmpty", ".interact-hud", ".workspace.is-drawers .dock"];
+// E3. Over the view sit only the pick filter, the empty card and a drag's sizes; a drawer covers the view too.
+const OBSTACLES = ["#modelPick", "#modelEmpty", ".interact-hud", ".workspace.is-drawers .dock"];
 
 let hooks: ContextBarHooks | null = null;
 let bar: HTMLElement | null = null;

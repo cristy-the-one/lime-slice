@@ -120,9 +120,9 @@ async function drawUprightPath(page: Page, length: string) {
 
 test("a rectangle on the bed lofts to a circle 30 mm above, and History Edit reopens the picks", async ({ page }) => {
   const tree = await start(page);
-  const tools = page.locator(".model-tools");
+  const tools = page.locator("#toolRail");
   const canvas = page.locator("#model");
-  expect(await tools.evaluate((bar) => bar.scrollWidth <= bar.clientWidth), "the toolbar fits at 1440").toBe(true);
+  expect(await tools.evaluate((bar) => bar.scrollHeight <= bar.clientHeight + 1), "the toolbar fits at 1440").toBe(true);
   await expect(page.locator("#modelToolLoft")).toHaveCount(0);
   await expect(page.locator("#modelToolSweep")).toHaveCount(0);
 
@@ -171,7 +171,7 @@ test("a rectangle on the bed lofts to a circle 30 mm above, and History Edit reo
   await expect(canvas).toHaveAttribute("data-loft-ruled", "0");
   await page.keyboard.press("M");
   await expect(canvas).toHaveAttribute("data-loft-mode", "new");
-  expect(await tools.evaluate((bar) => bar.scrollWidth <= bar.clientWidth), "loft adds no toolbar button").toBe(true);
+  expect(await tools.evaluate((bar) => bar.scrollHeight <= bar.clientHeight + 1), "loft adds no toolbar button").toBe(true);
   await page.keyboard.press("Enter");
 
   await expect(page.locator("#objectList .obj").filter({ hasText: "Loft 1" })).toHaveCount(1);
