@@ -1301,8 +1301,9 @@ async function sendPullProbe(gen: number, key: string, treeKey: string, node: No
 }
 
 /**
- * P1. Why a push or pull is refused before the kernel is asked: a distance past ten bed or part diagonals, or a move
- * that pushes a planar face as deep as the part. Null lets the kernel decide. Each face is read on the solid on screen,
+ * P1. Why a push or pull is refused before the kernel is asked: a distance past ten bed or part diagonals, a move
+ * that pushes a planar face as deep as the part, or a face that is the whole part moved past where it folds or given
+ * Alt's prism. Null lets the kernel decide. Each face is read on the solid on screen,
  * so `depths` is false where that solid is the step's own result (a Tab edit), not the one it is built on.
  */
 function pullGuard(op: ModelOp, depths = true): string | null {
@@ -1318,10 +1319,13 @@ function pullGuard(op: ModelOp, depths = true): string | null {
   for (const row of rows) {
     const index = typeof row.face === "number" ? row.face : row.face.index;
     const info = solid.faces[index];
-    const normal = info && !info.surface ? info.normal ?? null : null;
+    // A face that is the whole part has no plane to measure behind: its centre is inside the part, and its one normal
+    // is any direction. The kernel's fold distances bound it instead, read like the depth on the solid the step builds on.
+    const closed = depths && info?.closed ? { inMaxMm: info.inMaxMm, outMaxMm: info.outMaxMm } : null;
+    const normal = info && !info.surface && !closed ? info.normal ?? null : null;
     const centre = table.get(index)?.centre;
     const depth = depths && normal && centre ? depthBehind(solid.positions, centre, normal) : null;
-    const said = pullRefusal(op.kind === "moveFaces" ? "move" : "extrude", row.distance, [depth], limit, rows.length === 1);
+    const said = pullRefusal(op.kind === "moveFaces" ? "move" : "extrude", row.distance, [depth], limit, rows.length === 1, closed);
     if (said) return said;
   }
   return null;

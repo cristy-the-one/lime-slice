@@ -48,6 +48,16 @@ const curved = solid({
   }),
 });
 eq("a cylinder face keeps its radius", curved.faces[0], { id: 0, areaMm2: 1, surface: "cylinder", radiusMm: 10, axisPoint: [0, 0, 0], axis: [0, 0, 1] });
+const whole = solid({
+  ...encodeSolid({
+    ...sent,
+    faces: [{ areaMm2: 1, normal: [-1, 0, 0], closed: true, inMaxMm: 0.5 }, { areaMm2: 0.25, closed: true, inMaxMm: 4, outMaxMm: 6 }],
+  }),
+});
+eq("a closed face keeps how far it folds", whole.faces, [
+  { id: 0, areaMm2: 1, normal: [-1, 0, 0], closed: true, inMaxMm: 0.5 },
+  { id: 1, areaMm2: 0.25, closed: true, inMaxMm: 4, outMaxMm: 6 },
+]);
 eq("edges by index", back.edges.map((edge) => [edge.id, edge.lengthMm, Array.from(edge.points)]), [
   [0, 1, [0, 0, 0, 1, 0, 0]],
   [1, 2.5, [0, 0, 0, 0, 1, 0, 0, 1, 1]],

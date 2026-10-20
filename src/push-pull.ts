@@ -67,6 +67,16 @@ export function pullLimit(partMm: number, bedMm: number): number {
   return PULL_REACH * base;
 }
 
+/** A face that is the whole part: the largest push and pull before it folds, absent where it never does. */
+export interface ClosedFace {
+  inMaxMm?: number;
+  outMaxMm?: number;
+}
+
+/** Alt on a face that is the whole part. The kernel refuses with the same sentence. */
+export const WHOLE_PART_PRISM =
+  "Alt adds a prism on a face's outline, and this face is the whole part, so it has none. Drag without Alt to grow or shrink the part all round.";
+
 /** How deep the solid goes behind a planar face: from the face's plane to its farthest corner against `normal`. */
 export function depthBehind(positions: ArrayLike<number>, at: Vec3, normal: Vec3): number | null {
   const n = unit(normal);
@@ -86,11 +96,31 @@ export function depthBehind(positions: ArrayLike<number>, at: Vec3, normal: Vec3
  * neighbours cannot follow; a prism (Alt) may cut through, so the sentence offers that for one face. `depths` are the
  * faces' depths behind them, null where unknown (a curved face). The depth is a coarse bound, to the part's farthest
  * corner behind the face's plane: it never refuses a push that fits, and a thin wall of an L or a U is left to the kernel.
+ * `closed` is set for a face that is the whole part (an ellipsoid's, a sphere's): it has no outline for Alt's prism, and
+ * moves as one surface only as far as the kernel's fold distances, which the sentence names. The kernel says the same.
  */
-export function pullRefusal(kind: PullKind, distance: number, depths: readonly (number | null)[], limitMm: number, single = true): string | null {
+export function pullRefusal(
+  kind: PullKind,
+  distance: number,
+  depths: readonly (number | null)[],
+  limitMm: number,
+  single = true,
+  closed: ClosedFace | null = null,
+): string | null {
   if (!Number.isFinite(distance)) return "Type a distance in millimetres.";
   if (Math.abs(distance) > limitMm) {
     return `${formatNumber(Math.abs(distance), 1)} mm is farther than any printer reaches. A push or pull goes up to ${formatNumber(limitMm, 0)} mm here.`;
+  }
+  if (closed && kind === "extrude") return WHOLE_PART_PRISM;
+  if (closed && distance !== 0) {
+    const inward = distance < 0;
+    const most = inward ? closed.inMaxMm : closed.outMaxMm;
+    if (most != null && Math.abs(distance) > most + 1e-9) {
+      const way = inward ? "in" : "out";
+      const reach = most > 0 ? `It can go ${way} at most ${formatNumber(most, 1)} mm.` : `It cannot go ${way} at all.`;
+      return `${inward ? "Pushed in" : "Pulled out"} ${formatNumber(Math.abs(distance), 1)} mm, this surface would fold onto itself where it curves tightest. ${reach}`;
+    }
+    return null;
   }
   if (kind === "move" && distance < 0) {
     const through = depths.filter((depth): depth is number => depth != null && -distance >= depth - 1e-6);
