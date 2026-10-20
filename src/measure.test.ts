@@ -1,6 +1,6 @@
 import {
   chooseEdges, clearOfBox, cullByDistance, cullLabels, flatEdges, formatMm, keepLonger, labelBeside, majorTicks, nearBedEdges, niceLengthMm, overlaps, sameBox, scaleBar, segmentHitsRect, tickPriority, unionBox,
-  type Box, type Rect,
+  type Box, type Point, type Rect,
 } from "./measure.ts";
 
 let failed = 0;
@@ -127,10 +127,11 @@ eq("a label left of the solid clears that side", leftward.x + leftward.w, 88);
 const diagonal = clearOfBox(rect(110, 120, 40, 14), block, [0.02, 0.9998], 12);
 check("a shallow direction leaves by the short side", diagonal.y < 200 && diagonal.x < 200, JSON.stringify(diagonal));
 
-const label = (span: number, x: number, y: number, id: string) => ({ id, span, x, y, w: 40, h: 14, segments: [[[x, y - 8], [x + 40, y - 8]]] as [number, number][][] });
+const leaderOf = (x: number, y: number): [Point, Point][] => [[[x, y - 8], [x + 40, y - 8]]];
+const label = (span: number, x: number, y: number, id: string) => ({ id, span, x, y, w: 40, h: 14, segments: leaderOf(x, y) });
 const crowd2 = [label(10, 20, 20, "short"), label(60, 30, 20, "long"), label(30, 200, 20, "side")];
 eq("the longer axis keeps the overlap", keepLonger(crowd2, 400, 200).map((item) => item.id), ["long", "side"]);
-const leader = [label(60, 20, 40, "long"), { ...label(8, 30, 18, "short"), segments: [] as [number, number][][] }];
+const leader = [label(60, 20, 40, "long"), { ...label(8, 30, 18, "short"), segments: [] as [Point, Point][] }];
 eq("a short label on a longer leader goes", keepLonger(leader, 400, 200).map((item) => item.id), ["long"]);
 
 const beside = labelBeside([100, 100], [0, 1], 40, 14, 6);
