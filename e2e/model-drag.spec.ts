@@ -303,22 +303,51 @@ test("a 2 mm primitive still has every handle on its own spot, and its Size X kn
   expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
 });
 
-test("the ghost of the edited object stands out while a docked handle is hovered or dragged", async ({ page }) => {
+test("hovering a size knob lights that axis, its number, and a dimension", async ({ page }) => {
   await openSolid(page, []);
   await page.locator("#modelToolBoolean").click();
   expect(await page.locator("#model").getAttribute("data-ghost-lit")).not.toBe("1");
+  expect(await page.locator("#model").getAttribute("data-aspect")).toBeNull();
   const at = await grip(page, "size-1");
   await page.mouse.move(at.x, at.y);
-  await expect(page.locator("#model")).toHaveAttribute("data-ghost-lit", "1");
-  await expect(page.locator(".model-drag-tip")).toContainText("Size Y");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-1");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-tip", /Depth \(Y\)/);
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-mapped", "1");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-dim", "1");
+  await expect(page.locator("#modelDy")).toHaveClass(/is-aspect/);
+  await expect(page.locator(".model-drag-tip")).toContainText("Depth (Y)");
+  await expect(page.locator(".model-aspect-label")).toContainText("Depth (Y)");
+  expect(await page.locator("#model").getAttribute("data-ghost-lit")).not.toBe("1");
+  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/after-handle-axis.png" });
   await page.mouse.move(at.x - 300, at.y + 200);
-  await expect(page.locator("#model")).toHaveAttribute("data-ghost-lit", "0");
+  await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
+  await expect(page.locator("#modelDy")).not.toHaveClass(/is-aspect/);
   await expect(page.locator(".model-drag-tip")).toBeHidden();
+
+  await page.locator("#modelDy").focus();
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-1");
+  await expect(page.locator("#modelDy")).toHaveClass(/is-aspect/);
+  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/after-handle-field.png" });
+  await page.locator("#modelDy").blur();
+  await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
+
+  await page.locator(`#modelPrim [data-kind="cylinder"]`).click();
+  await page.locator("#modelRadius").focus();
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "radius");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-tip", /Radius/);
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-mapped", "1");
+  await page.locator("#modelRadius").blur();
+
+  const solidBox = (await page.locator("#model").boundingBox())!;
+  const screen = ((await page.locator("#model").getAttribute("data-solid-screen")) ?? "").split(",").map(Number);
+  await page.mouse.click(solidBox.x + screen[0]! + screen[2]! / 2, solidBox.y + screen[1]! + screen[3]! / 2);
+  await expect(page.locator("#modelContextBar")).not.toHaveAttribute("data-kind", "empty");
 
   await page.locator("#modelToolMeasure").click();
   const dot = await grip(page, "measure-a");
   await page.mouse.move(dot.x, dot.y);
-  await expect(page.locator("#model")).toHaveAttribute("data-ghost-lit", "0");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "measure-a");
+  expect(await page.locator("#model").getAttribute("data-ghost-lit")).not.toBe("1");
 });
 
 test("a hole slides in its face plane from two docked arrows, and its origin dot still drags over the solid", async ({ page }) => {

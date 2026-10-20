@@ -18,7 +18,8 @@ const BLEND_GHOST_STEP_MM = 0.05;
 
 /** P1. The push/pull arrow's handle id (`pullHandles` in `model-drag.ts`). */
 const PULL_HANDLE_ID = "pull";
-import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
+import { axisValues, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
+import { aspectFor, aspectTip, meshPoint, type HandleAspect } from "./handle-emphasis";
 import { contextMaterial } from "./context-look";
 import type { ContextPart } from "./model-context";
 import { turnCentre, type PrimitiveSpec } from "./model-primitive";
@@ -116,8 +117,6 @@ const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
 const PRIMITIVE_CREASE_DEG = 25;
 /** A join's tool past this many triangles is drawn without its outline, which would take a noticeable while to find. */
 const OBJECT_OUTLINE_MAX_TRIANGLES = 150_000;
-/** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
-const EMPHASIS_OPACITY = 0.45;
 /** Frames the view still draws after its last change, for anything that settles a frame late. */
 const STILL_FRAMES = 3;
 
@@ -296,11 +295,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   posed.add(body);
   const ghosts = new THREE.Group();
   const handleGroup = new THREE.Group();
+  /** Aspect lines in model space. Body-space lines (a scaled solid's box) are added to `body` instead. */
+  const aspectGroup = new THREE.Group();
   /** The workplane datum: drawn once per size in its own U, V, W, and moved by a matrix to where the frame is. */
   const datum = new THREE.Group();
   datum.matrixAutoUpdate = false;
   datum.visible = false;
-  scene.add(context, posed, datum, ghosts, handleGroup);
+  scene.add(context, posed, datum, ghosts, handleGroup, aspectGroup);
   // --- P1: the dotted line to the face a drag lines up with. ---
   const alignLine = new THREE.Line(
     new THREE.BufferGeometry(),
@@ -386,7 +387,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const dockAt = new THREE.Vector3();
   /** The dock's seat for the canvas size it was worked out for: it changes only when the canvas does. */
   let seated: { width: number; height: number; seat: DockSeat } | null = null;
-  let emphasis = false;
+  let aspectDim = false;
+  /** The panel or HUD field that has focus, so its handle lights without a pointer. */
+  let focusedField: string | null = null;
+  let aspectNow: HandleAspect | null = null;
+  let aspectLines: LineSegments2 | null = null;
+  let aspectBodyLines: LineSegments2 | null = null;
   let overHandle: string | null = null;
   let drag: ActiveDrag | null = null;
   let handleCb: (drag: HandleDrag) => void = () => {};
@@ -422,6 +428,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   tip.className = "model-drag-tip";
   tip.hidden = true;
   canvas.parentElement?.append(tip);
+  const aspectLabel = document.createElement("div");
+  aspectLabel.className = "model-aspect-label";
+  aspectLabel.hidden = true;
+  canvas.parentElement?.append(aspectLabel);
 
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -801,7 +811,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       metalness: 0.05,
       flatShading: flat,
       transparent: true,
-      opacity: emphasis ? Math.min(0.7, opacity + EMPHASIS_OPACITY) : opacity,
+      opacity: aspectDim ? Math.max(0.08, opacity * 0.45) : opacity,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
@@ -971,8 +981,20 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     applyScale();
     clipToSplit();
     buildGhost();
+    restyleGhostLines();
     publishGhostBox();
     rebuildCap();
+  }
+
+  /** The ghost's own edges step back while one aspect is lit, so the thick lines read on their own. */
+  function restyleGhostLines() {
+    ghosts.traverse((child) => {
+      if (!(child instanceof THREE.LineSegments)) return;
+      const material = child.material;
+      if (!(material instanceof THREE.LineBasicMaterial)) return;
+      material.transparent = true;
+      material.opacity = aspectDim ? 0.22 : 0.95;
+    });
   }
 
   /** The material that draws the side a split cuts off, tinted, shared by every split shown. */
@@ -1847,6 +1869,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   canvas.addEventListener("contextmenu", (ev) => {
     if (sketchLock || sketchCapture) ev.preventDefault();
   });
+  // A number field becomes a text field on focus, which blurs and refocuses it. Read the field after that settles.
+  document.addEventListener("focusin", () => queueMicrotask(syncFocusedField));
+  document.addEventListener("focusout", () => queueMicrotask(syncFocusedField));
 
   return {
     setSolid(next, at) {
@@ -2138,11 +2163,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setSketchDim(on) {
       if (solidDimmed === on) return;
       solidDimmed = on;
-      solidMaterial.transparent = on || solidMaterial.opacity < 1;
-      solidMaterial.opacity = on ? 0.35 : 1;
+      solidMaterial.transparent = on || aspectDim;
+      solidMaterial.opacity = on ? 0.35 : aspectDim ? 0.55 : 1;
       solidMaterial.needsUpdate = true;
-      edgeMaterial.transparent = on;
-      edgeMaterial.opacity = on ? 0.35 : 1;
+      edgeMaterial.transparent = on || aspectDim;
+      edgeMaterial.opacity = on || aspectDim ? 0.35 : 1;
       edgeMaterial.needsUpdate = true;
       kick();
     },
@@ -2525,13 +2550,22 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   function paintHandles() {
     const hot = hexToThree(colors.gizmoHot);
+    const lit = aspectHandle()?.id ?? null;
     for (const part of drawnHandles()) {
-      const on = drag?.handle.id === part.handle.id || (edgeDrag != null && part.handle.id === EDGE_KNOB_ID) || (!drag && !edgeDrag && overHandle === part.handle.id);
+      const on = part.handle.id === lit || (edgeDrag != null && part.handle.id === EDGE_KNOB_ID);
       part.material.color.setHex(on ? hot : handleColor(part.handle.color));
     }
     canvas.style.cursor = sketchCapture ? "crosshair" : drag || edgeDrag || faceDown?.moved ? "grabbing" : overHandle || (faceDrag && hover?.kind === "face") ? "grab" : "";
-    setEmphasis(handleParts.some((part) => part.handle.seat.at === "dock" && part.handle.id === (drag?.handle.id ?? overHandle)));
+    paintAspect();
     kick();
+  }
+
+  /** Drag, then the handle under the pointer, then the focused field. Nothing here lights the whole solid. */
+  function aspectHandle(): DragHandle | null {
+    if (drag) return { ...drag.handle, values: drag.values };
+    if (overHandle) return drawnHandles().find((part) => part.handle.id === overHandle)?.handle ?? null;
+    if (focusedField) return handleParts.find((part) => part.handle.fields.includes(focusedField!))?.handle ?? null;
+    return null;
   }
 
   function clearEdgeKnob() {
@@ -2564,17 +2598,200 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return { phase, x: ev.clientX, y: ev.clientY, alt: ev.altKey, ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey };
   }
 
-  /** A docked handle edits the tool's object, which is the ghost, so the ghost stands out while the handle is in use. */
-  function setEmphasis(next: boolean) {
-    if (emphasis === next) return;
-    emphasis = next;
-    canvas.dataset.ghostLit = next ? "1" : "0";
+  /** The open solid steps back while one aspect is lit. A sketch that already dims it is left as it is. */
+  function setAspectDim(next: boolean) {
+    if (aspectDim === next) return;
+    aspectDim = next;
+    canvas.dataset.aspectDim = next ? "1" : "0";
+    if (!solidDimmed) {
+      solidMaterial.transparent = next;
+      solidMaterial.opacity = next ? 0.55 : 1;
+      solidMaterial.needsUpdate = true;
+      edgeMaterial.transparent = next;
+      edgeMaterial.opacity = next ? 0.35 : 1;
+      edgeMaterial.needsUpdate = true;
+    }
     rebuildGhost();
   }
 
   function setOverHandle(next: string | null) {
     if (overHandle === next) return;
     overHandle = next;
+    paintHandles();
+  }
+
+  function paintAspect() {
+    const handle = aspectHandle();
+    const aspect = handle ? aspectFor(handle, aspectContext(handle)) : null;
+    aspectNow = aspect;
+    const world = aspect?.space === "world" ? aspect.lines : [];
+    const bodyLines = aspect?.space === "body" ? aspect.lines : [];
+    aspectLines = replaceAspect(aspectGroup, aspectLines, world, aspect ? handleColor(aspect.color) : accent);
+    aspectBodyLines = replaceAspect(body, aspectBodyLines, bodyLines, aspect ? handleColor(aspect.color) : accent);
+    setAspectDim(aspect?.dim === true);
+    markAspectFields(aspect);
+    publishAspect(handle, aspect);
+    placeAspectLabel();
+  }
+
+  function aspectContext(handle: DragHandle): Parameters<typeof aspectFor>[1] {
+    const current = ghost;
+    const siblings: Record<string, number> = {};
+    for (const part of handleParts) {
+      if (part.handle.fields.length === 1) siblings[part.handle.fields[0]!] = part.handle.values[0] ?? 0;
+    }
+    if (drag && drag.handle.fields.length === 1) siblings[drag.handle.fields[0]!] = drag.values[0] ?? 0;
+    const framed = handle.frame ? handle : handleParts.find((part) => part.handle.frame)?.handle;
+    const at = framed && framed.seat.at === "feature" ? framed.seat.origin : undefined;
+    return {
+      spec: current?.kind === "primitive" ? current.spec : null,
+      pieces: current?.kind === "pieces" ? current.parts.map((part) => part.spec) : undefined,
+      hole: current?.kind === "hole" ? current : current?.kind === "holes" ? current.holes[0] ?? null : null,
+      edgePoints: current?.kind === "blend" ? worldEdgePoints(current.edges) : null,
+      soup: current?.kind === "soup" ? worldPoints(current.positions) : null,
+      measure: current?.kind === "measure" ? { a: current.a, b: current.b } : null,
+      plane: current?.kind === "plane" ? { origin: current.origin, normal: current.normal, span: Math.max(extent * 1.45, 30) } : null,
+      bodyBox: ownBox,
+      anchor: aspectAnchor(),
+      extent,
+      frame: framed?.frame as Workplane | undefined,
+      at,
+      siblings,
+      values: handle.values,
+    };
+  }
+
+  function aspectAnchor(): Vec3 {
+    if (solidBox) return [(solidBox.min[0] + solidBox.max[0]) / 2, (solidBox.min[1] + solidBox.max[1]) / 2, (solidBox.min[2] + solidBox.max[2]) / 2];
+    if (ghost?.kind === "primitive") return meshPoint(ghost.spec, turnCentre(ghost.spec));
+    return [0, 0, 0];
+  }
+
+  /** Solid-frame points, in model space, so a cap lines up with a handle that already sits in model space. */
+  function worldPoints(local: ArrayLike<number>): Float32Array {
+    body.updateMatrixWorld(true);
+    const out = new Float32Array(local.length);
+    const point = new THREE.Vector3();
+    for (let i = 0; i + 2 < local.length; i += 3) {
+      point.set(local[i]!, local[i + 1]!, local[i + 2]!).applyMatrix4(body.matrixWorld);
+      out[i] = point.x;
+      out[i + 1] = point.y;
+      out[i + 2] = point.z;
+    }
+    return out;
+  }
+
+  function worldEdgePoints(ids: readonly number[]): number[] {
+    if (!solid) return [];
+    const local: number[] = [];
+    for (const id of ids) {
+      const edge = solid.edges.find((item) => item.id === id);
+      if (edge) local.push(...edge.points);
+    }
+    return [...worldPoints(local)];
+  }
+
+  function replaceAspect(parent: THREE.Object3D, current: LineSegments2 | null, positions: number[], color: number): LineSegments2 | null {
+    if (current) {
+      parent.remove(current);
+      const material = current.material as LineMaterial;
+      const index = fatLines.indexOf(material);
+      if (index >= 0) fatLines.splice(index, 1);
+      disposeObject(current);
+    }
+    const next = fatLine(positions, 5, 1, color);
+    if (!next) return null;
+    next.renderOrder = 8;
+    parent.add(next);
+    return next;
+  }
+
+  function markAspectFields(aspect: HandleAspect | null) {
+    const wanted = new Set(aspect?.fields ?? []);
+    document.querySelectorAll<HTMLInputElement>("input.is-aspect").forEach((input) => {
+      const id = input.id || input.dataset.field || "";
+      if (wanted.has(id)) return;
+      input.classList.remove("is-aspect");
+      delete input.dataset.aspectColor;
+    });
+    if (!aspect) return;
+    for (const id of aspect.fields) {
+      const byId = document.getElementById(id);
+      if (byId instanceof HTMLInputElement) {
+        byId.classList.add("is-aspect");
+        byId.dataset.aspectColor = aspect.color;
+      }
+      document.querySelectorAll<HTMLInputElement>("input[data-field]").forEach((input) => {
+        if (input.dataset.field !== id) return;
+        input.classList.add("is-aspect");
+        input.dataset.aspectColor = aspect.color;
+      });
+    }
+  }
+
+  function publishAspect(handle: DragHandle | null, aspect: HandleAspect | null) {
+    if (!handle || !aspect) {
+      delete canvas.dataset.aspect;
+      delete canvas.dataset.aspectTip;
+      delete canvas.dataset.aspectField;
+      delete canvas.dataset.aspectMapped;
+      delete canvas.dataset.aspectLines;
+      if (!aspectDim) canvas.dataset.aspectDim = "0";
+      return;
+    }
+    canvas.dataset.aspect = handle.id;
+    canvas.dataset.aspectTip = aspect.tip;
+    canvas.dataset.aspectField = aspect.fields.join(" ");
+    canvas.dataset.aspectMapped = aspect.mapped ? "1" : "0";
+    canvas.dataset.aspectLines = String(Math.floor(aspect.lines.length / 6));
+  }
+
+  function placeAspectLabel() {
+    const dimension = aspectNow?.dimension;
+    if (!dimension) {
+      aspectLabel.hidden = true;
+      aspectLabel.textContent = "";
+      return;
+    }
+    const mid: Vec3 = [
+      (dimension.from[0] + dimension.to[0]) / 2,
+      (dimension.from[1] + dimension.to[1]) / 2,
+      (dimension.from[2] + dimension.to[2]) / 2,
+    ];
+    const point = new THREE.Vector3(...mid);
+    if (aspectNow?.space === "body") body.localToWorld(point);
+    const projectedAt = point.project(camera);
+    if (projectedAt.z < -1 || projectedAt.z > 1) {
+      aspectLabel.hidden = true;
+      return;
+    }
+    const parent = canvas.parentElement?.getBoundingClientRect();
+    const rect = canvas.getBoundingClientRect();
+    if (!parent) return;
+    aspectLabel.hidden = false;
+    aspectLabel.textContent = dimension.text;
+    aspectLabel.dataset.color = aspectNow?.color ?? "accent";
+    const x = rect.left + (projectedAt.x * 0.5 + 0.5) * rect.width - parent.left;
+    const y = rect.top + (-projectedAt.y * 0.5 + 0.5) * rect.height - parent.top;
+    aspectLabel.style.left = `${Math.round(x)}px`;
+    aspectLabel.style.top = `${Math.round(y)}px`;
+  }
+
+  function fieldOf(target: EventTarget | null): string | null {
+    if (!(target instanceof HTMLInputElement)) return null;
+    const id = target.id || target.dataset.field || "";
+    return id || null;
+  }
+
+  function handleOwns(id: string): boolean {
+    return handleParts.some((part) => part.handle.fields.includes(id));
+  }
+
+  function syncFocusedField() {
+    const id = fieldOf(document.activeElement);
+    const next = id && handleOwns(id) ? id : null;
+    if (next === focusedField) return;
+    focusedField = next;
     paintHandles();
   }
 
@@ -2675,6 +2892,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     }
     const text = grips.join(" ");
     if (canvas.dataset.handles !== text) canvas.dataset.handles = text;
+    if (aspectNow) placeAspectLabel();
     // --- A10. The section arrow, sized like a handle, drawn in model space.
     if (sectionPlaneWorld) {
       if (!sectionArrow) {
@@ -2825,6 +3043,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (next && next.some((value, i) => value !== current.values[i])) {
       current.values = next;
       handleCb({ handle, values: next, phase: "move" });
+      paintAspect();
     }
     showTip(ev, handle, current.values);
   }
@@ -2832,7 +3051,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function showTip(ev: PointerEvent, handle: DragHandle, values: readonly number[]) {
     const parent = canvas.parentElement?.getBoundingClientRect();
     if (!parent) return;
-    tip.textContent = dragLabel(handle, values);
+    tip.textContent = aspectTip(handle, values);
     tip.hidden = false;
     // The dock sits at the right edge, so the tip flips to the pointer's left rather than run off the canvas.
     const right = ev.clientX - parent.left + 14;

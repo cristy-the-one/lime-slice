@@ -77,6 +77,7 @@ src/workplane.test.ts
 src/push-pull.test.ts
 src/context-bar.test.ts
 src/model-drag.test.ts
+src/handle-emphasis.test.ts
 src/interact/interact.test.ts
 src/interact/edge-drag.test.ts
 src/section-plane.test.ts

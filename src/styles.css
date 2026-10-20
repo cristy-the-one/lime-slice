@@ -1196,6 +1196,38 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   pointer-events: none;
 }
 .model-drag-tip[hidden] { display: none; }
+/* The live size of the aspect a handle changes. Colour is the axis; the text is the same sentence as the tooltip. */
+.model-aspect-label {
+  position: absolute;
+  z-index: 4;
+  transform: translate(-50%, -140%);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-pop);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-2);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.model-aspect-label[hidden] { display: none; }
+.model-aspect-label[data-color="x"] { border-color: var(--axis-x); }
+.model-aspect-label[data-color="y"] { border-color: var(--axis-y); }
+.model-aspect-label[data-color="z"] { border-color: var(--axis-z); }
+.model-aspect-label[data-color="accent"] { border-color: var(--accent); }
+/* The matching number. The ring is the axis colour and a second inset line, so it is not colour alone. */
+input.is-aspect {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+input.is-aspect[data-aspect-color="x"] { outline-color: var(--axis-x); box-shadow: inset 0 0 0 2px var(--axis-x); }
+input.is-aspect[data-aspect-color="y"] { outline-color: var(--axis-y); box-shadow: inset 0 0 0 2px var(--axis-y); }
+input.is-aspect[data-aspect-color="z"] { outline-color: var(--axis-z); box-shadow: inset 0 0 0 2px var(--axis-z); }
+input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
 /* Heads-up sizes for a drag. Nothing shows one until a tool asks. It sits at the pointer and stays on the canvas. */
 .interact-hud {
   position: absolute;

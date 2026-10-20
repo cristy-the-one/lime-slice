@@ -313,6 +313,7 @@ export function mountHud(parent: HTMLElement): HudMount {
       input.inputMode = "decimal";
       input.autocomplete = "off";
       input.spellcheck = false;
+      input.dataset.field = field.id;
       input.setAttribute("aria-label", field.label);
       input.addEventListener("input", onInput);
       input.addEventListener("focus", () => {

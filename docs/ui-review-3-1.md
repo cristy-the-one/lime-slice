@@ -149,6 +149,36 @@ The owner decided these four, and each keeps the behaviour above.
 - **Settings:** no "expand all"; scrolling the dock is enough.
 - **Dock closed by the 30% width budget:** no extra sentence.
 
+## Parameter handles
+
+Hovering a size knob, dragging it, or focusing its number used to light the whole ghost. The knob and the field now light only the part that number changes, in that axis's colour, drawn thicker than the other edges, with the live value on a dimension line. The same sentence is the handle's tooltip ("Depth (Y) 10 mm"). The matching field gets a ring as well as the colour. Tabbing to the field does this with no pointer. When nothing is hovered or focused, the solid's own selection is unchanged.
+
+| Control | What lights |
+| --- | --- |
+| Box, wedge, ellipsoid X / Y / Z | The edges parallel to that axis, and the dimension. A wedge's Top X lights the top edges. |
+| Cylinder, cone, tube radius | The rim circle and a radius line. A cone's top radius is the top rim. A tube's inner radius is the inner rim. |
+| Height | The side edges and a height dimension. |
+| Sphere | A great circle and a radius line. |
+| Torus | The ring, or the tube circle. |
+| Polygon sides | The outline, top and bottom and the verticals. Across is the across-flats or across-corners dimension. |
+| Hole | Diameter (the circle), depth, counterbore diameter and depth. Moving the hole lights that axis through the origin. |
+| Fillet, chamfer | The picked edge, and the radius standing off it. |
+| Extrude, push/pull | The moved face, or a ring on that plane, and the distance. |
+| Revolve, turn rings, tilt | The arc of the angle. |
+| Split | The cutting plane's outline. |
+| Shell | The face being opened, and the thickness. |
+| Scale | The solid's box, because every edge changes together, labelled with the factor. |
+| Measure | The line from A to B. |
+| Move arrows, feature width, height, diameter, depth, pitch | That axis, rectangle, circle, or pitch, when the face or the piece is known. |
+
+A count, a margin, and the thin-wall threshold have no edge of their own. Those still name themselves in the tooltip and light their field, and they do not dim the solid.
+
+![The whole ghost used to light for any size knob](screenshots/ui-review-3-1/before-handle-ghost.png)
+
+![Depth Y lights the four edges parallel to Y](screenshots/ui-review-3-1/after-handle-axis.png)
+
+![The same edges, from the keyboard, while Depth Y is focused](screenshots/ui-review-3-1/after-handle-field.png)
+
 ## Checks
 
 - `npx tsc --noEmit`
