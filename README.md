@@ -30,6 +30,8 @@ Those five are sketch operations. They are buttons on the sketch card, and keys 
 - **Sweep** (W) carries the profile along a path sketch.
 - **Holes** (H) only on a sketch drawn on a face. Select points or circle centres and Apply drills one hole at each, with one radius, depth, through, and optional counterbore for the whole set. With no sketch open, H is still the single Hole tool.
 
+Step-by-step examples, with the window at each click, are in [docs/tutorials](docs/tutorials/README.md): three revolves, three lofts, and three sweeps.
+
 ![Extruding the bed rectangle to 16 mm. The history row is the extrude.](docs/screenshots/clip-extrude.gif)
 
 ![A 270° revolve of a rectangle that sits off the axis.](docs/screenshots/model-revolve.png)

@@ -71,6 +71,8 @@ These are the web UI at 1440×900, dark, against a local engine with the Open CA
 
 ![Sweep of a square along a straight path.](screenshots/model-sweep.png)
 
+Worked examples of those three, built in the window, are in [tutorials](tutorials/README.md).
+
 ![Two holes from points on a face sketch.](screenshots/model-holes.png)
 
 ![Push/pull. The top face moved 8 mm.](screenshots/model-push.png)
