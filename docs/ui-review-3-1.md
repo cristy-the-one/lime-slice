@@ -243,6 +243,12 @@ The Objects toolbar stays on one line. A command that has a shortcut names it in
 
 ![Add, duplicate, arrange, center, lay flat, and the three rotates on one line](screenshots/ui-review-3-1/ux11-after-tools.png)
 
+Dimension labels stand off the solid. Each one clears the solid's projected box by 12 px, and a shorter label hides when it would cover a longer one or its leader.
+
+![20 mm labels sitting on the cube's edges](screenshots/ui-review-3-1/ux12-before-dims.png)
+
+![The three labels clear of the cube](screenshots/ui-review-3-1/ux12-after-dims.png)
+
 ## Checks
 
 - `npx tsc --noEmit`

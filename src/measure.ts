@@ -111,6 +111,47 @@ export function overlaps(a: Rect, b: Rect, pad = 0): boolean {
   return a.x < b.x + b.w + pad && b.x < a.x + a.w + pad && a.y < b.y + b.h + pad && b.y < a.y + a.h + pad;
 }
 
+/**
+ * Slide `rect` along the unit vector `dir` until it clears `block` by `gap` pixels.
+ * A direction with no way out leaves the rectangle where it is.
+ */
+export function clearOfBox(rect: Rect, block: Rect, dir: readonly [number, number], gap: number): Rect {
+  const grown: Rect = { x: block.x - gap, y: block.y - gap, w: block.w + gap * 2, h: block.h + gap * 2 };
+  if (!overlaps(rect, grown)) return rect;
+  const exit = (dirComp: number, start: number, size: number, blockStart: number, blockSize: number) => {
+    if (dirComp > 1e-6) return (blockStart + blockSize - start) / dirComp;
+    if (dirComp < -1e-6) return (blockStart - (start + size)) / dirComp;
+    return 0;
+  };
+  const exits = [exit(dir[0], rect.x, rect.w, grown.x, grown.w), exit(dir[1], rect.y, rect.h, grown.y, grown.h)].filter((t) => t > 1e-6);
+  const step = exits.length ? Math.min(...exits) : 0;
+  if (step === 0) return rect;
+  return { x: rect.x + dir[0] * step, y: rect.y + dir[1] * step, w: rect.w, h: rect.h };
+}
+
+/** A label plus the leader it belongs to, so a shorter one can yield the space. */
+export interface RankedLabel extends Rect {
+  span: number;
+  segments: [Point, Point][];
+}
+
+/**
+ * Labels that stay, longest axis first. A shorter one goes when its box meets a longer label or that label's
+ * leader. The result keeps the order of `items`.
+ */
+export function keepLonger<T extends RankedLabel>(items: readonly T[], width: number, height: number): T[] {
+  const ranked = items.map((item, index) => ({ item, index })).sort((a, b) => b.item.span - a.item.span || a.index - b.index);
+  const kept: T[] = [];
+  for (const { item } of ranked) {
+    if (!within(item, width, height, 2)) continue;
+    if (kept.some((other) => overlaps(item, other, 2))) continue;
+    if (kept.some((other) => other.segments.some(([p, q]) => segmentHitsRect(p, q, item, 2)))) continue;
+    kept.push(item);
+  }
+  const live = new Set(kept);
+  return items.filter((item) => live.has(item));
+}
+
 export function within(r: Rect, width: number, height: number, margin = 0): boolean {
   return r.x >= margin && r.y >= margin && r.x + r.w <= width - margin && r.y + r.h <= height - margin;
 }

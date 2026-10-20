@@ -351,6 +351,8 @@ Status: done. The Objects toolbar is one line. What does not fit moves into the 
 
 ### UX-12 (P2). Dimension labels on the solid don't collide
 
+Status: done. Bounding-box callouts stand 12 px off the edge, and a label that would still meet the solid's projected box is pushed until it clears that box by 12 px. A shorter label is hidden when it would overlap a longer label or that label's leader. Screenshots: `ux12-before-dims.png`, `ux12-after-dims.png`.
+
 - **Seen**: on the box and loft shots the "30.0 mm" and "18.0 mm" labels sit on the part's silhouette edges and touch
   the outline. On the revolve, "8.0 mm" crowds the "60.0 mm" leader.
 - **Change**: offset the bounding-box dimensions outside the silhouette (a screen-space 12 px gap), and hide a label

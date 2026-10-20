@@ -1,5 +1,5 @@
 import {
-  chooseEdges, cullByDistance, cullLabels, flatEdges, formatMm, labelBeside, majorTicks, nearBedEdges, niceLengthMm, overlaps, sameBox, scaleBar, segmentHitsRect, tickPriority, unionBox,
+  chooseEdges, clearOfBox, cullByDistance, cullLabels, flatEdges, formatMm, keepLonger, labelBeside, majorTicks, nearBedEdges, niceLengthMm, overlaps, sameBox, scaleBar, segmentHitsRect, tickPriority, unionBox,
   type Box, type Rect,
 } from "./measure.ts";
 
@@ -116,6 +116,22 @@ check("padding reaches a near miss", segmentHitsRect([90, 90], [160, 90], target
 eq("no boxes, no union", unionBox([]), null);
 eq("union spans both", unionBox([{ min: [0, 5, 0], max: [10, 9, 4] }, { min: [-2, 6, 1], max: [8, 20, 3] }]), { min: [-2, 5, 0], max: [10, 20, 4] });
 check("same box", sameBox(box, { min: [0, 0, 0], max: [20, 10, 30] }) && !sameBox(box, { min: [0, 0, 0], max: [20, 10, 31] }) && sameBox(null, null) && !sameBox(box, null));
+
+const block = rect(100, 100, 80, 40);
+const sitting = clearOfBox(rect(110, 120, 40, 14), block, [0, 1], 12);
+eq("a label on the solid moves 12 px past it", [sitting.x, sitting.y], [110, 152]);
+const already = clearOfBox(rect(110, 160, 40, 14), block, [0, 1], 12);
+eq("a label already 12 px clear stays", [already.x, already.y], [110, 160]);
+const leftward = clearOfBox(rect(90, 110, 30, 14), block, [-1, 0], 12);
+eq("a label left of the solid clears that side", leftward.x + leftward.w, 88);
+const diagonal = clearOfBox(rect(110, 120, 40, 14), block, [0.02, 0.9998], 12);
+check("a shallow direction leaves by the short side", diagonal.y < 200 && diagonal.x < 200, JSON.stringify(diagonal));
+
+const label = (span: number, x: number, y: number, id: string) => ({ id, span, x, y, w: 40, h: 14, segments: [[[x, y - 8], [x + 40, y - 8]]] as [number, number][][] });
+const crowd2 = [label(10, 20, 20, "short"), label(60, 30, 20, "long"), label(30, 200, 20, "side")];
+eq("the longer axis keeps the overlap", keepLonger(crowd2, 400, 200).map((item) => item.id), ["long", "side"]);
+const leader = [label(60, 20, 40, "long"), { ...label(8, 30, 18, "short"), segments: [] as [number, number][][] }];
+eq("a short label on a longer leader goes", keepLonger(leader, 400, 200).map((item) => item.id), ["long"]);
 
 const beside = labelBeside([100, 100], [0, 1], 40, 14, 6);
 eq("a label below a point has its top edge the gap below it", [beside.x, beside.y], [80, 106]);
