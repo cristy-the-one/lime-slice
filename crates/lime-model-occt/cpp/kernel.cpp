@@ -1682,7 +1682,7 @@ bool write_step(const TopoDS_Shape& shape, const char* path, std::string& error)
     Interface_Static::SetCVal("write.step.schema", "AP214IS");
     STEPControl_Writer writer;
     // --- 3.1 F17. No p-curves: each edge's 2D copy on every face it bounds is redundant with its 3D curve and the
-    // face's surface, every reader rebuilds it, and on a dense lattice it was about 40 % of the file. The writer's
+    // face's surface, every reader rebuilds it, and on a dense lattice it was about 60 % of the file. The writer's
     // constructor registers the STEP parameters, so they are set after it, and on its model as well.
     Interface_Static::SetIVal("write.surfacecurve.mode", 0);
     writer.Model()->InternalParameters.WriteSurfaceCurMode = false;

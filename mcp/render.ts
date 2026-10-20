@@ -267,7 +267,7 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
     paint(project(positions[i]!, positions[i + 1]!, positions[i + 2]!), project(positions[i + 3]!, positions[i + 4]!, positions[i + 5]!), project(positions[i + 6]!, positions[i + 7]!, positions[i + 8]!), shades, depth, color, tint, side, i / 9);
   }
   if (ghost) draw(ghost, ghostDepth, ghostShade);
-  const ink = edgeInk(positions, project, toPixel, owner, options.faces ?? null, width, height, eye, section);
+  const ink = edgeInk(positions, project, toPixel, owner, depth, options.faces ?? null, width, height, fit, eye, section);
   const transparent = options.transparent === true;
   const channels = transparent ? 4 : 3;
   const raw = new Uint8Array((width * channels + 1) * height);
@@ -363,18 +363,21 @@ const CREASE_DEG = 25;
 /**
  * How dark each pixel's edge line is, 0 to 255: a CAD drawing's lines over the shading. Edges come from the mesh: an
  * open boundary, a crease sharper than CREASE_DEG, or a silhouette, where one face looks at the camera and the other
- * away. Each is drawn only where one of its own triangles (or, with `faces`, a triangle of one of its faces) is the one
- * in front, at that pixel or the next. --- 3.1 F5. A depth margin of 2.5 pixels let an inner rib's edge through where it
- * ends a wall's thickness behind a rounded outer face seen edge-on: specks along the outside.
+ * away. Each is drawn where one of its own triangles is the one in front, at that pixel or the next; else only where
+ * nothing is clearly nearer (a couple of pixels' depth) and, with `faces`, the triangle in front is on one of its own
+ * faces. --- 3.1 F5. The depth margin alone let an inner rib's edge through where it ends a wall's thickness behind a
+ * rounded outer face seen edge-on.
  */
 function edgeInk(
   mesh: Float32Array,
   project: (x: number, y: number, z: number) => Vec,
   toPixel: (point: Vec) => Vec,
   owner: Int32Array,
+  depth: Float32Array,
   faces: ArrayLike<number> | null,
   width: number,
   height: number,
+  fit: number,
   eye: Vec,
   section: { point: Vec; normal: Vec } | null = null,
 ): Uint8Array {
@@ -407,12 +410,13 @@ function edgeInk(
   }
   const crease = Math.cos((CREASE_DEG * Math.PI) / 180);
   const smoothSeams = seamPartners(mesh, edges, crease);
-  /** Whether the triangle in front at a pixel is one of the edge's, or on one of its faces. */
-  const shows = (at: number, tris: readonly number[], own: readonly number[]) => {
+  const bias = 2.5 / fit;
+  /** Whether the triangle in front at a pixel is one of the edge's own (`exact`), or on one of its faces. */
+  const shows = (at: number, tris: readonly number[], own: readonly number[], exact: boolean) => {
     const front = owner[at]!;
     if (front < 0) return false;
     if (tris.includes(front)) return true;
-    return faces !== null && own.includes(faces[front]!);
+    return !exact && faces !== null && own.includes(faces[front]!);
   };
   for (const [key, { a, b, normals, tris }] of edges) {
     let strength = 0;
@@ -438,15 +442,19 @@ function edgeInk(
       const y = Math.round(p[1] + (q[1] - p[1]) * t);
       if (x < 0 || y < 0 || x >= width || y >= height) continue;
       const at = y * width + x;
-      let seen = false;
-      for (let dy = -1; dy <= 1 && !seen; dy += 1) {
-        for (let dx = -1; dx <= 1 && !seen; dx += 1) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx >= 0 && ny >= 0 && nx < width && ny < height) seen = shows(ny * width + nx, tris, own);
+      const around = (exact: boolean) => {
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && ny >= 0 && nx < width && ny < height && shows(ny * width + nx, tris, own, exact)) return true;
+          }
         }
-      }
-      if (!seen) continue;
+        return false;
+      };
+      const z = p[2] + (q[2] - p[2]) * t;
+      const clear = z + bias >= depth[at]!;
+      if (!around(true) && !(clear && (faces === null || around(false)))) continue;
       if (strength > ink[at]!) ink[at] = strength;
     }
   }

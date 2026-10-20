@@ -930,7 +930,11 @@ export function movedFeature(raw: Record<string, unknown>, plane: { origin: Vec3
   if (Array.isArray(moved.profile)) moved.profile = moved.profile.map(flipU);
   if (moved.loops !== undefined) moved.loops = flipLoops(moved.loops);
   if (moved.axisOrigin !== undefined) moved.axisOrigin = flipU(moved.axisOrigin);
-  if (moved.kind === "revolve") moved.axisDir = flipU(moved.axisDir ?? [0, 1]);
+  // A reflection turns a revolve the other way about the mirrored axis: the same axis line, walked the other way.
+  if (moved.kind === "revolve") {
+    const dir = Array.isArray(moved.axisDir) && moved.axisDir.length === 2 ? moved.axisDir as number[] : [0, 1];
+    moved.axisDir = [dir[0]!, -dir[1]!];
+  }
   return { op: moved };
 }
 

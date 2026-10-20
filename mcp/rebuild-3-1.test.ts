@@ -198,8 +198,9 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   // A ridge along X at Z = 50, one millimetre behind the face, its slopes running back to Y = 11 at a right angle.
   const ridge = [10, 1, 50, 90, 11, 40, 90, 1, 50, 10, 1, 50, 10, 11, 40, 90, 11, 40, 10, 1, 50, 90, 11, 60, 10, 11, 60, 10, 1, 50, 90, 1, 50, 90, 11, 60];
   for (const edge of [96, 256]) {
-    const alone = renderMesh(Float32Array.from(front), "front", edge).png;
-    const hidden = renderMesh(Float32Array.from([...front, ...ridge]), "front", edge).png;
+    // As render_view draws a solid: each triangle's face known (the front face 0, the ridge's slopes 1 and 2).
+    const alone = renderMesh(Float32Array.from(front), "front", edge, undefined, { faces: [0, 0] }).png;
+    const hidden = renderMesh(Float32Array.from([...front, ...ridge]), "front", edge, undefined, { faces: [0, 0, 1, 1, 2, 2] }).png;
     check(`a crease hidden behind a face leaves the ${edge}px image as it was`, Buffer.from(alone).equals(Buffer.from(hidden)));
   }
   // The same ridge on its own still draws its crease: the middle column is darker on the ridge line than on either slope.
@@ -286,6 +287,10 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   const patterned = await call("model_apply", { object: part, op: { kind: "pattern", linear: { step: [0, 10, 0], count: 3 }, op: { ...fin, origin: [-15, -12, 20] } } });
   const rows = (await call("model_history", { object: part, limit: 10 })).nodes as unknown[];
   check("a pattern of an extrude applies too, as one more group", patterned.ok === true && rows.length === 3, JSON.stringify({ patterned, rows }));
+  // A reflection turns a revolve the other way: the mirrored copy walks the same axis line the other way round.
+  const swept = await call("model_apply", { object: part, op: { kind: "mirror", plane: "x", op: { kind: "revolve", op: "fuse", origin: [15, 0, 20], turn: [0, 0, 0], profile: [[1, 0], [3, 0], [3, 2], [1, 2]], angleDeg: 90 } } });
+  const revolves = (obj.tree?.nodes.get(obj.tree.current)?.op as { steps?: Record<string, unknown>[] } | undefined)?.steps ?? [];
+  check("a mirrored revolve keeps its angle and walks its axis the other way", swept.ok === true && revolves.length === 2 && JSON.stringify(revolves[1]?.axisDir ?? (revolves[1]?.axis as { dir?: unknown } | undefined)?.dir) === "[0,-1]", JSON.stringify(revolves[1]));
   let refused: unknown;
   try {
     refused = await call("model_apply", { object: part, op: { kind: "mirror", plane: "x", op: { kind: "fillet", edges: [0], size: 1 } } });

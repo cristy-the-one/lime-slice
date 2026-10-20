@@ -185,7 +185,7 @@ const NAME_LIMIT = 120;
  */
 const DETACHABLE = new Set([
   "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
-  "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
+  "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "export_3mf", "model_export_step",
 ]);
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
@@ -3196,7 +3196,7 @@ export class Session {
     // ribs broke through its rounded outer edge by 0.2 mm at every rib end, which read as a drawing fault.
     const tiny = solidMesh ? obj.solid!.faces.filter((face) => face.areaMm2 < 0.1) : [];
     const slivers = tiny.length
-      ? { slivers: { count: tiny.length, at: tiny.slice(0, 3).map((face) => applyPose(obj.modelPose, face.centre).map((v) => Math.round(v * 100) / 100)), note: `${tiny.length} face${tiny.length === 1 ? " is" : "s are"} under 0.1 mm², drawn as specks: the solid has them, often where a step breaks through a thin wall. faces_find {nearPoint} at one names it.` } }
+      ? { slivers: { count: tiny.length, frame: "part", at: tiny.slice(0, 3).map((face) => face.centre.map((v) => Math.round(v * 100) / 100)), note: `${tiny.length} face${tiny.length === 1 ? " is" : "s are"} under 0.1 mm², drawn as specks: the solid has them, often where a step breaks through a thin wall. faces_find {nearPoint} at one (part frame) names it.` } }
       : {};
     const note = { ...(ghost ? { ghost: { colour: "orange", touchesSolid: ghost.touches } } : {}), ...(looks.legend.length ? { colours: looks.legend } : {}), ...slivers };
     const body = many ? { ok: true, views, ...note } : { ok: true, ...views[0]!, ...note };
@@ -3401,6 +3401,14 @@ export class Session {
     const raw = Number(process.env.LIME_MCP_MODEL_TIMEOUT_S);
     const seconds = Number.isFinite(raw) && raw > 0 ? raw : 90;
     return seconds * 1000;
+  }
+
+  /** The steps from the root to `node`, a group's counted one by one: what a goto there may replay. */
+  private stepsTo(tree: ModelTree, node: number): number {
+    return pathTo(tree, node).reduce((sum, id) => {
+      const op = tree.nodes.get(id)?.op;
+      return sum + (op ? 1 : 0) + (op?.kind === "group" ? op.steps.length : 0);
+    }, 0);
   }
 
   /** A call that replays `steps` steps (a group's count as many): two seconds each, at least the one-call limit. */
@@ -4115,7 +4123,7 @@ export class Session {
     const prior = obj.solid;
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(gotoRequest(tree.key, at, CHORD));
+      reply = await this.treeCall(gotoRequest(tree.key, at, CHORD), "edit", this.replayBudgetMs(this.stepsTo(tree, at)));
     } catch (err) {
       const lost = this.lostReply(err);
       if (lost) return lost;
@@ -4131,7 +4139,7 @@ export class Session {
       obj.solid = prior;
       if (!obj.treeStale) {
         try {
-          await this.treeCall(gotoRequest(tree.key, current, CHORD));
+          await this.treeCall(gotoRequest(tree.key, current, CHORD), "edit", this.replayBudgetMs(this.stepsTo(tree, current)));
         } catch {
           // A modeler restarted under the work rebuilds the history at its current step on next use.
         }
@@ -4187,6 +4195,7 @@ export class Session {
     const failedStep = view?.phase === "done" && view.ok === false && view.failedStep != null ? { failedStep: view.failedStep } : {};
     if (baked.op.kind === "shell" && note?.bad && /too thick/.test(note.text)) {
       const advice = await this.shellAdvice(obj, tree, at, baked.op, budgetMs);
+      if (advice.lost) return answer(advice.lost);
       return answer({ ok: false, reason: `${note.text} ${advice.text}`, ...(advice.maxMm !== undefined ? { maxMm: advice.maxMm } : {}), ...(advice.where ? { where: advice.where } : {}) });
     }
     if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}), ...failedStep });
@@ -4208,7 +4217,7 @@ export class Session {
    * a curved face of smaller radius than the wall cannot be offset either. The largest wall that fits is found by
    * halving, a probe each, within about 20 s; the solid does not change.
    */
-  private async shellAdvice(obj: PlateObject, tree: ModelTree, at: number, op: Extract<ModelOp, { kind: "shell" }>, budgetMs?: number): Promise<{ text: string; maxMm?: number; where?: Record<string, unknown> }> {
+  private async shellAdvice(obj: PlateObject, tree: ModelTree, at: number, op: Extract<ModelOp, { kind: "shell" }>, budgetMs?: number): Promise<{ text: string; maxMm?: number; where?: Record<string, unknown>; lost?: Record<string, unknown> }> {
     const t = op.thickness;
     const parts: string[] = [];
     let where: Record<string, unknown> | undefined;
@@ -4236,7 +4245,9 @@ export class Session {
       let reply: Record<string, unknown>;
       try {
         reply = await this.treeCall(probeRequest(tree.key, at, { ...op, thickness: trial }), "shell", budgetMs);
-      } catch {
+      } catch (err) {
+        const lost = this.lostReply(err);
+        if (lost) return { text: parts.join(" "), lost };
         break;
       }
       const view = probeFromBody(reply);
@@ -5095,13 +5106,9 @@ export class Session {
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
     // --- 3.1 F9. A goto replays from the nearest solid the engine still holds, which can be a whole group of hundreds
     // of booleans: it gets two seconds a step on the way, not one call's limit, and a modeler past even that is a reply.
-    const path = pathTo(tree, node).reduce((sum, id) => {
-      const op = tree.nodes.get(id)?.op;
-      return sum + (op ? 1 : 0) + (op?.kind === "group" ? op.steps.length : 0);
-    }, 0);
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(gotoRequest(tree.key, node, CHORD), "edit", this.replayBudgetMs(path));
+      reply = await this.treeCall(gotoRequest(tree.key, node, CHORD), "edit", this.replayBudgetMs(this.stepsTo(tree, node)));
     } catch (err) {
       const lost = this.lostReply(err);
       if (lost) return lost;

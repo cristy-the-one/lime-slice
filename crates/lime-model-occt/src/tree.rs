@@ -1955,6 +1955,7 @@ impl Store {
     ) -> Result<Answer, Failure> {
         let not_the_steps =
             || Failure::Message("The steps to fold are not the group's steps".into());
+        root_placement(parent, &op).map_err(Failure::Message)?;
         let Op::Group { steps, .. } = &op else {
             return Err(Failure::Message("Only a group folds steps".into()));
         };

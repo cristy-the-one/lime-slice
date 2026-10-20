@@ -208,6 +208,18 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const after = await call("model_describe", { object: block, limit: 1 });
   const box = await solidBox(block);
   check("a mirror of an extrude adds the fin and its image", fins.ok === true && near(Number(after.volumeMm3) - before, 2 * 36, 0.05) && near(box.min[0], -26, 0.01) && near(box.max[0], 26, 0.01), JSON.stringify({ fins, before, after: after.volumeMm3, box }));
+  // 15: a mirrored quarter revolve is the image of the original: the part stays symmetric about X = 0.
+  // A quarter revolve on the top face sweeps up, out of the block; a copy turned the wrong way would sweep into it.
+  const sweep = { kind: "revolve", op: "fuse", origin: [10, 0, 10], turn: [0, 0, 0], profile: [[0, -2], [4, -2], [4, 2], [0, 2]], angleDeg: 90 };
+  const one = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10 })).object);
+  const oneBefore = Number((await call("model_describe", { object: one, limit: 1 })).volumeMm3);
+  await call("model_apply", { object: one, probe: true, op: sweep });
+  const single = Number((await call("model_describe", { object: one, limit: 1 })).volumeMm3) - oneBefore;
+  const wheel = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10 })).object);
+  const quarter = await call("model_apply", { object: wheel, op: { kind: "mirror", plane: "x", op: sweep } });
+  const both = Number((await call("model_describe", { object: wheel, limit: 1 })).volumeMm3) - oneBefore;
+  const wheelBox = await solidBox(wheel);
+  check("a mirrored quarter revolve is the original's image", quarter.ok === true && single > 1 && near(both, 2 * single, 0.05) && near(wheelBox.min[0], -wheelBox.max[0], 0.01), JSON.stringify({ quarter, single, both, wheelBox }));
   // 5: a sliver the solid really has is named by render_view.
   await call("model_apply", { object: block, probe: true, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [19.9, 10, 10], dx: 0.2, dy: 0.25, dz: 0.25 } });
   const drawn = await call("render_view", { object: block, camera: "iso", inline: false, longEdge: 128, name: "slivers.png" });
