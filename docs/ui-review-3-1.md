@@ -197,6 +197,12 @@ A focused size field has a 2 px ring, an axis badge in the corner, and a visuall
 
 ![Depth Y focused, with its Y badge](screenshots/ui-review-3-1/ph08-after-badge.png)
 
+The sketch card is grouped. Draw is Line, Rectangle, Circle, Arc, Spline, Polygon, Slot, in that order, as icons. Edit and Make sit under their own headings. Finish sketch is the primary button until a feature is open. Fillet corner and Use stay in Edit so those tools are still on the card.
+
+![Sketch tools in one wrapping row](screenshots/ui-review-3-1/ux03-before-sketch-card.png)
+
+![Draw, Edit, and Make, with Finish sketch primary](screenshots/ui-review-3-1/ux03-after-sketch-card.png)
+
 ## Checks
 
 - `npx tsc --noEmit`

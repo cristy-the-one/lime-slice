@@ -123,12 +123,14 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   expect(await fits(), "drawing tools are not on the Model toolbar").toBe(true);
   await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
 
-  await page.locator("[data-sketch-menu=draw]").click();
-  await expect(page.locator(".sketch-menu:has([data-sketch-menu=draw]) .sketch-menu-list")).toBeVisible();
-  for (const label of ["Circle", "Arc", "Polygon", "Slot", "Spline", "Trim", "Offset", "Fillet corner", "Construction", "Use"]) {
-    await expect(page.locator(`.sketch-menu-list [data-sketch-tool]`, { hasText: label })).toBeVisible();
+  for (const label of ["Line", "Rectangle", "Circle", "Arc", "Spline", "Polygon", "Slot"]) {
+    await expect(page.locator(`[data-sketch-section=draw] [data-sketch-tool]`, { hasText: label }).or(page.getByRole("button", { name: label, exact: true }))).toBeVisible();
   }
-  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  for (const label of ["Select", "Trim", "Offset", "Fillet corner", "Construction", "Use"]) {
+    await expect(page.getByRole("button", { name: label, exact: true })).toBeVisible();
+  }
+  if (process.env.LIME_SHOTS) await page.locator("#sketchCards").screenshot({ path: `${process.env.LIME_SHOTS}/ux03-after-sketch-card.png` });
+  await page.getByRole("button", { name: "Circle", exact: true }).click();
   await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   await expect(page.locator("#modelReadout")).toContainText("Type a diameter");
 
@@ -252,36 +254,24 @@ test("the sketch card keeps the keyboard while the pointer moves, and its menus 
   for (let step = 0; step < 6; step += 1) await page.mouse.move(box.x + box.width / 2 + step * 9, box.y + box.height / 2 + step * 5);
   await expect(rectangle).toBeFocused();
 
-  // The Draw menu opens on its checked item, the arrows move through it, Esc closes it back onto its button.
-  await page.locator("[data-sketch-menu=draw]").focus();
+  // Draw stays a fixed row. The Constrain menu is still a keyboard menu.
+  const draw = page.locator("[data-sketch-section=draw] [data-sketch-tool]");
+  await expect(draw).toHaveCount(7);
+  await page.locator("[data-sketch-menu=constrain]").focus();
   await page.keyboard.press("Enter");
-  const items = page.locator(".sketch-menu:has([data-sketch-menu=draw]) [role=menuitemradio]");
+  const items = page.locator(".sketch-menu:has([data-sketch-menu=constrain]) [role^=menuitem]");
   await expect(items.first()).toBeVisible();
   const count = await items.count();
   expect(count).toBeGreaterThan(2);
-  await expect(page.locator(".sketch-menu:has([data-sketch-menu=draw]) [aria-checked=true]")).toHaveCount(0);
   await expect(items.nth(0)).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(items.nth(1)).toBeFocused();
-  await page.keyboard.press("ArrowUp");
-  await page.keyboard.press("ArrowUp");
-  await expect(items.nth(count - 1)).toBeFocused();
   await page.keyboard.press("Home");
   await expect(items.nth(0)).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(items.first()).toBeHidden();
-  await expect(page.locator("[data-sketch-menu=draw]")).toBeFocused();
+  await expect(page.locator("[data-sketch-menu=constrain]")).toBeFocused();
   await expect(canvas).toHaveAttribute("data-sketch", "editing");
-
-  // A tool picked from the menu is its checked item the next time it opens.
-  await page.keyboard.press("Enter");
-  await items.nth(1).press("Enter");
-  const picked = await items.nth(1).getAttribute("data-sketch-tool");
-  await expect(canvas).toHaveAttribute("data-sketch-current-tool", picked!);
-  await page.locator("[data-sketch-menu=draw]").focus();
-  await page.keyboard.press("Enter");
-  await expect(items.nth(1)).toHaveAttribute("aria-checked", "true");
-  await expect(items.nth(1)).toBeFocused();
   await expect(page.locator(".sketch-menu:has([data-sketch-menu=constrain]) [role=group]")).toHaveCount(3);
 });
 
@@ -407,12 +397,21 @@ test("extrude waits for a profile, and loft says what to pick", async ({ page })
   await hud.locator("input").nth(1).press("Enter");
   await expect(extrude).toHaveAttribute("aria-disabled", "false");
 
+  const drawAt = () => page.locator("[data-sketch-section=draw] [data-sketch-tool]").evaluateAll((nodes) => nodes.map((node) => {
+    const box = node.getBoundingClientRect();
+    return { tool: (node as HTMLElement).dataset.sketchTool, x: Math.round(box.x), y: Math.round(box.y) };
+  }));
+  const before = await drawAt();
   await page.locator("[data-sketch-loft]").click();
-  const prompt = page.locator(".sketch-prompt");
+  const prompt = page.locator(".sketch-prompt-text");
   await expect(prompt).toBeVisible();
   await expect(prompt).toContainText("Pick at least two sections to loft.");
+  const after = await drawAt();
+  expect(after).toEqual(before);
+  const overflow = await page.locator("#sketchCards button").evaluateAll((nodes) => nodes.filter((node) => node.scrollWidth > node.clientWidth + 1).map((node) => (node as HTMLElement).innerText));
+  expect(overflow).toEqual([]);
   if (process.env.LIME_SHOTS) await page.locator("#modelDock .sketch-card").screenshot({ path: `${process.env.LIME_SHOTS}/after-loft-prompt.png` });
-  await prompt.locator("[data-sketch-cancel]").click();
+  await page.locator("[data-sketch-section=feature] [data-sketch-cancel]").click();
   await expect(prompt).toHaveCount(0);
   await expect(canvas).toHaveAttribute("data-loft", "off");
 });

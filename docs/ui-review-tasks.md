@@ -154,6 +154,8 @@ Status: done. The field keeps its 2 px ring, gains an X/Y/Z badge, and `aria-des
 
 ### PH-09 (P1). Wider test coverage for the feature
 
+Status: done. `e2e/model-aspect.spec.ts` covers cylinder radius, cone top radius, hole depth, a picked-edge fillet, push/pull distance, the split plane, Tab into Depth and Shift+Tab out, and a pattern count (`mapped: false`).
+
 Playwright cases, in the existing `e2e/model-drag.spec.ts` or a new `e2e/model-aspect.spec.ts`:
 
 - cylinder radius (the rim circle is lit);

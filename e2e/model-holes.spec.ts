@@ -150,8 +150,7 @@ test("three sketch points become one group of holes, and History Edit changes th
   await expect(page.getByRole("button", { name: "Holes (H)" })).toBeVisible();
   await expect.poll(() => toolbarFits(page)).toBe(true);
 
-  await page.locator("[data-sketch-menu=draw]").click();
-  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  await page.locator("[data-sketch-tool=circle]").click();
   await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   const view = (await canvas.boundingBox())!;
   const spots = [
@@ -272,8 +271,7 @@ test("focusing hole 2's depth lights hole 2", async ({ page }) => {
   await page.mouse.click(top.x, top.y);
   await page.locator("#modelContextBar").getByRole("button", { name: "Sketch on face" }).click();
   await expect(canvas).toHaveAttribute("data-sketch", "editing");
-  await page.locator("[data-sketch-menu=draw]").click();
-  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  await page.locator("[data-sketch-tool=circle]").click();
   const view = (await canvas.boundingBox())!;
   for (const spot of [
     { x: view.x + view.width * 0.42, y: view.y + view.height * 0.48 },

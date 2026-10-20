@@ -860,14 +860,56 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .sketch-cards[hidden] { display: none; }
 .sketch-card {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   color: var(--text);
   font-size: var(--fs-2);
 }
-.sketch-card p { margin: 0 6px 0 0; }
+.sketch-card p { margin: 0; }
+.sketch-section { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sketch-section-title {
+  margin: 0;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.sketch-section-body, .sketch-foot, .sketch-feature {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.sketch-draw {
+  display: grid;
+  grid-template-columns: repeat(7, 32px);
+  gap: 4px;
+}
+.sketch-card .sketch-icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.sketch-card .btn {
+  height: auto;
+  min-height: 28px;
+  max-width: 100%;
+  white-space: normal;
+  line-height: 1.2;
+  text-align: center;
+}
 .sketch-card .btn[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+.sketch-modes { display: inline-flex; flex-wrap: wrap; max-width: 100%; }
+.sketch-modes .btn { border-radius: 0; }
+.sketch-modes .btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.sketch-modes .btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.sketch-feature-name { font-weight: 600; margin-right: 4px; }
+.sketch-prompt-text { flex: 1 1 100%; margin: 0; }
+.sketch-value { display: inline-flex; align-items: center; gap: 4px; }
+.sketch-value input { width: 6ch; }
 /* The sentence for a feature that is waiting on a pick, with its own Cancel, in the card. */
 .sketch-prompt {
   flex: 1 1 100%;

@@ -83,8 +83,7 @@ async function drawTypedRectangle(page: Page, width: string, height: string) {
 }
 
 async function drawTypedCircle(page: Page, diameter: string) {
-  await page.locator("[data-sketch-menu=draw]").click();
-  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  await page.locator("[data-sketch-tool=circle]").click();
   const canvas = page.locator("#model");
   await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   const box = (await canvas.boundingBox())!;

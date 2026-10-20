@@ -582,12 +582,12 @@ test("Auto makes a new object of a sketch beside the part, and the face sketch's
   await page.keyboard.press("E");
   await expect(canvas).toHaveAttribute("data-extrude", "aim");
   await expect(canvas).toHaveAttribute("data-extrude-mode", "new");
-  await expect(page.locator("[data-sketch-mode]")).toHaveText("Auto · New object (M)");
+  await expect(page.locator("[data-sketch-mode=new]")).toContainText("New object");
+  await expect(page.locator("[data-sketch-mode=new]")).toHaveAttribute("aria-pressed", "true");
 });
 
 async function drawTypedCircle(page: Page) {
-  await page.locator("[data-sketch-menu=draw]").click();
-  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  await page.locator("[data-sketch-tool=circle]").click();
   const canvas = page.locator("#model");
   await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   const box = (await canvas.boundingBox())!;
