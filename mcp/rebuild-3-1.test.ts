@@ -331,6 +331,8 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   session.onProgress = (_job, _fraction, stage) => stages.push(stage);
   const early = await session.call("project_open", { path: "replays.lime" });
   check("an open that replays answers with a job, naming what it does", early.status === "running" && String(early.stage).includes("replaying its 3 steps"), JSON.stringify(early));
+  const stop = await session.call("slice_cancel", { job: early.job });
+  check("an open cannot be stopped part way, and says so", stop.ok === false && String(stop.reason).includes("cannot stop part way"), JSON.stringify(stop));
   let done = await session.call("slice_wait", { job: early.job, timeoutS: 10 });
   for (let round = 0; done.status === "running" && round < 5; round += 1) done = await session.call("slice_wait", { job: early.job, timeoutS: 10 });
   check("its wait returns the opened project", done.status === "done" && done.ok === true && ids(done).length === 1 && stages.some((stage) => stage.includes("replaying its 3 steps")), JSON.stringify(done));

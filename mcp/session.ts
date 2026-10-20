@@ -218,6 +218,8 @@ interface WorkJob {
   started: number;
   ctx: CallMeta;
   stop: AbortController;
+  /** A run of ops (a batch, a build, a composite) stops after the step it is on; anything else finishes. */
+  stoppable: boolean;
   settled: Promise<void>;
   done: boolean;
   result?: Record<string, unknown>;
@@ -846,7 +848,8 @@ export class Session {
   private startWorkJob(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController): WorkJob {
     this.jobSeq += 1;
     const object = typeof input.object === "string" ? input.object : name.startsWith("model_") || name === "solid_new" ? this.selected : undefined;
-    const job: WorkJob = { handle: `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, done: false, settled: Promise.resolve() };
+    const stoppable = name === "model_apply_batch" || name === "model_build" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
+    const job: WorkJob = { handle: `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, stoppable, done: false, settled: Promise.resolve() };
     job.settled = work.then((value) => {
       job.result = value;
     }, (err: unknown) => {
@@ -909,6 +912,7 @@ export class Session {
 
   private async workCancel(job: WorkJob): Promise<Record<string, unknown>> {
     if (job.done) return { ...this.workReply(job), reason: "That job had already finished." };
+    if (!job.stoppable) return { ok: false, job: job.handle, status: "running", reason: `${job.tool} cannot stop part way. It finishes; then model_undo or plate_undo takes it back.` };
     job.stop.abort();
     await Promise.race([job.settled, this.pause(SLICE_WAIT_DEFAULT_S * 1000)]);
     if (!job.done) return { ok: true, job: job.handle, status: "cancelling", reason: "The work stops after the step it is on, and is then taken back. Call slice_wait for the outcome." };
