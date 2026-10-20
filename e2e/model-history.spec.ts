@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -379,7 +380,7 @@ test("an arrow press just before leaving Model does not move the step the plate 
   await expect(page.locator("#prepareBody")).toBeVisible();
   await expect(page.locator("#objectList .obj").first()).toContainText("20 × 20 × 6");
   await expect(page.locator("#modelHistoryTree"), "the arrow's pause ran out").not.toHaveAttribute("aria-busy", "true");
-  await page.locator("#plateDuplicate").click();
+  await plateClick(page, "duplicate");
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   await expect(page.locator("#objectList .obj").first(), "the plate keeps the step it took on leaving").toContainText("20 × 20 × 6");
 });

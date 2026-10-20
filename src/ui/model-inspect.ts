@@ -1,7 +1,7 @@
 /**
  * E3. Inspect: the right dock in Model. The open solid's size (the view's size line), its volume, the bed it is checked
- * against, the last Check, and the objects on the plate. It fills only while it is on screen in Model, and catches up
- * when it comes back, so a hidden Inspect costs nothing.
+ * against, the last Check, and the objects on the plate with the Prepare list's own actions. It fills only while it is
+ * on screen, and catches up when it comes back, so a hidden Inspect costs nothing.
  */
 import { state } from "../app/state.ts";
 import { openDock } from "./dock-reveal.ts";
@@ -21,15 +21,30 @@ export interface ModelInspectHooks {
   objects(): InspectObject[];
   /** The object Model has open, or null. */
   openId(): string | null;
-  /** Open another plate object in Model. Picking it selects it; the plate does not move. */
-  open(id: string): void;
-  /** Check the open object, as Check in the rail does. */
-  check(): void;
+}
+
+/**
+ * The plate's own actions, as the Prepare list has them: Model hides the settings, so Inspect's rows carry them. Each is
+ * the user's own choice; Model never changes the plate by itself.
+ */
+export interface InspectPlateActions {
+  /** Select the object, which opens it in Model. */
+  select(id: string): void;
+  frame(id: string): void;
+  check(id: string): void;
+  remove(id: string): void;
+  duplicate(): void;
+  add(): void;
 }
 
 let hooks: ModelInspectHooks | null = null;
+let actions: InspectPlateActions | null = null;
 let volume = "—";
 let checked = "";
+
+export function setInspectPlateActions(next: InspectPlateActions) {
+  actions = next;
+}
 
 /** On screen: the right dock in Model, or the Device tab on the phone. */
 function shown(): boolean {
@@ -38,14 +53,22 @@ function shown(): boolean {
 
 export function mountModelInspect(next: ModelInspectHooks) {
   hooks = next;
-  document.querySelector("#modelInspectCheckRun")?.addEventListener("click", () => hooks?.check());
   // The status line's "Too large" opens Inspect, where the size says by how much.
   document.querySelector("#modelFitWarn")?.addEventListener("click", () => openDock("right"));
   document.querySelector("#modelInspectObjects")?.addEventListener("click", (ev) => {
-    const row = (ev.target as Element | null)?.closest<HTMLElement>("[data-inspect-open]");
-    const id = row?.dataset.inspectOpen;
-    if (id && id !== hooks?.openId()) hooks?.open(id);
+    const target = ev.target instanceof Element ? ev.target : null;
+    const pick = (attr: string) => target?.closest<HTMLElement>(`[${attr}]`)?.getAttribute(attr) ?? null;
+    const frame = pick("data-plate-frame");
+    if (frame) return actions?.frame(frame);
+    const check = pick("data-plate-check");
+    if (check) return actions?.check(check);
+    const remove = pick("data-plate-remove");
+    if (remove) return actions?.remove(remove);
+    const select = pick("data-plate-select");
+    if (select && select !== hooks?.openId()) actions?.select(select);
   });
+  document.querySelector("#modelInspectDuplicate")?.addEventListener("click", () => actions?.duplicate());
+  document.querySelector("#modelInspectAdd")?.addEventListener("click", () => actions?.add());
   window.addEventListener("lime-inspect", () => paintModelInspect(true));
   paintModelInspect();
 }
@@ -99,9 +122,20 @@ export function paintModelInspect(force = false) {
   const list = document.querySelector("#modelInspectObjects");
   if (!list) return;
   const openId = hooks.openId();
-  const rows = hooks.objects().map((obj) => {
+  const objects = hooks.objects();
+  const many = objects.length > 1;
+  const rows = objects.map((obj) => {
     const current = obj.id === openId;
-    return `<div role="listitem"><button class="model-inspect-object" type="button" data-inspect-open="${escapeHtml(obj.id)}"${current ? ' aria-current="true"' : ""} data-tip="${current ? "Open in Model" : "Open this object in Model"}"><b>${escapeHtml(obj.name)}</b><span>${escapeHtml(obj.size)} mm</span></button></div>`;
+    const id = escapeHtml(obj.id);
+    const name = escapeHtml(obj.name);
+    return `<div class="obj obj-row" role="listitem" data-selected="${current ? "true" : "false"}">
+      <button class="obj-select" type="button" data-plate-select="${id}" aria-pressed="${current ? "true" : "false"}" data-tip="${current ? "Open in Model" : "Open this object in Model"}"><b>${name}</b><span>${escapeHtml(obj.size)} mm</span></button>
+      <div class="obj-actions">
+        <button class="btn obj-check" type="button" data-plate-check="${id}" aria-label="Check ${name}">Check</button>
+        <button class="btn obj-frame" type="button" data-plate-frame="${id}" aria-label="Frame ${name}">Frame</button>
+        ${many ? `<button class="btn obj-remove" type="button" data-plate-remove="${id}" aria-label="Remove ${name}">Remove</button>` : ""}
+      </div>
+    </div>`;
   });
   list.innerHTML = rows.join("") || `<p class="model-note">Nothing on the plate.</p>`;
 }

@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { primitiveMesh, type PrimitiveSpec } from "../src/model-primitive";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -222,7 +223,7 @@ test("a copy of a new solid that has no step yet starts from the same primitive,
   const tree = await start(page);
   await create(page, "tube", { modelRadius: 10, modelInnerR: 6, modelHeight: 5 });
   await expect(readout(page)).toContainText("Tube 1.");
-  await page.locator("#plateDuplicate").click();
+  await plateClick(page, "duplicate");
   await expect(objects(page)).toHaveCount(2);
   await expect.poll(() => tree.of("open").length, { message: "the copy is a tree of its own" }).toBe(2);
   const [first, copy] = tree.of("open");

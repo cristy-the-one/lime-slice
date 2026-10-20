@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type MockSolid } from "./model-tree-mock";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -128,7 +129,7 @@ test("a section face is taken only right after Face, and another object starts t
   await page.locator("#tabPrepare").click();
   await page.locator("#plateAddFile").setInputFiles({ name: "other.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume");
   await expect(page.locator("#modelSection"), "section is off on another object").not.toBeChecked();

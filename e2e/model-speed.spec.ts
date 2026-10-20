@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type TreeMock } from "./model-tree-mock";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -211,7 +212,7 @@ test("the piece a split adds opens as a solid of its own and splits again", asyn
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   await expect(page.locator("#modelReadout")).toContainText("Split. Volume 1600 mm³");
 
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(page.locator("#modelReadout")).toContainText("Volume 2400 mm³");
   await expect(page.locator("#modelEmpty"), "the piece is no mesh").toBeHidden();
   expect(calls.opens, "the piece is a tree of its own already, with no STEP read").toHaveLength(1);

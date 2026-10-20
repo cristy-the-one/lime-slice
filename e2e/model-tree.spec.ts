@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { MISMATCHED, encodeSolid } from "../src/model-reply";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -145,7 +146,7 @@ test("a jump above a split keeps the piece on the plate, and the piece is still 
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   await page.locator("#tabModel").click();
 
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(readout(page)).toContainText("Volume 2400 mm³");
   expect(tree.of("open"), "the piece needs no STEP read").toHaveLength(1);
   await cut(page, 2);
@@ -248,7 +249,7 @@ test("a split taken back by Prepare undo comes back with its piece when Model re
   await expect(page.locator("#objectList .obj").nth(1)).toContainText("20 × 20 × 6");
   expect(tree.of("apply"), "nothing was built again").toHaveLength(1);
 
-  await page.locator("[data-plate-remove]").nth(1).click();
+  await plateClick(page, "remove", 1);
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText("Volume 1600 mm³");
@@ -270,7 +271,7 @@ test("Duplicate in Model opens the copy, and a Slice in Model slices the step on
   await expect.poll(() => slices.length).toBe(1);
   expect(slices[0]!.filename, "the plate took the cut before slicing").toBe("plate.stl");
 
-  await page.locator("#plateDuplicate").click();
+  await plateClick(page, "duplicate");
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   await expect.poll(() => tree.of("open").length, { message: "the copy is a tree of its own" }).toBe(2);
   expect(tree.of("export").map((request) => request.node), "rooted in the STEP of the step it copies").toEqual([1]);
@@ -287,7 +288,7 @@ test("an engine that forgot a split piece gets it back from its parent's split",
   await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText("Split. Volume 1600 mm³");
   const split = tree.of("apply")[0]!;
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(readout(page)).toContainText("Volume 2400 mm³");
   tree.forget();
   await cut(page, 2);

@@ -578,8 +578,6 @@ export function bindModelView() {
   mountModelInspect({
     objects: () => plateObjectSizes(),
     openId: () => open?.objectId ?? state.plate.selectedId,
-    open: (id) => fx.selectPlateObject(id),
-    check: () => document.querySelector<HTMLButtonElement>("#modelToolCheck")?.click(),
   });
   // --- P1: face push/pull. The default when no other model tool is open. ---
   if (fx.model) {

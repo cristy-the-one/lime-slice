@@ -73,9 +73,9 @@ async function clickCanvas(page: Page, x: number, y: number, shift = false) {
 test("a hole follows the picked face, and a fillet sends every selected edge", async ({ page }) => {
   const probes: Record<string, unknown>[] = [];
   await openModel(page, probes);
-  await expect(page.locator("#modelToolFillet")).toHaveAttribute("data-tip-idle", "Round every selected edge in one step");
+  await expect(page.locator("#modelToolFillet")).toHaveAttribute("data-tip-idle", "Fillet: round every selected edge in one step");
   await expect(page.locator("#modelToolFillet")).toHaveAttribute("data-tip", "Pick an edge to fillet. Switch to Edge, then click the edges.");
-  await expect(page.locator("#modelToolHole")).toHaveAttribute("data-tip", "Cut a cylinder into the picked face, or straight down");
+  await expect(page.locator("#modelToolHole")).toHaveAttribute("data-tip", "Hole: cut a cylinder into the picked face, or straight down");
 
   await page.locator("#modelToolHole").click();
   await expect.poll(() => (probes.at(-1)?.axis as number[] | undefined)?.[2]).toBe(-1);

@@ -38,10 +38,11 @@ function enterModel() {
   const dock = document.querySelector("#modelDock");
   if (body && dock) body.append(dock);
   let foot = document.querySelector<HTMLElement>("#compactModelFoot");
-  if (!foot && body) {
+  if (!foot && dock) {
     foot = document.createElement("div");
     foot.id = "compactModelFoot";
-    body.append(foot);
+    // First in the sheet's column, so a sheet below it shrinks rather than run over it.
+    dock.prepend(foot);
   }
   for (const id of MODEL_STATUS) {
     const node = document.querySelector(id);

@@ -100,7 +100,9 @@ test("a polar pattern of a cylinder is one row of six cuts", async ({ page }) =>
   await expect(page.locator("#modelReadout")).toContainText(`Volume ${one} mm³`);
 
   await page.locator("#modelToolPattern").click();
-  await expect(page.locator("#modelToolFeatures")).toHaveText("Pattern");
+  // E3. Pattern is its own rail button; the Features button keeps to the features.
+  await expect(page.locator("#modelToolPattern")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#modelToolFeatures")).toHaveText("Pocket");
   const rows = page.locator("#modelHistoryTree [role=treeitem]");
   await expect(rows.nth(1)).toHaveAttribute("data-repeat", "");
   await rows.nth(1).click({ modifiers: ["Control"] });

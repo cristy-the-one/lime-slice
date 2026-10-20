@@ -674,11 +674,10 @@ html.layout-compact #toolRail .model-tool { flex: 0 0 auto; }
 html.layout-compact .model-pick { top: 60px; left: 8px; }
 html.layout-compact .model-pick .btn { min-height: 36px; }
 /* The readout, the paused chip and the size warning, under the strip and the pick filter. */
-#compactModelFoot {
-  position: absolute;
-  z-index: 3;
-  top: 108px;
-  left: 8px;
+html.layout-compact #modelDock > #compactModelFoot {
+  /* Under the strip and the pick filter, first in the sheet's column: the auto margin keeps the sheets at the bottom. */
+  flex: 0 0 auto;
+  margin: 108px 8px auto;
   /* The handle dock sits right of the middle at any phone size, so half the width keeps these clear of it. */
   max-width: calc(50% - 16px);
   display: flex;
@@ -757,8 +756,21 @@ html.layout-compact .model-actions {
 html.layout-compact .model-actions .btn { min-height: var(--model-bar-btn); min-width: 72px; }
 /* A landscape phone: room for a row of fields above slimmer buttons (still past the 24 px touch minimum). */
 @media (max-height: 500px) {
-  #compactModelFoot { top: 104px; }
+  html.layout-compact #modelDock > #compactModelFoot { margin-top: 104px; }
   html.layout-compact .model-panel { max-height: 46%; --model-bar-btn: 30px; --model-bar-pad: calc(var(--space-1) / 2); }
+  /* The strip shows which tool is open, so the sheet gives its head's row to the fields. */
+  html.layout-compact .model-panel-head:not(:has(#modelEditHead:not([hidden]))) { display: none; }
+  /* Split's plane buttons share the fields' row, so that row shows whole above the buttons. */
+  html.layout-compact #modelDock[data-tool="split"] .model-panel-body { display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: var(--space-2); }
+  html.layout-compact #modelDock[data-tool="split"] .model-panel-body > * { flex: 0 0 100%; }
+  html.layout-compact #modelDock[data-tool="split"] #modelPlaneModes { flex: 0 0 auto; margin-top: 0; }
+  html.layout-compact #modelDock[data-tool="split"] .model-fields { flex: 1 1 0; min-width: 0; }
+  /* So do the primitive's buttons, as a strip that scrolls on its own. */
+  html.layout-compact #modelDock:is([data-tool="boolean"], [data-tool="create"]) .model-panel-body { display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: var(--space-2); }
+  html.layout-compact #modelDock:is([data-tool="boolean"], [data-tool="create"]) .model-panel-body > * { flex: 0 0 100%; }
+  html.layout-compact #modelDock:is([data-tool="boolean"], [data-tool="create"]) #modelPrim { display: flex; flex: 0 1 auto; min-width: 0; margin: 0; overflow-x: auto; }
+  html.layout-compact #modelDock:is([data-tool="boolean"], [data-tool="create"]) .model-prim { flex: 0 0 36px; height: var(--control-h); }
+  html.layout-compact #modelDock:is([data-tool="boolean"], [data-tool="create"]) .model-fields { flex: 1 1 0; min-width: 0; }
 }
 /* The sketch card, at the bottom, where the tool's sheet is. */
 html.layout-compact #modelDock .sketch-cards {

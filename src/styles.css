@@ -1370,13 +1370,13 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   .workspace.show-right #rightDock { display: flex; max-height: none; min-height: 0; }
   .workspace.show-left { grid-template-rows: minmax(0, 180px) minmax(0, 1fr); }
   .workspace.show-left #leftDock { grid-row: 1; }
-  .workspace.show-left .stage { grid-row: 2; }
+  .workspace.show-left #stage { grid-row: 2; }
   .workspace.show-right { grid-template-rows: minmax(0, 1fr) minmax(0, 180px); }
-  .workspace.show-right .stage { grid-row: 1; }
+  .workspace.show-right #stage { grid-row: 1; }
   .workspace.show-right #rightDock { grid-row: 2; }
   .workspace.show-left.show-right { grid-template-rows: minmax(0, 160px) minmax(0, 1fr) minmax(0, 160px); }
   .workspace.show-left.show-right #leftDock { grid-row: 1; }
-  .workspace.show-left.show-right .stage { grid-row: 2; }
+  .workspace.show-left.show-right #stage { grid-row: 2; }
   .workspace.show-left.show-right #rightDock { grid-row: 3; }
   .top { flex-wrap: wrap; height: auto; max-height: none; overflow: visible; }
   #toolRail .rail-caption { display: none; }

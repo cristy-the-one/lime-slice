@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { primitiveMesh, type PrimitiveSpec } from "../src/model-primitive";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -186,7 +187,7 @@ test("a tool Model never opened gets its tree when picked, and a tool whose hist
   await page.locator("#tabPrepare").click();
   await page.locator("#plateAddFile").setInputFiles({ name: "rod.step", mimeType: "model/step", buffer: STEP });
   await expect(objects(page)).toHaveCount(3);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText("Volume 1000 mm³");
   await openJoin(page);
@@ -203,7 +204,7 @@ test("a tool Model never opened gets its tree when picked, and a tool whose hist
   await expect(page.locator("#modelKeepTool"), "Keep goes back off after the join").not.toBeChecked();
 
   await page.locator("#tabPrepare").click();
-  await page.locator("[data-plate-select]").nth(2).click();
+  await plateClick(page, "select", 2);
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText("Volume 4000 mm³");
   await openJoin(page);
@@ -293,7 +294,7 @@ test("the open object, a mesh, and surfaces are never offered as the tool", asyn
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText("can be measured but not edited");
   await page.locator("#tabPrepare").click();
-  await page.locator("[data-plate-select]").first().click();
+  await plateClick(page, "select");
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText("Volume 4000 mm³");
   await openJoin(page);

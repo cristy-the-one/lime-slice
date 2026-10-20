@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, olderFile, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -427,7 +428,7 @@ test("a save survives the plate being replaced while a piece's root STEP is stil
   page.on("pageerror", (err) => errors.push(err.message));
   const tree = await openModel(page);
   await split(page, 4);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(readout(page)).toContainText(volume(6));
   await cut(page, 2);
   await page.locator("#tabPrepare").click();
@@ -482,9 +483,9 @@ test("a copy's tree is closed once no Prepare step can bring the copy back, and 
   const tree = await openModel(page);
   await cut(page, 5);
   await page.locator("#tabPrepare").click();
-  await page.locator("#plateDuplicate").click();
+  await plateClick(page, "duplicate");
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText(volume(5));
   await cut(page, 3, 30);
@@ -493,12 +494,12 @@ test("a copy's tree is closed once no Prepare step can bring the copy back, and 
   await page.locator("#tabPrepare").click();
 
   // The part is deleted, then put back: its tree stays, and Model resumes it with nothing read again.
-  await page.locator("[data-plate-remove]").first().click();
+  await plateClick(page, "remove");
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   await page.keyboard.press("Control+z");
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   const opens = tree.of("open").length;
-  await page.locator("[data-plate-select]").first().click();
+  await plateClick(page, "select");
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText(volume(5));
   expect(tree.of("open"), "the part's tree was kept").toHaveLength(opens);
@@ -522,7 +523,7 @@ test("a copy's tree is closed once no Prepare step can bring the copy back, and 
 test("a split piece opens after a reload with its own steps, without the part it was cut from", async ({ page }) => {
   const tree = await openModel(page);
   await split(page, 4);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(readout(page)).toContainText(volume(6));
   await cut(page, 2);
 
@@ -531,7 +532,7 @@ test("a split piece opens after a reload with its own steps, without the part it
   expect(objects[0]!.modelTree.nodes.find((node) => node.id === 1)?.piece, "the split names its piece's plate object").toBe(objects[1]!.id);
 
   const calls = tree.calls.length;
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText(volume(2));
   await expect(rows(page)).toHaveCount(2);
@@ -557,7 +558,7 @@ test("after a reload, Delete branch refuses the plate's path and a split whose p
   await expect(readout(page)).toContainText(volume(10));
   await cut(page, 6);
   await page.locator("#tabPrepare").click();
-  await page.locator("[data-plate-select]").first().click();
+  await plateClick(page, "select");
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText(volume(6));
   await row(page, "Cut box 8").focus();
@@ -565,7 +566,7 @@ test("after a reload, Delete branch refuses the plate's path and a split whose p
   await expect(readout(page), "before the save, Prepare undo can bring the cut back").toHaveText("The plate held a step on this branch, and Prepare undo can bring it back.");
 
   await saveAndReopen(page);
-  await page.locator("[data-plate-select]").first().click();
+  await plateClick(page, "select");
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText(volume(6));
   await expect(labels(page)).toHaveText(["plate.step", "Cut box 8×10×10", "Split at Z 4", "Cut box 6×10×10"]);

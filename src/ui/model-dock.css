@@ -236,20 +236,10 @@ html:not(.layout-compact) .model-dock .model-params-table input { width: 100%; h
 .model-inspect-kv .model-fit { text-align: right; }
 .model-inspect .model-note { margin: 0 0 var(--space-2); }
 .model-inspect-objects { display: grid; gap: 4px; }
-.model-inspect-object {
-  display: grid;
-  width: 100%;
-  gap: 2px;
-  padding: 6px var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-}
-.model-inspect-object span { color: var(--text-dim); font: var(--fs-1) var(--font-mono); }
-.model-inspect-object:hover { background: var(--surface-3); }
-.model-inspect-object[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+/* The Prepare list's rows, with their buttons under the name in the dock's width. */
+.model-inspect .obj-row { grid-template-columns: minmax(0, 1fr); }
+.model-inspect .obj-actions { justify-content: flex-end; padding: 0 var(--space-2) var(--space-1); }
+.model-inspect-bar { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
 
 /* ---------- Status line in Model ---------- */
 html:not([data-stage="model"]) :is(#modelPaused, #modelReadout, #modelFitWarn) { display: none !important; }
@@ -287,4 +277,8 @@ html[data-stage="model"] .status #statusText { display: none; }
 /* A narrow window (601–960 px) stacks the Model dock over the view, with room for a tool's fields. */
 @media (max-width: 960px) {
   html:not(.layout-compact)[data-stage="model"] .workspace.show-left:not(.show-right) { grid-template-rows: minmax(0, 46%) minmax(0, 1fr); }
+  /* The floating rail starts under the stacked dock, on the view. */
+  html:not(.layout-compact)[data-stage="model"] .workspace.show-left:not(.show-right) #toolRail { top: calc(46% + 8px); max-height: calc(54% - 16px); }
+  /* The floating rail sits at the view's left edge: the pick filter moves past it. */
+  html:not(.layout-compact) .model-pick { left: 56px; }
 }

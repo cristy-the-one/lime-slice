@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -67,7 +68,7 @@ async function openFiles(page: Page, files: Record<string, MockSolid>, reportSea
     await page.locator("#plateAddFile").setInputFiles({ name, mimeType: "model/step", buffer: STEP });
     await expect(page.locator("#objectList .obj")).toHaveCount(i + 2);
   }
-  await page.locator("[data-plate-select]").first().click();
+  await plateClick(page, "select");
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume");
   return tree;
@@ -127,7 +128,7 @@ test("a split piece opens with its parent grey directly under it, where it was c
   await page.locator("#modelPlane").fill("4");
   await page.locator("#modelApply").click();
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(page.locator("#modelReadout")).toContainText("Volume 2400");
 
   await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,4.00,20.00,20.00,10.00");
@@ -148,16 +149,16 @@ test("two STEP files 100 mm apart in their own coordinates show 100 mm apart", a
 test("a STEP the slicer lowered onto the bed sits at its own Z in model space before Model has opened it", async ({ page }) => {
   await openFiles(page, { "low.step": boxSolid([40, 30, 20]), "high.step": boxSolid([40, 30, 20], [100, 0, 50]) });
   expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 50, 140, 30, 70]]);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(canvas(page)).toHaveAttribute("data-solid", "100.00,0.00,50.00,140.00,30.00,70.00");
 });
 
 test("with an engine that does not say how far it lowered a STEP, Model learns it the first time it opens the part", async ({ page }) => {
   await openFiles(page, { "low.step": boxSolid([40, 30, 20]), "high.step": boxSolid([40, 30, 20], [100, 0, 50]) }, false);
   expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 0, 140, 30, 20]]);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(canvas(page)).toHaveAttribute("data-solid", "100.00,0.00,50.00,140.00,30.00,70.00");
-  await page.locator("[data-plate-select]").nth(0).click();
+  await plateClick(page, "select");
   await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,0.00,40.00,30.00,20.00");
   expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 50, 140, 30, 70]]);
 });
@@ -175,10 +176,10 @@ test("a STEP re-read that another selection overtook leaves the seat as it was",
     return minZ + 10;
   });
   await page.locator("#tabPrepare").click();
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await page.locator("#stepTol").fill("0.2");
   await arrived;
-  await page.locator("[data-plate-select]").nth(0).click();
+  await plateClick(page, "select");
   release();
   await page.waitForTimeout(300);
   await page.locator("#tabModel").click();
@@ -192,10 +193,10 @@ test("pieces Separated from a raised STEP assembly sit at their own Z in model s
   const assembly = { ...lower, positions: [...lower.positions, ...upper.positions], triangles: [...lower.triangles, ...upper.triangles.map((face) => face + 6)] };
   await openFiles(page, { "base.step": boxSolid([40, 30, 20]), "asm.step": assembly });
   await page.locator("#tabPrepare").click();
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await page.locator("#separateShells").click();
   await expect(page.locator("#objectList .obj")).toHaveCount(3);
-  await page.locator("[data-plate-select]").nth(0).click();
+  await plateClick(page, "select");
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 24000");
   const boxes = Object.values(await contextBoxes(page)).sort((a, b) => a[0]! - b[0]!);
@@ -226,7 +227,7 @@ test("Place moves the open object in model space and leaves the plate and its me
   await expect(canvas(page)).toHaveAttribute("data-solid", "10.00,0.00,0.00,50.00,30.00,20.00");
 
   // The other object, opened, sees the moved one where it now is.
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(canvas(page)).toHaveAttribute("data-solid", "100.00,0.00,0.00,140.00,30.00,20.00");
   expect(Object.values(await contextBoxes(page))).toEqual([[10, 0, 0, 50, 30, 20]]);
 });
@@ -406,12 +407,12 @@ test("Frame in the Objects list frames that object in Model and stays in Model",
   const opening = await restingCamera(page);
   await zoomAndOrbit(page);
   expect(await restingCamera(page)).not.toBe(opening);
-  await page.locator("[data-plate-frame]").first().click();
+  await plateClick(page, "frame");
   expect(await restingCamera(page)).toBe(opening);
   await expect(page.locator("#modelBody")).toBeVisible();
   await expect(page.locator("#prepareBody")).toBeHidden();
 
-  await page.locator("[data-plate-frame]").nth(1).click();
+  await plateClick(page, "frame", 1);
   await expect(canvas(page)).toHaveAttribute("data-solid", "200.00,0.00,0.00,240.00,30.00,20.00");
   const target = (await restingCamera(page)).split(";")[1]!.split(",").map(Number);
   expect(target).toEqual([220, 15, 10]);

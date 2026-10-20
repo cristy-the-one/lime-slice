@@ -183,6 +183,8 @@ function mountToolRail(hooks: ChromeHooks) {
   rail.addEventListener("click", (ev) => {
     const button = (ev.target as Element | null)?.closest<HTMLButtonElement>("button");
     if (!button || button.classList.contains("is-disabled")) return;
+    // Model's tools are the Model code's (its Scale is not the gizmo's).
+    if (button.closest("#railModel, #railModelFoot")) return;
     const id = button.dataset.tool;
     if (id === "move" || id === "rotate" || id === "scale") selectManipulator(id, buttons, hooks);
     if (id === "layflat") document.querySelector<HTMLButtonElement>("#layflat")?.click();
