@@ -1,16 +1,16 @@
-# STEP editing, the kernel crate
+# STEP modeler
 
-`docs/step-modeler-evaluation.md` is the decision. This note is the contract for the first change: a kernel crate that dynamically links Open CASCADE Technology 7.9.2. Model mode, picking, measure, and the edits themselves are later changes. `crates/lime-slice-core` is not part of this work.
+`docs/step-modeler-evaluation.md` is the decision. This note is the contract for Model mode: a kernel crate that dynamically links Open CASCADE Technology 7.9.2, and the window that drives it. `crates/lime-slice-core` is the slicer. It does not link Open CASCADE.
 
-## What this change is
+## What is linked
 
 `crates/lime-model` is the swap point. `Kernel` is the trait. `open()` loads a session.
 
 `OCCT_ROOT` selects the install. When it is set, the build links `TKernel` with `cargo:rustc-link-lib=dylib` and `open()` returns the string from `OCCT_Version_String_Complete()`. When it is unset, the C++ compiler is not run and `open()` returns an error. A static archive of `TKernel` fails the build.
 
-The core, the `lime-slice` CLI, and the Tauri shell do not depend on this crate. Opening the app and slicing a file stay on the path they have today. Truck remains the reader of an unedited STEP file. An edited solid, when that exists, will tessellate into the existing `sourcePos` / `encodeStl` path.
+The core, the `lime-slice` CLI, and the Tauri shell do not depend on this crate. Opening the app and slicing a file stay on the path they have today. Truck remains the reader of an unedited STEP file when the bridge is absent. An edited solid tessellates into the existing `sourcePos` / `encodeStl` path, and the STEP button writes that solid back out (see "STEP write").
 
-`tools/occt/install.py` compiles tag `V7_9_2` as shared libraries. The pin, the archive URL, and the SHA-256 are in `third_party/occt/NOTICE.md`. The toolkit list is the modeling set through `TKMesh` and `TKShHealing`, plus `TKDESTEP` so Model mode can read a solid. CMake pulls `TKXCAF`, `TKV3d`, and `TKService` for that reader. FreeType and OpenGL stay off, and those toolkits build without them. STEP write is still a later change.
+`tools/occt/install.py` compiles tag `V7_9_2` as shared libraries. The pin, the archive URL, and the SHA-256 are in `third_party/occt/NOTICE.md`. The toolkit list is the modeling set through `TKMesh` and `TKShHealing`, plus `TKDESTEP` so Model mode can read and write a solid. CMake pulls `TKXCAF`, `TKV3d`, and `TKService` for that reader. FreeType and OpenGL stay off, and those toolkits build without them.
 
 `tools/occt/stage_bundle.py` copies those shared libraries and the three notice files. The release workflow stages them at `src-tauri/resources/occt` and passes `src-tauri/tauri.occt.json`, which bundles that directory as `occt/`. A local `tauri build` does not pass that overlay and does not need OCCT. The staged directory is gitignored.
 
@@ -52,6 +52,32 @@ Model uses the same shell as the slicer stages: the rail at the far left, a dock
 - **Hole** names its sizes by diameter, as History does: Diameter and Bore diameter. The op still stores the radius (`radius`, `counterboreRadius`), so the MCP and older files are unchanged; the fields show twice the number, and an expression typed in them is kept as the radius's (`(expr) / 2`), and an older radius expression shows doubled (`src/ui/diameter-expr.ts`). Their knobs read Diameter and Bore diameter too.
 - **On the phone** the rail's Model set is one strip along the top that scrolls sideways, with History, then Undo, Redo and STEP at its end. The pick filter sits under it, and the paused chip, the readout and the size warning under that, at most half the width so the handle dock stays clear. The Model panel is the sheet at the bottom: the tool's card, the sketch card, the History sheet, or Parameters while they are opened. Inspect is on the Device tab.
 - **Measured** (Model with Boolean, real engine, dark, 1366 × 768 / 1440 × 900 / 1920 × 1080): the view's clear share went from 0.534 / 0.583 / 0.681 to 0.688 / 0.709 / 0.759 (the mockup asked for 0.682 / 0.705 / 0.756), and with a sketch open at 1366 × 768 from 0.593 to 0.686 (0.682 asked).
+
+## The window, as of 3.1
+
+These are the web UI at 1440×900, dark, against a local engine with the Open CASCADE bridge. The phone frame is 390×844.
+
+![History. A 30 mm box and a through hole, in the left dock.](screenshots/model-history.png)
+
+![A bed sketch. Horizontal and vertical on the rectangle, and a driving length.](screenshots/model-sketch.png)
+
+![Size Z is the expression `height`. The field shows 24 and the ƒ mark.](screenshots/model-parameters.png)
+
+![Section through the middle of a box. The red face is the cut, and View stays open.](screenshots/model-section.png)
+
+![Revolve, 270°.](screenshots/model-revolve.png)
+
+![Loft from a square to a circle.](screenshots/model-loft.png)
+
+![Sweep of a square along a straight path.](screenshots/model-sweep.png)
+
+![Two holes from points on a face sketch.](screenshots/model-holes.png)
+
+![Push/pull. The top face moved 8 mm.](screenshots/model-push.png)
+
+![A fillet typed on a hovered edge.](screenshots/model-fillet.png)
+
+<img alt="Model on a phone. The rail is a strip along the top." src="screenshots/model-phone.png" width="240">
 
 ## Model space
 
