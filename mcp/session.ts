@@ -32,7 +32,8 @@ import { expandOps, type PartDef } from "../src/modeling/macro.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
 import { dropped, jumped, newTree, opLabel, pathTo, redoTarget, reserveId, rootLabel, undoTarget, withChild, withNode, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
-import { meshRecord, parseProject, readParameters, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
+import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
+import { decodeProject, encodeProject } from "../src/project-codec.ts";
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
 import { savedTree, loadedTree, toolFirst, withSavedNames } from "../src/model-tree-file.ts";
 import { addRange, addVolume, emptyOverrides, freshOverrideId, removeRange, removeVolume, type OverrideDocument, type SettingOverride } from "../src/overrides.ts";
@@ -957,9 +958,9 @@ export class Session {
       // A solid never committed has no plate mesh yet: its kernel mesh stands in, so the file opens.
       const doc = this.withKernelMeshes(this.saveDocument());
       this.attachPreview(doc, false);
-      const text = serializeProject(doc);
-      // One write at a time, off the call's path; a failed write is not worth failing a call for.
-      this.autosaveWriting = this.autosaveWriting.then(() => writeAutosave(path, text)).catch(() => undefined);
+      // One write at a time, off the call's path; a failed write is not worth failing a call for. The binary records are
+      // compressed in that chain too, so the call does not wait for them.
+      this.autosaveWriting = this.autosaveWriting.then(async () => writeAutosave(path, await encodeProject(doc))).catch(() => undefined);
     } catch {
       // An autosave that cannot be built is not worth failing a call for either.
     }
@@ -1431,7 +1432,7 @@ export class Session {
   private async projectOpen(path: string): Promise<Record<string, unknown>> {
     const full = resolveRead(path, "lime");
     const text = await readFile(full, "utf8");
-    const parsed = parseProject(text);
+    const parsed = await decodeProject(text);
     if (!parsed.ok) return { ok: false, reason: parsed.message };
     this.remember("Open project");
     await this.forgetObjects();
@@ -1868,7 +1869,7 @@ export class Session {
       const loss = this.lossy(doc);
       if (loss) return { ok: false, reason: loss };
     }
-    const text = serializeProject(doc);
+    const text = await encodeProject(doc);
     writeFileSync(path, text);
     this.sourceProject = structuredClone(doc);
     this.sourceHash = createHash("sha256").update(text).digest("hex");

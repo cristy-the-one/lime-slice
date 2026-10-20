@@ -1317,7 +1317,7 @@ impl<'a> Scan<'a> {
                 placement,
             }]);
         }
-        if version != 2 && version != 3 {
+        if !(2..=4).contains(&version) {
             return None;
         }
         if self.objects.is_empty() {

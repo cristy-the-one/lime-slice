@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import { fakeEngine } from "./engine.ts";
 import { Session } from "./session.ts";
+import { plainDocument } from "../src/project-codec.ts";
 
 const workspace = mkdtempSync(join(tmpdir(), "lime-mcp-review-"));
 process.env.LIME_MCP_WORKSPACE = workspace;
@@ -54,13 +55,13 @@ check(
 const saved = new Session(fakeEngine());
 const imported = await saved.call("mesh_import", { path: cube });
 const firstSave = await saved.call("project_save", { name: "once.lime" });
-const version1 = JSON.parse(readFileSync(String(firstSave.path), "utf8")) as { version?: number; objects?: unknown };
+const version1 = JSON.parse(readFileSync(String(firstSave.path), "utf8")) as { version?: number; objects?: unknown[] };
 const changed = await saved.call("settings_set", { object: imported.object, values: { walls: 7 } });
 const secondSave = await saved.call("project_save", { name: "once.lime" });
 const version2 = JSON.parse(readFileSync(String(secondSave.path), "utf8")) as { version?: number; objects?: { settings?: { walls?: number } }[] };
 check(
-  "a version-1 project keeps new object settings",
-  firstSave.ok === true && version1.version === 1 && version1.objects === undefined && changed.ok === true && secondSave.ok === true && version2.version === 3 && version2.objects?.[0]?.settings?.walls === 7,
+  "a one-object project is saved as a version 4 plate and keeps new object settings",
+  firstSave.ok === true && version1.version === 4 && version1.objects?.length === 1 && changed.ok === true && secondSave.ok === true && version2.version === 4 && version2.objects?.[0]?.settings?.walls === 7,
   JSON.stringify({ version1: version1.version, version2: version2.version, settings: version2.objects?.[0]?.settings }),
 );
 
@@ -70,7 +71,7 @@ const shells = new Session(fakeEngine());
 const shellImport = await shells.call("mesh_import", { path: shellsFile });
 const split = await shells.call("object_split_shells", { object: shellImport.object });
 const shellSave = await shells.call("project_save", { name: "shells.lime" });
-const shellDoc = JSON.parse(readFileSync(String(shellSave.path), "utf8")) as { objects?: { mesh?: { bytesBase64?: string } }[] };
+const shellDoc = await plainDocument(readFileSync(String(shellSave.path), "utf8")) as { objects?: { mesh?: { bytesBase64?: string } }[] };
 const counts = (shellDoc.objects ?? []).map((row) => {
   const bytes = Buffer.from(row.mesh?.bytesBase64 ?? "", "base64");
   return bytes.length >= 84 ? bytes.readUInt32LE(80) : 0;

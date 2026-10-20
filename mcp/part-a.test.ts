@@ -14,6 +14,7 @@ import { DEFAULT_PRESET } from "../src/presets.ts";
 import { serializeSettingsProfile } from "../src/ui/settings-profiles.ts";
 import { fakeEngine, ProtocolError } from "./engine.ts";
 import { Session } from "./session.ts";
+import { plainDocument } from "../src/project-codec.ts";
 
 const workspace = mkdtempSync(join(tmpdir(), "lime-mcp-part-a-"));
 process.env.LIME_MCP_WORKSPACE = workspace;
@@ -113,7 +114,7 @@ const staleExport = await call("gcode_export", { name: "after.gcode", now: "2020
 check("a commit makes the old G-code stale", beforeEdit.ok === true && staleExport.ok === false && staleExport.reason === STALE, JSON.stringify(staleExport));
 
 const saved = await call("project_save", { name: "holed.lime" });
-const file = JSON.parse(readFileSync(String(saved.path), "utf8")) as { version?: number; objects?: { modelTree?: { nodes?: unknown[] }; mesh?: { hash?: string }; brep?: { name?: string; bytesBase64?: string } }[] };
+const file = await plainDocument(readFileSync(String(saved.path), "utf8")) as { version?: number; objects?: { modelTree?: { nodes?: unknown[] }; mesh?: { hash?: string }; brep?: { name?: string; bytesBase64?: string } }[] };
 const savedObject = file.objects?.[0];
 const historyNodes = savedObject?.modelTree?.nodes;
 check(
@@ -121,7 +122,7 @@ check(
   savedObject?.brep?.name?.endsWith(".brep") === true && Buffer.from(savedObject.brep.bytesBase64 ?? "", "base64").toString().startsWith("LIMEBREP "),
   JSON.stringify(savedObject?.brep?.name),
 );
-check("a committed solid saves its mesh and its history", saved.ok === true && file.version === 3 && Array.isArray(historyNodes) && historyNodes.length > 1 && typeof savedObject?.mesh?.hash === "string", JSON.stringify(file).slice(0, 400));
+check("a committed solid saves its mesh and its history", saved.ok === true && file.version === 4 && Array.isArray(historyNodes) && historyNodes.length > 1 && typeof savedObject?.mesh?.hash === "string", JSON.stringify(file).slice(0, 400));
 const again = new Session(engine);
 const reopened = await again.call("project_open", { path: String(saved.path) });
 const reopenedId = (reopened.objects as { object: string }[])[0]?.object;
@@ -289,8 +290,8 @@ const firstProject = await switched.call("mesh_import", { path: fileURLToPath(me
 const savedA = await switched.call("project_save", { name: "a.lime" });
 const slicedA = await switched.call("slice_start", {});
 await switched.call("slice_wait", { job: slicedA.job });
-const docB = JSON.parse(readFileSync(String(savedA.path), "utf8")) as { mesh?: { name?: string } };
-if (docB.mesh) docB.mesh.name = "dragon.stl";
+const docB = JSON.parse(readFileSync(String(savedA.path), "utf8")) as { objects?: { mesh?: { name?: string } }[] };
+if (docB.objects?.[0]?.mesh) docB.objects[0].mesh.name = "dragon.stl";
 writeFileSync(join(workspace, "b.lime"), JSON.stringify(docB));
 const openedB = await switched.call("project_open", { path: join(workspace, "b.lime") });
 const exportB = await switched.call("gcode_export", { name: "b.gcode", now: "2020-01-02T03:04:05.000Z" });
