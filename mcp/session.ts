@@ -888,6 +888,15 @@ export class Session {
     return { ok: false, job: job.handle, reason: `${job.tool}${job.object ? ` on ${job.object}` : ""} is still running in the background as ${job.handle}${at}. Call slice_wait {job:"${job.handle}"} until it is done, or slice_cancel to take it back, then call this again.` };
   }
 
+  /** What the call is doing now, for its progress notifications and its job's wait. */
+  private noteStage(stage: string, fraction?: number): void {
+    const meta = this.callContext.getStore();
+    if (!meta) return;
+    meta.stage = stage;
+    if (fraction !== undefined) meta.fraction = fraction;
+    this.onProgress?.("model", meta.fraction ?? 0, stage, meta.progressToken);
+  }
+
   private async workWait(job: WorkJob, meta: CallMeta | undefined, timeoutS?: number): Promise<Record<string, unknown>> {
     const limitS = typeof timeoutS === "number" && Number.isFinite(timeoutS) ? Math.min(SLICE_WAIT_MAX_S, Math.max(0.05, timeoutS)) : SLICE_WAIT_DEFAULT_S;
     const deadline = Date.now() + limitS * 1000;
@@ -1502,9 +1511,11 @@ export class Session {
     for (const row of rows) if (row.modelTree && row.id) saved.set(row.id, row.modelTree);
     for (const tool of parsed.project.modelTools ?? []) if (!saved.has(tool.id)) saved.set(tool.id, tool.modelTree);
     const historyNotes: string[] = [];
-    for (const id of toolFirst(saved)) {
+    const order = toolFirst(saved);
+    for (const [k, id] of order.entries()) {
       const obj = this.find(id) ?? this.toolsOffPlate.find((row) => row.id === id);
       const tree = saved.get(id);
+      this.noteStage(`Opening history ${k + 1} of ${order.length}`, k / order.length);
       const note = obj && tree ? await this.adoptHistory(obj, tree) : null;
       if (note) historyNotes.push(note);
     }
@@ -1626,9 +1637,16 @@ export class Session {
       const at = stepPlate ? tree.committed : tree.current;
       // A refused seed means the history replays in full: the budget covers every step, as after a restart.
       // --- A9. Count steps inside groups, or one long composite restarts inside the per-node budget. ---
-      const budget = Math.max(this.modelTimeoutMs(), modelSteps(tree) * 2000);
-      const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD, { seed: this.seedOf(obj, tree) }), "open", budget);
+      const steps = modelSteps(tree) - 1;
+      const budget = Math.max(this.modelTimeoutMs(), steps * 2000);
+      const seed = this.seedOf(obj, tree);
+      // --- 3.1 F6. A history with no saved solid to start from replays every step: say so while it runs, and after.
+      const started = Date.now();
+      if (!seed && steps > 0) this.noteStage(`Opening ${shownName(obj.name)}: replaying its ${steps} steps, since this file keeps no solid to start from`);
+      const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD, { seed }), "open", budget);
+      const seconds = Math.round((Date.now() - started) / 1000);
       if (typeof reply.seedRefused === "string") note = `${shownName(obj.name)}: the saved solid did not open (${reply.seedRefused}), so its history was rebuilt.`;
+      else if (!seed && steps > 0 && seconds >= 5) note = `${shownName(obj.name)}: this file keeps no solid in the engine's own format (a project saved before version 3 keeps STEP), so its ${steps} steps were replayed, in ${seconds} s. project_save writes version 3, which opens at once.`;
       const solid = rememberSolid(reply);
       if (solid) obj.solid = solid;
       if (stepPlate && solid && solid.positions.length >= 9) {
@@ -3170,7 +3188,13 @@ export class Session {
       views.push({ camera: label, path, width: drawn.width, height: drawn.height });
       pictures.push(pngImage(drawn.png));
     });
-    const note = { ...(ghost ? { ghost: { colour: "orange", touchesSolid: ghost.touches } } : {}), ...(looks.legend.length ? { colours: looks.legend } : {}) };
+    // --- 3.1 F5. Faces too small to see draw their edges as specks. They are the solid's own: a back cover's lattice
+    // ribs broke through its rounded outer edge by 0.2 mm at every rib end, which read as a drawing fault.
+    const tiny = solidMesh ? obj.solid!.faces.filter((face) => face.areaMm2 < 0.1) : [];
+    const slivers = tiny.length
+      ? { slivers: { count: tiny.length, at: tiny.slice(0, 3).map((face) => applyPose(obj.modelPose, face.centre).map((v) => Math.round(v * 100) / 100)), note: `${tiny.length} face${tiny.length === 1 ? " is" : "s are"} under 0.1 mm², drawn as specks: the solid has them, often where a step breaks through a thin wall. faces_find {nearPoint} at one names it.` } }
+      : {};
+    const note = { ...(ghost ? { ghost: { colour: "orange", touchesSolid: ghost.touches } } : {}), ...(looks.legend.length ? { colours: looks.legend } : {}), ...slivers };
     const body = many ? { ok: true, views, ...note } : { ok: true, ...views[0]!, ...note };
     return input.inline === false ? body : withImages(body, pictures);
   }

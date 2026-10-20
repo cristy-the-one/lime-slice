@@ -311,6 +311,33 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("keepOriginal:false applies only the mirror image", image.ok === true && steps.length === 1 && steps[0]?.origin?.[0] === -8, JSON.stringify(steps));
 }
 
+{
+  // Finding 6: a project whose histories replay from the start says so while it opens, and answers with a job
+  // instead of outrunning the client.
+  const first = new Session(fakeEngine());
+  const part = String((await first.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 })).object);
+  for (const x of [-8, 0, 8]) await first.call("model_apply", { object: part, probe: true, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [x, -1, 19], dx: 2, dy: 2, dz: 3 } });
+  await first.call("model_commit", { object: part });
+  const saved = await first.call("project_save", { name: "replays.lime" });
+  // As a project saved before version 3: no solid in the engine's own format to start from.
+  const { readFileSync, writeFileSync } = await import("node:fs");
+  const doc = JSON.parse(readFileSync(String(saved.path), "utf8")) as { objects: { brep?: unknown }[] };
+  for (const row of doc.objects) delete row.brep;
+  writeFileSync(String(saved.path), JSON.stringify(doc));
+  process.env.LIME_MCP_FAKE_OPEN_MS = "1500";
+  process.env.LIME_MCP_REPLY_S = "0.5";
+  const session = new Session(fakeEngine());
+  const stages: string[] = [];
+  session.onProgress = (_job, _fraction, stage) => stages.push(stage);
+  const early = await session.call("project_open", { path: "replays.lime" });
+  check("an open that replays answers with a job, naming what it does", early.status === "running" && String(early.stage).includes("replaying its 3 steps"), JSON.stringify(early));
+  let done = await session.call("slice_wait", { job: early.job, timeoutS: 10 });
+  for (let round = 0; done.status === "running" && round < 5; round += 1) done = await session.call("slice_wait", { job: early.job, timeoutS: 10 });
+  check("its wait returns the opened project", done.status === "done" && done.ok === true && ids(done).length === 1 && stages.some((stage) => stage.includes("replaying its 3 steps")), JSON.stringify(done));
+  delete process.env.LIME_MCP_FAKE_OPEN_MS;
+  delete process.env.LIME_MCP_REPLY_S;
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

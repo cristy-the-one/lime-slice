@@ -649,6 +649,18 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
     },
     slowing: false,
     modelTree: (body: string): string | Promise<string> => {
+      // A slow whole-history open, as a project with no saved solids replays every step.
+      const slowOpen = Number(process.env.LIME_MCP_FAKE_OPEN_MS ?? 0);
+      if (slowOpen > 0 && !engine.slowing && /"call":"open"/.test(body) && /"nodes":\[\{/.test(body)) {
+        return new Promise((resolve) => setTimeout(resolve, slowOpen)).then(() => {
+          engine.slowing = true;
+          try {
+            return engine.modelTree(body);
+          } finally {
+            engine.slowing = false;
+          }
+        });
+      }
       // A slow kernel for long-call tests: each probe and apply waits this long first.
       const slow = Number(process.env.LIME_MCP_FAKE_MODEL_MS ?? 0);
       if (slow > 0 && !engine.slowing && /"call":"(apply|probe)"/.test(body)) {
