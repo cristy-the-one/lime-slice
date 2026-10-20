@@ -15,6 +15,8 @@ export interface ParameterHooks {
   /** Steps a rebuild would replay, from the earliest. */
   affected(): number;
   rebuild(): void;
+  /** Remembers the open state for this project. Empty uses one shared key. */
+  projectId?(): string;
 }
 
 let hooks: ParameterHooks | null = null;
@@ -27,20 +29,28 @@ export function panelParamMessage(message: string): string {
 /** E3. Parameters sit in the Model dock under History, folded or open as the user left them. */
 const FOLDED_KEY = "lime-slice-model-params-folded";
 
-function readFolded(): boolean {
+function storageKey(): string {
+  const id = hooks?.projectId?.().trim() || "default";
+  return `${FOLDED_KEY}:${id}`;
+}
+
+/** A stored choice wins. With none, an empty table starts collapsed. */
+function readFolded(count: number): boolean {
   try {
-    return localStorage.getItem(FOLDED_KEY) === "1";
+    const stored = localStorage.getItem(storageKey());
+    if (stored === "1") return true;
+    if (stored === "0") return false;
   } catch {
-    return false;
+    return count === 0;
   }
+  return count === 0;
 }
 
 function writeFolded(on: boolean) {
   try {
-    if (on) localStorage.setItem(FOLDED_KEY, "1");
-    else localStorage.removeItem(FOLDED_KEY);
+    localStorage.setItem(storageKey(), on ? "1" : "0");
   } catch {
-    /* blocked storage: the section opens unfolded next time */
+    /* blocked storage: the section follows the empty-table default next time */
   }
 }
 
@@ -66,8 +76,10 @@ export function mountParameters(next: ParameterHooks) {
   document.querySelector("#modelParamsRebuild")?.addEventListener("click", () => hooks?.rebuild());
   document.querySelector("#modelParamsBody")?.addEventListener("input", onInput);
   document.querySelector("#modelParamsBody")?.addEventListener("click", onClick);
-  setFolded(readFolded());
+  setFolded(readFolded(Object.keys(next.table()).length));
   paint(false);
+  const canvas = document.querySelector("#model");
+  if (canvas) new MutationObserver(() => syncSketchVisibility()).observe(canvas, { attributes: true, attributeFilter: ["data-sketch"] });
 }
 
 function setFolded(on: boolean) {
@@ -88,12 +100,28 @@ export function toggleParameters() {
 }
 
 /** The Features menu's Parameters and Ctrl+Alt+P: the Model dock shows, the section opens, and typing goes to it. */
+/** The user asked for the section, so a sketch does not hide it again until the sketch ends. */
+let revealed = false;
+
 export function revealParameters() {
+  revealed = true;
+  const section = document.querySelector<HTMLElement>("#modelParams");
+  if (section) section.hidden = false;
   // Asked for by the user, so the dock opens as their own choice.
   openDock("left");
-  document.querySelector<HTMLElement>("#modelParams")?.setAttribute("data-sheet", "open");
+  section?.setAttribute("data-sheet", "open");
   openParameters(true);
-  document.querySelector<HTMLElement>("#modelParams")?.scrollIntoView({ block: "nearest" });
+  section?.scrollIntoView({ block: "nearest" });
+}
+
+/** While sketching, an unused empty Parameters section stays out of the way. */
+function syncSketchVisibility() {
+  const section = document.querySelector<HTMLElement>("#modelParams");
+  if (!section) return;
+  const sketching = document.querySelector("#model")?.getAttribute("data-sketch") === "editing";
+  if (!sketching) revealed = false;
+  const count = Object.keys(hooks?.table() ?? {}).length;
+  section.hidden = sketching && !revealed && count === 0;
 }
 
 function openParameters(focus: boolean) {

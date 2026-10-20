@@ -192,6 +192,8 @@ Status: done. Headings Create, Shape, Features, Inspect, Frame, and Edit stay vi
 
 ### UX-02 (P1). A disabled control should be quiet, not striped
 
+Status: done. Disabled controls use dim text, a dashed border, and no stripe. Slice and Export keep the stripe only when the part is larger than the bed (`is-error`). The reason tooltip still shows on hover. Screenshots: `after-disabled-stripe.png` (before), `ux02-after-disabled.png`.
+
 - **Seen**: `after-disabled-stripe.png`, `model-history.png`. Disabled buttons get a full-size diagonal stripe:
   Fillet, Chamfer, Undo, Redo, Slice and Export at once. The stripes are the loudest thing on screen when nothing
   can be done.
@@ -283,6 +285,8 @@ Status: done. The HUD anchors to the handle, 16 px along its screen direction, a
   `data-handle-seat` on the canvas, or the existing handle data attributes.
 
 ### UX-07 (P1). The Parameters section shouldn't take a third of the Model panel when it's empty
+
+Status: done. With no parameters the section starts collapsed (`Parameters · 0`), History sits above it, and one click or Ctrl+Alt+P opens it. The fold is stored per project. An empty section hides while a sketch is open; the Features menu and Ctrl+Alt+P still open it. Screenshots: `ux07-before-params.png` (the old expanded empty section), `ux07-after-params.png`.
 
 - **Seen**: every Model screenshot shows "PARAMETERS · 0", empty Name and Value fields, and "Add parameter", even
   while sketching, where it pushes the history down.

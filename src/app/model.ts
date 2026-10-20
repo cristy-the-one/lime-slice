@@ -572,6 +572,7 @@ export function bindModelView() {
     rebuild() {
       void rebuildFromParameters();
     },
+    projectId: () => state.plate.objects.map((object) => object.id).join(",") || "empty",
   });
   noteParametersBuilt();
   // --- E3. Inspect, the right dock in Model. ---

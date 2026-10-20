@@ -137,9 +137,27 @@ test("a tool opens a closed Model panel for itself and closes it again, and leav
   await expect(dock, "an open dock stays open").toBeVisible();
 });
 
+test("an empty Parameters section starts collapsed, and History sits above it", async ({ page }) => {
+  await openModel(page, { width: 1440, height: 900 });
+  await expect(page.locator("#modelParamsCount")).toHaveText("· 0");
+  await expect(page.locator("#modelParamsMain")).toBeHidden();
+  const history = (await page.locator("#modelHistory").boundingBox())!;
+  const params = (await page.locator("#modelParams").boundingBox())!;
+  expect(params.y).toBeGreaterThanOrEqual(history.y + history.height - 4);
+  expect(params.height).toBeLessThan(72);
+  if (process.env.LIME_SHOTS) await page.locator("#leftDock").screenshot({ path: `${process.env.LIME_SHOTS}/ux07-after-params.png` });
+  await page.locator("#modelParamsToggle").click();
+  await expect(page.locator("#modelParamsMain")).toBeVisible();
+  await page.locator("#modelParamsToggle").click();
+  await expect(page.locator("#modelParamsMain")).toBeHidden();
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(page.locator("#model")).toHaveAttribute("data-sketch", "editing");
+  await expect(page.locator("#modelParams"), "an empty Parameters section stays out of a sketch").toBeHidden();
+});
+
 test("Ctrl+Alt+P opens Parameters from anywhere, and folds them from inside", async ({ page }) => {
   await openModel(page, { width: 1440, height: 900 });
-  await page.locator("#modelParamsToggle").click();
   await expect(page.locator("#modelParamsMain")).toBeHidden();
   await page.keyboard.press("Control+b");
   await expect(page.locator("#leftDock")).toBeHidden();

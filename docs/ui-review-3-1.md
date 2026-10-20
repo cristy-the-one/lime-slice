@@ -207,6 +207,12 @@ A feature's status line is a short title. The steps are in How, beside the strip
 
 ![Extrude distance on the arrow, unit inside the field](screenshots/ui-review-3-1/ux05-after-hud.png)
 
+An empty Parameters section starts collapsed, so History sits under the tool card. The header still reads Parameters · 0, and a click opens the table. While a sketch is open and nothing is named, the section hides.
+
+![Parameters open and empty under History](screenshots/ui-review-3-1/ux07-before-params.png)
+
+![Parameters collapsed to one line](screenshots/ui-review-3-1/ux07-after-params.png)
+
 ## Checks
 
 - `npx tsc --noEmit`
