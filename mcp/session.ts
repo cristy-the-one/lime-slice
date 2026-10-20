@@ -4118,6 +4118,10 @@ export class Session {
     const note = probeNote(tool, view);
     // --- A9. A group probe names the step that failed, counting from 1. ---
     const failedStep = view?.phase === "done" && view.ok === false && view.failedStep != null ? { failedStep: view.failedStep } : {};
+    if (baked.op.kind === "shell" && note?.bad && /too thick/.test(note.text)) {
+      const advice = await this.shellAdvice(obj, tree, at, baked.op, budgetMs);
+      return answer({ ok: false, reason: `${note.text} ${advice.text}`, ...(advice.maxMm !== undefined ? { maxMm: advice.maxMm } : {}), ...(advice.where ? { where: advice.where } : {}) });
+    }
     if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}), ...failedStep });
     if (view?.phase === "done" && addsPiece(baked.op as { kind: string; op?: string }, view.measure)) {
       const where = pieceReport(reply, (p) => applyPose(obj.modelPose, p));
@@ -4129,6 +4133,52 @@ export class Session {
     }
     obj.probes.set(probeKey(String(at), baked.op), true);
     return answer({ ok: true, reason: note.text });
+  }
+
+  /**
+   * --- 3.1 F10. Where a shell that is too thick runs out of room, and the thickest wall that fits. Inward offsets of t
+   * from two sides meet where the part is thinner than 2t, so the thinnest places are measured from the solid's mesh;
+   * a curved face of smaller radius than the wall cannot be offset either. The largest wall that fits is found by
+   * halving, a probe each, within about 20 s; the solid does not change.
+   */
+  private async shellAdvice(obj: PlateObject, tree: ModelTree, at: number, op: Extract<ModelOp, { kind: "shell" }>, budgetMs?: number): Promise<{ text: string; maxMm?: number; where?: Record<string, unknown> }> {
+    const t = op.thickness;
+    const parts: string[] = [];
+    let where: Record<string, unknown> | undefined;
+    const solid = obj.solid;
+    const pose = (p: readonly number[]) => applyPose(obj.modelPose, p as [number, number, number]).map((v) => Math.round(v * 100) / 100);
+    if (solid && solid.positions.length >= 9) {
+      const thin = thinWalls(solid.positions, 2 * t);
+      const worst = [...thin.regions].sort((a, b) => a.thinnestMm - b.thinnestMm)[0];
+      if (worst) {
+        where = { thinnestMm: Math.round(worst.thinnestMm * 100) / 100, at: pose(worst.centre), min: pose(worst.min), max: pose(worst.max) };
+        parts.push(`The part is ${where.thinnestMm} mm thick at (${(where.at as number[]).join(", ")}), and a ${t} mm wall needs ${2 * t} mm there.`);
+      }
+      const tight = solid.faces.filter((face) => (face.kind === "cylinder" || face.kind === "sphere" || face.kind === "cone") && typeof face.radiusMm === "number" && face.radiusMm < t).sort((a, b) => a.radiusMm! - b.radiusMm!)[0];
+      if (tight) {
+        where = { ...(where ?? {}), radiusMm: Math.round(tight.radiusMm! * 100) / 100, radiusAt: pose(tight.centre), face: tight.index };
+        parts.push(`Face ${tight.index}, a ${tight.kind} of radius ${where.radiusMm} mm at (${(where.radiusAt as number[]).join(", ")}), is rounder than the wall is thick.`);
+      }
+    }
+    let fits = 0;
+    let fails = t;
+    const until = Date.now() + 20_000;
+    for (let round = 0; round < 6 && Date.now() < until; round += 1) {
+      const trial = Math.round(((fits + fails) / 2) * 100) / 100;
+      if (!(trial > fits) || !(trial < fails)) break;
+      let reply: Record<string, unknown>;
+      try {
+        reply = await this.treeCall(probeRequest(tree.key, at, { ...op, thickness: trial }), "shell", budgetMs);
+      } catch {
+        break;
+      }
+      const view = probeFromBody(reply);
+      if (view?.phase === "done" && view.ok) fits = trial;
+      else fails = trial;
+    }
+    if (fits > 0) parts.push(`A ${fits} mm wall fits.`);
+    else parts.push(`Nothing from ${Math.round((fails) * 100) / 100} mm up fits; try a much thinner wall, or open a face near there.`);
+    return { text: parts.join(" "), ...(fits > 0 ? { maxMm: fits } : {}), ...(where ? { where } : {}) };
   }
 
   /**

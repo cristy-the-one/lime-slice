@@ -694,6 +694,8 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
       if (req.call === "probe") {
         const radius = req.op?.radius ?? 0;
         if (req.op?.kind === "hole" && radius > 8) return JSON.stringify({ ok: false, error: "The hole misses the solid." });
+        // A shell wall over 3 mm does not fit the stand-in's smallest feature.
+        if (req.op?.kind === "shell" && ((req.op as { thickness?: number }).thickness ?? 0) > 3) return JSON.stringify({ ok: false, error: "This wall is too thick for the part's smallest feature." });
         if (!req.preview) return JSON.stringify({ ok: true });
         const prior = kept.get(key) ?? { volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] };
         const shown = remember(`${key}#preview`, applied(prior, req.op), 0);

@@ -248,6 +248,17 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("a batch past 400 steps is refused at the op that passes it", over.ok === false && String((over.failed as { reason?: string } | undefined)?.reason).includes("more than 400 steps") && (over.failed as { index?: number }).index === 2, JSON.stringify(over).slice(0, 300));
 }
 
+{
+  // Finding 10: a shell that is too thick says where the part is too thin for it, and the thickest wall that fits.
+  const session = new Session(fakeEngine());
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const part = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 4 })).object);
+  const thick = await call("model_probe", { object: part, op: { kind: "shell", thickness: 5 } });
+  const where = thick.where as { thinnestMm?: number; at?: number[] } | undefined;
+  check("a refused shell names the thinnest place and its thickness", thick.ok === false && where?.thinnestMm === 4 && Array.isArray(where.at) && String(thick.reason).includes("The part is 4 mm thick at (") && String(thick.reason).includes("a 5 mm wall needs 10 mm there"), JSON.stringify(thick));
+  check("and the thickest wall that fits", typeof thick.maxMm === "number" && thick.maxMm > 2.8 && thick.maxMm <= 3 && String(thick.reason).includes(`A ${thick.maxMm} mm wall fits.`), JSON.stringify(thick));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
