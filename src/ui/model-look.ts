@@ -74,7 +74,24 @@ function togglePanel() {
   const show = panel.hidden;
   panel.hidden = !show;
   open.setAttribute("aria-expanded", show ? "true" : "false");
-  if (show) byId<HTMLInputElement>("#modelSection")?.focus();
+  if (show) {
+    seat(open, panel);
+    byId<HTMLInputElement>("#modelSection")?.focus();
+  }
+}
+
+/** E3. View opens beside the rail, level with its button and on screen; under the button on the phone's strip. */
+function seat(open: HTMLElement, panel: HTMLElement) {
+  const at = open.getBoundingClientRect();
+  const rail = open.closest("#toolRail")?.getBoundingClientRect();
+  if (rail && rail.height > rail.width) {
+    // Beside the rail, or beside a folded group's row when View was opened from it.
+    panel.style.left = `${Math.max(rail.right, at.right) + 6}px`;
+    panel.style.top = `${Math.max(8, Math.min(at.top - 4, window.innerHeight - panel.offsetHeight - 8))}px`;
+  } else {
+    panel.style.top = `${at.bottom + 4}px`;
+    panel.style.left = `${Math.max(8, Math.min(at.left, window.innerWidth - panel.offsetWidth - 8))}px`;
+  }
 }
 
 export function mountModelLook(next: ModelLookView) {

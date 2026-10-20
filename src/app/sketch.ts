@@ -82,6 +82,7 @@ import type { Params } from "../modeling/expr.ts";
 import { parseConstraints } from "../sketch/solve";
 import { workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 import { state } from "./state";
+import { revealDock } from "../ui/dock-reveal.ts";
 import { formatMm } from "../model-plane";
 import {
   buildSketchExtrude,
@@ -678,6 +679,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   // A pointer move publishes. The cards and the Undo buttons are painted only when what they show changes, so a move
   // costs no DOM rebuild and a focused card button keeps its focus.
   let cardsKey = "";
+  /** E3. The dock the live sketch card opened, closed again when the sketch ends. */
+  let releaseCardDock: (() => void) | null = null;
   let historyKey = "";
   /** A card button to focus once the cards are painted: a menu's first item when it opens, its button when it closes. */
   let cardFocus: string[] = [];
@@ -1394,6 +1397,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   function paintCards() {
     if (!cards) return;
+    // E3. The sketch card is in the Model dock: a sketch being chosen or drawn shows the dock, and gives it back after.
+    const live = editor.phase === "choosing" || editor.phase === "editing";
+    if (live) releaseCardDock ??= revealDock("left");
+    else if (releaseCardDock) {
+      releaseCardDock();
+      releaseCardDock = null;
+    }
     const pinned = editor.pinned.filter((item) => item.id !== editor.active && item.name !== "Sketch");
     const key = cardsState(pinned);
     if (key === cardsKey) {

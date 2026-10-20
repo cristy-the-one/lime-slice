@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import { railClick } from "./rail";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -379,7 +381,7 @@ test("an arrow press just before leaving Model does not move the step the plate 
   await expect(page.locator("#prepareBody")).toBeVisible();
   await expect(page.locator("#objectList .obj").first()).toContainText("20 × 20 × 6");
   await expect(page.locator("#modelHistoryTree"), "the arrow's pause ran out").not.toHaveAttribute("aria-busy", "true");
-  await page.locator("#plateDuplicate").click();
+  await plateClick(page, "duplicate");
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
   await expect(page.locator("#objectList .obj").first(), "the plate keeps the step it took on leaving").toContainText("20 × 20 × 6");
 });
@@ -431,25 +433,32 @@ async function longStack(page: Page) {
   await expect(page.locator("#modelFit")).toHaveAttribute("data-over", "1");
 }
 
-/** No two of the panel, History, the chip, and the readout overlap, all sit on the canvas, and the readout shows all its text. */
+/**
+ * E3. The panel and History share the Model dock and the readout and the size warning share the status line: no two of
+ * them overlap, none sits over the view, each stays in its own place, and the readout shows all its text.
+ */
 async function expectStackClear(page: Page) {
   const canvas = (await page.locator("#model").boundingBox())!;
+  const dock = (await page.locator("#leftDock").boundingBox())!;
+  const status = (await page.locator("footer.status").boundingBox())!;
   const parts = new Map<string, Rect>();
-  for (const id of ["#modelPanel", "#modelHistory", "#modelFit", "#modelReadout"]) {
+  for (const id of ["#modelPanel", "#modelHistory", "#modelFitWarn", "#modelReadout"]) {
     const box = (await page.locator(id).isVisible()) ? await page.locator(id).boundingBox() : null;
     if (box) parts.set(id, box);
   }
-  expect([...parts.keys()]).toEqual(expect.arrayContaining(["#modelHistory", "#modelFit", "#modelReadout"]));
+  expect([...parts.keys()]).toEqual(expect.arrayContaining(["#modelHistory", "#modelFitWarn", "#modelReadout"]));
   const list = [...parts];
   for (let i = 0; i < list.length; i += 1) {
-    expect(inside(list[i]![1], canvas), `${list[i]![0]} stays on the canvas`).toBe(true);
-    for (let j = i + 1; j < list.length; j += 1) expect(meets(list[i]![1], list[j]![1]), `${list[i]![0]} clear of ${list[j]![0]}`).toBe(false);
+    const [id, box] = list[i]!;
+    expect(meets(box, canvas), `${id} stays off the view`).toBe(false);
+    expect(inside(box, id === "#modelPanel" || id === "#modelHistory" ? dock : status), `${id} stays in its place`).toBe(true);
+    for (let j = i + 1; j < list.length; j += 1) expect(meets(box, list[j]![1]), `${id} clear of ${list[j]![0]}`).toBe(false);
   }
-  const clipped = await readout(page).evaluate((el) => el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1);
+  const clipped = await readout(page).locator(".model-readout-text").evaluate((el) => el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1);
   expect(clipped, "the readout shows all its text").toBe(false);
 }
 
-test("History, the size chip, and a long readout stack without overlap, on a tall canvas and a short one", async ({ page }) => {
+test("History, the size warning, and a long readout stay clear of each other and of the view, on a tall window and a short one", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openBig(page);
   await longStack(page);
@@ -460,7 +469,8 @@ test("History, the size chip, and a long readout stack without overlap, on a tal
 
   await page.setViewportSize({ width: 1280, height: 640 });
   await expectStackClear(page);
-  await page.locator("#modelToolBoolean").click();
+  // A short window folds the Combine group: its button opens it beside the rail.
+  await railClick(page, "#modelToolBoolean");
   await expect(page.locator("#modelPrim")).toBeVisible();
   await expectStackClear(page);
   const tree = (await page.locator("#modelHistoryTree").boundingBox())!;
@@ -471,7 +481,8 @@ test("History, the size chip, and a long readout stack without overlap, on a tal
   const label = root.locator(".mh-label");
   expect(await label.evaluate((el) => el.scrollWidth > el.clientWidth), "and ellipsized in the row").toBe(true);
   const panel = (await page.locator("#modelHistory").boundingBox())!;
-  expect(panel.width, "without widening the panel").toBeLessThanOrEqual(280.5);
+  // E3. History is the Model dock's width, which a long name does not widen.
+  expect(panel.width, "without widening the panel").toBeLessThanOrEqual((await page.locator("#leftDock").boundingBox())!.width);
 });
 
 test.describe("phone", () => {
@@ -509,7 +520,7 @@ test.describe("phone", () => {
     await page.locator("#modelHistoryOpen").click();
     await expect(rows(page)).toHaveCount(4);
     const sheet = (await page.locator("#modelHistory").boundingBox())!;
-    const fit = (await page.locator("#modelFit").boundingBox())!;
+    const fit = (await page.locator("#modelFitWarn").boundingBox())!;
     const text = (await readout(page).boundingBox())!;
     expect(meets(sheet, fit), "the sheet leaves the size warning").toBe(false);
     expect(meets(sheet, text), "and the readout").toBe(false);
@@ -521,7 +532,7 @@ test.describe("phone", () => {
     await openBig(page, "/?layout=compact");
     await longStack(page);
     const canvas = (await page.locator("#model").boundingBox())!;
-    const fit = (await page.locator("#modelFit").boundingBox())!;
+    const fit = (await page.locator("#modelFitWarn").boundingBox())!;
     const text = (await readout(page).boundingBox())!;
     const grips = ((await page.locator("#model").getAttribute("data-handles")) ?? "").split(" ").filter(Boolean).map((item) => canvas.x + Number(item.split(":")[1]!.split(",")[0]));
     expect(grips.length, "the Boolean tool's dock is up").toBeGreaterThan(0);

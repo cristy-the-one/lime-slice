@@ -33,7 +33,7 @@ test("the prepare scale gizmo stays parked off the part and writes Scale %", asy
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
   await expect(page.locator("#partScale")).toHaveValue("100");
 
-  const scale = page.locator('#toolRail [data-tool="scale"]');
+  const scale = page.locator('#toolRail .tool[data-tool="scale"]');
   await expect(scale).not.toHaveClass(/is-disabled/);
   await expect(scale).not.toHaveAttribute("aria-disabled", "true");
   await scale.click();

@@ -71,8 +71,8 @@ async function drawRectangle(page: Page, at: { x: number; y: number }, width: st
 
 test("a rectangle off the axis revolves, the ring drag sets the angle, and History Edit reopens it", async ({ page }) => {
   const tree = await start(page);
-  const tools = page.locator(".model-tools");
-  expect(await tools.evaluate((bar) => bar.scrollWidth <= bar.clientWidth), "the toolbar fits at 1440").toBe(true);
+  const tools = page.locator("#toolRail");
+  expect(await tools.evaluate((bar) => bar.scrollHeight <= bar.clientHeight + 1), "the toolbar fits at 1440").toBe(true);
   await expect(page.locator("#modelToolRevolve")).toHaveCount(0);
 
   await page.locator("#modelEmptySketch").click();
@@ -88,7 +88,7 @@ test("a rectangle off the axis revolves, the ring drag sets the angle, and Histo
   await expect(canvas).toHaveAttribute("data-revolve-regions", "1");
   await expect(canvas).toHaveAttribute("data-revolve-angle", "360");
   await expect(canvas).toHaveAttribute("data-revolve-mode", "new");
-  expect(await tools.evaluate((bar) => bar.scrollWidth <= bar.clientWidth), "revolve adds no toolbar button").toBe(true);
+  expect(await tools.evaluate((bar) => bar.scrollHeight <= bar.clientHeight + 1), "revolve adds no toolbar button").toBe(true);
 
   const read = async () => Number((await canvas.getAttribute("data-revolve-angle")) ?? "NaN");
   const at = { x: box.x + box.width * 0.4, y: box.y + box.height * 0.55 };

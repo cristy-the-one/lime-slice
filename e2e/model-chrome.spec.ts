@@ -50,8 +50,11 @@ async function openModel(page: Page) {
 test("model mode shows the bed, the outer size, and measure callouts", async ({ page }) => {
   await openModel(page);
   await expect(page.locator("#model")).toHaveAttribute("data-bed", "220x220x250");
-  await expect(page.locator("#measureField")).toBeVisible();
+  // E3. The size is Inspect's, in the right dock, which the estimate opens as it opens Results elsewhere.
+  await page.locator("#timing").click();
+  await expect(page.locator("#rightDock")).toHaveAttribute("aria-label", "Inspect");
   const fit = page.locator("#modelFit");
+  await expect(fit).toBeVisible();
   await expect(fit).toHaveText("20.0 × 20.0 × 10.0 mm");
   await expect(fit).toHaveAttribute("data-over", "0");
   await expect(page.locator("#modelBody .measure")).toContainText("20.0 mm");
@@ -60,7 +63,10 @@ test("model mode shows the bed, the outer size, and measure callouts", async ({ 
   await page.locator("#modelToolScale").click();
   await expect(fit).toHaveText("40.0 × 40.0 × 20.0 mm");
 
-  await page.locator("#measureField").click();
+  // In Model the sizes and the scale bar are a View option; the rail's Measure belongs to the slicer stages.
+  await expect(page.locator("#measureField")).toBeHidden();
+  await page.locator("#modelLookOpen").click();
+  await page.locator("#modelRulers").uncheck();
   await expect(page.locator("#measureField")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#modelBody .measure svg")).toHaveCount(0);
   await expect(fit).toHaveText("40.0 × 40.0 × 20.0 mm");
@@ -70,26 +76,29 @@ function overlaps(a: { x: number; y: number; width: number; height: number }, b:
   return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
 }
 
-test("model tool panels stay clear of the size chip, the measure control, and rail tips", async ({ page }) => {
+test("model tool panels stay clear of the size chip, the view, and rail tips", async ({ page }) => {
+  // Wide enough for the Model dock and Inspect side by side.
+  await page.setViewportSize({ width: 1920, height: 1080 });
   await openModel(page);
+  await page.locator("#timing").click();
   const fit = page.locator("#modelFit");
-  const measure = page.locator("#measureField");
-  const tools = page.locator("#modelBar .model-tools");
-  const rail = page.locator("#toolRail");
-  const measureBox = await measure.boundingBox();
-  const toolsBox = await tools.boundingBox();
-  const railBox = await rail.boundingBox();
-  expect(measureBox && toolsBox && railBox).toBeTruthy();
-  // Measure is a rail button now, off the floating model toolbar.
-  expect(overlaps(measureBox!, toolsBox!)).toBe(false);
-  expect(measureBox!.x + measureBox!.width).toBeLessThanOrEqual(railBox!.x + railBox!.width);
-  expect(measureBox!.x).toBeLessThan(toolsBox!.x);
+  const canvas = page.locator("#model");
+  const railBox = (await page.locator("#toolRail").boundingBox())!;
+  // E3. The tools are the rail's Model set: in the rail, off the view.
+  for (const id of ["#modelToolNew", "#modelToolPull", "#modelToolBoolean", "#modelToolHole", "#modelToolCheck", "#modelUndo"]) {
+    const box = (await page.locator(id).boundingBox())!;
+    expect(box.x + box.width, id).toBeLessThanOrEqual(railBox.x + railBox.width);
+    expect(overlaps(box, (await canvas.boundingBox())!), id).toBe(false);
+  }
 
   await page.locator("#modelToolBoolean").click();
   await expect(page.locator("#modelPanel")).toBeVisible();
   await expect(page.locator("#modelPrim")).toBeVisible();
   const panel = page.locator("#modelPanel");
   const prim = page.locator("#modelPrim");
+  // The panel is the Model dock's, beside the view rather than over it.
+  await expect(page.locator("#leftDock #modelPanel")).toBeVisible();
+  expect(overlaps((await panel.boundingBox())!, (await canvas.boundingBox())!)).toBe(false);
   expect(overlaps((await fit.boundingBox())!, (await panel.boundingBox())!)).toBe(false);
   expect(overlaps((await fit.boundingBox())!, (await prim.boundingBox())!)).toBe(false);
   if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-boolean-panel.png` });
@@ -99,7 +108,7 @@ test("model tool panels stay clear of the size chip, the measure control, and ra
   await expect(page.locator("#modelBlend")).toBeVisible();
   expect(overlaps((await fit.boundingBox())!, (await page.locator("#modelBlend").boundingBox())!)).toBe(false);
   if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-fillet-panel.png` });
-  await page.locator('#toolRail [data-tool="scale"]').hover();
+  await page.locator("#modelToolScale").hover();
   const tip = page.locator(".lime-tip");
   await expect(tip).toBeVisible();
   expect(overlaps((await tip.boundingBox())!, (await panel.boundingBox())!)).toBe(false);

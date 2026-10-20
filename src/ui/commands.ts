@@ -37,8 +37,8 @@ export const COMMANDS: CommandSpec[] = [
   { id: "palette", label: "Command palette", group: "Window", keys: ["Ctrl+K"], typing: true, keywords: "search commands" },
   { id: "help", label: "Shortcut sheet", group: "Window", keys: ["?"], keywords: "help keys" },
   { id: "help-close", label: "Close shortcut sheet", group: "Window", keys: ["Esc", "?"], when: "help", typing: true, show: "none" },
-  { id: "panel-left", label: "Toggle settings panel", group: "Window", keys: ["Ctrl+B"], target: "#leftToggle", keywords: "left collapse dock" },
-  { id: "panel-right", label: "Toggle results panel", group: "Window", keys: ["Ctrl+Alt+B"], target: "#timing", keywords: "right collapse estimate dock" },
+  { id: "panel-left", label: "Toggle settings panel", group: "Window", keys: ["Ctrl+B"], target: "#leftToggle", keywords: "left collapse dock model" },
+  { id: "panel-right", label: "Toggle results panel", group: "Window", keys: ["Ctrl+Alt+B"], target: "#timing", keywords: "right collapse estimate dock inspect" },
   { id: "printer-pick", label: "Printer, filament and nozzle", group: "File", keywords: "machine chip change" },
   { id: "printer-edit", label: "Printers and filaments", group: "File", keywords: "machine library edit bed flow advance" },
   { id: "new-project", label: "New project", group: "File", keys: ["Ctrl+N"], typing: true, keywords: "untitled blank document" },
@@ -78,8 +78,8 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-hole", label: "Hole", group: "Model", keys: ["H"], when: "model", target: "#modelToolHole", keywords: "drill" },
   { id: "model-features", label: "Features", group: "Model", when: "model", target: "#modelToolFeatures", keywords: "pocket boss texture array ribs text" },
   // --- A4 pattern and mirror. No shortcut: P is Push/Pull, H is Hole, Shift+P is Place. ---
-  { id: "model-pattern", label: "Pattern", group: "Model", when: "model", target: "#modelMenuPattern", keywords: "repeat linear polar path copy steps" },
-  { id: "model-mirror", label: "Mirror", group: "Model", when: "model", target: "#modelMenuMirror", keywords: "reflect flip plane" },
+  { id: "model-pattern", label: "Pattern", group: "Model", when: "model", target: "#modelToolPattern", keywords: "repeat linear polar path copy steps" },
+  { id: "model-mirror", label: "Mirror", group: "Model", when: "model", target: "#modelToolMirror", keywords: "reflect flip plane" },
   // --- A2 shell ---
   { id: "model-shell", label: "Shell", group: "Model", when: "model", target: "#modelToolShell", keywords: "hollow wall thickness open face" },
   { id: "model-scale", label: "Scale solid", group: "Model", keys: ["X"], when: "model", target: "#modelToolScale", keywords: "factor" },

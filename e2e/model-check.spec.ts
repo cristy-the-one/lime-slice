@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree } from "./model-tree-mock";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -137,12 +138,12 @@ test("a Check asked for from Prepare does not open on a later visit once Model w
     await route.fallback();
   };
   await page.route("**/api/model/tree", slow);
-  await page.locator("[data-plate-check]").nth(1).click();
+  await plateClick(page, "check", 1);
   await expect(page.locator("#tabModel")).toHaveAttribute("aria-selected", "true");
   await page.locator("#tabPrepare").click();
   await page.waitForTimeout(2500);
   await page.unroute("**/api/model/tree", slow);
-  await page.locator("[data-plate-select]").first().click();
+  await plateClick(page, "select");
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume");
   await page.waitForTimeout(500);

@@ -1,3 +1,4 @@
+import { installDocks } from "./dock-reveal";
 import { ChevronLeft, ChevronRight, createElement } from "lucide";
 import {
   dockMode,
@@ -25,6 +26,16 @@ const LAST_KEY = "lime-slice-dock-last";
 let fitting = false;
 /** Drawers (961–1200 px) start closed each visit and are not stored, so a narrow window never rewrites the docks. */
 const drawerOpen: Record<DockSide, boolean> = { left: false, right: false };
+/** E3. A dock a Model tool opened for its panel: shown for now, not remembered, and closed again with the tool. */
+const revealed: Record<DockSide, boolean> = { left: false, right: false };
+/**
+ * E3. Who holds each dock open for now (a tool's card, the sketch card): the last to let go closes it, the way it was
+ * opened. A user's own toggle, or leaving Model, ends the hold; `generation` turns older release functions into no-ops.
+ */
+const holds: Record<DockSide, { count: number; how: "dock" | "drawer" | "stacked" | null; generation: number }> = {
+  left: { count: 0, how: null, generation: 0 },
+  right: { count: 0, how: null, generation: 0 },
+};
 let shownMode: DockMode | "compact" | null = null;
 
 function mode(): DockMode | "compact" {
@@ -56,6 +67,7 @@ function storedWidth(side: DockSide): number | null {
 
 /** Whether the user wants this dock open, before the window's room is counted. */
 function wantsOpen(side: DockSide): boolean {
+  if (revealed[side]) return true;
   const stored = read(CLOSED_KEY[side]);
   if (stored === "1") return false;
   if (stored === "0") return true;
@@ -83,6 +95,7 @@ export function toggleDock(side: DockSide) {
   if (!ws || compact()) return;
   // A narrow window stacks a dock over the stage on demand; the top bar's Settings and Results buttons do the same.
   if (mode() === "narrow") {
+    dropHold(side);
     ws.classList.toggle(side === "left" ? "show-left" : "show-right");
     paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
     return;
@@ -90,7 +103,85 @@ export function toggleDock(side: DockSide) {
   setDock(side, !dockShown(side));
 }
 
+/**
+ * E3. Show a dock for something that needs it now, as a Model tool needs its panel: a closed dock opens without the
+ * choice being remembered (a drawer opens over the view). The returned function closes it again, unless the user
+ * opened or closed that dock in the meantime. A dock already shown, or the phone layout, is left alone.
+ */
+export function revealDock(side: DockSide): () => void {
+  if (compact()) return () => {};
+  const hold = holds[side];
+  if (hold.count === 0) {
+    const ws = workspace();
+    const stacked = side === "left" ? "show-left" : "show-right";
+    const now = mode();
+    // A dock already on screen is the user's: nothing to give back.
+    if (!ws || (now === "narrow" ? ws.classList.contains(stacked) : dockShown(side))) return () => {};
+    hold.how = now === "narrow" ? "stacked" : now === "drawer" ? "drawer" : "dock";
+    if (hold.how === "stacked") {
+      // A narrow window stacks the dock over the stage, as its top bar button does.
+      ws.classList.add(stacked);
+      paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
+      window.dispatchEvent(new Event("resize"));
+    } else {
+      if (hold.how === "drawer") {
+        drawerOpen[side] = true;
+        drawerOpen[side === "left" ? "right" : "left"] = false;
+      }
+      revealed[side] = true;
+      applyFit();
+    }
+  }
+  hold.count += 1;
+  const generation = hold.generation;
+  let released = false;
+  return () => {
+    if (released || hold.generation !== generation) return;
+    released = true;
+    hold.count -= 1;
+    if (hold.count === 0) endHold(side);
+  };
+}
+
+/** Close a dock its holders opened, the way it was opened. */
+function endHold(side: DockSide) {
+  const hold = holds[side];
+  const how = hold.how;
+  hold.count = 0;
+  hold.how = null;
+  hold.generation += 1;
+  revealed[side] = false;
+  const ws = workspace();
+  if (how === "stacked") {
+    const stacked = side === "left" ? "show-left" : "show-right";
+    if (ws?.classList.contains(stacked)) {
+      ws.classList.remove(stacked);
+      paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
+      window.dispatchEvent(new Event("resize"));
+    }
+    return;
+  }
+  if (how === "drawer" && mode() === "drawer") drawerOpen[side] = false;
+  if (how) applyFit();
+}
+
+/** Leaving Model: a dock its tools held open goes back to the user's choice. */
+export function endReveals() {
+  for (const side of ["left", "right"] as const) if (holds[side].count > 0) endHold(side);
+}
+
+/** The user took the dock: its holders no longer close it. */
+function dropHold(side: DockSide) {
+  const hold = holds[side];
+  hold.count = 0;
+  hold.how = null;
+  hold.generation += 1;
+  revealed[side] = false;
+}
+
 export function setDock(side: DockSide, open: boolean) {
+  // The user's own choice ends a reveal: the dock is theirs again.
+  dropHold(side);
   const dock = document.querySelector(DOCK_ID[side]);
   const hadFocus = !!dock?.contains(document.activeElement);
   const other: DockSide = side === "left" ? "right" : "left";
@@ -115,6 +206,8 @@ function bindDrawerEscape(side: DockSide) {
   document.querySelector(DOCK_ID[side])?.addEventListener("keydown", (ev) => {
     const e = ev as KeyboardEvent;
     if (e.key !== "Escape" || e.defaultPrevented || mode() !== "drawer" || !drawerOpen[side]) return;
+    // E3. In Model, Esc first ends what is open there (a tool, the Features menu, a sketch); only then the drawer.
+    if (document.documentElement.dataset.stage === "model" && document.querySelector('#modelBar[data-tool], #modelFeatureMenu:not([hidden]), #model:is([data-sketch="editing"], [data-sketch="choosing"])')) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest("textarea, select, [contenteditable=true], input:not([type=checkbox]):not([type=radio]):not([type=range])")) return;
     e.preventDefault();
@@ -129,6 +222,7 @@ function lastOpened(): DockSide {
 export function mountSplitters() {
   const ws = workspace();
   if (!ws || ws.querySelector(".splitter")) return;
+  installDocks({ reveal: revealDock, open: (side) => setDock(side, true) });
   const handles = { left: mountHandle(ws, "left"), right: mountHandle(ws, "right") };
   for (const side of ["left", "right"] as const) {
     const close = document.querySelector(`${DOCK_ID[side]} .dock-close`);
@@ -205,7 +299,8 @@ function currentFit(): DockFit {
       rightOpen,
       leftDesired: storedWidth("left"),
       rightDesired: storedWidth("right"),
-      last: lastOpened(),
+      // A revealed dock stays when both cannot: it is the one the open tool needs.
+      last: revealed.left ? "left" : revealed.right ? "right" : lastOpened(),
     });
   if (fit) return fit;
   return { left: leftOpen ? (storedWidth("left") ?? -1) : 0, right: rightOpen ? (storedWidth("right") ?? -1) : 0 };
@@ -260,7 +355,12 @@ function paintDrawerHint(show: boolean) {
   if (hint && hint.hidden === show) hint.hidden = !show;
 }
 
+let rightWasShown = false;
+
 function paintToggles(leftShown: boolean, rightShown: boolean) {
   document.querySelector("#leftToggle")?.setAttribute("aria-expanded", String(leftShown));
   document.querySelector("#timing")?.setAttribute("aria-expanded", String(rightShown));
+  // E3. Inspect fills its rows only while it is on screen: it catches up when it comes back.
+  if (rightShown && !rightWasShown) queueMicrotask(() => window.dispatchEvent(new Event("lime-inspect")));
+  rightWasShown = rightShown;
 }

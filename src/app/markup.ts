@@ -75,6 +75,109 @@ export function mountMarkup(root: HTMLElement) {
     </header>
     <div class="banner-rail" id="banner"></div>
     <div class="workspace">
+      <!-- E3. The Model tools: chrome.ts moves this set into the rail. A group folds into one flyout button when the window is too short for it. -->
+      <div class="rail-set rail-model" id="railModel" data-for="model" role="group" aria-label="Model tools" data-model-ui>
+        <div class="rail-group" data-group="create" role="group" aria-label="Create">
+          <span class="rail-caption" aria-hidden="true">Create</span>
+          <div class="rail-tools">
+            <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="New solid: a box, cylinder, cone, or another primitive">New solid</button>
+            <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
+            <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. The drawing tools are in the sketch card.">Sketch</button>
+          </div>
+        </div>
+        <div class="rail-group" data-group="modify" data-solid-only role="group" aria-label="Modify">
+          <div class="rail-sep"></div>
+          <span class="rail-caption" aria-hidden="true">Modify</span>
+          <div class="rail-tools">
+            <!-- P1: Push/Pull. P. Also the gesture when no other model tool is open. -->
+            <button class="model-tool" id="modelToolPull" type="button" data-tool="pushpull" aria-pressed="false" data-tip="Push/Pull: move a face. Hold Alt to add or cut material on that face only">Push/Pull</button>
+            <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Fillet: round every selected edge in one step">Fillet</button>
+            <button class="model-tool" id="modelToolChamfer" type="button" data-tool="chamfer" aria-pressed="false" data-tip="Chamfer: bevel every selected edge in one step">Chamfer</button>
+            <!-- A2 shell -->
+            <button class="model-tool" id="modelToolShell" type="button" data-tool="shell" aria-pressed="false" data-tip="Shell: hollow the solid to a wall thickness, with picked faces open">Shell</button>
+            <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split along X, Y, Z, or a picked flat face, and tilt the plane">Split</button>
+            <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
+          </div>
+        </div>
+        <div class="rail-group" data-group="combine" data-solid-only role="group" aria-label="Combine">
+          <div class="rail-sep"></div>
+          <span class="rail-caption" aria-hidden="true">Combine</span>
+          <div class="rail-tools">
+            <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Boolean: fuse, cut, or intersect a primitive or another object on the plate">Boolean</button>
+            <!-- --- A4 pattern and mirror --- -->
+            <button class="model-tool" id="modelToolPattern" type="button" data-tool="pattern" aria-pressed="false" data-tip="Pattern: repeat history steps in a line, around an axis, or along a path">Pattern</button>
+            <button class="model-tool" id="modelToolMirror" type="button" data-tool="mirror" aria-pressed="false" data-tip="Mirror: mirror history steps across X, Y, Z, or a picked flat face">Mirror</button>
+          </div>
+        </div>
+        <div class="rail-group" data-group="feature" data-solid-only role="group" aria-label="Feature">
+          <div class="rail-sep"></div>
+          <span class="rail-caption" aria-hidden="true">Feature</span>
+          <div class="rail-tools">
+            <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Hole: cut a cylinder into the picked face, or straight down">Hole</button>
+            <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
+            <div class="model-feature" id="modelFeature">
+              <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
+              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters"></button>
+              <div class="model-feature-menu" id="modelFeatureMenu" role="menu" aria-label="Features" hidden>
+                <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="texture">Texture</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="array">Array</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="ribs">Ribs</button>
+                <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
+                <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
+                <button id="modelMenuParameters" type="button" role="menuitem">Parameters</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="rail-group" data-group="inspect" role="group" aria-label="Inspect">
+          <div class="rail-sep"></div>
+          <span class="rail-caption" aria-hidden="true">Inspect</span>
+          <div class="rail-tools">
+            <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" data-solid-only aria-pressed="false" data-tip="Measure: drag two points on the solid and read the distance">Measure</button>
+            <!-- --- A7 model check --- also for a mesh, so not solid-only. -->
+            <button class="model-tool" id="modelToolCheck" type="button" data-tool="check" aria-pressed="false" data-tip="Check: overhangs, ceilings, islands, thin walls, and whether it fits the build volume">Check</button>
+            <!-- --- A10. View: section, colour by step, the bed, the sizes. --- -->
+            <button class="model-look-open" id="modelLookOpen" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelLookPanel" data-tip="View: section, colour by step, the bed">View</button>
+          </div>
+        </div>
+        <div class="rail-group" data-group="frame" data-solid-only role="group" aria-label="Frame">
+          <div class="rail-sep"></div>
+          <span class="rail-caption" aria-hidden="true">Frame</span>
+          <div class="rail-tools">
+            <button class="model-tool" id="modelToolPlace" type="button" data-tool="place" aria-pressed="false" data-tip="Place: move and turn this object among the others. The plate stays as it is">Place</button>
+            <button class="model-tool" id="modelToolWorkplane" type="button" data-tool="workplane" aria-pressed="false" data-tip="Workplane: the U, V, W frame Hole, Boolean, and Split are typed in">Workplane</button>
+          </div>
+        </div>
+        <!-- The phone's History sheet. The desktop shows History in the Model dock. -->
+        <button class="model-tool" id="modelHistoryOpen" type="button" data-solid-only aria-controls="modelHistory" aria-expanded="false" data-tip="History">History</button>
+      </div>
+      <!-- The rail foot's Model buttons: chrome.ts moves them above the dock toggle. -->
+      <div class="rail-set rail-model-foot" id="railModelFoot" data-for="model" role="group" aria-label="Model history and export" data-model-ui>
+        <button class="model-tool" id="modelUndo" type="button" data-solid-only disabled data-tip="Undo the last solid edit">Undo</button>
+        <button class="model-tool" id="modelRedo" type="button" data-solid-only disabled data-tip="Redo the last solid edit">Redo</button>
+        <button class="model-tool" id="modelStep" type="button" data-solid-only data-tip="Write this solid as AP214 STEP">STEP</button>
+        <div class="rail-sep"></div>
+      </div>
+      <div class="rail-fly model-look-panel" id="modelLookPanel" role="dialog" aria-label="View" data-model-ui hidden>
+        <h3>View</h3>
+        <button class="btn model-look-toggle" id="modelResetView" type="button" data-tip="Reset view. Shift: every object">Reset view</button>
+        <label class="model-keep"><input id="modelSection" type="checkbox"> Section</label>
+        <div class="model-look-axis" id="modelSectionAxis" role="group" aria-label="Section plane">
+          <button type="button" data-axis="x" aria-pressed="false">X</button>
+          <button type="button" data-axis="y" aria-pressed="false">Y</button>
+          <button type="button" data-axis="z" aria-pressed="true">Z</button>
+          <button type="button" data-axis="face" aria-pressed="false">Face</button>
+        </div>
+        <label class="model-look-offset">Offset <input id="modelSectionOffset" type="number" step="0.1" value="0" aria-label="Section offset"></label>
+        <label class="model-keep"><input id="modelSectionFlip" type="checkbox"> Flip</label>
+        <label class="model-keep"><input id="modelColourSteps" type="checkbox"> Colour by step</label>
+        <p class="model-note" id="modelSectionNote" hidden></p>
+        <hr />
+        <button class="btn model-look-toggle" id="modelBedToggle" type="button" aria-pressed="true" data-tip="Show the bed and build volume for size">Bed and build volume</button>
+        <label class="model-keep"><input id="modelRulers" type="checkbox"> Sizes and scale bar</label>
+      </div>
       <div class="rail-fly" id="flyColor" role="dialog" aria-label="Color by" hidden>
         <label class="fly-field">Color by
           <select id="colorBy" aria-label="Color by">
@@ -97,6 +200,277 @@ export function mountMarkup(root: HTMLElement) {
       <aside class="dock left" id="leftDock" aria-label="Settings">
         <div class="dock-head"><h2>Settings</h2><button class="btn ghost dock-close" type="button" aria-label="Collapse settings" aria-controls="leftDock"></button></div>
         <div class="panel" id="left"><div id="leftBody"></div></div>
+        <!-- E3. Model's side of the dock: the open tool on top with Cancel and Apply pinned, the sketch card, History, Parameters. -->
+        <div class="model-dock" id="modelDock" data-model-ui>
+          <section class="model-panel" id="modelPanel" aria-labelledby="modelPanelTitle" hidden>
+            <div class="model-panel-head">
+              <h3 class="model-panel-title" id="modelPanelTitle"></h3>
+              <h3 class="model-edit-head" id="modelEditHead" hidden></h3>
+              <kbd class="model-panel-key" aria-hidden="true">Esc</kbd>
+            </div>
+            <div class="model-panel-body" id="modelPanelBody">
+              <div class="modes model-plane-modes" id="modelWpModes" data-for="workplane" role="group" aria-label="Workplane">
+                <button class="btn mode on" id="modelWpGlobal" type="button" data-wp="global" aria-pressed="true" data-tip="Model space: U is X, V is Y, W is Z">Global</button>
+                <button class="btn mode" id="modelWpBed" type="button" data-wp="bed" aria-pressed="false" data-tip="Under the middle of the part, W up">Bed</button>
+                <button class="btn mode" id="modelWpFace" type="button" data-wp="face" aria-pressed="false" data-tip="On a picked flat face, W out of it">Face</button>
+              </div>
+              <!-- A5: edges a step made. Picked is today's fillet; A step takes every edge that history row made. -->
+              <div class="modes" id="modelEdgeModes" data-for="fillet chamfer" role="group" aria-label="Edges">
+                <button class="btn mode on" id="modelEdgesPicked" type="button" data-edge-mode="picked" aria-pressed="true">Picked</button>
+                <button class="btn mode" id="modelEdgesStep" type="button" data-edge-mode="step" aria-pressed="false" data-tip="Every sharp edge a history step made that is still on this solid">A step</button>
+              </div>
+              <div class="modes model-plane-modes" id="modelPlaneModes" data-for="split" role="group" aria-label="Plane">
+                <button class="btn mode" id="modelSplitX" type="button" data-plane="x" aria-pressed="false" data-tip="Cut square to X">X</button>
+                <button class="btn mode" id="modelSplitY" type="button" data-plane="y" aria-pressed="false" data-tip="Cut square to Y">Y</button>
+                <button class="btn mode on" id="modelSplitZ" type="button" data-plane="z" aria-pressed="true" data-tip="Cut square to Z">Z</button>
+                <button class="btn mode" id="modelSplitFace" type="button" data-plane="face" aria-pressed="false" data-tip="Cut parallel to a picked flat face">Face</button>
+              </div>
+              <div class="model-prims" id="modelPrim" data-for="boolean create" role="radiogroup" aria-label="Primitive">${PRIMITIVES.map(
+                (entry, i) => `<button class="model-prim" type="button" role="radio" data-kind="${entry.kind}" aria-label="${entry.label}" data-tip="${entry.label}" aria-checked="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${entry.label}</button>`,
+              ).join("")}<button class="model-prim" id="modelWithObject" type="button" role="radio" data-kind="object" data-for="boolean" aria-label="Another object" data-tip="Another object on the plate: a split piece, an import, or a new solid" aria-checked="false" tabindex="-1">Object</button></div>
+              <div class="model-objects" id="modelObjects" data-for="boolean" data-with="object" role="radiogroup" aria-label="Tool object"></div>
+              <div class="model-fields">
+                <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Size X</span><input id="modelDx" type="number" step="0.1" value="10" aria-label="Size x"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Size Y</span><input id="modelDy" type="number" step="0.1" value="10" aria-label="Size y"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Size Z</span><input id="modelDz" type="number" step="0.1" value="10" aria-label="Size z"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="wedge" data-snap="1"><span class="scrub-label" data-scrub>Top X</span><input id="modelTopX" type="number" step="0.1" min="0" value="3" aria-label="Top face length along x"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="cylinder sphere cone torus tube" data-snap="1"><span class="scrub-label" id="modelRadiusLabel" data-scrub>Radius</span><input id="modelRadius" type="number" step="0.1" min="0" value="5" aria-label="Radius"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="cone" data-snap="1"><span class="scrub-label" data-scrub>Top radius</span><input id="modelTopR" type="number" step="0.1" min="0" value="2" aria-label="Top radius"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="torus" data-snap="1"><span class="scrub-label" data-scrub>Tube radius</span><input id="modelTube" type="number" step="0.1" min="0" value="1.5" aria-label="Tube radius"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="tube" data-snap="1"><span class="scrub-label" data-scrub>Inner radius</span><input id="modelInnerR" type="number" step="0.1" min="0" value="3" aria-label="Inner radius"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="polygon" data-snap="1"><span class="scrub-label" data-scrub>Sides</span><input id="modelSides" type="number" step="1" min="3" max="64" value="6" data-whole aria-label="Sides"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="polygon" data-snap="1"><span class="scrub-label" id="modelAcrossLabel" data-scrub>Across flats</span><input id="modelAcross" type="number" step="0.1" min="0" value="10" aria-label="Width across flats"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="cylinder cone polygon tube" data-snap="1"><span class="scrub-label" data-scrub>Height</span><input id="modelHeight" type="number" step="0.1" min="0" value="10" aria-label="Height"></label>
+                <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
+                <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
+                <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
+                <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
+                <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
+                <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
+                <label data-for="split" data-snap="1"><span class="scrub-label" id="modelPlaneLabel" data-scrub>Plane Z</span><input id="modelPlane" type="number" step="any" value="5" aria-label="Split plane Z, mm"></label>
+                <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt A, degrees"></label>
+                <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt B, degrees"></label>
+                <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
+                <!-- P1: the distance, typed. A drag writes the same field. -->
+                <label data-for="pushpull" data-snap="1"><span class="scrub-label" data-scrub>Distance</span><input id="modelPull" type="number" step="0.1" value="0" aria-label="Push or pull distance, mm"></label>
+                <label id="modelPullDiameterRow" hidden><span>Diameter</span><input id="modelPullDiameter" type="number" step="0.1" min="0" aria-label="Cylinder diameter, mm"></label>
+                <!-- A5: the step, by its row or by its number. The number has no data-for, so the drag checklist stays on Size. -->
+                <label data-for="fillet chamfer" data-when="step" data-wide><span>Step</span><select id="modelEdgeStep" aria-label="History step"></select></label>
+                <label data-when="step" data-snap="1"><span class="scrub-label" data-scrub>Step number</span><input id="modelEdgeNode" type="number" step="1" min="0" value="0" data-whole aria-label="Step number"></label>
+                <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Diameter</span><input id="modelHoleR" type="number" step="0.1" min="0" value="4" aria-label="Hole diameter" data-diameter></label>
+                <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelHoleD" type="number" step="0.1" min="0" value="12" aria-label="Hole depth"></label>
+                <label data-for="hole"><span class="scrub-label">Screw</span><select id="modelScrew" aria-label="Screw size: a clearance hole through, counterbored for a socket head" data-tip="A clearance hole through, counterbored for a socket head cap screw"><option value="" disabled>Custom</option>${SCREWS.map((screw) => `<option value="${screw.name}">${screw.name}</option>`).join("")}</select></label>
+                <label data-for="hole" data-bore data-snap="1"><span class="scrub-label" data-scrub>Bore diameter</span><input id="modelBoreR" type="number" step="0.1" min="0" value="8" aria-label="Counterbore diameter" data-diameter></label>
+                <label data-for="hole" data-bore data-snap="1"><span class="scrub-label" data-scrub>Bore depth</span><input id="modelBoreD" type="number" step="0.1" min="0" value="3" aria-label="Counterbore depth"></label>
+                <!-- A2 shell -->
+                <label data-for="shell" data-snap="1"><span class="scrub-label" data-scrub>Thickness</span><input id="modelShell" type="number" step="0.1" min="0.05" value="1" aria-label="Wall thickness"></label>
+                <label data-for="scale" data-snap="0.5"><span class="scrub-label" data-scrub>Factor</span><input id="modelFactor" type="number" step="0.1" min="0.1" max="20" value="2" aria-label="Uniform scale"></label>
+                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A X</span><input id="modelAx" type="number" step="0.1" value="0" aria-label="Point A x"></label>
+                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A Y</span><input id="modelAy" type="number" step="0.1" value="0" aria-label="Point A y"></label>
+                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A Z</span><input id="modelAz" type="number" step="0.1" value="0" aria-label="Point A z"></label>
+                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B X</span><input id="modelBx" type="number" step="0.1" value="0" aria-label="Point B x"></label>
+                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B Y</span><input id="modelBy" type="number" step="0.1" value="0" aria-label="Point B y"></label>
+                <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B Z</span><input id="modelBz" type="number" step="0.1" value="0" aria-label="Point B z"></label>
+                <label data-for="place" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelPlaceX" type="number" step="0.1" value="0" aria-label="Move in model space x"></label>
+                <label data-for="place" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelPlaceY" type="number" step="0.1" value="0" aria-label="Move in model space y"></label>
+                <label data-for="place" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelPlaceZ" type="number" step="0.1" value="0" aria-label="Move in model space z"></label>
+                <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelPlaceRx" type="number" step="1" value="0" aria-label="Turn in model space about x, degrees"></label>
+                <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelPlaceRy" type="number" step="1" value="0" aria-label="Turn in model space about y, degrees"></label>
+                <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelPlaceRz" type="number" step="1" value="0" aria-label="Turn in model space about z, degrees"></label>
+                <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelWpX" type="number" step="0.1" value="0" aria-label="Workplane origin, model x"></label>
+                <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelWpY" type="number" step="0.1" value="0" aria-label="Workplane origin, model y"></label>
+                <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelWpZ" type="number" step="0.1" value="0" aria-label="Workplane origin, model z"></label>
+                <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelWpRx" type="number" step="1" value="0" aria-label="Turn the workplane about model x, degrees"></label>
+                <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelWpRy" type="number" step="1" value="0" aria-label="Turn the workplane about model y, degrees"></label>
+                <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelWpRz" type="number" step="1" value="0" aria-label="Turn the workplane about model z, degrees"></label>
+                <!-- --- A7 model check --- -->
+                <label data-for="check" data-snap="0.05"><span class="scrub-label" data-scrub>Thin wall</span><input id="modelThin" type="number" step="0.05" min="0.05" max="20" value="0.8" aria-label="Thin wall, mm"></label>
+                <!-- A3 composite features. Each number is one line: the drag checklist reads it that way. -->
+                <label data-for="pocket boss" data-shape="rect arch" data-snap="1" data-tip="U size."><span class="scrub-label" data-scrub>Width</span><input id="modelFeatW" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="U size"></label>
+                <label data-for="pocket boss" data-shape="rect arch" data-snap="1" data-tip="V size."><span class="scrub-label" data-scrub>Height</span><input id="modelFeatH" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="V size"></label>
+                <label data-for="pocket boss" data-shape="circle" data-snap="1" data-tip="Circle."><span class="scrub-label" data-scrub>Diameter</span><input id="modelFeatDia" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="Circle"></label>
+                <label data-for="pocket boss texture array ribs text" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelFeatDepth" type="number" step="0.1" min="0.1" max="1000" value="2" aria-label="Depth"></label>
+                <label data-for="pocket boss text" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>U</span><input id="modelFeatU" type="number" step="0.1" value="0" aria-label="Position along U"></label>
+                <label data-for="pocket boss text" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>V</span><input id="modelFeatV" type="number" step="0.1" value="0" aria-label="Position along V"></label>
+                <label data-for="pocket" data-snap="1" data-tip="Count."><span class="scrub-label" data-scrub>Bars across</span><input id="modelFeatBarsV" type="number" step="1" min="0" max="20" value="0" data-whole aria-label="Vertical bars"></label>
+                <label data-for="pocket" data-snap="1" data-tip="Count."><span class="scrub-label" data-scrub>Bars along</span><input id="modelFeatBarsH" type="number" step="1" min="0" max="20" value="0" data-whole aria-label="Horizontal bars"></label>
+                <label data-for="pocket" data-snap="1" data-tip="Default 1."><span class="scrub-label" data-scrub>Bar width</span><input id="modelFeatBarW" type="number" step="0.1" min="0.1" max="50" value="1" aria-label="Bar width, default 1"></label>
+                <label data-for="texture" data-snap="1" data-tip="[U, V] tile size."><span class="scrub-label" data-scrub>Pitch U</span><input id="modelTexPitchU" type="number" step="0.1" min="0.1" value="5" aria-label="Pitch along U"></label>
+                <label data-for="texture" data-snap="1" data-tip="[U, V] tile size."><span class="scrub-label" data-scrub>Pitch V</span><input id="modelTexPitchV" type="number" step="0.1" min="0.1" value="5" aria-label="Pitch along V"></label>
+                <label data-for="texture" data-snap="1" data-tip="Default 0.8."><span class="scrub-label" data-scrub>Groove</span><input id="modelTexGroove" type="number" step="0.1" min="0.1" max="20" value="0.8" aria-label="Groove width, default 0.8"></label>
+                <label data-for="array" data-cell="rect" data-snap="1" data-tip="U size."><span class="scrub-label" data-scrub>Cell width</span><input id="modelArrW" type="number" step="0.1" min="0.1" max="500" value="4" aria-label="Cell width along U"></label>
+                <label data-for="array" data-cell="rect" data-snap="1" data-tip="V size."><span class="scrub-label" data-scrub>Cell height</span><input id="modelArrH" type="number" step="0.1" min="0.1" max="500" value="3" aria-label="Cell height along V"></label>
+                <label data-for="array" data-cell="circle" data-snap="1" data-tip="Circle."><span class="scrub-label" data-scrub>Diameter</span><input id="modelArrDia" type="number" step="0.1" min="0.1" max="500" value="4" aria-label="Cell diameter"></label>
+                <label data-for="array" data-cell="polygon" data-snap="1" data-tip="Polygon."><span class="scrub-label" data-scrub>Sides</span><input id="modelArrSides" type="number" step="1" min="3" max="64" value="6" data-whole aria-label="Polygon sides"></label>
+                <label data-for="array" data-cell="polygon" data-snap="1" data-tip="Polygon corners."><span class="scrub-label" data-scrub>Across</span><input id="modelArrAcross" type="number" step="0.1" min="0.1" max="500" value="4" aria-label="Width across corners"></label>
+                <label data-for="array" data-snap="15" data-tip="Cell turn."><span class="scrub-label" data-scrub>Turn</span><input id="modelArrTurn" type="number" step="1" min="-360" max="360" value="0" aria-label="Cell turn, degrees"></label>
+                <label data-for="array" data-snap="1" data-tip="[U, V] cell spacing."><span class="scrub-label" data-scrub>Pitch U</span><input id="modelArrPitchU" type="number" step="0.1" min="0.1" value="6" aria-label="Cell spacing along U"></label>
+                <label data-for="array" data-snap="1" data-tip="[U, V] cell spacing."><span class="scrub-label" data-scrub>Pitch V</span><input id="modelArrPitchV" type="number" step="0.1" min="0.1" value="5" aria-label="Cell spacing along V"></label>
+                <label data-for="array" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelArrAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Layout angle, degrees"></label>
+                <label data-for="array" data-snap="1" data-tip="Kept from the face's edges."><span class="scrub-label" data-scrub>Margin</span><input id="modelArrMargin" type="number" step="0.1" min="0" max="100" value="0" aria-label="Margin from the face's edges"></label>
+                <label data-for="ribs" data-snap="1" data-tip="Rib width."><span class="scrub-label" data-scrub>Width</span><input id="modelRibWidth" type="number" step="0.1" min="0.1" max="100" value="1.2" aria-label="Rib width"></label>
+                <label data-for="ribs" data-snap="1" data-tip="Centre spacing."><span class="scrub-label" data-scrub>Pitch</span><input id="modelRibPitch" type="number" step="0.1" min="0.1" max="1000" value="4" aria-label="Centre spacing"></label>
+                <label data-for="ribs" data-snap="1" data-tip="Or this many, evenly."><span class="scrub-label" data-scrub>Count</span><input id="modelRibCount" type="number" step="1" min="0" max="200" value="0" data-whole aria-label="How many ribs, evenly. 0 uses the pitch"></label>
+                <label data-for="ribs" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelRibAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Rib angle, degrees"></label>
+                <label data-for="ribs" data-snap="1" data-tip="Kept from the face's edges."><span class="scrub-label" data-scrub>Margin</span><input id="modelRibMargin" type="number" step="0.1" min="0" max="100" value="0" aria-label="Margin from the face's edges"></label>
+                <label data-for="text" data-snap="1" data-tip="Capitals, mm."><span class="scrub-label" data-scrub>Height</span><input id="modelTextHeight" type="number" step="0.1" min="0.1" max="500" value="6" aria-label="Capitals, mm"></label>
+                <label data-for="text" data-snap="1" data-tip="Default height × 0.15."><span class="scrub-label" data-scrub>Stroke</span><input id="modelTextStroke" type="number" step="0.1" min="0.1" max="100" value="0.9" aria-label="Stroke width, default height × 0.15"></label>
+                <label data-for="text" data-snap="1" data-tip="Default height / 3."><span class="scrub-label" data-scrub>Spacing</span><input id="modelTextSpace" type="number" step="0.1" min="0" max="100" value="2" aria-label="Spacing, default height / 3"></label>
+                <label data-for="text" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelTextAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Text angle, degrees"></label>
+                <!-- end A3 -->
+                <!-- --- A4 pattern and mirror. Each number is one line: the drag checklist reads it that way. --- -->
+                <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="The first direction, in model space."><span class="scrub-label" data-scrub>Step X</span><input id="modelPatSx" type="number" step="0.1" value="10" aria-label="Step along X"></label>
+                <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="The first direction, in model space."><span class="scrub-label" data-scrub>Step Y</span><input id="modelPatSy" type="number" step="0.1" value="0" aria-label="Step along Y"></label>
+                <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="The first direction, in model space."><span class="scrub-label" data-scrub>Step Z</span><input id="modelPatSz" type="number" step="0.1" value="0" aria-label="Step along Z"></label>
+                <label data-for="pattern" data-snap="1" data-tip="Copies, including the original."><span class="scrub-label" data-scrub>Count</span><input id="modelPatCount" type="number" step="1" min="1" max="200" value="6" data-whole aria-label="Copies, including the original"></label>
+                <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="A second direction. Count 1 leaves it out."><span class="scrub-label" data-scrub>Step 2 X</span><input id="modelPatS2x" type="number" step="0.1" value="0" aria-label="Second step along X"></label>
+                <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="A second direction. Count 1 leaves it out."><span class="scrub-label" data-scrub>Step 2 Y</span><input id="modelPatS2y" type="number" step="0.1" value="0" aria-label="Second step along Y"></label>
+                <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="A second direction. Count 1 leaves it out."><span class="scrub-label" data-scrub>Step 2 Z</span><input id="modelPatS2z" type="number" step="0.1" value="0" aria-label="Second step along Z"></label>
+                <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="Copies in the second direction. 1 leaves it out."><span class="scrub-label" data-scrub>Count 2</span><input id="modelPatCount2" type="number" step="1" min="1" max="200" value="1" data-whole aria-label="Copies in the second direction"></label>
+                <label data-for="pattern" data-mode="polar" data-snap="15" data-tip="360 spaces the copies evenly around the whole turn."><span class="scrub-label" data-scrub>Angle</span><input id="modelPatAngle" type="number" step="1" min="-360" max="360" value="360" aria-label="Total angle, degrees"></label>
+                <label data-for="pattern" data-mode="polar" data-snap="1" data-tip="The centre the copies turn about."><span class="scrub-label" data-scrub>Centre X</span><input id="modelPatCx" type="number" step="0.1" value="0" aria-label="Centre x"></label>
+                <label data-for="pattern" data-mode="polar" data-snap="1" data-tip="The centre the copies turn about."><span class="scrub-label" data-scrub>Centre Y</span><input id="modelPatCy" type="number" step="0.1" value="0" aria-label="Centre y"></label>
+                <label data-for="pattern" data-mode="polar" data-snap="1" data-tip="The centre the copies turn about."><span class="scrub-label" data-scrub>Centre Z</span><input id="modelPatCz" type="number" step="0.1" value="0" aria-label="Centre z"></label>
+                <label data-for="pattern" data-mode="path" data-snap="1" data-tip="The last point. Add point keeps it."><span class="scrub-label" data-scrub>Point X</span><input id="modelPatPx" type="number" step="0.1" value="0" aria-label="Path point x"></label>
+                <label data-for="pattern" data-mode="path" data-snap="1" data-tip="The last point. Add point keeps it."><span class="scrub-label" data-scrub>Point Y</span><input id="modelPatPy" type="number" step="0.1" value="0" aria-label="Path point y"></label>
+                <label data-for="pattern" data-mode="path" data-snap="1" data-tip="The last point. Add point keeps it."><span class="scrub-label" data-scrub>Point Z</span><input id="modelPatPz" type="number" step="0.1" value="0" aria-label="Path point z"></label>
+                <label data-for="mirror" data-snap="1" data-tip="A point the plane passes through."><span class="scrub-label" data-scrub>Plane X</span><input id="modelMirX" type="number" step="0.1" value="0" aria-label="Plane point x"></label>
+                <label data-for="mirror" data-snap="1" data-tip="A point the plane passes through."><span class="scrub-label" data-scrub>Plane Y</span><input id="modelMirY" type="number" step="0.1" value="0" aria-label="Plane point y"></label>
+                <label data-for="mirror" data-snap="1" data-tip="A point the plane passes through."><span class="scrub-label" data-scrub>Plane Z</span><input id="modelMirZ" type="number" step="0.1" value="0" aria-label="Plane point z"></label>
+                <!-- --- end A4 --- -->
+              </div>
+              <!-- A5: which of the step's edges. The line names the row, "Edges of: Roof (convex)". -->
+              <div class="modes" id="modelEdgeFilter" data-for="fillet chamfer" data-when="step" role="group" aria-label="Which edges">
+                <button class="btn mode on" id="modelEdgeAll" type="button" data-edge-filter="all" aria-pressed="true">All</button>
+                <button class="btn mode" id="modelEdgeConvex" type="button" data-edge-filter="convex" aria-pressed="false">Convex</button>
+                <button class="btn mode" id="modelEdgeConcave" type="button" data-edge-filter="concave" aria-pressed="false">Concave</button>
+              </div>
+              <p class="model-note" id="modelEdgeOf" data-for="fillet chamfer" data-when="step" hidden></p>
+              <div class="model-check-list" id="modelCheckList" data-for="check" role="list" aria-label="Check"></div>
+              <div class="modes" id="modelAcrossModes" data-for="boolean create" data-with="primitive" data-prim="polygon" role="group" aria-label="Width across">
+                <button class="btn mode" id="modelCorners" type="button" aria-pressed="false" data-tip="Size the polygon from corner to corner">Corners</button>
+                <button class="btn mode on" id="modelFlats" type="button" aria-pressed="true" data-tip="Size the polygon from flat to flat, as a nut is sized">Flats</button>
+              </div>
+              <div class="modes" data-for="boolean" role="group" aria-label="Boolean">
+                <button class="btn mode on" id="modelFuse" type="button" aria-pressed="true">Fuse</button>
+                <button class="btn mode" id="modelCut" type="button" aria-pressed="false">Cut</button>
+                <button class="btn mode" id="modelCommon" type="button" aria-pressed="false">Common</button>
+              </div>
+              <label class="model-keep" data-for="boolean" data-with="object"><input id="modelKeepTool" type="checkbox"> Keep the tool object</label>
+              <!-- --- F4. One hole per sketch point. The origin fields stay in the markup for a single hole. --- -->
+              <p class="model-note" id="modelHolePoints" data-for="hole" data-hole="points" hidden></p>
+              <div class="model-hole-opts" data-for="hole">
+                <label class="model-keep"><input id="modelThrough" type="checkbox"> Through all</label>
+                <label class="model-keep"><input id="modelCounterbore" type="checkbox"> Counterbore</label>
+              </div>
+              <!-- A2 shell -->
+              <p class="model-note" id="modelShellFaces" data-for="shell"></p>
+              <label class="model-keep" data-for="shell"><input id="modelShellClosed" type="checkbox"> Keep it closed (hollow inside)</label>
+              <!-- A3 composite features -->
+              <div class="modes" id="modelFeatShape" data-for="pocket boss" role="group" aria-label="Shape" data-tip="rect, circle, arch.">
+                <button class="btn mode on" type="button" data-shape="rect" aria-pressed="true">Rect</button>
+                <button class="btn mode" type="button" data-shape="circle" aria-pressed="false">Circle</button>
+                <button class="btn mode" type="button" data-shape="arch" aria-pressed="false">Arch</button>
+              </div>
+              <div class="modes" id="modelFeatFrom" data-for="pocket boss text" role="group" aria-label="From" data-tip="U, V = 0 at the face centre, min corner, or bottom or top edge middle.">
+                <button class="btn mode on" type="button" data-from="centre" aria-pressed="true">Centre</button>
+                <button class="btn mode" type="button" data-from="corner" aria-pressed="false">Corner</button>
+                <button class="btn mode" type="button" data-from="bottom" aria-pressed="false">Bottom</button>
+                <button class="btn mode" type="button" data-from="top" aria-pressed="false">Top</button>
+              </div>
+              <div class="modes" id="modelTexPattern" data-for="texture" role="group" aria-label="Pattern" data-tip="brick and shingle stagger rows.">
+                <button class="btn mode on" type="button" data-pattern="lines" aria-pressed="true">Lines</button>
+                <button class="btn mode" type="button" data-pattern="grid" aria-pressed="false">Grid</button>
+                <button class="btn mode" type="button" data-pattern="brick" aria-pressed="false">Brick</button>
+                <button class="btn mode" type="button" data-pattern="shingle" aria-pressed="false">Shingle</button>
+              </div>
+              <div class="modes" id="modelArrCell" data-for="array" role="group" aria-label="Cell" data-tip="Default rect.">
+                <button class="btn mode on" type="button" data-cell="rect" aria-pressed="true">Rect</button>
+                <button class="btn mode" type="button" data-cell="circle" aria-pressed="false">Circle</button>
+                <button class="btn mode" type="button" data-cell="polygon" aria-pressed="false">Polygon</button>
+              </div>
+              <div class="modes" id="modelArrFit" data-for="array" role="group" aria-label="Fit" data-tip="Whole cell on the face (default), or its centre.">
+                <button class="btn mode on" type="button" data-fit="inside" aria-pressed="true">Inside</button>
+                <button class="btn mode" type="button" data-fit="centre" aria-pressed="false">Centre</button>
+              </div>
+              <label class="model-keep" data-for="array" data-tip="Every other row half a pitch over."><input id="modelArrStagger" type="checkbox"> Stagger</label>
+              <div class="modes" id="modelRibAlong" data-for="ribs" role="group" aria-label="Along" data-tip="u is level (default).">
+                <button class="btn mode on" type="button" data-along="u" aria-pressed="true">Along U</button>
+                <button class="btn mode" type="button" data-along="v" aria-pressed="false">Along V</button>
+              </div>
+              <div class="modes" id="modelFeatOp" data-for="array ribs" role="group" aria-label="Raise or cut" data-tip="fuse raises (default); cut recesses.">
+                <button class="btn mode on" type="button" data-op="fuse" aria-pressed="true">Raise</button>
+                <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Cut</button>
+              </div>
+              <label data-for="text" data-tip="A-Z, 0-9, space, -+.,:!?/'&amp;."><span class="scrub-label">Text</span><input id="modelFeatText" type="text" maxlength="80" value="A" aria-label="Text"></label>
+              <div class="modes" id="modelTextAlign" data-for="text" role="group" aria-label="Align" data-tip="at is the middle or start.">
+                <button class="btn mode on" type="button" data-align="centre" aria-pressed="true">Centre</button>
+                <button class="btn mode" type="button" data-align="left" aria-pressed="false">Start</button>
+              </div>
+              <div class="modes" id="modelTextOp" data-for="text" role="group" aria-label="Raise or engrave" data-tip="fuse raises (default); cut recesses.">
+                <button class="btn mode on" type="button" data-op="fuse" aria-pressed="true">Raise</button>
+                <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Engrave</button>
+              </div>
+              <!-- end A3 -->
+              <!-- --- A4 pattern and mirror --- -->
+              <p class="model-note" id="modelRepeatOf" data-for="pattern mirror"></p>
+              <div class="modes" id="modelPatMode" data-for="pattern" role="group" aria-label="Pattern">
+                <button class="btn mode on" type="button" data-pat="linear" aria-pressed="true">Linear</button>
+                <button class="btn mode" type="button" data-pat="polar" aria-pressed="false">Polar</button>
+                <button class="btn mode" type="button" data-pat="path" aria-pressed="false">Path</button>
+              </div>
+              <div class="modes" id="modelPatAxis" data-for="pattern" data-mode="polar" role="group" aria-label="Axis">
+                <button class="btn mode" type="button" data-axis="x" aria-pressed="false">X</button>
+                <button class="btn mode" type="button" data-axis="y" aria-pressed="false">Y</button>
+                <button class="btn mode on" type="button" data-axis="z" aria-pressed="true">Z</button>
+                <button class="btn mode" type="button" data-axis="pick" aria-pressed="false" data-tip="An edge, or a cylinder or a cone">Edge</button>
+              </div>
+              <p class="model-note" id="modelPathList" data-for="pattern" data-mode="path"></p>
+              <div class="modes" id="modelPathActions" data-for="pattern" data-mode="path" role="group" aria-label="Path points">
+                <button class="btn" id="modelPathAdd" type="button">Add point</button>
+                <button class="btn" id="modelPathDrop" type="button">Remove last</button>
+              </div>
+              <label class="model-keep" data-for="pattern" data-mode="path" data-tip="Each copy turns to follow the path."><input id="modelPatAlign" type="checkbox" checked> Align to the path</label>
+              <div class="modes" id="modelMirPlane" data-for="mirror" role="group" aria-label="Mirror plane">
+                <button class="btn mode" type="button" data-plane="x" aria-pressed="false">X</button>
+                <button class="btn mode" type="button" data-plane="y" aria-pressed="false">Y</button>
+                <button class="btn mode on" type="button" data-plane="z" aria-pressed="true">Z</button>
+                <button class="btn mode" type="button" data-plane="face" aria-pressed="false" data-tip="A picked flat face">Face</button>
+              </div>
+              <!-- --- end A4 --- -->
+              <p class="model-note" id="modelNote" hidden></p>
+            </div>
+            <div class="model-actions">
+              <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>
+              <button class="btn" id="modelCancel" type="button">Cancel</button>
+              <button class="btn primary" id="modelApply" type="button">Apply</button>
+            </div>
+          </section>
+          <!-- --- S2 sketch --- -->
+          <div class="sketch-cards" id="sketchCards" hidden></div>
+          <section class="model-history" id="modelHistory" aria-label="History" hidden>
+            <button class="model-history-toggle" id="modelHistoryToggle" type="button" aria-controls="modelHistoryTree" aria-expanded="true"><span>History</span> <span class="model-history-count" id="modelHistoryCount"></span></button>
+            <div class="mh-position" id="modelPosition" role="group" aria-label="Position">
+              <button class="mh-position-open" id="modelPositionOpen" type="button" data-tip="Where this object sits in model space. Click to open Place."><span class="mh-position-name">Position</span><span class="mh-position-text" id="modelPositionText"></span></button>
+              <button class="mh-position-reset" id="modelPositionReset" type="button" aria-label="Reset position" data-tip="Back to where its file put it" hidden></button>
+            </div>
+            <div class="model-history-tree" id="modelHistoryTree" role="tree" aria-label="Model history"></div>
+          </section>
+          <!-- --- A6 Parameters, under History as in Onshape. The header folds it. --- -->
+          <section class="model-params" id="modelParams" aria-label="Parameters">
+            <div class="model-params-head">
+              <button class="model-params-toggle" id="modelParamsToggle" type="button" aria-controls="modelParamsMain" aria-expanded="true"><span>Parameters</span> <span class="model-history-count" id="modelParamsCount"></span></button>
+              <!-- Shown folded too, so a step out of date is never hidden. -->
+              <button class="btn" id="modelParamsRebuild" type="button" hidden>Rebuild</button>
+            </div>
+            <div class="model-params-main" id="modelParamsMain">
+              <div id="modelParamsBody"></div>
+              <div class="model-params-bar">
+                <button class="btn" id="modelParamsAdd" type="button">Add parameter</button>
+              </div>
+            </div>
+          </section>
+        </div>
       </aside>
       <main class="stage mode-solid" id="stage" aria-label="Preview">
         <div class="stage-body" id="prepareBody" role="tabpanel" aria-labelledby="tabPrepare" hidden>
@@ -105,68 +479,14 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="stage-body" id="modelBody" role="tabpanel" aria-labelledby="tabModel" hidden>
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
+          <!-- E3. Over the view only the pick filter, the view cube (drawn in the canvas) and the context bar. -->
           <div class="model-bar" id="modelBar">
-            <div class="model-top">
-              <div class="model-tools" role="toolbar" aria-label="Model">
-                <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="Start a new solid from a box, cylinder, cone, or another primitive">New solid</button>
-                <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
-                <button class="model-tool is-icon" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. Drawing tools are in the sketch card.">Sketch</button>
-                <span class="model-sep"></span>
-                <div class="modes" role="group" aria-label="Pick">
-                  <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
-                  <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false" data-tip="Pick edges. Shift-click adds or removes.">Edge</button>
-                </div>
-                <span class="model-count" id="modelCount" hidden></span>
-                <div class="model-edit" id="modelEdit" hidden>
-                  <span class="model-sep"></span>
-                  <!-- P1: Push/Pull. P. Also the gesture when no other model tool is open. -->
-                  <button class="model-tool" id="modelToolPull" type="button" data-tool="pushpull" aria-pressed="false" data-tip="Push or pull a face. Hold Alt to add or cut material on that face only">Push/Pull</button>
-                  <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Fuse, cut, or intersect a primitive or another object on the plate">Boolean</button>
-                  <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split along X, Y, Z, or a picked flat face, and tilt the plane">Split</button>
-                  <button class="model-tool" id="modelToolFillet" type="button" data-tool="fillet" aria-pressed="false" data-tip="Round every selected edge in one step">Fillet</button>
-                  <button class="model-tool" id="modelToolChamfer" type="button" data-tool="chamfer" aria-pressed="false" data-tip="Chamfer every selected edge in one step">Chamfer</button>
-                  <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Cut a cylinder into the picked face, or straight down">Hole</button>
-                  <!-- A2 shell -->
-                  <button class="model-tool" id="modelToolShell" type="button" data-tool="shell" aria-pressed="false" data-tip="Hollow the solid to a wall thickness, with picked faces open">Shell</button>
-                  <!-- A3 composite features: one toolbar entry, last-used on the button, the rest in the menu. -->
-                  <div class="model-feature" id="modelFeature">
-                    <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-                    <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, pattern, mirror, parameters">▾</button>
-                    <div class="model-feature-menu" id="modelFeatureMenu" role="menu" hidden>
-                      <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
-                      <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
-                      <button class="model-tool" type="button" role="menuitem" data-tool="texture">Texture</button>
-                      <button class="model-tool" type="button" role="menuitem" data-tool="array">Array</button>
-                      <button class="model-tool" type="button" role="menuitem" data-tool="ribs">Ribs</button>
-                      <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
-                      <!-- --- A4 pattern and mirror. In this menu so the 1440 toolbar stays one row. --- -->
-                      <button class="model-tool" id="modelMenuPattern" type="button" role="menuitem" data-tool="pattern">Pattern</button>
-                      <button class="model-tool" id="modelMenuMirror" type="button" role="menuitem" data-tool="mirror">Mirror</button>
-                      <!-- --- end A4 --- -->
-                      <!-- --- A6. Not a toolbar button, so the bar still fits at 1440 px. --- -->
-                      <button id="modelMenuParameters" type="button" role="menuitem">Parameters</button>
-                      <!-- --- end A6 --- -->
-                    </div>
-                  </div>
-                  <!-- end A3 -->
-                  <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
-                  <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" aria-pressed="false" data-tip="Drag two points on the solid and read the distance">Measure</button>
-                  <button class="model-tool" id="modelToolPlace" type="button" data-tool="place" aria-pressed="false" data-tip="Move and turn this object among the others. The plate stays as it is">Place</button>
-                  <button class="model-tool" id="modelToolWorkplane" type="button" data-tool="workplane" aria-pressed="false" data-tip="Set the U, V, W frame Hole, Boolean, and Split are typed in">Workplane</button>
-                  <span class="model-sep"></span>
-                  <button class="model-tool is-icon" id="modelStep" type="button" data-tip="Write this solid as AP214 STEP">STEP</button>
-                  <button class="model-tool is-icon" id="modelUndo" type="button" disabled data-tip="Undo the last solid edit">Undo</button>
-                  <button class="model-tool is-icon" id="modelRedo" type="button" disabled data-tip="Redo the last solid edit">Redo</button>
-                  <button class="model-tool" id="modelHistoryOpen" type="button" aria-controls="modelHistory" aria-expanded="false">History</button>
-                </div>
-                <span class="model-sep"></span>
-                <!-- --- A7 model check --- stays outside #modelEdit, so a mesh can be checked too -->
-                <button class="model-tool" id="modelToolCheck" type="button" data-tool="check" aria-pressed="false" data-tip="Overhangs, ceilings, islands, thin walls, and whether it fits the build volume">Check</button>
-                <button class="model-tool is-icon" id="modelBedToggle" type="button" aria-pressed="true" data-tip="Show the bed and build volume for size">Bed</button>
+            <div class="model-pick" id="modelPick">
+              <div class="modes" role="group" aria-label="Pick">
+                <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
+                <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false" data-tip="Pick edges. Shift-click adds or removes.">Edge</button>
               </div>
-              <span class="model-paused" id="modelPaused">Slicing paused while modeling</span>
-              <!-- --- S2 sketch --- under the toolbar, so the tools do not cover the plane buttons. -->
-              <div class="sketch-cards" id="sketchCards" hidden></div>
+              <span class="model-count" id="modelCount" hidden></span>
             </div>
             <div class="model-empty" id="modelEmpty" hidden>
               <p class="model-empty-title" id="modelEmptyTitle">No solid open</p>
@@ -176,290 +496,6 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn" id="modelEmptyOpen" type="button">Open a file</button>
                 <!-- --- S2 sketch --- an empty plate sketches on the bed. -->
                 <button class="btn" id="modelEmptySketch" type="button">Sketch on the bed</button>
-              </div>
-            </div>
-            <div class="model-side">
-              <!-- --- A6 Parameters. A panel, not a tool, so it adds no toolbar button. --- -->
-              <section class="model-params" id="modelParams" aria-label="Parameters" hidden>
-                <div class="model-params-head">
-                  <h2>Parameters</h2>
-                  <button class="btn" id="modelParamsClose" type="button">Close</button>
-                </div>
-                <div id="modelParamsBody"></div>
-                <div class="model-params-bar">
-                  <button class="btn" id="modelParamsAdd" type="button">Add parameter</button>
-                  <button class="btn" id="modelParamsRebuild" type="button" hidden>Rebuild</button>
-                </div>
-              </section>
-              <!-- --- end A6 --- -->
-              <div class="model-panel" id="modelPanel" hidden>
-                <h2 class="model-edit-head" id="modelEditHead" hidden></h2>
-                <div class="modes model-plane-modes" id="modelWpModes" data-for="workplane" role="group" aria-label="Workplane">
-                  <button class="btn mode on" id="modelWpGlobal" type="button" data-wp="global" aria-pressed="true" data-tip="Model space: U is X, V is Y, W is Z">Global</button>
-                  <button class="btn mode" id="modelWpBed" type="button" data-wp="bed" aria-pressed="false" data-tip="Under the middle of the part, W up">Bed</button>
-                  <button class="btn mode" id="modelWpFace" type="button" data-wp="face" aria-pressed="false" data-tip="On a picked flat face, W out of it">Face</button>
-                </div>
-                <!-- A5: edges a step made. Picked is today's fillet; A step takes every edge that history row made. -->
-                <div class="modes" id="modelEdgeModes" data-for="fillet chamfer" role="group" aria-label="Edges">
-                  <button class="btn mode on" id="modelEdgesPicked" type="button" data-edge-mode="picked" aria-pressed="true">Picked</button>
-                  <button class="btn mode" id="modelEdgesStep" type="button" data-edge-mode="step" aria-pressed="false" data-tip="Every sharp edge a history step made that is still on this solid">A step</button>
-                </div>
-                <div class="modes model-plane-modes" id="modelPlaneModes" data-for="split" role="group" aria-label="Plane">
-                  <button class="btn mode" id="modelSplitX" type="button" data-plane="x" aria-pressed="false" data-tip="Cut square to X">X</button>
-                  <button class="btn mode" id="modelSplitY" type="button" data-plane="y" aria-pressed="false" data-tip="Cut square to Y">Y</button>
-                  <button class="btn mode on" id="modelSplitZ" type="button" data-plane="z" aria-pressed="true" data-tip="Cut square to Z">Z</button>
-                  <button class="btn mode" id="modelSplitFace" type="button" data-plane="face" aria-pressed="false" data-tip="Cut parallel to a picked flat face">Face</button>
-                </div>
-                <div class="model-prims" id="modelPrim" data-for="boolean create" role="radiogroup" aria-label="Primitive">${PRIMITIVES.map(
-                  (entry, i) => `<button class="model-prim" type="button" role="radio" data-kind="${entry.kind}" aria-label="${entry.label}" data-tip="${entry.label}" aria-checked="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${entry.label}</button>`,
-                ).join("")}<button class="model-prim" id="modelWithObject" type="button" role="radio" data-kind="object" data-for="boolean" aria-label="Another object" data-tip="Another object on the plate: a split piece, an import, or a new solid" aria-checked="false" tabindex="-1">Object</button></div>
-                <div class="model-objects" id="modelObjects" data-for="boolean" data-with="object" role="radiogroup" aria-label="Tool object"></div>
-                <div class="model-fields">
-                  <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Size X</span><input id="modelDx" type="number" step="0.1" value="10" aria-label="Size x"></label>
-                  <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Size Y</span><input id="modelDy" type="number" step="0.1" value="10" aria-label="Size y"></label>
-                  <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Size Z</span><input id="modelDz" type="number" step="0.1" value="10" aria-label="Size z"></label>
-                  <label data-for="boolean create" data-with="primitive" data-prim="wedge" data-snap="1"><span class="scrub-label" data-scrub>Top X</span><input id="modelTopX" type="number" step="0.1" min="0" value="3" aria-label="Top face length along x"></label>
-                  <label data-for="boolean create" data-with="primitive" data-prim="cylinder sphere cone torus tube" data-snap="1"><span class="scrub-label" id="modelRadiusLabel" data-scrub>Radius</span><input id="modelRadius" type="number" step="0.1" min="0" value="5" aria-label="Radius"></label>
-                  <label data-for="boolean create" data-with="primitive" data-prim="cone" data-snap="1"><span class="scrub-label" data-scrub>Top radius</span><input id="modelTopR" type="number" step="0.1" min="0" value="2" aria-label="Top radius"></label>
-                  <label data-for="boolean create" data-with="primitive" data-prim="torus" data-snap="1"><span class="scrub-label" data-scrub>Tube radius</span><input id="modelTube" type="number" step="0.1" min="0" value="1.5" aria-label="Tube radius"></label>
-                  <label data-for="boolean create" data-with="primitive" data-prim="tube" data-snap="1"><span class="scrub-label" data-scrub>Inner radius</span><input id="modelInnerR" type="number" step="0.1" min="0" value="3" aria-label="Inner radius"></label>
-                  <label data-for="boolean create" data-with="primitive" data-prim="polygon" data-snap="1"><span class="scrub-label" data-scrub>Sides</span><input id="modelSides" type="number" step="1" min="3" max="64" value="6" data-whole aria-label="Sides"></label>
-                  <label data-for="boolean create" data-with="primitive" data-prim="polygon" data-snap="1"><span class="scrub-label" id="modelAcrossLabel" data-scrub>Across flats</span><input id="modelAcross" type="number" step="0.1" min="0" value="10" aria-label="Width across flats"></label>
-                  <label data-for="boolean create" data-with="primitive" data-prim="cylinder cone polygon tube" data-snap="1"><span class="scrub-label" data-scrub>Height</span><input id="modelHeight" type="number" step="0.1" min="0" value="10" aria-label="Height"></label>
-                  <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelX" type="number" step="0.1" value="10" aria-label="Origin x"></label>
-                  <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelY" type="number" step="0.1" value="0" aria-label="Origin y"></label>
-                  <label data-for="boolean hole" data-hole="single" data-with="primitive" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelZ" type="number" step="0.1" value="0" aria-label="Origin z"></label>
-                  <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelRx" type="number" step="1" value="0" aria-label="Turn about x, degrees"></label>
-                  <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelRy" type="number" step="1" value="0" aria-label="Turn about y, degrees"></label>
-                  <label data-for="boolean" data-with="primitive" data-prim="box ellipsoid cylinder cone torus wedge polygon tube" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelRz" type="number" step="1" value="0" aria-label="Turn about z, degrees"></label>
-                  <label data-for="split" data-snap="1"><span class="scrub-label" id="modelPlaneLabel" data-scrub>Plane Z</span><input id="modelPlane" type="number" step="any" value="5" aria-label="Split plane Z, mm"></label>
-                  <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt A, degrees"></label>
-                  <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt B, degrees"></label>
-                  <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
-                  <!-- P1: the distance, typed. A drag writes the same field. -->
-                  <label data-for="pushpull" data-snap="1"><span class="scrub-label" data-scrub>Distance</span><input id="modelPull" type="number" step="0.1" value="0" aria-label="Push or pull distance, mm"></label>
-                  <label id="modelPullDiameterRow" hidden><span>Diameter</span><input id="modelPullDiameter" type="number" step="0.1" min="0" aria-label="Cylinder diameter, mm"></label>
-                  <!-- A5: the step, by its row or by its number. The number has no data-for, so the drag checklist stays on Size. -->
-                  <label data-for="fillet chamfer" data-when="step" data-wide><span>Step</span><select id="modelEdgeStep" aria-label="History step"></select></label>
-                  <label data-when="step" data-snap="1"><span class="scrub-label" data-scrub>Step number</span><input id="modelEdgeNode" type="number" step="1" min="0" value="0" data-whole aria-label="Step number"></label>
-                  <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Radius</span><input id="modelHoleR" type="number" step="0.1" min="0" value="2" aria-label="Hole radius"></label>
-                  <label data-for="hole" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelHoleD" type="number" step="0.1" min="0" value="12" aria-label="Hole depth"></label>
-                  <label data-for="hole"><span class="scrub-label">Screw</span><select id="modelScrew" aria-label="Screw size: a clearance hole through, counterbored for a socket head" data-tip="A clearance hole through, counterbored for a socket head cap screw"><option value="" disabled>Custom</option>${SCREWS.map((screw) => `<option value="${screw.name}">${screw.name}</option>`).join("")}</select></label>
-                  <label data-for="hole" data-bore data-snap="1"><span class="scrub-label" data-scrub>Bore radius</span><input id="modelBoreR" type="number" step="0.1" min="0" value="4" aria-label="Counterbore radius"></label>
-                  <label data-for="hole" data-bore data-snap="1"><span class="scrub-label" data-scrub>Bore depth</span><input id="modelBoreD" type="number" step="0.1" min="0" value="3" aria-label="Counterbore depth"></label>
-                  <!-- A2 shell -->
-                  <label data-for="shell" data-snap="1"><span class="scrub-label" data-scrub>Thickness</span><input id="modelShell" type="number" step="0.1" min="0.05" value="1" aria-label="Wall thickness"></label>
-                  <label data-for="scale" data-snap="0.5"><span class="scrub-label" data-scrub>Factor</span><input id="modelFactor" type="number" step="0.1" min="0.1" max="20" value="2" aria-label="Uniform scale"></label>
-                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A X</span><input id="modelAx" type="number" step="0.1" value="0" aria-label="Point A x"></label>
-                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A Y</span><input id="modelAy" type="number" step="0.1" value="0" aria-label="Point A y"></label>
-                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>A Z</span><input id="modelAz" type="number" step="0.1" value="0" aria-label="Point A z"></label>
-                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B X</span><input id="modelBx" type="number" step="0.1" value="0" aria-label="Point B x"></label>
-                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B Y</span><input id="modelBy" type="number" step="0.1" value="0" aria-label="Point B y"></label>
-                  <label data-for="measure" data-snap="1"><span class="scrub-label" data-scrub>B Z</span><input id="modelBz" type="number" step="0.1" value="0" aria-label="Point B z"></label>
-                  <label data-for="place" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelPlaceX" type="number" step="0.1" value="0" aria-label="Move in model space x"></label>
-                  <label data-for="place" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelPlaceY" type="number" step="0.1" value="0" aria-label="Move in model space y"></label>
-                  <label data-for="place" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelPlaceZ" type="number" step="0.1" value="0" aria-label="Move in model space z"></label>
-                  <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelPlaceRx" type="number" step="1" value="0" aria-label="Turn in model space about x, degrees"></label>
-                  <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelPlaceRy" type="number" step="1" value="0" aria-label="Turn in model space about y, degrees"></label>
-                  <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelPlaceRz" type="number" step="1" value="0" aria-label="Turn in model space about z, degrees"></label>
-                  <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelWpX" type="number" step="0.1" value="0" aria-label="Workplane origin, model x"></label>
-                  <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelWpY" type="number" step="0.1" value="0" aria-label="Workplane origin, model y"></label>
-                  <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelWpZ" type="number" step="0.1" value="0" aria-label="Workplane origin, model z"></label>
-                  <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelWpRx" type="number" step="1" value="0" aria-label="Turn the workplane about model x, degrees"></label>
-                  <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelWpRy" type="number" step="1" value="0" aria-label="Turn the workplane about model y, degrees"></label>
-                  <label data-for="workplane" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelWpRz" type="number" step="1" value="0" aria-label="Turn the workplane about model z, degrees"></label>
-                  <!-- --- A7 model check --- -->
-                  <label data-for="check" data-snap="0.05"><span class="scrub-label" data-scrub>Thin wall</span><input id="modelThin" type="number" step="0.05" min="0.05" max="20" value="0.8" aria-label="Thin wall, mm"></label>
-                  <!-- A3 composite features. Each number is one line: the drag checklist reads it that way. -->
-                  <label data-for="pocket boss" data-shape="rect arch" data-snap="1" data-tip="U size."><span class="scrub-label" data-scrub>Width</span><input id="modelFeatW" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="U size"></label>
-                  <label data-for="pocket boss" data-shape="rect arch" data-snap="1" data-tip="V size."><span class="scrub-label" data-scrub>Height</span><input id="modelFeatH" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="V size"></label>
-                  <label data-for="pocket boss" data-shape="circle" data-snap="1" data-tip="Circle."><span class="scrub-label" data-scrub>Diameter</span><input id="modelFeatDia" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="Circle"></label>
-                  <label data-for="pocket boss texture array ribs text" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelFeatDepth" type="number" step="0.1" min="0.1" max="1000" value="2" aria-label="Depth"></label>
-                  <label data-for="pocket boss text" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>U</span><input id="modelFeatU" type="number" step="0.1" value="0" aria-label="Position along U"></label>
-                  <label data-for="pocket boss text" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>V</span><input id="modelFeatV" type="number" step="0.1" value="0" aria-label="Position along V"></label>
-                  <label data-for="pocket" data-snap="1" data-tip="Count."><span class="scrub-label" data-scrub>Bars across</span><input id="modelFeatBarsV" type="number" step="1" min="0" max="20" value="0" data-whole aria-label="Vertical bars"></label>
-                  <label data-for="pocket" data-snap="1" data-tip="Count."><span class="scrub-label" data-scrub>Bars along</span><input id="modelFeatBarsH" type="number" step="1" min="0" max="20" value="0" data-whole aria-label="Horizontal bars"></label>
-                  <label data-for="pocket" data-snap="1" data-tip="Default 1."><span class="scrub-label" data-scrub>Bar width</span><input id="modelFeatBarW" type="number" step="0.1" min="0.1" max="50" value="1" aria-label="Bar width, default 1"></label>
-                  <label data-for="texture" data-snap="1" data-tip="[U, V] tile size."><span class="scrub-label" data-scrub>Pitch U</span><input id="modelTexPitchU" type="number" step="0.1" min="0.1" value="5" aria-label="Pitch along U"></label>
-                  <label data-for="texture" data-snap="1" data-tip="[U, V] tile size."><span class="scrub-label" data-scrub>Pitch V</span><input id="modelTexPitchV" type="number" step="0.1" min="0.1" value="5" aria-label="Pitch along V"></label>
-                  <label data-for="texture" data-snap="1" data-tip="Default 0.8."><span class="scrub-label" data-scrub>Groove</span><input id="modelTexGroove" type="number" step="0.1" min="0.1" max="20" value="0.8" aria-label="Groove width, default 0.8"></label>
-                  <label data-for="array" data-cell="rect" data-snap="1" data-tip="U size."><span class="scrub-label" data-scrub>Cell width</span><input id="modelArrW" type="number" step="0.1" min="0.1" max="500" value="4" aria-label="Cell width along U"></label>
-                  <label data-for="array" data-cell="rect" data-snap="1" data-tip="V size."><span class="scrub-label" data-scrub>Cell height</span><input id="modelArrH" type="number" step="0.1" min="0.1" max="500" value="3" aria-label="Cell height along V"></label>
-                  <label data-for="array" data-cell="circle" data-snap="1" data-tip="Circle."><span class="scrub-label" data-scrub>Diameter</span><input id="modelArrDia" type="number" step="0.1" min="0.1" max="500" value="4" aria-label="Cell diameter"></label>
-                  <label data-for="array" data-cell="polygon" data-snap="1" data-tip="Polygon."><span class="scrub-label" data-scrub>Sides</span><input id="modelArrSides" type="number" step="1" min="3" max="64" value="6" data-whole aria-label="Polygon sides"></label>
-                  <label data-for="array" data-cell="polygon" data-snap="1" data-tip="Polygon corners."><span class="scrub-label" data-scrub>Across</span><input id="modelArrAcross" type="number" step="0.1" min="0.1" max="500" value="4" aria-label="Width across corners"></label>
-                  <label data-for="array" data-snap="15" data-tip="Cell turn."><span class="scrub-label" data-scrub>Turn</span><input id="modelArrTurn" type="number" step="1" min="-360" max="360" value="0" aria-label="Cell turn, degrees"></label>
-                  <label data-for="array" data-snap="1" data-tip="[U, V] cell spacing."><span class="scrub-label" data-scrub>Pitch U</span><input id="modelArrPitchU" type="number" step="0.1" min="0.1" value="6" aria-label="Cell spacing along U"></label>
-                  <label data-for="array" data-snap="1" data-tip="[U, V] cell spacing."><span class="scrub-label" data-scrub>Pitch V</span><input id="modelArrPitchV" type="number" step="0.1" min="0.1" value="5" aria-label="Cell spacing along V"></label>
-                  <label data-for="array" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelArrAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Layout angle, degrees"></label>
-                  <label data-for="array" data-snap="1" data-tip="Kept from the face's edges."><span class="scrub-label" data-scrub>Margin</span><input id="modelArrMargin" type="number" step="0.1" min="0" max="100" value="0" aria-label="Margin from the face's edges"></label>
-                  <label data-for="ribs" data-snap="1" data-tip="Rib width."><span class="scrub-label" data-scrub>Width</span><input id="modelRibWidth" type="number" step="0.1" min="0.1" max="100" value="1.2" aria-label="Rib width"></label>
-                  <label data-for="ribs" data-snap="1" data-tip="Centre spacing."><span class="scrub-label" data-scrub>Pitch</span><input id="modelRibPitch" type="number" step="0.1" min="0.1" max="1000" value="4" aria-label="Centre spacing"></label>
-                  <label data-for="ribs" data-snap="1" data-tip="Or this many, evenly."><span class="scrub-label" data-scrub>Count</span><input id="modelRibCount" type="number" step="1" min="0" max="200" value="0" data-whole aria-label="How many ribs, evenly. 0 uses the pitch"></label>
-                  <label data-for="ribs" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelRibAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Rib angle, degrees"></label>
-                  <label data-for="ribs" data-snap="1" data-tip="Kept from the face's edges."><span class="scrub-label" data-scrub>Margin</span><input id="modelRibMargin" type="number" step="0.1" min="0" max="100" value="0" aria-label="Margin from the face's edges"></label>
-                  <label data-for="text" data-snap="1" data-tip="Capitals, mm."><span class="scrub-label" data-scrub>Height</span><input id="modelTextHeight" type="number" step="0.1" min="0.1" max="500" value="6" aria-label="Capitals, mm"></label>
-                  <label data-for="text" data-snap="1" data-tip="Default height × 0.15."><span class="scrub-label" data-scrub>Stroke</span><input id="modelTextStroke" type="number" step="0.1" min="0.1" max="100" value="0.9" aria-label="Stroke width, default height × 0.15"></label>
-                  <label data-for="text" data-snap="1" data-tip="Default height / 3."><span class="scrub-label" data-scrub>Spacing</span><input id="modelTextSpace" type="number" step="0.1" min="0" max="100" value="2" aria-label="Spacing, default height / 3"></label>
-                  <label data-for="text" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelTextAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Text angle, degrees"></label>
-                  <!-- end A3 -->
-                  <!-- --- A4 pattern and mirror. Each number is one line: the drag checklist reads it that way. --- -->
-                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="The first direction, in model space."><span class="scrub-label" data-scrub>Step X</span><input id="modelPatSx" type="number" step="0.1" value="10" aria-label="Step along X"></label>
-                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="The first direction, in model space."><span class="scrub-label" data-scrub>Step Y</span><input id="modelPatSy" type="number" step="0.1" value="0" aria-label="Step along Y"></label>
-                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="The first direction, in model space."><span class="scrub-label" data-scrub>Step Z</span><input id="modelPatSz" type="number" step="0.1" value="0" aria-label="Step along Z"></label>
-                  <label data-for="pattern" data-snap="1" data-tip="Copies, including the original."><span class="scrub-label" data-scrub>Count</span><input id="modelPatCount" type="number" step="1" min="1" max="200" value="6" data-whole aria-label="Copies, including the original"></label>
-                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="A second direction. Count 1 leaves it out."><span class="scrub-label" data-scrub>Step 2 X</span><input id="modelPatS2x" type="number" step="0.1" value="0" aria-label="Second step along X"></label>
-                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="A second direction. Count 1 leaves it out."><span class="scrub-label" data-scrub>Step 2 Y</span><input id="modelPatS2y" type="number" step="0.1" value="0" aria-label="Second step along Y"></label>
-                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="A second direction. Count 1 leaves it out."><span class="scrub-label" data-scrub>Step 2 Z</span><input id="modelPatS2z" type="number" step="0.1" value="0" aria-label="Second step along Z"></label>
-                  <label data-for="pattern" data-mode="linear" data-snap="1" data-tip="Copies in the second direction. 1 leaves it out."><span class="scrub-label" data-scrub>Count 2</span><input id="modelPatCount2" type="number" step="1" min="1" max="200" value="1" data-whole aria-label="Copies in the second direction"></label>
-                  <label data-for="pattern" data-mode="polar" data-snap="15" data-tip="360 spaces the copies evenly around the whole turn."><span class="scrub-label" data-scrub>Angle</span><input id="modelPatAngle" type="number" step="1" min="-360" max="360" value="360" aria-label="Total angle, degrees"></label>
-                  <label data-for="pattern" data-mode="polar" data-snap="1" data-tip="The centre the copies turn about."><span class="scrub-label" data-scrub>Centre X</span><input id="modelPatCx" type="number" step="0.1" value="0" aria-label="Centre x"></label>
-                  <label data-for="pattern" data-mode="polar" data-snap="1" data-tip="The centre the copies turn about."><span class="scrub-label" data-scrub>Centre Y</span><input id="modelPatCy" type="number" step="0.1" value="0" aria-label="Centre y"></label>
-                  <label data-for="pattern" data-mode="polar" data-snap="1" data-tip="The centre the copies turn about."><span class="scrub-label" data-scrub>Centre Z</span><input id="modelPatCz" type="number" step="0.1" value="0" aria-label="Centre z"></label>
-                  <label data-for="pattern" data-mode="path" data-snap="1" data-tip="The last point. Add point keeps it."><span class="scrub-label" data-scrub>Point X</span><input id="modelPatPx" type="number" step="0.1" value="0" aria-label="Path point x"></label>
-                  <label data-for="pattern" data-mode="path" data-snap="1" data-tip="The last point. Add point keeps it."><span class="scrub-label" data-scrub>Point Y</span><input id="modelPatPy" type="number" step="0.1" value="0" aria-label="Path point y"></label>
-                  <label data-for="pattern" data-mode="path" data-snap="1" data-tip="The last point. Add point keeps it."><span class="scrub-label" data-scrub>Point Z</span><input id="modelPatPz" type="number" step="0.1" value="0" aria-label="Path point z"></label>
-                  <label data-for="mirror" data-snap="1" data-tip="A point the plane passes through."><span class="scrub-label" data-scrub>Plane X</span><input id="modelMirX" type="number" step="0.1" value="0" aria-label="Plane point x"></label>
-                  <label data-for="mirror" data-snap="1" data-tip="A point the plane passes through."><span class="scrub-label" data-scrub>Plane Y</span><input id="modelMirY" type="number" step="0.1" value="0" aria-label="Plane point y"></label>
-                  <label data-for="mirror" data-snap="1" data-tip="A point the plane passes through."><span class="scrub-label" data-scrub>Plane Z</span><input id="modelMirZ" type="number" step="0.1" value="0" aria-label="Plane point z"></label>
-                  <!-- --- end A4 --- -->
-                </div>
-                <!-- A5: which of the step's edges. The line names the row, "Edges of: Roof (convex)". -->
-                <div class="modes" id="modelEdgeFilter" data-for="fillet chamfer" data-when="step" role="group" aria-label="Which edges">
-                  <button class="btn mode on" id="modelEdgeAll" type="button" data-edge-filter="all" aria-pressed="true">All</button>
-                  <button class="btn mode" id="modelEdgeConvex" type="button" data-edge-filter="convex" aria-pressed="false">Convex</button>
-                  <button class="btn mode" id="modelEdgeConcave" type="button" data-edge-filter="concave" aria-pressed="false">Concave</button>
-                </div>
-                <p class="model-note" id="modelEdgeOf" data-for="fillet chamfer" data-when="step" hidden></p>
-                <div class="model-check-list" id="modelCheckList" data-for="check" role="list" aria-label="Check"></div>
-                <div class="modes" id="modelAcrossModes" data-for="boolean create" data-with="primitive" data-prim="polygon" role="group" aria-label="Width across">
-                  <button class="btn mode" id="modelCorners" type="button" aria-pressed="false" data-tip="Size the polygon from corner to corner">Corners</button>
-                  <button class="btn mode on" id="modelFlats" type="button" aria-pressed="true" data-tip="Size the polygon from flat to flat, as a nut is sized">Flats</button>
-                </div>
-                <div class="modes" data-for="boolean" role="group" aria-label="Boolean">
-                  <button class="btn mode on" id="modelFuse" type="button" aria-pressed="true">Fuse</button>
-                  <button class="btn mode" id="modelCut" type="button" aria-pressed="false">Cut</button>
-                  <button class="btn mode" id="modelCommon" type="button" aria-pressed="false">Common</button>
-                </div>
-                <label class="model-keep" data-for="boolean" data-with="object"><input id="modelKeepTool" type="checkbox"> Keep the tool object</label>
-                <!-- --- F4. One hole per sketch point. The origin fields stay in the markup for a single hole. --- -->
-                <p class="model-note" id="modelHolePoints" data-for="hole" data-hole="points" hidden></p>
-                <div class="model-hole-opts" data-for="hole">
-                  <label class="model-keep"><input id="modelThrough" type="checkbox"> Through all</label>
-                  <label class="model-keep"><input id="modelCounterbore" type="checkbox"> Counterbore</label>
-                </div>
-                <!-- A2 shell -->
-                <p class="model-note" id="modelShellFaces" data-for="shell"></p>
-                <label class="model-keep" data-for="shell"><input id="modelShellClosed" type="checkbox"> Keep it closed (hollow inside)</label>
-                <!-- A3 composite features -->
-                <div class="modes" id="modelFeatShape" data-for="pocket boss" role="group" aria-label="Shape" data-tip="rect, circle, arch.">
-                  <button class="btn mode on" type="button" data-shape="rect" aria-pressed="true">Rect</button>
-                  <button class="btn mode" type="button" data-shape="circle" aria-pressed="false">Circle</button>
-                  <button class="btn mode" type="button" data-shape="arch" aria-pressed="false">Arch</button>
-                </div>
-                <div class="modes" id="modelFeatFrom" data-for="pocket boss text" role="group" aria-label="From" data-tip="U, V = 0 at the face centre, min corner, or bottom or top edge middle.">
-                  <button class="btn mode on" type="button" data-from="centre" aria-pressed="true">Centre</button>
-                  <button class="btn mode" type="button" data-from="corner" aria-pressed="false">Corner</button>
-                  <button class="btn mode" type="button" data-from="bottom" aria-pressed="false">Bottom</button>
-                  <button class="btn mode" type="button" data-from="top" aria-pressed="false">Top</button>
-                </div>
-                <div class="modes" id="modelTexPattern" data-for="texture" role="group" aria-label="Pattern" data-tip="brick and shingle stagger rows.">
-                  <button class="btn mode on" type="button" data-pattern="lines" aria-pressed="true">Lines</button>
-                  <button class="btn mode" type="button" data-pattern="grid" aria-pressed="false">Grid</button>
-                  <button class="btn mode" type="button" data-pattern="brick" aria-pressed="false">Brick</button>
-                  <button class="btn mode" type="button" data-pattern="shingle" aria-pressed="false">Shingle</button>
-                </div>
-                <div class="modes" id="modelArrCell" data-for="array" role="group" aria-label="Cell" data-tip="Default rect.">
-                  <button class="btn mode on" type="button" data-cell="rect" aria-pressed="true">Rect</button>
-                  <button class="btn mode" type="button" data-cell="circle" aria-pressed="false">Circle</button>
-                  <button class="btn mode" type="button" data-cell="polygon" aria-pressed="false">Polygon</button>
-                </div>
-                <div class="modes" id="modelArrFit" data-for="array" role="group" aria-label="Fit" data-tip="Whole cell on the face (default), or its centre.">
-                  <button class="btn mode on" type="button" data-fit="inside" aria-pressed="true">Inside</button>
-                  <button class="btn mode" type="button" data-fit="centre" aria-pressed="false">Centre</button>
-                </div>
-                <label class="model-keep" data-for="array" data-tip="Every other row half a pitch over."><input id="modelArrStagger" type="checkbox"> Stagger</label>
-                <div class="modes" id="modelRibAlong" data-for="ribs" role="group" aria-label="Along" data-tip="u is level (default).">
-                  <button class="btn mode on" type="button" data-along="u" aria-pressed="true">Along U</button>
-                  <button class="btn mode" type="button" data-along="v" aria-pressed="false">Along V</button>
-                </div>
-                <div class="modes" id="modelFeatOp" data-for="array ribs" role="group" aria-label="Raise or cut" data-tip="fuse raises (default); cut recesses.">
-                  <button class="btn mode on" type="button" data-op="fuse" aria-pressed="true">Raise</button>
-                  <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Cut</button>
-                </div>
-                <label data-for="text" data-tip="A-Z, 0-9, space, -+.,:!?/'&amp;."><span class="scrub-label">Text</span><input id="modelFeatText" type="text" maxlength="80" value="A" aria-label="Text"></label>
-                <div class="modes" id="modelTextAlign" data-for="text" role="group" aria-label="Align" data-tip="at is the middle or start.">
-                  <button class="btn mode on" type="button" data-align="centre" aria-pressed="true">Centre</button>
-                  <button class="btn mode" type="button" data-align="left" aria-pressed="false">Start</button>
-                </div>
-                <div class="modes" id="modelTextOp" data-for="text" role="group" aria-label="Raise or engrave" data-tip="fuse raises (default); cut recesses.">
-                  <button class="btn mode on" type="button" data-op="fuse" aria-pressed="true">Raise</button>
-                  <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Engrave</button>
-                </div>
-                <!-- end A3 -->
-                <!-- --- A4 pattern and mirror --- -->
-                <p class="model-note" id="modelRepeatOf" data-for="pattern mirror"></p>
-                <div class="modes" id="modelPatMode" data-for="pattern" role="group" aria-label="Pattern">
-                  <button class="btn mode on" type="button" data-pat="linear" aria-pressed="true">Linear</button>
-                  <button class="btn mode" type="button" data-pat="polar" aria-pressed="false">Polar</button>
-                  <button class="btn mode" type="button" data-pat="path" aria-pressed="false">Path</button>
-                </div>
-                <div class="modes" id="modelPatAxis" data-for="pattern" data-mode="polar" role="group" aria-label="Axis">
-                  <button class="btn mode" type="button" data-axis="x" aria-pressed="false">X</button>
-                  <button class="btn mode" type="button" data-axis="y" aria-pressed="false">Y</button>
-                  <button class="btn mode on" type="button" data-axis="z" aria-pressed="true">Z</button>
-                  <button class="btn mode" type="button" data-axis="pick" aria-pressed="false" data-tip="An edge, or a cylinder or a cone">Edge</button>
-                </div>
-                <p class="model-note" id="modelPathList" data-for="pattern" data-mode="path"></p>
-                <div class="modes" id="modelPathActions" data-for="pattern" data-mode="path" role="group" aria-label="Path points">
-                  <button class="btn" id="modelPathAdd" type="button">Add point</button>
-                  <button class="btn" id="modelPathDrop" type="button">Remove last</button>
-                </div>
-                <label class="model-keep" data-for="pattern" data-mode="path" data-tip="Each copy turns to follow the path."><input id="modelPatAlign" type="checkbox" checked> Align to the path</label>
-                <div class="modes" id="modelMirPlane" data-for="mirror" role="group" aria-label="Mirror plane">
-                  <button class="btn mode" type="button" data-plane="x" aria-pressed="false">X</button>
-                  <button class="btn mode" type="button" data-plane="y" aria-pressed="false">Y</button>
-                  <button class="btn mode on" type="button" data-plane="z" aria-pressed="true">Z</button>
-                  <button class="btn mode" type="button" data-plane="face" aria-pressed="false" data-tip="A picked flat face">Face</button>
-                </div>
-                <!-- --- end A4 --- -->
-                <p class="model-note" id="modelNote" hidden></p>
-                <div class="model-actions">
-                  <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>
-                  <button class="btn" id="modelCancel" type="button">Cancel</button>
-                  <button class="btn primary" id="modelApply" type="button">Apply</button>
-                </div>
-              </div>
-              <section class="model-history" id="modelHistory" aria-label="History" hidden>
-                <button class="model-history-toggle" id="modelHistoryToggle" type="button" aria-controls="modelHistoryTree" aria-expanded="true"><span>History</span> <span class="model-history-count" id="modelHistoryCount"></span></button>
-                <div class="mh-position" id="modelPosition" role="group" aria-label="Position">
-                  <button class="mh-position-open" id="modelPositionOpen" type="button" data-tip="Where this object sits in model space. Click to open Place."><span class="mh-position-name">Position</span><span class="mh-position-text" id="modelPositionText"></span></button>
-                  <button class="mh-position-reset" id="modelPositionReset" type="button" aria-label="Reset position" data-tip="Back to where its file put it" hidden></button>
-                </div>
-                <div class="model-history-tree" id="modelHistoryTree" role="tree" aria-label="Model history"></div>
-              </section>
-              <div class="model-foot" id="modelFoot">
-                <div class="model-foot-row">
-                  <button class="model-view-reset" id="modelResetView" type="button" aria-label="Reset view" data-tip="Reset view. Shift: every object"></button>
-                  <!-- --- A10. View menu: section and colour by step. In the foot, so the toolbar stays the width the fit test measures. -->
-                  <div class="model-look" id="modelLook">
-                    <button class="model-look-open" id="modelLookOpen" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="modelLookPanel">View</button>
-                    <div class="model-look-panel" id="modelLookPanel" hidden>
-                      <label class="model-keep"><input id="modelSection" type="checkbox"> Section</label>
-                      <div class="model-look-axis" id="modelSectionAxis" role="group" aria-label="Section plane">
-                        <button type="button" data-axis="x" aria-pressed="false">X</button>
-                        <button type="button" data-axis="y" aria-pressed="false">Y</button>
-                        <button type="button" data-axis="z" aria-pressed="true">Z</button>
-                        <button type="button" data-axis="face" aria-pressed="false">Face</button>
-                      </div>
-                      <label class="model-look-offset">Offset <input id="modelSectionOffset" type="number" step="0.1" value="0" aria-label="Section offset"></label>
-                      <label class="model-keep"><input id="modelSectionFlip" type="checkbox"> Flip</label>
-                      <label class="model-keep"><input id="modelColourSteps" type="checkbox"> Colour by step</label>
-                      <p class="model-note" id="modelSectionNote" hidden></p>
-                    </div>
-                  </div>
-                  <div id="modelReadout" class="model-readout"></div>
-                </div>
               </div>
             </div>
           </div>
@@ -531,9 +567,22 @@ export function mountMarkup(root: HTMLElement) {
       <aside class="dock right" id="rightDock" aria-label="Results">
         <div class="dock-head"><button class="btn ghost dock-close" type="button" aria-label="Collapse results" aria-controls="rightDock"></button><h2>Results</h2></div>
         <div class="panel right" id="right"></div>
+        <!-- E3. Inspect: the right dock in Model. -->
+        <div class="model-inspect" id="modelInspect" data-model-ui>
+          <dl class="model-inspect-kv">
+            <dt>Size</dt><dd id="modelInspectSize"></dd>
+            <dt>Volume</dt><dd id="modelInspectVolume">—</dd>
+            <dt>Build volume</dt><dd id="modelInspectBed">—</dd>
+          </dl>
+          <h3>Check</h3>
+          <p class="model-note" id="modelInspectCheck">Not checked yet.</p>
+          <h3>On the plate</h3>
+          <div class="model-inspect-objects" id="modelInspectObjects" role="list" aria-label="Objects on the plate"></div>
+          <div class="model-inspect-bar"><button class="btn" id="modelInspectAdd" type="button">Add a file</button><button class="btn" id="modelInspectDuplicate" type="button">Duplicate</button></div>
+        </div>
       </aside>
     </div>
-    <footer class="status"><span class="status-text" id="statusText" aria-live="polite"></span><span class="status-hint" id="statusHint" hidden>Settings are in the drawer (Ctrl+B)</span><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
+    <footer class="status"><span class="model-paused" id="modelPaused" data-tip="Slicing waits until you leave Model, then slices once">Slicing paused while modeling</span><div id="modelReadout" class="model-readout"></div><button class="model-fit-warn" id="modelFitWarn" type="button" hidden data-tip="Past the build volume. Inspect has the sizes.">Too large</button><span class="status-text" id="statusText" aria-live="polite"></span><span class="status-hint" id="statusHint" hidden>Settings are in the drawer (Ctrl+B)</span><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
   </div>
   <div id="calibrate" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="calibrateTitle">
     <div class="sheet-card cal-card">

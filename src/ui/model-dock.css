@@ -1,0 +1,289 @@
+/*
+ * E3. Model in the shell: its tools in the rail, the open tool with History and Parameters in the left dock, Inspect in
+ * the right dock, and the readout in the status line. Over the view stay only the pick filter, the view cube, the context
+ * bar, and the empty card; Reset view is in the rail's View menu. The phone layout has its own rules (compact.css).
+ */
+
+/* ---------- Which side of each dock shows ---------- */
+html[data-stage="model"] #left,
+html[data-stage="model"] #right { display: none; }
+html:not([data-stage="model"]) #modelDock,
+html:not(.layout-compact):not([data-stage="model"]) #modelInspect { display: none; }
+
+/* ---------- The rail's Model set ---------- */
+.tool-rail .rail-tools { display: contents; }
+.tool-rail .model-tool:not([role=menuitem]) { width: 36px; height: 32px; padding: 0; justify-content: center; font-weight: 400; }
+/* The Features menu sits in the rail's markup but reads as a menu. */
+.tool-rail .model-feature-menu button { width: 100%; height: 28px; padding: 0 var(--space-2); display: flex; justify-content: flex-start; color: var(--text); }
+.tool-rail .model-tool .ico { width: 16px; height: 16px; }
+.tool-rail .model-tool-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.tool-rail .model-tool:disabled { opacity: 0.35; }
+#railModel[data-no-solid] [data-solid-only],
+#railModelFoot[data-no-solid] [data-solid-only] { display: none !important; }
+.tool-rail .rail-group[data-group]:first-child > .rail-caption { margin-top: 0; }
+/* The Features button carries its menu's opener on its corner. */
+.tool-rail .model-feature { display: grid; flex: 0 0 auto; }
+.tool-rail .model-feature .model-feature-more {
+  position: absolute;
+  right: -3px;
+  bottom: -2px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text-dim);
+  display: grid;
+  place-items: center;
+}
+.tool-rail .model-feature .model-feature-more:hover,
+.tool-rail .model-feature .model-feature-more[aria-expanded="true"] { background: var(--surface-3); color: var(--text); }
+.model-feature-menu { z-index: var(--z-menu); }
+
+/*
+ * A rail too short for every Model tool gives up the least first (fitRail in chrome.ts): the captions ("bare"), then
+ * 4 px of each button ("dense", which keeps every tool down to about 790 px high), and only then whole groups.
+ */
+.tool-rail[data-fit] .rail-caption { display: none; }
+.tool-rail[data-fit] .rail-sep { margin: 4px 0; }
+.tool-rail[data-fit="dense"] :is(#railModel, #railModelFoot) button:is(.model-tool:not([role=menuitem]), .rail-fold, .model-look-open) { height: 28px; }
+.tool-rail[data-fit="dense"] :is(#railModel, #railModelFoot) .rail-sep { margin: 2px 0; }
+/* A group the rail has no room for folds into one button; its tools open beside the rail. */
+.tool-rail .rail-fold[hidden] { display: none; }
+.tool-rail .rail-group[data-folded]:has(.rail-tools .model-tool[aria-pressed="true"]) > .rail-fold {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+  color: var(--accent-text);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.tool-rail .rail-group[data-folded]:not([data-open]) > .rail-tools { display: none; }
+.tool-rail .rail-group[data-folded][data-open] > .rail-tools {
+  position: fixed;
+  z-index: var(--z-menu);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+}
+
+/* ---------- Left dock: the tool, the sketch card, History, Parameters ---------- */
+html:not(.layout-compact) .model-dock {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* The tool's card: its name and Esc on top, the fields scrolling, Cancel and Apply pinned at its foot. */
+html:not(.layout-compact) .model-dock .model-panel {
+  flex: 0 1 auto;
+  min-height: 140px;
+  max-height: 64%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--line);
+}
+.model-panel-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 36px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.model-panel-head .model-panel-title,
+.model-panel-head .model-edit-head {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-3);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-panel-head:has(#modelEditHead:not([hidden])) .model-panel-title { display: none; }
+.model-panel-key { flex: 0 0 auto; margin-left: auto; }
+.model-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3);
+  /* A field reached by Tab scrolls clear of the pinned buttons. */
+  scroll-padding-bottom: var(--space-3);
+}
+.model-panel-body > .modes:first-child,
+.model-panel-body > .model-prims:first-child { margin-top: 0; }
+html:not(.layout-compact) .model-dock .model-actions {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--line);
+}
+html:not(.layout-compact) .model-dock .model-fields { gap: 6px 8px; }
+html:not(.layout-compact) .model-dock .model-prims { gap: 3px; }
+html:not(.layout-compact) .model-dock .model-prim { height: 28px; }
+html:not(.layout-compact) .model-dock .modes { flex-wrap: wrap; width: fit-content; max-width: 100%; }
+
+/* The sketch card, where the tool card sits while a sketch is chosen or drawn. */
+html:not(.layout-compact) .model-dock .sketch-cards {
+  flex: 0 0 auto;
+  gap: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+}
+html:not(.layout-compact) .model-dock .sketch-card {
+  padding: var(--space-3);
+  gap: 6px;
+}
+html:not(.layout-compact) .model-dock .sketch-card + .sketch-card { border-top: 1px solid var(--line); }
+/* The drawing card is headed as the tool card is. */
+html:not(.layout-compact) .model-dock .sketch-card:has([data-sketch-finish])::before {
+  content: "Sketch";
+  flex: 1 1 100%;
+  margin-bottom: 2px;
+  color: var(--text);
+  font-size: var(--fs-3);
+  font-weight: 600;
+}
+html:not(.layout-compact) .model-dock .sketch-card > p { flex: 1 1 100%; margin: 0; color: var(--text-dim); }
+html:not(.layout-compact) .model-dock .sketch-card > .btn,
+html:not(.layout-compact) .model-dock .sketch-card > .sketch-menu { flex: 1 1 calc(33% - 6px); min-width: 0; }
+html:not(.layout-compact) .model-dock .sketch-card > .sketch-menu > .btn { width: 100%; }
+html:not(.layout-compact) .model-dock .sketch-card .btn { justify-content: center; }
+
+/* History: below the tool, it gives way first on a short window, and keeps its header and a row. */
+html:not(.layout-compact) .model-dock .model-history {
+  flex: 0 8 auto;
+  min-height: 0;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+html:not(.layout-compact) .model-dock .model-history:not([data-collapsed="1"]) { min-height: 96px; }
+.model-history-toggle, .model-params-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 30px;
+}
+/* Parameters, under History as in Onshape. */
+html:not(.layout-compact) .model-dock .model-params {
+  flex: 0 4 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+}
+.model-params-head { display: flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; }
+.model-params-head .model-params-toggle { flex: 1 1 auto; min-width: 0; }
+.model-params-head #modelParamsRebuild { flex: 0 0 auto; height: var(--control-h-sm); }
+.model-params-main { min-height: 0; overflow-y: auto; padding: 0 var(--space-1); }
+.model-params-main[hidden] { display: none; }
+.model-params-bar { margin-top: var(--space-2); }
+/* The table, two lines a row in the dock's width: name and value, then what it evaluates to, its uses, and its order. */
+html:not(.layout-compact) .model-dock .model-params-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+html:not(.layout-compact) .model-dock .model-params-table,
+html:not(.layout-compact) .model-dock .model-params-table tbody { display: block; }
+html:not(.layout-compact) .model-dock .model-params-table tr {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  padding: 4px 0;
+}
+html:not(.layout-compact) .model-dock .model-params-table td { display: block; padding: 0; }
+html:not(.layout-compact) .model-dock .model-params-table td:nth-child(1) { flex: 1 1 40%; min-width: 0; }
+html:not(.layout-compact) .model-dock .model-params-table td:nth-child(2) { flex: 1 1 52%; min-width: 0; }
+html:not(.layout-compact) .model-dock .model-params-table td[data-param-eval] { flex: 0 0 auto; color: var(--text-dim); font: var(--fs-1) var(--font-mono); }
+html:not(.layout-compact) .model-dock .model-params-table td[data-param-eval]:not(:empty)::before { content: "= "; }
+html:not(.layout-compact) .model-dock .model-params-table td[data-param-used] { flex: 1 1 auto; color: var(--text-faint); font-size: var(--fs-1); white-space: nowrap; }
+html:not(.layout-compact) .model-dock .model-params-table td[data-param-used]:not(:empty)::before { content: "used by "; }
+html:not(.layout-compact) .model-dock .model-params-actions { flex: 0 0 auto; margin-left: auto; display: flex; gap: 2px; }
+html:not(.layout-compact) .model-dock .model-params-actions .btn { height: 20px; padding: 0 5px; font-size: var(--fs-1); }
+/* A blank row to type into has nothing to evaluate, order or delete yet. */
+html:not(.layout-compact) .model-dock .model-params-table tr:has([data-param-name]:placeholder-shown):has([data-param-value]:placeholder-shown) :is(.model-params-actions, [data-param-eval], [data-param-used]) { display: none; }
+html:not(.layout-compact) .model-dock .model-params-table input { width: 100%; height: var(--control-h-sm); }
+
+/* ---------- Right dock in Model: Inspect ---------- */
+.model-inspect {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3);
+  font-size: var(--fs-2);
+}
+.model-inspect h3 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--fs-1);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.model-inspect-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px var(--space-3); margin: 0; }
+.model-inspect-kv dt { color: var(--text-dim); }
+.model-inspect-kv dd { margin: 0; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.model-inspect-kv .model-fit { text-align: right; }
+.model-inspect .model-note { margin: 0 0 var(--space-2); }
+.model-inspect-objects { display: grid; gap: 4px; }
+/* The Prepare list's rows, with their buttons under the name in the dock's width. */
+.model-inspect .obj-row { grid-template-columns: minmax(0, 1fr); }
+.model-inspect .obj-actions { justify-content: flex-end; padding: 0 var(--space-2) var(--space-1); }
+.model-inspect-bar { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* ---------- Status line in Model ---------- */
+html:not([data-stage="model"]) :is(#modelPaused, #modelReadout, #modelFitWarn) { display: none !important; }
+/* The slicer's status line text gives Model's readout the room, but stays a live region for what it announces. */
+html[data-stage="model"] .status #statusText { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; flex: none; }
+.status .model-paused { flex: 0 0 auto; }
+.status .model-fit-warn {
+  flex: 0 0 auto;
+  height: 18px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--border));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--warn);
+  font-size: var(--fs-1);
+}
+.status .model-fit-warn[hidden] { display: none; }
+
+/* ---------- Over the view ---------- */
+.model-pick {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px;
+  border: 1px solid var(--stage-chip-line);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--stage) 70%, var(--surface-2));
+  pointer-events: auto;
+}
+.model-pick .modes { border: 0; padding: 0; background: transparent; }
+/* The view stays dark in both themes: the filter takes the stage's chip colours, as the other chips on it do. */
+.model-pick .modes .btn { color: var(--on-stage-dim); }
+.model-pick .modes .btn:hover:not(:disabled) { background: var(--stage-chip); color: var(--on-stage); }
+.model-pick .modes .btn.mode[aria-pressed="true"] { background: var(--stage-chip-on); color: var(--on-stage); }
+.model-pick .model-count { margin-left: 0; }
+
+/* A narrow window (601–960 px) stacks the Model dock over the view, with room for a tool's fields. */
+@media (max-width: 960px) {
+  html:not(.layout-compact)[data-stage="model"] .workspace.show-left:not(.show-right) { grid-template-rows: minmax(0, 46%) minmax(0, 1fr); }
+  /* The floating rail starts under the stacked dock, on the view. */
+  html:not(.layout-compact)[data-stage="model"] .workspace.show-left:not(.show-right) #toolRail { top: calc(46% + 8px); max-height: calc(54% - 16px); }
+  /* The floating rail sits at the view's left edge: the pick filter moves past it. */
+  html:not(.layout-compact) .model-pick { left: 56px; }
+}

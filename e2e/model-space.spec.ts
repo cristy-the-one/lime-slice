@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import { railClick } from "./rail";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -67,7 +69,7 @@ async function openFiles(page: Page, files: Record<string, MockSolid>, reportSea
     await page.locator("#plateAddFile").setInputFiles({ name, mimeType: "model/step", buffer: STEP });
     await expect(page.locator("#objectList .obj")).toHaveCount(i + 2);
   }
-  await page.locator("[data-plate-select]").first().click();
+  await plateClick(page, "select");
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume");
   return tree;
@@ -127,7 +129,7 @@ test("a split piece opens with its parent grey directly under it, where it was c
   await page.locator("#modelPlane").fill("4");
   await page.locator("#modelApply").click();
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(page.locator("#modelReadout")).toContainText("Volume 2400");
 
   await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,4.00,20.00,20.00,10.00");
@@ -148,16 +150,16 @@ test("two STEP files 100 mm apart in their own coordinates show 100 mm apart", a
 test("a STEP the slicer lowered onto the bed sits at its own Z in model space before Model has opened it", async ({ page }) => {
   await openFiles(page, { "low.step": boxSolid([40, 30, 20]), "high.step": boxSolid([40, 30, 20], [100, 0, 50]) });
   expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 50, 140, 30, 70]]);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(canvas(page)).toHaveAttribute("data-solid", "100.00,0.00,50.00,140.00,30.00,70.00");
 });
 
 test("with an engine that does not say how far it lowered a STEP, Model learns it the first time it opens the part", async ({ page }) => {
   await openFiles(page, { "low.step": boxSolid([40, 30, 20]), "high.step": boxSolid([40, 30, 20], [100, 0, 50]) }, false);
   expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 0, 140, 30, 20]]);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(canvas(page)).toHaveAttribute("data-solid", "100.00,0.00,50.00,140.00,30.00,70.00");
-  await page.locator("[data-plate-select]").nth(0).click();
+  await plateClick(page, "select");
   await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,0.00,40.00,30.00,20.00");
   expect(Object.values(await contextBoxes(page))).toEqual([[100, 0, 50, 140, 30, 70]]);
 });
@@ -175,10 +177,10 @@ test("a STEP re-read that another selection overtook leaves the seat as it was",
     return minZ + 10;
   });
   await page.locator("#tabPrepare").click();
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await page.locator("#stepTol").fill("0.2");
   await arrived;
-  await page.locator("[data-plate-select]").nth(0).click();
+  await plateClick(page, "select");
   release();
   await page.waitForTimeout(300);
   await page.locator("#tabModel").click();
@@ -192,10 +194,10 @@ test("pieces Separated from a raised STEP assembly sit at their own Z in model s
   const assembly = { ...lower, positions: [...lower.positions, ...upper.positions], triangles: [...lower.triangles, ...upper.triangles.map((face) => face + 6)] };
   await openFiles(page, { "base.step": boxSolid([40, 30, 20]), "asm.step": assembly });
   await page.locator("#tabPrepare").click();
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await page.locator("#separateShells").click();
   await expect(page.locator("#objectList .obj")).toHaveCount(3);
-  await page.locator("[data-plate-select]").nth(0).click();
+  await plateClick(page, "select");
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 24000");
   const boxes = Object.values(await contextBoxes(page)).sort((a, b) => a[0]! - b[0]!);
@@ -226,7 +228,7 @@ test("Place moves the open object in model space and leaves the plate and its me
   await expect(canvas(page)).toHaveAttribute("data-solid", "10.00,0.00,0.00,50.00,30.00,20.00");
 
   // The other object, opened, sees the moved one where it now is.
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await expect(canvas(page)).toHaveAttribute("data-solid", "100.00,0.00,0.00,140.00,30.00,20.00");
   expect(Object.values(await contextBoxes(page))).toEqual([[10, 0, 0, 50, 30, 20]]);
 });
@@ -263,10 +265,16 @@ test("a split typed along model X on a moved part sends the engine the plane on 
   await expect(page.locator("#modelHistoryTree [role=treeitem]").last()).toContainText("Split at X 5");
 });
 
+/** E3. Bed and Reset view are in the rail's View menu. A click on the view closes it, so this opens it when shut. */
+async function openView(page: Page) {
+  if (await page.locator("#modelLookPanel").isHidden()) await page.locator("#modelLookOpen").click();
+}
+
 test("the bed toggle hides and shows the bed, and the choice stays", async ({ page }) => {
   await openFiles(page, { "box.step": boxSolid([20, 20, 10]) });
   const toggle = page.locator("#modelBedToggle");
   await expect(canvas(page)).toHaveAttribute("data-bed-visible", "1");
+  await openView(page);
   await toggle.click();
   await expect(canvas(page)).toHaveAttribute("data-bed-visible", "0");
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
@@ -284,6 +292,7 @@ test("Reset view and Home go back to the view Model opened with, and an Apply ke
 
   await zoomAndOrbit(page);
   expect(await restingCamera(page)).not.toBe(opening);
+  await openView(page);
   await page.locator("#modelResetView").click();
   expect(await restingCamera(page)).toBe(opening);
 
@@ -296,7 +305,9 @@ test("Reset view and Home go back to the view Model opened with, and an Apply ke
   await page.keyboard.press("Shift+Home");
   const all = await restingCamera(page);
   expect(all.split(";")[1], "Shift+Home looks at the middle of both objects").toBe("120.0,15.0,10.0");
+  await openView(page);
   await page.locator("#modelResetView").click();
+  await openView(page);
   await page.locator("#modelResetView").click({ modifiers: ["Shift"] });
   expect(await restingCamera(page)).toBe(all);
 
@@ -309,16 +320,19 @@ test("Reset view and Home go back to the view Model opened with, and an Apply ke
 });
 
 for (const [width, height] of [[960, 640], [1280, 800], [1440, 900]] as const) {
-  test(`Reset view sits clear of the chip, the readout, History, the dock and the view cube at ${width}×${height}`, async ({ page }) => {
+  test(`Reset view, in the rail's View menu, opens clear of the readout, the dock and the view cube at ${width}×${height}`, async ({ page }) => {
     await openFiles(page, { "box.step": boxSolid([20, 20, 10]) });
     await page.setViewportSize({ width, height });
-    await page.locator("#modelToolBoolean").click();
+    await railClick(page, "#modelToolBoolean");
     await expect(canvas(page)).toHaveAttribute("data-handles", /.+/);
+    // E3. Over the view stay only the pick filter, the view cube and the context bar: Reset view is in View.
+    await railClick(page, "#modelLookOpen");
+    await expect(page.locator("#modelResetView")).toBeVisible();
     const reset = (await page.locator("#modelResetView").boundingBox())!;
     const view = (await canvas(page).boundingBox())!;
     const meets = (a: { x: number; y: number; width: number; height: number }, b: typeof a) =>
       a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
-    for (const id of ["#modelFit", "#modelReadout", "#modelHistory", "#modelPanel", ".model-tools"]) {
+    for (const id of ["#modelReadout", "#modelPick", "#toolRail"]) {
       const box = await page.locator(id).boundingBox();
       if (box) expect(meets(reset, box), `clear of ${id}`).toBe(false);
     }
@@ -394,12 +408,12 @@ test("Frame in the Objects list frames that object in Model and stays in Model",
   const opening = await restingCamera(page);
   await zoomAndOrbit(page);
   expect(await restingCamera(page)).not.toBe(opening);
-  await page.locator("[data-plate-frame]").first().click();
+  await plateClick(page, "frame");
   expect(await restingCamera(page)).toBe(opening);
   await expect(page.locator("#modelBody")).toBeVisible();
   await expect(page.locator("#prepareBody")).toBeHidden();
 
-  await page.locator("[data-plate-frame]").nth(1).click();
+  await plateClick(page, "frame", 1);
   await expect(canvas(page)).toHaveAttribute("data-solid", "200.00,0.00,0.00,240.00,30.00,20.00");
   const target = (await restingCamera(page)).split(";")[1]!.split(",").map(Number);
   expect(target).toEqual([220, 15, 10]);

@@ -43,6 +43,7 @@ import {
   setModifierTool,
 } from "./override-actions";
 import { setModifierOpen } from "../ui/overrides-panel";
+import { setInspectPlateActions } from "../ui/model-inspect";
 import { toggleDock } from "../ui/splitters";
 import { pushToast } from "../ui/toasts";
 import { currentRules } from "./rules";
@@ -160,6 +161,8 @@ export function wireApp() {
     if (!id || state.query.trim()) return;
     noteGroupToggle(id, details.open);
   }, true);
+  // --- E3. Inspect's plate rows: the same actions as the Prepare list, which Model hides.
+  setInspectPlateActions({ select: selectPlateObject, frame: framePlateObject, check: requestModelCheck, remove: removePlateObject, duplicate: duplicatePlateObject, add: pickAddedMesh });
   document.querySelector("#left")!.addEventListener("click", (ev) => {
     const raw = ev.target as HTMLElement;
     // An icon button is hit on its svg; the button is what the ids below name.
@@ -544,7 +547,8 @@ export function wireApp() {
     scrub(state.layer);
   });
   document.querySelector("#toggleLeft")!.addEventListener("click", () => {
-    document.querySelector(".workspace")!.classList.toggle("show-left");
+    // The same as Ctrl+B there, so a dock a Model tool stacked becomes the user's.
+    toggleDock("left");
   });
   document.querySelector("#toggleRight")!.addEventListener("click", () => {
     document.querySelector(".workspace")!.classList.toggle("show-right");

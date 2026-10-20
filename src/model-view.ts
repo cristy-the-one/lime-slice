@@ -281,10 +281,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   fit.id = "modelFit";
   fit.className = "model-fit";
   fit.hidden = true;
-  // The size chip stacks with the readout under the History panel, so a long warning never runs under it.
-  const foot = canvas.parentElement?.querySelector("#modelFoot");
-  if (foot) foot.prepend(fit);
+  // E3. The size line is Inspect's Size row. Past the build volume, the status line says so too, as Inspect may be shut.
+  const sizeRow = document.querySelector("#modelInspectSize");
+  if (sizeRow) sizeRow.append(fit);
   else canvas.parentElement?.append(fit);
+  const overChip = document.querySelector<HTMLElement>("#modelFitWarn");
+  let overShown = false;
 
   const context = new THREE.Group();
   /** The open solid's pose in model space. `body` inside it keeps the scale preview. */
@@ -871,12 +873,22 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const box = ownBox ? liveBox(ownBox, factor) : null;
     if (!box) {
       if (!fit.hidden) fit.hidden = true;
+      paintOver(false, "");
       return;
     }
     const sentence = fitSentence(outerMm(box), bed);
     if (fit.textContent !== sentence.text) fit.textContent = sentence.text;
     fit.dataset.over = sentence.over ? "1" : "0";
     fit.hidden = false;
+    paintOver(sentence.over, sentence.text);
+  }
+
+  /** The status line's warning while the part is past the build volume. Touched only when that changes. */
+  function paintOver(over: boolean, text: string) {
+    if (!overChip || (over === overShown && (!over || overChip.dataset.tip === text))) return;
+    overShown = over;
+    overChip.hidden = !over;
+    if (over) overChip.dataset.tip = text;
   }
 
   /** The bed sits centred under the open solid, its plate at the solid's lowest point in model space. */

@@ -8,6 +8,7 @@ import { state } from "../app/state.ts";
 import { PROBE_WAIT_MS } from "../model-feasibility.ts";
 import { defaultThinMm, type CheckRow, type ModelCheckReport } from "../model-check.ts";
 import { boxUnder, type Affine } from "../model-space.ts";
+import { setInspectCheck } from "./model-inspect.ts";
 
 export interface CheckSource {
   /** The mesh, in its own frame: the open solid, or a plate mesh when Model has no solid. */
@@ -165,6 +166,8 @@ function applyReport(report: ModelCheckReport) {
   rows = report.rows;
   render(rows);
   setNote(report.note);
+  // --- E3. Inspect keeps the last check of the open object.
+  setInspectCheck(report.note);
 }
 
 function setNote(next: string) {

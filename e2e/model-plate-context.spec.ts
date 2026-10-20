@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree } from "./model-tree-mock";
+import { plateClick } from "./plate-rows";
 
 type V = [number, number, number];
 
@@ -127,7 +128,7 @@ test("the grey object is not picked, framed, or counted in the bed and size read
   };
 
   await page.locator("#tabPrepare").click();
-  await page.locator("[data-plate-remove]").first().click();
+  await plateClick(page, "remove");
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   await page.locator("#tabModel").click();
   await expect(page.locator("#model")).toHaveAttribute("data-context-count", "0");
@@ -150,14 +151,14 @@ test("a plate move leaves the grey object in model space, and removing it takes 
   await expect(canvas).toHaveAttribute("data-context", "part:60.00,0.00,0.00,100.00,30.00,20.00");
 
   await page.locator("#tabPrepare").click();
-  await page.locator("[data-plate-select]").nth(0).click();
+  await plateClick(page, "select");
   await commit(page, "#placeX", 30);
-  await page.locator("[data-plate-select]").nth(1).click();
+  await plateClick(page, "select", 1);
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume 4000");
   await expect(canvas).toHaveAttribute("data-context", "part:60.00,0.00,0.00,100.00,30.00,20.00");
 
-  await page.locator("[data-plate-remove]").first().click();
+  await plateClick(page, "remove");
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   await expect(canvas).toHaveAttribute("data-context-count", "0");
 });
@@ -165,7 +166,7 @@ test("a plate move leaves the grey object in model space, and removing it takes 
 test("a plate of one object has nothing to draw", async ({ page }) => {
   await twoObjects(page);
   await page.locator("#tabPrepare").click();
-  await page.locator("[data-plate-remove]").nth(1).click();
+  await plateClick(page, "remove", 1);
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   await page.locator("#tabModel").click();
   await expect(page.locator("#modelReadout")).toContainText("Volume");
@@ -177,7 +178,7 @@ test("selecting another object while Model is open opens that object's solid", a
   await openModel(page, "small");
   await expect(page.locator("#modelReadout")).toContainText("Volume 4000");
 
-  await page.locator("[data-plate-select]").nth(0).click();
+  await plateClick(page, "select");
   await expect(page.locator("#modelReadout")).toContainText("Volume 24000");
   const boxes = await contextBoxes(page);
   expect(Object.keys(boxes)).toHaveLength(1);

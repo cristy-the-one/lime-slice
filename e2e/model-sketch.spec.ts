@@ -115,7 +115,7 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   await page.setViewportSize({ width: 1440, height: 900 });
   await openBox(page);
   const canvas = page.locator("#model");
-  const fits = () => page.locator(".model-tools").evaluate((bar) => bar.scrollWidth <= bar.clientWidth);
+  const fits = () => page.locator("#toolRail").evaluate((bar) => bar.scrollHeight <= bar.clientHeight + 1);
   expect(await fits(), "the toolbar fits before the sketch opens").toBe(true);
   await page.locator("#modelToolSketch").click();
   await page.locator("[data-sketch-plane=XY]").click();
@@ -171,7 +171,7 @@ test("constraints live in the sketch card and a typed length drives the line", a
   await page.setViewportSize({ width: 1440, height: 900 });
   await openBox(page);
   const canvas = page.locator("#model");
-  const fits = () => page.locator(".model-tools").evaluate((bar) => bar.scrollWidth <= bar.clientWidth);
+  const fits = () => page.locator("#toolRail").evaluate((bar) => bar.scrollHeight <= bar.clientHeight + 1);
   expect(await fits(), "the toolbar fits before the sketch opens").toBe(true);
   await page.locator("#modelToolSketch").click();
   await page.locator("[data-sketch-plane=XY]").click();

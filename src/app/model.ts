@@ -147,7 +147,8 @@ import { revolveOutlines, revolvePresetOf, sketchForRevolve } from "../sketch/re
 import { sweepEditOf } from "../sketch/sweep";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
-import { apiBase, apiToken, isStepName } from "./settings";
+import { apiBase, apiToken, isStepName, plateObjectSizes } from "./settings";
+import { mountModelInspect, paintModelInspect, setInspectVolume } from "../ui/model-inspect";
 import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, stepOutOfDate, usedByCount } from "../modeling/params.ts";
@@ -573,6 +574,11 @@ export function bindModelView() {
     },
   });
   noteParametersBuilt();
+  // --- E3. Inspect, the right dock in Model. ---
+  mountModelInspect({
+    objects: () => plateObjectSizes(),
+    openId: () => open?.objectId ?? state.plate.selectedId,
+  });
   // --- P1: face push/pull. The default when no other model tool is open. ---
   if (fx.model) {
     const pull = mountPull(fx.model, {
@@ -2164,6 +2170,7 @@ function clearView() {
   setModelLocked(null);
   hideEmpty();
   fx.model?.setSolid(null, IDENTITY_POSE);
+  setInspectVolume("—");
   refreshModelContext();
   fx.model?.highlight([]);
   syncModelChrome([]);
@@ -4181,6 +4188,7 @@ function present(parsed: ParsedSolid, message: string, view: Lens | null = null)
   if (!view) learnSeat(parsed);
   setModelLocked(view && !editing ? PEEK_LOCK : null);
   fx.model?.setSolid(parsed, openPose());
+  setInspectVolume(parsed.editable ? `${mm(parsed.volumeMm3)} mm³` : "—");
   if (open && framedFor !== open.objectId) {
     framedFor = open.objectId;
     frameModel(false);
@@ -4253,6 +4261,8 @@ export function refreshModelContext() {
   const obj = open ? state.plate.objects.find((item) => item.id === open!.objectId) : undefined;
   // The open object's plate mesh, so a test can tell a model-space move left it alone.
   if (canvas && obj) canvas.dataset.plateMesh = meshTokenOf(obj.bytes);
+  // --- E3. Inspect lists the plate; it repaints only when the plate or the open object changed.
+  paintModelInspect();
 }
 
 /** The plate object drawn as the ghost rather than grey: Boolean's picked tool, or the tool of a join being edited. */
@@ -4537,9 +4547,17 @@ function forgetWorkplaneSteps() {
   wpRedo = [];
 }
 
+/** A solid's tools show in the rail only while a solid is open; New solid, Sketch and Check always do. */
 function showEdits(on: boolean) {
-  document.querySelector("#modelEdit")?.toggleAttribute("hidden", !on);
-  document.querySelector("#modelToolNew")?.classList.toggle("is-icon", on);
+  let changed = false;
+  for (const id of ["#railModel", "#railModelFoot"]) {
+    const set = document.querySelector<HTMLElement>(id);
+    if (!set || set.hasAttribute("data-no-solid") !== on) continue;
+    set.toggleAttribute("data-no-solid", !on);
+    changed = true;
+  }
+  // The rail has more or fewer tools: its folds are worked out again.
+  if (changed) window.dispatchEvent(new Event("lime-rail"));
   if (!on) closeModelTool();
 }
 
@@ -4890,9 +4908,15 @@ function readout(message: string) {
 
 /** The sentence, then Show where while a refusal has boxes. Setting textContent would drop the button. */
 function paintReadout() {
-  const node = document.querySelector("#modelReadout");
+  const node = document.querySelector<HTMLElement>("#modelReadout");
   if (!node) return;
-  node.textContent = readoutText;
+  // E3. One line in the status line: the sentence ellipsizes, and its tip says it whole.
+  const sentence = document.createElement("span");
+  sentence.className = "model-readout-text";
+  sentence.textContent = readoutText;
+  node.replaceChildren(sentence);
+  if (readoutText) node.dataset.tip = readoutText;
+  else delete node.dataset.tip;
   if (!locatedNow) return;
   const button = document.createElement("button");
   button.id = "modelShowWhere";

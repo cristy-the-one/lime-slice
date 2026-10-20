@@ -444,7 +444,9 @@ test("an extrude tilts the view to show its depth, says when it is past the buil
   await page.keyboard.press("Escape");
   await expect(canvas).toHaveAttribute("data-extrude", "off");
   await expect(canvas, "back in the sketch the view is the plan again").toHaveAttribute("data-sketch-camera", "locked");
-  await expect.poll(async () => (await canvas.getAttribute("data-camera")) ?? "").toBe(plan);
+  // The same pose to the published tenth: a coordinate that settles a hair either side of 0 reads 0.0 or -0.0.
+  const pose = (text: string) => text.split(/[;,]/).map((value) => Number(value) || 0);
+  await expect.poll(async () => pose((await canvas.getAttribute("data-camera")) ?? "")).toEqual(pose(plan));
 });
 
 test("two regions on an empty bed make two objects, and Undo takes them back as one step", async ({ page }) => {

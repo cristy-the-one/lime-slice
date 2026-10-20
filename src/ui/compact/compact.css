@@ -39,7 +39,7 @@ html.layout-compact .win-controls,
 html.layout-compact .dock,
 html.layout-compact .splitter,
 html.layout-compact #viewPresets,
-html.layout-compact .rail-fly,
+html.layout-compact .rail-fly:not(#modelLookPanel),
 html.layout-compact #toolRail [data-fly],
 html.layout-compact #toolRail [data-tool="rulers"],
 html.layout-compact .gizmo-readout,
@@ -443,7 +443,6 @@ html.layout-compact #playReadout { display: none; }
 html.layout-compact[data-compact-tab="device"] .workspace { visibility: hidden; }
 html.layout-compact[data-compact-tab="device"] #compactDevice { display: block; }
 html.layout-compact[data-compact-tab="preview"] #toolRail,
-html.layout-compact[data-compact-tab="model"] #toolRail,
 html.layout-compact[data-compact-tab="device"] #toolRail,
 html.layout-compact[data-compact-tab="preview"] #compactIso,
 html.layout-compact[data-compact-tab="model"] #compactIso,
@@ -647,106 +646,163 @@ html.layout-compact .toasts {
   html.layout-compact #compactSheet { transition: none; }
 }
 
-/* Model tools stay a slim overlay. The canvas keeps the stage; the panel sits on the bottom. */
-html.layout-compact .model-top {
-  top: 8px;
-  left: 8px;
-  right: 8px;
-  transform: none;
-  width: auto;
-  max-width: none;
-  align-items: flex-start;
-}
-html.layout-compact .model-tools {
-  align-self: stretch;
-  flex-wrap: wrap;
-  overflow: visible;
-}
-html.layout-compact .model-tool-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-html.layout-compact .model-tool { position: relative; width: 36px; height: 36px; padding: 0; justify-content: center; }
-html.layout-compact .model-tools .modes .btn { min-height: 36px; }
 /*
- * The column spans the canvas: the size chip and the readout at its top, under the toolbar and short of
- * the dock on the right, and the History sheet at its bottom, which shrinks and scrolls rather than run
- * over them. The tool panel closes the column at the bottom, after the chip and the readout, so on a short
- * canvas it too shrinks and scrolls rather than run over them.
+ * E3. Model on the phone: the rail's Model set is one tool strip along the top that scrolls sideways (C19: no more
+ * three rows), the Model dock is the sheet at the bottom over the view, and the readout sits under the strip and the
+ * pick filter, clear of both (A21, B25). Inspect is on the Device tab.
  */
-html.layout-compact .model-side { top: 0; left: 0; bottom: 0; width: 100%; gap: 0; }
+html.layout-compact[data-compact-tab="model"] #toolRail {
+  right: 8px;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+html.layout-compact[data-compact-tab="model"] #toolRail .rail-foot {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+}
+html.layout-compact #toolRail #leftToggle,
+html.layout-compact #toolRail .rail-fold { display: none !important; }
+html.layout-compact #toolRail .model-tool { flex: 0 0 auto; }
+html.layout-compact .model-pick { top: 60px; left: 8px; }
+html.layout-compact .model-pick .btn { min-height: 36px; }
+/* The readout, the paused chip and the size warning, under the strip and the pick filter. */
+html.layout-compact #modelDock > #compactModelFoot {
+  /* Under the strip and the pick filter, first in the sheet's column: the auto margin keeps the sheets at the bottom. */
+  flex: 0 0 auto;
+  margin: 108px 8px auto;
+  /* The handle dock sits right of the middle at any phone size, so half the width keeps these clear of it. */
+  max-width: calc(50% - 16px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px;
+  pointer-events: none;
+}
+#compactModelFoot > * { pointer-events: auto; }
+#compactModelFoot .model-paused { background: color-mix(in srgb, var(--panel) 88%, transparent); }
+#compactModelFoot .model-readout {
+  flex: 1 1 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+#compactModelFoot .model-readout:has(.model-readout-text:empty) { display: none; }
+#compactModelFoot .model-readout-text { white-space: normal; }
+#compactModelFoot .model-fit-warn {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--warn);
+  font-size: var(--fs-1);
+}
+#compactModelFoot .model-fit-warn[hidden] { display: none; }
+
+/* The Model dock is a sheet at the bottom: the open tool, the sketch card, or History. */
+html.layout-compact #modelDock {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+html.layout-compact #modelDock > * { pointer-events: auto; }
 html.layout-compact .model-panel {
   /* The button bar: its buttons' height, and its padding above them (twice that below). */
   --model-bar-btn: 36px;
   --model-bar-pad: var(--space-1);
-  align-self: stretch;
-  margin: auto 8px 8px;
-  transform: none;
-  width: auto;
+  display: flex;
+  flex-direction: column;
+  margin: 0 8px 8px;
   min-height: 0;
-  max-height: 28%;
-  overflow: auto;
-  /* Opaque like its button bar, so the two read as one sheet. */
+  max-height: 34%;
   background: var(--panel);
-  /* A field reached by Tab scrolls to above the buttons, not under them. */
-  scroll-padding-bottom: calc(var(--model-bar-btn) + 3 * var(--model-bar-pad));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+}
+html.layout-compact .model-panel-head { height: 32px; }
+html.layout-compact .model-panel-key { display: none; }
+html.layout-compact .model-panel-body {
+  padding: var(--space-2) var(--space-3);
+  /* A field reached by Tab scrolls clear of the buttons. */
+  scroll-padding-bottom: var(--space-2);
 }
 html.layout-compact .model-fields { display: flex; flex-wrap: nowrap; overflow-x: auto; }
 html.layout-compact .model-prim { height: 44px; }
 html.layout-compact .model-fields label { flex: 0 0 84px; }
 html.layout-compact .model-fields label[data-wide] { flex-basis: 120px; }
-/* The sheet scrolls its fields and note, and keeps Cancel, Done, and Apply on its bottom edge in reach. */
+/* Cancel, Done and Apply stay on the sheet's bottom edge, clear of the floating Slice button. */
 html.layout-compact .model-actions {
-  position: sticky;
-  bottom: calc(-1 * var(--space-2));
-  /* Out over the sheet's side and bottom padding, so nothing scrolling under it shows at an edge. The buttons keep clear of the floating Slice button. */
-  margin: var(--space-2) calc(-1 * var(--space-3)) calc(-1 * var(--space-2));
+  flex: 0 0 auto;
+  margin: 0;
   padding: var(--model-bar-pad) calc(116px + var(--space-3)) calc(2 * var(--model-bar-pad)) var(--space-3);
-  background: var(--panel);
+  border-top: 1px solid var(--line);
 }
 html.layout-compact .model-actions .btn { min-height: var(--model-bar-btn); min-width: 72px; }
-/* The dock sits right of the middle at any phone size, so half the width keeps the chip and the readout clear of it. */
-html.layout-compact .model-foot { order: -1; margin: 128px 8px 8px; max-width: calc(50% - 16px); }
-/* A landscape phone fits the toolbar on one row: the stack starts right under it and leaves the sheet a row or two. */
+/* A landscape phone: room for a row of fields above slimmer buttons (still past the 24 px touch minimum). */
 @media (max-height: 500px) {
-  html.layout-compact .model-foot { margin-top: 92px; }
-  /* Room for a row of fields above the buttons, which slim down to make it (still past the 24 px touch minimum). */
-  html.layout-compact .model-panel { max-height: 40%; --model-bar-btn: 30px; --model-bar-pad: calc(var(--space-1) / 2); }
+  html.layout-compact #modelDock > #compactModelFoot { margin-top: 104px; }
+  html.layout-compact .model-panel { max-height: 46%; --model-bar-btn: 30px; --model-bar-pad: calc(var(--space-1) / 2); }
+  /* The strip shows which tool is open, so the sheet gives its head's row to the fields. */
+  html.layout-compact .model-panel-head:not(:has(#modelEditHead:not([hidden]))) { display: none; }
   /* Split's plane buttons share the fields' row, so that row shows whole above the buttons. */
-  html.layout-compact .model-bar[data-tool="split"] .model-panel { display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: var(--space-2); }
-  html.layout-compact .model-bar[data-tool="split"] .model-panel > * { flex: 0 0 100%; }
-  html.layout-compact .model-bar[data-tool="split"] #modelPlaneModes { flex: 0 0 auto; margin-top: 0; }
-  html.layout-compact .model-bar[data-tool="split"] .model-fields { flex: 1 1 0; min-width: 0; }
-  html.layout-compact .model-bar[data-tool="split"] .model-actions { flex-basis: calc(100% + 2 * var(--space-3)); }
+  html.layout-compact #modelDock[data-tool="split"] .model-panel-body { display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: var(--space-2); }
+  html.layout-compact #modelDock[data-tool="split"] .model-panel-body > * { flex: 0 0 100%; }
+  html.layout-compact #modelDock[data-tool="split"] #modelPlaneModes { flex: 0 0 auto; margin-top: 0; }
+  html.layout-compact #modelDock[data-tool="split"] .model-fields { flex: 1 1 0; min-width: 0; }
   /* So do the primitive's buttons, as a strip that scrolls on its own. */
-  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) .model-panel { display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: var(--space-2); }
-  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) .model-panel > * { flex: 0 0 100%; }
-  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) #modelPrim { display: flex; flex: 0 1 auto; min-width: 0; margin: 0; overflow-x: auto; }
-  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) .model-prim { flex: 0 0 36px; height: var(--control-h); }
-  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) .model-fields { flex: 1 1 0; min-width: 0; }
-  html.layout-compact .model-bar:is([data-tool="boolean"], [data-tool="create"]) .model-actions { flex-basis: calc(100% + 2 * var(--space-3)); }
+  html.layout-compact #modelDock:is([data-tool="boolean"], [data-tool="create"]) .model-panel-body { display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: var(--space-2); }
+  html.layout-compact #modelDock:is([data-tool="boolean"], [data-tool="create"]) .model-panel-body > * { flex: 0 0 100%; }
+  html.layout-compact #modelDock:is([data-tool="boolean"], [data-tool="create"]) #modelPrim { display: flex; flex: 0 1 auto; min-width: 0; margin: 0; overflow-x: auto; }
+  html.layout-compact #modelDock:is([data-tool="boolean"], [data-tool="create"]) .model-prim { flex: 0 0 36px; height: var(--control-h); }
+  html.layout-compact #modelDock:is([data-tool="boolean"], [data-tool="create"]) .model-fields { flex: 1 1 0; min-width: 0; }
 }
-/* History is a sheet over the canvas, opened from the toolbar. */
-html.layout-compact #modelHistoryOpen { display: inline-flex; }
-html.layout-compact #modelHistoryOpen[aria-expanded="true"] {
-  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
-  color: var(--accent-text);
+/* The sketch card, at the bottom, where the tool's sheet is. */
+html.layout-compact #modelDock .sketch-cards {
+  margin: 0 8px 8px;
+  max-height: 40%;
+  overflow-y: auto;
 }
-html.layout-compact .model-history,
-html.layout-compact #modelBar[data-tool] .model-history {
+html.layout-compact #modelDock .sketch-card {
+  padding: 6px 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+html.layout-compact #modelDock .sketch-card .btn { min-height: 36px; }
+/* History is a sheet over the view, opened from the strip. */
+html.layout-compact #modelHistoryOpen { display: grid; }
+html.layout-compact .model-history {
   position: relative;
   z-index: 4;
-  align-self: stretch;
-  width: auto;
   max-height: 55%;
-  margin: auto 0 0;
+  min-height: 0;
+  margin: 0;
   padding: 4px 6px 8px;
   background: var(--panel);
   border-radius: 12px 12px 0 0;
-  border-bottom: 0;
 }
 html.layout-compact .model-history[data-sheet="closed"] { display: none; }
-/* The sheet covers the bottom of the canvas, where Slice floats. */
+/* The sheet covers the bottom of the view, where Slice floats. */
 html.layout-compact:has(#modelBody:not([hidden]) #modelHistory[data-sheet="open"]:not([hidden])) #slice { display: none !important; }
 html.layout-compact .model-history-toggle { height: 40px; font-size: var(--fs-2); }
 html.layout-compact .model-history .model-history-toggle .ico { transform: none; }
+html.layout-compact .model-history-tree { overflow-y: auto; min-height: 0; }
 html.layout-compact .mh-note:not([hidden]) { display: block; margin: 4px 6px 0; color: var(--warn); font-size: var(--fs-2); }
 html.layout-compact .mh-row { height: 40px; font-size: var(--fs-3); }
 html.layout-compact .model-history { --mh-position-h: 40px; }
@@ -754,3 +810,38 @@ html.layout-compact .mh-position-open { font-size: var(--fs-3); }
 html.layout-compact :is(.mh-more, .mh-edit) { width: 36px; height: 36px; opacity: 1; }
 html.layout-compact .mh-rename { height: 32px; }
 html.layout-compact .mh-menu [role="menuitem"] { min-height: 40px; }
+/* Parameters: a sheet only while opened (the Features menu or Ctrl+Alt+P), so the view stays clear. */
+html.layout-compact .model-params:not([data-sheet="open"]) { display: none; }
+html.layout-compact .model-params {
+  max-height: 50%;
+  margin: 0 8px 8px;
+  padding: 6px 8px 8px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+/* Inspect, on the Device tab. */
+html.layout-compact #compactDevice .model-inspect { padding: 0; overflow: visible; }
+/* Slicing waits in Model: the floating Slice gives the sketch card its corner. */
+html.layout-compact:has(#modelBody:not([hidden]) #model:is([data-sketch="editing"], [data-sketch="choosing"])) #slice { display: none !important; }
+/* The Features menu and its corner opener live in the strip's markup. */
+html.layout-compact #toolRail .model-feature .model-feature-more {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 6px;
+}
+html.layout-compact #toolRail .model-feature .model-feature-more .ico { width: 12px; height: 12px; }
+html.layout-compact #toolRail .model-feature-menu button {
+  width: 100%;
+  height: 44px;
+  justify-content: flex-start;
+  padding: 0 var(--space-3);
+  border-radius: 8px;
+  background: transparent;
+}

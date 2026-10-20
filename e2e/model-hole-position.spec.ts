@@ -119,7 +119,7 @@ test("Through all turns Depth and its knob off, sends a flag rather than a lengt
   await openHole(page);
   await expect(page.locator("#modelHoleD")).toBeEnabled();
   await expect.poll(async () => Object.keys(await grips(page))).toContain("hole-depth");
-  await page.locator("#modelHoleR").fill("2");
+  await page.locator("#modelHoleR").fill("4");
   await page.locator("#modelHoleR").dispatchEvent("input");
 
   await page.locator("#modelThrough").check();
@@ -176,7 +176,7 @@ test("a counterbore has its fields and knobs, a screw fills them, and Edit step 
   await page.locator("#modelScrew").selectOption("M3");
   await expect(page.locator("#modelThrough")).toBeChecked();
   await expect(page.locator("#modelCounterbore")).toBeChecked();
-  for (const [id, value] of [["#modelHoleR", "1.7"], ["#modelBoreR", "3.25"], ["#modelBoreD", "3.4"]] as const) await expect(page.locator(id)).toHaveValue(value);
+  for (const [id, value] of [["#modelHoleR", "3.4"], ["#modelBoreR", "6.5"], ["#modelBoreD", "3.4"]] as const) await expect(page.locator(id)).toHaveValue(value);
   await expect(apply(page)).toBeEnabled();
   await apply(page).click();
   // The click returns before the apply request is recorded. Wait for that call.
@@ -190,7 +190,7 @@ test("a counterbore has its fields and knobs, a screw fills them, and Edit step 
   await expect(page.locator("#modelThrough")).toBeChecked();
   await expect(page.locator("#modelCounterbore")).toBeChecked();
   await expect(page.locator("#modelHoleD")).toBeDisabled();
-  for (const [id, value] of [["#modelHoleR", "1.7"], ["#modelBoreR", "3.25"], ["#modelBoreD", "3.4"]] as const) await expect(page.locator(id)).toHaveValue(value);
+  for (const [id, value] of [["#modelHoleR", "3.4"], ["#modelBoreR", "6.5"], ["#modelBoreD", "3.4"]] as const) await expect(page.locator(id)).toHaveValue(value);
   await expect(page.locator("#modelScrew")).toHaveValue("M3");
   await expect(apply(page), "the step as it is would change nothing").toBeDisabled();
 
@@ -209,12 +209,12 @@ test("a counterbore has its fields and knobs, a screw fills them, and Edit step 
   await page.keyboard.press("Shift+E");
   await expect(page.locator("#modelThrough")).not.toBeChecked();
   await expect(page.locator("#modelHoleD")).toHaveValue("8");
-  await page.locator("#modelBoreR").fill("4");
+  await page.locator("#modelBoreR").fill("8");
   await update();
   expect(lastEdit(tree)).toMatchObject({ depth: 8, counterboreRadius: 4, counterboreDepth: 3.4 });
 
   await page.keyboard.press("Shift+E");
-  await expect(page.locator("#modelBoreR")).toHaveValue("4");
+  await expect(page.locator("#modelBoreR")).toHaveValue("8");
   await page.locator("#modelBoreD").fill("2");
   await update();
   expect(lastEdit(tree)).toMatchObject({ counterboreRadius: 4, counterboreDepth: 2 });

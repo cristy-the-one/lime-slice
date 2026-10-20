@@ -267,7 +267,7 @@ test("every probed tool shows the shape its check built, and Apply ends the tool
   expect([probe.preview, typeof probe.chordMm], "the check asks for its shape").toEqual([true, "number"]);
   await expect(canvas(page), "the shape is drawn in the solid's place").toHaveAttribute("data-preview", "3800.00");
   await expect(canvas(page), "and the hole's stand-in gives way to it").not.toHaveAttribute("data-ghost", /./);
-  await page.locator("#modelHoleR").fill("3");
+  await page.locator("#modelHoleR").fill("6");
   await expect(canvas(page), "a new number shows its shape once checked").toHaveAttribute("data-preview", "3700.00");
   await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText("Hole. Volume 3700 mm³");
@@ -276,7 +276,7 @@ test("every probed tool shows the shape its check built, and Apply ends the tool
   await expect(canvas(page)).not.toHaveAttribute("data-preview", /./);
   await expect(page.locator("#modelUndo")).toBeEnabled();
   await page.locator("#modelToolHole").click();
-  await expect(page.locator("#modelHoleR"), "the tool opens again on the numbers applied last").toHaveValue("3");
+  await expect(page.locator("#modelHoleR"), "the tool opens again on the numbers applied last").toHaveValue("6");
 
   await page.locator("#modelToolBoolean").click();
   await page.locator('#modelPrim [data-kind="box"]').click();
@@ -308,8 +308,7 @@ test("a pattern in a tool's tree follows its source when that source is edited f
   await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
   await expect(readout(page)).toContainText("Volume 3900 mm³");
-  await page.locator("#modelFeatureMore").click();
-  await page.locator("#modelMenuPattern").click();
+  await page.locator("#modelToolPattern").click();
   await page.locator("#modelPatCount").fill("3");
   await page.locator("#modelPatCount").press("Tab");
   await expect(page.locator("#modelApply")).toBeEnabled();

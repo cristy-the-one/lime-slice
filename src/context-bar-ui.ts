@@ -33,7 +33,9 @@ interface ContextBarHooks {
 }
 
 const VIEW_CUBE_PX = 128;
-const OBSTACLES = [".model-top", "#modelPanel", "#modelHistory", "#modelFoot", "#modelEmpty", ".interact-hud"];
+// E3. Over the view sit only the pick filter, the empty card and a drag's sizes; a drawer covers the view too, and on the
+// phone the readout, its chips and the Model sheets do.
+const OBSTACLES = ["#modelPick", "#modelEmpty", ".interact-hud", ".workspace.is-drawers .dock", "#compactModelFoot", ".layout-compact #modelDock > :is(#modelPanel, #sketchCards, #modelHistory, #modelParams)"];
 
 let hooks: ContextBarHooks | null = null;
 let bar: HTMLElement | null = null;

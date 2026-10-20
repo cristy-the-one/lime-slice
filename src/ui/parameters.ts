@@ -5,6 +5,7 @@
  */
 import { PARAM_NAME } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, isPlainNumber, type ParamTable } from "../modeling/params.ts";
+import { openDock } from "./dock-reveal.ts";
 
 export interface ParameterHooks {
   table(): ParamTable;
@@ -23,6 +24,26 @@ export function panelParamMessage(message: string): string {
   return appParamMessage(message, "Add it in Parameters above this row, or type a number.");
 }
 
+/** E3. Parameters sit in the Model dock under History, folded or open as the user left them. */
+const FOLDED_KEY = "lime-slice-model-params-folded";
+
+function readFolded(): boolean {
+  try {
+    return localStorage.getItem(FOLDED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFolded(on: boolean) {
+  try {
+    if (on) localStorage.setItem(FOLDED_KEY, "1");
+    else localStorage.removeItem(FOLDED_KEY);
+  } catch {
+    /* blocked storage: the section opens unfolded next time */
+  }
+}
+
 export function mountParameters(next: ParameterHooks) {
   hooks = next;
   document.querySelector("#modelParamsAdd")?.addEventListener("click", () => {
@@ -30,42 +51,65 @@ export function mountParameters(next: ParameterHooks) {
     // --- D33. The new row is where typing goes.
     [...document.querySelectorAll<HTMLInputElement>("#modelParamsBody [data-param-name]")].at(-1)?.focus();
   });
-  // --- D33. Escape closes the panel, as it closes a tool, and focus goes back to the Features menu button.
-  document.querySelector("#modelParams")?.addEventListener("keydown", (ev) => {
+  // --- D33. Escape folds the section, as it closes a tool, and focus goes to its header.
+  document.querySelector("#modelParamsMain")?.addEventListener("keydown", (ev) => {
     if ((ev as KeyboardEvent).key !== "Escape") return;
     ev.preventDefault();
     ev.stopPropagation();
     closeParameters();
-    document.querySelector<HTMLButtonElement>("#modelFeatureMore")?.focus();
+    document.querySelector<HTMLButtonElement>("#modelParamsToggle")?.focus();
   });
-  document.querySelector("#modelParamsClose")?.addEventListener("click", () => closeParameters());
+  document.querySelector("#modelParamsToggle")?.addEventListener("click", () => {
+    if (parametersOpen()) closeParameters();
+    else openParameters(false);
+  });
   document.querySelector("#modelParamsRebuild")?.addEventListener("click", () => hooks?.rebuild());
   document.querySelector("#modelParamsBody")?.addEventListener("input", onInput);
   document.querySelector("#modelParamsBody")?.addEventListener("click", onClick);
-}
-
-export function toggleParameters() {
-  const panel = document.querySelector<HTMLElement>("#modelParams");
-  if (!panel) return;
-  if (panel.hidden) openParameters();
-  else closeParameters();
-}
-
-export function openParameters() {
-  const panel = document.querySelector<HTMLElement>("#modelParams");
-  if (!panel) return;
-  panel.hidden = false;
+  setFolded(readFolded());
   paint(false);
-  panel.querySelector<HTMLInputElement>("input")?.focus();
+}
+
+function setFolded(on: boolean) {
+  const main = document.querySelector<HTMLElement>("#modelParamsMain");
+  if (main) main.hidden = on;
+  document.querySelector("#modelParamsToggle")?.setAttribute("aria-expanded", on ? "false" : "true");
+  const section = document.querySelector<HTMLElement>("#modelParams");
+  section?.setAttribute("data-collapsed", on ? "1" : "0");
+  // On the phone the section is a sheet that shows only while open.
+  if (on) section?.setAttribute("data-sheet", "closed");
+}
+
+/** Ctrl+Alt+P: open the section and go to its first field, or fold it. */
+export function toggleParameters() {
+  // Folded only from inside: from anywhere else the key goes to the parameters, opening them if need be.
+  if (parametersOpen() && document.querySelector("#modelParams")?.contains(document.activeElement)) closeParameters();
+  else revealParameters();
+}
+
+/** The Features menu's Parameters and Ctrl+Alt+P: the Model dock shows, the section opens, and typing goes to it. */
+export function revealParameters() {
+  // Asked for by the user, so the dock opens as their own choice.
+  openDock("left");
+  document.querySelector<HTMLElement>("#modelParams")?.setAttribute("data-sheet", "open");
+  openParameters(true);
+  document.querySelector<HTMLElement>("#modelParams")?.scrollIntoView({ block: "nearest" });
+}
+
+function openParameters(focus: boolean) {
+  setFolded(false);
+  writeFolded(false);
+  paint(false);
+  if (focus) document.querySelector<HTMLInputElement>("#modelParamsBody input")?.focus();
 }
 
 export function closeParameters() {
-  const panel = document.querySelector<HTMLElement>("#modelParams");
-  if (panel) panel.hidden = true;
+  setFolded(true);
+  writeFolded(true);
 }
 
 export function parametersOpen(): boolean {
-  return document.querySelector<HTMLElement>("#modelParams")?.hidden === false;
+  return document.querySelector<HTMLElement>("#modelParamsMain")?.hidden === false;
 }
 
 /** The table changed outside the panel, or a rebuild finished. */
@@ -139,6 +183,7 @@ function rowView(row: { name: string; text: string }, index: number, count: numb
   name.spellcheck = false;
   name.autocomplete = "off";
   name.setAttribute("aria-label", "Parameter name");
+  name.placeholder = "Name";
   name.dataset.paramName = "";
   const value = document.createElement("input");
   value.type = "text";
@@ -146,6 +191,7 @@ function rowView(row: { name: string; text: string }, index: number, count: numb
   value.spellcheck = false;
   value.autocomplete = "off";
   value.setAttribute("aria-label", "Value or expression");
+  value.placeholder = "Value";
   value.dataset.paramValue = "";
   const evaluated = document.createElement("td");
   evaluated.dataset.paramEval = "";
@@ -239,6 +285,9 @@ function writeFromDom() {
 }
 
 function paintRebuild() {
+  const counter = document.querySelector("#modelParamsCount");
+  const named = `· ${Object.keys(hooks?.table() ?? {}).length}`;
+  if (counter && counter.textContent !== named) counter.textContent = named;
   const button = document.querySelector<HTMLButtonElement>("#modelParamsRebuild");
   if (!button) return;
   const count = hooks?.affected() ?? 0;
