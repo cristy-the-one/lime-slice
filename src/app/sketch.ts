@@ -870,13 +870,6 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       else beginSweep();
       return;
     }
-    if (target.dataset.sketchCancel != null) {
-      if (gesture) endExtrude();
-      else if (revolve) endRevolve();
-      else if (loft) endLoft();
-      else if (sweep) endSweep();
-      return;
-    }
     // --- B20. A revolve turns the other way about the same axis. ---
     if (target.dataset.sketchFlip != null && revolve) {
       revolve = { ...revolve, axis: flipAxis(revolve.axis), follow: false };
@@ -924,6 +917,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     if (target.dataset.sketchCancel != null) {
+      // The prompt with Cancel goes away, so the keyboard lands on the button that started the feature.
+      const started = sweep ? "sweep" : loft ? "loft" : revolve ? "revolve" : gesture ? "extrude" : "";
+      if (started) cardFocus = [`[data-sketch-${started}]`];
       if (sweep) endSweep();
       else if (loft) endLoft();
       else if (revolve) endRevolve();
@@ -1514,7 +1510,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   /** A selector for the button with the same data attributes as `node`, or null when it has none. */
   function sameButton(node: HTMLElement): string | null {
-    const data = Object.entries(node.dataset).map(([name, value]) => `[data-${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${CSS.escape(value ?? "")}"]`);
+    // The tip text changes with a button's blocked state, so it cannot name the button.
+    const data = Object.entries(node.dataset).filter(([name]) => name !== "tip" && name !== "tipIdle").map(([name, value]) => `[data-${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${CSS.escape(value ?? "")}"]`);
     return data.length > 0 ? `button${data.join("")}` : null;
   }
 
@@ -1566,25 +1563,24 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     node.style.top = `${top}px`;
   }
 
-  /** Why Apply cannot keep the open feature, or "" when it can. The same sentence is the button's tooltip. */
+  /**
+   * Why Apply cannot keep the open feature for want of a pick, or "" when it can. The same sentence is the button's
+   * tooltip. Only picks block: a refusal the builder or the modeler gives is shown on Apply, under the box and in the
+   * status line, so it names the real cause and a retry is never blocked by a stale note.
+   */
   function featureBlocked(): string {
     if (revolve) {
       if (revolve.crossing) return `${CROSS_REFUSAL} Move the axis, or pick a region on one side of it.`;
       if (revolve.regions.length === 0) return "Select a region to revolve.";
-      if (!currentRevolveOp()) return "The revolve is not ready.";
       return "";
     }
     if (loft) {
-      if (loft.note) return loft.note;
       if (loft.picks.length < 2) return "Pick at least two sections to loft.";
-      if (!currentLoftOp()) return "The loft is not ready.";
       return "";
     }
     if (sweep) {
-      if (sweep.note) return sweep.note;
       if (!sweep.profile || !sweep.profileSketch) return "Pick a region to sweep.";
       if (sweep.path.length < 2) return "Pick a path to sweep along.";
-      if (!currentSweepOp()) return "The sweep is not ready.";
       return "";
     }
     if (gesture && gesture.regions.length === 0) return "Select a region to extrude.";
