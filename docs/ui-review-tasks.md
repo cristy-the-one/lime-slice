@@ -36,6 +36,8 @@ Priority: **P0** blocks merging the branch; **P1** is needed for an ergonomic st
 
 ### PH-01 (P0). The lit edges must stand out, and the solid must not wash out
 
+Status: done. Aspect lines are 4 px axis colour (`depthTest: false`) with a dashed hidden pass. The solid stays at opacity 1 (`data-solid-opacity`). Ghost edges dim to 0.35 and ghost faces by 20%. Screenshots: `ph01-before-axis.png` (the previous pale edges) and `ph01-after-axis.png`.
+
 - **Seen**: `after-handle-axis.png`, `after-handle-field.png`.
   - The four "Depth (Y)" edges are thin, pale green, and hard to see.
   - The whole solid and ghost go translucent (`aspectDim`: the solid at 0.55, the ghost at 0.45×), so the picture

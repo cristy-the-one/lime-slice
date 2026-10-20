@@ -179,6 +179,12 @@ A count, a margin, and the thin-wall threshold have no edge of their own. Those 
 
 ![The same edges, from the keyboard, while Depth Y is focused](screenshots/ui-review-3-1/after-handle-field.png)
 
+Those first lit edges were pale and the solid went translucent. The lines are now the axis colour at 4 px, drawn through the ghost, with the hidden run dashed. The solid stays opaque. Ghost edges drop to 0.35 and ghost faces by a fifth.
+
+![Pale edges and a washed-out solid](screenshots/ui-review-3-1/ph01-before-axis.png)
+
+![Axis-coloured edges, solid left opaque](screenshots/ui-review-3-1/ph01-after-axis.png)
+
 ## Checks
 
 - `npx tsc --noEmit`

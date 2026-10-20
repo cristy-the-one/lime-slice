@@ -4,6 +4,25 @@ import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree } from "./model-tree-mock";
 
+/** CIE76, enough to tell an axis green from a washed-out edge. */
+function deltaE(rgb: number[], target: number[]) {
+  const lab = (channels: number[]) => {
+    const lin = channels.map((value) => {
+      const c = value / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    const x = (lin[0]! * 0.4124 + lin[1]! * 0.3576 + lin[2]! * 0.1805) / 0.95047;
+    const y = lin[0]! * 0.2126 + lin[1]! * 0.7152 + lin[2]! * 0.0722;
+    const z = (lin[0]! * 0.0193 + lin[1]! * 0.1192 + lin[2]! * 0.9505) / 1.08883;
+    const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+    const fy = f(y);
+    return [116 * fy - 16, 500 * (f(x) - fy), 200 * (fy - f(z))];
+  };
+  const a = lab(rgb);
+  const b = lab(target);
+  return Math.hypot(a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!);
+}
+
 const out = path.resolve("artifacts/model-drag");
 fs.mkdirSync(out, { recursive: true });
 
@@ -314,11 +333,38 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
   await expect(page.locator("#model")).toHaveAttribute("data-aspect-tip", /Depth \(Y\)/);
   await expect(page.locator("#model")).toHaveAttribute("data-aspect-mapped", "1");
   await expect(page.locator("#model")).toHaveAttribute("data-aspect-dim", "1");
+  await expect(page.locator("#model")).toHaveAttribute("data-solid-opacity", "1");
   await expect(page.locator("#modelDy")).toHaveClass(/is-aspect/);
   await expect(page.locator(".model-drag-tip")).toContainText("Depth (Y)");
   await expect(page.locator(".model-aspect-label")).toContainText("Depth (Y)");
   expect(await page.locator("#model").getAttribute("data-ghost-lit")).not.toBe("1");
-  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/after-handle-axis.png" });
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-sample", /-?\d+,-?\d+/);
+  const sample = ((await page.locator("#model").getAttribute("data-aspect-sample")) ?? "0,0").split(",").map(Number);
+  const rgb = await page.evaluate(([sx, sy]) => {
+    const canvas = document.querySelector<HTMLCanvasElement>("#model")!;
+    const scale = canvas.width / Math.max(1, canvas.clientWidth);
+    const off = document.createElement("canvas");
+    off.width = canvas.width;
+    off.height = canvas.height;
+    const ctx = off.getContext("2d")!;
+    ctx.drawImage(canvas, 0, 0);
+    let best = 1e9;
+    let pick = [0, 0, 0];
+    const target = [143, 206, 106];
+    for (let dy = -3; dy <= 3; dy += 1) {
+      for (let dx = -3; dx <= 3; dx += 1) {
+        const px = ctx.getImageData(Math.round(sx! * scale) + dx, Math.round(sy! * scale) + dy, 1, 1).data;
+        const err = Math.hypot(px[0]! - target[0]!, px[1]! - target[1]!, px[2]! - target[2]!);
+        if (err < best) {
+          best = err;
+          pick = [px[0]!, px[1]!, px[2]!];
+        }
+      }
+    }
+    return pick;
+  }, sample);
+  expect(deltaE(rgb, [143, 206, 106]), `lit pixel ${rgb.join(",")}`).toBeLessThan(10);
+  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph01-after-axis.png" });
   await page.mouse.move(at.x - 300, at.y + 200);
   await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
   await expect(page.locator("#modelDy")).not.toHaveClass(/is-aspect/);
@@ -327,7 +373,7 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
   await page.locator("#modelDy").focus();
   await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-1");
   await expect(page.locator("#modelDy")).toHaveClass(/is-aspect/);
-  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/after-handle-field.png" });
+  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph01-after-field.png" });
   await page.locator("#modelDy").blur();
   await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
 

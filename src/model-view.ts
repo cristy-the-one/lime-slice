@@ -251,7 +251,7 @@ export interface SketchViewState {
 }
 
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
   // A split shows its two sides by clipping the solid at the plane.
   renderer.localClippingEnabled = true;
@@ -388,11 +388,17 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** The dock's seat for the canvas size it was worked out for: it changes only when the canvas does. */
   let seated: { width: number; height: number; seat: DockSeat } | null = null;
   let aspectDim = false;
+  /** Aspect lines, in screen pixels. Full axis colour, thick enough to read on the ghost. */
+  const ASPECT_LINE_PX = 4;
   /** The panel or HUD field that has focus, so its handle lights without a pointer. */
   let focusedField: string | null = null;
   let aspectNow: HandleAspect | null = null;
   let aspectLines: LineSegments2 | null = null;
+  let aspectHidden: LineSegments2 | null = null;
   let aspectBodyLines: LineSegments2 | null = null;
+  let aspectBodyHidden: LineSegments2 | null = null;
+  /** The lit segments, for a screen-space sample of the line colour. */
+  let aspectSample: { positions: number[]; body: boolean } | null = null;
   let overHandle: string | null = null;
   let drag: ActiveDrag | null = null;
   let handleCb: (drag: HandleDrag) => void = () => {};
@@ -478,6 +484,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
   });
+  canvas.dataset.solidOpacity = "1";
   const edgeMaterial = new THREE.LineBasicMaterial({ color: IDLE_EDGE });
 
   function clearPreview() {
@@ -804,17 +811,24 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   /** `flat` for a mesh that carries no normals, as a grey object's buffers do. */
+  /** Faces of the ghost step back by at most a fifth while one aspect is lit. The solid stays as it is. */
+  function ghostFaceOpacity(base: number) {
+    return aspectDim ? base * 0.8 : base;
+  }
+
   function ghostMaterial(opacity: number, flat = false) {
-    return new THREE.MeshStandardMaterial({
+    const material = new THREE.MeshStandardMaterial({
       color: accent,
       roughness: 0.55,
       metalness: 0.05,
       flatShading: flat,
       transparent: true,
-      opacity: aspectDim ? Math.max(0.08, opacity * 0.45) : opacity,
+      opacity: ghostFaceOpacity(opacity),
       depthWrite: false,
       side: THREE.DoubleSide,
     });
+    material.userData.baseOpacity = opacity;
+    return material;
   }
 
   const contextMat = contextMaterial(colors.context);
@@ -993,7 +1007,19 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const material = child.material;
       if (!(material instanceof THREE.LineBasicMaterial)) return;
       material.transparent = true;
-      material.opacity = aspectDim ? 0.22 : 0.95;
+      material.opacity = aspectDim ? 0.35 : 0.95;
+    });
+  }
+
+  function restyleGhostFaces() {
+    ghosts.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      const material = child.material;
+      if (!(material instanceof THREE.MeshStandardMaterial)) return;
+      const base = material.userData.baseOpacity;
+      if (typeof base !== "number") return;
+      material.opacity = ghostFaceOpacity(base);
+      material.needsUpdate = true;
     });
   }
 
@@ -2163,12 +2189,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setSketchDim(on) {
       if (solidDimmed === on) return;
       solidDimmed = on;
-      solidMaterial.transparent = on || aspectDim;
-      solidMaterial.opacity = on ? 0.35 : aspectDim ? 0.55 : 1;
+      solidMaterial.transparent = on;
+      solidMaterial.opacity = on ? 0.35 : 1;
       solidMaterial.needsUpdate = true;
-      edgeMaterial.transparent = on || aspectDim;
-      edgeMaterial.opacity = on || aspectDim ? 0.35 : 1;
+      edgeMaterial.transparent = on;
+      edgeMaterial.opacity = on ? 0.35 : 1;
       edgeMaterial.needsUpdate = true;
+      canvas.dataset.solidOpacity = String(solidMaterial.opacity);
       kick();
     },
     setSketchDraw(mesh) {
@@ -2598,20 +2625,18 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return { phase, x: ev.clientX, y: ev.clientY, alt: ev.altKey, ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey };
   }
 
-  /** The open solid steps back while one aspect is lit. A sketch that already dims it is left as it is. */
+  /**
+   * An aspect dims the ghost only. The solid's material is left alone: a sketch dims it through `setSketchDim`,
+   * and a handle must not wash the part out.
+   */
   function setAspectDim(next: boolean) {
     if (aspectDim === next) return;
     aspectDim = next;
     canvas.dataset.aspectDim = next ? "1" : "0";
-    if (!solidDimmed) {
-      solidMaterial.transparent = next;
-      solidMaterial.opacity = next ? 0.55 : 1;
-      solidMaterial.needsUpdate = true;
-      edgeMaterial.transparent = next;
-      edgeMaterial.opacity = next ? 0.35 : 1;
-      edgeMaterial.needsUpdate = true;
-    }
-    rebuildGhost();
+    canvas.dataset.solidOpacity = String(solidMaterial.opacity);
+    restyleGhostFaces();
+    restyleGhostLines();
+    kick();
   }
 
   function setOverHandle(next: string | null) {
@@ -2626,8 +2651,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     aspectNow = aspect;
     const world = aspect?.space === "world" ? aspect.lines : [];
     const bodyLines = aspect?.space === "body" ? aspect.lines : [];
-    aspectLines = replaceAspect(aspectGroup, aspectLines, world, aspect ? handleColor(aspect.color) : accent);
-    aspectBodyLines = replaceAspect(body, aspectBodyLines, bodyLines, aspect ? handleColor(aspect.color) : accent);
+    const color = aspect ? handleColor(aspect.color) : accent;
+    aspectSample = world.length >= 6 ? { positions: world, body: false } : bodyLines.length >= 6 ? { positions: bodyLines, body: true } : null;
+    aspectLines = replaceAspect(aspectGroup, aspectLines, world, color, false);
+    aspectHidden = replaceAspect(aspectGroup, aspectHidden, world, color, true);
+    aspectBodyLines = replaceAspect(body, aspectBodyLines, bodyLines, color, false);
+    aspectBodyHidden = replaceAspect(body, aspectBodyHidden, bodyLines, color, true);
     setAspectDim(aspect?.dim === true);
     markAspectFields(aspect);
     publishAspect(handle, aspect);
@@ -2691,19 +2720,44 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return [...worldPoints(local)];
   }
 
-  function replaceAspect(parent: THREE.Object3D, current: LineSegments2 | null, positions: number[], color: number): LineSegments2 | null {
-    if (current) {
-      parent.remove(current);
-      const material = current.material as LineMaterial;
-      const index = fatLines.indexOf(material);
-      if (index >= 0) fatLines.splice(index, 1);
-      disposeObject(current);
-    }
-    const next = fatLine(positions, 5, 1, color);
-    if (!next) return null;
-    next.renderOrder = 8;
-    parent.add(next);
-    return next;
+  function dropAspect(parent: THREE.Object3D, current: LineSegments2 | null) {
+    if (!current) return;
+    parent.remove(current);
+    const material = current.material as LineMaterial;
+    const index = fatLines.indexOf(material);
+    if (index >= 0) fatLines.splice(index, 1);
+    disposeObject(current);
+  }
+
+  /** Full axis colour. The solid pass reads through the ghost; the dashed pass is only the part the solid hides. */
+  function replaceAspect(parent: THREE.Object3D, current: LineSegments2 | null, positions: number[], color: number, hidden: boolean): LineSegments2 | null {
+    dropAspect(parent, current);
+    if (positions.length < 6) return null;
+    const geometry = new LineSegmentsGeometry();
+    geometry.setPositions(positions);
+    const material = new LineMaterial({
+      color: hidden ? darkenHex(color, 0.35) : color,
+      linewidth: ASPECT_LINE_PX,
+      transparent: hidden,
+      opacity: 1,
+      depthTest: hidden,
+      depthWrite: false,
+      worldUnits: false,
+      dashed: hidden,
+      dashScale: 1,
+      dashSize: 3,
+      gapSize: 2,
+      toneMapped: false,
+    });
+    if (hidden) material.depthFunc = THREE.GreaterEqualDepth;
+    material.resolution.copy(lineResolution());
+    fatLines.push(material);
+    const lines = new LineSegments2(geometry, material);
+    if (hidden) lines.computeLineDistances();
+    lines.renderOrder = hidden ? 9 : 8;
+    lines.raycast = () => undefined;
+    parent.add(lines);
+    return lines;
   }
 
   function markAspectFields(aspect: HandleAspect | null) {
@@ -2744,6 +2798,36 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     canvas.dataset.aspectField = aspect.fields.join(" ");
     canvas.dataset.aspectMapped = aspect.mapped ? "1" : "0";
     canvas.dataset.aspectLines = String(Math.floor(aspect.lines.length / 6));
+  }
+
+  function darkenHex(color: number, factor: number): number {
+    const scale = (channel: number) => Math.max(0, Math.min(255, Math.round(channel * factor)));
+    return (scale((color >> 16) & 255) << 16) | (scale((color >> 8) & 255) << 8) | scale(color & 255);
+  }
+
+  /** A lit segment's midpoint, in canvas pixels, so a test can read that pixel's colour. */
+  function publishAspectSample() {
+    const sample = aspectSample;
+    if (!sample || sample.positions.length < 6) {
+      delete canvas.dataset.aspectSample;
+      return;
+    }
+    const positions = sample.positions;
+    const mid = new THREE.Vector3(
+      (positions[0]! + positions[3]!) / 2,
+      (positions[1]! + positions[4]!) / 2,
+      (positions[2]! + positions[5]!) / 2,
+    );
+    if (sample.body) body.localToWorld(mid);
+    const projectedAt = mid.project(camera);
+    if (projectedAt.z < -1 || projectedAt.z > 1) {
+      delete canvas.dataset.aspectSample;
+      return;
+    }
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const text = `${Math.round((projectedAt.x * 0.5 + 0.5) * width)},${Math.round((-projectedAt.y * 0.5 + 0.5) * height)}`;
+    if (canvas.dataset.aspectSample !== text) canvas.dataset.aspectSample = text;
   }
 
   function placeAspectLabel() {
@@ -2892,7 +2976,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     }
     const text = grips.join(" ");
     if (canvas.dataset.handles !== text) canvas.dataset.handles = text;
-    if (aspectNow) placeAspectLabel();
+    if (aspectNow) {
+      placeAspectLabel();
+      publishAspectSample();
+    } else if (canvas.dataset.aspectSample) delete canvas.dataset.aspectSample;
     // --- A10. The section arrow, sized like a handle, drawn in model space.
     if (sectionPlaneWorld) {
       if (!sectionArrow) {
