@@ -10,6 +10,7 @@ import type { PlaceFields } from "../model-space";
 import { toolKeys, type ModelTree } from "../model-tree";
 import { isMobileLayout } from "../platform";
 import { state } from "../app/state";
+import { openDock } from "./dock-reveal";
 
 /** Rows are named by `RowKey`: an open solid's step, or a step of a tool one of its joins takes ("Booleans between objects"). */
 interface ModelHistoryHooks {
@@ -302,7 +303,11 @@ export function toggleModelHistoryFocus() {
   const from = document.activeElement;
   returnFocus = from instanceof HTMLElement && from !== document.body && !panel.contains(from) ? from : null;
   if (isMobileLayout()) setSheet(true, true);
-  else if (collapsed) setCollapsed(false);
+  else {
+    // E3. History is in the Model dock: a closed dock opens, as the user asked for History.
+    if (!panel.checkVisibility()) openDock("left");
+    if (collapsed) setCollapsed(false);
+  }
   focusRow(focusId ?? shownKey());
 }
 

@@ -31,6 +31,7 @@ import { evaluate, type Params } from "../modeling/expr.ts";
 import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
 import { revealParameters } from "./parameters.ts";
 import { revealDock } from "./dock-reveal.ts";
+import { diameterExpr, radiusExpr } from "./diameter-expr.ts";
 import "./model-dock.css";
 
 export type { ModelTool } from "../model-drag";
@@ -190,15 +191,11 @@ function shownScale(id: string): number {
 
 /** An expression typed in a diameter field, as the radius the op keeps, and back. Older radius expressions stay radii. */
 function storedExpr(id: string, text: string): string {
-  if (!DIAMETER_FIELDS.has(id)) return text;
-  const back = /^\((.*)\) \* 2$/.exec(text);
-  return back ? back[1]! : `(${text}) / 2`;
+  return DIAMETER_FIELDS.has(id) ? radiusExpr(text) : text;
 }
 
 function shownExpr(id: string, text: string): string {
-  if (!DIAMETER_FIELDS.has(id)) return text;
-  const back = /^\((.*)\) \/ 2$/.exec(text);
-  return back ? back[1]! : `(${text}) * 2`;
+  return DIAMETER_FIELDS.has(id) ? diameterExpr(text) : text;
 }
 
 /** The left dock opened for the open tool. It closes again with the tool, unless the user opened or closed it since. */
@@ -857,7 +854,8 @@ function closeTool() {
     setRepeatDraft(ended.before.repeat);
     setShellClosed(ended.before.shellClosed);
     document.querySelector<HTMLElement>("#modelEditHead")?.toggleAttribute("hidden", true);
-    document.querySelector("#modelPanel")?.removeAttribute("aria-labelledby");
+    // E3. The card is named by its title again.
+    document.querySelector("#modelPanel")?.setAttribute("aria-labelledby", "modelPanelTitle");
     paintPrimRow();
   }
   if (!ended) resetRepeatDraft();

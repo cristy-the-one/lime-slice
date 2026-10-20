@@ -547,7 +547,8 @@ export function wireApp() {
     scrub(state.layer);
   });
   document.querySelector("#toggleLeft")!.addEventListener("click", () => {
-    document.querySelector(".workspace")!.classList.toggle("show-left");
+    // The same as Ctrl+B there, so a dock a Model tool stacked becomes the user's.
+    toggleDock("left");
   });
   document.querySelector("#toggleRight")!.addEventListener("click", () => {
     document.querySelector(".workspace")!.classList.toggle("show-right");

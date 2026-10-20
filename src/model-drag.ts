@@ -83,6 +83,8 @@ export interface DragHandle {
   color: "x" | "y" | "z" | "accent";
   label: string;
   unit: "mm" | "°" | "×" | "count";
+  /** B24. The label shows the value times this: a hole's radius knob reads as its diameter, as its field does. */
+  shown?: number;
   /** The fields' values when the handle was placed. */
   values: number[];
   /** A `surface` handle's fields are this frame's U, V, W, so the point under the pointer is written in it. */
@@ -347,13 +349,13 @@ function holeHandles(ctx: DragContext): Spec[] {
   const axis = drillAxis(ctx.holeAxis);
   const side = drillSide(axis);
   const knobs: Spec[] = [
-    axisHandle("hole-radius", "knob", "modelHoleR", KNOB, side, "accent", "Radius", { min: 0.1, step: 0.5 }),
+    axisHandle("hole-radius", "knob", "modelHoleR", KNOB, side, "accent", "Diameter", { min: 0.1, step: 0.5, shown: 2 }),
     ...(ctx.hole?.through ? [] : [axisHandle("hole-depth", "knob", "modelHoleD", KNOB, axis, "z", "Depth", { min: 0.1 })]),
     // The counterbore's radius takes the next axis, as a primitive's second size does; its depth sits on the drill
     // axis nearer the dock's middle than the hole's, as the shallower of the two.
     ...(ctx.hole?.counterbore
       ? [
-          axisHandle("bore-radius", "knob", "modelBoreR", KNOB, facingUp(cross(axis, side)), "accent", "Bore radius", { min: 0.1, step: 0.5 }),
+          axisHandle("bore-radius", "knob", "modelBoreR", KNOB, facingUp(cross(axis, side)), "accent", "Bore diameter", { min: 0.1, step: 0.5, shown: 2 }),
           axisHandle("bore-depth", "knob", "modelBoreD", BORE_DEPTH_SEAT, axis, "z", "Bore depth", { min: 0.1 }),
         ]
       : []),
@@ -720,9 +722,9 @@ export function fieldText(value: number): string {
 }
 
 /** The short label that follows the pointer while a handle moves. */
-export function dragLabel(handle: Pick<DragHandle, "label" | "unit">, values: readonly number[]): string {
+export function dragLabel(handle: Pick<DragHandle, "label" | "unit" | "shown">, values: readonly number[]): string {
   if (values.length === 3) return `${handle.label} ${values.map((value) => fieldText(value)).join(", ")} mm`;
-  const value = fieldText(values[0] ?? 0);
+  const value = fieldText((values[0] ?? 0) * (handle.shown ?? 1));
   if (handle.unit === "×") return `${handle.label} ${value}×`;
   if (handle.unit === "count") return `${handle.label} ${value}`;
   if (handle.unit === "°") return `${handle.label} ${value}°`;

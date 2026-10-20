@@ -250,6 +250,7 @@ eq("a length label", dragLabel({ label: "Size X", unit: "mm" }, [12.345]), "Size
 eq("a turn label", dragLabel({ label: "Turn Z", unit: "°" }, [45]), "Turn Z 45°");
 eq("a factor label", dragLabel({ label: "Factor", unit: "×" }, [1.5]), "Factor 1.5×");
 eq("a point label", dragLabel({ label: "A", unit: "mm" }, [1, 2, 3]), "A 1, 2, 3 mm");
+eq("a hole radius knob reads as the diameter", dragLabel({ label: "Diameter", unit: "mm", shown: 2 }, [1.7]), "Diameter 3.4 mm");
 const a: Vec3 = [0, 0, 0];
 eq("the measure note", measureNote(a, [3, 4, 0]), "Distance 5 mm. ΔX 3, ΔY 4, ΔZ 0 mm.");
 

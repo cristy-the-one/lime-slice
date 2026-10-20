@@ -5,7 +5,7 @@
  */
 import { PARAM_NAME } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, isPlainNumber, type ParamTable } from "../modeling/params.ts";
-import { revealDock } from "./dock-reveal.ts";
+import { openDock } from "./dock-reveal.ts";
 
 export interface ParameterHooks {
   table(): ParamTable;
@@ -82,13 +82,15 @@ function setFolded(on: boolean) {
 
 /** Ctrl+Alt+P: open the section and go to its first field, or fold it. */
 export function toggleParameters() {
-  if (parametersOpen()) closeParameters();
+  // Folded only from inside: from anywhere else the key goes to the parameters, opening them if need be.
+  if (parametersOpen() && document.querySelector("#modelParams")?.contains(document.activeElement)) closeParameters();
   else revealParameters();
 }
 
 /** The Features menu's Parameters and Ctrl+Alt+P: the Model dock shows, the section opens, and typing goes to it. */
 export function revealParameters() {
-  revealDock("left");
+  // Asked for by the user, so the dock opens as their own choice.
+  openDock("left");
   document.querySelector<HTMLElement>("#modelParams")?.setAttribute("data-sheet", "open");
   openParameters(true);
   document.querySelector<HTMLElement>("#modelParams")?.scrollIntoView({ block: "nearest" });

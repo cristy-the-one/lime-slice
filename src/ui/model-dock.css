@@ -1,7 +1,7 @@
 /*
  * E3. Model in the shell: its tools in the rail, the open tool with History and Parameters in the left dock, Inspect in
- * the right dock, and the readout in the status line. Over the view stay only the pick filter, the view cube with Reset
- * view on its corner, the context bar, and the empty card. The phone layout has its own rules (compact.css).
+ * the right dock, and the readout in the status line. Over the view stay only the pick filter, the view cube, the context
+ * bar, and the empty card; Reset view is in the rail's View menu. The phone layout has its own rules (compact.css).
  */
 
 /* ---------- Which side of each dock shows ---------- */
@@ -243,7 +243,8 @@ html:not(.layout-compact) .model-dock .model-params-table input { width: 100%; h
 
 /* ---------- Status line in Model ---------- */
 html:not([data-stage="model"]) :is(#modelPaused, #modelReadout, #modelFitWarn) { display: none !important; }
-html[data-stage="model"] .status #statusText { display: none; }
+/* The slicer's status line text gives Model's readout the room, but stays a live region for what it announces. */
+html[data-stage="model"] .status #statusText { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; flex: none; }
 .status .model-paused { flex: 0 0 auto; }
 .status .model-fit-warn {
   flex: 0 0 auto;

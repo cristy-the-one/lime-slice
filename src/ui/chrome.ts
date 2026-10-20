@@ -25,7 +25,7 @@ import {
   type IconNode,
 } from "lucide";
 import { mountRailFlyouts } from "./rail-fly";
-import { toggleDock } from "./splitters";
+import { endReveals, toggleDock } from "./splitters";
 import { mountTooltips } from "./tooltip";
 import "./chrome.css";
 
@@ -303,6 +303,8 @@ function paintDockNames(stage: Stage) {
   if (hint) hint.textContent = model ? "The Model panel is in the drawer (Ctrl+B)" : "Settings are in the drawer (Ctrl+B)";
   const timing = document.querySelector<HTMLElement>("#timing");
   if (timing) timing.dataset.tip = `${names.right} panel`;
+  // A dock a Model tool held open goes back to the user's choice in the other stages.
+  if (!model) endReveals();
   // Inspect fills only in Model: it catches up as Model shows.
   if (model) window.dispatchEvent(new Event("lime-inspect"));
 }
@@ -322,7 +324,6 @@ function mountRailFolds(rail: HTMLElement) {
     fold.className = "rail-fold more";
     fold.hidden = true;
     fold.setAttribute("aria-label", `${name} tools`);
-    fold.setAttribute("aria-haspopup", "true");
     fold.setAttribute("aria-expanded", "false");
     fold.setAttribute("aria-controls", tools.id);
     tools.before(fold);
@@ -402,8 +403,9 @@ export function fitRail() {
     // The group's first icon and its tools' names, taken once the Model code has labelled them.
     const tools = group.querySelector<HTMLElement>(":scope > .rail-tools");
     const icon = tools?.querySelector(".ico");
-    if (on && icon && !button.querySelector(".ico")) {
-      button.append(icon.cloneNode(true));
+    if (on && icon) {
+      // Taken again at each fold: the Features button names the feature used last.
+      if (!button.querySelector(".ico")) button.append(icon.cloneNode(true));
       const names = [...(tools?.querySelectorAll<HTMLElement>(".model-tool-label") ?? [])].map((label) => label.textContent).join(", ");
       button.dataset.tip = `${group.getAttribute("aria-label") ?? ""}: ${names}`;
     }

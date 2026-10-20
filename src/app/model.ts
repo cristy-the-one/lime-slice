@@ -4549,12 +4549,15 @@ function forgetWorkplaneSteps() {
 
 /** A solid's tools show in the rail only while a solid is open; New solid, Sketch and Check always do. */
 function showEdits(on: boolean) {
+  let changed = false;
   for (const id of ["#railModel", "#railModelFoot"]) {
     const set = document.querySelector<HTMLElement>(id);
-    if (set && set.hasAttribute("data-no-solid") === on) set.toggleAttribute("data-no-solid", !on);
+    if (!set || set.hasAttribute("data-no-solid") !== on) continue;
+    set.toggleAttribute("data-no-solid", !on);
+    changed = true;
   }
   // The rail has more or fewer tools: its folds are worked out again.
-  window.dispatchEvent(new Event("lime-rail"));
+  if (changed) window.dispatchEvent(new Event("lime-rail"));
   if (!on) closeModelTool();
 }
 

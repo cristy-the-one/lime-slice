@@ -137,5 +137,13 @@ export function paintModelInspect(force = false) {
       </div>
     </div>`;
   });
+  // The rebuilt rows keep the keyboard where it was: the same button of the same object, else the first row.
+  const focused = document.activeElement instanceof HTMLElement && list.contains(document.activeElement) ? document.activeElement : null;
+  const action = focused ? ["data-plate-select", "data-plate-check", "data-plate-frame", "data-plate-remove"].find((attr) => focused.hasAttribute(attr)) : undefined;
+  const target = action ? focused!.getAttribute(action) : null;
   list.innerHTML = rows.join("") || `<p class="model-note">Nothing on the plate.</p>`;
+  if (focused) {
+    const again = action && target ? list.querySelector<HTMLElement>(`[${action}="${CSS.escape(target)}"]`) : null;
+    (again ?? list.querySelector<HTMLElement>("button"))?.focus();
+  }
 }

@@ -198,7 +198,7 @@ export function mountMarkup(root: HTMLElement) {
         <p class="fly-note">0 hides the plate. Does not change the slice.</p>
       </div>
       <aside class="dock left" id="leftDock" aria-label="Settings">
-        <div class="dock-head"><h2 id="leftDockTitle">Settings</h2><button class="btn ghost dock-close" type="button" aria-label="Collapse settings" aria-controls="leftDock"></button></div>
+        <div class="dock-head"><h2>Settings</h2><button class="btn ghost dock-close" type="button" aria-label="Collapse settings" aria-controls="leftDock"></button></div>
         <div class="panel" id="left"><div id="leftBody"></div></div>
         <!-- E3. Model's side of the dock: the open tool on top with Cancel and Apply pinned, the sketch card, History, Parameters. -->
         <div class="model-dock" id="modelDock" data-model-ui>
@@ -481,7 +481,7 @@ export function mountMarkup(root: HTMLElement) {
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
           <!-- E3. Over the view only the pick filter, the view cube (drawn in the canvas) and the context bar. -->
           <div class="model-bar" id="modelBar">
-            <div class="model-pick" id="modelPick" role="group" aria-label="Pick">
+            <div class="model-pick" id="modelPick">
               <div class="modes" role="group" aria-label="Pick">
                 <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
                 <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false" data-tip="Pick edges. Shift-click adds or removes.">Edge</button>
@@ -565,7 +565,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
       </main>
       <aside class="dock right" id="rightDock" aria-label="Results">
-        <div class="dock-head"><button class="btn ghost dock-close" type="button" aria-label="Collapse results" aria-controls="rightDock"></button><h2 id="rightDockTitle">Results</h2></div>
+        <div class="dock-head"><button class="btn ghost dock-close" type="button" aria-label="Collapse results" aria-controls="rightDock"></button><h2>Results</h2></div>
         <div class="panel right" id="right"></div>
         <!-- E3. Inspect: the right dock in Model. -->
         <div class="model-inspect" id="modelInspect" data-model-ui>

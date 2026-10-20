@@ -28,6 +28,14 @@ let fitting = false;
 const drawerOpen: Record<DockSide, boolean> = { left: false, right: false };
 /** E3. A dock a Model tool opened for its panel: shown for now, not remembered, and closed again with the tool. */
 const revealed: Record<DockSide, boolean> = { left: false, right: false };
+/**
+ * E3. Who holds each dock open for now (a tool's card, the sketch card): the last to let go closes it, the way it was
+ * opened. A user's own toggle, or leaving Model, ends the hold; `generation` turns older release functions into no-ops.
+ */
+const holds: Record<DockSide, { count: number; how: "dock" | "drawer" | "stacked" | null; generation: number }> = {
+  left: { count: 0, how: null, generation: 0 },
+  right: { count: 0, how: null, generation: 0 },
+};
 let shownMode: DockMode | "compact" | null = null;
 
 function mode(): DockMode | "compact" {
@@ -87,6 +95,7 @@ export function toggleDock(side: DockSide) {
   if (!ws || compact()) return;
   // A narrow window stacks a dock over the stage on demand; the top bar's Settings and Results buttons do the same.
   if (mode() === "narrow") {
+    dropHold(side);
     ws.classList.toggle(side === "left" ? "show-left" : "show-right");
     paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
     return;
@@ -101,40 +110,78 @@ export function toggleDock(side: DockSide) {
  */
 export function revealDock(side: DockSide): () => void {
   if (compact()) return () => {};
-  const ws = workspace();
-  if (mode() === "narrow") {
-    // A narrow window stacks the dock over the stage, as its top bar button does.
-    const shown = side === "left" ? "show-left" : "show-right";
-    if (!ws || ws.classList.contains(shown)) return () => {};
-    ws.classList.add(shown);
-    paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
-    window.dispatchEvent(new Event("resize"));
-    return () => {
-      if (mode() !== "narrow" || !ws.classList.contains(shown)) return;
-      ws.classList.remove(shown);
+  const hold = holds[side];
+  if (hold.count === 0) {
+    const ws = workspace();
+    const stacked = side === "left" ? "show-left" : "show-right";
+    const now = mode();
+    // A dock already on screen is the user's: nothing to give back.
+    if (!ws || (now === "narrow" ? ws.classList.contains(stacked) : dockShown(side))) return () => {};
+    hold.how = now === "narrow" ? "stacked" : now === "drawer" ? "drawer" : "dock";
+    if (hold.how === "stacked") {
+      // A narrow window stacks the dock over the stage, as its top bar button does.
+      ws.classList.add(stacked);
       paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
       window.dispatchEvent(new Event("resize"));
-    };
+    } else {
+      if (hold.how === "drawer") {
+        drawerOpen[side] = true;
+        drawerOpen[side === "left" ? "right" : "left"] = false;
+      }
+      revealed[side] = true;
+      applyFit();
+    }
   }
-  if (dockShown(side)) return () => {};
-  const drawers = mode() === "drawer";
-  if (drawers) {
-    drawerOpen[side] = true;
-    drawerOpen[side === "left" ? "right" : "left"] = false;
-  }
-  revealed[side] = true;
-  applyFit();
+  hold.count += 1;
+  const generation = hold.generation;
+  let released = false;
   return () => {
-    if (!revealed[side]) return;
-    revealed[side] = false;
-    if (drawers && mode() === "drawer") drawerOpen[side] = false;
-    applyFit();
+    if (released || hold.generation !== generation) return;
+    released = true;
+    hold.count -= 1;
+    if (hold.count === 0) endHold(side);
   };
+}
+
+/** Close a dock its holders opened, the way it was opened. */
+function endHold(side: DockSide) {
+  const hold = holds[side];
+  const how = hold.how;
+  hold.count = 0;
+  hold.how = null;
+  hold.generation += 1;
+  revealed[side] = false;
+  const ws = workspace();
+  if (how === "stacked") {
+    const stacked = side === "left" ? "show-left" : "show-right";
+    if (ws?.classList.contains(stacked)) {
+      ws.classList.remove(stacked);
+      paintToggles(ws.classList.contains("show-left"), ws.classList.contains("show-right"));
+      window.dispatchEvent(new Event("resize"));
+    }
+    return;
+  }
+  if (how === "drawer" && mode() === "drawer") drawerOpen[side] = false;
+  if (how) applyFit();
+}
+
+/** Leaving Model: a dock its tools held open goes back to the user's choice. */
+export function endReveals() {
+  for (const side of ["left", "right"] as const) if (holds[side].count > 0) endHold(side);
+}
+
+/** The user took the dock: its holders no longer close it. */
+function dropHold(side: DockSide) {
+  const hold = holds[side];
+  hold.count = 0;
+  hold.how = null;
+  hold.generation += 1;
+  revealed[side] = false;
 }
 
 export function setDock(side: DockSide, open: boolean) {
   // The user's own choice ends a reveal: the dock is theirs again.
-  revealed[side] = false;
+  dropHold(side);
   const dock = document.querySelector(DOCK_ID[side]);
   const hadFocus = !!dock?.contains(document.activeElement);
   const other: DockSide = side === "left" ? "right" : "left";
@@ -159,8 +206,8 @@ function bindDrawerEscape(side: DockSide) {
   document.querySelector(DOCK_ID[side])?.addEventListener("keydown", (ev) => {
     const e = ev as KeyboardEvent;
     if (e.key !== "Escape" || e.defaultPrevented || mode() !== "drawer" || !drawerOpen[side]) return;
-    // E3. In Model, Esc cancels the open tool first (its own order), so the drawer stays.
-    if (document.querySelector("#tabModel")?.getAttribute("aria-selected") === "true") return;
+    // E3. In Model, Esc first ends what is open there (a tool, the Features menu, a sketch); only then the drawer.
+    if (document.documentElement.dataset.stage === "model" && document.querySelector('#modelBar[data-tool], #modelFeatureMenu:not([hidden]), #model:is([data-sketch="editing"], [data-sketch="choosing"])')) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest("textarea, select, [contenteditable=true], input:not([type=checkbox]):not([type=radio]):not([type=range])")) return;
     e.preventDefault();
