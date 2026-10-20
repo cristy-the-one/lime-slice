@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <locale>
 #include <mutex>
 #include <sstream>
@@ -30,6 +31,7 @@
 #include <OSD_Parallel.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepLProp_SLProps.hxx>
 #include <BRepAlgoAPI_BooleanOperation.hxx>
 #include <BRepAlgoAPI_Check.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -534,6 +536,7 @@ void push_point(std::vector<float>& out, const gp_Pnt& point) {
 
 void append_face_normal(std::string& out, const TopoDS_Face& face);
 void append_face_radius(std::string& out, const TopoDS_Face& face);
+void append_face_fold(std::string& out, const TopoDS_Face& face);
 
 /// Mesh every face of a solid, never only around what a step made: for tests that compare the two.
 std::atomic<bool> g_whole_meshes{false};
@@ -689,6 +692,8 @@ std::string describe(Held& held) {
         append_face_normal(text, TopoDS::Face(held.faces(i + 1)));
         // P1. Optional. A plane, the faces of a box, stays as it was.
         append_face_radius(text, TopoDS::Face(held.faces(i + 1)));
+        // Optional. A face that is a whole closed shell, and how far it moves before it folds.
+        append_face_fold(text, TopoDS::Face(held.faces(i + 1)));
         text += '}';
     });
     OSD_Parallel::For(0, edges, [&held](int i) {
@@ -1204,6 +1209,174 @@ void append_face_radius(std::string& out, const TopoDS_Face& face) {
         }
     } catch (const Standard_Failure&) {
     }
+}
+
+/// A face that meets no other face: each of its edges is a seam or a pole. On a solid it is a whole closed shell (a
+/// sphere, an ellipsoid, a torus), so a push or pull moves all of that surface and Alt has no outline to sweep.
+bool face_is_closed(const TopoDS_Face& face) {
+    bool any = false;
+    for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+        const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
+        if (!BRep_Tool::Degenerated(edge) && !BRep_Tool::IsClosed(edge, face)) {
+            return false;
+        }
+        any = true;
+    }
+    return any;
+}
+
+/// How far a closed face moves along its outward normal before the moved surface folds onto itself: in, to just under
+/// the radius of its tightest convex curve; out, to just under its tightest concave one. Infinite on a side that never
+/// folds, as out on a convex part. Each is to the tenth of a millimetre below, so the number said is one that builds.
+struct FoldLimits {
+    double in = std::numeric_limits<double>::infinity();
+    double out = std::numeric_limits<double>::infinity();
+};
+
+/// Samples a side of the face's parameter grid, before the tightest reads are looked at more finely.
+constexpr int kFoldSamples = 64;
+/// The part of the tightest radius a move may use: the samples can still read the very tightest point a little wide.
+constexpr double kFoldShare = 0.95;
+/// A curve wider than this (a kilometre) is flat: numerical noise on a sphere is not a concave curve.
+constexpr double kFlatCurvature = 1e-6;
+
+double fold_below(double curvature) {
+    if (!(curvature > kFlatCurvature)) {
+        return std::numeric_limits<double>::infinity();
+    }
+    return std::floor(kFoldShare / curvature * 10.0 + 1e-9) / 10.0;
+}
+
+FoldLimits fold_limits(const TopoDS_Face& face) {
+    FoldLimits limits;
+    try {
+        BRepAdaptor_Surface surface(face);
+        const double u0 = surface.FirstUParameter();
+        const double u1 = surface.LastUParameter();
+        const double v0 = surface.FirstVParameter();
+        const double v1 = surface.LastVParameter();
+        if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0) || !std::isfinite(v1)) {
+            return limits;
+        }
+        // Open CASCADE's curvature is positive where the surface bends toward its normal. On a reversed face the
+        // outward normal is the other way, so a convex curve is negative either way after this flip.
+        const double outward = face.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
+        BRepLProp_SLProps props(surface, 2, 1e-9);
+        const double du = (u1 - u0) / kFoldSamples;
+        const double dv = (v1 - v0) / kFoldSamples;
+        // The tightest curve of each side, and where it was read.
+        double convex = 0.0;
+        double concave = 0.0;
+        gp_Pnt2d convex_at(u0, v0);
+        gp_Pnt2d concave_at(u0, v0);
+        const auto sample = [&](double u, double v) {
+            props.SetParameters(std::clamp(u, u0, u1), std::clamp(v, v0, v1));
+            if (!props.IsCurvatureDefined()) {
+                return;
+            }
+            for (const double k : {props.MaxCurvature() * outward, props.MinCurvature() * outward}) {
+                if (!std::isfinite(k)) {
+                    continue;
+                }
+                if (-k > convex) {
+                    convex = -k;
+                    convex_at.SetCoord(u, v);
+                }
+                if (k > concave) {
+                    concave = k;
+                    concave_at.SetCoord(u, v);
+                }
+            }
+        };
+        // The grid, plus a line just inside each edge of the parameters: a pole is degenerate, so a stretched sphere's
+        // tip there is read from beside it rather than skipped.
+        std::vector<double> us;
+        std::vector<double> vs;
+        for (int i = 0; i <= kFoldSamples; ++i) {
+            us.push_back(u0 + du * i);
+            vs.push_back(v0 + dv * i);
+        }
+        us.push_back(u0 + du * 1e-4);
+        us.push_back(u1 - du * 1e-4);
+        vs.push_back(v0 + dv * 1e-4);
+        vs.push_back(v1 - dv * 1e-4);
+        for (const double u : us) {
+            for (const double v : vs) {
+                sample(u, v);
+            }
+        }
+        // Then finer, a cell either side of each tightest read, for a tip between grid lines.
+        for (const gp_Pnt2d at : {convex_at, concave_at}) {
+            for (int i = -kFoldSamples / 4; i <= kFoldSamples / 4; ++i) {
+                for (int j = -kFoldSamples / 4; j <= kFoldSamples / 4; ++j) {
+                    sample(at.X() + du * i * 4 / kFoldSamples, at.Y() + dv * j * 4 / kFoldSamples);
+                }
+            }
+        }
+        limits.in = fold_below(convex);
+        limits.out = fold_below(concave);
+    } catch (const Standard_Failure&) {
+    }
+    return limits;
+}
+
+/// A closed face says so, with the largest push (`inMaxMm`) and pull (`outMaxMm`) that keep it from folding. A side
+/// that never folds is left out. Any other face adds nothing.
+void append_face_fold(std::string& out, const TopoDS_Face& face) {
+    try {
+        if (!face_is_closed(face)) {
+            return;
+        }
+        const FoldLimits limits = fold_limits(face);
+        out += ",\"closed\":true";
+        if (std::isfinite(limits.in)) {
+            out += ",\"inMaxMm\":";
+            append_num(out, limits.in);
+        }
+        if (std::isfinite(limits.out)) {
+            out += ",\"outMaxMm\":";
+            append_num(out, limits.out);
+        }
+    } catch (const Standard_Failure&) {
+    }
+}
+
+/// Unsigned millimetres to `places` decimals, trailing zeros dropped, as the app writes them: 24.9, 10, 0.5, 0.54.
+std::string mm_text(double mm, int places) {
+    const double scale = std::pow(10.0, places);
+    std::ostringstream text;
+    text.imbue(std::locale::classic());
+    text.setf(std::ios::fixed);
+    text.precision(places);
+    text << std::round(std::abs(mm) * scale) / scale;
+    std::string out = text.str();
+    if (out.find('.') != std::string::npos) {
+        while (out.back() == '0') {
+            out.pop_back();
+        }
+        if (out.back() == '.') {
+            out.pop_back();
+        }
+    }
+    return out;
+}
+
+std::string tenths(double mm) {
+    return mm_text(mm, 1);
+}
+
+/// Why a closed face cannot move `distance`: past `most` it folds onto itself.
+std::string fold_refusal(double distance, double most) {
+    const bool in = distance < 0.0;
+    // A distance that reads as `most` at the tenth (0.54 against 0.5) is written to the hundredth, so the sentence
+    // never refuses the number it allows.
+    const std::string asked = std::round(std::abs(distance) * 10.0) / 10.0 <= most ? mm_text(distance, 2) : tenths(distance);
+    std::string text = std::string(in ? "Pushed in " : "Pulled out ") + asked +
+        " mm, this surface would fold onto itself where it curves tightest. ";
+    if (most > 0.0) {
+        return text + "It can go " + (in ? "in" : "out") + " at most " + tenths(most) + " mm.";
+    }
+    return text + "It cannot go " + (in ? "in" : "out") + " at all.";
 }
 
 /// An edge Open CASCADE will refuse at every size: already tangent-continuous, or a seam on one face.
@@ -2652,26 +2825,28 @@ bool k3_draft_closes(const std::vector<double>& points, double shrink) {
 
 }  // namespace
 
-TopoDS_Shape build_extrude_extent(
+namespace {
+
+/// The profile's face, lifted `lift` along W. Null with `error` set when the outline does not make a face.
+using ProfileFaceAt = std::function<TopoDS_Face(double lift, std::string& error)>;
+
+/// K3 for any planar profile: a point outline or K1 loops. `closes` says whether a draft that narrows the far end by
+/// `shrink` closes the outline before the depth.
+TopoDS_Shape extent_from_face(
     const TopoDS_Shape& current,
     double before,
     const std::string& which,
-    const ProfileSpec& profile,
+    const ProfileFrame& frame,
+    const ProfileFaceAt& face_at,
+    const std::function<bool(double shrink)>& closes,
     double depth,
     bool symmetric,
     const ExtrudeExtent& extent,
     double& volume,
     std::string& error) {
-    const std::vector<double> points = profile_points(profile, error);
-    if (points.empty()) {
-        return {};
-    }
-    bool has_draft = extent.has_draft && std::abs(extent.draft_deg) > 1e-9;
+    const bool has_draft = extent.has_draft && std::abs(extent.draft_deg) > 1e-9;
     const bool has_depth2 = extent.has_depth2;
     const bool has_up_to = extent.has_up_to;
-    if (!has_draft && !has_depth2 && !has_up_to) {
-        return build_extrude(current, before, which, profile, depth, symmetric, volume, error);
-    }
     if (which != "fuse" && which != "cut" && which != "common") {
         error = "The boolean is fuse, cut, or common";
         return {};
@@ -2710,7 +2885,6 @@ TopoDS_Shape build_extrude_extent(
     if (!has_up_to && !k3_span(depth, symmetric, has_depth2, extent.depth2, lo, hi, error)) {
         return {};
     }
-    const ProfileFrame frame = frame_of(profile);
     if (has_draft && !has_up_to) {
         const double taper = std::tan(std::abs(draft_rad));
         double shrink = 0.0;
@@ -2721,7 +2895,7 @@ TopoDS_Shape build_extrude_extent(
             // One side: a positive angle shrinks the far end, whichever way the depth points.
             shrink = std::abs(depth) * taper;
         }
-        if (k3_draft_closes(points, shrink)) {
+        if (closes(shrink)) {
             error = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
             return {};
         }
@@ -2729,7 +2903,7 @@ TopoDS_Shape build_extrude_extent(
     const char* closed = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
 
     if (has_up_to) {
-        TopoDS_Face face = profile_face(frame, profile, 0.0, error);
+        TopoDS_Face face = face_at(0.0, error);
         if (face.IsNull()) {
             return {};
         }
@@ -2748,7 +2922,7 @@ TopoDS_Shape build_extrude_extent(
 
     if (!has_draft) {
         // Two-sided, straight walls: the same prism as a plain extrude, from the lower end along +W.
-        const TopoDS_Face face = profile_face(frame, profile, lo, error);
+        const TopoDS_Face face = face_at(lo, error);
         if (face.IsNull()) {
             return {};
         }
@@ -2760,7 +2934,7 @@ TopoDS_Shape build_extrude_extent(
         return combine_profile(current, before, which, tool, "extrude", volume, error);
     }
 
-    TopoDS_Face face = profile_face(frame, profile, 0.0, error);
+    TopoDS_Face face = face_at(0.0, error);
     if (face.IsNull()) {
         return {};
     }
@@ -2781,6 +2955,41 @@ TopoDS_Shape build_extrude_extent(
         return {};
     }
     return combine_profile(current, before, which, tool, "extrude", volume, error);
+}
+
+}  // namespace
+
+TopoDS_Shape build_extrude_extent(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const ProfileSpec& profile,
+    double depth,
+    bool symmetric,
+    const ExtrudeExtent& extent,
+    double& volume,
+    std::string& error) {
+    const std::vector<double> points = profile_points(profile, error);
+    if (points.empty()) {
+        return {};
+    }
+    const bool has_draft = extent.has_draft && std::abs(extent.draft_deg) > 1e-9;
+    if (!has_draft && !extent.has_depth2 && !extent.has_up_to) {
+        return build_extrude(current, before, which, profile, depth, symmetric, volume, error);
+    }
+    const ProfileFrame frame = frame_of(profile);
+    return extent_from_face(
+        current,
+        before,
+        which,
+        frame,
+        [&](double lift, std::string& message) { return profile_face(frame, profile, lift, message); },
+        [&](double shrink) { return k3_draft_closes(points, shrink); },
+        depth,
+        symmetric,
+        extent,
+        volume,
+        error);
 }
 
 TopoDS_Shape build_revolve(
@@ -2935,15 +3144,24 @@ void reverse_loop(ProfileLoop& loop) {
     loop.segments = std::move(rev);
 }
 
+/// A spline that ends where it starts, through at least two points between: the sketch's closed spline, one smooth
+/// periodic curve with no corner at its start.
+bool closed_spline(const double* from, const ProfileSeg& seg) {
+    return seg.kind == ProfileSegKind::Spline && seg.through.size() >= 4 && same_point(from, seg.to);
+}
+
 double spline_area2(const double* from, const ProfileSeg& seg) {
+    const bool closed = closed_spline(from, seg);
     std::vector<gp_Pnt> pts;
     pts.emplace_back(from[0], from[1], 0.0);
     for (size_t i = 0; i + 1 < seg.through.size(); i += 2) {
         pts.emplace_back(seg.through[i], seg.through[i + 1], 0.0);
     }
-    pts.emplace_back(seg.to[0], seg.to[1], 0.0);
+    if (!closed) {
+        pts.emplace_back(seg.to[0], seg.to[1], 0.0);
+    }
     std::string ignored;
-    const TopoDS_Edge edge = spline_edge(pts, false, ignored);
+    const TopoDS_Edge edge = spline_edge(pts, closed, ignored);
     if (edge.IsNull()) {
         return cross2(from[0], from[1], seg.to[0], seg.to[1]);
     }
@@ -3019,7 +3237,8 @@ bool loops_readable(std::vector<ProfileLoop>& loops, std::string& error) {
                     return false;
                 }
             }
-            if (same_point(from, seg.to)) {
+            // A closed spline is the loop's only segment; any other segment that comes back to its start has no length.
+            if (same_point(from, seg.to) && !(loop.segments.size() == 1 && closed_spline(from, seg))) {
                 error = "A loop segment ends where it starts. Give it some length.";
                 return false;
             }
@@ -3100,13 +3319,16 @@ TopoDS_Edge loop_edge(const ProfileFrame& frame, const double* from, const Profi
         }
         return edge.Edge();
     }
+    const bool closed = closed_spline(from, seg);
     std::vector<gp_Pnt> pts;
     pts.push_back(a);
     for (size_t i = 0; i + 1 < seg.through.size(); i += 2) {
         pts.push_back(frame.at(seg.through[i], seg.through[i + 1], lift));
     }
-    pts.push_back(b);
-    return spline_edge(pts, false, error);
+    if (!closed) {
+        pts.push_back(b);
+    }
+    return spline_edge(pts, closed, error);
 }
 
 TopoDS_Wire wire_of(const std::vector<TopoDS_Edge>& edges, std::string& error) {
@@ -3470,6 +3692,97 @@ TopoDS_Shape build_extrude_loops(
     return combine_profile(current, before, which, tool, "extrude", volume, error);
 }
 
+TopoDS_Shape build_extrude_loops_extent(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const double origin[3],
+    const double turn[3],
+    const std::vector<ProfileLoop>& loops,
+    double depth,
+    bool symmetric,
+    const ExtrudeExtent& extent,
+    double& volume,
+    std::string& error) {
+    const bool has_draft = extent.has_draft && std::abs(extent.draft_deg) > 1e-9;
+    if (!has_draft && !extent.has_depth2 && !extent.has_up_to) {
+        return build_extrude_loops(current, before, which, origin, turn, loops, depth, symmetric, volume, error);
+    }
+    const ProfileFrame frame = frame_from(origin, turn);
+    if (profile_loops_face(frame, loops, 0.0, error).IsNull()) {
+        return {};
+    }
+    const char* closes_profile = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+    if (has_draft && loops.size() > 1 && !extent.has_up_to) {
+        // LocOpe_DPrism does not draft a face with a round hole. The outline is drafted alone, and each hole is drafted
+        // the other way (a positive angle narrows the material, so it widens the hole) and cut from it.
+        std::string message;
+        double tool_volume = 0.0;
+        TopoDS_Shape tool = build_extrude_loops_extent(
+            TopoDS_Shape(), 0.0, "fuse", origin, turn, std::vector<ProfileLoop>{loops.front()}, depth, symmetric, extent, tool_volume, message);
+        if (tool.IsNull()) {
+            error = message;
+            return {};
+        }
+        ExtrudeExtent inward = extent;
+        inward.draft_deg = -extent.draft_deg;
+        for (size_t i = 1; i < loops.size(); ++i) {
+            double hole_volume = 0.0;
+            const TopoDS_Shape hole = build_extrude_loops_extent(
+                TopoDS_Shape(), 0.0, "fuse", origin, turn, std::vector<ProfileLoop>{loops[i]}, depth, symmetric, inward, hole_volume, message);
+            if (hole.IsNull()) {
+                error = message == closes_profile ? "This draft closes a hole before the depth. Use a smaller angle or a shorter depth." : message;
+                return {};
+            }
+            double cut_volume = 0.0;
+            tool = combine_profile(tool, tool_volume, "cut", hole, "extrude", cut_volume, message);
+            if (tool.IsNull()) {
+                error = message;
+                return {};
+            }
+            tool_volume = cut_volume;
+        }
+        return combine_profile(current, before, which, tool, "extrude", volume, error);
+    }
+    // The outline's box on the plane, from its drawn curves, as the point profile's check reads its corners.
+    std::vector<double> outline;
+    if (!loops.empty()) {
+        const ProfileLoop& outer = loops.front();
+        double from[2] = {outer.start[0], outer.start[1]};
+        for (const ProfileSeg& seg : outer.segments) {
+            std::string ignored;
+            const TopoDS_Edge edge = loop_edge(frame, from, seg, 0.0, ignored);
+            from[0] = seg.to[0];
+            from[1] = seg.to[1];
+            if (edge.IsNull()) {
+                continue;
+            }
+            BRepAdaptor_Curve curve(edge);
+            GCPnts_QuasiUniformDeflection sampler(curve, 0.01);
+            if (!sampler.IsDone()) {
+                continue;
+            }
+            for (int i = 1; i <= sampler.NbPoints(); ++i) {
+                const gp_Vec at(frame.origin, sampler.Value(i));
+                outline.push_back(at.Dot(gp_Vec(frame.u)));
+                outline.push_back(at.Dot(gp_Vec(frame.v)));
+            }
+        }
+    }
+    return extent_from_face(
+        current,
+        before,
+        which,
+        frame,
+        [&](double lift, std::string& message) { return profile_loops_face(frame, loops, lift, message); },
+        [&](double shrink) { return outline.size() >= 2 && k3_draft_closes(outline, shrink); },
+        depth,
+        symmetric,
+        extent,
+        volume,
+        error);
+}
+
 TopoDS_Shape build_revolve_loops(
     const TopoDS_Shape& current,
     double before,
@@ -3792,6 +4105,43 @@ constexpr double kFaceOverlapMm = 1e-3;
 const char* kCannotMove =
     "This face cannot move with its neighbours here. Push or pull adds material instead: hold Alt.";
 
+/// Alt on a face that is a whole closed shell: a prism sweeps a face's outline, and this one has none.
+const char* kWholePartPrism =
+    "Alt adds a prism on a face's outline, and this face is the whole part, so it has none. Drag without Alt to grow or "
+    "shrink the part all round.";
+
+/// Alt on a closed face that is not the whole part, such as a ball-shaped void's wall.
+const char* kClosedPrism =
+    "Alt adds a prism on a face's outline, and this closed surface has none. Drag without Alt to move all of it.";
+
+/// Closed faces, moved as whole surfaces, that Open CASCADE could still not offset. `only` when the face is the part.
+std::string closed_failed(double distance, bool only) {
+    const std::string mm = tenths(distance);
+    if (only) {
+        return "This face is the whole part, and Open CASCADE could not move all of it " + mm + " mm. Try a smaller distance.";
+    }
+    return "Open CASCADE could not move this closed surface " + mm + " mm as one.";
+}
+
+/// The only face of a solid offset as one surface. Open CASCADE's simple offset handles a closed freeform face (a
+/// stretched sphere) that the joined offset cannot. Null when it fails or the result is not a valid solid.
+TopoDS_Shape simple_offset(const TopoDS_Shape& solid, double distance) {
+    try {
+        BRepOffsetAPI_MakeOffsetShape offset;
+        offset.PerformBySimple(solid, distance);
+        if (!offset.IsDone() || offset.Shape().IsNull() || !has_solid(offset.Shape())) {
+            return {};
+        }
+        const TopoDS_Shape out = as_solid(offset.Shape());
+        if (!BRepCheck_Analyzer(out).IsValid()) {
+            return {};
+        }
+        return out;
+    } catch (const Standard_Failure&) {
+        return {};
+    }
+}
+
 /// Outward unit normal at the face midpoint. A reversed face is flipped so the solid's outside stays positive.
 bool outward_normal(const TopoDS_Face& face, gp_Dir& normal) {
     try {
@@ -3878,6 +4228,10 @@ TopoDS_Shape build_face_extrude(
     }
     if (count_of(current, TopAbs_SOLID) != 1) {
         error = "Push or pull works on a part of one body.";
+        return {};
+    }
+    if (face_is_closed(face)) {
+        error = count_of(current, TopAbs_FACE) == 1 ? kWholePartPrism : kClosedPrism;
         return {};
     }
     gp_Dir normal;
@@ -3967,8 +4321,25 @@ TopoDS_Shape build_move_faces(
         error = "Push or pull works on a part of one body.";
         return {};
     }
+    // A face that is a whole closed shell has no neighbours to follow it: it moves as one surface, up to where it folds.
+    bool whole = true;
+    for (const FaceOffset& row : faces) {
+        if (!face_is_closed(row.face)) {
+            whole = false;
+            continue;
+        }
+        const FoldLimits limits = fold_limits(row.face);
+        const double most = row.distance < 0.0 ? limits.in : limits.out;
+        if (std::abs(row.distance) > most + 1e-9) {
+            error = fold_refusal(row.distance, most);
+            return {};
+        }
+    }
     const TopoDS_Shape solid = as_solid(current);
+    const bool only = count_of(solid, TopAbs_FACE) == 1;
+    const std::string failed = whole ? closed_failed(faces[0].distance, only) : std::string(kCannotMove);
     g_stats.builds += 1;
+    TopoDS_Shape out;
     try {
         // Offset 0 on every face, then the moved ones. Intersection joins let the neighbours extend or trim.
         BRepOffset_MakeOffset maker;
@@ -3977,25 +4348,40 @@ TopoDS_Shape build_move_faces(
             maker.SetOffsetOnFace(row.face, row.distance);
         }
         maker.MakeOffsetShape();
-        if (!maker.IsDone() || maker.Shape().IsNull() || !has_solid(maker.Shape())) {
-            error = kCannotMove;
-            return {};
+        if (maker.IsDone() && !maker.Shape().IsNull() && has_solid(maker.Shape())) {
+            out = as_solid(maker.Shape());
+            if (!BRepCheck_Analyzer(out).IsValid()) {
+                out.Nullify();
+            }
         }
-        TopoDS_Shape out = as_solid(maker.Shape());
-        if (!BRepCheck_Analyzer(out).IsValid()) {
-            error = kCannotMove;
-            return {};
-        }
-        volume = volume_of(out);
-        if (!(volume > 1e-6) || std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
-            error = kCannotMove;
-            return {};
-        }
-        return out;
     } catch (const Standard_Failure&) {
-        error = kCannotMove;
+        out.Nullify();
+    }
+    // The joined offset gives up on a closed freeform face, such as an ellipsoid's. Alone on its solid, that face
+    // moves as one surface, which the simple offset builds.
+    if (out.IsNull() && whole && faces.size() == 1 && only) {
+        out = simple_offset(solid, faces[0].distance);
+    }
+    if (out.IsNull()) {
+        error = failed;
         return {};
     }
+    try {
+        volume = volume_of(out);
+    } catch (const Standard_Failure&) {
+        volume = 0.0;
+    }
+    if (!(volume > 1e-6) || std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
+        error = failed;
+        return {};
+    }
+    // One closed surface moved out must grow the part (a void's wall moved out shrinks the void), and moved in must
+    // shrink it; anything else has turned inside out. Several, moved different ways, may net either way.
+    if (whole && faces.size() == 1 && (faces[0].distance > 0.0) != (volume > before)) {
+        error = failed;
+        return {};
+    }
+    return out;
 }
 
 namespace {

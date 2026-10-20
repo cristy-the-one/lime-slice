@@ -3860,6 +3860,19 @@ extern "C" {
         loops_len: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    // K3 on K1 loops. `flags` matches lime_tree_extrude_extent.
+    fn lime_tree_extrude_loops_extent(
+        from: *const RawShape,
+        op: *const c_char,
+        p: *const f64,
+        loops: *const f64,
+        loops_len: c_int,
+        depth2: f64,
+        draft_deg: f64,
+        face: c_int,
+        flags: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     fn lime_tree_revolve_loops(
         from: *const RawShape,
         op: *const c_char,
@@ -3920,6 +3933,17 @@ extern "C" {
         p: *const f64,
         loops: *const f64,
         loops_len: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    // K3 on K1 loops as a feature root. There is no face to stop at.
+    fn lime_tree_feature_extrude_loops_extent(
+        op: *const c_char,
+        p: *const f64,
+        loops: *const f64,
+        loops_len: c_int,
+        depth2: f64,
+        draft_deg: f64,
+        flags: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     fn lime_tree_feature_revolve_loops(
@@ -4085,9 +4109,14 @@ fn encode_loops(loops: &[ProfileLoop], out: &mut Vec<f64>) {
     }
 }
 
+/// K3 bits for the C side: bit 0 a second depth, bit 1 a draft, bit 2 a face to stop at. 0 is a plain extrude.
+fn extent_flags<T>(depth2: Option<f64>, draft_deg: Option<f64>, up_to: Option<T>) -> c_int {
+    c_int::from(depth2.is_some()) | (c_int::from(draft_deg.is_some()) << 1) | (c_int::from(up_to.is_some()) << 2)
+}
+
 /// K1 profile v2. Separate from the point-profile arms so those stay as they are.
 fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, BuildFail> {
-    let Resolved { op, .. } = resolved;
+    let Resolved { op, picks } = resolved;
     let shape_note = "smooth and corners are for a point profile. A loop uses arc and spline segments.";
     let kept = match &op {
         Op::Extrude {
@@ -4104,11 +4133,6 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, BuildFail> 
             up_to,
             loops,
         } => {
-            if depth2.is_some() || draft_deg.is_some() || up_to.is_some() {
-                return Err(BuildFail::plain(
-                    "A second depth, a draft, or a face to stop at is for a point profile.",
-                ));
-            }
             if !profile.is_empty() {
                 return Err(BuildFail::plain("Give a profile or loops, not both."));
             }
@@ -4127,16 +4151,32 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, BuildFail> 
             ];
             let mut blob = Vec::new();
             encode_loops(loops, &mut blob);
-            Shape::made(|error| unsafe {
-                lime_tree_extrude_loops(
-                    from.raw(),
-                    which.name().as_ptr(),
-                    p.as_ptr(),
-                    blob.as_ptr(),
-                    blob.len() as c_int,
-                    error,
-                )
-            })
+            match extent_flags(*depth2, *draft_deg, up_to.as_ref()) {
+                0 => Shape::made(|error| unsafe {
+                    lime_tree_extrude_loops(
+                        from.raw(),
+                        which.name().as_ptr(),
+                        p.as_ptr(),
+                        blob.as_ptr(),
+                        blob.len() as c_int,
+                        error,
+                    )
+                }),
+                flags => Shape::made(|error| unsafe {
+                    lime_tree_extrude_loops_extent(
+                        from.raw(),
+                        which.name().as_ptr(),
+                        p.as_ptr(),
+                        blob.as_ptr(),
+                        blob.len() as c_int,
+                        depth2.unwrap_or(0.0),
+                        draft_deg.unwrap_or(0.0),
+                        picks.first().copied().unwrap_or(-1),
+                        flags,
+                        error,
+                    )
+                }),
+            }
         }
         Op::Revolve {
             op: which,
@@ -4458,9 +4498,6 @@ impl Shape {
                 up_to,
                 loops,
             } => {
-                if depth2.is_some() || draft_deg.is_some() || up_to.is_some() {
-                    return refuse("A second depth, a draft, or a face to stop at is for a point profile.".into());
-                }
                 if !profile.is_empty() {
                     return refuse("Give a profile or loops, not both.".into());
                 }
@@ -4479,15 +4516,29 @@ impl Shape {
                 ];
                 let mut blob = Vec::new();
                 encode_loops(loops, &mut blob);
-                Shape::made(|error| unsafe {
-                    lime_tree_feature_extrude_loops(
-                        which.name().as_ptr(),
-                        p.as_ptr(),
-                        blob.as_ptr(),
-                        blob.len() as c_int,
-                        error,
-                    )
-                })
+                match extent_flags(*depth2, *draft_deg, up_to.as_ref()) {
+                    0 => Shape::made(|error| unsafe {
+                        lime_tree_feature_extrude_loops(
+                            which.name().as_ptr(),
+                            p.as_ptr(),
+                            blob.as_ptr(),
+                            blob.len() as c_int,
+                            error,
+                        )
+                    }),
+                    flags => Shape::made(|error| unsafe {
+                        lime_tree_feature_extrude_loops_extent(
+                            which.name().as_ptr(),
+                            p.as_ptr(),
+                            blob.as_ptr(),
+                            blob.len() as c_int,
+                            depth2.unwrap_or(0.0),
+                            draft_deg.unwrap_or(0.0),
+                            flags,
+                            error,
+                        )
+                    }),
+                }
             }
             Op::Revolve {
                 op: which,

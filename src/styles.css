@@ -1183,6 +1183,16 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   white-space: nowrap;
 }
 .interact-hud-error:empty { display: none; }
+/* A tool's refusal is a sentence, so it wraps under the box instead of running off the view. */
+.interact-hud-error.is-note {
+  width: max-content;
+  max-width: 40ch;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel);
+  white-space: normal;
+}
 /* --- A10. View: a flyout beside the rail since E3, so a History row can still be hovered while it is open. */
 .model-look-panel { gap: 6px; min-width: 200px; }
 .model-look-panel[hidden] { display: none; }

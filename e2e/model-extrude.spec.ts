@@ -520,6 +520,49 @@ test("when one of two regions cannot be built, the other object goes too, and Ap
   await expect(page.locator("#objectList .obj")).toHaveCount(2);
 });
 
+test("Enter on an extrude that is refused says why under the box and in the status line, and a pointer move keeps it", async ({ page }) => {
+  let refuse = true;
+  await start(page, () => refuse);
+  await page.locator("#modelEmptySketch").click();
+  const canvas = page.locator("#model");
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await drawTypedRectangle(page);
+  await page.keyboard.press("E");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  const note = page.locator(".interact-hud:not([hidden]) .interact-hud-error");
+  const readout = page.locator("#modelReadout");
+  const box = (await canvas.boundingBox())!;
+
+  // A refusal the client knows is said as the value is typed, before Enter.
+  await page.keyboard.type("0");
+  await expect(note).toHaveText("An extrude needs a depth other than 0.");
+  await expect(readout).toContainText("An extrude needs a depth other than 0.");
+  await page.keyboard.press("Enter");
+  await page.mouse.move(box.x + 20, box.y + 20);
+  await page.mouse.move(box.x + 40, box.y + 30);
+  await expect(readout, "the hint does not write over it").toContainText("An extrude needs a depth other than 0.");
+  await expect(note).toHaveText("An extrude needs a depth other than 0.");
+  await expect(canvas, "the extrude stays open to fix").toHaveAttribute("data-extrude", "aim");
+
+  // The engine's refusal stays too, under the box and in the status line, after the pointer moves.
+  await page.keyboard.type("20");
+  await expect(note, "a new value clears the old refusal").toHaveText("");
+  await page.keyboard.press("Enter");
+  await expect(readout).toContainText("The second region could not be built");
+  await page.mouse.move(box.x + 60, box.y + 40);
+  await page.mouse.move(box.x + 80, box.y + 50);
+  await expect(readout).toContainText("The second region could not be built");
+  await expect(note).toContainText("The second region could not be built");
+  await expect(page.locator("#objectList .obj")).toHaveCount(0);
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+
+  // Apply again, once the engine builds it, makes the object.
+  refuse = false;
+  await page.locator("[data-sketch-apply]").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(1);
+  await expect(canvas).not.toHaveAttribute("data-sketch", "editing");
+});
+
 test("Auto makes a new object of a sketch beside the part, and the face sketch's new object stays on the face", async ({ page }) => {
   await start(page);
   await extrudeOnBed(page, "20");

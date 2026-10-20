@@ -66,6 +66,15 @@ const bore = await call("model_probe", { object, op: { kind: "hole", diameterMm:
 const boreOp = engine.lastProbe as { counterboreRadius?: number; counterboreDepth?: number };
 check("a counterbore reaches the modeler", bore.ok === true && boreOp?.counterboreRadius === 4 && boreOp?.counterboreDepth === 3, JSON.stringify(engine.lastProbe));
 
+const circle = { start: [3, 0], segments: [{ kind: "arc", through: [0, 3], to: [-3, 0] }, { kind: "arc", through: [0, -3], to: [3, 0] }] };
+const drafted = await call("model_probe", { object, op: { kind: "extrude", loops: [circle], depth: 5, depth2: 2, draftDeg: 3 } });
+const draftedOp = engine.lastProbe as { loops?: unknown[]; depth2?: number; draftDeg?: number; profile?: unknown };
+check(
+  "loops with a second depth and a draft reach the modeler",
+  drafted.ok === true && draftedOp?.loops?.length === 1 && draftedOp?.depth2 === 2 && draftedOp?.draftDeg === 3 && draftedOp?.profile === undefined,
+  JSON.stringify({ drafted, probe: engine.lastProbe }),
+);
+
 const cut = await call("model_probe", { object, op: { kind: "boolean", primitive: "cylinder", dx: 3, dz: 40, op: "cut" } });
 const tool = cut.stored as { radius?: number; height?: number };
 check("a boolean cylinder keeps its size", cut.ok === true && tool?.radius === 1.5 && tool?.height === 40, JSON.stringify(cut.stored));
