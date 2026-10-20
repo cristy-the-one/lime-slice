@@ -311,10 +311,56 @@ fn the_only_face_of_a_curved_part_offsets_the_whole_surface() {
     refused(&apply("egg", 0, 90, &pull(0, -24.9)), &folds("24.9", "0.5"));
     refused(&apply("egg", 0, 90, &pull(0, -0.6)), &folds("0.6", "0.5"));
 
+    // A push that reads as the limit at the tenth is written to the hundredth, so the sentence does not refuse 0.5.
+    refused(&apply("egg", 0, 90, &pull(0, -0.54)), &folds("0.54", "0.5"));
+
     // Alt's prism needs an outline to sweep, and the whole part has none.
     refused(
         &apply("egg", 0, 90, &json!({ "kind": "faceExtrude", "face": 0, "distance": 2.0 })),
         WHOLE_PART_PRISM,
+    );
+
+    // The same egg stood on end: its tightest curve is now at a pole of the stretched sphere, where the surface's
+    // parameters are degenerate. It is read from beside the pole, not skipped.
+    let standing = call(json!({
+        "call": "open", "key": "egg-up",
+        "primitive": { "primitive": "ellipsoid", "origin": [0.0, 0.0, 43.1], "size": [10.0, 24.0, 86.2] }
+    }));
+    assert_eq!(standing["faces"][0]["inMaxMm"].as_f64(), Some(0.5), "{}", standing["faces"][0]);
+}
+
+/// A ball-shaped void is a closed face too, but not the whole part: the sentences say so without calling it the part.
+/// Open CASCADE's joined offset does not move such a wall inside a box yet, and the simple offset would move the box too.
+#[test]
+fn a_ball_void_is_closed_but_not_the_part() {
+    let opened = call(json!({ "call": "open", "key": "void", "box": [20.0, 20.0, 20.0] }));
+    if opened.get("error").is_some() {
+        assert!(!require(), "OCCT was required: {opened}");
+        return;
+    }
+    let hollow = apply(
+        "void",
+        0,
+        1,
+        &json!({ "kind": "boolean", "op": "cut", "primitive": "sphere", "origin": [10.0, 10.0, 10.0], "radius": 5.0 }),
+    );
+    let ball = |r: f64| 4.0 / 3.0 * PI * r * r * r;
+    near(volume(&hollow), 8000.0 - ball(5.0));
+    let wall = hollow["faces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|face| face["closed"] == json!(true))
+        .expect("the void's wall is closed");
+    assert_eq!(hollow["faces"][wall]["inMaxMm"].as_f64(), None, "a void's wall is concave seen from the part");
+    assert_eq!(hollow["faces"][wall]["outMaxMm"].as_f64(), Some(4.7), "{}", hollow["faces"][wall]);
+    refused(
+        &apply("void", 1, 90, &pull(wall, -1.0)),
+        "Open CASCADE could not move this closed surface 1 mm as one.",
+    );
+    refused(
+        &apply("void", 1, 90, &json!({ "kind": "faceExtrude", "face": wall, "distance": 1.0 })),
+        "Alt adds a prism on a face's outline, and this closed surface has none. Drag without Alt to move all of it.",
     );
 }
 

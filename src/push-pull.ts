@@ -67,15 +67,22 @@ export function pullLimit(partMm: number, bedMm: number): number {
   return PULL_REACH * base;
 }
 
-/** A face that is the whole part: the largest push and pull before it folds, absent where it never does. */
+/**
+ * A closed face (a whole closed shell): the largest push and pull before it folds, absent where it never does. `only`
+ * when it is the part's one face, as an ellipsoid's; a ball-shaped void's wall is closed but not the part.
+ */
 export interface ClosedFace {
   inMaxMm?: number;
   outMaxMm?: number;
+  only: boolean;
 }
 
 /** Alt on a face that is the whole part. The kernel refuses with the same sentence. */
 export const WHOLE_PART_PRISM =
   "Alt adds a prism on a face's outline, and this face is the whole part, so it has none. Drag without Alt to grow or shrink the part all round.";
+
+/** Alt on any other closed face. The kernel refuses with the same sentence. */
+export const CLOSED_PRISM = "Alt adds a prism on a face's outline, and this closed surface has none. Drag without Alt to move all of it.";
 
 /** How deep the solid goes behind a planar face: from the face's plane to its farthest corner against `normal`. */
 export function depthBehind(positions: ArrayLike<number>, at: Vec3, normal: Vec3): number | null {
@@ -111,14 +118,16 @@ export function pullRefusal(
   if (Math.abs(distance) > limitMm) {
     return `${formatNumber(Math.abs(distance), 1)} mm is farther than any printer reaches. A push or pull goes up to ${formatNumber(limitMm, 0)} mm here.`;
   }
-  if (closed && kind === "extrude") return WHOLE_PART_PRISM;
+  if (closed && kind === "extrude") return closed.only ? WHOLE_PART_PRISM : CLOSED_PRISM;
   if (closed && distance !== 0) {
     const inward = distance < 0;
     const most = inward ? closed.inMaxMm : closed.outMaxMm;
     if (most != null && Math.abs(distance) > most + 1e-9) {
       const way = inward ? "in" : "out";
       const reach = most > 0 ? `It can go ${way} at most ${formatNumber(most, 1)} mm.` : `It cannot go ${way} at all.`;
-      return `${inward ? "Pushed in" : "Pulled out"} ${formatNumber(Math.abs(distance), 1)} mm, this surface would fold onto itself where it curves tightest. ${reach}`;
+      // One that reads as `most` at the tenth (0.54 against 0.5) is written to the hundredth, as the kernel does.
+      const asked = Math.round(Math.abs(distance) * 10) / 10 <= most ? formatNumber(Math.abs(distance), 2) : formatNumber(Math.abs(distance), 1);
+      return `${inward ? "Pushed in" : "Pulled out"} ${asked} mm, this surface would fold onto itself where it curves tightest. ${reach}`;
     }
     return null;
   }

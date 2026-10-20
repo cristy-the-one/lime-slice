@@ -127,7 +127,7 @@ eq("a prism may cut through", pullRefusal("extrude", -25, [20], 3000), null);
 eq("a curved face's depth is not known", pullRefusal("move", -25, [null], 3000), null);
 
 // The only face of a closed curved part (the owner's 86.2 × 10 × 24 ellipsoid): the kernel says how far it folds.
-const egg = { inMaxMm: 0.5 };
+const egg = { inMaxMm: 0.5, only: true };
 eq(
   "a push past the fold names the largest that fits",
   pullRefusal("move", -24.9, [null], 3000, true, egg),
@@ -137,18 +137,28 @@ eq("a push up to the fold is kept", pullRefusal("move", -0.5, [null], 3000, true
 eq("a convex part pulls out any distance", pullRefusal("move", 30, [null], 3000, true, egg), null);
 eq(
   "a pull past a concave fold names the largest that fits",
-  pullRefusal("move", 8, [null], 3000, true, { inMaxMm: 4, outMaxMm: 6 }),
+  pullRefusal("move", 8, [null], 3000, true, { inMaxMm: 4, outMaxMm: 6, only: true }),
   "Pulled out 8 mm, this surface would fold onto itself where it curves tightest. It can go out at most 6 mm.",
 );
 eq(
   "a surface too tight to push says so",
-  pullRefusal("move", -0.2, [null], 3000, true, { inMaxMm: 0 }),
+  pullRefusal("move", -0.2, [null], 3000, true, { inMaxMm: 0, only: true }),
   "Pushed in 0.2 mm, this surface would fold onto itself where it curves tightest. It cannot go in at all.",
 );
 eq(
   "Alt on the whole part says why and what works",
   pullRefusal("extrude", 2, [null], 3000, true, egg),
   "Alt adds a prism on a face's outline, and this face is the whole part, so it has none. Drag without Alt to grow or shrink the part all round.",
+);
+eq(
+  "a push that reads as the limit at the tenth is written to the hundredth",
+  pullRefusal("move", -0.54, [null], 3000, true, egg),
+  "Pushed in 0.54 mm, this surface would fold onto itself where it curves tightest. It can go in at most 0.5 mm.",
+);
+eq(
+  "Alt on a closed void's wall does not call it the part",
+  pullRefusal("extrude", 1, [null], 3000, true, { outMaxMm: 4.7, only: false }),
+  "Alt adds a prism on a face's outline, and this closed surface has none. Drag without Alt to move all of it.",
 );
 const cube = [0, 0, 0, 20, 0, 0, 20, 20, 0, 0, 0, 20, 20, 20, 20, 0, 20, 20];
 eq("the depth behind the top is the part's height", depthBehind(cube, [10, 10, 20], [0, 0, 1]), 20);

@@ -1179,9 +1179,9 @@ struct FoldLimits {
     double out = std::numeric_limits<double>::infinity();
 };
 
-/// Samples a side of the face's parameter grid. The tightest curve of a primitive sits on a grid line.
+/// Samples a side of the face's parameter grid, before the tightest reads are looked at more finely.
 constexpr int kFoldSamples = 64;
-/// The part of the tightest radius a move may use: sampling can miss the very tightest point between grid lines.
+/// The part of the tightest radius a move may use: the samples can still read the very tightest point a little wide.
 constexpr double kFoldShare = 0.95;
 /// A curve wider than this (a kilometre) is flat: numerical noise on a sphere is not a concave curve.
 constexpr double kFlatCurvature = 1e-6;
@@ -1208,20 +1208,54 @@ FoldLimits fold_limits(const TopoDS_Face& face) {
         // outward normal is the other way, so a convex curve is negative either way after this flip.
         const double outward = face.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
         BRepLProp_SLProps props(surface, 2, 1e-9);
+        const double du = (u1 - u0) / kFoldSamples;
+        const double dv = (v1 - v0) / kFoldSamples;
+        // The tightest curve of each side, and where it was read.
         double convex = 0.0;
         double concave = 0.0;
-        for (int i = 0; i <= kFoldSamples; ++i) {
-            for (int j = 0; j <= kFoldSamples; ++j) {
-                props.SetParameters(u0 + (u1 - u0) * i / kFoldSamples, v0 + (v1 - v0) * j / kFoldSamples);
-                if (!props.IsCurvatureDefined()) {
+        gp_Pnt2d convex_at(u0, v0);
+        gp_Pnt2d concave_at(u0, v0);
+        const auto sample = [&](double u, double v) {
+            props.SetParameters(std::clamp(u, u0, u1), std::clamp(v, v0, v1));
+            if (!props.IsCurvatureDefined()) {
+                return;
+            }
+            for (const double k : {props.MaxCurvature() * outward, props.MinCurvature() * outward}) {
+                if (!std::isfinite(k)) {
                     continue;
                 }
-                for (const double k : {props.MaxCurvature() * outward, props.MinCurvature() * outward}) {
-                    if (!std::isfinite(k)) {
-                        continue;
-                    }
-                    convex = std::max(convex, -k);
-                    concave = std::max(concave, k);
+                if (-k > convex) {
+                    convex = -k;
+                    convex_at.SetCoord(u, v);
+                }
+                if (k > concave) {
+                    concave = k;
+                    concave_at.SetCoord(u, v);
+                }
+            }
+        };
+        // The grid, plus a line just inside each edge of the parameters: a pole is degenerate, so a stretched sphere's
+        // tip there is read from beside it rather than skipped.
+        std::vector<double> us;
+        std::vector<double> vs;
+        for (int i = 0; i <= kFoldSamples; ++i) {
+            us.push_back(u0 + du * i);
+            vs.push_back(v0 + dv * i);
+        }
+        us.push_back(u0 + du * 1e-4);
+        us.push_back(u1 - du * 1e-4);
+        vs.push_back(v0 + dv * 1e-4);
+        vs.push_back(v1 - dv * 1e-4);
+        for (const double u : us) {
+            for (const double v : vs) {
+                sample(u, v);
+            }
+        }
+        // Then finer, a cell either side of each tightest read, for a tip between grid lines.
+        for (const gp_Pnt2d at : {convex_at, concave_at}) {
+            for (int i = -kFoldSamples / 4; i <= kFoldSamples / 4; ++i) {
+                for (int j = -kFoldSamples / 4; j <= kFoldSamples / 4; ++j) {
+                    sample(at.X() + du * i * 4 / kFoldSamples, at.Y() + dv * j * 4 / kFoldSamples);
                 }
             }
         }
@@ -1253,24 +1287,37 @@ void append_face_fold(std::string& out, const TopoDS_Face& face) {
     }
 }
 
-/// Millimetres to the tenth, as the app writes them: 24.9, 10, 0.5.
-std::string tenths(double mm) {
+/// Unsigned millimetres to `places` decimals, trailing zeros dropped, as the app writes them: 24.9, 10, 0.5, 0.54.
+std::string mm_text(double mm, int places) {
+    const double scale = std::pow(10.0, places);
     std::ostringstream text;
     text.imbue(std::locale::classic());
     text.setf(std::ios::fixed);
-    text.precision(1);
-    text << std::round(std::abs(mm) * 10.0) / 10.0;
+    text.precision(places);
+    text << std::round(std::abs(mm) * scale) / scale;
     std::string out = text.str();
-    if (out.size() > 2 && out.compare(out.size() - 2, 2, ".0") == 0) {
-        out.resize(out.size() - 2);
+    if (out.find('.') != std::string::npos) {
+        while (out.back() == '0') {
+            out.pop_back();
+        }
+        if (out.back() == '.') {
+            out.pop_back();
+        }
     }
     return out;
+}
+
+std::string tenths(double mm) {
+    return mm_text(mm, 1);
 }
 
 /// Why a closed face cannot move `distance`: past `most` it folds onto itself.
 std::string fold_refusal(double distance, double most) {
     const bool in = distance < 0.0;
-    std::string text = std::string(in ? "Pushed in " : "Pulled out ") + tenths(distance) +
+    // A distance that reads as `most` at the tenth (0.54 against 0.5) is written to the hundredth, so the sentence
+    // never refuses the number it allows.
+    const std::string asked = std::round(std::abs(distance) * 10.0) / 10.0 <= most ? mm_text(distance, 2) : tenths(distance);
+    std::string text = std::string(in ? "Pushed in " : "Pulled out ") + asked +
         " mm, this surface would fold onto itself where it curves tightest. ";
     if (most > 0.0) {
         return text + "It can go " + (in ? "in" : "out") + " at most " + tenths(most) + " mm.";
@@ -3862,10 +3909,17 @@ const char* kWholePartPrism =
     "Alt adds a prism on a face's outline, and this face is the whole part, so it has none. Drag without Alt to grow or "
     "shrink the part all round.";
 
-/// A face that is the whole part, moved as one surface, that Open CASCADE could still not offset.
-std::string whole_part_failed(double distance) {
-    return std::string("This face is the whole part, and Open CASCADE could not move all of it ") + tenths(distance) +
-        " mm. Try a smaller distance.";
+/// Alt on a closed face that is not the whole part, such as a ball-shaped void's wall.
+const char* kClosedPrism =
+    "Alt adds a prism on a face's outline, and this closed surface has none. Drag without Alt to move all of it.";
+
+/// Closed faces, moved as whole surfaces, that Open CASCADE could still not offset. `only` when the face is the part.
+std::string closed_failed(double distance, bool only) {
+    const std::string mm = tenths(distance);
+    if (only) {
+        return "This face is the whole part, and Open CASCADE could not move all of it " + mm + " mm. Try a smaller distance.";
+    }
+    return "Open CASCADE could not move this closed surface " + mm + " mm as one.";
 }
 
 /// The only face of a solid offset as one surface. Open CASCADE's simple offset handles a closed freeform face (a
@@ -3976,7 +4030,7 @@ TopoDS_Shape build_face_extrude(
         return {};
     }
     if (face_is_closed(face)) {
-        error = kWholePartPrism;
+        error = count_of(current, TopAbs_FACE) == 1 ? kWholePartPrism : kClosedPrism;
         return {};
     }
     gp_Dir normal;
@@ -4080,8 +4134,9 @@ TopoDS_Shape build_move_faces(
             return {};
         }
     }
-    const std::string failed = whole ? whole_part_failed(faces[0].distance) : std::string(kCannotMove);
     const TopoDS_Shape solid = as_solid(current);
+    const bool only = count_of(solid, TopAbs_FACE) == 1;
+    const std::string failed = whole ? closed_failed(faces[0].distance, only) : std::string(kCannotMove);
     g_stats.builds += 1;
     TopoDS_Shape out;
     try {
@@ -4103,7 +4158,7 @@ TopoDS_Shape build_move_faces(
     }
     // The joined offset gives up on a closed freeform face, such as an ellipsoid's. Alone on its solid, that face
     // moves as one surface, which the simple offset builds.
-    if (out.IsNull() && whole && faces.size() == 1 && count_of(solid, TopAbs_FACE) == 1) {
+    if (out.IsNull() && whole && faces.size() == 1 && only) {
         out = simple_offset(solid, faces[0].distance);
     }
     if (out.IsNull()) {
@@ -4119,8 +4174,9 @@ TopoDS_Shape build_move_faces(
         error = failed;
         return {};
     }
-    // A whole surface moved out must grow the part, and moved in must shrink it; anything else has turned inside out.
-    if (whole && (faces[0].distance > 0.0) != (volume > before)) {
+    // One closed surface moved out must grow the part (a void's wall moved out shrinks the void), and moved in must
+    // shrink it; anything else has turned inside out. Several, moved different ways, may net either way.
+    if (whole && faces.size() == 1 && (faces[0].distance > 0.0) != (volume > before)) {
         error = failed;
         return {};
     }

@@ -1321,7 +1321,7 @@ function pullGuard(op: ModelOp, depths = true): string | null {
     const info = solid.faces[index];
     // A face that is the whole part has no plane to measure behind: its centre is inside the part, and its one normal
     // is any direction. The kernel's fold distances bound it instead, read like the depth on the solid the step builds on.
-    const closed = depths && info?.closed ? { inMaxMm: info.inMaxMm, outMaxMm: info.outMaxMm } : null;
+    const closed = depths && info?.closed ? { inMaxMm: info.inMaxMm, outMaxMm: info.outMaxMm, only: solid.faces.length === 1 } : null;
     const normal = info && !info.surface && !closed ? info.normal ?? null : null;
     const centre = table.get(index)?.centre;
     const depth = depths && normal && centre ? depthBehind(solid.positions, centre, normal) : null;
