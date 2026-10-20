@@ -526,7 +526,7 @@ A turned primitive turns about its middle (`turnCentre` in `src/model-primitive.
 
 An echoed op (`stored`, `typed`) keeps the fields its primitive reads (`cleanOp`). A box no longer comes back with `radius: 30`.
 
-`solid_new` returns `bounds` in the part frame. `session_info` returns `model`: the op kinds, composite kinds, primitives, step limit, and guide topics. `guide {topic}` returns the guides as a tool, for clients that do not read resources; `ops` is the op reference with worked examples and `compose` is the few-call flow. `project_save {ifExists: "refuse"}` leaves a file of that name alone.
+`solid_new` returns `bounds` in the part frame. `session_info` returns `model`: the op kinds, composite kinds, primitives, `maxStepsPerCall` with `stepLimit` (a sentence: one composite, batch, or build makes at most 400 kernel steps, as the app's composite tools do, and the op that would pass that is refused; a history has no limit; it was `maxSteps` in 3.1.0, which read as a limit on the history), and guide topics. `guide {topic}` returns the guides as a tool, for clients that do not read resources; `ops` is the op reference with worked examples and `compose` is the few-call flow. `project_save {ifExists: "refuse"}` leaves a file of that name alone.
 
 ### Slicing
 

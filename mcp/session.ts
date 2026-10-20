@@ -1144,7 +1144,10 @@ export class Session {
         ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
         composite: [...COMPOSITE_KINDS],
         primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"],
-        maxSteps: MAX_PIECES,
+        // --- 3.1 F16. A limit per call, as the app's composite tools have it, not per history: one object's history
+        // passed 500 steps over several calls, which is fine, and maxSteps read as if it should have stopped there.
+        maxStepsPerCall: MAX_PIECES,
+        stepLimit: `One composite, batch, or build makes at most ${MAX_PIECES} kernel steps; the op that would pass that is refused like any other refusal. A history has no limit: split the work over several calls.`,
         expressions: true,
         guides: GUIDES.map((row) => row.uri.replace("lime://guide/", "")),
       },

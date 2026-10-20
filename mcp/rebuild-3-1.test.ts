@@ -233,6 +233,21 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("a mesh is refused with what to do instead", mesh.ok === false && String(mesh.reason).includes("Import its STEP file") && !String(mesh.reason).includes("Open the Model history"), JSON.stringify(mesh));
 }
 
+{
+  // Finding 16: the step limit is per call, and session_info says so; the op that passes it is refused.
+  const engine = fakeEngine();
+  const session = new Session(engine);
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const info = await call("session_info");
+  const model = info.model as { maxStepsPerCall?: number; stepLimit?: string; maxSteps?: number };
+  check("session_info names the limit per call, in a sentence", model.maxStepsPerCall === 400 && String(model.stepLimit).includes("A history has no limit") && model.maxSteps === undefined, JSON.stringify(model));
+  const part = String((await call("solid_new", { primitive: "box", dx: 200, dy: 200, dz: 10 })).object);
+  const dot = (y: number) => ({ kind: "pattern", linear: { step: [1, 0, 0], count: 200, step2: [0, 1, 0], count2: 1 }, op: { kind: "boolean", op: "cut", primitive: "box", origin: [-100, y, 9], dx: 0.5, dy: 0.5, dz: 2 } });
+  engine.calls.length = 0;
+  const over = await call("model_apply_batch", { object: part, ops: [dot(0), dot(5), dot(10)] });
+  check("a batch past 400 steps is refused at the op that passes it", over.ok === false && String((over.failed as { reason?: string } | undefined)?.reason).includes("more than 400 steps") && (over.failed as { index?: number }).index === 2, JSON.stringify(over).slice(0, 300));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
