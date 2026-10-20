@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <locale>
 #include <mutex>
 #include <sstream>
@@ -28,6 +29,7 @@
 #include <OSD_Parallel.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepLProp_SLProps.hxx>
 #include <BRepAlgoAPI_BooleanOperation.hxx>
 #include <BRepAlgoAPI_Check.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -532,6 +534,7 @@ void push_point(std::vector<float>& out, const gp_Pnt& point) {
 
 void append_face_normal(std::string& out, const TopoDS_Face& face);
 void append_face_radius(std::string& out, const TopoDS_Face& face);
+void append_face_fold(std::string& out, const TopoDS_Face& face);
 
 /// Mesh every face of a solid, never only around what a step made: for tests that compare the two.
 std::atomic<bool> g_whole_meshes{false};
@@ -687,6 +690,8 @@ std::string describe(Held& held) {
         append_face_normal(text, TopoDS::Face(held.faces(i + 1)));
         // P1. Optional. A plane, the faces of a box, stays as it was.
         append_face_radius(text, TopoDS::Face(held.faces(i + 1)));
+        // Optional. A face that is a whole closed shell, and how far it moves before it folds.
+        append_face_fold(text, TopoDS::Face(held.faces(i + 1)));
         text += '}';
     });
     OSD_Parallel::For(0, edges, [&held](int i) {
@@ -1150,6 +1155,127 @@ void append_face_radius(std::string& out, const TopoDS_Face& face) {
         }
     } catch (const Standard_Failure&) {
     }
+}
+
+/// A face that meets no other face: each of its edges is a seam or a pole. On a solid it is a whole closed shell (a
+/// sphere, an ellipsoid, a torus), so a push or pull moves all of that surface and Alt has no outline to sweep.
+bool face_is_closed(const TopoDS_Face& face) {
+    bool any = false;
+    for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+        const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
+        if (!BRep_Tool::Degenerated(edge) && !BRep_Tool::IsClosed(edge, face)) {
+            return false;
+        }
+        any = true;
+    }
+    return any;
+}
+
+/// How far a closed face moves along its outward normal before the moved surface folds onto itself: in, to just under
+/// the radius of its tightest convex curve; out, to just under its tightest concave one. Infinite on a side that never
+/// folds, as out on a convex part. Each is to the tenth of a millimetre below, so the number said is one that builds.
+struct FoldLimits {
+    double in = std::numeric_limits<double>::infinity();
+    double out = std::numeric_limits<double>::infinity();
+};
+
+/// Samples a side of the face's parameter grid. The tightest curve of a primitive sits on a grid line.
+constexpr int kFoldSamples = 64;
+/// The part of the tightest radius a move may use: sampling can miss the very tightest point between grid lines.
+constexpr double kFoldShare = 0.95;
+/// A curve wider than this (a kilometre) is flat: numerical noise on a sphere is not a concave curve.
+constexpr double kFlatCurvature = 1e-6;
+
+double fold_below(double curvature) {
+    if (!(curvature > kFlatCurvature)) {
+        return std::numeric_limits<double>::infinity();
+    }
+    return std::floor(kFoldShare / curvature * 10.0 + 1e-9) / 10.0;
+}
+
+FoldLimits fold_limits(const TopoDS_Face& face) {
+    FoldLimits limits;
+    try {
+        BRepAdaptor_Surface surface(face);
+        const double u0 = surface.FirstUParameter();
+        const double u1 = surface.LastUParameter();
+        const double v0 = surface.FirstVParameter();
+        const double v1 = surface.LastVParameter();
+        if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0) || !std::isfinite(v1)) {
+            return limits;
+        }
+        // Open CASCADE's curvature is positive where the surface bends toward its normal. On a reversed face the
+        // outward normal is the other way, so a convex curve is negative either way after this flip.
+        const double outward = face.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
+        BRepLProp_SLProps props(surface, 2, 1e-9);
+        double convex = 0.0;
+        double concave = 0.0;
+        for (int i = 0; i <= kFoldSamples; ++i) {
+            for (int j = 0; j <= kFoldSamples; ++j) {
+                props.SetParameters(u0 + (u1 - u0) * i / kFoldSamples, v0 + (v1 - v0) * j / kFoldSamples);
+                if (!props.IsCurvatureDefined()) {
+                    continue;
+                }
+                for (const double k : {props.MaxCurvature() * outward, props.MinCurvature() * outward}) {
+                    if (!std::isfinite(k)) {
+                        continue;
+                    }
+                    convex = std::max(convex, -k);
+                    concave = std::max(concave, k);
+                }
+            }
+        }
+        limits.in = fold_below(convex);
+        limits.out = fold_below(concave);
+    } catch (const Standard_Failure&) {
+    }
+    return limits;
+}
+
+/// A closed face says so, with the largest push (`inMaxMm`) and pull (`outMaxMm`) that keep it from folding. A side
+/// that never folds is left out. Any other face adds nothing.
+void append_face_fold(std::string& out, const TopoDS_Face& face) {
+    try {
+        if (!face_is_closed(face)) {
+            return;
+        }
+        const FoldLimits limits = fold_limits(face);
+        out += ",\"closed\":true";
+        if (std::isfinite(limits.in)) {
+            out += ",\"inMaxMm\":";
+            append_num(out, limits.in);
+        }
+        if (std::isfinite(limits.out)) {
+            out += ",\"outMaxMm\":";
+            append_num(out, limits.out);
+        }
+    } catch (const Standard_Failure&) {
+    }
+}
+
+/// Millimetres to the tenth, as the app writes them: 24.9, 10, 0.5.
+std::string tenths(double mm) {
+    std::ostringstream text;
+    text.imbue(std::locale::classic());
+    text.setf(std::ios::fixed);
+    text.precision(1);
+    text << std::round(std::abs(mm) * 10.0) / 10.0;
+    std::string out = text.str();
+    if (out.size() > 2 && out.compare(out.size() - 2, 2, ".0") == 0) {
+        out.resize(out.size() - 2);
+    }
+    return out;
+}
+
+/// Why a closed face cannot move `distance`: past `most` it folds onto itself.
+std::string fold_refusal(double distance, double most) {
+    const bool in = distance < 0.0;
+    std::string text = std::string(in ? "Pushed in " : "Pulled out ") + tenths(distance) +
+        " mm, this surface would fold onto itself where it curves tightest. ";
+    if (most > 0.0) {
+        return text + "It can go " + (in ? "in" : "out") + " at most " + tenths(most) + " mm.";
+    }
+    return text + "It cannot go " + (in ? "in" : "out") + " at all.";
 }
 
 /// An edge Open CASCADE will refuse at every size: already tangent-continuous, or a seam on one face.
@@ -3731,6 +3857,36 @@ constexpr double kFaceOverlapMm = 1e-3;
 const char* kCannotMove =
     "This face cannot move with its neighbours here. Push or pull adds material instead: hold Alt.";
 
+/// Alt on a face that is a whole closed shell: a prism sweeps a face's outline, and this one has none.
+const char* kWholePartPrism =
+    "Alt adds a prism on a face's outline, and this face is the whole part, so it has none. Drag without Alt to grow or "
+    "shrink the part all round.";
+
+/// A face that is the whole part, moved as one surface, that Open CASCADE could still not offset.
+std::string whole_part_failed(double distance) {
+    return std::string("This face is the whole part, and Open CASCADE could not move all of it ") + tenths(distance) +
+        " mm. Try a smaller distance.";
+}
+
+/// The only face of a solid offset as one surface. Open CASCADE's simple offset handles a closed freeform face (a
+/// stretched sphere) that the joined offset cannot. Null when it fails or the result is not a valid solid.
+TopoDS_Shape simple_offset(const TopoDS_Shape& solid, double distance) {
+    try {
+        BRepOffsetAPI_MakeOffsetShape offset;
+        offset.PerformBySimple(solid, distance);
+        if (!offset.IsDone() || offset.Shape().IsNull() || !has_solid(offset.Shape())) {
+            return {};
+        }
+        const TopoDS_Shape out = as_solid(offset.Shape());
+        if (!BRepCheck_Analyzer(out).IsValid()) {
+            return {};
+        }
+        return out;
+    } catch (const Standard_Failure&) {
+        return {};
+    }
+}
+
 /// Outward unit normal at the face midpoint. A reversed face is flipped so the solid's outside stays positive.
 bool outward_normal(const TopoDS_Face& face, gp_Dir& normal) {
     try {
@@ -3817,6 +3973,10 @@ TopoDS_Shape build_face_extrude(
     }
     if (count_of(current, TopAbs_SOLID) != 1) {
         error = "Push or pull works on a part of one body.";
+        return {};
+    }
+    if (face_is_closed(face)) {
+        error = kWholePartPrism;
         return {};
     }
     gp_Dir normal;
@@ -3906,8 +4066,24 @@ TopoDS_Shape build_move_faces(
         error = "Push or pull works on a part of one body.";
         return {};
     }
+    // A face that is a whole closed shell has no neighbours to follow it: it moves as one surface, up to where it folds.
+    bool whole = true;
+    for (const FaceOffset& row : faces) {
+        if (!face_is_closed(row.face)) {
+            whole = false;
+            continue;
+        }
+        const FoldLimits limits = fold_limits(row.face);
+        const double most = row.distance < 0.0 ? limits.in : limits.out;
+        if (std::abs(row.distance) > most + 1e-9) {
+            error = fold_refusal(row.distance, most);
+            return {};
+        }
+    }
+    const std::string failed = whole ? whole_part_failed(faces[0].distance) : std::string(kCannotMove);
     const TopoDS_Shape solid = as_solid(current);
     g_stats.builds += 1;
+    TopoDS_Shape out;
     try {
         // Offset 0 on every face, then the moved ones. Intersection joins let the neighbours extend or trim.
         BRepOffset_MakeOffset maker;
@@ -3916,25 +4092,39 @@ TopoDS_Shape build_move_faces(
             maker.SetOffsetOnFace(row.face, row.distance);
         }
         maker.MakeOffsetShape();
-        if (!maker.IsDone() || maker.Shape().IsNull() || !has_solid(maker.Shape())) {
-            error = kCannotMove;
-            return {};
+        if (maker.IsDone() && !maker.Shape().IsNull() && has_solid(maker.Shape())) {
+            out = as_solid(maker.Shape());
+            if (!BRepCheck_Analyzer(out).IsValid()) {
+                out.Nullify();
+            }
         }
-        TopoDS_Shape out = as_solid(maker.Shape());
-        if (!BRepCheck_Analyzer(out).IsValid()) {
-            error = kCannotMove;
-            return {};
-        }
-        volume = volume_of(out);
-        if (!(volume > 1e-6) || std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
-            error = kCannotMove;
-            return {};
-        }
-        return out;
     } catch (const Standard_Failure&) {
-        error = kCannotMove;
+        out.Nullify();
+    }
+    // The joined offset gives up on a closed freeform face, such as an ellipsoid's. Alone on its solid, that face
+    // moves as one surface, which the simple offset builds.
+    if (out.IsNull() && whole && faces.size() == 1 && count_of(solid, TopAbs_FACE) == 1) {
+        out = simple_offset(solid, faces[0].distance);
+    }
+    if (out.IsNull()) {
+        error = failed;
         return {};
     }
+    try {
+        volume = volume_of(out);
+    } catch (const Standard_Failure&) {
+        volume = 0.0;
+    }
+    if (!(volume > 1e-6) || std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
+        error = failed;
+        return {};
+    }
+    // A whole surface moved out must grow the part, and moved in must shrink it; anything else has turned inside out.
+    if (whole && (faces[0].distance > 0.0) != (volume > before)) {
+        error = failed;
+        return {};
+    }
+    return out;
 }
 
 namespace {

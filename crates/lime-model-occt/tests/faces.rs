@@ -1,5 +1,6 @@
 //! Face extrude and face move: a pulled box top, a widened hole, a prism on a side face, the refusal when a
-//! face cannot move with its neighbours, and a face found again after an edit above renumbers the faces.
+//! face cannot move with its neighbours, a face found again after an edit above renumbers the faces, and the only face
+//! of a closed curved part (an ellipsoid, a sphere, a torus) moved as one surface up to where it folds.
 //! `LIME_REQUIRE_OCCT=1` makes a missing kernel a failure.
 
 use std::f64::consts::PI;
@@ -254,5 +255,112 @@ fn a_cylinder_reports_its_radius_and_a_box_does_not() {
     for face in block["faces"].as_array().unwrap() {
         assert!(face.get("radiusMm").is_none(), "a box face has no radius: {face}");
         assert!(face.get("surface").is_none(), "a box face has no surface: {face}");
+    }
+}
+
+/// The flat egg the owner pulled: 86.2 × 10 × 24, one closed face with no neighbours.
+fn egg(key: &str) -> Option<Value> {
+    let opened = call(json!({
+        "call": "open", "key": key,
+        "primitive": { "primitive": "ellipsoid", "origin": [0.0, 0.0, 12.0], "size": [86.2, 10.0, 24.0] }
+    }));
+    if opened.get("error").is_some() {
+        assert!(!require(), "OCCT was required: {opened}");
+        return None;
+    }
+    Some(opened)
+}
+
+const WHOLE_PART_PRISM: &str = "Alt adds a prism on a face's outline, and this face is the whole part, so it has none. \
+     Drag without Alt to grow or shrink the part all round.";
+
+fn folds(pushed: &str, most: &str) -> String {
+    format!(
+        "Pushed in {pushed} mm, this surface would fold onto itself where it curves tightest. It can go in at most {most} mm."
+    )
+}
+
+/// A face that is the whole part moves as one surface: out without limit on a convex part, in only until the surface
+/// would fold where it curves tightest. The face says how far that is, so the app can refuse before it asks.
+#[test]
+fn the_only_face_of_a_curved_part_offsets_the_whole_surface() {
+    let Some(opened) = egg("egg") else {
+        return;
+    };
+    let faces = opened["faces"].as_array().expect("faces");
+    assert_eq!(faces.len(), 1, "{faces:?}");
+    let face = &faces[0];
+    assert_eq!(face["closed"], json!(true), "{face}");
+    // The tightest curve is at the long ends, radius b² / a = 5² / 43.1 = 0.58 mm. Just under it, to the tenth below,
+    // is the largest push that fits.
+    assert_eq!(face["inMaxMm"].as_f64(), Some(0.5), "{face}");
+    assert!(face.get("outMaxMm").is_none(), "a convex face may go out any distance: {face}");
+    let before = volume(&opened);
+    let area = face["areaMm2"].as_f64().unwrap();
+
+    // Out 2 mm: at least the area times 2 is added, as for any convex part (Steiner), and not wildly more.
+    let grown = volume(&apply("egg", 0, 1, &pull(0, 2.0)));
+    assert!(grown > before + 2.0 * area, "{grown} vs {before} + 2 × {area}");
+    assert!(grown < (before + 2.0 * area) * 1.1, "{grown}");
+
+    // In 0.5 mm, just under the tightest curve: at most the area times 0.5 comes off.
+    let shrunk = volume(&apply("egg", 0, 2, &pull(0, -0.5)));
+    assert!(shrunk < before && shrunk > before - 0.5 * area, "{shrunk} vs {before}");
+
+    // Deeper than that the surface would fold onto itself: refused with the largest push that fits.
+    refused(&apply("egg", 0, 90, &pull(0, -24.9)), &folds("24.9", "0.5"));
+    refused(&apply("egg", 0, 90, &pull(0, -0.6)), &folds("0.6", "0.5"));
+
+    // Alt's prism needs an outline to sweep, and the whole part has none.
+    refused(
+        &apply("egg", 0, 90, &json!({ "kind": "faceExtrude", "face": 0, "distance": 2.0 })),
+        WHOLE_PART_PRISM,
+    );
+}
+
+/// A sphere's one face, analytic: out and in by exact radii, and in only to just under its radius.
+#[test]
+fn a_sphere_grows_and_shrinks_by_its_radius() {
+    let ball = call(json!({
+        "call": "open", "key": "ball",
+        "primitive": { "primitive": "sphere", "origin": [0.0, 0.0, 10.0], "radius": 10.0 }
+    }));
+    if ball.get("error").is_some() {
+        assert!(!require(), "OCCT was required: {ball}");
+        return;
+    }
+    let face = &ball["faces"][0];
+    assert_eq!(face["closed"], json!(true), "{face}");
+    assert_eq!(face["inMaxMm"].as_f64(), Some(9.5), "{face}");
+    let sphere = |r: f64| 4.0 / 3.0 * PI * r * r * r;
+    near(volume(&apply("ball", 0, 1, &pull(0, 2.0))), sphere(12.0));
+    near(volume(&apply("ball", 0, 2, &pull(0, -9.5))), sphere(0.5));
+    refused(&apply("ball", 0, 90, &pull(0, -10.0)), &folds("10", "9.5"));
+    refused(
+        &apply("ball", 0, 90, &json!({ "kind": "faceExtrude", "face": 0, "distance": -2.0 })),
+        WHOLE_PART_PRISM,
+    );
+    // A torus is one closed face too. In, it folds at its tube's radius 5; out, where the hole closes, 20 − 5 = 15.
+    let ring = call(json!({
+        "call": "open", "key": "ring",
+        "primitive": { "primitive": "torus", "origin": [0.0, 0.0, 5.0], "radius": 20.0, "tubeRadius": 5.0 }
+    }));
+    let face = &ring["faces"][0];
+    assert_eq!(ring["faces"].as_array().map(Vec::len), Some(1), "{ring}");
+    assert_eq!(face["closed"], json!(true), "{face}");
+    assert_eq!(face["inMaxMm"].as_f64(), Some(4.7), "{face}");
+    assert_eq!(face["outMaxMm"].as_f64(), Some(14.2), "{face}");
+    // Pappus: 2π R × π r².
+    let torus = |r: f64| 2.0 * PI * 20.0 * PI * r * r;
+    near(volume(&apply("ring", 0, 1, &pull(0, 1.0))), torus(6.0));
+    refused(
+        &apply("ring", 0, 90, &pull(0, 15.0)),
+        "Pulled out 15 mm, this surface would fold onto itself where it curves tightest. It can go out at most 14.2 mm.",
+    );
+
+    // A box face has neighbours: it is not closed and says nothing of a fold.
+    let block = call(json!({ "call": "open", "key": "plain-fold", "box": [20.0, 20.0, 10.0] }));
+    for face in block["faces"].as_array().unwrap() {
+        assert!(face.get("closed").is_none() && face.get("inMaxMm").is_none(), "{face}");
     }
 }
