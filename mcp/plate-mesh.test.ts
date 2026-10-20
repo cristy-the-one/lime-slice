@@ -5,6 +5,7 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import { fakeEngine } from "./engine.ts";
 import { meshRecord } from "../src/project.ts";
@@ -24,7 +25,15 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 type SavedObject = { id: string; mesh: { name: string; bytesBase64: string }; brep?: { name: string; bytesBase64: string }; meshSeatMm?: number; modelTree?: unknown };
-const readDoc = (name: string) => JSON.parse(readFileSync(join(workspace, name), "utf8")) as { objects?: SavedObject[]; mesh?: { name: string } };
+// Unpacked with Node's own zlib, not the app's codec, so this also shows a version 4 record is a plain gzip stream.
+const unpack = (record?: Record<string, unknown>) => {
+  if (record?.encoding === "gzip+base64") record.bytesBase64 = gunzipSync(Buffer.from(String(record.data), "base64")).toString("base64");
+};
+const readDoc = (name: string) => {
+  const doc = JSON.parse(readFileSync(join(workspace, name), "utf8")) as { objects?: SavedObject[]; mesh?: { name: string } };
+  for (const obj of doc.objects ?? []) for (const record of [obj.mesh, obj.brep]) unpack(record as unknown as Record<string, unknown> | undefined);
+  return doc;
+};
 const isStl = (b64: string) => {
   const bytes = Buffer.from(b64, "base64");
   return bytes.length >= 84 && bytes.length === 84 + bytes.readUInt32LE(80) * 50;

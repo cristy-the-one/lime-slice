@@ -8,7 +8,7 @@ Dark theme, 1440×900, except the phone frames. Model clips and stills are the w
 
 ## Modeler
 
-Model edits a STEP solid, or starts one from a primitive or a sketch. The desktop release includes the Open CASCADE libraries. A build without them still slices an unedited STEP file, and Model stays off. `.lime` version 3 stores the solid as Open CASCADE's binary brep, so a saved part opens in Model without rebuilding every face from scratch. The contract is [docs/step-modeler.md](docs/step-modeler.md).
+Model edits a STEP solid, or starts one from a primitive or a sketch. The desktop release includes the Open CASCADE libraries. A build without them still slices an unedited STEP file, and Model stays off. `.lime` version 4 stores the solid as Open CASCADE's binary brep, so a saved part opens in Model without rebuilding every face from scratch, and gzips its big binary records (meshes, solids, root STEPs) so a file is about a quarter of its version 3 size. The contract is [docs/step-modeler.md](docs/step-modeler.md).
 
 ### Sketches and the constraint solver
 

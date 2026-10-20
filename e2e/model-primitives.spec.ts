@@ -4,6 +4,7 @@ import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { primitiveMesh, type PrimitiveSpec } from "../src/model-primitive";
 import { plateClick } from "./plate-rows";
+import { unpackLime } from "./lime-file";
 
 type V = [number, number, number];
 
@@ -119,7 +120,7 @@ test("a saved new solid reopens on its plate step from its saved solid, and keep
   await page.locator("#tabPrepare").click();
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const saved = await readFile((await download.path())!);
-  const doc = JSON.parse(saved.toString("utf8")) as { objects: { name: string; modelTree: { rootPrimitive?: unknown; rootStep?: unknown; nodes: unknown[] } }[] };
+  const doc = JSON.parse(unpackLime(saved).toString("utf8")) as { objects: { name: string; modelTree: { rootPrimitive?: unknown; rootStep?: unknown; nodes: unknown[] } }[] };
   expect(doc.objects[0]!.name).toBe("Box 1");
   expect(doc.objects[0]!.modelTree.rootPrimitive, "the file keeps the primitive's numbers").toEqual({ primitive: "box", origin: [-10, -10, 0], size: [20, 20, 20], radius: 0, height: 0, turn: [0, 0, 0] });
   expect(doc.objects[0]!.modelTree.rootStep, "and no root STEP").toBeUndefined();

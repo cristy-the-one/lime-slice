@@ -3,13 +3,14 @@
  * Skips when LIME_OCCT_BRIDGE is unset, and fails in CI when it is unset.
  * Build with CARGO_BUILD_JOBS=2. The rust job runs this after the OCCT install.
  */
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { engineCandidates, loadEngineWorker } from "./engine.ts";
 import { Session } from "./session.ts";
+import { plainDocument } from "../src/project-codec.ts";
 
 const bridge = process.env.LIME_OCCT_BRIDGE ?? "";
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -111,6 +112,29 @@ for (const row of opened) {
 }
 check("commit, slice, 3MF, STEP, save, and reopen succeed", committed.ok === true && started.ok === true && waited.ok === true && packed.ok === true && stepFile.ok === true && typeof stepFile.bytes === "number" && stepFile.bytes > 100 && saved.ok === true && reopened.ok === true, JSON.stringify({ committed, started, waited, packed, stepFile, saved, reopened }));
 check("the reopened solid is still the holed cube", reopenedId !== "" && near(again.volumeMm3, 874.34, 0.5) && labels.some((label) => label.startsWith("Hole")), JSON.stringify({ volume: again.volumeMm3, labels, objects: opened.length }));
+
+// Version 4: the saved solid is the engine's own bytes, compressed. A reopen gets the same bytes back as the seed, so
+// the whole tree opens from it at once, with nothing replayed.
+{
+  const text = readFileSync(String(saved.path), "utf8");
+  const raw = JSON.parse(text) as { version?: number; objects?: { brep?: { encoding?: string; byteLength?: number; bytesBase64?: string } }[] };
+  const plain = (await plainDocument(text)) as typeof raw;
+  const brepIndex = Math.max(0, (raw.objects ?? []).findIndex((row) => row.brep));
+  const brep = plain.objects?.[brepIndex]?.brep;
+  const bytes = brep?.bytesBase64 ? Buffer.from(brep.bytesBase64, "base64") : Buffer.alloc(0);
+  check("the saved file is version 4 and its solid is compressed", raw.version === 4 && raw.objects?.[brepIndex]?.brep?.encoding === "gzip+base64" && raw.objects[brepIndex]!.brep!.bytesBase64 === undefined, JSON.stringify(raw.version));
+  check("the solid unpacks to the engine's binary format, of its recorded length", bytes.toString("latin1", 0, 9) === "LIMEBREP " && bytes.length === brep?.byteLength && bytes.length > 100, `${bytes.length}`);
+  const packedLength = String((JSON.parse(text) as { objects: { brep: { data: string } }[] }).objects[brepIndex]!.brep.data.length);
+  check("the stored solid is shorter than the same solid as base64", Number(packedLength) < Math.ceil(bytes.length / 3) * 4, `${packedLength} vs ${bytes.length}`);
+  const t0 = Date.now();
+  const timed = new Session(loadEngineWorker(root));
+  const quick = await timed.call("project_open", { path: String(saved.path) });
+  const quickVolumes: unknown[] = [];
+  for (const row of (quick.objects as { object: string }[] | undefined) ?? []) quickVolumes.push((await timed.call("model_describe", { object: row.object })).volumeMm3);
+  const quickDescribed = { volumeMm3: quickVolumes.find((volume) => near(volume, 874.34, 0.5)) };
+  check("a version 4 file reopens from its solid with no history replayed, and the same volume", quick.ok === true && quick.historyNotes === undefined && near(quickDescribed.volumeMm3, 874.34, 0.5), JSON.stringify({ notes: quick.historyNotes, volume: quickDescribed.volumeMm3 }));
+  check("and in good time", Date.now() - t0 < 20000, `${Date.now() - t0} ms`);
+}
 
 const corner = await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
 const cornerId = String(corner.object);

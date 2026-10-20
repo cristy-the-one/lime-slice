@@ -1,6 +1,7 @@
 import type { Page, Route } from "@playwright/test";
 import { encodeSolid } from "../src/model-reply";
 import { fnv1aHex } from "../src/slice-action";
+import { unpackLime } from "./lime-file";
 
 /** A solid with plain number arrays. The mock sends it in the engine's binary reply format. */
 export interface MockSolid {
@@ -308,7 +309,7 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
  * written in its place, which the mock opens as the same solid.
  */
 export function olderFile(saved: Buffer): Buffer {
-  const doc = JSON.parse(saved.toString("utf8")) as { version: number; objects?: { brep?: { name: string; bytesBase64: string; byteLength: number; hash: string } }[] };
+  const doc = JSON.parse(unpackLime(saved).toString("utf8")) as { version: number; objects?: { brep?: { name: string; bytesBase64: string; byteLength: number; hash: string } }[] };
   doc.version = 2;
   for (const obj of doc.objects ?? []) {
     if (!obj.brep) continue;
