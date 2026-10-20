@@ -485,7 +485,8 @@ test("after a tool is closed with Esc or Cancel, the next hover offers the push 
     await expect(canvas, `the arrow is back after ${tool} and ${close}, with no click`).toHaveAttribute("data-handles", /pull:/);
   }
   await dragFace(page, top, 10);
-  expect(applied.at(-1)?.kind).toBe("moveFaces");
+  // mouseup starts the apply and returns before the request is recorded.
+  await expect.poll(() => applied.at(-1)?.kind).toBe("moveFaces");
 });
 
 test("with a section on, the half it hides is neither hovered nor picked", async ({ page }) => {
