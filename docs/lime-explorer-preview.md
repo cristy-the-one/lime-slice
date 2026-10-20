@@ -1,6 +1,6 @@
 # Explorer preview for `.lime` files
 
-A `.lime` file stays version 3 JSON. It gains two optional top-level fields, `thumbnail` and `summary`, written before every other key. Windows Explorer reads those fields from a small shell DLL. It does not open the slicer, Open CASCADE, or the mesh bytes.
+A `.lime` file stays JSON text (version 3 when this was decided; version 4 now, see "Version 4" below). It gains two optional top-level fields, `thumbnail` and `summary`, written before every other key. Windows Explorer reads those fields from a small shell DLL. It does not open the slicer, Open CASCADE, or the mesh bytes.
 
 This is the text-file version of what 3MF, OpenDocument, and Office already do with a package part, and what PrusaSlicer does for G-code: put a PNG where a dumb reader can lift it out, and keep a hash so a picture of a different plate is never shown. A ZIP container would match 3MF more literally and would make every newly saved file unreadable by the app that ships today.
 
@@ -19,7 +19,11 @@ This is the text-file version of what 3MF, OpenDocument, and Office already do w
 | Install | Per-user registry when the NSIS install is per-user, so it does not need an administrator. The existing app install is otherwise unchanged. |
 | macOS and Linux | Same fields, later. Not built here. |
 
-`PROJECT_VERSION` stays 3. An app from before version 3 still refuses the file, because the version number is still 3. A current reader that does not know the new keys still opens the file.
+`PROJECT_VERSION` stayed 3 for this work. An app from before version 3 still refuses the file, because the version number is still 3. A current reader that does not know the new keys still opens the file.
+
+### Version 4
+
+`PROJECT_VERSION` is 4 since the binary records were compressed (see "Compatibility" in `docs/step-modeler.md`). The picture and the summary are unchanged: the same two top-level keys, still written first, still plain JSON. The shell reads a record's `name` and `hash` and skips the rest of it, so it reads a version 4 file as it read version 3, without unpacking anything. `crates/lime-preview` accepts versions 2, 3, and 4, and a version 4 file is always a plate, so a one-object project is the plate of its one object (`id` `part`), which hashes as before.
 
 ## What comparable tools actually do
 

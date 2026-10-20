@@ -1661,7 +1661,7 @@ export class Session {
       const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD, { seed }), "open", budget);
       const seconds = Math.round((Date.now() - started) / 1000);
       if (typeof reply.seedRefused === "string") note = `${shownName(obj.name)}: the saved solid did not open (${reply.seedRefused}), so its history was rebuilt.`;
-      else if (!seed && steps > 0 && seconds >= 5) note = `${shownName(obj.name)}: this file keeps no solid in the engine's own format (a project saved before version 3 keeps STEP), so its ${steps} steps were replayed, in ${seconds} s. project_save writes version 3, which opens at once.`;
+      else if (!seed && steps > 0 && seconds >= 5) note = `${shownName(obj.name)}: this file keeps no solid in the engine's own format (a project saved before version 3 keeps STEP), so its ${steps} steps were replayed, in ${seconds} s. project_save writes version 4, which opens at once.`;
       const solid = rememberSolid(reply);
       if (solid) obj.solid = solid;
       if (stepPlate && solid && solid.positions.length >= 9) {
