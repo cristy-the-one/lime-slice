@@ -392,7 +392,7 @@ Shared result rules:
 | `session_info` | nothing on the engine | version of the server, engine `/api/health`, whether the OCCT bridge loaded, workspace root, printer-send gate |
 | `project_open` | `parseProject` | `project` handle, object handles, names, and any `unreadHistory` |
 | `project_create` | empty version-2 plate | `project` handle |
-| `project_save` | `serializeProject`, write under the workspace | path and byte length |
+| `project_save` | `serializeProject`, write under the workspace | path and byte length; `warnings` and `uncommitted` name an object whose current step would not commit (its mesh does not close): it is saved as it stands, with its whole history, and the plate keeps its last committed mesh (or the kernel's mesh when it has none). In 3.1.0 one such object refused the whole save. |
 | `app_open` | `project_save` when no path is given, then the bridge's `open` message or a launch of the installed app with the file | path, `opened` (`bridge` or `launch`), and a sentence; a refusal names where the file is |
 | `mesh_import` | `POST /api/mesh`, then the plate add the UI does in `src/app/files.ts` | object handle, triangle count, bbox, `meshId`, foreign-3MF note if any |
 | `solid_new` | `open` with `primitive` (`newSolidRequest`) | object handle and fingerprint. Phase 2, because it needs the bridge |

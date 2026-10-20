@@ -729,17 +729,8 @@ export class Session {
     try {
       const path = autosavePath();
       if (!path) return;
-      const doc = this.saveDocument();
       // A solid never committed has no plate mesh yet: its kernel mesh stands in, so the file opens.
-      const unplated = new Map(this.objects.filter((obj) => obj.bytes.byteLength === 0 && obj.solid && obj.solid.positions.length >= 9).map((obj) => [obj.id, obj]));
-      if (unplated.size > 0 && doc.objects) {
-        doc.objects = doc.objects.map((row) => {
-          const obj = row.id ? unplated.get(row.id) : undefined;
-          if (!obj?.solid) return row;
-          const name = stlFileName(obj.fileName);
-          return { ...row, mesh: meshRecord(name, stlBytes(Float32Array.from(obj.solid.positions), name)) };
-        });
-      }
+      const doc = this.withKernelMeshes(this.saveDocument());
       this.attachPreview(doc, false);
       const text = serializeProject(doc);
       // One write at a time, off the call's path; a failed write is not worth failing a call for.
@@ -1613,8 +1604,9 @@ export class Session {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
     const path = resolveWrite(name, ".lime");
     if (refuseExisting && existsSync(path)) return { ok: false, reason: "A project with that name is already in the workspace. Pick another name, or leave ifExists out to replace it." };
-    const committed = await this.commitAll();
-    if (committed) return { ok: false, reason: committed };
+    // An object whose current step will not commit (its mesh does not close) is saved as it stands: the plate keeps its
+    // last committed mesh, or the kernel's mesh when it has none, and its whole history is kept. The reply names it.
+    const refused = await this.commitAll();
     if (this.sourcePath && path === this.sourcePath && this.sourceHash) {
       let now = "";
       try {
@@ -1626,7 +1618,7 @@ export class Session {
         return { ok: false, reason: "That project changed on disk since it was opened. Save it under a new name." };
       }
     }
-    const doc = this.saveDocument();
+    const doc = this.withKernelMeshes(this.saveDocument());
     this.attachPreview(doc, true);
     if (this.sourcePath && path === this.sourcePath) {
       const loss = this.lossy(doc);
@@ -1637,7 +1629,12 @@ export class Session {
     this.sourceProject = structuredClone(doc);
     this.sourceHash = createHash("sha256").update(text).digest("hex");
     this.sourcePath = path;
-    return { ok: true, path, bytes: Buffer.byteLength(text) };
+    const warnings = refused.map((row) => {
+      const obj = this.find(row.object);
+      const kept = obj && obj.bytes.byteLength > 0 ? "the plate keeps its last committed mesh" : "the plate holds its open kernel mesh";
+      return `${row.name} (${row.object}) was saved without committing its current step: ${row.reason.replace(/ It was not put on the plate[^.]*\./, "")} Its history is saved whole, and ${kept}.`;
+    });
+    return { ok: true, path, bytes: Buffer.byteLength(text), ...(warnings.length ? { warnings, uncommitted: refused.map((row) => row.object) } : {}) };
   }
 
   /**
@@ -2860,8 +2857,8 @@ export class Session {
 
   private async export3mf(name: string): Promise<Record<string, unknown>> {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
-    const committed = await this.commitAll();
-    if (committed) return { ok: false, reason: committed };
+    const refused = (await this.commitAll())[0];
+    if (refused) return { ok: false, reason: `${refused.name} (${refused.object}): ${refused.reason}`, object: refused.object };
     const meshes = this.objects.map((obj) => this.placed(obj).positions);
     const bytes = encode3mf(meshes);
     const path = resolveWrite(name, ".3mf");
@@ -4968,12 +4965,31 @@ export class Session {
     return false;
   }
 
-  private async commitAll(): Promise<string | null> {
+  /** Every object's current step onto the plate. One that will not commit is named with its reason; the rest still commit. */
+  private async commitAll(): Promise<{ object: string; name: string; reason: string }[]> {
+    const refused: { object: string; name: string; reason: string }[] = [];
     for (const obj of this.objects) {
       const reason = await this.commitObject(obj);
-      if (reason) return reason;
+      if (reason) refused.push({ object: obj.id, name: shownName(obj.name), reason });
     }
-    return null;
+    return refused;
+  }
+
+  /**
+   * A plate object with no plate mesh yet, a solid never committed, carries its kernel mesh in a saved file, so the file
+   * opens: an autosave commits nothing, and a save keeps an object whose mesh would not close as it stands.
+   */
+  private withKernelMeshes(doc: LimeProject): LimeProject {
+    const unplated = new Map(this.objects.filter((obj) => obj.bytes.byteLength === 0 && obj.solid && obj.solid.positions.length >= 9).map((obj) => [obj.id, obj]));
+    if (unplated.size > 0 && doc.objects) {
+      doc.objects = doc.objects.map((row) => {
+        const obj = row.id ? unplated.get(row.id) : undefined;
+        if (!obj?.solid) return row;
+        const name = stlFileName(obj.fileName);
+        return { ...row, mesh: meshRecord(name, stlBytes(Float32Array.from(obj.solid.positions), name)) };
+      });
+    }
+    return doc;
   }
 
   private async exportStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
