@@ -324,6 +324,8 @@ export const session = {
   autoTimer: 0,
   /** A change was made in the Model tab, where automatic slices wait for the user to leave. */
   autoDeferred: false,
+  /** Prepare should ask for another slice after a Model visit changed the plate. */
+  askSlice: false,
   stepTimer: 0,
   /** Slice currently drawn. Geometry buffers carry the same id as `resultJob`. */
   shown: null as SliceResponse | null,

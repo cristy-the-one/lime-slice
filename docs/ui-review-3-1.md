@@ -231,6 +231,12 @@ The faded selection chip names the count, "1 face ▾", in the dock's surface co
 
 ![1 face, beside the solid](screenshots/ui-review-3-1/ux09-after-chip.png)
 
+"Slicing paused while modeling" shows for four seconds when Model opens onto a slice, then a dot beside Slice keeps the same tooltip. Back on Prepare, a change made in Model asks you to slice again.
+
+![The paused line in the status bar](screenshots/ui-review-3-1/ux10-before-pause.png)
+
+![The line gone, a dot beside Slice](screenshots/ui-review-3-1/ux10-after-pause-dot.png)
+
 ## Checks
 
 - `npx tsc --noEmit`

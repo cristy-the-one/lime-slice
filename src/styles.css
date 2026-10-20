@@ -685,6 +685,14 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   font-size: var(--fs-1);
   white-space: nowrap;
 }
+.slice-pause-dot {
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex: 0 0 auto;
+}
 .model-panel[hidden] { display: none !important; }
 .model-fields {
   display: grid;

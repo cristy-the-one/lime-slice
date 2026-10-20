@@ -331,6 +331,8 @@ Status: done. The faded chip reads "1 face ▾" (or "3 edges ▾") in the dock s
 
 ### UX-10 (P2). "Slicing paused while modeling" once, not always
 
+Status: done. With a slice already on screen, the line shows for 4 seconds when Model opens, then a dot beside Slice keeps the tooltip. Leaving Model for Prepare after a change says "Slice again to include your changes". Screenshots: `ux10-before-pause.png`, `ux10-after-pause-dot.png`.
+
 - **Seen**: the chip is in the status bar of every Model screenshot.
 - **Change**: show it for 4 s when Model opens with a slice that will need redoing, then keep it as a small dot with
   a tooltip next to the Slice button. On return to Prepare, say "Slice again to include your changes" if the plate
