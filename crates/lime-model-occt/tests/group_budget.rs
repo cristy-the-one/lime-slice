@@ -46,10 +46,32 @@ fn a_new_group_stops_at_its_budget_and_a_saved_one_replays() {
     );
 
     // The edited step of an edit is typed now, as an Apply's is: it stops too.
-    let edited = call(json!({ "call": "edit", "key": "b2", "parent": 0, "node": 2, "op": group, "replay": [], "chordMm": 0.1 }));
+    let edited = call(
+        json!({ "call": "edit", "key": "b2", "parent": 0, "node": 2, "op": group, "replay": [], "chordMm": 0.1 }),
+    );
     assert_eq!(edited["error"], json!(expected), "{edited}");
 
+    // --- 3.1 F9. One step past the budget stops inside Open CASCADE, with a sentence, and the tree stays usable: before,
+    // only a group stopped between steps, and a single long boolean ran until the server killed the engine.
+    let ring = json!({ "kind": "boolean", "op": "cut", "primitive": "torus", "origin": [5.0, 5.0, 10.0], "radius": 4.0, "tubeRadius": 1.5 });
+    let stopped = call(json!({ "call": "apply", "key": "b", "parent": 0, "node": 5, "op": ring }));
+    let said = stopped["error"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("s limit, so Open CASCADE stopped it and nothing changed"),
+        "{stopped}"
+    );
+    let probed = call(json!({ "call": "probe", "key": "b", "node": 0, "op": ring }));
+    assert!(
+        probed["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("s limit"),
+        "{probed}"
+    );
+
     lime_model_occt::set_group_budget(Duration::from_secs(60));
+    let fits = call(json!({ "call": "apply", "key": "b", "parent": 0, "node": 5, "op": ring }));
+    assert!(fits.get("error").is_none(), "{fits}");
     let applied = call(json!({ "call": "apply", "key": "b", "parent": 0, "node": 1, "op": group }));
     assert!(applied.get("error").is_none(), "{applied}");
     assert!(

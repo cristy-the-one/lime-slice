@@ -20,6 +20,8 @@
 
 #include <Message.hxx>
 #include <Message_Messenger.hxx>
+#include <Message_ProgressIndicator.hxx>
+#include <Message_ProgressScope.hxx>
 #include <Message_Printer.hxx>
 #include <Message_PrinterOStream.hxx>
 #include <TCollection_AsciiString.hxx>
@@ -1007,6 +1009,57 @@ TopoDS_Shape make_solid(const PrimitiveSpec& given, std::string& error) {
     return builder.Shape();
 }
 
+namespace {
+
+/// When the step being built must stop, in steady-clock milliseconds, and the budget it was given; 0 for none. One
+/// engine builds one step at a time, but Open CASCADE asks from its own threads too, so these are not thread-local.
+std::atomic<long long> g_deadline_ms{0};
+std::atomic<long long> g_budget_ms{0};
+
+long long steady_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+/// Open CASCADE polls `UserBreak` as a boolean or a blend works, so a step past its time stops there, cleanly,
+/// instead of holding the engine until its caller kills the process and every open tree with it.
+class Deadline : public Message_ProgressIndicator {
+public:
+    Standard_Boolean UserBreak() override { return past_deadline(); }
+
+protected:
+    void Show(const Message_ProgressScope&, const Standard_Boolean) override {}
+};
+
+}  // namespace
+
+void set_deadline(long long budget_ms) {
+    g_budget_ms.store(budget_ms > 0 ? budget_ms : 0);
+    g_deadline_ms.store(budget_ms > 0 ? steady_ms() + budget_ms : 0);
+}
+
+bool past_deadline() {
+    const long long until = g_deadline_ms.load();
+    return until > 0 && steady_ms() >= until;
+}
+
+std::string deadline_message() {
+    const long long seconds = (g_budget_ms.load() + 999) / 1000;
+    return "This step ran past its " + std::to_string(seconds) +
+           " s limit, so Open CASCADE stopped it and nothing changed. Use a smaller tool, fewer edges, or fewer faces "
+           "in the way, or split the part and edit one piece";
+}
+
+/// A progress range that stops at the deadline, or a plain one when no step is being timed. `watch` keeps the indicator
+/// alive while the build runs.
+Message_ProgressRange deadline_range(Handle(Message_ProgressIndicator)& watch) {
+    if (g_deadline_ms.load() <= 0) {
+        return Message_ProgressRange();
+    }
+    watch = new Deadline();
+    return watch->Start();
+}
+
 /// One boolean, built once. The two-shape constructors of `BRepAlgoAPI_Fuse`, `_Cut` and `_Common` build at once, with the
 /// default options, so setting options on one and calling `Build` again ran every boolean twice, the first time
 /// destructively, which could change the input's tolerances. History stays unfilled unless `history` is set: a hole's
@@ -1042,9 +1095,10 @@ TopoDS_Shape boolean_op(
     algo.SetNonDestructive(Standard_True);
     algo.SetRunParallel(Standard_True);
     algo.SetToFillHistory(history != nullptr ? Standard_True : Standard_False);
-    algo.Build();
+    Handle(Message_ProgressIndicator) watch;
+    algo.Build(deadline_range(watch));
     if (!algo.IsDone() || algo.HasErrors() || algo.Shape().IsNull()) {
-        error = "Open CASCADE did not complete the boolean";
+        error = past_deadline() ? deadline_message() : "Open CASCADE did not complete the boolean";
         return {};
     }
     if (history != nullptr) {
@@ -1246,9 +1300,10 @@ bool blend_build(
             for (const TopoDS_Edge& edge : edges) {
                 builder.Add(size, edge);
             }
-            builder.Build();
+            Handle(Message_ProgressIndicator) watch;
+            builder.Build(deadline_range(watch));
             if (!builder.IsDone() || builder.Shape().IsNull()) {
-                error = failed;
+                error = past_deadline() ? deadline_message() : failed;
                 return false;
             }
             shape = builder.Shape();
@@ -1257,9 +1312,10 @@ bool blend_build(
             for (const TopoDS_Edge& edge : edges) {
                 builder.Add(size, edge);
             }
-            builder.Build();
+            Handle(Message_ProgressIndicator) watch;
+            builder.Build(deadline_range(watch));
             if (!builder.IsDone() || builder.Shape().IsNull()) {
-                error = failed;
+                error = past_deadline() ? deadline_message() : failed;
                 return false;
             }
             shape = builder.Shape();

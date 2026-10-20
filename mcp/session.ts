@@ -3291,10 +3291,20 @@ export class Session {
     }
   }
 
+  /**
+   * How long one modeler call may run before the server kills the modeler, which closes every open tree. --- 3.1 F9.
+   * It is longer than the engine's own 60 s limit on a new step, which stops a slow boolean or blend cleanly with a
+   * refusal: at 30 s the server killed first, and a 3,000-face join came back as treeLost instead of a sentence.
+   */
   private modelTimeoutMs(): number {
     const raw = Number(process.env.LIME_MCP_MODEL_TIMEOUT_S);
-    const seconds = Number.isFinite(raw) && raw > 0 ? raw : 30;
+    const seconds = Number.isFinite(raw) && raw > 0 ? raw : 90;
     return seconds * 1000;
+  }
+
+  /** A call that replays `steps` steps (a group's count as many): two seconds each, at least the one-call limit. */
+  private replayBudgetMs(steps: number): number {
+    return Math.max(this.modelTimeoutMs(), steps * 2000);
   }
 
   private runawayMessage(kind: string, budgetMs: number): string {
@@ -3368,7 +3378,12 @@ export class Session {
 
   private lostReply(err: unknown): Record<string, unknown> | null {
     if (!(err instanceof ModelRunaway)) return null;
-    return { ok: false, reason: err.message, treeLost: true };
+    return {
+      ok: false,
+      reason: err.message,
+      treeLost: true,
+      treeNote: "The modeler did not answer, so it was restarted, which closed every open history in it. Nothing applied is lost: each history is built again from its first solid and its steps on its next use, which takes a while on a long one.",
+    };
   }
 
   private async treeCall(body: Record<string, unknown>, label = "edit", budgetMs?: number): Promise<Record<string, unknown>> {
@@ -4420,14 +4435,39 @@ export class Session {
   }
 
   /**
+   * The run of pieces from `firstPiece` to the current step, folded by the engine into `group` under `before`: the group
+   * node's id, null when the engine would not fold it (the caller then builds the group), or the failure when the
+   * modeler had to be restarted.
+   */
+  private async foldGroup(obj: PlateObject, before: number, firstPiece: number, group: GroupOp): Promise<number | Record<string, unknown> | null> {
+    const tree = obj.tree;
+    if (!tree || obj.treeStale || !pathTo(tree, tree.current).includes(firstPiece)) return null;
+    const [reserved, node] = reserveId(tree);
+    const without = dropped(jumped(reserved, before), firstPiece);
+    if (!without) return null;
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall({ call: "fold", key: tree.key, parent: before, node, op: group, last: tree.current, chordMm: CHORD }, "group");
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      if (err instanceof ProtocolError) return null;
+      throw err;
+    }
+    if (typeof reply.error === "string" && reply.error) return null;
+    obj.tree = withChild(without, before, { id: node, op: group, label: opLabel(group), fingerprint: null });
+    const solid = rememberSolid(reply);
+    if (solid) obj.solid = solid;
+    obj.probes.clear();
+    return node;
+  }
+
+  /**
    * --- A9. The pieces of one composite become a single group node.
    * Go back to the step before them, drop the chain, then probe and apply the group.
    * The probe and the apply share a budget that grows with the step count, so one composite is not cut off at the per-call limit.
    */
   private async storeGroup(obj: PlateObject, before: number, firstPiece: number, steps: ModelOp[], label: string | undefined, raw: Record<string, unknown>): Promise<{ ok: true; node: number } | { ok: false; failed: Record<string, unknown> }> {
-    const back = await this.gotoNode(obj, before);
-    if (back.ok !== true) return { ok: false, failed: { reason: String(back.reason ?? "The steps could not be gathered into one.") } };
-    if (obj.tree?.nodes.has(firstPiece)) this.drop(obj, firstPiece);
     let source: unknown = raw;
     try {
       source = JSON.parse(JSON.stringify(raw)) as unknown;
@@ -4435,6 +4475,14 @@ export class Session {
       source = raw;
     }
     const group: GroupOp = { kind: "group", label: compositeGroupLabel(raw, label), source, steps };
+    // --- 3.1 F1. The pieces are built and checked already: they fold into the group, which builds nothing again. Only
+    // an engine that cannot fold them (an old one, or a run whose last solid it let go) builds the group from the start.
+    const folded = await this.foldGroup(obj, before, firstPiece, group);
+    if (typeof folded === "number") return { ok: true, node: folded };
+    if (folded) return { ok: false, failed: folded };
+    const back = await this.gotoNode(obj, before);
+    if (back.ok !== true) return { ok: false, failed: { reason: String(back.reason ?? "The steps could not be gathered into one.") } };
+    if (obj.tree?.nodes.has(firstPiece)) this.drop(obj, firstPiece);
     const at = await this.opened(obj);
     if ("reason" in at) return { ok: false, failed: { reason: at.reason } };
     const baked = { op: group as ModelOp, typed: group as unknown as Record<string, unknown> };
@@ -4832,7 +4880,20 @@ export class Session {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
-    const reply = await this.treeCall(gotoRequest(tree.key, node, CHORD));
+    // --- 3.1 F9. A goto replays from the nearest solid the engine still holds, which can be a whole group of hundreds
+    // of booleans: it gets two seconds a step on the way, not one call's limit, and a modeler past even that is a reply.
+    const path = pathTo(tree, node).reduce((sum, id) => {
+      const op = tree.nodes.get(id)?.op;
+      return sum + (op ? 1 : 0) + (op?.kind === "group" ? op.steps.length : 0);
+    }, 0);
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(gotoRequest(tree.key, node, CHORD), "edit", this.replayBudgetMs(path));
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
     obj.tree = jumped(tree, node);
     const solid = rememberSolid(reply);
@@ -4942,7 +5003,16 @@ export class Session {
     const levels = crossEdit(tree, joins, node, baked.op, replayIds, (key, need) => this.reserveOn(key, need));
     const own = levels[levels.length - 1];
     if (!own) return { ok: false, reason: "That step could not be rebuilt." };
-    const reply = await this.treeCall(crossEditRequest(levels, obj.stepTolerance || CHORD));
+    // --- 3.1 F9. An edit replays every step after the one edited, and the tools its joins take: a budget for all of them.
+    const replayed = levels.reduce((sum, level) => sum + 1 + level.replay.reduce((inner, step) => inner + 1 + (step.op.kind === "group" ? step.op.steps.length : 0), 0), 0);
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(crossEditRequest(levels, obj.stepTolerance || CHORD), "edit", this.replayBudgetMs(replayed));
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
     const built = readBuilt(reply.built);
     const broken = readBroken(reply.broken);

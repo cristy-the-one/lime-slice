@@ -93,6 +93,44 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("undo from there goes one step back", undo.node === "node_2", JSON.stringify(undo));
 }
 
+{
+  // Finding 1: a composite's pieces, built and checked one by one, fold into its group without the group being built
+  // again; an engine that cannot fold still gets the group built the old way.
+  for (const fold of [true, false]) {
+    if (!fold) process.env.LIME_MCP_FAKE_NO_FOLD = "1";
+    const engine = fakeEngine();
+    const session = new Session(engine);
+    const call = (name: string, args: unknown = {}) => session.call(name, args);
+    const part = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 })).object);
+    engine.calls.length = 0;
+    const studs = await call("model_apply", { object: part, op: { kind: "pattern", linear: { step: [4, 0, 0], count: 4 }, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [-8, -1, 19], dx: 2, dy: 2, dz: 3 } } });
+    const history = await call("model_history", { object: part, limit: 20 });
+    const rows = (history.nodes ?? []) as { id: string; label: string; current: boolean }[];
+    const groupProbes = engine.calls.filter((name) => name === "probe").length;
+    if (fold) {
+      check("a composite folds its applied pieces into one group", studs.ok === true && engine.folds === 1 && rows.length === 2 && rows[1]!.current && groupProbes === 4 && !engine.calls.includes("goto"), JSON.stringify({ studs, rows, calls: engine.calls }));
+    } else {
+      check("an engine that cannot fold still gets the group built", studs.ok === true && engine.folds === 0 && rows.length === 2 && rows[1]!.current && groupProbes === 5, JSON.stringify({ studs, rows, calls: engine.calls }));
+    }
+    const undone = await call("model_undo", { object: part });
+    check(`the ${fold ? "folded" : "built"} group is one undo step`, undone.node === "node_0", JSON.stringify(undone));
+    delete process.env.LIME_MCP_FAKE_NO_FOLD;
+  }
+}
+
+{
+  // Finding 9: a modeler that had to be restarted says what that means for the histories.
+  process.env.LIME_MCP_HANG_MODEL = "1";
+  process.env.LIME_MCP_MODEL_TIMEOUT_S = "0.3";
+  const session = new Session(fakeEngine());
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const part = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 })).object);
+  const hung = await call("model_probe", { object: part, op: { kind: "fillet", edges: [0], size: 1 } });
+  check("treeLost comes with a sentence on what it means", hung.treeLost === true && String(hung.treeNote).includes("Nothing applied is lost"), JSON.stringify(hung));
+  delete process.env.LIME_MCP_HANG_MODEL;
+  delete process.env.LIME_MCP_MODEL_TIMEOUT_S;
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

@@ -556,7 +556,7 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
 }
 
 /** A stand-in for scripted tests. It does not slice. A committed STEP round-trips its mesh. */
-export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; opens: Record<string, unknown>[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number } {
+export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; opens: Record<string, unknown>[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number; folds: number } {
   const jobs = new Map<number, { status: string; body: string; polls: number }>();
   const kept = new Map<string, KeptSolid>();
   // --- A9. One solid per history node, so goto restores that step instead of a fresh cube. ---
@@ -627,6 +627,8 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
     lastProbeBody: null as unknown,
     resets: 0,
     previewResets: 0,
+    /** Composite runs the engine folded into a group without building it again. */
+    folds: 0,
     hung: false,
     version: () => appVersion(),
     occt: () => true,
@@ -772,6 +774,17 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         return JSON.stringify({ bytesBase64: bytes.toString("base64"), byteLength: bytes.length });
       }
       if (req.call === "close") return JSON.stringify({ ok: true });
+      // --- 3.1 F1. A run folds into one group with the solid its last step left. LIME_MCP_FAKE_NO_FOLD acts as an engine
+      // that cannot, so the group is built instead.
+      if (req.call === "fold") {
+        const solid = kept.get(key);
+        if (!solid || process.env.LIME_MCP_FAKE_NO_FOLD === "1") return JSON.stringify({ error: "The last step's solid is no longer held, so the group is built instead" });
+        engine.folds += 1;
+        keepNode(key, req.node ?? 1, solid);
+        const wire = remember(key, cloneSolid(solid));
+        wire.id = req.node ?? 1;
+        return JSON.stringify(wire);
+      }
       // --- A9. goto returns the solid that node held. A node with no snapshot keeps the current solid. ---
       if (req.call === "goto") {
         const id = typeof req.node === "number" ? req.node : 0;
