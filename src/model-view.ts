@@ -400,6 +400,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const ASPECT_LINE_PX = 4;
   /** The panel or HUD field that has focus, so its handle lights without a pointer. */
   let focusedField: string | null = null;
+  /** Which sketch hole the focused depth belongs to, when several share one number. */
+  let focusedHole: number | null = null;
   let focusSyncs = 0;
   let aspectNow: HandleAspect | null = null;
   let aspectLines: LineSegments2 | null = null;
@@ -2617,7 +2619,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function aspectHandle(): DragHandle | null {
     if (drag) return { ...drag.handle, values: drag.values };
     if (overHandle) return drawnHandles().find((part) => part.handle.id === overHandle)?.handle ?? null;
-    if (focusedField) return handleParts.find((part) => part.handle.fields.includes(focusedField!))?.handle ?? null;
+    if (focusedField) {
+      const matches = handleParts.filter((part) => part.handle.fields.includes(focusedField!));
+      if (focusedHole != null) {
+        const indexed = matches.find((part) => part.handle.holeIndex === focusedHole);
+        if (indexed) return indexed.handle;
+      }
+      return matches[0]?.handle ?? null;
+    }
     return null;
   }
 
@@ -2723,7 +2732,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return {
       spec: current?.kind === "primitive" ? current.spec : null,
       pieces: current?.kind === "pieces" ? current.parts.map((part) => part.spec) : undefined,
-      hole: current?.kind === "hole" ? current : current?.kind === "holes" ? current.holes[0] ?? null : null,
+      hole: current?.kind === "hole" ? current : current?.kind === "holes" ? current.holes[handle.holeIndex ?? 0] ?? current.holes[0] ?? null : null,
       edgePoints: current?.kind === "blend" ? worldEdgePoints(current.edges) : null,
       soup: current?.kind === "soup" ? worldPoints(current.positions) : null,
       measure: current?.kind === "measure" ? { a: current.a, b: current.b } : null,
@@ -2875,6 +2884,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       delete canvas.dataset.aspectField;
       delete canvas.dataset.aspectMapped;
       delete canvas.dataset.aspectLines;
+      delete canvas.dataset.aspectAt;
       if (!aspectDim) canvas.dataset.aspectDim = "0";
       return;
     }
@@ -2883,6 +2893,27 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     canvas.dataset.aspectField = aspect.fields.join(" ");
     canvas.dataset.aspectMapped = aspect.mapped ? "1" : "0";
     canvas.dataset.aspectLines = String(Math.floor(aspect.lines.length / 6));
+    publishAspectAt(handle);
+  }
+
+  /** The lit hole's centre, in canvas pixels, so a test can tell hole 2 from hole 1. */
+  function publishAspectAt(handle: DragHandle | null) {
+    const holes = ghost?.kind === "holes" ? ghost.holes : null;
+    const hole = holes && handle?.holeIndex != null ? holes[handle.holeIndex] : null;
+    if (!hole) {
+      delete canvas.dataset.aspectAt;
+      return;
+    }
+    const projectedAt = new THREE.Vector3(hole.x, hole.y, hole.z).project(camera);
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const text = `${Math.round((projectedAt.x * 0.5 + 0.5) * width)},${Math.round((-projectedAt.y * 0.5 + 0.5) * height)}`;
+    if (canvas.dataset.aspectAt !== text) canvas.dataset.aspectAt = text;
+    const centres = holes!.map((item) => {
+      const at = new THREE.Vector3(item.x, item.y, item.z).project(camera);
+      return `${Math.round((at.x * 0.5 + 0.5) * width)},${Math.round((-at.y * 0.5 + 0.5) * height)}`;
+    }).join(" ");
+    if (canvas.dataset.holeCentres !== centres) canvas.dataset.holeCentres = centres;
   }
 
   function darkenHex(color: number, factor: number): number {
@@ -2970,9 +3001,18 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function fieldOf(target: EventTarget | null): string | null {
-    if (!(target instanceof HTMLInputElement)) return null;
-    const id = target.id || target.dataset.field || "";
-    return id || null;
+    if (!(target instanceof HTMLElement)) return null;
+    if (target instanceof HTMLInputElement) {
+      const id = target.id || target.dataset.field || "";
+      return id || null;
+    }
+    return target.dataset.field || null;
+  }
+
+  function holeOf(target: EventTarget | null): number | null {
+    if (!(target instanceof HTMLElement) || target.dataset.holeIndex == null || target.dataset.holeIndex === "") return null;
+    const index = Number(target.dataset.holeIndex);
+    return Number.isInteger(index) ? index : null;
   }
 
   function handleOwns(id: string): boolean {
@@ -2982,10 +3022,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function syncFocusedField() {
     focusSyncs += 1;
     canvas.dataset.focusSyncs = String(focusSyncs);
-    const id = fieldOf(document.activeElement);
+    const active = document.activeElement;
+    const id = fieldOf(active);
+    const hole = holeOf(active);
     const next = id && handleOwns(id) ? id : null;
-    if (next === focusedField) return;
+    const nextHole = next ? hole : null;
+    if (next === focusedField && nextHole === focusedHole) return;
     focusedField = next;
+    focusedHole = nextHole;
     paintHandles();
   }
 

@@ -247,3 +247,58 @@ test("H on a bed sketch refuses, and the toolbar still fits", async ({ page }) =
   await expect(canvas).toHaveAttribute("data-sketch-holes", "off");
   await expect.poll(() => toolbarFits(page)).toBe(true);
 });
+
+test("focusing hole 2's depth lights hole 2", async ({ page }) => {
+  await start(page);
+  await page.locator("#modelEmptySketch").click();
+  const canvas = page.locator("#model");
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await page.locator("[data-sketch-tool=rectangle]").click();
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  const draft = page.locator(".interact-hud:not([hidden])");
+  await draft.locator("input").nth(0).fill("12");
+  await draft.locator("input").nth(0).press("Tab");
+  await draft.locator("input").nth(1).fill("8");
+  await draft.locator("input").nth(1).press("Enter");
+  await page.keyboard.press("E");
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await expect(hud).toBeVisible();
+  await hud.locator("input").first().fill("10");
+  await hud.locator("input").first().press("Enter");
+  await expect(canvas).not.toHaveAttribute("data-sketch", "editing");
+
+  const top = await facePoint(page, (normal) => normal[2]! > 0.5);
+  await page.mouse.click(top.x, top.y);
+  await page.locator("#modelContextBar").getByRole("button", { name: "Sketch on face" }).click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await page.locator("[data-sketch-menu=draw]").click();
+  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  const view = (await canvas.boundingBox())!;
+  for (const spot of [
+    { x: view.x + view.width * 0.42, y: view.y + view.height * 0.48 },
+    { x: view.x + view.width * 0.62, y: view.y + view.height * 0.55 },
+  ]) await drawTypedCircle(page, spot, "4");
+  await page.getByRole("button", { name: "Select", exact: true }).click();
+  await expect.poll(async () => ((await canvas.getAttribute("data-sketch-hits")) ?? "").split(" ").filter(Boolean).length).toBe(2);
+  const hits = ((await canvas.getAttribute("data-sketch-hits")) ?? "").split(" ").filter(Boolean).map((item) => {
+    const [, xy] = item.split(":");
+    const [x, y] = xy!.split(",").map(Number);
+    return { x: x!, y: y! };
+  });
+  for (let i = 0; i < hits.length; i += 1) {
+    if (i > 0) await page.keyboard.down("Shift");
+    await page.mouse.click(hits[i]!.x, hits[i]!.y);
+    if (i > 0) await page.keyboard.up("Shift");
+  }
+  await page.keyboard.press("H");
+  await expect(page.locator("#modelHoleDepth-2")).toBeVisible();
+  await page.locator("#modelHoleDepth-2").focus();
+  await expect(canvas).toHaveAttribute("data-aspect", "hole-depth-1");
+  await expect(canvas).toHaveAttribute("data-aspect-at", /-?\d+,-?\d+/);
+  const at = ((await canvas.getAttribute("data-aspect-at")) ?? "").split(",").map(Number);
+  const centres = ((await canvas.getAttribute("data-hole-centres")) ?? "").split(" ").map((item) => item.split(",").map(Number));
+  const distance = (point: number[]) => Math.hypot(point[0]! - at[0]!, point[1]! - at[1]!);
+  expect(distance(centres[1]!), "the lit circle is hole 2").toBeLessThan(distance(centres[0]!));
+  expect(distance(centres[1]!)).toBeLessThan(8);
+});

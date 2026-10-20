@@ -1214,6 +1214,8 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   pointer-events: none;
 }
 .model-aspect-label[hidden] { display: none; }
+.model-hole-picks { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.model-hole-picks .btn { white-space: normal; }
 .model-aspect-label[data-color="x"] { border-color: var(--axis-x); }
 .model-aspect-label[data-color="y"] { border-color: var(--axis-y); }
 .model-aspect-label[data-color="z"] { border-color: var(--axis-z); }

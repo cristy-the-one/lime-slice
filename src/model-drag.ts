@@ -89,6 +89,8 @@ export interface DragHandle {
   values: number[];
   /** A `surface` handle's fields are this frame's U, V, W, so the point under the pointer is written in it. */
   frame?: Workplane;
+  /** Which sketch hole this knob changes, when one depth is shared by several holes. */
+  holeIndex?: number;
 }
 
 /**
@@ -137,6 +139,8 @@ export interface DragContext {
   pull?: { at: Vec3; dir: Vec3 } | null;
   /** --- F4. One hole per sketch point: the points are the origins, so only the sizes drag. --- */
   sketchHoles?: boolean;
+  /** Where each sketch hole sits, so its own depth knob lights that hole. */
+  sketchHoleMarks?: { at: Vec3 }[];
   /** --- A4. Which pattern fields are on screen. Absent is linear. Mirror ignores it. --- */
   repeat?: { mode: "linear" | "polar" | "path" };
 }
@@ -361,7 +365,17 @@ function holeHandles(ctx: DragContext): Spec[] {
       : []),
   ];
   // --- F4. One hole per sketch point: the points are the origins, so only the sizes drag. ---
-  if (ctx.sketchHoles) return knobs;
+  if (ctx.sketchHoles) {
+    const marks = ctx.sketchHoleMarks ?? [];
+    if (marks.length > 1) {
+      const radius = knobs[0]!;
+      const depths = marks.map((mark, index) =>
+        axisHandle(`hole-depth-${index}`, "knob", "modelHoleD", onFeature(mark.at), axis, "z", `Hole ${index + 1} depth`, { min: 0.1, holeIndex: index }),
+      );
+      return [radius, ...depths];
+    }
+    return knobs;
+  }
   const typed: Vec3 = [r("modelX"), r("modelY"), r("modelZ")];
   const { axes, local } = frameAxes(ctx.frame);
   const top = local ? planePoint(ctx.frame!, typed) : typed;
