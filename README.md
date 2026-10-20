@@ -1,74 +1,146 @@
 # Lime Slice
 
-Lime Slice 3.1.0 is a slicer for filament printers. Open an STL, 3MF, or STEP file, set it on the build plate, and slice it to G-code. A Rust planner builds the toolpaths. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine. STEP import uses Open CASCADE when its optional bridge is installed; builds without it use truck. Version 2.8.0 saves Model solids in Open CASCADE's binary format (`.lime` version 3), so a saved part opens in Model in seconds, and the MCP server works straight from the installer.
+Lime Slice 3.1.0 is a filament slicer and a solid modeler in one window. Open an STL, 3MF, or STEP file, or start a solid from a sketch, then slice it to G-code. A Rust planner builds the toolpaths. Model edits go through Open CASCADE when its bridge is installed. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
+
+The shell is the landscape layout: a tool rail on the left, a dock on each side, and a status line. Prepare and Preview use the left dock for settings and the right dock for results. Model uses the left dock for the open tool, the sketch, History, and Parameters, and the right dock for Inspect.
+
+Dark theme, 1440×900, except the phone frames. Model clips and stills are the web UI against a local engine with the Open CASCADE bridge. Slice stills use `samples/overhang_ledge.stl` on the Lime 220 (PLA, 0.4 mm), speed strategy, organic tree supports: 8 min 19 s, 3.67 g, €0.07. The shelf layer is layer 62 at Z 12.40 mm.
+
+## Modeler
+
+Model edits a STEP solid, or starts one from a primitive or a sketch. The desktop release includes the Open CASCADE libraries. A build without them still slices an unedited STEP file, and Model stays off. `.lime` version 3 stores the solid as Open CASCADE's binary brep, so a saved part opens in Model without rebuilding every face from scratch. The contract is [docs/step-modeler.md](docs/step-modeler.md).
+
+### Sketches and the constraint solver
+
+Sketch on the bed, or on a flat face. Line, rectangle, and the Draw menu (circle, arc, polygon, slot, and the rest) live on the sketch card in the left dock, not on the rail. A rectangle is born with horizontal and vertical constraints.
+
+The solver is in-house (`src/sketch/solve.ts`): Levenberg-Marquardt over the sketch's points, radii, and arc bulges. It is MIT. It is not PlaneGCS or FreeCAD. Constraints are coincident, horizontal, vertical, parallel, perpendicular, tangent, equal, concentric, midpoint, fixed, and the driving sizes distance, length, radius, diameter, and angle. A driving size can be an expression that names a parameter. Dragging a point solves the rest. The readout says when the sketch is fully defined, when a constraint conflicts, and when one repeats another. A size the other constraints cannot meet is refused and the old value stays.
+
+![A bed sketch. The rectangle carries horizontal and vertical constraints, and a driving length of 36 mm.](docs/screenshots/model-sketch.png)
+
+![Drawing a rectangle on the bed. The sides pick up horizontal and vertical as soon as the rectangle exists, and a corner drag solves against them.](docs/screenshots/clip-sketch.gif)
+
+### Extrude, revolve, loft, sweep, and holes
+
+Those five are sketch operations. They are buttons on the sketch card, and keys while a sketch is being edited. There is no rail button for them.
+
+- **Extrude** (E) takes the selected region, or the only outer region, and a signed distance. Join, cut, intersect, or a new object.
+- **Revolve** (V) spins that region about the line, construction line, or projected edge under the pointer, or about the plane's U or V axis. The angle runs from a tenth of a degree to a full turn. A profile that crosses the axis is refused.
+- **Loft** (Shift+L) blends two or more sections: regions of the open sketch, a pinned sketch, or a flat face. Ruled is a straight blend.
+- **Sweep** (W) carries the profile along a path sketch.
+- **Holes** (H) only on a sketch drawn on a face. Select points or circle centres and Apply drills one hole at each, with one radius, depth, through, and optional counterbore for the whole set. With no sketch open, H is still the single Hole tool.
+
+![Extruding the bed rectangle to 16 mm. The history row is the extrude.](docs/screenshots/clip-extrude.gif)
+
+![A 270° revolve of a rectangle that sits off the axis.](docs/screenshots/model-revolve.png)
+
+![Revolving that profile. The angle is typed, then the solid appears.](docs/screenshots/clip-revolve.gif)
+
+![A loft from an 18 mm square up to a circle.](docs/screenshots/model-loft.png)
+
+![Lofting the square into the circle on a raised workplane.](docs/screenshots/clip-loft.gif)
+
+![A sweep of an 8 mm square along a straight path.](docs/screenshots/model-sweep.png)
+
+![Sweeping the square along the path sketch.](docs/screenshots/clip-sweep.gif)
+
+![Two holes from sketch points, ⌀4 mm and 8 mm deep, and the history row that edits them together.](docs/screenshots/model-holes.png)
+
+![Sketching two circles on the top face and drilling a hole at each centre.](docs/screenshots/clip-holes.gif)
+
+The rail's other Model tools are still there: New solid (box, cylinder, sphere, ellipsoid, cone, torus, wedge, polygon, tube), fillet, chamfer, shell, split, scale, boolean, pattern, mirror, and the Features menu (pocket, boss, texture, array, ribs, text, Parameters). Measure and Check sit under Inspect. Place and Workplane sit under Frame. Undo, Redo, and STEP sit at the foot of the rail.
+
+### Push/pull and edge drag
+
+With no other tool open, hovering a face lights it and seats an arrow on the outward normal. Drag the arrow, or type a distance. The context bar offers Push/Pull, Hole, and Shell for that face. A plain drag moves the face and its neighbours (`moveFaces`): a box gets taller. Alt extrudes that face alone (`faceExtrude`).
+
+Hover an edge and type a radius. Enter fillets that edge. The same gesture with the chamfer tool breaks the edge instead. The context bar is the short row by the pointer, not a second toolbar.
+
+![Pulling the top of a 16 mm box by 8 mm. The history row is the pull.](docs/screenshots/model-push.png)
+
+![The pull arrow on the top face, then a typed distance.](docs/screenshots/clip-push.gif)
+
+![A 6 mm fillet on a hovered edge.](docs/screenshots/model-fillet.png)
+
+![Hovering an edge and typing the fillet radius.](docs/screenshots/clip-fillet.gif)
+
+### Parameters, expressions, and History Edit
+
+Parameters live under History in the left dock. Each row is a name and a value, or an expression in other parameters. Type that name into a size field: the field shows the number it evaluates to, with an ƒ mark, and keeps the expression. Change the parameter and Rebuild replays the steps that use it.
+
+History lists every step. Edit step (the row, or Shift+E) reopens that step's panel, including a group of sketch holes. The tree is stored in the `.lime` project. A part an MCP recipe built shows "Built by a recipe" and that line stays read-only: changing the recipe's parameters and rebuilding from them is not in the window yet. Undo and redo walk the same tree.
+
+![New solid. Size Z is the expression `height`, shown as 24 with the ƒ mark. The parameter is not used until Create.](docs/screenshots/model-parameters.png)
+
+![Creating the box from `height`, then changing the parameter and rebuilding the step.](docs/screenshots/clip-parameters.gif)
+
+### Section view
+
+View, on the rail, opens section, colour by step, the bed, and the size readout. A section plane through the part's centre drops the side the normal points at. The cut is red. Offset slides the plane; Flip swaps the side. It changes the drawing only.
+
+![Section through the middle of a 40×24×18 mm box. The red face is the cut.](docs/screenshots/model-section.png)
+
+![Turning section on and sliding the plane.](docs/screenshots/clip-section.gif)
+
+### STEP in and STEP out
+
+An unedited STEP is tessellated on load. With the bridge, Open CASCADE reads it. Without the bridge, the pure-Rust [truck](https://github.com/ricosjp/truck) kernel reads planes, cylinders, cones, spheres, tori, and NURBS, and converts file units to millimetres. Assemblies and multi-body parts become one mesh; each instance keeps its placement. The chord tolerance defaults to 0.05 mm (0.01–2 mm) via the Prepare field or `slice --step-tolerance`. Faceted brep and AP242 tessellated solids are rejected with an error.
+
+Model mode opens that STEP as the root of the history tree. The STEP button at the foot of the rail writes the solid on screen as AP214, a manifold solid B-rep. The same write is the MCP tool `model_export_step`.
+
+![A 30 mm box with a through hole, and History listing the box and the hole.](docs/screenshots/model-history.png)
+
+<img alt="Model on a phone-sized window. The tool strip scrolls, and the box sits on the bed." src="docs/screenshots/model-phone.png" width="240">
+
+On a phone (`?layout=compact`, or a window 600 px wide or narrower) the Model rail is one strip along the top. History, Undo, Redo, and STEP sit at the end of that strip.
+
+## Slicing
 
 **Prepare** puts the model on the plate. Move, turn, and scale it, then choose a strategy: speed, efficiency, toughness, or a blend by weight, by layer, or by region. Each strategy is a real set of walls, infill, speed, acceleration, seam, and retraction.
 
-**Preview** draws the finished toolpaths in 3D, coloured by feature. A layer slider walks the print. The results panel gives the time and the filament. A G-code tab shows the file.
+![Prepare. The overhang is on the Lime 220, with the strategy list in the settings dock.](docs/screenshots/prepare.png)
+
+**Preview** draws the finished toolpaths in 3D, coloured by feature. The stage can be 2D, split, or 3D. The layer slider walks the print in every pane. The results dock gives the time and the filament. A G-code tab shows the file.
+
+![Preview. Organic tree supports under the shelf. The chip reads 8 min 19 s, 3.67 g.](docs/screenshots/preview-3d.png)
+
+![Scrubbing the sliced overhang from the first layer to the top.](docs/screenshots/clip-slice.gif)
+
+![The layer at Z 12.40 mm, where the shelf starts, with the print-time and filament breakdown.](docs/screenshots/layer-estimate.png)
 
 **Reinforce** paints a patch on the surface, or places a box or a cylinder, so that part of the model prints denser infill, up to solid. The rest of the part keeps the strategy.
 
-**Model** edits a STEP solid, or starts one from a box, cylinder, sphere, cone, torus, wedge, polygon, or tube. Fuse, cut, or intersect the solid with one of those shapes. Split it on a plane. Fillet or chamfer the picked edges, drill a hole, scale it, or measure between two points. Undo and redo step through those edits. The History tree of the steps is saved in the `.lime` project, so the same solid opens again. The desktop release includes the Open CASCADE libraries that do this work. A build without them still slices an unedited STEP file, and Model stays off. An unedited STEP is tessellated on load with the pure-Rust [truck](https://github.com/ricosjp/truck) kernel: planes, cylinders, cones, spheres, tori, and NURBS, with file units converted to millimetres. Assemblies and multi-body parts become one mesh; each instance keeps its placement. The chord tolerance defaults to 0.05 mm (0.01–2 mm) via the Prepare field or `slice --step-tolerance`. Faceted brep and AP242 tessellated solids are rejected with an error.
+![Reinforce. A painted patch on the overhang, set to solid.](docs/screenshots/reinforce.png)
 
-**Belt printers.** A generic 45° belt and the Ideaformer IR3 V2 slice on the belt. The belt carries the part along its length.
+**Printer, filament, and nozzle** sit in the chip at the top. The library includes a generic 45° belt and the Ideaformer IR3 V2. On a belt the part rides along the belt, and the layer readout's Z is position along the belt, not height above the bed. The 20 mm cube on the IR3 V2, same speed strategy, is 3 min 46 s and 2.11 g.
 
-**Support interface.** With supports on, set the vertical gap, the sideways gap, how many dense layers sit under the part, and a brim around tree trunks that stand on the bed. Zero keeps the usual gap (one layer vertically, at least 0.12 mm, and 0.55 mm sideways), three dense interface layers, and trunks with no brim.
+![Lime 220, PLA, and a 0.4 mm nozzle.](docs/screenshots/machine-library.png)
 
-**Bridges.** With overhang control on, bridge flow, bridge speed, and bridge fan are their own settings. Zero keeps full flow, the usual bridge slowdown, and Overhang fan %.
+![The calibration cube on the Ideaformer IR3 V2. Layer 141 is Z 40.60 along the belt.](docs/screenshots/belt-preview.png)
 
-**Cooling.** Fan %, Overhang fan %, Support fan %, and Fan off for first layers set the part-cooling fan (`M106`). The first layers print with the fan off, then Fan % runs. Overhang spans and bridges take Overhang fan %, unless Bridge fan % is set. Supports, including tree branches, tips, and interface, take Support fan %. Left empty, it follows Fan %. Belt-contact walls stay off. Each filament carries its own values, as it carries its temperature. Choosing a filament sets them, and a change in the panel is saved to that filament. The built-in values come from OrcaSlicer's generic profiles (`resources/profiles/OrcaFilamentLibrary/filament/base`): PLA and TPU 100 / 100 % with 1 layer off, ABS 10 / 80 % with 3 layers off. PETG is 20 / 100 % with 3 layers off, which matches IdeaFormer's own Generic PETG for the IR3 V2. A saved filament of another material reads OrcaSlicer's values for PCTG, ASA, PC, or PA by its name, and PLA's otherwise. The engine sets the fan when it writes the G-code, so a fan change does not plan the toolpaths again, and the fan costs no print time in the estimate.
+![Slicing the cube on the IR3 V2 and scrubbing along the belt.](docs/screenshots/clip-belt.gif)
+
+**Supports.** Automatic, painted only, or off. The default style is organic tree (`supportStyle: "tree"`). With supports on, the vertical gap, the sideways gap, the dense layers under the part, and a brim around trunks that stand on the bed are their own settings. Zero keeps the usual gap (one layer vertically, at least 0.12 mm, and 0.55 mm sideways), three dense interface layers, and trunks with no brim.
+
+**Bridges and cooling.** With overhang control on, bridge flow, bridge speed, and bridge fan are their own settings. Zero keeps full flow, the usual bridge slowdown, and Overhang fan %. Fan %, Overhang fan %, Support fan %, and Fan off for first layers set the part-cooling fan (`M106`). The first layers print with the fan off, then Fan % runs. Overhang spans and bridges take Overhang fan %, unless Bridge fan % is set. Supports, including tree branches, tips, and interface, take Support fan %. Left empty, Support fan % follows Fan %. Belt-contact walls stay off. Each filament carries its own values. The built-in numbers come from OrcaSlicer's generic profiles: PLA and TPU 100 / 100 % with 1 layer off, ABS 10 / 80 % with 3 layers off, PETG 20 / 100 % with 3 layers off (IdeaFormer's Generic PETG for the IR3 V2). A saved filament of another material reads OrcaSlicer's values for PCTG, ASA, PC, or PA by its name, and PLA's otherwise. The engine writes the fan into the G-code without planning the toolpaths again, and the fan costs no print time in the estimate.
 
 **Layer pause.** Mark a layer to pause the print, or to change filament. The G-code uses that printer's pause or filament-change command.
 
 **Foreign 3MF.** A project from PrusaSlicer, OrcaSlicer, Bambu Studio, or Cura opens as a mesh. You can copy its layer height, wall count, infill, and whether supports are on. Temperatures, speeds, and the infill pattern stay as they are.
 
-**Send to printer.** Send uploads the current G-code to a Prusa Link, Moonraker, or OctoPrint host stored on the printer. You can ask the printer to start the job after the upload.
+**Send to printer.** Send uploads the current G-code to a Prusa Link, Moonraker, or OctoPrint host stored on the printer, and can start the job after the upload. The MCP server has no send-to-printer tool.
 
 **Settings search.** The box at the top of the settings panel filters every setting. `/` or Ctrl+F focuses it. `and` and `&` match the same word.
 
-**MCP server.** An LLM client such as Claude can drive the slicer: import or build a part, edit it in Model, place it, change settings, slice, and write G-code. With the live bridge on, the open window shows the same plate as the session changes it, and `app_open` opens the session's project in the app. See [MCP server](#mcp-server).
+![Settings search. `bridge` leaves overhang control and the bridge flow, speed, and fan.](docs/screenshots/settings-search.png)
 
-**Opening files.** The desktop app opens a `.lime`, `.stl`, `.3mf`, or `.step` file named on its command line (`lime-slice-desktop.exe duck.lime`). The installer registers `.lime`, so a double-click opens the project. Starting the app again while it is open hands the file to the open window instead of starting a second one, and the window asks before dropping unsaved changes, as File > Open does.
+**Opening files.** The desktop app opens a `.lime`, `.stl`, `.3mf`, or `.step` file named on its command line. The installer registers `.lime`, so a double-click opens the project. Starting the app again while it is open hands the file to the open window, and the window asks before dropping unsaved changes. File > New project (Ctrl+N) starts a blank document without restarting. A saved `.lime` can carry a small PNG and a one-line summary for Windows Explorer. See [docs/lime-explorer-preview.md](docs/lime-explorer-preview.md).
 
-**New project.** File > New project, Ctrl+N, or the same entry in the compact menu starts a blank document without restarting. The plate, the slice, Model, undo, and the file name are cleared. Settings and the printer go back to what a fresh window shows. If the open project has unsaved changes, the same dirty flag as Open asks Save, Don't save, or Cancel. The title bar says Untitled until a file is opened or saved.
+<img alt="Prepare on a phone. The overhang fills the stage, and Prepare, Settings, Model, Preview, and Device sit along the bottom." src="docs/screenshots/prepare-phone.png" width="240">
 
-**Explorer preview.** A saved `.lime` can carry a small PNG and a one-line summary, still as version 3 JSON. Windows Explorer can show that picture. See [docs/lime-explorer-preview.md](docs/lime-explorer-preview.md).
+<img alt="Preview on a phone. The calibration cube's toolpaths, with the layer slider." src="docs/screenshots/preview-phone.png" width="240">
 
-## Screenshots
-
-Dark theme. These are the web UI against the local engine, at 1440×900 except the phone frame. The part is `samples/overhang_ledge.stl` on the Lime 220 bed, sliced with the speed strategy and organic tree supports. That slice finished at 8 min 19 s and 3.67 g.
-
-![Prepare. The overhang sits on the build plate, with the strategy list open beside it.](docs/screenshots/prepare.png)
-
-Prepare. The model is on the plate, and the settings panel is open.
-
-![Preview. The finished slice in perspective, coloured by feature, with organic supports under the shelf.](docs/screenshots/preview-3d.png)
-
-Preview. Perspective view of the finished slice. Walls, infill, and supports keep their colours. The layer slider and the time estimate sit with the view.
-
-![The layer at Z 12.40 mm, where the shelf starts, with the print-time and filament breakdown.](docs/screenshots/layer-estimate.png)
-
-The layer at Z 12.40 mm, where the shelf starts, and the print-time and filament breakdown.
-
-![Printer, filament, and nozzle. Lime 220, PLA, and a 0.4 mm nozzle.](docs/screenshots/machine-library.png)
-
-Printer, filament, and nozzle. Lime 220, PLA, 0.4 mm.
-
-![Reinforce. A painted patch on the top of the overhang, set to solid infill.](docs/screenshots/reinforce.png)
-
-Reinforce. A painted patch on the part, set to print solid.
-
-![Settings search. The word bridge leaves overhang control and the bridge flow, speed, and fan.](docs/screenshots/settings-search.png)
-
-Settings search. Typing `bridge` leaves the overhang control and the bridge settings.
-
-![Model. A STEP cube with a hole, and the History panel listing those steps.](docs/screenshots/model-history.png)
-
-Model. A STEP solid, with the History panel open.
-
-<img alt="Phone layout. Prepare fills the screen, with the overhang on the plate and the settings sheet peeked." src="docs/screenshots/prepare-phone.png" width="240">
-
-Phone layout (`?layout=compact`). Prepare fills the screen, and the settings sheet peeks at the bottom.
+Phone layout is `?layout=compact`, or Interface layout set to Compact. Auto uses it when the window is 600 px wide or less. It is the same web UI, not an iOS app. Details are under [Phone / compact layout](#phone--compact-layout).
 
 ## Run the UI
 
@@ -156,6 +228,8 @@ The setup is the same. Only the paths differ:
 Paths use forward slashes. Set `LIME_MCP_WORKSPACE` the same way.
 
 ### What it does
+
+The server drives the same plate, settings, paint, and Model operations the window commits. The builders are shared (`src/modeling`, `src/model-request`): extrude, revolve, loft, sweep, shell, push/pull (`faceExtrude`, `moveFaces`), holes, fillet, chamfer, split, scale, boolean, pocket, boss, texture, pattern, mirror, text, array, and ribs, plus history edit, parameters, and STEP export. An LLM session therefore builds the same solids and the same G-code. The interactive sketch and its constraint solver stay in the window. The server takes numeric profiles and the feature operations, not pointer drags. There is no send-to-printer tool. `render_view` and `layer_image` give the client a picture of the solid or a layer.
 
 A typical slice is `machine_list`, `machine_select`, `mesh_import`, `slice_start`, `slice_wait`, `gcode_summary`. A hole is `faces_find`, `workplane_set`, `model_probe`, `model_apply`, `model_commit`, then `slice_start`. The guides `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate` hold the same sequences. `guide {topic: "ops"}` lists every Model op with an example.
 
