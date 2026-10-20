@@ -30,11 +30,11 @@ import { thinWalls } from "../src/modeling/thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "../src/modeling/anchors.ts";
 import { expandOps, type PartDef } from "../src/modeling/macro.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, withNode, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
+import { dropped, jumped, newTree, opLabel, pathTo, redoTarget, reserveId, rootLabel, undoTarget, withChild, withNode, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, parseProject, readParameters, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
-import { savedTree, loadedTree, withSavedNames } from "../src/model-tree-file.ts";
+import { savedTree, loadedTree, toolFirst, withSavedNames } from "../src/model-tree-file.ts";
 import { addRange, addVolume, emptyOverrides, freshOverrideId, removeRange, removeVolume, type OverrideDocument, type SettingOverride } from "../src/overrides.ts";
 import { appendEdit, editRequestFields } from "../src/support-edit-list.ts";
 import type { EditEntry } from "../src/support-edit-list.ts";
@@ -1291,11 +1291,23 @@ export class Session {
       if (row.brep) obj.brep = row.brep;
       objects.push({ object: obj.id, name: shownName(obj.name) });
     }
+    // A tool a saved join took off the plate comes back off the plate, with its history, so model_undo of that join can
+    // put it back and a replay of the join can build it.
+    const selected = this.selected;
+    for (const tool of parsed.project.modelTools ?? []) {
+      if (this.find(tool.id)) continue;
+      const obj = this.addObject({ name: tool.name, fileName: stlFileName(tool.name), bytes: new Uint8Array(0), source: new Float32Array(0), triangles: 0, orient: [...ID_MATRIX] as Mat3, scale: 1, centered: false, offset: { x: 0, y: 0, z: 0 }, seatMm: 0 }, tool.id);
+      this.takeOffPlate(obj.id);
+    }
+    this.selected = selected;
+    const saved = new Map<string, NonNullable<NonNullable<LimeProject["objects"]>[number]["modelTree"]>>();
+    for (const row of rows) if (row.modelTree && row.id) saved.set(row.id, row.modelTree);
+    for (const tool of parsed.project.modelTools ?? []) if (!saved.has(tool.id)) saved.set(tool.id, tool.modelTree);
     const historyNotes: string[] = [];
-    for (const row of rows) {
-      if (!row.modelTree || !row.id) continue;
-      const obj = this.find(row.id);
-      const note = obj ? await this.adoptHistory(obj, row.modelTree) : null;
+    for (const id of toolFirst(saved)) {
+      const obj = this.find(id) ?? this.toolsOffPlate.find((row) => row.id === id);
+      const tree = saved.get(id);
+      const note = obj && tree ? await this.adoptHistory(obj, tree) : null;
       if (note) historyNotes.push(note);
     }
     this.adoptParameters(parsed.project);
@@ -1395,7 +1407,10 @@ export class Session {
     if (!root || (root.kind === "step" && !root.bytes)) return null;
     const stepRoot = root.kind === "step" && root.bytes ? { kind: "step" as const, name: root.name, bytes: root.bytes } : root.kind === "primitive" || root.kind === "feature" ? root : null;
     if (!stepRoot) return null;
-    const objectKey = (id: string) => this.objects.find((row) => row.id === id)?.tree?.key ?? (this.find(id) ? `mcp-${id}` : undefined);
+    const objectKey = (id: string) => {
+      const row = this.find(id) ?? this.toolsOffPlate.find((tool) => tool.id === id);
+      return row ? row.tree?.key ?? `mcp-${id}` : undefined;
+    };
     obj.tree = withSavedNames(loadedTree(saved, key, stepRoot, obj.name, null, objectKey));
     obj.platedNode = obj.tree.committed;
     // A file this server saved before 2.5.1 kept a Model solid's STEP as its plate mesh, which the slicer meshed with
@@ -1861,6 +1876,50 @@ export class Session {
     this.objects.splice(this.objects.indexOf(tool), 1);
     this.toolsOffPlate.push(tool);
     if (this.selected === id) this.selected = this.objects[0]?.id ?? "";
+  }
+
+  /**
+   * A tool a join took off the plate is off only while that join is on the way to its part's current step, as the
+   * desktop's Prepare undo puts it back with the edit: model_undo or a goto before the join brings the tool back, and
+   * redo takes it off again. A tool that came back without a plate mesh (a project's saved tool tree) is committed.
+   */
+  private async followJoins(obj: PlateObject): Promise<{ back: string[]; left: string[] }> {
+    const named = new Set<string>();
+    for (const node of obj.tree?.nodes.values() ?? []) if (node.op?.kind === "join" && !node.op.keepTool) named.add(node.op.tool.object);
+    if (named.size === 0) return { back: [], left: [] };
+    const consumed = new Set<string>();
+    for (const row of [...this.objects, ...this.toolsOffPlate]) {
+      const tree = row.tree;
+      if (!tree) continue;
+      for (const id of pathTo(tree, tree.current)) {
+        const op = tree.nodes.get(id)?.op;
+        if (op?.kind === "join" && !op.keepTool) consumed.add(op.tool.object);
+      }
+    }
+    const back: string[] = [];
+    const left: string[] = [];
+    for (const id of named) {
+      if (consumed.has(id)) {
+        if (this.objects.some((row) => row.id === id)) {
+          this.takeOffPlate(id);
+          left.push(id);
+        }
+        continue;
+      }
+      const tool = this.toolsOffPlate.find((row) => row.id === id);
+      if (!tool) continue;
+      this.toolsOffPlate.splice(this.toolsOffPlate.indexOf(tool), 1);
+      this.objects.push(tool);
+      if (tool.bytes.byteLength === 0) {
+        try {
+          await this.commitObject(tool);
+        } catch {
+          // The tool is back with its history; a later commit writes its mesh.
+        }
+      }
+      back.push(id);
+    }
+    return { back, left };
   }
 
   private async closeTree(obj: PlateObject): Promise<void> {
@@ -3918,7 +3977,7 @@ export class Session {
       return { ok: false, ...guarded };
     }
     const leftPlate = baked.op.kind === "join" && !baked.op.keepTool ? baked.op.tool.object : undefined;
-    if (leftPlate) this.takeOffPlate(leftPlate);
+    if (leftPlate) await this.followJoins(obj);
     const other = otherKey ? this.keepOtherHalf(obj, otherKey, reply.other, node) : undefined;
     const kept = baked.op.kind === "split" ? (keep === "both" ? "both" : this.keptSide(obj, baked.op)) : undefined;
     return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(leftPlate ? { toolLeftPlate: leftPlate } : {}), stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) };
@@ -4620,7 +4679,8 @@ export class Session {
     obj.tree = jumped(tree, node);
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
-    return { ok: true, node: nodeHandle(node) };
+    const tools = await this.followJoins(obj);
+    return { ok: true, node: nodeHandle(node), ...(tools.back.length ? { toolsBack: tools.back } : {}), ...(tools.left.length ? { toolsLeftPlate: tools.left } : {}) };
   }
 
   private async step(obj: PlateObject, direction: "undo" | "redo"): Promise<Record<string, unknown>> {
