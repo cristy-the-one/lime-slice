@@ -153,7 +153,7 @@ import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, stepOutOfDate, usedByCount } from "../modeling/params.ts";
 import { refreshOp } from "../param-rebuild.ts";
-import { mountParameters, syncParameters } from "../ui/parameters.ts";
+import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
 import { axesOf, drillDown, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
@@ -4599,6 +4599,8 @@ function syncUndo() {
   if (stepButton) stepButton.disabled = busy || jumping || !tree;
   setModelWaiting(busy || jumping);
   syncModelHistory(tree, modelTrees, lens?.row ?? null);
+  // The Rebuild count is the shown branch's, so it follows History: another object, a new solid, a step added or dropped.
+  syncRebuildCount();
   syncPosition();
   // --- A8. A recipe saved with this object, read-only under the History header. ---
   syncModelRecipe(open ? recipeNote(session.mcpModel, open.objectId) : null);
