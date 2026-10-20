@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, olderFile, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { plateClick } from "./plate-rows";
+import { unpackLime } from "./lime-file";
 
 type V = [number, number, number];
 
@@ -146,11 +147,17 @@ async function saveAndReopen(page: Page, older = false): Promise<Record<string, 
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const { readFile } = await import("node:fs/promises");
   const written = await readFile((await download.path())!);
+  if (!older) {
+    // The file the app wrote is version 4, its solid compressed; the page below opens exactly that file.
+    const raw = JSON.parse(written.toString("utf8")) as { version: number; objects: { brep?: { encoding?: string; bytesBase64?: string } }[] };
+    expect(raw.version, "a save is version 4").toBe(4);
+    for (const obj of raw.objects) if (obj.brep) expect([obj.brep.encoding, obj.brep.bytesBase64], "the solid is stored compressed").toEqual(["gzip+base64", undefined]);
+  }
   const saved = older ? olderFile(written) : written;
   await page.reload();
   await page.locator("#projectFile").setInputFiles({ name: "plate.lime", mimeType: "application/json", buffer: saved });
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
-  return JSON.parse(saved.toString("utf8")) as Record<string, unknown>;
+  return JSON.parse(unpackLime(saved).toString("utf8")) as Record<string, unknown>;
 }
 
 test("a project an older app saved brings back its Model history: the same steps and names, and a jump rebuilds a step from the root", async ({ page }) => {
@@ -217,7 +224,7 @@ test("a project whose history starts from a primitive opens Model from the plate
   await page.locator("#tabPrepare").click();
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const { readFile } = await import("node:fs/promises");
-  const doc = JSON.parse((await readFile((await download.path())!)).toString("utf8")) as { objects: { brep?: { bytesBase64?: string }; modelTree: Record<string, unknown> }[] };
+  const doc = JSON.parse(unpackLime(await readFile((await download.path())!)).toString("utf8")) as { objects: { brep?: { bytesBase64?: string }; modelTree: Record<string, unknown> }[] };
   const saved = doc.objects[0]!.modelTree;
   delete saved.rootStep;
   saved.rootPrimitive = { primitive: "box", origin: [0, 0, 0], size: [20, 20, 10], radius: 0, height: 0, turn: [0, 0, 0] };
@@ -242,7 +249,7 @@ test("a project saves the plate's step as the engine's binary solid, and reopens
   await expect(page.locator("#modelPanel"), "Apply ends the tool").toBeHidden();
   const doc = await saveAndReopen(page);
   const object = (doc.objects as { brep: { name: string; bytesBase64: string } }[])[0]!;
-  expect(doc.version, "a file with the binary solid is version 3").toBe(3);
+  expect(doc.version, "a file with the binary solid is version 4").toBe(4);
   expect(object.brep.name).toBe("plate.brep");
   expect(Buffer.from(object.brep.bytesBase64, "base64").toString().startsWith("LIMEBREP "), "the solid as the engine wrote it").toBe(true);
 

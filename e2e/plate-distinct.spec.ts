@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { meshKeyHex } from "../src/slice-action.ts";
 import { autoSliceOff } from "./auto-slice";
+import { unpackLime } from "./lime-file";
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 const shots = "/opt/cursor/artifacts/plate-distinct";
@@ -90,11 +91,11 @@ test("add a different STL, then undo, save, and export both parts", async ({ pag
     page.waitForEvent("download"),
     page.keyboard.press("Control+s"),
   ]);
-  const doc = JSON.parse(fs.readFileSync((await plateFile.path())!, "utf8")) as {
+  const doc = JSON.parse(unpackLime(fs.readFileSync((await plateFile.path())!)).toString("utf8")) as {
     version: number;
     objects?: { name: string; mesh: { name: string; bytesBase64: string } }[];
   };
-  expect(doc.version).toBe(3);
+  expect(doc.version).toBe(4);
   expect(doc.objects?.map((obj) => obj.mesh.name)).toEqual(["calibration_cube_20mm.stl", "overhang_ledge.stl"]);
   expect(doc.objects![0]!.mesh.bytesBase64).not.toBe(doc.objects![1]!.mesh.bytesBase64);
 
