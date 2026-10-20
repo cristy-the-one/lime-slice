@@ -59,6 +59,12 @@ TopoDS_Shape as_solid(const TopoDS_Shape& shape);
 bool has_solid(const TopoDS_Shape& shape);
 /// False, with the refusal every edit answers, for a shape of surfaces with no closed solid.
 bool editable(const TopoDS_Shape& shape, std::string& error);
+
+/// --- 3.1 F9. The step being built stops after `budget_ms` (0: no limit): a boolean or a blend polls it and fails with
+/// `deadline_message()`, so a slow step is a refusal, not a killed engine.
+void set_deadline(long long budget_ms);
+bool past_deadline();
+std::string deadline_message();
 double volume_of(const TopoDS_Shape& shape);
 /// Mesh the faces unless they are meshed at this chord already, and read the mesh out.
 Mesh tessellate(Held& held, double chord);

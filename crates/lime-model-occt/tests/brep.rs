@@ -130,6 +130,25 @@ fn a_saved_solid_reopens_as_its_step() {
         solid.len() < bytes(&step).len(),
         "the binary solid is smaller than its STEP"
     );
+    // --- 3.1 F17. The STEP carries no p-curves, which every reader rebuilds, and reads back as the same solid.
+    let text = String::from_utf8_lossy(&bytes(&step)).into_owned();
+    assert!(!text.contains("PCURVE"), "no p-curves in the STEP");
+    let from_step =
+        ok(json!({ "call": "open", "key": "c", "dataB64": b64(&bytes(&step)), "chordMm": 0.1 }));
+    assert!(
+        (from_step["volumeMm3"].as_f64().unwrap() - two["volumeMm3"].as_f64().unwrap()).abs()
+            < 1e-6,
+        "the STEP reads back as the step: {from_step}"
+    );
+    assert_eq!(
+        from_step["fingerprint"]["faces"],
+        two["fingerprint"]["faces"]
+    );
+    assert_eq!(
+        from_step["fingerprint"]["edges"],
+        two["fingerprint"]["edges"]
+    );
+    ok(json!({ "call": "close", "key": "c" }));
 
     // As a root: the same solid, face for face and edge for edge, and a fillet by edge index builds the same.
     let read = ok(json!({ "call": "open", "key": "b", "dataB64": b64(&solid), "chordMm": 0.1 }));

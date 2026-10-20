@@ -211,6 +211,21 @@ export function turnedPrimitiveBox(spec: PrimitiveSpec): Box {
 }
 
 /**
+ * --- 3.1 F8. Where a round primitive's axis lies once turned, in the same frame as its origin: `origin` is its base
+ * centre before the turn, and the turn is about the middle of the axis (`turnCentre`), as the engine builds it. A
+ * cylinder at [0, 0, 0] with height 10, turned [0, 90, 0], runs from [-5, 0, 5] to [5, 0, 5], not from the origin.
+ * Null for a box, a wedge, a sphere, an ellipsoid, and a torus, whose turn has no axis to lose track of.
+ */
+export function turnedAxis(spec: PrimitiveSpec): { base: [number, number, number]; top: [number, number, number] } | null {
+  if (spec.primitive !== "cylinder" && spec.primitive !== "cone" && spec.primitive !== "tube" && spec.primitive !== "polygon") return null;
+  const half = spec.height / 2;
+  const rot = eulerOrient(spec.turn[0], spec.turn[1], spec.turn[2]);
+  const mid: [number, number, number] = [spec.origin[0], spec.origin[1], spec.origin[2] + half];
+  const end = (sign: number): [number, number, number] => [mid[0] + sign * rot[2] * half, mid[1] + sign * rot[5] * half, mid[2] + sign * rot[8] * half];
+  return { base: end(-1), top: end(1) };
+}
+
+/**
  * A cut or common that misses the part does nothing. A fuse that misses it
  * adds a second body. Empty when the boxes touch, including along one face.
  */

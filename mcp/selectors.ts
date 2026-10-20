@@ -2,6 +2,8 @@
  * Face and edge filters. Centres and edge mids are in the part frame, millimetres.
  * A direction matches either way along the edge.
  */
+import { pointTriangleDistance } from "../src/modeling/frames.ts";
+
 import type { EdgeRow, FaceRow } from "./solid-geometry.ts";
 
 type Vec3 = [number, number, number];
@@ -103,7 +105,27 @@ function convexEdge(edge: EdgeRow, faces: readonly FaceRow[]): boolean | null {
   return !insidePlanes(outside, faces) && insidePlanes(inside, faces);
 }
 
-export function facesMatching(faces: readonly FaceRow[], input: Record<string, unknown>): FaceRow[] | { reason: string } {
+/** The nearest distance from `point` to each face's triangles, in mm. */
+function faceDistances(point: Vec3, mesh: { positions: ArrayLike<number>; triangles: ArrayLike<number> }, wanted: ReadonlySet<number>): Map<number, number> {
+  const gap = new Map<number, number>();
+  const count = Math.min(mesh.triangles.length, Math.floor(mesh.positions.length / 9));
+  for (let tri = 0; tri < count; tri += 1) {
+    const face = mesh.triangles[tri]!;
+    if (!wanted.has(face)) continue;
+    const at = tri * 9;
+    const p = mesh.positions;
+    const d = pointTriangleDistance(point, [p[at]!, p[at + 1]!, p[at + 2]!], [p[at + 3]!, p[at + 4]!, p[at + 5]!], [p[at + 6]!, p[at + 7]!, p[at + 8]!]);
+    if (d < (gap.get(face) ?? Infinity)) gap.set(face, d);
+  }
+  return gap;
+}
+
+/**
+ * The faces that match `input`. --- 3.1 F13. With `nearPoint` every match is kept, nearest first by the distance from
+ * the point to the face itself (`distanceMm`), larger faces first on a tie: a box around a curved or slanted face held
+ * points nowhere near it, and a point a little off every face matched none. Without the mesh, the faces' boxes stand in.
+ */
+export function facesMatching(faces: readonly FaceRow[], input: Record<string, unknown>, mesh?: { positions: ArrayLike<number>; triangles: ArrayLike<number> }): (FaceRow & { distanceMm?: number })[] | { reason: string } {
   const aimed = input.normal !== undefined;
   const normal = aimed ? readVec(input.normal) : null;
   if (aimed && !normal) return { reason: "normal is three numbers." };
@@ -111,13 +133,13 @@ export function facesMatching(faces: readonly FaceRow[], input: Record<string, u
   if (normal && !direction) return { reason: "normal needs a direction." };
   const span = within(input, aimed);
   if (typeof span !== "number") return span;
-  if (input.kind !== undefined && input.kind !== "plane" && input.kind !== "cylinder") return { reason: "kind is plane or cylinder." };
+  if (input.kind !== undefined && !["plane", "cylinder", "cone", "sphere", "other"].includes(String(input.kind))) return { reason: "kind is plane, cylinder, cone, sphere, or other." };
   if (input.areaMinMm2 !== undefined && (typeof input.areaMinMm2 !== "number" || !(input.areaMinMm2 >= 0))) {
     return { reason: "areaMinMm2 must be a number of square millimetres." };
   }
   const near = input.nearPoint !== undefined ? readVec(input.nearPoint) : null;
   if (input.nearPoint !== undefined && !near) return { reason: "nearPoint is three numbers." };
-  return faces.filter((face) => {
+  const matched = faces.filter((face) => {
     if (direction) {
       if (!face.normal) return false;
       const faceDir = unit(face.normal);
@@ -125,9 +147,14 @@ export function facesMatching(faces: readonly FaceRow[], input: Record<string, u
     }
     if (input.kind && face.kind !== input.kind) return false;
     if (typeof input.areaMinMm2 === "number" && face.areaMm2 < input.areaMinMm2) return false;
-    if (near && boxDistance(near, face) > 1) return false;
     return true;
   });
+  if (!near) return matched;
+  const gap = mesh ? faceDistances(near, mesh, new Set(matched.map((face) => face.index))) : null;
+  const distance = (face: FaceRow) => gap?.get(face.index) ?? boxDistance(near, face);
+  return matched
+    .map((face) => ({ ...face, distanceMm: Math.round(distance(face) * 1000) / 1000 }))
+    .sort((a, b) => a.distanceMm - b.distanceMm || b.areaMm2 - a.areaMm2);
 }
 
 export function edgesMatching(

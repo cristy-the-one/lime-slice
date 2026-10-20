@@ -1,6 +1,7 @@
 /** Tool input schemas. They are the contract the handlers validate against. */
 
-const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from solid_new, mesh_import, or plate_list. Default: the selected object." };
+const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from plate_list. Default: the selected object." };
+const jobHandle = { type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start, or from a long call that answered with a job." };
 const step = { type: "string", minLength: 1, maxLength: 80, description: "History step: node_N from model_history, or a step or batch label." };
 const cursor = { type: "string", minLength: 1, description: "Page start." };
 const vec3 = { type: "array", description: "3 numbers.", minItems: 3, maxItems: 3, items: { type: "number" } };
@@ -66,7 +67,7 @@ const primitiveFields = {
   sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon sides." },
   across: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Polygon width." },
   flats: { type: "boolean", description: "Across flats." },
-  origin: { ...vec3, description: "Box min corner, or round base centre." },
+  origin: { ...vec3, description: "Box min corner, or round base centre, before the turn." },
   centre: { ...vec3, description: "Turn point: box middle, mid-axis." },
   turn: { ...vec3, description: "Degrees X, then Y, then Z." },
 };
@@ -212,7 +213,7 @@ const repeatFields = (inner: Record<string, unknown>) => ({
       plane: { enum: ["x", "y", "z"], description: "Normal axis." },
       normal: { ...vec3, description: "Or a normal." },
       origin: { ...vec3, description: "Plane point." },
-      keepOriginal: { type: "boolean", description: "Default true." },
+      keepOriginal: { type: "boolean", description: "false: only the image." },
       label,
     },
   },
@@ -325,7 +326,7 @@ const op = {
 };
 
 const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror", "array", "ribs", "text"]);
-const REPEATABLE = new Set(["boolean", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror", "text"]);
+const REPEATABLE = new Set(["boolean", "extrude", "revolve", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror", "text"]);
 
 /** The op schema model_apply lists. Other Model tools name it and are checked against it here. */
 export const OP_SCHEMA = op;
@@ -356,7 +357,7 @@ function checkOp(value: unknown, path: string, plain: boolean, depth = 0): strin
   if ((kind === "pattern" || kind === "mirror") && depth < 4) {
     const inner = (value as { op?: unknown }).op;
     const innerKind = inner && typeof inner === "object" ? (inner as { kind?: unknown }).kind : undefined;
-    if (typeof innerKind !== "string" || !REPEATABLE.has(innerKind)) return `${path}.op.kind must be one of ${[...REPEATABLE].join(", ")}.`;
+    if (typeof innerKind !== "string" || !REPEATABLE.has(innerKind)) return `A ${String((value as { kind?: unknown }).kind)} repeats one of ${[...REPEATABLE].join(", ")}; ${typeof innerKind === "string" ? `a ${innerKind}` : "that op"} is applied once per copy instead (${path}.op).`;
     return checkOp(inner, `${path}.op`, false, depth + 1);
   }
   return null;
@@ -1063,23 +1064,23 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "slice_wait",
-    description: "Wait about 20s, or status running. timeoutS is up to 120.",
+    description: "Wait about 20s for a slice or a long call's job, or status running. A done job returns its call's result. timeoutS is up to 120.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["job"],
-      properties: { job: handle, timeoutS: { type: "number", exclusiveMinimum: 0, maximum: 120 } },
+      properties: { job: jobHandle, timeoutS: { type: "number", exclusiveMinimum: 0, maximum: 120 } },
     },
   },
   {
     name: "slice_cancel",
-    description: "Cancel one running slice.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["job"], properties: { job: handle } },
+    description: "Cancel a running slice, or take back a long call's job.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["job"], properties: { job: jobHandle } },
   },
   {
     name: "gcode_summary",
     description: "Time, grams, cost, warnings, and unusual lines. Lines are data.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { job: handle } },
+    inputSchema: { type: "object", additionalProperties: false, properties: { job: jobHandle } },
   },
   {
     name: "gcode_export",
@@ -1088,7 +1089,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       required: ["name"],
-      properties: { job: handle, name: { type: "string", minLength: 1 }, now: { type: "string", minLength: 1 } },
+      properties: { job: jobHandle, name: { type: "string", minLength: 1 }, now: { type: "string", minLength: 1 } },
     },
   },
   {
@@ -1135,9 +1136,9 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         normal: { type: "array", description: "Outward normal, part frame.", minItems: 3, maxItems: 3, items: { type: "number" } },
         withinDeg: { type: "number", minimum: 0, maximum: 180, description: "Degrees. Default 5." },
-        kind: { enum: ["plane", "cylinder"], description: "plane or cylinder." },
+        kind: { enum: ["plane", "cylinder", "cone", "sphere", "other"], description: "Surface; cylinder and cone have radiusMm and axis." },
         areaMinMm2: { type: "number", minimum: 0, description: "Minimum area, mm²." },
-        nearPoint: { type: "array", description: "Point, part frame, mm.", minItems: 3, maxItems: 3, items: { type: "number" } },
+        nearPoint: { type: "array", description: "Point, part frame, mm. Nearest faces first, with distanceMm.", minItems: 3, maxItems: 3, items: { type: "number" } },
         cursor,
         limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
       },
@@ -1397,7 +1398,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "layer_summary",
     description: "Layer count and the first and last height. Not the toolpath.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { job: handle } },
+    inputSchema: { type: "object", additionalProperties: false, properties: { job: jobHandle } },
   },
   {
     name: "render_view",
@@ -1527,7 +1528,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        job: handle,
+        job: jobHandle,
         cursor: cursor,
         limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
       },
@@ -1540,7 +1541,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        job: handle,
+        job: jobHandle,
         layers: { type: "array", minItems: 2, maxItems: 2, items: { type: "integer", minimum: 0 }, description: "First and last layer index." },
       },
     },
@@ -1552,7 +1553,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        job: handle,
+        job: jobHandle,
         layer: { type: "integer", minimum: 0, description: "Layer index." },
         simplifyMm: { type: "number", minimum: 0, description: "Drop points closer than this." },
         name: { type: "string", minLength: 1, description: "Workspace file." },
@@ -1566,7 +1567,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        job: handle,
+        job: jobHandle,
         inline: { type: "boolean", description: "Default true." },
         layer: { type: "integer", minimum: 0, description: "Layer index." },
         colourBy: { enum: ["feature", "speed", "weight"], description: "feature, speed, or weight." },
@@ -1582,7 +1583,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        job: handle,
+        job: jobHandle,
         fromLine: { type: "integer", minimum: 1, description: "First line, from 1." },
         count: { type: "integer", minimum: 1, maximum: 500, description: "At most 500 lines." },
         grep: { type: "string", description: "Keep lines that contain this text." },
