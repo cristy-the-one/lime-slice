@@ -432,7 +432,8 @@ test("a hole slides in its face plane from two docked arrows, and its origin dot
   const x1 = await value(page, "modelX");
   const dot = await grip(page, "hole-origin");
   await page.mouse.move(dot.x, dot.y);
-  await expect(page.locator(".model-drag-tip")).toContainText("Origin");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-tip", /Origin/);
+  await expect(page.locator(".model-aspect-label")).toContainText("Origin");
   await page.mouse.down();
   for (let i = 1; i <= 6; i += 1) await page.mouse.move(dot.x - 4 * i, dot.y - 2 * i);
   await page.mouse.up();

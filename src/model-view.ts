@@ -391,6 +391,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** Which side the live dimension sits on. -1 is the far side, used when the label would cover the knob. */
   let aspectGapSign: 1 | -1 = 1;
   let aspectGapFor = "";
+  /** Bumps when the ghost is rebuilt, so the aspect is redrawn only then, not on every pointer move. */
+  let ghostSerial = 0;
+  let aspectKey = "";
+  /** Model dock and HUD inputs, filled when the handles are set, so a drag does not search the document. */
+  const fieldInputs = new Map<string, HTMLInputElement[]>();
   /** Aspect lines, in screen pixels. Full axis colour, thick enough to read on the ghost. */
   const ASPECT_LINE_PX = 4;
   /** The panel or HUD field that has focus, so its handle lights without a pointer. */
@@ -994,6 +999,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function rebuildGhost() {
+    ghostSerial += 1;
     clearGhosts();
     applyScale();
     clipToSplit();
@@ -1405,6 +1411,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
    * the same frame over and over took the processor the modeler needed (a check on the back cover ran 0.4 s alone and
    * 1.2 s beside the view in a browser drawing without a graphics card).
    */
+  /** Dev builds keep each frame's time so a drag can be measured without a second loop. */
+  function recordFrame(ms: number) {
+    const dev = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
+    if (!dev) return;
+    const host = window as unknown as { __frameTimes?: number[] };
+    (host.__frameTimes ??= []).push(ms);
+  }
+
   function kick() {
     still = 0;
     if (running) return;
@@ -1419,6 +1433,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const now = performance.now();
       const dt = Math.min(0.05, (now - lastPaint) / 1000);
       lastPaint = now;
+      const workStart = now;
       if (viewHelper.animating) {
         controls.enabled = false;
         viewHelper.update(dt);
@@ -1445,6 +1460,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       viewHelper.center.copy(controls.target);
       renderer.render(scene, camera);
       renderViewHelper(renderer, viewHelper);
+      recordFrame(performance.now() - workStart);
       drawMeasure();
       paintFit();
       still = moved || viewHelper.animating ? 0 : still + 1;
@@ -2519,6 +2535,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     }
     handleParts = next.map((handle) => handlePart(handle));
     for (const part of handleParts) handleGroup.add(part.root);
+    collectFieldInputs();
     if (overHandle && !next.some((handle) => handle.id === overHandle)) overHandle = null;
     paintHandles();
   }
@@ -2655,6 +2672,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       aspectGapSign = 1;
       aspectGapFor = id;
     }
+    const valueKey = handle ? handle.values.map((value) => value.toFixed(4)).join(",") : "";
+    const key = `${id}|${aspectGapSign}|${valueKey}|${ghostSerial}`;
+    if (key === aspectKey) return;
+    aspectKey = key;
     const aspect = handle ? aspectFor(handle, { ...aspectContext(handle), gapSign: aspectGapSign }) : null;
     aspectNow = aspect;
     const world = aspect?.space === "world" ? aspect.lines : [];
@@ -2739,12 +2760,24 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   /** Full axis colour. The solid pass reads through the ghost; the dashed pass is only the part the solid hides. */
   function replaceAspect(parent: THREE.Object3D, current: LineSegments2 | null, positions: number[], color: number, hidden: boolean): LineSegments2 | null {
+    if (positions.length < 6) {
+      dropAspect(parent, current);
+      return null;
+    }
+    const hex = hidden ? darkenHex(color, 0.35) : color;
+    if (current?.parent === parent) {
+      (current.geometry as LineSegmentsGeometry).setPositions(positions);
+      if (hidden) current.computeLineDistances();
+      const material = current.material as LineMaterial;
+      material.color.setHex(hex);
+      material.linewidth = ASPECT_LINE_PX;
+      return current;
+    }
     dropAspect(parent, current);
-    if (positions.length < 6) return null;
     const geometry = new LineSegmentsGeometry();
     geometry.setPositions(positions);
     const material = new LineMaterial({
-      color: hidden ? darkenHex(color, 0.35) : color,
+      color: hex,
       linewidth: ASPECT_LINE_PX,
       transparent: hidden,
       opacity: 1,
@@ -2768,26 +2801,51 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return lines;
   }
 
+  function rememberInput(input: HTMLInputElement) {
+    const id = input.id || input.dataset.field || "";
+    if (!id) return;
+    const list = fieldInputs.get(id) ?? [];
+    if (!list.includes(input)) list.push(input);
+    fieldInputs.set(id, list);
+  }
+
+  /** The dock's fields, taken once when the tool's handles are built. */
+  function collectFieldInputs() {
+    fieldInputs.clear();
+    document.getElementById("modelPanel")?.querySelectorAll<HTMLInputElement>("input").forEach(rememberInput);
+    document.querySelectorAll<HTMLInputElement>(".interact-hud input[data-field]").forEach(rememberInput);
+  }
+
+  function inputsFor(id: string): HTMLInputElement[] {
+    const known = (fieldInputs.get(id) ?? []).filter((input) => input.isConnected);
+    if (known.length > 0) {
+      fieldInputs.set(id, known);
+      return known;
+    }
+    const found: HTMLInputElement[] = [];
+    const byId = document.getElementById(id);
+    if (byId instanceof HTMLInputElement) found.push(byId);
+    const hud = document.querySelector<HTMLInputElement>(`.interact-hud input[data-field="${CSS.escape(id)}"]`);
+    if (hud && !found.includes(hud)) found.push(hud);
+    if (found.length > 0) fieldInputs.set(id, found);
+    return found;
+  }
+
   function markAspectFields(aspect: HandleAspect | null) {
     const wanted = new Set(aspect?.fields ?? []);
-    document.querySelectorAll<HTMLInputElement>("input.is-aspect").forEach((input) => {
-      const id = input.id || input.dataset.field || "";
-      if (wanted.has(id)) return;
-      input.classList.remove("is-aspect");
-      delete input.dataset.aspectColor;
-    });
-    if (!aspect) return;
-    for (const id of aspect.fields) {
-      const byId = document.getElementById(id);
-      if (byId instanceof HTMLInputElement) {
-        byId.classList.add("is-aspect");
-        byId.dataset.aspectColor = aspect.color;
+    if (aspect) for (const id of aspect.fields) inputsFor(id);
+    for (const [id, inputs] of fieldInputs) {
+      const on = wanted.has(id);
+      for (const input of inputs) {
+        if (!input.isConnected) continue;
+        if (on && aspect) {
+          input.classList.add("is-aspect");
+          input.dataset.aspectColor = aspect.color;
+        } else if (input.classList.contains("is-aspect")) {
+          input.classList.remove("is-aspect");
+          delete input.dataset.aspectColor;
+        }
       }
-      document.querySelectorAll<HTMLInputElement>("input[data-field]").forEach((input) => {
-        if (input.dataset.field !== id) return;
-        input.classList.add("is-aspect");
-        input.dataset.aspectColor = aspect.color;
-      });
     }
   }
 

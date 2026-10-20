@@ -308,3 +308,44 @@ test("hovering and dragging a face of a part with thousands of faces keeps the v
   // on a GitHub runner. The bound sits well above that and well below the multi-second frames of the old code.
   expect(median, `frame gaps ${gaps.map(Math.round).join(" ")}`).toBeLessThan(1000);
 });
+
+test("a two second knob drag on a 3,000 face part stays within a frame", async ({ page }) => {
+  const slab = tiledSlab(60, 50, 1);
+  expect(slab.faces.length).toBeGreaterThan(3000);
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: SOLID.positions } }));
+  await mockModelTree(page, { open: () => slab, probe: () => ({ ok: true }) });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  await page.locator("#modelToolBoolean").click();
+  await expect(page.locator("#model")).toHaveAttribute("data-handles", /size-1:/);
+  const box = (await page.locator("#model").boundingBox())!;
+  const handles = (await page.locator("#model").getAttribute("data-handles")) ?? "";
+  const at = handles.split(" ").find((item) => item.startsWith("size-1:"))!.split(":")[1]!.split(",").map(Number);
+  const x = box.x + at[0]!;
+  const y = box.y + at[1]!;
+  const before = await page.evaluate(() => (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0);
+  await page.evaluate(() => {
+    (window as unknown as { __frameTimes: number[] }).__frameTimes = [];
+  });
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  const started = Date.now();
+  let step = 0;
+  while (Date.now() - started < 2000) {
+    step += 1;
+    await page.mouse.move(x + (step % 12) - 6, y - (step % 5));
+  }
+  await page.mouse.up();
+  const after = await page.evaluate(() => (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0);
+  const times = await page.evaluate(() => (window as unknown as { __frameTimes?: number[] }).__frameTimes ?? []);
+  expect(times.length).toBeGreaterThan(10);
+  const sorted = [...times].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)]!;
+  expect(median, `median frame ${median.toFixed(1)} ms from ${times.length} frames`).toBeLessThanOrEqual(17);
+  if (before > 0 && after > 0) expect(after - before, "heap growth").toBeLessThan(5 * 1024 * 1024);
+});

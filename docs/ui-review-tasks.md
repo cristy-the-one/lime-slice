@@ -84,6 +84,8 @@ Status: done. Box, wedge, and ellipsoid fields and handles say Width X, Depth Y,
 
 ### PH-04 (P0). No per-frame rebuilds while dragging
 
+Status: done. Aspect lines keep their `LineSegments2` and update positions in place. The aspect is recomputed only when the handle, its values, the dimension side, or the ghost changes. Dock inputs are cached when the handles are set. `setAspectDim` does not rebuild the ghost. Dev builds record `window.__frameTimes`.
+
 - **Seen in code**: `paintHandles()` runs on every pointer move during a drag (`moveDrag`, the face drag, the edge
   drag). Each call goes through `paintAspect()`, which:
   - disposes and recreates two `LineSegments2` objects with fresh geometry and a fresh `LineMaterial`

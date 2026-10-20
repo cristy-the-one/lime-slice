@@ -222,7 +222,7 @@ test("a drag on a docked tilt ring changes the tilt, turns the plane ghost, and 
   // about +Y runs clockwise on screen: at the grip, along (−y, x) in screen pixels.
   const along = { x: (-off.y / length) * 6, y: (off.x / length) * 6 };
   await page.mouse.move(ring.x, ring.y);
-  await expect(page.locator(".model-drag-tip")).toContainText("Tilt B");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-tip", /Tilt B/);
   await page.mouse.down();
   for (let i = 1; i <= 8; i += 1) await page.mouse.move(ring.x + along.x * i, ring.y + along.y * i);
   await page.mouse.up();
