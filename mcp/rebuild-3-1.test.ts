@@ -73,6 +73,26 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("the saved file reopens with both objects and the open object's step", reopened.ok === true && ids(reopened).length === 2 && (history.nodes as unknown[] | undefined)?.length === 2, JSON.stringify({ reopened, history }));
 }
 
+{
+  // Finding 2: an autosave of a part never committed reopens on its last edit, not on its first solid.
+  const session = new Session(fakeEngine());
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const part = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 })).object);
+  for (const x of [-8, 0, 8]) await call("model_apply", { object: part, probe: true, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [x, -1, 19], dx: 2, dy: 2, dz: 3 } });
+  const before = await call("model_history", { object: part, limit: 10 });
+  const last = ((before.nodes ?? []) as { id: string; current: boolean }[]).find((row) => row.current)?.id;
+  session.flushAutosave();
+  await session.autosaveSettled();
+  const fresh = new Session(fakeEngine());
+  const opened = await fresh.call("project_open", { path: `autosave-${process.pid}.lime` });
+  const handle = ids(opened)[0] ?? "";
+  const after = await fresh.call("model_history", { object: handle, limit: 10 });
+  const rows = (after.nodes ?? []) as { id: string; current: boolean; committed: boolean }[];
+  check("the reopened autosave is on the last applied step", last === "node_3" && rows.find((row) => row.current)?.id === "node_3" && rows.find((row) => row.committed)?.id === "node_0", JSON.stringify({ last, rows }));
+  const undo = await fresh.call("model_undo", { object: handle });
+  check("undo from there goes one step back", undo.node === "node_2", JSON.stringify(undo));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

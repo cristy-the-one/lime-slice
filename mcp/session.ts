@@ -1402,7 +1402,11 @@ export class Session {
       const row = this.find(id) ?? this.toolsOffPlate.find((tool) => tool.id === id);
       return row ? row.tree?.key ?? `mcp-${id}` : undefined;
     };
-    obj.tree = withSavedNames(loadedTree(saved, key, stepRoot, obj.name, null, objectKey));
+    // The app opens a saved tree on the plate's step, with redo leading to the step its view was on. The MCP has no view
+    // to come back to, so it opens on that step itself: an autosave of a part never committed reopens on its last edit,
+    // not on its first solid.
+    const loaded = withSavedNames(loadedTree(saved, key, stepRoot, obj.name, null, objectKey));
+    obj.tree = loaded.nodes.has(saved.current) ? jumped(loaded, saved.current) : loaded;
     obj.platedNode = obj.tree.committed;
     // A file this server saved before 2.5.1 kept a Model solid's STEP as its plate mesh, which the slicer meshed with
     // truck: a loft could come back as a sheet a metre across. Such a plate takes the kernel's mesh of the committed
@@ -1411,6 +1415,7 @@ export class Session {
     const tree = obj.tree;
     let note: string | null = null;
     try {
+      // An old STEP plate opens on the committed step first, to mesh it for the plate, then goes on to the current one.
       const at = stepPlate ? tree.committed : tree.current;
       // A refused seed means the history replays in full: the budget covers every step, as after a restart.
       // --- A9. Count steps inside groups, or one long composite restarts inside the per-node budget. ---
