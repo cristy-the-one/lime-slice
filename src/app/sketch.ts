@@ -788,7 +788,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!(target instanceof HTMLButtonElement)) return;
     if (target.getAttribute("aria-disabled") === "true") {
       const why = target.dataset.tip || target.title;
-      if (why) pushToast(why, "info");
+      if (why) {
+        host.readout(why);
+        pushToast(why, "info");
+      }
       return;
     }
     const plane = target.dataset.sketchPlane;
@@ -1604,11 +1607,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   type StartKind = "extrude" | "revolve" | "loft" | "sweep";
 
   /** Why Extrude, Revolve, Loft or Sweep cannot start. Empty when a click is the right next step. */
-  function startWhy(kind: StartKind): string {
+  function startWhy(kind: StartKind, hover = false): string {
     const sketch = activeSketch(editor);
     if (!sketch || editor.phase !== "editing") return "Open a sketch first.";
     const regions = sketchRegions(sketch);
-    const chosen = chooseRegions(sketch, editor.selection.entities, null);
+    // A key press also takes the region under the pointer, as beginExtrude and beginRevolve do. The button cannot.
+    const chosen = hover
+      ? editedRegions(sketch) ?? chooseRegions(sketch, editor.selection.entities, editor.cursor)
+      : chooseRegions(sketch, editor.selection.entities, null);
     if (kind === "extrude") {
       if (regions.length === 0) return "Draw a closed profile to extrude.";
       if (chosen.length === 0) return "Select a region to extrude.";
@@ -1630,7 +1636,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function blockedStart(kind: StartKind): boolean {
-    const why = startWhy(kind);
+    const why = startWhy(kind, true);
     if (!why) return false;
     host.readout(why);
     pushToast(why, "info");

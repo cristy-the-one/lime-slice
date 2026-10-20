@@ -183,7 +183,7 @@ test("a region that crosses the axis is refused and the sketch stays open", asyn
   await page.keyboard.press("V");
   await expect(canvas).toHaveAttribute("data-revolve", "aim");
   await expect(canvas).toHaveAttribute("data-revolve-cross", "1");
-  await page.locator("[data-sketch-apply]").click();
+  await page.locator("[data-sketch-apply]").click({ force: true });
   await expect(page.locator("#modelReadout")).toContainText("The profile crosses the revolve axis. Keep it on one side.");
   await expect(canvas).toHaveAttribute("data-sketch", "editing");
   await expect(canvas).toHaveAttribute("data-revolve", "aim");
