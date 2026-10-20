@@ -3100,6 +3100,18 @@ export class Session {
       if ("reason" in made) return { ok: false, reason: made.reason };
       ghost = made;
     }
+    // --- 3.1 F12. A section, a highlight or colours need the solid: a STEP import is opened for them here, as
+    // model_describe would open it, instead of being refused until something else had.
+    const looksAsked = input.section !== undefined || input.highlight !== undefined || input.colours !== undefined;
+    if (looksAsked && !(obj.solid && obj.solid.positions.length >= 9) && !this.meshBlock(obj)) {
+      try {
+        const opened = await this.opened(obj);
+        if ("reason" in opened) return { ok: false, reason: opened.reason };
+      } catch (err) {
+        if (err instanceof ProtocolError) return { ok: false, reason: err.message };
+        throw err;
+      }
+    }
     const solidMesh = !!obj.solid && obj.solid.positions.length >= 9;
     const mesh = solidMesh ? obj.solid!.positions : this.placed(obj).positions;
     const looks = this.renderLooks(obj, input, solidMesh);
@@ -3126,7 +3138,8 @@ export class Session {
    * plane in the solid's frame, where its mesh is.
    */
   private renderLooks(obj: PlateObject, input: Record<string, unknown>, solidMesh: boolean): { options: RenderOptions; legend: Record<string, unknown>[] } | { reason: string } {
-    const options: RenderOptions = { smooth: input.smooth !== false };
+    // The solid's faces also let an edge line show only where its own faces are in front (--- 3.1 F5).
+    const options: RenderOptions = { smooth: input.smooth !== false, ...(solidMesh ? { faces: obj.solid!.triangles } : {}) };
     const legend: Record<string, unknown>[] = [];
     const wanted: { label: string; rgb: [number, number, number] }[] = [];
     const highlight = typeof input.highlight === "string" ? [input.highlight] : Array.isArray(input.highlight) ? input.highlight.map(String) : [];
@@ -3137,10 +3150,9 @@ export class Session {
       const n = parseInt(match[1]!, 16);
       wanted.push({ label, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] });
     }
-    if ((wanted.length || input.section !== undefined) && !solidMesh) return { reason: "highlight, colours, and section need a Model solid. Open the Model history first (solid_new or model_build)." };
+    if ((wanted.length || input.section !== undefined) && !solidMesh) return { reason: "highlight, colours, and section need a solid, and this part is a mesh (STL, OBJ or 3MF), which has none. Import its STEP file, or make the part with solid_new or model_build." };
     if (wanted.length) {
       options.tints = [];
-      options.faces = obj.solid!.triangles;
       for (const { label, rgb } of wanted) {
         const box = this.labelBox(obj, label, true);
         if (!box) return { reason: `No step is labelled "${label}" with a tool to measure. model_anchors lists the labels.` };

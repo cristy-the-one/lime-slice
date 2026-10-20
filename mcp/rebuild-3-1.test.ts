@@ -191,6 +191,48 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("the history and the current solid stay on the scaled step", (here.stored as { origin?: number[] } | undefined)?.origin?.[2] === 40 && ((history.nodes ?? []) as { id: string; current: boolean }[]).find((row) => row.current)?.id === "node_1", JSON.stringify({ here, history }));
 }
 
+{
+  // Finding 5: a crease hidden a millimetre behind a face draws no specks through it, at any image size.
+  const { renderMesh } = await import("./render.ts");
+  const front = [0, 0, 0, 100, 0, 100, 100, 0, 0, 0, 0, 0, 0, 0, 100, 100, 0, 100];
+  // A ridge along X at Z = 50, one millimetre behind the face, its slopes running back to Y = 11 at a right angle.
+  const ridge = [10, 1, 50, 90, 11, 40, 90, 1, 50, 10, 1, 50, 10, 11, 40, 90, 11, 40, 10, 1, 50, 90, 11, 60, 10, 11, 60, 10, 1, 50, 90, 1, 50, 90, 11, 60];
+  for (const edge of [96, 256]) {
+    const alone = renderMesh(Float32Array.from(front), "front", edge).png;
+    const hidden = renderMesh(Float32Array.from([...front, ...ridge]), "front", edge).png;
+    check(`a crease hidden behind a face leaves the ${edge}px image as it was`, Buffer.from(alone).equals(Buffer.from(hidden)));
+  }
+  // The same ridge on its own still draws its crease: the middle column is darker on the ridge line than on either slope.
+  const { inflateSync } = await import("node:zlib");
+  const drawn = renderMesh(Float32Array.from(ridge), "front", 96);
+  const png = Buffer.from(drawn.png);
+  const parts: Buffer[] = [];
+  for (let at = 8; at < png.length; ) {
+    const length = png.readUInt32BE(at);
+    if (png.toString("latin1", at + 4, at + 8) === "IDAT") parts.push(png.subarray(at + 8, at + 8 + length));
+    at += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(parts));
+  const stride = drawn.width * 3 + 1;
+  const column = Array.from({ length: drawn.height }, (_, y) => raw[y * stride + 1 + Math.floor(drawn.width / 2) * 3]!);
+  const mid = drawn.height / 2;
+  const line = Math.min(...column.slice(mid - 2, mid + 3));
+  check("the same crease on its own still draws, on the ridge line", line < 0.95 * Math.min(column[mid - 4]!, column[mid + 4]!), JSON.stringify(column));
+}
+
+{
+  // Finding 12: a section of a STEP import draws at once, with no model_describe first; a mesh says what it lacks.
+  const { fileURLToPath } = await import("node:url");
+  const session = new Session(fakeEngine());
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const step = String((await call("mesh_import", { path: fileURLToPath(new URL("../samples/step_cube.step", import.meta.url)) })).object);
+  const cut = await call("render_view", { object: step, section: { normal: [0, -1, 0] }, inline: false, longEdge: 64 });
+  check("render_view sections a fresh STEP import", cut.ok === true && typeof cut.path === "string", JSON.stringify(cut));
+  const stl = String((await call("mesh_import", { path: fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url)) })).object);
+  const mesh = await call("render_view", { object: stl, section: { normal: [0, -1, 0] }, inline: false, longEdge: 64 });
+  check("a mesh is refused with what to do instead", mesh.ok === false && String(mesh.reason).includes("Import its STEP file") && !String(mesh.reason).includes("Open the Model history"), JSON.stringify(mesh));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
