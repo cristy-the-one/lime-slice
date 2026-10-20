@@ -341,6 +341,8 @@ Status: done. With a slice already on screen, the line shows for 4 seconds when 
 
 ### UX-11 (P2). Prepare: the Objects toolbar wraps
 
+Status: done. The Objects toolbar is one line. What does not fit moves into the ⋯ menu. Tips name a shortcut when the command has one: Arrange (A), Duplicate (Ctrl+D), Lay flat (F). Check and Frame stay text. Screenshots: `ux11-before-tools.png`, `ux11-after-tools.png`.
+
 - **Seen**: `prepare.png`. The Objects card's icon row wraps one icon (↻) onto a second line. The icons have no
   labels.
 - **Change**: fit the row on one line with an overflow "⋯" menu for the less-used actions. Give every icon a tooltip

@@ -237,6 +237,12 @@ The faded selection chip names the count, "1 face ▾", in the dock's surface co
 
 ![The line gone, a dot beside Slice](screenshots/ui-review-3-1/ux10-after-pause-dot.png)
 
+The Objects toolbar stays on one line. A command that has a shortcut names it in the tooltip. Check and Frame stay text buttons on the card. Anything that does not fit moves into the ⋯ menu.
+
+![The icon row wrapped one rotate onto a second line](screenshots/ui-review-3-1/ux11-before-tools.png)
+
+![Add, duplicate, arrange, center, lay flat, and the three rotates on one line](screenshots/ui-review-3-1/ux11-after-tools.png)
+
 ## Checks
 
 - `npx tsc --noEmit`

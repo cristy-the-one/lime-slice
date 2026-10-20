@@ -155,6 +155,32 @@ function stlTriangles(dataB64: unknown): number {
   return raw.readUInt32LE(80);
 }
 
+test("the object tools stay one row, and tips name the shortcuts", async ({ page }) => {
+  await quiet(page);
+  await page.route("**/api/slice", (route) => route.fulfill({ json: cube }));
+  await page.goto("/");
+  await autoSliceOff(page);
+  await loadCube(page);
+  for (const size of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(size);
+    const row = page.locator("#objTools");
+    const button = row.locator(":scope > .tool-btn").first();
+    await expect(button).toBeVisible();
+    const heights = await row.evaluate((node) => {
+      const bar = node as HTMLElement;
+      const one = bar.querySelector<HTMLElement>(":scope > .tool-btn");
+      return { row: bar.getBoundingClientRect().height, button: one?.getBoundingClientRect().height ?? 0 };
+    });
+    expect(heights.row, `${size.width}×${size.height}`).toBeLessThanOrEqual(heights.button + 2);
+  }
+  await expect(page.locator("#plateArrange")).toHaveAttribute("data-tip", "Arrange (A)");
+  await expect(page.locator("#plateDuplicate")).toHaveAttribute("data-tip", "Duplicate (Ctrl+D)");
+  await expect(page.locator("#layflat")).toHaveAttribute("data-tip", "Lay flat (F)");
+  await expect(page.locator(".obj-check").first()).toHaveText("Check");
+  await expect(page.locator(".obj-frame").first()).toHaveText("Frame");
+  if (process.env.LIME_SHOTS) await page.locator("#objTools").screenshot({ path: `${process.env.LIME_SHOTS}/ux11-after-tools.png` });
+});
+
 test.describe("compact plate list", () => {
   test.use({
     viewport: { width: 390, height: 844 },
