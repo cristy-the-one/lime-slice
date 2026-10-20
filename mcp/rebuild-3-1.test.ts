@@ -131,6 +131,23 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   delete process.env.LIME_MCP_MODEL_TIMEOUT_S;
 }
 
+{
+  // Finding 8: origin is a round tool's base centre before the turn, which is about the middle of its axis. The reply
+  // says where the axis went, with literal coordinates, and says so in a sentence when the base left origin.
+  const session = new Session(fakeEngine());
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const part = String((await call("solid_new", { primitive: "box", dx: 40, dy: 40, dz: 20 })).object);
+  const lying = { kind: "boolean", op: "cut", primitive: "cylinder", radius: 2, height: 10, turn: [0, 90, 0] };
+  const byOrigin = await call("model_probe", { object: part, op: { ...lying, origin: [0, 0, 0] } });
+  const axis = byOrigin.axis as { base?: number[]; top?: number[] } | undefined;
+  check("a turned cylinder by origin echoes its axis from [-5, 0, 5] to [5, 0, 5]", JSON.stringify(axis) === JSON.stringify({ base: [-5, 0, 5], top: [5, 0, 5] }), JSON.stringify(byOrigin));
+  check("and says its base is not at origin", String(byOrigin.turnNote).includes("base centre is at [-5, 0, 5]"), JSON.stringify(byOrigin.turnNote));
+  const byCentre = await call("model_probe", { object: part, op: { ...lying, centre: [0, 0, 5] } });
+  check("the same tool placed by centre has the same axis and no note", JSON.stringify(byCentre.axis) === JSON.stringify(axis) && byCentre.turnNote === undefined && !("centre" in (byCentre.typed as Record<string, unknown>)), JSON.stringify(byCentre));
+  const upright = await call("model_probe", { object: part, op: { ...lying, turn: [0, 0, 0], origin: [0, 0, 0] } });
+  check("an unturned tool has no axis echo", upright.axis === undefined && upright.turnNote === undefined, JSON.stringify(upright));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

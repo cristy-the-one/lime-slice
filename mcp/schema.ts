@@ -67,7 +67,7 @@ const primitiveFields = {
   sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon sides." },
   across: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Polygon width." },
   flats: { type: "boolean", description: "Across flats." },
-  origin: { ...vec3, description: "Box min corner, or round base centre." },
+  origin: { ...vec3, description: "Box min corner, or round base centre, before the turn." },
   centre: { ...vec3, description: "Turn point: box middle, mid-axis." },
   turn: { ...vec3, description: "Degrees X, then Y, then Z." },
 };

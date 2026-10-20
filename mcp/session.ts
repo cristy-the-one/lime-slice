@@ -17,12 +17,12 @@ import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
 import { align, centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
-import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
+import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, turnedAxis, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, type ToolLink } from "../src/model-edit.ts";
 import { dropRefusal } from "../src/model-history.ts";
 import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
-import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
+import { isPrimitiveKind, rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
 import { applyRequest, crossEditRequest, exportRequest, extrudeOp, faceExtrudeOp, gotoRequest, isBrep, joinOp, keepSketch, loftOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, solidFileName, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
 import { sweepSections, type SweepSpec } from "../src/modeling/sweep.ts";
@@ -490,6 +490,25 @@ function modelSteps(tree: ModelTree): number {
     if (node.op?.kind === "group") count += node.op.steps.length;
   }
   return count;
+}
+
+/**
+ * --- 3.1 F8. Where a turned round tool's axis lies, beside its echo, and a sentence when its base left `origin`: a
+ * turn is about the middle of the axis, and 198 holes once went h/2 off because a caller took origin for the pivot.
+ */
+function turnEcho(typed: Record<string, unknown>): Record<string, unknown> {
+  if (typed.kind !== "boolean" || !isPrimitiveKind(typed.primitive) || !Array.isArray(typed.turn) || !Array.isArray(typed.origin)) return {};
+  if ((typed.turn as number[]).every((value) => value === 0)) return {};
+  const axis = turnedAxis(typed as unknown as PrimitiveSpec);
+  if (!axis) return {};
+  const at = (p: readonly number[]) => p.map((value) => Math.round(value * 1000) / 1000 + 0);
+  const base = at(axis.base);
+  const origin = typed.origin as number[];
+  const moved = typed.centre === undefined && Math.hypot(base[0]! - origin[0]!, base[1]! - origin[1]!, base[2]! - origin[2]!) > 1e-3;
+  return {
+    axis: { base, top: at(axis.top) },
+    ...(moved ? { turnNote: `It turns about the middle of its axis, so its base centre is at [${base.join(", ")}], not at origin. Give centre to place a turned shape by its middle.` } : {}),
+  };
 }
 
 /** The history row for a composite: the label that was typed, else the feature's name, else Pattern or Mirror. */
@@ -3910,7 +3929,8 @@ export class Session {
       if ("reason" in local) return local;
       const solid = planePrimitive(local, this.typedPlane(obj));
       const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid }, obj.modelPose);
-      return { op, typed: { kind: "boolean", op: booleanOp, ...solid } };
+      // A tool placed by centre already says where its middle goes: turnEcho has no note for it. cleanOp drops the mark.
+      return { op, typed: { kind: "boolean", op: booleanOp, ...solid, ...(spec.centre !== undefined ? { centre: spec.centre } : {}) } };
     }
     if (kind === "root") {
       const local = primitiveFrom(spec, "box");
@@ -4004,7 +4024,7 @@ export class Session {
    */
   private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown> }, measure = false, composite = false, budgetMs?: number): Promise<Record<string, unknown>> {
     const picked = baked.op.kind === "fillet" || baked.op.kind === "chamfer" ? { edges: baked.typed.edges } : {};
-    const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) });
+    const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed), ...turnEcho(baked.typed) });
     if (baked.op.kind === "scale") {
       obj.probes.set(probeKey(String(at), baked.op), true);
       return answer({ ok: true, reason: "This scale fits." });
@@ -4147,7 +4167,7 @@ export class Session {
     if (leftPlate) await this.followJoins(obj);
     const other = otherKey ? this.keepOtherHalf(obj, otherKey, reply.other, node) : undefined;
     const kept = baked.op.kind === "split" ? (keep === "both" ? "both" : this.keptSide(obj, baked.op)) : undefined;
-    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(leftPlate ? { toolLeftPlate: leftPlate } : {}), stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) };
+    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(leftPlate ? { toolLeftPlate: leftPlate } : {}), stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed), ...turnEcho(baked.typed) };
   }
 
   /**
