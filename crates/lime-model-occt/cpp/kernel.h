@@ -289,6 +289,20 @@ TopoDS_Shape build_extrude_loops(
     bool symmetric,
     double& volume,
     std::string& error);
+/// `build_extrude_loops` plus `extent`: a second depth, a draft, or a face to stop at, on loops with arcs, splines,
+/// and holes. No extent calls `build_extrude_loops`.
+TopoDS_Shape build_extrude_loops_extent(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const double origin[3],
+    const double turn[3],
+    const std::vector<ProfileLoop>& loops,
+    double depth,
+    bool symmetric,
+    const ExtrudeExtent& extent,
+    double& volume,
+    std::string& error);
 TopoDS_Shape build_revolve_loops(
     const TopoDS_Shape& current,
     double before,

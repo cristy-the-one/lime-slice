@@ -732,6 +732,43 @@ LimeShape* lime_tree_feature_extrude_loops(const char* op, const double* p, cons
     }
 }
 
+// K3 on K1 loops as a feature root. `flags` matches lime_tree_extrude_extent; there is no solid, so no face to stop at.
+LimeShape* lime_tree_feature_extrude_loops_extent(
+    const char* op, const double* p, const double* loops, int loops_len, double depth2, double draft_deg, int flags, char** error) {
+    try {
+        std::vector<ProfileLoop> decoded;
+        int used = 0;
+        std::string message;
+        if (!decode_profile_loops(loops, loops_len, decoded, used, message) || used != loops_len) {
+            set_error(error, message.empty() ? "A loop is incomplete." : message);
+            return nullptr;
+        }
+        ExtrudeExtent extent;
+        extent.has_depth2 = (flags & 1) != 0;
+        extent.depth2 = depth2;
+        extent.has_draft = (flags & 2) != 0;
+        extent.draft_deg = draft_deg;
+        extent.has_up_to = (flags & 4) != 0;
+        double volume = 0.0;
+        const TopoDS_Shape none;
+        const double origin[3] = {p[0], p[1], p[2]};
+        const double turn[3] = {p[3], p[4], p[5]};
+        const TopoDS_Shape result = build_extrude_loops_extent(
+            none, 0.0, op == nullptr ? "" : op, origin, turn, decoded, p[6], p[7] != 0.0, extent, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The extrude did not make a solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// `p` is the plane's origin and turn, the axis point (u, v) and direction (u, v), and the angle in degrees.
 LimeShape* lime_tree_feature_revolve_loops(const char* op, const double* p, const double* loops, int loops_len, char** error) {
     try {
@@ -889,6 +926,59 @@ LimeShape* lime_tree_extrude_loops(const LimeShape* from, const char* op, const 
         const double turn[3] = {p[3], p[4], p[5]};
         const TopoDS_Shape result = build_extrude_loops(
             from->held.shape, from->held.volume, op == nullptr ? "" : op, origin, turn, decoded, p[6], p[7] != 0.0, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The extrude removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+// K3 on K1 loops: a second depth, a draft, or a face to stop at, on an outline with arcs, splines, or holes. `p` and
+// `loops` match lime_tree_extrude_loops; `flags` matches lime_tree_extrude_extent.
+LimeShape* lime_tree_extrude_loops_extent(
+    const LimeShape* from,
+    const char* op,
+    const double* p,
+    const double* loops,
+    int loops_len,
+    double depth2,
+    double draft_deg,
+    int face,
+    int flags,
+    char** error) {
+    try {
+        std::vector<ProfileLoop> decoded;
+        int used = 0;
+        std::string message;
+        if (!decode_profile_loops(loops, loops_len, decoded, used, message) || used != loops_len) {
+            set_error(error, message.empty() ? "A loop is incomplete." : message);
+            return nullptr;
+        }
+        ExtrudeExtent extent;
+        extent.has_depth2 = (flags & 1) != 0;
+        extent.depth2 = depth2;
+        extent.has_draft = (flags & 2) != 0;
+        extent.draft_deg = draft_deg;
+        extent.has_up_to = (flags & 4) != 0;
+        if (extent.has_up_to) {
+            if (face < 0 || face >= from->held.faces.Extent()) {
+                set_error(error, "That face is not on this solid.");
+                return nullptr;
+            }
+            extent.up_to = TopoDS::Face(from->held.faces(face + 1));
+        }
+        double volume = 0.0;
+        const double origin[3] = {p[0], p[1], p[2]};
+        const double turn[3] = {p[3], p[4], p[5]};
+        const TopoDS_Shape result = build_extrude_loops_extent(
+            from->held.shape, from->held.volume, op == nullptr ? "" : op, origin, turn, decoded, p[6], p[7] != 0.0, extent, volume, message);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;

@@ -165,6 +165,8 @@ export interface HudMount {
   move(at: { x: number; y: number }): void;
   setValues(values: readonly number[]): void;
   setParams(params: Params): void;
+  /** Why the tool will not apply what the box holds, under it and in the live region. Empty clears it. */
+  setNote(text: string): void;
   close(): void;
   destroy(): void;
   onCommit(cb: (commit: HudCommit) => void): void;
@@ -200,6 +202,7 @@ export function mountHud(parent: HTMLElement): HudMount {
 
   let model = emptyHud();
   let params: Params = {};
+  let note = "";
   let shown = false;
   let at = { x: 0, y: 0 };
   const inputs: HTMLInputElement[] = [];
@@ -224,8 +227,11 @@ export function mountHud(parent: HTMLElement): HudMount {
 
   /** `force` writes the active field even while it has the caret: a key the box took itself changed it. */
   const paint = (force = false) => {
-    live.textContent = model.error ? `${hudText(model)}. ${model.error}` : hudText(model);
-    error.textContent = model.error ?? "";
+    // A typed expression's own error comes first; the tool's note waits until the expression reads.
+    const said = model.error ?? note;
+    live.textContent = said ? `${hudText(model)}. ${said}` : hudText(model);
+    error.textContent = said;
+    error.classList.toggle("is-note", !model.error && note !== "");
     element.dataset.hud = hudText(model);
     element.dataset.hudActive = String(model.active);
     inputs.forEach((input, index) => {
@@ -359,12 +365,18 @@ export function mountHud(parent: HTMLElement): HudMount {
     setParams(next) {
       params = next;
     },
+    setNote(text) {
+      if (text === note) return;
+      note = text;
+      if (shown) paint();
+    },
     close() {
       shown = false;
       element.hidden = true;
       // A hidden box must not keep the caret, or the next sketch key is typed into it.
       if (element.contains(document.activeElement) && document.activeElement instanceof HTMLElement) document.activeElement.blur();
       model = { ...model, draft: null, error: null };
+      note = "";
     },
     destroy() {
       shown = false;
