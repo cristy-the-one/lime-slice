@@ -872,7 +872,20 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .sketch-dim-input[data-defined="1"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 65%, transparent); }
 .sketch-dim[data-conflict="1"],
 .sketch-dim-input[data-conflict="1"] { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 70%, transparent); }
-.sketch-dim-input { width: 4.5rem; text-align: center; }
+/* The general `input[type=text]` rule is more specific than a class, so the driving label is named as an input. */
+input.sketch-dim-input {
+  width: 4.5rem;
+  max-width: calc(100vw - 16px);
+  height: auto;
+  min-height: 0;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  color: var(--accent);
+  box-sizing: border-box;
+  text-align: center;
+}
 .sketch-box {
   position: fixed;
   z-index: 4;

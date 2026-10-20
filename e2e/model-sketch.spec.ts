@@ -205,6 +205,9 @@ test("constraints live in the sketch card and a typed length drives the line", a
 
   const label = page.locator(".sketch-dim-input");
   await expect(label).toBeVisible();
+  const dimWidth = await label.evaluate((el) => el.getBoundingClientRect().width);
+  expect(dimWidth, "the driving dimension stays a short field").toBeLessThan(120);
+  expect(dimWidth).toBeGreaterThan(40);
   await label.fill("40");
   await label.press("Enter");
   await expect(canvas).toHaveAttribute("data-sketch-measure", "40.000,0.000");
