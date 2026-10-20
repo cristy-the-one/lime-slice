@@ -108,7 +108,7 @@ test("model tool panels stay clear of the size chip, the view, and rail tips", a
   await expect(page.locator("#modelBlend")).toBeVisible();
   expect(overlaps((await fit.boundingBox())!, (await page.locator("#modelBlend").boundingBox())!)).toBe(false);
   if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-fillet-panel.png` });
-  await page.locator('#toolRail [data-tool="scale"]').hover();
+  await page.locator("#modelToolScale").hover();
   const tip = page.locator(".lime-tip");
   await expect(tip).toBeVisible();
   expect(overlaps((await tip.boundingBox())!, (await panel.boundingBox())!)).toBe(false);

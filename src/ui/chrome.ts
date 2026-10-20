@@ -424,20 +424,22 @@ export function fitRail() {
 
 /** The rail's reachable buttons: not in a hidden set or group. */
 function railButtons(rail: HTMLElement) {
-  return [...rail.querySelectorAll<HTMLButtonElement>("button")].filter((button) => !button.closest("[hidden]") && button.checkVisibility());
+  // The Features menu's items are a menu's, not the toolbar's.
+  return [...rail.querySelectorAll<HTMLButtonElement>("button")].filter((button) => !button.closest("[hidden], [role=menu]") && button.checkVisibility());
 }
 
 /** One tab stop for the rail: the arrows walk it, Home and End jump to its ends. */
 function mountRovingFocus(rail: HTMLElement) {
   rail.addEventListener("focusin", (ev) => {
     const target = ev.target as HTMLElement;
-    if (target.tagName !== "BUTTON") return;
+    if (target.tagName !== "BUTTON" || target.closest("[role=menu]")) return;
     for (const button of rail.querySelectorAll<HTMLButtonElement>("button")) button.tabIndex = button === target ? 0 : -1;
   });
   const steps: Record<string, number> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1, Home: -Infinity, End: Infinity };
   rail.addEventListener("keydown", (ev) => {
     const step = steps[ev.key];
-    if (step === undefined || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+    // A menu in the rail (Features) walks its own items.
+    if (step === undefined || ev.altKey || ev.ctrlKey || ev.metaKey || ev.defaultPrevented) return;
     const buttons = railButtons(rail);
     const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
     if (at < 0) return;

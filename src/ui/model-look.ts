@@ -85,7 +85,8 @@ function seat(open: HTMLElement, panel: HTMLElement) {
   const at = open.getBoundingClientRect();
   const rail = open.closest("#toolRail")?.getBoundingClientRect();
   if (rail && rail.height > rail.width) {
-    panel.style.left = `${rail.right + 6}px`;
+    // Beside the rail, or beside a folded group's row when View was opened from it.
+    panel.style.left = `${Math.max(rail.right, at.right) + 6}px`;
     panel.style.top = `${Math.max(8, Math.min(at.top - 4, window.innerHeight - panel.offsetHeight - 8))}px`;
   } else {
     panel.style.top = `${at.bottom + 4}px`;

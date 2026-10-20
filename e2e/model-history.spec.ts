@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { railClick } from "./rail";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { plateClick } from "./plate-rows";
@@ -468,7 +469,8 @@ test("History, the size warning, and a long readout stay clear of each other and
 
   await page.setViewportSize({ width: 1280, height: 640 });
   await expectStackClear(page);
-  await page.locator("#modelToolBoolean").click();
+  // A short window folds the Combine group: its button opens it beside the rail.
+  await railClick(page, "#modelToolBoolean");
   await expect(page.locator("#modelPrim")).toBeVisible();
   await expectStackClear(page);
   const tree = (await page.locator("#modelHistoryTree").boundingBox())!;
@@ -479,7 +481,8 @@ test("History, the size warning, and a long readout stay clear of each other and
   const label = root.locator(".mh-label");
   expect(await label.evaluate((el) => el.scrollWidth > el.clientWidth), "and ellipsized in the row").toBe(true);
   const panel = (await page.locator("#modelHistory").boundingBox())!;
-  expect(panel.width, "without widening the panel").toBeLessThanOrEqual(280.5);
+  // E3. History is the Model dock's width, which a long name does not widen.
+  expect(panel.width, "without widening the panel").toBeLessThanOrEqual((await page.locator("#leftDock").boundingBox())!.width);
 });
 
 test.describe("phone", () => {

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { railClick } from "./rail";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { plateClick } from "./plate-rows";
@@ -322,10 +323,10 @@ for (const [width, height] of [[960, 640], [1280, 800], [1440, 900]] as const) {
   test(`Reset view, in the rail's View menu, opens clear of the readout, the dock and the view cube at ${width}×${height}`, async ({ page }) => {
     await openFiles(page, { "box.step": boxSolid([20, 20, 10]) });
     await page.setViewportSize({ width, height });
-    await page.locator("#modelToolBoolean").click();
+    await railClick(page, "#modelToolBoolean");
     await expect(canvas(page)).toHaveAttribute("data-handles", /.+/);
     // E3. Over the view stay only the pick filter, the view cube and the context bar: Reset view is in View.
-    await page.locator("#modelLookOpen").click();
+    await railClick(page, "#modelLookOpen");
     await expect(page.locator("#modelResetView")).toBeVisible();
     const reset = (await page.locator("#modelResetView").boundingBox())!;
     const view = (await canvas(page).boundingBox())!;
