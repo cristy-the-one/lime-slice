@@ -136,3 +136,85 @@ test("a washer sweeps up a path with its hole, where it was drawn", async ({ pag
   expect(placed[2], "the sweep starts on the bed, where the washer was drawn").toBeCloseTo(0, 2);
   expect(placed[5]).toBeCloseTo(20, 1);
 });
+
+/** A face's centre on the page and its normal, from the published list, for the first face `want` takes. */
+async function facePoint(page: Page, want: (normal: number[]) => boolean): Promise<{ x: number; y: number; normal: number[] }> {
+  let found: { x: number; y: number; normal: number[] } | null = null;
+  await expect.poll(async () => {
+    const text = (await page.locator("#model").getAttribute("data-faces")) ?? "";
+    const box = await page.locator("#model").boundingBox();
+    found = null;
+    if (!box) return false;
+    for (const item of text.split(" ").filter(Boolean)) {
+      const [, xy, normalText] = item.split(":");
+      const normal = (normalText ?? "").split(",").map(Number);
+      if (!xy || normal.length !== 3 || !want(normal)) continue;
+      const [x, y] = xy.split(",").map(Number);
+      found = { x: box.x + x!, y: box.y + y!, normal };
+      return true;
+    }
+    return false;
+  }, { timeout: 60_000 }).toBe(true);
+  return found!;
+}
+
+/** The owner's 10 × 10 × 10 wedge with a 3 mm top, from the empty plate. */
+async function wedge(page: Page) {
+  await page.locator("#modelEmptyNew").click();
+  await page.locator('#modelPrim [data-kind="wedge"]').click();
+  for (const id of ["modelDx", "modelDy", "modelDz"]) await page.locator(`#${id}`).fill("10");
+  await page.locator("#modelTopX").fill("3");
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(1);
+  await expect.poll(() => volume(page), { timeout: 60_000 }).toBeCloseTo(650, 0);
+}
+
+/** A closed spline through four points around the middle of the view, closed by clicking its start again. */
+async function closedSpline(page: Page) {
+  const canvas = page.locator("#model");
+  const box = (await canvas.boundingBox())!;
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.locator("[data-sketch-menu=draw]").click();
+  await page.locator(".sketch-menu-list [data-sketch-tool=spline]").click();
+  const r = 60;
+  for (const [dx, dy] of [[r, 0], [0, -r], [-r, 0], [0, r]] as const) await page.mouse.click(centre.x + dx, centre.y + dy);
+  const first = ((await canvas.getAttribute("data-sketch-hits")) ?? "").split(" ")[0]!.split(":")[1]!.split(",").map(Number);
+  // The hits are page pixels.
+  await page.mouse.click(first[0]!, first[1]!);
+  await expect(canvas).toHaveAttribute("data-sketch-kinds", "spline");
+  await expect(canvas, "the click on the start closed the spline: no fifth point").toHaveAttribute("data-sketch-hits", /^(\S+ ){3}\S+$/);
+}
+
+for (const which of ["sloped", "flat top"] as const) {
+  test(`a spline on the wedge's ${which} face extrudes as a new object with two sides and a draft, along the face's normal`, async ({ page }) => {
+    await start(page);
+    const canvas = page.locator("#model");
+    await wedge(page);
+    const face = await facePoint(page, which === "sloped" ? (n) => n[2]! > 0.2 && n[2]! < 0.95 : (n) => n[2]! > 0.99);
+    await page.mouse.click(face.x, face.y);
+    await page.locator("#modelContextBar [data-action='sketch-on-face']").click();
+    await expect(canvas).toHaveAttribute("data-sketch", "editing");
+    await closedSpline(page);
+
+    await page.keyboard.press("E");
+    await expect(canvas).toHaveAttribute("data-extrude", "aim");
+    // M would be typed into the focused box, as a letter of an expression, so the card's mode button is the way.
+    for (let turn = 0; turn < 5 && (await canvas.getAttribute("data-extrude-mode")) !== "new"; turn += 1) await page.locator("[data-sketch-mode]").click();
+    await expect(canvas).toHaveAttribute("data-extrude-mode", "new");
+    // The owner's keys: the distance, Tab, the other side, Tab, the draft, Enter.
+    await page.keyboard.type("8.2");
+    await page.keyboard.press("Tab");
+    await page.keyboard.type("8.2");
+    await page.keyboard.press("Tab");
+    await page.keyboard.type("3");
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#objectList .obj"), "Enter made the new object").toHaveCount(2, { timeout: 60_000 });
+    await expect(canvas).not.toHaveAttribute("data-sketch", "editing");
+    // 16.4 mm through along the face's normal: the new object's box spans more than 14 mm along that normal.
+    const placed = await bounds(page);
+    const span = [placed[3]! - placed[0]!, placed[4]! - placed[1]!, placed[5]! - placed[2]!];
+    const along = span.reduce((sum, value, axis) => sum + value * Math.abs(face.normal[axis]!), 0);
+    expect(along, `along the normal ${face.normal.join(",")}, box ${span.map((v) => v.toFixed(2)).join(" × ")}`).toBeGreaterThan(14);
+  });
+}
