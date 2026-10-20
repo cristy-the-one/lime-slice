@@ -885,6 +885,95 @@ export function splitReason(report: PieceReport | null): string {
   return SPLIT_PIECE;
 }
 
+/** The plain ops a pattern or mirror repeats as whole steps, not as Boolean pieces. */
+export const REPEATED_FEATURES = ["extrude", "revolve"] as const;
+
+/** A [u, v] point read through a mirrored plane, whose U axis is turned round to keep the frame right-handed. */
+function flipU(value: unknown): unknown {
+  return Array.isArray(value) && value.length === 2 && typeof value[0] === "number" ? [-value[0], value[1]] : value;
+}
+
+function flipLoops(loops: unknown): unknown {
+  if (!Array.isArray(loops)) return loops;
+  return loops.map((loop) => {
+    if (!loop || typeof loop !== "object") return loop;
+    const row = loop as { start?: unknown; segments?: unknown };
+    const segments = Array.isArray(row.segments)
+      ? row.segments.map((segment) => {
+          if (!segment || typeof segment !== "object") return segment;
+          const s = segment as Record<string, unknown>;
+          return { ...s, ...(s.to !== undefined ? { to: flipU(s.to) } : {}), ...(s.through !== undefined ? { through: Array.isArray(s.through) && Array.isArray(s.through[0]) ? s.through.map(flipU) : flipU(s.through) } : {}) };
+        })
+      : row.segments;
+    return { ...row, start: flipU(row.start), segments };
+  });
+}
+
+/**
+ * --- 3.1 F15. An extrude or a revolve moved by `motion`: its plane's origin goes through the motion and its turn
+ * takes the motion's turn. A reflection would leave the plane left-handed, so U is turned round and every profile
+ * point's u with it: the same outline, mirrored. The op comes back with its plane as an explicit origin and turn.
+ */
+export function movedFeature(raw: Record<string, unknown>, plane: { origin: Vec3; turn: Vec3 }, motion: Motion): { op: Record<string, unknown> } | { reason: string } {
+  if (raw.upTo !== undefined) return { reason: "A repeated extrude cannot stop at a face. Give it a depth." };
+  const at = mulVec(motion.m, plane.origin);
+  let r = matMul(motion.m, eulerOrient(plane.turn[0], plane.turn[1], plane.turn[2]));
+  if (motion.reflect) r = matMul(r, [-1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  const euler = orientEuler(r);
+  const { face: _face, faceIndex: _faceIndex, from: _from, label: _label, ...rest } = raw;
+  const moved: Record<string, unknown> = {
+    ...rest,
+    origin: [round6(at[0] + motion.t[0]), round6(at[1] + motion.t[1]), round6(at[2] + motion.t[2])],
+    turn: [round6(euler.rx), round6(euler.ry), round6(euler.rz)],
+  };
+  if (!motion.reflect) return { op: moved };
+  if (Array.isArray(moved.profile)) moved.profile = moved.profile.map(flipU);
+  if (moved.loops !== undefined) moved.loops = flipLoops(moved.loops);
+  if (moved.axisOrigin !== undefined) moved.axisOrigin = flipU(moved.axisOrigin);
+  if (moved.kind === "revolve") moved.axisDir = flipU(moved.axisDir ?? [0, 1]);
+  return { op: moved };
+}
+
+/**
+ * --- 3.1 F15. A pattern or mirror of an extrude or a revolve, nested or not, as the plain ops it makes, each a whole
+ * step on its own plane; null when the op it repeats is not one of those. `planeOf` reads a profile's plane as typed.
+ */
+export function featureCopies(raw: Record<string, unknown>, plane: Workplane, planeOf: (spec: Record<string, unknown>) => { origin: Vec3; turn: Vec3 } | { reason: string }, depth = 0): Record<string, unknown>[] | { reason: string } | null {
+  if ((REPEATED_FEATURES as readonly unknown[]).includes(raw.kind)) {
+    const at = planeOf(raw);
+    if ("reason" in at) return at;
+    const { face: _face, faceIndex: _faceIndex, from: _from, label: _label, ...rest } = raw;
+    return [{ ...rest, origin: [...at.origin], turn: [...at.turn] }];
+  }
+  if ((raw.kind !== "pattern" && raw.kind !== "mirror") || depth > 4 || !raw.op || typeof raw.op !== "object") return null;
+  const inner = featureCopies(raw.op as Record<string, unknown>, plane, planeOf, depth + 1);
+  if (inner === null || "reason" in inner) return inner;
+  let motions: Motion[];
+  if (raw.kind === "pattern") {
+    const made = patternMotions(raw, plane);
+    if ("reason" in made) return made;
+    motions = made;
+  } else {
+    const made = mirrorMotion(raw, plane);
+    if ("reason" in made) return made;
+    motions = raw.keepOriginal === false ? [made] : [{ m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], reflect: false }, made];
+  }
+  const out: Record<string, unknown>[] = [];
+  for (const motion of motions) {
+    for (const copy of inner) {
+      if (isStill(motion)) {
+        out.push(copy);
+        continue;
+      }
+      const moved = movedFeature(copy, { origin: readVec3(copy.origin, [0, 0, 0]), turn: readVec3(copy.turn, [0, 0, 0]) }, motion);
+      if ("reason" in moved) return moved;
+      out.push(moved.op);
+      if (out.length > MAX_PIECES) return { reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller edits.` };
+    }
+  }
+  return out;
+}
+
 function isStill(motion: Motion): boolean {
   return !motion.reflect && motion.t.every((value) => value === 0) && motion.m.every((value, i) => value === (i % 4 === 0 ? 1 : 0));
 }

@@ -271,6 +271,30 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("several picks in a list are refused with the shapes that are taken", several.ok === false && String(several.reason).includes("{fromNode: \"node_4\", filter: \"convex\"}"), JSON.stringify(several));
 }
 
+{
+  // Finding 15: mirror and pattern repeat an extrude as whole steps, the mirrored one with its outline mirrored.
+  const session = new Session(fakeEngine());
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const part = String((await call("solid_new", { primitive: "box", dx: 40, dy: 40, dz: 20 })).object);
+  const fin = { kind: "extrude", op: "fuse", origin: [5, 0, 20], turn: [0, 0, 0], profile: [[0, 0], [6, 0], [0, 4]], depth: 3 };
+  const mirrored = await call("model_apply", { object: part, op: { kind: "mirror", plane: "x", op: fin, label: "fins" } });
+  const obj = session.objects.find((row) => row.id === part)!;
+  const group = obj.tree?.nodes.get(obj.tree.current)?.op as { kind?: string; steps?: { kind: string; plane?: { origin?: number[] }; profile?: number[][] }[] } | undefined;
+  const second = group?.steps?.[1] as Record<string, unknown> | undefined;
+  check("a mirror of an extrude applies as one group of two extrudes", mirrored.ok === true && group?.kind === "group" && group.steps?.length === 2 && group.steps.every((step) => step.kind === "extrude"), JSON.stringify({ mirrored, group }));
+  check("the mirrored extrude sits across the plane with its outline mirrored", JSON.stringify(second?.origin ?? (second?.plane as { origin?: unknown } | undefined)?.origin) === "[-5,0,20]" && JSON.stringify(second?.profile) === "[[0,0],[-6,0],[0,4]]", JSON.stringify(second));
+  const patterned = await call("model_apply", { object: part, op: { kind: "pattern", linear: { step: [0, 10, 0], count: 3 }, op: { ...fin, origin: [-15, -12, 20] } } });
+  const rows = (await call("model_history", { object: part, limit: 10 })).nodes as unknown[];
+  check("a pattern of an extrude applies too, as one more group", patterned.ok === true && rows.length === 3, JSON.stringify({ patterned, rows }));
+  let refused: unknown;
+  try {
+    refused = await call("model_apply", { object: part, op: { kind: "mirror", plane: "x", op: { kind: "fillet", edges: [0], size: 1 } } });
+  } catch (err) {
+    refused = String(err);
+  }
+  check("a mirror of a fillet is refused with the ops it repeats", String(refused).includes("repeats one of boolean, extrude, revolve") && String(refused).includes("a fillet is applied once per copy"), String(refused));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

@@ -77,7 +77,7 @@ import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
-import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
+import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, isPlainNumber, withExprs } from "../src/modeling/params.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
@@ -4493,21 +4493,43 @@ export class Session {
         checkpoints.push(obj.tree?.current ?? null);
         continue;
       }
-      // Expanded now, on the solid as the steps before it left it, so a face selector sees faces they made.
-      const pieces = expand(raw, this.expandContext(obj), (op) => this.pieceOf(obj, op));
-      if ("reason" in pieces) {
-        const ended = await refuse({ reason: pieces.reason });
+      // --- 3.1 F15. A pattern or mirror of an extrude or a revolve repeats that whole step on moved planes; other
+      // composites expand to Boolean pieces. Expanded now, on the solid as the steps before it left it, so a face
+      // selector sees faces they made.
+      const context = this.expandContext(obj);
+      const copies = featureCopies(raw, context.plane, (spec) => this.profilePlane(obj, spec));
+      const expanded = copies === null ? expand(raw, context, (op) => this.pieceOf(obj, op)) : copies;
+      if ("reason" in expanded) {
+        const ended = await refuse({ reason: expanded.reason });
         if (ended) return ended;
         continue;
       }
-      if ((made += pieces.length) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+      const pieces = copies === null ? expanded as Piece[] : [];
+      const count = expanded.length;
+      if ((made += count) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
       let refused: Record<string, unknown> | null = null;
       const touchingBefore = touching;
       // --- A9. The pieces that landed, in the solid's frame, become the group's steps. ---
       const steps: ModelOp[] = [];
-      for (let k = 0; k < pieces.length; k += 1) {
+      for (let k = 0; k < count; k += 1) {
         if (meta?.signal?.aborted) return cancelled();
-        progress(index, k, pieces.length);
+        progress(index, k, count);
+        if (copies !== null && !("reason" in copies)) {
+          const copy = copies[k]!;
+          const probed = await this.probe(obj, copy);
+          const done = probed.ok === true ? await this.apply(obj, copy) : probed;
+          if (done.ok !== true) {
+            refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(copy), step: k + 1, of: count, failedStep: k + 1, ...(done.where ? { where: done.where } : {}) };
+            break;
+          }
+          const node = parseNode(done.node);
+          const op = node === null ? null : obj.tree?.nodes.get(node)?.op;
+          if (node === null || !op) continue;
+          nodes.push(node);
+          ownNodes.push(node);
+          steps.push(op);
+          continue;
+        }
         const piece = pieces[k]!;
         const attempt = async (spec: PrimitiveSpec): Promise<{ probed: Record<string, unknown>; done: Record<string, unknown>; typed: Record<string, unknown>; op: ModelOp | null }> => {
           const at = await this.opened(obj);
@@ -4540,7 +4562,7 @@ export class Session {
         }
         if (done.ok !== true) {
           // --- A9. failedStep is the piece, counting from 1, including a located refusal. ---
-          refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(typed), step: k + 1, of: pieces.length, failedStep: k + 1, ...(done.where ? { where: done.where } : {}) };
+          refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(typed), step: k + 1, of: count, failedStep: k + 1, ...(done.where ? { where: done.where } : {}) };
           break;
         }
         const node = parseNode(done.node);
@@ -4551,8 +4573,8 @@ export class Session {
       }
       // --- D20. A composite whose every step missed changes nothing: refused, as the engine refuses such a group.
       // A step left out because it would only touch along an edge is reported as leftOut instead.
-      if (!refused && ownNodes.length === 0 && pieces.length > 0 && touching === touchingBefore) {
-        refused = { reason: pieces.length === 1 ? "Its one step does not change the part." : `None of its ${pieces.length} steps changes the part.` };
+      if (!refused && ownNodes.length === 0 && count > 0 && touching === touchingBefore) {
+        refused = { reason: count === 1 ? "Its one step does not change the part." : `None of its ${count} steps changes the part.` };
       }
       if (refused) {
         const ended = await refuse(refused);
@@ -4561,7 +4583,7 @@ export class Session {
       }
       // --- A9. Replace the piece chain with one group. A composite that applied nothing stays as it was. ---
       if (ownNodes.length > 0) {
-        progress(index, pieces.length - 1, pieces.length, `gathering its ${ownNodes.length} steps into one group`);
+        progress(index, count - 1, count, `gathering its ${ownNodes.length} steps into one group`);
         const stored = await this.storeGroup(obj, before, ownNodes[0]!, steps, label, raw);
         if (stored.ok !== true) {
           // The pieces are already gone. refuse still drops them when they remain, and rolls the run back.

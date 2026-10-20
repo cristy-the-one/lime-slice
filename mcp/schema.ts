@@ -213,7 +213,7 @@ const repeatFields = (inner: Record<string, unknown>) => ({
       plane: { enum: ["x", "y", "z"], description: "Normal axis." },
       normal: { ...vec3, description: "Or a normal." },
       origin: { ...vec3, description: "Plane point." },
-      keepOriginal: { type: "boolean", description: "Default true." },
+      keepOriginal: { type: "boolean", description: "false: only the image." },
       label,
     },
   },
@@ -326,7 +326,7 @@ const op = {
 };
 
 const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror", "array", "ribs", "text"]);
-const REPEATABLE = new Set(["boolean", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror", "text"]);
+const REPEATABLE = new Set(["boolean", "extrude", "revolve", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror", "text"]);
 
 /** The op schema model_apply lists. Other Model tools name it and are checked against it here. */
 export const OP_SCHEMA = op;
@@ -357,7 +357,7 @@ function checkOp(value: unknown, path: string, plain: boolean, depth = 0): strin
   if ((kind === "pattern" || kind === "mirror") && depth < 4) {
     const inner = (value as { op?: unknown }).op;
     const innerKind = inner && typeof inner === "object" ? (inner as { kind?: unknown }).kind : undefined;
-    if (typeof innerKind !== "string" || !REPEATABLE.has(innerKind)) return `${path}.op.kind must be one of ${[...REPEATABLE].join(", ")}.`;
+    if (typeof innerKind !== "string" || !REPEATABLE.has(innerKind)) return `A ${String((value as { kind?: unknown }).kind)} repeats one of ${[...REPEATABLE].join(", ")}; ${typeof innerKind === "string" ? `a ${innerKind}` : "that op"} is applied once per copy instead (${path}.op).`;
     return checkOp(inner, `${path}.op`, false, depth + 1);
   }
   return null;
