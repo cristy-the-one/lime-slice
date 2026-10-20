@@ -115,6 +115,7 @@
   background: var(--surface-3);
   color: var(--text);
   border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-pop);
   font-family: var(--font-mono);
   font-size: var(--fs-2);
   white-space: nowrap;

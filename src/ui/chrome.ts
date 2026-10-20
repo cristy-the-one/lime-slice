@@ -25,7 +25,7 @@ import {
   type IconNode,
 } from "lucide";
 import { mountRailFlyouts } from "./rail-fly";
-import { endReveals, toggleDock } from "./splitters";
+import { endReveals, paintDrawerHint, toggleDock } from "./splitters";
 import { mountTooltips } from "./tooltip";
 import "./chrome.css";
 
@@ -289,8 +289,14 @@ function paintDockNames(stage: Stage) {
     dock.setAttribute("aria-label", names[side]);
     const heading = dock.querySelector(".dock-head h2");
     if (heading) heading.textContent = names[side];
-    dock.querySelector(".dock-close")?.setAttribute("aria-label", `Collapse ${model && side === "left" ? "the Model panel" : names[side].toLowerCase()}`);
-    document.querySelector(`.splitter-${side}`)?.setAttribute("aria-label", `Resize ${model && side === "left" ? "the Model panel" : names[side].toLowerCase()}`);
+    const closeLabel = `Collapse ${model && side === "left" ? "the Model panel" : names[side].toLowerCase()}`;
+    const close = dock.querySelector<HTMLElement>(".dock-close");
+    close?.setAttribute("aria-label", closeLabel);
+    if (close) close.dataset.tip = closeLabel;
+    const splitter = document.querySelector<HTMLElement>(`.splitter-${side}`);
+    const resize = `Resize ${model && side === "left" ? "the Model panel" : names[side].toLowerCase()}. Double-click to reset the width.`;
+    splitter?.setAttribute("aria-label", resize);
+    if (splitter) splitter.dataset.tip = resize;
   }
   const toggle = document.querySelector<HTMLElement>("#leftToggle");
   if (toggle) {
@@ -299,8 +305,7 @@ function paintDockNames(stage: Stage) {
     const label = toggle.querySelector(".rail-label");
     if (label) label.textContent = names.left;
   }
-  const hint = document.querySelector("#statusHint");
-  if (hint) hint.textContent = model ? "The Model panel is in the drawer (Ctrl+B)" : "Settings are in the drawer (Ctrl+B)";
+  paintDrawerHint();
   const timing = document.querySelector<HTMLElement>("#timing");
   if (timing) timing.dataset.tip = `${names.right} panel`;
   // A dock a Model tool held open goes back to the user's choice in the other stages.

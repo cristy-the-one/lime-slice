@@ -8,6 +8,7 @@ import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
 import type { Affine, PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
+import { pushToast } from "./toasts";
 import type { EditPanel } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, localPoint, planePoint, planePrimitive, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
@@ -365,6 +366,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
     const featureItem = target?.closest<HTMLButtonElement>("#modelFeatureMenu [data-tool]");
     if (featureItem?.dataset.tool && isFeatureTool(featureItem.dataset.tool)) {
+      if (featureItem.getAttribute("aria-disabled") === "true") {
+        const why = featureItem.dataset.tip || featureItem.title;
+        if (why) pushToast(why, "info");
+        return;
+      }
       chooseFeature(featureItem.dataset.tool);
       return;
     }
@@ -408,6 +414,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     // --- end A3 ---
     const toolButton = target?.closest<HTMLButtonElement>(".model-tool[data-tool]");
     if (toolButton?.dataset.tool) {
+      if (toolButton.getAttribute("aria-disabled") === "true") {
+        const why = toolButton.dataset.tip || toolButton.title;
+        if (why) pushToast(why, "info");
+        return;
+      }
       toggleTool(toolButton.dataset.tool as ModelTool);
       return;
     }
@@ -1560,9 +1571,30 @@ function refreshTools() {
     const held = locked != null && id !== "create" && id !== "check";
     const viewOnly = !editable && !KEEPS_SOLID.has(id);
     const blocked = held ? locked : viewOnly ? VIEW_ONLY_TIP : toolBlockedTip(id, picks, legal);
-    button.disabled = held || viewOnly || !toolAvailable(id, picks, legal);
+    const off = held || viewOnly || !toolAvailable(id, picks, legal);
+    // aria-disabled stays in the tab order, so a keyboard user can land on the button and read why.
+    button.disabled = false;
+    button.setAttribute("aria-disabled", off ? "true" : "false");
+    button.classList.toggle("is-disabled", off);
     button.dataset.tip = blocked || button.dataset.tipIdle;
+    if (off && blocked) button.title = blocked;
+    else button.removeAttribute("title");
   });
+  refreshSketchTool();
+}
+
+/** Sketch is not a `data-tool` button, so the rail pass above never reaches it. */
+function refreshSketchTool() {
+  const button = document.querySelector<HTMLButtonElement>("#modelToolSketch");
+  if (!button) return;
+  button.dataset.tipIdle ??= button.dataset.tip ?? "Sketch";
+  const blocked = locked != null ? locked : !editable ? VIEW_ONLY_TIP : "";
+  const busy = button.getAttribute("aria-pressed") === "true";
+  button.setAttribute("aria-disabled", blocked ? "true" : "false");
+  button.classList.toggle("is-disabled", blocked !== "");
+  button.dataset.tip = blocked || (busy ? "Finish the sketch on the card, or press Esc." : button.dataset.tipIdle);
+  if (blocked) button.title = blocked;
+  else button.removeAttribute("title");
 }
 
 function refreshApply() {
@@ -1673,6 +1705,7 @@ function refreshNote() {
   }
   note.textContent = text;
   note.classList.toggle("is-bad", bad);
+  note.classList.toggle("is-prompt", /^(Pick|Select|Switch|Choose) /.test(text));
   note.toggleAttribute("hidden", text.length === 0);
   refreshShellFaces();
 }

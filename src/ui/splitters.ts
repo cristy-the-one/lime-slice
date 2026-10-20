@@ -343,16 +343,26 @@ function applyFit() {
   // A drawer opens over the view, so the canvas keeps its size and nothing needs to fit again.
   if (!drawers || modeChanged) window.dispatchEvent(new Event("resize"));
   fitting = false;
-  paintDrawerHint(drawers && leftClosed);
+  paintDrawerHint();
 }
 
 /**
- * While settings sit in a closed drawer (961–1200 px) the status line says where they are. The hint is its own span,
- * outside the live status text, so opening and closing a drawer is not read out again.
+ * While a dock sits in a closed drawer (961–1200 px) the status line says where it is, and the key that opens it.
+ * The hint is its own span, outside the live status text, so opening and closing a drawer is not read out again.
  */
-function paintDrawerHint(show: boolean) {
+export function paintDrawerHint() {
   const hint = document.querySelector<HTMLElement>("#statusHint");
-  if (hint && hint.hidden === show) hint.hidden = !show;
+  if (!hint) return;
+  const drawers = mode() === "drawer";
+  const ws = workspace();
+  const leftClosed = !!ws?.classList.contains("is-left-collapsed");
+  const rightClosed = !!ws?.classList.contains("is-right-collapsed");
+  const model = document.documentElement.dataset.stage === "model";
+  const parts: string[] = [];
+  if (drawers && leftClosed) parts.push(model ? "The Model panel is in the drawer (Ctrl+B)" : "Settings are in the drawer (Ctrl+B)");
+  if (drawers && rightClosed) parts.push(model ? "Inspect is in the drawer (Ctrl+Alt+B)" : "Results are in the drawer (Ctrl+Alt+B)");
+  hint.textContent = parts.join(". ");
+  hint.hidden = parts.length === 0;
 }
 
 let rightWasShown = false;

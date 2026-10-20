@@ -119,7 +119,7 @@ function solidAndCube(): { solid: ContextBox | null; cube: ContextBox | null } {
 function toolbarReady(selector: string | undefined): boolean {
   if (!selector) return true;
   const button = document.querySelector<HTMLButtonElement>(selector);
-  return !!button && !button.disabled;
+  return !!button && !button.disabled && button.getAttribute("aria-disabled") !== "true";
 }
 
 function listed(action: ContextAction): boolean {
@@ -129,7 +129,7 @@ function listed(action: ContextAction): boolean {
 function pressToolbar(selector: string | undefined): void {
   if (!selector) return;
   const button = document.querySelector<HTMLButtonElement>(selector);
-  if (!button || button.disabled) return;
+  if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return;
   // The toolbar toggles. A second press would close the tool the bar just opened.
   if (button.getAttribute("aria-pressed") === "true") return;
   button.click();
@@ -168,24 +168,57 @@ function publish(kind: string) {
   else delete node.dataset.selectionBar;
 }
 
+/** Escape collapses onto the chip; the focus that follows must not immediately open the bar again. */
+let collapseLock = false;
+
+function restoreButton(): HTMLButtonElement | null {
+  return bar?.querySelector<HTMLButtonElement>("#contextBarRestore") ?? null;
+}
+
+/** The buttons a key should move through: the chip while faded, the actions otherwise. */
+function barButtons(): HTMLButtonElement[] {
+  if (!bar) return [];
+  return [...bar.querySelectorAll<HTMLButtonElement>("button")].filter((button) =>
+    faded ? button.id === "contextBarRestore" : button.id !== "contextBarRestore",
+  );
+}
+
+/**
+ * Faded, the actions hide and a "Selection" chip stays where the bar was. The chip is the way back:
+ * click it, tab to it, or press Ctrl+.
+ */
+function setFaded(next: boolean) {
+  const was = faded;
+  if (was === next) return;
+  faded = next;
+  if (!bar) return;
+  bar.classList.toggle("is-faded", next);
+  bar.dataset.faded = next ? "1" : "0";
+  const restore = restoreButton();
+  bar.querySelectorAll<HTMLButtonElement>("button:not(#contextBarRestore)").forEach((button) => {
+    button.setAttribute("aria-hidden", next ? "true" : "false");
+    if (next) button.tabIndex = -1;
+  });
+  if (restore) restore.tabIndex = next ? 0 : -1;
+  if (!next) rove(null);
+  if (was && !next && document.activeElement === restore) barButtons()[0]?.focus();
+  if (was !== next) requestAnimationFrame(() => reseat());
+}
+
 function armFade() {
   window.clearTimeout(timer);
-  faded = false;
-  bar?.classList.remove("is-faded");
-  if (bar) bar.dataset.faded = "0";
+  if (faded) setFaded(false);
+  else if (bar) bar.dataset.faded = "0";
   timer = window.setTimeout(() => {
     // A keyboard user reading the bar keeps it: it fades once the focus has left.
     if (bar?.contains(document.activeElement)) return;
-    faded = true;
-    bar?.classList.add("is-faded");
-    if (bar) bar.dataset.faded = "1";
+    setFaded(true);
   }, CONTEXT_FADE_MS);
 }
 
 function stopFade() {
   window.clearTimeout(timer);
-  faded = false;
-  bar?.classList.remove("is-faded");
+  if (faded) setFaded(false);
   if (bar) delete bar.dataset.faded;
 }
 
@@ -271,13 +304,16 @@ function buttonOf(action: ContextAction, item: ContextMenuItem | null, className
 /** A toolbar is one Tab stop: the arrows move inside it, and the button last focused is the one Tab comes back to. */
 function rove(to: HTMLButtonElement | null) {
   if (!bar) return;
-  const buttons = [...bar.querySelectorAll<HTMLButtonElement>("button")];
+  const buttons = barButtons();
   const keep = to && buttons.includes(to) ? to : buttons[0];
   for (const button of buttons) button.tabIndex = button === keep ? 0 : -1;
+  const restore = restoreButton();
+  if (restore && !faded) restore.tabIndex = -1;
 }
 
 function renderButtons(actions: ContextAction[]) {
   if (!bar) return;
+  const restore = restoreButton();
   bar.replaceChildren();
   for (const action of actions) {
     if (!action.menu?.length) {
@@ -305,6 +341,7 @@ function renderButtons(actions: ContextAction[]) {
     group.append(main, caret);
     bar.append(group);
   }
+  if (restore) bar.append(restore);
   rove(null);
 }
 
@@ -379,6 +416,19 @@ export function mountContextBar(next: ContextBarHooks) {
   bar.setAttribute("role", "toolbar");
   bar.setAttribute("aria-label", "Selection");
   bar.hidden = true;
+  const restore = document.createElement("button");
+  restore.type = "button";
+  restore.id = "contextBarRestore";
+  restore.className = "context-bar-btn context-bar-restore";
+  restore.textContent = "Selection";
+  restore.dataset.tip = "Show selection actions";
+  restore.tabIndex = -1;
+  restore.addEventListener("click", () => {
+    if (!bar || bar.hidden) return;
+    armFade();
+    barButtons()[0]?.focus();
+  });
+  bar.append(restore);
   parent.append(bar);
 
   menu = document.createElement("div");
@@ -392,8 +442,9 @@ export function mountContextBar(next: ContextBarHooks) {
   bar.addEventListener("keydown", onBarKey);
   menu.addEventListener("keydown", onMenuKey);
   bar.addEventListener("focusin", (ev) => {
-    rove(ev.target instanceof HTMLButtonElement ? ev.target : null);
-    if (faded) armFade();
+    const onRestore = ev.target instanceof HTMLElement && ev.target.id === "contextBarRestore";
+    if (!onRestore) rove(ev.target instanceof HTMLButtonElement ? ev.target : null);
+    if (faded && !onRestore && !collapseLock) armFade();
   });
   bar.addEventListener("focusout", (ev) => {
     if (!bar?.contains(ev.relatedTarget as Node | null) && !bar?.hidden) armFade();
@@ -488,6 +539,17 @@ function onBarKey(ev: KeyboardEvent) {
   if (!bar) return;
   const target = ev.target instanceof HTMLButtonElement ? ev.target : null;
   if (!target || !bar.contains(target)) return;
+  if (ev.key === "Escape") {
+    // A second Escape, on the chip, clears the selection the way Esc does anywhere in Model.
+    if (faded) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    collapseLock = true;
+    setFaded(true);
+    restoreButton()?.focus();
+    collapseLock = false;
+    return;
+  }
   if (ev.key === "Enter") {
     ev.stopPropagation();
     return;
@@ -498,7 +560,7 @@ function onBarKey(ev: KeyboardEvent) {
     target.click();
     return;
   }
-  const buttons = [...bar.querySelectorAll<HTMLButtonElement>("button")];
+  const buttons = barButtons();
   if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
     ev.preventDefault();
     ev.stopPropagation();

@@ -32,7 +32,7 @@ test("preview opens in perspective, blurs until a slice, and steps one layer", a
   await page.locator('#toolRail [data-tool="move"]').click();
   await expect(page.locator("#gizmoNudge")).toBeVisible();
   const nudge = await page.locator("#gizmoNudge button").first().boundingBox();
-  expect(nudge?.height ?? 99).toBeLessThanOrEqual(20);
+  expect(nudge?.height ?? 99).toBeLessThanOrEqual(24);
   expect(nudge?.width ?? 99).toBeLessThanOrEqual(40);
 
   const before = await placeText(page);

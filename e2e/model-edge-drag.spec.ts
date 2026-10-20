@@ -232,7 +232,11 @@ test("P opens Push/Pull, D opens Split, and L still opens Fillet", async ({ page
   await page.keyboard.press("d");
   await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
   // Fillet's button waits for an edge. Enabling it and pressing L is the same click the shortcut sends.
-  await page.locator("#modelToolFillet").evaluate((button) => button.removeAttribute("disabled"));
+  await page.locator("#modelToolFillet").evaluate((button) => {
+    button.removeAttribute("disabled");
+    button.setAttribute("aria-disabled", "false");
+    button.classList.remove("is-disabled");
+  });
   await page.keyboard.press("l");
   await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "fillet");
   await expect(page.locator("#modelPanel")).toBeVisible();

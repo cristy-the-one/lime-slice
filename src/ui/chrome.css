@@ -69,9 +69,17 @@
   display: grid;
   place-items: center;
 }
-.tool-rail button:hover:not(.is-disabled) {
+.tool-rail button:hover:not(.is-disabled):not(:disabled) {
   background: var(--surface-3);
   color: var(--text);
+}
+.tool-rail button:is(.is-disabled, :disabled) {
+  opacity: 1;
+  cursor: not-allowed;
+  color: var(--text-dim);
+  border: 1px dashed var(--border-strong);
+  background-color: var(--surface-2);
+  background-image: repeating-linear-gradient(-45deg, transparent 0 3px, color-mix(in srgb, var(--text-dim) 28%, transparent) 3px 4px);
 }
 .tool-rail button[aria-pressed="true"],
 .tool-rail button[aria-expanded="true"] {
@@ -87,24 +95,24 @@
   background: var(--border);
 }
 .tool-rail .gizmo-nudge {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 24px 24px;
   gap: 2px;
-  width: 100%;
+  width: 48px;
   margin-top: var(--space-2);
-  padding: var(--space-1) 6px 0;
+  padding: 0;
 }
 .tool-rail .gizmo-nudge button {
-  width: 100%;
-  height: 16px;
-  min-width: 0;
-  min-height: 0;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
   padding: 0;
   border-radius: 3px;
   border: 1px solid var(--border);
-  background: transparent;
+  background: var(--surface-1);
   color: var(--text-dim);
-  font-size: var(--fs-1);
+  font-size: 10px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }

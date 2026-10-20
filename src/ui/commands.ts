@@ -39,6 +39,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "help-close", label: "Close shortcut sheet", group: "Window", keys: ["Esc", "?"], when: "help", typing: true, show: "none" },
   { id: "panel-left", label: "Toggle settings panel", group: "Window", keys: ["Ctrl+B"], target: "#leftToggle", keywords: "left collapse dock model" },
   { id: "panel-right", label: "Toggle results panel", group: "Window", keys: ["Ctrl+Alt+B"], target: "#timing", keywords: "right collapse estimate dock inspect" },
+  { id: "restore-hidden", label: "Show hidden controls", group: "Window", keys: ["Ctrl+."], target: "#contextBarRestore, #compactChromeShow", keywords: "selection bar chrome phone show controls" },
   { id: "printer-pick", label: "Printer, filament and nozzle", group: "File", keywords: "machine chip change" },
   { id: "printer-edit", label: "Printers and filaments", group: "File", keywords: "machine library edit bed flow advance" },
   { id: "new-project", label: "New project", group: "File", keys: ["Ctrl+N"], typing: true, keywords: "untitled blank document" },

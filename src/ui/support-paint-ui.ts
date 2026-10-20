@@ -6,6 +6,7 @@ import { createElement, Paintbrush } from "lucide";
 import type { BrushHooks, PrepareView } from "../prepare-view";
 import { BRUSH_R_DEFAULT_MM, BRUSH_R_MAX_MM, BRUSH_R_MIN_MM, paintCounts, tallyText, type PaintDisk, type PaintKind, type PaintTally } from "../support-paint";
 import { haptic } from "./haptics";
+import { pushToast } from "./toasts";
 import "./support-paint.css";
 
 export interface SupportPaintHooks {
@@ -68,7 +69,13 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
   function sync() {
     const view = hooks.view();
     tool.setAttribute("aria-pressed", on ? "true" : "false");
-    tool.classList.toggle("is-disabled", !view.hasMesh);
+    tool.dataset.tipIdle ??= tool.dataset.tip ?? "";
+    const blocked = !view.hasMesh;
+    tool.classList.toggle("is-disabled", blocked);
+    tool.setAttribute("aria-disabled", blocked ? "true" : "false");
+    tool.dataset.tip = blocked ? "Load a mesh to paint supports." : tool.dataset.tipIdle;
+    if (blocked) tool.title = "Load a mesh to paint supports.";
+    else tool.removeAttribute("title");
     bar.hidden = !on;
     document.documentElement.dataset.supportPaint = on ? "1" : "";
     for (const button of bar.querySelectorAll<HTMLButtonElement>("[data-kind]")) {
@@ -93,7 +100,10 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
   }
 
   function setOn(next: boolean) {
-    if (next && !hooks.view().hasMesh) return;
+    if (next && !hooks.view().hasMesh) {
+      pushToast("Load a mesh to paint supports.", "info");
+      return;
+    }
     if (next) hooks.yieldBrush?.();
     on = next;
     if (on) hooks.reveal();
