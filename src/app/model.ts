@@ -134,16 +134,16 @@ import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenO
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
 import { livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
-import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, noteEdit, patchEditBrep } from "./history";
+import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, newestEdits, noteEdit, patchEditBrep, redoUserEdit, undoUserEdit } from "./history";
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { mountEdgeDrag } from "./edge-drag";
-import { closeSketchSession, mountSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchUndo } from "./sketch";
-import { holeMarks, holesInModel, isSketchHoleGroup, pointsFromSource, sketchHoleSource, type HoleSizes, type HoleTarget } from "../sketch/holes.ts";
+import { closeSketchSession, forgetSketches, holdSketchForApply, mountSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchTakesPick, sketchUndo } from "./sketch";
+import { holeMarks, holeSizeRefusal, holesInModel, isSketchHoleGroup, pointsFromSource, sketchHoleSource, type HoleSizes, type HoleTarget } from "../sketch/holes.ts";
 import { sketchJson, type SketchData } from "../sketch/model.ts";
-import { opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
+import { featureOutlines, opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
 import { loftEditOf, readFaceLoops } from "../sketch/loft";
-import { revolvePresetOf, sketchForRevolve } from "../sketch/revolve";
+import { revolveOutlines, revolvePresetOf, sketchForRevolve } from "../sketch/revolve";
 import { sweepEditOf } from "../sketch/sweep";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
@@ -305,6 +305,8 @@ interface Editing {
 let editing: Editing | null = null;
 /** --- E1. A feature-root edit is not a sibling fork. Undo waits until the sketch closes. --- */
 let sketchRootEdit = false;
+/** The step shown when a feature-root edit began. Apply rebuilds the history and shows it again; Cancel goes back to it. */
+let rootEditFrom: NodeId | null = null;
 /** Bumps when an extrude preview is dropped, so a late probe does not land on the next gesture. */
 let extrudeGen = 0;
 /** P2. The idle edge knob. Null until the view is bound. */
@@ -315,6 +317,8 @@ let sketchUi: { sync(): void } | null = null;
 let sketchHoleDraft: { sketch: SketchData; points: HoleTarget[] } | null = null;
 /** Set while the panel is opening, so closing the previous tool does not drop the draft. */
 let holdSketchHoles = false;
+/** The readout says why the sketch holes' sizes cannot drill, so it is put back once they can. */
+let holeRefused = false;
 /** P1's face-drag sync, so a sketch can arm it again on the way out. */
 let syncPullDrag: (() => void) | null = null;
 let endPullDrag: (() => void) | null = null;
@@ -396,6 +400,16 @@ export function bindModelView() {
     paramsChanged(typed) {
       // --- F4. The draft lives only while the Hole panel is the points layout. ---
       if (sketchHoleDraft && openModelTool() !== "hole" && !holdSketchHoles) sketchHoleDraft = null;
+      // A size that cannot drill is said here, and nothing is sent for the engine to refuse.
+      const holeRefusal = sketchHoleDraft && openModelTool() === "hole" ? holeSizeRefusal(holeSizesNow()) : null;
+      if (holeRefusal) {
+        readout(holeRefusal);
+        holeRefused = true;
+      } else if (holeRefused) {
+        holeRefused = false;
+        const shown = viewed();
+        if (shown) readout(about(shown));
+      }
       // Place closed while a typed move was settling: that move is its step now, before Undo means the solid again.
       if (placeBefore && openModelTool() !== "place") endPlace();
       if (wpBefore && openModelTool() !== "workplane") endWorkplane();
@@ -1947,6 +1961,8 @@ export function leaveModel() {
   forgetWorkplaneSteps();
   commitModel();
   dropEdit();
+  // An open sketch is finished and kept as a card, so its keys and its view do not follow into Prepare.
+  closeSketchSession();
   endModelVisit();
   void writeSteps();
 }
@@ -1986,6 +2002,7 @@ export function forgetModelTrees() {
   stepKnown.clear();
   writing.clear();
   dropEdit();
+  forgetSketches();
   editBack = null;
   open = null;
   shownFor = null;
@@ -2276,6 +2293,7 @@ function redoNode(tree: ModelTree): NodeId | null {
 
 /** Undo is the parent, Redo the child last applied or jumped through, but for an edit, which Undo takes back whole. */
 async function step(way: "undo" | "redo") {
+  if (!busy && !jumping && !editing && !sketchRootEdit && newObjectStep(way)) return;
   const at = open;
   const tree = treeOf(at);
   const node = tree ? (way === "undo" ? undoNode(tree) : redoNode(tree)) : null;
@@ -2296,6 +2314,60 @@ async function step(way: "undo" | "redo") {
   syncUndo();
   // The shown branch changed, so the Rebuild count does too.
   noteParametersBuilt();
+}
+
+/** An object Model made, with the Prepare step that added it to the plate. */
+interface MadeObject {
+  id: string;
+  step: object | null;
+}
+
+/**
+ * Objects Model made, one batch per feature (separate regions make one object each), newest last. Undo at the start of
+ * the newest one's history takes its batch's Prepare steps back while they are still the newest steps, so the objects
+ * leave the plate, as undoing the first feature of a new body does in Fusion. Redo puts them back the same way.
+ */
+let madeBatches: MadeObject[][] = [];
+let unmadeBatches: MadeObject[][] = [];
+/** Set while one feature makes several objects, so they are one batch. */
+let makingBatch: MadeObject[] | null = null;
+const MADE_KEPT = 20;
+
+function canUnmake(): boolean {
+  const last = madeBatches.at(-1)?.at(-1);
+  const tree = treeOf(open);
+  const edits = newestEdits();
+  return !!last && !!tree && open?.objectId === last.id && undoNode(tree) == null && !edits.pending && edits.undo === last.step;
+}
+
+function canRemake(): boolean {
+  const first = unmadeBatches.at(-1)?.[0];
+  const edits = newestEdits();
+  return !!first && !edits.pending && edits.redo === first.step;
+}
+
+function newObjectStep(way: "undo" | "redo"): boolean {
+  if (way === "undo" ? !canUnmake() : !canRemake()) return false;
+  const batch = way === "undo" ? madeBatches.pop()! : unmadeBatches.pop()!;
+  const moved: MadeObject[] = [];
+  for (const made of way === "undo" ? [...batch].reverse() : batch) {
+    const edits = newestEdits();
+    if (edits.pending || (way === "undo" ? edits.undo : edits.redo) !== made.step) break;
+    if (!(way === "undo" ? undoUserEdit() : redoUserEdit())) break;
+    const after = newestEdits();
+    if (way === "undo") moved.unshift({ id: made.id, step: after.redo });
+    else moved.push({ id: made.id, step: after.undo });
+  }
+  if (moved.length > 0) (way === "undo" ? unmadeBatches : madeBatches).push(moved);
+  showModel();
+  return true;
+}
+
+function noteMadeObject(id: string) {
+  const made: MadeObject = { id, step: newestEdits().undo };
+  unmadeBatches = [];
+  if (makingBatch) makingBatch.push(made);
+  else madeBatches = [...madeBatches, [made]].slice(-MADE_KEPT);
 }
 
 /** A row of the History panel: show that step. A jump still on its way to another step gives way to this one. */
@@ -2490,6 +2562,7 @@ async function applyTool() {
   if (!op) {
     if (tool === "fillet" || tool === "chamfer") readout(tool === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
     if (tool === "split") readout(splitNote(splitState()).text);
+    if (tool === "hole" && sketchHoleDraft) readout(holeSizeRefusal(holeSizesNow()) ?? "Select points or circle centres.");
     return;
   }
   if (op.kind === "split") {
@@ -2510,7 +2583,16 @@ async function applyTool() {
     faceExtrude: "Pulling the face…",
     moveFaces: "Pulling the face…",
   };
-  await applyOp(op, op.kind === "group" ? `Applying ${op.label}…` : working[op.kind] ?? "Editing the solid…");
+  const fromSketch = tool === "hole" && sketchHoleDraft != null;
+  if (fromSketch) holdSketchForApply(true);
+  let applied = false;
+  try {
+    applied = await applyOp(op, op.kind === "group" ? `Applying ${op.label}…` : working[op.kind] ?? "Editing the solid…");
+  } finally {
+    if (fromSketch) holdSketchForApply(false);
+  }
+  // Holes from a sketch are its feature: the sketch closes as it does after an extrude, so Undo then takes the holes back.
+  if (applied && fromSketch) closeSketchSession();
 }
 
 /** Apply `op` to the shown node. The result is a new child, shown; the plate takes it on commit. */
@@ -2741,8 +2823,8 @@ async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
   const openIt = () => {
     if (sweepPreset) openSketchLoft(sweepPreset);
     else if (loftPreset) openSketchLoft(loftPreset);
-    else if (revolveEdit && revSketch && revPreset) openSketchRevolve(revSketch, revPreset);
-    else if (sketch && preset) openSketchFeature(sketch, preset);
+    else if (revolveEdit && revSketch && revPreset) openSketchRevolve(revSketch, revPreset, revolveOutlines(op));
+    else if (sketch && preset) openSketchFeature(sketch, preset, featureOutlines(op));
   };
   if (busy || jumping) {
     readout(STILL_WORKING);
@@ -2754,11 +2836,13 @@ async function startSketchEdit(node: NodeId, op: ModelOp, root: boolean) {
   }
   if (root) {
     sketchRootEdit = true;
+    rootEditFrom = tree.current;
     syncUndo();
     if (tree.current !== ROOT) {
       const shown = await showNode(ticket, at.objectId, at.key, ROOT, about);
       if (!shown) {
         sketchRootEdit = false;
+        rootEditFrom = null;
         syncUndo();
         return;
       }
@@ -2801,7 +2885,9 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
   if (!at || !tree || tree.root.kind !== "feature") return "This solid did not start from a sketch.";
   if (busy || jumping) return STILL_WORKING;
   const previous = tree;
-  const cleared = clearFingerprints(withFeatureRoot(tree, op));
+  // The later steps build on the new root, up to the step shown before the edit, which the view shows again.
+  const back = rootEditFrom != null && tree.nodes.has(rootEditFrom) ? rootEditFrom : tree.current;
+  const cleared = jumped(clearFingerprints(withFeatureRoot(tree, op)), back);
   modelTrees.set(at.key, cleared);
   forgetSolids(at.key);
   const mine = ticket;
@@ -2809,7 +2895,7 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
   syncUndo();
   readout("Rebuilding the solid…");
   await post({ call: "close", key: at.key });
-  const problem = await openWhole(at.key, cleared.current);
+  const problem = await openWhole(at.key, back);
   if (mine === ticket) busy = false;
   syncUndo();
   if (problem) {
@@ -2821,7 +2907,13 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
     return problem;
   }
   forgetSolids(at.key);
-  const shown = await showNode(mine, at.objectId, at.key, modelTrees.get(at.key)?.current ?? ROOT, (solid) => `Updated the sketch. ${about(solid)}`);
+  let shown = await showNode(mine, at.objectId, at.key, back, (solid) => `Updated the sketch. ${about(solid)}`);
+  const rebuilt = modelTrees.get(at.key);
+  if (!shown && mine === ticket && rebuilt && back !== ROOT) {
+    // A later step that no longer builds on the new root stays in the history, marked; the last step that builds is shown.
+    const good = lastGood(rebuilt, back) ?? ROOT;
+    if (good !== back) shown = await showNode(mine, at.objectId, at.key, good, (solid) => `Updated the sketch. ${BROKEN} ${about(solid)}`);
+  }
   if (!shown) return "The solid did not rebuild.";
   const solid = open?.solid;
   const now = modelTrees.get(at.key);
@@ -2832,6 +2924,7 @@ async function replaceFeatureRoot(op: Extract<ModelOp, { kind: "extrude" | "revo
     modelTrees.set(at.key, { ...now, nodes });
   }
   sketchRootEdit = false;
+  rootEditFrom = null;
   syncUndo();
   return null;
 }
@@ -2855,12 +2948,39 @@ async function commitSketchExtrude(op: ModelOp, placement: "new" | "on-solid"): 
   }
   if (placement === "new") {
     if (editing?.sketch) return "Editing this step keeps it on this solid. Join, cut, or intersect.";
+    // The sketch was drawn in the open solid's frame (model space when none is open), so each new object takes that
+    // pose and lands where it was drawn, on the face it was sketched on.
+    const pose = openPose();
     if (op.kind === "revolve" || op.kind === "extrude" || op.kind === "loft") {
-      const ok = await createFeatureSolid(op);
+      const ok = await createFeatureSolid(op, pose);
       return ok ? null : readoutText || "The solid was not created.";
     }
-    if (op.kind === "group" && op.steps.length > 0 && op.steps.every((step) => step.kind === "revolve")) return "A new solid is one revolve.";
-    return "A new solid is one extrude.";
+    // Separate regions are separate bodies, as a new-body extrude of several profiles makes in Fusion: one object
+    // each, each root carrying the drawing so its History Edit reopens it with that region picked.
+    const parts = op.kind === "group" ? op.steps.filter((step): step is Extract<ModelOp, { kind: "extrude" | "revolve" }> => step.kind === "extrude" || step.kind === "revolve") : [];
+    if (op.kind !== "group" || parts.length === 0 || parts.length !== op.steps.length) return "A new object is one extrude, revolve, or loft.";
+    const drawing = parts.find((step) => step.sketch)?.sketch;
+    const batch: MadeObject[] = [];
+    makingBatch = batch;
+    let failed: string | null = null;
+    try {
+      for (const part of parts) {
+        const root = drawing && !part.sketch ? { ...part, sketch: drawing } : part;
+        if (!(await createFeatureSolid(root, pose))) {
+          failed = readoutText || "The solid was not created.";
+          break;
+        }
+      }
+    } finally {
+      makingBatch = null;
+      if (batch.length > 0) madeBatches = [...madeBatches, batch].slice(-MADE_KEPT);
+    }
+    // One region failed: the objects the others made go too, so the sketch can be applied again without copies.
+    if (failed && batch.length > 0) {
+      newObjectStep("undo");
+      readout(failed);
+    }
+    return failed;
   }
   if (editing?.sketch) {
     const run: Editing = { ...editing, featureOp: op };
@@ -2897,8 +3017,14 @@ function clearExtrudePreview() {
 function cancelSketchFeature() {
   if (sketchRootEdit) {
     sketchRootEdit = false;
+    const back = rootEditFrom;
+    rootEditFrom = null;
     closeSketchSession();
     syncUndo();
+    // The edit showed the root. The step shown before it comes back, so the later steps are not left as Redo.
+    const at = open;
+    const tree = treeOf(at);
+    if (at && tree && back != null && tree.nodes.has(back) && tree.current !== back) void showNode(ticket, at.objectId, at.key, back, about);
     return;
   }
   if (editing?.sketch) cancelEdit();
@@ -3064,6 +3190,7 @@ function dropEdit() {
   const sketching = editing?.sketch === true || sketchRootEdit;
   editing = null;
   sketchRootEdit = false;
+  rootEditFrom = null;
   if (editedPanel()) closeModelTool();
   if (sketching) closeSketchSession();
 }
@@ -3656,7 +3783,7 @@ async function createSolid() {
  * A new plate object whose root is an extrude, a revolve, or a loft, with no primitive under it (K2). The sketch
  * editor (F1) calls this for "New object". Cut and intersect are refused: the feature is the solid.
  */
-export async function createFeatureSolid(op: FeatureOp): Promise<boolean> {
+export async function createFeatureSolid(op: FeatureOp, pose?: Affine): Promise<boolean> {
   if (busy || jumping || state.stage !== "model") return false;
   if (op.op !== "fuse") {
     const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
@@ -3669,6 +3796,7 @@ export async function createFeatureSolid(op: FeatureOp): Promise<boolean> {
     name: (names) => (op.kind === "loft" && op.drawing?.sweep ? sweepObjectName(names) : featureObjectName(names, op.kind)),
     root: from,
     bounds: (positions) => boundsOf(positions),
+    ...(pose ? { pose } : {}),
   });
 }
 
@@ -3678,6 +3806,8 @@ async function finishNewSolid(made: {
   name: (names: Iterable<string>) => string;
   root: Exclude<ModelRoot, { kind: "piece" }>;
   bounds: (positions: Float32Array) => Bounds;
+  /** Where the solid's own frame sits in model space. Absent stands it beside the other objects. */
+  pose?: Affine;
 }): Promise<boolean> {
   const id = freshPlateId();
   const key = freshTreeKey(id);
@@ -3713,7 +3843,7 @@ async function finishNewSolid(made: {
   const bytes = encodeStl(positions, fileName);
   setMeshSeat(bytes, seat);
   const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
-  const pose = newSolidPose(others, made.bounds(positions));
+  const pose = made.pose ?? newSolidPose(others, made.bounds(positions));
   const { bedX, bedY } = state.profile;
   state.plate = addedSolid(state.plate, { name, fileName, bytes, sourcePos: positions, stepTolerance: chord }, id, key, pose, bedX, bedY);
   applySelectedToState(state.plate);
@@ -3722,6 +3852,7 @@ async function finishNewSolid(made: {
   place(first ? "load" : "transform");
   flushEdit();
   markModelEdit();
+  noteMadeObject(id);
   ticket += 1;
   picks = [];
   parked = null;
@@ -4420,6 +4551,8 @@ function syncUndo() {
   const framing = openModelTool() === "workplane";
   // While a step is edited, Cancel is the way back.
   const held = busy || jumping || !tree || !!editing;
+  const unmake = !busy && !jumping && !editing && canUnmake();
+  const remake = !busy && !jumping && !editing && canRemake();
   // --- S2: Undo and Redo step the sketch while one is open. ---
   const sketchHist = sketchHistoryButtons();
   if (undo) {
@@ -4427,7 +4560,7 @@ function syncUndo() {
       undo.disabled = !sketchHist.undo;
       undo.dataset.tip = "Undo the last sketch edit";
     } else {
-      undo.disabled = held || (placing ? placeUndo.length === 0 && !placeBefore : framing ? wpUndo.length === 0 && !wpBefore : undoNode(tree!) == null);
+      undo.disabled = !(unmake && !placing && !framing) && (held || (placing ? placeUndo.length === 0 && !placeBefore : framing ? wpUndo.length === 0 && !wpBefore : undoNode(tree!) == null));
       undo.dataset.tip = placing ? "Undo the last move" : framing ? "Undo the last workplane move" : "Undo the last solid edit";
     }
   }
@@ -4436,7 +4569,7 @@ function syncUndo() {
       redo.disabled = !sketchHist.redo;
       redo.dataset.tip = "Redo the last sketch edit";
     } else {
-      redo.disabled = held || (placing ? placeRedo.length === 0 : framing ? wpRedo.length === 0 : redoNode(tree!) == null);
+      redo.disabled = !(remake && !placing && !framing) && (held || (placing ? placeRedo.length === 0 : framing ? wpRedo.length === 0 : redoNode(tree!) == null));
       redo.dataset.tip = placing ? "Redo the last move" : framing ? "Redo the last workplane move" : "Redo the last solid edit";
     }
   }
@@ -4625,6 +4758,8 @@ let contextClick: { x: number; y: number; empty: boolean } | null = null;
 let contextFromPick = false;
 
 async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: number; y: number }) {
+  // --- B13. A loft or sweep in Look around takes the click as a section or a profile. ---
+  if (sketchTakesPick(pointer.x, pointer.y)) return;
   const at = open;
   const tree = treeOf(at);
   const solid = viewed();

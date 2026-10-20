@@ -37,7 +37,7 @@ import {
   type SketchData,
   type SketchEntity,
 } from "./model.ts";
-import type { RefGeom } from "./refs.ts";
+import { refChain, type RefGeom } from "./refs.ts";
 
 export const DRAW_TOOLS = ["circle", "arc", "polygon", "slot", "spline", "trim", "offset", "fillet", "construction", "use"] as const;
 export type DrawTool = (typeof DRAW_TOOLS)[number];
@@ -678,16 +678,26 @@ function applyConstruction(sketch: SketchData, state: DrawState, ids: number[], 
 
 function applyUse(sketch: SketchData, state: DrawState, refs: RefGeom, index: number | null, selection: DrawSelection): DrawResult {
   if (index == null) return note(sketch, state, selection, "Click a faint edge or the face outline.");
-  const segment = refs.segments[index];
-  if (!segment) return note(sketch, state, selection, "Click a faint edge or the face outline.");
-  const batch = segment.source === "outline" ? refs.segments.filter((item) => item.source === "outline") : [segment];
+  const chain = refChain(refs, index);
+  if (!chain) return note(sketch, state, selection, "Click a faint edge or the face outline.");
+  // The view's edges are tessellated. Runs that lie on one line or one circle are copied as that line, arc or circle.
   let next = sketch;
   let added = 0;
-  for (const item of batch) {
-    if (hasLine(next, item.a, item.b)) continue;
-    const first = ensurePoint(next, item.a);
-    const second = ensurePoint(first.sketch, item.b);
-    next = addLine(second.sketch, first.id, second.id).sketch;
+  for (const piece of fitPieces(chain.points, chain.closed)) {
+    if (piece.kind === "circle") {
+      if (hasCircle(next, piece.centre, piece.radius)) continue;
+      next = addCircle(next, piece.centre, piece.radius).sketch;
+    } else if (piece.kind === "arc") {
+      if (hasArc(next, piece.a, piece.b, piece.through)) continue;
+      const first = ensurePoint(next, piece.a);
+      const second = ensurePoint(first.sketch, piece.b);
+      next = addArc(second.sketch, first.id, second.id, piece.through).sketch;
+    } else {
+      if (hasLine(next, piece.a, piece.b)) continue;
+      const first = ensurePoint(next, piece.a);
+      const second = ensurePoint(first.sketch, piece.b);
+      next = addLine(second.sketch, first.id, second.id).sketch;
+    }
     added += 1;
   }
   if (added === 0) return note(sketch, state, selection, "That edge is already in the sketch.");
@@ -997,6 +1007,91 @@ function constructionIds(sketch: SketchData, hit: { point: number | null; entity
 
 function entitiesAt(sketch: SketchData, point: number): number[] {
   return sketch.entities.filter((entity) => pointIds(entity).includes(point)).map((entity) => entity.id);
+}
+
+type UsePiece = { kind: "line"; a: Pt; b: Pt } | { kind: "arc"; a: Pt; b: Pt; through: Pt } | { kind: "circle"; centre: Pt; radius: number };
+
+/** How far a copied run may stray from the solid's tessellated edge, in millimetres. */
+const FIT_MM = 0.02;
+
+/**
+ * A polyline as lines, arcs and circles: a closed run on one circle is that circle; otherwise each longest run on one
+ * line is a line, and each run of three or more pieces on one circle is an arc.
+ */
+export function fitPieces(points: readonly Pt[], closed: boolean): UsePiece[] {
+  if (points.length < 2) return [];
+  if (closed && points.length >= 6) {
+    const round = circleThrough(points);
+    if (round) return [{ kind: "circle", centre: round.centre, radius: round.radius }];
+  }
+  const run = closed ? [...points, points[0]!] : [...points];
+  const out: UsePiece[] = [];
+  let at = 0;
+  while (at < run.length - 1) {
+    let line = at + 1;
+    while (line + 1 < run.length && onLine(run, at, line + 1)) line += 1;
+    let arc = at;
+    for (let end = at + 3; end < run.length; end += 1) {
+      if (circleThrough(run.slice(at, end + 1))) arc = end;
+      else break;
+    }
+    if (arc > line) {
+      const middle = run[Math.floor((at + arc) / 2)]!;
+      out.push({ kind: "arc", a: run[at]!, b: run[arc]!, through: middle });
+      at = arc;
+    } else {
+      out.push({ kind: "line", a: run[at]!, b: run[line]! });
+      at = line;
+    }
+  }
+  return out;
+}
+
+function onLine(run: readonly Pt[], from: number, to: number): boolean {
+  const a = run[from]!;
+  const b = run[to]!;
+  for (let i = from + 1; i < to; i += 1) {
+    const hit = projectToSegment(a, b, run[i]!);
+    if (!hit || hit.distance > FIT_MM) return false;
+  }
+  return true;
+}
+
+/**
+ * The circle through every point within `FIT_MM`, from the first, a middle and a late point; null when there is none.
+ * Each piece turns at most 20° about the centre and the pieces are near one length, as a tessellated curve's are, so
+ * a square, or a decagon pocket on the face outline, stays straight sides.
+ */
+function circleThrough(points: readonly Pt[]): { centre: Pt; radius: number } | null {
+  if (points.length < 4) return null;
+  const arc = arcFrom3(points[0]!, points[Math.floor(points.length / 3)]!, points[Math.floor((2 * points.length) / 3)]!);
+  if (!arc || !(arc.radius < 1e4)) return null;
+  if (!points.every((point) => Math.abs(dist(point, arc.centre) - arc.radius) <= FIT_MM)) return null;
+  const most = 2 * arc.radius * Math.sin((10 * Math.PI) / 180);
+  const chords = points.slice(1).map((point, i) => dist(points[i]!, point));
+  if (chords.some((chord) => chord > most)) return null;
+  const longest = Math.max(...chords);
+  if (chords.some((chord) => chord < longest * 0.85)) return null;
+  return { centre: arc.centre, radius: arc.radius };
+}
+
+function hasCircle(sketch: SketchData, centre: Pt, radius: number): boolean {
+  return sketch.entities.some((entity) => {
+    if (entity.kind !== "circle") return false;
+    const at = sketchPoint(sketch, entity.centre)?.at;
+    return !!at && dist(at, centre) <= 1e-3 && Math.abs(entity.radius - radius) <= 1e-3;
+  });
+}
+
+function hasArc(sketch: SketchData, a: Pt, b: Pt, through: Pt): boolean {
+  return sketch.entities.some((entity) => {
+    if (entity.kind !== "arc") return false;
+    const start = sketchPoint(sketch, entity.a)?.at;
+    const end = sketchPoint(sketch, entity.b)?.at;
+    if (!start || !end) return false;
+    const same = (dist(start, a) <= 1e-3 && dist(end, b) <= 1e-3) || (dist(start, b) <= 1e-3 && dist(end, a) <= 1e-3);
+    return same && dist(entity.through, through) <= 0.05;
+  });
 }
 
 function hasLine(sketch: SketchData, a: Pt, b: Pt): boolean {

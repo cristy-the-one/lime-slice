@@ -91,6 +91,8 @@ export interface DimLabel {
   text: string;
   at: Pt;
   title: string;
+  /** What a screen reader says: the kind and the value with its unit, "Length 12 mm". */
+  spoken: string;
   /** The expression, when the dimension was not typed as a plain number. */
   expr?: string;
 }
@@ -126,9 +128,9 @@ export function constrainReadout(tool: ConstrainTool, note: string | null): stri
   const hint = note ? ` ${note}` : "";
   switch (tool) {
     case "horizontal":
-      return `Horizontal. Click a line, or two points.${hint}`;
+      return `Horizontal. Click a line, or two points. With lines selected, each one is made horizontal.${hint}`;
     case "vertical":
-      return `Vertical. Click a line, or two points.${hint}`;
+      return `Vertical. Click a line, or two points. With lines selected, each one is made vertical.${hint}`;
     case "parallel":
       return `Parallel. Click two lines.${hint}`;
     case "perpendicular":
@@ -144,7 +146,7 @@ export function constrainReadout(tool: ConstrainTool, note: string | null): stri
     case "midpoint":
       return `Midpoint. Click a point and a line.${hint}`;
     case "coincident":
-      return `Coincident. Click two points. They become one shared point.${hint}`;
+      return `Coincident. Click two points, and they become one; or a point and a line, circle or arc, and it stays on it.${hint}`;
     case "distance":
       return `Distance. Click two points, or a point and a line. Type the distance on the label.${hint}`;
     case "length":
@@ -161,8 +163,14 @@ export function constrainReadout(tool: ConstrainTool, note: string | null): stri
 export function applyConstrainAction(sketch: SketchData, action: ConstrainAction, selection: { entities: number[]; points: number[] }, selectedDim: number | null): ConstrainBuild {
   if (action === "remove") {
     const next = removeConstraints(sketch, selection, selectedDim);
-    if (next === sketch) return { error: "Select a constraint, or the geometry it is on." };
-    return { sketch: next, focus: null };
+    if (next !== sketch) return { sketch: next, focus: null };
+    // With nothing chosen, the constraints that cannot be met go, so a sketch that conflicts can be freed in one step.
+    const unmet = selection.entities.length === 0 && selection.points.length === 0 && selectedDim == null ? constraintStatus(sketch)?.conflicting ?? [] : [];
+    if (unmet.length > 0) {
+      const count = unmet.length === 1 ? "the constraint" : `${unmet.length} constraints`;
+      return { sketch: dropDimIds(sketch, new Set(unmet)), focus: null, hint: `Removed ${count} that could not be met.` };
+    }
+    return { error: "Select a constraint, or the geometry it is on." };
   }
   return finishDraft(sketch, fromSelection(sketch, action, selection), false);
 }
@@ -176,7 +184,7 @@ export function constrainFromPick(sketch: SketchData, tool: ConstrainTool, picks
 
 function finishDraft(sketch: SketchData, built: Draft, strict: boolean): ConstrainBuild {
   if (built.coincide) return { sketch: coincide(sketch, built.coincide[0], built.coincide[1]), focus: null };
-  if (built.constraint) return commitAdded(sketch, built.constraint, built.extras ?? []);
+  if (built.constraint) return commitAdded(sketch, built.constraint, built.extras ?? [], built.more ?? []);
   if (strict && built.error) return { error: built.error };
   return { hint: built.hint ?? built.error };
 }
@@ -197,8 +205,136 @@ export function commitDriving(sketch: SketchData, id: number, value: number, exp
     else delete next.expr;
     return next;
   });
-  const solved = solveKeeping(sketch, { ...sketch, dims });
+  const solved = solveOrRefuse(sketch, { ...sketch, dims });
+  if (!solved) return { error: VALUE_CONFLICT };
   return { sketch: solved, focus: null };
+}
+
+/** A driving value the other constraints cannot meet is refused, and the old value stays. */
+export const VALUE_CONFLICT = "That value cannot be met with the other constraints. The old value stays.";
+/** A constraint that over-constrains the sketch is not added. */
+export const ADD_CONFLICT = "That constraint cannot be met with the others, so it was not added.";
+
+/**
+ * The sketch with `withDims` solved, or null when the solve cannot meet a constraint that `before` could: a new
+ * conflict, or a solve that does not converge. A conflict the sketch already had does not block an unrelated change.
+ */
+function solveOrRefuse(before: SketchData, withDims: SketchData): SketchData | null {
+  const solved = solveSketch(withDims);
+  if (solved.ok) return solved.sketch;
+  const had = constraintStatus(before)?.conflicting ?? [];
+  const fresh = solved.conflicting.filter((id) => !had.includes(id));
+  if (fresh.length > 0 || solved.conflicting.length === 0) return null;
+  return solveKeeping(before, withDims);
+}
+
+/**
+ * The dimensions after an edit replaced or reshaped geometry (trim, fillet corner, offset). One that names a point or
+ * an entity that is gone is dropped. On an entity whose end points the edit moved, only the directional constraints
+ * stay (horizontal, vertical, parallel, perpendicular, angle); a size or a position there would now fight the edit
+ * and lock the sketch, so it goes. A fillet keeps its own geometry, and the solver is not run.
+ */
+export function carryDims(before: SketchData, after: SketchData): SketchData {
+  if (!after.dims?.length) return after;
+  const points = new Set(after.points.map((point) => point.id));
+  const entities = new Map(after.entities.map((entity) => [entity.id, entity]));
+  const reshaped = new Set<number>();
+  for (const old of before.entities) {
+    const now = entities.get(old.id);
+    if (now && JSON.stringify(entityEnds(old)) !== JSON.stringify(entityEnds(now))) reshaped.add(old.id);
+  }
+  const keepOnReshaped = new Set(["horizontal", "vertical", "parallel", "perpendicular", "angle"]);
+  const drop = new Set<number>();
+  for (const constraint of parseConstraints(after)) {
+    const ids = namedIds(constraint);
+    if (ids.points.some((id) => !points.has(id)) || ids.entities.some((id) => !entities.has(id))) drop.add(constraint.id);
+    else if (ids.entities.some((id) => reshaped.has(id)) && !keepOnReshaped.has(constraint.kind)) drop.add(constraint.id);
+  }
+  return drop.size > 0 ? dropDimIds(after, drop) : after;
+}
+
+function entityEnds(entity: SketchEntity): number[] {
+  if (entity.kind === "line" || entity.kind === "arc") return [entity.a, entity.b];
+  if (entity.kind === "circle") return [entity.centre];
+  return [...entity.through];
+}
+
+function dropDimIds(sketch: SketchData, drop: ReadonlySet<number>): SketchData {
+  const kept = (sketch.dims ?? []).filter((dim) => !drop.has(dim.id));
+  const released = new Set(parseConstraints(sketch).filter((item) => drop.has(item.id) && item.kind === "fixed").map((item) => (item.kind === "fixed" ? item.point : -1)));
+  const next: SketchData = { ...sketch };
+  if (kept.length) next.dims = kept;
+  else delete next.dims;
+  const still = new Set(parseConstraints(next).filter((item) => item.kind === "fixed").map((item) => (item.kind === "fixed" ? item.point : -1)));
+  next.points = next.points.map((point) => {
+    if (!released.has(point.id) || still.has(point.id) || !point.fixed) return point;
+    const copy = { ...point };
+    delete copy.fixed;
+    return copy;
+  });
+  return next;
+}
+
+/**
+ * A drawn rectangle's sides: its first and third lines horizontal, its second and fourth vertical, as the two-point
+ * rectangle carries them in Fusion, so a width typed on one side and a dragged corner keep it square.
+ */
+export function withRectangleConstraints(sketch: SketchData, sides: readonly [number, number, number, number]): SketchData {
+  let next = sketch;
+  sides.forEach((line, index) => {
+    next = addOne(next, { id: 0, kind: index % 2 === 0 ? "horizontal" : "vertical", line }).sketch;
+  });
+  return next;
+}
+
+/** A geometric constraint's mark beside the geometry it is on, which a click picks. */
+export interface ConstraintGlyph {
+  id: number;
+  /** Several marks at one place sit side by side: this is the mark's place in that row. */
+  slot: number;
+  at: Pt;
+  text: string;
+  title: string;
+}
+
+const GLYPHS: Partial<Record<SketchConstraint["kind"], [string, string]>> = {
+  horizontal: ["H", "Horizontal"],
+  vertical: ["V", "Vertical"],
+  parallel: ["∥", "Parallel"],
+  perpendicular: ["⊥", "Perpendicular"],
+  tangent: ["T", "Tangent"],
+  equal: ["=", "Equal"],
+  concentric: ["◎", "Concentric"],
+  fixed: ["⊡", "Fixed"],
+  midpoint: ["M", "Midpoint"],
+  coincident: ["○", "On the curve"],
+};
+
+/** The marks of every constraint without a value, at each line's middle, each curve's top, or each point. */
+export function constraintGlyphs(sketch: SketchData): ConstraintGlyph[] {
+  const out: ConstraintGlyph[] = [];
+  const slots = new Map<string, number>();
+  const place = (id: number, at: Pt | null, mark: [string, string]) => {
+    if (!at) return;
+    const key = `${at[0].toFixed(3)},${at[1].toFixed(3)}`;
+    const slot = slots.get(key) ?? 0;
+    slots.set(key, slot + 1);
+    out.push({ id, slot, at, text: mark[0], title: `${mark[1]}. Click to select it. Delete removes it.` });
+  };
+  const entityAt = (id: number): Pt | null => {
+    const ends = lineEnds(sketch, id);
+    if (ends) return [(ends[0][0] + ends[1][0]) / 2, (ends[0][1] + ends[1][1]) / 2];
+    const circle = entityCircle(sketch, id);
+    return circle ? [circle.centre[0], circle.centre[1] + circle.radius] : null;
+  };
+  for (const constraint of parseConstraints(sketch)) {
+    const mark = GLYPHS[constraint.kind];
+    if (!mark || "value" in constraint) continue;
+    const ids = namedIds(constraint);
+    for (const entity of ids.entities) place(constraint.id, entityAt(entity), mark);
+    if (ids.entities.length === 0) for (const point of ids.points) place(constraint.id, sketchPoint(sketch, point)?.at ?? null, mark);
+  }
+  return out;
 }
 
 export function dimensionLabels(sketch: SketchData): DimLabel[] {
@@ -209,7 +345,7 @@ export function dimensionLabels(sketch: SketchData): DimLabel[] {
     if (!at) continue;
     const raw = sketch.dims?.find((dim) => dim.id === constraint.id);
     const expr = typeof raw?.expr === "string" && raw.expr.trim() ? raw.expr : undefined;
-    labels.push({ id: constraint.id, text: labelText(constraint), at, title: labelTitle(constraint), ...(expr ? { expr } : {}) });
+    labels.push({ id: constraint.id, text: labelText(constraint), at, title: labelTitle(constraint), spoken: labelSpoken(constraint), ...(expr ? { expr } : {}) });
   }
   return labels;
 }
@@ -295,6 +431,7 @@ function namedIds(constraint: SketchConstraint): { entities: number[]; points: n
   }
   if (constraint.kind === "fixed") return { entities: [], points: [constraint.point] };
   if (constraint.kind === "midpoint") return { entities: [constraint.line], points: [constraint.point] };
+  if (constraint.kind === "coincident") return { entities: [constraint.entity], points: [constraint.point] };
   if (constraint.kind === "distance" && "point" in constraint && "line" in constraint) {
     return { entities: [constraint.line], points: [constraint.point] };
   }
@@ -307,6 +444,8 @@ function namedIds(constraint: SketchConstraint): { entities: number[]; points: n
 
 interface Draft {
   constraint?: SketchConstraint;
+  /** More of the same kind, one for each further line selected. */
+  more?: SketchConstraint[];
   extras?: number[];
   coincide?: [number, number];
   error?: string;
@@ -321,7 +460,14 @@ function fromSelection(sketch: SketchData, tool: ConstrainTool, selection: { ent
   });
   const points = selection.points.filter((id) => sketchPoint(sketch, id));
   if (tool === "horizontal" || tool === "vertical") {
-    if (lines.length === 1) return { constraint: { id: 0, kind: tool, line: lines[0]! } };
+    // Every selected line that is not already this way takes it, as Fusion does with several lines selected.
+    const already = new Set(parseConstraints(sketch).flatMap((item) => (item.kind === tool && "line" in item ? [item.line] : [])));
+    const fresh = lines.filter((id) => !already.has(id));
+    if (lines.length >= 1 && fresh.length === 0) return { error: tool === "horizontal" ? "Those lines are already horizontal." : "Those lines are already vertical." };
+    if (fresh.length >= 1) {
+      const [first, ...rest] = fresh.map((line): SketchConstraint => ({ id: 0, kind: tool, line }));
+      return { constraint: first!, more: rest };
+    }
     if (points.length === 2) return { constraint: { id: 0, kind: tool, a: points[0]!, b: points[1]! } };
     return { hint: tool === "horizontal" ? "Horizontal needs a line, or two points." : "Vertical needs a line, or two points." };
   }
@@ -367,7 +513,15 @@ function fromSelection(sketch: SketchData, tool: ConstrainTool, selection: { ent
   }
   if (tool === "coincident") {
     if (points.length >= 2 && points[0] !== points[1]) return { coincide: [points[0]!, points[1]!] };
-    return { hint: "Coincident needs two points." };
+    // A point and a curve: the point stays on the line, circle or arc, anywhere along it.
+    const curve = selection.entities.find((id) => {
+      const entity = sketchEntity(sketch, id);
+      if (!entity || entity.kind === "spline" || points.length !== 1) return false;
+      const ends = entity.kind === "circle" ? [entity.centre] : [entity.a, entity.b];
+      return !ends.includes(points[0]!);
+    });
+    if (points.length === 1 && curve != null) return { constraint: { id: 0, kind: "coincident", point: points[0]!, entity: curve } };
+    return { hint: "Coincident needs two points, or a point and a line, circle or arc." };
   }
   if (tool === "distance") {
     if (points.length >= 2) return draftOf(distancePoints(sketch, points[0]!, points[1]!), "Those points are missing.");
@@ -404,11 +558,36 @@ function draftOf(constraint: SketchConstraint | null, error: string): Draft {
   return constraint ? { constraint } : { error };
 }
 
-function commitAdded(sketch: SketchData, constraint: SketchConstraint, extras: readonly number[]): ConstrainBuild {
-  let next = addOne(sketch, constraint);
+function commitAdded(sketch: SketchData, constraint: SketchConstraint, extras: readonly number[], more: readonly SketchConstraint[] = []): ConstrainBuild {
+  // A point put on a curve moves onto it first, so the solve starts met and the curve stays where it is.
+  let next = addOne(constraint.kind === "coincident" ? ontoCurve(sketch, constraint.point, constraint.entity) : sketch, constraint);
   const focus = "value" in constraint ? next.id : null;
   for (const point of extras) next = { sketch: addOne(next.sketch, { id: 0, kind: "fixed", point }).sketch, id: next.id };
-  return { sketch: solveKeeping(sketch, next.sketch), focus };
+  for (const extra of more) next = { sketch: addOne(next.sketch, extra).sketch, id: next.id };
+  const solved = solveOrRefuse(sketch, next.sketch);
+  if (!solved) return { error: ADD_CONFLICT };
+  return { sketch: solved, focus };
+}
+
+/** `point` moved to the nearest place on the line through `entity`, or on its circle. */
+function ontoCurve(sketch: SketchData, point: number, entity: number): SketchData {
+  const at = sketchPoint(sketch, point)?.at;
+  if (!at || sketchPoint(sketch, point)?.fixed) return sketch;
+  let to: Pt | null = null;
+  const ends = lineEnds(sketch, entity);
+  if (ends) {
+    const dir = unit(sub(ends[1], ends[0]));
+    if (dir) {
+      const along = (at[0] - ends[0][0]) * dir[0] + (at[1] - ends[0][1]) * dir[1];
+      to = [ends[0][0] + dir[0] * along, ends[0][1] + dir[1] * along];
+    }
+  } else {
+    const circle = entityCircle(sketch, entity);
+    const dir = circle ? unit(sub(at, circle.centre)) : null;
+    if (circle && dir) to = [circle.centre[0] + dir[0] * circle.radius, circle.centre[1] + dir[1] * circle.radius];
+  }
+  if (!to) return sketch;
+  return { ...sketch, points: sketch.points.map((item) => (item.id === point ? { ...item, at: to! } : item)) };
 }
 
 function addOne(sketch: SketchData, constraint: SketchConstraint): { sketch: SketchData; id: number } {
@@ -579,6 +758,13 @@ function labelText(constraint: SketchConstraint): string {
   if (constraint.kind === "diameter") return `⌀${text}`;
   if (constraint.kind === "radius") return `R${text}`;
   return text;
+}
+
+function labelSpoken(constraint: SketchConstraint): string {
+  const value = formatDim("value" in constraint && typeof constraint.value === "number" ? constraint.value : 0);
+  if (constraint.kind === "angle") return `Angle ${value}°`;
+  const noun = constraint.kind === "diameter" ? "Diameter" : constraint.kind === "radius" ? "Radius" : constraint.kind === "distance" ? "Distance" : "Length";
+  return `${noun} ${value} mm`;
 }
 
 function labelTitle(constraint: SketchConstraint): string {

@@ -152,7 +152,7 @@ test("three sketch points become one group of holes, and History Edit changes th
 
   await page.locator("[data-sketch-menu=draw]").click();
   await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "circle");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   const view = (await canvas.boundingBox())!;
   const spots = [
     { x: view.x + view.width * 0.42, y: view.y + view.height * 0.48 },
@@ -163,7 +163,7 @@ test("three sketch points become one group of holes, and History Edit changes th
   await expect(canvas).toHaveAttribute("data-sketch-kinds", "circle,circle,circle");
 
   await page.getByRole("button", { name: "Select", exact: true }).click();
-  await expect(canvas).toHaveAttribute("data-sketch-tool", "select");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "select");
   await expect.poll(async () => ((await canvas.getAttribute("data-sketch-hits")) ?? "").split(" ").filter(Boolean).length).toBe(3);
   const hits = ((await canvas.getAttribute("data-sketch-hits")) ?? "").split(" ").filter(Boolean).map((item) => {
     const [, xy] = item.split(":");
@@ -183,6 +183,12 @@ test("three sketch points become one group of holes, and History Edit changes th
   await expect(page.locator("label[data-hole=single]").first()).toBeHidden();
   await expect(canvas).toHaveAttribute("data-sketch-holes", "3");
   await expect.poll(() => toolbarFits(page)).toBe(true);
+  // A size that cannot drill is said in the app, and the modeler is not asked.
+  const before = tree.calls.length;
+  await page.locator("#modelHoleR").fill("0");
+  await expect(page.locator("#modelReadout")).toContainText("A hole needs a radius above 0.");
+  await page.waitForTimeout(500);
+  expect(tree.calls.slice(before).filter((call) => call.call === "probe")).toHaveLength(0);
   await page.locator("#modelHoleR").fill("2");
   await page.locator("#modelHoleD").fill("8");
   await expect(page.locator("#modelApply")).toBeEnabled();
@@ -197,8 +203,14 @@ test("three sketch points become one group of holes, and History Edit changes th
   expect(applied.source?.kind).toBe("sketchHoles");
   expect(applied.source?.points).toHaveLength(3);
 
-  // The open sketch's sentence covers the readout. Closing it shows the solid's volume.
-  await page.locator("[data-sketch-finish]").click();
+  // The holes are the sketch's feature: the sketch closes, and Undo takes the holes back, not a circle.
+  await expect(canvas).toHaveAttribute("data-sketch", "pinned");
+  await expect(page.locator("#modelReadout")).toContainText(shownVolume(4000 - 3 * Math.PI * 4 * 8));
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#modelReadout")).toContainText(shownVolume(4000));
+  await expect(canvas).toHaveAttribute("data-sketch", "pinned");
+  await page.keyboard.press("Control+y");
+  await expect(page.locator("#modelReadout")).toContainText(shownVolume(4000 - 3 * Math.PI * 4 * 8));
   for (let guard = 0; guard < 6 && (await canvas.getAttribute("data-sketch")) !== "off"; guard += 1) {
     const discard = page.locator("[data-sketch-discard]");
     if ((await discard.count()) === 0) break;

@@ -76,6 +76,7 @@ if (arc && arc.kind === "arc") {
   const sketch = activeSketch(editor)!;
   const built = arcFrom3(sketchPoint(sketch, arc.a)!.at, arc.through, sketchPoint(sketch, arc.b)!.at);
   near("the arc passes through the third click", built ? arcPoint(built, 0.5)[1] : 0, 5, 1e-6);
+  eq("and runs from the first click to the second", [sketchPoint(sketch, arc.a)!.at, sketchPoint(sketch, arc.b)!.at], [[0, 0], [10, 0]]);
 }
 editor = open("line");
 editor = click(editor, [0, 0]);
@@ -152,7 +153,7 @@ const before = activeSketch(editor)!;
 void cross(before);
 editor = click(editor, [8, 0]);
 const trimmed = activeSketch(editor)!;
-check("trimming drops the clicked end", trimmed.entities.length === before.entities.length);
+check("trimming keeps both lines, one of them shorter", trimmed.entities.length === before.entities.length && trimmed.entities.every((entity) => entity.kind === "line"));
 const kept = trimmed.entities.filter((entity) => entity.kind === "line").map((entity) => {
   if (entity.kind !== "line") return null;
   const a = sketchPoint(trimmed, entity.a)?.at;
@@ -172,6 +173,9 @@ const raised = activeSketch(editor)!.entities.filter((entity) => entity.kind ===
 check("typing an offset distance adds a parallel line", raised.length === 2);
 const heights = raised.map((entity) => (entity.kind === "line" ? sketchPoint(activeSketch(editor)!, entity.a)?.at[1] : 0));
 check("the new line sits the typed distance to the left", heights.some((y) => Math.abs((y ?? 0) - 3) < 1e-6), JSON.stringify(heights));
+const copy = raised.find((entity) => entity.kind === "line" && Math.abs((sketchPoint(activeSketch(editor)!, entity.a)?.at[1] ?? 0) - 3) < 1e-6);
+const copyEnds = copy && copy.kind === "line" ? [sketchPoint(activeSketch(editor)!, copy.a)!.at[0], sketchPoint(activeSketch(editor)!, copy.b)!.at[0]].sort((a, b) => a - b) : [];
+eq("and spans the same run, 0 to 10", copyEnds, [0, 10]);
 
 editor = open("line");
 editor = click(editor, [0, 0]);
@@ -189,7 +193,10 @@ editor = commitSizes(editor, [2]);
 const rounded = activeSketch(editor)!;
 check("typing a radius adds the corner arc", rounded.entities.some((entity) => entity.kind === "arc"), JSON.stringify(rounded.entities.map((entity) => entity.kind)));
 const round = rounded.entities.find((entity) => entity.kind === "arc");
-if (round && round.kind === "arc") near("the arc bulges into the corner", round.through[0], 2 - Math.SQRT2, 1e-6);
+if (round && round.kind === "arc") {
+  near("the arc bulges into the corner", round.through[0], 2 - Math.SQRT2, 1e-6);
+  eq("and meets the lines where they were cut back, 2 from the corner", [sketchPoint(rounded, round.a)!.at, sketchPoint(rounded, round.b)!.at].map((at) => at.map((v) => Math.round(v * 1e6) / 1e6)).sort(), [[0, 2], [2, 0]]);
+}
 
 editor = open("line");
 editor = click(editor, [0, 0]);
@@ -218,6 +225,37 @@ editor = click(editor, [0, 2]);
 eq("using the outline copies every outline segment", activeSketch(editor)?.entities.length, 3);
 editor = click(editor, [3, 0]);
 check("using the same edge again says so", sketchReadout(editor).includes("already in the sketch"));
+
+// Use on a curved edge copies the curve, and on the outline only the loop that was clicked.
+{
+  type P = [number, number];
+  const ring = (cx: number, cy: number, r: number, from: number, to: number, count: number): P[] => Array.from({ length: count + 1 }, (_, k) => [cx + r * Math.cos(from + ((to - from) * k) / count), cy + r * Math.sin(from + ((to - from) * k) / count)] as P);
+  const pieces = (points: P[], extra: Record<string, unknown>) => points.slice(1).map((b, i) => ({ a: points[i]!, b, ...extra }));
+  const square = (x: number, size: number): P[] => [[x, x], [x + size, x], [x + size, x + size], [x, x + size], [x, x]];
+  const curved = {
+    segments: [
+      ...pieces(ring(30, 0, 5, 0, 2 * Math.PI, 32), { source: "edge" as const, edge: 0 }),
+      ...pieces(ring(60, 0, 8, 0, Math.PI / 2, 8), { source: "edge" as const, edge: 1 }),
+      ...pieces(square(0, 20), { source: "outline" as const }),
+      ...pieces(square(5, 4), { source: "outline" as const }),
+    ],
+    vertices: [],
+  };
+  let used = withRefs(open("use"), curved);
+  used = click(used, [35, 0]);
+  const circles = activeSketch(used)!.entities.filter((entity) => entity.kind === "circle");
+  eq("a circular edge is one circle, not 32 lines", activeSketch(used)!.entities.map((entity) => entity.kind), ["circle"]);
+  near("of the edge's radius", circles[0]?.kind === "circle" ? circles[0].radius : 0, 5, 1e-6);
+  used = click(used, [60 + 8 * Math.cos(Math.PI / 4), 8 * Math.sin(Math.PI / 4)]);
+  eq("a quarter-circle edge is one arc", activeSketch(used)!.entities.map((entity) => entity.kind), ["circle", "arc"]);
+  used = click(used, [10, 0]);
+  eq("the outer outline is its four sides, not the hole's too", activeSketch(used)!.entities.map((entity) => entity.kind), ["circle", "arc", "line", "line", "line", "line"]);
+  used = click(used, [5, 7]);
+  eq("and a click on the hole copies the hole", activeSketch(used)!.entities.length, 10);
+  const decagon = { segments: pieces(ring(0, 0, 10, 0, 2 * Math.PI, 10), { source: "outline" as const }), vertices: [] };
+  const sides = click(withRefs(open("use"), decagon), [(10 + 10 * Math.cos(Math.PI / 5)) / 2, (10 * Math.sin(Math.PI / 5)) / 2]);
+  eq("a decagon outline stays ten sides, not a circle", activeSketch(sides)!.entities.map((entity) => entity.kind), Array(10).fill("line"));
+}
 
 editor = open("line");
 eq("C switches to the circle without leaving the sketch", sketchKey(editor, "c", { ctrl: false, meta: false, shift: false })?.tool, "circle");

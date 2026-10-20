@@ -23,6 +23,8 @@ export type SketchConstraint =
   | { id: number; kind: "tangent"; a: number; b: number; side?: 1 | -1; inner?: boolean }
   | { id: number; kind: "fixed"; point: number }
   | { id: number; kind: "midpoint"; point: number; line: number }
+  /** A point on a line (anywhere along it), or on a circle or an arc's circle. */
+  | { id: number; kind: "coincident"; point: number; entity: number }
   | { id: number; kind: "distance"; a: number; b: number; value: number }
   | { id: number; kind: "distance"; point: number; line: number; value: number; side: 1 | -1 }
   | { id: number; kind: "length"; line: number; value: number }
@@ -68,10 +70,16 @@ export function hasSolvableConstraints(sketch: SketchData): boolean {
   return parseConstraints(sketch).length > 0;
 }
 
+/** Sketches are replaced, never changed in place, so a status is read once per sketch: the view asks several times per paint. */
+const statusOf = new WeakMap<SketchData, ConstraintStatus | null>();
+
 export function constraintStatus(sketch: SketchData): ConstraintStatus | null {
+  const known = statusOf.get(sketch);
+  if (known !== undefined) return known;
   const parsed = parseConstraints(sketch);
-  if (parsed.length === 0) return null;
-  return analyse(sketch, parsed).status;
+  const status = parsed.length === 0 ? null : analyse(sketch, parsed).status;
+  statusOf.set(sketch, status);
+  return status;
 }
 
 /** Moves `ids` by `delta`. With no solvable constraint this is a plain translation, fixed points included as immovable. */
@@ -89,7 +97,28 @@ export function dragSketch(sketch: SketchData, ids: readonly number[], delta: Pt
   }
   let next = translatePoints(sketch, plain, delta);
   if (bound.length === 0 || (delta[0] === 0 && delta[1] === 0)) return next;
-  return walkDrag(next, bound, delta, parsed);
+  // Only the constraints that reach the dragged points can move: the rest of the sketch stays as it is, solved.
+  return walkDrag(next, bound, delta, reaching(next, parsed, bound));
+}
+
+/** The constraints joined to `ids` through shared points, so a drag solves the part it moves and not the whole sketch. */
+function reaching(sketch: SketchData, constraints: readonly SketchConstraint[], ids: readonly number[]): SketchConstraint[] {
+  const pointsOf = constraints.map((constraint) => referencedPoints(sketch, [constraint]));
+  const reached = new Set(ids);
+  const taken = new Set<number>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    constraints.forEach((_, index) => {
+      if (taken.has(index)) return;
+      const points = pointsOf[index]!;
+      if (![...points].some((id) => reached.has(id))) return;
+      taken.add(index);
+      for (const id of points) reached.add(id);
+      grew = true;
+    });
+  }
+  return constraints.filter((_, index) => taken.has(index));
 }
 
 export function solveSketch(sketch: SketchData): SolveResult {
@@ -97,6 +126,10 @@ export function solveSketch(sketch: SketchData): SolveResult {
   if (parsed.length === 0) {
     return { ran: false, sketch, ok: true, dof: 0, fullyDefined: false, redundant: [], conflicting: [], residual: 0 };
   }
+  return solveWith(sketch, parsed);
+}
+
+function solveWith(sketch: SketchData, parsed: readonly SketchConstraint[]): SolveResult {
   const locked = lockFixed(sketch, parsed);
   const solved = levenberg(locked, parsed);
   const written = writeState(locked, solved.x, solved.slots, parsed);
@@ -136,6 +169,12 @@ function parseConstraint(raw: Dimension): SketchConstraint | null {
     const point = num("point");
     if (point == null || !Number.isInteger(point)) return null;
     return { id, kind, point };
+  }
+  if (kind === "coincident") {
+    const point = num("point");
+    const entity = num("entity");
+    if (point == null || entity == null || !Number.isInteger(point) || !Number.isInteger(entity)) return null;
+    return { id, kind, point, entity };
   }
   if (kind === "midpoint") {
     const point = num("point");
@@ -327,7 +366,10 @@ function referencedPoints(sketch: SketchData, constraints: readonly SketchConstr
         take(constraint.b);
       }
     } else if (constraint.kind === "fixed") take(constraint.point);
-    else if (constraint.kind === "midpoint") {
+    else if (constraint.kind === "coincident") {
+      take(constraint.point);
+      takeEntity(constraint.entity);
+    } else if (constraint.kind === "midpoint") {
       take(constraint.point);
       takeEntity(constraint.line);
     } else if (constraint.kind === "distance" && "point" in constraint) {
@@ -355,7 +397,7 @@ function radiusUsers(sketch: SketchData, constraint: SketchConstraint): number[]
   if (constraint.kind === "equal" || constraint.kind === "tangent") {
     consider(constraint.a);
     consider(constraint.b);
-  } else if ((constraint.kind === "radius" || constraint.kind === "diameter") && sketchEntity(sketch, constraint.entity)?.kind === "circle") {
+  } else if ((constraint.kind === "radius" || constraint.kind === "diameter" || constraint.kind === "coincident") && sketchEntity(sketch, constraint.entity)?.kind === "circle") {
     out.push(constraint.entity);
   }
   return out;
@@ -369,7 +411,7 @@ function arcUsers(sketch: SketchData, constraint: SketchConstraint): number[] {
   if (constraint.kind === "equal" || constraint.kind === "tangent" || constraint.kind === "concentric") {
     consider(constraint.a);
     consider(constraint.b);
-  } else if (constraint.kind === "radius" || constraint.kind === "diameter") consider(constraint.entity);
+  } else if (constraint.kind === "radius" || constraint.kind === "diameter" || constraint.kind === "coincident") consider(constraint.entity);
   return out;
 }
 
@@ -451,6 +493,19 @@ function pushResidual(sketch: SketchData, geom: Geom, constraint: SketchConstrai
   }
   if (constraint.kind === "tangent") {
     pushTangent(sketch, geom, constraint, rows, lineEnds, circleAt);
+    return;
+  }
+  if (constraint.kind === "coincident") {
+    const point = geom.point(constraint.point);
+    if (!point) return;
+    const line = lineEnds(constraint.entity);
+    if (line) {
+      const signed = signedDistance(line[0], line[1], point);
+      if (signed != null) rows.push(signed);
+      return;
+    }
+    const circle = circleAt(constraint.entity);
+    if (circle) rows.push(dist(point, circle.centre) - circle.radius);
     return;
   }
   if (constraint.kind === "midpoint") {
@@ -641,7 +696,12 @@ function dampStep(j: number[][], r: number[], lambda: number): number[] | null {
       for (let other = 0; other < n; other += 1) a[col]![other] += (jr[col] ?? 0) * (jr[other] ?? 0);
     }
   }
-  for (let col = 0; col < n; col += 1) a[col]![col] += lambda * Math.max(a[col]![col] ?? 0, 1e-8);
+  // Each column is damped by at least the mean of the diagonal. A slot one constraint barely reads (a point's y on a
+  // nearly level radius) otherwise takes a huge step, and the solve stalls short of a point on a circle.
+  let trace = 0;
+  for (let col = 0; col < n; col += 1) trace += a[col]![col] ?? 0;
+  const floor = Math.max(trace / n, 1e-8);
+  for (let col = 0; col < n; col += 1) a[col]![col] += lambda * Math.max(a[col]![col] ?? 0, floor);
   const solved = solveLinear(a, g.map((value) => -value));
   return solved;
 }
@@ -698,12 +758,16 @@ function writeState(sketch: SketchData, x: number[], slots: readonly Slot[], con
   return lockFixed({ ...sketch, points, entities }, constraints);
 }
 
+/**
+ * Degrees of freedom, and which constraints repeat or fight the others. The Jacobian has a column only for the numbers a
+ * constraint reads (any other column is zero and adds no rank), and the rank grows one constraint at a time against an
+ * orthonormal basis of the rows already taken, instead of an eigen-solve of the whole system twice per constraint.
+ */
 function analyse(sketch: SketchData, constraints: readonly SketchConstraint[]): { status: ConstraintStatus; residual: number } {
   const geom = new Geom(sketch);
   const built = residuals(sketch, geom, constraints);
-  const slots = geomSlots(sketch);
+  const slots = slotsFor(sketch, constraints);
   const j = jacobian(sketch, constraints, geom, geom.pack(slots), slots);
-  const rankAll = rankOf(j);
   const geomN = geometricDof(sketch);
   const redundant: number[] = [];
   const conflicting: number[] = [];
@@ -717,16 +781,16 @@ function analyse(sketch: SketchData, constraints: readonly SketchConstraint[]): 
     if (seenFixed.has(constraint.point)) redundant.push(constraint.id);
     else seenFixed.add(constraint.point);
   }
-  let accepted: number[] = [];
+  const basis = new RowBasis(j);
   for (const group of built.groups) {
-    const trial = accepted.concat(group.rows);
-    const nextRank = rankOf(rowsOf(j, trial));
     const error = groupError(built.rows, group.rows);
-    if (nextRank > rankOf(rowsOf(j, accepted))) accepted = trial;
-    else if (error <= 1e-4) redundant.push(group.id);
+    if (basis.take(group.rows)) {
+      // Adds freedom it removes: taken.
+    } else if (error <= 1e-4) redundant.push(group.id);
     else conflicting.push(group.id);
     if (error > 1e-4 && !conflicting.includes(group.id)) conflicting.push(group.id);
   }
+  const rankAll = basis.rank;
   for (const constraint of constraints) {
     if (constraint.kind === "fixed") continue;
     const group = built.groups.find((item) => item.id === constraint.id);
@@ -741,17 +805,53 @@ function analyse(sketch: SketchData, constraints: readonly SketchConstraint[]): 
   };
 }
 
-function geomSlots(sketch: SketchData): Slot[] {
-  const slots: Slot[] = [];
-  for (const point of sketch.points) {
-    if (point.fixed) continue;
-    slots.push({ kind: "px", id: point.id }, { kind: "py", id: point.id });
+/**
+ * An orthonormal basis of Jacobian rows, grown by Gram-Schmidt (twice, for round-off). A row adds to the rank when
+ * what is left of it outside the basis is above the tolerance, scaled as the eigenvalue test was: 1e-8 of the largest
+ * squared row norm.
+ */
+class RowBasis {
+  private vectors: number[][] = [];
+  private readonly tolSq: number;
+  private readonly j: number[][];
+
+  constructor(j: number[][]) {
+    this.j = j;
+    let largest = 1;
+    for (const row of j) largest = Math.max(largest, dotN(row, row));
+    this.tolSq = RANK_TOL * largest;
   }
-  for (const entity of sketch.entities) {
-    if (entity.kind === "circle") slots.push({ kind: "radius", id: entity.id });
-    if (entity.kind === "arc") slots.push({ kind: "sagitta", id: entity.id });
+
+  get rank(): number {
+    return this.vectors.length;
   }
-  return slots;
+
+  /** Add the rows' independent parts. True when at least one added to the rank. */
+  take(rows: readonly number[]): boolean {
+    let added = false;
+    for (const index of rows) {
+      const left = (this.j[index] ?? []).slice();
+      for (let pass = 0; pass < 2; pass += 1) {
+        for (const q of this.vectors) {
+          const along = dotN(q, left);
+          if (along === 0) continue;
+          for (let k = 0; k < left.length; k += 1) left[k] -= along * q[k]!;
+        }
+      }
+      const size = dotN(left, left);
+      if (!(size > this.tolSq)) continue;
+      const length = Math.sqrt(size);
+      this.vectors.push(left.map((value) => value / length));
+      added = true;
+    }
+    return added;
+  }
+}
+
+function dotN(a: readonly number[], b: readonly number[]): number {
+  let sum = 0;
+  for (let k = 0; k < a.length; k += 1) sum += a[k]! * (b[k] ?? 0);
+  return sum;
 }
 
 function geometricDof(sketch: SketchData): number {
@@ -761,9 +861,6 @@ function geometricDof(sketch: SketchData): number {
   return points + circles + arcs;
 }
 
-function rowsOf(j: number[][], rows: number[]): number[][] {
-  return rows.map((row) => j[row] ?? []);
-}
 
 function groupError(rows: number[], indexes: number[]): number {
   let sum = 0;
@@ -771,20 +868,6 @@ function groupError(rows: number[], indexes: number[]): number {
   return Math.sqrt(sum);
 }
 
-function rankOf(j: number[][]): number {
-  const n = j[0]?.length ?? 0;
-  const m = j.length;
-  if (n === 0 || m === 0) return 0;
-  const a = Array.from({ length: n }, () => Array(n).fill(0));
-  for (let row = 0; row < m; row += 1) {
-    for (let col = 0; col < n; col += 1) {
-      for (let other = 0; other < n; other += 1) a[col]![other] += (j[row]?.[col] ?? 0) * (j[row]?.[other] ?? 0);
-    }
-  }
-  const values = jacobiValues(a);
-  const scale = Math.max(1, ...values.map((value) => Math.abs(value)));
-  return values.filter((value) => value > RANK_TOL * scale).length;
-}
 
 function nullBasis(j: number[][]): number[][] {
   const n = j[0]?.length ?? 0;
@@ -805,9 +888,6 @@ function nullBasis(j: number[][]): number[][] {
   return basis;
 }
 
-function jacobiValues(a: number[][]): number[] {
-  return jacobi(a).values;
-}
 
 function jacobi(input: number[][]): { values: number[]; vectors: number[][] } {
   const n = input.length;
@@ -883,7 +963,7 @@ function walkDrag(sketch: SketchData, ids: readonly number[], delta: Pt, constra
     const scale = stepScale(desired, motion, weighted);
     const moved = x.map((value, index) => value + guardStep(slots[index]!, value, (motion[index] ?? 0) * scale));
     const trial = writeState(current, moved, slots, constraints);
-    const cleaned = solveSketch(trial);
+    const cleaned = solveWith(trial, constraints);
     if (!cleaned.ok) break;
     current = cleaned.sketch;
   }

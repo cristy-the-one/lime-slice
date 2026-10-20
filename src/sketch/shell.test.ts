@@ -3,7 +3,7 @@
  * picking, and Line and Rectangle with typed sizes and undo.
  */
 import { gridSpacing } from "../interact/snap.ts";
-import { frameOf, lookAtFrame, mmPerPixel, originFrame, planeOf, planeWindow, rayOnPlane, rayOnQuad, SKETCH_ANIM_MS } from "./frame.ts";
+import { frameOf, lookAtFrame, tiltedAtFrame, mmPerPixel, originFrame, planeOf, planeWindow, rayOnPlane, rayOnQuad, SKETCH_ANIM_MS } from "./frame.ts";
 import { gridLines } from "./grid.ts";
 import { boxCrosses, boxPick, hitSketch } from "./hit.ts";
 import { addLine, emptySketch, sketchPoint } from "./model.ts";
@@ -58,6 +58,13 @@ check("a frame round-trips through a sketch plane", yzBack.w.every((value, i) =>
 const looked = lookAtFrame(xy, [10, 4, 8], 20, 40);
 check("the camera sits on the normal and looks at the plane", looked.position[2] > looked.target[2] && looked.target[0] === 10 && looked.target[1] === 4 && looked.target[2] === 0);
 check("the turn onto the plane is a quarter of a second", SKETCH_ANIM_MS === 250);
+// An extrude tilts the same framing: the same target and distance, above the plane but off its normal, the normal up.
+const tilted = tiltedAtFrame(xy, [10, 4, 8], 20, 40);
+const away = (pose: { position: number[]; target: number[] }) => Math.hypot(...pose.position.map((value, i) => value - pose.target[i]!));
+check("the tilted view looks at the same point from as far", tilted.target.every((value, i) => value === looked.target[i]) && Math.abs(away(tilted) - away(looked)) < 1e-9);
+const rise = (tilted.position[2]! - tilted.target[2]!) / away(tilted);
+check("from above the plane, off its normal", rise > 0.6 && rise < 0.95, String(rise));
+eq("with the normal up", tilted.up, [0, 0, 1]);
 const hit = rayOnPlane(xy, [3, 5, 12], [0, 0, -1]);
 eq("a ray straight down meets XY", hit && [hit.uv, hit.t], [[3, 5], 12]);
 check("a quad misses a hit outside itself", rayOnQuad(xy, [30, 0, 10], [0, 0, -1], 10) == null);

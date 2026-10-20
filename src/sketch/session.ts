@@ -47,6 +47,7 @@ import {
   constrainFromPick,
   constrainReadout,
   commitDriving,
+  carryDims,
   dropConstraints,
   drivingField,
   drivingValue,
@@ -58,6 +59,7 @@ import {
   type ConstrainAction,
   type ConstrainState,
   type ConstrainTool,
+  withRectangleConstraints,
 } from "./constrain.ts";
 import { dragSketch } from "./solve.ts";
 
@@ -78,14 +80,10 @@ export interface PinnedSketch {
   sketch: SketchData;
 }
 
+/** An undo step: the drawing and the selection. A gesture in progress is not one, so undo never restarts a line. */
 interface Mark {
   sketch: SketchData;
-  chain: number[] | null;
   selection: SketchSelection;
-  /** S3 gesture, so undo puts a half-drawn spline or circle back as well. */
-  draw: DrawState;
-  /** S4 picks and the dimension being typed. */
-  constrain: ConstrainState;
 }
 
 interface Drag {
@@ -126,6 +124,8 @@ export interface SketchEditor {
   box: BoxDrag | null;
   /** 1 after Esc ended the gesture. The next Esc finishes the sketch. */
   esc: 0 | 1;
+  /** Where the button went down, for a press, drag, release that draws from the press to the release. */
+  press: { at: Pt; sx: number; sy: number } | null;
   undo: Mark[];
   redo: Mark[];
   refs: RefGeom;
@@ -175,6 +175,7 @@ export function sketchOff(): SketchEditor {
     drag: null,
     box: null,
     esc: 0,
+    press: null,
     undo: [],
     redo: [],
     refs: EMPTY_REFS,
@@ -222,6 +223,7 @@ export function enterSketch(editor: SketchEditor, plane: SketchPlane, on?: Sketc
     drag: null,
     box: null,
     esc: 0,
+    press: null,
     undo: [],
     redo: [],
     draw: freshDraw(),
@@ -238,7 +240,10 @@ export function finishSketch(editor: SketchEditor): SketchEditor {
   const cleared = clearGesture(editor);
   const sketch = activeSketch(cleared);
   if (!sketch || sketch.entities.length === 0) return discardActive(cleared);
-  const name = `Sketch ${cleared.nextName}`;
+  // A sketch reopened from its card keeps its name. A new one takes the next number.
+  const card = cleared.pinned.find((item) => item.id === cleared.active);
+  const named = !!card && card.name !== "Sketch";
+  const name = named ? card.name : `Sketch ${cleared.nextName}`;
   return {
     ...cleared,
     phase: "pinned",
@@ -250,7 +255,7 @@ export function finishSketch(editor: SketchEditor): SketchEditor {
     esc: 0,
     undo: [],
     redo: [],
-    nextName: cleared.nextName + 1,
+    nextName: named ? cleared.nextName : cleared.nextName + 1,
   };
 }
 
@@ -280,6 +285,7 @@ export function reopenSketch(editor: SketchEditor, id: number): SketchEditor {
     drag: null,
     box: null,
     esc: 0,
+    press: null,
     undo: [],
     redo: [],
     draw: idleDraw(left.draw),
@@ -342,16 +348,28 @@ export function sketchDimensions(editor: SketchEditor): SketchDimensions | null 
   return null;
 }
 
+/** One rule for every typed size: a length, width, height, diameter, radius, or across is above 0. An angle, a side count, and an offset distance, whose sign picks the side, are not sizes. */
+export const SIZE_REFUSAL = "Type a size above 0.";
+
+function refusedSize(dims: SketchDimensions | null, values: readonly number[]): boolean {
+  if (!dims || dims.kind === "dimension" || dims.kind === "offset") return false;
+  const sizes = dims.fields.map((field, index) => (field.unit === "mm" ? values[index] ?? field.value : null)).filter((value): value is number => value != null);
+  if (sizes.some((value) => !Number.isFinite(value) || value < 0)) return true;
+  // A polygon takes across corners or across flats: the other one may be left at 0.
+  if (dims.kind === "polygon") return !sizes.some((value) => value > 1e-6);
+  return sizes.some((value) => !(value > 1e-6));
+}
+
 /** Enter on the heads-up sizes. A line places its next point and stays in the polyline. A rectangle is committed. */
 export function commitSizes(editor: SketchEditor, values: readonly number[], texts?: readonly (string | null)[]): SketchEditor {
   const sketch = activeSketch(editor);
   if (!sketch || editor.phase !== "editing") return editor;
+  if (refusedSize(sketchDimensions(editor), values)) return { ...editor, draw: { ...editor.draw, note: SIZE_REFUSAL } };
   if (editor.tool === "line" && editor.chain && editor.chain.length >= 1) {
     const from = sketchPoint(sketch, editor.chain[editor.chain.length - 1]!)?.at;
     if (!from) return editor;
     const length = values[0] ?? 0;
     const angle = values[1] ?? 0;
-    if (!(length > 1e-6)) return editor;
     const rad = (angle * Math.PI) / 180;
     const at: Pt = [from[0] + length * Math.cos(rad), from[1] + length * Math.sin(rad)];
     return placeLinePoint(editor, sketch, at);
@@ -359,7 +377,6 @@ export function commitSizes(editor: SketchEditor, values: readonly number[], tex
   if (editor.tool === "rectangle" && editor.rect) {
     const width = values[0] ?? 0;
     const height = values[1] ?? 0;
-    if (!(Math.abs(width) > 1e-6) || !(Math.abs(height) > 1e-6)) return editor;
     const cursor = editor.typed ?? editor.cursor ?? editor.rect.at;
     const at = rectCorner(editor.rect.at, cursor, width, height, editor.rect.fromCentre);
     return placeRectangle(editor, sketch, editor.rect.at, at, editor.rect.fromCentre);
@@ -396,10 +413,30 @@ export function previewSizes(editor: SketchEditor, values: readonly number[]): S
   return editor;
 }
 
+/** Tools that place a point on each click. A press, drag, release with one of these clicks at the press first. */
+const CLICK_TOOLS = new Set<SketchTool>(["line", "circle", "arc", "polygon", "slot"]);
+
 export function sketchPointer(editor: SketchEditor, ev: SketchPointer, env: SketchEnv): SketchEditor {
   if (editor.phase !== "editing") return editor;
   const sketch = activeSketch(editor);
   if (!sketch) return editor;
+  const press = editor.press;
+  if (ev.phase === "up" && press && CLICK_TOOLS.has(editor.tool) && !gestureOpen(editor) && (ev.sx - press.sx) ** 2 + (ev.sy - press.sy) ** 2 > 16) {
+    // Pressed on one spot and let go on another, with nothing drawn yet: the press is the first point, the release the next.
+    const first = pointerStep({ ...editor, press: null }, sketch, { ...ev, uv: press.at, sx: press.sx, sy: press.sy, double: false }, env);
+    const live = activeSketch(first);
+    return live ? pointerStep({ ...first, press: null }, live, ev, env) : first;
+  }
+  const next = pointerStep(editor, sketch, ev, env);
+  return { ...next, press: ev.phase === "down" ? { at: next.cursor ?? ev.uv, sx: ev.sx, sy: ev.sy } : ev.phase === "up" ? null : next.press };
+}
+
+/** A line, rectangle, or drawing tool already has its first point down. */
+function gestureOpen(editor: SketchEditor): boolean {
+  return (editor.chain?.length ?? 0) > 0 || editor.rect != null || editor.draw.gesture != null;
+}
+
+function pointerStep(editor: SketchEditor, sketch: SketchData, ev: SketchPointer, env: SketchEnv): SketchEditor {
   const snapped = snapAt(editor, sketch, ev.uv, env.mmPerPx);
   let next: SketchEditor = { ...editor, cursor: snapped.at, snap: snapped, typed: ev.phase === "move" ? null : editor.typed, esc: ev.phase === "down" ? 0 : editor.esc };
   if (ev.phase === "move") next = { ...next, hover: hitSketch(sketch, snapped.at, env.mmPerPx * 8) };
@@ -493,11 +530,12 @@ export function sketchReadout(editor: SketchEditor): string {
   const tail = snap ? ` ${snap}.` : "";
   if (editor.esc === 1 && !editor.chain && !editor.rect && !editor.draw.gesture) return `Esc again finishes the sketch.${tail}`;
   if (editor.lookAround) return `Look around is on. O locks the view for drawing.${tail}`;
+  const refused = editor.draw.note ? ` ${editor.draw.note}` : "";
   if (editor.tool === "line") {
-    return `Line. Click each point. Double-click or Esc ends it. Click the start point to close. Type a length and an angle.${tail}`;
+    return `Line. Click each point. Double-click or Esc ends it. Click the start point to close. Type a length and an angle.${refused}${tail}`;
   }
   if (editor.tool === "rectangle") {
-    return `Rectangle. Click two corners. Hold Ctrl to start from the centre. Type a width and a height.${tail}`;
+    return `Rectangle. Click two corners. Hold Ctrl to start from the centre. Type a width and a height.${refused}${tail}`;
   }
   if (isDrawTool(editor.tool)) {
     const note = editor.draw.note ? ` ${editor.draw.note}` : "";
@@ -530,7 +568,8 @@ export function rubber(editor: SketchEditor): Pt[] | null {
 function selectPointer(editor: SketchEditor, sketch: SketchData, ev: SketchPointer, env: SketchEnv, at: Pt): SketchEditor {
   if (ev.phase === "down") {
     const hit = hitSketch(sketch, at, env.mmPerPx * 8);
-    if (ev.shift) {
+    // Shift on a piece toggles it. Shift on empty space starts a box that adds to the selection.
+    if (ev.shift && (hit.point != null || hit.entity != null)) {
       return { ...editor, selection: toggleSelection(editor.selection, hit), drag: null, box: null };
     }
     if (hit.point != null || hit.entity != null) {
@@ -553,7 +592,7 @@ function selectPointer(editor: SketchEditor, sketch: SketchData, ev: SketchPoint
     const done = { ...editor, drag: null };
     if (!drag.active) return done;
     const moved = editor.undo;
-    return { ...done, undo: [...moved, { sketch: drag.base, chain: editor.chain, selection: editor.selection, draw: cloneDraw(editor.draw), constrain: cloneConstrain(editor.constrain) }].slice(-100), redo: [] };
+    return { ...done, undo: [...moved, { sketch: drag.base, selection: { entities: [...editor.selection.entities], points: [...editor.selection.points] } }].slice(-100), redo: [] };
   }
   if (ev.phase === "up" && editor.box) {
     const box = editor.box;
@@ -575,7 +614,7 @@ function lineClick(editor: SketchEditor, sketch: SketchData, at: Pt, ev: SketchP
   }
   if (chain && chain.length >= 2) {
     const first = sketchPoint(sketch, chain[0]!)?.at;
-    if (first && Math.hypot(first[0] - at[0], first[1] - at[1]) <= Math.max(1e-4, 0)) {
+    if (first && Math.hypot(first[0] - at[0], first[1] - at[1]) <= 1e-4) {
       return closeChain(editor, sketch);
     }
   }
@@ -631,17 +670,25 @@ function placeRectangle(editor: SketchEditor, sketch: SketchData, anchor: Pt, at
     next = point.sketch;
     ids.push(point.id);
   }
+  const sides: number[] = [];
   for (let i = 0; i < 4; i += 1) {
     const line = addLine(next, ids[i]!, ids[(i + 1) % 4]!);
     next = line.sketch;
+    sides.push(line.id);
   }
+  next = withRectangleConstraints(next, sides as [number, number, number, number]);
   const placed = replaceSketch({ ...editor, rect: null, typed: null, tool: editor.tool }, next);
   return { ...placed, undo: [...editor.undo, before].slice(-100), redo: [] };
 }
 
+/** Esc ends what is in progress first: a drag (put back), a gesture, then the selection. Only then does it arm finishing. */
 function onEsc(editor: SketchEditor): SketchEditor {
+  if (editor.drag?.active) return { ...clearGesture(replaceSketch(editor, editor.drag.base)), esc: 0 };
   if (editor.chain || editor.rect || editor.drag || editor.box || editor.draw.gesture || editor.constrain.picks.length > 0 || editor.constrain.hud != null) {
     return { ...clearGesture(editor), esc: 1 };
+  }
+  if (editor.selection.entities.length > 0 || editor.selection.points.length > 0 || editor.constrain.selected != null) {
+    return { ...editor, selection: freshSelection(), constrain: { ...editor.constrain, selected: null }, esc: 0 };
   }
   if (editor.esc === 1) return finishSketch(editor);
   return { ...editor, esc: 1 };
@@ -658,7 +705,7 @@ function clearGesture(editor: SketchEditor): SketchEditor {
   const sketch = activeSketch(editor);
   const pruned = sketch ? prunePoints(sketch) : null;
   const next = pruned ? replaceSketch(editor, pruned) : editor;
-  return { ...next, chain: null, rect: null, typed: null, drag: null, box: null, draw: idleDraw(editor.draw), constrain: idleConstrain(editor.constrain) };
+  return { ...next, chain: null, rect: null, typed: null, drag: null, box: null, press: null, draw: idleDraw(editor.draw), constrain: idleConstrain(editor.constrain) };
 }
 
 function deleteSelection(editor: SketchEditor): SketchEditor {
@@ -725,24 +772,18 @@ function currentMark(editor: SketchEditor): Mark {
   const sketch = activeSketch(editor);
   return {
     sketch: sketchJson(sketch ?? emptySketch()),
-    chain: editor.chain ? [...editor.chain] : null,
     selection: { entities: [...editor.selection.entities], points: [...editor.selection.points] },
-    draw: cloneDraw(editor.draw),
-    constrain: cloneConstrain(editor.constrain),
   };
 }
 
+/** Undo and redo put the drawing back and end any gesture: the line, the size box, and the picks start fresh. */
 function applyMark(editor: SketchEditor, mark: Mark): SketchEditor {
-  return replaceSketch(
-    {
-      ...clearGesture(editor),
-      chain: mark.chain ? [...mark.chain] : null,
-      selection: { entities: [...mark.selection.entities], points: [...mark.selection.points] },
-      draw: cloneDraw(mark.draw ?? freshDraw()),
-      constrain: cloneConstrain(mark.constrain ?? freshConstrain()),
-    },
-    sketchJson(mark.sketch),
-  );
+  const sketch = sketchJson(mark.sketch);
+  const selection = {
+    entities: mark.selection.entities.filter((id) => sketch.entities.some((entity) => entity.id === id)),
+    points: mark.selection.points.filter((id) => sketch.points.some((point) => point.id === id)),
+  };
+  return replaceSketch({ ...clearGesture(editor), selection, esc: 0, constrain: freshConstrain() }, sketch);
 }
 
 function applyDrawPointer(editor: SketchEditor, sketch: SketchData, ev: SketchPointer, env: SketchEnv, at: Pt): SketchEditor {
@@ -774,7 +815,8 @@ function commitDraw(editor: SketchEditor, sketch: SketchData, values: readonly n
 
 function applyDrawResult(editor: SketchEditor, sketch: SketchData, output: { sketch: SketchData; state: DrawState; selection: SketchSelection; committed: boolean }): SketchEditor {
   let next: SketchEditor = { ...editor, draw: output.state, selection: output.selection, typed: null };
-  if (output.sketch !== sketch) next = replaceSketch(next, output.sketch);
+  // A trim, a fillet, or an offset replaces or reshapes geometry: the dimensions on it follow, or go when they cannot.
+  if (output.sketch !== sketch) next = replaceSketch(next, output.committed ? carryDims(sketch, output.sketch) : output.sketch);
   if (!output.committed) return next;
   const before = currentMark(editor);
   return { ...next, undo: [...editor.undo, before].slice(-100), redo: [], esc: 0 };
@@ -801,15 +843,6 @@ function enterKey(editor: SketchEditor): SketchEditor | null {
   return commitDraw(editor, sketch, dims.fields.map((field) => field.value));
 }
 
-function cloneConstrain(state: ConstrainState): ConstrainState {
-  return {
-    picks: state.picks.map((pick) => ({ point: pick.point, entity: pick.entity })),
-    hud: state.hud,
-    focus: state.focus,
-    selected: state.selected,
-    note: state.note,
-  };
-}
 
 function constraintClause(sketch: SketchData): string {
   const status = placedStatus(sketch);
@@ -826,7 +859,7 @@ export function applyConstraint(editor: SketchEditor, action: ConstrainAction): 
   const sketch = activeSketch(editor);
   if (!sketch) return editor;
   const built = applyConstrainAction(sketch, action, editor.selection, editor.constrain.selected);
-  if (built.sketch) return rememberConstraint(editor, built.sketch, built.focus ?? null, null);
+  if (built.sketch) return rememberConstraint(editor, built.sketch, built.focus ?? null, built.hint ?? null);
   if (action === "remove" || !isConstrainTool(action)) {
     return { ...editor, constrain: { ...editor.constrain, note: built.error ?? built.hint ?? null } };
   }
@@ -850,6 +883,13 @@ export function commitDimensionText(editor: SketchEditor, id: number, text: stri
   return rememberConstraint(editor, built.sketch, null, null);
 }
 
+/** The label lost focus without Esc: what was typed is set, as Enter would. Unchanged text only closes it. */
+export function blurDimensionText(editor: SketchEditor, id: number, text: string): SketchEditor {
+  if (editor.phase !== "editing" || (editor.constrain.hud !== id && editor.constrain.selected !== id)) return editor;
+  if (!text.trim()) return cancelDimensionEdit(editor);
+  return commitDimensionText(editor, id, text);
+}
+
 function expressionText(text: string): string {
   return plainDrivingValue(text) == null && text.trim() ? text.trim() : "";
 }
@@ -869,6 +909,13 @@ export function cancelDimensionEdit(editor: SketchEditor): SketchEditor {
 export function editDimension(editor: SketchEditor, id: number): SketchEditor {
   if (editor.phase !== "editing") return editor;
   return { ...editor, constrain: { ...editor.constrain, selected: id, hud: id, focus: id, note: null }, esc: 0 };
+}
+
+/** A click on a constraint's mark selects that constraint: Delete or Remove constraint then takes it away. */
+export function selectConstraint(editor: SketchEditor, id: number): SketchEditor {
+  if (editor.phase !== "editing") return editor;
+  const selected = editor.constrain.selected === id ? null : id;
+  return { ...editor, selection: freshSelection(), constrain: { ...editor.constrain, selected, hud: null, focus: null, note: null }, esc: 0 };
 }
 
 /** The view focused the label, so the next paint must not steal the cursor. */
@@ -913,15 +960,6 @@ function removeChosenConstraint(editor: SketchEditor, sketch: SketchData): Sketc
   return rememberConstraint(editor, built.sketch, null, null);
 }
 
-function cloneDraw(state: DrawState): DrawState {
-  return {
-    sides: state.sides,
-    note: state.note,
-    tangentArm: state.tangentArm,
-    hud: state.hud ? [...state.hud] : null,
-    gesture: state.gesture ? structuredClone(state.gesture) : null,
-  };
-}
 
 function finishOpen(editor: SketchEditor): SketchEditor {
   if (editor.phase !== "editing") return editor;
@@ -957,6 +995,7 @@ function alreadyIn(selection: SketchSelection, hit: { point: number | null; enti
   return false;
 }
 
+/** A Shift box keeps what was selected and adds what it picks. */
 function unionSelection(selection: SketchSelection, picked: SketchSelection): SketchSelection {
   return {
     entities: [...new Set([...selection.entities, ...picked.entities])],
@@ -1040,8 +1079,12 @@ export function enterSketchData(editor: SketchEditor, sketch: SketchData): Sketc
     drag: null,
     box: null,
     esc: 0,
+    press: null,
     undo: [],
     redo: [],
+    // A History Edit starts clean: no picks, no dimension being typed, and no gesture from the sketch before it.
+    draw: freshDraw(),
+    constrain: freshConstrain(),
     hotPlane: null,
     nextName: id,
   };

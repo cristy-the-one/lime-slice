@@ -20,12 +20,14 @@ import {
   dragAngle,
   edgeAxes,
   featureRevolve,
+  flipAxis,
   perpPixels,
   pickAxis,
   planeAxes,
   regionCrossesAxis,
   regionsForEdit,
   resolveExtrudeMode,
+  revolveOutlines,
   revolvePresetOf,
   revolveRing,
   signedSide,
@@ -147,8 +149,11 @@ const group = buildSketchRevolve({ sketch: two, regions: both, axis: defaultAxis
 check("disjoint regions are a group of revolves", "op" in group && isSketchRevolveGroup(group.op));
 if ("op" in group && group.op.kind === "group") {
   eq("the row names them", group.op.label, "Revolve 2 regions");
-  check("each step keeps the sketch", group.op.steps.every((step) => step.kind === "revolve" && step.sketch != null));
-  check("the engine group drops both sketches", !("sketch" in (withoutSketch(group.op) as { steps: { sketch?: unknown }[] }).steps[0]!));
+  eq("only the first step keeps the drawing", group.op.steps.map((step) => step.kind === "revolve" && step.sketch != null), [true, false]);
+  check("the engine group drops the sketch", !("sketch" in (withoutSketch(group.op) as { steps: { sketch?: unknown }[] }).steps[0]!));
+  // A third rectangle the revolve did not use: the edit picks the two it did, not every region.
+  const three = rect(30, 0, 2, 2, two);
+  eq("an edit picks the revolved regions only", regionsForEdit(three, revolveOutlines(group.op)).map((region) => Math.round(region.area)), [24, 9]);
 }
 
 eq("no solid is a new object", resolveExtrudeMode({ choice: "cut", hasSolid: false, touches: true, distance: 1, lockNew: false }), "new");
@@ -160,7 +165,7 @@ eq("the rectangle under a solid on the bed touches it", sketchTouchesSolid(groun
 const old: RevolveOp = { kind: "revolve", op: "fuse", origin: [0, 0, 0], turn: [0, 0, 0], profile: [[2, 0], [6, 0], [6, 4], [2, 4]], angleDeg: 90, axisDir: [0, 1] };
 const rebuilt = sketchForRevolve(old);
 check("a profile with no sketch becomes lines", (rebuilt?.entities.length ?? 0) === 4 && rebuilt?.entities.every((entity) => entity.kind === "line") === true);
-const again = rebuilt ? buildSketchRevolve({ sketch: rebuilt, regions: regionsForEdit(rebuilt), axis: defaultAxis(), angleDeg: 90, mode: "new" }) : { error: "no sketch" };
+const again = rebuilt ? buildSketchRevolve({ sketch: rebuilt, regions: regionsForEdit(rebuilt, revolveOutlines(old)), axis: defaultAxis(), angleDeg: 90, mode: "new" }) : { error: "no sketch" };
 check("and those lines revolve", "op" in again && again.op.kind === "revolve" && (again.op.loops?.length ?? 0) === 1);
 const preset = revolvePresetOf(old, true);
 eq("an edit of a root is a new object at the stored angle", preset && { angle: preset.angleDeg, choice: preset.choice, kind: preset.axis.kind }, { angle: 90, choice: "new", kind: "v" });
@@ -190,6 +195,14 @@ broken.nodes[1].op.sketch = { v: 2 };
 eq("a sketch this app cannot read is dropped", readSavedTree(broken)?.nodes[1]?.op, withoutSketch(withSketch));
 const loaded = read && loadedTree(read, "k2", root, "Box", null, () => undefined);
 eq("the loaded step still carries the sketch", loaded?.nodes.get(1)?.op, withSketch);
+
+// Flip turns a line axis end for end over the same stretch: a point at 2 along it is at -2 along the flipped one.
+const line = { origin: [1, 1] as [number, number], dir: [0, 1] as [number, number], kind: "line" as const, from: 0, to: 5 };
+const turned = flipAxis(line);
+eq("flip reverses the direction", turned.dir, [-0, -1]);
+eq("flip keeps the origin", turned.origin, [1, 1]);
+eq("flip covers the same stretch", [turned.from, turned.to], [-5, -0]);
+eq("two flips are the axis again", flipAxis(turned).dir, [0, 1]);
 
 if (failed > 0) {
   console.error(`${failed} failed`);

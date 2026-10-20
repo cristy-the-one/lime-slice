@@ -9,10 +9,10 @@
 import { loftOp } from "../model-request.ts";
 import type { BooleanKind, LoftDrawing, LoftOp, LoftSection, ProfileLoop as EngineLoop, ProfileSegment as EngineSegment, Vec2, Vec3 } from "../model-tree.ts";
 import { frameOf, toWorld } from "./frame.ts";
-import { arcFrom3, arcPoint } from "./geom.ts";
-import { addArc, addCircle, addLine, addSpline, emptySketch, readSketch, sketchJson, type Pt, type SketchData } from "./model.ts";
+import { addCircle, emptySketch, readSketch, sketchJson, type Pt, type SketchData } from "./model.ts";
 import { loopSignedArea, toLoops, type ProfileLoop, type Region } from "./regions.ts";
-import type { ModeChoice, ResolvedMode } from "./extrude.ts";
+import { tooManyHoles, type ModeChoice, type ResolvedMode } from "./extrude.ts";
+import { copyLoop, drawLoop, lineLoop, sampleLoopPoints, sentence } from "./loops.ts";
 
 export const COPLANAR_REFUSAL = "The loft has no volume: its sections lie in one plane.";
 export const SECTIONS_REFUSAL = "A loft needs two or more sections.";
@@ -108,6 +108,10 @@ export function buildSketchLoft(input: { picks: readonly LoftPickInput[]; ruled:
   if (input.picks.length < 2) return { error: SECTIONS_REFUSAL };
   const sections = input.picks.map((pick) => pick.section);
   if (sectionsCoplanar(sections)) return { error: COPLANAR_REFUSAL };
+  for (const section of sections) {
+    const crowded = tooManyHoles(section.loops?.length ?? 1);
+    if (crowded) return { error: crowded };
+  }
   const boolean: BooleanKind = input.mode === "new" ? "fuse" : input.mode;
   const drawing: LoftDrawing = { sketches: input.picks.map((pick) => (pick.sketch ? sketchJson(pick.sketch) : null)) };
   return { op: { ...loftOp(boolean, sections, input.ruled), drawing } };
@@ -142,13 +146,13 @@ export function sketchFromSection(section: LoftSection): SketchData | null {
   const plane = { origin: [...section.origin] as Vec3, turn: [...section.turn] as Vec3 };
   let sketch = emptySketch(plane);
   if (section.loops && section.loops.length > 0) {
-    for (const loop of section.loops) sketch = addLoop(sketch, loop);
+    for (const loop of section.loops) sketch = drawLoop(sketch, loop);
   } else if (section.profile && section.profile.length >= 3) {
-    sketch = addLoop(sketch, profileLoop(section.profile));
+    sketch = drawLoop(sketch, lineLoop(section.profile));
   } else if (section.radius != null && section.radius > 0 && (section.radiusV == null || Math.abs(section.radiusV - section.radius) < 1e-6)) {
     sketch = addCircle(sketch, [0, 0], section.radius).sketch;
   } else if (section.radius != null && section.radius > 0) {
-    sketch = addLoop(sketch, ellipseLoop(section.radius, section.radiusV ?? section.radius));
+    sketch = drawLoop(sketch, ellipseLoop(section.radius, section.radiusV ?? section.radius));
   }
   return sketch.entities.length > 0 ? sketch : null;
 }
@@ -222,7 +226,7 @@ export function readLoftDrawing(value: unknown): LoftDrawing | undefined {
       if (!Array.isArray(value.sweep.edges) || value.sweep.edges.some((edge) => typeof edge !== "number" || !Number.isInteger(edge) || edge < 0)) return undefined;
       edges = [...value.sweep.edges];
     }
-    drawing.sweep = { profile, path, scale, ...(pathSketch ? { pathSketch } : {}), ...(edges && edges.length > 0 ? { edges } : {}) };
+    drawing.sweep = { profile, path, scale, ...(value.sweep.scaleAtEnd === true ? { scaleAtEnd: true as const } : {}), ...(pathSketch ? { pathSketch } : {}), ...(edges && edges.length > 0 ? { edges } : {}) };
   }
   if (!drawing.sketches && !drawing.sweep) return undefined;
   return drawing;
@@ -268,46 +272,17 @@ function readLoops(value: unknown): EngineLoop[] | null {
   return loops;
 }
 
-function sentence(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.endsWith(".") ? trimmed : `${trimmed}.`;
-}
-
 function cloneSection(section: LoftSection): LoftSection {
   return {
     origin: [...section.origin] as Vec3,
     turn: [...section.turn] as Vec3,
-    ...(section.loops ? { loops: section.loops.map(copyEngineLoop) } : {}),
+    ...(section.loops ? { loops: section.loops.map(copyLoop) } : {}),
     ...(section.profile ? { profile: section.profile.map((point) => [point[0], point[1]] as Vec2) } : {}),
     ...(section.radius !== undefined ? { radius: section.radius } : {}),
     ...(section.radiusV !== undefined ? { radiusV: section.radiusV } : {}),
     ...(section.smooth ? { smooth: true as const } : {}),
     ...(section.corners?.length ? { corners: [...section.corners] } : {}),
   };
-}
-
-function copyEngineLoop(loop: EngineLoop): EngineLoop {
-  return {
-    start: [loop.start[0], loop.start[1]],
-    segments: loop.segments.map((segment) => {
-      if (segment.kind === "line") return { kind: "line" as const, to: [segment.to[0], segment.to[1]] as Vec2 };
-      if (segment.kind === "arc") return { kind: "arc" as const, through: [segment.through[0], segment.through[1]] as Vec2, to: [segment.to[0], segment.to[1]] as Vec2 };
-      return { kind: "spline" as const, through: segment.through.map((point) => [point[0], point[1]] as Vec2), to: [segment.to[0], segment.to[1]] as Vec2 };
-    }),
-  };
-}
-
-function copyLoop(loop: ProfileLoop): EngineLoop {
-  return copyEngineLoop(loop as EngineLoop);
-}
-
-function profileLoop(profile: readonly Vec2[]): EngineLoop {
-  const points = profile.map((point) => [point[0], point[1]] as Vec2);
-  const first = points[0] ?? [0, 0];
-  const rest = points.slice(1);
-  const last = rest[rest.length - 1];
-  if (!last || Math.hypot(last[0] - first[0], last[1] - first[1]) > 1e-6) rest.push([first[0], first[1]]);
-  return { start: [first[0], first[1]], segments: rest.map((point) => ({ kind: "line" as const, to: point })) };
 }
 
 function ellipseLoop(radius: number, radiusV: number): EngineLoop {
@@ -317,47 +292,7 @@ function ellipseLoop(radius: number, radiusV: number): EngineLoop {
     const angle = (i / count) * Math.PI * 2;
     points.push([Math.cos(angle) * radius, Math.sin(angle) * radiusV]);
   }
-  return profileLoop(points);
-}
-
-function addLoop(sketch: SketchData, loop: EngineLoop): SketchData {
-  let next = sketch;
-  let prev: Pt = [loop.start[0], loop.start[1]];
-  for (const segment of loop.segments) {
-    const to: Pt = [segment.to[0], segment.to[1]];
-    if (segment.kind === "line") next = addLine(next, prev, to).sketch;
-    else if (segment.kind === "arc") next = addArc(next, prev, to, [segment.through[0], segment.through[1]]).sketch;
-    else next = addSpline(next, [prev, ...segment.through.map((point) => [point[0], point[1]] as Pt), to]).sketch;
-    prev = to;
-  }
-  return next;
-}
-
-function sampleLoopPoints(loop: EngineLoop): Pt[] {
-  const points: Pt[] = [];
-  let prev: Pt = [loop.start[0], loop.start[1]];
-  const push = (point: Pt) => {
-    const last = points[points.length - 1];
-    if (!last || Math.hypot(last[0] - point[0], last[1] - point[1]) > 1e-6) points.push(point);
-  };
-  push(prev);
-  for (const segment of loop.segments) {
-    const to: Pt = [segment.to[0], segment.to[1]];
-    if (segment.kind === "line") push(to);
-    else if (segment.kind === "arc") {
-      const arc = arcFrom3(prev, [segment.through[0], segment.through[1]], to);
-      if (!arc) push(to);
-      else for (let step = 1; step <= 8; step += 1) push(arcPoint(arc, step / 8));
-    } else {
-      for (const point of segment.through) push([point[0], point[1]]);
-      push(to);
-    }
-    prev = to;
-  }
-  const first = points[0];
-  const last = points[points.length - 1];
-  if (first && last && Math.hypot(first[0] - last[0], first[1] - last[1]) <= 1e-6) points.pop();
-  return points;
+  return lineLoop(points);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

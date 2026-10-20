@@ -4,13 +4,14 @@
 import { addArc, addCircle, addLine, emptySketch, type SketchData } from "./model.ts";
 import { sketchRegions, toLoops } from "./regions.ts";
 import {
-  LOOP_EXTENT_REFUSAL,
   buildSketchExtrude,
   chooseRegions,
   cycleMode,
   type ModeChoice,
   featureExtrude,
+  featureOutlines,
   opensSketchEditor,
+  regionsOfOutlines,
   presetOf,
   resolveExtrudeMode,
   sketchForFeature,
@@ -71,7 +72,9 @@ eq("an op with no sketch is the same object", withoutSketch(bare) === bare, true
 eq("no solid is a new object even when the choice is cut", resolveExtrudeMode({ choice: "cut", hasSolid: false, touches: true, distance: -5, lockNew: false }), "new");
 eq("a push into a touched solid cuts", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: true, distance: -5, lockNew: false }), "cut");
 eq("a pull out of it joins", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: true, distance: 5, lockNew: false }), "fuse");
-eq("a sketch that misses the solid joins as a new body only when chosen", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: false, distance: 5, lockNew: false }), "fuse");
+eq("a sketch that misses the solid is a new object", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: false, distance: 5, lockNew: false }), "new");
+eq("one pushed away from it is a new object too", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: false, distance: -5, lockNew: false }), "new");
+eq("a step edit that misses its solid still joins", resolveExtrudeMode({ choice: "auto", hasSolid: true, touches: false, distance: 5, lockNew: false, stepEdit: true }), "fuse");
 eq("the card's intersect wins", resolveExtrudeMode({ choice: "common", hasSolid: true, touches: true, distance: 5, lockNew: false }), "common");
 eq("a root edit stays a new object", resolveExtrudeMode({ choice: "cut", hasSolid: true, touches: true, distance: -5, lockNew: true }), "new");
 
@@ -84,10 +87,24 @@ eq("two rectangles are two regions", both.length, 2);
 const group = buildSketchExtrude({ sketch: two, regions: both, distance: 8, depth2: null, draftDeg: null, upTo: null, mode: "fuse" });
 check("disjoint regions are a group", "op" in group && group.op.kind === "group" && group.op.steps.length === 2);
 if ("op" in group && group.op.kind === "group") {
-  check("each step keeps the sketch", group.op.steps.every((step) => step.kind === "extrude" && step.sketch?.entities.length === two.entities.length));
+  eq("only the first step keeps the drawing", group.op.steps.map((step) => (step.kind === "extrude" ? step.sketch?.entities.length ?? 0 : -1)), [8, 0]);
   check("the group is not a pocket", group.op.source == null);
-  eq("the engine group drops both sketches", withoutSketch(group.op) === group.op, false);
+  eq("the engine group drops the sketch", withoutSketch(group.op) === group.op, false);
+  const reopened = sketchForFeature(group.op);
+  eq("an edit reopens the whole drawing", reopened?.entities.length, 8);
+  const outlines = featureOutlines(group.op);
+  eq("each step's outline is kept", outlines.length, 2);
+  const again = reopened ? regionsOfOutlines(reopened, outlines) : [];
+  eq("both regions are picked again", again.map((region) => Math.round(region.area)), [40, 16]);
+  // A third rectangle that was never extruded stays out of the edit.
+  const more = reopened ? rect(40, 0, 2, 2, reopened) : emptySketch();
+  eq("a region the step did not use is not picked", regionsOfOutlines(more, outlines).map((region) => Math.round(region.area)), [40, 16]);
+  // The drawing moved 0.5 mm: each region is found from a point inside its old outline.
+  const moved = reopened ? { ...reopened, points: reopened.points.map((point) => ({ ...point, at: [point.at[0] + 0.5, point.at[1]] as [number, number] })) } : emptySketch();
+  eq("a moved drawing still picks both", regionsOfOutlines(moved, outlines).length, 2);
 }
+const pointProfile: ExtrudeOp = { kind: "extrude", op: "fuse", origin: [0, 0, 0], turn: [0, 0, 0], profile: [[20, 0], [24, 0], [24, 4], [20, 4]], depth: 5, depth2: 2 };
+eq("a point profile's outline picks its region", regionsOfOutlines(two, featureOutlines(pointProfile)).map((region) => Math.round(region.area)), [16]);
 
 let washer = addCircle(emptySketch(), [0, 0], 10).sketch;
 washer = addCircle(washer, [0, 0], 4).sketch;
@@ -116,7 +133,11 @@ let bulged = addLine(emptySketch(), [0, 0], [10, 0]).sketch;
 bulged = addArc(bulged, [10, 0], [0, 0], [5, 4]).sketch;
 const bulgeRegions = chooseRegions(bulged, [], null);
 const bulge = buildSketchExtrude({ sketch: bulged, regions: bulgeRegions, distance: 10, depth2: null, draftDeg: 5, upTo: null, mode: "fuse" });
-eq("an arc with a draft is refused in the kernel's words", "error" in bulge ? bulge.error : "", LOOP_EXTENT_REFUSAL);
+eq("an arc with a draft is refused in plain words", "error" in bulge ? bulge.error : "", "A draft works on an outline of straight lines with no holes for now. Drop the draft, or draw the outline with lines.");
+const twoSided = buildSketchExtrude({ sketch: bulged, regions: bulgeRegions, distance: 10, depth2: 4, draftDeg: null, upTo: null, mode: "fuse" });
+eq("an arc with two different sides says to make them the same", "error" in twoSided ? twoSided.error : "", "A different depth on the other side works on an outline of straight lines with no holes for now. Give both sides the same depth, or draw the outline with lines.");
+const evenSides = buildSketchExtrude({ sketch: bulged, regions: bulgeRegions, distance: 6, depth2: 6, draftDeg: null, upTo: null, mode: "fuse" });
+check("an arc with the same depth both sides builds", "op" in evenSides);
 
 const upTo: { index: number; mid: Vec3; areaMm2: number } = { index: 3, mid: [0, 0, 10], areaMm2: 40 };
 const stopped = buildSketchExtrude({ sketch: bed, regions, distance: 10, depth2: null, draftDeg: 4, upTo, mode: "fuse" });
@@ -168,6 +189,24 @@ check("and the extrude is still editable", dropped != null && opensSketchEditor(
 const loaded = read && loadedTree(read, "k2", root, "Box", null, () => undefined);
 eq("the loaded step still carries the sketch", loaded?.nodes.get(1)?.op, withSketch);
 check("the first extrude of a group is the one an edit opens", featureExtrude(withSketch)?.kind === "extrude");
+
+// A plate with more holes than one profile takes is refused before the engine, with what to do.
+function perforated(holes: number): SketchData {
+  let plate = emptySketch();
+  plate = addLine(plate, [0, 0], [100, 0]).sketch;
+  plate = addLine(plate, [100, 0], [100, 100]).sketch;
+  plate = addLine(plate, [100, 100], [0, 100]).sketch;
+  plate = addLine(plate, [0, 100], [0, 0]).sketch;
+  for (let k = 0; k < holes; k += 1) plate = addCircle(plate, [6 + (k % 8) * 12, 6 + Math.floor(k / 8) * 12], 2).sketch;
+  return plate;
+}
+for (const holes of [31, 32]) {
+  const plate = perforated(holes);
+  const outer = sketchRegions(plate).reduce((big, region) => (region.area > big.area ? region : big));
+  const made = buildSketchExtrude({ sketch: plate, regions: [outer], distance: 3, depth2: null, draftDeg: null, upTo: null, mode: "new" });
+  if (holes === 31) eq("a plate with 31 holes extrudes", "op" in made, true);
+  else eq("a plate with 32 holes says what to do", "error" in made ? made.error : "", "This region has 32 holes, and one profile takes 31. Apply it with 31 or fewer holes, then cut the rest from a second sketch.");
+}
 
 if (failed > 0) {
   console.error(`${failed} failed`);

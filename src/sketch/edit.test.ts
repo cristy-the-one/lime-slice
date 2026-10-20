@@ -249,6 +249,33 @@ near(
 eq("a round copy needs an angle", polarCopy(spoke.sketch, [spoke.id], [0, 0], 0, 2).error, "A round copy needs an angle other than 0.");
 eq("the sketch that was copied is unchanged", polarCopy(spoke.sketch, [spoke.id], [0, 0], 90, 1).sketch !== spoke.sketch && spoke.sketch.entities.length, 1);
 
+
+// A trimmed spline keeps a few points along the kept piece, not every 0.5 mm sample of the old one.
+{
+  const controls: [number, number][] = [];
+  for (let x = 0; x <= 120; x += 20) controls.push([x, 6 * Math.sin(x / 15)]);
+  const wave = addSpline(emptySketch(), controls);
+  const cutter = addLine(wave.sketch, [100, -10], [100, 10]);
+  const kept = trim(cutter.sketch, wave.id, [110, 6 * Math.sin(110 / 15)]);
+  const spline = kept.sketch.entities.find((entity) => entity.kind === "spline");
+  check("the trim keeps a spline", !kept.error && !!spline);
+  const count = spline && spline.kind === "spline" ? spline.through.length : 0;
+  check(`the kept spline has a few points (${count}), not hundreds`, count >= 3 && count <= 40);
+  const kept2 = spline && spline.kind === "spline" ? spline.through.map((id) => sketchPoint(kept.sketch, id)!.at) : [];
+  check("and they lie on the old wave", kept2.every((at) => Math.abs(at[1] - 6 * Math.sin(at[0] / 15)) < 0.5));
+}
+
+// A trim of a long wave stays quick.
+{
+  const controls: [number, number][] = [];
+  for (let x = 0; x <= 600; x += 15) controls.push([x, 8 * Math.sin(x / 9)]);
+  const wave = addSpline(emptySketch(), controls);
+  const cutter = addLine(wave.sketch, [590, -20], [590, 20]);
+  const started = performance.now();
+  const kept = trim(cutter.sketch, wave.id, [595, 8 * Math.sin(595 / 9)]);
+  const took = performance.now() - started;
+  check(`trimming a 600 mm wave takes under a second (${took.toFixed(0)} ms)`, !kept.error && took < 1000);
+}
 if (failed) {
   console.error(`edit: ${failed} failed`);
   throw new Error(`edit: ${failed} failed`);
