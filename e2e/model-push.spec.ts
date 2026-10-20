@@ -124,6 +124,9 @@ test("dragging a face pulls it, Alt adds a prism, and Tab edits the distance", a
 });
 
 async function facePoint(page: Page, want: (normal: number[]) => boolean): Promise<{ x: number; y: number }> {
+  // data-solid changes as soon as a new solid is set, but the face list is redone when the next frame draws. Two
+  // frames make sure that draw has run, so a point is never read off the solid before (on a slow runner, ~300 ms).
+  await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
   // The list is cleared for a frame while a dry-run replaces the solid, so the point is taken from the same read.
   let found: { x: number; y: number } | null = null;
   await expect.poll(async () => {
