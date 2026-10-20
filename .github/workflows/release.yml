@@ -21,7 +21,7 @@ jobs:
     outputs:
       id: ${{ steps.release.outputs.id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # A tag push names the tag. A manual run uses v<version> from tauri.conf.json.
       - name: Create or find the draft release
@@ -102,7 +102,7 @@ jobs:
       # linuxdeploy on GitHub runners has no FUSE device.
       APPIMAGE_EXTRACT_AND_RUN: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # clipper2c-sys compiles vendored Clipper2 C++ with the cc crate. It does
       # not invoke CMake. Linux links libstdc++ through .cargo/config.toml,
@@ -127,7 +127,7 @@ jobs:
             cmake \
             ninja-build
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -143,7 +143,7 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -156,7 +156,7 @@ jobs:
 
       - name: Restore the OCCT shared libraries
         id: occt-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ matrix.label == 'macos-intel' && 'X64' || runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
@@ -170,7 +170,7 @@ jobs:
 
       - name: Save the OCCT shared libraries
         if: steps.occt-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ matrix.label == 'macos-intel' && 'X64' || runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
