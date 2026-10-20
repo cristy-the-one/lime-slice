@@ -219,6 +219,12 @@ Boolean and New solid no longer park their gizmo on the right. Arrows and rings 
 
 ![Arrows, rings, and size knobs on the ghost](screenshots/ui-review-3-1/ux06-after-handles.png)
 
+A history row names the sketch and the value: Extrude Sketch 1, 20 mm. An unchanged pose is the small line "Placed as in the file" instead of a Position row. The plate chip's tooltip says that step is what the plate slices.
+
+![Position as a history row, At file position](screenshots/ui-review-3-1/ux08-before-history.png)
+
+![Extrude Sketch 1, 20 mm, and the file pose as a line](screenshots/ui-review-3-1/ux08-after-history.png)
+
 ## Checks
 
 - `npx tsc --noEmit`

@@ -1045,6 +1045,9 @@ html:not(.layout-compact) #modelHistoryOpen { display: none; }
  * Collapsing folds the tree only, so the pose still shows.
  */
 .mh-position { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; margin: 0 2px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+.mh-position.is-file { border-bottom: 0; padding-bottom: 0; }
+.mh-position.is-file .mh-position-name { display: none; }
+.mh-position.is-file .mh-position-open { height: auto; min-height: 18px; padding-block: 1px; color: var(--text-dim); background: none; font-size: var(--fs-1); }
 html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { border-bottom: 0; padding-bottom: 0; }
 .mh-position-name { flex: 0 0 auto; color: var(--text-dim); }
 .mh-position-open {

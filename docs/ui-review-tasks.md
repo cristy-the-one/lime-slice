@@ -303,6 +303,8 @@ Status: done. With no parameters the section starts collapsed (`Parameters · 0`
 
 ### UX-08 (P2). History rows say what the user did
 
+Status: done. History shows "Extrude Sketch 1, 20 mm" (and the same shape for revolve and loft). A file pose is the line "Placed as in the file", and a changed pose stays the Position row. The plate chip's tip is "This step is what the plate slices." Stored `opLabel` is unchanged. Screenshots: `ux08-before-history.png`, `ux08-after-history.png`.
+
 - **Seen**: "Revolve 1-loop profile 270°", "Loft through 2 sections", "Position At file position", and "Box
   30×30×16" with a "Plate" chip.
 - **Change**:

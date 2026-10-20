@@ -1089,6 +1089,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.view.onSketchView(() => {
     if (editor.phase !== "editing" && editor.phase !== "choosing") return;
     draw();
+    // The tilt runs after the feature opens. Hits, and the value box on the handle, follow the camera.
+    paintDataset();
+    if (gesture || revolve || sweep) syncHud("values");
   });
 
   host.canvas.dataset.sketch = "off";
@@ -2554,11 +2557,19 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   /** The op the open extrude would apply, or the sentence it is refused with before anything is sent. */
+  /** The card's name, so History can say "Sketch 1" instead of a profile count. */
+  function withSketchName(sketch: SketchData, id: number | null): SketchData {
+    if (sketch.name?.trim()) return sketch;
+    const card = id == null ? undefined : editor.pinned.find((item) => item.id === id);
+    const name = card && card.name !== "Sketch" ? card.name : `Sketch ${card?.id ?? editor.nextName}`;
+    return { ...sketch, name };
+  }
+
   function builtExtrude(): { op: ModelOp } | { error: string } | null {
     const sketch = activeSketch(editor);
     if (!sketch || !gesture || gesture.regions.length === 0) return null;
     return buildSketchExtrude({
-      sketch,
+      sketch: withSketchName(sketch, editor.active),
       regions: gesture.regions,
       distance: gesture.distance,
       depth2: gesture.slots >= 2 ? gesture.depth2 : null,
@@ -2948,7 +2959,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const sketch = activeSketch(editor);
     if (!sketch || !revolve || revolve.regions.length === 0 || revolve.crossing) return null;
     const built = buildSketchRevolve({
-      sketch,
+      sketch: withSketchName(sketch, editor.active),
       regions: revolve.regions,
       axis: revolve.axis,
       angleDeg: revolve.angle,
@@ -2966,7 +2977,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const sketch = activeSketch(editor);
     if (!sketch || !revolve || (applying || holding)) return;
     const built = buildSketchRevolve({
-      sketch,
+      sketch: withSketchName(sketch, editor.active),
       regions: revolve.regions,
       axis: revolve.axis,
       angleDeg: revolve.angle,
@@ -3282,7 +3293,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const key = `sketch:${id}`;
-    const pick: LoftPick = { key, sketchId: id, sketch: sketchJson(item.sketch), section: sectionFromRegion(item.sketch, region) };
+    const pick: LoftPick = { key, sketchId: id, sketch: sketchJson(withSketchName(item.sketch, id)), section: sectionFromRegion(item.sketch, region) };
     const at = loft.picks.findIndex((itemPick) => itemPick.key === key);
     const picks = at >= 0 ? loft.picks.filter((_, index) => index !== at) : [...loft.picks, pick];
     loft = { ...loft, picks, note: "" };
@@ -3430,7 +3441,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!hit) return;
     const { id, region } = hit;
     const key = regionKey(id, region);
-    const pick: LoftPick = { key, sketchId: id, sketch: sketchJson(hit.sketch), section: sectionFromRegion(hit.sketch, region) };
+    const pick: LoftPick = { key, sketchId: id, sketch: sketchJson(withSketchName(hit.sketch, id)), section: sectionFromRegion(hit.sketch, region) };
     const at = loft.picks.findIndex((item) => item.key === key || item.key === `sketch:${id}`);
     const picks = at >= 0 ? loft.picks.filter((_, index) => index !== at) : [...loft.picks, pick];
     loft = { ...loft, picks, note: "" };

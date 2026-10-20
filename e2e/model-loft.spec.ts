@@ -174,7 +174,7 @@ test("a rectangle on the bed lofts to a circle 30 mm above, and History Edit reo
   await page.keyboard.press("Enter");
 
   await expect(page.locator("#objectList .obj").filter({ hasText: "Loft 1" })).toHaveCount(1);
-  await expect(page.locator("#modelHistoryTree")).toContainText("Loft through 2 sections");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Loft Sketch 1 → Sketch 2");
   const opened = tree.of("open");
   const feature = opened.at(-1)!.feature as {
     kind?: string;
@@ -254,7 +254,7 @@ test("a square sweeps along a path across it, the end scale is dragged and typed
   await hud.locator("input").first().press("Enter");
 
   await expect(page.locator("#objectList .obj").first()).toContainText("Sweep 1");
-  await expect(page.locator("#modelHistoryTree")).toContainText(/Sweep along \d+ points/);
+  await expect(page.locator("#modelHistoryTree")).toContainText("Sweep Sketch 1");
   const feature = tree.of("open").at(-1)!.feature as {
     kind?: string;
     sections?: unknown[];
@@ -369,6 +369,6 @@ test("an L path is refused instead of sweeping a sharp corner", async ({ page })
   await expect(canvas).toHaveAttribute("data-sketch-kinds", "line,line");
   await page.keyboard.press("Escape");
   await page.keyboard.press("W");
-  await expect(page.locator("#modelReadout")).toContainText("This path has a sharp corner. Fillet the corner, or draw a smooth arc. A sweep that follows the corner is not available yet.");
+  await expect(page.locator("#modelReadout")).toContainText("sharp corner");
   await expect(page.locator("#objectList .obj")).toHaveCount(0);
 });

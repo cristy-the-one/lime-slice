@@ -194,7 +194,8 @@ test("a rectangle on the bed extrudes 20 into a new object, and History Edit cha
   await extrudeOnBed(page, "20");
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   await expect(page.locator("#objectList .obj").first()).toContainText("Extrude 1");
-  await expect(page.locator("#modelHistoryTree")).toContainText("Extrude 1-loop profile 20");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Extrude Sketch 1, 20 mm");
+  if (process.env.LIME_SHOTS) await page.locator("#leftDock").screenshot({ path: `${process.env.LIME_SHOTS}/ux08-after-history.png` });
   await expect.poll(() => height(page)).toBeCloseTo(20, 0);
   const opened = tree.of("open");
   expect(opened).toHaveLength(1);
@@ -213,7 +214,7 @@ test("a rectangle on the bed extrudes 20 into a new object, and History Edit cha
   const hud = page.locator(".interact-hud:not([hidden])");
   await hud.locator("input").first().fill("12");
   await hud.locator("input").first().press("Enter");
-  await expect(page.locator("#modelHistoryTree")).toContainText("Extrude 1-loop profile 12");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Extrude Sketch 1, 12 mm");
   await expect.poll(() => height(page)).toBeCloseTo(12, 0);
   const again = tree.of("open").at(-1)!.feature as { depth?: number; sketch?: unknown };
   expect(again.depth).toBe(12);
@@ -238,7 +239,7 @@ test("editing the root of a part with a later cut keeps the cut current, on Canc
   const rows = page.locator("#modelHistoryTree .mh-row");
   await expect(rows).toHaveCount(2);
   const current = page.locator('#modelHistoryTree .mh-row[aria-selected="true"]');
-  await expect(current).toContainText("Cut");
+  await expect(current).toContainText(", cut");
 
   // Cancel: the root was shown for the edit; the cut comes back as the current step.
   await rows.first().locator(".mh-edit").click();
@@ -246,7 +247,7 @@ test("editing the root of a part with a later cut keeps the cut current, on Canc
   await expect.poll(() => height(page)).toBeCloseTo(20, 0);
   await page.locator("[data-sketch-finish]").click();
   await expect(canvas).not.toHaveAttribute("data-sketch", "editing");
-  await expect(current).toContainText("Cut");
+  await expect(current).toContainText(", cut");
   await expect.poll(() => height(page)).toBeCloseTo(15, 0);
 
   // Apply: the history rebuilds on the new root and the cut is still current, not a Redo.
@@ -254,8 +255,8 @@ test("editing the root of a part with a later cut keeps the cut current, on Canc
   await expect(canvas).toHaveAttribute("data-extrude", "aim");
   await hud.locator("input").first().fill("30");
   await hud.locator("input").first().press("Enter");
-  await expect(page.locator("#modelHistoryTree")).toContainText("Extrude 1-loop profile 30");
-  await expect(current).toContainText("Cut");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Extrude Sketch 1, 30 mm");
+  await expect(current).toContainText(", cut");
   await expect.poll(() => height(page)).toBeCloseTo(25, 0);
   await expect(page.locator("#modelRedo")).toBeDisabled();
 });
@@ -438,7 +439,7 @@ test("an extrude tilts the view to show its depth, says when it is past the buil
   expect(rise).toBeLessThan(0.95);
   const hud = page.locator(".interact-hud:not([hidden])");
   await hud.locator("input").first().fill("100000");
-  await expect(page.locator("#modelReadout")).toContainText(/^100000 mm is more than the printer's \d+ mm build height\. Extrude 100000 mm/);
+  await expect(page.locator("#modelReadout")).toContainText("Extrude 100000 mm · past the bed");
   await hud.locator("input").first().fill("5");
   await expect(page.locator("#modelReadout")).toContainText(/^Extrude 5 mm/);
   await page.keyboard.press("Escape");
@@ -616,7 +617,7 @@ test("a circle on the top face, pushed in with the mouse, cuts 5", async ({ page
   await dragExtrude(page, -5);
   await expect(canvas).toHaveAttribute("data-extrude-mode", "cut");
   await page.locator("[data-sketch-apply]").click();
-  await expect(page.locator("#modelHistoryTree")).toContainText("Cut extrude 1-loop profile -5 mm");
+  await expect(page.locator("#modelHistoryTree")).toContainText("5 mm, cut");
   await expect.poll(() => height(page)).toBeCloseTo(15, 0);
   const applied = tree.of("apply").at(-1)!.op as { kind?: string; op?: string; depth?: number; sketch?: unknown; loops?: unknown };
   expect(applied.kind).toBe("extrude");

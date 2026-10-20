@@ -6,7 +6,7 @@
 import { formatMm } from "./model-plane.ts";
 import type { PlaceFields } from "./model-space.ts";
 import type { ToolLink } from "./model-edit.ts";
-import { ROOT, childrenOf, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
+import { ROOT, childrenOf, historyCaption, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
 
 /** Where a row sits against the shown step: before it in its history, it, after it on the branch Redo follows, or elsewhere. */
 export type RowState = "past" | "current" | "redo" | "other";
@@ -229,7 +229,10 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
     return free;
   };
   const state = (key: RowKey, redoStep: boolean): RowState => (key === shownKey ? "current" : hot.has(key) ? "past" : redoStep ? "redo" : "other");
-  const text = (node: ModelNode) => ({ label: stepLabel(node), opLabel: node.name?.trim() ? node.label : null, broken: node.broken ?? null });
+  const text = (node: ModelNode) => {
+    const feature = node.op ?? (node.id === ROOT && tree.root.kind === "feature" ? tree.root.op : null);
+    return { label: node.name?.trim() || historyCaption(feature, node.label), opLabel: node.name?.trim() ? node.label : null, broken: node.broken ?? null };
+  };
 
   /**
    * The lane of the tool the join `join` takes, drawn before the join's row: its steps from the root to the one the join
@@ -457,8 +460,8 @@ export function historyKey(ev: HistoryKey, tree: ModelTree, layout: HistoryLayou
 
 /**
  * The Position row above the tree: the open object's pose as Place's fields read it, X, Y and Z from where its file put
- * it and the turns about its centre, each shown only when it is not 0 at the panel's precision. "At file position" for
- * none. Place moves are not steps (a pose is the plate object's, not a kernel op), so the row is not a node.
+ * it and the turns about its centre, each shown only when it is not 0 at the panel's precision. "Placed as in the file"
+ * for none. Place moves are not steps (a pose is the plate object's, not a kernel op), so the row is not a node.
  */
 export function positionText(fields: PlaceFields): string {
   const parts: string[] = [];
@@ -470,7 +473,7 @@ export function positionText(fields: PlaceFields): string {
     const text = formatMm(fields[key]);
     if (text !== "0") parts.push(`Turn ${name} ${text}°`);
   }
-  return parts.length === 0 ? "At file position" : parts.join(" · ");
+  return parts.length === 0 ? "Placed as in the file" : parts.join(" · ");
 }
 
 // --- A8. Files that still have rows named "prefix k/n" fold those runs. A9 stores a new MCP composite as one group, already one row.

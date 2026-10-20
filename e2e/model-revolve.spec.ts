@@ -107,7 +107,7 @@ test("a rectangle off the axis revolves, the ring drag sets the angle, and Histo
 
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   await expect(page.locator("#objectList .obj").first()).toContainText("Revolve 1");
-  await expect(page.locator("#modelHistoryTree")).toContainText("Revolve 1-loop profile 90°");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Revolve Sketch 1, 90°");
   const opened = tree.of("open");
   expect(opened).toHaveLength(1);
   const feature = opened[0]!.feature as {
@@ -135,7 +135,7 @@ test("a rectangle off the axis revolves, the ring drag sets the angle, and Histo
   await again.locator("input").first().fill("45");
   await again.locator("input").first().press("Enter");
   await expect(canvas).toHaveAttribute("data-revolve", "off");
-  await expect(page.locator("#modelHistoryTree")).toContainText("Revolve 1-loop profile 45°");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Revolve Sketch 1, 45°");
   await expect.poll(() => tree.of("open").length).toBe(2);
   const edited = tree.of("open").at(-1)!.feature as { angleDeg?: number; sketch?: unknown };
   expect(edited.angleDeg).toBe(45);

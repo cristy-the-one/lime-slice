@@ -748,3 +748,41 @@ export function opLabel(op: ModelOp): string {
     }
   }
 }
+
+/** The sketch card's name, or "Sketch N" when the drawing was stored without one. */
+function sketchTitle(sketch: SketchData | null | undefined, index: number): string {
+  const name = sketch?.name?.trim();
+  return name || `Sketch ${index}`;
+}
+
+function featureMode(op: BooleanKind): string {
+  if (op === "cut") return ", cut";
+  if (op === "common") return ", intersect";
+  return "";
+}
+
+/**
+ * The history row for a sketch feature. `fallback` is the stored label (`opLabel`), used for MCP-made
+ * steps and for anything that was not drawn from a sketch.
+ */
+export function historyCaption(op: ModelOp | null, fallback: string): string {
+  const n = formatMm;
+  if (!op) return fallback;
+  if (op.kind === "extrude" && op.sketch) {
+    const reach = op.upTo != null ? "up to a face" : `${n(Math.abs(op.depth))} mm`;
+    return `Extrude ${sketchTitle(op.sketch, 1)}, ${reach}${featureMode(op.op)}`;
+  }
+  if (op.kind === "revolve" && op.sketch) {
+    return `Revolve ${sketchTitle(op.sketch, 1)}, ${n(op.angleDeg ?? 360)}°${featureMode(op.op)}`;
+  }
+  if (op.kind === "loft" && op.drawing?.sweep) {
+    return `Sweep ${sketchTitle(op.drawing.sweep.profile, 1)}${featureMode(op.op)}`;
+  }
+  if (op.kind === "loft" && op.drawing?.sketches && op.drawing.sketches.length >= 2) {
+    const sketches = op.drawing.sketches;
+    const from = sketchTitle(sketches[0], 1);
+    const to = sketchTitle(sketches[sketches.length - 1], sketches.length);
+    return `Loft ${from} → ${to}${op.ruled ? ", ruled" : ""}${featureMode(op.op)}`;
+  }
+  return fallback;
+}

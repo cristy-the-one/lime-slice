@@ -2159,6 +2159,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       faceCb = cb;
     },
     projectPoint(at) {
+      // lookAt changes the quaternion and leaves the world matrix behind until the next draw.
+      camera.updateMatrixWorld();
       projected.set(at[0], at[1], at[2]);
       projected.project(camera);
       if (projected.z < -1 || projected.z > 1) return null;

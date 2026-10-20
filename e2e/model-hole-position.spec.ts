@@ -232,7 +232,7 @@ test("a counterbore has its fields and knobs, a screw fills them, and Edit step 
 test("the Position row shows the pose, opens Place, and Reset is one undoable step that asks the engine nothing", async ({ page }) => {
   const tree = await openModel(page);
   await expect(page.getByRole("group", { name: "Position" })).toBeVisible();
-  await expect(positionText(page)).toHaveText("At file position");
+  await expect(positionText(page)).toHaveText("Placed as in the file");
   await expect(reset(page), "nothing to reset at the file position").toBeHidden();
   await expect(page.locator("#modelHistoryTree #modelPosition"), "the row is not in the tree").toHaveCount(0);
   await openHole(page);
@@ -257,7 +257,7 @@ test("the Position row shows the pose, opens Place, and Reset is one undoable st
   // Reset while Place is open: the part is back where its file put it, and Undo takes it back as a Place step.
   await expect(reset(page)).toBeVisible();
   await reset(page).click();
-  await expect(positionText(page)).toHaveText("At file position");
+  await expect(positionText(page)).toHaveText("Placed as in the file");
   await expect(reset(page)).toBeHidden();
   await expect(canvas(page)).toHaveAttribute("data-solid", "0.00,0.00,0.00,20.00,20.00,10.00");
   await expect(page.locator("#modelPlaceX")).toHaveValue("0");
@@ -271,7 +271,7 @@ test("the Position row shows the pose, opens Place, and Reset is one undoable st
   await page.locator("#tabModel").click();
   await expect(positionText(page)).toHaveText("X 10 · Turn Z 30°");
   await reset(page).click();
-  await expect(positionText(page)).toHaveText("At file position");
+  await expect(positionText(page)).toHaveText("Placed as in the file");
   await page.locator("#tabPrepare").click();
   await page.keyboard.press("Control+z");
   await page.locator("#tabModel").click();
@@ -282,7 +282,7 @@ test("the Position row shows the pose, opens Place, and Reset is one undoable st
   await reset(page).click();
   await expect(page.locator("#modelToolPlace")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#modelToolHole")).toHaveAttribute("aria-pressed", "false");
-  await expect(positionText(page)).toHaveText("At file position");
+  await expect(positionText(page)).toHaveText("Placed as in the file");
   await page.locator("#modelUndo").click();
   await expect(positionText(page)).toHaveText("X 10 · Turn Z 30°");
 
