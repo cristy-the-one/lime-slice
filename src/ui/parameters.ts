@@ -112,6 +112,11 @@ export function parametersOpen(): boolean {
   return document.querySelector<HTMLElement>("#modelParamsMain")?.hidden === false;
 }
 
+/** The shown branch changed (another object, a new solid, a step added or dropped): only the Rebuild count follows. */
+export function syncRebuildCount() {
+  paintRebuild();
+}
+
 /** The table changed outside the panel, or a rebuild finished. */
 export function syncParameters() {
   if (parametersOpen()) paint(false);

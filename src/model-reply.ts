@@ -23,8 +23,8 @@ type Vec3 = [number, number, number];
 /** A solid as Model draws, picks, and measures it. Face and edge ids are their indexes. */
 export type FaceSurface = "cylinder" | "cone" | "sphere";
 
-export interface ParsedFace {
-  id: number;
+/** A face as the engine writes it. */
+export interface FaceRow {
   areaMm2: number;
   normal?: Vec3;
   /** P1. Present when the face is a cylinder, a cone, or a sphere. */
@@ -32,6 +32,17 @@ export interface ParsedFace {
   surface?: FaceSurface;
   axisPoint?: Vec3;
   axis?: Vec3;
+  /**
+   * The face is a whole closed shell (an ellipsoid, a sphere, a torus): it meets no other face, so a push or pull moves
+   * all of it. `inMaxMm` and `outMaxMm` are the largest push and pull before it folds onto itself; absent where it never does.
+   */
+  closed?: true;
+  inMaxMm?: number;
+  outMaxMm?: number;
+}
+
+export interface ParsedFace extends FaceRow {
+  id: number;
 }
 
 export interface ParsedSolid extends ModelSolid {
@@ -46,7 +57,7 @@ export interface SolidArrays {
   volumeMm3: number;
   positions: ArrayLike<number>;
   triangles: ArrayLike<number>;
-  faces: { areaMm2: number; normal?: Vec3; radiusMm?: number; surface?: FaceSurface; axisPoint?: Vec3; axis?: Vec3 }[];
+  faces: FaceRow[];
   edges: { lengthMm: number; points: ArrayLike<number> }[];
   solid?: boolean;
   /** The node that made each face, or null for a face the step being previewed has not applied yet. */
@@ -70,7 +81,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
   if (positions.length !== triangles.length * 9 || offsets.length !== edgeLengths.length + 1 || offsets[0] !== 0) return DAMAGED;
   for (const face of triangles) if (face >= faceRows.length) return DAMAGED;
   const faces: ParsedSolid["faces"] = [];
-  for (const row of faceRows as { areaMm2?: unknown; normal?: unknown; radiusMm?: unknown; surface?: unknown; axisPoint?: unknown; axis?: unknown }[]) {
+  for (const row of faceRows as { [K in keyof FaceRow]?: unknown }[]) {
     if (!row || typeof row.areaMm2 !== "number") return DAMAGED;
     const normal = readNormal(row.normal);
     const surface = row.surface === "cylinder" || row.surface === "cone" || row.surface === "sphere" ? row.surface : undefined;
@@ -82,6 +93,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
       areaMm2: row.areaMm2,
       ...(normal ? { normal } : {}),
       ...(surface && radiusMm != null ? { surface, radiusMm, ...(axisPoint && axis ? { axisPoint, axis } : {}) } : {}),
+      ...closedFields(row),
     });
   }
   const edges: ParsedSolid["edges"] = [];
@@ -107,12 +119,21 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
   };
 }
 
+/** A closed face's flag and fold distances, or nothing for any other face. A distance that is not a number 0 or over is dropped. */
+function closedFields(row: { closed?: unknown; inMaxMm?: unknown; outMaxMm?: unknown }): Pick<FaceRow, "closed" | "inMaxMm" | "outMaxMm"> {
+  if (row.closed !== true) return {};
+  const most = (value: unknown) => (typeof value === "number" && value >= 0 ? value : undefined);
+  const inMaxMm = most(row.inMaxMm);
+  const outMaxMm = most(row.outMaxMm);
+  return { closed: true, ...(inMaxMm != null ? { inMaxMm } : {}), ...(outMaxMm != null ? { outMaxMm } : {}) };
+}
+
 /** A solid reply's fields as the engine writes them, but for `id` and `fingerprint`. */
 export type SolidWire = {
   format: string;
   volumeMm3: number;
   solid: boolean;
-  faces: { areaMm2: number; normal?: Vec3; radiusMm?: number; surface?: FaceSurface; axisPoint?: Vec3; axis?: Vec3 }[];
+  faces: FaceRow[];
   edgeLengths: number[];
   positions: string;
   triangles: string;
@@ -131,11 +152,15 @@ export function encodeSolid(solid: SolidArrays): SolidWire & { stepFaces?: (numb
     format: SOLID_FORMAT,
     volumeMm3: solid.volumeMm3,
     solid: solid.solid !== false,
-    faces: solid.faces.map(({ areaMm2, normal, radiusMm, surface, axisPoint, axis }) => ({
-      areaMm2,
-      ...(normal ? { normal } : {}),
-      ...(surface && radiusMm != null ? { surface, radiusMm, ...(axisPoint && axis ? { axisPoint, axis } : {}) } : {}),
-    })),
+    faces: solid.faces.map((face) => {
+      const { areaMm2, normal, radiusMm, surface, axisPoint, axis } = face;
+      return {
+        areaMm2,
+        ...(normal ? { normal } : {}),
+        ...(surface && radiusMm != null ? { surface, radiusMm, ...(axisPoint && axis ? { axisPoint, axis } : {}) } : {}),
+        ...closedFields(face),
+      };
+    }),
     edgeLengths: solid.edges.map((edge) => edge.lengthMm),
     positions: wordsBase64(Float32Array.from(solid.positions)),
     triangles: wordsBase64(Uint32Array.from(solid.triangles)),
