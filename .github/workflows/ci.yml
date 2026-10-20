@@ -268,10 +268,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The Model specs in test:engine need the OCCT bridge. runner.temp is not
+      # available in a job-level env block.
+      - name: Point at the OCCT install
+        run: echo "OCCT_LIBS=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
+
+      # CMake and Ninja build OCCT when the cache misses.
       - name: Install the C++ toolchain Clipper2 links against
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake ninja-build
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -279,6 +285,35 @@ jobs:
 
       - name: Release CLI
         run: cargo build -p lime-slice --release --locked
+
+      # Same cache as the rust job. A miss builds OCCT here too.
+      - name: Restore the OCCT shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 180
+        run: python3 tools/occt/install.py --prefix "$OCCT_LIBS"
+
+      - name: Save the OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      # OCCT_ROOT only for this step, so the CLI above stays the plain build.
+      # The bridge lands in target/release next to lime-slice, where the engine looks.
+      - name: Release OCCT bridge
+        env:
+          OCCT_ROOT: ${{ env.OCCT_LIBS }}
+        run: |
+          cargo build -p lime-model-occt --release --locked
+          test -f target/release/liblime_model_occt.so
 
       - name: Slice bundled samples and the PA tower
         run: |
@@ -347,8 +382,14 @@ jobs:
       - name: Playwright against the release engine
         run: |
           set -euo pipefail
+          export LD_LIBRARY_PATH="${OCCT_LIBS}/lib:${LD_LIBRARY_PATH:-}"
           target/release/lime-slice serve --port 43218 --cache-dir "$RUNNER_TEMP/slicecache" &
           for _ in $(seq 1 30); do curl -sf http://127.0.0.1:43218/api/health && break; sleep 1; done
+          # The Model specs skip on an engine without a modeler. Fail here instead.
+          probe=$(curl -sf http://127.0.0.1:43218/api/model/tree -H 'content-type: application/json' -d '{"call":"open","key":"ci-probe","primitive":{"primitive":"box","origin":[0,0,0],"size":[1,1,1],"turn":[0,0,0]},"chordMm":0.1}')
+          echo "${probe:0:300}"
+          [[ "$probe" == *'"volumeMm3"'* ]]
+          curl -sf http://127.0.0.1:43218/api/model/tree -H 'content-type: application/json' -d '{"call":"close","key":"ci-probe"}' > /dev/null
           LIME_EDIT_API=http://127.0.0.1:43218 npm run test:engine
 
   occt-windows:
