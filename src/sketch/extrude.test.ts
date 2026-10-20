@@ -1,7 +1,7 @@
 /**
  * Extrude from a sketch: the op, the mode, and reopening it when the file has no sketch.
  */
-import { addArc, addCircle, addLine, emptySketch, type SketchData } from "./model.ts";
+import { addArc, addCircle, addLine, addSpline, emptySketch, type SketchData } from "./model.ts";
 import { sketchRegions, toLoops } from "./regions.ts";
 import {
   buildSketchExtrude,
@@ -133,9 +133,29 @@ let bulged = addLine(emptySketch(), [0, 0], [10, 0]).sketch;
 bulged = addArc(bulged, [10, 0], [0, 0], [5, 4]).sketch;
 const bulgeRegions = chooseRegions(bulged, [], null);
 const bulge = buildSketchExtrude({ sketch: bulged, regions: bulgeRegions, distance: 10, depth2: null, draftDeg: 5, upTo: null, mode: "fuse" });
-eq("an arc with a draft is refused in plain words", "error" in bulge ? bulge.error : "", "A draft works on an outline of straight lines with no holes for now. Drop the draft, or draw the outline with lines.");
+if ("op" in bulge && bulge.op.kind === "extrude") {
+  eq("an arc with a draft sends its loops", bulge.op.loops?.[0]?.segments.map((segment) => segment.kind), ["line", "arc"]);
+  eq("with the draft on them", { draftDeg: bulge.op.draftDeg, profile: bulge.op.profile }, { draftDeg: 5, profile: undefined });
+} else check(`an arc with a draft builds: ${"error" in bulge ? bulge.error : ""}`, false);
 const twoSided = buildSketchExtrude({ sketch: bulged, regions: bulgeRegions, distance: 10, depth2: 4, draftDeg: null, upTo: null, mode: "fuse" });
-eq("an arc with two different sides says to make them the same", "error" in twoSided ? twoSided.error : "", "A different depth on the other side works on an outline of straight lines with no holes for now. Give both sides the same depth, or draw the outline with lines.");
+if ("op" in twoSided && twoSided.op.kind === "extrude") {
+  eq(
+    "an arc with two different sides sends its loops and the other side",
+    { loops: twoSided.op.loops?.length, depth: twoSided.op.depth, depth2: twoSided.op.depth2, draftDeg: twoSided.op.draftDeg },
+    { loops: 1, depth: 10, depth2: 4, draftDeg: undefined },
+  );
+} else check("an arc with two different sides builds", false);
+// The owner's extrude: a closed spline, 8.2 mm both ways with a 3° draft, as a new object.
+const openBlob = addSpline(emptySketch(), [[10, 0], [0, 10], [-10, 0], [0, -10]]).sketch;
+const blob: SketchData = { ...openBlob, entities: openBlob.entities.map((entity) => (entity.kind === "spline" ? { ...entity, through: [...entity.through, entity.through[0]!] } : entity)) };
+const owner = buildSketchExtrude({ sketch: blob, regions: chooseRegions(blob, [], null), distance: 8.2, depth2: 8.2, draftDeg: 3, upTo: null, mode: "new" });
+if ("op" in owner && owner.op.kind === "extrude") {
+  eq(
+    "a drafted centred spline is centred loops with the draft",
+    { symmetric: owner.op.symmetric, depth: owner.op.depth, depth2: owner.op.depth2, draftDeg: owner.op.draftDeg, kinds: owner.op.loops?.[0]?.segments.map((segment) => segment.kind) },
+    { symmetric: true, depth: 16.4, depth2: undefined, draftDeg: 3, kinds: ["spline"] },
+  );
+} else check(`the owner's drafted spline builds: ${"error" in owner ? owner.error : ""}`, false);
 const evenSides = buildSketchExtrude({ sketch: bulged, regions: bulgeRegions, distance: 6, depth2: 6, draftDeg: null, upTo: null, mode: "fuse" });
 check("an arc with the same depth both sides builds", "op" in evenSides);
 
