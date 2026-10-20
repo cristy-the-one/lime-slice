@@ -233,6 +233,7 @@ export function renderChrome() {
   sliceBtn.disabled = state.busy || !state.mesh;
   document.querySelector<HTMLButtonElement>("#cancel")!.hidden = !state.busy;
   paintExport(document.querySelector("#export"), isStale);
+  paintFitError(sliceBtn, document.querySelector("#export"));
   syncSendButtons();
   paintTiming();
   const warn = staleWarning();
@@ -1512,6 +1513,28 @@ export function touch() {
   fx.scheduleAuto();
 }
 
+/** The plate sticks out of the bed. Empty when it fits, or when nothing is loaded. */
+function overBedReason(): string {
+  if (!state.mesh) return "";
+  const { rows, limit } = plateRows();
+  const notes = [...new Set(rows.flatMap(({ part }) => limit(part.bounds)))];
+  if (notes.length === 0) return "";
+  return `The part is larger than the bed (${notes.join("; ")}).`;
+}
+
+/** The stripe stays only for that error. "Nothing loaded" stays a quiet disabled button. */
+function paintFitError(...buttons: (HTMLButtonElement | null)[]) {
+  const reason = overBedReason();
+  for (const button of buttons) {
+    if (!button) continue;
+    const error = reason !== "";
+    button.classList.toggle("is-error", error);
+    if (!error) continue;
+    button.dataset.tip = reason;
+    button.title = reason;
+  }
+}
+
 /** Export is on whenever a mesh is loaded. Without a current slice it slices first, then saves. */
 function paintExport(button: HTMLButtonElement | null, isStale: boolean) {
   if (!button) return;
@@ -1530,6 +1553,7 @@ export function markStale() {
   if (sliceBtn) fx.paintSliceButton(sliceBtn);
   if (forceBtn) fx.paintForceButton(forceBtn);
   paintExport(exp, isStale);
+  paintFitError(sliceBtn ?? null, exp);
   syncSendButtons();
   const warn = staleWarning();
   document.querySelector("#stage")?.classList.toggle("stale", warn);

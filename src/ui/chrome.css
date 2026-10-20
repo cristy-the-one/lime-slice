@@ -79,7 +79,7 @@
   color: var(--text-dim);
   border: 1px dashed var(--border-strong);
   background-color: var(--surface-2);
-  background-image: repeating-linear-gradient(-45deg, transparent 0 3px, color-mix(in srgb, var(--text-dim) 28%, transparent) 3px 4px);
+  background-image: none;
 }
 .tool-rail button[aria-pressed="true"],
 .tool-rail button[aria-expanded="true"] {

@@ -478,21 +478,28 @@ textarea.machine-gcode {
 .btn.primary, .btn.reslice { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
 .btn.primary:hover:not(:disabled), .btn.reslice:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
 .btn.primary:active:not(:disabled), .btn.reslice:active:not(:disabled) { background: var(--accent-pressed); border-color: var(--accent-pressed); }
-/* Disabled reads the same everywhere: full contrast, a dashed edge, and a stripe, not a fade. */
+/* Disabled is quiet: dim text, a dashed edge, no stripe. The stripe is only an error on Slice and Export. */
 :is(button, select):is(:disabled, .is-disabled) {
   opacity: 1;
   cursor: not-allowed;
   color: var(--text-dim);
   background-color: var(--surface-2);
+  background-image: none;
   border: 1px dashed var(--border-strong);
-  background-image: repeating-linear-gradient(-45deg, transparent 0 3px, color-mix(in srgb, var(--text-dim) 28%, transparent) 3px 4px);
 }
 .btn.primary:is(:disabled, .is-disabled),
 .btn.reslice:is(:disabled, .is-disabled) {
   opacity: 1;
   color: var(--text-dim);
   background-color: var(--surface-3);
+  background-image: none;
   border: 1px dashed var(--border-strong);
+}
+:is(#slice, #export).is-error {
+  cursor: not-allowed;
+  color: var(--text-dim);
+  border: 1px dashed var(--border-strong);
+  background-color: var(--surface-2);
   background-image: repeating-linear-gradient(-45deg, transparent 0 3px, color-mix(in srgb, var(--text-dim) 28%, transparent) 3px 4px);
 }
 :is(input, textarea):is(:disabled, .is-disabled) {

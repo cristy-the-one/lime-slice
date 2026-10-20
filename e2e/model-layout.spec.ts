@@ -102,6 +102,19 @@ test("the rail keeps every Model tool at 1440 × 900, and a short window folds t
   await expect.poll(() => folded(page), "room again unfolds it").toEqual([]);
 });
 
+test("a disabled tool is dashed, not striped, and still says why", async ({ page }) => {
+  await openModel(page, { width: 1440, height: 900 });
+  const undo = page.locator("#modelUndo");
+  await expect(undo).toBeDisabled();
+  const image = await undo.evaluate((button) => getComputedStyle(button).backgroundImage);
+  expect(image).toBe("none");
+  const style = await undo.evaluate((button) => getComputedStyle(button).borderStyle);
+  expect(style).toBe("dashed");
+  await undo.hover();
+  await expect(page.locator(".lime-tip")).toContainText("Undo");
+  if (process.env.LIME_SHOTS) await page.locator("#toolRail").screenshot({ path: `${process.env.LIME_SHOTS}/ux02-after-disabled.png` });
+});
+
 test("a tool opens a closed Model panel for itself and closes it again, and leaves an open one alone", async ({ page }) => {
   await openModel(page, { width: 1440, height: 900 });
   const dock = page.locator("#leftDock");
