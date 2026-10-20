@@ -551,7 +551,7 @@ export function wireApp() {
     toggleDock("left");
   });
   document.querySelector("#toggleRight")!.addEventListener("click", () => {
-    document.querySelector(".workspace")!.classList.toggle("show-right");
+    toggleDock("right");
   });
   document.querySelector("#slice")!.addEventListener("click", () => void runSlice(false));
   document.querySelector("#staleReslice")!.addEventListener("click", () => void runSlice(false));

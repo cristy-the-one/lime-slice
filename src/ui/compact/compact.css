@@ -289,9 +289,10 @@ html.layout-compact #toolRail button {
   height: 44px;
   min-height: 44px;
   padding: var(--space-1);
-  border: 0;
+  border: 1px solid var(--border-strong);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  background-color: var(--surface-2);
+  box-shadow: var(--shadow-pop);
 }
 html.layout-compact #toolRail button .ico {
   width: 20px;
@@ -544,6 +545,25 @@ html.layout-compact.chrome-hidden #compactSupportEdit,
 html.layout-compact.chrome-hidden #compactSupportChip {
   visibility: hidden;
   pointer-events: none;
+}
+/* The one control that stays when a tap hides the chrome, so the tabs and tools can be found again. */
+#compactChromeShow { display: none; }
+html.layout-compact.chrome-hidden #compactChromeShow {
+  display: inline-flex;
+  position: fixed;
+  z-index: 40;
+  left: 50%;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  min-width: 44px;
+  height: 44px;
+  padding: 0 16px;
+  border-radius: 22px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-pop);
+  font-weight: 600;
 }
 
 /* 44px hit, 36px painted face. Sits on the preview, clear of the scrubber. */
@@ -825,18 +845,26 @@ html.layout-compact .model-params {
 html.layout-compact #compactDevice .model-inspect { padding: 0; overflow: visible; }
 /* Slicing waits in Model: the floating Slice gives the sketch card its corner. */
 html.layout-compact:has(#modelBody:not([hidden]) #model:is([data-sketch="editing"], [data-sketch="choosing"])) #slice { display: none !important; }
-/* The Features menu and its corner opener live in the strip's markup. */
-html.layout-compact #toolRail .model-feature .model-feature-more {
-  position: absolute;
-  right: -2px;
-  bottom: -2px;
-  width: 20px;
-  height: 20px;
-  min-height: 0;
-  padding: 0;
-  border-radius: 6px;
+/* On the phone the opener sits beside Pocket in the scrolling strip, each 44px, so the strip stays one row. */
+html.layout-compact #toolRail .model-feature {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  width: auto;
+  height: 44px;
+  gap: 4px;
 }
-html.layout-compact #toolRail .model-feature .model-feature-more .ico { width: 12px; height: 12px; }
+html.layout-compact #toolRail .model-feature .model-tool,
+html.layout-compact #toolRail .model-feature .model-feature-more {
+  position: static;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border-radius: 14px;
+}
+html.layout-compact #toolRail .model-feature .model-feature-more .ico { width: 16px; height: 16px; }
 html.layout-compact #toolRail .model-feature-menu button {
   width: 100%;
   height: 44px;

@@ -252,6 +252,12 @@ test("an edge offers Fillet and Chamfer, and the bar fades until the pointer ret
   await expect(bar).toHaveAttribute("data-faded", "0");
   await page.waitForTimeout(3200);
   await expect(bar).toHaveAttribute("data-faded", "1");
+  await expect(bar.locator("#contextBarRestore"), "a Selection chip stays when the actions fade").toBeVisible();
+  await expect(bar.locator("[data-action='push-pull']")).toBeHidden();
+  const chip = (await bar.locator("#contextBarRestore").boundingBox())!;
+  expect(chip.x, "the chip stays on screen").toBeGreaterThanOrEqual(0);
+  expect(chip.y).toBeGreaterThanOrEqual(0);
+  expect(chip.x + chip.width).toBeLessThanOrEqual(1440);
   await page.mouse.move(top.x + 3, top.y + 3);
   await expect(bar).toHaveAttribute("data-faded", "0");
 });

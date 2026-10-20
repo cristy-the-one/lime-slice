@@ -126,7 +126,7 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="model-tool" type="button" role="menuitem" data-tool="ribs">Ribs</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
                 <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
-                <button id="modelMenuParameters" type="button" role="menuitem">Parameters</button>
+                <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
               </div>
             </div>
           </div>
@@ -438,7 +438,7 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode" type="button" data-plane="face" aria-pressed="false" data-tip="A picked flat face">Face</button>
               </div>
               <!-- --- end A4 --- -->
-              <p class="model-note" id="modelNote" hidden></p>
+              <p class="model-note" id="modelNote" hidden role="status"></p>
             </div>
             <div class="model-actions">
               <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>

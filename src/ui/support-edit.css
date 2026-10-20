@@ -3,8 +3,8 @@
 .support-edits {
   position: absolute;
   z-index: 3;
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: 0 6px 18px color-mix(in srgb, #000 32%, transparent);
   color: var(--text);

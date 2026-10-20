@@ -7,6 +7,7 @@
  * Undo here is the sketch's own stack (`docs/plan-gui-cad-modeling.md` §4.3).
  */
 import { Pencil, createElement } from "lucide";
+import { pushToast } from "../ui/toasts";
 import { mountHud, type HudField } from "../interact/hud";
 import { gridSpacing } from "../interact/snap";
 import { dragAxis } from "../interact/drag-axis";
@@ -444,6 +445,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (drawing) return;
+      if (!loft && blockedStart("loft")) return;
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) endExtrude();
       if (revolve) endRevolve();
@@ -456,6 +458,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (drawing) return;
+      if (!sweep && blockedStart("sweep")) return;
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) endExtrude();
       if (revolve) endRevolve();
@@ -486,6 +489,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (drawing) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
+      if (!gesture && blockedStart("extrude")) return;
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (revolve) endRevolve();
       if (loft) endLoft();
@@ -498,6 +502,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (drawing) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
+      if (!revolve && blockedStart("revolve")) return;
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) endExtrude();
       if (loft) endLoft();
@@ -732,7 +737,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   };
 
   button?.addEventListener("click", () => {
-    if (sketchBusy(editor)) return;
+    if (button.getAttribute("aria-disabled") === "true") {
+      pushToast(button.title || button.dataset.tip || "Sketch is not available.", "info");
+      return;
+    }
+    if (sketchBusy(editor)) {
+      button.dataset.tip = "Finish the sketch on the card, or press Esc.";
+      return;
+    }
+    button.dataset.tip = button.dataset.tipIdle ?? button.dataset.tip ?? "";
     host.closeTool();
     editor = beginChoose(editor);
     publish("open");
@@ -761,7 +774,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     if (ev.key === "Tab") {
+      const which = menuOpen;
       menuOpen = null;
+      if (which) cardFocus = [`[data-sketch-menu="${which}"]`];
       publish("skip");
     }
   });
@@ -771,6 +786,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (applying || holding) return;
     const target = ev.target instanceof HTMLElement ? ev.target.closest("button") : null;
     if (!(target instanceof HTMLButtonElement)) return;
+    if (target.getAttribute("aria-disabled") === "true") {
+      const why = target.dataset.tip || target.title;
+      if (why) pushToast(why, "info");
+      return;
+    }
     const plane = target.dataset.sketchPlane;
     if (plane === "XY" || plane === "XZ" || plane === "YZ" || plane === "workplane") {
       enterNamed(plane);
@@ -845,6 +865,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (sweep) void commitSweep();
       else beginSweep();
+      return;
+    }
+    if (target.dataset.sketchCancel != null) {
+      if (gesture) endExtrude();
+      else if (revolve) endRevolve();
+      else if (loft) endLoft();
+      else if (sweep) endSweep();
       return;
     }
     // --- B20. A revolve turns the other way about the same axis. ---
@@ -1167,7 +1194,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     syncHud(hudMode);
     hud.setNote(featureNote());
     focusDimensionLabel();
-    if (button) button.setAttribute("aria-pressed", sketchBusy(editor) ? "true" : "false");
+    if (button) {
+      const busy = sketchBusy(editor);
+      button.setAttribute("aria-pressed", busy ? "true" : "false");
+      if (button.getAttribute("aria-disabled") !== "true") {
+        button.dataset.tipIdle ??= button.dataset.tip ?? "";
+        button.dataset.tip = busy ? "Finish the sketch on the card, or press Esc." : button.dataset.tipIdle;
+      }
+    }
     host.syncPull();
     host.syncEdge();
     paintExtrude();
@@ -1422,6 +1456,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const key = cardsState(pinned);
     if (key === cardsKey) {
       takeCardFocus();
+      refreshBlocked();
       return;
     }
     cardsKey = key;
@@ -1439,6 +1474,31 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     for (const item of pinned) cards.append(card(pinnedRow(item.id, item.name)));
     if (cards.childElementCount === 0) cards.hidden = true;
     takeCardFocus();
+    refreshBlocked();
+  }
+
+  /** Apply and Holes follow the selection without rebuilding the card, so a typed field keeps its focus. */
+  function refreshBlocked() {
+    const holes = cards?.querySelector<HTMLButtonElement>("[data-sketch-holes]");
+    if (holes) {
+      const sketch = activeSketch(editor);
+      const why = !sketch || holeTargets(sketch, editor.selection).length === 0 ? POINT_REFUSAL : "";
+      holes.dataset.tipIdle ??= "Drill a hole at each selected point";
+      markBlocked(holes, why);
+    }
+    const apply = cards?.querySelector<HTMLButtonElement>("[data-sketch-apply]");
+    if (apply) {
+      apply.dataset.tipIdle ??= "Keep this feature";
+      markBlocked(apply, featureBlocked());
+    }
+    paintStarts();
+    const prompt = cards?.querySelector<HTMLElement>(".sketch-prompt");
+    const sentence = pickPrompt();
+    if (prompt) {
+      const text = prompt.querySelector(".sketch-prompt-text");
+      if (text) text.textContent = sentence;
+      prompt.toggleAttribute("hidden", sentence === "");
+    }
   }
 
   function takeCardFocus() {
@@ -1493,6 +1553,117 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return label;
   }
 
+  /** Keep a fixed label inside the window. A driving dimension must not slide fully off screen. */
+  function placeFixed(node: HTMLElement, x: number, y: number) {
+    const width = node.offsetWidth || 72;
+    const height = node.offsetHeight || 22;
+    const left = Math.min(window.innerWidth - 8 - width / 2, Math.max(8 + width / 2, x));
+    const top = Math.min(window.innerHeight - 8 - height / 2, Math.max(8 + height / 2, y));
+    node.style.left = `${left}px`;
+    node.style.top = `${top}px`;
+  }
+
+  /** Why Apply cannot keep the open feature, or "" when it can. The same sentence is the button's tooltip. */
+  function featureBlocked(): string {
+    if (revolve) {
+      if (revolve.crossing) return `${CROSS_REFUSAL} Move the axis, or pick a region on one side of it.`;
+      if (revolve.regions.length === 0) return "Select a region to revolve.";
+      if (!currentRevolveOp()) return "The revolve is not ready.";
+      return "";
+    }
+    if (loft) {
+      if (loft.note) return loft.note;
+      if (loft.picks.length < 2) return "Pick at least two sections to loft.";
+      if (!currentLoftOp()) return "The loft is not ready.";
+      return "";
+    }
+    if (sweep) {
+      if (sweep.note) return sweep.note;
+      if (!sweep.profile || !sweep.profileSketch) return "Pick a region to sweep.";
+      if (sweep.path.length < 2) return "Pick a path to sweep along.";
+      if (!currentSweepOp()) return "The sweep is not ready.";
+      return "";
+    }
+    if (gesture && gesture.regions.length === 0) return "Select a region to extrude.";
+    return "";
+  }
+
+  function markBlocked(button: HTMLButtonElement, why: string) {
+    button.setAttribute("aria-disabled", why ? "true" : "false");
+    button.classList.toggle("is-disabled", why !== "");
+    if (why) {
+      button.dataset.tip = why;
+      button.title = why;
+    } else {
+      if (button.dataset.tipIdle) button.dataset.tip = button.dataset.tipIdle;
+      else delete button.dataset.tip;
+      button.removeAttribute("title");
+    }
+  }
+
+  type StartKind = "extrude" | "revolve" | "loft" | "sweep";
+
+  /** Why Extrude, Revolve, Loft or Sweep cannot start. Empty when a click is the right next step. */
+  function startWhy(kind: StartKind): string {
+    const sketch = activeSketch(editor);
+    if (!sketch || editor.phase !== "editing") return "Open a sketch first.";
+    const regions = sketchRegions(sketch);
+    const chosen = chooseRegions(sketch, editor.selection.entities, null);
+    if (kind === "extrude") {
+      if (regions.length === 0) return "Draw a closed profile to extrude.";
+      if (chosen.length === 0) return "Select a region to extrude.";
+      return "";
+    }
+    if (kind === "revolve") {
+      if (regions.length === 0) return "Draw a closed profile to revolve.";
+      if (chosen.length === 0) return "Select a region to revolve.";
+      return "";
+    }
+    if (kind === "loft") {
+      const elsewhere = editor.pinned.some((item) => item.id !== editor.active && sketchRegions(item.sketch).length > 0);
+      if (regions.length === 0 && !elsewhere) return "Draw a closed profile to loft.";
+      return "";
+    }
+    const path = openChain(sketch) ?? pinnedChain();
+    if (chosen.length === 0 && !pinnedRegion() && !path) return "Draw a closed profile or an open path to sweep.";
+    return "";
+  }
+
+  function blockedStart(kind: StartKind): boolean {
+    const why = startWhy(kind);
+    if (!why) return false;
+    host.readout(why);
+    pushToast(why, "info");
+    return true;
+  }
+
+  function startActive(kind: StartKind): boolean {
+    if (kind === "extrude") return gesture != null;
+    if (kind === "revolve") return revolve != null;
+    if (kind === "loft") return loft != null;
+    return sweep != null;
+  }
+
+  function paintStarts() {
+    const kinds: [StartKind, string][] = [
+      ["extrude", "[data-sketch-extrude]"],
+      ["revolve", "[data-sketch-revolve]"],
+      ["loft", "[data-sketch-loft]"],
+      ["sweep", "[data-sketch-sweep]"],
+    ];
+    for (const [kind, selector] of kinds) {
+      const button = cards?.querySelector<HTMLButtonElement>(selector);
+      if (!button) continue;
+      markBlocked(button, startActive(kind) ? "" : startWhy(kind));
+    }
+  }
+
+  /** The pick the open feature is still waiting for, shown on the card with Cancel. */
+  function pickPrompt(): string {
+    const why = featureBlocked();
+    return why.startsWith("Select ") || why.startsWith("Pick ") ? why : "";
+  }
+
   function editingRow(): Node[] {
     const row: Node[] = [
       toolButton("line", "Line"),
@@ -1509,15 +1680,32 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       textButton("Sweep (W)", { sketchSweep: "" }),
     ];
     // --- F4. Only a sketch on a face has a solid to drill. ---
-    if (activeSketch(editor)?.on?.kind === "face") row.push(textButton("Holes (H)", { sketchHoles: "" }));
+    if (activeSketch(editor)?.on?.kind === "face") {
+      const holes = textButton("Holes (H)", { sketchHoles: "" });
+      const sketch = activeSketch(editor);
+      const why = !sketch || holeTargets(sketch, editor.selection).length === 0 ? POINT_REFUSAL : "";
+      holes.dataset.tipIdle = "Drill a hole at each selected point";
+      markBlocked(holes, why);
+      row.push(holes);
+    }
     if (gesture || revolve || loft || sweep) {
+      const prompt = document.createElement("div");
+      prompt.className = "sketch-prompt";
+      prompt.setAttribute("role", "status");
+      const text = document.createElement("span");
+      text.className = "sketch-prompt-text";
+      prompt.append(text, textButton("Cancel", { sketchCancel: "" }));
+      row.push(prompt);
       const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
       const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
       const auto = choice === "auto" ? "Auto · " : "";
       row.push(textButton(`${auto}${modeLabel(mode)} (M)`, { sketchMode: mode }));
       if (loft) row.push(textButton(loft.ruled ? "Ruled" : "Smooth", { sketchRuled: loft.ruled ? "1" : "0" }));
       if (revolve) row.push(textButton("Flip", { sketchFlip: "" }));
-      row.push(textButton("Apply", { sketchApply: "" }));
+      const apply = textButton("Apply", { sketchApply: "" });
+      apply.dataset.tipIdle = "Keep this feature";
+      markBlocked(apply, featureBlocked());
+      row.push(apply);
     }
     row.push(textButton(editor.lookAround ? "Lock view" : "Look around", { sketchLook: editor.lookAround ? "1" : "0" }));
     row.push(textButton("Finish sketch", { sketchFinish: "" }));
@@ -1635,10 +1823,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (node instanceof HTMLButtonElement) node.setAttribute("aria-label", `${item.spoken}${item.expr ? `, from ${item.expr}` : ""}. Click to type a new one.`);
       const screen = host.view.projectPoint(toWorld(frame, item.at));
       node.hidden = !screen;
-      if (screen) {
-        node.style.left = `${screen.x}px`;
-        node.style.top = `${screen.y}px`;
-      }
+      if (screen) placeFixed(node, screen.x, screen.y);
       node.dataset.defined = status?.fullyDefined ? "1" : "0";
       node.dataset.conflict = status?.conflicting.includes(item.id) ? "1" : "0";
       node.title = item.title;
@@ -2187,7 +2372,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   async function commitExtrude() {
     if (!gesture || (applying || holding)) return;
     const built = builtExtrude();
-    if (!built) return;
+    if (!built) {
+      // Nothing picked yet: the same sentence as the Apply tooltip and the card's prompt.
+      const why = featureBlocked();
+      if (why) host.readout(why);
+      return;
+    }
     if ("error" in built) {
       refuseExtrude(built.error);
       return;
@@ -2534,6 +2724,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   async function commitRevolve() {
+    const why = featureBlocked();
+    if (why) {
+      host.readout(why);
+      return;
+    }
     const sketch = activeSketch(editor);
     if (!sketch || !revolve || (applying || holding)) return;
     const built = buildSketchRevolve({
@@ -2936,6 +3131,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   async function commitLoft() {
+    const why = featureBlocked();
+    if (why) {
+      host.readout(why);
+      return;
+    }
     if (!loft || (applying || holding)) return;
     const built = buildSketchLoft({ picks: freshLoftPicks(), ruled: loft.ruled, mode: resolvedLoftMode() });
     if ("error" in built) {
@@ -3075,6 +3275,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   async function commitSweep() {
+    const why = featureBlocked();
+    if (why) {
+      host.readout(why);
+      return;
+    }
     if (!sweep || (applying || holding)) return;
     if (!sweep.profile || !sweep.profileSketch) {
       sweep = { ...sweep, note: "Pick a region to sweep." };

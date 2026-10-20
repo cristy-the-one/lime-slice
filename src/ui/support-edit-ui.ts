@@ -303,9 +303,14 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   function paintToggle() {
     const ok = ready();
     if (toggle) {
+      toggle.dataset.tipIdle ??= toggle.dataset.tip ?? "";
+      const why = "Slice with tree supports to edit them.";
       toggle.classList.toggle("is-disabled", !ok);
       toggle.setAttribute("aria-disabled", ok ? "false" : "true");
       toggle.setAttribute("aria-pressed", editing ? "true" : "false");
+      toggle.dataset.tip = ok ? toggle.dataset.tipIdle : why;
+      if (ok) toggle.removeAttribute("title");
+      else toggle.title = why;
     }
     const showCompact = isMobileLayout() && (ok || editing);
     compactBtn.hidden = !showCompact;
@@ -557,6 +562,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     placePanel();
     refresh();
   });
+  refresh();
 
   return {
     refresh,

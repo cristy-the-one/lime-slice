@@ -103,7 +103,11 @@ test("model tool panels stay clear of the size chip, the view, and rail tips", a
   expect(overlaps((await fit.boundingBox())!, (await prim.boundingBox())!)).toBe(false);
   if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-boolean-panel.png` });
 
-  await page.locator("#modelToolFillet").evaluate((button) => button.removeAttribute("disabled"));
+  await page.locator("#modelToolFillet").evaluate((button) => {
+    button.removeAttribute("disabled");
+    button.setAttribute("aria-disabled", "false");
+    button.classList.remove("is-disabled");
+  });
   await page.locator("#modelToolFillet").click();
   await expect(page.locator("#modelBlend")).toBeVisible();
   expect(overlaps((await fit.boundingBox())!, (await page.locator("#modelBlend").boundingBox())!)).toBe(false);
