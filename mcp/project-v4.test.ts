@@ -79,6 +79,22 @@ check("the autosave is a version 4 file with a compressed mesh", autoDoc.version
 const fromAutosave = await new Session(fakeEngine()).call("project_open", { path: autosave ?? "" });
 check("the autosave opens", fromAutosave.ok === true, JSON.stringify(fromAutosave));
 
+// An autosave queued behind a write is the plate as it was at its call, not as it is when its turn comes.
+{
+  const queued = new Session(fakeEngine());
+  const first = await queued.call("mesh_import", { path: cube });
+  await queued.call("object_place", { object: first.object, centreX: 30, centreY: 30 });
+  const reference = await queued.call("project_save", { name: "at-30.lime" });
+  const wanted = (JSON.parse(readFileSync(String(reference.path), "utf8")) as { objects: { placement: unknown }[] }).objects[0]!.placement;
+  queued.flushAutosave();
+  const moving = queued.call("object_place", { object: first.object, centreX: 90, centreY: 90 });
+  await queued.autosaveSettled();
+  await moving;
+  const path = autosavePath();
+  const kept = path ? (JSON.parse(readFileSync(path, "utf8")) as { objects: { placement: unknown }[] }).objects[0]!.placement : null;
+  check("the autosave holds the plate as of its flush, not as of its write", kept !== null && JSON.stringify(kept) === JSON.stringify(wanted), JSON.stringify({ kept, wanted }));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

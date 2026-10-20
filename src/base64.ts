@@ -50,11 +50,11 @@ export function base64ToBytes(text: string): Uint8Array | null {
     if (native) return native.call(Uint8Array, text);
     const buffer = nodeBuffer();
     if (buffer) {
-      // Buffer skips what is not base64 instead of refusing it: a length that is not the text's says it did.
+      // Buffer skips what is not base64 instead of refusing it, and reads the URL-safe - and _: a length that is not the text's, or either of those, sends the text to the strict path.
       const padding = text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0;
       const expected = Math.floor(((text.length - padding) * 3) / 4);
       const made = buffer.from(text, "base64");
-      if (made.length === expected && text.length % 4 === 0) {
+      if (made.length === expected && text.length % 4 === 0 && !text.includes("-") && !text.includes("_")) {
         // A small Buffer is a slice of a shared pool: hand back bytes that own their memory.
         return made.byteOffset === 0 && made.buffer.byteLength === made.length ? new Uint8Array(made.buffer, 0, made.length) : new Uint8Array(made);
       }

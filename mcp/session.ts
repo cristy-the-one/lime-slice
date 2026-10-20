@@ -33,7 +33,7 @@ import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, 
 import { dropped, jumped, newTree, opLabel, pathTo, redoTarget, reserveId, rootLabel, undoTarget, withChild, withNode, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
-import { decodeProject, encodeProject } from "../src/project-codec.ts";
+import { decodeProject, encodeProject, finishProject, prepareProject } from "../src/project-codec.ts";
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
 import { savedTree, loadedTree, toolFirst, withSavedNames } from "../src/model-tree-file.ts";
 import { addRange, addVolume, emptyOverrides, freshOverrideId, removeRange, removeVolume, type OverrideDocument, type SettingOverride } from "../src/overrides.ts";
@@ -960,7 +960,9 @@ export class Session {
       this.attachPreview(doc, false);
       // One write at a time, off the call's path; a failed write is not worth failing a call for. The binary records are
       // compressed in that chain too, so the call does not wait for them.
-      this.autosaveWriting = this.autosaveWriting.then(async () => writeAutosave(path, await encodeProject(doc))).catch(() => undefined);
+      // The document is taken now (a copy), so a write queued behind another still saves the plate as it is at this call.
+      const prepared = prepareProject(doc);
+      this.autosaveWriting = this.autosaveWriting.then(async () => writeAutosave(path, await finishProject(prepared))).catch(() => undefined);
     } catch {
       // An autosave that cannot be built is not worth failing a call for either.
     }

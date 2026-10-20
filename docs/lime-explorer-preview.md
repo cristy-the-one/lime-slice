@@ -178,6 +178,8 @@ JPEG was rejected with (a)'s format row. 3MF permits it. It has no alpha, so Exp
 
 ## File format
 
+_Written when files were version 3; "version 3" below means the version the file had then. A version 4 file is the same document with its binary records compressed (see "Version 4" above)._
+
 No version change. `PROJECT_VERSION` remains 3. Fields are optional. A file without them is a normal version 3 file.
 
 Pretty-printed with the same two-space `JSON.stringify` as today. When a thumbnail is present it is the first key. When a summary is present and a thumbnail is not, the summary is first. Then `version`, and the rest of the object in the order `serializeProject` already uses. RFC 8259 does not give object order a meaning. `JSON.parse` accepts any order. Our writer uses insertion order, which `JSON.stringify` preserves, so a streaming reader that wants the picture reads the first key and stops. The rest of the file is still one JSON value; we do not truncate it.
@@ -351,6 +353,8 @@ Windows, for Marius, because this VM is Linux:
 - Install and uninstall as a normal user. No console window from the installer, the DLL, or Explorer. The self-test is allowed to be a console program because he runs it himself.
 
 ## Migration
+
+_Written when files were version 3. Version 4 changes only how the binary records are stored (see "Version 4" above); the picture, the summary, and this migration story are unchanged._
 
 - Files on disk today: unchanged, and they open on this app and on 2.7.0.
 - Files this app saves: still `"version": 3`. 2.7.0 opens them and, on a later save, writes them back without `thumbnail` or `summary`. No geometry is lost. The picture comes back the next time this app saves.

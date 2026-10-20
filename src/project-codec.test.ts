@@ -147,6 +147,45 @@ check("base64 round-trips every length", [1, 2, 3, 4, 5, 100].every((n) => {
 }));
 check("text that is not base64 is refused", base64ToBytes("@@@@") === null && base64ToBytes("AA=A") === null);
 check("the async encoder agrees with the sync one", (await bytesToBase64Async(mesh)) === bytesToBase64(mesh));
+check("URL-safe characters are not base64 here either", base64ToBytes("AA-A") === null && base64ToBytes("AA_A") === null);
+
+// A newer file is refused by its version, whatever it holds.
+const future = await decodeProject(JSON.stringify({ ...JSON.parse(text), version: 5 }));
+check("a version 5 file is refused by its version", !future.ok && future.message === "This project is version 5. This app opens up to version 4.", JSON.stringify(future));
+
+// Saving leaves the project as it was, and a root STEP the file holds elsewhere is written as a reference and comes back.
+const before = JSON.stringify(project);
+const treeCopy = newTree("copy#run1.3", { kind: "step", name: "part.step", bytes: rootStep.buffer.slice(0) as ArrayBuffer }, "copy.stl", fp(4000));
+const sharing: LimeProject = {
+  ...project,
+  objects: [
+    ...project.objects!,
+    { id: "obj-3", name: "copy.stl", mesh: meshRecord("copy.stl", lattice(10)), placement, supportEdits: [], modelTree: { ...savedTree(treeCopy, 0, () => undefined), rootStep: meshRecord("part.step", rootStep) } },
+  ],
+};
+const sharedText = await encodeProject(sharing);
+check("encoding does not change the project", JSON.stringify(project) === before);
+const sharedWire = JSON.parse(sharedText) as { objects: { modelTree?: { rootStep?: Record<string, unknown> } }[] };
+const reference3 = parseProject(serializeProject(sharing));
+const sharedBack = await decodeProject(sharedText);
+check("a root STEP seen twice is written once, the second as name, hash, and length", sharedWire.objects[0]!.modelTree!.rootStep!.encoding === ENCODING_GZIP && sharedWire.objects[2]!.modelTree!.rootStep!.data === undefined && sharedWire.objects[2]!.modelTree!.rootStep!.hash === sharedWire.objects[0]!.modelTree!.rootStep!.hash);
+check("and both trees come back with its bytes", sharedBack.ok && reference3.ok && JSON.stringify(sharedBack.project) === JSON.stringify(reference3.project) && sharedBack.project.objects![2]!.modelTree?.rootStep?.bytesBase64 === sharedBack.project.objects![0]!.modelTree?.rootStep?.bytesBase64);
+
+// Where the platform has no CompressionStream, the file is written as plain base64 records and still opens.
+{
+  const real = globalThis.CompressionStream;
+  (globalThis as { CompressionStream?: unknown }).CompressionStream = undefined;
+  let plainText = "";
+  try {
+    plainText = await encodeProject(project);
+  } finally {
+    (globalThis as { CompressionStream?: unknown }).CompressionStream = real;
+  }
+  const plainWire = JSON.parse(plainText) as { objects: { mesh: { encoding?: string; bytesBase64?: string } }[] };
+  check("without CompressionStream the records are written as base64", plainWire.objects[0]!.mesh.encoding === "base64" && plainWire.objects[0]!.mesh.bytesBase64 === undefined);
+  const plainBack = await decodeProject(plainText);
+  check("and that file opens as the compressed one does", plainBack.ok && reference.ok && JSON.stringify(plainBack.project) === JSON.stringify(reference.project));
+}
 check("the plain reader leaves a compressed record unread", !parseProject(text).ok);
 
 if (failed) {
