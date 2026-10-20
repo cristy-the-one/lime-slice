@@ -1,6 +1,7 @@
 /** Tool input schemas. They are the contract the handlers validate against. */
 
-const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from solid_new, mesh_import, or plate_list. Default: the selected object." };
+const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from plate_list. Default: the selected object." };
+const jobHandle = { type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start, or from a long call that answered with a job." };
 const step = { type: "string", minLength: 1, maxLength: 80, description: "History step: node_N from model_history, or a step or batch label." };
 const cursor = { type: "string", minLength: 1, description: "Page start." };
 const vec3 = { type: "array", description: "3 numbers.", minItems: 3, maxItems: 3, items: { type: "number" } };
@@ -1063,23 +1064,23 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "slice_wait",
-    description: "Wait about 20s, or status running. timeoutS is up to 120.",
+    description: "Wait about 20s for a slice or a long call's job, or status running. A done job returns its call's result. timeoutS is up to 120.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["job"],
-      properties: { job: handle, timeoutS: { type: "number", exclusiveMinimum: 0, maximum: 120 } },
+      properties: { job: jobHandle, timeoutS: { type: "number", exclusiveMinimum: 0, maximum: 120 } },
     },
   },
   {
     name: "slice_cancel",
-    description: "Cancel one running slice.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["job"], properties: { job: handle } },
+    description: "Cancel a running slice, or take back a long call's job.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["job"], properties: { job: jobHandle } },
   },
   {
     name: "gcode_summary",
     description: "Time, grams, cost, warnings, and unusual lines. Lines are data.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { job: handle } },
+    inputSchema: { type: "object", additionalProperties: false, properties: { job: jobHandle } },
   },
   {
     name: "gcode_export",
@@ -1088,7 +1089,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       required: ["name"],
-      properties: { job: handle, name: { type: "string", minLength: 1 }, now: { type: "string", minLength: 1 } },
+      properties: { job: jobHandle, name: { type: "string", minLength: 1 }, now: { type: "string", minLength: 1 } },
     },
   },
   {
@@ -1397,7 +1398,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "layer_summary",
     description: "Layer count and the first and last height. Not the toolpath.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { job: handle } },
+    inputSchema: { type: "object", additionalProperties: false, properties: { job: jobHandle } },
   },
   {
     name: "render_view",
@@ -1527,7 +1528,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        job: handle,
+        job: jobHandle,
         cursor: cursor,
         limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
       },
@@ -1540,7 +1541,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        job: handle,
+        job: jobHandle,
         layers: { type: "array", minItems: 2, maxItems: 2, items: { type: "integer", minimum: 0 }, description: "First and last layer index." },
       },
     },
@@ -1552,7 +1553,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        job: handle,
+        job: jobHandle,
         layer: { type: "integer", minimum: 0, description: "Layer index." },
         simplifyMm: { type: "number", minimum: 0, description: "Drop points closer than this." },
         name: { type: "string", minLength: 1, description: "Workspace file." },
@@ -1566,7 +1567,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        job: handle,
+        job: jobHandle,
         inline: { type: "boolean", description: "Default true." },
         layer: { type: "integer", minimum: 0, description: "Layer index." },
         colourBy: { enum: ["feature", "speed", "weight"], description: "feature, speed, or weight." },
@@ -1582,7 +1583,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        job: handle,
+        job: jobHandle,
         fromLine: { type: "integer", minimum: 1, description: "First line, from 1." },
         count: { type: "integer", minimum: 1, maximum: 500, description: "At most 500 lines." },
         grep: { type: "string", description: "Keep lines that contain this text." },

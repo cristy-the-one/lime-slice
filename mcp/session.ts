@@ -178,10 +178,50 @@ const LONG_CALLS = new Set(["model_apply_batch", "model_build", "model_edit", "p
 const NAME_LIMIT = 120;
 /** Tools whose op fields may be text expressions. */
 
+/**
+ * Calls that may outrun the client's request timeout (Claude Code's is 60 s, and it then restarts the server). One that
+ * has not answered after `replySeconds()`, or whose request the client cancels, goes on as a background job instead:
+ * the reply is a job handle for slice_wait, and the work finishes or, with slice_cancel, is taken back.
+ */
+const DETACHABLE = new Set([
+  "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
+  "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
+]);
+
+/** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
+const WHILE_BUSY = new Set([
+  "session_info", "guide", "plate_list", "slice_wait", "slice_cancel", "model_history", "settings_schema", "machine_list",
+  "machine_get", "overrides_list", "layer_actions_list", "paint_list", "gcode_summary", "gcode_read", "layer_summary",
+  "layer_detail", "mesh_stats", "support_trees",
+]);
+
+/** Seconds a detachable call runs before it answers with a job instead: under a 60 s client timeout. */
+function replySeconds(): number {
+  const raw = Number(process.env.LIME_MCP_REPLY_S);
+  return Number.isFinite(raw) && raw > 0 ? raw : 45;
+}
+
 /** Carried with one tools/call: a progress token, and cancel for that request. */
 export interface CallMeta {
   progressToken?: string | number;
   signal?: AbortSignal;
+  /** How far the work is, for a job's wait: the last fraction and stage it reported. */
+  fraction?: number;
+  stage?: string;
+}
+
+/** A detachable call that outran its reply: it runs on, and slice_wait returns its result. */
+interface WorkJob {
+  handle: string;
+  tool: string;
+  object?: string;
+  started: number;
+  ctx: CallMeta;
+  stop: AbortController;
+  settled: Promise<void>;
+  done: boolean;
+  result?: Record<string, unknown>;
+  error?: string;
 }
 
 export interface PlateObject {
@@ -597,6 +637,8 @@ export class Session {
   jobs: Job[] = [];
   running: Job | null = null;
   latest: Job | null = null;
+  /** Long calls that went on in the background, newest last; a few finished ones are kept for their wait. */
+  private workJobs: WorkJob[] = [];
   private seq = 0;
   private jobSeq = 0;
   private readonly engine: Engine;
@@ -666,6 +708,8 @@ export class Session {
       this.startupChecked = true;
       this.previousAutosave = takePreviousAutosave();
     }
+    const busy = this.busyRefusal(name);
+    if (busy) return Promise.resolve(busy);
     const numbered = this.withNumbers(name, args);
     if ("reason" in numbered) return Promise.resolve({ ok: false, reason: numbered.reason });
     args = numbered.args;
@@ -677,14 +721,19 @@ export class Session {
     const long = LONG_CALLS.has(name) || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
     if (changes && this.inflight === 0 && long) this.flushAutosave();
     this.inflight += 1;
+    // A detachable call's work stops only for slice_cancel: the request's own cancel, which a client also sends when it
+    // gives up waiting, hands the work to a background job instead of throwing it away.
+    const detachable = DETACHABLE.has(name);
+    const stop = new AbortController();
+    const ctx: CallMeta = detachable ? { progressToken: meta?.progressToken, signal: stop.signal } : (meta ?? {});
     let result: ReturnType<Session["dispatch"]>;
     try {
-      result = this.callContext.run(meta ?? {}, () => this.dispatch(name, input, meta));
+      result = this.callContext.run(ctx, () => this.dispatch(name, input, ctx));
     } catch (err) {
       this.inflight -= 1;
       throw err;
     }
-    return Promise.resolve(result).then((value) => {
+    const work = Promise.resolve(result).then((value) => {
       const { payload, carriedAll } = this.bridgePayload(name, input, value);
       this.lastBridge = payload;
       void mirror(payload, this.bridgeLink, carriedAll);
@@ -702,6 +751,101 @@ export class Session {
         this.scheduleAutosave();
       }
     });
+    if (!detachable) return work;
+    return this.detachable(name, input, work, ctx, stop, meta?.signal);
+  }
+
+  /** The call's answer, or a job handle when it is not done within replySeconds() or its request is cancelled. */
+  private detachable(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController, request?: AbortSignal): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      let answered = false;
+      const finish = () => {
+        answered = true;
+        clearTimeout(timer);
+        request?.removeEventListener("abort", detach);
+      };
+      const detach = () => {
+        if (answered) return;
+        finish();
+        resolve(this.workReply(this.startWorkJob(name, input, work, ctx, stop)));
+      };
+      const timer = setTimeout(detach, replySeconds() * 1000);
+      timer.unref?.();
+      request?.addEventListener("abort", detach, { once: true });
+      work.then((value) => {
+        if (answered) return;
+        finish();
+        resolve(value);
+      }, (err: unknown) => {
+        if (answered) return;
+        finish();
+        reject(err);
+      });
+      if (request?.aborted) detach();
+    });
+  }
+
+  private startWorkJob(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController): WorkJob {
+    this.jobSeq += 1;
+    const object = typeof input.object === "string" ? input.object : name.startsWith("model_") || name === "solid_new" ? this.selected : undefined;
+    const job: WorkJob = { handle: `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, done: false, settled: Promise.resolve() };
+    job.settled = work.then((value) => {
+      job.result = value;
+    }, (err: unknown) => {
+      job.error = err instanceof Error ? err.message : "The call failed.";
+    }).finally(() => {
+      job.done = true;
+      // The work's own end already scheduled the autosave; a finished job is kept a while for its wait.
+      const finished = this.workJobs.filter((row) => row.done);
+      if (finished.length > 8) this.workJobs.splice(this.workJobs.indexOf(finished[0]!), 1);
+    });
+    this.workJobs.push(job);
+    return job;
+  }
+
+  /** A job's state as slice_wait and the detached call answer it. A finished job answers with its call's own result. */
+  private workReply(job: WorkJob): Record<string, unknown> {
+    if (job.done) {
+      if (job.error !== undefined) return { ok: false, job: job.handle, status: "error", tool: job.tool, reason: job.error };
+      return { ...(job.result ?? { ok: false }), job: job.handle, status: "done", tool: job.tool };
+    }
+    return {
+      ok: true,
+      job: job.handle,
+      status: "running",
+      tool: job.tool,
+      ...(job.object ? { object: job.object } : {}),
+      fraction: Math.round((job.ctx.fraction ?? 0) * 1000) / 1000,
+      ...(job.ctx.stage ? { stage: job.ctx.stage } : {}),
+      seconds: Math.round((Date.now() - job.started) / 1000),
+      note: `${job.tool} runs longer than a client waits, so it goes on in the background. Call slice_wait {job:"${job.handle}"} until status is done: that reply is the call's own result. slice_cancel takes the work back. Edits wait until it is done.`,
+    };
+  }
+
+  /** While a background job runs, only reads that leave the modeler alone, and the job's wait and cancel, are answered. */
+  private busyRefusal(name: string): Record<string, unknown> | null {
+    const job = this.workJobs.find((row) => !row.done);
+    if (!job || WHILE_BUSY.has(name)) return null;
+    const at = job.ctx.stage ? `, ${job.ctx.stage}` : "";
+    return { ok: false, job: job.handle, reason: `${job.tool}${job.object ? ` on ${job.object}` : ""} is still running in the background as ${job.handle}${at}. Call slice_wait {job:"${job.handle}"} until it is done, or slice_cancel to take it back, then call this again.` };
+  }
+
+  private async workWait(job: WorkJob, meta: CallMeta | undefined, timeoutS?: number): Promise<Record<string, unknown>> {
+    const limitS = typeof timeoutS === "number" && Number.isFinite(timeoutS) ? Math.min(SLICE_WAIT_MAX_S, Math.max(0.05, timeoutS)) : SLICE_WAIT_DEFAULT_S;
+    const deadline = Date.now() + limitS * 1000;
+    while (!job.done && Date.now() < deadline && !meta?.signal?.aborted) {
+      this.onProgress?.(job.handle, job.ctx.fraction ?? 0, job.ctx.stage ?? "", meta?.progressToken);
+      await Promise.race([job.settled, this.pause(Math.min(250, Math.max(1, deadline - Date.now())), meta?.signal)]);
+    }
+    return this.workReply(job);
+  }
+
+  private async workCancel(job: WorkJob): Promise<Record<string, unknown>> {
+    if (job.done) return { ...this.workReply(job), reason: "That job had already finished." };
+    job.stop.abort();
+    await Promise.race([job.settled, this.pause(SLICE_WAIT_DEFAULT_S * 1000)]);
+    if (!job.done) return { ok: true, job: job.handle, status: "cancelling", reason: "The work stops after the step it is on, and is then taken back. Call slice_wait for the outcome." };
+    return this.workReply(job);
   }
 
   /** An unknown handle right after a restart: the reply says where the last session's plate is. */
@@ -963,6 +1107,7 @@ export class Session {
     } catch (err) {
       reason = err instanceof Error ? err.message : "The engine did not answer.";
     }
+    const running = this.workJobs.find((row) => !row.done);
     return {
       ok: true,
       serverVersion: appVersion(),
@@ -972,6 +1117,7 @@ export class Session {
       ...(reason ? { reason } : {}),
       workspace: process.env.LIME_MCP_WORKSPACE ?? "",
       ...(this.previousAutosave ? { autosave: this.previousAutosave } : {}),
+      ...(running ? { job: { job: running.handle, tool: running.tool, ...(running.object ? { object: running.object } : {}), ...(running.ctx.stage ? { stage: running.ctx.stage } : {}) } } : {}),
       printer: this.printer().name,
       filament: this.filament().name,
       printerSend: false,
@@ -2680,6 +2826,8 @@ export class Session {
   }
 
   private async sliceWait(handle: string, meta?: CallMeta, timeoutS?: number): Promise<Record<string, unknown>> {
+    const work = this.workJobs.find((row) => row.handle === handle);
+    if (work) return this.workWait(work, meta, timeoutS);
     const job = this.jobOf(handle);
     if (!job) return { ok: false, job: handle, reason: "That slice job is not in this session." };
     const limitS = typeof timeoutS === "number" && Number.isFinite(timeoutS)
@@ -2755,6 +2903,8 @@ export class Session {
   }
 
   private async sliceCancel(handle: string): Promise<Record<string, unknown>> {
+    const work = this.workJobs.find((row) => row.handle === handle);
+    if (work) return this.workCancel(work);
     const job = this.jobOf(handle);
     if (!job) return { ok: false, reason: "That slice job is not in this session." };
     await this.ask(this.engine.sliceCancel(String(job.engineId)));
@@ -4091,9 +4241,14 @@ export class Session {
     const result = (body: Record<string, unknown>) => ({ ...body, checkpoints });
     const meta = this.callContext.getStore();
     // Progress per step, so a client that resets its timeout on progress keeps waiting for a long batch.
-    const progress = (index: number, step: number, steps: number) => {
+    const progress = (index: number, step: number, steps: number, doing?: string) => {
       const fraction = Math.min(0.999, (index + (steps > 0 ? step / steps : 0)) / Math.max(1, raws.length));
-      this.onProgress?.("model", fraction, `op ${index + 1 + offset} of ${raws.length + offset}${steps > 1 ? `, step ${step + 1} of ${steps}` : ""}`, meta?.progressToken);
+      const stage = `op ${index + 1 + offset} of ${raws.length + offset}${doing ? `, ${doing}` : steps > 1 ? `, step ${step + 1} of ${steps}` : ""}`;
+      if (meta) {
+        meta.fraction = fraction;
+        meta.stage = stage;
+      }
+      this.onProgress?.("model", fraction, stage, meta?.progressToken);
     };
     // A cancelled call, or one the client gave up on, takes the whole run back: the part is as it was before it.
     const cancelled = async (): Promise<Record<string, unknown>> => {
@@ -4228,6 +4383,7 @@ export class Session {
       }
       // --- A9. Replace the piece chain with one group. A composite that applied nothing stays as it was. ---
       if (ownNodes.length > 0) {
+        progress(index, pieces.length - 1, pieces.length, `gathering its ${ownNodes.length} steps into one group`);
         const stored = await this.storeGroup(obj, before, ownNodes[0]!, steps, label, raw);
         if (stored.ok !== true) {
           // The pieces are already gone. refuse still drops them when they remain, and rolls the run back.
