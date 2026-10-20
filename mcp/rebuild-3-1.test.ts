@@ -342,7 +342,15 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   for (let round = 0; done.status === "running" && round < 5; round += 1) done = await session.call("slice_wait", { job: early.job, timeoutS: 10 });
   check("its wait returns the opened project", done.status === "done" && done.ok === true && ids(done).length === 1 && stages.some((stage) => stage.includes("replaying its 3 steps")), JSON.stringify(done));
   delete process.env.LIME_MCP_FAKE_OPEN_MS;
+
+  // A slice_start that became a job hands on its own slice handle, so the same wait loop goes on to the slice.
+  const part2 = String((await session.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 })).object);
+  process.env.LIME_MCP_REPLY_S = "0.001";
+  await session.call("object_select", { object: part2 });
+  let sliced = await session.call("slice_start", {});
   delete process.env.LIME_MCP_REPLY_S;
+  for (let round = 0; sliced.status === "running" && round < 10; round += 1) sliced = await session.call("slice_wait", { job: sliced.job, timeoutS: 10 });
+  check("a slice_start job leads its wait on to the slice itself", sliced.status === "done" && typeof sliced.seconds === "number", JSON.stringify(sliced));
 }
 
 if (failed) {

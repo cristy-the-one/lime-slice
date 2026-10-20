@@ -185,7 +185,7 @@ const NAME_LIMIT = 120;
  */
 const DETACHABLE = new Set([
   "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
-  "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "export_3mf", "model_export_step",
+  "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
 ]);
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
@@ -194,6 +194,9 @@ const WHILE_BUSY = new Set([
   "machine_get", "overrides_list", "layer_actions_list", "paint_list", "gcode_summary", "gcode_read", "layer_summary",
   "layer_detail", "mesh_stats", "support_trees",
 ]);
+
+/** Detachable calls that change no part: a cancelled one is simply left to finish. */
+const CHANGES_NOTHING = new Set(["model_probe", "project_save", "app_open", "export_3mf", "model_export_step"]);
 
 /** Seconds a detachable call runs before it answers with a job instead: under a 60 s client timeout. */
 function replySeconds(): number {
@@ -868,7 +871,11 @@ export class Session {
   private workReply(job: WorkJob): Record<string, unknown> {
     if (job.done) {
       if (job.error !== undefined) return { ok: false, job: job.handle, status: "error", tool: job.tool, reason: job.error };
-      return { ...(job.result ?? { ok: false }), job: job.handle, status: "done", tool: job.tool };
+      const result = job.result ?? { ok: false };
+      // A call whose result is a job of its own (slice_start's slice) keeps that handle and status, so the same wait
+      // loop goes on to wait for the slice; the background job is named beside it.
+      if (typeof result.job === "string") return { ...result, workJob: job.handle, tool: job.tool };
+      return { ...result, job: job.handle, status: "done", tool: job.tool };
     }
     return {
       ok: true,
@@ -912,7 +919,10 @@ export class Session {
 
   private async workCancel(job: WorkJob): Promise<Record<string, unknown>> {
     if (job.done) return { ...this.workReply(job), reason: "That job had already finished." };
-    if (!job.stoppable) return { ok: false, job: job.handle, status: "running", reason: `${job.tool} cannot stop part way. It finishes; then model_undo or plate_undo takes it back.` };
+    if (!job.stoppable) {
+      const after = CHANGES_NOTHING.has(job.tool) ? "It changes no part." : job.tool.startsWith("model_") || job.tool === "solid_new" ? "Once it is done, model_undo or model_goto takes the part back." : "Once it is done, plate_undo takes it back.";
+      return { ok: false, job: job.handle, status: "running", reason: `${job.tool} cannot stop part way; it finishes in the background, and slice_wait returns its result. ${after}` };
+    }
     job.stop.abort();
     await Promise.race([job.settled, this.pause(SLICE_WAIT_DEFAULT_S * 1000)]);
     if (!job.done) return { ok: true, job: job.handle, status: "cancelling", reason: "The work stops after the step it is on, and is then taken back. Call slice_wait for the outcome." };
