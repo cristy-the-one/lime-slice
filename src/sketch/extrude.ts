@@ -2,9 +2,9 @@
  * --- F1 / E1. Extrude a sketch's regions, and reopen that extrude from history. ---
  *
  * The sketch stays the editing state. The op stores a copy as `sketch`, and the kernel never
- * reads it. A straight outline that needs a second depth, a draft, or a face to stop at is sent
- * as a point profile: the kernel refuses those fields on loops. An arc or a hole with those
- * fields is refused here, with the kernel's sentence, and nothing is sent.
+ * reads it. A single outline of straight lines that needs a second depth, a draft, or a face to
+ * stop at is sent as a point profile, as it always was. An arc, a spline, or a hole sends its
+ * loops with those fields: the kernel builds them on the same face.
  */
 import { arcFrom3, arcPoint, curveOf, dist, pointOn, projectToArc, projectToSegment, projectToSpline, sampleSpline } from "./geom.ts";
 import { frameOf, toPlane, type SketchFrame } from "./frame.ts";
@@ -19,12 +19,6 @@ const NEAR_MM = 0.05;
 /** Two sides this close are the centred extrude. */
 const EQUAL_MM = 1e-4;
 
-/** Why a second depth, a draft, or a face to stop at is refused on an outline with arcs, splines, or holes, in plain words. */
-export function loopExtentRefusal(extent: { depth2: number | null; draftDeg: number | null; upTo: unknown }): string {
-  const what = extent.draftDeg != null ? "A draft" : extent.upTo != null ? "Stopping at a face" : "A different depth on the other side";
-  const instead = extent.draftDeg != null ? "Drop the draft" : extent.upTo != null ? "Set a depth instead" : "Give both sides the same depth";
-  return `${what} works on an outline of straight lines with no holes for now. ${instead}, or draw the outline with lines.`;
-}
 export const DRAFT_UP_TO_REFUSAL = "A draft up to a face is not available yet. Drop the draft, or drop the face and set a depth.";
 export const UP_TO_SECOND_REFUSAL = "An extrude up to a face starts at the profile. Drop the second depth.";
 export const DEPTH_REFUSAL = "An extrude needs a depth other than 0.";
@@ -289,15 +283,24 @@ function oneExtrude(
     ...(extent.upTo != null ? { upTo: extent.upTo } : {}),
   };
   const sketchCopy = sketchJson(sketch);
-  if (needsPoint) {
-    const profile = lineProfile(loops);
-    if (!profile) return { error: loopExtentRefusal(extent) };
-    return { op: { ...extrudeOp(boolean, plane, profile, depth, extent.symmetric, {}, fields), sketch: sketchCopy } };
-  }
-  return { op: { ...extrudeOp(boolean, plane, [], depth, extent.symmetric, {}, copyLoops(loops)), sketch: sketchCopy } };
+  const profile = needsPoint ? lineProfile(loops) : null;
+  if (profile) return { op: { ...extrudeOp(boolean, plane, profile, depth, extent.symmetric, {}, fields), sketch: sketchCopy } };
+  // Loops carry the extent fields too: the op is the plain one with them added.
+  const op = extrudeOp(boolean, plane, [], depth, extent.symmetric, {}, copyLoops(loops));
+  const extended = needsPoint ? { ...op, ...extentFields(extrudeOp(boolean, plane, [], depth, extent.symmetric, {}, fields)) } : op;
+  return { op: { ...extended, sketch: sketchCopy } };
 }
 
-/** A single all-line outline, or null when an arc, a spline, or a hole would have to become points. */
+/** The second depth, draft, and face to stop at of `op`, each only when set. */
+function extentFields(op: ExtrudeOp): Pick<ExtrudeOp, "depth2" | "draftDeg" | "upTo"> {
+  return {
+    ...(op.depth2 !== undefined ? { depth2: op.depth2 } : {}),
+    ...(op.draftDeg !== undefined ? { draftDeg: op.draftDeg } : {}),
+    ...(op.upTo !== undefined ? { upTo: op.upTo } : {}),
+  };
+}
+
+/** A single all-line outline, or null when an arc, a spline, or a hole would make it more than points. */
 function lineProfile(loops: readonly ProfileLoop[]): Vec2[] | null {
   const outer = loops[0];
   if (!outer || loops.length !== 1) return null;

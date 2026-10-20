@@ -3540,33 +3540,8 @@ export class Session {
       if (loops.loops && spec.profile !== undefined) return { reason: "Give a profile or loops, not both." };
       if (loops.loops && (spec.smooth !== undefined || spec.corners !== undefined)) return { reason: LOOP_SHAPE };
       const booleanOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
-      if (loops.loops) {
-        if (kind === "extrude") {
-          if (spec.depth2 !== undefined || (spec.draftDeg !== undefined && spec.draftDeg !== 0) || spec.upTo !== undefined) {
-            return { reason: "A second depth, a draft, or a face to stop at is for a point profile." };
-          }
-          const depth = spec.depth;
-          if (typeof depth !== "number" || depth === 0) return { reason: "An extrude needs a depth in millimetres." };
-          const made = extrudeOp(booleanOp, plane, [], depth, spec.symmetric === true, {}, loops.loops);
-          return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
-        }
-        const axisOrigin = readProfile([spec.axisOrigin, [0, 0], [0, 0]])?.[0];
-        const axisDir = readProfile([spec.axisDir, [0, 0], [0, 0]])?.[0];
-        const made = revolveOp(booleanOp, plane, [], {
-          ...(spec.axisOrigin !== undefined && axisOrigin ? { origin: axisOrigin } : {}),
-          ...(spec.axisDir !== undefined && axisDir ? { dir: axisDir } : {}),
-          ...(typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {}),
-        }, {}, loops.loops);
-        return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
-      }
-      const profile = readProfile(spec.profile);
-      if (!profile) return { reason: "A profile needs at least three [u, v] points." };
-      const shape = readShape(spec, profile.length);
-      if ("reason" in shape) return shape;
-      if (kind === "extrude") {
-        const depth = spec.depth;
-        if (typeof depth !== "number" || !Number.isFinite(depth)) return { reason: "An extrude needs a depth in millimetres." };
-        // K3. Each field is sent only when set. A plain extrude is the same call as before.
+      // K3. Each field is sent only when set. A plain extrude is the same call as before. Loops take them too.
+      const readExtent = (depth: number): { depth2?: number; draftDeg?: number; upTo?: number } | { reason: string } => {
         const extent: { depth2?: number; draftDeg?: number; upTo?: number } = {};
         if (spec.depth2 !== undefined) {
           if (typeof spec.depth2 !== "number" || !(spec.depth2 > 0)) return { reason: "The second depth is a distance on the other side of the plane, above 0." };
@@ -3591,6 +3566,42 @@ export class Session {
         if (extent.upTo !== undefined && extent.draftDeg !== undefined) return { reason: "A draft up to a face is not available yet. Drop the draft, or drop the face and set a depth." };
         if (extent.depth2 !== undefined && spec.symmetric === true) return { reason: "An extrude is centred, or it has a second depth, not both." };
         if (depth === 0 && extent.upTo === undefined && extent.depth2 === undefined) return { reason: "An extrude needs a depth in millimetres." };
+        return extent;
+      };
+      if (loops.loops) {
+        if (kind === "extrude") {
+          const depth = spec.depth;
+          if (typeof depth !== "number" || !Number.isFinite(depth)) return { reason: "An extrude needs a depth in millimetres." };
+          const extent = readExtent(depth);
+          if ("reason" in extent) return extent;
+          const plain = extrudeOp(booleanOp, plane, [], depth, spec.symmetric === true, {}, loops.loops);
+          const fields = extrudeOp(booleanOp, plane, [], depth, spec.symmetric === true, {}, extent);
+          const made = {
+            ...plain,
+            ...(fields.depth2 !== undefined ? { depth2: fields.depth2 } : {}),
+            ...(fields.draftDeg !== undefined ? { draftDeg: fields.draftDeg } : {}),
+            ...(fields.upTo !== undefined ? { upTo: fields.upTo } : {}),
+          };
+          return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+        }
+        const axisOrigin = readProfile([spec.axisOrigin, [0, 0], [0, 0]])?.[0];
+        const axisDir = readProfile([spec.axisDir, [0, 0], [0, 0]])?.[0];
+        const made = revolveOp(booleanOp, plane, [], {
+          ...(spec.axisOrigin !== undefined && axisOrigin ? { origin: axisOrigin } : {}),
+          ...(spec.axisDir !== undefined && axisDir ? { dir: axisDir } : {}),
+          ...(typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {}),
+        }, {}, loops.loops);
+        return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+      }
+      const profile = readProfile(spec.profile);
+      if (!profile) return { reason: "A profile needs at least three [u, v] points." };
+      const shape = readShape(spec, profile.length);
+      if ("reason" in shape) return shape;
+      if (kind === "extrude") {
+        const depth = spec.depth;
+        if (typeof depth !== "number" || !Number.isFinite(depth)) return { reason: "An extrude needs a depth in millimetres." };
+        const extent = readExtent(depth);
+        if ("reason" in extent) return extent;
         const made = extrudeOp(booleanOp, plane, profile, depth, spec.symmetric === true, shape, extent);
         return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
       }

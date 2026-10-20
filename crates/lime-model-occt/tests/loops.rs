@@ -177,3 +177,125 @@ fn washer_and_rounded_rectangle_and_the_refusals() {
     near(volume(&lofted), block + 1000.0);
     assert!(lofted["op"]["sections"][0].get("profile").is_none(), "{}", lofted["op"]);
 }
+
+/// A closed spline through four points, as the sketch's Spline tool closes one: the start passed again at the end.
+fn blob(radius: f64) -> Value {
+    json!({
+        "start": [radius, 0.0],
+        "segments": [
+            { "kind": "spline", "through": [[0.0, radius], [-radius, 0.0], [0.0, -radius]], "to": [radius, 0.0] }
+        ]
+    })
+}
+
+fn feature(key: &str, op: Value) -> Value {
+    call(json!({ "call": "open", "key": key, "feature": op, "chordMm": 0.1 }))
+}
+
+/// A cone frustum's volume between radii `a` and `b`, `h` apart.
+fn frustum(a: f64, b: f64, h: f64) -> f64 {
+    PI * h / 3.0 * (a * a + a * b + b * b)
+}
+
+#[test]
+fn loops_take_a_second_depth_and_a_draft() {
+    let probe = call(json!({ "call": "open", "key": "loops-k3-probe", "box": [1.0, 1.0, 1.0] }));
+    if probe.get("error").is_some() {
+        assert!(!require(), "OCCT was required: {probe}");
+        return;
+    }
+    let round = |extra: Value| {
+        let mut op = json!({
+            "kind": "extrude", "op": "fuse", "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0],
+            "depth": 6.0, "loops": [circle(5.0)]
+        });
+        for (name, value) in extra.as_object().unwrap() {
+            op[name] = value.clone();
+        }
+        op
+    };
+
+    // A circle 6 mm up and 4 mm down is a 10 mm cylinder, and the op keeps its loops and its second depth.
+    let sided = feature("loops-k3-sided", round(json!({ "depth2": 4.0 })));
+    near(volume(&sided), PI * 25.0 * 10.0);
+
+    // A 5° draft on a 10 mm push: the far end is 10 tan 5° smaller all round, a frustum.
+    let taper = (5.0f64).to_radians().tan();
+    let drafted = feature("loops-k3-draft", round(json!({ "depth": 10.0, "draftDeg": 5.0 })));
+    assert!(
+        (volume(&drafted) - frustum(5.0, 5.0 - 10.0 * taper, 10.0)).abs() < 0.5,
+        "{} is not a frustum of {}",
+        volume(&drafted),
+        frustum(5.0, 5.0 - 10.0 * taper, 10.0)
+    );
+
+    // The owner's extrude, on a circle: 8.2 mm each way with 3°. The wall is one plane, so the +W end shrinks and
+    // the −W end grows by 8.2 tan 3°.
+    let lean = 8.2 * (3.0f64).to_radians().tan();
+    let centred = feature("loops-k3-centred", round(json!({ "depth": 16.4, "symmetric": true, "draftDeg": 3.0 })));
+    assert!(
+        (volume(&centred) - frustum(5.0 + lean, 5.0 - lean, 16.4)).abs() < 0.5,
+        "{} is not a frustum of {}",
+        volume(&centred),
+        frustum(5.0 + lean, 5.0 - lean, 16.4)
+    );
+
+    // The same on a closed spline: a solid between the straight prism of the outline at its narrow and wide ends.
+    let spline = |extra: Value| {
+        let mut op = json!({
+            "kind": "extrude", "op": "fuse", "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0],
+            "depth": 16.4, "loops": [blob(5.0)]
+        });
+        for (name, value) in extra.as_object().unwrap() {
+            op[name] = value.clone();
+        }
+        op
+    };
+    // One spline segment that comes back to its start is the sketch's closed spline: a smooth periodic curve, near the
+    // circle through the same four points.
+    let straight = volume(&feature("loops-k3-spline-straight", spline(json!({ "symmetric": true }))));
+    let disc = PI * 25.0 * 16.4;
+    assert!(
+        (straight - disc).abs() / disc < 0.1,
+        "a closed spline through a circle's four points is near {disc}, not {straight}"
+    );
+    let spline_draft = feature("loops-k3-spline", spline(json!({ "symmetric": true, "draftDeg": 3.0 })));
+    let leaned = volume(&spline_draft);
+    assert!(
+        (leaned - straight).abs() / straight < 0.05 && (leaned - straight).abs() > 1e-3,
+        "a 3° centred draft keeps a spline near its straight volume {straight}, not {leaned}"
+    );
+
+    // On a solid: a circle on a 20 mm block's top, 6 up and 4 down, adds only what is above the top.
+    let opened = call(json!({ "call": "open", "key": "loops-k3-block", "box": [20.0, 20.0, 10.0] }));
+    near(volume(&opened), 4000.0);
+    let on_block = json!({
+        "kind": "extrude", "op": "fuse", "origin": [10.0, 10.0, 10.0], "turn": [0.0, 0.0, 0.0],
+        "depth": 6.0, "depth2": 4.0, "loops": [circle(5.0)]
+    });
+    let joined = apply("loops-k3-block", 0, 1, &on_block);
+    near(volume(&joined), 4000.0 + PI * 25.0 * 6.0);
+    assert_eq!(joined["op"]["depth2"], json!(4.0), "{}", joined["op"]);
+    assert!(joined["op"]["loops"].is_array(), "{}", joined["op"]);
+
+    // A draft that closes the circle before the depth is refused, as it is on a point profile.
+    let closes = feature("loops-k3-closes", round(json!({ "depth": 10.0, "draftDeg": 30.0 })));
+    refused(&closes, "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.");
+
+    // A centred draft grows the −W end, so a washer's 4 mm hole closes there once 15 tan 10° on each side passes 2 mm.
+    let washer = |depth: f64| {
+        json!({
+            "kind": "extrude", "op": "fuse", "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0],
+            "depth": depth, "symmetric": true, "draftDeg": 10.0, "loops": [circle(10.0), circle(2.0)]
+        })
+    };
+    // At 10 mm through, the outline is a frustum from 10 + t to 10 − t and the hole one from 2 − t to 2 + t.
+    let t = 5.0 * (10.0f64).to_radians().tan();
+    let ring = frustum(10.0 + t, 10.0 - t, 10.0) - frustum(2.0 - t, 2.0 + t, 10.0);
+    let drafted_washer = volume(&feature("loops-k3-washer", washer(10.0)));
+    assert!((drafted_washer - ring).abs() < 0.5, "a drafted washer is {ring}, not {drafted_washer}");
+    refused(
+        &feature("loops-k3-washer-shut", washer(30.0)),
+        "This draft closes a hole before the depth. Use a smaller angle or a shorter depth.",
+    );
+}

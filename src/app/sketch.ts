@@ -346,8 +346,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     picked?: boolean;
     /** Heads-up text for distance, the other side, and draft. */
     texts?: Record<string, string>;
+    /** What the last Enter or Apply was refused with, and the extrude it was refused for (`extrudeKey`). */
+    refused?: { key: string; text: string };
   }
   let gesture: ExtrudeGesture | null = null;
+  /** The last client refusal worked out for the open extrude, and what it was worked out from. */
+  let noteMemo: { sketch: SketchData; key: string; text: string } | null = null;
   // --- F2. The axis stays live until a click or a drag locks it. ---
   interface RevolveGesture {
     angle: number;
@@ -1188,6 +1192,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     paintGlyphs();
     paintReadout();
     syncHud(hudMode);
+    hud.setNote(featureNote());
     focusDimensionLabel();
     if (button) {
       const busy = sketchBusy(editor);
@@ -1286,6 +1291,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       aspect: view.height > 0 ? view.width / view.height : 1,
     });
     return gridLines(window.minU, window.maxU, window.minV, window.maxV, gridSpacing(view.mmPerPx));
+  }
+
+  /** The open feature's refusal, for under the box. */
+  function featureNote(): string {
+    if (editor.phase !== "editing") return "";
+    if (sweep) return sweep.note;
+    if (revolve) return revolveNote;
+    if (gesture) return extrudeNote();
+    return "";
   }
 
   function syncHud(mode: "open" | "values" | "skip") {
@@ -1570,7 +1584,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (!currentSweepOp()) return "The sweep is not ready.";
       return "";
     }
-    if (gesture && gesture.regions.length === 0) return "Select a region to extrude.";
+    if (gesture) {
+      if (gesture.regions.length === 0) return "Select a region to extrude.";
+      return extrudeNote();
+    }
     return "";
   }
 
@@ -2306,10 +2323,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     });
   }
 
-  function currentOp(): ModelOp | null {
+  /** The op the open extrude would apply, or the sentence it is refused with before anything is sent. */
+  function builtExtrude(): { op: ModelOp } | { error: string } | null {
     const sketch = activeSketch(editor);
     if (!sketch || !gesture || gesture.regions.length === 0) return null;
-    const built = buildSketchExtrude({
+    return buildSketchExtrude({
       sketch,
       regions: gesture.regions,
       distance: gesture.distance,
@@ -2318,39 +2336,72 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       upTo: gesture.upTo,
       mode: resolvedMode(),
     });
-    return "op" in built ? built.op : null;
   }
 
+  function currentOp(): ModelOp | null {
+    const built = builtExtrude();
+    return built && "op" in built ? built.op : null;
+  }
+
+  /** Everything an Apply of the open extrude depends on. A refusal is shown until one of these changes. */
+  function extrudeKey(): string {
+    if (!gesture) return "";
+    const fields = [gesture.slots, gesture.distance, gesture.depth2, gesture.draft, gesture.upTo, resolvedMode()];
+    const regions = gesture.regions.map((region) => [region.area.toFixed(4), region.outer.start.map((value) => value.toFixed(4))]);
+    return JSON.stringify([fields, regions]);
+  }
+
+  /**
+   * Why the open extrude will not apply, or "". A refusal found before sending shows as soon as the values make it,
+   * so the box says it before Enter; one the modeler gave stays until the extrude changes.
+   */
+  function extrudeNote(): string {
+    if (!gesture) return "";
+    const key = extrudeKey();
+    if (gesture.refused && gesture.refused.key === key) return gesture.refused.text;
+    // A pointer move asks twice (the readout and the box) and changes nothing the op is built from: build once per change.
+    const sketch = activeSketch(editor);
+    if (noteMemo && noteMemo.sketch === sketch && noteMemo.key === key) return noteMemo.text;
+    const built = builtExtrude();
+    const text = built && "error" in built ? built.error : "";
+    noteMemo = sketch ? { sketch, key, text } : null;
+    return text;
+  }
+
+  /**
+   * Enter and Apply always end in something seen: the step (or the new object), or the refusal under the box and in
+   * the status line, with the extrude left open to change.
+   */
   async function commitExtrude() {
+    if (!gesture || (applying || holding)) return;
     const why = featureBlocked();
     if (why) {
-      host.readout(why);
+      refuseExtrude(why);
       return;
     }
-    const sketch = activeSketch(editor);
-    if (!sketch || !gesture || (applying || holding)) return;
-    const built = buildSketchExtrude({
-      sketch,
-      regions: gesture.regions,
-      distance: gesture.distance,
-      depth2: gesture.slots >= 2 ? gesture.depth2 : null,
-      draftDeg: gesture.slots >= 3 ? gesture.draft : null,
-      upTo: gesture.upTo,
-      mode: resolvedMode(),
-    });
+    const built = builtExtrude();
+    if (!built) return;
     if ("error" in built) {
-      host.readout(built.error);
+      refuseExtrude(built.error);
       return;
     }
     const op = withExprs(built.op, gesture.texts);
     const mode = resolvedMode();
+    const key = extrudeKey();
     const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
     if (error === undefined) return;
     if (error) {
-      host.readout(error);
+      refuseExtrude(error, key);
       return;
     }
     afterFeature();
+  }
+
+  function refuseExtrude(text: string, key = extrudeKey()) {
+    if (!gesture) return;
+    gesture = { ...gesture, refused: { key, text } };
+    publish("skip");
+    host.readout(text);
   }
 
   /**
@@ -2437,6 +2488,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   function extrudeReadout(): string {
     if (!gesture) return "";
+    const note = extrudeNote();
+    if (note) return `${note} Esc returns to the sketch.`;
     const mode = modeLabel(resolvedMode());
     const where = gesture.upTo != null ? `Up to face ${typeof gesture.upTo === "number" ? gesture.upTo : gesture.upTo.index}. ` : "";
     return `${where}${tooBig()}Extrude ${gesture.distance} mm, ${mode}. Drag the arrow or type the distance. Click a region to extrude it, Shift-click to add one. M changes join, cut, or new object. Tab adds the other side, then a draft. Enter or Apply keeps it. Esc returns to the sketch.`;
@@ -2689,6 +2742,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       mode: resolvedRevolveMode(),
     });
     if ("error" in built) {
+      revolveNote = built.error;
+      publish("skip");
       host.readout(built.error);
       return;
     }
@@ -2697,6 +2752,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
     if (error === undefined) return;
     if (error) {
+      revolveNote = error;
+      publish("skip");
       host.readout(error);
       return;
     }

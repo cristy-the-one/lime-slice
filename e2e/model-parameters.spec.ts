@@ -91,6 +91,42 @@ test("parameters panel and an expression in a number field", async ({ page }) =>
   await expect(page.locator("#modelParamsRebuild")).toBeHidden();
 });
 
+// The owner's 3.1.0 report: "Rebuild 2 steps" over a new ellipsoid whose History is only its root, with 0 parameters.
+// The count was the last object's, painted before the new solid opened.
+test("Rebuild counts the open object's steps: none on a new solid after an out-of-date one", async ({ page }) => {
+  await openModel(page);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuParameters").click();
+  await page.locator("#modelParams [data-param-name]").fill("wallH");
+  await page.locator("#modelParams [data-param-value]").fill("30");
+  await page.locator("#modelToolNew").click();
+  const height = page.locator("#modelDz");
+  await height.focus();
+  await height.fill("wallH");
+  await height.blur();
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume 3000 mm³");
+  await page.locator("#modelParams [data-param-value]").fill("40");
+  await page.locator("#modelParams [data-param-value]").blur();
+  await expect(page.locator("#modelParamsRebuild")).toHaveText("Rebuild 1 step");
+
+  await page.locator("#modelToolNew").click();
+  await page.locator('#modelPrim [data-kind="ellipsoid"]').click();
+  for (const [id, text] of [["modelDx", "86.2"], ["modelDy", "10"], ["modelDz", "24"]] as const) {
+    await page.locator(`#${id}`).click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.type(text);
+  }
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelHistoryTree")).toHaveText("Ellipsoid 86.2×10×24");
+  await expect(page.locator("#modelParamsRebuild"), "the new solid has nothing out of date").toBeHidden();
+
+  // Undo takes the new solid back off the plate. Back on the box, its step is still out of date at wallH 40.
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#modelHistoryTree")).not.toContainText("Ellipsoid");
+  await expect(page.locator("#modelParamsRebuild")).toHaveText("Rebuild 1 step");
+});
+
 test("a repaint keeps every row valid, and a row that names an edited parameter follows it", async ({ page }) => {
   await openModel(page);
   await page.locator("#modelFeatureMore").click();

@@ -43,6 +43,12 @@ async function newSolid(page: Page, kind: string, fields: Record<string, number>
   await expect(page.locator("#modelPanel")).toBeHidden();
 }
 
+/** The solid's box on screen, X, Y and Z widths to the tenth. */
+async function widths(page: Page): Promise<number[]> {
+  const box = ((await page.locator("#model").getAttribute("data-solid")) ?? "").split(",").map(Number);
+  return [box[3]! - box[0]!, box[4]! - box[1]!, box[5]! - box[2]!].map((value) => Math.round(value * 10) / 10);
+}
+
 function volume(text: string | null): number {
   const match = /Volume ([\d.,]+) mm³/.exec(text ?? "");
   return match ? Number(match[1]!.replace(/,/g, "")) : Number.NaN;
@@ -81,4 +87,64 @@ test("pushing a cylinder's wall moves it along its radius, and the box shows the
     return [box[3]! - box[0]!, box[4]! - box[1]!, box[5]! - box[2]!].map((value) => Math.round(value * 10) / 10);
   };
   await expect.poll(width, { timeout: 60_000, message: "the kernel built ⌀12, as tall as before" }).toEqual([12, 12, 20]);
+});
+
+// The owner's 3.1.0 report: an ellipsoid is one closed face, and every push, pull, and Alt on it was refused with
+// "cannot move with its neighbours … hold Alt".
+test("the only face of an ellipsoid pulls out all round, and a push past its fold or Alt is refused with why", async ({ page }) => {
+  await newSolid(page, "ellipsoid", { modelDx: 86.2, modelDy: 10, modelDz: 24 });
+  expect(await widths(page)).toEqual([86.2, 10, 24]);
+  const sent: { kind?: string; distance?: number }[] = [];
+  page.on("request", (req) => {
+    if (!req.url().includes("/api/model/tree")) return;
+    const body = JSON.parse(req.postData() ?? "{}") as { op?: { kind?: string; distance?: number; faces?: { distance: number }[] } };
+    if (body.op) sent.push({ kind: body.op.kind, distance: body.op.distance ?? body.op.faces?.[0]?.distance });
+  });
+  const canvas = page.locator("#model");
+  const rect = (await canvas.boundingBox())!;
+  const screen = (await canvas.getAttribute("data-solid-screen"))!.split(",").map(Number);
+  const middle = { x: rect.x + screen[0]! + screen[2]! / 2, y: rect.y + screen[1]! + screen[3]! / 2 };
+  await page.mouse.click(middle.x, middle.y);
+  await page.locator("#modelToolPull").click();
+  const note = page.locator("#modelNote");
+  const distance = page.locator("#modelPull");
+
+  // 24.9 mm in on a part 10 mm thick, and far past where its long ends fold (radius 5² / 43.1 = 0.58 mm).
+  await distance.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type("-24.9");
+  await expect(note).toHaveText(
+    "Pushed in 24.9 mm, this surface would fold onto itself where it curves tightest. It can go in at most 0.5 mm.",
+  );
+  expect(sent.filter((op) => op.distance === -24.9), "refused before the kernel is asked").toEqual([]);
+
+  // 2 mm out: the whole surface moves, so every width grows by 4.
+  await distance.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type("2");
+  await page.locator("#modelApply").click();
+  await expect.poll(() => widths(page), { timeout: 60_000, message: "the kernel offset the whole surface" }).toEqual([90.2, 14, 28]);
+  await expect(page.locator("#modelHistoryTree")).toContainText("Pull face 2 mm");
+  await page.keyboard.press("Escape");
+
+  // Alt on the whole part: a prism has no outline to sweep. Nothing is applied, and the sentence says what works.
+  const count = sent.length;
+  const at = { x: middle.x, y: rect.y + screen[1]! + screen[3]! * 0.3 };
+  let nudge = 0;
+  await expect.poll(async () => {
+    nudge = (nudge + 1) % 3;
+    await page.mouse.move(at.x + nudge, at.y);
+    return canvas.getAttribute("data-handles") ?? "";
+  }).toContain("pull:");
+  await page.keyboard.down("Alt");
+  await page.mouse.down();
+  for (let step = 5; step <= 60; step += 5) await page.mouse.move(at.x, at.y + step);
+  await expect(page.locator("#modelReadout")).toHaveText(
+    "Alt adds a prism on a face's outline, and this face is the whole part, so it has none. Drag without Alt to grow or shrink the part all round.",
+  );
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  await page.waitForTimeout(500);
+  expect(sent.slice(count).filter((op) => op.kind === "faceExtrude"), "no prism reaches the kernel").toEqual([]);
+  expect(await widths(page)).toEqual([90.2, 14, 28]);
 });
