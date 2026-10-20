@@ -824,7 +824,7 @@ html.layout-compact .model-params {
 /* Inspect, on the Device tab. */
 html.layout-compact #compactDevice .model-inspect { padding: 0; overflow: visible; }
 /* Slicing waits in Model: the floating Slice gives the sketch card its corner. */
-html.layout-compact:has(#modelBody:not([hidden]) #sketchCards:not([hidden])) #slice { display: none !important; }
+html.layout-compact:has(#modelBody:not([hidden]) #model:is([data-sketch="editing"], [data-sketch="choosing"])) #slice { display: none !important; }
 /* The Features menu and its corner opener live in the strip's markup. */
 html.layout-compact #toolRail .model-feature .model-feature-more {
   position: absolute;
