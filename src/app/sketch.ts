@@ -1584,10 +1584,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (!currentSweepOp()) return "The sweep is not ready.";
       return "";
     }
-    if (gesture) {
-      if (gesture.regions.length === 0) return "Select a region to extrude.";
-      return extrudeNote();
-    }
+    if (gesture && gesture.regions.length === 0) return "Select a region to extrude.";
     return "";
   }
 
@@ -1611,7 +1608,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const sketch = activeSketch(editor);
     if (!sketch || editor.phase !== "editing") return "Open a sketch first.";
     const regions = sketchRegions(sketch);
-    const chosen = chooseRegions(sketch, editor.selection.entities, null);
+    const chosen = chooseRegions(sketch, editor.selection.entities, editor.cursor);
     if (kind === "extrude") {
       if (regions.length === 0) return "Draw a closed profile to extrude.";
       if (chosen.length === 0) return "Select a region to extrude.";
