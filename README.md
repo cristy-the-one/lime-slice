@@ -60,7 +60,7 @@ Hover an edge and type a radius. Enter fillets that edge. The same gesture with 
 
 ![The pull arrow on the top face, then a typed distance.](docs/screenshots/clip-push.gif)
 
-![A 2 mm fillet on a hovered edge.](docs/screenshots/model-fillet.png)
+![A 6 mm fillet on a hovered edge.](docs/screenshots/model-fillet.png)
 
 ![Hovering an edge and typing the fillet radius.](docs/screenshots/clip-fillet.gif)
 
