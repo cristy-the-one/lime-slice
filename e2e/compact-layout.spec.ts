@@ -93,6 +93,11 @@ test.describe("iPhone 14 compact layout", () => {
     const hidden = await share(page, "#prepare");
     expect(hidden, `chrome hidden share ${hidden}`).toBeGreaterThanOrEqual(0.7);
     await page.screenshot({ path: path.join(out, "06-chrome-hidden.png") });
+    await expect(page.locator("#compactChromeShow")).toBeVisible();
+    await expect(page.locator("#compactChromeShow")).toHaveAttribute("data-tip", "Show controls");
+    await page.locator("#compactChromeShow").click();
+    await expect(page.locator("html")).not.toHaveClass(/chrome-hidden/);
+    await expect(page.locator("#compactTabs")).toBeVisible();
   });
 
   test("the 4 and 1 keys move the compact nav with the stage", async ({ page }) => {

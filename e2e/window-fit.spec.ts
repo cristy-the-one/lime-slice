@@ -66,6 +66,7 @@ for (const engine of ["running", "down"] as const) test(`desktop shell fits the 
   // Results start folded on a desktop width; the narrow window's Results button still shows them.
   await page.locator("#toggleRight").click();
   await expect(page.locator("#right")).toBeVisible();
+  await expect(page.locator("#timing")).toHaveAttribute("aria-expanded", "true");
   expect((await outerOverflow(page)).delta).toBe(0);
 });
 
@@ -84,7 +85,7 @@ test("from 961 to 1200 px the docks are drawers over a still view, one at a time
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await expect(toggle.locator(".rail-label")).toBeVisible();
   await expect(page.locator("#statusHint")).toBeVisible();
-  await expect(page.locator("#statusHint")).toHaveText("Settings are in the drawer (Ctrl+B)");
+  await expect(page.locator("#statusHint")).toHaveText("Settings are in the drawer (Ctrl+B). Results are in the drawer (Ctrl+Alt+B)");
   // The hint stays out of the live status text, so a drawer toggle is not read out again.
   await expect(page.locator("#statusText")).not.toContainText("drawer");
   // The stage and its canvas: neither moves nor resizes under a drawer, so the camera stays put.
@@ -99,7 +100,7 @@ test("from 961 to 1200 px the docks are drawers over a still view, one at a time
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(toggle.locator(".rail-label")).toBeHidden();
-  await expect(page.locator("#statusHint")).toBeHidden();
+  await expect(page.locator("#statusHint")).toHaveText("Results are in the drawer (Ctrl+Alt+B)");
   expect(await stage(), "the view keeps its size under an open drawer").toEqual(before);
   const fit = await outerOverflow(page);
   expect(fit.delta).toBe(0);

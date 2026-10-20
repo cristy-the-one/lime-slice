@@ -79,6 +79,7 @@ export function mountCompact() {
   const app = document.querySelector(".app");
   if (!app) return;
   app.append(topBar(), sheet(), tabs(), devicePage(), menu());
+  mountChromeShow();
   const stage = document.querySelector("#stage");
   stage?.append(isoButton(), progressLine());
   const preview = document.querySelector("#previewBody");
@@ -396,6 +397,28 @@ function toggleChrome() {
   document.documentElement.classList.toggle("chrome-hidden");
   applyHeights(sheetHeight(detent, window.innerHeight), true);
   haptic("tap");
+}
+
+/** A tap hid the tabs and tools. This puts them back and returns the keyboard to the tab that was showing. */
+function showChrome() {
+  if (!document.documentElement.classList.contains("chrome-hidden")) return;
+  document.documentElement.classList.remove("chrome-hidden");
+  applyHeights(sheetHeight(detent, window.innerHeight), true);
+  haptic("tap");
+  document.querySelector<HTMLButtonElement>("#compactTabs .compact-tab[aria-selected=true]")?.focus();
+}
+
+function mountChromeShow() {
+  if (document.querySelector("#compactChromeShow")) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "compactChromeShow";
+  button.className = "compact-chrome-show";
+  button.textContent = "Show controls";
+  button.setAttribute("aria-label", "Show controls");
+  button.dataset.tip = "Show controls";
+  button.addEventListener("click", () => showChrome());
+  document.body.append(button);
 }
 
 /** The stage changed without the nav: take the nav tab that shows it, leaving Settings and Device on Prepare alone. */

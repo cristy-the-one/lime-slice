@@ -446,6 +446,15 @@ export function runCommand(id: string) {
     case "panel-right":
       toggleDock("right");
       return;
+    case "restore-hidden": {
+      const root = document.documentElement;
+      if (root.classList.contains("layout-compact") && root.classList.contains("chrome-hidden")) {
+        document.querySelector<HTMLButtonElement>("#compactChromeShow")?.click();
+        return;
+      }
+      document.querySelector<HTMLButtonElement>("#contextBarRestore")?.click();
+      return;
+    }
     default: {
       const target = COMMANDS.find((command) => command.id === id)?.target;
       if (target) click(target);

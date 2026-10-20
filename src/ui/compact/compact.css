@@ -545,6 +545,25 @@ html.layout-compact.chrome-hidden #compactSupportChip {
   visibility: hidden;
   pointer-events: none;
 }
+/* The one control that stays when a tap hides the chrome, so the tabs and tools can be found again. */
+#compactChromeShow { display: none; }
+html.layout-compact.chrome-hidden #compactChromeShow {
+  display: inline-flex;
+  position: fixed;
+  z-index: 40;
+  left: 50%;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  min-width: 44px;
+  height: 44px;
+  padding: 0 16px;
+  border-radius: 22px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-pop);
+  font-weight: 600;
+}
 
 /* 44px hit, 36px painted face. Sits on the preview, clear of the scrubber. */
 html.layout-compact #compactSupportEdit[hidden] { display: none !important; }
@@ -828,10 +847,10 @@ html.layout-compact:has(#modelBody:not([hidden]) #model:is([data-sketch="editing
 /* The Features menu and its corner opener live in the strip's markup. */
 html.layout-compact #toolRail .model-feature .model-feature-more {
   position: absolute;
-  right: -2px;
-  bottom: -2px;
+  right: 0;
+  bottom: 0;
   width: 20px;
-  height: 20px;
+  height: 24px;
   min-height: 0;
   padding: 0;
   border-radius: 6px;

@@ -121,6 +121,7 @@ eq("Ctrl+Enter slices", press("Ctrl+Enter"), "slice");
 eq("Ctrl+Enter slices from a field", press("Ctrl+Enter", { typing: true }), "slice");
 eq("Ctrl+Shift+Enter forces a re-slice", [press("Ctrl+Shift+Enter"), press("Ctrl+Shift+Enter", { typing: true })], ["force-slice", "force-slice"]);
 eq("Ctrl+B and Ctrl+Alt+B fold the panels", [press("Ctrl+B"), press("Ctrl+Alt+B")], ["panel-left", "panel-right"]);
+eq("Ctrl+. shows hidden controls", press("Ctrl+."), "restore-hidden");
 eq("Ctrl+K opens the palette, even from a field", [press("Ctrl+K"), press("Ctrl+K", { typing: true })], ["palette", "palette"]);
 eq("undo and redo work in a field", [press("Ctrl+Z", { typing: true }), press("Ctrl+Shift+Z", { typing: true })], ["undo", "redo"]);
 eq("Ctrl+Y redoes and Y is still the front view", [press("Ctrl+Y"), press("Y"), press("Ctrl+Y", { typing: true })], ["redo", "view-front", "redo"]);

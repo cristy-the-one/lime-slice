@@ -1257,7 +1257,10 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   pointer-events: auto;
 }
 .context-bar[hidden] { display: none !important; }
-.context-bar.is-faded { opacity: 0; pointer-events: none; }
+/* Faded, the actions give way to a labelled chip. The chip stays on the bar's seat, so the selection is never stranded. */
+.context-bar.is-faded > :not(#contextBarRestore) { display: none !important; }
+.context-bar-restore { display: none; }
+.context-bar.is-faded #contextBarRestore { display: inline-flex; }
 .context-bar-split { display: inline-flex; align-items: center; }
 .context-bar-btn, .context-bar-caret, .context-bar-item {
   height: 26px;

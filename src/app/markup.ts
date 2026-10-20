@@ -126,7 +126,7 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="model-tool" type="button" role="menuitem" data-tool="ribs">Ribs</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
                 <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
-                <button id="modelMenuParameters" type="button" role="menuitem">Parameters</button>
+                <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
               </div>
             </div>
           </div>
