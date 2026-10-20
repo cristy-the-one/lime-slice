@@ -15,7 +15,7 @@
  * A record with `bytesBase64` (a version 3 file) is read as it was. An encoding this code does not know is refused by name.
  * Compression is the platform's own: `CompressionStream` / `DecompressionStream` (WebView2, WebKitGTK, WKWebView, Node).
  */
-import { base64ToBytes, bytesToBase64 } from "./base64.ts";
+import { base64ToBytes, bytesToBase64Async } from "./base64.ts";
 import { parseProjectDoc, projectWire, type LimeProject, type Migration, type ProjectResult, migrations, PROJECT_VERSION } from "./project.ts";
 
 export const ENCODING_GZIP = "gzip+base64";
@@ -72,7 +72,7 @@ export async function encodeProject(project: LimeProject): Promise<string> {
       }
       const bytes = base64ToBytes(bytesBase64);
       if (!bytes) return;
-      swaps.set(record, { ...rest, encoding: ENCODING_GZIP, data: bytesToBase64(await gzip(bytes)) });
+      swaps.set(record, { ...rest, encoding: ENCODING_GZIP, data: await bytesToBase64Async(await gzip(bytes)) });
     }),
   );
   const replaced = (value: unknown) => (isRow(value) ? (swaps.get(value) ?? value) : value);
@@ -110,7 +110,7 @@ async function inflateRecords(doc: Row): Promise<string | null> {
           return;
         }
         try {
-          record.bytesBase64 = bytesToBase64(await gunzip(packed));
+          record.bytesBase64 = await bytesToBase64Async(await gunzip(packed));
         } catch {
           // Left without bytes: the reader says the mesh or the solid is damaged.
         }

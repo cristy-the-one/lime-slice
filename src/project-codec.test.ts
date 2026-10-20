@@ -5,7 +5,7 @@ import { defaultProfile } from "./profiles.ts";
 import { DEFAULT_PRESET } from "./presets.ts";
 import { meshRecord, parseProject, serializeProject, PROJECT_VERSION, type LimeProject } from "./project.ts";
 import { decodeProject, encodeProject, ENCODING_GZIP, gunzip, gzip } from "./project-codec.ts";
-import { base64ToBytes, bytesToBase64 } from "./base64.ts";
+import { base64ToBytes, bytesToBase64, bytesToBase64Async } from "./base64.ts";
 import { jumped, newTree, opLabel, withChild, type ModelOp } from "./model-tree.ts";
 import { savedTree } from "./model-tree-file.ts";
 
@@ -138,6 +138,15 @@ const uncompressedResult = await decodeProject(JSON.stringify(uncompressed));
 check("the plain base64 encoding opens", uncompressedResult.ok && uncompressedResult.project.mesh.hash === project.mesh.hash);
 const gz = await gzip(mesh);
 check("gzip is the standard stream", gz[0] === 0x1f && gz[1] === 0x8b && Buffer.from(await gunzip(gz)).equals(mesh));
+// The base64 helpers: Node's Buffer path agrees with the strict path on good text, and refuses what is not base64.
+check("base64 of nothing is nothing", bytesToBase64(new Uint8Array(0)) === "" && base64ToBytes("")?.length === 0);
+check("base64 round-trips every length", [1, 2, 3, 4, 5, 100].every((n) => {
+  const bytes = Uint8Array.from({ length: n }, (_, i) => (i * 37 + 11) & 0xff);
+  const back = base64ToBytes(bytesToBase64(bytes));
+  return !!back && back.byteLength === n && back.buffer.byteLength === n && Buffer.from(back).equals(Buffer.from(bytes));
+}));
+check("text that is not base64 is refused", base64ToBytes("@@@@") === null && base64ToBytes("AA=A") === null);
+check("the async encoder agrees with the sync one", (await bytesToBase64Async(mesh)) === bytesToBase64(mesh));
 check("the plain reader leaves a compressed record unread", !parseProject(text).ok);
 
 if (failed) {
