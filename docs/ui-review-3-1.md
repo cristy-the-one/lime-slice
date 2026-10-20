@@ -189,6 +189,10 @@ A mapped size shows the value once, on the dimension: extension lines, arrowhead
 
 ![One dimension for Depth Y](screenshots/ui-review-3-1/ph02-after-dimension.png)
 
+The panel, the handle, and the dimension use one name: Width X, Depth Y, Height Z.
+
+![Depth Y on the panel and on the dimension](screenshots/ui-review-3-1/ph03-after-labels.png)
+
 ## Checks
 
 - `npx tsc --noEmit`

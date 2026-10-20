@@ -128,7 +128,7 @@ eq("a handle carries its field's value", moveX.values, [2]);
 eq("the box size knobs are docked", box.filter((handle) => handle.id.startsWith("size-")).map(docked), [true, true, true]);
 eq("the box turn rings are docked", box.filter((handle) => handle.kind === "ring").map(docked), [true, true, true]);
 const turnedBox = handlesFor("boolean", context("box", { read: (field) => (field === "modelRz" ? 90 : values[field] ?? 0) }));
-check("a box turned a quarter about Z has its Size X knob along world Y", nearVec(turnedBox.find((handle) => handle.id === "size-0")!.dir, [0, 1, 0]));
+check("a box turned a quarter about Z has its Width X knob along world Y", nearVec(turnedBox.find((handle) => handle.id === "size-0")!.dir, [0, 1, 0]));
 const sizeZ = box.find((handle) => handle.id === "size-2")!;
 eq("the box Z size knob sits out along Z, past the arrows", [sizeZ.dir, reachOf(sizeZ)], [[0, 0, 1], DOCK_KNOB_REACH]);
 const cylinder = handlesFor("boolean", context("cylinder"));
@@ -246,7 +246,7 @@ check("the anchor points out of the solid, square to the edge", !!anchor && near
 check("a one-point edge has no anchor", edgeAnchor(new Float32Array([1, 2, 3]), [0, 0, 0]) == null);
 
 eq("degrees wrap", [wrapDegrees(190), wrapDegrees(-190), wrapDegrees(180), wrapDegrees(-180)], [-170, 170, 180, 180]);
-eq("a length label", dragLabel({ label: "Size X", unit: "mm" }, [12.345]), "Size X 12.35 mm");
+eq("a length label", dragLabel({ label: "Width X", unit: "mm" }, [12.345]), "Width X 12.35 mm");
 eq("a turn label", dragLabel({ label: "Turn Z", unit: "°" }, [45]), "Turn Z 45°");
 eq("a factor label", dragLabel({ label: "Factor", unit: "×" }, [1.5]), "Factor 1.5×");
 eq("a point label", dragLabel({ label: "A", unit: "mm" }, [1, 2, 3]), "A 1, 2, 3 mm");

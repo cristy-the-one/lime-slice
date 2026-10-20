@@ -19,7 +19,7 @@ export interface AspectDimension {
 
 export interface HandleAspect {
   fields: readonly string[];
-  /** "Width (X) 20 mm", the same sentence as the handle's tooltip. */
+  /** "Width X 20 mm", the same sentence as the handle's tooltip. */
   tip: string;
   color: DragHandle["color"];
   /** Segments, six numbers each. */
@@ -71,15 +71,9 @@ export interface AspectContext {
 /** Set for the duration of `aspectFor`, so every dimension uses the same side. */
 let dimensionSign = 1;
 
-const SIZE_NAME: Record<string, string> = {
-  "Size X": "Width (X)",
-  "Size Y": "Depth (Y)",
-  "Size Z": "Height (Z)",
-};
-
-/** The sentence on the handle and on its dimension: "Width (X) 20 mm". */
+/** The sentence on the handle and on its dimension: "Width X 20 mm". */
 export function aspectTip(handle: Pick<DragHandle, "label" | "unit" | "shown">, values: readonly number[]): string {
-  return dragLabel({ ...handle, label: SIZE_NAME[handle.label] ?? handle.label }, values);
+  return dragLabel(handle, values);
 }
 
 interface LocalAspect {

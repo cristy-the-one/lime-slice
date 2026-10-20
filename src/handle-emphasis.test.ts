@@ -69,9 +69,9 @@ const sizeX = boxHandles.find((handle) => handle.id === "size-0")!;
 const sizeY = boxHandles.find((handle) => handle.id === "size-1")!;
 const sizeZ = boxHandles.find((handle) => handle.id === "size-2")!;
 
-eq("width is named with its axis and its number", aspectTip(sizeX, sizeX.values), "Width (X) 20 mm");
-eq("depth is named with its axis", aspectTip(sizeY, sizeY.values), "Depth (Y) 10 mm");
-eq("height is named with its axis", aspectTip(sizeZ, sizeZ.values), "Height (Z) 8 mm");
+eq("width is named with its axis and its number", aspectTip(sizeX, sizeX.values), "Width X 20 mm");
+eq("depth is named with its axis", aspectTip(sizeY, sizeY.values), "Depth Y 10 mm");
+eq("height is named with its axis", aspectTip(sizeZ, sizeZ.values), "Height Z 8 mm");
 
 const width = aspectFor(sizeX, { spec: box });
 check("width is mapped", width.mapped && width.dim);
@@ -79,7 +79,7 @@ eq("width keeps the field", width.fields, ["modelDx"]);
 eq("width uses the X colour", width.color, "x");
 check("width has the four edges parallel to X", segments(width.lines).filter((edge) => along(edge, 0) && near(Math.abs(direction(edge)[0]), 20, 0.1)).length >= 4);
 check("width does not thicken an edge parallel to Y", segments(width.lines).filter((edge) => along(edge, 1) && Math.abs(direction(edge)[1]) > 5).length === 0);
-check("the dimension carries the same sentence", width.dimension?.text === "Width (X) 20 mm");
+check("the dimension carries the same sentence", width.dimension?.text === "Width X 20 mm");
 function meets(lines: number[], point: Vec3) {
   return segments(lines).filter((edge) => edge.some((end) => near(end[0], point[0], 1e-3) && near(end[1], point[1], 1e-3) && near(end[2], point[2], 1e-3))).length;
 }

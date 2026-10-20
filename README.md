@@ -72,7 +72,7 @@ Parameters live under History in the left dock. Each row is a name and a value, 
 
 History lists every step. Edit step (the row, or Shift+E) reopens that step's panel, including a group of sketch holes. The tree is stored in the `.lime` project. A part an MCP recipe built shows "Built by a recipe" and that line stays read-only: changing the recipe's parameters and rebuilding from them is not in the window yet. Undo and redo walk the same tree.
 
-![New solid. Size Z is the expression `height`, shown as 24 with the ƒ mark. The parameter is not used until Create.](docs/screenshots/model-parameters.png)
+![New solid. Height Z is the expression `height`, shown as 24 with the ƒ mark. The parameter is not used until Create.](docs/screenshots/model-parameters.png)
 
 ![Creating the box from `height`, then changing the parameter and rebuilding the step.](docs/screenshots/clip-parameters.gif)
 

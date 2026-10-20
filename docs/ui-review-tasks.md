@@ -71,6 +71,8 @@ Status: done. A mapped handle draws extension lines, a dimension line with arrow
 
 ### PH-03 (P0). One vocabulary for one number
 
+Status: done. Box, wedge, and ellipsoid fields and handles say Width X, Depth Y, and Height Z. `SIZE_NAME` is gone, so the dimension uses that label. Modifier volumes say Extent X/Y/Z mm, which is the volume's size, not the primitive. `grep` of `src` finds no "Size X/Y/Z". Screenshot: `ph03-after-labels.png`.
+
 - **Seen**: the panel calls the field "Size Y", while the handle, the dimension and the tooltip call it "Depth (Y)"
   (`SIZE_NAME` in `src/handle-emphasis.ts`). Users see two names for one value.
 - **Change**: rename the panel labels for box, wedge and ellipsoid to "Width X", "Depth Y" and "Height Z" (markup in

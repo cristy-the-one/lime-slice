@@ -294,7 +294,7 @@ test("a boolean primitive moves, resizes, and turns from the dock, in sync with 
   await page.screenshot({ path: path.join(out, "boolean-turned.png") });
 });
 
-test("a 2 mm primitive still has every handle on its own spot, and its Size X knob grows it", async ({ page }) => {
+test("a 2 mm primitive still has every handle on its own spot, and its Width X knob grows it", async ({ page }) => {
   await openSolid(page, []);
   await page.locator("#modelToolBoolean").click();
   for (const id of ["modelDx", "modelDy", "modelDz"]) await setField(page, id, "2");
@@ -330,14 +330,15 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
   const at = await grip(page, "size-1");
   await page.mouse.move(at.x, at.y);
   await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-1");
-  await expect(page.locator("#model")).toHaveAttribute("data-aspect-tip", /Depth \(Y\)/);
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-tip", "Depth Y 10 mm");
+  await expect(page.locator("label:has(#modelDy) .scrub-label")).toHaveText("Depth Y");
   await expect(page.locator("#model")).toHaveAttribute("data-aspect-mapped", "1");
   await expect(page.locator("#model")).toHaveAttribute("data-aspect-dim", "1");
   await expect(page.locator("#model")).toHaveAttribute("data-solid-opacity", "1");
   await expect(page.locator("#modelDy")).toHaveClass(/is-aspect/);
   await expect(page.locator(".model-drag-tip")).toBeHidden();
-  await expect(page.locator(".model-aspect-label")).toContainText("Depth (Y)");
-  await expect(page.getByText("Depth (Y) 10 mm")).toHaveCount(1);
+  await expect(page.locator(".model-aspect-label")).toHaveText("Depth Y 10 mm");
+  await expect(page.getByText("Depth Y 10 mm")).toHaveCount(1);
   expect(await page.locator("#model").getAttribute("data-ghost-lit")).not.toBe("1");
   await expect(page.locator("#model")).toHaveAttribute("data-aspect-sample", /-?\d+,-?\d+/);
   const sample = ((await page.locator("#model").getAttribute("data-aspect-sample")) ?? "0,0").split(",").map(Number);
@@ -365,7 +366,7 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
     return pick;
   }, sample);
   expect(deltaE(rgb, [143, 206, 106]), `lit pixel ${rgb.join(",")}`).toBeLessThan(10);
-  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph02-after-dimension.png" });
+  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph03-after-labels.png" });
   await page.mouse.move(at.x - 300, at.y + 200);
   await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
   await expect(page.locator("#modelDy")).not.toHaveClass(/is-aspect/);

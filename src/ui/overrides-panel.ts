@@ -71,9 +71,9 @@ function volumeItem(volume: ModifierVolume, selectedId: string | null): string {
         ${num("x", "X mm", String(volume.x), -500, 1500, 0.1, 2)}
         ${num("y", "Y mm", String(volume.y), -500, 1500, 0.1, 2)}
         ${num("z", "Z mm", String(volume.z), -500, 1500, 0.1, 2)}
-        ${num("sx", "Size X mm", String(volume.sx), 0.2, 1000, 0.1, 2)}
-        ${num("sy", "Size Y mm", String(volume.sy), 0.2, 1000, 0.1, 2)}
-        ${num("sz", "Size Z mm", String(volume.sz), 0.2, 1000, 0.1, 2)}
+        ${num("sx", "Extent X mm", String(volume.sx), 0.2, 1000, 0.1, 2)}
+        ${num("sy", "Extent Y mm", String(volume.sy), 0.2, 1000, 0.1, 2)}
+        ${num("sz", "Extent Z mm", String(volume.sz), 0.2, 1000, 0.1, 2)}
         ${overrideFields(volume.override)}
       </div>
     </details>`;
