@@ -41,9 +41,11 @@ const STEP_LIBS: &[&str] = &[
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(lime_occt)");
     println!("cargo::rustc-check-cfg=cfg(lime_occt_step)");
+    println!("cargo::rustc-check-cfg=cfg(lime_occt_test_hooks)");
     println!("cargo:rerun-if-env-changed=OCCT_ROOT");
     println!("cargo:rerun-if-changed=cpp/kernel.cpp");
     println!("cargo:rerun-if-changed=cpp/tree.cpp");
+    println!("cargo:rerun-if-changed=cpp/fault.cpp");
     println!("cargo:rerun-if-changed=cpp/kernel.h");
     let Ok(root) = env::var("OCCT_ROOT") else {
         return;
@@ -84,9 +86,21 @@ fn main() {
         .std("c++17")
         .file("cpp/kernel.cpp")
         .file("cpp/tree.cpp")
+        .file("cpp/fault.cpp")
         .include(&include);
     if env::var("CARGO_CFG_TARGET_ENV").ok().as_deref() == Some("msvc") {
-        build.flag("/EHsc");
+        // /EHa, as Open CASCADE itself is built: a hardware fault inside it is then thrown as a C++ exception
+        // (cpp/fault.cpp), and every frame it unwinds runs its destructors. A `catch (...)` now also catches the
+        // structured exceptions the translator leaves alone, such as a stack overflow.
+        build.flag("/EHa");
+    } else {
+        // Open CASCADE's CMake defines this off MSVC. OCC_CATCH_SIGNALS turns a signal into an exception only with it.
+        build.define("OCC_CONVERT_SIGNALS", None);
+    }
+    // A debug build (every `cargo test`) has the hook that faults on purpose. A release build, which ships, has not.
+    if env::var("PROFILE").ok().as_deref() == Some("debug") {
+        build.define("LIME_OCCT_TEST_HOOKS", None);
+        println!("cargo:rustc-cfg=lime_occt_test_hooks");
     }
     if step_reader(&root) {
         build.define("LIME_OCCT_STEP", None);

@@ -57,10 +57,11 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
     page.waitForEvent("download"),
     page.keyboard.press("Control+s"),
   ]);
-  const singleDoc = JSON.parse(fs.readFileSync((await single.path())!, "utf8")) as { version: number; objects?: unknown; mesh?: { name: string } };
-  expect(singleDoc.version).toBe(1);
-  expect(singleDoc.objects).toBeUndefined();
-  expect(singleDoc.mesh?.name).toContain("cube");
+  const singleDoc = JSON.parse(fs.readFileSync((await single.path())!, "utf8")) as { version: number; objects?: { mesh: { name: string } }[]; mesh?: unknown };
+  expect(singleDoc.version).toBe(4);
+  expect(singleDoc.objects).toHaveLength(1);
+  expect(singleDoc.mesh).toBeUndefined();
+  expect(singleDoc.objects?.[0]?.mesh.name).toContain("cube");
 
   await page.locator("#plateDuplicate").click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
@@ -104,7 +105,7 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
     objects?: { id: string; placement: { scale: number } }[];
     printOrder?: unknown;
   };
-  expect(plateDoc.version).toBe(3);
+  expect(plateDoc.version).toBe(4);
   expect(plateDoc.mesh).toBeUndefined();
   expect(plateDoc.objects?.[0]?.id).toBe("part");
   expect(plateDoc.objects?.[1]?.id).toMatch(/^obj-/);

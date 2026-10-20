@@ -80,6 +80,18 @@ fn one_simple_object_hashes_as_part() {
 }
 
 #[test]
+fn version4_compressed_records_hash_as_version3() {
+    let file = format!(
+        r#"{{"version":4,"objects":[{{"id":"part","name":"bracket.stl","mesh":{{"name":"bracket.stl","byteLength":8,"hash":"eaa27901f3139a05","encoding":"gzip+base64","data":"H4sIAAAAAAAAA0tOzMkBAKB+9NMIAAAA"}},"placement":{}}}]}}"#,
+        place("0")
+    );
+    assert_eq!(
+        preview(file.as_bytes()).geometry_hash.as_deref(),
+        Some("e55a0c3d9becba93")
+    );
+}
+
+#[test]
 fn a_renamed_object_hashes_under_its_id() {
     let file = format!(
         r#"{{"version":3,"objects":[{{"id":"a","name":"other","mesh":{{"name":"bracket.stl","hash":"eaa27901f3139a05"}},"placement":{}}}]}}"#,

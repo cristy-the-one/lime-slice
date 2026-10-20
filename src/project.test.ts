@@ -86,7 +86,7 @@ const ironed = JSON.parse(serializeProject({
   ...project,
   settings: { ...project.settings, ironing: true, ironingFlow: 0.15, ironingSpeed: 30, ironingSpacing: 0.2 },
 })) as { version: number; settings: Record<string, unknown> };
-eq("ironing stays on a version 1 project", ironed.version, 1);
+eq("ironing is written in a version 4 plate", ironed.version, 4);
 const ironOpened = parseProject(JSON.stringify(ironed));
 check("ironing round-trips", ironOpened.ok && ironOpened.project.settings.ironing === true && ironOpened.project.settings.ironingFlow === 0.15 && ironOpened.project.settings.ironingSpeed === 30 && ironOpened.project.settings.ironingSpacing === 0.2);
 delete ironed.settings.ironing;
@@ -115,7 +115,7 @@ for (const key of ["squareCornerVelocity", "minimumCruiseRatio", "extruderCorner
 const beforeKlipper = parseProject(JSON.stringify(klipped));
 check("a file from before the Klipper limits opens at Klipper's defaults and no caps", beforeKlipper.ok && beforeKlipper.project.profile.squareCornerVelocity === 5 && beforeKlipper.project.profile.minimumCruiseRatio === 0.5 && beforeKlipper.project.profile.extruderCornerVelocity === 1 && beforeKlipper.project.profile.maxVelocity === 0 && beforeKlipper.project.profile.maxZVelocity === 0 && beforeKlipper.project.profile.maxZAccel === 0);
 
-const wire = JSON.parse(text) as { supportEdits: { edit: Record<string, unknown> }[] };
+const wire = (JSON.parse(text) as { objects: { supportEdits: { edit: Record<string, unknown> }[] }[] }).objects[0]!;
 eq("a prune stores sites, not a walk id", wire.supportEdits[0].edit, {
   kind: "prune",
   sites: [{ xy: [1.5, -2], z: 4.25 }],
@@ -123,14 +123,23 @@ eq("a prune stores sites, not a walk id", wire.supportEdits[0].edit, {
 check("the prune edit has no limb id", !("limb" in wire.supportEdits[0].edit) && !("walk" in wire.supportEdits[0].edit));
 eq("a regrow stores its region and z range", wire.supportEdits[1].edit.kind, "regrow");
 
+/** A file as version 1 wrote it: the one object's mesh, placement, and edits at the top. */
+function asVersion1(source: string): Record<string, unknown> {
+  const doc = JSON.parse(source) as Record<string, unknown> & { objects: Record<string, unknown>[] };
+  const { mesh, placement, supportEdits } = doc.objects[0]!;
+  delete (doc as { objects?: unknown }).objects;
+  return { ...doc, version: 1, mesh, placement, supportEdits };
+}
+
 const damaged = parseProject(text.replace(project.mesh.hash, "0000000000000000"));
 eq("a hash mismatch is a damaged mesh", damaged, { ok: false, message: "The mesh in this project is damaged." });
 
-const broken = { ...JSON.parse(text), mesh: { ...project.mesh, bytesBase64: "@@@", byteLength: 1, hash: "nope" } };
+const broken = JSON.parse(text) as { objects: { mesh: Record<string, unknown> }[] };
+broken.objects[0]!.mesh = { ...project.mesh, bytesBase64: "@@@", byteLength: 1, hash: "nope" };
 eq("bad base64 is a damaged mesh", parseProject(JSON.stringify(broken)), { ok: false, message: "The mesh in this project is damaged." });
 
-const short = JSON.parse(text) as { mesh: { bytesBase64: string; byteLength: number } };
-short.mesh.byteLength = 1;
+const short = JSON.parse(text) as { objects: { mesh: { bytesBase64: string; byteLength: number } }[] };
+short.objects[0]!.mesh.byteLength = 1;
 eq("a length mismatch is a damaged mesh", parseProject(JSON.stringify(short)), { ok: false, message: "The mesh in this project is damaged." });
 
 eq("prose is not a project", parseProject("not json"), { ok: false, message: "This file is not a Lime Slice project." });
@@ -138,8 +147,8 @@ eq("an array is not a project", parseProject("[]"), { ok: false, message: "This 
 eq("a file with no version cannot be opened", parseProject("{}"), { ok: false, message: "This project file has no version, so it cannot be opened." });
 eq(
   "a newer file is refused",
-  parseProject(JSON.stringify({ ...JSON.parse(text), version: 4 })),
-  { ok: false, message: "This project is version 4. This app opens up to version 3." },
+  parseProject(JSON.stringify({ ...JSON.parse(text), version: 5 })),
+  { ok: false, message: "This project is version 5. This app opens up to version 4." },
 );
 eq(
   "version 0 has no built-in migration",
@@ -148,7 +157,7 @@ eq(
 );
 
 const step: Migration = (doc) => ({ ...doc, version: 1, level: doc.level ?? "simple" });
-const legacy = { ...JSON.parse(text), version: 0 };
+const legacy = { ...asVersion1(text), version: 0 };
 delete (legacy as { level?: unknown }).level;
 const hooked = parseProject(JSON.stringify(legacy), [step], 1);
 check("a migration hook brings version 0 up to 1", hooked.ok && hooked.project.level === "simple" && hooked.project.mesh.name === "bracket.stl");
@@ -184,17 +193,19 @@ eq(
   { ok: false, message: "Layer height is not an override. The slice has one layer height." },
 );
 
-const wireProject = JSON.parse(text) as { version: number; objects?: unknown; mesh?: unknown };
-check("a one-object project stays version 1", wireProject.version === 1);
-check("a one-object project omits objects", wireProject.objects === undefined);
-check("a one-object project keeps its mesh", wireProject.mesh !== undefined);
+const wireProject = JSON.parse(text) as { version: number; objects?: { id: string }[]; mesh?: unknown };
+check("a one-object project is written as a version 4 plate", wireProject.version === 4 && wireProject.objects?.length === 1 && wireProject.objects[0]?.id === "part");
+check("a one-object project keeps no top-level mesh", wireProject.mesh === undefined);
+const version1Text = JSON.stringify(asVersion1(text));
+const fromVersion1 = parseProject(version1Text);
+check("a version 1 file still opens", fromVersion1.ok && fromVersion1.project.mesh.hash === project.mesh.hash && fromVersion1.project.supportEdits.length === 2);
 
-const migrated = applyMigrations(JSON.parse(text) as Record<string, unknown>);
+const migrated = applyMigrations(JSON.parse(version1Text) as Record<string, unknown>);
 check("version 1 migrates to one object", migrated.ok);
 if (migrated.ok) {
   const objects = migrated.doc.objects as { id: string }[];
   check("the migrated object id is part", objects.length === 1 && objects[0]?.id === "part");
-  check("a plate drops the top-level mesh and is version 3", migrated.doc.mesh === undefined && migrated.doc.version === 3);
+  check("a plate drops the top-level mesh and is version 4", migrated.doc.mesh === undefined && migrated.doc.version === 4);
 }
 
 const secondPlacement = { ...project.placement, centered: false, offset: { x: 40, y: 8, z: 0 } };
@@ -208,7 +219,7 @@ const multi: LimeProject = {
 };
 const multiText = serializeProject(multi);
 const multiWire = JSON.parse(multiText) as { version: number; mesh?: unknown; placement?: unknown; supportEdits?: unknown; objects: { id: string; settings?: unknown }[] };
-check("a plate writes version 3", multiWire.version === 3 && multiWire.objects.length === 2);
+check("a plate writes version 4", multiWire.version === 4 && multiWire.objects.length === 2);
 check("version 2 omits the single mesh, placement, and support edits", multiWire.mesh === undefined && multiWire.placement === undefined && multiWire.supportEdits === undefined);
 const openedMulti = parseProject(multiText);
 check("a plate round trip opens", openedMulti.ok);
@@ -230,7 +241,7 @@ const soloSettings: LimeProject = {
   objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], settings: { supports: true } }],
 };
 const soloWire = JSON.parse(serializeProject(soloSettings)) as { version: number; objects: { settings: { supports: boolean } }[]; mesh?: unknown };
-check("one object with its own settings stays a plate", soloWire.version === 3 && soloWire.objects[0]?.settings.supports === true && soloWire.mesh === undefined);
+check("one object with its own settings stays a plate", soloWire.version === 4 && soloWire.objects[0]?.settings.supports === true && soloWire.mesh === undefined);
 const walled: LimeProject = {
   ...project,
   version: 2,
@@ -258,7 +269,7 @@ const painted: LimeProject = {
   objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], supportPaint: dabs }],
 };
 const paintedWire = JSON.parse(serializeProject(painted)) as { version: number; objects: { supportPaint?: unknown }[] };
-eq("one object with support paint writes a plate and keeps it in paint order", [paintedWire.version, paintedWire.objects[0]?.supportPaint], [3, dabs]);
+eq("one object with support paint writes a plate and keeps it in paint order", [paintedWire.version, paintedWire.objects[0]?.supportPaint], [4, dabs]);
 const paintedOpened = parseProject(JSON.stringify(paintedWire));
 eq("support paint round-trips", paintedOpened.ok ? paintedOpened.project.objects?.[0]?.supportPaint : null, dabs);
 const unpaintedOpened = parseProject(multiText);
@@ -276,7 +287,7 @@ const reinforced: LimeProject = {
   objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], reinforcement: reinforceRegions }],
 };
 const reinforcedWire = JSON.parse(serializeProject(reinforced)) as { version: number; objects: { reinforcement?: unknown }[] };
-eq("one object with reinforcement writes a plate and keeps its regions", [reinforcedWire.version, reinforcedWire.objects[0]?.reinforcement], [3, reinforceRegions]);
+eq("one object with reinforcement writes a plate and keeps its regions", [reinforcedWire.version, reinforcedWire.objects[0]?.reinforcement], [4, reinforceRegions]);
 const reinforcedOpened = parseProject(JSON.stringify(reinforcedWire));
 eq("reinforcement round-trips", reinforcedOpened.ok ? reinforcedOpened.project.objects?.[0]?.reinforcement : null, reinforceRegions);
 reinforcedWire.objects[0]!.reinforcement = [{ kind: "paint", density: 5, depthMm: 5, disks: [] }];
@@ -289,7 +300,7 @@ const withBrep: LimeProject = {
   objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], brep: brepMesh }],
 };
 const brepWire = JSON.parse(serializeProject(withBrep)) as { version: number; objects: { brep?: { name: string; hash: string } }[] };
-eq("one object with a solid writes a plate and keeps the brep", [brepWire.version, brepWire.objects[0]?.brep], [3, brepMesh]);
+eq("one object with a solid writes a plate and keeps the brep", [brepWire.version, brepWire.objects[0]?.brep], [4, brepMesh]);
 // A version 2 file, whose solid is STEP, opens as it is: the engine reads STEP there.
 eq("a version 2 file with a STEP solid still opens with it", (() => {
   const old = parseProject(JSON.stringify({ ...brepWire, version: 2 }));
@@ -310,7 +321,7 @@ const placedInSpace: LimeProject = {
   objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], modelPose: spacePose, meshSeatMm: 712.5 }],
 };
 const spaceWire = JSON.parse(serializeProject(placedInSpace)) as { version: number; objects: Record<string, unknown>[] };
-eq("one object with a model pose writes a plate and keeps it", [spaceWire.version, spaceWire.objects[0]?.modelPose, spaceWire.objects[0]?.meshSeatMm], [3, spacePose, 712.5]);
+eq("one object with a model pose writes a plate and keeps it", [spaceWire.version, spaceWire.objects[0]?.modelPose, spaceWire.objects[0]?.meshSeatMm], [4, spacePose, 712.5]);
 const spaceOpened = parseProject(JSON.stringify(spaceWire));
 eq("the model pose and seat round-trip", spaceOpened.ok ? [spaceOpened.project.objects?.[0]?.modelPose, spaceOpened.project.objects?.[0]?.meshSeatMm] : null, [spacePose, 712.5]);
 eq("a plate saved before model space opens with no pose: identity", plainOpened.ok ? plainOpened.project.objects?.map((obj) => [obj.modelPose ?? null, obj.meshSeatMm ?? null]) : null, [[null, null], [null, null]]);
@@ -333,7 +344,7 @@ const framed: LimeProject = {
   objects: [{ id: "part", name: "bracket.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], workplane: frame }],
 };
 const frameWire = JSON.parse(serializeProject(framed)) as { version: number; objects: { workplane?: unknown }[] };
-eq("one object with a workplane writes a plate and keeps it", [frameWire.version, frameWire.objects[0]?.workplane], [3, frame]);
+eq("one object with a workplane writes a plate and keeps it", [frameWire.version, frameWire.objects[0]?.workplane], [4, frame]);
 const frameOpened = parseProject(JSON.stringify(frameWire));
 eq("the workplane round-trips", frameOpened.ok ? frameOpened.project.objects?.[0]?.workplane : null, frame);
 eq("a plate saved before workplanes opens with none", plainOpened.ok ? plainOpened.project.objects?.map((obj) => obj.workplane ?? null) : null, [null, null]);
@@ -570,7 +581,7 @@ const joined: LimeProject = {
 };
 const joinWire = JSON.parse(serializeProject(joined)) as { version: number; objects: { modelTree: { nodes: { op: Record<string, unknown> | null }[]; current: number; committed: number } }[]; modelTools?: { id: string; modelTree: Record<string, unknown> }[] };
 eq("a join names its tool by object and step, with the name it had, and no engine key", joinWire.objects[0]!.modelTree.nodes[1]!.op, { kind: "join", op: "cut", tool: { object: "obj-8", node: 1, name: "rod" }, relative: turnedZ, keepTool: false });
-eq("the tool's tree is kept after its object left the plate", [joinWire.version, joinWire.modelTools?.map((tool) => tool.id)], [3, ["obj-8"]]);
+eq("the tool's tree is kept after its object left the plate", [joinWire.version, joinWire.modelTools?.map((tool) => tool.id)], [4, ["obj-8"]]);
 const joinOpened = parseProject(JSON.stringify(joinWire));
 eq("a join and its tool's tree round-trip", joinOpened.ok ? [joinOpened.project.objects?.map((obj) => obj.modelTree), joinOpened.project.modelTools, joinOpened.project.unreadHistory] : null, [joined.objects!.map((obj) => obj.modelTree), joined.modelTools, undefined]);
 const joinSaved = new Map<string, SavedTreeBody>(joinOpened.ok ? [["obj-9", joinOpened.project.objects![0]!.modelTree!], ["obj-8", joinOpened.project.modelTools![0]!.modelTree]] : []);
@@ -609,7 +620,7 @@ eq("a project without layer actions omits them", [JSON.parse(text).layerActions,
 eq("an empty list is omitted too", JSON.parse(serializeProject({ ...project, layerActions: [] })).layerActions, undefined);
 const paused: LimeProject = { ...project, layerActions: actions };
 const pausedWire = JSON.parse(serializeProject(paused)) as { version: number; layerActions?: unknown[] };
-eq("layer actions stay on a version 1 project", [pausedWire.version, pausedWire.layerActions], [1, actions]);
+eq("layer actions are written in a version 4 plate", [pausedWire.version, pausedWire.layerActions], [4, actions]);
 const pausedOpened = parseProject(JSON.stringify(pausedWire));
 eq("a one-object project keeps its layer actions", pausedOpened.ok ? pausedOpened.project : null, paused);
 const pausedPlate: LimeProject = { ...multi, layerActions: actions };

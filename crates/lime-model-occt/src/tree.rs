@@ -763,6 +763,10 @@ enum Request {
         node: NodeId,
         face: FacePick,
     },
+    /// Debug builds only: an access violation inside Open CASCADE on purpose, on step `node`'s solid, answered as the
+    /// refusal any such crash gets (`tests/kernel_fault.rs`).
+    #[cfg(lime_occt_test_hooks)]
+    TestFault { key: String, node: NodeId },
     /// --- A5. The edges step `node` made, as indexes on the tree's current solid. ---
     StepEdges {
         key: String,
@@ -1667,6 +1671,12 @@ impl Store {
                     fields.insert("face".into(), json!(found.index));
                 }
                 Ok(Answer::Plain(body.to_string()))
+            }
+            #[cfg(lime_occt_test_hooks)]
+            Request::TestFault { key, node } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                Err(Failure::Message(shape.test_fault()))
             }
             Request::Export { key, node, format } => {
                 self.ensure(&key, node)?;
@@ -3993,6 +4003,8 @@ extern "C" {
         face: c_int,
         error: *mut *mut c_char,
     ) -> *mut c_char;
+    #[cfg(lime_occt_test_hooks)]
+    fn lime_tree_test_fault(shape: *const RawShape, error: *mut *mut c_char) -> c_int;
     fn lime_tree_created(shape: *const RawShape, out: *mut *const c_int) -> c_int;
     // --- A10.
     fn lime_tree_face_from(shape: *const RawShape, out: *mut *const c_int) -> c_int;
@@ -4837,6 +4849,14 @@ impl Shape {
         let mut shells = 0;
         unsafe { lime_tree_counts(self.raw(), &mut solids, &mut shells) };
         (solids, shells)
+    }
+
+    /// Debug builds only: the refusal for a fault inside Open CASCADE caused on purpose.
+    #[cfg(lime_occt_test_hooks)]
+    fn test_fault(&self) -> String {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        unsafe { lime_tree_test_fault(self.raw(), &mut error) };
+        take_text(error).unwrap_or_default()
     }
 
     /// K4. `{origin, turn, loops}` for face `index`, as JSON.

@@ -11,7 +11,7 @@ import { fakeEngine } from "./engine.ts";
 import { Session } from "./session.ts";
 import { autosavePath } from "./autosave.ts";
 import { geometryHash } from "../src/project-thumb.ts";
-import { parseProject } from "../src/project.ts";
+import { decodeProject } from "../src/project-codec.ts";
 
 const workspace = mkdtempSync(join(tmpdir(), "lime-thumb-"));
 process.env.LIME_MCP_WORKSPACE = workspace;
@@ -29,7 +29,7 @@ const imported = await session.call("mesh_import", { path: cube });
 const saved = await session.call("project_save", { name: "plate.lime" });
 const text = readFileSync(String(saved.path), "utf8");
 const doc = JSON.parse(text) as { version?: number; thumbnail?: { format?: string; width?: number; meshHash?: string; data?: string }; summary?: { objectCount?: number; printer?: string } };
-const parsed = parseProject(text);
+const parsed = await decodeProject(text);
 check("the save opens", saved.ok === true && imported.ok === true && parsed.ok);
 check("the thumbnail is the first key", text.startsWith('{\n  "thumbnail": {'));
 check("the picture is a PNG with a hash", doc.thumbnail?.format === "png" && doc.thumbnail.width === 512 && /^[0-9a-f]{16}$/.test(doc.thumbnail.meshHash ?? ""));
@@ -49,7 +49,7 @@ check("autosave drops the picture instead of redrawing it", !autoText.includes('
 const again = await session.call("project_save", { name: "moved.lime" });
 const movedText = readFileSync(String(again.path), "utf8");
 const movedDoc = JSON.parse(movedText) as { thumbnail?: { meshHash?: string } };
-const movedParsed = parseProject(movedText);
+const movedParsed = await decodeProject(movedText);
 check("the next save draws a new picture", again.ok === true && movedParsed.ok && movedDoc.thumbnail?.meshHash === geometryHash(movedParsed.project) && movedDoc.thumbnail.meshHash !== doc.thumbnail?.meshHash);
 
 if (failed) {

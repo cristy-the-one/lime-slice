@@ -28,10 +28,11 @@ test("save a project, refuse a damaged file, and open it again", async ({ page }
     page.keyboard.press("Control+s"),
   ]);
   const saved = fs.readFileSync((await download.path())!);
-  const doc = JSON.parse(saved.toString("utf8")) as { version: number; mesh: { name: string }; supportEdits: unknown[] };
-  expect(doc.version).toBe(1);
-  expect(doc.mesh.name).toContain("cube");
-  expect(doc.supportEdits).toEqual([]);
+  const doc = JSON.parse(saved.toString("utf8")) as { version: number; objects: { mesh: { name: string; encoding?: string }; supportEdits: unknown[] }[] };
+  expect(doc.version).toBe(4);
+  expect(doc.objects[0]!.mesh.name).toContain("cube");
+  expect(doc.objects[0]!.mesh.encoding, "the mesh is stored compressed").toBe("gzip+base64");
+  expect(doc.objects[0]!.supportEdits).toEqual([]);
 
   await page.locator("#projectFile").setInputFiles({
     name: "broken.lime",

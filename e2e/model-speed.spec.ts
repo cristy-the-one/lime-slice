@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type TreeMock } from "./model-tree-mock";
 import { plateClick } from "./plate-rows";
+import { unpackLime } from "./lime-file";
 
 type V = [number, number, number];
 
@@ -168,7 +169,7 @@ test("Apply writes no STEP; leaving Model writes the edited solid once, and save
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const saved = fs.readFileSync((await download.path())!);
   const written = Buffer.from("LIMEBREP 1 mock 0 *\nEDITED-1").toString("base64");
-  expect(saved.toString("utf8"), "the project keeps the edited solid").toContain(written);
+  expect(unpackLime(saved).toString("utf8"), "the project keeps the edited solid").toContain(written);
   expect(calls.tree.of("export"), "a save after leaving writes nothing new").toHaveLength(1);
 
   // One part is already listed, and the readout still says Volume, so neither marks the
@@ -198,7 +199,7 @@ test("a save while the STEP from leaving Model is on its way waits for it instea
   await page.locator("#tabPrepare").click();
   await expect.poll(() => calls.tree.of("export").length).toBe(1);
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
-  const saved = fs.readFileSync((await download.path())!).toString("utf8");
+  const saved = unpackLime(fs.readFileSync((await download.path())!)).toString("utf8");
   expect(saved, "the save carries the solid leaving Model wrote").toContain(Buffer.from("LIMEBREP 1 mock 0 *\nEDITED-1").toString("base64"));
   expect(calls.tree.of("export"), "one export for one solid").toHaveLength(1);
 });
