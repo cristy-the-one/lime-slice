@@ -145,6 +145,8 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.locator("#samples > summary").click();
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("button", { name: "60 mm hull" }).click();
+  // Loading a sample sends the app back to Prepare; under load that lands after a fast Preview click.
+  await page.waitForTimeout(1500);
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   delay = 2500;
   await page.locator("#slice").click();
