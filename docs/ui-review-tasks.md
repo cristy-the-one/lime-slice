@@ -108,6 +108,8 @@ Status: done. Aspect lines keep their `LineSegments2` and update positions in pl
 
 ### PH-05 (P1). No dimming flicker when the pointer crosses handles
 
+Status: done. The lit aspect stays for 120 ms after the pointer leaves a handle, and a move onto the next handle cancels that wait, so the view does not pass through an unlit frame.
+
 - **Seen in code**: moving from one knob to the next toggles `aspectDim` off and on, which flashes the whole view.
 - **Change**: keep the lit state for 120 ms after the pointer leaves a handle. Switch straight to the next handle's
   aspect without passing through "none".
@@ -115,6 +117,8 @@ Status: done. Aspect lines keep their `LineSegments2` and update positions in pl
   spec records the attribute's changes through a `MutationObserver`).
 
 ### PH-06 (P1). Focus listeners belong to the Model dock, and are removed
+
+Status: done. Focus listeners sit on `#modelPanel` only. `data-focus-syncs` counts calls. Focusing the auto-slice setting does not increment it. The view is created once and is not disposed.
 
 - **Seen in code**: `document.addEventListener("focusin" | "focusout", () => queueMicrotask(syncFocusedField))` in
   `createModelView`. It runs for every focus change anywhere in the app (settings, dialogs, the G-code tab) and is

@@ -398,6 +398,50 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
   expect(await page.locator("#model").getAttribute("data-ghost-lit")).not.toBe("1");
 });
 
+test("focusing a settings field does not sync the model aspect", async ({ page }) => {
+  await openSolid(page, []);
+  await page.locator("#modelToolBoolean").click();
+  await page.locator("#modelDy").focus();
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-1");
+  await page.locator("#modelDy").blur();
+  await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
+  const before = Number((await page.locator("#model").getAttribute("data-focus-syncs")) ?? "0");
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await page.locator("#autoslice").focus();
+  await page.waitForTimeout(50);
+  expect(Number(await page.locator("#model").getAttribute("data-focus-syncs"))).toBe(before);
+  await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
+});
+
+test("crossing the size knobs does not flicker the lit state", async ({ page }) => {
+  await openSolid(page, []);
+  await page.locator("#modelToolBoolean").click();
+  await page.evaluate(() => {
+    const canvas = document.querySelector("#model")!;
+    const changes: string[] = [];
+    (window as unknown as { __dimChanges: string[] }).__dimChanges = changes;
+    new MutationObserver(() => changes.push(canvas.getAttribute("data-aspect-dim") ?? "0")).observe(canvas, { attributes: true, attributeFilter: ["data-aspect-dim"] });
+  });
+  const first = await grip(page, "size-0");
+  const second = await grip(page, "size-1");
+  const third = await grip(page, "size-2");
+  const path = [first, second, third];
+  await page.evaluate((points) => {
+    const canvas = document.querySelector<HTMLCanvasElement>("#model")!;
+    const hop = (at: { x: number; y: number }) => canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: at.x, clientY: at.y, bubbles: true }));
+    hop(points[0]!);
+    for (let i = 1; i < points.length; i += 1) {
+      const from = points[i - 1]!;
+      const to = points[i]!;
+      for (let step = 1; step <= 6; step += 1) hop({ x: from.x + ((to.x - from.x) * step) / 6, y: from.y + ((to.y - from.y) * step) / 6 });
+    }
+  }, path);
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-2");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-dim", "1");
+  const changes = await page.evaluate(() => (window as unknown as { __dimChanges: string[] }).__dimChanges);
+  expect(changes.filter((value) => value === "0"), `dim changes ${changes.join(" ")}`).toEqual([]);
+});
+
 test("a hole slides in its face plane from two docked arrows, and its origin dot still drags over the solid", async ({ page }) => {
   const probes: Record<string, unknown>[] = [];
   await openSolid(page, probes);

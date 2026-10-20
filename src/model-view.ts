@@ -400,6 +400,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const ASPECT_LINE_PX = 4;
   /** The panel or HUD field that has focus, so its handle lights without a pointer. */
   let focusedField: string | null = null;
+  let focusSyncs = 0;
   let aspectNow: HandleAspect | null = null;
   let aspectLines: LineSegments2 | null = null;
   let aspectHidden: LineSegments2 | null = null;
@@ -408,6 +409,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** The lit segments, for a screen-space sample of the line colour. */
   let aspectSample: { positions: number[]; body: boolean } | null = null;
   let overHandle: string | null = null;
+  /** Keeps the lit aspect for a moment after the pointer leaves, so a gap between knobs does not flash. */
+  let aspectLeaveTimer: number | null = null;
   let drag: ActiveDrag | null = null;
   let handleCb: (drag: HandleDrag) => void = () => {};
   // --- P1 ---
@@ -1915,8 +1918,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (sketchLock || sketchCapture) ev.preventDefault();
   });
   // A number field becomes a text field on focus, which blurs and refocuses it. Read the field after that settles.
-  document.addEventListener("focusin", () => queueMicrotask(syncFocusedField));
-  document.addEventListener("focusout", () => queueMicrotask(syncFocusedField));
+  // The dock only: a Settings field must not run this.
+  const modelDock = document.getElementById("modelPanel");
+  const onDockFocus = () => queueMicrotask(syncFocusedField);
+  modelDock?.addEventListener("focusin", onDockFocus);
+  modelDock?.addEventListener("focusout", onDockFocus);
 
   return {
     setSolid(next, at) {
@@ -2660,9 +2666,22 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function setOverHandle(next: string | null) {
-    if (overHandle === next) return;
-    overHandle = next;
-    paintHandles();
+    if (next) {
+      if (aspectLeaveTimer != null) {
+        window.clearTimeout(aspectLeaveTimer);
+        aspectLeaveTimer = null;
+      }
+      if (overHandle === next) return;
+      overHandle = next;
+      paintHandles();
+      return;
+    }
+    if (overHandle == null || aspectLeaveTimer != null) return;
+    aspectLeaveTimer = window.setTimeout(() => {
+      aspectLeaveTimer = null;
+      overHandle = null;
+      paintHandles();
+    }, 120);
   }
 
   function paintAspect() {
@@ -2961,6 +2980,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function syncFocusedField() {
+    focusSyncs += 1;
+    canvas.dataset.focusSyncs = String(focusSyncs);
     const id = fieldOf(document.activeElement);
     const next = id && handleOwns(id) ? id : null;
     if (next === focusedField) return;
