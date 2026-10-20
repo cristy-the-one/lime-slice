@@ -71,6 +71,7 @@ export function mountMarkup(root: HTMLElement) {
           </select>
         </label>
         <label class="row setting" data-label="auto-slice when a slice takes under 20 s" data-tip="Slice again by itself after a change, while the last slice took under 20 seconds."><span class="row-label">Auto-slice when a slice takes under 20 s</span><input id="autoslice" type="checkbox" class="switch" role="switch" /></label>
+        <label class="row setting" data-label="show tool labels" data-tip="Widen the tool rail and show each tool's name. Off by default."><span class="row-label">Show tool labels</span><input id="railLabels" type="checkbox" class="switch" role="switch" /></label>
       </div>
     </header>
     <div class="banner-rail" id="banner"></div>
@@ -85,9 +86,9 @@ export function mountMarkup(root: HTMLElement) {
             <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. The drawing tools are in the sketch card.">Sketch</button>
           </div>
         </div>
-        <div class="rail-group" data-group="modify" data-solid-only role="group" aria-label="Modify">
+        <div class="rail-group" data-group="shape" data-solid-only role="group" aria-label="Shape">
           <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Modify</span>
+          <span class="rail-caption" aria-hidden="true">Shape</span>
           <div class="rail-tools">
             <!-- P1: Push/Pull. P. Also the gesture when no other model tool is open. -->
             <button class="model-tool" id="modelToolPull" type="button" data-tool="pushpull" aria-pressed="false" data-tip="Push/Pull: move a face. Hold Alt to add or cut material on that face only">Push/Pull</button>
@@ -99,20 +100,13 @@ export function mountMarkup(root: HTMLElement) {
             <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
           </div>
         </div>
-        <div class="rail-group" data-group="combine" data-solid-only role="group" aria-label="Combine">
+        <div class="rail-group" data-group="features" data-solid-only role="group" aria-label="Features">
           <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Combine</span>
+          <span class="rail-caption" aria-hidden="true">Features</span>
           <div class="rail-tools">
             <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Boolean: fuse, cut, or intersect a primitive or another object on the plate">Boolean</button>
-            <!-- --- A4 pattern and mirror --- -->
             <button class="model-tool" id="modelToolPattern" type="button" data-tool="pattern" aria-pressed="false" data-tip="Pattern: repeat history steps in a line, around an axis, or along a path">Pattern</button>
             <button class="model-tool" id="modelToolMirror" type="button" data-tool="mirror" aria-pressed="false" data-tip="Mirror: mirror history steps across X, Y, Z, or a picked flat face">Mirror</button>
-          </div>
-        </div>
-        <div class="rail-group" data-group="feature" data-solid-only role="group" aria-label="Feature">
-          <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Feature</span>
-          <div class="rail-tools">
             <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Hole: cut a cylinder into the picked face, or straight down">Hole</button>
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
@@ -155,6 +149,9 @@ export function mountMarkup(root: HTMLElement) {
       </div>
       <!-- The rail foot's Model buttons: chrome.ts moves them above the dock toggle. -->
       <div class="rail-set rail-model-foot" id="railModelFoot" data-for="model" role="group" aria-label="Model history and export" data-model-ui>
+        <div class="rail-group" data-group="edit" role="group" aria-label="Edit">
+          <span class="rail-caption" aria-hidden="true">Edit</span>
+        </div>
         <button class="model-tool" id="modelUndo" type="button" data-solid-only disabled data-tip="Undo the last solid edit">Undo</button>
         <button class="model-tool" id="modelRedo" type="button" data-solid-only disabled data-tip="Redo the last solid edit">Redo</button>
         <button class="model-tool" id="modelStep" type="button" data-solid-only data-tip="Write this solid as AP214 STEP">STEP</button>

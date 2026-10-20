@@ -2,7 +2,7 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Axis3d, Box, Boxes, ChevronRight, CircleDot, Cone, Copy, Cylinder, Disc, Download, Egg, Eye, Focus, Globe, Grid2x2, Grid3x3, Hash, Hexagon, Layers, ListChecks, MirrorRectangular, Move3d, MoveVertical, Plus, Redo2, Rows3, Ruler, Scaling, Spline, SquareArrowUp, SquareSplitHorizontal, SquareSquare, SquaresUnite, Torus, Triangle, TriangleRight, Type, Undo2, createElement, type IconNode } from "lucide";
+import { Axis3d, Box, Boxes, ChevronRight, CircleDot, Cone, Copy, Cylinder, Disc, Download, Egg, Eye, FlipHorizontal2, Focus, Globe, Grid2x2, Grid3x3, Hash, Hexagon, Layers, ListChecks, Move3d, MoveVertical, Plus, Radius, Redo2, Rows3, Ruler, Scaling, SquareArrowUp, SquareSplitHorizontal, SquareSquare, SquaresUnite, Torus, Triangle, TriangleRight, Type, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
@@ -31,6 +31,7 @@ import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queue
 import { evaluate, type Params } from "../modeling/expr.ts";
 import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
 import { revealParameters } from "./parameters.ts";
+import { COMMANDS, shortcutOf } from "./commands.ts";
 import { revealDock } from "./dock-reveal.ts";
 import { diameterExpr, radiusExpr } from "./diameter-expr.ts";
 import "./model-dock.css";
@@ -130,9 +131,9 @@ const TOOLS: { id: ModelTool; icon: IconNode; label: string }[] = [
   { id: "boolean", icon: SquaresUnite, label: "Boolean" },
   // --- A4. Their own rail buttons since E3. ---
   { id: "pattern", icon: Copy, label: "Pattern" },
-  { id: "mirror", icon: MirrorRectangular, label: "Mirror" },
+  { id: "mirror", icon: FlipHorizontal2, label: "Mirror" },
   { id: "split", icon: SquareSplitHorizontal, label: "Split" },
-  { id: "fillet", icon: Spline, label: "Fillet" },
+  { id: "fillet", icon: Radius, label: "Fillet" },
   { id: "chamfer", icon: Triangle, label: "Chamfer" },
   { id: "hole", icon: CircleDot, label: "Hole" },
   // --- A2 shell ---
@@ -303,6 +304,18 @@ let wpExact: Workplane = GLOBAL_WORKPLANE;
 /** Where the origin was when an arrow was grabbed: the arrow moves it by how far it slid, not to the rounded fields. */
 let wpGrab: readonly number[] | null = null;
 
+/** Put each tool's shortcut in its tip, so hover and focus name the key. */
+function nameRailTips() {
+  for (const button of document.querySelectorAll<HTMLElement>("#railModel button, #railModelFoot button")) {
+    const command = COMMANDS.find((item) => item.keys && item.target && button.matches(item.target));
+    const key = command ? shortcutOf(command) : undefined;
+    if (!key) continue;
+    button.setAttribute("aria-keyshortcuts", key);
+    const tip = button.dataset.tip ?? button.getAttribute("aria-label") ?? "";
+    if (tip && !tip.includes(key)) button.dataset.tip = `${tip} (${key})`;
+  }
+}
+
 function svgIcon(node: IconNode) {
   return createElement(node, { width: 14, height: 14, "aria-hidden": "true", class: "ico" });
 }
@@ -339,6 +352,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   iconize("#modelBedToggle", Grid3x3);
   document.querySelector("#modelFeatureMore")?.replaceChildren(createElement(ChevronRight, { width: 10, height: 10, "aria-hidden": "true", class: "ico" }));
   iconize("#modelResetView", Focus);
+  nameRailTips();
   setBed(readBedPref());
   document.querySelector("#modelBedToggle")?.addEventListener("click", () => {
     const on = document.querySelector("#modelBedToggle")?.getAttribute("aria-pressed") !== "true";

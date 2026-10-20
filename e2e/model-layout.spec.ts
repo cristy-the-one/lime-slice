@@ -53,8 +53,29 @@ test("the rail keeps every Model tool at 1440 × 900, and a short window folds t
   for (const id of ["#modelToolNew", "#modelToolPull", "#modelToolBoolean", "#modelToolPattern", "#modelToolHole", "#modelToolCheck", "#modelLookOpen", "#modelToolWorkplane", "#modelUndo", "#modelStep"]) {
     await expect(page.locator(id), id).toBeVisible();
   }
-  // C21: Push/Pull leads Modify, named in its label and tip.
+  // C21: Push/Pull leads Shape, named in its label and tip.
   await expect(page.locator("#modelToolPull")).toHaveAccessibleName("Push/Pull");
+  for (const heading of ["Create", "Shape", "Features", "Inspect", "Frame", "Edit"]) {
+    await expect(page.locator("#railModel .rail-caption, #railModelFoot .rail-caption").filter({ hasText: new RegExp(`^${heading}$`) })).toBeVisible();
+  }
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(page.locator("#model")).toHaveAttribute("data-sketch", "editing");
+  for (const heading of ["Create", "Shape", "Features", "Inspect", "Frame", "Edit"]) {
+    await expect(page.locator("#railModel .rail-caption, #railModelFoot .rail-caption").filter({ hasText: new RegExp(`^${heading}$`) })).toBeVisible();
+  }
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  const pull = page.locator("#modelToolPull");
+  await pull.evaluate((button: HTMLElement) => button.focus({ focusVisible: true }));
+  await expect(page.locator(".lime-tip")).toContainText("P");
+  const unnamed = await page.locator("#railModel button, #railModelFoot button").evaluateAll((nodes) =>
+    nodes
+      .filter((node) => (node as HTMLElement).checkVisibility())
+      .filter((node) => !((node as HTMLElement).getAttribute("aria-label") || node.textContent?.trim()))
+      .map((node) => (node as HTMLElement).id),
+  );
+  expect(unnamed).toEqual([]);
 
   await page.setViewportSize({ width: 1366, height: 768 });
   await expect.poll(() => folded(page)).toEqual(["frame"]);

@@ -175,6 +175,8 @@ Each asserts `data-aspect-field`, `data-aspect-lines > 0` (or 0 for unmapped) an
 
 ### UX-01 (P1). The Model rail needs groups and names, not a column of 20 icons
 
+Status: done. Headings Create, Shape, Features, Inspect, Frame, and Edit stay visible at 1440×900, including while a sketch is open. Tips name the shortcut (hover within 250 ms, and on keyboard focus). Show tool labels is a setting, off by default, and widens the rail to 132 px. Fillet uses the radius icon and Mirror uses a flip icon, so they no longer match Split's square.
+
 - **Seen**: `model-push.png`, `model-history.png`. The left rail is about 20 icon-only buttons. The group headings
   (CREATE, INSPECT) appear only in some states; in others there are only thin separators. Several icons look alike
   (the two "documents", the two squares).
@@ -251,6 +253,8 @@ Status: done. Feature status titles stay within 40 characters (`featureTitle` in
   hints are defined: `src/app/sketch.ts` and the model hint strings), and the popover is reachable by keyboard.
 
 ### UX-05 (P1). Put the typed value at the thing being changed
+
+Status: done. The HUD anchors to the handle, 16 px along its screen direction, and stays on the canvas. The unit and the ƒ mark sit inside the field. Playwright checks extrude, revolve, and sweep scale stay within 120 px of the handle.
 
 - **Seen**:
   - `handle-05-typed-scale.png`: the sweep's "0.6 ×" box floats at an unrelated spot, far from the path's end it

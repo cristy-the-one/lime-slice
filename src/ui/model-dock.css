@@ -58,6 +58,28 @@ html:not(.layout-compact):not([data-stage="model"]) #modelInspect { display: non
  * 4 px of each button ("dense", which keeps every tool down to about 790 px high), and only then whole groups.
  */
 .tool-rail[data-fit] .rail-caption { display: none; }
+@media (min-height: 820px) {
+  .tool-rail[data-fit] :is(#railModel, #railModelFoot) .rail-caption { display: block; }
+}
+:is(#railModel, #railModelFoot) .rail-caption { margin: 1px 0 0; line-height: 1.1; }
+html[data-rail-labels="1"] #toolRail { width: 132px; align-items: stretch; padding-left: 4px; padding-right: 4px; }
+html[data-rail-labels="1"] #toolRail .model-tool-label {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  white-space: nowrap;
+}
+html[data-rail-labels="1"] :is(#railModel, #railModelFoot) button:is(.model-tool:not([role=menuitem]), .model-look-open) {
+  width: auto;
+  height: auto;
+  min-height: 28px;
+  padding: 0 6px;
+  justify-content: flex-start;
+  gap: 6px;
+}
 .tool-rail[data-fit] .rail-sep { margin: 4px 0; }
 .tool-rail[data-fit="dense"] :is(#railModel, #railModelFoot) button:is(.model-tool:not([role=menuitem]), .rail-fold, .model-look-open) { height: 28px; }
 .tool-rail[data-fit="dense"] :is(#railModel, #railModelFoot) .rail-sep { margin: 2px 0; }

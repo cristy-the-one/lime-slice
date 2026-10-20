@@ -2,7 +2,7 @@ import { computePosition, flip, offset, shift } from "@floating-ui/dom";
 
 import { COMMANDS, commandForElement, shortcutOf, targetSelector, type CommandSpec } from "./commands";
 
-const SHOW_MS = 380;
+const SHOW_MS = 250;
 
 function commandById(id: string | undefined): CommandSpec | undefined {
   if (!id) return undefined;

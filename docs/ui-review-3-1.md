@@ -203,6 +203,10 @@ The sketch card is grouped. Draw is Line, Rectangle, Circle, Arc, Spline, Polygo
 
 ![Draw, Edit, and Make, with Finish sketch primary](screenshots/ui-review-3-1/ux03-after-sketch-card.png)
 
+A feature's status line is a short title. The steps are in How, beside the strip. The size field sits on the handle, and the unit is inside the field.
+
+![Extrude distance on the arrow, unit inside the field](screenshots/ui-review-3-1/ux05-after-hud.png)
+
 ## Checks
 
 - `npx tsc --noEmit`
