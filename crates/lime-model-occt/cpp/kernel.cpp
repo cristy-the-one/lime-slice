@@ -2591,26 +2591,28 @@ bool k3_draft_closes(const std::vector<double>& points, double shrink) {
 
 }  // namespace
 
-TopoDS_Shape build_extrude_extent(
+namespace {
+
+/// The profile's face, lifted `lift` along W. Null with `error` set when the outline does not make a face.
+using ProfileFaceAt = std::function<TopoDS_Face(double lift, std::string& error)>;
+
+/// K3 for any planar profile: a point outline or K1 loops. `closes` says whether a draft that narrows the far end by
+/// `shrink` closes the outline before the depth.
+TopoDS_Shape extent_from_face(
     const TopoDS_Shape& current,
     double before,
     const std::string& which,
-    const ProfileSpec& profile,
+    const ProfileFrame& frame,
+    const ProfileFaceAt& face_at,
+    const std::function<bool(double shrink)>& closes,
     double depth,
     bool symmetric,
     const ExtrudeExtent& extent,
     double& volume,
     std::string& error) {
-    const std::vector<double> points = profile_points(profile, error);
-    if (points.empty()) {
-        return {};
-    }
-    bool has_draft = extent.has_draft && std::abs(extent.draft_deg) > 1e-9;
+    const bool has_draft = extent.has_draft && std::abs(extent.draft_deg) > 1e-9;
     const bool has_depth2 = extent.has_depth2;
     const bool has_up_to = extent.has_up_to;
-    if (!has_draft && !has_depth2 && !has_up_to) {
-        return build_extrude(current, before, which, profile, depth, symmetric, volume, error);
-    }
     if (which != "fuse" && which != "cut" && which != "common") {
         error = "The boolean is fuse, cut, or common";
         return {};
@@ -2649,7 +2651,6 @@ TopoDS_Shape build_extrude_extent(
     if (!has_up_to && !k3_span(depth, symmetric, has_depth2, extent.depth2, lo, hi, error)) {
         return {};
     }
-    const ProfileFrame frame = frame_of(profile);
     if (has_draft && !has_up_to) {
         const double taper = std::tan(std::abs(draft_rad));
         double shrink = 0.0;
@@ -2660,7 +2661,7 @@ TopoDS_Shape build_extrude_extent(
             // One side: a positive angle shrinks the far end, whichever way the depth points.
             shrink = std::abs(depth) * taper;
         }
-        if (k3_draft_closes(points, shrink)) {
+        if (closes(shrink)) {
             error = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
             return {};
         }
@@ -2668,7 +2669,7 @@ TopoDS_Shape build_extrude_extent(
     const char* closed = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
 
     if (has_up_to) {
-        TopoDS_Face face = profile_face(frame, profile, 0.0, error);
+        TopoDS_Face face = face_at(0.0, error);
         if (face.IsNull()) {
             return {};
         }
@@ -2687,7 +2688,7 @@ TopoDS_Shape build_extrude_extent(
 
     if (!has_draft) {
         // Two-sided, straight walls: the same prism as a plain extrude, from the lower end along +W.
-        const TopoDS_Face face = profile_face(frame, profile, lo, error);
+        const TopoDS_Face face = face_at(lo, error);
         if (face.IsNull()) {
             return {};
         }
@@ -2699,7 +2700,7 @@ TopoDS_Shape build_extrude_extent(
         return combine_profile(current, before, which, tool, "extrude", volume, error);
     }
 
-    TopoDS_Face face = profile_face(frame, profile, 0.0, error);
+    TopoDS_Face face = face_at(0.0, error);
     if (face.IsNull()) {
         return {};
     }
@@ -2720,6 +2721,41 @@ TopoDS_Shape build_extrude_extent(
         return {};
     }
     return combine_profile(current, before, which, tool, "extrude", volume, error);
+}
+
+}  // namespace
+
+TopoDS_Shape build_extrude_extent(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const ProfileSpec& profile,
+    double depth,
+    bool symmetric,
+    const ExtrudeExtent& extent,
+    double& volume,
+    std::string& error) {
+    const std::vector<double> points = profile_points(profile, error);
+    if (points.empty()) {
+        return {};
+    }
+    const bool has_draft = extent.has_draft && std::abs(extent.draft_deg) > 1e-9;
+    if (!has_draft && !extent.has_depth2 && !extent.has_up_to) {
+        return build_extrude(current, before, which, profile, depth, symmetric, volume, error);
+    }
+    const ProfileFrame frame = frame_of(profile);
+    return extent_from_face(
+        current,
+        before,
+        which,
+        frame,
+        [&](double lift, std::string& message) { return profile_face(frame, profile, lift, message); },
+        [&](double shrink) { return k3_draft_closes(points, shrink); },
+        depth,
+        symmetric,
+        extent,
+        volume,
+        error);
 }
 
 TopoDS_Shape build_revolve(
@@ -2874,15 +2910,24 @@ void reverse_loop(ProfileLoop& loop) {
     loop.segments = std::move(rev);
 }
 
+/// A spline that ends where it starts, through at least two points between: the sketch's closed spline, one smooth
+/// periodic curve with no corner at its start.
+bool closed_spline(const double* from, const ProfileSeg& seg) {
+    return seg.kind == ProfileSegKind::Spline && seg.through.size() >= 4 && same_point(from, seg.to);
+}
+
 double spline_area2(const double* from, const ProfileSeg& seg) {
+    const bool closed = closed_spline(from, seg);
     std::vector<gp_Pnt> pts;
     pts.emplace_back(from[0], from[1], 0.0);
     for (size_t i = 0; i + 1 < seg.through.size(); i += 2) {
         pts.emplace_back(seg.through[i], seg.through[i + 1], 0.0);
     }
-    pts.emplace_back(seg.to[0], seg.to[1], 0.0);
+    if (!closed) {
+        pts.emplace_back(seg.to[0], seg.to[1], 0.0);
+    }
     std::string ignored;
-    const TopoDS_Edge edge = spline_edge(pts, false, ignored);
+    const TopoDS_Edge edge = spline_edge(pts, closed, ignored);
     if (edge.IsNull()) {
         return cross2(from[0], from[1], seg.to[0], seg.to[1]);
     }
@@ -2958,7 +3003,8 @@ bool loops_readable(std::vector<ProfileLoop>& loops, std::string& error) {
                     return false;
                 }
             }
-            if (same_point(from, seg.to)) {
+            // A closed spline is the loop's only segment; any other segment that comes back to its start has no length.
+            if (same_point(from, seg.to) && !(loop.segments.size() == 1 && closed_spline(from, seg))) {
                 error = "A loop segment ends where it starts. Give it some length.";
                 return false;
             }
@@ -3039,13 +3085,16 @@ TopoDS_Edge loop_edge(const ProfileFrame& frame, const double* from, const Profi
         }
         return edge.Edge();
     }
+    const bool closed = closed_spline(from, seg);
     std::vector<gp_Pnt> pts;
     pts.push_back(a);
     for (size_t i = 0; i + 1 < seg.through.size(); i += 2) {
         pts.push_back(frame.at(seg.through[i], seg.through[i + 1], lift));
     }
-    pts.push_back(b);
-    return spline_edge(pts, false, error);
+    if (!closed) {
+        pts.push_back(b);
+    }
+    return spline_edge(pts, closed, error);
 }
 
 TopoDS_Wire wire_of(const std::vector<TopoDS_Edge>& edges, std::string& error) {
@@ -3407,6 +3456,53 @@ TopoDS_Shape build_extrude_loops(
         return {};
     }
     return combine_profile(current, before, which, tool, "extrude", volume, error);
+}
+
+TopoDS_Shape build_extrude_loops_extent(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const double origin[3],
+    const double turn[3],
+    const std::vector<ProfileLoop>& loops,
+    double depth,
+    bool symmetric,
+    const ExtrudeExtent& extent,
+    double& volume,
+    std::string& error) {
+    const bool has_draft = extent.has_draft && std::abs(extent.draft_deg) > 1e-9;
+    if (!has_draft && !extent.has_depth2 && !extent.has_up_to) {
+        return build_extrude_loops(current, before, which, origin, turn, loops, depth, symmetric, volume, error);
+    }
+    const ProfileFrame frame = frame_from(origin, turn);
+    if (profile_loops_face(frame, loops, 0.0, error).IsNull()) {
+        return {};
+    }
+    // The outline's box, from its ends and the points its arcs and splines pass through, as the point profile's
+    // check reads its corners. A hole widens as the walls lean in, so only the outline can close.
+    std::vector<double> outline;
+    if (!loops.empty()) {
+        const ProfileLoop& outer = loops.front();
+        outline.push_back(outer.start[0]);
+        outline.push_back(outer.start[1]);
+        for (const ProfileSeg& seg : outer.segments) {
+            outline.insert(outline.end(), seg.through.begin(), seg.through.end());
+            outline.push_back(seg.to[0]);
+            outline.push_back(seg.to[1]);
+        }
+    }
+    return extent_from_face(
+        current,
+        before,
+        which,
+        frame,
+        [&](double lift, std::string& message) { return profile_loops_face(frame, loops, lift, message); },
+        [&](double shrink) { return outline.size() >= 2 && k3_draft_closes(outline, shrink); },
+        depth,
+        symmetric,
+        extent,
+        volume,
+        error);
 }
 
 TopoDS_Shape build_revolve_loops(
