@@ -281,4 +281,21 @@ fn loops_take_a_second_depth_and_a_draft() {
     // A draft that closes the circle before the depth is refused, as it is on a point profile.
     let closes = feature("loops-k3-closes", round(json!({ "depth": 10.0, "draftDeg": 30.0 })));
     refused(&closes, "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.");
+
+    // A centred draft grows the −W end, so a washer's 4 mm hole closes there once 15 tan 10° on each side passes 2 mm.
+    let washer = |depth: f64| {
+        json!({
+            "kind": "extrude", "op": "fuse", "origin": [0.0, 0.0, 0.0], "turn": [0.0, 0.0, 0.0],
+            "depth": depth, "symmetric": true, "draftDeg": 10.0, "loops": [circle(10.0), circle(2.0)]
+        })
+    };
+    // At 10 mm through, the outline is a frustum from 10 + t to 10 − t and the hole one from 2 − t to 2 + t.
+    let t = 5.0 * (10.0f64).to_radians().tan();
+    let ring = frustum(10.0 + t, 10.0 - t, 10.0) - frustum(2.0 - t, 2.0 + t, 10.0);
+    let drafted_washer = volume(&feature("loops-k3-washer", washer(10.0)));
+    assert!((drafted_washer - ring).abs() < 0.5, "a drafted washer is {ring}, not {drafted_washer}");
+    refused(
+        &feature("loops-k3-washer-shut", washer(30.0)),
+        "This draft closes a hole before the depth. Use a smaller angle or a shorter depth.",
+    );
 }

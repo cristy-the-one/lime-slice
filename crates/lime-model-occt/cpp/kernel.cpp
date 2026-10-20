@@ -3478,17 +3478,61 @@ TopoDS_Shape build_extrude_loops_extent(
     if (profile_loops_face(frame, loops, 0.0, error).IsNull()) {
         return {};
     }
-    // The outline's box, from its ends and the points its arcs and splines pass through, as the point profile's
-    // check reads its corners. A hole widens as the walls lean in, so only the outline can close.
+    const char* closes_profile = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+    if (has_draft && loops.size() > 1 && !extent.has_up_to) {
+        // LocOpe_DPrism does not draft a face with a round hole. The outline is drafted alone, and each hole is drafted
+        // the other way (a positive angle narrows the material, so it widens the hole) and cut from it.
+        std::string message;
+        double tool_volume = 0.0;
+        TopoDS_Shape tool = build_extrude_loops_extent(
+            TopoDS_Shape(), 0.0, "fuse", origin, turn, std::vector<ProfileLoop>{loops.front()}, depth, symmetric, extent, tool_volume, message);
+        if (tool.IsNull()) {
+            error = message;
+            return {};
+        }
+        ExtrudeExtent inward = extent;
+        inward.draft_deg = -extent.draft_deg;
+        for (size_t i = 1; i < loops.size(); ++i) {
+            double hole_volume = 0.0;
+            const TopoDS_Shape hole = build_extrude_loops_extent(
+                TopoDS_Shape(), 0.0, "fuse", origin, turn, std::vector<ProfileLoop>{loops[i]}, depth, symmetric, inward, hole_volume, message);
+            if (hole.IsNull()) {
+                error = message == closes_profile ? "This draft closes a hole before the depth. Use a smaller angle or a shorter depth." : message;
+                return {};
+            }
+            double cut_volume = 0.0;
+            tool = combine_profile(tool, tool_volume, "cut", hole, "extrude", cut_volume, message);
+            if (tool.IsNull()) {
+                error = message;
+                return {};
+            }
+            tool_volume = cut_volume;
+        }
+        return combine_profile(current, before, which, tool, "extrude", volume, error);
+    }
+    // The outline's box on the plane, from its drawn curves, as the point profile's check reads its corners.
     std::vector<double> outline;
     if (!loops.empty()) {
         const ProfileLoop& outer = loops.front();
-        outline.push_back(outer.start[0]);
-        outline.push_back(outer.start[1]);
+        double from[2] = {outer.start[0], outer.start[1]};
         for (const ProfileSeg& seg : outer.segments) {
-            outline.insert(outline.end(), seg.through.begin(), seg.through.end());
-            outline.push_back(seg.to[0]);
-            outline.push_back(seg.to[1]);
+            std::string ignored;
+            const TopoDS_Edge edge = loop_edge(frame, from, seg, 0.0, ignored);
+            from[0] = seg.to[0];
+            from[1] = seg.to[1];
+            if (edge.IsNull()) {
+                continue;
+            }
+            BRepAdaptor_Curve curve(edge);
+            GCPnts_QuasiUniformDeflection sampler(curve, 0.01);
+            if (!sampler.IsDone()) {
+                continue;
+            }
+            for (int i = 1; i <= sampler.NbPoints(); ++i) {
+                const gp_Vec at(frame.origin, sampler.Value(i));
+                outline.push_back(at.Dot(gp_Vec(frame.u)));
+                outline.push_back(at.Dot(gp_Vec(frame.v)));
+            }
         }
     }
     return extent_from_face(
