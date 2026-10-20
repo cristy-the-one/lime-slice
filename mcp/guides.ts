@@ -103,7 +103,7 @@ GUIDES.push(
       "moveFaces: {kind:\"moveFaces\", faces:[{face, distance}]}. Neighbours extend or trim. Positive distance follows the solid's outward normal, so a box top grows and a hole wall moves toward the hole's axis, which makes the hole smaller. A negative distance on a hole wall widens the hole.",
       "  A taller box: {kind:\"moveFaces\", faces:[{face:{normal:[0, 0, 1]}, distance:5}]}.",
       "hole: {kind:\"hole\", diameterMm, through:true | depth, at:{u, v}} on the workplane, or screw:\"M3\".",
-      "fillet, chamfer: {edges:[index] | {select:{direction, onFace, convex}} | {fromNode:\"roof\", filter:\"convex\"}, size}. fromNode takes the edges a step made, found again after edits.",
+      "fillet, chamfer: {edges:[index] | {select:{direction, onFace, convex}} | {fromNode:\"roof\", filter:\"convex\"}, size}. fromNode takes the edges a step made, found again after edits. A pick is one object; [{fromNode}] reads as it.",
       "split: {origin, normal, keep}. scale: {factor}.",
       "join: {kind:\"join\", toolObject:\"obj_N\", op:\"cut\"|\"fuse\"|\"common\", keepTool}. Another object's solid as the tool, where it stands. Without keepTool the tool leaves the plate, as in the app; model_undo of the join or model_goto before it puts it back.",
       "pocket: {kind:\"pocket\", faceIndex, shape:\"rect\"|\"circle\"|\"arch\", at:{u, v}, width, height | diameter, depth, bars:{vertical, horizontal, width}}.",

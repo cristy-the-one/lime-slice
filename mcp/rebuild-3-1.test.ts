@@ -259,6 +259,18 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("and the thickest wall that fits", typeof thick.maxMm === "number" && thick.maxMm > 2.8 && thick.maxMm <= 3 && String(thick.reason).includes(`A ${thick.maxMm} mm wall fits.`), JSON.stringify(thick));
 }
 
+{
+  // Finding 4: a fillet's step pick written inside a list is that pick; several are refused with the shapes taken.
+  const session = new Session(fakeEngine());
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const part = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 })).object);
+  await call("model_apply", { object: part, probe: true, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [-2, -2, 19], dx: 4, dy: 4, dz: 3, label: "boss" } });
+  const listed = await call("model_apply_batch", { object: part, ops: [{ kind: "fillet", size: 0.5, edges: [{ fromNode: "boss", filter: "convex" }] }] });
+  check("edges: [{fromNode, filter}] is taken as the pick", listed.ok === true && listed.applied === 1, JSON.stringify(listed));
+  const several = await call("model_probe", { object: part, op: { kind: "fillet", size: 0.5, edges: [{ fromNode: "boss" }, { fromNode: "node_0" }] } });
+  check("several picks in a list are refused with the shapes that are taken", several.ok === false && String(several.reason).includes("{fromNode: \"node_4\", filter: \"convex\"}"), JSON.stringify(several));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

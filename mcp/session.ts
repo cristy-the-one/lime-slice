@@ -511,6 +511,43 @@ function turnEcho(typed: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+const EDGES_SHAPE = "edges is a list of edge indexes, [3, 7], or one pick object: {fromNode: \"node_4\", filter: \"convex\"} or {select: {direction, onFace, convex}}, not inside a list.";
+
+/**
+ * --- 3.1 F4. A fillet's or chamfer's `edges` as the schema takes it: one pick object written inside a list,
+ * `[{fromNode, filter}]`, is that object. Several pick objects in a list, or picks mixed with indexes, are refused
+ * with the shapes that are taken, before the schema check says only "edges[0] must be a number".
+ */
+function edgePicksAsTyped(args: unknown): { args: unknown } | { reason: string } {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return { args };
+  const input = args as Record<string, unknown>;
+  const fix = (op: unknown): { op: unknown } | { reason: string } => {
+    if (!op || typeof op !== "object" || Array.isArray(op)) return { op };
+    const row = op as Record<string, unknown>;
+    if ((row.kind !== "fillet" && row.kind !== "chamfer") || !Array.isArray(row.edges)) return { op };
+    const objects = row.edges.filter((edge) => edge !== null && typeof edge === "object");
+    if (objects.length === 0) return { op };
+    if (row.edges.length === 1) return { op: { ...row, edges: objects[0] } };
+    return { reason: EDGES_SHAPE };
+  };
+  let out = input;
+  if (input.op !== undefined) {
+    const fixed = fix(input.op);
+    if ("reason" in fixed) return fixed;
+    out = { ...out, op: fixed.op };
+  }
+  if (Array.isArray(input.ops)) {
+    const ops: unknown[] = [];
+    for (const [index, op] of input.ops.entries()) {
+      const fixed = fix(op);
+      if ("reason" in fixed) return { reason: `ops[${index}]: ${fixed.reason}` };
+      ops.push(fixed.op);
+    }
+    out = { ...out, ops };
+  }
+  return { args: out };
+}
+
 /** The history row for a composite: the label that was typed, else the feature's name, else Pattern or Mirror. */
 function compositeGroupLabel(raw: Record<string, unknown>, given?: string): string {
   const typed = given?.trim();
@@ -731,7 +768,9 @@ export class Session {
     if (busy) return Promise.resolve(busy);
     const numbered = this.withNumbers(name, args);
     if ("reason" in numbered) return Promise.resolve({ ok: false, reason: numbered.reason });
-    args = numbered.args;
+    const picked = edgePicksAsTyped(numbered.args);
+    if ("reason" in picked) return Promise.resolve({ ok: false, reason: picked.reason });
+    args = picked.args;
     const problem = validateTool(name, args ?? {});
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
@@ -3647,7 +3686,7 @@ export class Session {
     }
     if (Array.isArray(raw)) {
       if (raw.length === 0) return { reason: empty };
-      if (!raw.every((edge) => Number.isInteger(edge))) return { reason: "Edge indexes are whole numbers." };
+      if (!raw.every((edge) => Number.isInteger(edge))) return { reason: EDGES_SHAPE };
       return raw as number[];
     }
     if (raw && typeof raw === "object" && "select" in raw) {
