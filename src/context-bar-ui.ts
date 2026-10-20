@@ -119,7 +119,7 @@ function solidAndCube(): { solid: ContextBox | null; cube: ContextBox | null } {
 function toolbarReady(selector: string | undefined): boolean {
   if (!selector) return true;
   const button = document.querySelector<HTMLButtonElement>(selector);
-  return !!button && !button.disabled;
+  return !!button && !button.disabled && button.getAttribute("aria-disabled") !== "true";
 }
 
 function listed(action: ContextAction): boolean {
@@ -129,7 +129,7 @@ function listed(action: ContextAction): boolean {
 function pressToolbar(selector: string | undefined): void {
   if (!selector) return;
   const button = document.querySelector<HTMLButtonElement>(selector);
-  if (!button || button.disabled) return;
+  if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return;
   // The toolbar toggles. A second press would close the tool the bar just opened.
   if (button.getAttribute("aria-pressed") === "true") return;
   button.click();

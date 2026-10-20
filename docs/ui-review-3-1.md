@@ -106,17 +106,46 @@ A click toasts that sentence and does not open the bar.
 
 **Change:** `#model:focus-visible` and the history menu items draw a 2px accent outline. Layer marks are 24px. The overflow summary is 28px wide. The top bar stays one 40px row at the widths the window-fit spec checks, including 1440×900.
 
+## Second pass
+
+### Overlapping layers
+
+Panels that sit on the view (the empty card, the selection bar and its menu, the gizmo and section readouts, the drag tip, the heads-up size box, paint and support bars, driving dimensions, toasts, dialogs, menus, and the drawer docks) use an opaque background, a solid border, and a shadow. Stage chips use an opaque fill instead of a translucent white. A drawer dock has a border as well as its shadow.
+
+![File menu over the view](screenshots/ui-review-3-1/after-file-menu.png)
+
+### Extrude, Revolve, Loft, and Sweep
+
+With no closed profile, Extrude and Revolve are disabled. The tooltip, a keyboard focus, and a click all say "Draw a closed profile to extrude." (or revolve). With several regions and none selected, they say to select one. Loft and Sweep stay clickable when a profile or an open path exists, because the click starts the pick. The card then shows the sentence ("Pick at least two sections to loft.") and a Cancel. Model tools that cannot run (fillet with no edge, a locked solid) use the same `aria-disabled` treatment, so the reason is a tooltip a keyboard user can reach. The panel note for a pick ("Pick a face.") is a bordered prompt above the fields.
+
+![Loft waiting for a second section](screenshots/ui-review-3-1/after-loft-prompt.png)
+
+### Hit targets
+
+The Features opener is no longer a badge on Pocket. Pocket and the opener share one 48px rail row, 24px each, so a click on Pocket still starts Pocket and the row is no taller than the other tools. At 1366×768 only the Frame group folds. On the phone the opener is its own 44px control in the scrolling strip.
+
+The gizmo nudge is a 2-by-3 grid of 24px keys. Six keys in a column at 24px would be taller than the old 16px stack; two columns are shorter, so showing them does not fold another group.
+
+![Pocket and the Features opener side by side](screenshots/ui-review-3-1/after-feature-split.png)
+
+![Gizmo nudge keys](screenshots/ui-review-3-1/after-gizmo-nudge.png)
+
+The earlier corner badge, for comparison:
+
+![Features opener on the corner of Pocket](screenshots/ui-review-3-1/after-feature-opener.png)
+
+### Disabled controls
+
+Disabled buttons stay at full opacity, in `--text-dim`, with a dashed border and a diagonal stripe, plus `cursor: not-allowed`. The "why" tooltip opens on keyboard focus (`:focus-visible`), not only on hover. Text fields that are disabled get the dashed border and the dim colour, without a stripe across the value.
+
+![Paint explains itself, and Slice stays readable while it is off](screenshots/ui-review-3-1/after-disabled-stripe.png)
+
 ## Left for Marius
 
-- **Extrude, Revolve, Loft, and Sweep** on the sketch card stay enabled when nothing is selected. Starting them enters a picking step (`chooseRegions` and the same for the other features), so the button is the way to begin. Apply is the control that refuses a half-finished feature.
-- **The Features opener is 16px wide.** A 24×24 control cannot sit in the 36×32 Pocket button without covering its click or sticking out of the rail. Sticking out folds Inspect at 1366×768.
-- **Gizmo nudge keys stay 16px tall.** Six of them live in the rail while a gizmo is up. At 24px they add about 48px and the rail folds another group. They are `aria-label`led ("Nudge X −0.1 mm" and so on).
-- **Disabled controls use `opacity: var(--disabled)` (0.45).** Raising that is a theme-wide contrast change.
 - **The selection bar still fades after 3 seconds.** It fades to the chip, not to nothing. It can stay open instead if that is what you want.
 - **A canvas tap on the phone still hides the chrome.** The new button is the way back.
 - **Settings groups below the fold** are reached by scrolling the dock. There is no separate "expand all".
-- **A dock closed by the 30% width budget** does not add a sentence of its own. The rail toggles, Ctrl+B, and Ctrl+Alt+B already open it.
-- **Popovers** (File, samples, feature menu, flyouts) already have a panel background, a border, and a shadow. Nothing in this pass restyled them.
+- **A dock closed by the 30% width budget** does not add a sentence of its own. The rail toggles, Ctrl+B, and Ctrl+Alt+B already open it. In the drawer range the status line already names a closed dock.
 
 ## Checks
 

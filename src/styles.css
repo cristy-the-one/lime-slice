@@ -208,6 +208,7 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
   border: 1px solid var(--stage-chip-line);
   border-radius: 999px;
   background: var(--stage-chip);
+  box-shadow: var(--shadow-pop);
   color: var(--on-stage);
   font-size: var(--fs-2);
   white-space: nowrap;
@@ -229,8 +230,9 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
   max-width: calc(100% - 20px);
   padding: var(--space-1) var(--space-2);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-pop);
   color: var(--text);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -262,7 +264,8 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
   padding: 2px;
   border: 1px solid var(--stage-chip-line);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--stage) 70%, var(--surface-2));
+  background: var(--stage-chip);
+  box-shadow: var(--shadow-pop);
   color: var(--on-stage-dim);
   font-size: var(--fs-2);
 }
@@ -390,6 +393,7 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
   border: 1px solid var(--stage-chip-line);
   border-radius: 8px;
   background: var(--stage-chip);
+  box-shadow: var(--shadow-pop);
   color: var(--on-stage);
   font-size: 12px;
   line-height: 14px;
@@ -474,8 +478,30 @@ textarea.machine-gcode {
 .btn.primary, .btn.reslice { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
 .btn.primary:hover:not(:disabled), .btn.reslice:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
 .btn.primary:active:not(:disabled), .btn.reslice:active:not(:disabled) { background: var(--accent-pressed); border-color: var(--accent-pressed); }
-/* Disabled reads the same everywhere. */
-:is(button, input, select, textarea):disabled, .is-disabled { opacity: var(--disabled); cursor: not-allowed; }
+/* Disabled reads the same everywhere: full contrast, a dashed edge, and a stripe, not a fade. */
+:is(button, select):is(:disabled, .is-disabled) {
+  opacity: 1;
+  cursor: not-allowed;
+  color: var(--text-dim);
+  background-color: var(--surface-2);
+  border: 1px dashed var(--border-strong);
+  background-image: repeating-linear-gradient(-45deg, transparent 0 3px, color-mix(in srgb, var(--text-dim) 28%, transparent) 3px 4px);
+}
+.btn.primary:is(:disabled, .is-disabled),
+.btn.reslice:is(:disabled, .is-disabled) {
+  opacity: 1;
+  color: var(--text-dim);
+  background-color: var(--surface-3);
+  border: 1px dashed var(--border-strong);
+  background-image: repeating-linear-gradient(-45deg, transparent 0 3px, color-mix(in srgb, var(--text-dim) 28%, transparent) 3px 4px);
+}
+:is(input, textarea):is(:disabled, .is-disabled) {
+  opacity: 1;
+  cursor: not-allowed;
+  color: var(--text-dim);
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
 /* Hover, press and focus fill in one place for every row-like control. */
 :is(.btn, .tool-btn, .strat, .estimate, .menu nav button, .group > summary, .mod-item > summary, .mod-remove, .tool-rail button, .flat-tool, .layer-step, .win-controls .btn) {
   transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
@@ -685,6 +711,16 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-edit-head[hidden] { display: none; }
 .model-note { margin: var(--space-2) 0 0; color: var(--text-dim); font-size: var(--fs-2); }
 .model-note.is-bad { color: var(--danger); }
+/* A pick or a choice sits on the panel, above the fields, so the next step is not only in the status line. */
+.model-note.is-prompt {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+}
 .model-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
 .model-actions .btn { height: var(--control-h-sm); }
 .model-dock:is([data-tool="measure"], [data-tool="place"], [data-tool="workplane"], [data-tool="check"]) #modelApply { display: none; }
@@ -804,8 +840,8 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   transform: translate(-50%, -50%);
   width: min(340px, calc(100% - 32px));
   padding: var(--space-4);
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-pop);
   text-align: center;
@@ -832,6 +868,22 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 }
 .sketch-card p { margin: 0 6px 0 0; }
 .sketch-card .btn[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+/* The sentence for a feature that is waiting on a pick, with its own Cancel, in the card. */
+.sketch-prompt {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 2px 0;
+  padding: var(--space-2);
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+}
+.sketch-prompt[hidden] { display: none; }
+.sketch-prompt-text { flex: 1 1 auto; min-width: 0; }
 /* --- S3 drawing tools. The menu is in the sketch card, so the Model toolbar stays one row at 1440 px. --- */
 .sketch-menu { position: relative; }
 .sketch-menu-list {
@@ -860,8 +912,9 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   transform: translate(-50%, -50%);
   pointer-events: auto;
   color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--accent);
+  background: var(--panel);
+  box-shadow: var(--shadow-pop);
   font: 12px/1.2 "IBM Plex Mono", ui-monospace, monospace;
   border-radius: 4px;
   padding: 1px 5px;
@@ -879,9 +932,10 @@ input.sketch-dim-input {
   height: auto;
   min-height: 0;
   padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  background: var(--panel);
+  box-shadow: var(--shadow-pop);
   color: var(--accent);
   box-sizing: border-box;
   text-align: center;
@@ -1131,8 +1185,9 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   z-index: 3;
   padding: 2px var(--space-1);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-pop);
   color: var(--text);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -1150,8 +1205,9 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   gap: var(--space-1);
   padding: 2px var(--space-1);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-pop);
   color: var(--text);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -1252,8 +1308,8 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   gap: 2px;
   max-width: calc(100% - 16px);
   padding: 3px;
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-pop);
   pointer-events: auto;
@@ -1288,8 +1344,8 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   display: grid;
   min-width: 9rem;
   padding: 3px;
-  background: color-mix(in srgb, var(--panel) 96%, transparent);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-pop);
 }
@@ -1302,8 +1358,9 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   max-width: calc(100% - 24px);
   padding: var(--space-1) var(--space-2);
   border-radius: 4px;
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  border: 1px solid var(--line);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-pop);
   color: var(--text);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -1373,6 +1430,8 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   z-index: calc(var(--z-menu) - 1);
   top: 0;
   bottom: 0;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
   box-shadow: var(--shadow-pop);
 }
 .workspace.is-drawers #leftDock { grid-area: auto; left: 48px; width: var(--panel-left); }

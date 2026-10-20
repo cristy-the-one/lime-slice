@@ -441,6 +441,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (drawing) return;
+      if (!loft && blockedStart("loft")) return;
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) endExtrude();
       if (revolve) endRevolve();
@@ -453,6 +454,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ev.preventDefault();
       ev.stopImmediatePropagation();
       if (drawing) return;
+      if (!sweep && blockedStart("sweep")) return;
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) endExtrude();
       if (revolve) endRevolve();
@@ -483,6 +485,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (drawing) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
+      if (!gesture && blockedStart("extrude")) return;
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (revolve) endRevolve();
       if (loft) endLoft();
@@ -495,6 +498,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (drawing) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
+      if (!revolve && blockedStart("revolve")) return;
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (gesture) endExtrude();
       if (loft) endLoft();
@@ -778,7 +782,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (applying || holding) return;
     const target = ev.target instanceof HTMLElement ? ev.target.closest("button") : null;
     if (!(target instanceof HTMLButtonElement)) return;
-    if (target.getAttribute("aria-disabled") === "true") return;
+    if (target.getAttribute("aria-disabled") === "true") {
+      const why = target.dataset.tip || target.title;
+      if (why) pushToast(why, "info");
+      return;
+    }
     const plane = target.dataset.sketchPlane;
     if (plane === "XY" || plane === "XZ" || plane === "YZ" || plane === "workplane") {
       enterNamed(plane);
@@ -853,6 +861,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (sweep) void commitSweep();
       else beginSweep();
+      return;
+    }
+    if (target.dataset.sketchCancel != null) {
+      if (gesture) endExtrude();
+      else if (revolve) endRevolve();
+      else if (loft) endLoft();
+      else if (sweep) endSweep();
       return;
     }
     // --- B20. A revolve turns the other way about the same axis. ---
@@ -1462,6 +1477,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       apply.dataset.tipIdle ??= "Keep this feature";
       markBlocked(apply, featureBlocked());
     }
+    paintStarts();
+    const prompt = cards?.querySelector<HTMLElement>(".sketch-prompt");
+    const sentence = pickPrompt();
+    if (prompt) {
+      const text = prompt.querySelector(".sketch-prompt-text");
+      if (text) text.textContent = sentence;
+      prompt.toggleAttribute("hidden", sentence === "");
+    }
   }
 
   function takeCardFocus() {
@@ -1554,9 +1577,77 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   function markBlocked(button: HTMLButtonElement, why: string) {
     button.setAttribute("aria-disabled", why ? "true" : "false");
     button.classList.toggle("is-disabled", why !== "");
-    button.dataset.tip = why || button.dataset.tipIdle || "";
-    if (why) button.title = why;
-    else button.removeAttribute("title");
+    if (why) {
+      button.dataset.tip = why;
+      button.title = why;
+    } else {
+      if (button.dataset.tipIdle) button.dataset.tip = button.dataset.tipIdle;
+      else delete button.dataset.tip;
+      button.removeAttribute("title");
+    }
+  }
+
+  type StartKind = "extrude" | "revolve" | "loft" | "sweep";
+
+  /** Why Extrude, Revolve, Loft or Sweep cannot start. Empty when a click is the right next step. */
+  function startWhy(kind: StartKind): string {
+    const sketch = activeSketch(editor);
+    if (!sketch || editor.phase !== "editing") return "Open a sketch first.";
+    const regions = sketchRegions(sketch);
+    const chosen = chooseRegions(sketch, editor.selection.entities, null);
+    if (kind === "extrude") {
+      if (regions.length === 0) return "Draw a closed profile to extrude.";
+      if (chosen.length === 0) return "Select a region to extrude.";
+      return "";
+    }
+    if (kind === "revolve") {
+      if (regions.length === 0) return "Draw a closed profile to revolve.";
+      if (chosen.length === 0) return "Select a region to revolve.";
+      return "";
+    }
+    if (kind === "loft") {
+      const elsewhere = editor.pinned.some((item) => item.id !== editor.active && sketchRegions(item.sketch).length > 0);
+      if (regions.length === 0 && !elsewhere) return "Draw a closed profile to loft.";
+      return "";
+    }
+    const path = openChain(sketch) ?? pinnedChain();
+    if (chosen.length === 0 && !pinnedRegion() && !path) return "Draw a closed profile or an open path to sweep.";
+    return "";
+  }
+
+  function blockedStart(kind: StartKind): boolean {
+    const why = startWhy(kind);
+    if (!why) return false;
+    host.readout(why);
+    pushToast(why, "info");
+    return true;
+  }
+
+  function startActive(kind: StartKind): boolean {
+    if (kind === "extrude") return gesture != null;
+    if (kind === "revolve") return revolve != null;
+    if (kind === "loft") return loft != null;
+    return sweep != null;
+  }
+
+  function paintStarts() {
+    const kinds: [StartKind, string][] = [
+      ["extrude", "[data-sketch-extrude]"],
+      ["revolve", "[data-sketch-revolve]"],
+      ["loft", "[data-sketch-loft]"],
+      ["sweep", "[data-sketch-sweep]"],
+    ];
+    for (const [kind, selector] of kinds) {
+      const button = cards?.querySelector<HTMLButtonElement>(selector);
+      if (!button) continue;
+      markBlocked(button, startActive(kind) ? "" : startWhy(kind));
+    }
+  }
+
+  /** The pick the open feature is still waiting for, shown on the card with Cancel. */
+  function pickPrompt(): string {
+    const why = featureBlocked();
+    return why.startsWith("Select ") || why.startsWith("Pick ") ? why : "";
   }
 
   function editingRow(): Node[] {
@@ -1584,6 +1675,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       row.push(holes);
     }
     if (gesture || revolve || loft || sweep) {
+      const prompt = document.createElement("div");
+      prompt.className = "sketch-prompt";
+      prompt.setAttribute("role", "status");
+      const text = document.createElement("span");
+      text.className = "sketch-prompt-text";
+      prompt.append(text, textButton("Cancel", { sketchCancel: "" }));
+      row.push(prompt);
       const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
       const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
       const auto = choice === "auto" ? "Auto · " : "";

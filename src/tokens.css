@@ -68,9 +68,9 @@
   --stage: #0b0d11;
   /* Other plate objects in Model mode: neutral grey on the dark viewport. */
   --context: #9aa3b0;
-  --stage-chip: rgba(255, 255, 255, 0.07);
-  --stage-chip-line: rgba(255, 255, 255, 0.14);
-  --stage-chip-on: rgba(255, 255, 255, 0.2);
+  --stage-chip: #1a1f28;
+  --stage-chip-line: #3a4454;
+  --stage-chip-on: #2a3342;
   --bed: #141820;
   --bed-minor: #222733;
   --mesh: #96be28;

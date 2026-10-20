@@ -379,3 +379,40 @@ test("sketch keys leave text fields alone and stop when Model closes", async ({ 
   await expect(canvas).toHaveAttribute("data-sketch-entities", "4");
   await expect(canvas).toHaveAttribute("data-sweep", "off");
 });
+
+test("extrude waits for a profile, and loft says what to pick", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  const extrude = page.locator("[data-sketch-extrude]");
+  await expect(extrude).toHaveAttribute("aria-disabled", "true");
+  await expect(extrude).toHaveAttribute("data-tip", "Draw a closed profile to extrude.");
+  await extrude.evaluate((button: HTMLElement) => button.focus({ focusVisible: true }));
+  await expect(page.locator(".lime-tip")).toContainText("Draw a closed profile to extrude.");
+  await extrude.click({ force: true });
+  await expect(page.locator("#toasts")).toContainText("Draw a closed profile to extrude.");
+
+  const box = (await canvas.boundingBox())!;
+  const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.locator("[data-sketch-tool=rectangle]").click();
+  await page.mouse.click(start.x, start.y);
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await expect(hud).toBeVisible();
+  await hud.locator("input").nth(0).fill("12");
+  await hud.locator("input").nth(0).press("Tab");
+  await hud.locator("input").nth(1).fill("5");
+  await hud.locator("input").nth(1).press("Enter");
+  await expect(extrude).toHaveAttribute("aria-disabled", "false");
+
+  await page.locator("[data-sketch-loft]").click();
+  const prompt = page.locator(".sketch-prompt");
+  await expect(prompt).toBeVisible();
+  await expect(prompt).toContainText("Pick at least two sections to loft.");
+  if (process.env.LIME_SHOTS) await page.locator("#modelDock .sketch-card").screenshot({ path: `${process.env.LIME_SHOTS}/after-loft-prompt.png` });
+  await prompt.locator("[data-sketch-cancel]").click();
+  await expect(prompt).toHaveCount(0);
+  await expect(canvas).toHaveAttribute("data-loft", "off");
+});
