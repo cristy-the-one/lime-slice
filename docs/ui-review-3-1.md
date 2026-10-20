@@ -225,6 +225,12 @@ A history row names the sketch and the value: Extrude Sketch 1, 20 mm. An unchan
 
 ![Extrude Sketch 1, 20 mm, and the file pose as a line](screenshots/ui-review-3-1/ux08-after-history.png)
 
+The faded selection chip names the count, "1 face ▾", in the dock's surface colour, and sits beside the solid.
+
+![A white Selection chip centred above the box](screenshots/ui-review-3-1/ux09-before-chip.png)
+
+![1 face, beside the solid](screenshots/ui-review-3-1/ux09-after-chip.png)
+
 ## Checks
 
 - `npx tsc --noEmit`

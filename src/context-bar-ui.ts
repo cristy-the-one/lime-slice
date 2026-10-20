@@ -17,6 +17,7 @@ import {
   type ContextPick,
   type Vec3,
 } from "./context-bar.ts";
+import { selectionChipLabel } from "./model-select.ts";
 
 export interface ContextBarState {
   kind: ContextKind;
@@ -184,9 +185,17 @@ function barButtons(): HTMLButtonElement[] {
 }
 
 /**
- * Faded, the actions hide and a "Selection" chip stays where the bar was. The chip is the way back:
+ * Faded, the actions hide and a count chip stays beside the selection. The chip is the way back:
  * click it, tab to it, or press Ctrl+.
  */
+function paintChip(picks: readonly ContextPick[]) {
+  const restore = restoreButton();
+  if (!restore) return;
+  const label = selectionChipLabel(picks);
+  restore.textContent = label;
+  restore.setAttribute("aria-label", label);
+}
+
 function setFaded(next: boolean) {
   const was = faded;
   if (was === next) return;
@@ -194,6 +203,8 @@ function setFaded(next: boolean) {
   if (!bar) return;
   bar.classList.toggle("is-faded", next);
   bar.dataset.faded = next ? "1" : "0";
+  if (pending) paintChip(pending.picks);
+  reseat();
   const restore = restoreButton();
   bar.querySelectorAll<HTMLButtonElement>("button:not(#contextBarRestore)").forEach((button) => {
     button.setAttribute("aria-hidden", next ? "true" : "false");
@@ -366,6 +377,7 @@ function reseat() {
     solid: solid ? local(solid) : null,
     obstacles: [...obstacleBoxes(), ...(cube ? [cube] : [])].map(local),
     gap: CONTEXT_GAP_PX,
+    place: faded ? "beside" : "above",
   });
   bar.style.left = `${Math.round(view.left - frame.left + seat.x)}px`;
   bar.style.top = `${Math.round(view.top - frame.top + seat.y)}px`;
@@ -391,6 +403,7 @@ function render(state: ContextBarState) {
     return;
   }
   renderButtons(actions);
+  paintChip(state.picks);
   bar.dataset.kind = state.kind;
   bar.dataset.actions = actions.map((action) => action.id).join(",");
   bar.hidden = false;

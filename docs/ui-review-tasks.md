@@ -319,6 +319,8 @@ Status: done. History shows "Extrude Sketch 1, 20 mm" (and the same shape for re
 
 ### UX-09 (P2). The selection chip should say what is selected
 
+Status: done. The faded chip reads "1 face ▾" (or "3 edges ▾") in the dock surface colour, and sits beside the solid. The pick-filter count uses the same surface. Screenshots: `ux09-before-chip.png`, `ux09-after-chip.png`.
+
 - **Seen**: `after-selection-chip.png`. A white "Selection" chip floats above the box, and the "1 face" count is a
   low-contrast pill in the Face/Edge switch.
 - **Change**: the chip reads "1 face ▾" (or "3 edges ▾"), uses the dock surface style (dark, not white, in the dark

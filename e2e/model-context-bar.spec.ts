@@ -252,7 +252,22 @@ test("an edge offers Fillet and Chamfer, and the bar fades until the pointer ret
   await expect(bar).toHaveAttribute("data-faded", "0");
   await page.waitForTimeout(3200);
   await expect(bar).toHaveAttribute("data-faded", "1");
-  await expect(bar.locator("#contextBarRestore"), "a Selection chip stays when the actions fade").toBeVisible();
+  await expect(bar.locator("#contextBarRestore"), "a count chip stays when the actions fade").toBeVisible();
+  await expect(bar.locator("#contextBarRestore")).toHaveText("1 face ▾");
+  const tone = await page.evaluate(() => {
+    const chip = getComputedStyle(document.querySelector("#contextBarRestore")!);
+    const dock = getComputedStyle(document.querySelector("#modelPanel")!);
+    return { chip: chip.backgroundColor, dock: dock.backgroundColor, ink: chip.color, dockInk: dock.color };
+  });
+  expect(tone.chip, "the chip uses the dock surface").toBe(tone.dock);
+  expect(tone.ink).toBe(tone.dockInk);
+  const canvasBox = (await canvas.boundingBox())!;
+  const [sx, , sw] = ((await canvas.getAttribute("data-solid-screen")) ?? "").split(",").map(Number);
+  const chipBox = (await bar.boundingBox())!;
+  const solidLeft = canvasBox.x + sx!;
+  const solidRight = solidLeft + sw!;
+  expect(chipBox.x + chipBox.width <= solidLeft + 2 || chipBox.x >= solidRight - 2, "the chip sits beside the solid").toBe(true);
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/ux09-after-chip.png` });
   await expect(bar.locator("[data-action='push-pull']")).toBeHidden();
   const chip = (await bar.locator("#contextBarRestore").boundingBox())!;
   expect(chip.x, "the chip stays on screen").toBeGreaterThanOrEqual(0);
