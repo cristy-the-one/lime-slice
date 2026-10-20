@@ -90,7 +90,7 @@
 .split { display: inline-flex; align-items: stretch; }
 .split #slice { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .split-more > summary {
-  width: 28px;
+  width: 24px;
   padding: 0;
   margin-left: -1px;
   border-top-left-radius: 0;

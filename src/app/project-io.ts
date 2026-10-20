@@ -12,7 +12,8 @@ import {
 } from "../plate.ts";
 import { dropEmptyReinforce } from "../reinforcement.ts";
 import { base64ToBytes } from "../base64.ts";
-import { meshRecord, parseProject, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile, type ToolTree } from "../project.ts";
+import { meshRecord, type LimeProject, type ProjectPlacement, type ProjectProfile, type ToolTree } from "../project.ts";
+import { decodeProject, encodeProject } from "../project-codec.ts";
 import { geometryHash, projectSummary, thumbnailFromPng, type ProjectThumbnail } from "../project-thumb.ts";
 import { capturePlatePng } from "./thumb-capture.ts";
 import { saveProfile, type PrinterProfile } from "../profiles.ts";
@@ -88,7 +89,7 @@ export async function saveCurrentProject() {
   }
   if (!project.thumbnail && keptThumb?.meshHash === hash) project.thumbnail = keptThumb;
   const name = `${state.mesh.name.replace(/\.(stl|3mf|step|stp|lime)$/i, "")}.lime`;
-  const wrote = await saveProjectText(serializeProject(project), name);
+  const wrote = await saveProjectText(await encodeProject(project), name);
   if (!wrote) return;
   setProjectTitle(name);
   markProjectClean();
@@ -99,7 +100,7 @@ export async function saveCurrentProject() {
 
 export async function openProjectFile(file: File) {
   if (!confirmDiscard()) return;
-  const parsed = parseProject(await file.text());
+  const parsed = await decodeProject(await file.text());
   if (!parsed.ok) {
     pushToast(parsed.message, "error", { label: "Retry", run: openProjectPicker });
     return;

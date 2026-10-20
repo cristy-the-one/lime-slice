@@ -71,7 +71,17 @@ void set_error(char** out, const std::string& message) {
 
 void set_failure(char** out, const Standard_Failure& failure) {
     const char* message = failure.GetMessageString();
-    set_error(out, message != nullptr && message[0] != '\0' ? message : "Open CASCADE failed");
+    if (message == nullptr || message[0] == '\0') {
+        set_error(out, "Open CASCADE failed");
+        return;
+    }
+    // A fault on one of Open CASCADE's worker threads comes back named by its type ("Standard_Failure: The modeler…")
+    // or, caught there as an unknown exception, with no words at all; with several workers, under "Multiple exceptions".
+    if (std::strstr(message, kInternalError) != nullptr || std::strstr(message, "Error: Unknown exception") != nullptr) {
+        set_error(out, kInternalError);
+        return;
+    }
+    set_error(out, message);
 }
 
 std::unique_ptr<LimeShape> hold(const TopoDS_Shape& shape, double volume) {
@@ -224,6 +234,7 @@ void lime_tree_free(LimeShape* shape) { delete shape; }
 /// A primitive root: the solid built from its numbers, with its volume integrated once.
 LimeShape* lime_tree_primitive(const char* kind, const double* p, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         const TopoDS_Shape made = make_solid(spec_of(kind, p), message);
         if (made.IsNull()) {
@@ -242,6 +253,7 @@ LimeShape* lime_tree_primitive(const char* kind, const double* p, char** error) 
 
 LimeShape* lime_tree_read_step(const char* path, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         const TopoDS_Shape shape = read_step(path, message);
         if (shape.IsNull()) {
@@ -264,6 +276,7 @@ LimeShape* lime_tree_read_step(const char* path, char** error) {
 /// `created` is the edges its step made, `count` of them; a negative count leaves every edge, as for a root.
 LimeShape* lime_tree_read_brep(const char* data, size_t size, double volume, const int* created, int count, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         const TopoDS_Shape shape = read_brep(data, size, message);
         if (shape.IsNull()) {
@@ -295,6 +308,7 @@ LimeShape* lime_tree_read_brep(const char* data, size_t size, double volume, con
 /// Null, and `error` set, when Open CASCADE fails.
 char* lime_tree_write_brep(const LimeShape* shape, size_t* size, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         const std::string bytes = write_brep(shape->held.shape);
         char* out = static_cast<char*>(std::malloc(bytes.empty() ? 1 : bytes.size()));
         if (out == nullptr) {
@@ -316,8 +330,12 @@ char* lime_tree_write_brep(const LimeShape* shape, size_t* size, char** error) {
 /// The linked Open CASCADE version, as `lime_model_occt_stats` reports it. Static: never freed.
 const char* lime_tree_occt_version() { return OCCT_Version_String_Complete(); }
 
+/// --- 3.1 F9. The step about to be built stops after `budget_ms`; 0 clears the limit.
+void lime_tree_set_deadline(long long budget_ms) { set_deadline(budget_ms); }
+
 LimeShape* lime_tree_boolean(const LimeShape* from, const char* op, const char* primitive, const double* p, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         const std::string which = op == nullptr ? "" : op;
         double volume = 0.0;
@@ -342,6 +360,7 @@ LimeShape* lime_tree_boolean(const LimeShape* from, const char* op, const char* 
 /// The Rust side has checked that `tool` is a solid and `place` rigid.
 LimeShape* lime_tree_join(const LimeShape* from, const LimeShape* tool, const char* op, const double* place, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         const std::string which = op == nullptr ? "" : op;
         double volume = 0.0;
@@ -365,6 +384,7 @@ LimeShape* lime_tree_join(const LimeShape* from, const LimeShape* tool, const ch
 /// `p` is x, y, z, dx, dy, dz, radius, depth, through (0 or 1), counterbore (0 or 1), its radius, its depth.
 LimeShape* lime_tree_hole(const LimeShape* from, const double* p, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         double volume = 0.0;
         HoleSpec hole;
@@ -406,6 +426,7 @@ LimeShape* lime_tree_blend(
     double* max_mm,
     char** error) {
     try {
+        LIME_CATCH_FAULTS;
         const bool is_chamfer = chamfer != 0;
         if (!(size > 0.0)) {
             set_error(error, is_chamfer ? "A chamfer needs a positive distance" : "A fillet needs a positive radius");
@@ -446,6 +467,7 @@ LimeShape* lime_tree_blend(
 /// `p` is x, y, z, nx, ny, nz. The result is the negative side; `other` receives the positive side.
 LimeShape* lime_tree_split(const LimeShape* from, const double* p, LimeShape** other, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         TopoDS_Shape kept;
         TopoDS_Shape rest;
@@ -477,6 +499,7 @@ LimeShape* lime_tree_split(const LimeShape* from, const double* p, LimeShape** o
 
 LimeShape* lime_tree_scale(const LimeShape* from, double factor, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         const TopoDS_Shape scaled = build_scale(from->held.shape, factor, message);
         if (scaled.IsNull()) {
@@ -497,6 +520,7 @@ LimeShape* lime_tree_scale(const LimeShape* from, double factor, char** error) {
 /// `p` is the plane's origin and turn, the depth, symmetric (0 or 1), then smooth, the corner count, and the corners.
 LimeShape* lime_tree_extrude(const LimeShape* from, const char* op, const double* p, const double* points, int count, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         double volume = 0.0;
         const TopoDS_Shape result = build_extrude(
@@ -520,6 +544,7 @@ LimeShape* lime_tree_extrude(const LimeShape* from, const char* op, const double
 LimeShape* lime_tree_extrude_extent(
     const LimeShape* from, const char* op, const double* p, const double* points, int count, double depth2, double draft_deg, int face, int flags, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         double volume = 0.0;
         ExtrudeExtent extent;
@@ -563,6 +588,7 @@ LimeShape* lime_tree_extrude_extent(
 /// the corner count, and the corners.
 LimeShape* lime_tree_revolve(const LimeShape* from, const char* op, const double* p, const double* points, int count, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         double volume = 0.0;
         const TopoDS_Shape result = build_revolve(
@@ -586,6 +612,7 @@ LimeShape* lime_tree_revolve(const LimeShape* from, const char* op, const double
 /// `p` is the plane's origin and turn, the depth, symmetric (0 or 1), then smooth, the corner count, and the corners.
 LimeShape* lime_tree_feature_extrude(const char* op, const double* p, const double* points, int count, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         double volume = 0.0;
         const TopoDS_Shape none;
@@ -609,6 +636,7 @@ LimeShape* lime_tree_feature_extrude(const char* op, const double* p, const doub
 LimeShape* lime_tree_feature_extrude_extent(
     const char* op, const double* p, const double* points, int count, double depth2, double draft_deg, int flags, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         double volume = 0.0;
         ExtrudeExtent extent;
@@ -638,6 +666,7 @@ LimeShape* lime_tree_feature_extrude_extent(
 /// the corner count, and the corners.
 LimeShape* lime_tree_feature_revolve(const char* op, const double* p, const double* points, int count, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         double volume = 0.0;
         const TopoDS_Shape none;
@@ -660,6 +689,7 @@ LimeShape* lime_tree_feature_revolve(const char* op, const double* p, const doub
 /// `head` is 11 numbers a section, as `lime_tree_loft`. `data` is each section's points and corners.
 LimeShape* lime_tree_feature_loft(const char* op, const double* head, int count, const double* data, int ruled, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<LoftSection> sections;
         size_t at = 0;
         for (int s = 0; s < count; ++s) {
@@ -705,6 +735,7 @@ LimeShape* lime_tree_feature_loft(const char* op, const double* head, int count,
 /// `p` is the plane's origin and turn, the depth, and symmetric (0 or 1). `loops` is one encode_loops blob.
 LimeShape* lime_tree_feature_extrude_loops(const char* op, const double* p, const double* loops, int loops_len, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<ProfileLoop> decoded;
         int used = 0;
         std::string message;
@@ -736,6 +767,7 @@ LimeShape* lime_tree_feature_extrude_loops(const char* op, const double* p, cons
 LimeShape* lime_tree_feature_extrude_loops_extent(
     const char* op, const double* p, const double* loops, int loops_len, double depth2, double draft_deg, int flags, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<ProfileLoop> decoded;
         int used = 0;
         std::string message;
@@ -772,6 +804,7 @@ LimeShape* lime_tree_feature_extrude_loops_extent(
 /// `p` is the plane's origin and turn, the axis point (u, v) and direction (u, v), and the angle in degrees.
 LimeShape* lime_tree_feature_revolve_loops(const char* op, const double* p, const double* loops, int loops_len, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<ProfileLoop> decoded;
         int used = 0;
         std::string message;
@@ -811,6 +844,7 @@ LimeShape* lime_tree_feature_loft_loops(
     int loops_len,
     char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<LoftSection> sections;
         size_t at = 0;
         for (int s = 0; s < count; ++s) {
@@ -870,6 +904,7 @@ LimeShape* lime_tree_feature_loft_loops(
 /// count, and the corner count. `data` is each section's u, v pairs and then its corners, one section after another.
 LimeShape* lime_tree_loft(const LimeShape* from, const char* op, const double* head, int count, const double* data, int ruled, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<LoftSection> sections;
         size_t at = 0;
         for (int s = 0; s < count; ++s) {
@@ -914,6 +949,7 @@ LimeShape* lime_tree_loft(const LimeShape* from, const char* op, const double* h
 /// `p` is the plane's origin and turn, the depth, and symmetric (0 or 1). `loops` is one encode_loops blob.
 LimeShape* lime_tree_extrude_loops(const LimeShape* from, const char* op, const double* p, const double* loops, int loops_len, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<ProfileLoop> decoded;
         int used = 0;
         std::string message;
@@ -954,6 +990,7 @@ LimeShape* lime_tree_extrude_loops_extent(
     int flags,
     char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<ProfileLoop> decoded;
         int used = 0;
         std::string message;
@@ -996,6 +1033,7 @@ LimeShape* lime_tree_extrude_loops_extent(
 /// `p` is the plane's origin and turn, the axis point (u, v) and direction (u, v), and the angle in degrees.
 LimeShape* lime_tree_revolve_loops(const LimeShape* from, const char* op, const double* p, const double* loops, int loops_len, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<ProfileLoop> decoded;
         int used = 0;
         std::string message;
@@ -1036,6 +1074,7 @@ LimeShape* lime_tree_loft_loops(
     int loops_len,
     char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<LoftSection> sections;
         size_t at = 0;
         for (int s = 0; s < count; ++s) {
@@ -1094,6 +1133,7 @@ LimeShape* lime_tree_loft_loops(
 /// `piece_report` of the two shapes, for the caller to free. Null when there is nothing to report.
 char* lime_tree_pieces(const LimeShape* from, const LimeShape* built) {
     try {
+        LIME_CATCH_FAULTS;
         const std::string text = piece_report(from->held.shape, built->held.shape);
         return text.empty() ? nullptr : alloc(text);
     } catch (...) {
@@ -1104,6 +1144,7 @@ char* lime_tree_pieces(const LimeShape* from, const LimeShape* built) {
 /// Every index must be a face of `from`; the Rust side resolves picks before this.
 LimeShape* lime_tree_shell(const LimeShape* from, const int* faces, int count, double thickness, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<TopoDS_Face> open;
         for (int i = 0; i < count; ++i) {
             if (faces[i] < 0 || faces[i] >= from->held.faces.Extent()) {
@@ -1153,6 +1194,7 @@ void lime_tree_set_face_from(LimeShape* shape, const int* indexes, int count) {
 /// Each of `edges` as convex (1), concave (2), or neither (0). 0 when an index is not on this solid or Open CASCADE fails.
 int lime_tree_edge_kinds(const LimeShape* shape, const int* edges, int count, int* out) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<TopoDS_Edge> found;
         for (int i = 0; i < count; ++i) {
             if (edges[i] < 0 || edges[i] >= shape->held.edges.Extent()) {
@@ -1182,6 +1224,7 @@ int lime_tree_face(LimeShape* shape, int index, double* mid, double* area) {
     FaceInfo& info = shape->faces[static_cast<size_t>(index)];
     if (!info.ready) {
         try {
+            LIME_CATCH_FAULTS;
             GProp_GProps props;
             BRepGProp::SurfaceProperties(shape->held.faces(index + 1), props);
             const gp_Pnt centre = props.CentreOfMass();
@@ -1202,12 +1245,21 @@ int lime_tree_face(LimeShape* shape, int index, double* mid, double* area) {
 
 /// 1 when the shape can be edited, else 0 and the refusal every edit answers.
 int lime_tree_editable(const LimeShape* shape, char** error) {
-    std::string message;
-    if (editable(shape->held.shape, message)) {
-        return 1;
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        if (editable(shape->held.shape, message)) {
+            return 1;
+        }
+        set_error(error, message);
+        return 0;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
     }
-    set_error(error, message);
-    return 0;
 }
 
 void lime_tree_fingerprint(const LimeShape* shape, double* volume, int* faces, int* edges) {
@@ -1224,6 +1276,7 @@ int lime_tree_edge(LimeShape* shape, int index, double* mid, double* length) {
     EdgeInfo& info = shape->edges[static_cast<size_t>(index)];
     if (!info.ready) {
         try {
+            LIME_CATCH_FAULTS;
             const TopoDS_Edge edge = TopoDS::Edge(shape->held.edges(index + 1));
             BRepAdaptor_Curve curve(edge);
             const gp_Pnt point = curve.Value((curve.FirstParameter() + curve.LastParameter()) * 0.5);
@@ -1248,6 +1301,7 @@ int lime_tree_edge(LimeShape* shape, int index, double* mid, double* length) {
 /// shape's description, which lives as long as the shape. Null, and `error` set, when Open CASCADE fails.
 Mesh* lime_tree_mesh(LimeShape* shape, double chord, LimeMeshView* view, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         auto mesh = std::make_unique<Mesh>(tessellate(shape->held, chord));
         if (shape->held.about.empty()) {
             shape->held.about = describe(shape->held);
@@ -1283,6 +1337,7 @@ int lime_tree_distance(
     double* out,
     char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         if (!measure_distance(shape->held, a_kind, a_index, b_kind, b_index, *out, message)) {
             set_error(error, message);
@@ -1309,6 +1364,7 @@ LimeShape* lime_tree_face_extrude(
     int up_to,
     char** error) {
     try {
+        LIME_CATCH_FAULTS;
         if (face < 0 || face >= from->held.faces.Extent()) {
             set_error(error, "That face is not on this solid.");
             return nullptr;
@@ -1350,6 +1406,7 @@ LimeShape* lime_tree_move_faces(
     int count,
     char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::vector<FaceOffset> rows;
         rows.reserve(static_cast<size_t>(std::max(count, 0)));
         for (int i = 0; i < count; ++i) {
@@ -1382,6 +1439,7 @@ LimeShape* lime_tree_move_faces(
 /// The face's outline in its plane, as JSON `{origin, turn, loops}`, for the caller to free.
 char* lime_tree_face_loops(const LimeShape* shape, int face, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         if (face < 0 || face >= shape->held.faces.Extent()) {
             set_error(error, "That face is not on this solid.");
             return nullptr;
@@ -1404,6 +1462,7 @@ char* lime_tree_face_loops(const LimeShape* shape, int face, char** error) {
 
 int lime_tree_write_step(const LimeShape* shape, const char* path, char** error) {
     try {
+        LIME_CATCH_FAULTS;
         std::string message;
         if (!write_step(shape->held.shape, path, message)) {
             set_error(error, message);
@@ -1418,5 +1477,24 @@ int lime_tree_write_step(const LimeShape* shape, const char* path, char** error)
         return 0;
     }
 }
+
+#ifdef LIME_OCCT_TEST_HOOKS
+/// Debug builds only, for tests: a curve read off a null edge on the shape's first face. That is the access violation
+/// inside TKBRep (BRep_Tool::CurveOnSurface) a wall push beside raised lettering hit, so a test can prove the guard.
+int lime_tree_test_fault(const LimeShape* shape, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        const BRepAdaptor_Curve curve(TopoDS_Edge(), TopoDS::Face(shape->held.faces(1)));
+        set_error(error, "The null edge did not fault");
+        return 0;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
+    }
+}
+#endif
 
 }  // extern "C"

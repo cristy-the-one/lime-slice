@@ -1,6 +1,6 @@
 # Explorer preview for `.lime` files
 
-A `.lime` file stays version 3 JSON. It gains two optional top-level fields, `thumbnail` and `summary`, written before every other key. Windows Explorer reads those fields from a small shell DLL. It does not open the slicer, Open CASCADE, or the mesh bytes.
+A `.lime` file stays JSON text (version 3 when this was decided; version 4 now, see "Version 4" below). It gains two optional top-level fields, `thumbnail` and `summary`, written before every other key. Windows Explorer reads those fields from a small shell DLL. It does not open the slicer, Open CASCADE, or the mesh bytes.
 
 This is the text-file version of what 3MF, OpenDocument, and Office already do with a package part, and what PrusaSlicer does for G-code: put a PNG where a dumb reader can lift it out, and keep a hash so a picture of a different plate is never shown. A ZIP container would match 3MF more literally and would make every newly saved file unreadable by the app that ships today.
 
@@ -19,7 +19,11 @@ This is the text-file version of what 3MF, OpenDocument, and Office already do w
 | Install | Per-user registry when the NSIS install is per-user, so it does not need an administrator. The existing app install is otherwise unchanged. |
 | macOS and Linux | Same fields, later. Not built here. |
 
-`PROJECT_VERSION` stays 3. An app from before version 3 still refuses the file, because the version number is still 3. A current reader that does not know the new keys still opens the file.
+`PROJECT_VERSION` stayed 3 for this work. An app from before version 3 still refuses the file, because the version number is still 3. A current reader that does not know the new keys still opens the file.
+
+### Version 4
+
+`PROJECT_VERSION` is 4 since the binary records were compressed (see "Compatibility" in `docs/step-modeler.md`). The picture and the summary are unchanged: the same two top-level keys, still written first, still plain JSON. The shell reads a record's `name` and `hash` and skips the rest of it, so it reads a version 4 file as it read version 3, without unpacking anything. `crates/lime-preview` accepts versions 2, 3, and 4, and a version 4 file is always a plate, so a one-object project is the plate of its one object (`id` `part`), which hashes as before.
 
 ## What comparable tools actually do
 
@@ -173,6 +177,8 @@ A future package version, if it ever happens, should move this PNG to `Metadata/
 JPEG was rejected with (a)'s format row. 3MF permits it. It has no alpha, so Explorer would need a matte, and the matte is the black-box bug above. QOI was rejected because only Prusa's firmware wants it. A second, smaller PNG was rejected because the shell already caches several sizes; two base64 blobs would both have to carry the same hash and would both sit in the prefix.
 
 ## File format
+
+_Written when files were version 3; "version 3" below means the version the file had then. A version 4 file is the same document with its binary records compressed (see "Version 4" above)._
 
 No version change. `PROJECT_VERSION` remains 3. Fields are optional. A file without them is a normal version 3 file.
 
@@ -347,6 +353,8 @@ Windows, for Marius, because this VM is Linux:
 - Install and uninstall as a normal user. No console window from the installer, the DLL, or Explorer. The self-test is allowed to be a console program because he runs it himself.
 
 ## Migration
+
+_Written when files were version 3. Version 4 changes only how the binary records are stored (see "Version 4" above); the picture, the summary, and this migration story are unchanged._
 
 - Files on disk today: unchanged, and they open on this app and on 2.7.0.
 - Files this app saves: still `"version": 3`. 2.7.0 opens them and, on a later save, writes them back without `thumbnail` or `summary`. No geometry is lost. The picture comes back the next time this app saves.

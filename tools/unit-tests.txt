@@ -33,6 +33,7 @@ src/mesh-place.test.ts
 src/playback.test.ts
 src/project.test.ts
 src/project-blank.test.ts
+src/project-codec.test.ts
 src/project-thumb.test.ts
 src/ironing.test.ts
 src/overrides.test.ts
@@ -103,6 +104,7 @@ mcp/render.test.ts
 mcp/native-load.test.ts
 mcp/stdio.test.ts
 mcp/part-a.test.ts
+mcp/project-v4.test.ts
 mcp/batch1.test.ts
 mcp/batch2.test.ts
 src/paint-region.test.ts
@@ -120,6 +122,7 @@ mcp/seeing.test.ts
 mcp/app-open.test.ts
 mcp/engine-load.test.ts
 mcp/back-cover.test.ts
+mcp/rebuild-3-1.test.ts
 mcp/long-call.test.ts
 src/model-edge-step.test.ts
 src/model-sketch.test.ts

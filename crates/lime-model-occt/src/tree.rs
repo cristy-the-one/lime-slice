@@ -577,8 +577,13 @@ struct GroupBudget;
 
 impl GroupBudget {
     fn start() -> GroupBudget {
-        let budget = Duration::from_millis(GROUP_BUDGET_MS.load(Ordering::Relaxed));
+        let ms = GROUP_BUDGET_MS.load(Ordering::Relaxed);
+        let budget = Duration::from_millis(ms);
         GROUP_DEADLINE.set(Instant::now().checked_add(budget));
+        // --- 3.1 F9. One step past the budget stops inside Open CASCADE too, not only between a group's steps. A zero
+        // budget is the smallest limit, not none.
+        // SAFETY: plain value in, no pointers.
+        unsafe { lime_tree_set_deadline(i64::try_from(ms).unwrap_or(i64::MAX).max(1)) };
         GroupBudget
     }
 }
@@ -586,6 +591,8 @@ impl GroupBudget {
 impl Drop for GroupBudget {
     fn drop(&mut self) {
         GROUP_DEADLINE.set(None);
+        // SAFETY: plain value in, no pointers.
+        unsafe { lime_tree_set_deadline(0) };
     }
 }
 
@@ -689,6 +696,19 @@ enum Request {
         /// Split only: the piece cut off opens as the root of its own tree under this key.
         other_key: Option<String>,
     },
+    /// --- 3.1 F1. The steps from `parent` down to `last`, each already applied, become the one group `node` under
+    /// `parent`, with the solid `last` holds: nothing is built again. `op` is the group, its steps the chain's ops in
+    /// order. The chain is dropped. A chain that is not exactly those steps, has another branch, or whose last solid is
+    /// no longer held is refused, and the caller builds the group instead.
+    Fold {
+        key: String,
+        parent: NodeId,
+        node: NodeId,
+        op: Op,
+        last: NodeId,
+        #[serde(default = "default_chord")]
+        chord_mm: f64,
+    },
     /// With `preview`, a probe that builds also answers the built shape's reply at `chordMm`, which
     /// the shape keeps, so an Apply that takes the probe meshes nothing again.
     Probe {
@@ -743,6 +763,10 @@ enum Request {
         node: NodeId,
         face: FacePick,
     },
+    /// Debug builds only: an access violation inside Open CASCADE on purpose, on step `node`'s solid, answered as the
+    /// refusal any such crash gets (`tests/kernel_fault.rs`).
+    #[cfg(lime_occt_test_hooks)]
+    TestFault { key: String, node: NodeId },
     /// --- A5. The edges step `node` made, as indexes on the tree's current solid. ---
     StepEdges {
         key: String,
@@ -1566,6 +1590,14 @@ impl Store {
                 chord_mm,
                 other_key,
             } => self.apply(key, parent, node, op, chord_mm, other_key),
+            Request::Fold {
+                key,
+                parent,
+                node,
+                op,
+                last,
+                chord_mm,
+            } => self.fold(key, parent, node, op, last, chord_mm),
             Request::Probe {
                 key,
                 node,
@@ -1639,6 +1671,12 @@ impl Store {
                     fields.insert("face".into(), json!(found.index));
                 }
                 Ok(Answer::Plain(body.to_string()))
+            }
+            #[cfg(lime_occt_test_hooks)]
+            Request::TestFault { key, node } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                Err(Failure::Message(shape.test_fault()))
             }
             Request::Export { key, node, format } => {
                 self.ensure(&key, node)?;
@@ -1909,6 +1947,103 @@ impl Store {
             let key_field = ("key", Part::Json(json!(other_key).to_string()));
             fields.push(("other", Part::Object(other, vec![key_field])));
         }
+        Ok(Answer::Held { key, text, fields })
+    }
+
+    /// --- 3.1 F1. A composite the MCP server applied piece by piece, each piece checked, becomes one group without
+    /// building every piece again: a second build of a 245-step group on a 1,700-face part ran past the group budget
+    /// and threw the whole composite away. The group's faces belong to it where its pieces made them, as a built group's
+    /// do, and its solid is the last piece's, which is what building the group again gives.
+    fn fold(
+        &mut self,
+        key: String,
+        parent: NodeId,
+        id: NodeId,
+        op: Op,
+        last: NodeId,
+        chord: f64,
+    ) -> Result<Answer, Failure> {
+        let not_the_steps =
+            || Failure::Message("The steps to fold are not the group's steps".into());
+        root_placement(parent, &op).map_err(Failure::Message)?;
+        let Op::Group { steps, .. } = &op else {
+            return Err(Failure::Message("Only a group folds steps".into()));
+        };
+        let doc = doc_in(&mut self.docs, &key)?;
+        if doc.nodes.contains_key(&id) {
+            return Err(Failure::Message(format!(
+                "Node {id} is already in this tree for another step"
+            )));
+        }
+        let mut chain = Vec::new();
+        let mut at = last;
+        while at != parent {
+            let node = doc.node(at)?;
+            chain.push(at);
+            at = node.parent.ok_or_else(not_the_steps)?;
+        }
+        chain.reverse();
+        if chain.is_empty() || chain.len() != steps.len() {
+            return Err(not_the_steps());
+        }
+        for (at, step) in chain.iter().zip(steps) {
+            if !doc
+                .node(*at)?
+                .op
+                .as_ref()
+                .is_some_and(|stored| same_request(stored, step))
+            {
+                return Err(not_the_steps());
+            }
+        }
+        let gone = doc.subtree(chain[0]);
+        if gone.len() != chain.len() {
+            return Err(Failure::Message(
+                "A step to fold has another branch under it".into(),
+            ));
+        }
+        if doc.node(last)?.shape.is_none() {
+            return Err(Failure::Message(
+                "The last step's solid is no longer held, so the group is built instead".into(),
+            ));
+        }
+        if self.names_tool(&key, Some(&gone)) {
+            return Err(Failure::Message(
+                "A step of another part's history uses a step of this run as its tool".into(),
+            ));
+        }
+        self.clock += 1;
+        let used = self.clock;
+        let doc = doc_in(&mut self.docs, &key)?;
+        let held = doc.nodes.get_mut(&last).expect("checked above");
+        let shape = held.shape.take().expect("checked above");
+        let fingerprint = held.fingerprint;
+        let owners: Vec<NodeId> = held
+            .face_owners
+            .iter()
+            .map(|owner| if gone.contains(owner) { id } else { *owner })
+            .collect();
+        doc.nodes.retain(|node, _| !gone.contains(node));
+        if doc
+            .probe
+            .as_ref()
+            .is_some_and(|probe| gone.contains(&probe.parent))
+        {
+            doc.probe = None;
+        }
+        let node = doc.insert(id, parent, op.clone())?;
+        node.fingerprint = fingerprint;
+        node.shape = Some(shape);
+        node.face_owners = owners;
+        node.used = used;
+        doc.current = id;
+        self.replies
+            .retain(|reply| reply.key != key || !gone.contains(&reply.node));
+        let text = self.reply(&key, id, chord)?;
+        let fields = vec![
+            ("op", Part::Json(json!(op).to_string())),
+            ("replayed", Part::Json("0".into())),
+        ];
         Ok(Answer::Held { key, text, fields })
     }
 
@@ -3648,6 +3783,7 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> *mut c_char;
     fn lime_tree_occt_version() -> *const c_char;
+    fn lime_tree_set_deadline(budget_ms: i64);
     fn lime_tree_boolean(
         from: *const RawShape,
         op: *const c_char,
@@ -3867,6 +4003,8 @@ extern "C" {
         face: c_int,
         error: *mut *mut c_char,
     ) -> *mut c_char;
+    #[cfg(lime_occt_test_hooks)]
+    fn lime_tree_test_fault(shape: *const RawShape, error: *mut *mut c_char) -> c_int;
     fn lime_tree_created(shape: *const RawShape, out: *mut *const c_int) -> c_int;
     // --- A10.
     fn lime_tree_face_from(shape: *const RawShape, out: *mut *const c_int) -> c_int;
@@ -4711,6 +4849,14 @@ impl Shape {
         let mut shells = 0;
         unsafe { lime_tree_counts(self.raw(), &mut solids, &mut shells) };
         (solids, shells)
+    }
+
+    /// Debug builds only: the refusal for a fault inside Open CASCADE caused on purpose.
+    #[cfg(lime_occt_test_hooks)]
+    fn test_fault(&self) -> String {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        unsafe { lime_tree_test_fault(self.raw(), &mut error) };
+        take_text(error).unwrap_or_default()
     }
 
     /// K4. `{origin, turn, loops}` for face `index`, as JSON.

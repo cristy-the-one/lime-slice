@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { fnv1aHex } from "../src/slice-action.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject } from "../src/project.ts";
+import { decodeProject } from "../src/project-codec.ts";
 import { DEFAULT_PRESET } from "../src/presets.ts";
 import { ID_MATRIX } from "../src/mesh-place.ts";
 import { beltSliceField } from "../src/belt.ts";
@@ -126,7 +127,7 @@ check("a directory inside the workspace is created", nested.ok === true && exist
 
 const saved = await call("project_save", { name: "cube.lime" });
 check("save writes a project", saved.ok === true);
-const openedFile = parseProject(readFileSync(String(saved.path), "utf8"));
+const openedFile = await decodeProject(readFileSync(String(saved.path), "utf8"));
 const original = new Uint8Array(readFileSync(cube));
 check("the saved mesh hash is the file's FNV-1a", openedFile.ok && openedFile.project.mesh.hash === fnv1aHex(original));
 const reopened = await call("project_open", { path: saved.path });
@@ -250,7 +251,7 @@ if (!ir3 || !pla) {
     await richCall("object_place", { object: richObject, centreX: 40, centreY: 50 });
     const richSaved = await richCall("project_save", { name: "rich.lime" });
     check("the rich project saves over itself", richSaved.ok === true, JSON.stringify(richSaved));
-    const again = parseProject(readFileSync(String(richSaved.path), "utf8"));
+    const again = await decodeProject(readFileSync(String(richSaved.path), "utf8"));
     check("the save still parses", again.ok);
     if (again.ok) {
       const left = structuredClone(again.project);

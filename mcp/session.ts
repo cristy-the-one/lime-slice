@@ -17,12 +17,12 @@ import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
 import { align, centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
-import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
+import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, turnedAxis, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, type ToolLink } from "../src/model-edit.ts";
 import { dropRefusal } from "../src/model-history.ts";
 import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
-import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
+import { isPrimitiveKind, rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
 import { applyRequest, crossEditRequest, exportRequest, extrudeOp, faceExtrudeOp, gotoRequest, isBrep, joinOp, keepSketch, loftOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, solidFileName, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
 import { sweepSections, type SweepSpec } from "../src/modeling/sweep.ts";
@@ -30,11 +30,12 @@ import { thinWalls } from "../src/modeling/thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "../src/modeling/anchors.ts";
 import { expandOps, type PartDef } from "../src/modeling/macro.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, redoTarget, reserveId, rootLabel, undoTarget, withChild, withNode, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
+import { dropped, jumped, newTree, opLabel, pathTo, redoTarget, reserveId, rootLabel, undoTarget, withChild, withNode, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
-import { meshRecord, parseProject, readParameters, serializeProject, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
+import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
+import { decodeProject, encodeProject, finishProject, prepareProject } from "../src/project-codec.ts";
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
-import { savedTree, loadedTree, withSavedNames } from "../src/model-tree-file.ts";
+import { savedTree, loadedTree, toolFirst, withSavedNames } from "../src/model-tree-file.ts";
 import { addRange, addVolume, emptyOverrides, freshOverrideId, removeRange, removeVolume, type OverrideDocument, type SettingOverride } from "../src/overrides.ts";
 import { appendEdit, editRequestFields } from "../src/support-edit-list.ts";
 import type { EditEntry } from "../src/support-edit-list.ts";
@@ -77,7 +78,7 @@ import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
-import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
+import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, isPlainNumber, withExprs } from "../src/modeling/params.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
@@ -178,10 +179,55 @@ const LONG_CALLS = new Set(["model_apply_batch", "model_build", "model_edit", "p
 const NAME_LIMIT = 120;
 /** Tools whose op fields may be text expressions. */
 
+/**
+ * Calls that may outrun the client's request timeout (Claude Code's is 60 s, and it then restarts the server). One that
+ * has not answered after `replySeconds()`, or whose request the client cancels, goes on as a background job instead:
+ * the reply is a job handle for slice_wait, and the work finishes or, with slice_cancel, is taken back.
+ */
+const DETACHABLE = new Set([
+  "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
+  "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
+]);
+
+/** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
+const WHILE_BUSY = new Set([
+  "session_info", "guide", "plate_list", "slice_wait", "slice_cancel", "model_history", "settings_schema", "machine_list",
+  "machine_get", "overrides_list", "layer_actions_list", "paint_list", "gcode_summary", "gcode_read", "layer_summary",
+  "layer_detail", "mesh_stats", "support_trees",
+]);
+
+/** Detachable calls that change no part: a cancelled one is simply left to finish. */
+const CHANGES_NOTHING = new Set(["model_probe", "project_save", "app_open", "export_3mf", "model_export_step"]);
+
+/** Seconds a detachable call runs before it answers with a job instead: under a 60 s client timeout. */
+function replySeconds(): number {
+  const raw = Number(process.env.LIME_MCP_REPLY_S);
+  return Number.isFinite(raw) && raw > 0 ? raw : 45;
+}
+
 /** Carried with one tools/call: a progress token, and cancel for that request. */
 export interface CallMeta {
   progressToken?: string | number;
   signal?: AbortSignal;
+  /** How far the work is, for a job's wait: the last fraction and stage it reported. */
+  fraction?: number;
+  stage?: string;
+}
+
+/** A detachable call that outran its reply: it runs on, and slice_wait returns its result. */
+interface WorkJob {
+  handle: string;
+  tool: string;
+  object?: string;
+  started: number;
+  ctx: CallMeta;
+  stop: AbortController;
+  /** A run of ops (a batch, a build, a composite) stops after the step it is on; anything else finishes. */
+  stoppable: boolean;
+  settled: Promise<void>;
+  done: boolean;
+  result?: Record<string, unknown>;
+  error?: string;
 }
 
 export interface PlateObject {
@@ -452,6 +498,62 @@ function modelSteps(tree: ModelTree): number {
   return count;
 }
 
+/**
+ * --- 3.1 F8. Where a turned round tool's axis lies, beside its echo, and a sentence when its base left `origin`: a
+ * turn is about the middle of the axis, and 198 holes once went h/2 off because a caller took origin for the pivot.
+ */
+function turnEcho(typed: Record<string, unknown>): Record<string, unknown> {
+  if (typed.kind !== "boolean" || !isPrimitiveKind(typed.primitive) || !Array.isArray(typed.turn) || !Array.isArray(typed.origin)) return {};
+  if ((typed.turn as number[]).every((value) => value === 0)) return {};
+  const axis = turnedAxis(typed as unknown as PrimitiveSpec);
+  if (!axis) return {};
+  const at = (p: readonly number[]) => p.map((value) => Math.round(value * 1000) / 1000 + 0);
+  const base = at(axis.base);
+  const origin = typed.origin as number[];
+  const moved = typed.centre === undefined && Math.hypot(base[0]! - origin[0]!, base[1]! - origin[1]!, base[2]! - origin[2]!) > 1e-3;
+  return {
+    axis: { base, top: at(axis.top) },
+    ...(moved ? { turnNote: `It turns about the middle of its axis, so its base centre is at [${base.join(", ")}], not at origin. Give centre to place a turned shape by its middle.` } : {}),
+  };
+}
+
+const EDGES_SHAPE = "edges is a list of edge indexes, [3, 7], or one pick object: {fromNode: \"node_4\", filter: \"convex\"} or {select: {direction, onFace, convex}}, not inside a list.";
+
+/**
+ * --- 3.1 F4. A fillet's or chamfer's `edges` as the schema takes it: one pick object written inside a list,
+ * `[{fromNode, filter}]`, is that object. Several pick objects in a list, or picks mixed with indexes, are refused
+ * with the shapes that are taken, before the schema check says only "edges[0] must be a number".
+ */
+function edgePicksAsTyped(args: unknown): { args: unknown } | { reason: string } {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return { args };
+  const input = args as Record<string, unknown>;
+  const fix = (op: unknown): { op: unknown } | { reason: string } => {
+    if (!op || typeof op !== "object" || Array.isArray(op)) return { op };
+    const row = op as Record<string, unknown>;
+    if ((row.kind !== "fillet" && row.kind !== "chamfer") || !Array.isArray(row.edges)) return { op };
+    const objects = row.edges.filter((edge) => edge !== null && typeof edge === "object");
+    if (objects.length === 0) return { op };
+    if (row.edges.length === 1) return { op: { ...row, edges: objects[0] } };
+    return { reason: EDGES_SHAPE };
+  };
+  let out = input;
+  if (input.op !== undefined) {
+    const fixed = fix(input.op);
+    if ("reason" in fixed) return fixed;
+    out = { ...out, op: fixed.op };
+  }
+  if (Array.isArray(input.ops)) {
+    const ops: unknown[] = [];
+    for (const [index, op] of input.ops.entries()) {
+      const fixed = fix(op);
+      if ("reason" in fixed) return { reason: `ops[${index}]: ${fixed.reason}` };
+      ops.push(fixed.op);
+    }
+    out = { ...out, ops };
+  }
+  return { args: out };
+}
+
 /** The history row for a composite: the label that was typed, else the feature's name, else Pattern or Mirror. */
 function compositeGroupLabel(raw: Record<string, unknown>, given?: string): string {
   const typed = given?.trim();
@@ -597,6 +699,8 @@ export class Session {
   jobs: Job[] = [];
   running: Job | null = null;
   latest: Job | null = null;
+  /** Long calls that went on in the background, newest last; a few finished ones are kept for their wait. */
+  private workJobs: WorkJob[] = [];
   private seq = 0;
   private jobSeq = 0;
   private readonly engine: Engine;
@@ -666,9 +770,13 @@ export class Session {
       this.startupChecked = true;
       this.previousAutosave = takePreviousAutosave();
     }
+    const busy = this.busyRefusal(name);
+    if (busy) return Promise.resolve(busy);
     const numbered = this.withNumbers(name, args);
     if ("reason" in numbered) return Promise.resolve({ ok: false, reason: numbered.reason });
-    args = numbered.args;
+    const picked = edgePicksAsTyped(numbered.args);
+    if ("reason" in picked) return Promise.resolve({ ok: false, reason: picked.reason });
+    args = picked.args;
     const problem = validateTool(name, args ?? {});
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
@@ -677,14 +785,19 @@ export class Session {
     const long = LONG_CALLS.has(name) || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
     if (changes && this.inflight === 0 && long) this.flushAutosave();
     this.inflight += 1;
+    // A detachable call's work stops only for slice_cancel: the request's own cancel, which a client also sends when it
+    // gives up waiting, hands the work to a background job instead of throwing it away.
+    const detachable = DETACHABLE.has(name);
+    const stop = new AbortController();
+    const ctx: CallMeta = detachable ? { progressToken: meta?.progressToken, signal: stop.signal } : (meta ?? {});
     let result: ReturnType<Session["dispatch"]>;
     try {
-      result = this.callContext.run(meta ?? {}, () => this.dispatch(name, input, meta));
+      result = this.callContext.run(ctx, () => this.dispatch(name, input, ctx));
     } catch (err) {
       this.inflight -= 1;
       throw err;
     }
-    return Promise.resolve(result).then((value) => {
+    const work = Promise.resolve(result).then((value) => {
       const { payload, carriedAll } = this.bridgePayload(name, input, value);
       this.lastBridge = payload;
       void mirror(payload, this.bridgeLink, carriedAll);
@@ -702,6 +815,119 @@ export class Session {
         this.scheduleAutosave();
       }
     });
+    if (!detachable) return work;
+    return this.detachable(name, input, work, ctx, stop, meta?.signal);
+  }
+
+  /** The call's answer, or a job handle when it is not done within replySeconds() or its request is cancelled. */
+  private detachable(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController, request?: AbortSignal): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      let answered = false;
+      const finish = () => {
+        answered = true;
+        clearTimeout(timer);
+        request?.removeEventListener("abort", detach);
+      };
+      const detach = () => {
+        if (answered) return;
+        finish();
+        resolve(this.workReply(this.startWorkJob(name, input, work, ctx, stop)));
+      };
+      const timer = setTimeout(detach, replySeconds() * 1000);
+      timer.unref?.();
+      request?.addEventListener("abort", detach, { once: true });
+      work.then((value) => {
+        if (answered) return;
+        finish();
+        resolve(value);
+      }, (err: unknown) => {
+        if (answered) return;
+        finish();
+        reject(err);
+      });
+      if (request?.aborted) detach();
+    });
+  }
+
+  private startWorkJob(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController): WorkJob {
+    this.jobSeq += 1;
+    const object = typeof input.object === "string" ? input.object : name.startsWith("model_") || name === "solid_new" ? this.selected : undefined;
+    const stoppable = name === "model_apply_batch" || name === "model_build" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
+    const job: WorkJob = { handle: `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, stoppable, done: false, settled: Promise.resolve() };
+    job.settled = work.then((value) => {
+      job.result = value;
+    }, (err: unknown) => {
+      job.error = err instanceof Error ? err.message : "The call failed.";
+    }).finally(() => {
+      job.done = true;
+      // The work's own end already scheduled the autosave; a finished job is kept a while for its wait.
+      const finished = this.workJobs.filter((row) => row.done);
+      if (finished.length > 8) this.workJobs.splice(this.workJobs.indexOf(finished[0]!), 1);
+    });
+    this.workJobs.push(job);
+    return job;
+  }
+
+  /** A job's state as slice_wait and the detached call answer it. A finished job answers with its call's own result. */
+  private workReply(job: WorkJob): Record<string, unknown> {
+    if (job.done) {
+      if (job.error !== undefined) return { ok: false, job: job.handle, status: "error", tool: job.tool, reason: job.error };
+      const result = job.result ?? { ok: false };
+      // A call whose result is a job of its own (slice_start's slice) keeps that handle and status, so the same wait
+      // loop goes on to wait for the slice; the background job is named beside it.
+      if (typeof result.job === "string") return { ...result, workJob: job.handle, tool: job.tool };
+      return { ...result, job: job.handle, status: "done", tool: job.tool };
+    }
+    return {
+      ok: true,
+      job: job.handle,
+      status: "running",
+      tool: job.tool,
+      ...(job.object ? { object: job.object } : {}),
+      fraction: Math.round((job.ctx.fraction ?? 0) * 1000) / 1000,
+      ...(job.ctx.stage ? { stage: job.ctx.stage } : {}),
+      seconds: Math.round((Date.now() - job.started) / 1000),
+      note: `${job.tool} runs longer than a client waits, so it goes on in the background. Call slice_wait {job:"${job.handle}"} until status is done: that reply is the call's own result. slice_cancel takes the work back. Edits wait until it is done.`,
+    };
+  }
+
+  /** While a background job runs, only reads that leave the modeler alone, and the job's wait and cancel, are answered. */
+  private busyRefusal(name: string): Record<string, unknown> | null {
+    const job = this.workJobs.find((row) => !row.done);
+    if (!job || WHILE_BUSY.has(name)) return null;
+    const at = job.ctx.stage ? `, ${job.ctx.stage}` : "";
+    return { ok: false, job: job.handle, reason: `${job.tool}${job.object ? ` on ${job.object}` : ""} is still running in the background as ${job.handle}${at}. Call slice_wait {job:"${job.handle}"} until it is done, or slice_cancel to take it back, then call this again.` };
+  }
+
+  /** What the call is doing now, for its progress notifications and its job's wait. */
+  private noteStage(stage: string, fraction?: number): void {
+    const meta = this.callContext.getStore();
+    if (!meta) return;
+    meta.stage = stage;
+    if (fraction !== undefined) meta.fraction = fraction;
+    this.onProgress?.("model", meta.fraction ?? 0, stage, meta.progressToken);
+  }
+
+  private async workWait(job: WorkJob, meta: CallMeta | undefined, timeoutS?: number): Promise<Record<string, unknown>> {
+    const limitS = typeof timeoutS === "number" && Number.isFinite(timeoutS) ? Math.min(SLICE_WAIT_MAX_S, Math.max(0.05, timeoutS)) : SLICE_WAIT_DEFAULT_S;
+    const deadline = Date.now() + limitS * 1000;
+    while (!job.done && Date.now() < deadline && !meta?.signal?.aborted) {
+      this.onProgress?.(job.handle, job.ctx.fraction ?? 0, job.ctx.stage ?? "", meta?.progressToken);
+      await Promise.race([job.settled, this.pause(Math.min(250, Math.max(1, deadline - Date.now())), meta?.signal)]);
+    }
+    return this.workReply(job);
+  }
+
+  private async workCancel(job: WorkJob): Promise<Record<string, unknown>> {
+    if (job.done) return { ...this.workReply(job), reason: "That job had already finished." };
+    if (!job.stoppable) {
+      const after = CHANGES_NOTHING.has(job.tool) ? "It changes no part." : job.tool.startsWith("model_") || job.tool === "solid_new" ? "Once it is done, model_undo or model_goto takes the part back." : "Once it is done, plate_undo takes it back.";
+      return { ok: false, job: job.handle, status: "running", reason: `${job.tool} cannot stop part way; it finishes in the background, and slice_wait returns its result. ${after}` };
+    }
+    job.stop.abort();
+    await Promise.race([job.settled, this.pause(SLICE_WAIT_DEFAULT_S * 1000)]);
+    if (!job.done) return { ok: true, job: job.handle, status: "cancelling", reason: "The work stops after the step it is on, and is then taken back. Call slice_wait for the outcome." };
+    return this.workReply(job);
   }
 
   /** An unknown handle right after a restart: the reply says where the last session's plate is. */
@@ -729,21 +955,14 @@ export class Session {
     try {
       const path = autosavePath();
       if (!path) return;
-      const doc = this.saveDocument();
       // A solid never committed has no plate mesh yet: its kernel mesh stands in, so the file opens.
-      const unplated = new Map(this.objects.filter((obj) => obj.bytes.byteLength === 0 && obj.solid && obj.solid.positions.length >= 9).map((obj) => [obj.id, obj]));
-      if (unplated.size > 0 && doc.objects) {
-        doc.objects = doc.objects.map((row) => {
-          const obj = row.id ? unplated.get(row.id) : undefined;
-          if (!obj?.solid) return row;
-          const name = stlFileName(obj.fileName);
-          return { ...row, mesh: meshRecord(name, stlBytes(Float32Array.from(obj.solid.positions), name)) };
-        });
-      }
+      const doc = this.withKernelMeshes(this.saveDocument());
       this.attachPreview(doc, false);
-      const text = serializeProject(doc);
-      // One write at a time, off the call's path; a failed write is not worth failing a call for.
-      this.autosaveWriting = this.autosaveWriting.then(() => writeAutosave(path, text)).catch(() => undefined);
+      // One write at a time, off the call's path; a failed write is not worth failing a call for. The binary records are
+      // compressed in that chain too, so the call does not wait for them.
+      // The document is taken now (a copy), so a write queued behind another still saves the plate as it is at this call.
+      const prepared = prepareProject(doc);
+      this.autosaveWriting = this.autosaveWriting.then(async () => writeAutosave(path, await finishProject(prepared))).catch(() => undefined);
     } catch {
       // An autosave that cannot be built is not worth failing a call for either.
     }
@@ -972,6 +1191,7 @@ export class Session {
     } catch (err) {
       reason = err instanceof Error ? err.message : "The engine did not answer.";
     }
+    const running = this.workJobs.find((row) => !row.done);
     return {
       ok: true,
       serverVersion: appVersion(),
@@ -981,6 +1201,7 @@ export class Session {
       ...(reason ? { reason } : {}),
       workspace: process.env.LIME_MCP_WORKSPACE ?? "",
       ...(this.previousAutosave ? { autosave: this.previousAutosave } : {}),
+      ...(running ? { job: { job: running.handle, tool: running.tool, ...(running.object ? { object: running.object } : {}), ...(running.ctx.stage ? { stage: running.ctx.stage } : {}) } } : {}),
       printer: this.printer().name,
       filament: this.filament().name,
       printerSend: false,
@@ -988,7 +1209,10 @@ export class Session {
         ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
         composite: [...COMPOSITE_KINDS],
         primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"],
-        maxSteps: MAX_PIECES,
+        // --- 3.1 F16. A limit per call, as the app's composite tools have it, not per history: one object's history
+        // passed 500 steps over several calls, which is fine, and maxSteps read as if it should have stopped there.
+        maxStepsPerCall: MAX_PIECES,
+        stepLimit: `One composite, batch, or build makes at most ${MAX_PIECES} kernel steps; the op that would pass that is refused like any other refusal. A history has no limit: split the work over several calls.`,
         expressions: true,
         guides: GUIDES.map((row) => row.uri.replace("lime://guide/", "")),
       },
@@ -1210,7 +1434,7 @@ export class Session {
   private async projectOpen(path: string): Promise<Record<string, unknown>> {
     const full = resolveRead(path, "lime");
     const text = await readFile(full, "utf8");
-    const parsed = parseProject(text);
+    const parsed = await decodeProject(text);
     if (!parsed.ok) return { ok: false, reason: parsed.message };
     this.remember("Open project");
     await this.forgetObjects();
@@ -1291,11 +1515,25 @@ export class Session {
       if (row.brep) obj.brep = row.brep;
       objects.push({ object: obj.id, name: shownName(obj.name) });
     }
+    // A tool a saved join took off the plate comes back off the plate, with its history, so model_undo of that join can
+    // put it back and a replay of the join can build it.
+    const selected = this.selected;
+    for (const tool of parsed.project.modelTools ?? []) {
+      if (this.find(tool.id)) continue;
+      const obj = this.addObject({ name: tool.name, fileName: stlFileName(tool.name), bytes: new Uint8Array(0), source: new Float32Array(0), triangles: 0, orient: [...ID_MATRIX] as Mat3, scale: 1, centered: false, offset: { x: 0, y: 0, z: 0 }, seatMm: 0 }, tool.id);
+      this.takeOffPlate(obj.id);
+    }
+    this.selected = selected;
+    const saved = new Map<string, NonNullable<NonNullable<LimeProject["objects"]>[number]["modelTree"]>>();
+    for (const row of rows) if (row.modelTree && row.id) saved.set(row.id, row.modelTree);
+    for (const tool of parsed.project.modelTools ?? []) if (!saved.has(tool.id)) saved.set(tool.id, tool.modelTree);
     const historyNotes: string[] = [];
-    for (const row of rows) {
-      if (!row.modelTree || !row.id) continue;
-      const obj = this.find(row.id);
-      const note = obj ? await this.adoptHistory(obj, row.modelTree) : null;
+    const order = toolFirst(saved);
+    for (const [k, id] of order.entries()) {
+      const obj = this.find(id) ?? this.toolsOffPlate.find((row) => row.id === id);
+      const tree = saved.get(id);
+      this.noteStage(`Opening history ${k + 1} of ${order.length}`, k / order.length);
+      const note = obj && tree ? await this.adoptHistory(obj, tree) : null;
       if (note) historyNotes.push(note);
     }
     this.adoptParameters(parsed.project);
@@ -1395,8 +1633,15 @@ export class Session {
     if (!root || (root.kind === "step" && !root.bytes)) return null;
     const stepRoot = root.kind === "step" && root.bytes ? { kind: "step" as const, name: root.name, bytes: root.bytes } : root.kind === "primitive" || root.kind === "feature" ? root : null;
     if (!stepRoot) return null;
-    const objectKey = (id: string) => this.objects.find((row) => row.id === id)?.tree?.key ?? (this.find(id) ? `mcp-${id}` : undefined);
-    obj.tree = withSavedNames(loadedTree(saved, key, stepRoot, obj.name, null, objectKey));
+    const objectKey = (id: string) => {
+      const row = this.find(id) ?? this.toolsOffPlate.find((tool) => tool.id === id);
+      return row ? row.tree?.key ?? `mcp-${id}` : undefined;
+    };
+    // The app opens a saved tree on the plate's step, with redo leading to the step its view was on. The MCP has no view
+    // to come back to, so it opens on that step itself: an autosave of a part never committed reopens on its last edit,
+    // not on its first solid.
+    const loaded = withSavedNames(loadedTree(saved, key, stepRoot, obj.name, null, objectKey));
+    obj.tree = loaded.nodes.has(saved.current) ? jumped(loaded, saved.current) : loaded;
     obj.platedNode = obj.tree.committed;
     // A file this server saved before 2.5.1 kept a Model solid's STEP as its plate mesh, which the slicer meshed with
     // truck: a loft could come back as a sheet a metre across. Such a plate takes the kernel's mesh of the committed
@@ -1405,12 +1650,20 @@ export class Session {
     const tree = obj.tree;
     let note: string | null = null;
     try {
+      // An old STEP plate opens on the committed step first, to mesh it for the plate, then goes on to the current one.
       const at = stepPlate ? tree.committed : tree.current;
       // A refused seed means the history replays in full: the budget covers every step, as after a restart.
       // --- A9. Count steps inside groups, or one long composite restarts inside the per-node budget. ---
-      const budget = Math.max(this.modelTimeoutMs(), modelSteps(tree) * 2000);
-      const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD, { seed: this.seedOf(obj, tree) }), "open", budget);
+      const steps = modelSteps(tree) - 1;
+      const budget = Math.max(this.modelTimeoutMs(), steps * 2000);
+      const seed = this.seedOf(obj, tree);
+      // --- 3.1 F6. A history with no saved solid to start from replays every step: say so while it runs, and after.
+      const started = Date.now();
+      if (!seed && steps > 0) this.noteStage(`Opening ${shownName(obj.name)}: replaying its ${steps} steps, since this file keeps no solid to start from`);
+      const reply = await this.treeCall(wholeTreeRequest(tree, stepRoot, at, obj.stepTolerance || CHORD, { seed }), "open", budget);
+      const seconds = Math.round((Date.now() - started) / 1000);
       if (typeof reply.seedRefused === "string") note = `${shownName(obj.name)}: the saved solid did not open (${reply.seedRefused}), so its history was rebuilt.`;
+      else if (!seed && steps > 0 && seconds >= 5) note = `${shownName(obj.name)}: this file keeps no solid in the engine's own format (a project saved before version 3 keeps STEP), so its ${steps} steps were replayed, in ${seconds} s. project_save writes version 4, which opens at once.`;
       const solid = rememberSolid(reply);
       if (solid) obj.solid = solid;
       if (stepPlate && solid && solid.positions.length >= 9) {
@@ -1598,8 +1851,9 @@ export class Session {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
     const path = resolveWrite(name, ".lime");
     if (refuseExisting && existsSync(path)) return { ok: false, reason: "A project with that name is already in the workspace. Pick another name, or leave ifExists out to replace it." };
-    const committed = await this.commitAll();
-    if (committed) return { ok: false, reason: committed };
+    // An object whose current step will not commit (its mesh does not close) is saved as it stands: the plate keeps its
+    // last committed mesh, or the kernel's mesh when it has none, and its whole history is kept. The reply names it.
+    const refused = await this.commitAll();
     if (this.sourcePath && path === this.sourcePath && this.sourceHash) {
       let now = "";
       try {
@@ -1611,18 +1865,23 @@ export class Session {
         return { ok: false, reason: "That project changed on disk since it was opened. Save it under a new name." };
       }
     }
-    const doc = this.saveDocument();
+    const doc = this.withKernelMeshes(this.saveDocument());
     this.attachPreview(doc, true);
     if (this.sourcePath && path === this.sourcePath) {
       const loss = this.lossy(doc);
       if (loss) return { ok: false, reason: loss };
     }
-    const text = serializeProject(doc);
+    const text = await encodeProject(doc);
     writeFileSync(path, text);
     this.sourceProject = structuredClone(doc);
     this.sourceHash = createHash("sha256").update(text).digest("hex");
     this.sourcePath = path;
-    return { ok: true, path, bytes: Buffer.byteLength(text) };
+    const warnings = refused.map((row) => {
+      const obj = this.find(row.object);
+      const kept = obj && obj.bytes.byteLength > 0 ? "the plate keeps its last committed mesh" : "the plate holds its open kernel mesh";
+      return `${row.name} (${row.object}) was saved without committing its current step: ${row.reason.replace(/ It was not put on the plate[^.]*\./, "")} Its history is saved whole, and ${kept}.`;
+    });
+    return { ok: true, path, bytes: Buffer.byteLength(text), ...(warnings.length ? { warnings, uncommitted: refused.map((row) => row.object) } : {}) };
   }
 
   /**
@@ -1861,6 +2120,50 @@ export class Session {
     this.objects.splice(this.objects.indexOf(tool), 1);
     this.toolsOffPlate.push(tool);
     if (this.selected === id) this.selected = this.objects[0]?.id ?? "";
+  }
+
+  /**
+   * A tool a join took off the plate is off only while that join is on the way to its part's current step, as the
+   * desktop's Prepare undo puts it back with the edit: model_undo or a goto before the join brings the tool back, and
+   * redo takes it off again. A tool that came back without a plate mesh (a project's saved tool tree) is committed.
+   */
+  private async followJoins(obj: PlateObject): Promise<{ back: string[]; left: string[] }> {
+    const named = new Set<string>();
+    for (const node of obj.tree?.nodes.values() ?? []) if (node.op?.kind === "join" && !node.op.keepTool) named.add(node.op.tool.object);
+    if (named.size === 0) return { back: [], left: [] };
+    const consumed = new Set<string>();
+    for (const row of [...this.objects, ...this.toolsOffPlate]) {
+      const tree = row.tree;
+      if (!tree) continue;
+      for (const id of pathTo(tree, tree.current)) {
+        const op = tree.nodes.get(id)?.op;
+        if (op?.kind === "join" && !op.keepTool) consumed.add(op.tool.object);
+      }
+    }
+    const back: string[] = [];
+    const left: string[] = [];
+    for (const id of named) {
+      if (consumed.has(id)) {
+        if (this.objects.some((row) => row.id === id)) {
+          this.takeOffPlate(id);
+          left.push(id);
+        }
+        continue;
+      }
+      const tool = this.toolsOffPlate.find((row) => row.id === id);
+      if (!tool) continue;
+      this.toolsOffPlate.splice(this.toolsOffPlate.indexOf(tool), 1);
+      this.objects.push(tool);
+      if (tool.bytes.byteLength === 0) {
+        try {
+          await this.commitObject(tool);
+        } catch {
+          // The tool is back with its history; a later commit writes its mesh.
+        }
+      }
+      back.push(id);
+    }
+    return { back, left };
   }
 
   private async closeTree(obj: PlateObject): Promise<void> {
@@ -2619,6 +2922,8 @@ export class Session {
   }
 
   private async sliceWait(handle: string, meta?: CallMeta, timeoutS?: number): Promise<Record<string, unknown>> {
+    const work = this.workJobs.find((row) => row.handle === handle);
+    if (work) return this.workWait(work, meta, timeoutS);
     const job = this.jobOf(handle);
     if (!job) return { ok: false, job: handle, reason: "That slice job is not in this session." };
     const limitS = typeof timeoutS === "number" && Number.isFinite(timeoutS)
@@ -2694,6 +2999,8 @@ export class Session {
   }
 
   private async sliceCancel(handle: string): Promise<Record<string, unknown>> {
+    const work = this.workJobs.find((row) => row.handle === handle);
+    if (work) return this.workCancel(work);
     const job = this.jobOf(handle);
     if (!job) return { ok: false, reason: "That slice job is not in this session." };
     await this.ask(this.engine.sliceCancel(String(job.engineId)));
@@ -2801,8 +3108,8 @@ export class Session {
 
   private async export3mf(name: string): Promise<Record<string, unknown>> {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
-    const committed = await this.commitAll();
-    if (committed) return { ok: false, reason: committed };
+    const refused = (await this.commitAll())[0];
+    if (refused) return { ok: false, reason: `${refused.name} (${refused.object}): ${refused.reason}`, object: refused.object };
     const meshes = this.objects.map((obj) => this.placed(obj).positions);
     const bytes = encode3mf(meshes);
     const path = resolveWrite(name, ".3mf");
@@ -2870,6 +3177,18 @@ export class Session {
       if ("reason" in made) return { ok: false, reason: made.reason };
       ghost = made;
     }
+    // --- 3.1 F12. A section, a highlight or colours need the solid: a STEP import is opened for them here, as
+    // model_describe would open it, instead of being refused until something else had.
+    const looksAsked = input.section !== undefined || input.highlight !== undefined || input.colours !== undefined;
+    if (looksAsked && !(obj.solid && obj.solid.positions.length >= 9) && !this.meshBlock(obj)) {
+      try {
+        const opened = await this.opened(obj);
+        if ("reason" in opened) return { ok: false, reason: opened.reason };
+      } catch (err) {
+        if (err instanceof ProtocolError) return { ok: false, reason: err.message };
+        throw err;
+      }
+    }
     const solidMesh = !!obj.solid && obj.solid.positions.length >= 9;
     const mesh = solidMesh ? obj.solid!.positions : this.placed(obj).positions;
     const looks = this.renderLooks(obj, input, solidMesh);
@@ -2886,7 +3205,13 @@ export class Session {
       views.push({ camera: label, path, width: drawn.width, height: drawn.height });
       pictures.push(pngImage(drawn.png));
     });
-    const note = { ...(ghost ? { ghost: { colour: "orange", touchesSolid: ghost.touches } } : {}), ...(looks.legend.length ? { colours: looks.legend } : {}) };
+    // --- 3.1 F5. Faces too small to see draw their edges as specks. They are the solid's own: a back cover's lattice
+    // ribs broke through its rounded outer edge by 0.2 mm at every rib end, which read as a drawing fault.
+    const tiny = solidMesh ? obj.solid!.faces.filter((face) => face.areaMm2 < 0.1) : [];
+    const slivers = tiny.length
+      ? { slivers: { count: tiny.length, frame: "part", at: tiny.slice(0, 3).map((face) => face.centre.map((v) => Math.round(v * 100) / 100)), note: `${tiny.length} face${tiny.length === 1 ? " is" : "s are"} under 0.1 mm², drawn as specks: the solid has them, often where a step breaks through a thin wall. faces_find {nearPoint} at one (part frame) names it.` } }
+      : {};
+    const note = { ...(ghost ? { ghost: { colour: "orange", touchesSolid: ghost.touches } } : {}), ...(looks.legend.length ? { colours: looks.legend } : {}), ...slivers };
     const body = many ? { ok: true, views, ...note } : { ok: true, ...views[0]!, ...note };
     return input.inline === false ? body : withImages(body, pictures);
   }
@@ -2896,7 +3221,8 @@ export class Session {
    * plane in the solid's frame, where its mesh is.
    */
   private renderLooks(obj: PlateObject, input: Record<string, unknown>, solidMesh: boolean): { options: RenderOptions; legend: Record<string, unknown>[] } | { reason: string } {
-    const options: RenderOptions = { smooth: input.smooth !== false };
+    // The solid's faces also let an edge line show only where its own faces are in front (--- 3.1 F5).
+    const options: RenderOptions = { smooth: input.smooth !== false, ...(solidMesh ? { faces: obj.solid!.triangles } : {}) };
     const legend: Record<string, unknown>[] = [];
     const wanted: { label: string; rgb: [number, number, number] }[] = [];
     const highlight = typeof input.highlight === "string" ? [input.highlight] : Array.isArray(input.highlight) ? input.highlight.map(String) : [];
@@ -2907,10 +3233,9 @@ export class Session {
       const n = parseInt(match[1]!, 16);
       wanted.push({ label, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] });
     }
-    if ((wanted.length || input.section !== undefined) && !solidMesh) return { reason: "highlight, colours, and section need a Model solid. Open the Model history first (solid_new or model_build)." };
+    if ((wanted.length || input.section !== undefined) && !solidMesh) return { reason: "highlight, colours, and section need a solid, and this part is a mesh (STL, OBJ or 3MF), which has none. Import its STEP file, or make the part with solid_new or model_build." };
     if (wanted.length) {
       options.tints = [];
-      options.faces = obj.solid!.triangles;
       for (const { label, rgb } of wanted) {
         const box = this.labelBox(obj, label, true);
         if (!box) return { reason: `No step is labelled "${label}" with a tool to measure. model_anchors lists the labels.` };
@@ -3080,10 +3405,28 @@ export class Session {
     }
   }
 
+  /**
+   * How long one modeler call may run before the server kills the modeler, which closes every open tree. --- 3.1 F9.
+   * It is longer than the engine's own 60 s limit on a new step, which stops a slow boolean or blend cleanly with a
+   * refusal: at 30 s the server killed first, and a 3,000-face join came back as treeLost instead of a sentence.
+   */
   private modelTimeoutMs(): number {
     const raw = Number(process.env.LIME_MCP_MODEL_TIMEOUT_S);
-    const seconds = Number.isFinite(raw) && raw > 0 ? raw : 30;
+    const seconds = Number.isFinite(raw) && raw > 0 ? raw : 90;
     return seconds * 1000;
+  }
+
+  /** The steps from the root to `node`, a group's counted one by one: what a goto there may replay. */
+  private stepsTo(tree: ModelTree, node: number): number {
+    return pathTo(tree, node).reduce((sum, id) => {
+      const op = tree.nodes.get(id)?.op;
+      return sum + (op ? 1 : 0) + (op?.kind === "group" ? op.steps.length : 0);
+    }, 0);
+  }
+
+  /** A call that replays `steps` steps (a group's count as many): two seconds each, at least the one-call limit. */
+  private replayBudgetMs(steps: number): number {
+    return Math.max(this.modelTimeoutMs(), steps * 2000);
   }
 
   private runawayMessage(kind: string, budgetMs: number): string {
@@ -3157,7 +3500,12 @@ export class Session {
 
   private lostReply(err: unknown): Record<string, unknown> | null {
     if (!(err instanceof ModelRunaway)) return null;
-    return { ok: false, reason: err.message, treeLost: true };
+    return {
+      ok: false,
+      reason: err.message,
+      treeLost: true,
+      treeNote: "The modeler did not answer, so it was restarted, which closed every open history in it. Nothing applied is lost: each history is built again from its first solid and its steps on its next use, which takes a while on a long one.",
+    };
   }
 
   private async treeCall(body: Record<string, unknown>, label = "edit", budgetMs?: number): Promise<Record<string, unknown>> {
@@ -3347,7 +3695,7 @@ export class Session {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
-    const matched = facesMatching(obj.solid.faces, input);
+    const matched = facesMatching(obj.solid.faces, input, obj.solid);
     if ("reason" in matched) return { ok: false, reason: matched.reason };
     const listed = page(matched, input.cursor, input.limit);
     return { ok: true, total: matched.length, frame: "part", faces: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
@@ -3387,7 +3735,7 @@ export class Session {
     }
     if (Array.isArray(raw)) {
       if (raw.length === 0) return { reason: empty };
-      if (!raw.every((edge) => Number.isInteger(edge))) return { reason: "Edge indexes are whole numbers." };
+      if (!raw.every((edge) => Number.isInteger(edge))) return { reason: EDGES_SHAPE };
       return raw as number[];
     }
     if (raw && typeof raw === "object" && "select" in raw) {
@@ -3695,7 +4043,8 @@ export class Session {
       if ("reason" in local) return local;
       const solid = planePrimitive(local, this.typedPlane(obj));
       const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid }, obj.modelPose);
-      return { op, typed: { kind: "boolean", op: booleanOp, ...solid } };
+      // A tool placed by centre already says where its middle goes: turnEcho has no note for it. cleanOp drops the mark.
+      return { op, typed: { kind: "boolean", op: booleanOp, ...solid, ...(spec.centre !== undefined ? { centre: spec.centre } : {}) } };
     }
     if (kind === "root") {
       const local = primitiveFrom(spec, "box");
@@ -3778,9 +4127,48 @@ export class Session {
     const asked = this.nodeOf(obj, nodeHandleValue);
     const at = asked ?? tree.current;
     if (asked !== null && !tree.nodes.has(asked)) return { ok: false, reason: "That step is not in the history." };
+    if (at !== tree.current) return this.atStep(obj, tree, at, () => this.bakeAndProbe(obj, tree, at, raw, measure));
+    return this.bakeAndProbe(obj, tree, at, raw, measure);
+  }
+
+  private async bakeAndProbe(obj: PlateObject, tree: ModelTree, at: number, raw: unknown, measure: boolean): Promise<Record<string, unknown>> {
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
     return this.probeBaked(obj, tree, at, baked, measure);
+  }
+
+  /**
+   * --- 3.1 F14. Work on step `at`'s solid: face and edge selectors, a hole's depth through the part, and the checks
+   * read `obj.solid`, which is the current step's. The engine shows `at` for the work and the current step again after,
+   * and the history does not move.
+   */
+  private async atStep(obj: PlateObject, tree: ModelTree, at: number, work: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
+    const current = tree.current;
+    const prior = obj.solid;
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(gotoRequest(tree.key, at, CHORD), "edit", this.replayBudgetMs(this.stepsTo(tree, at)));
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
+    if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
+    const solid = rememberSolid(reply);
+    if (!solid) return { ok: false, reason: "That step's solid could not be read." };
+    obj.solid = solid;
+    try {
+      return await work();
+    } finally {
+      obj.solid = prior;
+      if (!obj.treeStale) {
+        try {
+          await this.treeCall(gotoRequest(tree.key, current, CHORD), "edit", this.replayBudgetMs(this.stepsTo(tree, current)));
+        } catch {
+          // A modeler restarted under the work rebuilds the history at its current step on next use.
+        }
+      }
+    }
   }
 
   /**
@@ -3789,7 +4177,7 @@ export class Session {
    */
   private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown> }, measure = false, composite = false, budgetMs?: number): Promise<Record<string, unknown>> {
     const picked = baked.op.kind === "fillet" || baked.op.kind === "chamfer" ? { edges: baked.typed.edges } : {};
-    const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) });
+    const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed), ...turnEcho(baked.typed) });
     if (baked.op.kind === "scale") {
       obj.probes.set(probeKey(String(at), baked.op), true);
       return answer({ ok: true, reason: "This scale fits." });
@@ -3829,6 +4217,11 @@ export class Session {
     const note = probeNote(tool, view);
     // --- A9. A group probe names the step that failed, counting from 1. ---
     const failedStep = view?.phase === "done" && view.ok === false && view.failedStep != null ? { failedStep: view.failedStep } : {};
+    if (baked.op.kind === "shell" && note?.bad && /too thick/.test(note.text)) {
+      const advice = await this.shellAdvice(obj, tree, at, baked.op, budgetMs);
+      if (advice.lost) return answer(advice.lost);
+      return answer({ ok: false, reason: `${note.text} ${advice.text}`, ...(advice.maxMm !== undefined ? { maxMm: advice.maxMm } : {}), ...(advice.where ? { where: advice.where } : {}) });
+    }
     if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}), ...failedStep });
     if (view?.phase === "done" && addsPiece(baked.op as { kind: string; op?: string }, view.measure)) {
       const where = pieceReport(reply, (p) => applyPose(obj.modelPose, p));
@@ -3840,6 +4233,54 @@ export class Session {
     }
     obj.probes.set(probeKey(String(at), baked.op), true);
     return answer({ ok: true, reason: note.text });
+  }
+
+  /**
+   * --- 3.1 F10. Where a shell that is too thick runs out of room, and the thickest wall that fits. Inward offsets of t
+   * from two sides meet where the part is thinner than 2t, so the thinnest places are measured from the solid's mesh;
+   * a curved face of smaller radius than the wall cannot be offset either. The largest wall that fits is found by
+   * halving, a probe each, within about 20 s; the solid does not change.
+   */
+  private async shellAdvice(obj: PlateObject, tree: ModelTree, at: number, op: Extract<ModelOp, { kind: "shell" }>, budgetMs?: number): Promise<{ text: string; maxMm?: number; where?: Record<string, unknown>; lost?: Record<string, unknown> }> {
+    const t = op.thickness;
+    const parts: string[] = [];
+    let where: Record<string, unknown> | undefined;
+    const solid = obj.solid;
+    const pose = (p: readonly number[]) => applyPose(obj.modelPose, p as [number, number, number]).map((v) => Math.round(v * 100) / 100);
+    if (solid && solid.positions.length >= 9) {
+      const thin = thinWalls(solid.positions, 2 * t);
+      const worst = [...thin.regions].sort((a, b) => a.thinnestMm - b.thinnestMm)[0];
+      if (worst) {
+        where = { thinnestMm: Math.round(worst.thinnestMm * 100) / 100, at: pose(worst.centre), min: pose(worst.min), max: pose(worst.max) };
+        parts.push(`The part is ${where.thinnestMm} mm thick at (${(where.at as number[]).join(", ")}), and a ${t} mm wall needs ${2 * t} mm there.`);
+      }
+      const tight = solid.faces.filter((face) => (face.kind === "cylinder" || face.kind === "sphere" || face.kind === "cone") && typeof face.radiusMm === "number" && face.radiusMm < t).sort((a, b) => a.radiusMm! - b.radiusMm!)[0];
+      if (tight) {
+        where = { ...(where ?? {}), radiusMm: Math.round(tight.radiusMm! * 100) / 100, radiusAt: pose(tight.centre), face: tight.index };
+        parts.push(`Face ${tight.index}, a ${tight.kind} of radius ${where.radiusMm} mm at (${(where.radiusAt as number[]).join(", ")}), is rounder than the wall is thick.`);
+      }
+    }
+    let fits = 0;
+    let fails = t;
+    const until = Date.now() + 20_000;
+    for (let round = 0; round < 6 && Date.now() < until; round += 1) {
+      const trial = Math.round(((fits + fails) / 2) * 100) / 100;
+      if (!(trial > fits) || !(trial < fails)) break;
+      let reply: Record<string, unknown>;
+      try {
+        reply = await this.treeCall(probeRequest(tree.key, at, { ...op, thickness: trial }), "shell", budgetMs);
+      } catch (err) {
+        const lost = this.lostReply(err);
+        if (lost) return { text: parts.join(" "), lost };
+        break;
+      }
+      const view = probeFromBody(reply);
+      if (view?.phase === "done" && view.ok) fits = trial;
+      else fails = trial;
+    }
+    if (fits > 0) parts.push(`A ${fits} mm wall fits.`);
+    else parts.push(`Nothing from ${Math.round((fails) * 100) / 100} mm up fits; try a much thinner wall, or open a face near there.`);
+    return { text: parts.join(" "), ...(fits > 0 ? { maxMm: fits } : {}), ...(where ? { where } : {}) };
   }
 
   /**
@@ -3929,10 +4370,10 @@ export class Session {
       return { ok: false, ...guarded };
     }
     const leftPlate = baked.op.kind === "join" && !baked.op.keepTool ? baked.op.tool.object : undefined;
-    if (leftPlate) this.takeOffPlate(leftPlate);
+    if (leftPlate) await this.followJoins(obj);
     const other = otherKey ? this.keepOtherHalf(obj, otherKey, reply.other, node) : undefined;
     const kept = baked.op.kind === "split" ? (keep === "both" ? "both" : this.keptSide(obj, baked.op)) : undefined;
-    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(leftPlate ? { toolLeftPlate: leftPlate } : {}), stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed) };
+    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(leftPlate ? { toolLeftPlate: leftPlate } : {}), stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed), ...turnEcho(baked.typed) };
   }
 
   /**
@@ -4041,9 +4482,14 @@ export class Session {
     const result = (body: Record<string, unknown>) => ({ ...body, checkpoints });
     const meta = this.callContext.getStore();
     // Progress per step, so a client that resets its timeout on progress keeps waiting for a long batch.
-    const progress = (index: number, step: number, steps: number) => {
+    const progress = (index: number, step: number, steps: number, doing?: string) => {
       const fraction = Math.min(0.999, (index + (steps > 0 ? step / steps : 0)) / Math.max(1, raws.length));
-      this.onProgress?.("model", fraction, `op ${index + 1 + offset} of ${raws.length + offset}${steps > 1 ? `, step ${step + 1} of ${steps}` : ""}`, meta?.progressToken);
+      const stage = `op ${index + 1 + offset} of ${raws.length + offset}${doing ? `, ${doing}` : steps > 1 ? `, step ${step + 1} of ${steps}` : ""}`;
+      if (meta) {
+        meta.fraction = fraction;
+        meta.stage = stage;
+      }
+      this.onProgress?.("model", fraction, stage, meta?.progressToken);
     };
     // A cancelled call, or one the client gave up on, takes the whole run back: the part is as it was before it.
     const cancelled = async (): Promise<Record<string, unknown>> => {
@@ -4110,21 +4556,43 @@ export class Session {
         checkpoints.push(obj.tree?.current ?? null);
         continue;
       }
-      // Expanded now, on the solid as the steps before it left it, so a face selector sees faces they made.
-      const pieces = expand(raw, this.expandContext(obj), (op) => this.pieceOf(obj, op));
-      if ("reason" in pieces) {
-        const ended = await refuse({ reason: pieces.reason });
+      // --- 3.1 F15. A pattern or mirror of an extrude or a revolve repeats that whole step on moved planes; other
+      // composites expand to Boolean pieces. Expanded now, on the solid as the steps before it left it, so a face
+      // selector sees faces they made.
+      const context = this.expandContext(obj);
+      const copies = featureCopies(raw, context.plane, (spec) => this.profilePlane(obj, spec));
+      const expanded = copies === null ? expand(raw, context, (op) => this.pieceOf(obj, op)) : copies;
+      if ("reason" in expanded) {
+        const ended = await refuse({ reason: expanded.reason });
         if (ended) return ended;
         continue;
       }
-      if ((made += pieces.length) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+      const pieces = copies === null ? expanded as Piece[] : [];
+      const count = expanded.length;
+      if ((made += count) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
       let refused: Record<string, unknown> | null = null;
       const touchingBefore = touching;
       // --- A9. The pieces that landed, in the solid's frame, become the group's steps. ---
       const steps: ModelOp[] = [];
-      for (let k = 0; k < pieces.length; k += 1) {
+      for (let k = 0; k < count; k += 1) {
         if (meta?.signal?.aborted) return cancelled();
-        progress(index, k, pieces.length);
+        progress(index, k, count);
+        if (copies !== null && !("reason" in copies)) {
+          const copy = copies[k]!;
+          const probed = await this.probe(obj, copy);
+          const done = probed.ok === true ? await this.apply(obj, copy) : probed;
+          if (done.ok !== true) {
+            refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(copy), step: k + 1, of: count, failedStep: k + 1, ...(done.where ? { where: done.where } : {}) };
+            break;
+          }
+          const node = parseNode(done.node);
+          const op = node === null ? null : obj.tree?.nodes.get(node)?.op;
+          if (node === null || !op) continue;
+          nodes.push(node);
+          ownNodes.push(node);
+          steps.push(op);
+          continue;
+        }
         const piece = pieces[k]!;
         const attempt = async (spec: PrimitiveSpec): Promise<{ probed: Record<string, unknown>; done: Record<string, unknown>; typed: Record<string, unknown>; op: ModelOp | null }> => {
           const at = await this.opened(obj);
@@ -4157,7 +4625,7 @@ export class Session {
         }
         if (done.ok !== true) {
           // --- A9. failedStep is the piece, counting from 1, including a located refusal. ---
-          refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(typed), step: k + 1, of: pieces.length, failedStep: k + 1, ...(done.where ? { where: done.where } : {}) };
+          refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(typed), step: k + 1, of: count, failedStep: k + 1, ...(done.where ? { where: done.where } : {}) };
           break;
         }
         const node = parseNode(done.node);
@@ -4168,8 +4636,8 @@ export class Session {
       }
       // --- D20. A composite whose every step missed changes nothing: refused, as the engine refuses such a group.
       // A step left out because it would only touch along an edge is reported as leftOut instead.
-      if (!refused && ownNodes.length === 0 && pieces.length > 0 && touching === touchingBefore) {
-        refused = { reason: pieces.length === 1 ? "Its one step does not change the part." : `None of its ${pieces.length} steps changes the part.` };
+      if (!refused && ownNodes.length === 0 && count > 0 && touching === touchingBefore) {
+        refused = { reason: count === 1 ? "Its one step does not change the part." : `None of its ${count} steps changes the part.` };
       }
       if (refused) {
         const ended = await refuse(refused);
@@ -4178,6 +4646,7 @@ export class Session {
       }
       // --- A9. Replace the piece chain with one group. A composite that applied nothing stays as it was. ---
       if (ownNodes.length > 0) {
+        progress(index, count - 1, count, `gathering its ${ownNodes.length} steps into one group`);
         const stored = await this.storeGroup(obj, before, ownNodes[0]!, steps, label, raw);
         if (stored.ok !== true) {
           // The pieces are already gone. refuse still drops them when they remain, and rolls the run back.
@@ -4214,14 +4683,39 @@ export class Session {
   }
 
   /**
+   * The run of pieces from `firstPiece` to the current step, folded by the engine into `group` under `before`: the group
+   * node's id, null when the engine would not fold it (the caller then builds the group), or the failure when the
+   * modeler had to be restarted.
+   */
+  private async foldGroup(obj: PlateObject, before: number, firstPiece: number, group: GroupOp): Promise<number | Record<string, unknown> | null> {
+    const tree = obj.tree;
+    if (!tree || obj.treeStale || !pathTo(tree, tree.current).includes(firstPiece)) return null;
+    const [reserved, node] = reserveId(tree);
+    const without = dropped(jumped(reserved, before), firstPiece);
+    if (!without) return null;
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall({ call: "fold", key: tree.key, parent: before, node, op: group, last: tree.current, chordMm: CHORD }, "group");
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      if (err instanceof ProtocolError) return null;
+      throw err;
+    }
+    if (typeof reply.error === "string" && reply.error) return null;
+    obj.tree = withChild(without, before, { id: node, op: group, label: opLabel(group), fingerprint: null });
+    const solid = rememberSolid(reply);
+    if (solid) obj.solid = solid;
+    obj.probes.clear();
+    return node;
+  }
+
+  /**
    * --- A9. The pieces of one composite become a single group node.
    * Go back to the step before them, drop the chain, then probe and apply the group.
    * The probe and the apply share a budget that grows with the step count, so one composite is not cut off at the per-call limit.
    */
   private async storeGroup(obj: PlateObject, before: number, firstPiece: number, steps: ModelOp[], label: string | undefined, raw: Record<string, unknown>): Promise<{ ok: true; node: number } | { ok: false; failed: Record<string, unknown> }> {
-    const back = await this.gotoNode(obj, before);
-    if (back.ok !== true) return { ok: false, failed: { reason: String(back.reason ?? "The steps could not be gathered into one.") } };
-    if (obj.tree?.nodes.has(firstPiece)) this.drop(obj, firstPiece);
     let source: unknown = raw;
     try {
       source = JSON.parse(JSON.stringify(raw)) as unknown;
@@ -4229,6 +4723,14 @@ export class Session {
       source = raw;
     }
     const group: GroupOp = { kind: "group", label: compositeGroupLabel(raw, label), source, steps };
+    // --- 3.1 F1. The pieces are built and checked already: they fold into the group, which builds nothing again. Only
+    // an engine that cannot fold them (an old one, or a run whose last solid it let go) builds the group from the start.
+    const folded = await this.foldGroup(obj, before, firstPiece, group);
+    if (typeof folded === "number") return { ok: true, node: folded };
+    if (folded) return { ok: false, failed: folded };
+    const back = await this.gotoNode(obj, before);
+    if (back.ok !== true) return { ok: false, failed: { reason: String(back.reason ?? "The steps could not be gathered into one.") } };
+    if (obj.tree?.nodes.has(firstPiece)) this.drop(obj, firstPiece);
     const at = await this.opened(obj);
     if ("reason" in at) return { ok: false, failed: { reason: at.reason } };
     const baked = { op: group as ModelOp, typed: group as unknown as Record<string, unknown> };
@@ -4626,12 +5128,22 @@ export class Session {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
-    const reply = await this.treeCall(gotoRequest(tree.key, node, CHORD));
+    // --- 3.1 F9. A goto replays from the nearest solid the engine still holds, which can be a whole group of hundreds
+    // of booleans: it gets two seconds a step on the way, not one call's limit, and a modeler past even that is a reply.
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(gotoRequest(tree.key, node, CHORD), "edit", this.replayBudgetMs(this.stepsTo(tree, node)));
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
     obj.tree = jumped(tree, node);
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
-    return { ok: true, node: nodeHandle(node) };
+    const tools = await this.followJoins(obj);
+    return { ok: true, node: nodeHandle(node), ...(tools.back.length ? { toolsBack: tools.back } : {}), ...(tools.left.length ? { toolsLeftPlate: tools.left } : {}) };
   }
 
   private async step(obj: PlateObject, direction: "undo" | "redo"): Promise<Record<string, unknown>> {
@@ -4735,7 +5247,16 @@ export class Session {
     const levels = crossEdit(tree, joins, node, baked.op, replayIds, (key, need) => this.reserveOn(key, need));
     const own = levels[levels.length - 1];
     if (!own) return { ok: false, reason: "That step could not be rebuilt." };
-    const reply = await this.treeCall(crossEditRequest(levels, obj.stepTolerance || CHORD));
+    // --- 3.1 F9. An edit replays every step after the one edited, and the tools its joins take: a budget for all of them.
+    const replayed = levels.reduce((sum, level) => sum + 1 + level.replay.reduce((inner, step) => inner + 1 + (step.op.kind === "group" ? step.op.steps.length : 0), 0), 0);
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(crossEditRequest(levels, obj.stepTolerance || CHORD), "edit", this.replayBudgetMs(replayed));
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
     if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
     const built = readBuilt(reply.built);
     const broken = readBroken(reply.broken);
@@ -4919,12 +5440,31 @@ export class Session {
     return false;
   }
 
-  private async commitAll(): Promise<string | null> {
+  /** Every object's current step onto the plate. One that will not commit is named with its reason; the rest still commit. */
+  private async commitAll(): Promise<{ object: string; name: string; reason: string }[]> {
+    const refused: { object: string; name: string; reason: string }[] = [];
     for (const obj of this.objects) {
       const reason = await this.commitObject(obj);
-      if (reason) return reason;
+      if (reason) refused.push({ object: obj.id, name: shownName(obj.name), reason });
     }
-    return null;
+    return refused;
+  }
+
+  /**
+   * A plate object with no plate mesh yet, a solid never committed, carries its kernel mesh in a saved file, so the file
+   * opens: an autosave commits nothing, and a save keeps an object whose mesh would not close as it stands.
+   */
+  private withKernelMeshes(doc: LimeProject): LimeProject {
+    const unplated = new Map(this.objects.filter((obj) => obj.bytes.byteLength === 0 && obj.solid && obj.solid.positions.length >= 9).map((obj) => [obj.id, obj]));
+    if (unplated.size > 0 && doc.objects) {
+      doc.objects = doc.objects.map((row) => {
+        const obj = row.id ? unplated.get(row.id) : undefined;
+        if (!obj?.solid) return row;
+        const name = stlFileName(obj.fileName);
+        return { ...row, mesh: meshRecord(name, stlBytes(Float32Array.from(obj.solid.positions), name)) };
+      });
+    }
+    return doc;
   }
 
   private async exportStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {

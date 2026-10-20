@@ -75,7 +75,7 @@ const project: LimeProject = {
 };
 
 const bare = serializeProject(project);
-check("a project without a preview serializes as before", !bare.includes("thumbnail") && !bare.includes("summary") && bare.includes('"version": 1'));
+check("a project without a preview serializes as before", !bare.includes("thumbnail") && !bare.includes("summary") && bare.includes('"version": 4'));
 const bareOpened = parseProject(bare);
 check("that file opens", bareOpened.ok && !bareOpened.project.thumbnail && !bareOpened.project.summary);
 
@@ -141,7 +141,7 @@ const plateText = serializeProject({
   summary: { name: "bracket.stl", printer: "Voron 2.4", objectCount: 2, layerHeight: 0.2 },
 });
 const plateDoc = JSON.parse(plateText) as { version?: number; thumbnail?: { meshHash?: string } };
-check("a plate is still version 3", plateDoc.version === PROJECT_VERSION && plateDoc.thumbnail?.meshHash === plateHash);
+check("a plate is version 4", plateDoc.version === PROJECT_VERSION && plateDoc.thumbnail?.meshHash === plateHash);
 const plateOpened = parseProject(plateText);
 check("a plate picture round-trips", plateOpened.ok && plateOpened.project.thumbnail?.meshHash === plateHash && plateOpened.project.summary?.objectCount === 2);
 const plateLines = geometryPreimage(plate);

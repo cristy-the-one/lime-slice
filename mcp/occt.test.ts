@@ -3,13 +3,14 @@
  * Skips when LIME_OCCT_BRIDGE is unset, and fails in CI when it is unset.
  * Build with CARGO_BUILD_JOBS=2. The rust job runs this after the OCCT install.
  */
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { engineCandidates, loadEngineWorker } from "./engine.ts";
 import { Session } from "./session.ts";
+import { plainDocument } from "../src/project-codec.ts";
 
 const bridge = process.env.LIME_OCCT_BRIDGE ?? "";
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -112,6 +113,29 @@ for (const row of opened) {
 check("commit, slice, 3MF, STEP, save, and reopen succeed", committed.ok === true && started.ok === true && waited.ok === true && packed.ok === true && stepFile.ok === true && typeof stepFile.bytes === "number" && stepFile.bytes > 100 && saved.ok === true && reopened.ok === true, JSON.stringify({ committed, started, waited, packed, stepFile, saved, reopened }));
 check("the reopened solid is still the holed cube", reopenedId !== "" && near(again.volumeMm3, 874.34, 0.5) && labels.some((label) => label.startsWith("Hole")), JSON.stringify({ volume: again.volumeMm3, labels, objects: opened.length }));
 
+// Version 4: the saved solid is the engine's own bytes, compressed. A reopen gets the same bytes back as the seed, so
+// the whole tree opens from it at once, with nothing replayed.
+{
+  const text = readFileSync(String(saved.path), "utf8");
+  const raw = JSON.parse(text) as { version?: number; objects?: { brep?: { encoding?: string; byteLength?: number; bytesBase64?: string } }[] };
+  const plain = (await plainDocument(text)) as typeof raw;
+  const brepIndex = Math.max(0, (raw.objects ?? []).findIndex((row) => row.brep));
+  const brep = plain.objects?.[brepIndex]?.brep;
+  const bytes = brep?.bytesBase64 ? Buffer.from(brep.bytesBase64, "base64") : Buffer.alloc(0);
+  check("the saved file is version 4 and its solid is compressed", raw.version === 4 && raw.objects?.[brepIndex]?.brep?.encoding === "gzip+base64" && raw.objects[brepIndex]!.brep!.bytesBase64 === undefined, JSON.stringify(raw.version));
+  check("the solid unpacks to the engine's binary format, of its recorded length", bytes.toString("latin1", 0, 9) === "LIMEBREP " && bytes.length === brep?.byteLength && bytes.length > 100, `${bytes.length}`);
+  const packedLength = String((JSON.parse(text) as { objects: { brep: { data: string } }[] }).objects[brepIndex]!.brep.data.length);
+  check("the stored solid is shorter than the same solid as base64", Number(packedLength) < Math.ceil(bytes.length / 3) * 4, `${packedLength} vs ${bytes.length}`);
+  const t0 = Date.now();
+  const timed = new Session(loadEngineWorker(root));
+  const quick = await timed.call("project_open", { path: String(saved.path) });
+  const quickVolumes: unknown[] = [];
+  for (const row of (quick.objects as { object: string }[] | undefined) ?? []) quickVolumes.push((await timed.call("model_describe", { object: row.object })).volumeMm3);
+  const quickDescribed = { volumeMm3: quickVolumes.find((volume) => near(volume, 874.34, 0.5)) };
+  check("a version 4 file reopens from its solid with no history replayed, and the same volume", quick.ok === true && quick.historyNotes === undefined && near(quickDescribed.volumeMm3, 874.34, 0.5), JSON.stringify({ notes: quick.historyNotes, volume: quickDescribed.volumeMm3 }));
+  check("and in good time", Date.now() - t0 < 20000, `${Date.now() - t0} ms`);
+}
+
 const corner = await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
 const cornerId = String(corner.object);
 const cornerOp = { kind: "hole", diameterMm: 3, depth: 8, origin: [5, 5, 10], axis: [0, 0, -1], counterboreDiameterMm: 6, counterboreDepth: 2 };
@@ -172,6 +196,63 @@ check(
 );
 const crossingCommit = await call("model_commit", { object: crossing.object });
 check("the equal-width cover commits with a closed mesh", crossingCommit.ok === true, JSON.stringify(crossingCommit));
+
+// --- The 3.1 rebuild findings, against real Open CASCADE.
+/** The solid's box, from its faces' boxes. */
+async function solidBox(object: string): Promise<{ min: number[]; max: number[] }> {
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  let cursor: string | undefined;
+  do {
+    const page = await call("faces_find", { object, limit: 100, ...(cursor ? { cursor } : {}) });
+    for (const face of (page.faces ?? []) as { bbox: { min: number[]; max: number[] } }[]) {
+      for (let k = 0; k < 3; k += 1) {
+        min[k] = Math.min(min[k]!, face.bbox.min[k]!);
+        max[k] = Math.max(max[k]!, face.bbox.max[k]!);
+      }
+    }
+    cursor = typeof page.nextCursor === "string" ? page.nextCursor : undefined;
+  } while (cursor);
+  return { min, max };
+}
+{
+  const block = String((await call("solid_new", { primitive: "box", dx: 40, dy: 40, dz: 20 })).object);
+  // 13: a cylinder's radius and axis are the kernel's.
+  await call("model_apply", { object: block, probe: true, op: { kind: "boolean", op: "cut", primitive: "cylinder", origin: [5, 5, -1], radius: 3, height: 30 } });
+  const round = await call("faces_find", { object: block, kind: "cylinder" });
+  const bore = ((round.faces ?? []) as { radiusMm?: number; axis?: number[]; axisPoint?: number[] }[])[0];
+  check("faces_find reads a bore's radius and axis from the kernel", near(bore?.radiusMm, 3, 1e-6) && Math.abs(Math.abs(bore?.axis?.[2] ?? 0) - 1) < 1e-9 && near(bore?.axisPoint?.[0], 5, 1e-6), JSON.stringify(round));
+  // 8: a turned cylinder by origin lies where its axis echo says.
+  const lying = await call("model_apply", { object: block, probe: true, op: { kind: "boolean", op: "fuse", primitive: "cylinder", origin: [0, -10, 16], radius: 2, height: 10, turn: [0, 90, 0] } });
+  const lyingBox = await solidBox(block);
+  check("a turned cylinder's axis echo matches the kernel's solid", lying.ok === true && JSON.stringify(lying.axis) === JSON.stringify({ base: [-5, -10, 21], top: [5, -10, 21] }) && near(lyingBox.max[2], 23, 0.05), JSON.stringify({ lying, lyingBox }));
+  // 15: a mirrored extrude lands across the plane, with the same volume as the original.
+  const before = Number((await call("model_describe", { object: block, limit: 1 })).volumeMm3);
+  const fins = await call("model_apply", { object: block, op: { kind: "mirror", plane: "x", op: { kind: "extrude", op: "fuse", origin: [20, 0, 5], turn: [0, 0, 0], profile: [[0, 0], [6, 0], [0, 4]], depth: 3 } } });
+  const after = await call("model_describe", { object: block, limit: 1 });
+  const box = await solidBox(block);
+  check("a mirror of an extrude adds the fin and its image", fins.ok === true && near(Number(after.volumeMm3) - before, 2 * 36, 0.05) && near(box.min[0], -26, 0.01) && near(box.max[0], 26, 0.01), JSON.stringify({ fins, before, after: after.volumeMm3, box }));
+  // 15: a mirrored quarter revolve is the image of the original: the part stays symmetric about X = 0.
+  // A quarter revolve on the top face sweeps up, out of the block; a copy turned the wrong way would sweep into it.
+  const sweep = { kind: "revolve", op: "fuse", origin: [10, 0, 10], turn: [0, 0, 0], profile: [[0, -2], [4, -2], [4, 2], [0, 2]], angleDeg: 90 };
+  const one = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10 })).object);
+  const oneBefore = Number((await call("model_describe", { object: one, limit: 1 })).volumeMm3);
+  await call("model_apply", { object: one, probe: true, op: sweep });
+  const single = Number((await call("model_describe", { object: one, limit: 1 })).volumeMm3) - oneBefore;
+  const wheel = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10 })).object);
+  const quarter = await call("model_apply", { object: wheel, op: { kind: "mirror", plane: "x", op: sweep } });
+  const both = Number((await call("model_describe", { object: wheel, limit: 1 })).volumeMm3) - oneBefore;
+  const wheelBox = await solidBox(wheel);
+  check("a mirrored quarter revolve is the original's image", quarter.ok === true && single > 1 && near(both, 2 * single, 0.05) && near(wheelBox.min[0], -wheelBox.max[0], 0.01), JSON.stringify({ quarter, single, both, wheelBox }));
+  // 5: a sliver the solid really has is named by render_view.
+  await call("model_apply", { object: block, probe: true, op: { kind: "boolean", op: "fuse", primitive: "box", origin: [19.9, 10, 10], dx: 0.2, dy: 0.25, dz: 0.25 } });
+  const drawn = await call("render_view", { object: block, camera: "iso", inline: false, longEdge: 128, name: "slivers.png" });
+  check("render_view names faces too small to see", (drawn.slivers as { count?: number } | undefined)?.count! > 0, JSON.stringify(drawn.slivers));
+  // 10: a shell too thick for a thin plate says where and the thickest that fits.
+  const plate = String((await call("solid_new", { primitive: "box", dx: 30, dy: 30, dz: 3 })).object);
+  const shell = await call("model_probe", { object: plate, op: { kind: "shell", thickness: 4, openFaces: [{ normal: [0, 0, 1] }] } });
+  check("a refused shell names the thin place and the thickest wall that fits", shell.ok === false && (shell.where as { thinnestMm?: number } | undefined)?.thinnestMm !== undefined && typeof shell.maxMm === "number" && shell.maxMm < 3, JSON.stringify(shell));
+}
 
 if (failed) {
   console.error(`${failed} failed`);

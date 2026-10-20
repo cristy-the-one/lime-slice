@@ -9,6 +9,11 @@
  * engine writes it, not STEP. A `brep` is told by its first bytes (`isBrep`), not by the version: a
  * version 3 file can still carry a STEP `brep` not yet written again. `migrations[2]` takes a version 2
  * file as it is. An app before version 3 refuses a version 3 file.
+ * Version 4 is the version 3 plate with its big binary records (a mesh, a solid, a root STEP) compressed: such a
+ * record keeps `name`, `byteLength`, and `hash` of the original bytes, and holds the bytes as `encoding` and `data`
+ * (`gzip+base64`) in place of `bytesBase64`. `src/project-codec.ts` writes and reads that form. A version 4 file
+ * is always a plate, even for one plain object. `parseProject` and `serializeProject` here are the plain layer
+ * under it, with every record as `bytesBase64`. A version 3 file reads as before.
  * `modelTree` is another: the object's Model history. A damaged one is left out and the part opens.
  * `modelTools` keeps the trees of tools that left the plate while a saved join names them.
  * `modelPose` and `meshSeatMm` place the object in Model's shared space; without them it sits where its file put it.
@@ -38,7 +43,7 @@ import type { SiteSpec } from "./support-edits.ts";
 import { readSummary, readThumbnail, summaryForWire, thumbnailForWire, type ProjectSummary, type ProjectThumbnail } from "./project-thumb.ts";
 import { PARAM_NAME } from "./modeling/expr.ts";
 
-export const PROJECT_VERSION = 3;
+export const PROJECT_VERSION = 4;
 
 export type SettingsLevel = "simple" | "advanced" | "expert";
 
@@ -137,64 +142,57 @@ export type Migration = (doc: Record<string, unknown>) => Record<string, unknown
  * Index 0 would migrate a version-0 file, which was never written.
  * Index 1 wraps a version 1 file into one object, id `part`.
  * Index 2 takes a version 2 plate as it is: only what `brep` holds changed.
+ * Index 3 takes a version 3 plate as it is: only how its binary records are stored changed.
  */
 const migrationSteps: Migration[] = [];
 migrationSteps[1] = migrateVersion1;
 migrationSteps[2] = (doc) => ({ ...doc, version: 3 });
+migrationSteps[3] = (doc) => ({ ...doc, version: 4 });
 export const migrations: readonly Migration[] = migrationSteps;
 
 export function meshRecord(name: string, bytes: Uint8Array): ProjectMesh {
   return { name, bytesBase64: bytesToBase64(bytes), byteLength: bytes.byteLength, hash: fnv1aHex(bytes) };
 }
 
+/** The plain text of a project: every binary record whole, as `bytesBase64`. A file is written by `encodeProject`. */
 export function serializeProject(project: LimeProject): string {
-  const overrides = project.overrides;
-  if (project.version === 2 && project.objects && plateFileIsVersion2(project.objects)) {
-    const objects = project.objects.map(stripEmptySettings);
-    const shared = shareRootSteps([...objects, ...(project.modelTools ?? [])]);
-    const wire: Record<string, unknown> = {
-      version: PROJECT_VERSION,
-      settings: project.settings,
-      preset: project.preset,
-      profile: project.profile,
-      level: project.level,
-      objects: shared.slice(0, objects.length),
-    };
-    if (project.modelTools?.length) wire.modelTools = shared.slice(objects.length);
-    // --- A8. The MCP record rides along, including each object's recipe. ---
-    if (project.mcpModel) wire.mcpModel = project.mcpModel;
-    const parameters = parametersForWire(project.parameters);
-    if (parameters) wire.parameters = parameters;
-    if (overrides) wire.overrides = overrides;
-    if (project.layerActions?.length) wire.layerActions = project.layerActions;
-    if (project.printOrder === "sequential") {
-      wire.printOrder = "sequential";
-      if (project.sequentialClearanceMm !== undefined && project.sequentialClearanceMm > 0) {
-        wire.sequentialClearanceMm = project.sequentialClearanceMm;
-      }
-      if (project.sequentialGantryMm !== undefined && project.sequentialGantryMm > 0) {
-        wire.sequentialGantryMm = project.sequentialGantryMm;
-      }
-    }
-    return JSON.stringify(withPreview(project, wire), null, 2);
-  }
+  return JSON.stringify(projectWire(project), null, 2);
+}
+
+/**
+ * The document a save writes, as a value: always a plate at `PROJECT_VERSION`. A one-object project with nothing of
+ * its own becomes the plate of its one object, id `part`, as `migrations[1]` would make it.
+ */
+export function projectWire(project: LimeProject): Record<string, unknown> {
+  const plate = project.version === 2 && project.objects && plateFileIsVersion2(project.objects) ? project.objects : null;
+  const own: PlateFileObject = { id: "part", name: project.mesh.name, mesh: project.mesh, placement: project.placement, supportEdits: project.supportEdits };
+  const objects = (plate ?? [own]).map(stripEmptySettings);
+  const shared = shareRootSteps([...objects, ...(plate ? (project.modelTools ?? []) : [])]);
   const wire: Record<string, unknown> = {
-    version: 1,
-    mesh: project.mesh,
-    placement: project.placement,
+    version: PROJECT_VERSION,
     settings: project.settings,
     preset: project.preset,
     profile: project.profile,
     level: project.level,
-    supportEdits: project.supportEdits,
+    objects: shared.slice(0, objects.length),
   };
-  if (overrides) wire.overrides = overrides;
-  if (project.layerActions?.length) wire.layerActions = project.layerActions;
-  // --- A8. A one-object file keeps the MCP record too, so a recipe is not dropped on save. ---
+  if (plate && project.modelTools?.length) wire.modelTools = shared.slice(objects.length);
+  // --- A8. The MCP record rides along, including each object's recipe. ---
   if (project.mcpModel) wire.mcpModel = project.mcpModel;
   const parameters = parametersForWire(project.parameters);
   if (parameters) wire.parameters = parameters;
-  return JSON.stringify(withPreview(project, wire), null, 2);
+  if (project.overrides) wire.overrides = project.overrides;
+  if (project.layerActions?.length) wire.layerActions = project.layerActions;
+  if (plate && project.printOrder === "sequential") {
+    wire.printOrder = "sequential";
+    if (project.sequentialClearanceMm !== undefined && project.sequentialClearanceMm > 0) {
+      wire.sequentialClearanceMm = project.sequentialClearanceMm;
+    }
+    if (project.sequentialGantryMm !== undefined && project.sequentialGantryMm > 0) {
+      wire.sequentialGantryMm = project.sequentialGantryMm;
+    }
+  }
+  return withPreview(project, wire);
 }
 
 /** `thumbnail`, then `summary`, then the keys the file already had. Absent fields stay absent. */
@@ -320,7 +318,12 @@ export function parseProject(text: string, steps: readonly Migration[] = migrati
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return { ok: false, message: "This file is not a Lime Slice project." };
   }
-  const migrated = applyMigrations(raw as Record<string, unknown>, steps, target);
+  return parseProjectDoc(raw as Record<string, unknown>, steps, target);
+}
+
+/** `parseProject` for a document already parsed from JSON, with every binary record as `bytesBase64`. */
+export function parseProjectDoc(raw: Record<string, unknown>, steps: readonly Migration[] = migrations, target = PROJECT_VERSION): ProjectResult {
+  const migrated = applyMigrations(raw, steps, target);
   if (!migrated.ok) return migrated;
   return readProject(migrated.doc);
 }

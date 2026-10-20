@@ -14,8 +14,44 @@
 #include <TopoDS_Shape.hxx>
 
 #include <BRepTools_History.hxx>
+#include <Standard_ErrorHandler.hxx>
 
 namespace lime_occt {
+
+/// The refusal for a step Open CASCADE crashed inside: an access violation, an illegal instruction, or an integer
+/// divide by zero that no check of ours can see coming, such as the null edge BRepOffset_Inter2d hands
+/// BRepAdaptor_Curve when a wall beside raised lettering is pushed.
+extern const char* const kInternalError;
+
+// On MSVC OCC_CATCH_SIGNALS is empty (Open CASCADE defines OCC_CONVERT_SIGNALS only elsewhere): FaultScope does its work.
+// The entry points that only copy numbers or free a shape (lime_tree_free, lime_tree_counts, lime_tree_fingerprint…)
+// call no Open CASCADE algorithm and go without.
+#if defined(_MSC_VER)
+/// While alive, a hardware fault on this thread is thrown as a Standard_Failure carrying kInternalError, through the
+/// frames between, with their destructors run (this needs /EHa, which build.rs sets). The previous translator comes
+/// back at the end of the call.
+class FaultScope {
+public:
+    FaultScope();
+    ~FaultScope();
+    FaultScope(const FaultScope&) = delete;
+    FaultScope& operator=(const FaultScope&) = delete;
+
+private:
+    void* previous_;
+};
+/// Every bridge entry point opens its `try` with this, so a crash inside Open CASCADE refuses the step instead of
+/// ending the app. The nearest `catch (const Standard_Failure&)` answers it: an op's own refusal, or the entry
+/// point's kInternalError.
+#define LIME_CATCH_FAULTS const lime_occt::FaultScope lime_fault_scope
+#else
+/// Sets the handlers once. A fault then jumps to the nearest OCC_CATCH_SIGNALS on its thread, which throws it as a
+/// Standard_Failure; a fault outside one goes to the handler that was there before, such as Rust's stack overflow check.
+void watch_faults();
+#define LIME_CATCH_FAULTS \
+    lime_occt::watch_faults(); \
+    OCC_CATCH_SIGNALS
+#endif
 
 /// One shape with what was computed from it once. A shape never changes, so its volume, its face
 /// and edge numbering, and its description stay valid for as long as a tree node holds it.
@@ -59,6 +95,12 @@ TopoDS_Shape as_solid(const TopoDS_Shape& shape);
 bool has_solid(const TopoDS_Shape& shape);
 /// False, with the refusal every edit answers, for a shape of surfaces with no closed solid.
 bool editable(const TopoDS_Shape& shape, std::string& error);
+
+/// --- 3.1 F9. The step being built stops after `budget_ms` (0: no limit): a boolean or a blend polls it and fails with
+/// `deadline_message()`, so a slow step is a refusal, not a killed engine.
+void set_deadline(long long budget_ms);
+bool past_deadline();
+std::string deadline_message();
 double volume_of(const TopoDS_Shape& shape);
 /// Mesh the faces unless they are meshed at this chord already, and read the mesh out.
 Mesh tessellate(Held& held, double chord);

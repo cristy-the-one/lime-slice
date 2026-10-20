@@ -140,12 +140,14 @@ Disabled buttons stay at full opacity, in `--text-dim`, with a dashed border and
 
 ![Paint explains itself, and Slice stays readable while it is off](screenshots/ui-review-3-1/after-disabled-stripe.png)
 
-## Left for Marius
+## Decided (2026-10-20)
 
-- **The selection bar still fades after 3 seconds.** It fades to the chip, not to nothing. It can stay open instead if that is what you want.
-- **A canvas tap on the phone still hides the chrome.** The new button is the way back.
-- **Settings groups below the fold** are reached by scrolling the dock. There is no separate "expand all".
-- **A dock closed by the 30% width budget** does not add a sentence of its own. The rail toggles, Ctrl+B, and Ctrl+Alt+B already open it. In the drawer range the status line already names a closed dock.
+The owner decided these four, and each keeps the behaviour above.
+
+- **Selection bar:** it keeps fading after 3 seconds, to the Selection chip.
+- **Phone canvas tap:** it still hides the chrome, and Show controls brings it back.
+- **Settings:** no "expand all"; scrolling the dock is enough.
+- **Dock closed by the 30% width budget:** no extra sentence.
 
 ## Checks
 
