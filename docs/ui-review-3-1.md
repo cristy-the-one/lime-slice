@@ -193,6 +193,10 @@ The panel, the handle, and the dimension use one name: Width X, Depth Y, Height 
 
 ![Depth Y on the panel and on the dimension](screenshots/ui-review-3-1/ph03-after-labels.png)
 
+A focused size field has a 2 px ring, an axis badge in the corner, and a visually hidden description ("Depth Y, 10 millimetres, lights the edges along Y"). Axis colours against the stage, and against the ghost (the accent mixed at 22% over the stage), are at least 3:1 in the dark and light themes.
+
+![Depth Y focused, with its Y badge](screenshots/ui-review-3-1/ph08-after-badge.png)
+
 ## Checks
 
 - `npx tsc --noEmit`

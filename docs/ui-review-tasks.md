@@ -130,6 +130,8 @@ Status: done. Focus listeners sit on `#modelPanel` only. `data-focus-syncs` coun
 
 ### PH-07 (P1). Every hole lights the right hole
 
+Status: done. A sketch with several holes gets one depth knob per hole (`holeIndex` on the handle). Focusing "Hole 2 depth" lights hole 2. `data-aspect-at` is that hole's centre.
+
 - **Seen in code**: `aspectContext` uses `current.holes[0]` for a ghost of several holes, so a knob for the third
   hole lights the first.
 - **Change**: pass the hole index the handle belongs to (the handle id or seat carries it) and light that one.
@@ -137,6 +139,8 @@ Status: done. Focus listeners sit on `#modelPanel` only. `data-focus-syncs` coun
   at hole 2's centre (`data-aspect-at` or a lines-bbox attribute).
 
 ### PH-08 (P1). Not by colour alone
+
+Status: done. The field keeps its 2 px ring, gains an X/Y/Z badge, and `aria-describedby` points at a visually hidden sentence. Contrast of the three axis colours against the stage and the ghost is at least 3:1 in dark and light (`e2e/a11y-errors.spec.ts`).
 
 - **Change**:
   - Besides the colour, the lit lines are thicker and the field gets a 2 px ring with a small axis badge ("Y") in the

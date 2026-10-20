@@ -2869,12 +2869,60 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         if (on && aspect) {
           input.classList.add("is-aspect");
           input.dataset.aspectColor = aspect.color;
+          input.setAttribute("aria-describedby", "modelAspectDesc");
         } else if (input.classList.contains("is-aspect")) {
           input.classList.remove("is-aspect");
           delete input.dataset.aspectColor;
+          input.removeAttribute("aria-describedby");
         }
       }
     }
+    placeAspectBadge(aspect);
+    writeAspectDescription(aspect);
+  }
+
+  function aspectDescription(aspect: HandleAspect): string {
+    const axis = aspect.color === "x" ? "X" : aspect.color === "y" ? "Y" : aspect.color === "z" ? "Z" : "";
+    const named = aspect.tip.replace(/ mm$/, " millimetres").replace(/°$/, " degrees").replace(/×$/, " times");
+    const sentence = named.replace(/(\s)(\d)/, ", $2");
+    const along = axis ? `lights the edges along ${axis}` : "lights the matching part";
+    return `${sentence}, ${along}`;
+  }
+
+  function writeAspectDescription(aspect: HandleAspect | null) {
+    let node = document.getElementById("modelAspectDesc");
+    if (!node) {
+      node = document.createElement("span");
+      node.id = "modelAspectDesc";
+      node.className = "sr-only";
+      document.getElementById("modelPanel")?.append(node);
+    }
+    node.textContent = aspect ? aspectDescription(aspect) : "";
+  }
+
+  function placeAspectBadge(aspect: HandleAspect | null) {
+    let badge = document.getElementById("modelAspectBadge");
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.id = "modelAspectBadge";
+      badge.className = "model-aspect-badge";
+      badge.setAttribute("aria-hidden", "true");
+      document.getElementById("modelPanel")?.append(badge);
+    }
+    const letter = aspect?.color === "x" ? "X" : aspect?.color === "y" ? "Y" : aspect?.color === "z" ? "Z" : "";
+    const input = aspect ? inputsFor(aspect.fields[0] ?? "").find((item) => item.id) : undefined;
+    const panel = document.getElementById("modelPanel");
+    if (!letter || !input || !panel) {
+      badge.hidden = true;
+      return;
+    }
+    badge.hidden = false;
+    badge.textContent = letter;
+    badge.dataset.color = aspect!.color;
+    const host = panel.getBoundingClientRect();
+    const box = input.getBoundingClientRect();
+    badge.style.left = `${Math.round(box.right - host.left - 16)}px`;
+    badge.style.top = `${Math.round(box.top - host.top + 3)}px`;
   }
 
   function publishAspect(handle: DragHandle | null, aspect: HandleAspect | null) {
