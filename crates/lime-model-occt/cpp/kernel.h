@@ -23,6 +23,9 @@ namespace lime_occt {
 /// BRepAdaptor_Curve when a wall beside raised lettering is pushed.
 extern const char* const kInternalError;
 
+// On MSVC OCC_CATCH_SIGNALS is empty (Open CASCADE defines OCC_CONVERT_SIGNALS only elsewhere): FaultScope does its work.
+// The entry points that only copy numbers or free a shape (lime_tree_free, lime_tree_counts, lime_tree_fingerprint…)
+// call no Open CASCADE algorithm and go without.
 #if defined(_MSC_VER)
 /// While alive, a hardware fault on this thread is thrown as a Standard_Failure carrying kInternalError, through the
 /// frames between, with their destructors run (this needs /EHa, which build.rs sets). The previous translator comes

@@ -5,6 +5,10 @@
 // call. Elsewhere Open CASCADE's own signal jumps do it (OCC_CATCH_SIGNALS), with handlers that act only while one of
 // those is on the faulting thread's stack, since OSD::SetSignal would also take Ctrl-C, hang-up, and Rust's stack
 // overflow check for the whole app.
+//
+// A fault on one of Open CASCADE's worker threads (OSD_Parallel, a parallel boolean) never meets this translator,
+// which is per thread: OSD_ThreadPool::performJob catches it with `catch (...)` (Open CASCADE is built /EHa) and
+// raises it again on the calling thread as "Error: Unknown exception", which set_failure in tree.cpp words as ours.
 
 #include "kernel.h"
 
@@ -25,7 +29,9 @@
 
 #include <eh.h>
 #else
-#include <csignal>
+#include <signal.h>
+
+#include <cstddef>
 #include <cstring>
 #include <mutex>
 #endif
@@ -122,15 +128,23 @@ namespace {
 
 constexpr int kSignals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
 struct sigaction g_before[sizeof kSignals / sizeof kSignals[0]];
+/// Set while this thread turns a fault into a jump: a second fault in that (an allocation on a broken heap) crashes.
+thread_local bool t_jumping = false;
 
+/// The jump skips the destructors between the fault and the nearest OCC_CATCH_SIGNALS, as Open CASCADE's own handler
+/// does: what those frames held leaks, and a lock one of them held would stay held. A refused step is still better
+/// than a closed app, and every later call starts from the solids the tree already holds.
 void on_fault(int signal, siginfo_t* info, void* context) {
-    if (Standard_ErrorHandler::IsInTryBlock()) {
+    if (!t_jumping && Standard_ErrorHandler::IsInTryBlock()) {
+        t_jumping = true;
         sigset_t unblock;
         sigemptyset(&unblock);
         sigaddset(&unblock, signal);
-        sigprocmask(SIG_UNBLOCK, &unblock, nullptr);
+        pthread_sigmask(SIG_UNBLOCK, &unblock, nullptr);
+        const Handle(Standard_Failure) failure = Standard_Failure::NewInstance(lime_occt::kInternalError);
+        t_jumping = false;
         // Jumps to the nearest OCC_CATCH_SIGNALS, which throws this as a C++ exception from there.
-        Standard_Failure::NewInstance(lime_occt::kInternalError)->Jump();
+        failure->Jump();
     }
     for (size_t i = 0; i < sizeof kSignals / sizeof kSignals[0]; ++i) {
         if (kSignals[i] != signal) {

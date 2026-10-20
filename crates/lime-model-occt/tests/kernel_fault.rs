@@ -116,6 +116,18 @@ fn ok(reply: Value) -> Value {
     reply
 }
 
+/// A step that crashed Open CASCADE 7.9.2 on Windows is refused there with one of `refusals`. Linux and macOS round
+/// differently and may not reach the null edge, so there a solid is fine too; a refusal is still one of `refusals`.
+fn survived(reply: &Value, refusals: &[&str]) {
+    match reply.get("error") {
+        Some(error) => assert!(refusals.iter().any(|said| error == &json!(said)), "{reply}"),
+        None => assert!(
+            !cfg!(windows) && reply["volumeMm3"].as_f64().is_some_and(|v| v > 0.0),
+            "refused on Windows: {reply}"
+        ),
+    }
+}
+
 /// The box, or None when the kernel is not linked.
 fn open(key: &str) -> Option<Value> {
     let opened = call(json!({ "call": "open", "key": key, "box": [40.0, 30.0, 20.0] }));
@@ -182,9 +194,9 @@ fn a_wall_push_beside_raised_lettering_is_refused_instead_of_crashing() {
     let probed = call(
         json!({ "call": "probe", "key": "wall", "node": 1, "op": push(wall, -0.05), "preview": true }),
     );
-    assert_eq!(probed["error"], json!(CANNOT_MOVE), "{probed}");
+    survived(&probed, &[CANNOT_MOVE]);
     let applied = apply("wall", 1, 2, push(wall, -0.05));
-    assert_eq!(applied["error"], json!(CANNOT_MOVE), "{applied}");
+    survived(&applied, &[CANNOT_MOVE]);
 
     // The tree is still whole: the lettered solid is unchanged, and another step builds on it.
     let back = ok(call(json!({ "call": "goto", "key": "wall", "node": 1 })));
@@ -273,13 +285,7 @@ fn a_fillet_that_crashes_the_kernel_is_refused() {
         4,
         json!({ "kind": "fillet", "edges": [{ "fromNode": 2 }], "size": 0.1 }),
     );
-    let said = reply["error"]
-        .as_str()
-        .unwrap_or_else(|| panic!("refused: {reply}"));
-    assert!(
-        said == "The fillet did not fit these edges" || said == INTERNAL,
-        "{reply}"
-    );
+    survived(&reply, &["The fillet did not fit these edges", INTERNAL]);
     let back = ok(call(json!({ "call": "goto", "key": "blend", "node": 3 })));
     assert_eq!(back["fingerprint"], lettered["fingerprint"], "{back}");
 }

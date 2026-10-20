@@ -90,7 +90,8 @@ fn main() {
         .include(&include);
     if env::var("CARGO_CFG_TARGET_ENV").ok().as_deref() == Some("msvc") {
         // /EHa, as Open CASCADE itself is built: a hardware fault inside it is then thrown as a C++ exception
-        // (cpp/fault.cpp), and every frame it unwinds runs its destructors.
+        // (cpp/fault.cpp), and every frame it unwinds runs its destructors. A `catch (...)` now also catches the
+        // structured exceptions the translator leaves alone, such as a stack overflow.
         build.flag("/EHa");
     } else {
         // Open CASCADE's CMake defines this off MSVC. OCC_CATCH_SIGNALS turns a signal into an exception only with it.

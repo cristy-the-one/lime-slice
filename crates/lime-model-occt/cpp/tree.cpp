@@ -76,8 +76,8 @@ void set_failure(char** out, const Standard_Failure& failure) {
         return;
     }
     // A fault on one of Open CASCADE's worker threads comes back named by its type ("Standard_Failure: The modeler…")
-    // or, caught there as an unknown exception, with no words at all.
-    if (std::strstr(message, kInternalError) != nullptr || std::strncmp(message, "Error: Unknown exception", 24) == 0) {
+    // or, caught there as an unknown exception, with no words at all; with several workers, under "Multiple exceptions".
+    if (std::strstr(message, kInternalError) != nullptr || std::strstr(message, "Error: Unknown exception") != nullptr) {
         set_error(out, kInternalError);
         return;
     }
