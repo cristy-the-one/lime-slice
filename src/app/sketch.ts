@@ -1321,10 +1321,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (mode === "skip") return;
     if (sweep && editor.phase === "editing") {
       const fields: HudField[] = [{ id: "scale", label: "End scale", unit: "×", value: scaleOf(sweep.scale) }];
-      const at = pointerAt();
+      const anchor = featureAnchor();
+      const at = anchor?.at ?? pointerAt();
       if (mode === "open" || !hud.shown) hud.open(fields, at, host.parameters());
       else hud.setValues(fields.map((field) => field.value));
-      hud.move(at);
+      hud.move(at, anchor?.dir);
       return;
     }
     if (loft && editor.phase === "editing") {
@@ -1333,18 +1334,20 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (revolve && editor.phase === "editing") {
       const fields: HudField[] = [{ id: "angle", label: "Angle", unit: "°", value: revolve.angle }];
-      const at = pointerAt();
+      const anchor = featureAnchor();
+      const at = anchor?.at ?? pointerAt();
       if (mode === "open" || !hud.shown) hud.open(fields, at, host.parameters());
       else hud.setValues(fields.map((field) => field.value));
-      hud.move(at);
+      hud.move(at, anchor?.dir);
       return;
     }
     if (gesture && editor.phase === "editing") {
       const fields = extrudeFields();
-      const at = pointerAt();
+      const anchor = featureAnchor();
+      const at = anchor?.at ?? pointerAt();
       if (mode === "open" || !hud.shown) hud.open(fields, at, host.parameters());
       else hud.setValues(fields.map((field) => field.value));
-      hud.move(at);
+      hud.move(at, anchor?.dir);
       return;
     }
     const dims = sketchDimensions(editor);
@@ -1362,6 +1365,43 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const parent = host.canvas.parentElement?.getBoundingClientRect();
     if (!parent) return { x: 24, y: 24 };
     return { x: lastClient.x - parent.left + 16, y: lastClient.y - parent.top + 16 };
+  }
+
+  function toParent(point: { x: number; y: number } | null): { x: number; y: number } | null {
+    const parent = host.canvas.parentElement?.getBoundingClientRect();
+    if (!point || !parent) return null;
+    return { x: point.x - parent.left, y: point.y - parent.top };
+  }
+
+  /** The open feature's handle, in the HUD parent's coordinates, and its screen direction. */
+  function featureAnchor(): { at: { x: number; y: number }; dir: { x: number; y: number } } | null {
+    const frame = drawingFrame();
+    if (gesture && frame && gesture.regions.length > 0) {
+      const centre = toWorld(frame, regionsCentroid(gesture.regions));
+      const tip: Vec3 = [centre[0] + frame.w[0] * gesture.distance, centre[1] + frame.w[1] * gesture.distance, centre[2] + frame.w[2] * gesture.distance];
+      const from = toParent(host.view.projectPoint(centre));
+      const at = toParent(host.view.projectPoint(tip));
+      if (!at) return null;
+      return { at, dir: from ? { x: at.x - from.x, y: at.y - from.y } : { x: 0, y: -1 } };
+    }
+    if (revolve && frame && revolve.regions.length > 0) {
+      const centre = toWorld(frame, regionsCentroid(revolve.regions));
+      const axis = axisWorld(frame, revolve.axis);
+      const tip: Vec3 = [centre[0] + axis[0], centre[1] + axis[1], centre[2] + axis[2]];
+      const from = toParent(host.view.projectPoint(centre));
+      const at = toParent(host.view.projectPoint(tip));
+      if (!from) return null;
+      return { at: from, dir: at ? { x: at.x - from.x, y: at.y - from.y } : { x: 0, y: -1 } };
+    }
+    if (sweep && sweep.path.length >= 1) {
+      const last = sweep.path[sweep.path.length - 1]!;
+      const prev = sweep.path[sweep.path.length - 2] ?? last;
+      const end = toParent(host.view.projectPoint(applyPose(host.pose(), last)));
+      const before = toParent(host.view.projectPoint(applyPose(host.pose(), prev)));
+      if (!end) return null;
+      return { at: end, dir: before ? { x: end.x - before.x, y: end.y - before.y } : { x: 0, y: -1 } };
+    }
+    return null;
   }
 
   function paintDataset() {

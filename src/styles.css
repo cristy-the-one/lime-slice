@@ -1334,11 +1334,11 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
   border: 0;
 }
 .interact-hud-fields { display: flex; align-items: center; gap: var(--space-1); }
-.interact-hud label { display: flex; align-items: center; gap: 2px; }
+.interact-hud label { position: relative; display: inline-flex; align-items: center; }
 .interact-hud input {
   width: 7ch;
   min-width: 0;
-  padding: 1px 4px;
+  padding: 1px 1.8em 1px 4px;
   border: 1px solid transparent;
   border-radius: 3px;
   background: transparent;
@@ -1350,7 +1350,16 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
   border-color: var(--accent);
   background: var(--surface-2);
 }
-.interact-hud-sep, .interact-hud-unit { color: var(--text-dim); }
+.interact-hud-sep { color: var(--text-dim); }
+.interact-hud-unit, .interact-hud .expr-mark {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-dim);
+}
+.interact-hud-unit { right: 4px; }
+.interact-hud .expr-mark { right: 1.5em; }
 .interact-hud-error {
   position: absolute;
   left: 0;

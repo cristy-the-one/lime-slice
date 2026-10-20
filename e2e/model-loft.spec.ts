@@ -242,6 +242,14 @@ test("a square sweeps along a path across it, the end scale is dragged and typed
 
   const hud = page.locator(".interact-hud:not([hidden])");
   await expect(hud.locator("input").first(), "the scale is the size at the path's end").toHaveAttribute("aria-label", "End scale");
+  await expect(hud.locator(".interact-hud-unit")).toHaveText("×");
+  const unitInside = await hud.locator(".interact-hud-unit").evaluate((node) => node.parentElement?.querySelector("input") != null);
+  expect(unitInside).toBe(true);
+  const hudBox = (await hud.boundingBox())!;
+  const [ax, ay] = ((await hud.getAttribute("data-anchor")) ?? "0,0").split(",").map(Number);
+  const gapX = Math.max(hudBox.x - ax!, ax! - (hudBox.x + hudBox.width), 0);
+  const gapY = Math.max(hudBox.y - ay!, ay! - (hudBox.y + hudBox.height), 0);
+  expect(Math.hypot(gapX, gapY)).toBeLessThanOrEqual(120);
   await hud.locator("input").first().fill("1");
   await hud.locator("input").first().press("Enter");
 

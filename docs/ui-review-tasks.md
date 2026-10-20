@@ -236,6 +236,8 @@ Status: done. The card is Draw, Edit, Make, and a footer. Draw is seven icon but
 
 ### UX-04 (P1). Instructions belong next to the work, not in a status line that gets cut off
 
+Status: done. Feature status titles stay within 40 characters (`featureTitle` in `src/sketch/hints.ts`). The numbered steps sit in a How popover on the feature strip, open the first three times, then behind ?. `src/sketch/hints.test.ts` checks the hint table. The loft Playwright test focuses How and reads the first step.
+
 - **Seen**: `bowl-03-axis-pick.png`, `handle-05-typed-scale.png`. The status bar holds a 200-character paragraph
   ("Revolve 360°, New object. Drag the ring or type the angle. Typing 360 is a full turn. Click a region… Esc
   returns to the sk…"), truncated with an ellipsis.

@@ -370,6 +370,35 @@ test("sketch keys leave text fields alone and stop when Model closes", async ({ 
   await expect(canvas).toHaveAttribute("data-sweep", "off");
 });
 
+async function hudNear(page: Page, unit: string) {
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await expect(hud).toBeVisible();
+  await expect(hud.locator(".interact-hud-unit").first()).toHaveText(unit);
+  const inside = await hud.locator(".interact-hud-unit").first().evaluate((node) => node.parentElement?.querySelector("input") != null);
+  expect(inside).toBe(true);
+  const box = (await hud.boundingBox())!;
+  const [x, y] = ((await hud.getAttribute("data-anchor")) ?? "").split(",").map(Number);
+  expect(Number.isFinite(x) && Number.isFinite(y)).toBe(true);
+  const gapX = Math.max(box.x - x!, x! - (box.x + box.width), 0);
+  const gapY = Math.max(box.y - y!, y! - (box.y + box.height), 0);
+  expect(Math.hypot(gapX, gapY)).toBeLessThanOrEqual(120);
+}
+
+test("the size box sits on the extrude and revolve handles", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await sketchRectangle(page);
+  await page.keyboard.press("e");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await hudNear(page, "mm");
+  if (process.env.LIME_SHOTS) await page.locator(".interact-hud:not([hidden])").screenshot({ path: `${process.env.LIME_SHOTS}/ux05-after-hud.png` });
+  await page.keyboard.press("Escape");
+  await expect(canvas).toHaveAttribute("data-extrude", "off");
+  await page.keyboard.press("v");
+  await expect(canvas).toHaveAttribute("data-revolve", "aim");
+  await hudNear(page, "°");
+});
+
 test("extrude waits for a profile, and loft says what to pick", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openBox(page);

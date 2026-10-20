@@ -135,6 +135,38 @@ export interface HudBox {
  * right, flips toward the pointer when that would leave the frame, and does not cover the pointer
  * when the frame has room.
  */
+/**
+ * The box sits `offset` px from the handle, along the handle's screen direction, and stays inside the frame.
+ * The handle point is in the same coordinates as the frame.
+ */
+export function placeHudNear(
+  handle: { x: number; y: number },
+  direction: { x: number; y: number },
+  box: { width: number; height: number },
+  frame: { width: number; height: number },
+  offset = 16,
+  margin = 4,
+): HudBox {
+  const length = Math.hypot(direction.x, direction.y) || 1;
+  const ux = direction.x / length;
+  const uy = direction.y / length;
+  const width = Math.max(0, box.width);
+  const height = Math.max(0, box.height);
+  let left = handle.x + ux * offset;
+  let top = handle.y + uy * offset;
+  const outside = left < margin || top < margin || left + width > frame.width - margin || top + height > frame.height - margin;
+  if (outside) {
+    left = handle.x - ux * (offset + width);
+    top = handle.y - uy * (offset + height);
+  }
+  const maxLeft = Math.max(margin, frame.width - width - margin);
+  const maxTop = Math.max(margin, frame.height - height - margin);
+  return {
+    left: Math.min(Math.max(left, margin), maxLeft),
+    top: Math.min(Math.max(top, margin), maxTop),
+  };
+}
+
 export function placeHud(
   pointer: { x: number; y: number },
   box: { width: number; height: number },
@@ -162,7 +194,7 @@ export interface HudMount {
   element: HTMLElement;
   readonly shown: boolean;
   open(fields: readonly HudField[], at: { x: number; y: number }, params?: Params): void;
-  move(at: { x: number; y: number }): void;
+  move(at: { x: number; y: number }, direction?: { x: number; y: number }): void;
   setValues(values: readonly number[]): void;
   setParams(params: Params): void;
   /** Why the tool will not apply what the box holds, under it and in the live region. Empty clears it. */
@@ -205,6 +237,7 @@ export function mountHud(parent: HTMLElement): HudMount {
   let note = "";
   let shown = false;
   let at = { x: 0, y: 0 };
+  let direction = { x: 0, y: 0 };
   const inputs: HTMLInputElement[] = [];
   let commitCb: (commit: HudCommit) => void = () => {};
   let cancelCb: () => void = () => {};
@@ -213,9 +246,13 @@ export function mountHud(parent: HTMLElement): HudMount {
   const place = () => {
     const rect = element.getBoundingClientRect();
     const frame = parent.getBoundingClientRect();
-    const spot = placeHud(at, { width: rect.width, height: rect.height }, { width: frame.width, height: frame.height });
+    const along = Math.hypot(direction.x, direction.y) > 0.5;
+    const spot = along
+      ? placeHudNear(at, direction, { width: rect.width, height: rect.height }, { width: frame.width, height: frame.height })
+      : placeHud(at, { width: rect.width, height: rect.height }, { width: frame.width, height: frame.height });
     element.style.left = `${spot.left}px`;
     element.style.top = `${spot.top}px`;
+    element.dataset.anchor = `${Math.round(at.x + frame.left)},${Math.round(at.y + frame.top)}`;
   };
 
   /** The live number, selected while nothing is typed, so a key replaces it instead of adding to it. */
@@ -355,8 +392,10 @@ export function mountHud(parent: HTMLElement): HudMount {
       inputs[0]?.focus({ preventScroll: true });
       selectLive(inputs[0]);
     },
-    move(spot) {
+    move(spot, nextDirection) {
       at = spot;
+      if (nextDirection) direction = nextDirection;
+      else direction = { x: 0, y: 0 };
       if (shown) place();
     },
     setValues(values) {

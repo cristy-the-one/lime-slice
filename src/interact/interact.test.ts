@@ -15,7 +15,7 @@ import {
   triangulate,
   type PlaneFrame,
 } from "./ghosts.ts";
-import { emptyHud, formatDimension, hudKey, hudSetValues, hudText, HUD_MAX_FIELDS, placeHud } from "./hud.ts";
+import { emptyHud, formatDimension, hudKey, hudSetValues, hudText, HUD_MAX_FIELDS, placeHud, placeHudNear } from "./hud.ts";
 import { inPlaceArrow } from "./in-place-arrow.ts";
 import { GRID_MIN_PX, gridSpacing, SNAP_PX, snapHint, snapPoint, type Pt } from "./snap.ts";
 
@@ -271,6 +271,8 @@ const four = emptyHud([
 ]);
 eq("the box keeps three sizes", four.fields.length, HUD_MAX_FIELDS);
 
+const hudSpot = placeHudNear({ x: 40, y: 40 }, { x: 0, y: -10 }, { width: 60, height: 20 }, { width: 200, height: 100 });
+check("the box sits along the handle", Math.hypot(hudSpot.left - 40, hudSpot.top - 40) <= 120);
 const spot = placeHud({ x: 190, y: 40 }, { width: 80, height: 20 }, { width: 200, height: 100 });
 check("the box flips to stay inside the frame", spot.left + 80 <= 196);
 check("the box does not cover the pointer when there is room", !(spot.left <= 190 && spot.left + 80 >= 190 && spot.top <= 40 && spot.top + 20 >= 40));
