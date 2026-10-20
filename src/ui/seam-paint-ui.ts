@@ -7,6 +7,7 @@ import type { BrushHooks, PrepareView } from "../prepare-view";
 import { BRUSH_R_DEFAULT_MM, BRUSH_R_MAX_MM, BRUSH_R_MIN_MM } from "../support-paint";
 import type { SeamDisk } from "../seam-paint";
 import { haptic } from "./haptics";
+import { pushToast } from "./toasts";
 import "./support-paint.css";
 
 export interface SeamPaintHooks {
@@ -61,7 +62,13 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
   function sync() {
     const view = hooks.view();
     tool.setAttribute("aria-pressed", on ? "true" : "false");
-    tool.classList.toggle("is-disabled", !view.hasMesh);
+    tool.dataset.tipIdle ??= tool.dataset.tip ?? "";
+    const blocked = !view.hasMesh;
+    tool.classList.toggle("is-disabled", blocked);
+    tool.setAttribute("aria-disabled", blocked ? "true" : "false");
+    tool.dataset.tip = blocked ? "Load a mesh to paint the seam." : tool.dataset.tipIdle;
+    if (blocked) tool.title = "Load a mesh to paint the seam.";
+    else tool.removeAttribute("title");
     bar.hidden = !on;
     document.documentElement.dataset.seamPaint = on ? "1" : "";
     clear.disabled = view.disks.length === 0;
@@ -91,7 +98,10 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
   }
 
   function setOn(next: boolean) {
-    if (next && !hooks.view().hasMesh) return;
+    if (next && !hooks.view().hasMesh) {
+      pushToast("Load a mesh to paint the seam.", "info");
+      return;
+    }
     if (next) hooks.yieldBrush?.();
     on = next;
     if (on) {

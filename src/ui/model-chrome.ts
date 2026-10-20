@@ -1563,6 +1563,21 @@ function refreshTools() {
     button.disabled = held || viewOnly || !toolAvailable(id, picks, legal);
     button.dataset.tip = blocked || button.dataset.tipIdle;
   });
+  refreshSketchTool();
+}
+
+/** Sketch is not a `data-tool` button, so the rail pass above never reaches it. */
+function refreshSketchTool() {
+  const button = document.querySelector<HTMLButtonElement>("#modelToolSketch");
+  if (!button) return;
+  button.dataset.tipIdle ??= button.dataset.tip ?? "Sketch";
+  const blocked = locked != null ? locked : !editable ? VIEW_ONLY_TIP : "";
+  const busy = button.getAttribute("aria-pressed") === "true";
+  button.setAttribute("aria-disabled", blocked ? "true" : "false");
+  button.classList.toggle("is-disabled", blocked !== "");
+  button.dataset.tip = blocked || (busy ? "Finish the sketch on the card, or press Esc." : button.dataset.tipIdle);
+  if (blocked) button.title = blocked;
+  else button.removeAttribute("title");
 }
 
 function refreshApply() {

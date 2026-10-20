@@ -17,6 +17,7 @@ import {
   type ReinforceRegion,
 } from "../reinforcement";
 import { haptic } from "./haptics";
+import { pushToast } from "./toasts";
 import "./support-paint.css";
 
 const STRIP_OFFSET_MAX_MM = 50;
@@ -224,7 +225,13 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   function sync() {
     const view = hooks.view();
     tool.setAttribute("aria-pressed", on ? "true" : "false");
-    tool.classList.toggle("is-disabled", !view.hasMesh);
+    tool.dataset.tipIdle ??= tool.dataset.tip ?? "";
+    const blocked = !view.hasMesh;
+    tool.classList.toggle("is-disabled", blocked);
+    tool.setAttribute("aria-disabled", blocked ? "true" : "false");
+    tool.dataset.tip = blocked ? "Load a mesh to reinforce." : tool.dataset.tipIdle;
+    if (blocked) tool.title = "Load a mesh to reinforce.";
+    else tool.removeAttribute("title");
     bar.hidden = !on;
     document.documentElement.dataset.reinforcePaint = on ? "1" : "";
     const paintReg = activePaintRegion(view.regions, view.activeIndex);
@@ -305,7 +312,10 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   }
 
   function setOn(next: boolean) {
-    if (next && !hooks.view().hasMesh) return;
+    if (next && !hooks.view().hasMesh) {
+      pushToast("Load a mesh to reinforce.", "info");
+      return;
+    }
     if (next) hooks.yieldBrush?.();
     on = next;
     if (on) {
