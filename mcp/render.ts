@@ -125,6 +125,8 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   const ghostDepth = new Float32Array(width * height);
   ghostDepth.fill(-Infinity);
   const ghostShade = new Uint8Array(width * height);
+  /** The part's triangle in front at each pixel, or -1: an edge line is drawn only where one of its own triangles shows. */
+  const owner = new Int32Array(width * height).fill(-1);
   const project = (x: number, y: number, z: number): Vec => [
     x * right[0] + y * right[1] + z * right[2],
     x * up[0] + y * up[1] + z * up[2],
@@ -154,7 +156,7 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
     height / 2 - (point[1] - midY) * fit,
     point[2],
   ];
-  const paint = (a: Vec, b: Vec, c: Vec, shade: number | Vec, zbuf: Float32Array, out: Uint8Array, tint = 0, side?: Vec) => {
+  const paint = (a: Vec, b: Vec, c: Vec, shade: number | Vec, zbuf: Float32Array, out: Uint8Array, tint = 0, side?: Vec, id = -1) => {
     const shades: Vec = typeof shade === "number" ? [shade, shade, shade] : shade;
     const [x0, y0, z0] = toPixel(a);
     const [x1, y1, z1] = toPixel(b);
@@ -179,7 +181,10 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
         if (z > zbuf[at]!) {
           zbuf[at] = z;
           out[at] = Math.max(1, Math.round(w0 * shades[0] + w1 * shades[1] + w2 * shades[2]));
-          if (out === color) tintAt[at] = tint;
+          if (out === color) {
+            tintAt[at] = tint;
+            owner[at] = id;
+          }
         }
       }
     }
@@ -259,10 +264,10 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
       // A facet facing away from the camera is the part's inside, seen through the cut.
       if (dot(own, eye) < 0) tint = 255;
     }
-    paint(project(positions[i]!, positions[i + 1]!, positions[i + 2]!), project(positions[i + 3]!, positions[i + 4]!, positions[i + 5]!), project(positions[i + 6]!, positions[i + 7]!, positions[i + 8]!), shades, depth, color, tint, side);
+    paint(project(positions[i]!, positions[i + 1]!, positions[i + 2]!), project(positions[i + 3]!, positions[i + 4]!, positions[i + 5]!), project(positions[i + 6]!, positions[i + 7]!, positions[i + 8]!), shades, depth, color, tint, side, i / 9);
   }
   if (ghost) draw(ghost, ghostDepth, ghostShade);
-  const ink = edgeInk(positions, project, toPixel, depth, width, height, fit, eye, section);
+  const ink = edgeInk(positions, project, toPixel, owner, depth, options.faces ?? null, width, height, fit, eye, section);
   const transparent = options.transparent === true;
   const channels = transparent ? 4 : 3;
   const raw = new Uint8Array((width * channels + 1) * height);
@@ -358,13 +363,18 @@ const CREASE_DEG = 25;
 /**
  * How dark each pixel's edge line is, 0 to 255: a CAD drawing's lines over the shading. Edges come from the mesh: an
  * open boundary, a crease sharper than CREASE_DEG, or a silhouette, where one face looks at the camera and the other
- * away. Each is drawn only where nothing nearer covers it, against the depth buffer the faces left.
+ * away. Each is drawn where one of its own triangles is the one in front, at that pixel or the next; else only where
+ * nothing is clearly nearer (a couple of pixels' depth) and, with `faces`, the triangle in front is on one of its own
+ * faces. --- 3.1 F5. The depth margin alone let an inner rib's edge through where it ends a wall's thickness behind a
+ * rounded outer face seen edge-on.
  */
 function edgeInk(
   mesh: Float32Array,
   project: (x: number, y: number, z: number) => Vec,
   toPixel: (point: Vec) => Vec,
+  owner: Int32Array,
   depth: Float32Array,
+  faces: ArrayLike<number> | null,
   width: number,
   height: number,
   fit: number,
@@ -374,7 +384,7 @@ function edgeInk(
   const away = (x: number, y: number, z: number) => !!section && (x - section.point[0]) * section.normal[0] + (y - section.point[1]) * section.normal[1] + (z - section.point[2]) * section.normal[2] > 0;
   const ink = new Uint8Array(width * height);
   const keyOf = (i: number) => `${Math.round(mesh[i]! * 1000)},${Math.round(mesh[i + 1]! * 1000)},${Math.round(mesh[i + 2]! * 1000)}`;
-  const edges = new Map<string, { a: number; b: number; normals: Vec[] }>();
+  const edges = new Map<string, { a: number; b: number; normals: Vec[]; tris: number[] }>();
   for (let t = 0; t + 8 < mesh.length; t += 9) {
     const ux = mesh[t + 3]! - mesh[t]!;
     const uy = mesh[t + 4]! - mesh[t + 1]!;
@@ -392,15 +402,23 @@ function edgeInk(
       const kb = keyOf(b);
       const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
       const row = edges.get(key);
-      if (row) row.normals.push(n);
-      else edges.set(key, { a, b, normals: [n] });
+      if (row) {
+        row.normals.push(n);
+        row.tris.push(t / 9);
+      } else edges.set(key, { a, b, normals: [n], tris: [t / 9] });
     }
   }
   const crease = Math.cos((CREASE_DEG * Math.PI) / 180);
   const smoothSeams = seamPartners(mesh, edges, crease);
-  // A line is hidden only behind something clearly nearer than it, more than a couple of pixels' depth.
   const bias = 2.5 / fit;
-  for (const [key, { a, b, normals }] of edges) {
+  /** Whether the triangle in front at a pixel is one of the edge's own (`exact`), or on one of its faces. */
+  const shows = (at: number, tris: readonly number[], own: readonly number[], exact: boolean) => {
+    const front = owner[at]!;
+    if (front < 0) return false;
+    if (tris.includes(front)) return true;
+    return !exact && faces !== null && own.includes(faces[front]!);
+  };
+  for (const [key, { a, b, normals, tris }] of edges) {
     let strength = 0;
     if (normals.length === 1 && smoothSeams.has(key)) continue;
     if (normals.length !== 2) strength = 230;
@@ -416,15 +434,27 @@ function edgeInk(
     if (away(mesh[a]!, mesh[a + 1]!, mesh[a + 2]!) || away(mesh[b]!, mesh[b + 1]!, mesh[b + 2]!)) continue;
     const p = toPixel(project(mesh[a]!, mesh[a + 1]!, mesh[a + 2]!));
     const q = toPixel(project(mesh[b]!, mesh[b + 1]!, mesh[b + 2]!));
+    const own = faces ? [...new Set(tris.map((tri) => faces[tri]!))] : [];
     const steps = Math.max(1, Math.ceil(Math.max(Math.abs(q[0] - p[0]), Math.abs(q[1] - p[1])) * 1.5));
     for (let s = 0; s <= steps; s += 1) {
       const t = s / steps;
       const x = Math.round(p[0] + (q[0] - p[0]) * t);
       const y = Math.round(p[1] + (q[1] - p[1]) * t);
       if (x < 0 || y < 0 || x >= width || y >= height) continue;
-      const z = p[2] + (q[2] - p[2]) * t;
       const at = y * width + x;
-      if (z + bias < depth[at]!) continue;
+      const around = (exact: boolean) => {
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && ny >= 0 && nx < width && ny < height && shows(ny * width + nx, tris, own, exact)) return true;
+          }
+        }
+        return false;
+      };
+      const z = p[2] + (q[2] - p[2]) * t;
+      const clear = z + bias >= depth[at]!;
+      if (!around(true) && !(clear && (faces === null || around(false)))) continue;
       if (strength > ink[at]!) ink[at] = strength;
     }
   }

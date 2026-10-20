@@ -316,6 +316,9 @@ char* lime_tree_write_brep(const LimeShape* shape, size_t* size, char** error) {
 /// The linked Open CASCADE version, as `lime_model_occt_stats` reports it. Static: never freed.
 const char* lime_tree_occt_version() { return OCCT_Version_String_Complete(); }
 
+/// --- 3.1 F9. The step about to be built stops after `budget_ms`; 0 clears the limit.
+void lime_tree_set_deadline(long long budget_ms) { set_deadline(budget_ms); }
+
 LimeShape* lime_tree_boolean(const LimeShape* from, const char* op, const char* primitive, const double* p, char** error) {
     try {
         std::string message;

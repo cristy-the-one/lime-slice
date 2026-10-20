@@ -20,6 +20,26 @@ fn ok(request: Value) -> Value {
     reply
 }
 
+/// --- 3.1 F8. `origin` is a round primitive's base centre before it turns, and it turns about the middle of its
+/// axis: a cylinder of radius 2 and height 10 at the origin, turned 90 degrees about Y, lies along X from -5 to 5 with
+/// its axis 5 mm up, not from 0 to 10 at Z = 0. The MCP's `axis` echo and its guide say the same.
+#[test]
+fn a_turned_cylinder_placed_by_origin_turns_about_the_middle_of_its_axis() {
+    if !kernel() {
+        return;
+    }
+    ok(open(
+        "turned-axis",
+        json!({ "primitive": "box", "origin": [-20.0, -20.0, -20.0], "size": [40.0, 40.0, 40.0] }),
+    ));
+    let lying = ok(
+        json!({ "call": "apply", "key": "turned-axis", "parent": 0, "node": 1,
+        "op": { "kind": "boolean", "op": "common", "primitive": "cylinder", "origin": [0.0, 0.0, 0.0],
+            "radius": 2.0, "height": 10.0, "turn": [0.0, 90.0, 0.0] } }),
+    );
+    near_box(bounds(&lying), [[-5.0, -2.0, 3.0], [5.0, 2.0, 7.0]]);
+}
+
 /// False, and the test passes, when the kernel is not linked and nobody asked for it.
 fn kernel() -> bool {
     let probe = call(json!({ "call": "open", "key": "kernel", "box": [1.0, 1.0, 1.0] }));

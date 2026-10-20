@@ -14,6 +14,7 @@ const INSTRUCTIONS = [
   "Import a mesh with mesh_import, choose a printer and filament with machine_select, then slice_start and slice_wait, then gcode_export.",
   "Read lime://guide/slice, lime://guide/model, lime://guide/paint, and lime://guide/calibrate for the call order.",
   "slice_wait returns within about 20 seconds. When the status is running, call it again with the same job.",
+  "A Model call that runs past about 45 seconds answers with a job instead: slice_wait on it returns the call's result.",
   "For a Model edit: faces_find, workplane_set, model_probe, model_apply, then model_commit so the plate uses the new solid.",
   "A refusal is a sentence and does not change the solid. Nothing is sent to a printer.",
 ].join(" ");

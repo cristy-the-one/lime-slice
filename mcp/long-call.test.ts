@@ -1,7 +1,8 @@
 /**
  * Finding 2 of the 2.6.1 back-cover session: a long model_apply_batch hit the client's 60 s request timeout, the client
  * restarted the server, and the plate was gone. Against a slow stand-in kernel and the MCP SDK's own client:
- * progress keeps a client that restarts its timeout waiting; a cancelled batch is taken back whole; and a server
+ * progress keeps a client that restarts its timeout waiting; a cancelled or slow batch goes on as a job that
+ * slice_wait returns and slice_cancel takes back (3.1 finding 1); and a server
  * started again in the same workspace offers the last autosave, which opens with its history.
  */
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -48,14 +49,14 @@ check("progress the work reports is sent as it is", nextProgress(0.2, 0.6) === 0
   else process.env.LIME_MCP_WORKSPACE = before;
 }
 
-async function connect(): Promise<{ client: Client; call: (name: string, args: unknown) => Promise<Record<string, unknown>> }> {
+async function connect(extra: Record<string, string> = {}): Promise<{ client: Client; call: (name: string, args: unknown) => Promise<Record<string, unknown>> }> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) if (typeof value === "string") env[key] = value;
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: serverArgs,
     cwd: root,
-    env: { ...env, LIME_MCP_FAKE: "1", LIME_MCP_WORKSPACE: workspace, LIME_MCP_FAKE_MODEL_MS: "150", LIME_MCP_HEARTBEAT_MS: "100" },
+    env: { ...env, LIME_MCP_FAKE: "1", LIME_MCP_WORKSPACE: workspace, LIME_MCP_FAKE_MODEL_MS: "150", LIME_MCP_HEARTBEAT_MS: "100", ...extra },
     stderr: "pipe",
   });
   const client = new Client({ name: "lime-long-call-test", version: "0.0.0" });
@@ -92,7 +93,8 @@ const afterLong = await first.call("model_history", { object, limit: 100 });
 const kept = (afterLong.nodes as unknown[]).length;
 check("the history holds the root and the eight steps", kept === 9, JSON.stringify(afterLong));
 
-// A client that does not reset its timeout gives up and cancels: the batch is taken back whole.
+// A client that does not reset its timeout gives up and cancels (3.1 finding 1): the batch is not thrown away but goes
+// on as a background job, which session_info names, an edit is refused with, and slice_wait returns the result of.
 let timedOut = false;
 try {
   await first.client.callTool({ name: "model_apply_batch", arguments: { object, ops: bosses(8) } }, undefined, { timeout: 700 });
@@ -100,13 +102,29 @@ try {
   timedOut = true;
 }
 check("a client without progress resets times out", timedOut);
-// The server takes the batch back once the step in flight ends: wait for the history to settle, up to 10 s.
-let afterCancel = await first.call("model_history", { object, limit: 100 });
-for (let waited = 0; (afterCancel.nodes as unknown[]).length !== kept && waited < 10_000; waited += 200) {
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  afterCancel = await first.call("model_history", { object, limit: 100 });
+const busyInfo = await first.call("session_info", {});
+const running = (busyInfo.job as { job?: string; tool?: string } | undefined) ?? {};
+check("session_info names the job the cancelled call became", typeof running.job === "string" && running.tool === "model_apply_batch", JSON.stringify(busyInfo.job));
+const busy = await first.call("model_apply", { object, probe: true, op: bosses(1)[0] });
+check("an edit while it runs is refused with the job's handle", busy.ok === false && busy.job === running.job && String(busy.reason).includes("slice_wait"), JSON.stringify(busy));
+let waited = await first.call("slice_wait", { job: running.job, timeoutS: 20 });
+for (let round = 0; waited.status === "running" && round < 5; round += 1) waited = await first.call("slice_wait", { job: running.job, timeoutS: 20 });
+check("slice_wait returns the batch's own result once it is done", waited.status === "done" && waited.ok === true && waited.applied === 8 && waited.tool === "model_apply_batch", JSON.stringify(waited));
+const afterJob = await first.call("model_history", { object, limit: 100 });
+check("the job's eight steps are in the history", (afterJob.nodes as unknown[]).length === kept + 8, JSON.stringify(afterJob));
+
+// slice_cancel takes a job back whole: the part and its history are as they were before it.
+let cancelledJob = "";
+try {
+  await first.client.callTool({ name: "model_apply_batch", arguments: { object, ops: bosses(8) } }, undefined, { timeout: 700 });
+} catch {
+  cancelledJob = String(((await first.call("session_info", {})).job as { job?: string } | undefined)?.job ?? "");
 }
-check("the cancelled batch left no steps behind", (afterCancel.nodes as unknown[]).length === kept, JSON.stringify(afterCancel));
+const stopped = await first.call("slice_cancel", { job: cancelledJob });
+let outcome = stopped;
+for (let round = 0; outcome.status === "cancelling" && round < 5; round += 1) outcome = await first.call("slice_wait", { job: cancelledJob, timeoutS: 20 });
+const afterCancel = await first.call("model_history", { object, limit: 100 });
+check("slice_cancel takes the job's batch back whole", outcome.cancelled === true && outcome.rolledBack === true && (afterCancel.nodes as unknown[]).length === kept + 8, JSON.stringify({ outcome, afterCancel }));
 await new Promise((resolve) => setTimeout(resolve, 1300));
 await first.client.close();
 
@@ -122,8 +140,18 @@ check("an old handle says where the last plate is", stale.ok === false && String
 const reopened = await second.call("project_open", { path: offer?.path ?? "" });
 const rows = (reopened.objects ?? []) as { object: string }[];
 const back = rows.length ? await second.call("model_history", { object: rows[0]!.object, limit: 100 }) : {};
-check("the autosave opens with the whole history", reopened.ok === true && Array.isArray(back.nodes) && (back.nodes as unknown[]).length === kept, JSON.stringify({ reopened, back }));
+check("the autosave opens with the whole history", reopened.ok === true && Array.isArray(back.nodes) && (back.nodes as unknown[]).length === kept + 8, JSON.stringify({ reopened, back }));
 await second.client.close();
+
+// A call that runs past LIME_MCP_REPLY_S answers with a job before any client gives up; slice_wait has its result.
+const third = await connect({ LIME_MCP_REPLY_S: "0.5" });
+const part = String((await third.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 })).object);
+const early = await third.call("model_apply_batch", { object: part, ops: bosses(8) });
+check("a batch past the reply time answers with a running job", early.ok === true && early.status === "running" && typeof early.job === "string" && early.tool === "model_apply_batch", JSON.stringify(early));
+let late = await third.call("slice_wait", { job: early.job, timeoutS: 20 });
+for (let round = 0; late.status === "running" && round < 5; round += 1) late = await third.call("slice_wait", { job: early.job, timeoutS: 20 });
+check("its wait returns the applied batch", late.status === "done" && late.applied === 8, JSON.stringify(late));
+await third.client.close();
 
 if (failed) {
   console.error(`${failed} failed`);
