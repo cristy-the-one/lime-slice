@@ -4013,9 +4013,48 @@ export class Session {
     const asked = this.nodeOf(obj, nodeHandleValue);
     const at = asked ?? tree.current;
     if (asked !== null && !tree.nodes.has(asked)) return { ok: false, reason: "That step is not in the history." };
+    if (at !== tree.current) return this.atStep(obj, tree, at, () => this.bakeAndProbe(obj, tree, at, raw, measure));
+    return this.bakeAndProbe(obj, tree, at, raw, measure);
+  }
+
+  private async bakeAndProbe(obj: PlateObject, tree: ModelTree, at: number, raw: unknown, measure: boolean): Promise<Record<string, unknown>> {
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
     return this.probeBaked(obj, tree, at, baked, measure);
+  }
+
+  /**
+   * --- 3.1 F14. Work on step `at`'s solid: face and edge selectors, a hole's depth through the part, and the checks
+   * read `obj.solid`, which is the current step's. The engine shows `at` for the work and the current step again after,
+   * and the history does not move.
+   */
+  private async atStep(obj: PlateObject, tree: ModelTree, at: number, work: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
+    const current = tree.current;
+    const prior = obj.solid;
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(gotoRequest(tree.key, at, CHORD));
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
+    if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
+    const solid = rememberSolid(reply);
+    if (!solid) return { ok: false, reason: "That step's solid could not be read." };
+    obj.solid = solid;
+    try {
+      return await work();
+    } finally {
+      obj.solid = prior;
+      if (!obj.treeStale) {
+        try {
+          await this.treeCall(gotoRequest(tree.key, current, CHORD));
+        } catch {
+          // A modeler restarted under the work rebuilds the history at its current step on next use.
+        }
+      }
+    }
   }
 
   /**

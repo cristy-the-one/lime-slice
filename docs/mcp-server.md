@@ -417,7 +417,7 @@ The numeric path, which is the one MCP can express:
 | `workplane_set` | none, as today | `face` requires a face index whose normal is present. Curved faces return "Pick a flat face. This one is curved." |
 | `workplane_print_up` | none | sets `orient` so W is up, the same as "Print with W up" |
 | `model_place` | none | writes `modelPose`. No Apply. Fields are X, Y, Z and Turn X, Y, Z in degrees, the Place panel |
-| `model_probe` | `probe` with `preview`, or the local split/scale check | `{ok, reason, maxMm?, metrics}`. See Probe metrics |
+| `model_probe` | `probe` with `preview`, or the local split/scale check | `{ok, reason, maxMm?, metrics}`. See Probe metrics. With `node`, its face and edge selectors, a hole's depth and the checks read that step's solid: the engine shows that step for the probe and the current one again after, and the history does not move (`atStep`). In 3.1.0 they read the current solid. |
 | `model_apply` | `apply` | refused unless this session has a passing probe for this node and this op. Split and scale use the numeric check in place of `probe` |
 | `model_history` | session tree | paged nodes: id, parent, label from `opLabel`, `current`, `committed`, `broken` |
 | `model_goto` | `goto` | moves `current`. Does not move the plate until commit |

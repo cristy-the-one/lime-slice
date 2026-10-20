@@ -174,6 +174,23 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("nearPoint ranks every face, nearest first, with its distance", near.total === 6 && JSON.stringify(rows[0]?.normal) === "[0,0,1]" && rows[0]?.distanceMm === 5 && rows.every((row, i) => i === 0 || row.distanceMm! >= rows[i - 1]!.distanceMm!), JSON.stringify(near));
 }
 
+{
+  // Finding 14: model_probe at an earlier node reads that node's solid for its selectors and sizes, and the history
+  // stays where it was.
+  const engine = fakeEngine();
+  const session = new Session(engine);
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const part = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 })).object);
+  await call("model_apply", { object: part, probe: true, op: { kind: "scale", factor: 2 } });
+  const hole = { kind: "hole", diameterMm: 3, through: true, at: { u: 0, v: 0 } };
+  const atRoot = await call("model_probe", { object: part, node: "node_0", op: hole });
+  const stored = atRoot.stored as { origin?: number[] } | undefined;
+  check("a hole probed at node_0 starts on node_0's top, not the scaled one", atRoot.ok === true && stored?.origin?.[2] === 20, JSON.stringify(atRoot));
+  const here = await call("model_probe", { object: part, op: hole });
+  const history = await call("model_history", { object: part });
+  check("the history and the current solid stay on the scaled step", (here.stored as { origin?: number[] } | undefined)?.origin?.[2] === 40 && ((history.nodes ?? []) as { id: string; current: boolean }[]).find((row) => row.current)?.id === "node_1", JSON.stringify({ here, history }));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
