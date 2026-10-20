@@ -148,6 +148,32 @@ const ids = (value: Record<string, unknown>) => ((value.objects ?? []) as { obje
   check("an unturned tool has no axis echo", upright.axis === undefined && upright.turnNote === undefined, JSON.stringify(upright));
 }
 
+{
+  // Finding 13: a curved face's radius and axis are the engine's, and nearPoint ranks faces by distance to the face.
+  // An R95 quarter cylinder about an axis 500 mm from the origin, along Y, as the engine describes it.
+  const positions: number[] = [];
+  const triangles: number[] = [];
+  const at = (angle: number, y: number) => [500 + 95 * Math.cos(angle), y, 95 * Math.sin(angle)];
+  for (let k = 0; k < 16; k += 1) {
+    const a0 = (k / 16) * (Math.PI / 2);
+    const a1 = ((k + 1) / 16) * (Math.PI / 2);
+    positions.push(...at(a0, 0), ...at(a1, 0), ...at(a1, 40), ...at(a0, 0), ...at(a1, 40), ...at(a0, 40));
+    triangles.push(0, 0);
+  }
+  const { faceRows } = await import("./solid-geometry.ts");
+  const engineSaid = faceRows(positions, triangles, [{ areaMm2: 5969, normal: [0.7071, 0, 0.7071], surface: "cylinder", radiusMm: 95, axisPoint: [500, 0, 0], axis: [0, 1, 0] }]);
+  check("a curved face takes the engine's radius and axis", engineSaid[0]!.kind === "cylinder" && engineSaid[0]!.radiusMm === 95 && JSON.stringify(engineSaid[0]!.axis) === "[0,1,0]" && JSON.stringify(engineSaid[0]!.axisPoint) === "[500,0,0]", JSON.stringify(engineSaid[0]));
+  const guessed = faceRows(positions, triangles, [{ areaMm2: 5969, normal: [0.7071, 0, 0.7071] }]);
+  check("a curved face the engine names no surface for is other, not a guessed cylinder", guessed[0]!.kind === "other" && guessed[0]!.radiusMm === undefined, JSON.stringify(guessed[0]));
+
+  const session = new Session(fakeEngine());
+  const call = (name: string, args: unknown = {}) => session.call(name, args);
+  const part = String((await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 })).object);
+  const near = await call("faces_find", { object: part, nearPoint: [0, 0, 25] });
+  const rows = (near.faces ?? []) as { normal?: number[]; distanceMm?: number }[];
+  check("nearPoint ranks every face, nearest first, with its distance", near.total === 6 && JSON.stringify(rows[0]?.normal) === "[0,0,1]" && rows[0]?.distanceMm === 5 && rows.every((row, i) => i === 0 || row.distanceMm! >= rows[i - 1]!.distanceMm!), JSON.stringify(near));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

@@ -10,9 +10,11 @@ export interface FaceRow {
   normal?: Vec3;
   centre: Vec3;
   bbox: { min: Vec3; max: Vec3 };
-  kind: "plane" | "cylinder" | "other";
+  kind: "plane" | "cylinder" | "cone" | "sphere" | "other";
   radiusMm?: number;
   axis?: Vec3;
+  /** A point on a cylinder's or a cone's axis. */
+  axisPoint?: Vec3;
 }
 
 export interface EdgeRow {
@@ -76,14 +78,30 @@ interface FaceAcc {
   cz: number;
   min: Vec3;
   max: Vec3;
-  samples: Vec3[];
+  /** The face's first point, and how far any of its points lies off the plane through it along its normal. */
+  first: Vec3 | null;
+  off: number;
 }
 
-/** Area-weighted centre and box of each face. A flat face is a plane. A constant-radius face is a cylinder. */
+/** A face as the engine describes it: its area, its normal at the middle, and a cylinder's, cone's or sphere's surface. */
+export interface EngineFace {
+  areaMm2: number;
+  normal?: Vec3;
+  surface?: "cylinder" | "cone" | "sphere";
+  radiusMm?: number;
+  axisPoint?: Vec3;
+  axis?: Vec3;
+}
+
+/**
+ * Area-weighted centre and box of each face. A face whose every point lies on the plane of its normal is a plane. A
+ * cylinder, a cone, or a sphere is what the engine says it is, with its radius and axis from Open CASCADE (--- 3.1 F13:
+ * a fit of 16 triangles about a world axis through the origin read an R95 fillet as 885 mm). Anything else is other.
+ */
 export function faceRows(
   positions: ArrayLike<number>,
   triangles: ArrayLike<number>,
-  faces: readonly { areaMm2: number; normal?: Vec3 }[],
+  faces: readonly EngineFace[],
 ): FaceRow[] {
   const acc: FaceAcc[] = faces.map(() => ({
     area: 0,
@@ -92,7 +110,8 @@ export function faceRows(
     cz: 0,
     min: [Infinity, Infinity, Infinity],
     max: [-Infinity, -Infinity, -Infinity],
-    samples: [],
+    first: null,
+    off: 0,
   }));
   const triCount = Math.min(triangles.length, Math.floor(positions.length / 9));
   for (let tri = 0; tri < triCount; tri += 1) {
@@ -115,12 +134,14 @@ export function faceRows(
     row.cx += cx * area;
     row.cy += cy * area;
     row.cz += cz * area;
+    const normal = faces[face]?.normal;
     for (const p of [a, b, c]) {
       for (let axis = 0; axis < 3; axis += 1) {
         if (p[axis] < row.min[axis]) row.min[axis] = p[axis];
         if (p[axis] > row.max[axis]) row.max[axis] = p[axis];
       }
-      if (row.samples.length < 48) row.samples.push(p);
+      row.first ??= p;
+      if (normal) row.off = Math.max(row.off, Math.abs((p[0] - row.first[0]) * normal[0] + (p[1] - row.first[1]) * normal[1] + (p[2] - row.first[2]) * normal[2]));
     }
   }
   return faces.map((face, index) => {
@@ -130,49 +151,18 @@ export function faceRows(
       min: row.min.map((value) => (Number.isFinite(value) ? value : 0)) as Vec3,
       max: row.max.map((value) => (Number.isFinite(value) ? value : 0)) as Vec3,
     };
-    const kind = faceKind(face.normal, row.samples);
+    const curved = face.surface && face.radiusMm !== undefined ? face.surface : null;
+    const kind: FaceRow["kind"] = curved ?? (face.normal && row.first && row.off < 0.05 ? "plane" : "other");
     return {
       index,
       areaMm2: face.areaMm2,
       ...(face.normal ? { normal: face.normal } : {}),
       centre,
       bbox,
-      kind: kind.kind,
-      ...(kind.radiusMm !== undefined ? { radiusMm: kind.radiusMm, axis: kind.axis } : {}),
+      kind,
+      ...(curved ? { radiusMm: face.radiusMm } : {}),
+      ...(curved && face.axis && face.axisPoint ? { axis: face.axis, axisPoint: face.axisPoint } : {}),
     };
   });
 }
 
-function faceKind(normal: Vec3 | undefined, samples: Vec3[]): { kind: "plane" | "cylinder" | "other"; radiusMm?: number; axis?: Vec3 } {
-  if (samples.length < 3) return { kind: normal ? "plane" : "other" };
-  if (normal) {
-    const [nx, ny, nz] = normal;
-    const origin = samples[0]!;
-    const plane = samples.every((p) => Math.abs((p[0] - origin[0]) * nx + (p[1] - origin[1]) * ny + (p[2] - origin[2]) * nz) < 0.05);
-    if (plane) return { kind: "plane" };
-  }
-  const cylinder = cylinderOf(samples);
-  if (cylinder) return { kind: "cylinder", radiusMm: cylinder.radius, axis: cylinder.axis };
-  return { kind: "other" };
-}
-
-/** A face whose points sit on one radius about a principal axis. */
-function cylinderOf(samples: Vec3[]): { radius: number; axis: Vec3 } | null {
-  const axes: Vec3[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-  let best: { radius: number; axis: Vec3; spread: number } | null = null;
-  for (const axis of axes) {
-    const radial = samples.map((p) => {
-      const along = p[0] * axis[0] + p[1] * axis[1] + p[2] * axis[2];
-      const dx = p[0] - axis[0] * along;
-      const dy = p[1] - axis[1] * along;
-      const dz = p[2] - axis[2] * along;
-      return Math.hypot(dx, dy, dz);
-    });
-    const mean = radial.reduce((sum, value) => sum + value, 0) / radial.length;
-    if (!(mean > 0.2)) continue;
-    const spread = Math.max(...radial.map((value) => Math.abs(value - mean)));
-    if (spread > Math.max(0.15, mean * 0.08)) continue;
-    if (!best || spread < best.spread) best = { radius: mean, axis, spread };
-  }
-  return best ? { radius: best.radius, axis: best.axis } : null;
-}
