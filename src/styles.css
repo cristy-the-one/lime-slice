@@ -910,6 +910,19 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .sketch-prompt-text { flex: 1 1 100%; margin: 0; }
 .sketch-value { display: inline-flex; align-items: center; gap: 4px; }
 .sketch-value input { width: 6ch; }
+.sketch-how { position: relative; flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
+.sketch-how-open { width: 28px; min-width: 28px; padding: 0; }
+.sketch-how-pop {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 4px 8px 4px 22px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+}
+.sketch-how-pop[hidden] { display: none; }
+.sketch-how-pop li { margin: 2px 0; }
 /* The sentence for a feature that is waiting on a pick, with its own Cancel, in the card. */
 .sketch-prompt {
   flex: 1 1 100%;

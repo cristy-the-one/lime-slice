@@ -75,6 +75,7 @@ import {
   type SketchTool,
 } from "../sketch/session";
 import { isDrawTool } from "../sketch/tools";
+import { featureTitle, fitStatus, hintSteps } from "../sketch/hints";
 // --- S4. Constraints live in the sketch card menu, not on the Model toolbar. ---
 import { CONSTRAIN_MENU, constraintGlyphs, dimensionLabels, firstLineMeasure, type ConstraintGlyph, isConstrainTool, placedStatus, plainDrivingValue, setDrivingEvaluator } from "../sketch/constrain";
 import { evaluate, ExprError } from "../modeling/expr.ts";
@@ -430,6 +431,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     // A letter typed in any field is text: "wallH / 2" in the size box, or a search. Only the size box's Tab and Esc are the gesture's.
     const field = typingTarget(ev.target);
     if (field && !(field.closest(".interact-hud") && (ev.key === "Tab" || ev.key === "Escape"))) return;
+    // Esc closes How when the keyboard is on it, and leaves the feature alone.
+    const howHost = cards?.querySelector(".sketch-how");
+    if (ev.key === "Escape" && howOpen && ev.target instanceof Node && howHost?.contains(ev.target)) {
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      closeHow(true);
+      return;
+    }
     // Esc closes an open card menu before it ends a gesture or the selection.
     if (ev.key === "Escape" && menuOpen) {
       ev.preventDefault();
@@ -685,6 +694,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let aimKey = "";
   let refsKey = "";
   let menuOpen: "draw" | "constrain" | null = null;
+  /** The feature whose How count was bumped for this visit. Cleared when the feature closes. */
+  let howFeature: string | null = null;
+  let howOpen = false;
   // A pointer move publishes. The cards and the Undo buttons are painted only when what they show changes, so a move
   // costs no DOM rebuild and a focused card button keeps its focus.
   let cardsKey = "";
@@ -1236,11 +1248,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     saidLast = true;
-    if (sweep && editor.phase === "editing") host.readout(sweep.note || sweepReadout());
-    else if (loft && editor.phase === "editing") host.readout(loft.note || loftReadout());
-    else if (revolve && editor.phase === "editing") host.readout(revolveNote || revolveReadout());
-    else if (gesture && editor.phase === "editing") host.readout(extrudeReadout());
-    else host.readout(sketchReadout(editor));
+    if (sweep && editor.phase === "editing") host.readout(fitStatus(sweep.note || sweepReadout()));
+    else if (loft && editor.phase === "editing") host.readout(fitStatus(loft.note || loftReadout()));
+    else if (revolve && editor.phase === "editing") host.readout(fitStatus(revolveNote || revolveReadout()));
+    else if (gesture && editor.phase === "editing") host.readout(fitStatus(extrudeReadout()));
+    else host.readout(fitStatus(sketchReadout(editor)));
   }
 
   function aim(frame: SketchFrame | null) {
@@ -1455,6 +1467,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       releaseCardDock = null;
     }
     const pinned = editor.pinned.filter((item) => item.id !== editor.active && item.name !== "Sketch");
+    if (!(gesture || revolve || loft || sweep)) howFeature = null;
     const key = cardsState(pinned);
     if (key === cardsKey) {
       takeCardFocus();
@@ -1764,12 +1777,76 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     const value = featureValue();
     if (value) strip.append(value);
+    const kind = gesture ? "extrude" : revolve ? "revolve" : loft ? "loft" : "sweep";
+    strip.append(howControl(kind));
     const apply = textButton("Apply", { sketchApply: "" });
     apply.classList.add("primary");
     apply.dataset.tipIdle = "Keep this feature";
     markBlocked(apply, featureBlocked());
     strip.append(apply, textButton("Cancel", { sketchCancel: "" }));
     return strip;
+  }
+
+  function howSeen(kind: string): number {
+    const key = `lime-slice-how-${kind}`;
+    try {
+      if (howFeature !== kind) {
+        howFeature = kind;
+        const next = Number(localStorage.getItem(key) ?? "0") + 1;
+        const count = Number.isFinite(next) && next > 0 ? next : 1;
+        localStorage.setItem(key, String(count));
+        return count;
+      }
+      const seen = Number(localStorage.getItem(key) ?? "1");
+      return Number.isFinite(seen) && seen > 0 ? seen : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  function closeHow(refocus: boolean) {
+    howOpen = false;
+    const pop = cards?.querySelector<HTMLElement>("#sketchHow");
+    const button = cards?.querySelector<HTMLButtonElement>(".sketch-how-open");
+    if (pop) pop.hidden = true;
+    button?.setAttribute("aria-expanded", "false");
+    if (refocus) button?.focus();
+  }
+
+  /** Numbered steps beside the feature strip. Open the first three times, then a ? button. */
+  function howControl(kind: "extrude" | "revolve" | "loft" | "sweep"): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "sketch-how";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn sketch-how-open";
+    button.textContent = "?";
+    button.setAttribute("aria-label", "How");
+    const pop = document.createElement("div");
+    pop.id = "sketchHow";
+    pop.className = "sketch-how-pop";
+    pop.setAttribute("role", "dialog");
+    pop.setAttribute("aria-label", "How");
+    const list = document.createElement("ol");
+    for (const step of hintSteps(kind)) {
+      const item = document.createElement("li");
+      item.textContent = step;
+      list.append(item);
+    }
+    pop.append(list);
+    const open = howSeen(kind) <= 3;
+    howOpen = open;
+    pop.hidden = !open;
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    button.setAttribute("aria-controls", "sketchHow");
+    button.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      howOpen = pop.hidden;
+      pop.hidden = !pop.hidden;
+      button.setAttribute("aria-expanded", pop.hidden ? "false" : "true");
+    });
+    wrap.append(button, pop);
+    return wrap;
   }
 
   function modeControl(): HTMLElement {
@@ -2604,8 +2681,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const note = extrudeNote();
     if (note) return `${note} Esc returns to the sketch.`;
     const mode = modeLabel(resolvedMode());
-    const where = gesture.upTo != null ? `Up to face ${typeof gesture.upTo === "number" ? gesture.upTo : gesture.upTo.index}. ` : "";
-    return `${where}${tooBig()}Extrude ${gesture.distance} mm, ${mode}. Drag the arrow or type the distance. Click a region to extrude it, Shift-click to add one. M changes join, cut, or new object. Tab adds the other side, then a draft. Enter or Apply keeps it. Esc returns to the sketch.`;
+    const past = tooBig();
+    const detail = gesture.upTo != null ? `${formatMm(gesture.distance)} mm · up to face` : past ? `${formatMm(gesture.distance)} mm · past the bed` : `${formatMm(gesture.distance)} mm · ${mode}`;
+    return featureTitle("extrude", detail);
   }
 
   /** --- B28. A depth past the printer's build volume along the extrude is said first; it is not refused. --- */
@@ -2893,7 +2971,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!revolve) return "";
     if (revolve.crossing) return `${CROSS_REFUSAL} Move the axis, or pick a region on one side of it.`;
     const mode = modeLabel(resolvedRevolveMode());
-    return `Revolve ${revolve.angle}°, ${mode}. Drag the ring or type the angle. Typing 360 is a full turn. Click a region to revolve it, Shift-click to add one. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
+    return featureTitle("revolve", `${revolve.angle}° · ${mode}`);
   }
 
   function axisUnderPointer(sketch: SketchData, frame: NonNullable<ReturnType<typeof drawingFrame>>): RevolveAxis | null {
@@ -3289,7 +3367,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (loft.note) return loft.note;
     const mode = modeLabel(resolvedLoftMode());
     const count = loft.picks.length;
-    return `Loft, ${count} ${count === 1 ? "section" : "sections"}, ${mode}. Pick sections in order: a sketch region or a flat face. R rules the loft. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
+    return featureTitle("loft", `${count} ${count === 1 ? "section" : "sections"} · ${mode}`);
   }
 
   function loftPointer(ev: { phase: "down" | "move" | "up"; x: number; y: number }) {
@@ -3451,7 +3529,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const mode = modeLabel(resolvedSweepMode());
     const profile = sweep.profile ? "profile" : "no profile";
     const path = sweep.path.length >= 2 ? "path" : "no path";
-    return `Sweep, ${profile}, ${path}, end scale ${scaleOf(sweep.scale)}, ${mode}. Drag or type the size at the end of the path. Click a region for the profile. Pick an open chain, or Shift-click edges that meet. M changes join, cut, or new object. Enter or Apply keeps it. Esc returns to the sketch.`;
+    return featureTitle("sweep", `${profile}, ${path} · ${mode}`);
   }
 
   function sweepPointer(ev: { phase: "down" | "move" | "up"; x: number; y: number; shift: boolean; ctrl: boolean }, _frame: ReturnType<typeof drawingFrame>) {

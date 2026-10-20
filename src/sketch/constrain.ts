@@ -128,35 +128,35 @@ export function constrainReadout(tool: ConstrainTool, note: string | null): stri
   const hint = note ? ` ${note}` : "";
   switch (tool) {
     case "horizontal":
-      return `Horizontal. Click a line, or two points. With lines selected, each one is made horizontal.${hint}`;
+      return `Horizontal. Click a line or two points.${hint}`;
     case "vertical":
-      return `Vertical. Click a line, or two points. With lines selected, each one is made vertical.${hint}`;
+      return `Vertical. Click a line or two points.${hint}`;
     case "parallel":
       return `Parallel. Click two lines.${hint}`;
     case "perpendicular":
       return `Perpendicular. Click two lines.${hint}`;
     case "tangent":
-      return `Tangent. Click a line and a circle or arc, or two circles or arcs.${hint}`;
+      return `Tangent. Click a line and a circle.${hint}`;
     case "equal":
-      return `Equal. Click two lines, or two circles or arcs.${hint}`;
+      return `Equal. Click two lines or two circles.${hint}`;
     case "concentric":
       return `Concentric. Click two circles or arcs.${hint}`;
     case "fixed":
-      return `Fixed. Click a point or a line to keep it where it is.${hint}`;
+      return `Fixed. Click a point or a line.${hint}`;
     case "midpoint":
       return `Midpoint. Click a point and a line.${hint}`;
     case "coincident":
-      return `Coincident. Click two points, and they become one; or a point and a line, circle or arc, and it stays on it.${hint}`;
+      return `Coincident. Click two points.${hint}`;
     case "distance":
-      return `Distance. Click two points, or a point and a line. Type the distance on the label.${hint}`;
+      return `Distance. Click two points. Type it.${hint}`;
     case "length":
-      return `Length. Click a line. Type the length on the label.${hint}`;
+      return `Length. Click a line and type it.${hint}`;
     case "radius":
-      return `Radius. Click a circle or an arc. Type the radius on the label.${hint}`;
+      return `Radius. Click a circle or an arc.${hint}`;
     case "diameter":
-      return `Diameter. Click a circle or an arc. Type the diameter on the label.${hint}`;
+      return `Diameter. Click a circle or an arc.${hint}`;
     case "angle":
-      return `Angle. Click two lines. Type the angle on the label.${hint}`;
+      return `Angle. Click two lines and type it.${hint}`;
   }
 }
 

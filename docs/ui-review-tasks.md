@@ -203,6 +203,8 @@ Each asserts `data-aspect-field`, `data-aspect-lines > 0` (or 0 for unmapped) an
 
 ### UX-03 (P1). The sketch card: group the tools, stop the layout shifting, never truncate
 
+Status: done. The card is Draw, Edit, Make, and a footer. Draw is seven icon buttons in a fixed grid. A feature replaces Make with a strip (name, Join/Cut/New object, value, Apply, Cancel). `e2e/model-sketch.spec.ts` checks that Draw does not move and that no button overflows. Screenshots: `ux03-before-sketch-card.png`, `ux03-after-sketch-card.png`.
+
 - **Seen**: `model-sketch.png`, and the tutorials `bowl-03-axis-pick.png` and `handle-05-typed-scale.png`.
   - 11–13 equal buttons in a 3-column grid mix drawing tools (Line, Rectangle, Draw/Arc), modes (Constrain, Select),
     features (Extrude, Revolve, Loft, Sweep), feature options ("Auto · Join (M)") and actions (Look around, Lock

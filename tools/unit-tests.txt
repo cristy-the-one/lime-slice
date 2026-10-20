@@ -141,6 +141,7 @@ src/sketch/sweep.test.ts
 src/sketch/edit.test.ts
 src/sketch/solve.test.ts
 src/sketch/session.test.ts
+src/sketch/hints.test.ts
 src/modeling/index.test.ts
 src/model-face.test.ts
 src/model-loops.test.ts
