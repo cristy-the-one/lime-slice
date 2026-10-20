@@ -211,10 +211,11 @@ for (const which of ["sloped", "flat top"] as const) {
 
     await expect(page.locator("#objectList .obj"), "Enter made the new object").toHaveCount(2, { timeout: 60_000 });
     await expect(canvas).not.toHaveAttribute("data-sketch", "editing");
-    // 16.4 mm through along the face's normal: the new object's box spans more than 14 mm along that normal.
+    // 16.4 mm through along the face's normal: on each axis the box spans at least that axis's share of 16.4 mm. On the
+    // sloped face that is about 13.4 mm along X; an extrude up world Z would span only the outline's few mm there.
     const placed = await bounds(page);
     const span = [placed[3]! - placed[0]!, placed[4]! - placed[1]!, placed[5]! - placed[2]!];
-    const along = span.reduce((sum, value, axis) => sum + value * Math.abs(face.normal[axis]!), 0);
-    expect(along, `along the normal ${face.normal.join(",")}, box ${span.map((v) => v.toFixed(2)).join(" × ")}`).toBeGreaterThan(14);
+    const box = `box ${span.map((v) => v.toFixed(2)).join(" × ")} for the normal ${face.normal.join(",")}`;
+    for (const axis of [0, 1, 2]) expect(span[axis]!, box).toBeGreaterThan(16.4 * Math.abs(face.normal[axis]!) * 0.95);
   });
 }
