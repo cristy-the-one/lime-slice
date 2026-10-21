@@ -58,7 +58,7 @@ html:not(.layout-compact):not([data-stage="model"]) #modelInspect { display: non
  * 4 px of each button ("dense", which keeps every tool down to about 790 px high), and only then whole groups.
  */
 .tool-rail[data-fit] .rail-caption { display: none; }
-@media (min-height: 820px) {
+@media (min-height: 720px) {
   .tool-rail[data-fit] :is(#railModel, #railModelFoot) .rail-caption { display: block; }
 }
 :is(#railModel, #railModelFoot) .rail-caption { margin: 1px 0 0; line-height: 1.1; }

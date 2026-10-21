@@ -43,7 +43,7 @@
   margin: 6px 0 1px;
   font-size: 9px;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
   color: var(--text-faint);
   white-space: nowrap;

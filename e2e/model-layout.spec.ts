@@ -55,13 +55,13 @@ test("the rail keeps every Model tool at 1440 × 900, and a short window folds t
   }
   // C21: Push/Pull leads Shape, named in its label and tip.
   await expect(page.locator("#modelToolPull")).toHaveAccessibleName("Push/Pull");
-  for (const heading of ["Create", "Shape", "Features", "Inspect", "Frame", "Edit"]) {
+  for (const heading of ["Make", "Shape", "Feat\\.", "Check", "Frame", "Edit"]) {
     await expect(page.locator("#railModel .rail-caption, #railModelFoot .rail-caption").filter({ hasText: new RegExp(`^${heading}$`) })).toBeVisible();
   }
   await page.locator("#modelToolSketch").click();
   await page.locator("[data-sketch-plane=XY]").click();
   await expect(page.locator("#model")).toHaveAttribute("data-sketch", "editing");
-  for (const heading of ["Create", "Shape", "Features", "Inspect", "Frame", "Edit"]) {
+  for (const heading of ["Make", "Shape", "Feat\\.", "Check", "Frame", "Edit"]) {
     await expect(page.locator("#railModel .rail-caption, #railModelFoot .rail-caption").filter({ hasText: new RegExp(`^${heading}$`) })).toBeVisible();
   }
   await page.keyboard.press("Escape");
@@ -100,6 +100,30 @@ test("the rail keeps every Model tool at 1440 × 900, and a short window folds t
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect.poll(() => folded(page), "room again unfolds it").toEqual([]);
+});
+
+test("rail headings fit at 1440×900, 1366×768, and 1280×800", async ({ page }) => {
+  await openModel(page, { width: 1440, height: 900 });
+  for (const size of [
+    { width: 1440, height: 900 },
+    { width: 1366, height: 768 },
+    { width: 1280, height: 800 },
+  ]) {
+    await page.setViewportSize(size);
+    const headings = page.locator("#railModel .rail-caption, #railModelFoot .rail-caption");
+    await expect(headings, `${size.width}×${size.height}`).toHaveCount(6);
+    for (const heading of await headings.all()) {
+      await expect(heading).toBeVisible();
+      expect(await heading.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    }
+    const stranded = await page.locator("#toolRail button").evaluateAll((nodes) =>
+      nodes
+        .filter((node) => !node.closest("[hidden], [role=menu]"))
+        .filter((node) => !(node as HTMLElement).checkVisibility() && !node.closest("[data-folded]"))
+        .map((node) => (node as HTMLElement).id || (node as HTMLElement).textContent || "button"),
+    );
+    expect(stranded, `${size.width}×${size.height} tools`).toEqual([]);
+  }
 });
 
 test("a disabled tool is dashed, not striped, and still says why", async ({ page }) => {

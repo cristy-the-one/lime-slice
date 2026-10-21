@@ -80,7 +80,7 @@ export function mountMarkup(root: HTMLElement) {
       <!-- E3. The Model tools: chrome.ts moves this set into the rail. A group folds into one flyout button when the window is too short for it. -->
       <div class="rail-set rail-model" id="railModel" data-for="model" role="group" aria-label="Model tools" data-model-ui>
         <div class="rail-group" data-group="create" role="group" aria-label="Create">
-          <span class="rail-caption" aria-hidden="true">Create</span>
+          <span class="rail-caption" aria-hidden="true" title="Create">Make</span>
           <div class="rail-tools">
             <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="New solid: a box, cylinder, cone, or another primitive">New solid</button>
             <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
@@ -89,7 +89,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="rail-group" data-group="shape" data-solid-only role="group" aria-label="Shape">
           <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Shape</span>
+          <span class="rail-caption" aria-hidden="true" title="Shape">Shape</span>
           <div class="rail-tools">
             <!-- P1: Push/Pull. P. Also the gesture when no other model tool is open. -->
             <button class="model-tool" id="modelToolPull" type="button" data-tool="pushpull" aria-pressed="false" data-tip="Push/Pull: move a face. Hold Alt to add or cut material on that face only">Push/Pull</button>
@@ -103,7 +103,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="rail-group" data-group="features" data-solid-only role="group" aria-label="Features">
           <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Features</span>
+          <span class="rail-caption" aria-hidden="true" title="Features">Feat.</span>
           <div class="rail-tools">
             <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Boolean: fuse, cut, or intersect a primitive or another object on the plate">Boolean</button>
             <button class="model-tool" id="modelToolPattern" type="button" data-tool="pattern" aria-pressed="false" data-tip="Pattern: repeat history steps in a line, around an axis, or along a path">Pattern</button>
@@ -128,7 +128,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="rail-group" data-group="inspect" role="group" aria-label="Inspect">
           <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Inspect</span>
+          <span class="rail-caption" aria-hidden="true" title="Inspect">Check</span>
           <div class="rail-tools">
             <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" data-solid-only aria-pressed="false" data-tip="Measure: drag two points on the solid and read the distance">Measure</button>
             <!-- --- A7 model check --- also for a mesh, so not solid-only. -->
@@ -139,7 +139,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="rail-group" data-group="frame" data-solid-only role="group" aria-label="Frame">
           <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Frame</span>
+          <span class="rail-caption" aria-hidden="true" title="Frame">Frame</span>
           <div class="rail-tools">
             <button class="model-tool" id="modelToolPlace" type="button" data-tool="place" aria-pressed="false" data-tip="Place: move and turn this object among the others. The plate stays as it is">Place</button>
             <button class="model-tool" id="modelToolWorkplane" type="button" data-tool="workplane" aria-pressed="false" data-tip="Workplane: the U, V, W frame Hole, Boolean, and Split are typed in">Workplane</button>
@@ -151,7 +151,7 @@ export function mountMarkup(root: HTMLElement) {
       <!-- The rail foot's Model buttons: chrome.ts moves them above the dock toggle. -->
       <div class="rail-set rail-model-foot" id="railModelFoot" data-for="model" role="group" aria-label="Model history and export" data-model-ui>
         <div class="rail-group" data-group="edit" role="group" aria-label="Edit">
-          <span class="rail-caption" aria-hidden="true">Edit</span>
+          <span class="rail-caption" aria-hidden="true" title="Edit">Edit</span>
         </div>
         <button class="model-tool" id="modelUndo" type="button" data-solid-only disabled data-tip="Undo the last solid edit">Undo</button>
         <button class="model-tool" id="modelRedo" type="button" data-solid-only disabled data-tip="Redo the last solid edit">Redo</button>
