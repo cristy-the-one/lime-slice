@@ -52,8 +52,30 @@ and the Tauri command), which links both crates. `lime-sim` receives it as data,
 
 ### P-D2. The slicer is not changed
 
-D10 holds. The engine reads the `LayerPaths` of a finished job, from the same store `layer_paths` and `layer_image`
-read. No field is added to `SliceRequest`, `Extrusion` or the G-code. The golden hashes don't move.
+D10 holds for behaviour. No field is added to `SliceRequest`, `Extrusion` or the G-code, and the golden hashes
+don't move.
+
+**The source is the G-code writer's own input.** The field is built from the job's `PlateLayer`s, exactly as
+`emit_gcode` in `crates/lime-slice-core/src/gcode.rs` receives them. On the way out the writer applies:
+
+- the job's global `flow` multiplier;
+- the per-object `offsets`;
+- the belt transform;
+- per-point `flow_frac` and `z_frac`;
+- scarf ramps, and fuzzy skin, which is applied once the seam and any scarf are final.
+
+The export must see every one of those, or the solved part isn't the printed part.
+
+So the expansion from a path to the beads the nozzle lays down is **one function, used by both**. Add a read-only
+iterator to `lime-slice-core`, `emitted_beads(layers, profile, flow, offsets, belt)`. It yields
+`(layer, role, from, to, width, bead_height, flow)` per extruding segment, after every one of those steps. `emit_gcode`
+is refactored to draw its extrusion moves from that iterator, and the engine's export draws from it too. That's the
+one change this design makes inside the slicer crate. It changes no output, and the golden hashes are the proof: the
+refactor PR must leave `mcp/golden.test.ts` and `tools/golden.sh` byte-identical. A second test asserts that the
+export's total bead volume equals the writer's total extrusion, as filament length × filament area, within `1e-9`.
+
+The engine calls the iterator on a finished job's layers, from the same store `layer_paths` and `layer_image` read.
+`lime-sim` still never links the slicer (P-D1): the engine turns the iterator's output into `slice-field-1`.
 
 ### P-D3. One object, sliced alone
 
@@ -69,8 +91,9 @@ ironing deposits no structural material. `Bridge` beads are kept, flagged, becau
 
 ## 4. The data: `slice-field-1`
 
-Built by the engine from a one-object job. Binary, because a part has millions of bead vertices. The MCP never returns
-it; it's an input to the solve.
+Built by the engine from a one-object job, through `emitted_beads` (P-D2), so it holds the segments the G-code will
+extrude and nothing else. It's binary, because a part has millions of bead vertices. The MCP never returns it; it's
+an input to the solve.
 
 ```text
 header (JSON)
@@ -81,13 +104,15 @@ header (JSON)
   layers: [ { index, zMm, heightMm, beadStart, beadCount } ]
   roles: ["outer","inner","wall","thin-wall","gap-fill","infill","sparse","solid","top","bridge"]
 buffers (little-endian)
-  beads: u32 role, u32 pointStart, u32 pointCount, f32 widthMm, f32 beadHeightMm (0 = layer height), f32 flow
-  points: f32 x, f32 y        in the slice frame, millimetres
-  zFrac: f32 per point, only for beads whose path has `z_frac` (non-planar), else empty
+  segments: u32 layer, u8 role, f32 x0, f32 y0, f32 z0, f32 x1, f32 y1, f32 z1,
+            f32 widthMm, f32 beadHeightMm, f32 flow
+            one row per extruding segment, as `emitted_beads` yields it: in the slice frame, after offsets,
+            fuzzy skin and scarf, with the per-point z and flow already resolved and the global flow applied
 ```
 
-The width, bead height and flow give the bead's cross-section. That's the same volume the slicer meters, so the
-smeared mass and the slicer's `FILAMENT_G` agree to the rounding of the cross-section model. That's a test (§9).
+The width, bead height and flow give the bead's cross-section. Because the segments are the writer's own, their total
+volume is the writer's total extrusion. The smeared mass and the slicer's `FILAMENT_G` agree to the rounding of the
+cross-section model, which §9 tests.
 
 ## 5. From beads to a mesh
 
@@ -252,8 +277,8 @@ Both read the same per-cell result. No second solve.
 
 Formulas in the test, as in the main plan's §7. No copied benchmark text.
 
-1. **The slice field is faithful.** For a sliced box, the sum of bead volumes equals the slicer's extruded volume,
-   within 1%. The cells' `φ` integrated over the grid equals that same volume, within 2%. Skirt and supports
+1. **The slice field is faithful.** For a sliced box, the sum of segment volumes equals the writer's extrusion
+   (filament length × filament area) within `1e-9`, with fuzzy skin and scarf seams on. The cells' `φ` integrated over the grid equals that same volume, within 2%. Skirt and supports
    contribute 0.
 2. **Sliced and smeared agree where the smear is right.** A box under bending, 100% infill, on the same card
    (`E_along = E_across`): the sliced and smeared tip deflections agree within 3% at the same cell size.
@@ -287,7 +312,8 @@ mesher exists.
 
 | | Scope | Accept when |
 |---|---|---|
-| **L1** | `slice-field-1` export in `lime-mcp-engine` and the Tauri command, from a one-object job | §9.1 and §9.5 pass. D10 test passes. `lime-sim`'s graph test still has no slicer crate. |
+| **L1a** | `emitted_beads` in `lime-slice-core`, and `emit_gcode` refactored to draw its extrusion moves from it | Golden hashes byte-identical. No other output change. |
+| **L1** | `slice-field-1` export in `lime-mcp-engine` and the Tauri command, from a one-object job, through `emitted_beads` | §9.1 and §9.5 pass. D10 test passes. `lime-sim`'s graph test still has no slicer crate. |
 | **L2** | Grid, rasteriser, void threshold, six-tet split, the `sliced` representation in `Request` | §9.2 passes. A sliced STL with no B-rep solves. The node cap refuses with the sentence and suggests `hXY`. |
 | **L3** | Bead card section, orientation tensor, `max-stress-bead` | §9.3 passes. Provisional bead cards cap trust at `rough`. |
 | **L4** | Margins, hot spot with `role`, `governs`, `nearestFace`, the §10 trust rules | §9.4 passes. A deliberately weak-across-layers part reports `governs: across-layers`. |
@@ -323,5 +349,5 @@ Decided by Marius, 2026-10-21:
 3. **The Preview shows stress.** `stress` and `safety` join the Preview's colour menu and `layer_image`'s `colourBy`.
    They're available only when the open object has a current sliced result. Otherwise the menu item says why, in the
    same words as a disabled tool.
-4. **No foreign G-code.** The slice field is built only from Lime Slice's own jobs. A G-code from another slicer is
-   not solved, and the milestones carry no parser for it.
+4. **No foreign G-code, and no G-code parser at all.** The slice field is built from the internal representation the
+   G-code is written from (P-D2), so there's nothing to parse back. A G-code from another slicer is not solved.
