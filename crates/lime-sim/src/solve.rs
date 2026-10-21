@@ -1,13 +1,13 @@
-//! Simplicial LDLᵀ through faer. AMD orders the matrix. The trait is the seam
+//! Sparse LDLᵀ through faer. AMD orders the matrix. The trait is the seam
 //! a later factorisation would implement. Modal analysis is the trait that
 //! returns "not in this version".
 
-use std::cell::Cell;
-
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::prelude::ReborrowMut;
+use faer::sparse::linalg::cholesky::supernodal::{SupernodalLdltRef, SymbolicSupernodalCholesky};
 use faer::sparse::linalg::cholesky::{
-    factorize_symbolic_cholesky, CholeskySymbolicParams, SymbolicCholeskyRaw, SymmetricOrdering,
+    factorize_symbolic_cholesky, CholeskySymbolicParams, LdltRef, SymbolicCholesky,
+    SymbolicCholeskyRaw, SymmetricOrdering,
 };
 use faer::sparse::linalg::SupernodalThreshold;
 use faer::sparse::{SparseColMat, Triplet};
@@ -63,107 +63,153 @@ impl EigenSolver for ModalStub {
     }
 }
 
-/// Faer's simplicial LDLᵀ. Supernodal factorisation is forced off.
+/// Faer's sparse LDLᵀ, ordered by AMD. `factor` orders and factors the
+/// matrix once and keeps the factor, so each `solve` is one forward and back
+/// substitution: a second load case on the same matrix costs no new factor.
+/// Faer picks a simplicial or a supernodal factor by its flop estimate; the
+/// supernodal one is far faster on a 3D mesh, and both keep the pivots on
+/// their diagonal.
 #[derive(Default)]
 pub struct FaerLdlt {
-    symbolic_n: usize,
-    /// Triplets kept so `solve` factorises the matrix it was given.
-    raw: Option<Factor>,
-    /// Smallest |pivot| over largest |pivot| from the last successful solve.
-    /// Faer stores each LDLᵀ pivot on the diagonal of the simplicial factor.
-    pivot_ratio: Cell<f64>,
+    factored: Option<Factored>,
+    /// Smallest |pivot| over largest |pivot| of the last factor.
+    pivot_ratio: f64,
+    /// How many times `factor` ran, so a test can count factorisations.
+    pub factors: usize,
 }
 
-struct Factor {
+struct Factored {
     n: usize,
-    triplets: Vec<(usize, usize, f64)>,
+    symbolic: SymbolicCholesky<usize>,
+    values: Vec<f64>,
 }
 
 impl FaerLdlt {
-    /// `|D_min| / |D_max|` of the last factor. Zero when no solve has run.
+    /// `|D_min| / |D_max|` of the last factor. Zero when nothing was factored.
     pub fn pivot_ratio(&self) -> f64 {
-        self.pivot_ratio.get()
+        self.pivot_ratio
+    }
+
+    /// Factor with an explicit choice of simplicial or supernodal, so the
+    /// two can be compared.
+    fn factor_with(
+        &mut self,
+        triplets: &[(usize, usize, f64)],
+        n: usize,
+        threshold: SupernodalThreshold,
+    ) -> Result<(), SimError> {
+        self.factors += 1;
+        self.factored = None;
+        self.pivot_ratio = 0.0;
+        if n == 0 {
+            return Ok(());
+        }
+        let trips: Vec<Triplet<usize, usize, f64>> = triplets
+            .iter()
+            .copied()
+            .map(|(r, c, v)| Triplet::new(r, c, v))
+            .collect();
+        let matrix = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &trips)
+            .map_err(|_| SimError::new("The stiffness matrix could not be built."))?;
+        let symbolic = factorize_symbolic_cholesky(
+            matrix.symbolic(),
+            Side::Upper,
+            SymmetricOrdering::Amd,
+            CholeskySymbolicParams {
+                supernodal_flop_ratio_threshold: threshold,
+                ..Default::default()
+            },
+        )
+        .map_err(|_| SimError::new("The stiffness matrix could not be ordered."))?;
+        let mut values = vec![0.0; symbolic.len_val()];
+        let par = Par::Seq;
+        let scratch = symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default());
+        let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
+        if symbolic
+            .factorize_numeric_ldlt(
+                &mut values,
+                matrix.as_ref(),
+                Side::Upper,
+                Default::default(),
+                par,
+                MemStack::new(&mut mem),
+                Default::default(),
+            )
+            .is_err()
+        {
+            return Err(not_held());
+        }
+        self.pivot_ratio = match symbolic.raw() {
+            SymbolicCholeskyRaw::Simplicial(simplicial) => {
+                pivot_ratio_of(simplicial.col_ptr(), simplicial.row_idx(), &values)
+            }
+            SymbolicCholeskyRaw::Supernodal(supernodal) => {
+                supernodal_pivot_ratio(supernodal, &values)
+            }
+        };
+        self.factored = Some(Factored {
+            n,
+            symbolic,
+            values,
+        });
+        Ok(())
     }
 }
 
 impl LinearSolver for FaerLdlt {
     fn factor(&mut self, triplets: &[(usize, usize, f64)], n: usize) -> Result<(), SimError> {
-        self.symbolic_n = n;
-        self.raw = Some(Factor {
-            n,
-            triplets: triplets.to_vec(),
-        });
-        Ok(())
+        self.factor_with(triplets, n, SupernodalThreshold::AUTO)
     }
 
     fn solve(&self, b: &[f64], x: &mut [f64]) -> Result<(), SimError> {
-        if b.len() != x.len() || b.len() != self.symbolic_n {
+        if b.len() != x.len() {
             return Err(SimError::new("The load vector does not match the matrix."));
         }
-        if self.symbolic_n == 0 {
-            return Ok(());
+        let Some(f) = &self.factored else {
+            if b.is_empty() {
+                return Ok(());
+            }
+            return Err(SimError::new("The matrix has not been factored."));
+        };
+        if b.len() != f.n {
+            return Err(SimError::new("The load vector does not match the matrix."));
         }
-        let factor = self
-            .raw
-            .as_ref()
-            .ok_or_else(|| SimError::new("The matrix has not been factored."))?;
-        let (sol, ratio) = numeric(&factor.triplets, factor.n, b)?;
-        self.pivot_ratio.set(ratio);
-        x.copy_from_slice(&sol);
+        let par = Par::Seq;
+        let mut rhs = Mat::<f64>::from_fn(f.n, 1, |i, _| b[i]);
+        let scratch = f.symbolic.solve_in_place_scratch::<f64>(1, par);
+        let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
+        LdltRef::new(&f.symbolic, &f.values).solve_in_place_with_conj(
+            Conj::No,
+            rhs.rb_mut(),
+            par,
+            MemStack::new(&mut mem),
+        );
+        for (i, out) in x.iter_mut().enumerate() {
+            *out = rhs[(i, 0)];
+        }
         Ok(())
     }
 }
 
-fn numeric(
-    triplets: &[(usize, usize, f64)],
-    n: usize,
-    rhs: &[f64],
-) -> Result<(Vec<f64>, f64), SimError> {
-    let trips: Vec<Triplet<usize, usize, f64>> = triplets
-        .iter()
-        .copied()
-        .map(|(r, c, v)| Triplet::new(r, c, v))
-        .collect();
-    let matrix = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &trips)
-        .map_err(|_| SimError::new("The stiffness matrix could not be built."))?;
-    let symbolic = factorize_symbolic_cholesky(
-        matrix.symbolic(),
-        Side::Upper,
-        SymmetricOrdering::Amd,
-        CholeskySymbolicParams {
-            supernodal_flop_ratio_threshold: SupernodalThreshold::FORCE_SIMPLICIAL,
-            ..Default::default()
-        },
-    )
-    .map_err(|_| SimError::new("The stiffness matrix could not be ordered."))?;
-    let mut values = vec![0.0; symbolic.len_val()];
-    let par = Par::Seq;
-    let scratch = symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default());
-    let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
-    let ldlt = match symbolic.factorize_numeric_ldlt(
-        &mut values,
-        matrix.as_ref(),
-        Side::Upper,
-        Default::default(),
-        par,
-        MemStack::new(&mut mem),
-        Default::default(),
-    ) {
-        Ok(ldlt) => ldlt,
-        Err(_) => return Err(not_held()),
-    };
-    let mut x = Mat::<f64>::from_fn(n, 1, |i, _| rhs[i]);
-    let scratch = symbolic.solve_in_place_scratch::<f64>(1, par);
-    let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
-    ldlt.solve_in_place_with_conj(Conj::No, x.rb_mut(), par, MemStack::new(&mut mem));
-    let ratio = match symbolic.raw() {
-        SymbolicCholeskyRaw::Simplicial(simplicial) => {
-            pivot_ratio_of(simplicial.col_ptr(), simplicial.row_idx(), &values)
+/// `|D_min| / |D_max|` of a supernodal factor: each supernode's block
+/// diagonal holds its pivots on its own diagonal.
+fn supernodal_pivot_ratio(symbolic: &SymbolicSupernodalCholesky<usize>, values: &[f64]) -> f64 {
+    let factor = SupernodalLdltRef::new(symbolic, values);
+    let mut min_abs = f64::INFINITY;
+    let mut max_abs = 0.0_f64;
+    for s in 0..symbolic.n_supernodes() {
+        let block = factor.supernode(s).val();
+        for j in 0..block.ncols() {
+            let pivot = block[(j, j)].abs();
+            min_abs = min_abs.min(pivot);
+            max_abs = max_abs.max(pivot);
         }
-        // Supernodal factorisation is forced off. Its block diagonal is not read.
-        SymbolicCholeskyRaw::Supernodal(_) => 1.0,
-    };
-    Ok(((0..n).map(|i| x[(i, 0)]).collect(), ratio))
+    }
+    if !min_abs.is_finite() || max_abs == 0.0 {
+        0.0
+    } else {
+        min_abs / max_abs
+    }
 }
 
 /// `|D_min| / |D_max|`. The diagonal entries of the simplicial factor are the pivots.
@@ -209,13 +255,91 @@ mod tests {
     #[test]
     fn a_zero_pivot_is_not_held() {
         let mut solver = FaerLdlt::default();
-        solver.factor(&[(0, 0, 0.0)], 1).unwrap();
-        let mut x = [0.0];
-        let err = solver.solve(&[1.0], &mut x).unwrap_err();
+        let err = solver.factor(&[(0, 0, 0.0)], 1).unwrap_err();
         assert_eq!(
             err.message,
             "This part is not held. Fix a face, or the bed."
         );
+    }
+
+    /// A 3D Laplacian, the stiffness of a grid of springs to ground: big
+    /// enough that faer goes supernodal.
+    fn laplacian(side: usize) -> (Vec<(usize, usize, f64)>, usize) {
+        let n = side * side * side;
+        let id = |i: usize, j: usize, k: usize| i + side * (j + side * k);
+        let mut t = Vec::new();
+        for k in 0..side {
+            for j in 0..side {
+                for i in 0..side {
+                    let a = id(i, j, k);
+                    t.push((a, a, 6.0 + 0.01 * (a % 7) as f64));
+                    if i + 1 < side {
+                        t.push((a, id(i + 1, j, k), -1.0));
+                    }
+                    if j + 1 < side {
+                        t.push((a, id(i, j + 1, k), -1.0));
+                    }
+                    if k + 1 < side {
+                        t.push((a, id(i, j, k + 1), -1.0));
+                    }
+                }
+            }
+        }
+        (t, n)
+    }
+
+    #[test]
+    fn supernodal_and_simplicial_agree_and_both_read_their_pivots() {
+        let (t, n) = laplacian(18);
+        let b: Vec<f64> = (0..n).map(|i| (i % 5) as f64 - 2.0).collect();
+        let mut simple = FaerLdlt::default();
+        simple
+            .factor_with(&t, n, SupernodalThreshold::FORCE_SIMPLICIAL)
+            .unwrap();
+        let mut blocks = FaerLdlt::default();
+        blocks
+            .factor_with(&t, n, SupernodalThreshold::FORCE_SUPERNODAL)
+            .unwrap();
+        let (mut x, mut y) = (vec![0.0; n], vec![0.0; n]);
+        simple.solve(&b, &mut x).unwrap();
+        blocks.solve(&b, &mut y).unwrap();
+        let worst = x
+            .iter()
+            .zip(&y)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        assert!(worst < 1e-10, "{worst}");
+        assert!(simple.pivot_ratio() > 0.0);
+        // Different orderings of the same elimination keep different pivots,
+        // but both are well away from a singular matrix.
+        assert!(blocks.pivot_ratio() > 0.1, "{}", blocks.pivot_ratio());
+    }
+
+    #[test]
+    fn one_factor_serves_every_load() {
+        let (t, n) = laplacian(6);
+        let mut solver = FaerLdlt::default();
+        solver.factor(&t, n).unwrap();
+        for case in 0..3 {
+            let b: Vec<f64> = (0..n).map(|i| ((i + case) % 4) as f64).collect();
+            let mut x = vec![0.0; n];
+            solver.solve(&b, &mut x).unwrap();
+            // A x = b, checked by the triplets.
+            let mut ax = vec![0.0; n];
+            for &(r, c, v) in &t {
+                ax[r] += v * x[c];
+                if r != c {
+                    ax[c] += v * x[r];
+                }
+            }
+            let worst = ax
+                .iter()
+                .zip(&b)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f64::max);
+            assert!(worst < 1e-10, "case {case}: {worst}");
+        }
+        assert_eq!(solver.factors, 1);
     }
 
     #[test]
