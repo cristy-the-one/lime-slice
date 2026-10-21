@@ -134,6 +134,9 @@ fn the_build_axis_changes_bending() {
         nu: 0.3,
         strength_in_plane_mpa: 40.0,
         strength_across_layers_mpa: 20.0,
+        compression_in_plane_mpa: 40.0,
+        compression_across_layers_mpa: 20.0,
+        shear_across_layers_mpa: 10.0,
         density_g_cm3: 1.24,
         isotropic: false,
     };

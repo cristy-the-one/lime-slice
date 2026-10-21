@@ -38,6 +38,9 @@ pub struct Tangent {
 pub struct Allowables {
     pub in_plane_mpa: f64,
     pub across_layers_mpa: f64,
+    pub compression_in_plane_mpa: f64,
+    pub compression_across_layers_mpa: f64,
+    pub shear_across_layers_mpa: f64,
 }
 
 pub trait MaterialModel {
@@ -66,6 +69,9 @@ pub struct LinearOrthotropic {
     pub nu: f64,
     pub strength_in_plane_mpa: f64,
     pub strength_across_layers_mpa: f64,
+    pub compression_in_plane_mpa: f64,
+    pub compression_across_layers_mpa: f64,
+    pub shear_across_layers_mpa: f64,
     pub density_g_cm3: f64,
     pub isotropic: bool,
 }
@@ -78,6 +84,9 @@ impl LinearOrthotropic {
             nu,
             strength_in_plane_mpa: f64::INFINITY,
             strength_across_layers_mpa: f64::INFINITY,
+            compression_in_plane_mpa: f64::INFINITY,
+            compression_across_layers_mpa: f64::INFINITY,
+            shear_across_layers_mpa: f64::INFINITY,
             density_g_cm3,
             isotropic: true,
         }
@@ -128,11 +137,17 @@ impl MaterialModel for LinearOrthotropic {
             Allowables {
                 in_plane_mpa: s,
                 across_layers_mpa: s,
+                compression_in_plane_mpa: s,
+                compression_across_layers_mpa: s,
+                shear_across_layers_mpa: s,
             }
         } else {
             Allowables {
                 in_plane_mpa: self.strength_in_plane_mpa,
                 across_layers_mpa: self.strength_across_layers_mpa,
+                compression_in_plane_mpa: self.compression_in_plane_mpa,
+                compression_across_layers_mpa: self.compression_across_layers_mpa,
+                shear_across_layers_mpa: self.shear_across_layers_mpa,
             }
         }
     }
@@ -157,21 +172,34 @@ impl FailureCriterion for MaxStress {
         ]);
         let local = tensor_to_stress(&rotate_to(&q, &stress_to_tensor(&stress.v)));
         let mean = 0.5 * (local[0] + local[1]);
+        // local[3] is in-plane shear. It widens the principal radius. It is
+        // not compared with the interlayer shear allowable.
         let radius = ((0.5 * (local[0] - local[1])).powi(2) + local[3] * local[3]).sqrt();
         let tension_in = (mean + radius).max(mean - radius).max(0.0);
+        let compression_in = (-(mean + radius).min(mean - radius)).max(0.0);
         let tension_z = local[2].max(0.0);
+        let compression_z = (-local[2]).max(0.0);
+        let interlayer = local[4].hypot(local[5]);
+        // The smeared stress is the average. The struts in a core carry
+        // about stress/vf, so the allowable scales by the same fraction.
+        let vf = ctx.volume_fraction.clamp(0.0, 1.0);
         let mut sf = f64::INFINITY;
         if tension_in > 1e-15 {
-            sf = sf.min(allow.in_plane_mpa / tension_in);
+            sf = sf.min(allow.in_plane_mpa * vf / tension_in);
+        }
+        if compression_in > 1e-15 {
+            sf = sf.min(allow.compression_in_plane_mpa * vf / compression_in);
         }
         if tension_z > 1e-15 {
-            sf = sf.min(allow.across_layers_mpa / tension_z);
+            sf = sf.min(allow.across_layers_mpa * vf / tension_z);
         }
-        if sf.is_finite() {
-            sf
-        } else {
-            1.0e9
+        if compression_z > 1e-15 {
+            sf = sf.min(allow.compression_across_layers_mpa * vf / compression_z);
         }
+        if interlayer > 1e-15 {
+            sf = sf.min(allow.shear_across_layers_mpa * vf / interlayer);
+        }
+        sf
     }
 }
 
@@ -388,6 +416,9 @@ mod tests {
             nu: 0.35,
             strength_in_plane_mpa: 30.0,
             strength_across_layers_mpa: 15.0,
+            compression_in_plane_mpa: 30.0,
+            compression_across_layers_mpa: 15.0,
+            shear_across_layers_mpa: 7.5,
             density_g_cm3: 1.27,
             isotropic: false,
         };

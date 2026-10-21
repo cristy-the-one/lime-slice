@@ -306,12 +306,19 @@ fn recover(
     // Extrapolated to the corners and averaged by volume. The same field the estimator smooths with.
     let nodal_stress = estimate::recover_nodal(mesh, &gauss);
     let allow = req.material.allowables();
-    let ctx = MaterialContext {
-        build_axis: axis,
-        temperature_c: None,
-        fibre_axis: None,
-        volume_fraction: 1.0,
-    };
+    // Lowest fraction of the elements around the node. A node on both a wall
+    // and the core is limited by the core, which is the conservative choice.
+    let mut nodal_vf = vec![1.0; mesh.nodes.len()];
+    let mut touched = vec![false; mesh.nodes.len()];
+    for (ei, cell) in mesh.elements.iter().enumerate() {
+        let fraction = vf.get(ei).copied().unwrap_or(1.0);
+        for &node in &cell.nodes {
+            if !touched[node] || fraction < nodal_vf[node] {
+                nodal_vf[node] = fraction;
+                touched[node] = true;
+            }
+        }
+    }
     let mut von_mises_field = vec![0.0; mesh.nodes.len()];
     let mut safety = vec![0.0; mesh.nodes.len()];
     let mut max_vm = -1.0;
@@ -319,12 +326,18 @@ fn recover(
     let mut max_disp = -1.0;
     let mut max_disp_at = [0.0; 3];
     let mut min_sf = f64::INFINITY;
-    let mut min_sf_at = [0.0; 3];
+    let mut min_sf_at: Option<[f64; 3]> = None;
     for i in 0..mesh.nodes.len() {
         let vm = von_mises(&nodal_stress[i]);
         von_mises_field[i] = vm;
+        let ctx = MaterialContext {
+            build_axis: axis,
+            temperature_c: None,
+            fibre_axis: None,
+            volume_fraction: nodal_vf[i],
+        };
         let sf = MaxStress.safety(&Stress { v: nodal_stress[i] }, &allow, &ctx);
-        safety[i] = sf;
+        safety[i] = if sf.is_finite() { sf } else { 1.0e9 };
         if vm > max_vm {
             max_vm = vm;
             max_vm_at = mesh.nodes[i];
@@ -334,9 +347,9 @@ fn recover(
             max_disp = mag;
             max_disp_at = mesh.nodes[i];
         }
-        if sf < min_sf {
+        if sf.is_finite() && sf < min_sf {
             min_sf = sf;
-            min_sf_at = mesh.nodes[i];
+            min_sf_at = Some(mesh.nodes[i]);
         }
     }
     // A peak is never below the Gauss points': the recovered field can still be smoother than them on a coarse mesh.
@@ -349,10 +362,16 @@ fn recover(
             max_vm = vm;
             max_vm_at = sample.xyz;
         }
+        let ctx = MaterialContext {
+            build_axis: axis,
+            temperature_c: None,
+            fibre_axis: None,
+            volume_fraction: vf.get(sample.element).copied().unwrap_or(1.0),
+        };
         let sf = MaxStress.safety(&Stress { v: sample.stress }, &allow, &ctx);
-        if sf < min_sf {
+        if sf.is_finite() && sf < min_sf {
             min_sf = sf;
-            min_sf_at = sample.xyz;
+            min_sf_at = Some(sample.xyz);
         }
     }
     let peak_gap = if max_vm > 1e-30 {
@@ -366,9 +385,11 @@ fn recover(
     if !max_disp.is_finite() {
         max_disp = 0.0;
     }
-    if !min_sf.is_finite() {
-        min_sf = 1.0e9;
-    }
+    let min_safety_factor = if min_sf.is_finite() {
+        Some(min_sf)
+    } else {
+        None
+    };
 
     let density = req.material.density_g_cm3();
     let mut solution = Solution {
@@ -391,7 +412,7 @@ fn recover(
         max_von_mises_at: max_vm_at,
         max_displacement_mm: max_disp,
         max_displacement_at: max_disp_at,
-        min_safety_factor: min_sf,
+        min_safety_factor,
         min_safety_at: min_sf_at,
         criterion: "max-stress".into(),
         label: LABEL.into(),
@@ -412,11 +433,11 @@ fn recover(
         solution.max_von_mises_at,
         radius,
     );
-    if solution.min_safety_factor < 1.0e9 {
+    if let Some(at) = solution.min_safety_at {
         peak_error = peak_error.max(estimate::local_relative(
             &solution,
             &solution.element_error,
-            solution.min_safety_at,
+            at,
             radius,
         ));
     }

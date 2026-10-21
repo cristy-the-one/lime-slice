@@ -31,6 +31,14 @@ pub struct Card {
     pub strength_in_plane_mpa: f64,
     #[serde(rename = "strengthAcrossLayersMPa")]
     pub strength_across_layers_mpa: f64,
+    /// Absent on an older card. Then compression uses the tension number.
+    #[serde(default, rename = "compressionInPlaneMPa")]
+    pub compression_in_plane_mpa: Option<f64>,
+    #[serde(default, rename = "compressionAcrossLayersMPa")]
+    pub compression_across_layers_mpa: Option<f64>,
+    /// Absent on an older card. Then shear is half the across-layer tension.
+    #[serde(default, rename = "shearAcrossLayersMPa")]
+    pub shear_across_layers_mpa: Option<f64>,
     #[serde(rename = "densityGCm3")]
     pub density_g_cm3: f64,
     #[serde(default, rename = "measuredAtC")]
@@ -53,6 +61,15 @@ impl Card {
             nu: self.nu,
             strength_in_plane_mpa: self.strength_in_plane_mpa,
             strength_across_layers_mpa: self.strength_across_layers_mpa,
+            compression_in_plane_mpa: self
+                .compression_in_plane_mpa
+                .unwrap_or(self.strength_in_plane_mpa),
+            compression_across_layers_mpa: self
+                .compression_across_layers_mpa
+                .unwrap_or(self.strength_across_layers_mpa),
+            shear_across_layers_mpa: self
+                .shear_across_layers_mpa
+                .unwrap_or(0.5 * self.strength_across_layers_mpa),
             density_g_cm3: self.density_g_cm3,
             isotropic: self.isotropic,
         }
@@ -98,9 +115,12 @@ fn card(
         nu,
         strength_in_plane_mpa: s_in,
         strength_across_layers_mpa: s_z,
+        compression_in_plane_mpa: Some(s_in),
+        compression_across_layers_mpa: Some(s_z),
+        shear_across_layers_mpa: Some(0.5 * s_z),
         density_g_cm3: density,
         measured_at_c: None,
-        specimen: "not measured".into(),
+        specimen: "placeholder, not measured".into(),
         method: None,
         source: "in-house".into(),
         isotropic: false,
@@ -424,6 +444,17 @@ mod tests {
             .unwrap();
         assert_eq!(shipped.e_in_plane_mpa, card.e_in_plane_mpa);
         assert_eq!(shipped.strength_across_layers_mpa, 15.0);
+        assert_eq!(shipped.compression_in_plane_mpa, Some(30.0));
+        assert_eq!(shipped.compression_across_layers_mpa, Some(15.0));
+        assert_eq!(shipped.shear_across_layers_mpa, Some(7.5));
+        assert!(
+            shipped.specimen.contains("placeholder"),
+            "{}",
+            shipped.specimen
+        );
+        let filled = card.material();
+        assert!((filled.compression_in_plane_mpa - 30.0).abs() < 1e-12);
+        assert!((filled.shear_across_layers_mpa - 7.5).abs() < 1e-12);
     }
 
     #[test]

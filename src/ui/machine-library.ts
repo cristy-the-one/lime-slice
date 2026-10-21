@@ -395,6 +395,10 @@ function readMaterialCard(value: unknown): MaterialCard | null {
   if (!finite(row.nu) || row.nu <= -1 || row.nu >= 0.5) return null;
   if (!finite(row.strengthInPlaneMPa) || row.strengthInPlaneMPa <= 0) return null;
   if (!finite(row.strengthAcrossLayersMPa) || row.strengthAcrossLayersMPa <= 0) return null;
+  const compressionInPlaneMPa = optionalPositive(row.compressionInPlaneMPa, row.strengthInPlaneMPa);
+  const compressionAcrossLayersMPa = optionalPositive(row.compressionAcrossLayersMPa, row.strengthAcrossLayersMPa);
+  const shearAcrossLayersMPa = optionalPositive(row.shearAcrossLayersMPa, row.strengthAcrossLayersMPa / 2);
+  if (compressionInPlaneMPa === null || compressionAcrossLayersMPa === null || shearAcrossLayersMPa === null) return null;
   if (!finite(row.densityGCm3) || row.densityGCm3 <= 0) return null;
   if (row.measuredAtC !== null && row.measuredAtC !== undefined && !finite(row.measuredAtC)) return null;
   if (typeof row.specimen !== "string") return null;
@@ -409,6 +413,9 @@ function readMaterialCard(value: unknown): MaterialCard | null {
     nu: row.nu,
     strengthInPlaneMPa: row.strengthInPlaneMPa,
     strengthAcrossLayersMPa: row.strengthAcrossLayersMPa,
+    compressionInPlaneMPa,
+    compressionAcrossLayersMPa,
+    shearAcrossLayersMPa,
     densityGCm3: row.densityGCm3,
     measuredAtC: finite(row.measuredAtC) ? row.measuredAtC : null,
     specimen: row.specimen,
@@ -1483,6 +1490,12 @@ function finite(value: unknown): value is number {
 
 function positive(value: unknown): value is number {
   return finite(value) && value > 0;
+}
+
+/** An absent strength uses the placeholder. A present one has to be positive. */
+function optionalPositive(value: unknown, fallback: number): number | null {
+  if (value === undefined || value === null) return fallback;
+  return positive(value) ? value : null;
 }
 
 function escapeHtml(value: string): string {

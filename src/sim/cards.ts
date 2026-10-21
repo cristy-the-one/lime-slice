@@ -14,6 +14,9 @@ export interface MaterialCard {
   nu: number;
   strengthInPlaneMPa: number;
   strengthAcrossLayersMPa: number;
+  compressionInPlaneMPa: number;
+  compressionAcrossLayersMPa: number;
+  shearAcrossLayersMPa: number;
   densityGCm3: number;
   measuredAtC: number | null;
   specimen: string;
@@ -41,9 +44,12 @@ function card(
     nu,
     strengthInPlaneMPa: sIn,
     strengthAcrossLayersMPa: sZ,
+    compressionInPlaneMPa: sIn,
+    compressionAcrossLayersMPa: sZ,
+    shearAcrossLayersMPa: sZ / 2,
     densityGCm3: density,
     measuredAtC: null,
-    specimen: "not measured",
+    specimen: "placeholder, not measured",
     method: null,
     source: "in-house",
     isotropic: false,

@@ -65,7 +65,7 @@ for (const name of readdirSync(root)) {
 const petg = provisionalCards().find((card) => card.id === "inhouse-petg");
 check(
   "PETG matches the plan",
-  !!petg && petg.polymer === "PETG" && petg.provisional && petg.EInPlaneMPa === 1800 && petg.EAcrossLayersMPa === 1500 && petg.nu === 0.35 && petg.strengthInPlaneMPa === 30 && petg.strengthAcrossLayersMPa === 15 && petg.densityGCm3 === 1.27 && petg.measuredAtC === null && petg.specimen === "not measured" && petg.method === null && petg.source === "in-house" && petg.isotropic === false,
+  !!petg && petg.polymer === "PETG" && petg.provisional && petg.EInPlaneMPa === 1800 && petg.EAcrossLayersMPa === 1500 && petg.nu === 0.35 && petg.strengthInPlaneMPa === 30 && petg.strengthAcrossLayersMPa === 15 && petg.compressionInPlaneMPa === 30 && petg.compressionAcrossLayersMPa === 15 && petg.shearAcrossLayersMPa === 7.5 && petg.densityGCm3 === 1.27 && petg.measuredAtC === null && petg.specimen === "placeholder, not measured" && petg.method === null && petg.source === "in-house" && petg.isotropic === false,
 );
 check("the four polymers we ship, and no others", provisionalCards().map((card) => card.polymer).join(",") === "PLA,PETG,ABS,TPU");
 
