@@ -268,7 +268,9 @@ for (const [width, height] of [[1440, 900], [1280, 720], [1024, 768]] as const) 
       const room = Math.min(centre.x - reach - canvas.x, canvas.x + canvas.width - centre.x - reach, centre.y - reach - canvas.y, canvas.y + canvas.height - centre.y - reach);
       expect(room, `${what}: the dock's reach is ${Math.round(room)} px from the canvas edge`).toBeGreaterThanOrEqual(24);
     };
-    await page.locator("#modelToolBoolean").click();
+    const boolean = page.locator("#modelToolBoolean");
+    if (!(await boolean.isVisible())) await page.locator('.rail-group[data-group="features"] .rail-fold').click();
+    await boolean.click();
     await expect.poll(async () => Object.keys(await grips(page))).toContain("size-0");
     await expect(page.locator("#model")).not.toHaveAttribute("data-gizmo-at", /.+/);
     await seatsOnGhost(page, "boolean");
@@ -435,7 +437,10 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
   const offLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) >= 15);
   expect(onLine.length, "dashed line pixels").toBeGreaterThan(0);
   expect(offLine.length, "dashed gaps").toBeGreaterThan(0);
-  if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph03-after-labels.png" });
+  if (process.env.UPDATE_SCREENSHOTS === "1") {
+    await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph03-after-labels.png" });
+    await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph03-followup-after-sizes.png" });
+  }
   await page.mouse.move(at.x - 300, at.y + 200);
   await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
   await expect(page.locator("#modelDy")).not.toHaveClass(/is-aspect/);
