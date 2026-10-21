@@ -449,7 +449,7 @@ test("the size box sits on the extrude and revolve handles", async ({ page }) =>
   await page.keyboard.press("e");
   await expect(canvas).toHaveAttribute("data-extrude", "aim");
   await hudNear(page, "mm");
-  if (process.env.LIME_SHOTS) await page.locator(".interact-hud:not([hidden])").screenshot({ path: `${process.env.LIME_SHOTS}/ux05-after-hud.png` });
+  if (process.env.UPDATE_SCREENSHOTS === "1") await page.locator("#modelBody").screenshot({ path: "docs/screenshots/ui-review-3-1/ux05-after-hud.png" });
   await page.keyboard.press("Escape");
   await expect(canvas).toHaveAttribute("data-extrude", "off");
   await page.keyboard.press("v");

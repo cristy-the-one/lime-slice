@@ -434,7 +434,7 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
   const offLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) >= 40);
   expect(onLine.length, "dashed line pixels").toBeGreaterThan(0);
   expect(offLine.length, "dashed gaps").toBeGreaterThan(0);
-  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph03-after-labels.png" });
+  if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph03-after-labels.png" });
   await page.mouse.move(at.x - 300, at.y + 200);
   await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
   await expect(page.locator("#modelDy")).not.toHaveClass(/is-aspect/);
@@ -443,7 +443,7 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
   await page.locator("#modelDy").focus();
   await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-1");
   await expect(page.locator("#modelDy")).toHaveClass(/is-aspect/);
-  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph01-after-field.png" });
+  if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph01-after-field.png" });
   await page.locator("#modelDy").blur();
   await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
 

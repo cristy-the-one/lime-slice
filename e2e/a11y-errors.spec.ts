@@ -219,5 +219,5 @@ test("a focused model field names its axis for assistive tech", async ({ page })
     return out;
   });
   for (const row of ratios) expect(row.ratio, `${row.scheme} ${row.axis} on ${row.against}`).toBeGreaterThanOrEqual(3);
-  await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph08-after-badge.png" });
+  if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph08-after-badge.png" });
 });
