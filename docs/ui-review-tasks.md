@@ -372,3 +372,193 @@ Status: done. Bounding-box callouts stand 12 px off the edge, and a label that w
 
 PH-01 to PH-04 and UX-01 to UX-07 each come with screenshots before and after, added to
 `docs/screenshots/ui-review-3-2/` and described in the review doc.
+
+---
+
+## Round 2: review of `586f1de..affa39a` (2026-10-21)
+
+Round 1 is a clear step forward:
+
+- one name for each dimension;
+- an opaque solid;
+- quiet disabled tools;
+- a folded empty Parameters section;
+- handles on the ghost.
+
+These findings come from reading the diff and the new screenshots, and from running the specs. The typecheck and
+unit tests pass. In `model-drag`, `model-sketch`, `model-layout`, `model-speed`, `model-holes`, `ui-review`,
+`window-fit` and `compact-layout`, 49 of 50 tests pass. The one failure is R2-01.
+
+The same rules as round 1 apply:
+
+- one commit per task, with its ID in the subject (`R2-03: …`);
+- the named specs must pass;
+- checks count only in the build Playwright runs (`vite build` plus `vite preview`). Don't mark a task done until
+  its check has passed in that build.
+
+### R2-01 (P0). The frame-time check must run in the build Playwright tests
+
+- **Seen**:
+  - `recordFrame` in `src/model-view.ts` writes `window.__frameTimes` only when `import.meta.env.DEV` is set.
+  - Playwright serves `vite preview`, which is a production build, so the list stays empty.
+  - As a result, `e2e/model-speed.spec.ts:312` fails with "Expected: > 10, Received: 0". PH-04's "≤ 17 ms" was never
+    measured.
+- **Change**:
+  - Measure from the test instead of the app. Before the drag, `page.evaluate` starts a `requestAnimationFrame` loop
+    that records the gap between frames. Read the times and stop the loop after the drag.
+  - Delete `recordFrame` and `__frameTimes` from `src/model-view.ts`.
+  - If an in-app hook is truly needed, gate it on a query flag the spec sets (`?perf=1`), not on `DEV`, and cap the
+    list at 600 entries.
+- **Accept when**: `npx playwright test e2e/model-speed.spec.ts` passes against the preview build, and the assertion
+  message prints the median it measured. Record that number in the task status.
+
+### R2-02 (P0). `preserveDrawingBuffer` off for users
+
+- **Seen**: `new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true })` at
+  `src/model-view.ts:254`. It was added so a test can read a pixel, but it slows every Model frame for every user.
+- **Change**:
+  - Create the renderer without it.
+  - For PH-01's pixel check, read the pixel within the frame: `page.evaluate` waits for the next
+    `requestAnimationFrame`, then calls `gl.readPixels` before the browser composites.
+  - Or use `canvas.toDataURL()` right after a forced render, through a test hook gated as in R2-01.
+- **Accept when**: `grep -n preserveDrawingBuffer src` finds nothing, and the PH-01 colour check in
+  `e2e/model-drag.spec.ts` still passes.
+
+### R2-03 (P0). Draw the lit edges once: solid where seen, dashed where hidden
+
+- **Seen**: in `replaceAspect`:
+  - The visible pass has `depthTest: false`, so it draws the whole edge through the solid.
+  - The hidden pass (`GreaterEqualDepth`, dashed, darkened to 35%) then draws over it, with `renderOrder 9`.
+  - Behind the solid, users see a full-colour line with dark dashes on top. That's the pale, broken look in
+    `ph01-after-axis.png`, `ph02-after-dimension.png` and `ph08-after-badge.png`.
+- **Change**:
+  - Visible pass: `depthTest: true` and `depthFunc: LessEqualDepth`. The ghost has `depthWrite: false`, so the line
+    still reads through the ghost.
+  - Hidden pass: stays dashed, with `GreaterDepth`, at 60% of the axis colour rather than 35%, so it reads on the
+    dark stage.
+  - Keep `renderOrder` above the solid's.
+- **Accept when**:
+  - The PH-01 pixel check passes at a visible edge's midpoint.
+  - A new check samples a point on an edge behind the solid. That point isn't the full axis colour, and along 20 px
+    the samples alternate between line and background (dashed).
+  - `ph01-after-axis.png` and `ph08-after-badge.png` are retaken.
+
+### R2-04 (P0). Typed-value boxes light their handle again
+
+- **Seen**:
+  - PH-06 moved the `focusin`/`focusout` listeners to `#modelPanel`.
+  - The typed-value box (`src/interact/hud.ts`) is mounted on the canvas's parent, outside the panel. It's mounted by
+    `src/app/sketch.ts:611`, `src/push-pull-ui.ts:117` and `src/app/edge-drag.ts:135`.
+  - So focusing that box no longer lights its handle.
+- **Change**:
+  - Listen on the panel and on each mounted HUD element.
+  - Either `mountHud` takes an `onFocusChange` callback, or the view exposes `watchFocus(element)`, called when a HUD
+    mounts and undone when it unmounts.
+  - Settings fields must still not trigger a sync.
+- **Accept when**:
+  - A Playwright test opens extrude in a sketch, Tabs into the HUD's distance field, and sees `data-aspect-field`
+    name it.
+  - Focusing a Settings field still leaves `data-focus-syncs` unchanged.
+
+### R2-05 (P1). Work out the ghost seats once per ghost, not per frame
+
+- **Seen**: `sizeHandles()` runs every frame (`src/model-view.ts:1464`) and on every pointer move (`handleAt`). It
+  now calls:
+  - `readGhost()`, which runs `Box3.setFromObject` over the ghost;
+  - `facePoint()` for every face knob, which walks every ghost vertex;
+  - `placeAspectLabel()` → `labelCoversKnob()`, which calls `getBoundingClientRect` on the label and the canvas.
+    That forces a layout each frame.
+- **Change**:
+  - Cache the ghost's world box and its six face points, keyed on `ghostSerial`. Only re-project them per frame.
+  - Skip `readGhost` when no handle has `seat.at === "ghost"`.
+  - Run `labelCoversKnob` only when the label moves by more than 2 px or the aspect key changes. Use the label's size
+    cached when its text changes.
+- **Accept when**:
+  - The measured median frame time is ≤ 17 ms on the 3,000-face part (R2-01's test), and on a 40-hole sketch ghost
+    as a second case.
+  - A Performance trace of a 2 s drag shows no "Forced reflow" warning from `model-view.ts`.
+
+### R2-06 (P1). Take out the "Hole N depth" buttons
+
+- **Seen**: PH-07 added a row of buttons, "Hole 1 depth", "Hole 2 depth" and so on (`paintHolePicks` in
+  `src/ui/model-chrome.ts`). Their only job is to take focus. Clicking one changes nothing, and with 20 holes there are
+  20 of them.
+- **Change**:
+  - Remove `paintHolePicks` and `#modelHolePicks`.
+  - Keep `holeIndex` on the handles, so hovering or dragging hole 2's own depth knob lights hole 2.
+  - The panel's single depth field (one number for the group) lights every hole in the group. Show each lit hole's
+    rim, not just the first.
+- **Accept when**:
+  - The `e2e/model-holes.spec.ts` test "focusing hole 2's depth lights hole 2" is rewritten to hover hole 2's knob
+    (from `data-handles`), and checks `data-aspect-at` against `data-hole-centres`.
+  - Focusing the panel's depth field gives `data-aspect-lines` that cover all the holes.
+  - No element has an id starting with `modelHoleDepth-`.
+
+### R2-07 (P1). Remember Parameters open or closed per project, keyed properly
+
+- **Seen**: the key comes from
+  `projectId: () => state.plate.objects.map((object) => object.id).join(",")` in `src/app/model.ts:575`. That key:
+  - changes whenever a part is added or removed;
+  - can match between two projects with the same ids;
+  - leaves a new localStorage entry each time.
+- **Change**:
+  - Key on the project's saved path, or on the `.lime` file's own id if it has one.
+  - For a project that hasn't been saved, use one shared key.
+  - Keep at most 50 such keys: drop the oldest when writing the 51st.
+  - Re-run `syncSketchVisibility` when a parameter is added or removed, not only when `data-sketch` changes.
+- **Accept when**: a unit test in `src/ui/parameters` (or `src/params.test.ts`) shows:
+  - the open state survives adding a part;
+  - the state differs between two saved paths;
+  - the key count stays at 50 or fewer after 60 projects.
+
+### R2-08 (P1). Rail headings fit, and stay on laptop screens
+
+- **Seen**:
+  - "FEATURES" is clipped at the left edge in `ux02-after-disabled.png` and `ux09-after-chip.png`.
+  - Below 820 px tall the headings are hidden (`@media (min-height: 820px)` in `src/ui/model-dock.css`). So at
+    1280×800 and 1366×768 there are none (`ux10-after-pause-dot.png`).
+- **Change**:
+  - Make the headings fit the rail's width. Use smaller letter-spacing, or shorter words ("Make", "Shape", "Feat.",
+    "Check", "Frame", "Edit") with the full name in the heading's `title`.
+  - Show the headings down to 720 px tall, by using the 2 px dense spacing first. Drop headings only when a whole
+    group has to fold into the flyout.
+- **Accept when**: in `e2e/model-layout.spec.ts`, at 1440×900, 1366×768 and 1280×800, every heading is visible with
+  `scrollWidth <= clientWidth`, and every rail tool is still reachable.
+
+### R2-09 (P1). The sketch card's feature strip reads as a form, not a centred stack
+
+- **Seen**: in `ux03-after-feature-strip.png`, while Loft is active:
+  - the prompt, the name, Join/Cut/New object, Smooth, Apply and Cancel are a centred column of different widths;
+  - Smooth sits alone on its line;
+  - Apply isn't styled as the main button;
+  - the prompt is centred text.
+- **Change**: lay the strip out left-aligned, at the full card width:
+  1. the prompt, as a note (the same style as other panel notes);
+  2. the name and the segmented Join / Cut / New object, on one row;
+  3. options (Smooth, Flip, the value field), on one row;
+  4. Apply (primary) and Cancel, on one row and right-aligned, as in the other Model tools.
+- **Accept when**: in `e2e/model-sketch.spec.ts`, with Loft active and again with Extrude active:
+  - Apply and Cancel share a top edge, within 1 px;
+  - Apply has the primary class;
+  - every strip control's left edge matches the card's content edge, within 1 px, except buttons on a shared row.
+
+  Retake both `ux03-after-*` screenshots after UX-02, so they show the dashed disabled style.
+
+### R2-10 (P2). Small fixes
+
+- **Screenshot for UX-05**: `ux05-after-hud.png` is a 40 px crop of the field. Replace it with a canvas shot that
+  shows the box next to the extrude arrow it belongs to.
+- **Selection chip spacing**:
+  - `ux09-after-chip.png` renders "1face ▾". Check the chip's CSS (letter-spacing, `white-space`, or a font without a
+    regular space) so the label reads "1 face ▾".
+  - Add a Playwright check that the chip's `innerText` is `1 face ▾`.
+- **Screenshots left in the tree**: the specs write to `docs/screenshots/` on every run, so a local test run leaves
+  changed PNGs in the tree. Write screenshots only when `UPDATE_SCREENSHOTS=1` is set.
+- **Engine check**: run the byte-for-byte engine comparison on a machine with the slicer binary before the PR, or say
+  in the PR that it wasn't run.
+
+### Round 2 order
+
+1. R2-01 to R2-04 (P0). Open the PR after these. Round 1's P2 tasks and R2-05 onward can follow in the same PR.
+2. R2-05 to R2-09.
+3. R2-10.
