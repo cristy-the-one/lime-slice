@@ -162,6 +162,39 @@ export function moveVolume(volume: ModifierVolume, axis: AxisName, deltaMm: numb
   return next;
 }
 
+export type VolumeSizeField = "sx" | "sy" | "sz";
+
+/**
+ * The name of one size, and whether the field shows a radius.
+ * A box's three sizes are full extents. A cylinder's X and Y are radii (half the stored size) and Z is the height.
+ * A sphere's three sizes are radii. The stored `size` array stays the full extent either way.
+ */
+export function volumeSizeAxis(kind: VolumeKind, field: VolumeSizeField): { label: string; radius: boolean } {
+  if (kind === "box") {
+    if (field === "sx") return { label: "Width X", radius: false };
+    if (field === "sy") return { label: "Depth Y", radius: false };
+    return { label: "Height Z", radius: false };
+  }
+  if (kind === "cylinder") {
+    if (field === "sz") return { label: "Height Z", radius: false };
+    return { label: field === "sx" ? "Radius X" : "Radius Y", radius: true };
+  }
+  if (field === "sx") return { label: "Radius X", radius: true };
+  if (field === "sy") return { label: "Radius Y", radius: true };
+  return { label: "Radius Z", radius: true };
+}
+
+/** The number the field shows. A radius field shows half the stored extent. */
+export function volumeSizeShown(kind: VolumeKind, field: VolumeSizeField, stored: number): number {
+  return round3(volumeSizeAxis(kind, field).radius ? stored / 2 : stored);
+}
+
+/** The extent to store. A typed radius is doubled, and the engine floor stays 0.2 mm of full size. */
+export function volumeSizeStored(kind: VolumeKind, field: VolumeSizeField, typed: number): number {
+  const full = volumeSizeAxis(kind, field).radius ? typed * 2 : typed;
+  return round3(Math.max(MIN_SIZE, full));
+}
+
 /** `deltaMm` is the change in full size. The center stays put. */
 export function scaleVolume(volume: ModifierVolume, axis: AxisName, deltaMm: number): ModifierVolume {
   const next = { ...volume };
