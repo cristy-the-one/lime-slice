@@ -793,3 +793,112 @@ Status: done.
 4. R3-06.
 
 Round 3 can land in the same PR as round 2, or in a PR of its own straight after it.
+
+---
+
+## Round 4: review of `0c30fe2..8c0c161`, with CI in mind (2026-10-21)
+
+Round 3 and most of round 2 landed well. The typecheck and unit tests pass. On a Windows machine with a GPU (Intel,
+Direct3D 11), 77 of 82 tests pass across 13 UI specs. The five failures are below.
+
+**CI is the bar, not a local run.** `.github/workflows/ci.yml` runs `npm run test:smoke` on `ubuntu-24.04` runners.
+Those have no GPU, so headless Chromium draws with SwiftShader on the CPU. `test:smoke` already includes
+`model-speed`, `model-drag`, `model-context-bar`, `compact-layout` and `model-layout`, so every failure below would
+fail CI. A task is done when the CI job is green on the pushed branch, and the task's status links that run.
+
+### R4-01 (P0). A speed test that means the same thing on a GPU and on a CPU
+
+- **Seen**:
+  - The test measures the median gap between frames during a 2 s knob drag on the 3,000-face part.
+  - This machine renders with the GPU. There the gaps are 4.2 ms idle, 4.2 ms orbiting and 1.2 ms dragging, so ≤ 17 ms
+    passes.
+  - Grok's machine measured 40.3 ms.
+  - The comment already in `model-speed.spec.ts` records 310–335 ms per frame on a GitHub runner.
+  - A fixed 17 ms limit therefore measures the machine, not the code, and would fail CI on every run.
+- **Change** in `e2e/model-speed.spec.ts`:
+  1. Read the renderer: `getExtension("WEBGL_debug_renderer_info")` on the `#model` canvas's context, then
+     `UNMASKED_RENDERER_WEBGL`. Treat "SwiftShader", "llvmpipe" or "Software" in it as software.
+  2. Measure a baseline on the same page first: 2 s of orbit drags on empty canvas, with the same `frameGaps`
+     `requestAnimationFrame` loop.
+  3. Assert, everywhere: knob drag median ≤ orbit median × 1.5 + 4 ms. The knob drag must not cost much more than
+     the view itself.
+  4. Only when the renderer is not software, also assert drag median ≤ 17 ms. Otherwise skip that one assertion
+     with `test.info().annotations.push({ type: "skip-absolute", description: renderer })`.
+  5. The assertion message prints the renderer, both medians and the frame counts.
+- **Accept when**:
+  - The test passes locally and in the CI `test:smoke` job.
+  - The CI log shows the software renderer and the relative check passing.
+  - The task status records both runs' numbers.
+
+### R4-02 (P0). The knob drag stops rebuilding the ghost on every move
+
+- **Seen**:
+  - In the same test, the heap grew by **27 MB** in 2 s, against a limit of 5 MB.
+  - Every value change during the drag calls `rebuildGhost()`. That disposes and re-creates the ghost's meshes,
+    materials and edge lines, and bumps `ghostSerial`.
+  - Bumping `ghostSerial` also invalidates every R2-05 cache on every move, so those caches do nothing during a drag.
+- **Change**:
+  - In `src/model-view.ts`, when only the numbers of the same primitive change (same `kind`, same primitive type, same
+    segment counts), update the existing objects in place.
+    - Box, ellipsoid and the like: a scale and position on the ghost's group, if the mesh is built at unit size.
+      Otherwise write new positions into the existing `BufferAttribute` (`array.set`, `needsUpdate = true`) and
+      `setPositions` on the edge `LineSegmentsGeometry`.
+    - Rebuild only when the kind or the vertex count changes.
+  - `ghostSerial` bumps only on a real rebuild. Add a separate `ghostPose` counter for in-place updates, so the
+    R2-05 caches re-project rather than recompute.
+- **Accept when**:
+  - Measure the heap after a forced GC: launch with `--js-flags=--expose-gc` through this spec's
+    `test.use({ launchOptions })`, and call `window.gc()` before both readings.
+  - Growth after GC is < 5 MB, locally and in CI.
+  - A unit or Playwright check confirms that dragging a box size knob through 50 values leaves `ghostSerial`
+    unchanged (expose it as `data-ghost-serial` on the canvas).
+
+### R4-03 (P0). Stage keys work again on the phone layout
+
+- **Seen**: `compact-layout.spec.ts:103` fails: "4" no longer opens Model. R3-01's safety net in `click()`
+  (`src/ui/palette.ts`) refuses a hidden target. In the compact layout the top tabs (`#tabModel` and the others) are
+  hidden, because the bottom nav replaces them.
+- **Change**:
+  - `tab-prepare` to `tab-model` switch stage through the same function the tabs call, not by clicking `#tab*`.
+  - Look through every other command whose `target` can be hidden in the compact layout, and give it a direct call
+    or a compact fallback target (for example `#compactTabs [data-tab=model]`).
+  - Add the compact layout to R3-05's matrix in `src/ui/commands.test.ts` as a `layout: "desktop" | "compact"`
+    dimension. Keep a map from target to the layouts it's visible in, as for stages.
+- **Accept when**: `compact-layout.spec.ts` passes, and the matrix fails if a command's only target is hidden in a
+  layout where its key fires.
+
+### R4-04 (P0). The context bar gets out of the way while a tool is open
+
+- **Seen**: `model-context-bar.spec.ts:98` and `:138` fail. After a face click opens Push/Pull, `#modelContextBar`
+  stays visible (`is-tool`, `data-actions=""`, `data-faded="0"`), an empty bar over the canvas. The UX-09 follow-up
+  ("does not fade, including while a tool is open") was meant for the chip, but it keeps the whole bar up.
+- **Change**: while a tool is open, hide the bar, as before UX-09. If the design wants the chip to stay instead, show
+  only the chip (no empty toolbar) and update these two tests on purpose: assert the chip is visible and the action
+  buttons are not. Say which one in the task status.
+- **Accept when**: `model-context-bar.spec.ts` passes in full, with the change to its assertions (if any) explained in
+  the commit message.
+
+### R4-05 (P1). The lit-colour check holds on any GPU and on SwiftShader
+
+- **Seen**: `model-drag.spec.ts:369` fails here with ΔE 13.6 against a limit of 10. Antialiasing mixes a 4 px line
+  with the background differently on each renderer, so a single pixel is too fragile.
+- **Change**: sample a 5×5 patch around `data-aspect-sample` and test the most saturated pixel in it against the axis
+  colour. Keep the limit at 10. Do the same for R2-03's hidden-edge walk.
+- **Accept when**: the check passes locally and in CI, with the measured ΔE printed in the assertion message.
+
+### R4-06 (P1). The new specs run in CI
+
+- **Seen**: `e2e/model-aspect.spec.ts` (PH-09) isn't in `test:smoke`, so CI never runs it. The same goes for any spec
+  added in rounds 2–4.
+- **Change**: add every new spec to `test:smoke` in `package.json`. Then run the whole `e2e/` folder locally, not
+  only the specs a task names, before marking a round done. `model-context-bar` and `compact-layout` were missed this
+  way in round 3.
+- **Accept when**: `git diff origin/main -- e2e` lists no new `.spec.ts` that's missing from `test:smoke`, and the
+  CI job is green.
+
+### Round 4 order
+
+1. R4-01 and R4-02 together: the speed test, then the fix it measures.
+2. R4-03 and R4-04.
+3. R4-05 and R4-06.
+4. Push, wait for CI, and record the run in each status. Then the branch is ready for its PR to `main`.
