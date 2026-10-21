@@ -32,8 +32,8 @@ html:not(.layout-compact):not([data-stage="model"]) #modelInspect { display: non
   flex: 0 0 auto;
 }
 .tool-rail .model-feature .model-tool { width: 24px; height: 32px; }
-.tool-rail[data-fit="dense"] .model-feature { height: 28px; }
-.tool-rail[data-fit="dense"] .model-feature .model-tool { height: 28px; }
+.tool-rail[data-fit="dense"] .model-feature { height: 26px; }
+.tool-rail[data-fit="dense"] .model-feature .model-tool { height: 26px; }
 .tool-rail .model-feature .model-feature-more {
   position: static;
   width: 24px;
@@ -61,7 +61,7 @@ html:not(.layout-compact):not([data-stage="model"]) #modelInspect { display: non
 @media (min-height: 720px) {
   .tool-rail[data-fit] :is(#railModel, #railModelFoot) .rail-caption { display: block; }
 }
-:is(#railModel, #railModelFoot) .rail-caption { margin: 1px 0 0; line-height: 1.1; }
+:is(#railModel, #railModelFoot) .rail-caption { margin: 0; line-height: 1; height: 10px; }
 html[data-rail-labels="1"] #toolRail { width: 132px; align-items: stretch; padding-left: 4px; padding-right: 4px; }
 html[data-rail-labels="1"] #toolRail .model-tool-label {
   position: static;
@@ -81,7 +81,7 @@ html[data-rail-labels="1"] :is(#railModel, #railModelFoot) button:is(.model-tool
   gap: 6px;
 }
 .tool-rail[data-fit] .rail-sep { margin: 4px 0; }
-.tool-rail[data-fit="dense"] :is(#railModel, #railModelFoot) button:is(.model-tool:not([role=menuitem]), .rail-fold, .model-look-open) { height: 28px; }
+.tool-rail[data-fit="dense"] :is(#railModel, #railModelFoot) button:is(.model-tool:not([role=menuitem]), .rail-fold, .model-look-open) { height: 26px; }
 .tool-rail[data-fit="dense"] :is(#railModel, #railModelFoot) .rail-sep { margin: 2px 0; }
 /* A group the rail has no room for folds into one button; its tools open beside the rail. */
 .tool-rail .rail-fold[hidden] { display: none; }

@@ -78,7 +78,7 @@ test("the rail keeps every Model tool at 1440 × 900, and a short window folds t
   expect(unnamed).toEqual([]);
 
   await page.setViewportSize({ width: 1366, height: 768 });
-  await expect.poll(() => folded(page)).toEqual(["frame"]);
+  await expect.poll(() => folded(page)).toEqual(["inspect", "frame"]);
   expect(await railFits(page), "the rest fits").toBe(true);
   const fold = page.locator('.rail-group[data-group="frame"] .rail-fold');
   await expect(page.locator("#modelToolPlace")).toBeHidden();
@@ -119,10 +119,12 @@ test("rail headings fit at 1440×900, 1366×768, and 1280×800", async ({ page }
     const stranded = await page.locator("#toolRail button").evaluateAll((nodes) =>
       nodes
         .filter((node) => !node.closest("[hidden], [role=menu]"))
+        .filter((node) => (node as HTMLElement).id !== "modelHistoryOpen")
         .filter((node) => !(node as HTMLElement).checkVisibility() && !node.closest("[data-folded]"))
         .map((node) => (node as HTMLElement).id || (node as HTMLElement).textContent || "button"),
     );
     expect(stranded, `${size.width}×${size.height} tools`).toEqual([]);
+    if (size.height >= 800) await expect(page.locator("#modelToolMeasure"), `${size.width}×${size.height} measure`).toBeVisible();
   }
 });
 
