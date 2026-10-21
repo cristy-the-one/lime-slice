@@ -213,6 +213,8 @@ export interface ModelView {
   onSketchView(cb: () => void): void;
   /** Top, front, or the framed isometric pose. Z stays up. */
   setCameraPreset(preset: "top" | "front" | "iso"): void;
+  /** A typed-value box outside the panel. Focusing it lights its handle. Settings fields are not passed here. */
+  watchFocus(element: HTMLElement): () => void;
 }
 
 /** --- S2 sketch --- What the view draws. Positions are in model space. */
@@ -2007,6 +2009,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       controls.enableDamping = true;
       publishCamera();
       kick();
+    },
+    watchFocus(element) {
+      const onFocus = () => queueMicrotask(syncFocusedField);
+      element.addEventListener("focusin", onFocus);
+      element.addEventListener("focusout", onFocus);
+      return () => {
+        element.removeEventListener("focusin", onFocus);
+        element.removeEventListener("focusout", onFocus);
+      };
     },
     inView(box) {
       camera.updateMatrixWorld();

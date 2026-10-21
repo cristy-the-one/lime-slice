@@ -392,6 +392,18 @@ async function hudNear(page: Page, unit: string) {
   expect(Math.hypot(gapX, gapY)).toBeLessThanOrEqual(120);
 }
 
+test("Tab into the extrude size box lights that distance", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await sketchRectangle(page);
+  await page.keyboard.press("e");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await page.locator("#model").focus();
+  await page.keyboard.press("Tab");
+  await expect(page.locator(".interact-hud input")).toBeFocused();
+  await expect(canvas).toHaveAttribute("data-aspect-field", /distance/);
+});
+
 test("the size box sits on the extrude and revolve handles", async ({ page }) => {
   await openBox(page);
   const canvas = page.locator("#model");

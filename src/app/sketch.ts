@@ -424,6 +424,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let probeTimer = 0;
 
   const hud = mountHud(host.canvas.parentElement ?? document.body);
+  host.view.watchFocus(hud.element);
   const box = document.createElement("div");
   box.className = "sketch-box";
   box.hidden = true;
