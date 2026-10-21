@@ -264,6 +264,9 @@ Formulas in the test, as in the main plan's §7. No copied benchmark text.
 5. **Belt frame.** An IR3 V2 slice's `layerNormal` equals the main plan's §6.1 vector within `1e-12`.
 6. **D10.** A project solved as sliced produces the same slice request and G-code as before. The engine reads the
    job; it doesn't change it.
+7. **Regions and bands.** A cantilever with a band on its tip region has a margin of 1 at the band's centre and 0 at
+   each edge, and the reply names the side it missed when outside. Two load cases on one beam give the same
+   displacements as two separate solves, within `1e-10`, with one factorisation (count the factor calls).
 
 ## 10. Trust for the sliced representation
 
@@ -288,6 +291,7 @@ mesher exists.
 | **L2** | Grid, rasteriser, void threshold, six-tet split, the `sliced` representation in `Request` | §9.2 passes. A sliced STL with no B-rep solves. The node cap refuses with the sentence and suggests `hXY`. |
 | **L3** | Bead card section, orientation tensor, `max-stress-bead` | §9.3 passes. Provisional bead cards cap trust at `rough`. |
 | **L4** | Margins, hot spot with `role`, `governs`, `nearestFace`, the §10 trust rules | §9.4 passes. A deliberately weak-across-layers part reports `governs: across-layers`. |
+| **L4b** | Regions, bands, stiffness targets and load cases (§7.1): one factorisation, one back-substitution per case | §9.7 passes. A clip with a stiff mount and a latch band reports both margins from one factorisation. Too-stiff and too-flexible both say which side they missed. |
 | **L5** | MCP: `representation: "sliced"` on `sim_setup`, the margins on `sim_run`, `reslice` on `sim_sweep`, the guide table | An LLM run against the generated beam, an STL and a STEP part follows the guide's loop with no OCCT for the first two. |
 | **L6** | Preview `colourBy: stress / safety`, the Model heatmap labelled "as sliced" | Playwright on a canned sliced result: the Preview layer shows the stress colours and the legend text. |
 
