@@ -378,6 +378,10 @@ export function runCommand(id: string) {
     case "model-join":
       openJoinTool();
       return;
+    case "model-reset-view":
+      // The button sits in the View menu, which is hidden until it opens. Clicking it does nothing.
+      frameModel(false);
+      return;
     case "model-frame-all":
       frameModel(true);
       return;
