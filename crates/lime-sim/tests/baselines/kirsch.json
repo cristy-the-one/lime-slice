@@ -1,0 +1,36 @@
+{
+  "formula": "Infinite plate, flank r = a, θ = π/2: Kt = 3. A finite plate of outer radius 10a sits near that.",
+  "aMm": 10,
+  "outerMm": 100,
+  "sigmaMPa": 1,
+  "thicknessMm": 2,
+  "rows": {
+    "nr6-nt4": {
+      "nr": 6,
+      "nt": 4,
+      "edgeMm": 3.927,
+      "nodes": 351,
+      "kt": 2.4080,
+      "gapTo3": 0.5920,
+      "relativeEnergyError": 0.0515
+    },
+    "nr12-nt8": {
+      "nr": 12,
+      "nt": 8,
+      "edgeMm": 1.963,
+      "nodes": 1275,
+      "kt": 2.6960,
+      "gapTo3": 0.3040,
+      "relativeEnergyError": 0.0347
+    },
+    "nr24-nt16": {
+      "nr": 24,
+      "nt": 16,
+      "edgeMm": 0.982,
+      "nodes": 4851,
+      "kt": 2.8431,
+      "gapTo3": 0.1569,
+      "relativeEnergyError": 0.0194
+    }
+  }
+}

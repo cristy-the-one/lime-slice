@@ -1,0 +1,60 @@
+{
+  "formula": "δ = P L³ / (3 E I) + (6/5) P L / (A G), σ(x,z) = P (L − x) (z − h/2) / I",
+  "Lmm": 100,
+  "bMm": 10,
+  "hMm": 10,
+  "EMpa": 10000,
+  "nu": 0.3,
+  "PNewton": 10,
+  "analyticTipDownMm": 0.40312,
+  "rows": {
+    "tet10-h": {
+      "element": "tet10",
+      "edgeMm": 10,
+      "nodes": 189,
+      "tipDownMm": 0.39330159,
+      "tipRel": -0.024356,
+      "stressMPa": 4.099056,
+      "stressRel": 0.017773,
+      "sampleMm": [7.236, 5.854, 8.618],
+      "relativeEnergyError": 0.650167
+    },
+    "tet10-h2": {
+      "element": "tet10",
+      "edgeMm": 5,
+      "nodes": 1025,
+      "tipDownMm": 0.39864321,
+      "tipRel": -0.011105,
+      "stressMPa": 4.995627,
+      "stressRel": -0.020343,
+      "sampleMm": [1.382, 5.691, 9.309],
+      "relativeEnergyError": 0.217580
+    },
+    "tet4-h2": {
+      "element": "tet4",
+      "edgeMm": 5,
+      "nodes": 189,
+      "tipDownMm": 0.20305190,
+      "tipRel": -0.496299,
+      "stressMPa": 3.411154,
+      "stressRel": -0.222529,
+      "sampleMm": [2.500, 6.250, 8.750],
+      "relativeEnergyError": 0.672874,
+      "note": "Same node count as tet10-h. Stiffer tip: the locking regression."
+    },
+    "tet10-h4": {
+      "element": "tet10",
+      "edgeMm": 2.5,
+      "nodes": 6561,
+      "fine": true,
+      "tipDownMm": 0.39986678,
+      "tipRel": -0.008070,
+      "stressMPa": 5.676492,
+      "stressRel": 0.023378,
+      "sampleMm": [0.691, 5.345, 9.655],
+      "relativeEnergyError": 0.083554,
+      "observedOrder": 0.461,
+      "note": "Skipped unless LIME_SIM_FINE=1. Order is ln(|tipRel h/2| / |tipRel h/4|) / ln 2."
+    }
+  }
+}

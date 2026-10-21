@@ -123,7 +123,7 @@ impl Mesh {
                 ];
                 let nodes_of = match self.kind {
                     ElementKind::Tet4 => corners.to_vec(),
-                    ElementKind::Tet10 => tet10_nodes(corners, &mut nodes, &mut mids, &self.nodes),
+                    ElementKind::Tet10 => tet10_nodes(corners, &mut nodes, &mut mids, midpoint),
                     other => {
                         return Err(SimError::new(format!(
                             "{} is not in this version.",
@@ -208,15 +208,96 @@ fn tet10_nodes(
     corners: [usize; 4],
     nodes: &mut Vec<[f64; 3]>,
     mids: &mut HashMap<(usize, usize), usize>,
-    _origin: &[[f64; 3]],
+    mid_of: fn([f64; 3], [f64; 3]) -> [f64; 3],
 ) -> Vec<usize> {
     let pairs = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)];
     let mut out = corners.to_vec();
     for (i, j) in pairs {
-        let at = midpoint(nodes[corners[i]], nodes[corners[j]]);
+        let at = mid_of(nodes[corners[i]], nodes[corners[j]]);
         out.push(ensure_mid(corners[i], corners[j], nodes, mids, at));
     }
     out
+}
+
+/// A brick grid in index space, placed by `at(i, j, k)`. `mid_of` is the
+/// straight midpoint, or a projection that puts a quadratic node on a circle.
+pub fn mapped_grid(
+    div: [usize; 3],
+    kind: ElementKind,
+    at: impl Fn(usize, usize, usize) -> [f64; 3],
+    mid_of: fn([f64; 3], [f64; 3]) -> [f64; 3],
+) -> Result<Mesh, SimError> {
+    if !matches!(kind, ElementKind::Tet4 | ElementKind::Tet10) {
+        return Err(SimError::new(format!(
+            "{} is not in this version.",
+            kind.name()
+        )));
+    }
+    let [nx, ny, nz] = div;
+    if nx == 0 || ny == 0 || nz == 0 {
+        return Err(SimError::new("A grid needs at least one brick."));
+    }
+    let mut nodes = Vec::new();
+    for k in 0..=nz {
+        for j in 0..=ny {
+            for i in 0..=nx {
+                nodes.push(at(i, j, k));
+            }
+        }
+    }
+    let cid = |i: usize, j: usize, k: usize| i + (nx + 1) * (j + (ny + 1) * k);
+    let mut mids: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut elements = Vec::new();
+    for k in 0..nz {
+        for j in 0..ny {
+            for i in 0..nx {
+                let hex = [
+                    cid(i, j, k),
+                    cid(i + 1, j, k),
+                    cid(i + 1, j + 1, k),
+                    cid(i, j + 1, k),
+                    cid(i, j, k + 1),
+                    cid(i + 1, j, k + 1),
+                    cid(i + 1, j + 1, k + 1),
+                    cid(i, j + 1, k + 1),
+                ];
+                for tet in HEX_TETS {
+                    let corners = [hex[tet[0]], hex[tet[1]], hex[tet[2]], hex[tet[3]]];
+                    let cell_nodes = if kind == ElementKind::Tet4 {
+                        corners.to_vec()
+                    } else {
+                        tet10_nodes(corners, &mut nodes, &mut mids, mid_of)
+                    };
+                    elements.push(Cell { nodes: cell_nodes });
+                }
+            }
+        }
+    }
+    Ok(Mesh {
+        nodes,
+        elements,
+        kind,
+    })
+}
+
+/// Mid-edge node on a Z-axis cylinder. A radial edge stays straight. An edge
+/// whose ends share a radius is put on that cylinder, so a quadratic tet
+/// follows the hole instead of the chord.
+pub fn cylindrical_mid(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    let ra = (a[0] * a[0] + a[1] * a[1]).sqrt();
+    let rb = (b[0] * b[0] + b[1] * b[1]).sqrt();
+    let scale = ra.max(rb).max(1.0);
+    if (ra - rb).abs() > 1e-8 * scale || ra < 1e-12 || rb < 1e-12 {
+        return midpoint(a, b);
+    }
+    let ux = a[0] / ra + b[0] / rb;
+    let uy = a[1] / ra + b[1] / rb;
+    let n = (ux * ux + uy * uy).sqrt();
+    if n < 1e-12 {
+        return midpoint(a, b);
+    }
+    let r = 0.5 * (ra + rb);
+    [r * ux / n, r * uy / n, 0.5 * (a[2] + b[2])]
 }
 
 pub fn beam(
@@ -294,7 +375,7 @@ pub fn grid(
                     let cell_nodes = if kind == ElementKind::Tet4 {
                         corners.to_vec()
                     } else {
-                        tet10_nodes(corners, &mut nodes, &mut mids, &[])
+                        tet10_nodes(corners, &mut nodes, &mut mids, midpoint)
                     };
                     elements.push(Cell { nodes: cell_nodes });
                 }
@@ -334,7 +415,7 @@ pub fn patch_mesh(kind: ElementKind, interior: bool) -> Result<Mesh, SimError> {
         let cell_nodes = if kind == ElementKind::Tet4 {
             tet.to_vec()
         } else {
-            tet10_nodes(tet, &mut nodes, &mut mids, &[])
+            tet10_nodes(tet, &mut nodes, &mut mids, midpoint)
         };
         elements.push(Cell { nodes: cell_nodes });
     }
@@ -351,7 +432,7 @@ fn one_tet(corners: &[[f64; 3]; 4], kind: ElementKind) -> Result<Mesh, SimError>
     let cell_nodes = if kind == ElementKind::Tet4 {
         vec![0, 1, 2, 3]
     } else {
-        tet10_nodes([0, 1, 2, 3], &mut nodes, &mut mids, &[])
+        tet10_nodes([0, 1, 2, 3], &mut nodes, &mut mids, midpoint)
     };
     Ok(Mesh {
         nodes,
@@ -556,5 +637,29 @@ mod tests {
             fine.elements.len()
         );
         assert!((fine.volume() - mesh.volume()).abs() < 1e-8);
+    }
+
+    #[test]
+    fn cylindrical_mids_sit_on_the_arc() {
+        let mesh = mapped_grid(
+            [2, 4, 1],
+            ElementKind::Tet10,
+            |i, j, k| {
+                let r = 10.0 + 5.0 * i as f64;
+                let th = std::f64::consts::FRAC_PI_2 * j as f64 / 4.0;
+                [r * th.cos(), r * th.sin(), k as f64]
+            },
+            cylindrical_mid,
+        )
+        .unwrap();
+        let min_r = mesh
+            .nodes
+            .iter()
+            .map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt())
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            (min_r - 10.0).abs() < 1e-8,
+            "a chord mid would sit inside r=10, got {min_r}"
+        );
     }
 }

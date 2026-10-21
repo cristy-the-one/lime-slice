@@ -52,8 +52,20 @@ impl DofMap {
 #[derive(Clone, Debug)]
 pub enum Hold {
     Fixed,
-    Axis { axis: usize, value: f64 },
-    Normal { normal: [f64; 3], value: f64 },
+    Axis {
+        axis: usize,
+        value: f64,
+    },
+    Normal {
+        normal: [f64; 3],
+        value: f64,
+    },
+    /// `q` columns are the local directions in global coordinates, same layout
+    /// as `NodeBasis`. `prescribed[local]` is set, and `None` stays free.
+    Frame {
+        q: [[f64; 3]; 3],
+        prescribed: [Option<f64>; 3],
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -92,7 +104,9 @@ impl Constraint for NodeHold {
     fn kind(&self) -> ConstraintKind {
         match self.hold {
             Hold::Fixed => ConstraintKind::Fixed,
-            Hold::Axis { .. } | Hold::Normal { .. } => ConstraintKind::Prescribed,
+            Hold::Axis { .. } | Hold::Normal { .. } | Hold::Frame { .. } => {
+                ConstraintKind::Prescribed
+            }
         }
     }
 
@@ -109,6 +123,13 @@ impl Constraint for NodeHold {
             }
             Hold::Normal { value, .. } => {
                 system.prescribed.insert((self.node, 0), value);
+            }
+            Hold::Frame { prescribed, .. } => {
+                for local in 0..3 {
+                    if let Some(value) = prescribed[local] {
+                        system.prescribed.insert((self.node, local), value);
+                    }
+                }
             }
         }
     }
@@ -162,6 +183,13 @@ pub fn build_dof(n_nodes: usize, holds: &[NodeHold]) -> Result<DofMap, SimError>
                     [n[2], t1[2], t2[2]],
                 ];
                 basis.prescribed[0] = Some(value);
+            }
+            Hold::Frame { q, prescribed } => {
+                if basis.prescribed.iter().any(|p| p.is_some()) || !is_identity(&basis.q) {
+                    return Err(SimError::new("A node is held twice."));
+                }
+                basis.q = q;
+                basis.prescribed = prescribed;
             }
         }
     }
