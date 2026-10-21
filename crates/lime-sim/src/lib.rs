@@ -93,6 +93,21 @@ pub fn solve(study: &Study, mesh: &Mesh) -> Result<Solution, SimError> {
 }
 
 pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
+    let mut solved = solve_cases(req, std::slice::from_ref(&req.loads))?;
+    Ok(solved.solutions.remove(0))
+}
+
+/// Solutions of one request under several load cases, and how many times
+/// the stiffness was factored to get them.
+pub struct CaseSolutions {
+    pub solutions: Vec<Solution>,
+    pub factorisations: usize,
+}
+
+/// Solve `req` once per load case in `cases`; `req.loads` is not read. A
+/// linear study's stiffness doesn't depend on its loads, so it is factored
+/// once and each case is one more back-substitution.
+pub fn solve_cases(req: &Request, cases: &[Vec<Load>]) -> Result<CaseSolutions, SimError> {
     validate_request_fields(req)?;
     if req.temperature_c.is_some() || req.fibre_axis.is_some() {
         return Err(temperature_refused());
@@ -140,10 +155,39 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
         Some(c) => c,
         None => &req.material,
     };
+    let mut solver = FaerLdlt::default();
+    let mut solutions = Vec::with_capacity(cases.len());
+    for loads in cases {
+        solutions.push(solve_case(
+            req,
+            loads,
+            material,
+            beads,
+            axis,
+            &cells,
+            &mut solver,
+        )?);
+    }
+    Ok(CaseSolutions {
+        solutions,
+        factorisations: solver.factors,
+    })
+}
+
+/// One load case. A linear study reuses a factor the solver already holds.
+#[allow(clippy::too_many_arguments)]
+fn solve_case(
+    req: &Request,
+    loads: &[Load],
+    material: &dyn MaterialModel,
+    beads: Option<&BeadSection>,
+    axis: [f64; 3],
+    cells: &[CellMaterial],
+    solver: &mut FaerLdlt,
+) -> Result<Solution, SimError> {
     let mut u = vec![[0.0; 3]; req.mesh.nodes.len()];
     let mut load_level = 0.0;
     let mut steps_run = 0;
-    let mut solver = FaerLdlt::default();
 
     for step in &req.steps {
         load_level += step.factor;
@@ -155,8 +199,8 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
                 &req.mesh,
                 material,
                 axis,
-                &cells,
-                &req.loads,
+                cells,
+                loads,
                 load_level,
                 req.gravity,
                 &u,
@@ -172,8 +216,10 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
                 );
                 break;
             }
-            stage(req, "factor");
-            solver.factor(&assembly.system.k, assembly.system.dof.n_free)?;
+            if !(req.linear && solver.factors > 0) {
+                stage(req, "factor");
+                solver.factor(&assembly.system.k, assembly.system.dof.n_free)?;
+            }
             if cancelled(req.cancel.as_ref()) {
                 return Err(SimError::new("The solve was cancelled."));
             }
@@ -195,8 +241,8 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
                 &req.mesh,
                 material,
                 axis,
-                &cells,
-                &req.loads,
+                cells,
+                loads,
                 load_level,
                 req.gravity,
                 &u,
@@ -228,8 +274,8 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
         &req.mesh,
         material,
         axis,
-        &cells,
-        &req.loads,
+        cells,
+        loads,
         load_level,
         req.gravity,
         &u,
@@ -261,7 +307,7 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
         material,
         beads,
         axis,
-        &cells,
+        cells,
         u,
         residual,
         final_assembly.solid_volume,

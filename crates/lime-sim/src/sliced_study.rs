@@ -36,7 +36,7 @@ use crate::material::{FailureCriterion, MaterialModel};
 use crate::mesh::{boundary_faces, BoundaryFace, Mesh};
 use crate::slice_field::{SliceField, ROLES};
 use crate::sliced::{default_h_xy, SlicedGrid, SlicedMesh, PHI_MIN};
-use crate::solve_request;
+use crate::solve_cases;
 use crate::study::{Card, Request, Step};
 use crate::trust::TrustLevel;
 use crate::units::{cross, dot, norm, sub, NODE_CAP};
@@ -130,20 +130,68 @@ pub enum SlicedLoad {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ConstraintKind {
+    #[default]
     MinSafetyFactor,
     MaxDeflectionMm,
+    /// The peak displacement inside `band`: elastic enough, but not too much.
+    DeflectionBandMm,
+    /// The case's force over the region's mean displacement along it.
+    MinStiffnessNPerMm,
+    StiffnessBandNPerMm,
+    /// How much the distance between the centroids of `region` and `other`
+    /// changes.
+    RelativeDeflectionMm,
     MaxMassG,
     MinMassG,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+impl ConstraintKind {
+    fn is_band(self) -> bool {
+        matches!(self, Self::DeflectionBandMm | Self::StiffnessBandNPerMm)
+    }
+
+    fn is_floor(self) -> bool {
+        matches!(
+            self,
+            Self::MinSafetyFactor | Self::MinStiffnessNPerMm | Self::MinMassG
+        )
+    }
+
+    fn is_stiffness(self) -> bool {
+        matches!(self, Self::MinStiffnessNPerMm | Self::StiffnessBandNPerMm)
+    }
+}
+
+/// A target. A floor or a ceiling has a `value`; a band has `band`. It reads
+/// the whole part unless it names a `region`, under the first load case
+/// unless it names its `loadCase`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Constraint {
     pub kind: ConstraintKind,
+    #[serde(default)]
     pub value: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<Region>,
+    /// The second region of a relative deflection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<Region>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_case: Option<String>,
+}
+
+/// Loads that act together. Several cases share one factorisation: each is
+/// one more back-substitution.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoadCase {
+    pub name: String,
+    pub loads: Vec<SlicedLoad>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -154,17 +202,82 @@ pub struct SlicedStudy {
     pub h_xy: Option<f64>,
     pub card: Card,
     pub holds: Vec<SlicedHold>,
+    /// One load case, named "default". Give this or `loadCases`.
+    #[serde(default)]
     pub loads: Vec<SlicedLoad>,
     #[serde(default)]
+    pub load_cases: Vec<LoadCase>,
+    #[serde(default)]
     pub constraints: Vec<Constraint>,
-    /// Run the second cell size even when it is past the cap is not an
-    /// option; this turns it off for a quick look.
+    /// Solve at a second, finer cell size to judge the result. Off is a
+    /// quick look, and is at most `usable`.
     #[serde(default = "yes")]
     pub check_resolution: bool,
 }
 
 fn yes() -> bool {
     true
+}
+
+impl SlicedStudy {
+    /// The load cases, and every target checked against them.
+    fn cases(&self) -> Result<Vec<LoadCase>, SimError> {
+        let cases = match (self.loads.is_empty(), self.load_cases.is_empty()) {
+            (false, true) => vec![LoadCase {
+                name: "default".into(),
+                loads: self.loads.clone(),
+            }],
+            (true, false) => self.load_cases.clone(),
+            (true, true) => return Err(SimError::new("This study has no load.")),
+            (false, false) => return Err(SimError::new("Give loads or load cases, not both.")),
+        };
+        if cases.iter().any(|c| c.loads.is_empty()) {
+            return Err(SimError::new("A load case has no load."));
+        }
+        for c in &self.constraints {
+            if c.kind.is_band() {
+                let ok = c.band.is_some_and(|[lo, hi]| {
+                    lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo
+                });
+                if !ok {
+                    return Err(SimError::new("A band needs two numbers, the lower first."));
+                }
+            } else if !(c.value.is_finite() && c.value > 0.0) {
+                return Err(SimError::new("A target has to be a positive number."));
+            }
+            if c.kind.is_stiffness() && c.region.is_none() {
+                return Err(SimError::new(
+                    "A stiffness target needs the region it reads.",
+                ));
+            }
+            if c.kind == ConstraintKind::RelativeDeflectionMm
+                && (c.region.is_none() || c.other.is_none())
+            {
+                return Err(SimError::new(
+                    "A relative deflection needs two regions, region and other.",
+                ));
+            }
+            let case = match &c.load_case {
+                Some(name) => cases
+                    .iter()
+                    .find(|k| &k.name == name)
+                    .ok_or_else(|| SimError::new(format!("There is no load case named {name}.")))?,
+                None => &cases[0],
+            };
+            if c.kind.is_stiffness()
+                && !case
+                    .loads
+                    .iter()
+                    .any(|l| matches!(l, SlicedLoad::Force { .. }))
+            {
+                return Err(SimError::new(format!(
+                    "A stiffness target reads a force, and load case {} has none.",
+                    case.name
+                )));
+            }
+        }
+        Ok(cases)
+    }
 }
 
 /// Where a margin is tightest.
@@ -188,12 +301,21 @@ pub struct HotSpot {
 #[serde(rename_all = "camelCase")]
 pub struct Margin {
     pub kind: ConstraintKind,
+    /// The floor or ceiling; 0 for a band.
     pub limit: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub band: Option<[f64; 2]>,
+    pub load_case: String,
     pub value: f64,
-    /// 0 on the limit, positive inside it, as a share of the limit.
+    /// Signed and relative: 0 on the limit, positive inside it. A band's is
+    /// the distance to its nearer edge over its half-width: 1 at its centre,
+    /// 0 at each edge.
     pub margin: f64,
     /// Inside the limit and trusted enough to say so.
     pub met: bool,
+    /// Which side a band missed, as a sentence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hot_spot: Option<HotSpot>,
 }
@@ -203,6 +325,8 @@ pub struct Margin {
 pub struct Resolution {
     pub h_xy_mm: f64,
     pub nodes: usize,
+    /// Every load case shares this many factorisations of the stiffness.
+    pub factorisations: usize,
     /// The governing constraint's value at this cell size.
     pub governing_value: Option<f64>,
 }
@@ -215,6 +339,7 @@ pub struct SlicedReport {
     pub trust: TrustLevel,
     pub notes: Vec<String>,
     pub margins: Vec<Margin>,
+    pub load_cases: Vec<String>,
     /// The lowest safety factor at any Gauss point of any cell, the
     /// staircase's steps and corners included.
     pub raw_min_safety_factor: Option<f64>,
@@ -224,8 +349,12 @@ pub struct SlicedReport {
     pub max_displacement_mm: f64,
     pub mass_g: f64,
     pub resolutions: Vec<Resolution>,
+    /// The first load case's solve at the first cell size.
     #[serde(skip)]
     pub solution: Option<Solution>,
+    /// Every load case's solve at the first cell size, in order.
+    #[serde(skip)]
+    pub case_solutions: Vec<Solution>,
     #[serde(skip)]
     pub mesh: Option<SlicedMesh>,
     /// The second cell size's solve, when it ran.
@@ -413,14 +542,7 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
     if study.holds.is_empty() {
         return Err(crate::error::not_held());
     }
-    if study.loads.is_empty() {
-        return Err(SimError::new("This study has no load."));
-    }
-    for c in &study.constraints {
-        if !(c.value.is_finite() && c.value > 0.0) {
-            return Err(SimError::new("A target has to be a positive number."));
-        }
-    }
+    let cases = study.cases()?;
     let to_part = Affine {
         m: field.header.frame,
     };
@@ -428,16 +550,16 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
         .inverse()
         .ok_or_else(|| SimError::new("The slice field's frame can't be inverted."))?;
     let h = study.h_xy.unwrap_or_else(|| default_h_xy(field));
-    let first = solve_at(field, study, h, to_part, to_slice)?;
-    let mut resolutions = vec![first.resolution(study)];
-    let mut notes = first.solution.notes.clone();
-    let governing = first.governing(study);
+    let first = solve_at(field, study, &cases, h, to_part, to_slice)?;
+    let governing = first.governing(study)?;
+    let mut resolutions = vec![first.resolution(governing, study)?];
+    let mut notes = first.cases[0].solution.notes.clone();
     let mut finer = None;
     let mut moved = None;
     let fine = h / std::f64::consts::SQRT_2;
     // The node count goes with the cell count, about h⁻³ while slabs follow
     // the layers; √2 finer is about 2.8 times the nodes.
-    let estimate = (first.solution.mesh.nodes.len() as f64 * 2.83) as usize;
+    let estimate = (first.mesh.mesh.nodes.len() as f64 * 2.83) as usize;
     let one_size_why = if !study.check_resolution {
         "The sliced result was solved at one cell size only.".to_string()
     } else if estimate > NODE_CAP {
@@ -446,21 +568,19 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
             format_mm(fine)
         )
     } else {
-        let second = solve_at(field, study, fine, to_part, to_slice)?;
-        resolutions.push(second.resolution(study));
-        if let (Some(k), Some(a)) = (governing, first.value(governing)) {
-            let b = second
-                .value(Some(k))
-                .expect("the same constraint on both grids");
+        let second = solve_at(field, study, &cases, fine, to_part, to_slice)?;
+        let resolution = second.resolution(governing, study)?;
+        if let (Some(a), Some(b)) = (resolutions[0].governing_value, resolution.governing_value) {
             moved = Some((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
+        } else {
+            // Nothing governs: no target and no stress.
+            moved = Some(0.0);
         }
-        finer = Some((second.solution, second.mesh));
+        resolutions.push(resolution);
+        let mut solutions = second.cases.into_iter().map(|c| c.solution);
+        finer = solutions.next().map(|s| (s, second.mesh));
         String::new()
     };
-    if moved.is_none() && one_size_why.is_empty() {
-        // Both sizes ran but nothing governs: no target and no stress.
-        moved = Some(0.0);
-    }
     let provisional =
         study.card.provisional || study.card.beads.as_ref().is_some_and(|b| b.provisional);
     let (level, why) = sliced_trust(provisional, moved, &one_size_why);
@@ -469,40 +589,76 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
         .constraints
         .iter()
         .map(|c| first.margin(c, level))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
+    let worst_sf = |pick: fn(&CaseResult) -> Option<f64>| {
+        first
+            .cases
+            .iter()
+            .filter_map(pick)
+            .fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.min(v))))
+    };
+    let raw_min_safety_factor = worst_sf(|c| c.raw_min_sf.map(|s| s.0));
+    let min_safety_factor = worst_sf(|c| c.min_sf.map(|s| s.0));
+    let max_displacement_mm = first.cases.iter().map(|c| c.max_disp.0).fold(0.0, f64::max);
+    let mass_g = first.cases[0].solution.mass_g;
+    let mut case_solutions: Vec<Solution> = first.cases.into_iter().map(|c| c.solution).collect();
     Ok(SlicedReport {
         representation: "sliced",
         h_xy_mm: h,
         trust: level,
         notes,
         margins,
-        raw_min_safety_factor: first.raw_min_sf.map(|s| s.0),
-        min_safety_factor: first.min_sf.map(|s| s.0),
-        max_displacement_mm: first.max_disp.0,
-        mass_g: first.solution.mass_g,
+        load_cases: cases.iter().map(|c| c.name.clone()).collect(),
+        raw_min_safety_factor,
+        min_safety_factor,
+        max_displacement_mm,
+        mass_g,
         resolutions,
-        solution: Some(first.solution),
+        solution: Some(case_solutions[0].clone()),
+        case_solutions: std::mem::take(&mut case_solutions),
         mesh: Some(first.mesh),
         finer,
     })
 }
 
-struct Solved {
-    mesh: SlicedMesh,
+/// One load case solved on one grid.
+struct CaseResult {
     solution: Solution,
-    to_part: Affine,
-    layers: Vec<(u32, f64, f64)>,
-    /// Lowest safety factor, the element it is in, the slice-frame point,
-    /// and what governs it.
+    /// The case's force loads summed, in the part frame.
+    force: Option<[f64; 3]>,
+    /// Every trusted cell's safety factor, the element it starts at, its
+    /// slice-frame centroid, and what governs it.
+    cell_safety: Vec<(f64, usize, [f64; 3], Option<Governs>)>,
     min_sf: Option<(f64, usize, [f64; 3], Option<Governs>)>,
     raw_min_sf: Option<(f64, usize, [f64; 3])>,
     /// Largest displacement and its node.
     max_disp: (f64, usize),
 }
 
+struct Solved {
+    mesh: SlicedMesh,
+    faces: Vec<BoundaryFace>,
+    h: f64,
+    to_part: Affine,
+    layers: Vec<(u32, f64, f64)>,
+    names: Vec<String>,
+    cases: Vec<CaseResult>,
+    factorisations: usize,
+}
+
+/// What decides trust: a target, or the lowest safety factor when the study
+/// has none.
+#[derive(Clone, Copy)]
+enum Governing {
+    Target(usize),
+    SafetyFactor,
+    Nothing,
+}
+
 fn solve_at(
     field: &SliceField,
     study: &SlicedStudy,
+    cases: &[LoadCase],
     h: f64,
     to_part: Affine,
     to_slice: Affine,
@@ -548,8 +704,128 @@ fn solve_at(
             }
         }
     }
-    let mut loads = Vec::new();
-    for load in &study.loads {
+    let mut case_loads = Vec::with_capacity(cases.len());
+    for case in cases {
+        case_loads.push(loads_of(&case.loads, &surface, to_slice)?);
+    }
+    let card = &study.card;
+    let req = Request {
+        mesh: mesh.clone(),
+        material: card.material(),
+        recipe: crate::recipe::Recipe::solid(),
+        // The grid is in the slice frame, where the layers stack along +Z.
+        build_axis: [0.0, 0.0, 1.0],
+        holds,
+        loads: Vec::new(),
+        steps: vec![Step {
+            factor: 1.0,
+            max_iter: 1,
+            tol: 1e-10,
+        }],
+        linear: true,
+        gravity: None,
+        h_mm: h,
+        allow_linear_tets: false,
+        analysis: "static".into(),
+        temperature_c: None,
+        fibre_axis: None,
+        solver: "faer-ldlt".into(),
+        representation: "sliced".into(),
+        cells: sliced.cells.clone(),
+        beads: card.beads.clone(),
+        post_steps: Vec::new(),
+        provisional: card.provisional,
+        cancel: None,
+        on_progress: None,
+    };
+    let solved = solve_cases(&req, &case_loads)?;
+    let allow = card.material().allowables();
+    let axis = [0.0, 0.0, 1.0];
+    let safety = |stress: [f64; 6], element: usize| {
+        let ctx = sliced.cells[element].context(axis);
+        match &card.beads {
+            Some(b) => BeadMaxStress { beads: b }.safety_governed(&Stress { v: stress }, &ctx),
+            None => (MaxStress.safety(&Stress { v: stress }, &allow, &ctx), None),
+        }
+    };
+    let mut results = Vec::with_capacity(cases.len());
+    for (case, solution) in cases.iter().zip(solved.solutions) {
+        let mut raw_min_sf: Option<(f64, usize, [f64; 3])> = None;
+        for sample in &solution.gauss {
+            let (sf, _) = safety(sample.stress, sample.element);
+            if sf.is_finite() && raw_min_sf.is_none_or(|(best, _, _)| sf < best) {
+                raw_min_sf = Some((sf, sample.element, sample.xyz));
+            }
+        }
+        let cell_safety: Vec<(f64, usize, [f64; 3], Option<Governs>)> =
+            cell_stresses(&solution, &sliced)
+                .into_iter()
+                .filter(|cell| !cell.staircase)
+                .filter_map(|cell| {
+                    let (sf, governs) = safety(cell.stress, cell.element);
+                    sf.is_finite()
+                        .then_some((sf, cell.element, cell.at, governs))
+                })
+                .collect();
+        let min_sf = cell_safety
+            .iter()
+            .copied()
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let max_disp = solution
+            .displacement
+            .iter()
+            .enumerate()
+            .map(|(i, u)| (norm(*u), i))
+            .fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a });
+        let forces: Vec<[f64; 3]> = case
+            .loads
+            .iter()
+            .filter_map(|l| match l {
+                SlicedLoad::Force { force, .. } => Some(*force),
+                _ => None,
+            })
+            .collect();
+        let force = (!forces.is_empty()).then(|| {
+            forces
+                .iter()
+                .fold([0.0; 3], |a, f| [a[0] + f[0], a[1] + f[1], a[2] + f[2]])
+        });
+        results.push(CaseResult {
+            solution,
+            force,
+            cell_safety,
+            min_sf,
+            raw_min_sf,
+            max_disp,
+        });
+    }
+    let mut layers: Vec<(u32, f64, f64)> = field
+        .header
+        .layers
+        .iter()
+        .map(|l| (l.index, l.z_mm - l.height_mm, l.z_mm))
+        .collect();
+    layers.sort_by(|a, b| a.1.total_cmp(&b.1));
+    Ok(Solved {
+        mesh: sliced,
+        faces,
+        h,
+        to_part,
+        layers,
+        names: cases.iter().map(|c| c.name.clone()).collect(),
+        cases: results,
+        factorisations: solved.factorisations,
+    })
+}
+
+/// A case's loads as tractions on the grid's surface, in the slice frame.
+fn loads_of(
+    loads: &[SlicedLoad],
+    surface: &Surface<'_>,
+    to_slice: Affine,
+) -> Result<Vec<Load>, SimError> {
+    let mut out = Vec::new();
+    for load in loads {
         let region = match load {
             SlicedLoad::Force { region, .. }
             | SlicedLoad::Pressure { region, .. }
@@ -566,7 +842,7 @@ fn solve_at(
                 let area: f64 = picked.iter().map(|f| f.area).sum();
                 let t = to_slice.vector(*force);
                 for face in picked {
-                    loads.push(Load::Traction {
+                    out.push(Load::Traction {
                         nodes: face.nodes.clone(),
                         traction: [t[0] / area, t[1] / area, t[2] / area],
                     });
@@ -575,7 +851,7 @@ fn solve_at(
             SlicedLoad::Pressure { mpa, .. } => {
                 for face in picked {
                     let n = face.normal;
-                    loads.push(Load::Traction {
+                    out.push(Load::Traction {
                         nodes: face.nodes.clone(),
                         traction: [-mpa * n[0], -mpa * n[1], -mpa * n[2]],
                     });
@@ -617,7 +893,7 @@ fn solve_at(
                     let t_part = cross(axis_part, r);
                     let s = torque / polar;
                     let t = to_slice.vector([t_part[0] * s, t_part[1] * s, t_part[2] * s]);
-                    loads.push(Load::Traction {
+                    out.push(Load::Traction {
                         nodes: face.nodes.clone(),
                         traction: t,
                     });
@@ -625,112 +901,222 @@ fn solve_at(
             }
         }
     }
-    let card = &study.card;
-    let req = Request {
-        mesh: mesh.clone(),
-        material: card.material(),
-        recipe: crate::recipe::Recipe::solid(),
-        // The grid is in the slice frame, where the layers stack along +Z.
-        build_axis: [0.0, 0.0, 1.0],
-        holds,
-        loads,
-        steps: vec![Step {
-            factor: 1.0,
-            max_iter: 1,
-            tol: 1e-10,
-        }],
-        linear: true,
-        gravity: None,
-        h_mm: h,
-        allow_linear_tets: false,
-        analysis: "static".into(),
-        temperature_c: None,
-        fibre_axis: None,
-        solver: "faer-ldlt".into(),
-        representation: "sliced".into(),
-        cells: sliced.cells.clone(),
-        beads: card.beads.clone(),
-        post_steps: Vec::new(),
-        provisional: card.provisional,
-        cancel: None,
-        on_progress: None,
-    };
-    let solution = solve_request(&req)?;
-    let allow = card.material().allowables();
-    let axis = [0.0, 0.0, 1.0];
-    let safety = |stress: [f64; 6], element: usize| {
-        let ctx = sliced.cells[element].context(axis);
-        match &card.beads {
-            Some(b) => BeadMaxStress { beads: b }.safety_governed(&Stress { v: stress }, &ctx),
-            None => (MaxStress.safety(&Stress { v: stress }, &allow, &ctx), None),
-        }
-    };
-    let mut raw_min_sf: Option<(f64, usize, [f64; 3])> = None;
-    for sample in &solution.gauss {
-        let (sf, _) = safety(sample.stress, sample.element);
-        if sf.is_finite() && raw_min_sf.is_none_or(|(best, _, _)| sf < best) {
-            raw_min_sf = Some((sf, sample.element, sample.xyz));
-        }
-    }
-    let mut min_sf: Option<(f64, usize, [f64; 3], Option<Governs>)> = None;
-    for cell in cell_stresses(&solution, &sliced) {
-        if cell.staircase {
-            continue;
-        }
-        let (sf, governs) = safety(cell.stress, cell.element);
-        if sf.is_finite() && min_sf.is_none_or(|(best, ..)| sf < best) {
-            min_sf = Some((sf, cell.element, cell.at, governs));
-        }
-    }
-    let max_disp = solution
-        .displacement
-        .iter()
-        .enumerate()
-        .map(|(i, u)| (norm(*u), i))
-        .fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a });
-    let mut layers: Vec<(u32, f64, f64)> = field
-        .header
-        .layers
-        .iter()
-        .map(|l| (l.index, l.z_mm - l.height_mm, l.z_mm))
-        .collect();
-    layers.sort_by(|a, b| a.1.total_cmp(&b.1));
-    Ok(Solved {
-        mesh: sliced,
-        solution,
-        to_part,
-        layers,
-        min_sf,
-        raw_min_sf,
-        max_disp,
-    })
+    Ok(out)
+}
+
+/// A target read on one grid: its value and where it is tightest.
+struct Reading {
+    value: f64,
+    hot_spot: Option<HotSpot>,
 }
 
 impl Solved {
-    fn value(&self, kind: Option<ConstraintKind>) -> Option<f64> {
-        self.value_of(kind?)
+    fn case_of(&self, c: &Constraint) -> usize {
+        c.load_case
+            .as_ref()
+            .and_then(|name| self.names.iter().position(|n| n == name))
+            .unwrap_or(0)
     }
 
-    /// The constraint with the smallest margin, or the safety factor when
-    /// the study names none.
-    fn governing(&self, study: &SlicedStudy) -> Option<ConstraintKind> {
+    fn surface(&self) -> Surface<'_> {
+        Surface {
+            faces: &self.faces,
+            to_part: self.to_part,
+            h: self.h,
+        }
+    }
+
+    fn in_region(&self, part_point: [f64; 3], region: &Region) -> bool {
+        match region {
+            Region::Box { min, max } => {
+                (0..3).all(|k| part_point[k] >= min[k] && part_point[k] <= max[k])
+            }
+            Region::Near { point, radius } => norm(sub(part_point, *point)) <= *radius,
+            Region::Faces { triangles } => triangles
+                .iter()
+                .any(|tri| point_triangle_distance(part_point, tri) <= self.h * 0.75),
+        }
+    }
+
+    /// The grid nodes a region reads: inside a box or a ball, or on the
+    /// surface it picks for model faces.
+    fn region_nodes(&self, region: &Region) -> Result<Vec<usize>, SimError> {
+        let nodes: Vec<usize> = match region {
+            Region::Faces { .. } => {
+                let mut picked: Vec<usize> = self
+                    .surface()
+                    .select(region)
+                    .into_iter()
+                    .flat_map(|f| f.nodes.iter().copied())
+                    .collect();
+                picked.sort_unstable();
+                picked.dedup();
+                picked
+            }
+            _ => (0..self.mesh.mesh.nodes.len())
+                .filter(|&i| self.in_region(self.to_part.point(self.mesh.mesh.nodes[i]), region))
+                .collect(),
+        };
+        if nodes.is_empty() {
+            return Err(SimError::new(
+                "A target's region holds no node of the sliced part.",
+            ));
+        }
+        Ok(nodes)
+    }
+
+    fn displacement_part(&self, case: usize, node: usize) -> [f64; 3] {
+        self.to_part
+            .vector(self.cases[case].solution.displacement[node])
+    }
+
+    fn node_spot(&self, node: usize) -> HotSpot {
+        let at = self.mesh.mesh.nodes[node];
+        let element = nearest_element(&self.mesh.mesh, node);
+        self.hot_spot(element, at, None)
+    }
+
+    fn read(&self, c: &Constraint) -> Result<Option<Reading>, SimError> {
+        let k = self.case_of(c);
+        let case = &self.cases[k];
+        Ok(Some(match c.kind {
+            ConstraintKind::MinSafetyFactor => {
+                let best = match &c.region {
+                    None => case.min_sf,
+                    Some(region) => case
+                        .cell_safety
+                        .iter()
+                        .copied()
+                        .filter(|cell| self.in_region(self.to_part.point(cell.2), region))
+                        .min_by(|a, b| a.0.total_cmp(&b.0)),
+                };
+                let Some((sf, element, at, governs)) = best else {
+                    return Ok(None);
+                };
+                Reading {
+                    value: sf,
+                    hot_spot: Some(self.hot_spot(element, at, governs)),
+                }
+            }
+            ConstraintKind::MaxDeflectionMm | ConstraintKind::DeflectionBandMm => {
+                let (value, node) = match &c.region {
+                    None => case.max_disp,
+                    Some(region) => self
+                        .region_nodes(region)?
+                        .into_iter()
+                        .map(|n| (norm(case.solution.displacement[n]), n))
+                        .fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a }),
+                };
+                Reading {
+                    value,
+                    hot_spot: Some(self.node_spot(node)),
+                }
+            }
+            ConstraintKind::MinStiffnessNPerMm | ConstraintKind::StiffnessBandNPerMm => {
+                let region = c
+                    .region
+                    .as_ref()
+                    .expect("checked: a stiffness target has a region");
+                let force = case.force.expect("checked: its case has a force");
+                let magnitude = norm(force);
+                let along = [
+                    force[0] / magnitude,
+                    force[1] / magnitude,
+                    force[2] / magnitude,
+                ];
+                let nodes = self.region_nodes(region)?;
+                let moved = nodes
+                    .iter()
+                    .map(|&n| dot(self.displacement_part(k, n), along))
+                    .sum::<f64>()
+                    / nodes.len() as f64;
+                Reading {
+                    value: if moved > 1e-15 {
+                        magnitude / moved
+                    } else {
+                        f64::INFINITY
+                    },
+                    hot_spot: None,
+                }
+            }
+            ConstraintKind::RelativeDeflectionMm => {
+                let centre = |region: &Region| -> Result<([f64; 3], [f64; 3]), SimError> {
+                    let nodes = self.region_nodes(region)?;
+                    let n = nodes.len() as f64;
+                    let mut at = [0.0; 3];
+                    let mut u = [0.0; 3];
+                    for &i in &nodes {
+                        let p = self.to_part.point(self.mesh.mesh.nodes[i]);
+                        let d = self.displacement_part(k, i);
+                        for j in 0..3 {
+                            at[j] += p[j] / n;
+                            u[j] += d[j] / n;
+                        }
+                    }
+                    Ok((at, u))
+                };
+                let (a, ua) = centre(c.region.as_ref().expect("checked"))?;
+                let (b, ub) = centre(c.other.as_ref().expect("checked"))?;
+                let before = norm(sub(b, a));
+                let after = norm(sub(
+                    [b[0] + ub[0], b[1] + ub[1], b[2] + ub[2]],
+                    [a[0] + ua[0], a[1] + ua[1], a[2] + ua[2]],
+                ));
+                Reading {
+                    value: (after - before).abs(),
+                    hot_spot: None,
+                }
+            }
+            ConstraintKind::MaxMassG | ConstraintKind::MinMassG => Reading {
+                value: case.solution.mass_g,
+                hot_spot: None,
+            },
+        }))
+    }
+
+    fn governing(&self, study: &SlicedStudy) -> Result<Governing, SimError> {
         if study.constraints.is_empty() {
-            return self.min_sf.map(|_| ConstraintKind::MinSafetyFactor);
+            return Ok(if self.cases[0].min_sf.is_some() {
+                Governing::SafetyFactor
+            } else {
+                Governing::Nothing
+            });
         }
-        study
-            .constraints
-            .iter()
-            .filter_map(|c| Some((c.kind, signed_margin(c, self.value(Some(c.kind))?))))
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(k, _)| k)
+        let mut best: Option<(usize, f64)> = None;
+        for (i, c) in study.constraints.iter().enumerate() {
+            if let Some(reading) = self.read(c)? {
+                let m = signed_margin(c, reading.value);
+                if best.is_none_or(|(_, b)| m < b) {
+                    best = Some((i, m));
+                }
+            }
+        }
+        Ok(best.map_or(Governing::Nothing, |(i, _)| Governing::Target(i)))
     }
 
-    fn resolution(&self, study: &SlicedStudy) -> Resolution {
-        Resolution {
+    fn governing_value(
+        &self,
+        governing: Governing,
+        study: &SlicedStudy,
+    ) -> Result<Option<f64>, SimError> {
+        Ok(match governing {
+            Governing::Target(i) => self.read(&study.constraints[i])?.map(|r| r.value),
+            Governing::SafetyFactor => self.cases[0].min_sf.map(|s| s.0),
+            Governing::Nothing => None,
+        })
+    }
+
+    fn resolution(
+        &self,
+        governing: Governing,
+        study: &SlicedStudy,
+    ) -> Result<Resolution, SimError> {
+        Ok(Resolution {
             h_xy_mm: self.mesh.h_xy,
-            nodes: self.solution.mesh.nodes.len(),
-            governing_value: self.value(self.governing(study)),
-        }
+            nodes: self.mesh.mesh.nodes.len(),
+            factorisations: self.factorisations,
+            governing_value: self.governing_value(governing, study)?,
+        })
     }
 
     fn hot_spot(&self, element: usize, slice_point: [f64; 3], governs: Option<Governs>) -> HotSpot {
@@ -756,45 +1142,62 @@ impl Solved {
         }
     }
 
-    fn margin(&self, c: &Constraint, level: TrustLevel) -> Margin {
-        let value = self.value_of(c.kind);
-        let margin = value.map_or(f64::INFINITY, |v| signed_margin(c, v));
-        let hot_spot = match c.kind {
-            ConstraintKind::MinSafetyFactor => self
-                .min_sf
-                .map(|(_, element, at, governs)| self.hot_spot(element, at, governs)),
-            ConstraintKind::MaxDeflectionMm => {
-                let node = self.max_disp.1;
-                let at = self.solution.mesh.nodes[node];
-                let element = nearest_element(&self.solution.mesh, node);
-                Some(self.hot_spot(element, at, None))
-            }
-            ConstraintKind::MaxMassG | ConstraintKind::MinMassG => None,
-        };
-        Margin {
+    fn margin(&self, c: &Constraint, level: TrustLevel) -> Result<Margin, SimError> {
+        let reading = self.read(c)?;
+        let value = reading.as_ref().map_or(f64::INFINITY, |r| r.value);
+        let margin = reading
+            .as_ref()
+            .map_or(f64::INFINITY, |r| signed_margin(c, r.value));
+        Ok(Margin {
             kind: c.kind,
-            limit: c.value,
-            value: value.unwrap_or(f64::INFINITY),
+            limit: if c.kind.is_band() { 0.0 } else { c.value },
+            band: c.band,
+            load_case: self.names[self.case_of(c)].clone(),
+            value,
             margin,
             met: margin >= 0.0 && level != TrustLevel::Rough,
-            hot_spot,
-        }
-    }
-
-    fn value_of(&self, kind: ConstraintKind) -> Option<f64> {
-        match kind {
-            ConstraintKind::MinSafetyFactor => self.min_sf.map(|s| s.0),
-            ConstraintKind::MaxDeflectionMm => Some(self.max_disp.0),
-            ConstraintKind::MaxMassG | ConstraintKind::MinMassG => Some(self.solution.mass_g),
-        }
+            note: band_note(c, value),
+            hot_spot: reading.and_then(|r| r.hot_spot),
+        })
     }
 }
 
-/// `(value − S) / S` for a floor, `(L − value) / L` for a ceiling.
-fn signed_margin(c: &Constraint, value: f64) -> f64 {
+/// Signed and relative. A floor: `(value − S) / S`. A ceiling:
+/// `(L − value) / L`. A band: the distance to the nearer edge over the
+/// half-width, 1 at the centre, 0 at each edge, negative outside.
+pub fn signed_margin(c: &Constraint, value: f64) -> f64 {
+    if let Some([lo, hi]) = c.band.filter(|_| c.kind.is_band()) {
+        return (value - lo).min(hi - value) / (0.5 * (hi - lo));
+    }
+    if c.kind.is_floor() {
+        (value - c.value) / c.value
+    } else {
+        (c.value - value) / c.value
+    }
+}
+
+/// The side a band missed, as a sentence. Inside it, nothing.
+fn band_note(c: &Constraint, value: f64) -> Option<String> {
+    let [lo, hi] = c.band.filter(|_| c.kind.is_band())?;
+    let v = format_num(value);
     match c.kind {
-        ConstraintKind::MinSafetyFactor | ConstraintKind::MinMassG => (value - c.value) / c.value,
-        ConstraintKind::MaxDeflectionMm | ConstraintKind::MaxMassG => (c.value - value) / c.value,
+        ConstraintKind::DeflectionBandMm if value < lo => Some(format!(
+            "Too stiff: it moves {v} mm, and the band starts at {} mm.",
+            format_num(lo)
+        )),
+        ConstraintKind::DeflectionBandMm if value > hi => Some(format!(
+            "Too flexible: it moves {v} mm, and the band ends at {} mm.",
+            format_num(hi)
+        )),
+        ConstraintKind::StiffnessBandNPerMm if value < lo => Some(format!(
+            "Too flexible: it takes {v} N/mm, and the band starts at {} N/mm.",
+            format_num(lo)
+        )),
+        ConstraintKind::StiffnessBandNPerMm if value > hi => Some(format!(
+            "Too stiff: it takes {v} N/mm, and the band ends at {} N/mm.",
+            format_num(hi)
+        )),
+        _ => None,
     }
 }
 
@@ -808,4 +1211,18 @@ fn nearest_element(mesh: &Mesh, node: usize) -> usize {
 fn format_mm(mm: f64) -> String {
     let text = format!("{mm:.2}");
     text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// Three significant figures, no trailing zeros.
+fn format_num(value: f64) -> String {
+    if !value.is_finite() || value == 0.0 {
+        return format!("{value}");
+    }
+    let digits = (2 - value.abs().log10().floor() as i32).max(0) as usize;
+    let text = format!("{value:.digits$}");
+    if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text
+    }
 }

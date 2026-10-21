@@ -148,6 +148,7 @@ fn a_twisted_shaft_carries_t_r_over_j_at_its_surface() {
             h_xy: Some(1.0),
             card: isotropic_card(),
             holds: vec![SlicedHold::Bed],
+            load_cases: Vec::new(),
             loads: vec![SlicedLoad::Torque {
                 region: top(height),
                 origin: [0.0, 0.0, 0.0],
@@ -157,6 +158,7 @@ fn a_twisted_shaft_carries_t_r_over_j_at_its_surface() {
             constraints: vec![Constraint {
                 kind: ConstraintKind::MinSafetyFactor,
                 value: 2.0,
+                ..Default::default()
             }],
             check_resolution: true,
         },
@@ -234,6 +236,7 @@ fn a_bar_weak_across_layers_says_so() {
             h_xy: Some(0.9),
             card: bead_card(10.0),
             holds: vec![SlicedHold::Bed],
+            load_cases: Vec::new(),
             loads: vec![SlicedLoad::Force {
                 region: top(8.0),
                 force: [0.0, 0.0, 40.0],
@@ -242,10 +245,12 @@ fn a_bar_weak_across_layers_says_so() {
                 Constraint {
                     kind: ConstraintKind::MinSafetyFactor,
                     value: 2.0,
+                    ..Default::default()
                 },
                 Constraint {
                     kind: ConstraintKind::MaxDeflectionMm,
                     value: 0.01,
+                    ..Default::default()
                 },
             ],
             check_resolution: false,
@@ -329,6 +334,7 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
                     max: [0.01, 10.0, 10.0],
                 },
             }],
+            load_cases: Vec::new(),
             loads: vec![SlicedLoad::Force {
                 region: Region::Box {
                     min: [17.99, -1.0, -1.0],
@@ -339,6 +345,7 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
             constraints: vec![Constraint {
                 kind: ConstraintKind::MaxDeflectionMm,
                 value: 1.0,
+                ..Default::default()
             }],
             check_resolution: false,
         },
@@ -360,6 +367,7 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
                     radius: 1.0,
                 },
             }],
+            load_cases: Vec::new(),
             loads: vec![SlicedLoad::Force {
                 region: top(4.0),
                 force: [0.0, 0.0, 1.0],
