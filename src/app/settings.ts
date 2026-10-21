@@ -628,15 +628,15 @@ function objectShortcut(id: string): string | undefined {
   return command ? shortcutOf(command) : undefined;
 }
 
-/** The button's sentence, with an empty shortcut slot left off. The key cap is added when the tip opens. */
-function tipWithKey(tip: string): string {
-  return tipWithShortcut(tip, undefined);
+/** The button's sentence plus its chord, when it has one. An empty slot is left off. */
+function tipWithKey(id: string, tip: string): string {
+  return tipWithShortcut(tip, objectShortcut(id));
 }
 
 function objectToolsHtml(): string {
   const many = state.plate.objects.length > 1;
   const tool = (id: string, node: IconNode, tip: string, extra = "", aria = tip) => {
-    const said = tipWithKey(tip);
+    const said = tipWithKey(id, tip);
     const key = objectShortcut(id);
     const keys = key ? ` aria-keyshortcuts="${escapeHtml(key)}"` : "";
     return `<button class="tool-btn" id="${id}" type="button" data-tip="${escapeHtml(said)}" aria-label="${escapeHtml(aria)}"${keys}${extra}>${icon(node)}</button>`;

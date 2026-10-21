@@ -40,15 +40,16 @@ export function mountTooltips(root: ParentNode = document) {
     const command = commandForElement(el) ?? commandById(el.dataset.command);
     const owned = command ? shortcutOf(command) ?? "" : "";
     const shortcut = owned && !shortcutShadowed(owned) ? owned : "";
-    // The chord is the key cap. The sentence stays free of it, and an empty slot stays off.
-    const text = tipWithShortcut(el.dataset.tip ?? command?.label ?? "", undefined);
-    if (!text) {
+    // A stored sentence may already end with the chord. The open tip shows that chord once, as a key cap.
+    let text = tipWithShortcut(el.dataset.tip ?? command?.label ?? "", undefined);
+    if (shortcut && text.endsWith(` (${shortcut})`)) text = text.slice(0, -(` (${shortcut})`.length)).trim();
+    if (!text && !shortcut) {
       hide();
       return;
     }
     tip.replaceChildren();
-    tip.append(document.createTextNode(text));
-    if (shortcut && !text.includes(`(${shortcut})`)) {
+    if (text) tip.append(document.createTextNode(text));
+    if (shortcut) {
       const kbd = document.createElement("kbd");
       kbd.textContent = shortcut;
       tip.append(kbd);
