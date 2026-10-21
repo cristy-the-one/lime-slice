@@ -405,6 +405,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let aspectGapFor = "";
   /** Bumps when the ghost is rebuilt, so the aspect is redrawn only then, not on every pointer move. */
   let ghostSerial = 0;
+  /** The ghost's world box and face points. Rebuilt only when `ghostSerial` changes. */
+  let ghostCache: { serial: number; centre: THREE.Vector3; min: THREE.Vector3; max: THREE.Vector3; faces: Map<string, THREE.Vector3> } | null = null;
+  /** Label size from the last text change, so a frame does not measure it again. */
+  let labelMeasure = { text: "", width: 0, height: 0 };
+  let labelPlaced = { x: 0, y: 0, key: "" };
   let aspectKey = "";
   /** Model dock and HUD inputs, filled when the handles are set, so a drag does not search the document. */
   const fieldInputs = new Map<string, HTMLInputElement[]>();
@@ -3096,20 +3101,26 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const rect = canvas.getBoundingClientRect();
     if (!parent) return;
     aspectLabel.hidden = false;
-    aspectLabel.textContent = dimension.text;
+    if (labelMeasure.text !== dimension.text) {
+      aspectLabel.textContent = dimension.text;
+      const measured = aspectLabel.getBoundingClientRect();
+      labelMeasure = { text: dimension.text, width: measured.width, height: measured.height };
+    }
     aspectLabel.dataset.color = aspectNow?.color ?? "accent";
     const x = rect.left + (projectedAt.x * 0.5 + 0.5) * rect.width - parent.left;
     const y = rect.top + (-projectedAt.y * 0.5 + 0.5) * rect.height - parent.top;
     aspectLabel.style.left = `${Math.round(x)}px`;
     aspectLabel.style.top = `${Math.round(y)}px`;
-    if (aspectGapSign === 1 && labelCoversKnob()) {
+    const moved = Math.hypot(x - labelPlaced.x, y - labelPlaced.y) > 2 || aspectKey !== labelPlaced.key;
+    labelPlaced = { x, y, key: aspectKey };
+    if (moved && aspectGapSign === 1 && labelCoversKnob(x - (rect.left - parent.left), y - (rect.top - parent.top))) {
       aspectGapSign = -1;
       paintAspect();
     }
   }
 
-  /** The label's box against the knob's grip, both in canvas pixels. */
-  function labelCoversKnob(): boolean {
+  /** The label's cached box against the knob's grip, both in canvas pixels. */
+  function labelCoversKnob(lx: number, ly: number): boolean {
     const handle = aspectHandle();
     if (!handle || aspectLabel.hidden) return false;
     const part = drawnHandles().find((item) => item.handle.id === handle.id);
@@ -3119,12 +3130,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const at = gripPoint(handle, part.root.position, part.root.scale.x).project(camera);
     const kx = (at.x * 0.5 + 0.5) * width;
     const ky = (-at.y * 0.5 + 0.5) * height;
-    const label = aspectLabel.getBoundingClientRect();
-    const canvasRect = canvas.getBoundingClientRect();
-    const lx = label.left - canvasRect.left;
-    const ly = label.top - canvasRect.top;
     const pad = 12;
-    return lx < kx + pad && lx + label.width > kx - pad && ly < ky + pad && ly + label.height > ky - pad;
+    return lx < kx + pad && lx + labelMeasure.width > kx - pad && ly < ky + pad && ly + labelMeasure.height > ky - pad;
   }
 
   function fieldOf(target: EventTarget | null): string | null {
@@ -3226,13 +3233,28 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return { x: (mark.x * 0.5 + 0.5) * width, y: (-mark.y * 0.5 + 0.5) * height };
   }
 
-  /** The ghost's centre, its screen box, and a handle size that follows that box. */
-  function readGhost(width: number, height: number): { centre: THREE.Vector3; span: number; hits: boolean; size: number; screen: string } | null {
-    if (ghosts.children.length === 0) return null;
+  /** World box of the ghost. The walk runs once per ghost, not once per frame. */
+  function ghostBounds(): { centre: THREE.Vector3; min: THREE.Vector3; max: THREE.Vector3 } | null {
+    if (ghosts.children.length === 0) {
+      ghostCache = null;
+      return null;
+    }
+    if (ghostCache?.serial === ghostSerial) return ghostCache;
     ghosts.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(ghosts);
-    if (box.isEmpty()) return null;
-    const centre = box.getCenter(new THREE.Vector3());
+    if (box.isEmpty()) {
+      ghostCache = null;
+      return null;
+    }
+    ghostCache = { serial: ghostSerial, centre: box.getCenter(new THREE.Vector3()), min: box.min.clone(), max: box.max.clone(), faces: new Map() };
+    return ghostCache;
+  }
+
+  /** The ghost's centre, its screen box, and a handle size that follows that box. */
+  function readGhost(width: number, height: number): { centre: THREE.Vector3; span: number; hits: boolean; size: number; screen: string } | null {
+    const box = ghostBounds();
+    if (!box) return null;
+    const centre = box.centre;
     const xs: number[] = [];
     const ys: number[] = [];
     const corner = new THREE.Vector3();
@@ -3265,6 +3287,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** The centre of the ghost's face that `dir` points at: the supporting plane through the centre. */
   function facePoint(centre: THREE.Vector3, dir: THREE.Vector3): THREE.Vector3 {
     const axis = dir.clone().normalize();
+    const key = `${axis.x.toFixed(5)},${axis.y.toFixed(5)},${axis.z.toFixed(5)}`;
+    const known = ghostCache?.faces.get(key);
+    if (known) return known.clone();
     let half = 0;
     const vertex = new THREE.Vector3();
     ghosts.traverse((obj) => {
@@ -3277,7 +3302,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         half = Math.max(half, vertex.sub(centre).dot(axis));
       }
     });
-    return centre.clone().addScaledVector(axis, Math.max(half, 0));
+    const at = centre.clone().addScaledVector(axis, Math.max(half, 0));
+    ghostCache?.faces.set(key, at.clone());
+    return at;
   }
 
   function sizeHandles() {
@@ -3286,7 +3313,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     publishScreenBoxes(width, height);
     publishFaces(width, height);
     camera.updateMatrixWorld();
-    const ghostNow = readGhost(width, height);
+    const needsGhost = drawnHandles().some((part) => part.handle.seat.at === "ghost");
+    const ghostNow = needsGhost ? readGhost(width, height) : null;
     const onGhost = ghostNow != null && ghostNow.hits && ghostNow.span >= 24;
     if (ghostNow) canvas.dataset.ghostScreen = ghostNow.screen;
     else delete canvas.dataset.ghostScreen;
