@@ -30,6 +30,8 @@ export interface CommandSpec {
   keys?: string[];
   /** A named scope, or the stages whose button is on screen. Default "always" (the shortcut sheet is closed). */
   when?: KeyScope | readonly StageName[];
+  /** Layouts where a target is on screen. Default both. A key does not fire where every target is hidden. */
+  layouts?: readonly ("desktop" | "compact")[];
   /** Fires while a text field has focus. */
   typing?: boolean;
   /** Fires on key auto-repeat. */
@@ -46,7 +48,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "help", label: "Shortcut sheet", group: "Window", keys: ["?"], keywords: "help keys" },
   { id: "help-close", label: "Close shortcut sheet", group: "Window", keys: ["Esc", "?"], when: "help", typing: true, show: "none" },
   { id: "panel-left", label: "Toggle settings panel", group: "Window", keys: ["Ctrl+B"], target: "#leftToggle", keywords: "left collapse dock model" },
-  { id: "panel-right", label: "Toggle results panel", group: "Window", keys: ["Ctrl+Alt+B"], target: "#timing", keywords: "right collapse estimate dock inspect" },
+  { id: "panel-right", label: "Toggle results panel", group: "Window", keys: ["Ctrl+Alt+B"], target: "#timing", layouts: ["desktop"], keywords: "right collapse estimate dock inspect" },
   { id: "restore-hidden", label: "Show hidden controls", group: "Window", keys: ["Ctrl+."], target: "#contextBarRestore, #compactChromeShow", keywords: "selection bar chrome phone show controls" },
   { id: "printer-pick", label: "Printer, filament and nozzle", group: "File", keywords: "machine chip change" },
   { id: "printer-edit", label: "Printers and filaments", group: "File", keywords: "machine library edit bed flow advance" },
@@ -56,26 +58,26 @@ export const COMMANDS: CommandSpec[] = [
   { id: "samples", label: "Samples", group: "File", keywords: "cube hull example" },
   { id: "calibrate", label: "Calibrate", group: "File", keywords: "pressure advance flow temperature retraction tower test" },
   { id: "slice", label: "Slice", group: "Slice", keys: ["Ctrl+Enter"], typing: true, target: "#slice", keywords: "plan show result re-slice" },
-  { id: "force-slice", label: "Force re-slice", group: "Slice", keys: ["Ctrl+Shift+Enter"], typing: true, target: "#force", keywords: "recompute cache" },
+  { id: "force-slice", label: "Force re-slice", group: "Slice", keys: ["Ctrl+Shift+Enter"], typing: true, target: "#force", layouts: ["desktop"], keywords: "recompute cache" },
   { id: "cancel-slice", label: "Cancel slice", group: "Slice", keys: ["Esc"], when: "running", typing: true, target: "#cancel", keywords: "stop abort" },
-  { id: "export", label: "Export G-code", group: "Slice", keys: ["Ctrl+E"], target: "#export", keywords: "save download" },
+  { id: "export", label: "Export G-code", group: "Slice", keys: ["Ctrl+E"], target: "#export", layouts: ["desktop"], keywords: "save download" },
   { id: "send-printer", label: "Send to printer", group: "Slice", keywords: "prusa link upload gcode host" },
-  { id: "tab-prepare", label: "Prepare", group: "View", keys: ["1"], when: "workspace", target: "#tabPrepare", keywords: "tab mesh stage" },
-  { id: "tab-preview", label: "Preview", group: "View", keys: ["2"], when: "workspace", target: "#tabPreview", keywords: "tab toolpath stage" },
-  { id: "tab-gcode", label: "G-code", group: "View", keys: ["3"], when: "workspace", target: "#tabGcode", keywords: "tab gcode stage" },
-  { id: "tab-model", label: "Model", group: "View", keys: ["4"], when: "workspace", target: "#tabModel", keywords: "tab solid face edge measure" },
+  { id: "tab-prepare", label: "Prepare", group: "View", keys: ["1"], when: "workspace", target: "#tabPrepare, #compactTabs [data-tab=prepare]", keywords: "tab mesh stage" },
+  { id: "tab-preview", label: "Preview", group: "View", keys: ["2"], when: "workspace", target: "#tabPreview, #compactTabs [data-tab=preview]", keywords: "tab toolpath stage" },
+  { id: "tab-gcode", label: "G-code", group: "View", keys: ["3"], when: "workspace", target: "#tabGcode", layouts: ["desktop"], keywords: "tab gcode stage" },
+  { id: "tab-model", label: "Model", group: "View", keys: ["4"], when: "workspace", target: "#tabModel, #compactTabs [data-tab=model]", keywords: "tab solid face edge measure" },
   { id: "view-cycle", label: "Cycle 2D, split, 3D", group: "View", keys: ["V"], when: "preview", keywords: "preview mode flat solid" },
   { id: "view-2d", label: "2D preview", group: "View", target: '[data-mode="flat"]', keywords: "flat" },
   { id: "view-split", label: "Split preview", group: "View", target: '[data-mode="split"]' },
   { id: "view-3d", label: "3D preview", group: "View", target: '[data-mode="solid"]', keywords: "solid" },
   { id: "model-view-top", label: "Top view", group: "View", keys: ["T"], when: "model", keywords: "camera model" },
-  { id: "view-top", label: "Top view", group: "View", keys: ["T"], when: ["prepare"], target: "#viewPresets button:nth-child(1)", keywords: "camera prepare" },
+  { id: "view-top", label: "Top view", group: "View", keys: ["T"], when: ["prepare"], target: "#viewPresets button:nth-child(1)", layouts: ["desktop"], keywords: "camera prepare" },
   { id: "model-view-front", label: "Front view", group: "View", keys: ["Y"], when: "model", keywords: "camera model" },
-  { id: "view-front", label: "Front view", group: "View", keys: ["Y"], when: ["prepare"], target: "#viewPresets button:nth-child(2)", keywords: "camera prepare" },
+  { id: "view-front", label: "Front view", group: "View", keys: ["Y"], when: ["prepare"], target: "#viewPresets button:nth-child(2)", layouts: ["desktop"], keywords: "camera prepare" },
   { id: "model-view-iso", label: "Iso view", group: "View", keys: ["I"], when: "model", keywords: "camera model isometric" },
-  { id: "view-iso", label: "Iso view", group: "View", keys: ["I"], when: ["prepare"], target: "#viewPresets button:nth-child(3)", keywords: "camera prepare isometric" },
+  { id: "view-iso", label: "Iso view", group: "View", keys: ["I"], when: ["prepare"], target: "#viewPresets button:nth-child(3), #compactIso", keywords: "camera prepare isometric" },
   { id: "model-measure", label: "Measure", group: "View", keys: ["Shift+M"], when: "model", target: "#modelToolMeasure", keywords: "ruler distance model" },
-  { id: "measure", label: "Measure", group: "View", keys: ["Shift+M"], when: ["prepare", "preview", "gcode"], target: "#measureField", keywords: "ruler size dimensions scale bar millimetres" },
+  { id: "measure", label: "Measure", group: "View", keys: ["Shift+M"], when: ["prepare", "preview", "gcode"], target: "#measureField", layouts: ["desktop"], keywords: "ruler size dimensions scale bar millimetres" },
   { id: "model-new", label: "New solid", group: "Model", keys: ["Shift+N"], when: "model", target: "#modelToolNew", keywords: "create primitive box cylinder sphere cone torus wedge polygon hexagon tube empty" },
   { id: "model-face", label: "Pick faces", group: "Model", keys: ["Q"], when: "model", target: "#modelPickFace", keywords: "select face" },
   { id: "model-edge", label: "Pick edges", group: "Model", keys: ["W"], when: "model", target: "#modelPickEdge", keywords: "select edge" },
@@ -102,7 +104,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-check", label: "Check the solid", group: "Model", keys: ["Shift+K"], when: "model", target: "#modelToolCheck", keywords: "overhang ceiling island thin wall fit printability" },
   { id: "model-reset-view", label: "Reset view", group: "Model", keys: ["Home"], when: "model", target: "#modelResetView", keywords: "frame zoom fit camera" },
   { id: "model-frame-all", label: "Frame every object", group: "Model", keys: ["Shift+Home"], when: "model", keywords: "reset view zoom fit camera all" },
-  { id: "model-history", label: "Model history", group: "Model", keys: ["Shift+H"], when: "model", target: "#modelHistoryOpen", keywords: "steps tree branch undo jump rename" },
+  { id: "model-history", label: "Model history", group: "Model", keys: ["Shift+H"], when: "model", target: "#modelHistoryOpen, #modelHistoryToggle", keywords: "steps tree branch undo jump rename" },
   { id: "model-parameters", label: "Parameters", group: "Model", keys: ["Ctrl+Alt+P"], when: "model-any", typing: true, keywords: "expression variable wall height rebuild" },
   { id: "model-edit-step", label: "Edit step", group: "Model", keys: ["Shift+E"], when: "model", keywords: "history change numbers parameters size radius update fork" },
   { id: "model-apply", label: "Apply model edit", group: "Model", keys: ["Enter"], when: "model", target: "#modelApply", keywords: "confirm" },
@@ -214,6 +216,8 @@ export interface KeyContext {
   sketchFeature: boolean;
   /** Loft is the active feature, so R toggles smooth instead of choosing Rectangle. */
   sketchLoft: boolean;
+  /** Phone chrome hides the top tabs. A key fires only in layouts where one of its targets is shown. */
+  layout: "desktop" | "compact";
 }
 
 /** A sketch owns the Model stage, and a running slice or an open search still wins Esc. */
@@ -277,6 +281,7 @@ function scopeAllows(command: CommandSpec, ctx: KeyContext): boolean {
 
 export function fires(command: CommandSpec, ev: KeyEventLike, ctx: KeyContext): boolean {
   if (!command.keys) return false;
+  if (command.layouts && !command.layouts.includes(ctx.layout)) return false;
   if (!scopeAllows(command, ctx)) return false;
   // The sketch has its own undo. A field that is not the sketch HUD keeps the browser's undo.
   if ((command.id === "undo" || command.id === "redo") && ctx.sketchOpen) return false;

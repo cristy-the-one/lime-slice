@@ -34,6 +34,7 @@ function keyContext(ev: KeyboardEvent): KeyContext {
     sketchOpen: state.stage === "model" && (sketchPhase === "editing" || sketchPhase === "choosing"),
     sketchFeature: document.querySelector("#model")?.getAttribute("data-sketch-feature") === "1",
     sketchLoft: document.querySelector("#model")?.getAttribute("data-loft") === "pick",
+    layout: document.documentElement.classList.contains("layout-compact") ? "compact" : "desktop",
   };
 }
 

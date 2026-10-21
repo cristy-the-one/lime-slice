@@ -138,7 +138,7 @@ for (let i = 0; i + 8 < soup.length; i += 9) {
 }
 check("the loft ghost of a square prism is 1000 mm³", near(Math.abs(ghost / 6), 1000, 1e-3));
 
-const model: KeyContext = { helpOpen: false, typing: false, stage: "model", hasResult: false, running: false, searching: false, brushOn: false, editingSupports: false, inGcode: false, sketchOpen: false, sketchFeature: false, sketchLoft: false };
+const model: KeyContext = { helpOpen: false, typing: false, stage: "model", hasResult: false, running: false, searching: false, brushOn: false, editingSupports: false, inGcode: false, sketchOpen: false, sketchFeature: false, sketchLoft: false, layout: "desktop" };
 const key = (name: string, shift: boolean): KeyEventLike => ({ key: shift ? name.toUpperCase() : name, code: `Key${name.toUpperCase()}`, ctrlKey: false, metaKey: false, shiftKey: shift, altKey: false, repeat: false });
 eq("W still picks edges when no sketch is open", resolveKey(key("w", false), model)?.id, "model-edge");
 eq("Shift+L still chamfers when no sketch is open", resolveKey(key("l", true), model)?.id, "model-chamfer");

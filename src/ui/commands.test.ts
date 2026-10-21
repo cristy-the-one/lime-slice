@@ -49,6 +49,7 @@ const BASE: KeyContext = {
   sketchOpen: false,
   sketchFeature: false,
   sketchLoft: false,
+  layout: "desktop",
 };
 
 const NAMED: Record<string, string> = { Esc: "Escape", "↑": "ArrowUp", "↓": "ArrowDown", PgUp: "PageUp", PgDn: "PageDown", Del: "Delete" };
@@ -75,7 +76,8 @@ const contexts: KeyContext[] = [];
 for (const helpOpen of bools) for (const typing of bools) for (const hasResult of bools) for (const running of bools)
   for (const searching of bools) for (const brushOn of bools) for (const editingSupports of bools) for (const inGcode of bools)
     for (const stage of ["prepare", "preview", "gcode", "model"] as const)
-      contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode, sketchOpen: false, sketchFeature: false, sketchLoft: false });
+      for (const layout of ["desktop", "compact"] as const)
+        contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode, sketchOpen: false, sketchFeature: false, sketchLoft: false, layout });
 const chords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
 for (const chord of chords) {
   for (const repeat of bools) {
@@ -217,6 +219,11 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   "#tabPreview": ["prepare", "preview", "gcode", "model"],
   "#tabGcode": ["prepare", "preview", "gcode", "model"],
   "#tabModel": ["prepare", "preview", "gcode", "model"],
+  "#compactTabs [data-tab=prepare]": ["prepare", "preview", "gcode", "model"],
+  "#compactTabs [data-tab=preview]": ["prepare", "preview", "gcode", "model"],
+  "#compactTabs [data-tab=model]": ["prepare", "preview", "gcode", "model"],
+  "#compactIso": ["prepare"],
+  "#modelHistoryToggle": ["model"],
   '[data-mode="flat"]': ["preview"],
   '[data-mode="split"]': ["preview"],
   '[data-mode="solid"]': ["preview"],
@@ -286,37 +293,66 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   "[data-sketch-holes]": ["model"],
   "[data-sketch-ruled]": ["model"],
 };
+const TARGET_LAYOUTS: Record<string, readonly ("desktop" | "compact")[]> = {
+  "#tabPrepare": ["desktop"],
+  "#tabPreview": ["desktop"],
+  "#tabGcode": ["desktop"],
+  "#tabModel": ["desktop"],
+  "#compactTabs [data-tab=prepare]": ["compact"],
+  "#compactTabs [data-tab=preview]": ["compact"],
+  "#compactTabs [data-tab=model]": ["compact"],
+  "#viewPresets button:nth-child(1)": ["desktop"],
+  "#viewPresets button:nth-child(2)": ["desktop"],
+  "#viewPresets button:nth-child(3)": ["desktop"],
+  "#compactIso": ["compact"],
+  "#measureField": ["desktop"],
+  "#timing": ["desktop"],
+  "#export": ["desktop"],
+  "#force": ["desktop"],
+  "#modelHistoryOpen": ["compact"],
+  "#compactChromeShow": ["compact"],
+};
+for (const selector of Object.keys(TARGET_STAGES)) {
+  if (!(selector in TARGET_LAYOUTS)) TARGET_LAYOUTS[selector] = ["desktop", "compact"];
+}
 for (const command of COMMANDS) {
   if (!command.target) continue;
   for (const selector of command.target.split(",").map((part) => part.trim())) {
     check(`target ${selector} is in the stage map`, selector in TARGET_STAGES, command.id);
+    check(`target ${selector} is in the layout map`, selector in TARGET_LAYOUTS, command.id);
   }
 }
 const honestChords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
-for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
-  for (const sketchOpen of bools) for (const sketchFeature of bools) for (const sketchLoft of bools) for (const brushOn of bools)
-    for (const helpOpen of bools) for (const running of bools) for (const typing of bools) {
-      const ctx: KeyContext = {
-        ...BASE,
-        stage,
-        hasResult: stage === "preview",
-        sketchOpen,
-        sketchFeature,
-        sketchLoft,
-        brushOn,
-        helpOpen,
-        running,
-        typing,
-      };
-      for (const chord of honestChords) {
-        const hits = COMMANDS.filter((command) => fires(command, eventFor(chord), ctx));
-        if (hits.length > 1) check(`${chord} fires one command`, false, hits.map((command) => command.id).join(",") + ` in ${stage}`);
-        const hit = hits[0];
-        if (!hit?.target) continue;
-        const allowed = new Set(hit.target.split(",").flatMap((part) => TARGET_STAGES[part.trim()] ?? []));
-        check(`${hit.id} stays on screen in ${stage}`, allowed.has(stage), chord);
+for (const layout of ["desktop", "compact"] as const) {
+  for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
+    for (const sketchOpen of bools) for (const sketchFeature of bools) for (const sketchLoft of bools) for (const brushOn of bools)
+      for (const helpOpen of bools) for (const running of bools) for (const typing of bools) {
+        const ctx: KeyContext = {
+          ...BASE,
+          layout,
+          stage,
+          hasResult: stage === "preview",
+          sketchOpen,
+          sketchFeature,
+          sketchLoft,
+          brushOn,
+          helpOpen,
+          running,
+          typing,
+        };
+        for (const chord of honestChords) {
+          const hits = COMMANDS.filter((command) => fires(command, eventFor(chord), ctx));
+          if (hits.length > 1) check(`${chord} fires one command`, false, hits.map((command) => command.id).join(",") + ` in ${layout} ${stage}`);
+          const hit = hits[0];
+          if (!hit?.target) continue;
+          const parts = hit.target.split(",").map((part) => part.trim());
+          const stages = new Set(parts.flatMap((part) => TARGET_STAGES[part] ?? []));
+          check(`${hit.id} stays on screen in ${stage}`, stages.has(stage), chord);
+          const shown = parts.some((part) => (TARGET_LAYOUTS[part] ?? []).includes(layout));
+          check(`${hit.id} stays on screen in ${layout}`, shown, `${chord} in ${stage}`);
+        }
       }
-    }
+  }
 }
 
 const sketchCtx = { stage: "model" as const, sketchOpen: true };
