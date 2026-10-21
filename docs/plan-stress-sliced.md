@@ -164,8 +164,54 @@ across constraints and across runs:
 | `maxMassG: M` | printed mass from `φ` | `(M − value) / M` |
 | `minMassG: M` | printed mass | `(value − M) / M` |
 
-`margin ≥ 0` is inside the limit. `met` still needs the trust gate from §7.7. Each failing or tightest constraint
-carries a **hot spot**:
+`margin ≥ 0` is inside the limit. `met` still needs the trust gate from §7.7.
+
+### 7.1 Targets on a region: stiff here, flexible there
+
+A real part rarely has one target. A clip has to be **stiff** at its mount and **flexible** at its latch. A bracket
+has to hold its bolt face still while a living hinge bends. So a constraint can name **where** it applies, and a
+target can be a **band** rather than a ceiling.
+
+A region is one of:
+- `faces`: model face indexes, the same picks the fixtures and loads use;
+- `box`: a box in the part frame;
+- `near`: a point and a radius.
+
+`sliced` maps a region onto the boundary cells and the nodes inside it. For `faces`, that's the cells within half a
+cell of those faces' triangles, with a matching normal.
+
+| Constraint | Reads | Use |
+|---|---|---|
+| `maxDeflectionMm` on a region | the peak displacement of the region's nodes | "the mount face moves under 0.05 mm" |
+| `deflectionBandMm: [lo, hi]` on a region | the same peak | "the latch tip travels 1.5 to 2.5 mm under the snap load", elastic **enough** but not too much |
+| `minStiffnessNPerMm` on a region | the load's force over the region's displacement along the load | "the button face is at least 40 N/mm" |
+| `stiffnessBandNPerMm: [lo, hi]` on a region | the same ratio | a spring arm that must feel like a spring |
+| `relativeDeflectionMm` between two regions | the change in distance between their centroids | "the two jaws close by at most 0.2 mm" |
+| `minSafetyFactor` on a region | the lowest safety factor inside it | "the hinge may bend, but it must not crack", often the partner of a band |
+
+A band's margin is the distance to the **nearer** edge, over the band's half-width: `min(value − lo, hi − value) /
+((hi − lo) / 2)`. It's positive inside, 1 at the centre and negative outside. Its hot-spot sentence says which side
+it missed: "Too stiff: the latch moves 0.9 mm, the band starts at 1.5 mm."
+
+**Several load cases.** Stiff here and flexible there are often under **different loads**: the mount under the
+working load, the latch under the snap force. So a study can hold several `loadCases`, each with its loads and the
+constraints that read it. Linear statics makes this cheap: the matrix is factored **once**, and each case is one more
+back-substitution. The driver's step loop already holds the matrix between steps. A load case is a right-hand side,
+not a new solve.
+
+**What it steers.** A too-stiff region with `governs` irrelevant (it isn't near failure) points at **less material
+there**: fewer walls, lower infill or a thinner section at `nearestFace`, through a height range or a modifier volume
+on that region. That's `settings_set` with a range or `modifier_add`, which the sliced representation now actually
+sees. A too-flexible region points the other way: reinforcement, more walls in a modifier, or geometry. Per-region
+print settings are exactly the tool the slicer already has. The loop now has a reason to use them.
+
+The panel (the main plan's §9.1) gets the same: a target row has a region picker (faces, as for loads), a kind, and
+one number or two. `sim_setup` takes `constraints: [{ region, kind, value | band, loadCase }]`. `sim_sweep`'s
+constraints become the same objects.
+
+### 7.2 The hot spot
+
+Each failing or tightest constraint carries a **hot spot**:
 
 - `at`: the point in the part frame, plus its layer index and height;
 - `role`: the dominant role of the cell (`outer`, `sparse`, `bridge` and so on);
