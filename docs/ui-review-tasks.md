@@ -562,3 +562,181 @@ The same rules as round 1 apply:
 1. R2-01 to R2-04 (P0). Open the PR after these. Round 1's P2 tasks and R2-05 onward can follow in the same PR.
 2. R2-05 to R2-09.
 3. R2-10.
+
+---
+
+## Round 3: keyboard shortcuts (2026-10-21)
+
+This round comes from an audit of every shortcut on `dev/ui-review` at `3c4c6e7`. It covers:
+
+- the registry in `src/ui/commands.ts`, which feeds the `?` sheet, the palette, tooltips and `src/ui/keys.ts`;
+- the keys handled locally in `src/app/sketch.ts`, `src/sketch/session.ts`, `src/app/edge-drag.ts`,
+  `src/interact/hud.ts`, and the paint and support-edit UIs.
+
+Within one context, no key press runs two commands; `src/ui/commands.test.ts` checks that. The problems are:
+
+- Prepare keys that still fire in other stages, clicking buttons that aren't on screen;
+- a whole set of sketch keys the registry doesn't know about;
+- a few keys that mean different things in different places.
+
+Rules:
+
+- The same as rounds 1 and 2: one commit per task, with its ID in the subject (`R3-02: …`).
+- The registry stays the single list of keys. A local handler may still do a key's work, but the key must be declared
+  in `COMMANDS`.
+- Every new or moved key appears in the `?` sheet and in its button's tooltip.
+
+### R3-01 (P0). Prepare's keys stop firing in other stages
+
+- **Seen**: these commands have scope `always`, but the buttons they click (`target`) live in a rail set shown only in
+  some stages (`railSet(...)` in `src/ui/chrome.ts`). In other stages, `runCommand` clicks a hidden button: nothing
+  changes on screen, but the state of the other stage does.
+
+  | Keys | Commands | Where the button is | What goes wrong elsewhere |
+  |---|---|---|---|
+  | M, R | `tool-move`, `tool-rotate` | Prepare | In Model, they switch Prepare's gizmo mode unseen |
+  | F | `tool-layflat` | Prepare | Clicks Prepare's Lay flat from Model or Preview |
+  | B, K, N | `paint-supports`, `paint-seam`, `paint-reinforce` | Prepare | They turn a brush on in Model or Preview. Brushes only switch off when the stage *leaves* Prepare |
+  | E | `edit-supports` | Preview, G-code | Hidden click in Prepare and Model |
+  | C, Shift+M | `tool-section`, `measure` | Prepare, Preview, G-code | In Model they act on hidden controls. Model has its own Measure tool |
+  | T, Y, I | `view-top`, `view-front`, `view-iso` | `#viewPresets` (Prepare's viewer) | In Model they move a camera nobody can see |
+  | / and Ctrl+F | `search` (`find` scope) | Settings search | In Model the left dock is the Model panel, so focus goes to a hidden field |
+  | Shift+1 to Shift+5 | `strategy-*` | Prepare's strategy cards | They change the slicing strategy from Model, with nothing on screen to show it |
+
+- **Change**:
+  - Let `when` take a list of stages as well as a named scope, for example `when: ["prepare", "preview", "gcode"]`.
+    `SCOPES` gains a helper that checks `!c.helpOpen && list.includes(c.stage)`.
+  - New scopes:
+    - M, R, F, B, K, N: `prepare`. A already is.
+    - E: `["preview", "gcode"]`, matching its rail set.
+    - C and Shift+M: `["prepare", "preview", "gcode"]`. Shift+M in Model is R3-04.
+    - T, Y, I: the stages whose viewer `#viewPresets` drives. Check `src/app/viewer.ts` for whether that's Prepare
+      only or Prepare and Preview. Model's views are R3-04.
+    - `find`: also requires `stage !== "model"`.
+    - `strategy-*`: `["prepare", "preview"]`.
+  - In `runCommand`'s default branch, don't click a target that isn't rendered (`!el.isConnected || el.closest("[hidden]")`
+    or `getClientRects().length === 0`). This is a safety net. The scopes are the fix.
+- **Accept when**: a new unit test in `src/ui/commands.test.ts` builds a `KeyContext` for each stage (prepare,
+  preview, gcode, model) and checks:
+  - `resolveKey` for M, R, F, B, K, N, E, C, T, Y, I, "/", Ctrl+F and Shift+1 returns `null` in every stage the
+    command's button isn't in;
+  - in the stages where the button is, each still returns the same command as before.
+
+  A Playwright check in `e2e/model-layout.spec.ts` opens Model and presses M, then returns to Prepare: the Prepare
+  rail's pressed tool is unchanged.
+
+### R3-02 (P0). Declare the sketch's keys in the registry
+
+- **Seen**: the sketch handles its own keys in `src/app/sketch.ts:417` and in `sketchKey` and `sketchHandlesKey`
+  (`src/sketch/session.ts:457`). The keys are:
+  - drawing tools: L Line, R Rectangle, C Circle, A Arc (Shift+A tangent arc), N Polygon, Shift+S Slot, B Spline;
+  - editing tools: T Trim, F Offset, G Fillet corner, U Use, X Construction;
+  - view: O Look around;
+  - features: E Extrude, V Revolve, Shift+L Loft, W Sweep, H Holes;
+  - while a feature is active: M Join/Cut/New object, R Smooth (loft only), Enter, Esc, Tab;
+  - Del and Backspace (delete), Ctrl+Z and Ctrl+Y (sketch undo).
+
+  None of these is in `COMMANDS`, so:
+  - the `?` sheet doesn't list them;
+  - the overlap test never checks them;
+  - Model rail tooltips show the Model meaning while the sketch has taken the key. "Pick edges (W)" and
+    "Chamfer (Shift+L)" show while W is Sweep and Shift+L is Loft.
+- **Change**:
+  - Add `"sketch"` and `"sketch-feature"` to `KeyScope`. Add `sketchOpen` and `sketchFeature` to `KeyContext`,
+    read from `#model[data-sketch="editing"]` and the active feature.
+  - The `model` scope requires `!c.sketchOpen`. `sketch` requires `stage === "model" && c.sketchOpen`.
+    `sketch-feature` requires a feature to be active.
+  - Add one `COMMANDS` entry per sketch key above: group "Sketch", labels as on the sketch card,
+    `show: "help"`. Their `runCommand` cases call into the sketch module through a small exported dispatcher, for
+    example `runSketchKey(id)`, so `sketch.ts` keeps the behaviour.
+  - Remove the matching `if (ev.key === …)` branches from the sketch's window listener, so each key has exactly one
+    handler. The sketch's text-field and HUD rules (a letter in a field is text) move into `fires()` as they already
+    exist there (`typing`).
+  - Tooltips are worked out per scope: a rail button whose command is shadowed by an active sketch command shows no
+    key while the sketch is open.
+- **Accept when**:
+  - The `?` sheet has a "Sketch" group listing every key above. Playwright opens the sheet during a sketch and finds
+    "Loft" next to "Shift+L".
+  - `src/ui/commands.test.ts`: with `sketchOpen: true`, every letter key resolves to a sketch command or `null`, never
+    a `model` command.
+  - The existing `e2e/model-sketch*.spec.ts`, `model-loft`, `model-revolve`, `model-sweep` and `model-holes` specs
+    pass unchanged.
+  - `grep -n 'ev.key === "w"' src/app/sketch.ts` finds nothing.
+
+### R3-03 (P0). Number keys don't leave Model in the middle of a sketch
+
+- **Seen**: `tab-prepare` to `tab-model` (1 to 4) are `always` and not `typing`. The sketch doesn't take digits, so
+  typing "25" for a line's length before clicking into the size box switches the app to Preview mid-sketch.
+- **Change**: while `sketchOpen`, a digit, ".", "-" or "(" focuses the active tool's size box and goes into it, as
+  `src/app/edge-drag.ts:547` already does for the edge drag. With no size box to take it, the key does nothing. The
+  stage keys get `when` that excludes `sketchOpen`. Ctrl+1 to Ctrl+4 are not added: the stage tabs stay one click
+  away.
+- **Accept when**: a Playwright test opens a sketch, picks Line, clicks one point, and types `2` `5` Enter. The stage
+  is still Model (`#tabModel[aria-selected="true"]`), and the line is 25 mm.
+
+### R3-04 (P1). Same job, same key, in Model too
+
+- **Measure**:
+  - Seen: Shift+M toggles Prepare's rulers (`#measureField`). Model's own Measure tool (`#modelToolMeasure`) has no
+    key.
+  - Change: add `model-measure`, Shift+M, scope `model`, target `#modelToolMeasure`, placed before `measure` in
+    `COMMANDS`.
+- **Camera views**:
+  - Seen: T, Y and I are Top, Front and Iso in Prepare but do nothing visible in Model, which has only Home.
+  - Change: add `model-view-top`, `model-view-front` and `model-view-iso` (T, Y, I, scope `model`), wired to the Model
+    view's camera presets. Expose them from `createModelView` if they don't exist. Inside a sketch, T stays Trim:
+    the `sketch` scope wins.
+- **Scale**:
+  - Seen: Scale is S in Prepare and X in Model (S is Sketch).
+  - Change: keep both keys. Label the Model command "Scale solid" with its key in every place it appears (rail tip,
+    palette, sheet), so the difference is plain.
+- **Loft's R**:
+  - Seen: the card says "Smooth", the code says `ruled`, and R is Rectangle the rest of the time.
+  - Change: the button reads "Smooth (R)" and its tooltip says R toggles it. The `R3-02` entry is labelled "Smooth
+    loft".
+- **Export**:
+  - Seen: Ctrl+E is G-code export everywhere. Model's STEP export has no key.
+  - Change: no new key. In Model, the Ctrl+E tooltip and palette row say "Export G-code", so nobody expects a STEP.
+- **Accept when**:
+  - Unit tests: in Model with no sketch, Shift+M resolves to `model-measure`, T to `model-view-top`, and so on. In a
+    sketch, T resolves to the sketch's Trim.
+  - Playwright: in Model, pressing T then I changes `data-camera` (or whichever attribute `publishCamera` writes) to
+    the top and then the iso pose.
+
+### R3-05 (P1). One test that keeps keys honest
+
+- **Change**: extend `src/ui/commands.test.ts` with a table-driven check over every combination of:
+  - stage (4);
+  - sketch open or not;
+  - a sketch feature active or not;
+  - a brush on or not;
+  - help open or not;
+  - a slice running or not;
+  - typing or not.
+
+  For each, and for every chord in `COMMANDS`:
+  1. at most one command fires;
+  2. a command with a `target` fires only in stages where that target's rail set or panel is shown. Keep a small map
+     from target selector to stages in the test, and fail when a new target is missing from the map.
+- **Accept when**:
+  - The test fails on today's registry, because of the R3-01 leaks, and passes after R3-01 to R3-04.
+  - It runs from `tools/unit-tests.txt` (`npm run test:unit`).
+
+### R3-06 (P2). Small fixes
+
+- **Duplicate icon**: after UX-01, the sketch's Arc button and Model's Fillet both use Lucide's `Radius`. Give Arc
+  its own icon (a quarter-arc SVG drawn in the Lucide style; Spline already uses `Spline`) so the two never look the
+  same.
+- **The sheet's mouse hints**: `MOUSE_HINTS` lists "Shift+click" twice with two meanings. Name the context: "Model:
+  add or remove a face or edge" and "Paint: a straight line from the last dab".
+- **Sketch tool tips**: the Edit section's buttons (Select, Trim, Offset, Constrain, Construction, Fillet corner,
+  Use) show their key in the tooltip as the Draw buttons do, from the R3-02 entries rather than hand-written strings.
+
+### Round 3 order
+
+1. R3-01 and R3-05 together: the test shows the leaks, then the scopes close them.
+2. R3-02, then R3-03, since R3-03 needs `sketchOpen` from R3-02.
+3. R3-04.
+4. R3-06.
+
+Round 3 can land in the same PR as round 2, or in a PR of its own straight after it.
