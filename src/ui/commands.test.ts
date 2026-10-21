@@ -200,6 +200,102 @@ for (const [chord, where] of Object.entries(STAGE_KEYS)) {
   }
 }
 
+// R3-05. Every chord, in every combination of stage and mode, fires at most one command,
+// and a targeted command fires only where that target is on screen.
+const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | "model")[]> = {
+  "#leftToggle": ["prepare", "preview", "gcode", "model"],
+  "#timing": ["prepare", "preview", "gcode", "model"],
+  "#contextBarRestore": ["model"],
+  "#compactChromeShow": ["prepare", "preview", "gcode", "model"],
+  "#slice": ["prepare", "preview", "gcode", "model"],
+  "#force": ["prepare", "preview", "gcode", "model"],
+  "#cancel": ["prepare", "preview", "gcode", "model"],
+  "#export": ["prepare", "preview", "gcode", "model"],
+  "#tabPrepare": ["prepare", "preview", "gcode", "model"],
+  "#tabPreview": ["prepare", "preview", "gcode", "model"],
+  "#tabGcode": ["prepare", "preview", "gcode", "model"],
+  "#tabModel": ["prepare", "preview", "gcode", "model"],
+  '[data-mode="flat"]': ["preview"],
+  '[data-mode="split"]': ["preview"],
+  '[data-mode="solid"]': ["preview"],
+  "#viewPresets button:nth-child(1)": ["prepare"],
+  "#viewPresets button:nth-child(2)": ["prepare"],
+  "#viewPresets button:nth-child(3)": ["prepare"],
+  "#measureField": ["prepare", "preview", "gcode"],
+  "#modelToolNew": ["model"],
+  "#modelPickFace": ["model"],
+  "#modelPickEdge": ["model"],
+  "#modelToolBoolean": ["model"],
+  "#modelToolSplit": ["model"],
+  "#modelToolPull": ["model"],
+  "#modelToolSketch": ["model"],
+  "#modelToolFillet": ["model"],
+  "#modelToolChamfer": ["model"],
+  "#modelToolHole": ["model"],
+  "#modelToolFeatures": ["model"],
+  "#modelToolPattern": ["model"],
+  "#modelToolMirror": ["model"],
+  "#modelToolShell": ["model"],
+  "#modelToolScale": ["model"],
+  "#modelToolPlace": ["model"],
+  "#modelToolWorkplane": ["model"],
+  "#modelToolCheck": ["model"],
+  "#modelResetView": ["model"],
+  "#modelHistoryOpen": ["model"],
+  "#modelApply": ["model"],
+  '[data-card="speed"]': ["prepare", "preview"],
+  '[data-card="efficiency"]': ["prepare", "preview"],
+  '[data-card="toughness"]': ["prepare", "preview"],
+  '[data-card="layer"]': ["prepare", "preview"],
+  '[data-card="region"]': ["prepare", "preview"],
+  "#plateArrange": ["prepare"],
+  "#plateDuplicate": ["prepare"],
+  '#toolRail [data-tool="move"]': ["prepare"],
+  '#toolRail [data-tool="rotate"]': ["prepare"],
+  '#toolRail [data-tool="scale"]': ["prepare"],
+  "#layflat": ["prepare"],
+  '#toolRail [data-tool="layflat"]': ["prepare"],
+  '#toolRail [data-tool="section"]': ["prepare", "preview", "gcode"],
+  '#toolRail [data-tool="supports"]': ["preview", "gcode"],
+  '#toolRail [data-tool="paint"]': ["prepare"],
+  '#toolRail [data-tool="seam"]': ["prepare"],
+  '#toolRail [data-tool="reinforce"]': ["prepare"],
+  // Undo and Redo run in every stage. The Model buttons are the tooltip targets, and the handler clicks them only in Model.
+  "#modelUndo": ["prepare", "preview", "gcode", "model"],
+  "#modelRedo": ["prepare", "preview", "gcode", "model"],
+};
+for (const command of COMMANDS) {
+  if (!command.target) continue;
+  for (const selector of command.target.split(",").map((part) => part.trim())) {
+    check(`target ${selector} is in the stage map`, selector in TARGET_STAGES, command.id);
+  }
+}
+const honestChords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
+for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
+  for (const sketchOpen of bools) for (const sketchFeature of bools) for (const brushOn of bools)
+    for (const helpOpen of bools) for (const running of bools) for (const typing of bools) {
+      const ctx: KeyContext = {
+        ...BASE,
+        stage,
+        hasResult: stage === "preview",
+        sketchOpen,
+        sketchFeature,
+        brushOn,
+        helpOpen,
+        running,
+        typing,
+      };
+      for (const chord of honestChords) {
+        const hits = COMMANDS.filter((command) => fires(command, eventFor(chord), ctx));
+        if (hits.length > 1) check(`${chord} fires one command`, false, hits.map((command) => command.id).join(",") + ` in ${stage}`);
+        const hit = hits[0];
+        if (!hit?.target) continue;
+        const allowed = new Set(hit.target.split(",").flatMap((part) => TARGET_STAGES[part.trim()] ?? []));
+        check(`${hit.id} stays on screen in ${stage}`, allowed.has(stage), chord);
+      }
+    }
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
