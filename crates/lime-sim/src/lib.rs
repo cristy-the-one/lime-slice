@@ -21,6 +21,7 @@ pub mod fields;
 pub mod material;
 pub mod mesh;
 pub mod recipe;
+pub mod skin;
 pub mod solve;
 pub mod study;
 pub mod trust;

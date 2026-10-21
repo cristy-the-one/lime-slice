@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::element::element;
 use crate::mesh::Mesh;
-use crate::units::{dot, normalize};
+use crate::skin::SurfaceBands;
+use crate::units::normalize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -96,6 +97,10 @@ impl Recipe {
 }
 
 /// One fraction per element. 1 is solid polymer, the infill number is the core.
+///
+/// The walls and skins are a band inside the part's real surface, found by
+/// [`crate::skin::SurfaceBands`]. Each element's fraction is its wall share
+/// at 1 plus the rest at the core fraction.
 pub fn volume_fractions(mesh: &Mesh, recipe: &Recipe, build_axis: [f64; 3]) -> Vec<f64> {
     let n = mesh.elements.len();
     if recipe.infill >= 1.0 - 1e-12 {
@@ -104,69 +109,15 @@ pub fn volume_fractions(mesh: &Mesh, recipe: &Recipe, build_axis: [f64; 3]) -> V
     let Some(axis) = normalize(build_axis) else {
         return vec![recipe.infill.clamp(0.0, 1.0); n];
     };
-    let (min, max) = bounds(mesh);
     let core = (recipe.infill * recipe.pattern_factor).clamp(0.0, 1.0);
-    let mut out = Vec::with_capacity(n);
-    for elem in &mesh.elements {
-        let coords: Vec<[f64; 3]> = elem.nodes.iter().map(|i| mesh.nodes[*i]).collect();
-        let Some(elem_kind) = element(mesh.kind) else {
-            out.push(core);
-            continue;
-        };
-        let mut inside = 0.0;
-        let mut total = 0.0;
-        for gp in elem_kind.quadrature() {
-            let shape = elem_kind.shape(gp.xi);
-            let mut p = [0.0; 3];
-            for (a, n) in shape.n.iter().enumerate() {
-                p[0] += n * coords[a][0];
-                p[1] += n * coords[a][1];
-                p[2] += n * coords[a][2];
-            }
-            total += 1.0;
-            if in_skin(p, min, max, axis, recipe) {
-                inside += 1.0;
-            }
-        }
-        let frac = if total == 0.0 { 0.0 } else { inside / total };
-        out.push((frac + (1.0 - frac) * core).clamp(0.0, 1.0));
-    }
-    out
-}
-
-fn bounds(mesh: &Mesh) -> ([f64; 3], [f64; 3]) {
-    let mut min = [f64::INFINITY; 3];
-    let mut max = [f64::NEG_INFINITY; 3];
-    for p in &mesh.nodes {
-        for k in 0..3 {
-            min[k] = min[k].min(p[k]);
-            max[k] = max[k].max(p[k]);
-        }
-    }
-    (min, max)
-}
-
-fn in_skin(p: [f64; 3], min: [f64; 3], max: [f64; 3], axis: [f64; 3], recipe: &Recipe) -> bool {
-    let faces = [
-        ([-1.0, 0.0, 0.0], p[0] - min[0]),
-        ([1.0, 0.0, 0.0], max[0] - p[0]),
-        ([0.0, -1.0, 0.0], p[1] - min[1]),
-        ([0.0, 1.0, 0.0], max[1] - p[1]),
-        ([0.0, 0.0, -1.0], p[2] - min[2]),
-        ([0.0, 0.0, 1.0], max[2] - p[2]),
-    ];
-    let limit = (45.0_f64.to_radians()).cos();
-    for (normal, distance) in faces {
-        let thick = if dot(normal, axis).abs() >= limit {
-            recipe.skin_layers as f64 * recipe.layer_height_mm
-        } else {
-            recipe.walls as f64 * recipe.line_width_mm
-        };
-        if distance <= thick + 1e-9 {
-            return true;
-        }
-    }
-    false
+    let skin = f64::from(recipe.skin_layers) * recipe.layer_height_mm;
+    let wall = f64::from(recipe.walls) * recipe.line_width_mm;
+    let bands = SurfaceBands::new(mesh, axis, skin, wall);
+    bands
+        .wall_shares(mesh)
+        .into_iter()
+        .map(|share| (share + (1.0 - share) * core).clamp(0.0, 1.0))
+        .collect()
 }
 
 pub fn integrate_volumes(mesh: &Mesh, vf: &[f64]) -> (f64, f64) {

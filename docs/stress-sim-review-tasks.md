@@ -26,6 +26,14 @@ Each task is marked with who should take it:
   - The hole's Kt goes 2.41 → 2.70 → 2.84 as the edge length halves.
   - Lamé matches at the sample radius.
 
+## Who has what (2026-10-21)
+
+- **Claude**: SR-03 (done, in the commit after this note) and SR-04 (in progress).
+- **Grok**: SR-02, SR-05, SR-06 and SR-07 first, then SR-01 last. SR-01 changes the recovery code in
+  `crates/lime-sim/src/lib.rs` that SR-04 rewrites, so start SR-01 only after the SR-04 commit has landed on this
+  branch. Pull before each task: SR-03 already rewrote `volume_fractions` in `recipe.rs`, which SR-02 option (a)
+  extends.
+
 ## Rules for these tasks
 
 - One commit per task, with its ID in the subject (`SR-03: …`).
@@ -94,6 +102,11 @@ Each task is marked with who should take it:
 
 ### SR-03 (P0, Claude). Walls and skins follow the real surface, not the bounding box
 
+Status: done. `crates/lime-sim/src/skin.rs` builds the bands from `boundary_faces`, finds them with a bucket grid,
+and samples each element at 64 equal sub-tet centroids, then 512 where those disagree. `tests/skin.rs` checks a box
+meshed 4× coarser than its walls, the box turned 30°, and a tube's bore against the exact band volume, each within
+10% (the turned box within 5% of the flat one).
+
 - **Seen**:
   - `in_skin` in `recipe.rs` measures each Gauss point's distance to the six faces of the mesh's **axis-aligned
     bounding box**. That's right only for a box aligned with the axes. On a cylinder, a bracket, a rotated part, or
@@ -121,6 +134,8 @@ Each task is marked with who should take it:
   - **No regression:** the existing "more walls deflect less" test still passes.
 
 ### SR-04 (P0, Claude). `converged` must mean the peak numbers are converged
+
+Status: in progress (Claude).
 
 - **Seen**:
   - The trust level comes from the global ZZ relative energy error (`estimate.rs`), with nodal stress recovered as a
