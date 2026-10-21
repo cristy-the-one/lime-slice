@@ -254,3 +254,166 @@ there. The cantilever's peak error is now 0.022, 0.0068 and 0.0029, `converged` 
 
 S3 (desktop) shouldn't start until SR-01 to SR-04 have landed. The legend and the MCP summary show the very numbers
 those tasks fix.
+
+---
+
+# Round 2: review of S3 and S4, and wiring the sliced solve
+
+Written 2026-10-22 by reviewing `dev/stress-sim` at `72e9dc9`. The sliced plan's L1a to L4b have landed
+(`docs/plan-stress-sliced.md`). A real part can now be solved as it is sliced, so the desktop and the MCP can show real
+results.
+
+## What the review found
+
+S3 built the panel's mechanics, and they work:
+- the menu entry and the dock section;
+- typed and dragged loads;
+- the legend, the probe and section clipping;
+- an undo that stays off the model history.
+
+The **result** it draws isn't a solve. `cannedBeam` in `src/sim/study.ts` applies the Euler–Bernoulli cantilever formula
+to the object's **bounding box**. Seen in the app, through a headless Playwright run with the model tree mocked as in
+`e2e/model-stress.spec.ts`:
+
+- **The shape is ignored.** An L bracket (a 40 × 10 × 4 foot and a 4 × 10 × 30 upright) is painted as one solid
+  40 × 10 × 34 block, filling the empty corner of the L.
+- **The holds and the load's faces are ignored.** "Bed" holding the whole bottom face, with 25 N pressing down, should
+  give light compression. It shows a cantilever clamped at x = min, bending to 6 MPa. The formula always clamps x = min
+  and loads the far end.
+- **The print is ignored:** infill, walls, the build direction and the across-layer strength. The safety factor is
+  `strengthInPlane / vonMises`.
+- **The words over it are wrong.** It's labelled **In-house estimate**. The main plan's §9.2 meant the canned beam only
+  for the Playwright spec, so the screenshot doesn't wait on a factorisation.
+- **The sweep only scales.** Its rows are the same formula scaled by the load. Walls, infill and pattern variants change
+  only the mass.
+- **Two visual issues:**
+  - The colour surface sits in the same plane as the solid, so the solid's grey top shows through it (z-fighting).
+  - The pattern select shows "As printe".
+
+S4 solves only the generated beam, which was its stated scope. `mcp/sim.ts` spawns `target/debug/lime-sim`, a debug
+build in the checkout that an installed app doesn't ship.
+
+## The bridge (Claude, SR-14, lands first)
+
+A crate `crates/lime-sim-bridge` links `lime-slice-core` and `lime-sim`. `lime-sim` itself still links no slicer. It
+exposes one call, used by both the Tauri command and the engine:
+
+```rust
+lime_sim_bridge::study_json(body: &str) -> String   // JSON in, JSON out; a refusal is { "ok": false, "reason": "<sentence>" }
+```
+
+Request:
+
+```jsonc
+{
+  "request": { /* a SliceRequest for this object alone: the body a one-object slice sends, with its pose and settings */ },
+  "study": {
+    "hXy": 1.0,                      // optional; absent picks the largest that fits the node cap
+    "card": { /* a Card, as src/sim/cards.ts holds it; "beads" optional */ },
+    "holds": [ { "kind": "bed" }, { "kind": "region", "region": { "kind": "faces", "triangles": [[[x,y,z],[x,y,z],[x,y,z]], ...] } } ],
+    "loads": [ { "kind": "force", "region": { ... }, "force": [0, 0, -25] },
+               { "kind": "pressure", "region": { ... }, "mpa": 0.2 },
+               { "kind": "torque", "region": { ... }, "origin": [..], "axis": [..], "torque": 100 } ],
+    "loadCases": [ { "name": "snap", "loads": [ ... ] } ],   // instead of "loads", when there are several
+    "constraints": [ { "kind": "minSafetyFactor", "value": 2 },
+                     { "kind": "deflectionBandMm", "band": [1.5, 2.5], "region": { ... }, "loadCase": "snap" } ],
+    "checkResolution": true
+  }
+}
+```
+
+- **Coordinates:** every point and direction is in the **model frame**, the frame the Model view's solid and its face
+  ids are in. The bridge undoes the object's pose and the slice's own frame.
+- **Faces:** a `faces` region carries the faces' **triangles**, because `lime-sim` has no B-rep. Take them from the
+  solid's positions and its per-triangle face ids, the same arrays the view draws.
+- **Regions:** the other kinds are `box` (`min`, `max`) and `near` (`point`, `radius`).
+
+Reply:
+
+```jsonc
+{
+  "ok": true,
+  "report": { "representation": "sliced", "hXyMm": 1, "trust": "usable", "notes": [ ... ],
+              "margins": [ { "kind", "limit", "band", "loadCase", "value", "margin", "met", "note",
+                             "hotSpot": { "at": [x,y,z], "layer", "layerZMm", "role", "governs" } } ],
+              "loadCases": ["default"], "rawMinSafetyFactor", "minSafetyFactor", "maxDisplacementMm", "massG",
+              "resolutions": [ { "hXyMm", "nodes", "factorisations", "governingValue" } ] },
+  "surface": { "triangles": 1234,                        // the solved part's outer surface, first load case
+               "positionsB64": "...",                    // f32 x y z per triangle corner, model frame
+               "displacementB64": "...",                 // f32 x y z per corner, model frame, unscaled
+               "vonMisesB64": "...", "safetyB64": "..." } // f32 per corner: the cell average the margins read
+}
+```
+
+The surface is the staircase of the sliced grid: within half a cell of the part, steps on slopes. Draw it as is. A
+later improvement smooths it for display only.
+
+## Tasks
+
+### SR-08 (P0, Grok). Stop showing the formula as a result
+
+- `cannedBeam` stays as a Playwright fixture only, reachable from the spec and not from the panel's Run.
+- Until SR-09 lands, Run and Run sweep refuse with "The stress solve is not wired to the desktop yet."
+- **Accept when:** `e2e/model-stress.spec.ts` still passes on its fixture, and no non-test code path calls
+  `cannedBeam`.
+
+### SR-09 (P0, Grok). Run solves through the bridge
+
+- A Tauri command `sim_study(body)` calls `lime_sim_bridge::study_json` on a blocking thread. Add the crate to
+  `src-tauri`'s dependencies.
+- **What the panel sends:**
+  - the object's one-object slice request: the same body the plate builds for a single object, with its pose;
+  - the study in the shape above. Holds and loads on faces go as their triangles, and "Bed" is `{ "kind": "bed" }`.
+- **While it runs:** Cancel leaves the previous result. Show the stage the way slicing shows it, if the bridge's watch
+  is easy to reach; otherwise the word "Solving".
+- **Accept when:**
+  - the bracket above, held on its foot's underside and pushed on the upright's top, gives a result whose highest
+    stress is at the corner of the L;
+  - a Playwright spec on a mocked `sim_study` reply draws it;
+  - one `cargo test` in `src-tauri` runs the command on a small box.
+
+### SR-10 (P0, Grok). Draw the sliced result
+
+- **The surface:**
+  - draw `surface.positionsB64` displaced by `displacementB64 × scale`, coloured by the chosen field;
+  - von Mises and displacement run from the low colour to the high one, and the safety factor is lowest-is-worst, as
+    now.
+- **The solid and the legend:**
+  - hide the solid's own faces while a result is shown, or give the result `polygonOffset`, so nothing z-fights;
+  - the legend reads "In-house estimate · as sliced", the trust word, and every note in `report.notes`.
+- **Margins:**
+  - each margin's `hotSpot.at` gets a small marker;
+  - its row shows value, margin, `met`, and `note` when present, which is the band's side.
+- **The probe** reads the nearest surface corner, as now.
+- **Accept when:** a Playwright spec on a mocked reply checks the legend words, a marker at the hot spot, and a probe
+  value.
+
+### SR-11 (P1, Grok). The sweep reslices
+
+A variant of walls, infill or pattern is a different print, so each is one more `sim_study` with that setting on the
+object's slice request. Up to 16, as now, and the status line says each variant is a slice plus a solve. A load-scale
+variant may scale the base result: the solve is linear. Until this lands, refuse the print variants with a sentence
+rather than scaling the formula.
+
+### SR-12 (P1, Grok). The MCP solves real parts (the sliced plan's L5)
+
+- `sim_setup` takes `representation: "sliced"` and defaults to it for an STL or STEP part with a printer chosen, as
+  decided in the sliced plan's §12.
+- `sim_run` calls the engine's new `simStudy`, the same `study_json` in-process, which Claude adds with SR-14. Replace
+  the `target/debug/lime-sim` spawn, which an installed app can't find.
+- The reply carries `margins` and their hot spots. The guide (`lime://guide/sim`) gets the sliced plan's §7.2 table
+  that maps `governs` to the change to try.
+- **Accept when:** an MCP test solves a sliced box held on the bed and pulled on its top, and reads `margins` from the
+  reply.
+
+### SR-13 (P2, Grok). Panel details
+
+- The pattern select is cut to "As printe" at 1440 px.
+- The stress section is long. Put Run and Cancel where the other tools keep them, pinned at the foot of the dock.
+
+### SR-14 (Claude). The bridge
+
+As specified above, with Rust tests:
+- a placed box's result comes back in the model frame;
+- the bracket's peak is at its corner;
+- the engine's `simStudy` napi call answers the same JSON.
