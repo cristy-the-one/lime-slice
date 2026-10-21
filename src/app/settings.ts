@@ -622,18 +622,24 @@ function toolRow(buttons: { id: string; tool: string; label: string; command: st
   }).join("")}</div>`;
 }
 
-/** A tooltip names the action, and the shortcut when the command has one. */
-function tipWithKey(id: string, tip: string): string {
+/** The object tool's chord, so the hover tip can show it as a key cap. */
+function objectShortcut(id: string): string | undefined {
   const command = COMMANDS.find((item) => item.target?.split(",").some((part) => part.trim() === `#${id}`));
-  const key = command ? shortcutOf(command) : undefined;
-  return tipWithShortcut(tip, key);
+  return command ? shortcutOf(command) : undefined;
+}
+
+/** The button's sentence, with an empty shortcut slot left off. The key cap is added when the tip opens. */
+function tipWithKey(tip: string): string {
+  return tipWithShortcut(tip, undefined);
 }
 
 function objectToolsHtml(): string {
   const many = state.plate.objects.length > 1;
   const tool = (id: string, node: IconNode, tip: string, extra = "", aria = tip) => {
-    const said = tipWithKey(id, tip);
-    return `<button class="tool-btn" id="${id}" type="button" data-tip="${escapeHtml(said)}" aria-label="${escapeHtml(aria)}"${extra}>${icon(node)}</button>`;
+    const said = tipWithKey(tip);
+    const key = objectShortcut(id);
+    const keys = key ? ` aria-keyshortcuts="${escapeHtml(key)}"` : "";
+    return `<button class="tool-btn" id="${id}" type="button" data-tip="${escapeHtml(said)}" aria-label="${escapeHtml(aria)}"${keys}${extra}>${icon(node)}</button>`;
   };
   const spin = (axis: "X" | "Y" | "Z") =>
     `<button class="tool-btn" id="rot${axis}" type="button" data-tip="Rotate 90° around ${axis}" aria-label="Rotate 90 degrees around ${axis}">${icon(RotateCw)}<sub>${axis.toLowerCase()}</sub></button>`;
@@ -652,26 +658,45 @@ function objectToolsHtml(): string {
   </div>`;
 }
 
+let dockObserved = false;
+let fittingTools = false;
+
+/** The dock's width changes without a window resize when a splitter or a test sets it. */
+function watchSettingsDock() {
+  if (dockObserved || typeof ResizeObserver === "undefined") return;
+  const dock = document.querySelector("#left");
+  if (!dock) return;
+  dockObserved = true;
+  new ResizeObserver(() => fitObjectTools()).observe(dock);
+}
+
 /** Keep the object tools on one line. What does not fit moves into the ⋯ menu. */
 export function fitObjectTools() {
-  const row = document.querySelector<HTMLElement>("#objTools");
-  const more = row?.querySelector<HTMLDetailsElement>(".obj-more");
-  const menu = row?.querySelector<HTMLElement>(".obj-more-menu");
-  if (!row || !more || !menu) return;
-  while (menu.firstChild) row.insertBefore(menu.firstChild, more);
-  more.hidden = true;
-  const height = row.querySelector<HTMLElement>(".tool-btn")?.offsetHeight ?? 28;
-  const overflows = () => row.scrollWidth > row.clientWidth + 1 || row.scrollHeight > height + 1;
-  if (!overflows()) return;
-  more.hidden = false;
-  const movable = [...row.querySelectorAll<HTMLElement>(":scope > .tool-btn, :scope > .tool-sep")].filter((node) => node !== more.querySelector("summary"));
-  while (overflows() && movable.length > 1) {
-    const node = movable.pop();
-    if (!node || node === more) continue;
-    menu.prepend(node);
+  if (fittingTools) return;
+  fittingTools = true;
+  try {
+    watchSettingsDock();
+    const row = document.querySelector<HTMLElement>("#objTools");
+    const more = row?.querySelector<HTMLDetailsElement>(".obj-more");
+    const menu = row?.querySelector<HTMLElement>(".obj-more-menu");
+    if (!row || !more || !menu) return;
+    while (menu.firstChild) row.insertBefore(menu.firstChild, more);
+    more.hidden = true;
+    const height = row.querySelector<HTMLElement>(".tool-btn")?.offsetHeight ?? 28;
+    const overflows = () => row.scrollWidth > row.clientWidth + 1 || row.scrollHeight > height + 1;
+    if (!overflows()) return;
+    more.hidden = false;
+    const movable = [...row.querySelectorAll<HTMLElement>(":scope > .tool-btn, :scope > .tool-sep")].filter((node) => node !== more.querySelector("summary"));
+    while (overflows() && movable.length > 1) {
+      const node = movable.pop();
+      if (!node || node === more) continue;
+      menu.prepend(node);
+    }
+    const first = menu.firstElementChild;
+    if (first?.classList.contains("tool-sep")) first.remove();
+  } finally {
+    fittingTools = false;
   }
-  const first = menu.firstElementChild;
-  if (first?.classList.contains("tool-sep")) first.remove();
 }
 
 if (typeof window !== "undefined") window.addEventListener("resize", () => fitObjectTools());

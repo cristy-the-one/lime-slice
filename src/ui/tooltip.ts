@@ -40,7 +40,8 @@ export function mountTooltips(root: ParentNode = document) {
     const command = commandForElement(el) ?? commandById(el.dataset.command);
     const owned = command ? shortcutOf(command) ?? "" : "";
     const shortcut = owned && !shortcutShadowed(owned) ? owned : "";
-    const text = tipWithShortcut(el.dataset.tip ?? command?.label ?? "", shortcut);
+    // The chord is the key cap. The sentence stays free of it, and an empty slot stays off.
+    const text = tipWithShortcut(el.dataset.tip ?? command?.label ?? "", undefined);
     if (!text) {
       hide();
       return;

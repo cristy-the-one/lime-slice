@@ -315,7 +315,8 @@ export function refreshModelRailTips() {
     const raw = button.dataset.tip ?? button.getAttribute("aria-label") ?? "";
     const mark = owned ? ` (${owned})` : "";
     const base = mark && raw.endsWith(mark) ? raw.slice(0, -mark.length) : raw;
-    if (base) button.dataset.tip = tipWithShortcut(base, key);
+    // The hover tip adds the key cap. The stored sentence stays the tool's own words.
+    if (base) button.dataset.tip = tipWithShortcut(base, undefined);
   }
 }
 
