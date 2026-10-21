@@ -312,13 +312,16 @@ Risks we choose a side on:
 - **One object alone.** A part printed among others is solved alone. Different neighbours change cooling, not the
   geometry; that's out of scope.
 
-Open, for Marius:
+Decided by Marius, 2026-10-21:
 
-1. **Default representation for real parts.** This design suggests `sliced` as the default whenever a slice can be
-   made, and `smear` only for generated shapes or before a printer is chosen.
-2. **Reslicing in a sweep.** A sliced sweep must slice, up to 16 times. Confirm that's acceptable as the cost of
-   `reslice: true`, with the default off.
-3. **Preview colouring.** Adding `stress` and `safety` to the Preview's colour menu puts simulation results in a tab
-   that today only shows the slice. Confirm that's welcome, or keep it to `layer_image` for the MCP only.
-4. **Foreign G-code.** The same field could be built from a G-code file (extrusion per millimetre gives the width),
-   so a print from another slicer could be checked. That's not in these milestones. Say if it's wanted.
+1. **`sliced` is the default for real parts.** A study on an STL or STEP part uses `representation: "sliced"`
+   whenever a printer is chosen and the object can be sliced. `smear` is for the generated verification shapes, for a
+   study before a printer is chosen, and when the caller asks for it by name. The panel shows which one ran, and so
+   does the legend ("as sliced" or "as smeared").
+2. **A sliced sweep reslices.** `reslice: true` is accepted, up to 16 variants, each a one-object slice plus a solve.
+   It stays off by default, and the tool description states the cost.
+3. **The Preview shows stress.** `stress` and `safety` join the Preview's colour menu and `layer_image`'s `colourBy`.
+   They're available only when the open object has a current sliced result. Otherwise the menu item says why, in the
+   same words as a disabled tool.
+4. **No foreign G-code.** The slice field is built only from Lime Slice's own jobs. A G-code from another slicer is
+   not solved, and the milestones carry no parser for it.
