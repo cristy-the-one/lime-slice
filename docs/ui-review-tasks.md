@@ -662,7 +662,7 @@ Status: done.
 Status: done.
 - Pass: the `?` sheet lists Loft beside Shift+L while a sketch is open.
 - Pass: with a sketch open, letter keys resolve to a sketch command or null, never a Model command.
-- Pass: `e2e/model-sketch.spec.ts`, `model-loft`, and `model-holes` passed on the preview build. `model-revolve` and `model-sweep` were not in this run.
+- Pass: `e2e/model-sketch.spec.ts`, `model-loft` (its sweep cases; there is no `model-sweep` spec), `model-revolve` (3 passed), and `model-holes` passed on the preview build. `model-sketch-real` skips without `LIME_EDIT_API`.
 - Pass: `grep 'ev.key === "w"' src/app/sketch.ts` finds nothing.
 
 - **Seen**: the sketch handles its own keys in `src/app/sketch.ts:417` and in `sketchKey` and `sketchHandlesKey`
