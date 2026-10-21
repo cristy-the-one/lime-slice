@@ -406,7 +406,7 @@ The same rules as round 1 apply:
 
 ### R2-01 (P0). The frame-time check must run in the build Playwright tests
 
-Status: not done. The preview build records the gaps and the assertion prints the median: 40.3 ms from 46 frames. That is above 17 ms, so the check stays as written.
+Status: the 17 ms bar is now the relative check in R4-01. On SwiftShader the preview build measured orbit 16.7 ms from 116 frames and drag 17.7 ms from 146 frames, and that relative check passed. The absolute 17 ms check was skipped because the renderer is software. CI did not start on this branch.
 
 - **Seen**:
   - `recordFrame` in `src/model-view.ts` writes `window.__frameTimes` only when `import.meta.env.DEV` is set.
@@ -478,7 +478,7 @@ Status: done. Tabbing into the extrude distance field sets `data-aspect-field`. 
 
 ### R2-05 (P1). Work out the ghost seats once per ghost, not per frame
 
-Status: not done. The ghost box, its face points, and the label size are cached, and a drag does not raycast the solid for the edge sample. The 3,000-face median on the preview build is 40.3 ms from 46 frames, above 17 ms. There is no 40-hole timing case.
+Status: a size drag keeps the ghost it already built. ghostPose advances and ghostSerial stays put, so the seat cache re-projects. On SwiftShader that drag grew the heap by 1.22 MB after gc and left ghost serial 11 unchanged. The frame check is the relative one in R4-01. There is still no 40-hole timing case. CI did not start on this branch.
 
 - **Seen**: `sizeHandles()` runs every frame (`src/model-view.ts:1464`) and on every pointer move (`handleAt`). It
   now calls:
@@ -808,6 +808,10 @@ fail CI. A task is done when the CI job is green on the pushed branch, and the t
 
 ### R4-01 (P0). A speed test that means the same thing on a GPU and on a CPU
 
+Status: local pass on SwiftShader (`ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)`). Orbit 16.7 ms from 116 frames, drag 17.7 ms from 146 frames. The relative check passed. The absolute 17 ms assertion was skipped (`skip-absolute`) because the renderer is software. CI did not start: the workflow runs on push to `main` and on a pull request into `main`, and this round does not open that pull request.
+- Pass locally: the preview-build test prints the renderer, both medians, and the frame counts, and the drag stays within 1.5× the orbit plus 4 ms.
+- Not run: the CI `test:smoke` job. A push to `dev/ui-review` does not start it.
+
 - **Seen**:
   - The test measures the median gap between frames during a 2 s knob drag on the 3,000-face part.
   - This machine renders with the GPU. There the gaps are 4.2 ms idle, 4.2 ms orbiting and 1.2 ms dragging, so ≤ 17 ms
@@ -832,6 +836,10 @@ fail CI. A task is done when the CI job is green on the pushed branch, and the t
 
 ### R4-02 (P0). The knob drag stops rebuilding the ghost on every move
 
+Status: local pass. The same SwiftShader drag grew the heap by 1.22 MB after one frame and `gc()`, under 5 MB, and left `data-ghost-serial` at 11. The drag stepped through at least 50 size values. A box scales the mesh it was built at, and `ghostPose` advances so the seat cache re-projects. CI did not start, for the same reason as R4-01.
+- Pass locally: heap growth under 5 MB after `gc()`, and the serial is unchanged across the drag.
+- Not run: the CI `test:smoke` job.
+
 - **Seen**:
   - In the same test, the heap grew by **27 MB** in 2 s, against a limit of 5 MB.
   - Every value change during the drag calls `rebuildGhost()`. That disposes and re-creates the ghost's meshes,
@@ -855,6 +863,10 @@ fail CI. A task is done when the CI job is green on the pushed branch, and the t
 
 ### R4-03 (P0). Stage keys work again on the phone layout
 
+Status: local pass. `compact-layout.spec.ts` passed, including the 4 and 1 keys moving the compact nav with the stage. Home calls `frameModel` directly, because Reset view sits in a menu that is hidden until it opens. The command matrix includes layout. CI did not start, for the same reason as R4-01.
+- Pass locally: the compact spec, and the matrix rejects a key whose only target is hidden in that layout.
+- Not run: the CI `test:smoke` job.
+
 - **Seen**: `compact-layout.spec.ts:103` fails: "4" no longer opens Model. R3-01's safety net in `click()`
   (`src/ui/palette.ts`) refuses a hidden target. In the compact layout the top tabs (`#tabModel` and the others) are
   hidden, because the bottom nav replaces them.
@@ -869,6 +881,10 @@ fail CI. A task is done when the CI job is green on the pushed branch, and the t
 
 ### R4-04 (P0). The context bar gets out of the way while a tool is open
 
+Status: the chip stays while a tool is open. The action buttons are removed, and the bar's padding, border, and shadow are cleared so an empty toolbar does not sit on the canvas. `model-context-bar.spec.ts` passed in the full folder run. CI did not start, for the same reason as R4-01.
+- Pass locally: the context-bar spec, with the chip visible and `[data-action]` empty while Push/Pull, Pattern, and Shell are open.
+- Not run: the CI `test:smoke` job.
+
 - **Seen**: `model-context-bar.spec.ts:98` and `:138` fail. After a face click opens Push/Pull, `#modelContextBar`
   stays visible (`is-tool`, `data-actions=""`, `data-faded="0"`), an empty bar over the canvas. The UX-09 follow-up
   ("does not fade, including while a tool is open") was meant for the chip, but it keeps the whole bar up.
@@ -880,6 +896,10 @@ fail CI. A task is done when the CI job is green on the pushed branch, and the t
 
 ### R4-05 (P1). The lit-colour check holds on any GPU and on SwiftShader
 
+Status: local pass on SwiftShader. The lit check and the hidden-edge walk both take the most saturated pixel in a 5×5 patch and keep the limit at 10. The assertion message includes the measured ΔE. The passing run did not print a number, because the check held. CI did not start, for the same reason as R4-01.
+- Pass locally: the hover check in `model-drag.spec.ts`, including the hidden-edge walk.
+- Not run: the CI `test:smoke` job, so there is no second machine's ΔE to record.
+
 - **Seen**: `model-drag.spec.ts:369` fails here with ΔE 13.6 against a limit of 10. Antialiasing mixes a 4 px line
   with the background differently on each renderer, so a single pixel is too fragile.
 - **Change**: sample a 5×5 patch around `data-aspect-sample` and test the most saturated pixel in it against the axis
@@ -887,6 +907,10 @@ fail CI. A task is done when the CI job is green on the pushed branch, and the t
 - **Accept when**: the check passes locally and in CI, with the measured ΔE printed in the assertion message.
 
 ### R4-06 (P1). The new specs run in CI
+
+Status: `e2e/model-aspect.spec.ts` is in `test:smoke`, and it is the only spec added since `origin/main`. The whole `e2e/` folder on the preview build finished 530 passed and 22 skipped. One supports-slice count failed in that run and passed on its own (5 passed). CI did not start, so the job is not green.
+- Pass locally: no added `.spec.ts` is missing from `test:smoke`, and the folder run is green aside from that one count, which passed alone.
+- Not run: the CI `test:smoke` job. `golden` in the unit suite was SKIPPED (no slicer binary).
 
 - **Seen**: `e2e/model-aspect.spec.ts` (PH-09) isn't in `test:smoke`, so CI never runs it. The same goes for any spec
   added in rounds 2–4.
