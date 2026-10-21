@@ -393,24 +393,31 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
     if (!gl) return [0, 0, 0];
     const scale = canvas.width / Math.max(1, canvas.clientWidth);
     const buf = new Uint8Array(4);
-    let best = 1e9;
+    let bestSat = -1;
+    let bestSum = -1;
     let pick = [0, 0, 0];
-    const target = [143, 206, 106];
-    for (let dy = -3; dy <= 3; dy += 1) {
-      for (let dx = -3; dx <= 3; dx += 1) {
-        const x = Math.round(sx! * scale) + dx;
-        const y = canvas.height - (Math.round(sy! * scale) + dy) - 1;
-        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-        const err = Math.hypot(buf[0]! - target[0]!, buf[1]! - target[1]!, buf[2]! - target[2]!);
-        if (err < best) {
-          best = err;
-          pick = [buf[0]!, buf[1]!, buf[2]!];
+    const read = (px: number, py: number) => {
+      gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      return [buf[0]!, buf[1]!, buf[2]!];
+    };
+    const cx = Math.round(sx! * scale);
+    const cy = canvas.height - Math.round(sy! * scale) - 1;
+    for (let dy = -2; dy <= 2; dy += 1) {
+      for (let dx = -2; dx <= 2; dx += 1) {
+        const pixel = read(cx + dx, cy + dy);
+        const sat = Math.max(...pixel) - Math.min(...pixel);
+        const sum = pixel[0]! + pixel[1]! + pixel[2]!;
+        if (sat > bestSat || (sat === bestSat && sum > bestSum)) {
+          bestSat = sat;
+          bestSum = sum;
+          pick = pixel;
         }
       }
     }
     return pick;
   }, sample);
-  expect(deltaE(rgb, [143, 206, 106]), `lit pixel ${rgb.join(",")}`).toBeLessThan(10);
+  const lit = deltaE(rgb, [143, 206, 106]);
+  expect(lit, `lit ΔE ${lit.toFixed(1)} pixel ${rgb.join(",")}`).toBeLessThan(10);
   if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph01-after-axis.png" });
   const hidden = ((await page.locator("#model").getAttribute("data-aspect-hidden")) ?? "").split(",").map(Number);
   expect(hidden.length, "a point on the edge behind the solid").toBe(4);
@@ -420,17 +427,33 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
     const gl = canvas.getContext("webgl2")!;
     const scale = canvas.width / Math.max(1, canvas.clientWidth);
     const buf = new Uint8Array(4);
-    const read = (px: number, py: number) => {
-      const x = Math.round(px * scale);
-      const y = canvas.height - Math.round(py * scale) - 1;
-      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-      return [buf[0]!, buf[1]!, buf[2]!];
+    const patch = (px: number, py: number) => {
+      let bestSat = -1;
+      let bestSum = -1;
+      let pick = [0, 0, 0];
+      for (let dy = -2; dy <= 2; dy += 1) {
+        for (let dx = -2; dx <= 2; dx += 1) {
+          const x = Math.round(px * scale) + dx;
+          const y = canvas.height - (Math.round(py * scale) + dy) - 1;
+          gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+          const pixel = [buf[0]!, buf[1]!, buf[2]!];
+          const sat = Math.max(...pixel) - Math.min(...pixel);
+          const sum = pixel[0]! + pixel[1]! + pixel[2]!;
+          if (sat > bestSat || (sat === bestSat && sum > bestSum)) {
+            bestSat = sat;
+            bestSum = sum;
+            pick = pixel;
+          }
+        }
+      }
+      return pick;
     };
     const along: number[][] = [];
-    for (let step = -10; step <= 10; step += 2) along.push(read(hx! + hdx! * step, hy! + hdy! * step));
-    return { at: read(hx!, hy!), along };
+    for (let step = -10; step <= 10; step += 2) along.push(patch(hx! + hdx! * step, hy! + hdy! * step));
+    return { at: patch(hx!, hy!), along };
   }, hidden);
-  expect(deltaE(hiddenRgb.at, [143, 206, 106]), `hidden pixel ${hiddenRgb.at.join(",")}`).toBeGreaterThan(15);
+  const hiddenDelta = deltaE(hiddenRgb.at, [143, 206, 106]);
+  expect(hiddenDelta, `hidden ΔE ${hiddenDelta.toFixed(1)} pixel ${hiddenRgb.at.join(",")}`).toBeGreaterThan(15);
   const line = [143, 206, 106].map((channel) => Math.round(channel * 0.6));
   // The part behind a hidden edge is itself green, so a gap is only about 22 ΔE from the dash.
   const onLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) < 15);

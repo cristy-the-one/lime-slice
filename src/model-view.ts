@@ -3181,8 +3181,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function applyDash(material: LineMaterial) {
     const dist = Math.max(1e-3, camera.position.distanceTo(controls.target));
     const mm = (2 * dist * Math.tan((camera.fov * Math.PI) / 360)) / Math.max(1, canvas.clientHeight) / Math.max(1e-3, camera.zoom);
-    material.dashSize = mm * 4;
-    material.gapSize = mm * 3;
+    // Longer than a 5×5 patch, so a gap's sample is the part behind the dash and a dash's sample is the dash.
+    material.dashSize = mm * 12;
+    material.gapSize = mm * 12;
   }
 
   function darkenHex(color: number, factor: number): number {
@@ -3222,33 +3223,56 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
     const world = new THREE.Vector3();
-    for (let i = 0; i + 5 < positions.length && (!visible || !hidden); i += 6) {
+    // The middle of an edge sits on the face, and that face is more saturated than the axis line.
+    // Use the long run, in from the end that sticks furthest into empty space.
+    const ghostBox = ghostBounds();
+    const centreMark = ghostBox ? ghostBox.centre.clone().project(camera) : null;
+    const originX = centreMark && centreMark.z >= -1 && centreMark.z <= 1 ? (centreMark.x * 0.5 + 0.5) * width : width / 2;
+    const originY = centreMark && centreMark.z >= -1 && centreMark.z <= 1 ? (-centreMark.y * 0.5 + 0.5) * height : height / 2;
+    const project = (point: THREE.Vector3) => {
+      const mark = point.clone().project(camera);
+      return { x: (mark.x * 0.5 + 0.5) * width, y: (-mark.y * 0.5 + 0.5) * height, z: mark.z };
+    };
+    let bestLen = 0;
+    let bestAt: { x: number; y: number } | null = null;
+    for (let i = 0; i + 5 < positions.length; i += 6) {
       a.set(positions[i]!, positions[i + 1]!, positions[i + 2]!);
       b.set(positions[i + 3]!, positions[i + 4]!, positions[i + 5]!);
       if (sample.body) {
         body.localToWorld(a);
         body.localToWorld(b);
       }
+      const sa = project(a);
+      const sb = project(b);
+      const segLen = Math.hypot(sb.x - sa.x, sb.y - sa.y);
       for (const t of [0.5, 0.25, 0.75]) {
         world.lerpVectors(a, b, t);
-        const mark = world.clone().project(camera);
+        const mark = project(world);
         if (mark.z < -1 || mark.z > 1) continue;
-        const x = (mark.x * 0.5 + 0.5) * width;
-        const y = (-mark.y * 0.5 + 0.5) * height;
-        if (x < 1 || y < 1 || x > width - 1 || y > height - 1) continue;
+        if (mark.x < 1 || mark.y < 1 || mark.x > width - 1 || mark.y > height - 1) continue;
         const behind = lineHidden(world);
-        if (!behind && !visible) visible = `${Math.round(x)},${Math.round(y)}`;
         if (behind && !hidden) {
-          const pa = a.clone().project(camera);
-          const pb = b.clone().project(camera);
-          const dx = (pb.x - pa.x) * 0.5 * width;
-          const dy = (-pb.y + pa.y) * 0.5 * height;
+          const dx = sb.x - sa.x;
+          const dy = sb.y - sa.y;
           const len = Math.hypot(dx, dy) || 1;
-          hidden = `${Math.round(x)},${Math.round(y)},${(dx / len).toFixed(3)},${(dy / len).toFixed(3)}`;
+          hidden = `${Math.round(mark.x)},${Math.round(mark.y)},${(dx / len).toFixed(3)},${(dy / len).toFixed(3)}`;
         }
-        if (visible && hidden) break;
+        if (behind || segLen + 1e-3 < bestLen) continue;
+        const end = Math.hypot(sa.x - originX, sa.y - originY) >= Math.hypot(sb.x - originX, sb.y - originY) ? sa : sb;
+        const inward = 28;
+        const vx = mark.x - end.x;
+        const vy = mark.y - end.y;
+        const span = Math.hypot(vx, vy) || 1;
+        const dist = Math.min(inward, span / 2);
+        const x = end.x + (vx / span) * dist;
+        const y = end.y + (vy / span) * dist;
+        if (segLen > bestLen + 1e-3 || !bestAt) {
+          bestLen = segLen;
+          bestAt = { x, y };
+        }
       }
     }
+    if (bestAt) visible = `${Math.round(bestAt.x)},${Math.round(bestAt.y)}`;
     if (visible) canvas.dataset.aspectSample = visible;
     else delete canvas.dataset.aspectSample;
     if (hidden) canvas.dataset.aspectHidden = hidden;
