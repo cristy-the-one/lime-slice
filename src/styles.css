@@ -1474,6 +1474,13 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
   font-family: var(--font-ui, ui-sans-serif, system-ui, sans-serif);
 }
 .context-bar.is-tool > :not(#contextBarRestore) { display: none !important; }
+.context-bar.is-tool {
+  padding: 0;
+  gap: 0;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
 .context-bar.is-faded {
   background: var(--panel);
   border-color: var(--border-strong);

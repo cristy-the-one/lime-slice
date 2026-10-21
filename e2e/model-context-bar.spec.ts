@@ -132,7 +132,8 @@ test("a face click opens Push/Pull, Hole, and Shell off the solid, and Enter typ
   await distance.fill("7");
   await expect(distance).toHaveValue("7");
   await expect(page.locator("#modelPullDiameter"), "a flat face has no diameter").toBeHidden();
-  await expect(bar).toBeHidden();
+  await expect(bar.locator("#contextBarRestore"), "the chip stays while Push/Pull is open").toBeVisible();
+  await expect(bar.locator("[data-action]"), "the action buttons leave while the tool is open").toHaveCount(0);
 });
 
 test("several faces, a cylinder, an edge, and empty space each offer their own actions", async ({ page }) => {
@@ -154,14 +155,16 @@ test("several faces, a cylinder, an edge, and empty space each offer their own a
   await bar.locator("[data-action='pattern']").click();
   await expect(page.locator("#modelBar")).toHaveAttribute("data-tool", "pattern");
   await expect(page.locator("#modelPatCount")).toBeVisible();
-  await expect(bar).toBeHidden();
+  await expect(bar.locator("#contextBarRestore"), "the chip stays while Pattern is open").toBeVisible();
+  await expect(bar.locator("[data-action]")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(page.locator("#modelPatCount")).toBeHidden();
   await expect(bar).toBeVisible();
   await bar.locator("[data-action='shell-faces']").click();
   await expect(page.locator("#modelShell")).toBeVisible();
   await expect(page.locator("#modelShellFaces")).toContainText("2 faces open");
-  await expect(bar).toBeHidden();
+  await expect(bar.locator("#contextBarRestore"), "the chip stays while Shell is open").toBeVisible();
+  await expect(bar.locator("[data-action]")).toHaveCount(0);
 
   await page.keyboard.press("Escape");
   await expect(page.locator("#modelShell")).toBeHidden();
