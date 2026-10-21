@@ -17,7 +17,7 @@
 .menu > summary { display: inline-flex; align-items: center; gap: var(--space-2); }
 .menu nav hr { width: 100%; margin: var(--space-1) 0; border: 0; border-top: 1px solid var(--border); }
 .menu nav button { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
-.menu nav button[data-key]::after {
+.menu nav button[data-key]:not([data-key=""])::after {
   content: attr(data-key);
   font: var(--fs-1) var(--font-mono);
   color: var(--text-faint);
@@ -56,8 +56,8 @@
 #printerChip { flex: 0 1 auto; min-width: 96px; }
 #printerChip > .btn.chip { max-width: min(260px, 100%); }
 .title-tabs .btn.mode { padding: 0 var(--space-3); gap: var(--space-2); }
-.title-tabs .btn.mode[data-key]::after,
-.action-row .btn[data-key]::after {
+.title-tabs .btn.mode[data-key]:not([data-key=""])::after,
+.action-row .btn[data-key]:not([data-key=""])::after {
   content: attr(data-key);
   font: var(--fs-1) var(--font-mono);
   opacity: 0.6;

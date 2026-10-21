@@ -228,6 +228,21 @@ export function shortcutOf(command: CommandSpec): string | undefined {
   return command.keys?.[0];
 }
 
+const EMPTY_SHORTCUT_SLOT = /(?:\s*[·•|–—]\s*|\s+-\s*|\s*\(\s*\))\s*$/;
+
+/**
+ * A tooltip names the action. A real shortcut is appended once. An empty slot — `()`, a middot,
+ * a bullet, a pipe, or a dash with nothing after it — is left off.
+ */
+export function tipWithShortcut(text: string, shortcut: string | undefined): string {
+  const tip = text.trim().replace(EMPTY_SHORTCUT_SLOT, "").trim();
+  const key = shortcut?.trim();
+  if (!key) return tip;
+  const mark = `(${key})`;
+  if (tip.includes(mark)) return tip;
+  return tip ? `${tip} ${mark}` : mark;
+}
+
 /** The first chord of the command with this id. */
 export function keyOf(id: string, commands: CommandSpec[] = COMMANDS): string | undefined {
   const command = commands.find((c) => c.id === id);

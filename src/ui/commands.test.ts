@@ -1,4 +1,4 @@
-import { COMMANDS, fires, fuzzyScore, helpGroups, paletteCommands, rankCommands, resolveKey, shortcutOf, type KeyContext, type KeyEventLike } from "./commands.ts";
+import { COMMANDS, fires, fuzzyScore, helpGroups, paletteCommands, rankCommands, resolveKey, shortcutOf, tipWithShortcut, type KeyContext, type KeyEventLike } from "./commands.ts";
 
 let failed = 0;
 
@@ -165,6 +165,14 @@ eq("the sheet spells the keys the old prose left out", ["Search settings", "Smal
 eq("groups appear once each", helpGroups().map((group) => group.group), [...new Set(helpGroups().map((group) => group.group))]);
 check("the palette hides sheet-only commands", paletteCommands().every((command) => command.show !== "help" && command.show !== "none"));
 check("the palette lists the shortcut of a keyed command", shortcutOf(COMMANDS.find((command) => command.id === "slice")!) === "Ctrl+Enter");
+for (const command of COMMANDS) {
+  if (command.keys?.length) continue;
+  const tip = tipWithShortcut(command.label, undefined);
+  check(`${command.id} tip has no empty shortcut`, tip === command.label && !tip.includes("()") && !/[·•|–—-]\s*$/.test(tip), tip);
+}
+eq("a keyed tip names the shortcut once", tipWithShortcut("Fillet", "L"), "Fillet (L)");
+eq("an empty slot is dropped", tipWithShortcut("Add ()", undefined), "Add");
+eq("a real shortcut is kept", tipWithShortcut("Arrange (A)", "A"), "Arrange (A)");
 
 if (failed) {
   console.error(`${failed} failed`);

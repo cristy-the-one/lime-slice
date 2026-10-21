@@ -50,7 +50,7 @@ import {
   type SchemaContext,
   type Tier,
 } from "../ui/settings-schema";
-import { chordGlyphs, COMMANDS, keyOf, shortcutOf } from "../ui/commands";
+import { chordGlyphs, COMMANDS, keyOf, shortcutOf, tipWithShortcut } from "../ui/commands";
 
 export function apiBase() {
   return currentApiTarget().base;
@@ -616,15 +616,17 @@ function icon(node: IconNode): string {
 }
 
 function toolRow(buttons: { id: string; tool: string; label: string; command: string; tip?: string }[]): string {
-  return `<div class="row-tools">${buttons.map((b) => `<button class="btn" id="${b.id}" type="button" data-rail-tool="${b.tool}"${b.tip ? ` data-tip="${escapeHtml(b.tip)}"` : ""}>${escapeHtml(b.label)} ${kbdHtml(b.command)}</button>`).join("")}</div>`;
+  return `<div class="row-tools">${buttons.map((b) => {
+    const kbd = kbdHtml(b.command);
+    return `<button class="btn" id="${b.id}" type="button" data-rail-tool="${b.tool}"${b.tip ? ` data-tip="${escapeHtml(b.tip)}"` : ""}>${escapeHtml(b.label)}${kbd ? ` ${kbd}` : ""}</button>`;
+  }).join("")}</div>`;
 }
 
 /** A tooltip names the action, and the shortcut when the command has one. */
 function tipWithKey(id: string, tip: string): string {
   const command = COMMANDS.find((item) => item.target?.split(",").some((part) => part.trim() === `#${id}`));
   const key = command ? shortcutOf(command) : undefined;
-  const mark = key ? ` (${key})` : "";
-  return mark && !tip.includes(mark) ? `${tip}${mark}` : tip;
+  return tipWithShortcut(tip, key);
 }
 
 function objectToolsHtml(): string {

@@ -1,6 +1,6 @@
 import { computePosition, flip, offset, shift } from "@floating-ui/dom";
 
-import { COMMANDS, commandForElement, shortcutOf, targetSelector, type CommandSpec } from "./commands";
+import { COMMANDS, commandForElement, shortcutOf, targetSelector, tipWithShortcut, type CommandSpec } from "./commands";
 
 const SHOW_MS = 250;
 
@@ -38,15 +38,15 @@ export function mountTooltips(root: ParentNode = document) {
     }
     // --- P3 context bar --- a selection button names its command, since it is not the toolbar button.
     const command = commandForElement(el) ?? commandById(el.dataset.command);
-    const text = el.dataset.tip ?? command?.label ?? "";
     const shortcut = command ? shortcutOf(command) ?? "" : "";
-    if (!text && !shortcut) {
+    const text = tipWithShortcut(el.dataset.tip ?? command?.label ?? "", shortcut);
+    if (!text) {
       hide();
       return;
     }
     tip.replaceChildren();
-    if (text) tip.append(document.createTextNode(text));
-    if (shortcut) {
+    tip.append(document.createTextNode(text));
+    if (shortcut && !text.includes(`(${shortcut})`)) {
       const kbd = document.createElement("kbd");
       kbd.textContent = shortcut;
       tip.append(kbd);
