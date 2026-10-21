@@ -112,7 +112,7 @@ export function mountMarkup(root: HTMLElement) {
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
               <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters"></button>
+              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters, stress"></button>
               <div class="model-feature-menu" id="modelFeatureMenu" role="menu" aria-label="Features" hidden>
                 <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
@@ -122,6 +122,7 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
                 <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
                 <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
+                <button id="modelMenuStress" type="button" role="menuitem" data-tip="Hold, load, and an in-house estimate. The solid is not edited.">Stress…</button>
               </div>
             </div>
           </div>
@@ -468,6 +469,90 @@ export function mountMarkup(root: HTMLElement) {
               </div>
             </div>
           </section>
+          <!-- Stress sits under Parameters. Hidden until the menu opens it. Holds and loads are plate undo, not History. -->
+          <section class="model-stress" id="modelStress" aria-label="Stress" hidden>
+            <div class="model-params-head">
+              <button class="model-params-toggle" id="modelStressToggle" type="button" aria-controls="modelStressMain" aria-expanded="false"><span>Stress</span></button>
+            </div>
+            <div class="model-params-main" id="modelStressMain" hidden>
+              <p class="stress-label" id="stressLabel"></p>
+              <p class="stress-note" id="stressProvisional" hidden></p>
+              <fieldset class="stress-group">
+                <legend>Hold</legend>
+                <label class="stress-check"><input id="stressBed" type="checkbox" /> Bed</label>
+                <div class="stress-row">
+                  <button class="btn" id="stressUseFaces" type="button">Faces</button>
+                  <label>Face <input id="stressFaceIndex" type="number" min="0" step="1" aria-label="Face index" /></label>
+                  <button class="btn" id="stressFaceAdd" type="button">Add</button>
+                </div>
+                <p id="stressHolds" class="stress-note"></p>
+              </fieldset>
+              <fieldset class="stress-group">
+                <legend>Load</legend>
+                <div class="stress-row">
+                  <label class="stress-check"><input id="stressLoadForce" type="radio" name="stressLoadKind" checked /> Force N</label>
+                  <label class="stress-check"><input id="stressLoadPressure" type="radio" name="stressLoadKind" /> Pressure MPa</label>
+                </div>
+                <label>Magnitude <input id="stressForce" type="number" step="0.1" value="10" aria-label="Load magnitude" /></label>
+                <div class="stress-grid">
+                  <label>Direction X <input id="stressDirX" type="number" step="0.1" value="0" aria-label="Direction X" /></label>
+                  <label>Direction Y <input id="stressDirY" type="number" step="0.1" value="0" aria-label="Direction Y" /></label>
+                  <label>Direction Z <input id="stressDirZ" type="number" step="0.1" value="-1" aria-label="Direction Z" /></label>
+                </div>
+                <div class="stress-row">
+                  <button class="btn" id="stressLoadFaces" type="button">Load faces</button>
+                  <label>Face <input id="stressLoadFace" type="number" min="0" step="1" aria-label="Load face index" /></label>
+                  <button class="btn" id="stressLoadFaceAdd" type="button">Add</button>
+                </div>
+                <p id="stressLoadList" class="stress-note"></p>
+                <label class="stress-check"><input id="stressGravity" type="checkbox" /> Gravity</label>
+              </fieldset>
+              <fieldset class="stress-group">
+                <legend>Material</legend>
+                <label>Card <select id="stressCard" aria-label="Material card"></select></label>
+                <div class="stress-grid">
+                  <label>E in plane MPa <input id="stressEIn" type="number" step="1" aria-label="E in plane" /></label>
+                  <label>E across MPa <input id="stressEZ" type="number" step="1" aria-label="E across layers" /></label>
+                  <label>ν <input id="stressNu" type="number" step="0.01" aria-label="Poisson ratio" /></label>
+                  <label>Strength in plane MPa <input id="stressSIn" type="number" step="0.1" aria-label="Strength in plane" /></label>
+                  <label>Strength across MPa <input id="stressSZ" type="number" step="0.1" aria-label="Strength across layers" /></label>
+                  <label>Density g/cm³ <input id="stressDensity" type="number" step="0.01" aria-label="Density" /></label>
+                </div>
+                <label class="stress-check"><input id="stressPrinter" type="checkbox" checked /> This printer</label>
+                <div class="stress-grid">
+                  <label>Direction X <input id="stressBuildX" type="number" step="0.01" value="0" aria-label="Build direction X" /></label>
+                  <label>Direction Y <input id="stressBuildY" type="number" step="0.01" value="0" aria-label="Build direction Y" /></label>
+                  <label>Direction Z <input id="stressBuildZ" type="number" step="0.01" value="1" aria-label="Build direction Z" /></label>
+                </div>
+                <button class="btn" id="stressSaveCard" type="button">Save card</button>
+              </fieldset>
+              <fieldset class="stress-group">
+                <legend>Result</legend>
+                <label>Edge mm <input id="stressEdge" type="number" min="0.2" step="0.1" value="5" aria-label="Edge length" /></label>
+                <label>Colour <select id="stressField" aria-label="Stress field">
+                  <option value="vonMises">von Mises</option>
+                  <option value="displacement">Displacement</option>
+                  <option value="safety">Safety factor</option>
+                </select></label>
+                <div class="stress-row">
+                  <label>Scale <input id="stressScale" type="number" min="0" step="0.1" aria-label="Displacement scale" /></label>
+                  <button class="btn" id="stressTrueScale" type="button">True scale</button>
+                </div>
+                <div class="stress-grid">
+                  <label>X <input id="stressProbeX" type="number" step="0.1" aria-label="Probe X" /></label>
+                  <label>Y <input id="stressProbeY" type="number" step="0.1" aria-label="Probe Y" /></label>
+                  <label>Z <input id="stressProbeZ" type="number" step="0.1" aria-label="Probe Z" /></label>
+                </div>
+                <button class="btn" id="stressProbeGo" type="button">Probe</button>
+                <p id="stressStatus" class="stress-note" role="status"></p>
+                <p id="stressNote" class="stress-note"></p>
+              </fieldset>
+              <div class="model-params-bar">
+                <button class="btn" id="stressCancel" type="button">Cancel</button>
+                <button class="btn primary" id="stressRun" type="button">Run</button>
+              </div>
+            </div>
+          </section>
         </div>
       </aside>
       <main class="stage mode-solid" id="stage" aria-label="Preview">
@@ -477,6 +562,15 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="stage-body" id="modelBody" role="tabpanel" aria-labelledby="tabModel" hidden>
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
+          <div id="stressLegend" class="stress-legend" hidden>
+            <span class="stress-ramp" aria-hidden="true"></span>
+            <div>
+              <p id="stressLegendLabel"></p>
+              <p id="stressLegendText"></p>
+              <p id="stressLegendTrust"></p>
+            </div>
+          </div>
+          <div id="stressProbe" class="stress-probe" hidden></div>
           <!-- E3. Over the view only the pick filter, the view cube (drawn in the canvas) and the context bar. -->
           <div class="model-bar" id="modelBar">
             <div class="model-pick" id="modelPick">

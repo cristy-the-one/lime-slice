@@ -248,6 +248,62 @@ html:not(.layout-compact) .model-dock .model-params-actions .btn { height: 20px;
 html:not(.layout-compact) .model-dock .model-params-table tr:has([data-param-name]:placeholder-shown):has([data-param-value]:placeholder-shown) :is(.model-params-actions, [data-param-eval], [data-param-used]) { display: none; }
 html:not(.layout-compact) .model-dock .model-params-table input { width: 100%; height: var(--control-h-sm); }
 
+/* Stress, under Parameters. The same fold as Parameters, and it starts hidden. */
+html:not(.layout-compact) .model-dock .model-stress {
+  flex: 0 4 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  border-top: 1px solid var(--line);
+}
+.model-stress .model-params-main { min-height: 0; overflow-y: auto; max-height: 46vh; }
+.model-stress .model-params-main[hidden] { display: none; }
+.stress-group { border: 0; margin: 0 0 var(--space-2); padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.stress-group > legend { font-size: var(--fs-1); color: var(--text-dim); padding: 0; }
+.stress-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+.stress-row { display: flex; flex-wrap: wrap; align-items: end; gap: 4px; }
+.model-stress label { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-1); min-width: 0; }
+.model-stress .stress-check { flex-direction: row; align-items: center; gap: 6px; }
+.model-stress input, .model-stress select { width: 100%; height: var(--control-h-sm); }
+.model-stress .model-params-bar { display: flex; gap: 6px; }
+.model-stress .model-params-bar .btn { flex: 1 1 auto; }
+.stress-label { margin: 0; font-weight: 600; }
+.stress-note { margin: 0; color: var(--text-dim); font-size: var(--fs-1); }
+.stress-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--panel, #fff) 92%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  pointer-events: none;
+  max-width: 280px;
+}
+.stress-legend p { margin: 0; font-size: var(--fs-1); }
+.stress-ramp {
+  width: 12px;
+  align-self: stretch;
+  min-height: 48px;
+  border-radius: 3px;
+  background: linear-gradient(to top, rgb(38, 71, 184), rgb(230, 128, 20), rgb(255, 31, 20));
+}
+.stress-probe {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  padding: 2px 6px;
+  background: var(--panel, #fff);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: var(--fs-1) var(--font-mono, monospace);
+}
+
 /* ---------- Right dock in Model: Inspect ---------- */
 .model-inspect {
   flex: 1 1 auto;

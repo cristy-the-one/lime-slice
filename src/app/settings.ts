@@ -16,6 +16,7 @@ import { featureRows, featureTableMarkup } from "../ui/legend";
 import { shellCount } from "../mesh-shells";
 import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
+import { LABEL } from "../sim/label.ts";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
 import { noteAdvance, noteFan, noteFirmware, noteFirmwareArcs, noteFlow, noteGcode, noteHeatLimits, noteRetract, noteTemps, setSupportMode } from "./machine-actions";
@@ -736,6 +737,13 @@ export function plateObjectSizes(): { id: string; name: string; size: string }[]
   return plateRows().rows.map(({ obj, part }) => ({ id: obj.id, name: obj.name, size: boundsSize(part.bounds) }));
 }
 
+/** Replace only the object list, so a study link can appear without rebuilding every field. */
+export function refreshObjectList() {
+  const slot = document.querySelector<HTMLElement>('[data-slot="objectList"]');
+  if (!slot) return;
+  slot.innerHTML = objectListHtml();
+}
+
 function objectListHtml(): string {
   if (!state.placed) return "";
   const { rows, limit } = plateRows();
@@ -755,6 +763,7 @@ function objectListHtml(): string {
         </button>
         <div class="obj-actions">
           <!-- --- A7 model check --- -->
+          ${obj.sim ? `<button class="btn obj-stress" type="button" data-plate-stress="${escapeHtml(obj.id)}">${escapeHtml(LABEL)}</button>` : ""}
           <button class="btn obj-check" type="button" data-plate-check="${escapeHtml(obj.id)}" aria-label="Check ${escapeHtml(obj.name)}">Check</button>
           <button class="btn obj-frame" type="button" data-plate-frame="${escapeHtml(obj.id)}" aria-label="Frame ${escapeHtml(obj.name)}">Frame</button>
           ${many ? `<button class="btn obj-remove" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}

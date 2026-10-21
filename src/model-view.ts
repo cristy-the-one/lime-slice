@@ -120,6 +120,16 @@ const OBJECT_OUTLINE_MAX_TRIANGLES = 150_000;
 /** Frames the view still draws after its last change, for anything that settles a frame late. */
 const STILL_FRAMES = 3;
 
+/** The stress colouring, in the solid's own frame. An empty position list draws only the load arrow. */
+export interface StressDraw {
+  positions: Float32Array;
+  triangles: Uint32Array;
+  colors: Float32Array;
+  displacement: Float32Array;
+  scale: number;
+  arrow: { at: Vec3; dir: Vec3; length: number } | null;
+}
+
 export interface ModelView {
   /** The open solid, in its own frame, drawn at `pose` in model space. The camera stays where it is. */
   setSolid(solid: ModelSolid | null, pose: Affine): void;
@@ -215,6 +225,12 @@ export interface ModelView {
   setCameraPreset(preset: "top" | "front" | "iso"): void;
   /** A typed-value box outside the panel. Focusing it lights its handle. Settings fields are not passed here. */
   watchFocus(element: HTMLElement): () => void;
+  /** The stress result beside the solid. Null hides it. Closing the section passes null. */
+  setStress(draw: StressDraw | null): void;
+  /** A click on the coloured surface: the nearest drawn node, in the solid's frame. */
+  onStressProbe(cb: (at: Vec3) => void): void;
+  /** A drag of the load arrow. `dir` is in the solid's frame. */
+  onStressDirection(cb: (dir: Vec3, phase: "start" | "move" | "end", at: { x: number; y: number }) => void): void;
 }
 
 /** --- S2 sketch --- What the view draws. Positions are in model space. */
@@ -305,6 +321,19 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   posed.matrixAutoUpdate = false;
   const body = new THREE.Group();
   posed.add(body);
+  /** Stress colouring shares the solid's frame. clearBody leaves this group where it is. */
+  const stressGroup = new THREE.Group();
+  stressGroup.name = "stress";
+  body.add(stressGroup);
+  const stressMaterial = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.55,
+    metalness: 0,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
   const ghosts = new THREE.Group();
   const handleGroup = new THREE.Group();
   /** Aspect lines in model space. Body-space lines (a scaled solid's box) are added to `body` instead. */
@@ -380,6 +409,16 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let sectionArrow: THREE.ArrowHelper | null = null;
   let sectionCapMesh: THREE.Mesh | null = null;
   let sectionGesture: { pointerId: number; base: number; origin: THREE.Vector3; normal: THREE.Vector3 } | null = null;
+  let stressMesh: THREE.Mesh | null = null;
+  let stressArrow: THREE.ArrowHelper | null = null;
+  let stressRest: Float32Array | null = null;
+  let stressDisp: Float32Array | null = null;
+  let stressScale = 1;
+  let stressSeat = new THREE.Vector3();
+  let stressArrowLength = 8;
+  let stressGesture: { pointerId: number } | null = null;
+  let stressProbeCb: (at: Vec3) => void = () => {};
+  let stressDirCb: (dir: Vec3, phase: "start" | "move" | "end", at: { x: number; y: number }) => void = () => {};
   const INSIDE = 0xcd463c;
   const sectionCapMaterial = new THREE.MeshBasicMaterial({
     color: INSIDE,
@@ -1241,6 +1280,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if ((edgeMaterial.clippingPlanes?.length ?? 0) !== keep.length) edgeMaterial.needsUpdate = true;
     solidMaterial.clippingPlanes = keep;
     edgeMaterial.clippingPlanes = keep;
+    if ((stressMaterial.clippingPlanes?.length ?? 0) !== keep.length) stressMaterial.needsUpdate = true;
+    stressMaterial.clippingPlanes = keep;
+    publishStressClip();
   }
 
   /** The pick outlines are cut where the solid is, so a picked face's outline does not float over the hidden half. */
@@ -1712,6 +1754,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     else {
       faceCb(faceEvent("click", ev, hit));
       pickCb({ kind: "face", index: hit.face, at: hit.point }, ev.shiftKey, { x: ev.clientX, y: ev.clientY });
+      const probed = stressHitLocal(ev.clientX, ev.clientY);
+      if (probed) stressProbeCb(probed);
       setHover({ kind: "face", index: hit.face });
     }
     paintHandles();
@@ -1855,6 +1899,16 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       return;
     }
     // --- A10. The section arrow is its own control. A face push behind it, the default when no tool is open, leaves the shaft alone.
+    if (stressArrowHit(ev.clientX, ev.clientY)) {
+      ev.stopImmediatePropagation();
+      ev.preventDefault();
+      controls.enabled = false;
+      canvas.setPointerCapture(ev.pointerId);
+      stressGesture = { pointerId: ev.pointerId };
+      const dir = stressDragDir(ev.clientX, ev.clientY);
+      stressDirCb(dir ?? [0, 0, -1], "start", { x: ev.clientX, y: ev.clientY });
+      return;
+    }
     if (sectionHit(ev.clientX, ev.clientY) && sectionPlaneWorld) {
       const origin = sectionPlaneWorld.origin.clone();
       const normal = sectionPlaneWorld.normal.clone();
@@ -1915,6 +1969,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       if (ev.pointerId === drag.pointerId) moveDrag(ev);
       return;
     }
+    if (stressGesture && ev.pointerId === stressGesture.pointerId) {
+      const dir = stressDragDir(ev.clientX, ev.clientY);
+      if (dir) stressDirCb(dir, "move", { x: ev.clientX, y: ev.clientY });
+      return;
+    }
     if (sectionGesture && ev.pointerId === sectionGesture.pointerId) {
       const at = sectionTravel(sectionGesture.origin, sectionGesture.normal, ev.clientX, ev.clientY);
       if (at != null) sectionDragCb(at - sectionGesture.base, "move");
@@ -1965,6 +2024,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setHover(pickAt(ev));
   });
   const finishDrag = (ev: PointerEvent) => {
+    if (stressGesture && ev.pointerId === stressGesture.pointerId) {
+      const dir = stressDragDir(ev.clientX, ev.clientY);
+      stressDirCb(dir ?? [0, 0, -1], "end", { x: ev.clientX, y: ev.clientY });
+      stressGesture = null;
+      controls.enabled = true;
+      if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+      return;
+    }
     if (sectionGesture && ev.pointerId === sectionGesture.pointerId) {
       const at = sectionTravel(sectionGesture.origin, sectionGesture.normal, ev.clientX, ev.clientY);
       sectionDragCb((at ?? sectionGesture.base) - sectionGesture.base, "end");
@@ -2041,6 +2108,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       return;
     }
     pickCb(pickAt(ev), ev.shiftKey, { x: ev.clientX, y: ev.clientY });
+    const probed = stressHitLocal(ev.clientX, ev.clientY);
+    if (probed) stressProbeCb(probed);
     setHover(pickAt(ev));
   });
 
@@ -2078,6 +2147,140 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const onDockFocus = () => queueMicrotask(syncFocusedField);
   modelDock?.addEventListener("focusin", onDockFocus);
   modelDock?.addEventListener("focusout", onDockFocus);
+
+  function clearStressDraw() {
+    if (stressMesh) {
+      stressGroup.remove(stressMesh);
+      stressMesh.geometry.dispose();
+      stressMesh = null;
+    }
+    if (stressArrow) {
+      stressGroup.remove(stressArrow);
+      stressArrow.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        mesh.geometry?.dispose();
+      });
+      stressArrow = null;
+    }
+    stressRest = null;
+    stressDisp = null;
+    delete canvas.dataset.stress;
+  }
+
+  function publishStressClip() {
+    if (!stressRest || stressRest.length < 3) {
+      delete canvas.dataset.stress;
+      return;
+    }
+    body.updateMatrixWorld(true);
+    const point = new THREE.Vector3();
+    let shown = 0;
+    let hidden = 0;
+    for (let i = 0; i < stressRest.length; i += 3) {
+      point.set(
+        stressRest[i]! + (stressDisp?.[i] ?? 0) * stressScale,
+        stressRest[i + 1]! + (stressDisp?.[i + 1] ?? 0) * stressScale,
+        stressRest[i + 2]! + (stressDisp?.[i + 2] ?? 0) * stressScale,
+      );
+      body.localToWorld(point);
+      if (cutAway(point)) hidden += 1;
+      else shown += 1;
+    }
+    canvas.dataset.stress = `shown ${shown} hidden ${hidden}`;
+  }
+
+  function applyStress(draw: StressDraw | null) {
+    clearStressDraw();
+    if (!draw) {
+      kick();
+      return;
+    }
+    stressScale = draw.scale;
+    if (draw.positions.length >= 3 && draw.triangles.length >= 3) {
+      stressRest = draw.positions;
+      stressDisp = draw.displacement;
+      const posedPos = new Float32Array(draw.positions.length);
+      for (let i = 0; i < posedPos.length; i += 1) posedPos[i] = draw.positions[i]! + (draw.displacement[i] ?? 0) * draw.scale;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(posedPos, 3));
+      geometry.setAttribute("color", new THREE.BufferAttribute(draw.colors, 3));
+      geometry.setIndex(new THREE.BufferAttribute(draw.triangles, 1));
+      geometry.computeVertexNormals();
+      stressMesh = new THREE.Mesh(geometry, stressMaterial);
+      stressMesh.renderOrder = 3;
+      stressGroup.add(stressMesh);
+    }
+    if (draw.arrow) {
+      const dir = new THREE.Vector3(...draw.arrow.dir);
+      if (dir.lengthSq() < 1e-12) dir.set(0, 0, -1);
+      dir.normalize();
+      stressSeat.set(...draw.arrow.at);
+      stressArrowLength = Math.max(1, draw.arrow.length);
+      stressArrow = new THREE.ArrowHelper(dir, stressSeat, stressArrowLength, 0xc2410c);
+      stressArrow.traverse((child) => {
+        child.raycast = () => undefined;
+      });
+      stressGroup.add(stressArrow);
+    }
+    stressMaterial.clippingPlanes = solidMaterial.clippingPlanes ?? [];
+    body.updateMatrixWorld(true);
+    publishStressClip();
+    kick();
+  }
+
+  function stressArrowHit(x: number, y: number): boolean {
+    if (!stressArrow) return false;
+    const rect = canvas.getBoundingClientRect();
+    const origin = stressSeat.clone();
+    const tip = stressSeat.clone().addScaledVector(new THREE.Vector3(0, 1, 0).applyQuaternion(stressArrow.quaternion), stressArrowLength);
+    body.localToWorld(origin);
+    body.localToWorld(tip);
+    const projectWorld = (point: THREE.Vector3) => {
+      const p = point.clone().project(camera);
+      return { x: rect.left + (p.x * 0.5 + 0.5) * rect.width, y: rect.top + (-p.y * 0.5 + 0.5) * rect.height, z: p.z };
+    };
+    const a = projectWorld(origin);
+    const b = projectWorld(tip);
+    if (a.z < -1 || a.z > 1 || b.z < -1 || b.z > 1) return false;
+    return segmentDistance(x, y, a.x, a.y, b.x, b.y) <= 14;
+  }
+
+  function stressDragDir(x: number, y: number): Vec3 | null {
+    const seat = stressSeat.clone();
+    body.localToWorld(seat);
+    const ray = rayAt(x, y);
+    const camDir = camera.getWorldDirection(new THREE.Vector3());
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camDir, seat);
+    const hit = new THREE.Vector3();
+    if (!ray.intersectPlane(plane, hit)) return null;
+    hit.sub(seat);
+    if (hit.lengthSq() < 1e-8) return null;
+    hit.normalize();
+    const local = hit.transformDirection(new THREE.Matrix4().copy(body.matrixWorld).invert());
+    const n = local.length();
+    if (!(n > 1e-8)) return null;
+    return [local.x / n, local.y / n, local.z / n];
+  }
+
+  function stressHitLocal(x: number, y: number): Vec3 | null {
+    if (!stressMesh) return null;
+    rayAt(x, y);
+    const hits = raycaster.intersectObject(stressMesh, false);
+    const hit = hits.find((item) => !cutAway(item.point));
+    if (!hit) return null;
+    const local = stressMesh.worldToLocal(hit.point.clone());
+    const pos = stressMesh.geometry.getAttribute("position");
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < pos.count; i += 1) {
+      const d = (pos.getX(i) - local.x) ** 2 + (pos.getY(i) - local.y) ** 2 + (pos.getZ(i) - local.z) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    return [pos.getX(best), pos.getY(best), pos.getZ(best)];
+  }
 
   return {
     setSolid(next, at) {
@@ -2169,6 +2372,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         element.removeEventListener("focusin", onFocus);
         element.removeEventListener("focusout", onFocus);
       };
+    },
+    setStress(draw) {
+      applyStress(draw);
+    },
+    onStressProbe(cb) {
+      stressProbeCb = cb;
+    },
+    onStressDirection(cb) {
+      stressDirCb = cb;
     },
     inView(box) {
       camera.updateMatrixWorld();

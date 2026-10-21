@@ -1,0 +1,148 @@
+import { ID_MATRIX } from "../mesh-place.ts";
+import { oneObjectPlate, revivePlate, snapPlate } from "../plate.ts";
+import { defaultProfile } from "../profiles.ts";
+import { DEFAULT_PRESET } from "../presets.ts";
+import { meshRecord, parseProject, serializeProject, type LimeProject } from "../project.ts";
+import { provisionalCards } from "./cards.ts";
+import { LABEL, NOT_HELD, PROVISIONAL_SENTENCE } from "./label.ts";
+import { loadArrow } from "./arrow.ts";
+import {
+  arrowLength,
+  beltLayerNormal,
+  boxOf,
+  cannedBeam,
+  defaultScale,
+  emptyStudy,
+  formatProbe,
+  holdLine,
+  holdRefusal,
+  onBed,
+  probeNearest,
+  readStudy,
+  sectionHides,
+  shownTrust,
+  vertexColours,
+} from "./study.ts";
+import { MODEL_TOOLS } from "../model-drag.ts";
+import { COMMANDS } from "../ui/commands.ts";
+
+let failed = 0;
+function eq<T>(name: string, actual: T, expected: T) {
+  if (JSON.stringify(actual) === JSON.stringify(expected)) return;
+  failed += 1;
+  console.error(`FAIL ${name}\n  got ${JSON.stringify(actual)}\n  want ${JSON.stringify(expected)}`);
+}
+function check(name: string, ok: boolean, detail = "") {
+  if (ok) return;
+  failed += 1;
+  console.error(`FAIL ${name}${detail ? `: ${detail}` : ""}`);
+}
+
+const petg = provisionalCards()[1]!;
+const box = boxOf(new Float32Array([0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 10, 10]))!;
+eq("a box is its corners", box, { min: [0, 0, 0], max: [10, 10, 10] });
+
+const bare = emptyStudy();
+eq("nothing held is refused", holdRefusal(bare), NOT_HELD);
+bare.holds = [{ kind: "bed", faces: [] }];
+eq("the bed is a hold", holdRefusal(bare), null);
+eq("a bed reads as Bed", holdLine(bare.holds[0]!), "Bed");
+eq("two faces read as a count", holdLine({ kind: "faces", faces: [1, 4] }), "2 faces fixed");
+eq("one face stays singular", holdLine({ kind: "faces", faces: [3] }), "1 face fixed");
+
+eq("a provisional card is rough", shownTrust(petg), { level: "rough", sentence: PROVISIONAL_SENTENCE });
+eq("a measured card is not capped", shownTrust({ provisional: false }), { level: "usable", sentence: "" });
+
+const beam = cannedBeam(bare, box, petg, "vonMises");
+if ("error" in beam) {
+  check("the canned beam solves", false, beam.error);
+} else {
+  eq("the label is the shared one", beam.label, LABEL);
+  eq("trust stays rough", beam.trust, "rough");
+  eq("the sentence is on the result", beam.trustSentence, PROVISIONAL_SENTENCE);
+  const tip = beam.nodes[beam.nodes.length - 1]!;
+  const root = beam.nodes[0]!;
+  check("the tip moves and the root does not", tip.displacement > root.displacement && root.displacement === 0, `${root.displacement} ${tip.displacement}`);
+  const peak = Math.max(...beam.nodes.map((node) => node.displacement));
+  const diagonal = Math.hypot(10, 10, 10);
+  eq("the default scale is 5% of the diagonal", beam.scale, defaultScale(peak, diagonal));
+  check("colours are not green", !vertexColours(beam).some((value, index) => index % 3 === 1 && value > 0.55 && vertexColours(beam)[index - 1]! < 0.4));
+  const hit = probeNearest(beam, [10, 5, 5], "rest");
+  check("a probe reports a number", Number.isFinite(hit.value), String(hit.value));
+  check("the readout has a unit", formatProbe(hit.value, "vonMises").endsWith(" MPa"));
+  const centre = [5, 5, 5];
+  const normal = [0, 0, 1];
+  const hidden = beam.nodes.filter((node) => sectionHides(node.at, centre, normal));
+  const shown = beam.nodes.length - hidden.length;
+  check("a mid-height plane hides the cut half", hidden.length > 0 && shown > 0 && hidden.length === shown, `${shown} ${hidden.length}`);
+}
+
+eq("the bed is the bottom 0.05 mm", [onBed(0), onBed(0.05), onBed(0.06)], [true, true, false]);
+{
+  const got = beltLayerNormal(45);
+  const want = [0, -0.7071067811865476, 0.7071067811865476];
+  check("IR3's layer normal is the locked vector", got.every((value, index) => Math.abs(value - want[index]!) < 1e-12), JSON.stringify(got));
+}
+check("a longer force lengthens the arrow", arrowLength(1, 20) < arrowLength(40, 20));
+
+const arrow = loadArrow([10, 5, 5], [0, 0, -1], 25, "Force");
+eq("the load arrow is an axis handle on the face", [arrow.kind, arrow.seat.at, arrow.values[0]], ["axis", "feature", 25]);
+
+const stress = COMMANDS.find((command) => command.id === "model-stress");
+eq("stress is a Model command with no key", stress ? [stress.group, stress.keys ?? [], stress.keywords] : null, ["Model", [], "stress fem load fixture safety"]);
+check("stress is not a toolbar tool", !(MODEL_TOOLS as readonly string[]).includes("stress"));
+
+const study = emptyStudy();
+study.holds = [{ kind: "bed", faces: [] }];
+eq("a study reads back", readStudy(JSON.parse(JSON.stringify(study))), study);
+eq("a damaged study is left out", readStudy({ holds: "bed" }), null);
+
+const plate = oneObjectPlate({
+  name: "beam",
+  fileName: "beam.stl",
+  bytes: new ArrayBuffer(4),
+  sourcePos: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  orient: [...ID_MATRIX],
+  partScale: 1,
+  centered: false,
+  offset: { x: 0, y: 0, z: 0 },
+  stepTolerance: 0.1,
+  supportEdits: [],
+  supportPaint: [],
+  seamPaint: [],
+});
+plate.objects[0]!.sim = study;
+const revived = revivePlate(snapPlate(plate));
+eq("undo keeps the fixture", revived?.objects[0]?.sim, study);
+
+const mesh = meshRecord("beam.stl", new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
+const placement = {
+  orient: [1, 0, 0, 0, 1, 0, 0, 0, 1] as [number, number, number, number, number, number, number, number, number],
+  scale: 1,
+  centered: false,
+  offset: { x: 0, y: 0, z: 0 },
+  stepTolerance: 0.1,
+};
+const saved: LimeProject = {
+  version: 2,
+  mesh,
+  placement,
+  settings: DEFAULT_PRESET,
+  preset: "bench",
+  profile: defaultProfile(),
+  level: "simple",
+  supportEdits: [],
+  objects: [{ id: "part", name: "beam", mesh, placement, supportEdits: [], sim: study }],
+};
+const opened = parseProject(serializeProject(saved));
+check("a study survives a project", opened.ok && JSON.stringify(opened.project.objects?.[0]?.sim) === JSON.stringify(study));
+const damaged = JSON.parse(serializeProject(saved)) as { objects: { sim?: unknown }[] };
+damaged.objects[0]!.sim = { holds: "bed" };
+const dropped = parseProject(JSON.stringify(damaged));
+check("a damaged study is omitted", dropped.ok && dropped.project.objects?.[0]?.sim === undefined);
+
+if (failed) {
+  console.error(`${failed} failed`);
+  process.exit(1);
+}
+console.log("study: canned beam, probe, clip, undo snap ok");

@@ -101,6 +101,7 @@ mcp/golden.test.ts
 mcp/model.test.ts
 mcp/request.test.ts
 src/sim/recipe.test.ts
+src/sim/study.test.ts
 mcp/numbers.test.ts
 mcp/render.test.ts
 mcp/native-load.test.ts
