@@ -314,6 +314,8 @@ function medianOf(times: number[]): number {
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
+test.use({ launchOptions: { args: ["--js-flags=--expose-gc", "--enable-precise-memory-info"] } });
+
 test("a two second knob drag on a 3,000 face part stays with the orbit", async ({ page }) => {
   const slab = tiledSlab(60, 50, 1);
   expect(slab.faces.length).toBeGreaterThan(3000);
@@ -342,6 +344,7 @@ test("a two second knob drag on a 3,000 face part stays with the orbit", async (
     return typeof name === "string" ? name : "unknown";
   });
   const software = /SwiftShader|llvmpipe|Software/i.test(renderer);
+  const serialBefore = await canvas.getAttribute("data-ghost-serial");
   await page.evaluate(() => {
     const w = window as unknown as { frameGaps: number[] };
     w.frameGaps = [];
@@ -374,20 +377,35 @@ test("a two second knob drag on a 3,000 face part stays with the orbit", async (
   const orbitTimes = await takeGaps();
   expect(orbitTimes.length).toBeGreaterThan(10);
   const orbitMedian = medianOf(orbitTimes);
+  const heap = () => page.evaluate(async () => {
+    // The renderer drops a disposed buffer on the next frame. Read the heap after that, then GC.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(0)));
+    (window as unknown as { gc?: () => void }).gc?.();
+    return (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0;
+  });
+  const before = await heap();
   await page.mouse.move(x, y);
   await page.mouse.down();
   const started = Date.now();
   let step = 0;
-  while (Date.now() - started < 2000) {
+  // SwiftShader handles each move slowly, so a fixed 2 s can stop short of 50 values. Keep going until both.
+  while (Date.now() - started < 2000 || step < 50) {
     step += 1;
     await page.mouse.move(x + (step % 12) - 6, y - (step % 5));
   }
   await page.mouse.up();
+  const after = await heap();
   const dragTimes = await takeGaps();
   expect(dragTimes.length).toBeGreaterThan(10);
   const dragMedian = medianOf(dragTimes);
+  const serialAfter = await canvas.getAttribute("data-ghost-serial");
   const detail = `${renderer}: orbit ${orbitMedian.toFixed(1)} ms from ${orbitTimes.length} frames, drag ${dragMedian.toFixed(1)} ms from ${dragTimes.length} frames`;
   expect(dragMedian, detail).toBeLessThanOrEqual(orbitMedian * 1.5 + 4);
   if (software) test.info().annotations.push({ type: "skip-absolute", description: renderer });
   else expect(dragMedian, detail).toBeLessThanOrEqual(17);
+  expect(before, "heap is readable after gc").toBeGreaterThan(0);
+  expect(after - before, `heap growth ${detail}`).toBeLessThan(5 * 1024 * 1024);
+  expect(serialBefore, "the ghost was built").toMatch(/^\d+$/);
+  expect(serialAfter, "a size drag does not rebuild the ghost").toBe(serialBefore);
+  expect(step, "the drag moved through many values").toBeGreaterThanOrEqual(50);
 });

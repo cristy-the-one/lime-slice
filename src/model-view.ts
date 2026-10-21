@@ -403,10 +403,22 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** Which side the live dimension sits on. -1 is the far side, used when the label would cover the knob. */
   let aspectGapSign: 1 | -1 = 1;
   let aspectGapFor = "";
-  /** Bumps when the ghost is rebuilt, so the aspect is redrawn only then, not on every pointer move. */
+  /** Bumps when the ghost is rebuilt. An in-place size change does not bump it. */
   let ghostSerial = 0;
-  /** The ghost's world box and face points. Rebuilt only when `ghostSerial` changes. */
-  let ghostCache: { serial: number; centre: THREE.Vector3; min: THREE.Vector3; max: THREE.Vector3; faces: Map<string, THREE.Vector3> } | null = null;
+  /** Bumps when the same primitive's numbers are written into the ghost it already has. */
+  let ghostPose = 0;
+  /** The primitive ghost last built, so a size drag can scale it or write positions instead of rebuilding. */
+  let posedPrimitive: {
+    primitive: string;
+    soupCount: number;
+    group: THREE.Group;
+    shape: THREE.Mesh;
+    outline: THREE.LineSegments;
+    /** Sizes the geometry was built at. A later drag scales this mesh instead of replacing it. */
+    spec: PrimitiveSpec;
+  } | null = null;
+  /** The ghost's world box and face points. Rebuilt when the ghost is, and re-projected when only its pose changes. */
+  let ghostCache: { serial: number; pose: number; centre: THREE.Vector3; min: THREE.Vector3; max: THREE.Vector3; faces: Map<string, THREE.Vector3> } | null = null;
   /** Label size from the last text change, so a frame does not measure it again. */
   let labelMeasure = { text: "", width: 0, height: 0 };
   let labelPlaced = { x: 0, y: 0, key: "" };
@@ -592,6 +604,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function clearGhosts() {
+    posedPrimitive = null;
     for (const child of [...ghosts.children]) {
       ghosts.remove(child);
       // A split's offcut draws the solid's own geometry with a shared material: neither is the ghost's to free.
@@ -1027,13 +1040,141 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   function rebuildGhost() {
     ghostSerial += 1;
+    ghostPose = 0;
+    posedPrimitive = null;
+    canvas.dataset.ghostSerial = String(ghostSerial);
+    canvas.dataset.ghostPose = "0";
     clearGhosts();
     applyScale();
     clipToSplit();
     buildGhost();
+    rememberPrimitive();
     restyleGhostLines();
     publishGhostBox();
     rebuildCap();
+  }
+
+  /** The primitive group `buildGhost` just added, when a later size change can reuse it. */
+  function rememberPrimitive() {
+    if (ghost?.kind !== "primitive") return;
+    const group = ghosts.children.find((child) => child instanceof THREE.Group);
+    const shape = group?.children.find((child) => child instanceof THREE.Mesh);
+    const outline = shape?.children.find((child) => child instanceof THREE.LineSegments);
+    if (!(group instanceof THREE.Group) || !(shape instanceof THREE.Mesh) || !(outline instanceof THREE.LineSegments)) return;
+    if (!shape.geometry.getAttribute("position") || !outline.geometry.getAttribute("position")) return;
+    const spec = ghost.spec;
+    posedPrimitive = {
+      primitive: spec.primitive,
+      soupCount: ghost.mesh.length,
+      group,
+      shape,
+      outline,
+      spec: { ...spec, origin: [...spec.origin], size: [...spec.size], turn: [...spec.turn] },
+    };
+  }
+
+  /** Axis scale from the built mesh, when the new primitive is that mesh grown from its own origin. */
+  function primitiveScale(built: PrimitiveSpec, next: PrimitiveSpec): [number, number, number] | null {
+    if (built.primitive !== next.primitive) return null;
+    const ratio = (from: number, to: number) => (Math.abs(from) > 1e-9 ? to / from : null);
+    if (next.primitive === "box" || next.primitive === "ellipsoid") {
+      const x = ratio(built.size[0], next.size[0]);
+      const y = ratio(built.size[1], next.size[1]);
+      const z = ratio(built.size[2], next.size[2]);
+      return x == null || y == null || z == null ? null : [x, y, z];
+    }
+    if (next.primitive === "sphere") {
+      const s = ratio(built.radius, next.radius);
+      return s == null ? null : [s, s, s];
+    }
+    if (next.primitive === "cylinder" || next.primitive === "tube") {
+      const s = ratio(built.radius, next.radius);
+      const z = ratio(built.height, next.height);
+      if (s == null || z == null) return null;
+      if (next.primitive === "tube") {
+        const inner = ratio(built.innerRadius ?? 0, next.innerRadius ?? 0);
+        if (inner == null || Math.abs(inner - s) > 1e-4) return null;
+      }
+      return [s, s, z];
+    }
+    if (next.primitive === "wedge") {
+      const x = ratio(built.size[0], next.size[0]);
+      const y = ratio(built.size[1], next.size[1]);
+      const z = ratio(built.size[2], next.size[2]);
+      if (x == null || y == null || z == null) return null;
+      const top = (built.topX ?? built.size[0]) * x;
+      if (Math.abs(top - (next.topX ?? next.size[0])) > 1e-3) return null;
+      return [x, y, z];
+    }
+    return null;
+  }
+
+  function writePositions(attr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, source: ArrayLike<number>) {
+    (attr.array as Float32Array).set(source);
+    attr.needsUpdate = true;
+  }
+
+  /**
+   * Same primitive, same vertex count: keep the meshes already on screen.
+   * A box and its kin were built at a real size, so they scale about that size. Anything else copies
+   * positions into the existing buffers. A `LineSegmentsGeometry` takes `setPositions`.
+   */
+  function posePrimitive(next: Extract<ModelGhost, { kind: "primitive" }>): boolean {
+    const held = posedPrimitive;
+    if (!held || ghost?.kind !== "primitive") return false;
+    if (held.primitive !== next.spec.primitive) return false;
+    const scale = primitiveScale(held.spec, next.spec);
+    // A new segment count builds a different soup. Scale only the mesh we already have.
+    if (scale && held.soupCount === next.mesh.length) {
+      held.shape.scale.set(scale[0], scale[1], scale[2]);
+      const centre = turnCentre(next.spec);
+      const [x, y, z] = next.spec.origin;
+      held.group.position.set(x + centre[0], y + centre[1], z + centre[2]);
+      held.group.quaternion.copy(turnQuaternion(next.spec.turn));
+      held.shape.position.set(-centre[0], -centre[1], -centre[2]);
+      ghostPose += 1;
+      canvas.dataset.ghostPose = String(ghostPose);
+      return true;
+    }
+    if (held.soupCount !== next.mesh.length) return false;
+    // The scale path may have run on an earlier size. These positions are already the new size.
+    held.shape.scale.set(1, 1, 1);
+    const soup = new THREE.BufferGeometry();
+    soup.setAttribute("position", new THREE.BufferAttribute(next.mesh, 3));
+    const shaded = toCreasedNormals(soup, (PRIMITIVE_CREASE_DEG * Math.PI) / 180);
+    soup.dispose();
+    const edges = new THREE.EdgesGeometry(shaded, PRIMITIVE_CREASE_DEG);
+    const shadedPos = shaded.getAttribute("position");
+    const shadedNorm = shaded.getAttribute("normal");
+    const edgePos = edges.getAttribute("position");
+    const livePos = held.shape.geometry.getAttribute("position");
+    const liveNorm = held.shape.geometry.getAttribute("normal");
+    const liveEdge = held.outline.geometry.getAttribute("position");
+    const fits = !!shadedPos && !!edgePos && !!livePos && !!liveEdge && shadedPos.count === livePos.count && edgePos.count === liveEdge.count;
+    if (!fits || !shadedPos || !edgePos || !livePos || !liveEdge) {
+      shaded.dispose();
+      edges.dispose();
+      return false;
+    }
+    writePositions(livePos, shadedPos.array);
+    if (liveNorm && shadedNorm && liveNorm.count === shadedNorm.count) writePositions(liveNorm, shadedNorm.array);
+    const line = held.outline.geometry as THREE.BufferGeometry & { setPositions?: (array: Float32Array) => void };
+    if (typeof line.setPositions === "function") line.setPositions(edgePos.array as Float32Array);
+    else writePositions(liveEdge, edgePos.array);
+    held.shape.geometry.computeBoundingBox();
+    held.shape.geometry.computeBoundingSphere();
+    held.outline.geometry.computeBoundingBox();
+    held.outline.geometry.computeBoundingSphere();
+    shaded.dispose();
+    edges.dispose();
+    const centre = turnCentre(next.spec);
+    const [x, y, z] = next.spec.origin;
+    held.group.position.set(x + centre[0], y + centre[1], z + centre[2]);
+    held.group.quaternion.copy(turnQuaternion(next.spec.turn));
+    held.shape.position.set(-centre[0], -centre[1], -centre[2]);
+    ghostPose += 1;
+    canvas.dataset.ghostPose = String(ghostPose);
+    return true;
   }
 
   /** The ghost's own edges step back while one aspect is lit, so the thick lines read on their own. */
@@ -2060,6 +2201,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       // A drag moves the blend in steps finer than anyone sees: the strip is rebuilt once it grows by 0.05 mm.
       if (ghost?.kind === "blend" && next?.kind === "blend" && next.radius > 0 && ghost.radius > 0 && ghost.chamfer === next.chamfer
         && ghost.edges.join() === next.edges.join() && Math.abs(ghost.radius - next.radius) < BLEND_GHOST_STEP_MM) return;
+      if (next?.kind === "primitive" && posePrimitive(next)) {
+        ghost = next;
+        publishGhostBox();
+        kick();
+        return;
+      }
       ghost = next;
       rebuildGhost();
       kick();
@@ -2583,6 +2730,18 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function buildHandles(next: DragHandle[]) {
+    const same = handleParts.length === next.length && next.every((handle, index) => {
+      const held = handleParts[index]!.handle;
+      return held.id === handle.id && held.look === handle.look && held.kind === handle.kind;
+    });
+    // A size drag only changes numbers. Rebuilding the arrows each move kept their geometries alive past GC.
+    if (same) {
+      for (let index = 0; index < next.length; index += 1) handleParts[index]!.handle = next[index]!;
+      collectFieldInputs();
+      if (overHandle && !next.some((handle) => handle.id === overHandle)) overHandle = null;
+      paintHandles();
+      return;
+    }
     for (const part of handleParts) {
       handleGroup.remove(part.root);
       disposeObject(part.root);
@@ -3258,14 +3417,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       ghostCache = null;
       return null;
     }
-    if (ghostCache?.serial === ghostSerial) return ghostCache;
+    if (ghostCache?.serial === ghostSerial && ghostCache.pose === ghostPose) return ghostCache;
     ghosts.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(ghosts);
     if (box.isEmpty()) {
       ghostCache = null;
       return null;
     }
-    ghostCache = { serial: ghostSerial, centre: box.getCenter(new THREE.Vector3()), min: box.min.clone(), max: box.max.clone(), faces: new Map() };
+    ghostCache = { serial: ghostSerial, pose: ghostPose, centre: box.getCenter(new THREE.Vector3()), min: box.min.clone(), max: box.max.clone(), faces: new Map() };
     return ghostCache;
   }
 
