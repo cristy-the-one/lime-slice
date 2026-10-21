@@ -423,6 +423,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let saidLast = false;
   let probeTimer = 0;
 
+  // Tab on the extrude's last field adds Other side, then Draft. The size box below also takes Tab in capture, and
+  // `mountKeys` registers after this module, so the registry's `sketch-tab` would never see it: this listener has to
+  // be added before the box's. The registry entry stays for the shortcut sheet.
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Tab" || ev.defaultPrevented || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (state.stage !== "model" || editor.phase !== "editing") return;
+    if (!tabSketchExtrude(ev)) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
+
   const hud = mountHud(host.canvas.parentElement ?? document.body);
   host.view.watchFocus(hud.element);
   const box = document.createElement("div");

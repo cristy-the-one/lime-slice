@@ -594,6 +594,15 @@ test("Auto makes a new object of a sketch beside the part, and the face sketch's
   await expect(hud.locator("input").nth(0)).toBeFocused();
   await page.keyboard.type("7.5");
   await expect(hud.locator("input").nth(0)).toHaveValue("7.5");
+  // Tab on the last field adds Other side, then Draft, before the size box can take Tab for itself.
+  await page.keyboard.press("Tab");
+  await expect(hud.locator("input")).toHaveCount(2);
+  await expect(hud.locator("input").nth(1)).toBeFocused();
+  await page.keyboard.type("4");
+  await page.keyboard.press("Tab");
+  await expect(hud.locator("input")).toHaveCount(3);
+  await expect(hud.locator("input").nth(0)).toHaveValue("7.5");
+  await expect(hud.locator("input").nth(1)).toHaveValue("4");
 });
 
 async function drawTypedCircle(page: Page) {
