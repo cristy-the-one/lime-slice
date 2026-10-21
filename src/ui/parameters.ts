@@ -36,19 +36,52 @@ export function panelParamMessage(message: string): string {
 }
 
 /** E3. Parameters sit in the Model dock under History, folded or open as the user left them. */
-const FOLDED_KEY = "lime-slice-model-params-folded";
+const FOLD_PREFIX = "lime-slice-model-params-folded:";
+const FOLD_ORDER = "lime-slice-model-params-folded-order";
+const FOLD_LIMIT = 50;
 
-function storageKey(): string {
-  const id = hooks?.projectId?.().trim() || "default";
-  return `${FOLDED_KEY}:${id}`;
+type FoldStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+/** A saved path, or one shared key when the project has not been saved. */
+export function parametersFoldId(projectPath: string): string {
+  return projectPath.trim() || "unsaved";
+}
+
+function foldOrder(storage: FoldStorage): string[] {
+  return (storage.getItem(FOLD_ORDER) ?? "").split("\n").filter(Boolean);
+}
+
+/** How many projects remember a fold. At most 50. */
+export function parametersFoldCount(storage: FoldStorage): number {
+  return foldOrder(storage).length;
+}
+
+/** `true` is folded. Null when this project has no stored choice. */
+export function readParametersFold(storage: FoldStorage, projectPath: string): boolean | null {
+  const stored = storage.getItem(FOLD_PREFIX + parametersFoldId(projectPath));
+  if (stored === "1") return true;
+  if (stored === "0") return false;
+  return null;
+}
+
+/** Remember the fold for this path. The 51st project drops the oldest. */
+export function writeParametersFold(storage: FoldStorage, projectPath: string, folded: boolean): void {
+  const id = parametersFoldId(projectPath);
+  storage.setItem(FOLD_PREFIX + id, folded ? "1" : "0");
+  const order = foldOrder(storage).filter((item) => item !== id);
+  order.push(id);
+  while (order.length > FOLD_LIMIT) {
+    const oldest = order.shift();
+    if (oldest) storage.removeItem(FOLD_PREFIX + oldest);
+  }
+  storage.setItem(FOLD_ORDER, order.join("\n"));
 }
 
 /** A stored choice wins. With none, an empty table starts collapsed. */
 function readFolded(count: number): boolean {
   try {
-    const stored = localStorage.getItem(storageKey());
-    if (stored === "1") return true;
-    if (stored === "0") return false;
+    const stored = readParametersFold(localStorage, hooks?.projectId?.() ?? "");
+    if (stored != null) return stored;
   } catch {
     return count === 0;
   }
@@ -57,7 +90,7 @@ function readFolded(count: number): boolean {
 
 function writeFolded(on: boolean) {
   try {
-    localStorage.setItem(storageKey(), on ? "1" : "0");
+    writeParametersFold(localStorage, hooks?.projectId?.() ?? "", on);
   } catch {
     /* blocked storage: the section follows the empty-table default next time */
   }
