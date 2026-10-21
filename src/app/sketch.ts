@@ -2250,6 +2250,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function onSketchEscape(ev: KeyboardEvent): boolean {
+    const field = typingTarget(ev.target);
+    // Parameters keeps the key and folds. Count the press, so the next Escape leaves the sketch.
+    if (field && !field.closest(".interact-hud, #sketchCards, .sketch-dims")) {
+      if (!menuOpen && !howOpen && !loft && !sweep && !revolve && !gesture && !host.sketchHolesArmed()) {
+        applyEditorKey("Escape", { ctrl: false, meta: false, shift: false });
+      }
+      return false;
+    }
     const howHost = cards?.querySelector(".sketch-how");
     if (howOpen && ev.target instanceof Node && howHost?.contains(ev.target)) {
       closeHow(true);

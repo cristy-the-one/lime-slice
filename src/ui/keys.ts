@@ -17,6 +17,8 @@ function keyContext(ev: KeyboardEvent): KeyContext {
   let typing = isTyping(target);
   if (hud && (history || ev.key === "Escape" || ev.key === "Tab")) typing = false;
   if (target?.dataset.sketchDimInput != null && ev.key === "Escape") typing = false;
+  // Escape in Parameters still folds the section. The sketch also sees it, so two presses leave.
+  if (target?.closest("#modelParams") && ev.key === "Escape") typing = false;
   const root = document.documentElement.dataset;
   const sketchPhase = document.querySelector("#model")?.getAttribute("data-sketch");
   return {
@@ -56,8 +58,9 @@ export function mountKeys() {
   // that returns false (Tab between the box's fields) is left for that box.
   window.addEventListener("keydown", (ev) => {
     if (ev.defaultPrevented || document.documentElement.dataset.overlay) return;
-    if (pressesControl(ev)) return;
     const command = resolveKey(ev, keyContext(ev));
+    // Enter on a button presses that button, except loft's Enter, which commits even from a card.
+    if (pressesControl(ev) && !(command?.id === "sketch-enter" && document.querySelector("#model")?.getAttribute("data-loft") === "pick")) return;
     if (!command?.id.startsWith("sketch-")) return;
     setActiveSketchEvent(ev);
     try {

@@ -133,7 +133,7 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   await expect(page.locator('[data-sketch-tool="offset"]')).toHaveAttribute("data-tip", "Offset (F)");
   await expect(page.locator('[data-sketch-tool="construction"]')).toHaveAttribute("data-tip", "Construction (X)");
   await expect(page.locator('[data-sketch-tool="fillet"]')).toHaveAttribute("data-tip", "Fillet corner (G)");
-  await expect(page.locator('[data-sketch-tool="use"]')).toHaveAttribute("data-tip", /Use \(U\)/);
+  await expect(page.locator('[data-sketch-tool="use"]')).toHaveAttribute("data-tip", "Use. Click a faint edge to copy it. (U)");
   const arcD = await page.locator('[data-sketch-tool="arc"] path').first().getAttribute("d");
   const filletD = await page.locator("#modelToolFillet path").first().getAttribute("d");
   expect(arcD).not.toBe(filletD);

@@ -17,7 +17,8 @@ export type KeyScope =
   | "sketch-feature"
   | "sketch-draw"
   | "sketch-loft"
-  | "workspace";
+  | "workspace"
+  | "model-any";
 
 export type StageName = "prepare" | "preview" | "gcode" | "model";
 
@@ -102,7 +103,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-reset-view", label: "Reset view", group: "Model", keys: ["Home"], when: "model", target: "#modelResetView", keywords: "frame zoom fit camera" },
   { id: "model-frame-all", label: "Frame every object", group: "Model", keys: ["Shift+Home"], when: "model", keywords: "reset view zoom fit camera all" },
   { id: "model-history", label: "Model history", group: "Model", keys: ["Shift+H"], when: "model", target: "#modelHistoryOpen", keywords: "steps tree branch undo jump rename" },
-  { id: "model-parameters", label: "Parameters", group: "Model", keys: ["Ctrl+Alt+P"], when: "model", typing: true, keywords: "expression variable wall height rebuild" },
+  { id: "model-parameters", label: "Parameters", group: "Model", keys: ["Ctrl+Alt+P"], when: "model-any", typing: true, keywords: "expression variable wall height rebuild" },
   { id: "model-edit-step", label: "Edit step", group: "Model", keys: ["Shift+E"], when: "model", keywords: "history change numbers parameters size radius update fork" },
   { id: "model-apply", label: "Apply model edit", group: "Model", keys: ["Enter"], when: "model", target: "#modelApply", keywords: "confirm" },
   { id: "model-escape", label: "Cancel model tool or clear selection", group: "Model", keys: ["Esc"], when: "model", typing: true, keywords: "clear deselect" },
@@ -232,6 +233,8 @@ const SCOPES: Record<KeyScope, (c: KeyContext) => boolean> = {
   brush: (c) => !c.helpOpen && c.stage === "prepare" && c.brushOn,
   find: (c) => !c.helpOpen && !c.inGcode && c.stage !== "model",
   model: (c) => !c.helpOpen && c.stage === "model" && !c.running && !c.searching && !c.sketchOpen,
+  // Parameters stay reachable while a sketch is open. The chord does not belong to the sketch.
+  "model-any": (c) => !c.helpOpen && c.stage === "model" && !c.running && !c.searching,
   sketch: (c) => sketching(c),
   "sketch-feature": (c) => sketching(c) && c.sketchFeature,
   "sketch-draw": (c) => sketching(c) && !c.sketchLoft,

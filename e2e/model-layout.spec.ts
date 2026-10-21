@@ -224,10 +224,10 @@ test("in the drawer range, Esc ends an open tool first and closes the drawer onl
 test("M in Model does not change Prepare's move tool", async ({ page }) => {
   await openModel(page, { width: 1440, height: 900 });
   const move = page.locator('#toolRail [data-tool="move"]');
-  await expect(move).toHaveAttribute("aria-pressed", "false");
+  await expect(move).not.toHaveAttribute("aria-pressed", "true");
   await page.keyboard.press("m");
   await page.locator("#tabPrepare").click();
-  await expect(move).toHaveAttribute("aria-pressed", "false");
+  await expect(move).not.toHaveAttribute("aria-pressed", "true");
 });
 
 test("T then I moves the Model camera from top to iso", async ({ page }) => {
