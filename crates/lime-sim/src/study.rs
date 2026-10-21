@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::assemble::{Hold, Load, NodeHold};
 use crate::element::ElementKind;
 use crate::error::{bead_refused, temperature_refused, tet4_refused, zero_axis, SimError};
-use crate::material::LinearOrthotropic;
+use crate::material::{BeadSection, LinearOrthotropic};
 use crate::mesh::Mesh;
 use crate::recipe::Recipe;
 use crate::sliced::CellMaterial;
@@ -52,6 +52,10 @@ pub struct Card {
     pub source: String,
     #[serde(default)]
     pub isotropic: bool,
+    /// Bead constants for the sliced representation. A card without them
+    /// solves a sliced part as a smear of its own numbers at each fraction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beads: Option<BeadSection>,
 }
 
 impl Card {
@@ -125,6 +129,20 @@ fn card(
         method: None,
         source: "in-house".into(),
         isotropic: false,
+        // The bond across beads is taken as the bond across layers, which
+        // is a placeholder, not a measurement.
+        beads: Some(BeadSection {
+            provisional: true,
+            e_along_mpa: e_in,
+            e_across_mpa: e_z,
+            e_layers_mpa: e_z,
+            strength_along_mpa: s_in,
+            strength_across_mpa: s_z,
+            strength_layers_mpa: s_z,
+            shear_layers_mpa: 0.5 * s_z,
+            shear_across_mpa: None,
+            bridge_factor: 0.5,
+        }),
     }
 }
 
@@ -262,6 +280,9 @@ pub struct Request {
     /// One material per element for `representation: "sliced"`, from its
     /// grid cell. Empty for a smear, whose fractions come from the recipe.
     pub cells: Vec<CellMaterial>,
+    /// The card's bead section. A sliced study with one mixes each cell's
+    /// beads; a smear ignores it.
+    pub beads: Option<BeadSection>,
     pub post_steps: Vec<serde_json::Value>,
     pub provisional: bool,
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -340,6 +361,7 @@ impl Study {
             solver: self.solver.clone(),
             representation: self.representation.clone(),
             cells: Vec::new(),
+            beads: self.card.beads.clone(),
             post_steps: self.post_steps.clone(),
             provisional: self.card.provisional,
             cancel: None,
@@ -398,6 +420,9 @@ pub fn validate_study(study: &Study) -> Result<(), SimError> {
 
 pub fn validate_request_fields(req: &Request) -> Result<(), SimError> {
     req.recipe.refuse_regions()?;
+    if let Some(beads) = &req.beads {
+        beads.check().map_err(SimError::new)?;
+    }
     if req.solver != "faer-ldlt" {
         return Err(SimError::new(format!(
             "{} is not in this version.",

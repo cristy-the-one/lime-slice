@@ -8,8 +8,9 @@ use faer::Mat;
 
 use crate::element::{element, gradients, ElementKind, ElementOut, GaussContext};
 use crate::error::SimError;
-use crate::material::{MatState, MaterialContext, MaterialModel};
+use crate::material::{MatState, MaterialModel};
 use crate::mesh::Mesh;
+use crate::sliced::CellMaterial;
 use crate::units::{normalize, specific_weight_n_per_mm3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,7 +234,7 @@ pub fn assemble(
     mesh: &Mesh,
     material: &dyn MaterialModel,
     build_axis: [f64; 3],
-    vf: &[f64],
+    cells: &[CellMaterial],
     loads: &[Load],
     load_level: f64,
     gravity_mm_s2: Option<f64>,
@@ -283,7 +284,8 @@ pub fn assemble(
         .ok_or_else(|| SimError::new(format!("{} is not in this version.", mesh.kind.name())))?;
 
     for (ei, cell) in mesh.elements.iter().enumerate() {
-        let fraction = vf.get(ei).copied().unwrap_or(1.0);
+        let made_of = cells.get(ei).copied().unwrap_or(CellMaterial::smeared(1.0));
+        let fraction = made_of.volume_fraction;
         let coords: Vec<[f64; 3]> = cell.nodes.iter().map(|n| mesh.nodes[*n]).collect();
         let nd = cell.nodes.len() * 3;
         let mut displacement = vec![0.0; nd];
@@ -292,12 +294,7 @@ pub fn assemble(
                 displacement[a * 3 + k] = u[*node][k];
             }
         }
-        let mat_ctx = MaterialContext {
-            build_axis,
-            temperature_c: None,
-            fibre_axis: None,
-            volume_fraction: fraction,
-        };
+        let mat_ctx = made_of.context(build_axis);
         let mut state = MatState::default();
         let mut ctx = GaussContext {
             coords: &coords,

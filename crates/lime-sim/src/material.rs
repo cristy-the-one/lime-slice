@@ -4,7 +4,9 @@
 //! `isotropic` set. A later plastic model implements the same
 //! `stress_tangent` and keeps its history in `MatState`.
 
-use crate::units::material_frame;
+use serde::{Deserialize, Serialize};
+
+use crate::units::{cross, dot, material_frame, normalize};
 
 #[derive(Clone, Debug, Default)]
 pub struct MatState {
@@ -17,6 +19,25 @@ pub struct MaterialContext {
     pub temperature_c: Option<f64>,
     pub fibre_axis: Option<[f64; 3]>,
     pub volume_fraction: f64,
+    /// The larger eigenvalue of the beads' orientation tensor: 0.5 for
+    /// crossing beads, 1 for beads along `fibre_axis`. A smear has 0.5.
+    pub alignment: f64,
+    /// The share of the volume that was bridged. A smear has 0.
+    pub bridge_share: f64,
+}
+
+impl MaterialContext {
+    /// A smeared element: a fraction, and no bead direction.
+    pub fn smeared(build_axis: [f64; 3], volume_fraction: f64) -> Self {
+        Self {
+            build_axis,
+            temperature_c: None,
+            fibre_axis: None,
+            volume_fraction,
+            alignment: 0.5,
+            bridge_share: 0.0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -203,6 +224,247 @@ impl FailureCriterion for MaxStress {
     }
 }
 
+/// A bead card section: a transversely orthotropic bead, its bond to the
+/// next bead, and its bond to the next layer. A cell of the sliced
+/// representation mixes it by how its beads lie (the sliced plan, §6).
+///
+/// Like the rest of a card it is never copied from a data sheet. A
+/// provisional section keeps the study `rough`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeadSection {
+    #[serde(default)]
+    pub provisional: bool,
+    #[serde(rename = "EAlongBeadMPa")]
+    pub e_along_mpa: f64,
+    /// In the layer plane, across a bead: the bead-to-bead bond.
+    #[serde(rename = "EAcrossBeadMPa")]
+    pub e_across_mpa: f64,
+    /// Along the layer normal: the layer-to-layer bond.
+    #[serde(rename = "EAcrossLayersMPa")]
+    pub e_layers_mpa: f64,
+    #[serde(rename = "strengthAlongBeadMPa")]
+    pub strength_along_mpa: f64,
+    #[serde(rename = "strengthAcrossBeadMPa")]
+    pub strength_across_mpa: f64,
+    #[serde(rename = "strengthAcrossLayersMPa")]
+    pub strength_layers_mpa: f64,
+    #[serde(rename = "shearAcrossLayersMPa")]
+    pub shear_layers_mpa: f64,
+    /// In-plane shear between beads. Absent, it is half the across-bead
+    /// strength, a placeholder like the main card's shear.
+    #[serde(default, rename = "shearAcrossBeadMPa")]
+    pub shear_across_mpa: Option<f64>,
+    /// Multiplies the across-bead modulus and strength in a bridged cell.
+    #[serde(rename = "bridgeFactor")]
+    pub bridge_factor: f64,
+}
+
+impl BeadSection {
+    pub fn check(&self) -> Result<(), String> {
+        let moduli = [self.e_along_mpa, self.e_across_mpa, self.e_layers_mpa];
+        let strengths = [
+            self.strength_along_mpa,
+            self.strength_across_mpa,
+            self.strength_layers_mpa,
+            self.shear_layers_mpa,
+            self.shear_across_mpa.unwrap_or(1.0),
+        ];
+        if moduli
+            .iter()
+            .chain(&strengths)
+            .any(|v| !(v.is_finite() && *v > 0.0))
+        {
+            return Err("Every bead modulus and strength has to be positive.".into());
+        }
+        if !(self.bridge_factor.is_finite()
+            && self.bridge_factor > 0.0
+            && self.bridge_factor <= 1.0)
+        {
+            return Err("bridgeFactor has to be above 0 and at most 1.".into());
+        }
+        Ok(())
+    }
+
+    fn shear_across(&self) -> f64 {
+        self.shear_across_mpa
+            .unwrap_or(0.5 * self.strength_across_mpa)
+    }
+
+    /// The across-bead number in a cell with this bridged share.
+    fn bridged(&self, value: f64, bridge_share: f64) -> f64 {
+        let share = bridge_share.clamp(0.0, 1.0);
+        value * (1.0 - share * (1.0 - self.bridge_factor))
+    }
+
+    /// Along the cell's first axis, across it in the plane, and along the
+    /// layer normal, for this context: the beads mixed by their alignment
+    /// and scaled by the fraction.
+    fn cell_values(&self, along: f64, across: f64, layers: f64, ctx: &MaterialContext) -> [f64; 3] {
+        let phi = ctx.volume_fraction.clamp(0.0, 1.0);
+        let l1 = ctx.alignment.clamp(0.5, 1.0);
+        let l2 = 1.0 - l1;
+        let across = self.bridged(across, ctx.bridge_share);
+        [
+            phi * (l1 * along + l2 * across),
+            phi * (l2 * along + l1 * across),
+            phi * layers,
+        ]
+    }
+}
+
+/// The cell's frame: the bead direction, the in-plane normal to it, and the
+/// layer normal, as rows. Without a direction the cell is in-plane
+/// isotropic, so any in-plane pair will do.
+pub fn bead_frame(ctx: &MaterialContext) -> [[f64; 3]; 3] {
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let Some(e3) = normalize(ctx.build_axis) else {
+        return identity;
+    };
+    let in_plane = ctx.fibre_axis.and_then(|t| {
+        let along = [
+            t[0] - dot(t, e3) * e3[0],
+            t[1] - dot(t, e3) * e3[1],
+            t[2] - dot(t, e3) * e3[2],
+        ];
+        normalize(along)
+    });
+    match in_plane {
+        Some(e1) => [e1, cross(e3, e1), e3],
+        None => material_frame(e3).unwrap_or(identity),
+    }
+}
+
+/// Beads mixed per cell. Stiffness follows `BeadSection::cell_values`; the
+/// shear moduli are Huber's, `√(Ei·Ej) / (2(1 + ν))`, so the cell stays
+/// positive definite at any mix. Density is the card's.
+#[derive(Clone, Debug)]
+pub struct BeadComposite {
+    pub beads: BeadSection,
+    pub nu: f64,
+    pub density_g_cm3: f64,
+}
+
+impl MaterialModel for BeadComposite {
+    fn stress_tangent(
+        &self,
+        strain: &[f64; 6],
+        _state: &mut MatState,
+        ctx: &MaterialContext,
+    ) -> (Stress, Tangent) {
+        let b = &self.beads;
+        let [e1, e2, e3] = b.cell_values(b.e_along_mpa, b.e_across_mpa, b.e_layers_mpa, ctx);
+        if e1 <= 0.0 || e2 <= 0.0 || e3 <= 0.0 {
+            return (Stress { v: [0.0; 6] }, Tangent { c: [[0.0; 6]; 6] });
+        }
+        let c_local = orthotropic_huber(e1, e2, e3, self.nu);
+        let c = tangent_global(&c_local, &bead_frame(ctx));
+        let mut stress = [0.0; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                stress[i] += c[i][j] * strain[j];
+            }
+        }
+        (Stress { v: stress }, Tangent { c })
+    }
+
+    /// The solid bead's numbers; the cell's come from `BeadMaxStress`.
+    fn allowables(&self) -> Allowables {
+        let b = &self.beads;
+        Allowables {
+            in_plane_mpa: b.strength_along_mpa,
+            across_layers_mpa: b.strength_layers_mpa,
+            compression_in_plane_mpa: b.strength_along_mpa,
+            compression_across_layers_mpa: b.strength_layers_mpa,
+            shear_across_layers_mpa: b.shear_layers_mpa,
+        }
+    }
+
+    fn density_g_cm3(&self) -> f64 {
+        self.density_g_cm3
+    }
+
+    fn isotropic(&self) -> bool {
+        false
+    }
+}
+
+/// Which allowable decided a safety factor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Governs {
+    InPlane,
+    AlongBead,
+    AcrossBead,
+    AcrossLayers,
+    InterlayerShear,
+    BeadShear,
+}
+
+impl Governs {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Governs::InPlane => "in-plane",
+            Governs::AlongBead => "along-bead",
+            Governs::AcrossBead => "across-bead",
+            Governs::AcrossLayers => "across-layers",
+            Governs::InterlayerShear => "interlayer-shear",
+            Governs::BeadShear => "bead-shear",
+        }
+    }
+}
+
+/// Max-stress in the cell's own frame: along the bead, across it, across
+/// the layers, interlayer shear and shear between beads. Each allowable is
+/// mixed and scaled by the fraction as the stiffness is (SR-01's rule, from
+/// the real fraction). Compression uses the tension number, a placeholder
+/// like the main card's.
+pub struct BeadMaxStress<'a> {
+    pub beads: &'a BeadSection,
+}
+
+impl BeadMaxStress<'_> {
+    pub fn safety_governed(
+        &self,
+        stress: &Stress,
+        ctx: &MaterialContext,
+    ) -> (f64, Option<Governs>) {
+        let b = self.beads;
+        let q = bead_frame(ctx);
+        let local = tensor_to_stress(&rotate_to(&q, &stress_to_tensor(&stress.v)));
+        let [s1, s2, s3] = b.cell_values(
+            b.strength_along_mpa,
+            b.strength_across_mpa,
+            b.strength_layers_mpa,
+            ctx,
+        );
+        let phi = ctx.volume_fraction.clamp(0.0, 1.0);
+        let shear_layers = phi * b.shear_layers_mpa;
+        let shear_beads = phi * b.bridged(b.shear_across(), ctx.bridge_share);
+        let checks = [
+            (local[0].abs(), s1, Governs::AlongBead),
+            (local[1].abs(), s2, Governs::AcrossBead),
+            (local[2].abs(), s3, Governs::AcrossLayers),
+            (
+                local[4].hypot(local[5]),
+                shear_layers,
+                Governs::InterlayerShear,
+            ),
+            (local[3].abs(), shear_beads, Governs::BeadShear),
+        ];
+        let mut best = (f64::INFINITY, None);
+        for (load, allow, governs) in checks {
+            if load > 1e-15 {
+                let sf = allow / load;
+                if sf < best.0 {
+                    best = (sf, Some(governs));
+                }
+            }
+        }
+        best
+    }
+}
+
 pub fn von_mises(s: &[f64; 6]) -> f64 {
     let (xx, yy, zz, xy, yz, zx) = (s[0], s[1], s[2], s[3], s[4], s[5]);
     let a = (xx - yy).powi(2) + (yy - zz).powi(2) + (zz - xx).powi(2);
@@ -232,6 +494,25 @@ fn orthotropic_c(e1: f64, e2: f64, e3: f64, nu: f64) -> [[f64; 6]; 6] {
     s[3][3] = 1.0 / g12;
     s[4][4] = 1.0 / g23;
     s[5][5] = 1.0 / g31;
+    invert6(&s).unwrap_or([[0.0; 6]; 6])
+}
+
+/// Orthotropic stiffness with one Poisson ratio and Huber's shear moduli.
+fn orthotropic_huber(e1: f64, e2: f64, e3: f64, nu: f64) -> [[f64; 6]; 6] {
+    let g = |a: f64, b: f64| (a * b).sqrt() / (2.0 * (1.0 + nu));
+    let mut s = [[0.0; 6]; 6];
+    s[0][0] = 1.0 / e1;
+    s[1][1] = 1.0 / e2;
+    s[2][2] = 1.0 / e3;
+    s[0][1] = -nu / e1;
+    s[1][0] = -nu / e1;
+    s[0][2] = -nu / e1;
+    s[2][0] = -nu / e1;
+    s[1][2] = -nu / e2;
+    s[2][1] = -nu / e2;
+    s[3][3] = 1.0 / g(e1, e2);
+    s[4][4] = 1.0 / g(e2, e3);
+    s[5][5] = 1.0 / g(e1, e3);
     invert6(&s).unwrap_or([[0.0; 6]; 6])
 }
 
@@ -427,6 +708,8 @@ mod tests {
             temperature_c: None,
             fibre_axis: None,
             volume_fraction: 1.0,
+            alignment: 0.5,
+            bridge_share: 0.0,
         };
         let stress = Stress {
             v: [0.0, 0.0, 10.0, 0.0, 0.0, 0.0],
@@ -450,6 +733,8 @@ mod tests {
             temperature_c: None,
             fibre_axis: None,
             volume_fraction: 1.0,
+            alignment: 0.5,
+            bridge_share: 0.0,
         };
         let (stress, tangent) = mat.stress_tangent(&strain, &mut MatState::default(), &ctx);
         for k in 0..6 {

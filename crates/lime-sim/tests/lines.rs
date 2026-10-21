@@ -66,6 +66,7 @@ fn lines_infill_is_noted_and_not_converged() {
         solver: "faer-ldlt".into(),
         representation: "smear".into(),
         cells: Vec::new(),
+        beads: None,
         post_steps: Vec::new(),
         provisional: false,
         cancel: None,

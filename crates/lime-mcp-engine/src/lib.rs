@@ -947,6 +947,7 @@ mod tests {
             solver: "faer-ldlt".into(),
             representation: representation.into(),
             cells,
+            beads: None,
             post_steps: Vec::new(),
             provisional: false,
             cancel: None,

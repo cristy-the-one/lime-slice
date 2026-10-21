@@ -104,6 +104,7 @@ fn solve(nr: usize, nt: usize) -> Solution {
         solver: "faer-ldlt".into(),
         representation: "smear".into(),
         cells: Vec::new(),
+        beads: None,
         post_steps: Vec::new(),
         provisional: false,
         cancel: None,

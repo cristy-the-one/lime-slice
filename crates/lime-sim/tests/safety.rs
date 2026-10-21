@@ -34,6 +34,8 @@ fn ctx(vf: f64) -> MaterialContext {
         temperature_c: None,
         fibre_axis: None,
         volume_fraction: vf,
+        alignment: 0.5,
+        bridge_share: 0.0,
     }
 }
 
@@ -92,6 +94,7 @@ fn bar(infill: f64, traction: [f64; 3]) -> lime_sim::Solution {
         solver: "faer-ldlt".into(),
         representation: "smear".into(),
         cells: Vec::new(),
+        beads: None,
         post_steps: Vec::new(),
         provisional: false,
         cancel: None,

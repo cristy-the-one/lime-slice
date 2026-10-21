@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use crate::element::ElementKind;
 use crate::error::SimError;
+use crate::material::MaterialContext;
 use crate::mesh::{tet10_nodes, Cell, Mesh, HEX_TETS};
 use crate::slice_field::{SliceField, ROLES};
 use crate::units::{midpoint, NODE_CAP};
@@ -51,6 +52,18 @@ pub struct CellMaterial {
 }
 
 impl CellMaterial {
+    /// The context the material and the criterion read for this cell.
+    pub fn context(&self, build_axis: [f64; 3]) -> MaterialContext {
+        MaterialContext {
+            build_axis,
+            temperature_c: None,
+            fibre_axis: self.fibre_axis,
+            volume_fraction: self.volume_fraction,
+            alignment: self.alignment,
+            bridge_share: self.bridge_share,
+        }
+    }
+
     /// Solid polymer with no direction: what a smeared element is.
     pub fn smeared(volume_fraction: f64) -> Self {
         Self {

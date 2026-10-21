@@ -5,6 +5,7 @@
 
 use serde::Serialize;
 
+use crate::material::Governs;
 use crate::mesh::Mesh;
 use crate::trust::TrustLevel;
 
@@ -95,6 +96,8 @@ pub struct Solution {
     pub min_safety_factor: Option<f64>,
     pub min_safety_at: Option<[f64; 3]>,
     pub criterion: String,
+    /// Which allowable decided the lowest safety factor, under max-stress-bead.
+    pub min_safety_governs: Option<Governs>,
     pub label: String,
     pub steps_run: usize,
     pub h_mm: f64,
@@ -132,6 +135,8 @@ pub struct Summary {
     pub min_safety_factor: Option<f64>,
     pub min_safety_at: Option<[f64; 3]>,
     pub criterion: String,
+    /// Which allowable decided the lowest safety factor, under max-stress-bead.
+    pub min_safety_governs: Option<Governs>,
     pub mass_g: f64,
     pub solid_mass_g: f64,
     pub trust: TrustReport,
@@ -149,6 +154,7 @@ impl Solution {
             min_safety_factor: self.min_safety_factor,
             min_safety_at: self.min_safety_at,
             criterion: self.criterion.clone(),
+            min_safety_governs: self.min_safety_governs,
             mass_g: self.mass_g,
             solid_mass_g: self.solid_mass_g,
             trust: TrustReport {

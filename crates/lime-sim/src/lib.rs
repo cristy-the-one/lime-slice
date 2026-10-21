@@ -45,10 +45,11 @@ use error::{node_cap, not_held, temperature_refused, tet4_refused, zero_axis};
 use estimate::{Estimator, Zz};
 use fields::GaussSample;
 use material::{
-    compliance_of, von_mises, FailureCriterion, MatState, MaterialContext, MaterialModel,
-    MaxStress, Stress,
+    compliance_of, von_mises, BeadComposite, BeadMaxStress, BeadSection, FailureCriterion, Governs,
+    MatState, MaterialContext, MaterialModel, MaxStress, Stress,
 };
 use recipe::volume_fractions;
+use sliced::CellMaterial;
 use solve::{FaerLdlt, LinearSolver};
 use study::{modal_sentence, validate_request_fields};
 use trust::{level_of, TrustInput, TrustLevel};
@@ -120,10 +121,23 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
 
     stage(req, "mesh");
     let sliced = req.representation == "sliced";
-    let vf: Vec<f64> = if sliced {
-        req.cells.iter().map(|c| c.volume_fraction).collect()
+    let cells: Vec<CellMaterial> = if sliced {
+        req.cells.clone()
     } else {
         volume_fractions(&req.mesh, &req.recipe, axis)
+            .into_iter()
+            .map(CellMaterial::smeared)
+            .collect()
+    };
+    let beads = req.beads.as_ref().filter(|_| sliced);
+    let composite = beads.map(|b| BeadComposite {
+        beads: b.clone(),
+        nu: req.material.nu,
+        density_g_cm3: req.material.density_g_cm3,
+    });
+    let material: &dyn MaterialModel = match &composite {
+        Some(c) => c,
+        None => &req.material,
     };
     let mut u = vec![[0.0; 3]; req.mesh.nodes.len()];
     let mut load_level = 0.0;
@@ -138,9 +152,9 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
             let dof = assemble::build_dof(req.mesh.nodes.len(), &req.holds)?;
             let assembly = assemble(
                 &req.mesh,
-                &req.material,
+                material,
                 axis,
-                &vf,
+                &cells,
                 &req.loads,
                 load_level,
                 req.gravity,
@@ -178,9 +192,9 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
             }
             let check = assemble(
                 &req.mesh,
-                &req.material,
+                material,
                 axis,
-                &vf,
+                &cells,
                 &req.loads,
                 load_level,
                 req.gravity,
@@ -211,9 +225,9 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
     let final_dof = assemble::build_dof(req.mesh.nodes.len(), &req.holds)?;
     let final_assembly = assemble(
         &req.mesh,
-        &req.material,
+        material,
         axis,
-        &vf,
+        &cells,
         &req.loads,
         load_level,
         req.gravity,
@@ -243,8 +257,10 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
     };
     recover(
         req,
+        material,
+        beads,
         axis,
-        &vf,
+        &cells,
         u,
         residual,
         final_assembly.solid_volume,
@@ -259,8 +275,10 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
 #[allow(clippy::too_many_arguments)]
 fn recover(
     req: &Request,
+    material: &dyn MaterialModel,
+    beads: Option<&BeadSection>,
     axis: [f64; 3],
-    vf: &[f64],
+    cells: &[CellMaterial],
     displacement: Vec<[f64; 3]>,
     residual: f64,
     solid_volume: f64,
@@ -272,8 +290,9 @@ fn recover(
 ) -> Result<Solution, SimError> {
     let mesh = &req.mesh;
     let mut gauss = Vec::new();
+    let made_of = |ei: usize| cells.get(ei).copied().unwrap_or(CellMaterial::smeared(1.0));
+    let vf: Vec<f64> = cells.iter().map(|c| c.volume_fraction).collect();
     for (ei, cell) in mesh.elements.iter().enumerate() {
-        let fraction = vf.get(ei).copied().unwrap_or(1.0);
         let coords: Vec<[f64; 3]> = cell.nodes.iter().map(|n| mesh.nodes[*n]).collect();
         let mut local_u = vec![0.0; cell.nodes.len() * 3];
         for (a, node) in cell.nodes.iter().enumerate() {
@@ -281,16 +300,11 @@ fn recover(
                 local_u[a * 3 + k] = displacement[*node][k];
             }
         }
-        let mat_ctx = MaterialContext {
-            build_axis: axis,
-            temperature_c: None,
-            fibre_axis: None,
-            volume_fraction: fraction,
-        };
+        let mat_ctx = made_of(ei).context(axis);
         let mut state = MatState::default();
-        let (_, tangent) = req.material.stress_tangent(&[0.0; 6], &mut state, &mat_ctx);
+        let (_, tangent) = material.stress_tangent(&[0.0; 6], &mut state, &mat_ctx);
         let compliance = compliance_of(&tangent.c);
-        for sample in sample_element(mesh.kind, &coords, &local_u, &req.material, &mat_ctx) {
+        for sample in sample_element(mesh.kind, &coords, &local_u, material, &mat_ctx) {
             let shape = shape_of(mesh.kind, sample.xi);
             let mut xyz = [0.0; 3];
             for (a, weight) in shape.n.iter().enumerate() {
@@ -313,19 +327,28 @@ fn recover(
     // Extrapolated to the corners and averaged by volume. The same field the estimator smooths with.
     let nodal_stress = estimate::recover_nodal(mesh, &gauss);
     let allow = req.material.allowables();
-    // Lowest fraction of the elements around the node. A node on both a wall
-    // and the core is limited by the core, which is the conservative choice.
-    let mut nodal_vf = vec![1.0; mesh.nodes.len()];
-    let mut touched = vec![false; mesh.nodes.len()];
+    // A node takes the element around it with the lowest fraction. A node on
+    // both a wall and the core is limited by the core, which is the
+    // conservative choice.
+    let mut nodal_cell: Vec<Option<usize>> = vec![None; mesh.nodes.len()];
     for (ei, cell) in mesh.elements.iter().enumerate() {
-        let fraction = vf.get(ei).copied().unwrap_or(1.0);
+        let fraction = made_of(ei).volume_fraction;
         for &node in &cell.nodes {
-            if !touched[node] || fraction < nodal_vf[node] {
-                nodal_vf[node] = fraction;
-                touched[node] = true;
+            let lower = nodal_cell[node].is_none_or(|e| fraction < made_of(e).volume_fraction);
+            if lower {
+                nodal_cell[node] = Some(ei);
             }
         }
     }
+    let safety_of = |stress: &[f64; 6], ctx: &MaterialContext| -> (f64, Option<Governs>) {
+        match beads {
+            Some(b) => BeadMaxStress { beads: b }.safety_governed(&Stress { v: *stress }, ctx),
+            None => (
+                MaxStress.safety(&Stress { v: *stress }, &allow, ctx),
+                Some(Governs::InPlane),
+            ),
+        }
+    };
     let mut von_mises_field = vec![0.0; mesh.nodes.len()];
     let mut safety = vec![0.0; mesh.nodes.len()];
     let mut max_vm = -1.0;
@@ -334,16 +357,12 @@ fn recover(
     let mut max_disp_at = [0.0; 3];
     let mut min_sf = f64::INFINITY;
     let mut min_sf_at: Option<[f64; 3]> = None;
+    let mut min_sf_governs: Option<Governs> = None;
     for i in 0..mesh.nodes.len() {
         let vm = von_mises(&nodal_stress[i]);
         von_mises_field[i] = vm;
-        let ctx = MaterialContext {
-            build_axis: axis,
-            temperature_c: None,
-            fibre_axis: None,
-            volume_fraction: nodal_vf[i],
-        };
-        let sf = MaxStress.safety(&Stress { v: nodal_stress[i] }, &allow, &ctx);
+        let ctx = made_of(nodal_cell[i].unwrap_or(0)).context(axis);
+        let (sf, governs) = safety_of(&nodal_stress[i], &ctx);
         safety[i] = if sf.is_finite() { sf } else { 1.0e9 };
         if vm > max_vm {
             max_vm = vm;
@@ -357,6 +376,7 @@ fn recover(
         if sf.is_finite() && sf < min_sf {
             min_sf = sf;
             min_sf_at = Some(mesh.nodes[i]);
+            min_sf_governs = governs;
         }
     }
     // A peak is never below the Gauss points': the recovered field can still be smoother than them on a coarse mesh.
@@ -383,16 +403,12 @@ fn recover(
             judged_vm = vm;
             judged_vm_at = Some(sample.xyz);
         }
-        let ctx = MaterialContext {
-            build_axis: axis,
-            temperature_c: None,
-            fibre_axis: None,
-            volume_fraction: vf.get(sample.element).copied().unwrap_or(1.0),
-        };
-        let sf = MaxStress.safety(&Stress { v: sample.stress }, &allow, &ctx);
+        let ctx = made_of(sample.element).context(axis);
+        let (sf, governs) = safety_of(&sample.stress, &ctx);
         if sf.is_finite() && sf < min_sf {
             min_sf = sf;
             min_sf_at = Some(sample.xyz);
+            min_sf_governs = governs;
         }
         if !skip && sf.is_finite() && sf < judged_sf {
             judged_sf = sf;
@@ -402,8 +418,16 @@ fn recover(
     // With nothing near a gripping hold, trust is judged at the reported peaks themselves. With every element near
     // one, as on a very coarse mesh, it is judged there too.
     let any_hold_edge = at_hold.iter().any(|&s| s);
-    let judged_vm_at = if any_hold_edge { judged_vm_at.unwrap_or(max_vm_at) } else { max_vm_at };
-    let judged_sf_at = if any_hold_edge { judged_sf_at.or(min_sf_at) } else { min_sf_at };
+    let judged_vm_at = if any_hold_edge {
+        judged_vm_at.unwrap_or(max_vm_at)
+    } else {
+        max_vm_at
+    };
+    let judged_sf_at = if any_hold_edge {
+        judged_sf_at.or(min_sf_at)
+    } else {
+        min_sf_at
+    };
     let peak_gap = if max_vm > 1e-30 {
         (recovered_peak - gauss_peak).abs() / recovered_peak.max(gauss_peak)
     } else {
@@ -421,7 +445,7 @@ fn recover(
         None
     };
 
-    let density = req.material.density_g_cm3();
+    let density = material.density_g_cm3();
     let mut solution = Solution {
         mesh: mesh.clone(),
         displacement,
@@ -445,7 +469,17 @@ fn recover(
         max_displacement_at: max_disp_at,
         min_safety_factor,
         min_safety_at: min_sf_at,
-        criterion: "max-stress".into(),
+        criterion: if beads.is_some() {
+            "max-stress-bead"
+        } else {
+            "max-stress"
+        }
+        .into(),
+        min_safety_governs: min_safety_factor.and(if beads.is_some() {
+            min_sf_governs
+        } else {
+            None
+        }),
         label: LABEL.into(),
         steps_run,
         h_mm,
@@ -458,7 +492,11 @@ fn recover(
     solution.relative_energy_error = estimator.relative(&solution.element_error);
     // The elements within two edge lengths of the peak stress, and of the lowest safety factor when that is a real number.
     let radius = 2.0 * h_mm;
-    let skip: Vec<bool> = if at_hold.iter().all(|&s| s) { vec![false; at_hold.len()] } else { at_hold };
+    let skip: Vec<bool> = if at_hold.iter().all(|&s| s) {
+        vec![false; at_hold.len()]
+    } else {
+        at_hold
+    };
     let mut peak_error = estimate::local_relative(
         &solution,
         &solution.element_error,
@@ -477,8 +515,10 @@ fn recover(
     }
     solution.peak_relative_error = peak_error;
     let has_infill_core = vf.iter().any(|v| *v < 1.0 - 1e-9);
+    let provisional = req.provisional || beads.is_some_and(|b| b.provisional);
+    solution.provisional = provisional;
     solution.trust = level_of(&TrustInput {
-        provisional: req.provisional,
+        provisional,
         tet4: mesh.kind == ElementKind::Tet4,
         relative_energy_error: Some(solution.relative_energy_error),
         peak_relative_error: Some(solution.peak_relative_error),
@@ -499,6 +539,16 @@ fn recover(
         solution
             .notes
             .push("Provisional card, not a measurement.".into());
+    } else if provisional {
+        solution
+            .notes
+            .push("Provisional bead constants, not a measurement.".into());
+    }
+    if req.representation == "sliced" && beads.is_none() {
+        solution.notes.push(
+            "This card has no bead constants, so each cell is a smear of the card at its fraction."
+                .into(),
+        );
     }
     if req.representation == "sliced" {
         solution.notes.push(format!(
