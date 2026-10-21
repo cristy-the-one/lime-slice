@@ -22,6 +22,8 @@ test("a collapsed group stays collapsed across a reload and its header still sho
   await quality.locator("summary").click();
   await expect(quality).not.toHaveAttribute("open");
   await expect(quality.locator(".group-sum")).toBeVisible();
+  // `toggle` fires a task after `open` changes, and that is when the fold is saved: a reload before it loses it.
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("lime-slice-closed-groups") ?? "")).toContain('"quality"');
   await page.reload();
   await expect(page.locator('#left .group[data-group="quality"]')).not.toHaveAttribute("open");
   await expect(page.locator('#left .group[data-group="printer"]')).not.toHaveAttribute("open");
