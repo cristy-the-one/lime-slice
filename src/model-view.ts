@@ -2817,7 +2817,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       dropAspect(parent, current);
       return null;
     }
-    const hex = hidden ? darkenHex(color, 0.35) : color;
+    const hex = hidden ? darkenHex(color, 0.6) : color;
     if (current?.parent === parent) {
       (current.geometry as LineSegmentsGeometry).setPositions(positions);
       if (hidden) current.computeLineDistances();
@@ -2834,7 +2834,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       linewidth: ASPECT_LINE_PX,
       transparent: hidden,
       opacity: 1,
-      depthTest: hidden,
+      depthTest: true,
       depthWrite: false,
       worldUnits: false,
       dashed: hidden,
@@ -2843,7 +2843,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       gapSize: 2,
       toneMapped: false,
     });
-    if (hidden) material.depthFunc = THREE.GreaterEqualDepth;
+    material.depthFunc = hidden ? THREE.GreaterDepth : THREE.LessEqualDepth;
     material.resolution.copy(lineResolution());
     fatLines.push(material);
     const lines = new LineSegments2(geometry, material);
@@ -2994,29 +2994,72 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return (scale((color >> 16) & 255) << 16) | (scale((color >> 8) & 255) << 8) | scale(color & 255);
   }
 
-  /** A lit segment's midpoint, in canvas pixels, so a test can read that pixel's colour. */
+  const depthRay = new THREE.Raycaster();
+  let aspectSampleKey = "";
+
+  /** A line point the solid sits in front of. A point on the surface still counts as seen. */
+  function lineHidden(point: THREE.Vector3): boolean {
+    if (!mesh) return false;
+    const dir = point.clone().sub(camera.position);
+    const dist = dir.length();
+    if (dist < 1e-4) return false;
+    depthRay.set(camera.position, dir.normalize());
+    return depthRay.intersectObject(mesh, false).some((hit) => hit.distance < dist - 0.4);
+  }
+
+  /**
+   * A seen midpoint (`data-aspect-sample`) and a point behind the solid (`data-aspect-hidden`,
+   * `x,y,dx,dy` with a unit screen direction along that edge).
+   */
   function publishAspectSample() {
     const sample = aspectSample;
-    if (!sample || sample.positions.length < 6) {
-      delete canvas.dataset.aspectSample;
-      return;
-    }
-    const positions = sample.positions;
-    const mid = new THREE.Vector3(
-      (positions[0]! + positions[3]!) / 2,
-      (positions[1]! + positions[4]!) / 2,
-      (positions[2]! + positions[5]!) / 2,
-    );
-    if (sample.body) body.localToWorld(mid);
-    const projectedAt = mid.project(camera);
-    if (projectedAt.z < -1 || projectedAt.z > 1) {
-      delete canvas.dataset.aspectSample;
-      return;
-    }
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-    const text = `${Math.round((projectedAt.x * 0.5 + 0.5) * width)},${Math.round((-projectedAt.y * 0.5 + 0.5) * height)}`;
-    if (canvas.dataset.aspectSample !== text) canvas.dataset.aspectSample = text;
+    const key = sample ? `${aspectKey}|${width}|${height}|${camera.matrixWorld.elements.join(",")}` : "";
+    if (key === aspectSampleKey) return;
+    aspectSampleKey = key;
+    if (!sample || sample.positions.length < 6) {
+      delete canvas.dataset.aspectSample;
+      delete canvas.dataset.aspectHidden;
+      return;
+    }
+    let visible: string | null = null;
+    let hidden: string | null = null;
+    const positions = sample.positions;
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const world = new THREE.Vector3();
+    for (let i = 0; i + 5 < positions.length && (!visible || !hidden); i += 6) {
+      a.set(positions[i]!, positions[i + 1]!, positions[i + 2]!);
+      b.set(positions[i + 3]!, positions[i + 4]!, positions[i + 5]!);
+      if (sample.body) {
+        body.localToWorld(a);
+        body.localToWorld(b);
+      }
+      for (const t of [0.5, 0.25, 0.75]) {
+        world.lerpVectors(a, b, t);
+        const mark = world.clone().project(camera);
+        if (mark.z < -1 || mark.z > 1) continue;
+        const x = (mark.x * 0.5 + 0.5) * width;
+        const y = (-mark.y * 0.5 + 0.5) * height;
+        if (x < 1 || y < 1 || x > width - 1 || y > height - 1) continue;
+        const behind = lineHidden(world);
+        if (!behind && !visible) visible = `${Math.round(x)},${Math.round(y)}`;
+        if (behind && !hidden) {
+          const pa = a.clone().project(camera);
+          const pb = b.clone().project(camera);
+          const dx = (pb.x - pa.x) * 0.5 * width;
+          const dy = (-pb.y + pa.y) * 0.5 * height;
+          const len = Math.hypot(dx, dy) || 1;
+          hidden = `${Math.round(x)},${Math.round(y)},${(dx / len).toFixed(3)},${(dy / len).toFixed(3)}`;
+        }
+        if (visible && hidden) break;
+      }
+    }
+    if (visible) canvas.dataset.aspectSample = visible;
+    else delete canvas.dataset.aspectSample;
+    if (hidden) canvas.dataset.aspectHidden = hidden;
+    else delete canvas.dataset.aspectHidden;
   }
 
   function placeAspectLabel() {

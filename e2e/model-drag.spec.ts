@@ -409,6 +409,31 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
     return pick;
   }, sample);
   expect(deltaE(rgb, [143, 206, 106]), `lit pixel ${rgb.join(",")}`).toBeLessThan(10);
+  if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph01-after-axis.png" });
+  const hidden = ((await page.locator("#model").getAttribute("data-aspect-hidden")) ?? "").split(",").map(Number);
+  expect(hidden.length, "a point on the edge behind the solid").toBe(4);
+  const hiddenRgb = await page.evaluate(([hx, hy, hdx, hdy]) => {
+    (window as unknown as { __renderModelFrame?: () => void }).__renderModelFrame?.();
+    const canvas = document.querySelector<HTMLCanvasElement>("#model")!;
+    const gl = canvas.getContext("webgl2")!;
+    const scale = canvas.width / Math.max(1, canvas.clientWidth);
+    const buf = new Uint8Array(4);
+    const read = (px: number, py: number) => {
+      const x = Math.round(px * scale);
+      const y = canvas.height - Math.round(py * scale) - 1;
+      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      return [buf[0]!, buf[1]!, buf[2]!];
+    };
+    const along: number[][] = [];
+    for (let step = -10; step <= 10; step += 2) along.push(read(hx! + hdx! * step, hy! + hdy! * step));
+    return { at: read(hx!, hy!), along };
+  }, hidden);
+  expect(deltaE(hiddenRgb.at, [143, 206, 106]), `hidden pixel ${hiddenRgb.at.join(",")}`).toBeGreaterThan(15);
+  const line = [143, 206, 106].map((channel) => Math.round(channel * 0.6));
+  const onLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) < 40);
+  const offLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) >= 40);
+  expect(onLine.length, "dashed line pixels").toBeGreaterThan(0);
+  expect(offLine.length, "dashed gaps").toBeGreaterThan(0);
   await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph03-after-labels.png" });
   await page.mouse.move(at.x - 300, at.y + 200);
   await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
