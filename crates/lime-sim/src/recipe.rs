@@ -8,9 +8,15 @@
 use serde::{Deserialize, Serialize};
 
 use crate::element::element;
+use crate::error::SimError;
 use crate::mesh::Mesh;
 use crate::skin::SurfaceBands;
 use crate::units::normalize;
+
+/// A modifier or a painted reinforcement is recorded on the recipe. This
+/// version does not smear either one. Option (b) in SR-02: refuse, do not
+/// drop the keys and do not change the wall bands.
+pub const REGIONS_REFUSAL: &str = "Modifier and reinforcement regions are not in this version.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -47,8 +53,23 @@ impl Pattern {
     }
 }
 
+/// A height range or a modifier volume, as the panel records it. Present so
+/// the key is not an unknown field. A non-empty list is refused.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Region {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub walls: Option<u32>,
+    #[serde(default)]
+    pub infill: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Recipe {
     pub walls: u32,
     pub line_width_mm: f64,
@@ -62,6 +83,13 @@ pub struct Recipe {
     pub pattern_factor: f64,
     #[serde(default)]
     pub pattern_measured: bool,
+    /// Height ranges and modifier volumes. Empty is the whole-part smear.
+    #[serde(default)]
+    pub regions: Vec<Region>,
+    /// The raised core after painted reinforcement. Absent, or not above
+    /// `infill`, does not change the smear.
+    #[serde(default)]
+    pub reinforced_infill: f64,
 }
 
 fn three_layers() -> u32 {
@@ -88,11 +116,24 @@ impl Recipe {
             pattern: Pattern::Grid,
             pattern_factor: 1.0,
             pattern_measured: true,
+            regions: Vec::new(),
+            reinforced_infill: 1.0,
         }
     }
 
     pub fn pattern_is_measured(&self) -> bool {
         self.pattern_measured || self.pattern.measured()
+    }
+
+    /// Refuse a modifier or a reinforcement that would change the smear.
+    /// An empty region list and a reinforced infill that does not exceed
+    /// `infill` are the recipe the panel sends when neither is set.
+    pub fn refuse_regions(&self) -> Result<(), SimError> {
+        let raised = self.reinforced_infill > self.infill + 1e-9;
+        if self.regions.is_empty() && !raised {
+            return Ok(());
+        }
+        Err(SimError::new(REGIONS_REFUSAL))
     }
 }
 

@@ -28,6 +28,8 @@ fn recipe(walls: u32, infill: f64, pattern: Pattern) -> Recipe {
         pattern,
         pattern_factor: 1.0,
         pattern_measured: pattern.measured(),
+        regions: Vec::new(),
+        reinforced_infill: infill,
     }
 }
 

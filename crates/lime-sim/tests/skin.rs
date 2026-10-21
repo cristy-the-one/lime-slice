@@ -20,6 +20,8 @@ fn recipe() -> Recipe {
         pattern: Pattern::Grid,
         pattern_factor: 1.0,
         pattern_measured: true,
+        regions: Vec::new(),
+        reinforced_infill: CORE,
     }
 }
 

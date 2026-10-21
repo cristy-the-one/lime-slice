@@ -16,6 +16,7 @@ use crate::solve::{Csc, EigenSolver, ModalStub};
 use crate::units::{normalize, GRAVITY_MM_S2};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Card {
     pub id: String,
     pub polymer: String,
@@ -107,7 +108,7 @@ fn card(
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Step {
     pub factor: f64,
     #[serde(default = "one_iter")]
@@ -132,7 +133,7 @@ fn default_steps() -> Vec<Step> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum StudyHold {
     Fixed {
         node: usize,
@@ -150,7 +151,7 @@ pub enum StudyHold {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum StudyLoad {
     Force {
         node: usize,
@@ -163,7 +164,7 @@ pub enum StudyLoad {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Study {
     pub format: String,
     #[serde(default = "default_true")]
@@ -323,6 +324,7 @@ impl Study {
 }
 
 pub fn validate_study(study: &Study) -> Result<(), SimError> {
+    study.recipe.refuse_regions()?;
     if study.format != "lime-sim-1" {
         return Err(SimError::new(format!(
             "{} is not in this version.",
@@ -365,6 +367,7 @@ pub fn validate_study(study: &Study) -> Result<(), SimError> {
 }
 
 pub fn validate_request_fields(req: &Request) -> Result<(), SimError> {
+    req.recipe.refuse_regions()?;
     if req.solver != "faer-ldlt" {
         return Err(SimError::new(format!(
             "{} is not in this version.",

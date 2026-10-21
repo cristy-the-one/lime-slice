@@ -1,8 +1,10 @@
 /**
  * The numbers the solver smears. Walls, infill, and the pattern come from the
  * strategy, then from the object, the same way a slice already resolves them.
- * A height range or a modifier wins on a field it sets, inside that region.
- * Reinforcement can raise the infill in its region and cannot lower it.
+ * A height range or a modifier is recorded on the recipe. It does not
+ * replace the whole-part smear: the solver refuses a non-empty region
+ * list, and a reinforced infill above the object's, until a later version
+ * smears them. Reinforcement can raise the recorded infill and cannot lower it.
  * No DOM. The slicer's toughness heuristic on patterns is not read.
  */
 import { clampWalls, type OverrideDocument, type SettingOverride } from "../overrides.ts";
@@ -72,6 +74,19 @@ function regionFields(baseWalls: number, baseInfill: number, override: SettingOv
   if (out.walls === baseWalls) delete out.walls;
   if (out.infill !== undefined && Math.abs(out.infill - baseInfill) < 1e-9) delete out.infill;
   return out;
+}
+
+/** The sentence the solver returns when a region or a raised reinforcement is set. */
+export const REGIONS_REFUSAL = "Modifier and reinforcement regions are not in this version.";
+
+/**
+ * What a solve of this recipe would refuse. An empty region list and a
+ * reinforced infill that does not exceed `infill` are solved. Anything else
+ * is the sentence, never a smear that drops the keys.
+ */
+export function recipeRefusal(recipe: SimRecipe): string | null {
+  if (recipe.regions.length > 0 || recipe.reinforcedInfill > recipe.infill + 1e-9) return REGIONS_REFUSAL;
+  return null;
 }
 
 /** One recipe for a study. The solver receives these numbers and does not plan a bead. */

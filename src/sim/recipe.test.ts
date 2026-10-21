@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { emptyOverrides, addRange, addVolume, defaultVolume } from "../overrides.ts";
 import { builtinLibrary, cardsOf, ensureBuiltins, parseLibrary, saveMaterialCard, serializeLibrary } from "../ui/machine-library.ts";
 import { provisionalCards } from "./cards.ts";
-import { simRecipe } from "./recipe.ts";
+import { recipeRefusal, REGIONS_REFUSAL, simRecipe } from "./recipe.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -52,6 +52,8 @@ check("the smear keeps the object's walls and infill", ranged.walls === 2 && ran
 check("a range wins on walls inside its band", ranged.regions.some((region) => region.id === "range-1" && region.walls === 6 && region.infill === undefined));
 check("a modifier wins on infill inside its volume", ranged.regions.some((region) => region.id === "volume-1" && region.infill === 0.55));
 check("reinforcement raises and does not lower", ranged.reinforcedInfill === 0.9);
+check("a modifier region is refused, not solved as if it were absent", recipeRefusal(ranged) === REGIONS_REFUSAL);
+check("a recipe with no region and no raised reinforcement is solved", recipeRefusal(object) === null);
 
 const root = join(dirname(fileURLToPath(import.meta.url)));
 for (const name of readdirSync(root)) {
