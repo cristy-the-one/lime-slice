@@ -41,7 +41,7 @@ impl Pattern {
         match self {
             Self::Grid => None,
             Self::Lines => Some(
-                "Lines infill is modelled as a grid of the same density. The factor has not been measured.",
+                "Lines infill is modelled as a grid of the same density. Its strength along each layer's direction is not modelled.",
             ),
             Self::Gyroid => Some(
                 "Gyroid infill is modelled as a grid of the same density. The factor has not been measured.",
