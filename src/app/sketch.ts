@@ -6,7 +6,14 @@
  * --- F3. Loft (Shift+L) and sweep (W) are taken only while a sketch is open.
  * Undo here is the sketch's own stack (`docs/plan-gui-cad-modeling.md` §4.3).
  */
-import { Circle, Hexagon, PenLine, Pencil, Radius, RectangleHorizontal, Spline, Square, createElement, type IconNode } from "lucide";
+import { Circle, Hexagon, PenLine, Pencil, RectangleHorizontal, Spline, Square, createElement, type IconNode } from "lucide";
+
+/** A quarter-arc in the Lucide style, so sketch Arc is not the fillet radius. */
+const ARC_ICON: IconNode = [
+  ["path", { d: "M19 19a12 12 0 0 0-12-12" }],
+  ["path", { d: "M19 19h-4" }],
+  ["path", { d: "M19 19v-4" }],
+];
 import { setSketchKeyHandler } from "./sketch-keys";
 import { chordGlyphs, keyOf, tipWithShortcut } from "../ui/commands";
 import { refreshModelRailTips } from "../ui/model-chrome";
@@ -1525,7 +1532,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       { tool: "line", label: "Line", id: "sketch-line", icon: PenLine },
       { tool: "rectangle", label: "Rectangle", id: "sketch-rect", icon: Square },
       { tool: "circle", label: "Circle", id: "sketch-circle", icon: Circle },
-      { tool: "arc", label: "Arc", id: "sketch-arc", icon: Radius },
+      { tool: "arc", label: "Arc", id: "sketch-arc", icon: ARC_ICON },
       { tool: "spline", label: "Spline", id: "sketch-spline", icon: Spline },
       { tool: "polygon", label: "Polygon", id: "sketch-polygon", icon: Hexagon },
       { tool: "slot", label: "Slot", id: "sketch-slot", icon: RectangleHorizontal },
@@ -1536,12 +1543,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   function editTools(): Node[] {
     return [
       namedTool("select", "Select", "Select. Click a line or a point."),
-      namedTool("trim", "Trim", "Trim (T)"),
-      namedTool("offset", "Offset", "Offset (F)"),
+      namedTool("trim", "Trim", tipWithShortcut("Trim", keyOf("sketch-trim"))),
+      namedTool("offset", "Offset", tipWithShortcut("Offset", keyOf("sketch-offset"))),
       constrainMenu(),
-      namedTool("construction", "Construction", "Construction (X)"),
-      namedTool("fillet", "Fillet corner", "Fillet corner (G)"),
-      namedTool("use", "Use", "Use (U). Click a faint edge to copy it."),
+      namedTool("construction", "Construction", tipWithShortcut("Construction", keyOf("sketch-construction"))),
+      namedTool("fillet", "Fillet corner", tipWithShortcut("Fillet corner", keyOf("sketch-fillet"))),
+      namedTool("use", "Use", tipWithShortcut("Use. Click a faint edge to copy it.", keyOf("sketch-use"))),
     ];
   }
 

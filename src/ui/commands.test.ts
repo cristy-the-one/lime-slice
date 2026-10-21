@@ -1,4 +1,4 @@
-import { COMMANDS, fires, fuzzyScore, helpGroups, paletteCommands, rankCommands, resolveKey, shortcutOf, tipWithShortcut, type KeyContext, type KeyEventLike } from "./commands.ts";
+import { COMMANDS, fires, fuzzyScore, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, resolveKey, shortcutOf, tipWithShortcut, type KeyContext, type KeyEventLike } from "./commands.ts";
 
 let failed = 0;
 
@@ -348,6 +348,11 @@ eq("T, Y and I move the Model camera", ["T", "Y", "I"].map((chord) => press(chor
 eq("T in a sketch still trims", press("T", sketchCtx), "sketch-trim");
 eq("Model scale is labelled Scale solid", COMMANDS.find((command) => command.id === "model-scale")?.label, "Scale solid");
 eq("export is labelled Export G-code", COMMANDS.find((command) => command.id === "export")?.label, "Export G-code");
+eq(
+  "Shift+click names Model and Paint",
+  MOUSE_HINTS.filter((hint) => hint.gesture === "Shift+click").map((hint) => hint.label),
+  ["Model: add or remove a face or edge", "Paint: a straight line from the last dab"],
+);
 
 if (failed) {
   console.error(`${failed} failed`);

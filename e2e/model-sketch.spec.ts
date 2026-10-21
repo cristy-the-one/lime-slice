@@ -129,6 +129,14 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   for (const label of ["Select", "Trim", "Offset", "Fillet corner", "Construction", "Use"]) {
     await expect(page.getByRole("button", { name: label, exact: true })).toBeVisible();
   }
+  await expect(page.locator('[data-sketch-tool="trim"]')).toHaveAttribute("data-tip", "Trim (T)");
+  await expect(page.locator('[data-sketch-tool="offset"]')).toHaveAttribute("data-tip", "Offset (F)");
+  await expect(page.locator('[data-sketch-tool="construction"]')).toHaveAttribute("data-tip", "Construction (X)");
+  await expect(page.locator('[data-sketch-tool="fillet"]')).toHaveAttribute("data-tip", "Fillet corner (G)");
+  await expect(page.locator('[data-sketch-tool="use"]')).toHaveAttribute("data-tip", /Use \(U\)/);
+  const arcD = await page.locator('[data-sketch-tool="arc"] path').first().getAttribute("d");
+  const filletD = await page.locator("#modelToolFillet path").first().getAttribute("d");
+  expect(arcD).not.toBe(filletD);
   if (process.env.LIME_SHOTS) await page.locator("#sketchCards").screenshot({ path: `${process.env.LIME_SHOTS}/ux03-after-sketch-card.png` });
   await page.getByRole("button", { name: "Circle", exact: true }).click();
   await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");

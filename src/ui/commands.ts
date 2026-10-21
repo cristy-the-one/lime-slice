@@ -180,14 +180,14 @@ export const COMMANDS: CommandSpec[] = [
 
 /** Gestures the sheet lists beside the keys. The pointer code lives in the views. */
 export const MOUSE_HINTS: { gesture: string; label: string }[] = [
-  { gesture: "Shift+click", label: "Add or remove a face or edge in Model" },
+  { gesture: "Shift+click", label: "Model: add or remove a face or edge" },
   // --- P1 ---
   { gesture: "Drag a face", label: "Push or pull. Alt adds or cuts on that face only." },
   { gesture: "Click empty", label: "Clear the Model selection" },
   { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°" },
   { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring" },
   { gesture: "Alt/Shift + wheel", label: "Resize the paint brush" },
-  { gesture: "Shift+click", label: "Paint a straight line from the last dab" },
+  { gesture: "Shift+click", label: "Paint: a straight line from the last dab" },
   { gesture: "Drag the plane", label: "Move the By region split" },
   { gesture: "2D: drag", label: "Pan the layer" },
   { gesture: "2D: wheel", label: "Zoom at the cursor" },
