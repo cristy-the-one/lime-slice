@@ -80,6 +80,8 @@ pub struct Solution {
     pub peak_relative_error: f64,
     /// How far the recovered peak von Mises is from the Gauss-point peak, over the larger of the two.
     pub peak_gap: f64,
+    /// The reported peak sits where a fixed hold meets the free surface, where the exact stress has no finite limit.
+    pub peak_at_hold: bool,
     pub residual: f64,
     pub mass_g: f64,
     pub solid_mass_g: f64,
@@ -108,6 +110,7 @@ pub struct TrustReport {
     pub relative_energy_error: f64,
     pub peak_relative_error: f64,
     pub peak_gap: f64,
+    pub peak_at_hold: bool,
     pub residual: f64,
     pub element: String,
     pub h_mm: f64,
@@ -152,6 +155,7 @@ impl Solution {
                 relative_energy_error: self.relative_energy_error,
                 peak_relative_error: self.peak_relative_error,
                 peak_gap: self.peak_gap,
+                peak_at_hold: self.peak_at_hold,
                 residual: self.residual,
                 element: self.element.clone(),
                 h_mm: self.h_mm,

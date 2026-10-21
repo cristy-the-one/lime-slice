@@ -165,6 +165,15 @@ The beam's root is a clamped corner, a real singularity, so its peak error falls
 honest word there. The tests now assert each row's trust word, that it never gets worse as the beam refines, and
 that a Kirsch row whose flank stress is more than 5% below the finest row's is not `converged`.
 
+Follow-up, after the corrected cantilever reference: the beam's root shear goes through one pinned node, a point
+support, and its peak error rose with refinement (0.022, 0.034, 0.074). Trust is now judged away from **hold edges**:
+nodes held in a direction that runs along every boundary face through them (a fixed face's perimeter, a pinned point,
+a pinned line), on a face with a corner not held that way. Rollers and symmetry planes hold across their faces and
+are never marked, so the plate with a hole and Lamé are unchanged. The exclusion reaches the larger of 1.5 elements
+and a fifth of the part's thinnest extent: near a singularity the error a fixed number of elements away doesn't fall,
+only the error at a fixed distance does. Peaks are still reported in full, with `peakAtHold` and a note when they sit
+there. The cantilever's peak error is now 0.022, 0.0068 and 0.0029, `converged` at h, h/2 and h/4.
+
 - **Seen**:
   - The trust level comes from the global ZZ relative energy error (`estimate.rs`), with nodal stress recovered as a
     plain average of the Gauss samples around each node.

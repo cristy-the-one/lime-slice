@@ -355,12 +355,26 @@ fn recover(
     // A peak is never below the Gauss points': the recovered field can still be smoother than them on a coarse mesh.
     let recovered_peak = max_vm;
     let mut gauss_peak: f64 = 0.0;
+    // Trust is judged at the worst point away from the edge of a fixed hold, where the stress has no finite limit.
+    let reach = estimate::hold_reach(mesh, h_mm);
+    let at_hold = estimate::held_edge_elements(mesh, &req.holds, reach);
+    let mut judged_vm = -1.0;
+    let mut judged_vm_at = None;
+    let mut judged_sf = f64::INFINITY;
+    let mut judged_sf_at = None;
+    let mut peak_in_hold = false;
     for sample in &gauss {
         let vm = von_mises(&sample.stress);
+        let skip = at_hold.get(sample.element).copied().unwrap_or(false);
         gauss_peak = gauss_peak.max(vm);
         if vm > max_vm {
             max_vm = vm;
             max_vm_at = sample.xyz;
+            peak_in_hold = skip;
+        }
+        if !skip && vm > judged_vm {
+            judged_vm = vm;
+            judged_vm_at = Some(sample.xyz);
         }
         let ctx = MaterialContext {
             build_axis: axis,
@@ -373,7 +387,16 @@ fn recover(
             min_sf = sf;
             min_sf_at = Some(sample.xyz);
         }
+        if !skip && sf.is_finite() && sf < judged_sf {
+            judged_sf = sf;
+            judged_sf_at = Some(sample.xyz);
+        }
     }
+    // With nothing near a gripping hold, trust is judged at the reported peaks themselves. With every element near
+    // one, as on a very coarse mesh, it is judged there too.
+    let any_hold_edge = at_hold.iter().any(|&s| s);
+    let judged_vm_at = if any_hold_edge { judged_vm_at.unwrap_or(max_vm_at) } else { max_vm_at };
+    let judged_sf_at = if any_hold_edge { judged_sf_at.or(min_sf_at) } else { min_sf_at };
     let peak_gap = if max_vm > 1e-30 {
         (recovered_peak - gauss_peak).abs() / recovered_peak.max(gauss_peak)
     } else {
@@ -403,6 +426,7 @@ fn recover(
         relative_energy_error: 0.0,
         peak_relative_error: 0.0,
         peak_gap,
+        peak_at_hold: peak_in_hold,
         residual,
         mass_g: mass_g(printed_volume, density),
         solid_mass_g: mass_g(solid_volume, density),
@@ -427,18 +451,21 @@ fn recover(
     solution.relative_energy_error = estimator.relative(&solution.element_error);
     // The elements within two edge lengths of the peak stress, and of the lowest safety factor when that is a real number.
     let radius = 2.0 * h_mm;
+    let skip: Vec<bool> = if at_hold.iter().all(|&s| s) { vec![false; at_hold.len()] } else { at_hold };
     let mut peak_error = estimate::local_relative(
         &solution,
         &solution.element_error,
-        solution.max_von_mises_at,
+        judged_vm_at,
         radius,
+        &skip,
     );
-    if let Some(at) = solution.min_safety_at {
+    if let Some(at) = judged_sf_at {
         peak_error = peak_error.max(estimate::local_relative(
             &solution,
             &solution.element_error,
             at,
             radius,
+            &skip,
         ));
     }
     solution.peak_relative_error = peak_error;
@@ -454,6 +481,12 @@ fn recover(
         has_infill_core,
         notes: &[],
     });
+    if solution.peak_at_hold {
+        solution.notes.push(
+            "The highest stress is where a fixed face meets a free face. A rigid hold makes the stress there grow as the mesh is refined, so the trust is judged away from it."
+                .into(),
+        );
+    }
     if req.provisional {
         solution
             .notes
