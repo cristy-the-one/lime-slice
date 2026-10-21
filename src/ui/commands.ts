@@ -16,7 +16,8 @@ export type KeyScope =
   | "sketch"
   | "sketch-feature"
   | "sketch-draw"
-  | "sketch-loft";
+  | "sketch-loft"
+  | "workspace";
 
 export type StageName = "prepare" | "preview" | "gcode" | "model";
 
@@ -58,10 +59,10 @@ export const COMMANDS: CommandSpec[] = [
   { id: "cancel-slice", label: "Cancel slice", group: "Slice", keys: ["Esc"], when: "running", typing: true, target: "#cancel", keywords: "stop abort" },
   { id: "export", label: "Export G-code", group: "Slice", keys: ["Ctrl+E"], target: "#export", keywords: "save download" },
   { id: "send-printer", label: "Send to printer", group: "Slice", keywords: "prusa link upload gcode host" },
-  { id: "tab-prepare", label: "Prepare", group: "View", keys: ["1"], target: "#tabPrepare", keywords: "tab mesh stage" },
-  { id: "tab-preview", label: "Preview", group: "View", keys: ["2"], target: "#tabPreview", keywords: "tab toolpath stage" },
-  { id: "tab-gcode", label: "G-code", group: "View", keys: ["3"], target: "#tabGcode", keywords: "tab gcode stage" },
-  { id: "tab-model", label: "Model", group: "View", keys: ["4"], target: "#tabModel", keywords: "tab solid face edge measure" },
+  { id: "tab-prepare", label: "Prepare", group: "View", keys: ["1"], when: "workspace", target: "#tabPrepare", keywords: "tab mesh stage" },
+  { id: "tab-preview", label: "Preview", group: "View", keys: ["2"], when: "workspace", target: "#tabPreview", keywords: "tab toolpath stage" },
+  { id: "tab-gcode", label: "G-code", group: "View", keys: ["3"], when: "workspace", target: "#tabGcode", keywords: "tab gcode stage" },
+  { id: "tab-model", label: "Model", group: "View", keys: ["4"], when: "workspace", target: "#tabModel", keywords: "tab solid face edge measure" },
   { id: "view-cycle", label: "Cycle 2D, split, 3D", group: "View", keys: ["V"], when: "preview", keywords: "preview mode flat solid" },
   { id: "view-2d", label: "2D preview", group: "View", target: '[data-mode="flat"]', keywords: "flat" },
   { id: "view-split", label: "Split preview", group: "View", target: '[data-mode="split"]' },
@@ -129,6 +130,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "sketch-delete", label: "Delete", group: "Sketch", keys: ["Del", "Backspace"], when: "sketch", show: "help" },
   { id: "sketch-undo", label: "Undo sketch", group: "Sketch", keys: ["Ctrl+Z"], when: "sketch", show: "help" },
   { id: "sketch-redo", label: "Redo sketch", group: "Sketch", keys: ["Ctrl+Y", "Ctrl+Shift+Z"], when: "sketch", show: "help" },
+  { id: "sketch-size", label: "Type a size", group: "Sketch", keys: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "-", "("], when: "sketch", show: "help" },
   { id: "layer-up", label: "Layer up", group: "Layers", keys: ["↑", "]"], when: "preview", repeat: true, show: "help" },
   { id: "layer-down", label: "Layer down", group: "Layers", keys: ["↓", "["], when: "preview", repeat: true, show: "help" },
   { id: "layer-up-10", label: "Ten layers up", group: "Layers", keys: ["PgUp"], when: "preview", repeat: true, show: "help" },
@@ -230,6 +232,7 @@ const SCOPES: Record<KeyScope, (c: KeyContext) => boolean> = {
   "sketch-feature": (c) => sketching(c) && c.sketchFeature,
   "sketch-draw": (c) => sketching(c) && !c.sketchLoft,
   "sketch-loft": (c) => sketching(c) && c.sketchLoft,
+  workspace: (c) => !c.helpOpen && !c.sketchOpen,
 };
 
 export type KeyEventLike = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey" | "repeat">;

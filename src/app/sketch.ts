@@ -2219,6 +2219,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (outside && !outside.closest(".interact-hud, #sketchCards, .sketch-dims")) return false;
       return true;
     }
+    // A digit with no size box is swallowed, so 2 cannot switch to Preview. The box itself writes the character.
+    if (id === "sketch-size") return !hud.shown;
     if (editor.phase === "choosing") {
       if (id !== "sketch-escape") return true;
       const next = sketchKey(editor, "Escape", { ctrl: false, meta: false, shift: false });

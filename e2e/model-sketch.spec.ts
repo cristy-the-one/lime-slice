@@ -469,3 +469,27 @@ test("the shortcut sheet lists Loft beside Shift+L while a sketch is open", asyn
   const loft = sketch.locator("li").filter({ has: page.locator("span", { hasText: /^Loft$/ }) });
   await expect(loft.locator("kbd")).toHaveText("Shift+L");
 });
+
+test("typing a length mid-sketch stays in Model", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "line");
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await expect(hud).toBeVisible();
+  await page.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  });
+  await page.keyboard.press("2");
+  await page.keyboard.press("5");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#tabModel")).toHaveAttribute("aria-selected", "true");
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "1");
+  await expect(canvas).toHaveAttribute("data-sketch-measure", /^25\.000,/);
+});

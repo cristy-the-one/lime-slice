@@ -338,6 +338,10 @@ eq("Ctrl+Z undoes the sketch", press("Ctrl+Z", sketchCtx), "sketch-undo");
 eq("Ctrl+Z in a sketch field stays in the field", press("Ctrl+Z", { ...sketchCtx, typing: true }), null);
 eq("Esc cancels the sketch", press("Esc", sketchCtx), "sketch-escape");
 eq("Esc still cancels a running slice while sketching", press("Esc", { ...sketchCtx, running: true }), "cancel-slice");
+eq("2 types a size while sketching", press("2", sketchCtx), "sketch-size");
+eq("2 in a sketch field stays text", press("2", { ...sketchCtx, typing: true }), null);
+eq("2 still opens Preview outside a sketch", press("2"), "tab-preview");
+eq("a sketch digit does not switch stage", press("1", sketchCtx), "sketch-size");
 
 if (failed) {
   console.error(`${failed} failed`);
