@@ -522,20 +522,20 @@ export function redoSketch(editor: SketchEditor): SketchEditor {
 
 /** The sentence for the readout, including the snap the pointer is on. */
 export function sketchReadout(editor: SketchEditor): string {
-  if (editor.phase === "choosing") return "Click a flat face, an origin plane, or the workplane. Esc cancels.";
-  if (editor.phase === "pinned") return "Sketch kept. A feature can use it. Discard drops it.";
+  if (editor.phase === "choosing") return "Click a flat face, an origin plane, or the workplane.";
+  if (editor.phase === "pinned") return "Sketch kept. A feature can use it.";
   if (editor.phase !== "editing") return "";
   const sketch = activeSketch(editor);
   const snap = editor.snap && editor.snap.kind !== "none" ? snapHint(editor.snap.kind) : "";
   const tail = snap ? ` ${snap}.` : "";
   if (editor.esc === 1 && !editor.chain && !editor.rect && !editor.draw.gesture) return `Esc again finishes the sketch.${tail}`;
-  if (editor.lookAround) return `Look around is on. O locks the view for drawing.${tail}`;
+  if (editor.lookAround) return `Look around is on. O locks the view.${tail}`;
   const refused = editor.draw.note ? ` ${editor.draw.note}` : "";
   if (editor.tool === "line") {
-    return `Line. Click each point. Double-click or Esc ends it. Click the start point to close. Type a length and an angle.${refused}${tail}`;
+    return `Line. Click points. Type a length and an angle.${refused}${tail}`;
   }
   if (editor.tool === "rectangle") {
-    return `Rectangle. Click two corners. Hold Ctrl to start from the centre. Type a width and a height.${refused}${tail}`;
+    return `Rectangle. Click two corners.${refused}${tail}`;
   }
   if (isDrawTool(editor.tool)) {
     const note = editor.draw.note ? ` ${editor.draw.note}` : "";
@@ -544,7 +544,7 @@ export function sketchReadout(editor: SketchEditor): string {
   // --- S4 ---
   if (isConstrainTool(editor.tool)) return `${constrainReadout(editor.tool, editor.constrain.note)}${tail}${sketch ? constraintClause(sketch) : ""}`;
   const note = editor.constrain.note ? ` ${editor.constrain.note}` : "";
-  return `Select. Click a line or a point. Drag a point to move it. Drag empty space to box-select. L line, R rectangle.${note}${tail}${sketch ? constraintClause(sketch) : ""}`;
+  return `Select. Click a line or a point.${note}${tail}${sketch ? constraintClause(sketch) : ""}`;
 }
 
 export function rubber(editor: SketchEditor): Pt[] | null {

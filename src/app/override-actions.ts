@@ -22,7 +22,9 @@ import {
   type HeightRange,
   type ModifierVolume,
   type SettingOverride,
+  volumeSizeStored,
   type VolumeKind,
+  type VolumeSizeField,
 } from "../overrides";
 
 export function addHeightRange() {
@@ -136,7 +138,7 @@ function applyVolumeField(volume: ModifierVolume, field: string, raw: string): M
     const value = Number(raw);
     if (!Number.isFinite(value)) return volume;
     const next = { ...volume, [field]: value };
-    if (field === "sx" || field === "sy" || field === "sz") next[field] = Math.max(0.2, value);
+    if (field === "sx" || field === "sy" || field === "sz") next[field] = volumeSizeStored(volume.kind, field as VolumeSizeField, value);
     return next;
   }
   return { ...volume, override: applyOverride(volume.override, field, raw) };

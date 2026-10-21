@@ -286,6 +286,7 @@ export function syncModelPosition(fields: PlaceFields | null, atFile: boolean) {
     open.setAttribute("aria-label", `Position: ${text}. Opens Place.`);
     open.dataset.tip = `Where this object sits in model space: ${text}. Click to open Place.`;
   }
+  document.querySelector("#modelPosition")?.classList.toggle("is-file", atFile && !!fields);
   const reset = document.querySelector<HTMLElement>("#modelPositionReset");
   if (!reset || reset.hidden === atFile) return;
   // Reset hides once the pose is reset: focus stays in the row rather than drop to the page.
@@ -562,7 +563,7 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
     const chip = document.createElement("span");
     chip.className = "mh-plate";
     chip.textContent = "Plate";
-    chip.dataset.tip = "The plate shows this step until you leave Model.";
+    chip.dataset.tip = "This step is what the plate slices.";
     edit.before(chip);
   }
 }

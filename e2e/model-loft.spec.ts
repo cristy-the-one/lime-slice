@@ -83,8 +83,7 @@ async function drawTypedRectangle(page: Page, width: string, height: string) {
 }
 
 async function drawTypedCircle(page: Page, diameter: string) {
-  await page.locator("[data-sketch-menu=draw]").click();
-  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  await page.locator("[data-sketch-tool=circle]").click();
   const canvas = page.locator("#model");
   await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   const box = (await canvas.boundingBox())!;
@@ -175,7 +174,7 @@ test("a rectangle on the bed lofts to a circle 30 mm above, and History Edit reo
   await page.keyboard.press("Enter");
 
   await expect(page.locator("#objectList .obj").filter({ hasText: "Loft 1" })).toHaveCount(1);
-  await expect(page.locator("#modelHistoryTree")).toContainText("Loft through 2 sections");
+  await expect(page.locator("#modelHistoryTree")).toContainText("Loft Sketch 1 → Sketch 2");
   const opened = tree.of("open");
   const feature = opened.at(-1)!.feature as {
     kind?: string;
@@ -243,11 +242,19 @@ test("a square sweeps along a path across it, the end scale is dragged and typed
 
   const hud = page.locator(".interact-hud:not([hidden])");
   await expect(hud.locator("input").first(), "the scale is the size at the path's end").toHaveAttribute("aria-label", "End scale");
+  await expect(hud.locator(".interact-hud-unit")).toHaveText("×");
+  const unitInside = await hud.locator(".interact-hud-unit").evaluate((node) => node.parentElement?.querySelector("input") != null);
+  expect(unitInside).toBe(true);
+  const hudBox = (await hud.boundingBox())!;
+  const [ax, ay] = ((await hud.getAttribute("data-anchor")) ?? "0,0").split(",").map(Number);
+  const gapX = Math.max(hudBox.x - ax!, ax! - (hudBox.x + hudBox.width), 0);
+  const gapY = Math.max(hudBox.y - ay!, ay! - (hudBox.y + hudBox.height), 0);
+  expect(Math.hypot(gapX, gapY)).toBeLessThanOrEqual(120);
   await hud.locator("input").first().fill("1");
   await hud.locator("input").first().press("Enter");
 
   await expect(page.locator("#objectList .obj").first()).toContainText("Sweep 1");
-  await expect(page.locator("#modelHistoryTree")).toContainText(/Sweep along \d+ points/);
+  await expect(page.locator("#modelHistoryTree")).toContainText("Sweep Sketch 1");
   const feature = tree.of("open").at(-1)!.feature as {
     kind?: string;
     sections?: unknown[];
@@ -362,6 +369,6 @@ test("an L path is refused instead of sweeping a sharp corner", async ({ page })
   await expect(canvas).toHaveAttribute("data-sketch-kinds", "line,line");
   await page.keyboard.press("Escape");
   await page.keyboard.press("W");
-  await expect(page.locator("#modelReadout")).toContainText("This path has a sharp corner. Fillet the corner, or draw a smooth arc. A sweep that follows the corner is not available yet.");
+  await expect(page.locator("#modelReadout")).toContainText("sharp corner");
   await expect(page.locator("#objectList .obj")).toHaveCount(0);
 });

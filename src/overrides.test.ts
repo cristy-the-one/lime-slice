@@ -10,6 +10,9 @@ import {
   projectOverrides,
   scaleVolume,
   sliceOverrideFields,
+  volumeSizeAxis,
+  volumeSizeShown,
+  volumeSizeStored,
   type OverrideDocument,
 } from "./overrides.ts";
 
@@ -82,6 +85,18 @@ eq("move keeps size and steps x", { x: moved.x, sx: moved.sx, y: moved.y }, { x:
 const scaled = scaleVolume(moved, "z", -100);
 eq("scale does not collapse the axis", scaled.sz, 0.2);
 eq("scale leaves the center", scaled.z, moved.z);
+
+eq("a box names full extents", ["sx", "sy", "sz"].map((field) => volumeSizeAxis("box", field as "sx").label), ["Width X", "Depth Y", "Height Z"]);
+eq("a box shows the stored extent", volumeSizeShown("box", "sx", 30), 30);
+eq("a cylinder names radii and a height", ["sx", "sy", "sz"].map((field) => volumeSizeAxis("cylinder", field as "sx").label), ["Radius X", "Radius Y", "Height Z"]);
+eq("a cylinder radius is half the stored size", volumeSizeShown("cylinder", "sx", 24), 12);
+eq("a typed cylinder radius stores the full size", volumeSizeStored("cylinder", "sx", 12), 24);
+eq("a cylinder height stays a full extent", volumeSizeStored("cylinder", "sz", 24), 24);
+eq("a sphere names three radii", ["sx", "sy", "sz"].map((field) => volumeSizeAxis("sphere", field as "sx").label), ["Radius X", "Radius Y", "Radius Z"]);
+eq("a sphere radius is half the stored size", volumeSizeShown("sphere", "sy", 24), 12);
+eq("a typed radius cannot store under 0.2 mm full size", volumeSizeStored("sphere", "sz", 0.01), 0.2);
+const cylinder = defaultVolume("cylinder", 220, 220, "volume-c");
+eq("the slice still sends a cylinder's full size", sliceOverrideFields(addVolume(empty, cylinder)).modifierVolumes?.[0]?.size, [cylinder.sx, cylinder.sy, cylinder.sz]);
 
 const band = bandFractions(0, 4, 0, 20);
 eq("a low band sits at the bottom of the slider", band.top + band.height, 1);

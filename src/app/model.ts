@@ -572,6 +572,7 @@ export function bindModelView() {
     rebuild() {
       void rebuildFromParameters();
     },
+    projectId: () => session.projectTitle?.trim() || "",
   });
   noteParametersBuilt();
   // --- E3. Inspect, the right dock in Model. ---
@@ -4851,6 +4852,19 @@ function paintContextBar() {
   }
   if (!fromPick) {
     if (picks.length === 0) hideContextBar();
+    else if (document.querySelector("#modelBar")?.getAttribute("data-tool")) {
+      const restored = contextKind(
+        picks,
+        solid.faces.map((face) => ({ index: face.id, ...(face.surface ? { surface: face.surface } : {}) })),
+      );
+      const box = document.querySelector("#model")?.getBoundingClientRect();
+      if (restored) showContextBar({
+        kind: restored,
+        picks,
+        pointer: box ? { x: box.left + box.width / 2, y: box.top + 28 } : { x: 28, y: 28 },
+        anchor: contextAnchor(solid),
+      });
+    }
     return;
   }
   const pointer = contextClick;

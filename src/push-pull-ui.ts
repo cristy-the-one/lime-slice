@@ -115,6 +115,7 @@ export interface PullController {
 export function mountPull(view: ModelView, hooks: PullHooks): PullController {
   const parent = document.querySelector<HTMLElement>("#modelBody") ?? document.body;
   const hud = mountHud(parent);
+  view.watchFocus(hud.element);
   let hoverFace: number | null = null;
   let hoverLocal: Vec3 | null = null;
   let hoverTriangle: number | null = null;

@@ -62,8 +62,7 @@ async function rectangleAt(page: Page, at: { x: number; y: number }, width: stri
 }
 
 async function circleAt(page: Page, at: { x: number; y: number }, diameter: string) {
-  await page.locator("[data-sketch-menu=draw]").click();
-  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  await page.locator("[data-sketch-tool=circle]").click();
   await page.mouse.click(at.x, at.y);
   await typed(page, [diameter]);
 }
@@ -90,7 +89,7 @@ test("a rectangle extrudes on the bed, a circle cuts it from below, and an edit 
   await circleAt(page, { x: centre.x + 4, y: centre.y - 4 }, "4");
   await page.keyboard.press("E");
   await expect(canvas).toHaveAttribute("data-extrude", "aim");
-  for (let turn = 0; turn < 4 && (await canvas.getAttribute("data-extrude-mode")) !== "cut"; turn += 1) await page.locator("[data-sketch-mode]").click();
+  await page.locator("[data-sketch-mode=cut]").click();
   await expect(canvas).toHaveAttribute("data-extrude-mode", "cut");
   await typed(page, ["5"]);
   await expect.poll(() => volume(page), { timeout: 60_000 }).toBeCloseTo(2000 - Math.PI * 4 * 5, 0);
@@ -101,7 +100,7 @@ test("a rectangle extrudes on the bed, a circle cuts it from below, and an edit 
   await rows.first().locator(".mh-edit").click();
   await expect(canvas).toHaveAttribute("data-extrude", "aim");
   await typed(page, ["12"]);
-  await expect(page.locator('#modelHistoryTree .mh-row[aria-selected="true"]')).toContainText("Cut");
+  await expect(page.locator('#modelHistoryTree .mh-row[aria-selected="true"]')).toContainText("5 mm, cut");
   await expect.poll(() => volume(page), { timeout: 60_000 }).toBeCloseTo(2400 - Math.PI * 4 * 5, 0);
   await expect(page.locator("#modelRedo")).toBeDisabled();
 });
@@ -174,8 +173,7 @@ async function closedSpline(page: Page) {
   const canvas = page.locator("#model");
   const box = (await canvas.boundingBox())!;
   const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  await page.locator("[data-sketch-menu=draw]").click();
-  await page.locator(".sketch-menu-list [data-sketch-tool=spline]").click();
+  await page.locator("[data-sketch-tool=spline]").click();
   const r = 60;
   for (const [dx, dy] of [[r, 0], [0, -r], [-r, 0], [0, r]] as const) await page.mouse.click(centre.x + dx, centre.y + dy);
   await expect(canvas, "four spline points").toHaveAttribute("data-sketch-hits", /^(\S+ ){3}\S+$/);
@@ -199,13 +197,8 @@ for (const which of ["sloped", "flat top"] as const) {
 
     await page.keyboard.press("E");
     await expect(canvas).toHaveAttribute("data-extrude", "aim");
-    // M would be typed into the focused box, as a letter of an expression, so the card's mode button is the way.
-    for (let turn = 0; turn < 5; turn += 1) {
-      const was = await canvas.getAttribute("data-extrude-mode");
-      if (was === "new") break;
-      await page.locator("[data-sketch-mode]").click();
-      await expect(canvas).not.toHaveAttribute("data-extrude-mode", was ?? "");
-    }
+    // M would be typed into the focused box. New object is its own segment, not a button that cycles.
+    await page.locator("[data-sketch-mode=new]").click();
     await expect(canvas).toHaveAttribute("data-extrude-mode", "new");
     // The owner's keys: the distance, Tab, the other side, Tab, the draft, Enter.
     await page.keyboard.type("8.2");

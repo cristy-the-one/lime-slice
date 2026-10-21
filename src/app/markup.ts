@@ -54,13 +54,14 @@ export function mountMarkup(root: HTMLElement) {
         <button class="btn" id="cancel" type="button" hidden>Cancel</button>
         <button class="btn" id="sendPrinter" type="button" hidden disabled>Send</button>
         <div class="split" id="sliceSplit">
+          <span id="slicePauseDot" class="slice-pause-dot" hidden data-tip="Slicing waits until you leave Model, then slices once"></span>
           <button class="btn primary" id="slice" type="button" data-slice-action="none">Slice</button>
           <details class="menu split-more" id="sliceMore">
             <summary class="btn primary" aria-label="Slice options" data-tip="More slice actions"><span class="caret" aria-hidden="true"></span></summary>
             <nav><button type="button" id="force" hidden>Force re-slice</button></nav>
           </details>
         </div>
-        <button class="btn" id="export" type="button" disabled aria-label="Export G-code">Export</button>
+        <button class="btn" id="export" type="button" disabled aria-label="Export G-code" data-tip="Export G-code">Export</button>
       </div>
       <div class="gear-items" hidden>
         <label class="theme-field">Theme
@@ -71,6 +72,7 @@ export function mountMarkup(root: HTMLElement) {
           </select>
         </label>
         <label class="row setting" data-label="auto-slice when a slice takes under 20 s" data-tip="Slice again by itself after a change, while the last slice took under 20 seconds."><span class="row-label">Auto-slice when a slice takes under 20 s</span><input id="autoslice" type="checkbox" class="switch" role="switch" /></label>
+        <label class="row setting" data-label="show tool labels" data-tip="Widen the tool rail and show each tool's name. Off by default."><span class="row-label">Show tool labels</span><input id="railLabels" type="checkbox" class="switch" role="switch" /></label>
       </div>
     </header>
     <div class="banner-rail" id="banner"></div>
@@ -78,16 +80,16 @@ export function mountMarkup(root: HTMLElement) {
       <!-- E3. The Model tools: chrome.ts moves this set into the rail. A group folds into one flyout button when the window is too short for it. -->
       <div class="rail-set rail-model" id="railModel" data-for="model" role="group" aria-label="Model tools" data-model-ui>
         <div class="rail-group" data-group="create" role="group" aria-label="Create">
-          <span class="rail-caption" aria-hidden="true">Create</span>
+          <span class="rail-caption" aria-hidden="true" title="Create">Make</span>
           <div class="rail-tools">
             <button class="model-tool" id="modelToolNew" type="button" data-tool="create" aria-pressed="false" data-tip="New solid: a box, cylinder, cone, or another primitive">New solid</button>
             <!-- --- S2 sketch --- no data-tool: Sketch is a mode, not a dock handle. S. -->
             <button class="model-tool" id="modelToolSketch" type="button" aria-pressed="false" data-tip="Sketch on a face, an origin plane, or the workplane. The drawing tools are in the sketch card.">Sketch</button>
           </div>
         </div>
-        <div class="rail-group" data-group="modify" data-solid-only role="group" aria-label="Modify">
+        <div class="rail-group" data-group="shape" data-solid-only role="group" aria-label="Shape">
           <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Modify</span>
+          <span class="rail-caption" aria-hidden="true" title="Shape">Shape</span>
           <div class="rail-tools">
             <!-- P1: Push/Pull. P. Also the gesture when no other model tool is open. -->
             <button class="model-tool" id="modelToolPull" type="button" data-tool="pushpull" aria-pressed="false" data-tip="Push/Pull: move a face. Hold Alt to add or cut material on that face only">Push/Pull</button>
@@ -96,23 +98,16 @@ export function mountMarkup(root: HTMLElement) {
             <!-- A2 shell -->
             <button class="model-tool" id="modelToolShell" type="button" data-tool="shell" aria-pressed="false" data-tip="Shell: hollow the solid to a wall thickness, with picked faces open">Shell</button>
             <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split along X, Y, Z, or a picked flat face, and tilt the plane">Split</button>
-            <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
+            <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale solid">Scale</button>
           </div>
         </div>
-        <div class="rail-group" data-group="combine" data-solid-only role="group" aria-label="Combine">
+        <div class="rail-group" data-group="features" data-solid-only role="group" aria-label="Features">
           <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Combine</span>
+          <span class="rail-caption" aria-hidden="true" title="Features">Feat.</span>
           <div class="rail-tools">
             <button class="model-tool" id="modelToolBoolean" type="button" data-tool="boolean" aria-pressed="false" data-tip="Boolean: fuse, cut, or intersect a primitive or another object on the plate">Boolean</button>
-            <!-- --- A4 pattern and mirror --- -->
             <button class="model-tool" id="modelToolPattern" type="button" data-tool="pattern" aria-pressed="false" data-tip="Pattern: repeat history steps in a line, around an axis, or along a path">Pattern</button>
             <button class="model-tool" id="modelToolMirror" type="button" data-tool="mirror" aria-pressed="false" data-tip="Mirror: mirror history steps across X, Y, Z, or a picked flat face">Mirror</button>
-          </div>
-        </div>
-        <div class="rail-group" data-group="feature" data-solid-only role="group" aria-label="Feature">
-          <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Feature</span>
-          <div class="rail-tools">
             <button class="model-tool" id="modelToolHole" type="button" data-tool="hole" aria-pressed="false" data-tip="Hole: cut a cylinder into the picked face, or straight down">Hole</button>
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
@@ -133,7 +128,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="rail-group" data-group="inspect" role="group" aria-label="Inspect">
           <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Inspect</span>
+          <span class="rail-caption" aria-hidden="true" title="Inspect">Check</span>
           <div class="rail-tools">
             <button class="model-tool" id="modelToolMeasure" type="button" data-tool="measure" data-solid-only aria-pressed="false" data-tip="Measure: drag two points on the solid and read the distance">Measure</button>
             <!-- --- A7 model check --- also for a mesh, so not solid-only. -->
@@ -144,7 +139,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <div class="rail-group" data-group="frame" data-solid-only role="group" aria-label="Frame">
           <div class="rail-sep"></div>
-          <span class="rail-caption" aria-hidden="true">Frame</span>
+          <span class="rail-caption" aria-hidden="true" title="Frame">Frame</span>
           <div class="rail-tools">
             <button class="model-tool" id="modelToolPlace" type="button" data-tool="place" aria-pressed="false" data-tip="Place: move and turn this object among the others. The plate stays as it is">Place</button>
             <button class="model-tool" id="modelToolWorkplane" type="button" data-tool="workplane" aria-pressed="false" data-tip="Workplane: the U, V, W frame Hole, Boolean, and Split are typed in">Workplane</button>
@@ -155,9 +150,12 @@ export function mountMarkup(root: HTMLElement) {
       </div>
       <!-- The rail foot's Model buttons: chrome.ts moves them above the dock toggle. -->
       <div class="rail-set rail-model-foot" id="railModelFoot" data-for="model" role="group" aria-label="Model history and export" data-model-ui>
+        <div class="rail-group" data-group="edit" role="group" aria-label="Edit">
+          <span class="rail-caption" aria-hidden="true" title="Edit">Edit</span>
+        </div>
         <button class="model-tool" id="modelUndo" type="button" data-solid-only disabled data-tip="Undo the last solid edit">Undo</button>
         <button class="model-tool" id="modelRedo" type="button" data-solid-only disabled data-tip="Redo the last solid edit">Redo</button>
-        <button class="model-tool" id="modelStep" type="button" data-solid-only data-tip="Write this solid as AP214 STEP">STEP</button>
+        <button class="model-tool" id="modelStep" type="button" data-solid-only data-tip="Export this solid as a STEP file">STEP</button>
         <div class="rail-sep"></div>
       </div>
       <div class="rail-fly model-look-panel" id="modelLookPanel" role="dialog" aria-label="View" data-model-ui hidden>
@@ -230,9 +228,9 @@ export function mountMarkup(root: HTMLElement) {
               ).join("")}<button class="model-prim" id="modelWithObject" type="button" role="radio" data-kind="object" data-for="boolean" aria-label="Another object" data-tip="Another object on the plate: a split piece, an import, or a new solid" aria-checked="false" tabindex="-1">Object</button></div>
               <div class="model-objects" id="modelObjects" data-for="boolean" data-with="object" role="radiogroup" aria-label="Tool object"></div>
               <div class="model-fields">
-                <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Size X</span><input id="modelDx" type="number" step="0.1" value="10" aria-label="Size x"></label>
-                <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Size Y</span><input id="modelDy" type="number" step="0.1" value="10" aria-label="Size y"></label>
-                <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Size Z</span><input id="modelDz" type="number" step="0.1" value="10" aria-label="Size z"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Width X</span><input id="modelDx" type="number" step="0.1" value="10" aria-label="Width X"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Depth Y</span><input id="modelDy" type="number" step="0.1" value="10" aria-label="Depth Y"></label>
+                <label data-for="boolean create" data-with="primitive" data-prim="box wedge ellipsoid" data-snap="1"><span class="scrub-label" data-scrub>Height Z</span><input id="modelDz" type="number" step="0.1" value="10" aria-label="Height Z"></label>
                 <label data-for="boolean create" data-with="primitive" data-prim="wedge" data-snap="1"><span class="scrub-label" data-scrub>Top X</span><input id="modelTopX" type="number" step="0.1" min="0" value="3" aria-label="Top face length along x"></label>
                 <label data-for="boolean create" data-with="primitive" data-prim="cylinder sphere cone torus tube" data-snap="1"><span class="scrub-label" id="modelRadiusLabel" data-scrub>Radius</span><input id="modelRadius" type="number" step="0.1" min="0" value="5" aria-label="Radius"></label>
                 <label data-for="boolean create" data-with="primitive" data-prim="cone" data-snap="1"><span class="scrub-label" data-scrub>Top radius</span><input id="modelTopR" type="number" step="0.1" min="0" value="2" aria-label="Top radius"></label>
@@ -486,7 +484,6 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
                 <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false" data-tip="Pick edges. Shift-click adds or removes.">Edge</button>
               </div>
-              <span class="model-count" id="modelCount" hidden></span>
             </div>
             <div class="model-empty" id="modelEmpty" hidden>
               <p class="model-empty-title" id="modelEmptyTitle">No solid open</p>
@@ -582,7 +579,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
       </aside>
     </div>
-    <footer class="status"><span class="model-paused" id="modelPaused" data-tip="Slicing waits until you leave Model, then slices once">Slicing paused while modeling</span><div id="modelReadout" class="model-readout"></div><button class="model-fit-warn" id="modelFitWarn" type="button" hidden data-tip="Past the build volume. Inspect has the sizes.">Too large</button><span class="status-text" id="statusText" aria-live="polite"></span><span class="status-hint" id="statusHint" hidden>Settings are in the drawer (Ctrl+B)</span><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
+    <footer class="status"><span class="model-paused" id="modelPaused" hidden data-tip="Slicing waits until you leave Model, then slices once">Slicing paused while modeling</span><div id="modelReadout" class="model-readout"></div><button class="model-fit-warn" id="modelFitWarn" type="button" hidden data-tip="Past the build volume. Inspect has the sizes.">Too large</button><span class="status-text" id="statusText" aria-live="polite"></span><span class="status-hint" id="statusHint" hidden>Settings are in the drawer (Ctrl+B)</span><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
   </div>
   <div id="calibrate" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="calibrateTitle">
     <div class="sheet-card cal-card">

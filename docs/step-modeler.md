@@ -61,7 +61,7 @@ These are the web UI at 1440×900, dark, against a local engine with the Open CA
 
 ![A bed sketch. Horizontal and vertical on the rectangle, and a driving length.](screenshots/model-sketch.png)
 
-![Size Z is the expression `height`. The field shows 24 and the ƒ mark.](screenshots/model-parameters.png)
+![Height Z is the expression `height`. The field shows 24 and the ƒ mark.](screenshots/model-parameters.png)
 
 ![Section through the middle of a box. The red face is the cut, and View stays open.](screenshots/model-section.png)
 
@@ -421,7 +421,7 @@ Every Model tool is both typed and dragged. Each number in the open tool's panel
 
 | Tool | Handles |
 | --- | --- |
-| Boolean | X, Y, Z arrows on the primitive's origin, a knob for each of its sizes (out along the primitive's own axis that size grows along; a second size on one axis takes the next axis, and a wedge's Top X leans up from Size X), and three turn rings on every primitive but a sphere |
+| Boolean | X, Y, Z arrows on the primitive's origin, a knob for each of its sizes (out along the primitive's own axis that size grows along; a second size on one axis takes the next axis, and a wedge's Top X leans up from Width X), and three turn rings on every primitive but a sphere |
 | New solid | the same size knobs, unturned; it places itself, so it has no arrows or rings |
 | Split | an arrow on the plane's pivot along its normal, held between the face margins, and two tilt rings on the dock |
 | Fillet, Chamfer | a size knob out from the picked edge's middle |

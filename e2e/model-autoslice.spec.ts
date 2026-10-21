@@ -104,13 +104,31 @@ test.describe("auto-slice on", () => {
     expect(slices).toHaveLength(1);
 
     await page.locator("#tabPrepare").click();
+    await expect(page.locator("#statusText")).toHaveText("Slice again to include your changes");
     await expect.poll(() => slices.length).toBe(2);
     await settle(page);
     expect(slices).toHaveLength(2);
     await expect(chip(page)).toBeHidden();
   });
 
-  test("switching tabs without a Model change slices nothing", async ({ page }) => {
+  test("the paused line lasts a few seconds, then a dot stays by Slice", async ({ page }) => {
+  const slices = await mockEngine(page);
+  await openModel(page, slices, true);
+  await expect(chip(page)).toBeVisible();
+  await expect(page.locator("#slicePauseDot")).toBeHidden();
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/ux10-before-pause.png` });
+  await page.waitForTimeout(5000);
+  await expect(chip(page), "the line is gone five seconds after Model opens").toBeHidden();
+  const dot = page.locator("#slicePauseDot");
+  await expect(dot).toBeVisible();
+  await expect(dot).toHaveAttribute("data-tip", "Slicing waits until you leave Model, then slices once");
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/ux10-after-pause-dot.png` });
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#statusText")).not.toHaveText("Slice again to include your changes");
+  await expect(dot).toBeHidden();
+});
+
+test("switching tabs without a Model change slices nothing", async ({ page }) => {
     const slices = await mockEngine(page);
     await openModel(page, slices, true);
     await expect(chip(page)).toBeVisible();

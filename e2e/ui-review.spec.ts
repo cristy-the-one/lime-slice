@@ -35,8 +35,12 @@ test("the Features opener is 24px beside Pocket, and a keyboard focus shows why 
   await paint.evaluate((button: HTMLElement) => button.focus({ focusVisible: true }));
   await expect(page.locator(".lime-tip")).toContainText("Load a mesh to paint supports.");
   if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-disabled-stripe.png` });
-  const stripe = await paint.evaluate((button) => getComputedStyle(button).backgroundImage);
-  expect(stripe, "a disabled control is striped, not only faded").toContain("linear-gradient");
+  const stripe = await paint.evaluate((button) => {
+    const style = getComputedStyle(button);
+    return { image: style.backgroundImage, border: style.borderStyle };
+  });
+  expect(stripe.image, "a disabled control is dashed, not striped").toBe("none");
+  expect(stripe.border).toBe("dashed");
   await expect.poll(async () => paint.evaluate((button) => getComputedStyle(button).opacity)).toBe("1");
 
   await page.locator("#tabModel").click();

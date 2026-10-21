@@ -478,21 +478,28 @@ textarea.machine-gcode {
 .btn.primary, .btn.reslice { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
 .btn.primary:hover:not(:disabled), .btn.reslice:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
 .btn.primary:active:not(:disabled), .btn.reslice:active:not(:disabled) { background: var(--accent-pressed); border-color: var(--accent-pressed); }
-/* Disabled reads the same everywhere: full contrast, a dashed edge, and a stripe, not a fade. */
+/* Disabled is quiet: dim text, a dashed edge, no stripe. The stripe is only an error on Slice and Export. */
 :is(button, select):is(:disabled, .is-disabled) {
   opacity: 1;
   cursor: not-allowed;
   color: var(--text-dim);
   background-color: var(--surface-2);
+  background-image: none;
   border: 1px dashed var(--border-strong);
-  background-image: repeating-linear-gradient(-45deg, transparent 0 3px, color-mix(in srgb, var(--text-dim) 28%, transparent) 3px 4px);
 }
 .btn.primary:is(:disabled, .is-disabled),
 .btn.reslice:is(:disabled, .is-disabled) {
   opacity: 1;
   color: var(--text-dim);
   background-color: var(--surface-3);
+  background-image: none;
   border: 1px dashed var(--border-strong);
+}
+:is(#slice, #export).is-error {
+  cursor: not-allowed;
+  color: var(--text-dim);
+  border: 1px dashed var(--border-strong);
+  background-color: var(--surface-2);
   background-image: repeating-linear-gradient(-45deg, transparent 0 3px, color-mix(in srgb, var(--text-dim) 28%, transparent) 3px 4px);
 }
 :is(input, textarea):is(:disabled, .is-disabled) {
@@ -652,21 +659,6 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
 }
 .model-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.model-count {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  margin-left: 4px;
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--stage-chip-line));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 22%, var(--stage-chip));
-  color: var(--accent);
-  font: 500 var(--fs-1) / 1 var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.model-count[hidden] { display: none !important; }
 .model-paused {
   display: inline-flex;
   align-items: center;
@@ -677,6 +669,14 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   color: var(--text-dim);
   font-size: var(--fs-1);
   white-space: nowrap;
+}
+.slice-pause-dot {
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex: 0 0 auto;
 }
 .model-panel[hidden] { display: none !important; }
 .model-fields {
@@ -860,14 +860,80 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .sketch-cards[hidden] { display: none; }
 .sketch-card {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   color: var(--text);
   font-size: var(--fs-2);
 }
-.sketch-card p { margin: 0 6px 0 0; }
+.sketch-card p { margin: 0; }
+.sketch-section { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sketch-section-title {
+  margin: 0;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.sketch-section-body, .sketch-foot, .sketch-feature {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.sketch-draw {
+  display: grid;
+  grid-template-columns: repeat(7, 32px);
+  gap: 4px;
+}
+.sketch-card .sketch-icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.sketch-card .btn {
+  height: auto;
+  min-height: 28px;
+  max-width: 100%;
+  white-space: normal;
+  line-height: 1.2;
+  text-align: center;
+}
 .sketch-card .btn[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+.sketch-modes { display: inline-flex; flex-wrap: wrap; max-width: 100%; }
+.sketch-modes .btn { border-radius: 0; }
+.sketch-modes .btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.sketch-modes .btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.sketch-section.sketch-feature { align-items: stretch; width: 100%; }
+.sketch-feature-row, .sketch-feature-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+.sketch-feature-actions { justify-content: flex-end; }
+.sketch-feature .sketch-prompt-text { flex: none; width: 100%; text-align: left; margin: 0; }
+.sketch-feature-name { font-weight: 600; margin: 0 4px 0 0; }
+.sketch-prompt-text { flex: 1 1 100%; margin: 0; }
+.sketch-value { display: inline-flex; align-items: center; gap: 4px; }
+.sketch-value input { width: 6ch; }
+.sketch-how { position: relative; flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
+.sketch-how-open { width: 28px; min-width: 28px; padding: 0; }
+.sketch-how-pop {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 4px 8px 4px 22px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+}
+.sketch-how-pop[hidden] { display: none; }
+.sketch-how-pop li { margin: 2px 0; }
 /* The sentence for a feature that is waiting on a pick, with its own Cancel, in the card. */
 .sketch-prompt {
   flex: 1 1 100%;
@@ -983,6 +1049,9 @@ html:not(.layout-compact) #modelHistoryOpen { display: none; }
  * Collapsing folds the tree only, so the pose still shows.
  */
 .mh-position { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; margin: 0 2px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+.mh-position.is-file { border-bottom: 0; padding-bottom: 0; }
+.mh-position.is-file .mh-position-name { display: none; }
+.mh-position.is-file .mh-position-open { height: auto; min-height: 18px; padding-block: 1px; color: var(--text-dim); background: none; font-size: var(--fs-1); }
 html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { border-bottom: 0; padding-bottom: 0; }
 .mh-position-name { flex: 0 0 auto; color: var(--text-dim); }
 .mh-position-open {
@@ -1196,6 +1265,56 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   pointer-events: none;
 }
 .model-drag-tip[hidden] { display: none; }
+/* The live size of the aspect a handle changes. Colour is the axis; the text is the same sentence as the tooltip. */
+.model-aspect-label {
+  position: absolute;
+  z-index: 4;
+  transform: translate(-50%, -140%);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-pop);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-2);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.model-aspect-label[hidden] { display: none; }
+.model-panel { position: relative; }
+.model-aspect-badge {
+  position: absolute;
+  z-index: 5;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  color: #10150a;
+  pointer-events: none;
+}
+.model-aspect-badge[hidden] { display: none; }
+.model-aspect-badge[data-color="x"] { background: var(--axis-x); }
+.model-aspect-badge[data-color="y"] { background: var(--axis-y); }
+.model-aspect-badge[data-color="z"] { background: var(--axis-z); }
+.model-aspect-label[data-color="x"] { border-color: var(--axis-x); }
+.model-aspect-label[data-color="y"] { border-color: var(--axis-y); }
+.model-aspect-label[data-color="z"] { border-color: var(--axis-z); }
+.model-aspect-label[data-color="accent"] { border-color: var(--accent); }
+/* The matching number. The ring is the axis colour and a second inset line, so it is not colour alone. */
+input.is-aspect {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+input.is-aspect[data-aspect-color="x"] { outline-color: var(--axis-x); box-shadow: inset 0 0 0 2px var(--axis-x); }
+input.is-aspect[data-aspect-color="y"] { outline-color: var(--axis-y); box-shadow: inset 0 0 0 2px var(--axis-y); }
+input.is-aspect[data-aspect-color="z"] { outline-color: var(--axis-z); box-shadow: inset 0 0 0 2px var(--axis-z); }
+input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
 /* Heads-up sizes for a drag. Nothing shows one until a tool asks. It sits at the pointer and stays on the canvas. */
 .interact-hud {
   position: absolute;
@@ -1227,11 +1346,11 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   border: 0;
 }
 .interact-hud-fields { display: flex; align-items: center; gap: var(--space-1); }
-.interact-hud label { display: flex; align-items: center; gap: 2px; }
+.interact-hud label { position: relative; display: inline-flex; align-items: center; }
 .interact-hud input {
   width: 7ch;
   min-width: 0;
-  padding: 1px 4px;
+  padding: 1px 1.8em 1px 4px;
   border: 1px solid transparent;
   border-radius: 3px;
   background: transparent;
@@ -1243,7 +1362,16 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   border-color: var(--accent);
   background: var(--surface-2);
 }
-.interact-hud-sep, .interact-hud-unit { color: var(--text-dim); }
+.interact-hud-sep { color: var(--text-dim); }
+.interact-hud-unit, .interact-hud .expr-mark {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-dim);
+}
+.interact-hud-unit { right: 4px; }
+.interact-hud .expr-mark { right: 1.5em; }
 .interact-hud-error {
   position: absolute;
   left: 0;
@@ -1327,8 +1455,36 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
 .context-bar[hidden] { display: none !important; }
 /* Faded, the actions give way to a labelled chip. The chip stays on the bar's seat, so the selection is never stranded. */
 .context-bar.is-faded > :not(#contextBarRestore) { display: none !important; }
+.context-bar.is-faded {
+  padding: 0;
+  background: var(--surface-1);
+  border-color: var(--border);
+  box-shadow: none;
+}
 .context-bar-restore { display: none; }
-.context-bar.is-faded #contextBarRestore { display: inline-flex; }
+.context-bar.has-selection #contextBarRestore,
+.context-bar.is-faded #contextBarRestore {
+  display: inline-flex;
+  background: var(--panel);
+  color: var(--text);
+  opacity: 1;
+  letter-spacing: 0;
+  word-spacing: normal;
+  white-space: pre;
+  font-family: var(--font-ui, ui-sans-serif, system-ui, sans-serif);
+}
+.context-bar.is-tool > :not(#contextBarRestore) { display: none !important; }
+.context-bar.is-tool {
+  padding: 0;
+  gap: 0;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.context-bar.is-faded {
+  background: var(--panel);
+  border-color: var(--border-strong);
+}
 .context-bar-split { display: inline-flex; align-items: center; }
 .context-bar-btn, .context-bar-caret, .context-bar-item {
   height: 26px;

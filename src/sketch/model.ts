@@ -60,6 +60,8 @@ export interface SketchData {
   points: SketchPoint[];
   entities: SketchEntity[];
   dims?: Dimension[];
+  /** The card's name, kept so History can say "Sketch 1". The kernel never reads it. */
+  name?: string;
 }
 
 /** The only sketch JSON this phase writes. */
@@ -223,6 +225,7 @@ export function readSketch(value: unknown): SketchData | null {
   const sketch: SketchData = { v: 1, plane, points, entities };
   if (on) sketch.on = on;
   if (dims) sketch.dims = dims;
+  if (typeof value.name === "string" && value.name.trim()) sketch.name = value.name.trim();
   return sketch;
 }
 

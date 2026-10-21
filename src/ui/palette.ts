@@ -1,4 +1,6 @@
+import { fx } from "../app/fx";
 import { redoUserEdit, undoUserEdit } from "../app/history";
+import { runSketchKey } from "../app/sketch-keys";
 import { frameModel } from "../app/model";
 import { escapeModel, openJoinTool } from "./model-chrome";
 import { editModelStep, toggleModelHistoryFocus } from "./model-history";
@@ -19,7 +21,9 @@ import { newProject } from "../app/new-project";
 import { saveCurrentProject } from "../app/project-io";
 import { clearSettingsSearch, commitTypedFields, focusSettingsSearch, revealPrinterDetails } from "../app/settings";
 import { state } from "../app/state";
-import { scrub, setView } from "../app/viewer";
+import { measureOn, setMeasureOn } from "../measure-pref";
+import { scrub, setStage, setView } from "../app/viewer";
+import { applyViewPreset } from "./viewport";
 import { pickModelFile } from "../platform";
 import { nudgeBrushRadius } from "./brush-radius";
 import { chordMatches, COMMANDS, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, shortcutOf, type CommandSpec } from "./commands";
@@ -228,7 +232,12 @@ function escapeHtml(text: string) {
 }
 
 function click(selector: string) {
-  document.querySelector<HTMLElement>(selector)?.click();
+  for (const part of selector.split(",")) {
+    const el = document.querySelector<HTMLElement>(part.trim());
+    if (!el?.isConnected || el.closest("[hidden]") || el.getClientRects().length === 0) continue;
+    el.click();
+    return;
+  }
 }
 
 function setTheme(value: string) {
@@ -256,6 +265,10 @@ function sliceFromKey(selector: string) {
 
 /** Runs the command's own case, else clicks its `target`. */
 export function runCommand(id: string) {
+  if (id.startsWith("sketch-")) {
+    runSketchKey(id);
+    return;
+  }
   switch (id) {
     case "palette":
       document.dispatchEvent(new CustomEvent("lime-open-palette"));
@@ -353,8 +366,21 @@ export function runCommand(id: string) {
     case "model-escape":
       escapeModel();
       return;
+    case "model-view-top":
+      fx.model?.setCameraPreset("top");
+      return;
+    case "model-view-front":
+      fx.model?.setCameraPreset("front");
+      return;
+    case "model-view-iso":
+      fx.model?.setCameraPreset("iso");
+      return;
     case "model-join":
       openJoinTool();
+      return;
+    case "model-reset-view":
+      // The button sits in the View menu, which is hidden until it opens. Clicking it does nothing.
+      frameModel(false);
       return;
     case "model-frame-all":
       frameModel(true);
@@ -445,6 +471,30 @@ export function runCommand(id: string) {
       return;
     case "panel-right":
       toggleDock("right");
+      return;
+    case "tab-prepare":
+      setStage("prepare");
+      return;
+    case "tab-preview":
+      setStage("preview");
+      return;
+    case "tab-gcode":
+      setStage("gcode");
+      return;
+    case "tab-model":
+      setStage("model");
+      return;
+    case "view-top":
+      applyViewPreset("top");
+      return;
+    case "view-front":
+      applyViewPreset("front");
+      return;
+    case "view-iso":
+      applyViewPreset("iso");
+      return;
+    case "measure":
+      setMeasureOn(!measureOn());
       return;
     case "restore-hidden": {
       const root = document.documentElement;

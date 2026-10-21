@@ -1,6 +1,6 @@
 import {
   type BedRect, type Box, type DimEdge, type Point, type Rect, type ScaleBar, type Vec3,
-  MIN_TICK_GAP_PX, chooseEdges, cullByDistance, cullLabels, flatEdges, formatMm, labelBeside, majorTicks, nearBedEdges, overlaps, scaleBar, segmentHitsRect, tickPriority,
+  MIN_TICK_GAP_PX, chooseEdges, clearOfBox, cullByDistance, cullLabels, flatEdges, formatMm, keepLonger, labelBeside, majorTicks, nearBedEdges, overlaps, scaleBar, segmentHitsRect, tickPriority,
 } from "./measure";
 import { measureOn } from "./measure-pref";
 import "./ui/measure.css";
@@ -40,10 +40,12 @@ const LABEL_H = FONT_PX + 3;
 /** Shortest callout line worth drawing. */
 const MIN_LINE_PX = 24;
 /**
- * A callout line stands this far off the box's edge, so it reads against the part's own edge, with a short
- * extension at each end. Label, stand-off and extension fit in the air the 2D view leaves round a layer.
+ * A callout line stands this far off the box's edge, outside the silhouette, with a short extension at each
+ * end. The label is pushed further when that still leaves it on the solid's projected box.
  */
-const STAND_OFF_PX = 8;
+const STAND_OFF_PX = 12;
+/** The label's screen box stays at least this far from the solid's projected box. */
+const SILHOUETTE_GAP_PX = 12;
 const EXTEND_PX = 3;
 const LABEL_GAP_PX = 3;
 const SCALE_BOTTOM_PX = 8;
@@ -56,13 +58,39 @@ const n = (value: number) => value.toFixed(1);
 /** One callout: the segments of its line and extensions on screen, and its label's rectangle. */
 interface Callout extends Rect {
   edge: DimEdge;
+  /** Length of this axis, so a shorter label yields when two would meet. */
+  span: number;
   segments: [Point, Point][];
   label: string;
   /** Text turned to read along the line: the 2D view's Y, which has no room beside the layer for it to lie flat. */
   turned: boolean;
 }
 
-function callouts(frame: MeasureFrame, box: Box, edges: DimEdge[]): Callout[] {
+/** The solid's box on screen: the axis-aligned rectangle of its eight corners. */
+function projectedBox(frame: MeasureFrame, box: Box): Rect | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let seen = false;
+  for (const x of [box.min[0], box.max[0]]) {
+    for (const y of [box.min[1], box.max[1]]) {
+      for (const z of [box.min[2], box.max[2]]) {
+        const p = frame.project([x, y, z]);
+        if (!p) continue;
+        seen = true;
+        minX = Math.min(minX, p[0]);
+        minY = Math.min(minY, p[1]);
+        maxX = Math.max(maxX, p[0]);
+        maxY = Math.max(maxY, p[1]);
+      }
+    }
+  }
+  if (!seen) return null;
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+function callouts(frame: MeasureFrame, box: Box, edges: DimEdge[], solid: Rect | null): Callout[] {
   const center = frame.project([
     (box.min[0] + box.max[0]) / 2,
     (box.min[1] + box.max[1]) / 2,
@@ -77,7 +105,8 @@ function callouts(frame: MeasureFrame, box: Box, edges: DimEdge[]): Callout[] {
     const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
     if (length < MIN_LINE_PX) continue;
     const axis = edge.axis === "x" ? 0 : edge.axis === "y" ? 1 : 2;
-    const label = formatMm(edge.to[axis]! - edge.from[axis]!);
+    const span = Math.abs(edge.to[axis]! - edge.from[axis]!);
+    const label = formatMm(span);
     // Off the line, on the side away from the part.
     const perp: [number, number] = [-(b[1] - a[1]) / length, (b[0] - a[0]) / length];
     const mid: [number, number] = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
@@ -85,12 +114,22 @@ function callouts(frame: MeasureFrame, box: Box, edges: DimEdge[]): Callout[] {
       perp[0] = -perp[0];
       perp[1] = -perp[1];
     }
-    const at: [number, number] = [mid[0] + perp[0] * STAND_OFF_PX, mid[1] + perp[1] * STAND_OFF_PX];
     const turned = !frame.cam && edge.axis === "y";
     const [w, h] = turned ? [LABEL_H, textWidth(label)] : [textWidth(label), LABEL_H];
+    const atOf = (stand: number): [number, number] => [mid[0] + perp[0] * stand, mid[1] + perp[1] * stand];
+    let stand = STAND_OFF_PX;
+    let placed = labelBeside(atOf(stand), perp, w, h, LABEL_GAP_PX);
+    if (solid) {
+      const cleared = clearOfBox(placed, solid, perp, SILHOUETTE_GAP_PX);
+      const step = (cleared.x - placed.x) * perp[0] + (cleared.y - placed.y) * perp[1];
+      if (step > 0.5) {
+        stand += step;
+        placed = cleared;
+      }
+    }
     const off = (p: [number, number], d: number): Point => [p[0] + perp[0] * d, p[1] + perp[1] * d];
-    const segments: [Point, Point][] = [[a, off(a, STAND_OFF_PX + EXTEND_PX)], [b, off(b, STAND_OFF_PX + EXTEND_PX)], [off(a, STAND_OFF_PX), off(b, STAND_OFF_PX)]];
-    out.push({ edge, segments, label, turned, ...labelBeside(at, perp, w, h, LABEL_GAP_PX) });
+    const segments: [Point, Point][] = [[a, off(a, stand + EXTEND_PX)], [b, off(b, stand + EXTEND_PX)], [off(a, stand), off(b, stand)]];
+    out.push({ edge, span, segments, label, turned, ...placed });
   }
   return out;
 }
@@ -183,12 +222,16 @@ export function mountMeasureOverlay(host: HTMLElement, options: MeasureOptions =
   return {
     render(frame) {
       if (!frame || !measureOn() || frame.w < 2 || frame.h < 2) {
+        delete root.dataset.solid;
         show("");
         return;
       }
       const phone = options.scalePhone && document.documentElement.classList.contains("layout-compact") ? options.scalePhone : null;
+      const solid = frame.box ? projectedBox(frame, frame.box) : null;
+      if (solid) root.dataset.solid = [solid.x, solid.y, solid.w, solid.h].map((n) => n.toFixed(1)).join(",");
+      else delete root.dataset.solid;
       const edges = !frame.box ? [] : frame.cam ? chooseEdges(frame.cam, frame.box) : flatEdges(frame.box);
-      const shown = frame.box ? cullLabels(callouts(frame, frame.box, edges), frame.w, frame.h) : [];
+      const shown = frame.box ? keepLonger(callouts(frame, frame.box, edges, solid), frame.w, frame.h) : [];
       const bottom = phone?.bottom ?? SCALE_BOTTOM_PX;
       const right = scaleLayout(frame, "right", phone?.right ?? options.scaleRight ?? 14, bottom);
       // The bar takes the right corner, or the left one when a callout reaches the right; nothing draws over it.

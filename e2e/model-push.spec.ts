@@ -103,13 +103,13 @@ test("dragging a face pulls it, Alt adds a prism, and Tab edits the distance", a
 
   const top = await facePoint(page, (normal) => normal[2]! > 0.5);
   await dragFace(page, top, 10);
-  expect(applied.at(-1)?.kind).toBe("moveFaces");
+  await expect.poll(() => applied.at(-1)?.kind).toBe("moveFaces");
   await expect(page.locator("#modelHistoryTree")).toContainText("Pull face 10 mm");
   expect(await height(page)).toBeCloseTo(30, 0);
 
   const side = await facePoint(page, (normal) => normal[0]! > 0.5);
   await dragFace(page, side, 8, true);
-  expect(applied.at(-1)?.kind).toBe("faceExtrude");
+  await expect.poll(() => applied.at(-1)?.kind).toBe("faceExtrude");
   await expect.poll(async () => (await extent(page))[0]).toBeGreaterThan(20);
 
   await page.keyboard.press("Tab");
@@ -260,7 +260,7 @@ test("a typed distance replaces the live one, with Ctrl held through the drag, a
   await page.mouse.up();
   await page.keyboard.up("Control");
   await expect(page.locator("#modelHistoryTree")).toContainText("Pull face 7 mm");
-  expect(applied.at(-1)?.faces?.[0]?.distance).toBe(7);
+  await expect.poll(() => applied.at(-1)?.faces?.[0]?.distance).toBe(7);
 
   await page.keyboard.press("Tab");
   await expect(hud).toHaveValue("7");
@@ -268,7 +268,7 @@ test("a typed distance replaces the live one, with Ctrl held through the drag, a
   await expect(hud, "a Tab edit starts from an empty box too").toHaveValue("4");
   await page.keyboard.press("Enter");
   await expect(page.locator("#modelHistoryTree")).toContainText("Pull face 4 mm");
-  expect(applied.at(-1)?.faces?.[0]?.distance).toBe(4);
+  await expect.poll(() => applied.at(-1)?.faces?.[0]?.distance).toBe(4);
   // History names the step before the view has the rebuilt solid: the top's point is read off the new one.
   await expect.poll(async () => height(page)).toBeCloseTo(24, 0);
 
@@ -398,7 +398,7 @@ test("History edits a pull and a prism in Push/Pull, and a prism stays a prism",
   await page.keyboard.type("5");
   await page.locator("#modelApply").click();
   await expect(history).toContainText("Extrude face 5 mm");
-  expect(applied.at(-1)).toMatchObject({ kind: "faceExtrude", face: 5, distance: 5 });
+  await expect.poll(() => applied.at(-1)).toMatchObject({ kind: "faceExtrude", face: 5, distance: 5 });
 });
 
 test("a distance no printer reaches is refused in the panel", async ({ page }) => {
@@ -542,8 +542,8 @@ test("the push arrow stays put while the pointer walks to its tip, and grabbing 
   expect(pulled, "dragging on along the arrow pulls").toBeGreaterThan(start + 1);
   await page.mouse.up();
   await expect.poll(() => applied.length).toBe(1);
-  expect(applied[0]?.kind).toBe("moveFaces");
-  expect(applied[0]?.faces?.[0]?.face).toBe(1);
+  await expect.poll(() => applied[0]?.kind).toBe("moveFaces");
+  await expect.poll(() => applied[0]?.faces?.[0]?.face).toBe(1);
 });
 
 test("a Tab edit of a push is not refused for the depth its own push already took", async ({ page }) => {
@@ -560,7 +560,7 @@ test("a Tab edit of a push is not refused for the depth its own push already too
   await page.keyboard.press("Enter");
   await expect(page.locator("#modelReadout")).not.toContainText("goes through the part");
   await expect.poll(() => tree.of("edit").length).toBe(1);
-  expect(applied.at(-1)?.faces?.[0]?.distance).toBe(-18);
+  await expect.poll(() => applied.at(-1)?.faces?.[0]?.distance).toBe(-18);
   await expect.poll(async () => height(page)).toBeCloseTo(2, 0);
 });
 

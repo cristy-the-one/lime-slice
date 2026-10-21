@@ -86,7 +86,7 @@ export function mountCompact() {
   preview?.append(layerTip());
   // A stage key (1 to 4) clicks the stage's own tab: the nav and the sheet follow it, so Model never keeps Prepare's sheet.
   const follow = new MutationObserver(followStage);
-  for (const id of ["#tabPrepare", "#tabPreview", "#tabModel"]) {
+  for (const id of ["#tabPrepare", "#tabPreview", "#tabGcode", "#tabModel"]) {
     const node = document.querySelector(id);
     if (node) follow.observe(node, { attributes: true, attributeFilter: ["aria-selected"] });
   }
@@ -424,6 +424,8 @@ function mountChromeShow() {
 /** The stage changed without the nav: take the nav tab that shows it, leaving Settings and Device on Prepare alone. */
 function followStage() {
   if (!active) return;
+  // G-code has no phone tab. Leave the nav where it is instead of sending it back to Prepare.
+  if (document.querySelector("#tabGcode[aria-selected=true]")) return;
   const stage = document.querySelector<HTMLElement>("#tabModel[aria-selected=true]") ? "model"
     : document.querySelector<HTMLElement>("#tabPreview[aria-selected=true]") ? "preview"
     : "prepare";

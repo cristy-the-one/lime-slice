@@ -34,6 +34,12 @@ export function selectionCountLabel(picks: readonly ModelPickRef[]): string {
   return parts.join(" · ");
 }
 
+/** The faded selection chip: the count, and a caret because it opens the actions. */
+export function selectionChipLabel(picks: readonly ModelPickRef[]): string {
+  const count = selectionCountLabel(picks);
+  return count ? `${count} ▾` : "Selection ▾";
+}
+
 /** The last selected edge. The blend size handle sits on this one; Apply still uses every edge. */
 export function lastEdge(picks: readonly ModelPickRef[]): number | null {
   for (let i = picks.length - 1; i >= 0; i -= 1) {

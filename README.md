@@ -1,6 +1,6 @@
 # Lime Slice
 
-Lime Slice 3.3.0 is a filament slicer and a solid modeler in one window. Open an STL, 3MF, or STEP file, or start a solid from a sketch, then slice it to G-code. A Rust planner builds the toolpaths. Model edits go through Open CASCADE when its bridge is installed. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
+Lime Slice 3.5.0 is a filament slicer and a solid modeler in one window. Open an STL, 3MF, or STEP file, or start a solid from a sketch, then slice it to G-code. A Rust planner builds the toolpaths. Model edits go through Open CASCADE when its bridge is installed. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
 
 The shell is the landscape layout: a tool rail on the left, a dock on each side, and a status line. Prepare and Preview use the left dock for settings and the right dock for results. Model uses the left dock for the open tool, the sketch, History, and Parameters, and the right dock for Inspect.
 
@@ -72,7 +72,7 @@ Parameters live under History in the left dock. Each row is a name and a value, 
 
 History lists every step. Edit step (the row, or Shift+E) reopens that step's panel, including a group of sketch holes. The tree is stored in the `.lime` project. A part an MCP recipe built shows "Built by a recipe" and that line stays read-only: changing the recipe's parameters and rebuilding from them is not in the window yet. Undo and redo walk the same tree.
 
-![New solid. Size Z is the expression `height`, shown as 24 with the ƒ mark. The parameter is not used until Create.](docs/screenshots/model-parameters.png)
+![New solid. Height Z is the expression `height`, shown as 24 with the ƒ mark. The parameter is not used until Create.](docs/screenshots/model-parameters.png)
 
 ![Creating the box from `height`, then changing the parameter and rebuilding the step.](docs/screenshots/clip-parameters.gif)
 
@@ -391,7 +391,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (3.3.0). Publishing that draft is a separate step. Draft releases through v1.8.0 are already on the repository.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (3.5.0). Publishing that draft is a separate step. Draft releases through v1.8.0 are already on the repository.
 
 ## Headless slice and bench
 

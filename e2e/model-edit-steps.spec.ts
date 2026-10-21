@@ -226,7 +226,7 @@ test("a step under the edit that no longer builds is kept broken with the engine
   await byId(page, 5).hover();
   await byId(page, 5).locator(".mh-edit").click();
   await expect(head(page)).toHaveText("Editing step 2: Fillet 1 edge r 1");
-  await expect(page.locator("#modelCount"), "its edge is picked again").toHaveText("1 edge");
+  await expect(page.locator("#contextBarRestore"), "its edge is picked again").toHaveText("1 edge ▾");
   await expect(page.locator("#modelBlend")).toHaveValue("1");
   await page.locator("#modelBlend").fill("0.5");
   await expect(apply(page)).toBeEnabled();

@@ -1,3 +1,4 @@
+import { setActiveSketchEvent, sketchKeyWasHandled } from "../app/sketch-keys";
 import { state } from "../app/state";
 import { resolveKey, type KeyContext } from "./commands";
 import { runCommand } from "./palette";
@@ -9,8 +10,17 @@ function isTyping(target: HTMLElement | null): boolean {
 
 function keyContext(ev: KeyboardEvent): KeyContext {
   const target = ev.target instanceof HTMLElement ? ev.target : null;
-  const typing = isTyping(target);
+  const hud = !!target?.closest(".interact-hud");
+  const history = (ev.ctrlKey || ev.metaKey) && /^[zZyY]$/.test(ev.key);
+  // The size box keeps Esc and Tab (they drive the feature) and Ctrl+Z (it undoes the sketch).
+  // A driving-dimension label keeps Esc. Every other field keeps its own text.
+  let typing = isTyping(target);
+  if (hud && (history || ev.key === "Escape" || ev.key === "Tab")) typing = false;
+  if (target?.dataset.sketchDimInput != null && ev.key === "Escape") typing = false;
+  // Escape in Parameters still folds the section. The sketch also sees it, so two presses leave.
+  if (target?.closest("#modelParams") && ev.key === "Escape") typing = false;
   const root = document.documentElement.dataset;
+  const sketchPhase = document.querySelector("#model")?.getAttribute("data-sketch");
   return {
     helpOpen: state.help,
     typing,
@@ -21,6 +31,10 @@ function keyContext(ev: KeyboardEvent): KeyContext {
     brushOn: root.supportPaint === "1" || root.seamPaint === "1" || root.reinforcePaint === "1",
     editingSupports: document.querySelector('#toolRail [data-tool="supports"]')?.getAttribute("aria-pressed") === "true",
     inGcode: !!target && !!document.querySelector("#gcodePane")?.contains(target),
+    sketchOpen: state.stage === "model" && (sketchPhase === "editing" || sketchPhase === "choosing"),
+    sketchFeature: document.querySelector("#model")?.getAttribute("data-sketch-feature") === "1",
+    sketchLoft: document.querySelector("#model")?.getAttribute("data-loft") === "pick",
+    layout: document.documentElement.classList.contains("layout-compact") ? "compact" : "desktop",
   };
 }
 
@@ -41,11 +55,29 @@ function pressesControl(ev: KeyboardEvent): boolean {
 }
 
 export function mountKeys() {
+  // Capture, and only for the sketch: it has to run before the size box takes Tab. A sketch command
+  // that returns false (Tab between the box's fields) is left for that box.
+  window.addEventListener("keydown", (ev) => {
+    if (ev.defaultPrevented || document.documentElement.dataset.overlay) return;
+    const command = resolveKey(ev, keyContext(ev));
+    // Enter on a button presses that button, except loft's Enter, which commits even from a card.
+    if (pressesControl(ev) && !(command?.id === "sketch-enter" && document.querySelector("#model")?.getAttribute("data-loft") === "pick")) return;
+    if (!command?.id.startsWith("sketch-")) return;
+    setActiveSketchEvent(ev);
+    try {
+      runCommand(command.id);
+    } finally {
+      setActiveSketchEvent(null);
+    }
+    if (!sketchKeyWasHandled()) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
   window.addEventListener("keydown", (ev) => {
     if (ev.defaultPrevented || document.documentElement.dataset.overlay) return;
     if (pressesControl(ev)) return;
     const command = resolveKey(ev, keyContext(ev));
-    if (!command) return;
+    if (!command || command.id.startsWith("sketch-")) return;
     ev.preventDefault();
     runCommand(command.id);
   });

@@ -89,13 +89,20 @@ export interface DragHandle {
   values: number[];
   /** A `surface` handle's fields are this frame's U, V, W, so the point under the pointer is written in it. */
   frame?: Workplane;
+  /** Which sketch hole this knob changes, when one depth is shared by several holes. */
+  holeIndex?: number;
 }
 
 /**
  * Where a handle is drawn. A `feature` handle edits a picked feature, so it sits on the solid at `origin`.
+ * A `ghost` handle edits the Boolean or New solid primitive: arrows and rings at its centre, size knobs on its
+ * faces. `fallback` is the dock reach used when that ghost is off screen or smaller than 24 px.
  * A `dock` handle edits the tool's object, so it sits at the fixed dock, `reach` handle units out along `dir`.
  */
-export type HandleSeat = { at: "feature"; origin: Vec3 } | { at: "dock"; reach: number };
+export type HandleSeat =
+  | { at: "feature"; origin: Vec3 }
+  | { at: "dock"; reach: number }
+  | { at: "ghost"; role: "centre" | "face"; fallback: number };
 
 export interface DragContext {
   read(field: string): number;
@@ -137,6 +144,8 @@ export interface DragContext {
   pull?: { at: Vec3; dir: Vec3 } | null;
   /** --- F4. One hole per sketch point: the points are the origins, so only the sizes drag. --- */
   sketchHoles?: boolean;
+  /** Where each sketch hole sits, so its own depth knob lights that hole. */
+  sketchHoleMarks?: { at: Vec3 }[];
   /** --- A4. Which pattern fields are on screen. Absent is linear. Mirror ignores it. --- */
   repeat?: { mode: "linear" | "polar" | "path" };
 }
@@ -198,6 +207,12 @@ function axisHandle(
 
 const onFeature = (origin: Vec3): HandleSeat => ({ at: "feature", origin });
 const onDock = (reach: number): HandleSeat => ({ at: "dock", reach });
+/** Boolean and New solid: `centre` for arrows and rings, `face` for a size knob. */
+const onGhost = (role: "centre" | "face"): HandleSeat => ({
+  at: "ghost",
+  role,
+  fallback: role === "face" ? DOCK_KNOB_REACH : 0,
+});
 /** A size knob stands out past the arrows and rings. */
 const KNOB = onDock(DOCK_KNOB_REACH);
 /** A counterbore's depth knob, on the drill axis inside the hole's own, where no arrow or ring runs. */
@@ -214,20 +229,20 @@ function alongFrame(frame: Workplane | undefined, dir: Vec3): Vec3 {
   return frameAxes(frame).local ? turnDir(framePose(frame!), dir) : dir;
 }
 
-/** Three dock arrows, one field each, along the frame's axes: X, Y, Z, or a workplane's U, V, W. */
-function moveArrows(fields: readonly [string, string, string], prefix: string, frame?: Workplane): Spec[] {
+/** Three arrows, one field each, along the frame's axes: X, Y, Z, or a workplane's U, V, W. */
+function moveArrows(fields: readonly [string, string, string], prefix: string, frame?: Workplane, seat: HandleSeat = onDock(0)): Spec[] {
   const { axes, local } = frameAxes(frame);
   const names = local ? "UVW" : "XYZ";
-  return fields.map((field, i) => axisHandle(`${prefix}-${"xyz"[i]}`, "arrow", field, onDock(0), axes[i]!, (["x", "y", "z"] as const)[i]!, `Move ${names[i]}`));
+  return fields.map((field, i) => axisHandle(`${prefix}-${"xyz"[i]}`, "arrow", field, seat, axes[i]!, (["x", "y", "z"] as const)[i]!, `Move ${names[i]}`));
 }
 
-/** Three dock rings, each about the axis that changes only its own angle, named by the frame's axes. */
-function turnRings(fields: readonly [string, string, string], turn: Vec3, frame?: Workplane): Spec[] {
+/** Three rings, each about the axis that changes only its own angle, named by the frame's axes. */
+function turnRings(fields: readonly [string, string, string], turn: Vec3, frame?: Workplane, seat: HandleSeat = onDock(0)): Spec[] {
   const names = frameAxes(frame).local ? "UVW" : "XYZ";
   const gimbal = turnGimbal(turn).map((dir) => alongFrame(frame, dir)) as [Vec3, Vec3, Vec3];
   const colors = ["x", "y", "z"] as const;
   return fields.map((field, i): Spec => ({
-    id: `turn-${field}`, kind: "ring", look: "ring", fields: [field], seat: onDock(0), dir: gimbal[i]!, rate: 1, step: 15,
+    id: `turn-${field}`, kind: "ring", look: "ring", fields: [field], seat, dir: gimbal[i]!, rate: 1, step: 15,
     color: colors[i]!, label: `Turn ${names[i]}`, unit: "°",
   }));
 }
@@ -236,28 +251,31 @@ function booleanHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
   const turn: Vec3 = ctx.primitive === "sphere" ? [0, 0, 0] : [r("modelRx"), r("modelRy"), r("modelRz")];
   const sizes = turnedAxes(turn).map((dir) => alongFrame(ctx.frame, dir)) as [Vec3, Vec3, Vec3];
-  const out: Spec[] = [...moveArrows(["modelX", "modelY", "modelZ"], "move", ctx.frame), ...sizeKnobs(ctx, sizes)];
-  if (ctx.primitive !== "sphere") out.push(...turnRings(["modelRx", "modelRy", "modelRz"], turn, ctx.frame));
+  const centre = onGhost("centre");
+  const out: Spec[] = [...moveArrows(["modelX", "modelY", "modelZ"], "move", ctx.frame, centre), ...sizeKnobs(ctx, sizes)];
+  if (ctx.primitive !== "sphere") out.push(...turnRings(["modelRx", "modelRy", "modelRz"], turn, ctx.frame, centre));
   return out;
 }
 
 /**
- * The primitive's size knobs on the dock, each out along the primitive's own axis it grows along (`axes`, after its
- * turn), so a knob pulls the way the size goes. Two sizes on one axis take the next axis, so no two knobs meet.
+ * The primitive's size knobs, one on each face it grows along (`axes`, after its turn), so a knob pulls the way the
+ * size goes. Two sizes on one axis take the next axis, so no two knobs meet. The view parks them on the dock when
+ * the ghost is off screen or smaller than 24 px.
  */
 function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
+  const face = onGhost("face");
   const knob = (id: string, field: string, dir: Vec3, color: DragHandle["color"], label: string, extra: Partial<Spec> = {}) =>
-    axisHandle(id, "knob", field, KNOB, dir, color, label, { min: 0.1, ...extra });
+    axisHandle(id, "knob", field, face, dir, color, label, { min: 0.1, ...extra });
   const height = knob("height", "modelHeight", axes[2], "z", "Height");
   switch (ctx.primitive) {
     case "box":
     case "wedge":
     case "ellipsoid": {
       const sizes = (["modelDx", "modelDy", "modelDz"] as const).map((field, i) =>
-        knob(`size-${i}`, field, axes[i]!, (["x", "y", "z"] as const)[i]!, `Size ${"XYZ"[i]}`),
+        knob(`size-${i}`, field, axes[i]!, (["x", "y", "z"] as const)[i]!, ["Width X", "Depth Y", "Height Z"][i]!),
       );
       if (ctx.primitive === "ellipsoid") return sizes;
-      // The wedge's top runs along X at the top: its knob leans up from the Size X one.
+      // The wedge's top runs along X at the top: its knob leans up from the Width X one.
       return ctx.primitive === "box" ? sizes : [...sizes, knob("top-x", "modelTopX", normalize(add(axes[0], axes[2])), "accent", "Top X", { min: 0 })];
     }
     case "cylinder":
@@ -361,7 +379,17 @@ function holeHandles(ctx: DragContext): Spec[] {
       : []),
   ];
   // --- F4. One hole per sketch point: the points are the origins, so only the sizes drag. ---
-  if (ctx.sketchHoles) return knobs;
+  if (ctx.sketchHoles) {
+    const marks = ctx.sketchHoleMarks ?? [];
+    if (marks.length > 1) {
+      const radius = knobs[0]!;
+      const depths = marks.map((mark, index) =>
+        axisHandle(`hole-depth-${index}`, "knob", "modelHoleD", onFeature(mark.at), axis, "z", `Hole ${index + 1} depth`, { min: 0.1, holeIndex: index }),
+      );
+      return [radius, ...depths];
+    }
+    return knobs;
+  }
   const typed: Vec3 = [r("modelX"), r("modelY"), r("modelZ")];
   const { axes, local } = frameAxes(ctx.frame);
   const top = local ? planePoint(ctx.frame!, typed) : typed;

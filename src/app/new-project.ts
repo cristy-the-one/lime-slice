@@ -78,6 +78,7 @@ export function blankProject() {
   window.clearTimeout(session.autoTimer);
   window.clearTimeout(session.stepTimer);
   session.autoDeferred = false;
+  session.askSlice = false;
   session.paintUi?.stop();
   session.seamUi?.stop();
   session.reinforceUi?.stop();

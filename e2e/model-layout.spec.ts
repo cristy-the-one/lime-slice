@@ -53,11 +53,32 @@ test("the rail keeps every Model tool at 1440 × 900, and a short window folds t
   for (const id of ["#modelToolNew", "#modelToolPull", "#modelToolBoolean", "#modelToolPattern", "#modelToolHole", "#modelToolCheck", "#modelLookOpen", "#modelToolWorkplane", "#modelUndo", "#modelStep"]) {
     await expect(page.locator(id), id).toBeVisible();
   }
-  // C21: Push/Pull leads Modify, named in its label and tip.
+  // C21: Push/Pull leads Shape, named in its label and tip.
   await expect(page.locator("#modelToolPull")).toHaveAccessibleName("Push/Pull");
+  for (const heading of ["Make", "Shape", "Feat\\.", "Check", "Frame", "Edit"]) {
+    await expect(page.locator("#railModel .rail-caption, #railModelFoot .rail-caption").filter({ hasText: new RegExp(`^${heading}$`) })).toBeVisible();
+  }
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(page.locator("#model")).toHaveAttribute("data-sketch", "editing");
+  for (const heading of ["Make", "Shape", "Feat\\.", "Check", "Frame", "Edit"]) {
+    await expect(page.locator("#railModel .rail-caption, #railModelFoot .rail-caption").filter({ hasText: new RegExp(`^${heading}$`) })).toBeVisible();
+  }
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  const pull = page.locator("#modelToolPull");
+  await pull.evaluate((button: HTMLElement) => button.focus({ focusVisible: true }));
+  await expect(page.locator(".lime-tip")).toContainText("P");
+  const unnamed = await page.locator("#railModel button, #railModelFoot button").evaluateAll((nodes) =>
+    nodes
+      .filter((node) => (node as HTMLElement).checkVisibility())
+      .filter((node) => !((node as HTMLElement).getAttribute("aria-label") || node.textContent?.trim()))
+      .map((node) => (node as HTMLElement).id),
+  );
+  expect(unnamed).toEqual([]);
 
   await page.setViewportSize({ width: 1366, height: 768 });
-  await expect.poll(() => folded(page)).toEqual(["frame"]);
+  await expect.poll(() => folded(page)).toEqual(["inspect", "frame"]);
   expect(await railFits(page), "the rest fits").toBe(true);
   const fold = page.locator('.rail-group[data-group="frame"] .rail-fold');
   await expect(page.locator("#modelToolPlace")).toBeHidden();
@@ -79,6 +100,45 @@ test("the rail keeps every Model tool at 1440 × 900, and a short window folds t
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect.poll(() => folded(page), "room again unfolds it").toEqual([]);
+});
+
+test("rail headings fit at 1440×900, 1366×768, and 1280×800", async ({ page }) => {
+  await openModel(page, { width: 1440, height: 900 });
+  for (const size of [
+    { width: 1440, height: 900 },
+    { width: 1366, height: 768 },
+    { width: 1280, height: 800 },
+  ]) {
+    await page.setViewportSize(size);
+    const headings = page.locator("#railModel .rail-caption, #railModelFoot .rail-caption");
+    await expect(headings, `${size.width}×${size.height}`).toHaveCount(6);
+    for (const heading of await headings.all()) {
+      await expect(heading).toBeVisible();
+      expect(await heading.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    }
+    const stranded = await page.locator("#toolRail button").evaluateAll((nodes) =>
+      nodes
+        .filter((node) => !node.closest("[hidden], [role=menu]"))
+        .filter((node) => (node as HTMLElement).id !== "modelHistoryOpen")
+        .filter((node) => !(node as HTMLElement).checkVisibility() && !node.closest("[data-folded]"))
+        .map((node) => (node as HTMLElement).id || (node as HTMLElement).textContent || "button"),
+    );
+    expect(stranded, `${size.width}×${size.height} tools`).toEqual([]);
+    if (size.height >= 800) await expect(page.locator("#modelToolMeasure"), `${size.width}×${size.height} measure`).toBeVisible();
+  }
+});
+
+test("a disabled tool is dashed, not striped, and still says why", async ({ page }) => {
+  await openModel(page, { width: 1440, height: 900 });
+  const undo = page.locator("#modelUndo");
+  await expect(undo).toBeDisabled();
+  const image = await undo.evaluate((button) => getComputedStyle(button).backgroundImage);
+  expect(image).toBe("none");
+  const style = await undo.evaluate((button) => getComputedStyle(button).borderStyle);
+  expect(style).toBe("dashed");
+  await undo.hover();
+  await expect(page.locator(".lime-tip")).toContainText("Undo");
+  if (process.env.LIME_SHOTS) await page.locator("#toolRail").screenshot({ path: `${process.env.LIME_SHOTS}/ux02-after-disabled.png` });
 });
 
 test("a tool opens a closed Model panel for itself and closes it again, and leaves an open one alone", async ({ page }) => {
@@ -103,9 +163,44 @@ test("a tool opens a closed Model panel for itself and closes it again, and leav
   await expect(dock, "an open dock stays open").toBeVisible();
 });
 
+test("an empty Parameters section starts collapsed, and History sits above it", async ({ page }) => {
+  await openModel(page, { width: 1440, height: 900 });
+  await expect(page.locator("#modelParamsCount")).toHaveText("· 0");
+  await expect(page.locator("#modelParamsMain")).toBeHidden();
+  const history = (await page.locator("#modelHistory").boundingBox())!;
+  const params = (await page.locator("#modelParams").boundingBox())!;
+  expect(params.y).toBeGreaterThanOrEqual(history.y + history.height - 4);
+  expect(params.height).toBeLessThan(72);
+  if (process.env.LIME_SHOTS) await page.locator("#leftDock").screenshot({ path: `${process.env.LIME_SHOTS}/ux07-after-params.png` });
+  await page.locator("#modelParamsToggle").click();
+  await expect(page.locator("#modelParamsMain")).toBeVisible();
+  await page.locator("#modelParamsToggle").click();
+  await expect(page.locator("#modelParamsMain")).toBeHidden();
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(page.locator("#model")).toHaveAttribute("data-sketch", "editing");
+  await expect(page.locator("#modelParams"), "an empty Parameters section stays out of a sketch").toBeHidden();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#model")).not.toHaveAttribute("data-sketch", "editing");
+  await page.locator("#modelParamsToggle").click();
+  await page.locator("#modelParams [data-param-name]").fill("wallH");
+  await page.locator("#modelParams [data-param-value]").fill("12");
+  await page.locator("#modelParams [data-param-value]").blur();
+  await expect(page.locator("#modelParamsCount")).toHaveText("· 1");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(page.locator("#modelParams"), "a parameter the sketch does not use stays hidden").toBeHidden();
+  await page.keyboard.press("Control+Alt+p");
+  await expect(page.locator("#modelParams"), "Ctrl+Alt+P still opens it").toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#model")).not.toHaveAttribute("data-sketch", "editing");
+  await expect(page.locator("#modelParams"), "closing the sketch shows Parameters again").toBeVisible();
+});
+
 test("Ctrl+Alt+P opens Parameters from anywhere, and folds them from inside", async ({ page }) => {
   await openModel(page, { width: 1440, height: 900 });
-  await page.locator("#modelParamsToggle").click();
   await expect(page.locator("#modelParamsMain")).toBeHidden();
   await page.keyboard.press("Control+b");
   await expect(page.locator("#leftDock")).toBeHidden();
@@ -150,4 +245,33 @@ test("in the drawer range, Esc ends an open tool first and closes the drawer onl
   await page.locator("#modelParamsToggle").focus();
   await page.keyboard.press("Escape");
   await expect(dock, "with nothing open, Esc closes the drawer").toBeHidden();
+});
+
+test("M in Model does not change Prepare's move tool", async ({ page }) => {
+  await openModel(page, { width: 1440, height: 900 });
+  const move = page.locator('#toolRail [data-tool="move"]');
+  await expect(move).not.toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("m");
+  await page.locator("#tabPrepare").click();
+  await expect(move).not.toHaveAttribute("aria-pressed", "true");
+});
+
+test("T then I moves the Model camera from top to iso", async ({ page }) => {
+  await openModel(page, { width: 1440, height: 900 });
+  const canvas = page.locator("#model");
+  await page.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  });
+  const before = (await canvas.getAttribute("data-camera")) ?? "";
+  await page.keyboard.press("t");
+  await expect(canvas).not.toHaveAttribute("data-camera", before);
+  const top = (await canvas.getAttribute("data-camera")) ?? "";
+  const [topEye, topAt] = top.split(";");
+  expect(Number(topEye?.split(",")[2])).toBeGreaterThan(Number(topAt?.split(",")[2]) + 10);
+  await page.keyboard.press("i");
+  await expect(canvas).not.toHaveAttribute("data-camera", top);
+  const iso = (await canvas.getAttribute("data-camera")) ?? "";
+  const [isoEye, isoAt] = iso.split(";");
+  expect(Math.abs(Number(isoEye?.split(",")[0]) - Number(isoAt?.split(",")[0]))).toBeGreaterThan(5);
 });

@@ -123,12 +123,22 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   expect(await fits(), "drawing tools are not on the Model toolbar").toBe(true);
   await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
 
-  await page.locator("[data-sketch-menu=draw]").click();
-  await expect(page.locator(".sketch-menu:has([data-sketch-menu=draw]) .sketch-menu-list")).toBeVisible();
-  for (const label of ["Circle", "Arc", "Polygon", "Slot", "Spline", "Trim", "Offset", "Fillet corner", "Construction", "Use"]) {
-    await expect(page.locator(`.sketch-menu-list [data-sketch-tool]`, { hasText: label })).toBeVisible();
+  for (const label of ["Line", "Rectangle", "Circle", "Arc", "Spline", "Polygon", "Slot"]) {
+    await expect(page.locator(`[data-sketch-section=draw] [data-sketch-tool]`, { hasText: label }).or(page.getByRole("button", { name: label, exact: true }))).toBeVisible();
   }
-  await page.locator(".sketch-menu-list [data-sketch-tool=circle]").click();
+  for (const label of ["Select", "Trim", "Offset", "Fillet corner", "Construction", "Use"]) {
+    await expect(page.getByRole("button", { name: label, exact: true })).toBeVisible();
+  }
+  await expect(page.locator('[data-sketch-tool="trim"]')).toHaveAttribute("data-tip", "Trim (T)");
+  await expect(page.locator('[data-sketch-tool="offset"]')).toHaveAttribute("data-tip", "Offset (F)");
+  await expect(page.locator('[data-sketch-tool="construction"]')).toHaveAttribute("data-tip", "Construction (X)");
+  await expect(page.locator('[data-sketch-tool="fillet"]')).toHaveAttribute("data-tip", "Fillet corner (G)");
+  await expect(page.locator('[data-sketch-tool="use"]')).toHaveAttribute("data-tip", "Use. Click a faint edge to copy it. (U)");
+  const arcD = await page.locator('[data-sketch-tool="arc"] path').first().getAttribute("d");
+  const filletD = await page.locator("#modelToolFillet path").first().getAttribute("d");
+  expect(arcD).not.toBe(filletD);
+  if (process.env.LIME_SHOTS) await page.locator("#sketchCards").screenshot({ path: `${process.env.LIME_SHOTS}/ux03-after-sketch-card.png` });
+  await page.getByRole("button", { name: "Circle", exact: true }).click();
   await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
   await expect(page.locator("#modelReadout")).toContainText("Type a diameter");
 
@@ -252,36 +262,24 @@ test("the sketch card keeps the keyboard while the pointer moves, and its menus 
   for (let step = 0; step < 6; step += 1) await page.mouse.move(box.x + box.width / 2 + step * 9, box.y + box.height / 2 + step * 5);
   await expect(rectangle).toBeFocused();
 
-  // The Draw menu opens on its checked item, the arrows move through it, Esc closes it back onto its button.
-  await page.locator("[data-sketch-menu=draw]").focus();
+  // Draw stays a fixed row. The Constrain menu is still a keyboard menu.
+  const draw = page.locator("[data-sketch-section=draw] [data-sketch-tool]");
+  await expect(draw).toHaveCount(7);
+  await page.locator("[data-sketch-menu=constrain]").focus();
   await page.keyboard.press("Enter");
-  const items = page.locator(".sketch-menu:has([data-sketch-menu=draw]) [role=menuitemradio]");
+  const items = page.locator(".sketch-menu:has([data-sketch-menu=constrain]) [role^=menuitem]");
   await expect(items.first()).toBeVisible();
   const count = await items.count();
   expect(count).toBeGreaterThan(2);
-  await expect(page.locator(".sketch-menu:has([data-sketch-menu=draw]) [aria-checked=true]")).toHaveCount(0);
   await expect(items.nth(0)).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(items.nth(1)).toBeFocused();
-  await page.keyboard.press("ArrowUp");
-  await page.keyboard.press("ArrowUp");
-  await expect(items.nth(count - 1)).toBeFocused();
   await page.keyboard.press("Home");
   await expect(items.nth(0)).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(items.first()).toBeHidden();
-  await expect(page.locator("[data-sketch-menu=draw]")).toBeFocused();
+  await expect(page.locator("[data-sketch-menu=constrain]")).toBeFocused();
   await expect(canvas).toHaveAttribute("data-sketch", "editing");
-
-  // A tool picked from the menu is its checked item the next time it opens.
-  await page.keyboard.press("Enter");
-  await items.nth(1).press("Enter");
-  const picked = await items.nth(1).getAttribute("data-sketch-tool");
-  await expect(canvas).toHaveAttribute("data-sketch-current-tool", picked!);
-  await page.locator("[data-sketch-menu=draw]").focus();
-  await page.keyboard.press("Enter");
-  await expect(items.nth(1)).toHaveAttribute("aria-checked", "true");
-  await expect(items.nth(1)).toBeFocused();
   await expect(page.locator(".sketch-menu:has([data-sketch-menu=constrain]) [role=group]")).toHaveCount(3);
 });
 
@@ -380,6 +378,85 @@ test("sketch keys leave text fields alone and stop when Model closes", async ({ 
   await expect(canvas).toHaveAttribute("data-sweep", "off");
 });
 
+async function hudNear(page: Page, unit: string) {
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await expect(hud).toBeVisible();
+  await expect(hud.locator(".interact-hud-unit").first()).toHaveText(unit);
+  const inside = await hud.locator(".interact-hud-unit").first().evaluate((node) => node.parentElement?.querySelector("input") != null);
+  expect(inside).toBe(true);
+  const box = (await hud.boundingBox())!;
+  const [x, y] = ((await hud.getAttribute("data-anchor")) ?? "").split(",").map(Number);
+  expect(Number.isFinite(x) && Number.isFinite(y)).toBe(true);
+  const gapX = Math.max(box.x - x!, x! - (box.x + box.width), 0);
+  const gapY = Math.max(box.y - y!, y! - (box.y + box.height), 0);
+  expect(Math.hypot(gapX, gapY)).toBeLessThanOrEqual(120);
+}
+
+test("Tab into the extrude size box lights that distance", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await sketchRectangle(page);
+  await page.keyboard.press("e");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await page.locator("#model").focus();
+  await page.keyboard.press("Tab");
+  await expect(page.locator(".interact-hud input")).toBeFocused();
+  await expect(canvas).toHaveAttribute("data-aspect-field", /distance/);
+});
+
+test("the feature strip reads as a left-aligned form", async ({ page }) => {
+  await openBox(page);
+  await sketchRectangle(page);
+  const check = async (label: string) => {
+    const edges = await page.locator("[data-sketch-section=feature]").evaluate((strip) => {
+      const card = strip.closest(".sketch-card") as HTMLElement;
+      const cardBox = card.getBoundingClientRect();
+      const pad = Number.parseFloat(getComputedStyle(card).paddingLeft) || 0;
+      const left = cardBox.left + pad;
+      const apply = strip.querySelector("[data-sketch-apply]")!.getBoundingClientRect();
+      const cancel = strip.querySelector("[data-sketch-cancel]")!.getBoundingClientRect();
+      const name = strip.querySelector(".sketch-feature-name")!.getBoundingClientRect();
+      const prompt = strip.querySelector(".sketch-prompt-text") as HTMLElement | null;
+      const promptLeft = prompt && !prompt.hidden ? prompt.getBoundingClientRect().left : left;
+      return {
+        tops: Math.abs(apply.top - cancel.top),
+        primary: strip.querySelector("[data-sketch-apply]")!.classList.contains("primary"),
+        name: Math.abs(name.left - left),
+        prompt: Math.abs(promptLeft - left),
+      };
+    });
+    expect(edges.tops, label).toBeLessThanOrEqual(1);
+    expect(edges.primary, label).toBe(true);
+    expect(edges.name, label).toBeLessThanOrEqual(1);
+    expect(edges.prompt, label).toBeLessThanOrEqual(1);
+  };
+  await page.keyboard.press("e");
+  await expect(page.locator("[data-sketch-section=feature]")).toBeVisible();
+  await check("extrude");
+  await page.keyboard.press("Escape");
+  await page.locator("[data-sketch-loft]").click();
+  await expect(page.locator("[data-sketch-section=feature]")).toContainText("Loft");
+  await check("loft");
+  if (process.env.UPDATE_SCREENSHOTS === "1") {
+    await page.locator("#sketchCards").screenshot({ path: "docs/screenshots/ui-review-3-1/ux03-after-feature-strip.png" });
+  }
+});
+
+test("the size box sits on the extrude and revolve handles", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await sketchRectangle(page);
+  await page.keyboard.press("e");
+  await expect(canvas).toHaveAttribute("data-extrude", "aim");
+  await hudNear(page, "mm");
+  if (process.env.UPDATE_SCREENSHOTS === "1") await page.locator("#modelBody").screenshot({ path: "docs/screenshots/ui-review-3-1/ux05-after-hud.png" });
+  await page.keyboard.press("Escape");
+  await expect(canvas).toHaveAttribute("data-extrude", "off");
+  await page.keyboard.press("v");
+  await expect(canvas).toHaveAttribute("data-revolve", "aim");
+  await hudNear(page, "°");
+});
+
 test("extrude waits for a profile, and loft says what to pick", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openBox(page);
@@ -407,12 +484,70 @@ test("extrude waits for a profile, and loft says what to pick", async ({ page })
   await hud.locator("input").nth(1).press("Enter");
   await expect(extrude).toHaveAttribute("aria-disabled", "false");
 
+  const drawAt = () => page.locator("[data-sketch-section=draw] [data-sketch-tool]").evaluateAll((nodes) => nodes.map((node) => {
+    const box = node.getBoundingClientRect();
+    return { tool: (node as HTMLElement).dataset.sketchTool, x: Math.round(box.x), y: Math.round(box.y) };
+  }));
+  const before = await drawAt();
   await page.locator("[data-sketch-loft]").click();
-  const prompt = page.locator(".sketch-prompt");
+  const prompt = page.locator(".sketch-prompt-text");
   await expect(prompt).toBeVisible();
   await expect(prompt).toContainText("Pick at least two sections to loft.");
+  const readout = (await page.locator("#modelReadout").innerText()).trim();
+  expect(readout.length, readout).toBeLessThanOrEqual(80);
+  const how = page.getByRole("button", { name: "How" });
+  await how.focus();
+  await expect(how).toBeFocused();
+  const pop = page.locator("#sketchHow");
+  if (await pop.isHidden()) await page.keyboard.press("Enter");
+  await expect(pop).toBeVisible();
+  await expect(pop.locator("li").first()).toHaveText("Pick sections in order.");
+  const after = await drawAt();
+  expect(after).toEqual(before);
+  const overflow = await page.locator("#sketchCards button").evaluateAll((nodes) => nodes.filter((node) => node.scrollWidth > node.clientWidth + 1).map((node) => (node as HTMLElement).innerText));
+  expect(overflow).toEqual([]);
   if (process.env.LIME_SHOTS) await page.locator("#modelDock .sketch-card").screenshot({ path: `${process.env.LIME_SHOTS}/after-loft-prompt.png` });
-  await prompt.locator("[data-sketch-cancel]").click();
+  await page.locator("[data-sketch-section=feature] [data-sketch-cancel]").click();
   await expect(prompt).toHaveCount(0);
   await expect(canvas).toHaveAttribute("data-loft", "off");
+});
+
+test("the shortcut sheet lists Loft beside Shift+L while a sketch is open", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await expect(page.locator("#modelToolChamfer")).not.toHaveAttribute("aria-keyshortcuts", "Shift+L");
+  await expect(page.locator("#modelPickEdge")).not.toHaveAttribute("aria-keyshortcuts", "W");
+  await page.keyboard.press("?");
+  const sheet = page.locator("#help");
+  await expect(sheet).toBeVisible();
+  const sketch = sheet.locator(".help-group", { has: page.locator("h3", { hasText: /^Sketch$/ }) });
+  const loft = sketch.locator("li").filter({ has: page.locator("span", { hasText: /^Loft$/ }) });
+  await expect(loft.locator("kbd")).toHaveText("Shift+L");
+});
+
+test("typing a length mid-sketch stays in Model", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "line");
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await expect(hud).toBeVisible();
+  await page.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  });
+  await page.keyboard.press("2");
+  await page.keyboard.press("5");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#tabModel")).toHaveAttribute("aria-selected", "true");
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "1");
+  await expect(canvas).toHaveAttribute("data-sketch-measure", /^25\.000,/);
 });

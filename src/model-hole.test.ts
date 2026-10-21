@@ -103,13 +103,13 @@ check("every counterbore is wider than its hole and shallower than it is wide", 
 
 // The Position row: identity, a move, a turn, as Place's fields read them.
 const pivot: [number, number, number] = [10, 10, 5];
-eq("identity is at the file position", positionText(placeFields(IDENTITY_POSE, pivot)), "At file position");
+eq("identity is at the file position", positionText(placeFields(IDENTITY_POSE, pivot)), "Placed as in the file");
 const shifted = poseFromPlace(poseFromPlace(IDENTITY_POSE, pivot, "x", 12.5), pivot, "z", -3);
 eq("a move shows only the axes it moved", positionText(placeFields(shifted, pivot)), "X 12.5 · Z -3");
 const turned = poseFromPlace(IDENTITY_POSE, pivot, "rz", 30);
 eq("a turn about the centre shows only the turn", positionText(placeFields(turned, pivot)), "Turn Z 30°");
 eq("both", positionText(placeFields(poseFromPlace(turned, pivot, "y", 4), pivot)), "Y 4 · Turn Z 30°");
-eq("a hair off is still at the file position", positionText({ x: 0.001, y: -0.004, z: 0, rx: 0.002, ry: 0, rz: 0 }), "At file position");
+eq("a hair off is still at the file position", positionText({ x: 0.001, y: -0.004, z: 0, rx: 0.002, ry: 0, rz: 0 }), "Placed as in the file");
 
 if (failed > 0) {
   throw new Error(`model-hole: ${failed} failed`);

@@ -149,11 +149,133 @@ The owner decided these four, and each keeps the behaviour above.
 - **Settings:** no "expand all"; scrolling the dock is enough.
 - **Dock closed by the 30% width budget:** no extra sentence.
 
+## Parameter handles
+
+Hovering a size knob, dragging it, or focusing its number used to light the whole ghost. The knob and the field now light only the part that number changes, in that axis's colour, drawn thicker than the other edges, with the live value on a dimension line. The same sentence is the handle's tooltip ("Depth (Y) 10 mm"). The matching field gets a ring as well as the colour. Tabbing to the field does this with no pointer. When nothing is hovered or focused, the solid's own selection is unchanged.
+
+| Control | What lights |
+| --- | --- |
+| Box, wedge, ellipsoid X / Y / Z | The edges parallel to that axis, and the dimension. A wedge's Top X lights the top edges. |
+| Cylinder, cone, tube radius | The rim circle and a radius line. A cone's top radius is the top rim. A tube's inner radius is the inner rim. |
+| Height | The side edges and a height dimension. |
+| Sphere | A great circle and a radius line. |
+| Torus | The ring, or the tube circle. |
+| Polygon sides | The outline, top and bottom and the verticals. Across is the across-flats or across-corners dimension. |
+| Hole | Diameter (the circle), depth, counterbore diameter and depth. Moving the hole lights that axis through the origin. |
+| Fillet, chamfer | The picked edge, and the radius standing off it. |
+| Extrude, push/pull | The moved face, or a ring on that plane, and the distance. |
+| Revolve, turn rings, tilt | The arc of the angle. |
+| Split | The cutting plane's outline. |
+| Shell | The face being opened, and the thickness. |
+| Scale | The solid's box, because every edge changes together, labelled with the factor. |
+| Measure | The line from A to B. |
+| Move arrows, feature width, height, diameter, depth, pitch | That axis, rectangle, circle, or pitch, when the face or the piece is known. |
+
+A count, a margin, and the thin-wall threshold have no edge of their own. Those still name themselves in the tooltip and light their field, and they do not dim the solid.
+
+![The whole ghost used to light for any size knob](screenshots/ui-review-3-1/before-handle-ghost.png)
+
+![Depth Y lights the four edges parallel to Y](screenshots/ui-review-3-1/after-handle-axis.png)
+
+![The same edges, from the keyboard, while Depth Y is focused](screenshots/ui-review-3-1/after-handle-field.png)
+
+Those first lit edges were pale and the solid went translucent. The lines are now the axis colour at 4 px, drawn through the ghost, with the hidden run dashed. The solid stays opaque. Ghost edges drop to 0.35 and ghost faces by a fifth.
+
+![Pale edges and a washed-out solid](screenshots/ui-review-3-1/ph01-before-axis.png)
+
+![Axis-coloured edges, solid left opaque](screenshots/ui-review-3-1/ph01-after-axis.png)
+
+A mapped size shows the value once, on the dimension: extension lines, arrowheads, and the label. The knob tooltip is hidden while that dimension is up.
+
+![One dimension for Depth Y](screenshots/ui-review-3-1/ph02-after-dimension.png)
+
+The panel, the handle, and the dimension use one name: Width X, Depth Y, Height Z.
+
+![Depth Y on the panel and on the dimension](screenshots/ui-review-3-1/ph03-after-labels.png)
+
+A focused size field has a 2 px ring, an axis badge in the corner, and a visually hidden description ("Depth Y, 10 millimetres, lights the edges along Y"). Axis colours against the stage, and against the ghost (the accent mixed at 22% over the stage), are at least 3:1 in the dark and light themes.
+
+![Depth Y focused, with its Y badge](screenshots/ui-review-3-1/ph08-after-badge.png)
+
+The sketch card is grouped. Draw is Line, Rectangle, Circle, Arc, Spline, Polygon, Slot, in that order, as icons. Edit and Make sit under their own headings. Finish sketch is the primary button until a feature is open. Fillet corner and Use stay in Edit so those tools are still on the card.
+
+![Sketch tools in one wrapping row](screenshots/ui-review-3-1/ux03-before-sketch-card.png)
+
+![Draw, Edit, and Make, with Finish sketch primary](screenshots/ui-review-3-1/ux03-after-sketch-card.png)
+
+A feature's status line is a short title. The steps are in How, beside the strip. The size field sits on the handle, and the unit is inside the field.
+
+![Extrude distance on the arrow, unit inside the field](screenshots/ui-review-3-1/ux05-after-hud.png)
+
+An empty Parameters section starts collapsed, so History sits under the tool card. The header still reads Parameters · 0, and a click opens the table. While a sketch is open and nothing is named, the section hides.
+
+![Parameters open and empty under History](screenshots/ui-review-3-1/ux07-before-params.png)
+
+![Parameters collapsed to one line](screenshots/ui-review-3-1/ux07-after-params.png)
+
+Boolean and New solid no longer park their gizmo on the right. Arrows and rings sit on the ghost's centre, and each size knob sits on the face it grows. The side gizmo comes back only when that centre leaves the canvas, or the ghost is under 24 px on screen.
+
+![The gizmo used to float at the right edge](screenshots/ui-review-3-1/before-handle-ghost.png)
+
+![Arrows, rings, and size knobs on the ghost](screenshots/ui-review-3-1/ux06-after-handles.png)
+
+A history row names the sketch and the value: Extrude Sketch 1, 20 mm. An unchanged pose is the small line "Placed as in the file" instead of a Position row. The plate chip's tooltip says that step is what the plate slices.
+
+![Position as a history row, At file position](screenshots/ui-review-3-1/ux08-before-history.png)
+
+![Extrude Sketch 1, 20 mm, and the file pose as a line](screenshots/ui-review-3-1/ux08-after-history.png)
+
+The faded selection chip names the count, "1 face ▾", in the dock's surface colour, and sits beside the solid.
+
+![A white Selection chip centred above the box](screenshots/ui-review-3-1/ux09-before-chip.png)
+
+![1 face, beside the solid](screenshots/ui-review-3-1/ux09-after-chip.png)
+
+"Slicing paused while modeling" shows for four seconds when Model opens onto a slice, then a dot beside Slice keeps the same tooltip. Back on Prepare, a change made in Model asks you to slice again.
+
+![The paused line in the status bar](screenshots/ui-review-3-1/ux10-before-pause.png)
+
+![The line gone, a dot beside Slice](screenshots/ui-review-3-1/ux10-after-pause-dot.png)
+
+The Objects toolbar stays on one line. A command that has a shortcut names it in the tooltip. Check and Frame stay text buttons on the card. Anything that does not fit moves into the ⋯ menu.
+
+![The icon row wrapped one rotate onto a second line](screenshots/ui-review-3-1/ux11-before-tools.png)
+
+![Add, duplicate, arrange, center, lay flat, and the three rotates on one line](screenshots/ui-review-3-1/ux11-after-tools.png)
+
+Dimension labels stand off the solid. Each one clears the solid's projected box by 12 px, and a shorter label hides when it would cover a longer one or its leader.
+
+![20 mm labels sitting on the cube's edges](screenshots/ui-review-3-1/ux12-before-dims.png)
+
+![The three labels clear of the cube](screenshots/ui-review-3-1/ux12-after-dims.png)
+
 ## Checks
 
 - `npx tsc --noEmit`
 - `npm run test:unit`
-- Playwright, against the dev server, for the specs this branch changes: `ui-review`, `model-sketch`, `model-context-bar`, `model-layout`, `model-features`, `model-parameters`, `window-fit`, `compact-layout`
+- Playwright, against the dev server, for the specs this branch changes: `ui-review`, `model-sketch`, `model-context-bar`, `model-layout`, `model-features`, `model-parameters`, `window-fit`, `compact-layout`, `plate`, `view-rulers`
 - `tools/golden_ab.sh` needs a built slicer binary. This change does not touch the engine, the slice path, or G-code. The unit runner reports `golden: SKIPPED` when that binary is absent.
 
-At 1440×900 every Model tool is on the rail. At 1366×768 only the Frame group folds. Tools still take a typed value and a click. New actions went into existing menus and the command palette, not onto the toolbar.
+At 1440×900 every Model tool is on the rail. At 1366×768 the headings stay, and Inspect and Frame fold into flyouts. Tools still take a typed value and a click. New actions went into existing menus and the command palette, not onto the toolbar.
+
+## Rounds 2 and 3
+
+Lit edges are solid where the solid does not cover them and dashed, at 60% of the axis colour, where it does.
+
+![A size axis, solid in front and dashed behind](screenshots/ui-review-3-1/ph01-after-axis.png)
+
+![Depth Y focused, badge on the field](screenshots/ui-review-3-1/ph08-after-badge.png)
+
+Boolean sizes use the same names as the primitive: Width X, Depth Y, Height Z.
+
+![Boolean box sizes named Width, Depth, and Height](screenshots/ui-review-3-1/ph03-followup-after-sizes.png)
+
+The sketch feature strip is a left-aligned form. Apply is the primary button.
+
+![Loft strip: prompt, name, Smooth, Apply and Cancel](screenshots/ui-review-3-1/ux03-after-feature-strip.png)
+
+The extrude size box sits on the canvas next to its arrow.
+
+![Extrude distance beside the arrow](screenshots/ui-review-3-1/ux05-after-hud.png)
+
+The 3,000-face frame check runs on the preview build. Its median was 40.3 ms from 46 frames, above the 17 ms bar, so that task stays open. The engine byte comparison was not run: there is no slicer binary here (`golden: SKIPPED`).

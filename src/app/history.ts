@@ -217,6 +217,11 @@ export function markModelEdit() {
   visitEdited = true;
 }
 
+/** The plate changed during the Model visit that is open, or that just closed. */
+export function modelVisitChanged(): boolean {
+  return visitEdited;
+}
+
 /**
  * Fold a visit that changed the plate into one step: only the state before the visit and the one
  * after it stay reachable. The Model tree keeps the steps in between, and the after state gets its

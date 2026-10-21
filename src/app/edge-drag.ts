@@ -133,6 +133,7 @@ export function mountEdgeDrag(host: EdgeDragHost): { sync(): void; picksChanged(
     const parent = host.canvas()?.parentElement;
     if (!parent) return null;
     hud = mountHud(parent);
+    host.view()?.watchFocus(hud.element);
     hud.onCommit((commit) => {
       if (!live) return;
       const size = commit.values[0];

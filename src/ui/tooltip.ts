@@ -1,8 +1,8 @@
 import { computePosition, flip, offset, shift } from "@floating-ui/dom";
 
-import { COMMANDS, commandForElement, shortcutOf, targetSelector, type CommandSpec } from "./commands";
+import { COMMANDS, commandForElement, shortcutOf, shortcutShadowed, targetSelector, tipWithShortcut, type CommandSpec } from "./commands";
 
-const SHOW_MS = 380;
+const SHOW_MS = 250;
 
 function commandById(id: string | undefined): CommandSpec | undefined {
   if (!id) return undefined;
@@ -38,8 +38,11 @@ export function mountTooltips(root: ParentNode = document) {
     }
     // --- P3 context bar --- a selection button names its command, since it is not the toolbar button.
     const command = commandForElement(el) ?? commandById(el.dataset.command);
-    const text = el.dataset.tip ?? command?.label ?? "";
-    const shortcut = command ? shortcutOf(command) ?? "" : "";
+    const owned = command ? shortcutOf(command) ?? "" : "";
+    const shortcut = owned && !shortcutShadowed(owned) ? owned : "";
+    // A stored sentence may already end with the chord. The open tip shows that chord once, as a key cap.
+    let text = tipWithShortcut(el.dataset.tip ?? command?.label ?? "", undefined);
+    if (shortcut && text.endsWith(` (${shortcut})`)) text = text.slice(0, -(` (${shortcut})`.length)).trim();
     if (!text && !shortcut) {
       hide();
       return;

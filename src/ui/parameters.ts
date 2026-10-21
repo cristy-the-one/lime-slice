@@ -4,7 +4,7 @@
  * told to add it above this row; the evaluator's own sentence stays for model_params.
  */
 import { PARAM_NAME } from "../modeling/expr.ts";
-import { appParamMessage, evaluateTable, isPlainNumber, type ParamTable } from "../modeling/params.ts";
+import { appParamMessage, evaluateTable, expressionMentions, isPlainNumber, type ParamTable } from "../modeling/params.ts";
 import { openDock } from "./dock-reveal.ts";
 
 export interface ParameterHooks {
@@ -15,9 +15,20 @@ export interface ParameterHooks {
   /** Steps a rebuild would replay, from the earliest. */
   affected(): number;
   rebuild(): void;
+  /** Remembers the open state for this project. Empty uses one shared key. */
+  projectId?(): string;
 }
 
 let hooks: ParameterHooks | null = null;
+
+/**
+ * Hide Parameters while a sketch is open and none of its dimension expressions name a table entry.
+ * A sketch that is closed, or that the user opened with Ctrl+Alt+P, stays visible.
+ */
+export function parametersHiddenWhileSketching(sketching: boolean, revealed: boolean, names: readonly string[], exprs: string): boolean {
+  if (!sketching || revealed) return false;
+  return !names.some((name) => expressionMentions(exprs, name));
+}
 
 /** The panel never names the MCP tool. Other evaluator sentences pass through. */
 export function panelParamMessage(message: string): string {
@@ -25,22 +36,63 @@ export function panelParamMessage(message: string): string {
 }
 
 /** E3. Parameters sit in the Model dock under History, folded or open as the user left them. */
-const FOLDED_KEY = "lime-slice-model-params-folded";
+const FOLD_PREFIX = "lime-slice-model-params-folded:";
+const FOLD_ORDER = "lime-slice-model-params-folded-order";
+const FOLD_LIMIT = 50;
 
-function readFolded(): boolean {
-  try {
-    return localStorage.getItem(FOLDED_KEY) === "1";
-  } catch {
-    return false;
+type FoldStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+/** A saved path, or one shared key when the project has not been saved. */
+export function parametersFoldId(projectPath: string): string {
+  return projectPath.trim() || "unsaved";
+}
+
+function foldOrder(storage: FoldStorage): string[] {
+  return (storage.getItem(FOLD_ORDER) ?? "").split("\n").filter(Boolean);
+}
+
+/** How many projects remember a fold. At most 50. */
+export function parametersFoldCount(storage: FoldStorage): number {
+  return foldOrder(storage).length;
+}
+
+/** `true` is folded. Null when this project has no stored choice. */
+export function readParametersFold(storage: FoldStorage, projectPath: string): boolean | null {
+  const stored = storage.getItem(FOLD_PREFIX + parametersFoldId(projectPath));
+  if (stored === "1") return true;
+  if (stored === "0") return false;
+  return null;
+}
+
+/** Remember the fold for this path. The 51st project drops the oldest. */
+export function writeParametersFold(storage: FoldStorage, projectPath: string, folded: boolean): void {
+  const id = parametersFoldId(projectPath);
+  storage.setItem(FOLD_PREFIX + id, folded ? "1" : "0");
+  const order = foldOrder(storage).filter((item) => item !== id);
+  order.push(id);
+  while (order.length > FOLD_LIMIT) {
+    const oldest = order.shift();
+    if (oldest) storage.removeItem(FOLD_PREFIX + oldest);
   }
+  storage.setItem(FOLD_ORDER, order.join("\n"));
+}
+
+/** A stored choice wins. With none, an empty table starts collapsed. */
+function readFolded(count: number): boolean {
+  try {
+    const stored = readParametersFold(localStorage, hooks?.projectId?.() ?? "");
+    if (stored != null) return stored;
+  } catch {
+    return count === 0;
+  }
+  return count === 0;
 }
 
 function writeFolded(on: boolean) {
   try {
-    if (on) localStorage.setItem(FOLDED_KEY, "1");
-    else localStorage.removeItem(FOLDED_KEY);
+    writeParametersFold(localStorage, hooks?.projectId?.() ?? "", on);
   } catch {
-    /* blocked storage: the section opens unfolded next time */
+    /* blocked storage: the section follows the empty-table default next time */
   }
 }
 
@@ -66,8 +118,10 @@ export function mountParameters(next: ParameterHooks) {
   document.querySelector("#modelParamsRebuild")?.addEventListener("click", () => hooks?.rebuild());
   document.querySelector("#modelParamsBody")?.addEventListener("input", onInput);
   document.querySelector("#modelParamsBody")?.addEventListener("click", onClick);
-  setFolded(readFolded());
+  setFolded(readFolded(Object.keys(next.table()).length));
   paint(false);
+  const canvas = document.querySelector("#model");
+  if (canvas) new MutationObserver(() => syncSketchVisibility()).observe(canvas, { attributes: true, attributeFilter: ["data-sketch", "data-sketch-exprs"] });
 }
 
 function setFolded(on: boolean) {
@@ -88,12 +142,30 @@ export function toggleParameters() {
 }
 
 /** The Features menu's Parameters and Ctrl+Alt+P: the Model dock shows, the section opens, and typing goes to it. */
+/** The user asked for the section, so a sketch does not hide it again until the sketch ends. */
+let revealed = false;
+
 export function revealParameters() {
+  revealed = true;
+  const section = document.querySelector<HTMLElement>("#modelParams");
+  if (section) section.hidden = false;
   // Asked for by the user, so the dock opens as their own choice.
   openDock("left");
-  document.querySelector<HTMLElement>("#modelParams")?.setAttribute("data-sheet", "open");
+  section?.setAttribute("data-sheet", "open");
   openParameters(true);
-  document.querySelector<HTMLElement>("#modelParams")?.scrollIntoView({ block: "nearest" });
+  section?.scrollIntoView({ block: "nearest" });
+}
+
+/** While sketching, Parameters stays out of the way unless a dimension names one of them. */
+function syncSketchVisibility() {
+  const section = document.querySelector<HTMLElement>("#modelParams");
+  if (!section) return;
+  const canvas = document.querySelector("#model");
+  const sketching = canvas?.getAttribute("data-sketch") === "editing";
+  if (!sketching) revealed = false;
+  const names = Object.keys(hooks?.table() ?? {});
+  const exprs = canvas?.getAttribute("data-sketch-exprs") ?? "";
+  section.hidden = parametersHiddenWhileSketching(sketching, revealed, names, exprs);
 }
 
 function openParameters(focus: boolean) {
@@ -121,6 +193,7 @@ export function syncRebuildCount() {
 export function syncParameters() {
   if (parametersOpen()) paint(false);
   else paintRebuild();
+  syncSketchVisibility();
 }
 
 function onInput(ev: Event) {
@@ -287,6 +360,7 @@ function readDom(): ParamTable {
 
 function writeFromDom() {
   hooks?.setTable(readDom());
+  syncSketchVisibility();
 }
 
 function paintRebuild() {

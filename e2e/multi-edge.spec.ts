@@ -134,7 +134,7 @@ test("a hole follows the picked face, and a fillet sends every selected edge", a
   expect(hits.length, "the scan should find two different edges").toBeGreaterThanOrEqual(2);
   await clickCanvas(page, hits[0]!.x, hits[0]!.y);
   await clickCanvas(page, hits[1]!.x, hits[1]!.y, true);
-  await expect(page.locator("#modelCount")).toContainText("2 edges");
+  await expect(page.locator("#contextBarRestore")).toHaveText("2 edges ▾");
   await page.locator("#modelToolFillet").click();
   await expect(page.locator("#modelPickEdge")).toHaveAttribute("aria-pressed", "true");
   await expect.poll(() => (probes.at(-1)?.edges as number[] | undefined)?.length).toBe(2);

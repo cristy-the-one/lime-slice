@@ -7,6 +7,7 @@ import {
   jumped,
   newTree,
   nodeWithMesh,
+  historyCaption,
   opLabel,
   pathTo,
   reachableTrees,
@@ -137,6 +138,18 @@ eq("an object without a key keeps a tree of its own with its mesh", [...reachabl
 eq("and, as a copy, any tree with its mesh", [...reachableTrees(trees, [{ id: "copy", token: "m-b" }])], ["b#3"]);
 eq("an object with a key keeps another tree only if that tree is its own", [...reachableTrees(trees, [{ id: "c", key: "c#4", token: "m-b" }])], ["c#4"]);
 eq("nothing names the rest", [...reachableTrees(trees, [{ id: "gone", key: "gone#9", token: "m-x" }])], []);
+
+const drawn = { v: 1 as const, plane: { origin: [0, 0, 0] as [number, number, number], turn: [0, 0, 0] as [number, number, number] }, points: [], entities: [], name: "Sketch 1" };
+const drawn2 = { ...drawn, name: "Sketch 2" };
+const extrude: ModelOp = { kind: "extrude", op: "cut", origin: [0, 0, 0], turn: [0, 0, 0], profile: [[0, 0], [1, 0], [0, 1]], depth: -20, sketch: drawn };
+const revolve: ModelOp = { kind: "revolve", op: "fuse", origin: [0, 0, 0], turn: [0, 0, 0], profile: [[0, 0], [1, 0], [0, 1]], angleDeg: 270, sketch: drawn };
+const loft: ModelOp = { kind: "loft", op: "fuse", sections: [], drawing: { sketches: [drawn, drawn2] } };
+eq("a sketch feature is named from the sketch, and an MCP step keeps opLabel", [
+  historyCaption(extrude, opLabel(extrude)),
+  historyCaption(revolve, opLabel(revolve)),
+  historyCaption(loft, opLabel(loft)),
+  historyCaption(cut, opLabel(cut)),
+], ["Extrude Sketch 1, 20 mm, cut", "Revolve Sketch 1, 270°", "Loft Sketch 1 → Sketch 2", opLabel(cut)]);
 
 eq("labels", [cut, hole, scale, { kind: "split", origin: [0, 0, 4.5], normal: [0, 0, 1] }, { kind: "split", origin: [10, 5, 5], normal: [1, 0, 0] }, { kind: "fillet", edges: [1, 2, 3], size: 1 }].map((op) => opLabel(op as ModelOp)), [
   "Cut box 10×10×10",

@@ -176,6 +176,7 @@ function mountToolRail(hooks: ChromeHooks) {
   mountRovingFocus(rail);
   mountRailFolds(rail);
   flyouts = mountRailFlyouts(rail);
+  mountRailLabels();
   paintRailStage(hooks.stage());
 
   const buttons = { move, rotate, scale };
@@ -314,8 +315,35 @@ function paintDockNames(stage: Stage) {
   if (model) window.dispatchEvent(new Event("lime-inspect"));
 }
 
+const RAIL_LABELS_KEY = "lime-slice-rail-labels";
+
+/** Show labels is a setting, off until the user turns it on. It widens the rail to 132 px. */
+function mountRailLabels() {
+  const input = document.querySelector<HTMLInputElement>("#railLabels");
+  const apply = (on: boolean) => {
+    document.documentElement.dataset.railLabels = on ? "1" : "0";
+    if (input) input.checked = on;
+  };
+  let on = false;
+  try {
+    on = localStorage.getItem(RAIL_LABELS_KEY) === "1";
+  } catch {
+    on = false;
+  }
+  apply(on);
+  input?.addEventListener("change", () => {
+    apply(input.checked);
+    try {
+      localStorage.setItem(RAIL_LABELS_KEY, input.checked ? "1" : "0");
+    } catch {
+      // The choice still applies for this visit.
+    }
+    fitRail();
+  });
+}
+
 /** E3. Groups fold into one flyout button when the rail is too short for every tool, the least used first. */
-const FOLD_ORDER = ["frame", "inspect", "combine", "feature", "modify", "create"];
+const FOLD_ORDER = ["frame", "inspect", "features", "shape", "create"];
 let openFold: HTMLElement | null = null;
 
 function mountRailFolds(rail: HTMLElement) {
@@ -418,7 +446,6 @@ export function fitRail() {
   for (const group of groups) fold(group, false);
   delete rail.dataset.fit;
   if (document.documentElement.classList.contains("layout-compact") || rail.querySelector("#railModel")?.closest("[hidden]")) return;
-  if (overflows()) rail.dataset.fit = "bare";
   if (overflows()) rail.dataset.fit = "dense";
   for (const group of groups) {
     if (!overflows()) break;

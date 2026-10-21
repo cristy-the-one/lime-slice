@@ -3,7 +3,7 @@ import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResp
 import { autoSliceAllowed, autoSliceDeferred, meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply, FORCE_LABEL } from "../slice-action";
 import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, withMeshData } from "./files";
 import { MeshRefs, sendWithMeshes, unknownMeshRef, type MeshFields, type SentMesh } from "../mesh-refs";
-import { adoptPatch, previewBase } from "./viewer";
+import { adoptPatch, paintStatus, previewBase } from "./viewer";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
 import { replyOffset, type SlicedBed } from "../bed-offset";
@@ -383,6 +383,8 @@ export async function runSlice(force = false) {
     if (id !== session.job) return;
     if (body.error) throw new Error(body.error);
     state.result = body;
+    session.askSlice = false;
+    paintStatus();
     session.resultJob = id;
     session.resultFrame = frame;
     slicedBed.offset = replyOffset(body.offset);

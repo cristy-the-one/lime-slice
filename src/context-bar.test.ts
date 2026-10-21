@@ -64,6 +64,10 @@ check("the bar stays off the solid", !boxesOverlap(boxOf(clearOfSolid), solid));
 check("the bar stays off the pointer when the solid owns the preferred seat", !boxesOverlap(boxOf(clearOfSolid), { x: pointer.x - 4, y: pointer.y - 4, width: 8, height: 8 }));
 check("a blocked seat prefers above the solid", clearOfSolid.y + bar.height <= solid.y);
 
+const beside = seatContextBar({ pointer, bar, bounds: canvas, solid, obstacles: [], place: "beside" });
+check("a chip sits beside the solid", beside.x + bar.width <= solid.x || beside.x >= solid.x + solid.width);
+check("a chip beside the solid does not cover it", !boxesOverlap(boxOf(beside), solid));
+
 const readout: ContextBox = { x: 8, y: 8, width: 760, height: 80 };
 const underReadout = seatContextBar({
   pointer: { x: 400, y: 40 },

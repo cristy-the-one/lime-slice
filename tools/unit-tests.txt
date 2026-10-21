@@ -77,6 +77,7 @@ src/workplane.test.ts
 src/push-pull.test.ts
 src/context-bar.test.ts
 src/model-drag.test.ts
+src/handle-emphasis.test.ts
 src/interact/interact.test.ts
 src/interact/edge-drag.test.ts
 src/section-plane.test.ts
@@ -140,6 +141,7 @@ src/sketch/sweep.test.ts
 src/sketch/edit.test.ts
 src/sketch/solve.test.ts
 src/sketch/session.test.ts
+src/sketch/hints.test.ts
 src/modeling/index.test.ts
 src/model-face.test.ts
 src/model-loops.test.ts

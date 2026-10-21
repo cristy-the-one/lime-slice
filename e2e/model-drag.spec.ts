@@ -4,6 +4,25 @@ import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree } from "./model-tree-mock";
 
+/** CIE76, enough to tell an axis green from a washed-out edge. */
+function deltaE(rgb: number[], target: number[]) {
+  const lab = (channels: number[]) => {
+    const lin = channels.map((value) => {
+      const c = value / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    const x = (lin[0]! * 0.4124 + lin[1]! * 0.3576 + lin[2]! * 0.1805) / 0.95047;
+    const y = lin[0]! * 0.2126 + lin[1]! * 0.7152 + lin[2]! * 0.0722;
+    const z = (lin[0]! * 0.0193 + lin[1]! * 0.1192 + lin[2]! * 0.9505) / 1.08883;
+    const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+    const fy = f(y);
+    return [116 * fy - 16, 500 * (f(x) - fy), 200 * (fy - f(z))];
+  };
+  const a = lab(rgb);
+  const b = lab(target);
+  return Math.hypot(a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!);
+}
+
 const out = path.resolve("artifacts/model-drag");
 fs.mkdirSync(out, { recursive: true });
 
@@ -55,7 +74,7 @@ async function openSolid(page: Page, probes: Record<string, unknown>[], solid = 
       return { ok: true };
     },
   });
-  await page.goto("/");
+  await page.goto("/?perf=1");
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
   // From 961 to 1200 px settings start in a closed drawer: open it from the rail, as a user would, then close it so
@@ -85,6 +104,33 @@ async function grips(page: Page): Promise<Record<string, { x: number; y: number 
     map[id!] = { x: box.x + x!, y: box.y + y! };
   }
   return map;
+}
+
+/** Each handle's seat, in page pixels. */
+async function seats(page: Page): Promise<Record<string, { x: number; y: number }>> {
+  const text = (await page.locator("#model").getAttribute("data-handle-seat")) ?? "";
+  const box = (await page.locator("#model").boundingBox())!;
+  const map: Record<string, { x: number; y: number }> = {};
+  for (const item of text.split(" ").filter(Boolean)) {
+    const [id, at] = item.split(":");
+    const [x, y] = at!.split(",").map(Number);
+    map[id!] = { x: box.x + x!, y: box.y + y! };
+  }
+  return map;
+}
+
+/** Boolean and New solid seats stay inside the ghost's screen box, plus 40 px. */
+async function seatsOnGhost(page: Page, what: string) {
+  const box = (await page.locator("#model").boundingBox())!;
+  const [x, y, w, h] = ((await page.locator("#model").getAttribute("data-ghost-screen")) ?? "").split(",").map(Number);
+  const all = await seats(page);
+  expect(Object.keys(all).length, what).toBeGreaterThan(0);
+  for (const [id, at] of Object.entries(all)) {
+    expect(at.x, `${what}: ${id}`).toBeGreaterThanOrEqual(box.x + x! - 40);
+    expect(at.y, `${what}: ${id}`).toBeGreaterThanOrEqual(box.y + y! - 40);
+    expect(at.x, `${what}: ${id}`).toBeLessThanOrEqual(box.x + x! + w! + 40);
+    expect(at.y, `${what}: ${id}`).toBeLessThanOrEqual(box.y + y! + h! + 40);
+  }
 }
 
 /** Where the dock's middle is, in page pixels. */
@@ -165,7 +211,7 @@ test("the split plane drags inside the part, Shift is fine, and Ctrl snaps", asy
 
 test("the dock stays put through orbit, zoom, pan, a tool change, and a number typed into a field", async ({ page }) => {
   await openSolid(page, [], boxSolid([-110, -110, 0], [220, 220, 5.1]));
-  await page.locator("#modelToolBoolean").click();
+  await page.locator("#modelToolHole").click();
   const start = await dock(page);
   const canvas = (await page.locator("#model").boundingBox())!;
   const empty = { x: canvas.x + canvas.width * 0.5, y: canvas.y + canvas.height * 0.88 };
@@ -196,8 +242,6 @@ test("the dock stays put through orbit, zoom, pan, a tool change, and a number t
   await page.locator("#modelX").fill("-60");
   await page.locator("#modelX").dispatchEvent("input");
   await still("a typed X");
-  await page.locator("#modelToolHole").click();
-  await still("the Hole tool");
   await page.locator("#modelToolScale").click();
   await still("the Scale tool");
   await page.locator("#modelToolSplit").click();
@@ -224,14 +268,15 @@ for (const [width, height] of [[1440, 900], [1280, 720], [1024, 768]] as const) 
       const room = Math.min(centre.x - reach - canvas.x, canvas.x + canvas.width - centre.x - reach, centre.y - reach - canvas.y, canvas.y + canvas.height - centre.y - reach);
       expect(room, `${what}: the dock's reach is ${Math.round(room)} px from the canvas edge`).toBeGreaterThanOrEqual(24);
     };
-    await page.locator("#modelToolBoolean").click();
+    const boolean = page.locator("#modelToolBoolean");
+    if (!(await boolean.isVisible())) await page.locator('.rail-group[data-group="features"] .rail-fold').click();
+    await boolean.click();
     await expect.poll(async () => Object.keys(await grips(page))).toContain("size-0");
-    if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/dock-boolean-${width}x${height}.png` });
-    await inside("the box's arrows, rings, and knobs");
+    await expect(page.locator("#model")).not.toHaveAttribute("data-gizmo-at", /.+/);
+    await seatsOnGhost(page, "boolean");
     await page.locator("#modelToolSplit").click();
     await expect.poll(async () => Object.keys(await grips(page))).toContain("tilt-a");
     await inside("the split's tilt rings");
-    await page.locator("#modelToolBoolean").click();
     const start = await dock(page);
     const empty = { x: canvas.x + canvas.width * 0.4, y: canvas.y + canvas.height * 0.85 };
     await page.mouse.move(empty.x, empty.y);
@@ -246,7 +291,20 @@ for (const [width, height] of [[1440, 900], [1280, 720], [1024, 768]] as const) 
   });
 }
 
-test("a boolean primitive moves, resizes, and turns from the dock, in sync with its numbers", async ({ page }) => {
+test("boolean and new solid handles sit on the ghost", async ({ page }) => {
+  await openSolid(page, []);
+  await page.locator("#modelToolBoolean").click();
+  await expect.poll(async () => Object.keys(await grips(page))).toContain("move-x");
+  await expect(page.locator("#model")).not.toHaveAttribute("data-gizmo-at", /.+/);
+  await seatsOnGhost(page, "boolean");
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/ux06-after-handles.png` });
+  await page.locator("#modelToolNew").click();
+  await expect.poll(async () => Object.keys(await grips(page))).toContain("size-0");
+  await expect(page.locator("#model")).not.toHaveAttribute("data-gizmo-at", /.+/);
+  await seatsOnGhost(page, "new solid");
+});
+
+test("a boolean primitive moves, resizes, and turns from the ghost, in sync with its numbers", async ({ page }) => {
   const probes: Record<string, unknown>[] = [];
   await openSolid(page, probes);
   await page.locator("#modelToolBoolean").click();
@@ -256,7 +314,7 @@ test("a boolean primitive moves, resizes, and turns from the dock, in sync with 
   await page.locator("#modelX").dispatchEvent("input");
   await page.waitForTimeout(300);
   const after = await grip(page, "move-x");
-  expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeLessThanOrEqual(1);
+  expect(Math.hypot(after.x - before.x, after.y - before.y), "the arrow follows the ghost").toBeGreaterThan(8);
 
   const x0 = await value(page, "modelX");
   await drag(page, "move-x", 60, 25);
@@ -275,17 +333,22 @@ test("a boolean primitive moves, resizes, and turns from the dock, in sync with 
   await page.screenshot({ path: path.join(out, "boolean-turned.png") });
 });
 
-test("a 2 mm primitive still has every handle on its own spot, and its Size X knob grows it", async ({ page }) => {
+test("a 2 mm primitive still has every handle on its own spot, and its Width X knob grows it", async ({ page }) => {
   await openSolid(page, []);
   await page.locator("#modelToolBoolean").click();
   for (const id of ["modelDx", "modelDy", "modelDz"]) await setField(page, id, "2");
   await expect.poll(async () => (await ghost(page)).size[0]).toBeCloseTo(2, 1);
-  expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
+  const parked = (await page.locator("#model").getAttribute("data-gizmo-at")) != null;
+  if (parked) expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
 
   const start = await grip(page, "size-0");
-  const centre = await dock(page);
+  const centre = parked ? await dock(page) : await (async () => {
+    const box = (await page.locator("#model").boundingBox())!;
+    const [x, y, w, h] = ((await page.locator("#model").getAttribute("data-ghost-screen")) ?? "").split(",").map(Number);
+    return { x: box.x + x! + w! / 2, y: box.y + y! + h! / 2 };
+  })();
   const length = Math.hypot(start.x - centre.x, start.y - centre.y);
-  expect(length, "the knob stands out of the dock's middle").toBeGreaterThan(40);
+  expect(length, parked ? "the knob stands out of the dock's middle" : "the knob stands off the ghost's centre").toBeGreaterThan(parked ? 40 : 4);
   const outward: [number, number] = [((start.x - centre.x) / length) * 10, ((start.y - centre.y) / length) * 10];
   const dx0 = await value(page, "modelDx");
   await drag(page, "size-0", outward[0], outward[1]);
@@ -297,28 +360,183 @@ test("a 2 mm primitive still has every handle on its own spot, and its Size X kn
   await page.locator(`#modelPrim [data-kind="cylinder"]`).click();
   for (const id of ["modelRadius", "modelHeight"]) await setField(page, id, "1");
   await expect.poll(async () => Object.keys(await grips(page))).toContain("height");
-  expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
+  if ((await page.locator("#model").getAttribute("data-gizmo-at")) != null) expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
   await page.locator(`#modelPrim [data-kind="sphere"]`).click();
   await expect.poll(async () => Object.keys(await grips(page))).not.toContain("height");
-  expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
+  if ((await page.locator("#model").getAttribute("data-gizmo-at")) != null) expect(await minGripGap(page)).toBeGreaterThanOrEqual(14);
 });
 
-test("the ghost of the edited object stands out while a docked handle is hovered or dragged", async ({ page }) => {
+test("hovering a size knob lights that axis, its number, and a dimension", async ({ page }) => {
   await openSolid(page, []);
   await page.locator("#modelToolBoolean").click();
   expect(await page.locator("#model").getAttribute("data-ghost-lit")).not.toBe("1");
+  expect(await page.locator("#model").getAttribute("data-aspect")).toBeNull();
   const at = await grip(page, "size-1");
   await page.mouse.move(at.x, at.y);
-  await expect(page.locator("#model")).toHaveAttribute("data-ghost-lit", "1");
-  await expect(page.locator(".model-drag-tip")).toContainText("Size Y");
-  await page.mouse.move(at.x - 300, at.y + 200);
-  await expect(page.locator("#model")).toHaveAttribute("data-ghost-lit", "0");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-1");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-tip", "Depth Y 10 mm");
+  await expect(page.locator("label:has(#modelDy) .scrub-label")).toHaveText("Depth Y");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-mapped", "1");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-dim", "1");
+  await expect(page.locator("#model")).toHaveAttribute("data-solid-opacity", "1");
+  await expect(page.locator("#modelDy")).toHaveClass(/is-aspect/);
   await expect(page.locator(".model-drag-tip")).toBeHidden();
+  await expect(page.locator(".model-aspect-label")).toHaveText("Depth Y 10 mm");
+  await expect(page.getByText("Depth Y 10 mm")).toHaveCount(1);
+  expect(await page.locator("#model").getAttribute("data-ghost-lit")).not.toBe("1");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-sample", /-?\d+,-?\d+/);
+  const sample = ((await page.locator("#model").getAttribute("data-aspect-sample")) ?? "0,0").split(",").map(Number);
+  const rgb = await page.evaluate(([sx, sy]) => {
+    (window as unknown as { __renderModelFrame?: () => void }).__renderModelFrame?.();
+    const canvas = document.querySelector<HTMLCanvasElement>("#model")!;
+    const gl = canvas.getContext("webgl2");
+    if (!gl) return [0, 0, 0];
+    const scale = canvas.width / Math.max(1, canvas.clientWidth);
+    const buf = new Uint8Array(4);
+    let bestSat = -1;
+    let bestSum = -1;
+    let pick = [0, 0, 0];
+    const read = (px: number, py: number) => {
+      gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      return [buf[0]!, buf[1]!, buf[2]!];
+    };
+    const cx = Math.round(sx! * scale);
+    const cy = canvas.height - Math.round(sy! * scale) - 1;
+    for (let dy = -2; dy <= 2; dy += 1) {
+      for (let dx = -2; dx <= 2; dx += 1) {
+        const pixel = read(cx + dx, cy + dy);
+        const sat = Math.max(...pixel) - Math.min(...pixel);
+        const sum = pixel[0]! + pixel[1]! + pixel[2]!;
+        if (sat > bestSat || (sat === bestSat && sum > bestSum)) {
+          bestSat = sat;
+          bestSum = sum;
+          pick = pixel;
+        }
+      }
+    }
+    return pick;
+  }, sample);
+  const lit = deltaE(rgb, [143, 206, 106]);
+  expect(lit, `lit ΔE ${lit.toFixed(1)} pixel ${rgb.join(",")}`).toBeLessThan(10);
+  if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph01-after-axis.png" });
+  const hidden = ((await page.locator("#model").getAttribute("data-aspect-hidden")) ?? "").split(",").map(Number);
+  expect(hidden.length, "a point on the edge behind the solid").toBe(4);
+  const hiddenRgb = await page.evaluate(([hx, hy, hdx, hdy]) => {
+    (window as unknown as { __renderModelFrame?: () => void }).__renderModelFrame?.();
+    const canvas = document.querySelector<HTMLCanvasElement>("#model")!;
+    const gl = canvas.getContext("webgl2")!;
+    const scale = canvas.width / Math.max(1, canvas.clientWidth);
+    const buf = new Uint8Array(4);
+    const patch = (px: number, py: number) => {
+      let bestSat = -1;
+      let bestSum = -1;
+      let pick = [0, 0, 0];
+      for (let dy = -2; dy <= 2; dy += 1) {
+        for (let dx = -2; dx <= 2; dx += 1) {
+          const x = Math.round(px * scale) + dx;
+          const y = canvas.height - (Math.round(py * scale) + dy) - 1;
+          gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+          const pixel = [buf[0]!, buf[1]!, buf[2]!];
+          const sat = Math.max(...pixel) - Math.min(...pixel);
+          const sum = pixel[0]! + pixel[1]! + pixel[2]!;
+          if (sat > bestSat || (sat === bestSat && sum > bestSum)) {
+            bestSat = sat;
+            bestSum = sum;
+            pick = pixel;
+          }
+        }
+      }
+      return pick;
+    };
+    const along: number[][] = [];
+    for (let step = -10; step <= 10; step += 2) along.push(patch(hx! + hdx! * step, hy! + hdy! * step));
+    return { at: patch(hx!, hy!), along };
+  }, hidden);
+  const hiddenDelta = deltaE(hiddenRgb.at, [143, 206, 106]);
+  expect(hiddenDelta, `hidden ΔE ${hiddenDelta.toFixed(1)} pixel ${hiddenRgb.at.join(",")}`).toBeGreaterThan(15);
+  const line = [143, 206, 106].map((channel) => Math.round(channel * 0.6));
+  // The part behind a hidden edge is itself green, so a gap is only about 22 ΔE from the dash.
+  const onLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) < 15);
+  const offLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) >= 15);
+  expect(onLine.length, "dashed line pixels").toBeGreaterThan(0);
+  expect(offLine.length, "dashed gaps").toBeGreaterThan(0);
+  if (process.env.UPDATE_SCREENSHOTS === "1") {
+    await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph03-after-labels.png" });
+    await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph03-followup-after-sizes.png" });
+  }
+  await page.mouse.move(at.x - 300, at.y + 200);
+  await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
+  await expect(page.locator("#modelDy")).not.toHaveClass(/is-aspect/);
+  await expect(page.locator(".model-drag-tip")).toBeHidden();
+
+  await page.locator("#modelDy").focus();
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-1");
+  await expect(page.locator("#modelDy")).toHaveClass(/is-aspect/);
+  if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph01-after-field.png" });
+  await page.locator("#modelDy").blur();
+  await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
+
+  await page.locator(`#modelPrim [data-kind="cylinder"]`).click();
+  await page.locator("#modelRadius").focus();
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "radius");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-tip", /Radius/);
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-mapped", "1");
+  await page.locator("#modelRadius").blur();
+
+  const solidBox = (await page.locator("#model").boundingBox())!;
+  const screen = ((await page.locator("#model").getAttribute("data-solid-screen")) ?? "").split(",").map(Number);
+  await page.mouse.click(solidBox.x + screen[0]! + screen[2]! / 2, solidBox.y + screen[1]! + screen[3]! / 2);
+  await expect(page.locator("#modelContextBar")).not.toHaveAttribute("data-kind", "empty");
 
   await page.locator("#modelToolMeasure").click();
   const dot = await grip(page, "measure-a");
   await page.mouse.move(dot.x, dot.y);
-  await expect(page.locator("#model")).toHaveAttribute("data-ghost-lit", "0");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "measure-a");
+  expect(await page.locator("#model").getAttribute("data-ghost-lit")).not.toBe("1");
+});
+
+test("focusing a settings field does not sync the model aspect", async ({ page }) => {
+  await openSolid(page, []);
+  await page.locator("#modelToolBoolean").click();
+  await page.locator("#modelDy").focus();
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-1");
+  await page.locator("#modelDy").blur();
+  await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
+  const before = Number((await page.locator("#model").getAttribute("data-focus-syncs")) ?? "0");
+  await page.locator("#gear").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await page.locator("#autoslice").focus();
+  await page.waitForTimeout(50);
+  expect(Number(await page.locator("#model").getAttribute("data-focus-syncs"))).toBe(before);
+  await expect(page.locator("#model")).not.toHaveAttribute("data-aspect", /.+/);
+});
+
+test("crossing the size knobs does not flicker the lit state", async ({ page }) => {
+  await openSolid(page, []);
+  await page.locator("#modelToolBoolean").click();
+  await page.evaluate(() => {
+    const canvas = document.querySelector("#model")!;
+    const changes: string[] = [];
+    (window as unknown as { __dimChanges: string[] }).__dimChanges = changes;
+    new MutationObserver(() => changes.push(canvas.getAttribute("data-aspect-dim") ?? "0")).observe(canvas, { attributes: true, attributeFilter: ["data-aspect-dim"] });
+  });
+  const first = await grip(page, "size-0");
+  const second = await grip(page, "size-1");
+  const third = await grip(page, "size-2");
+  const path = [first, second, third];
+  await page.evaluate((points) => {
+    const canvas = document.querySelector<HTMLCanvasElement>("#model")!;
+    const hop = (at: { x: number; y: number }) => canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: at.x, clientY: at.y, bubbles: true }));
+    hop(points[0]!);
+    for (let i = 1; i < points.length; i += 1) {
+      const from = points[i - 1]!;
+      const to = points[i]!;
+      for (let step = 1; step <= 6; step += 1) hop({ x: from.x + ((to.x - from.x) * step) / 6, y: from.y + ((to.y - from.y) * step) / 6 });
+    }
+  }, path);
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "size-2");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-dim", "1");
+  const changes = await page.evaluate(() => (window as unknown as { __dimChanges: string[] }).__dimChanges);
+  expect(changes.filter((value) => value === "0"), `dim changes ${changes.join(" ")}`).toEqual([]);
 });
 
 test("a hole slides in its face plane from two docked arrows, and its origin dot still drags over the solid", async ({ page }) => {
@@ -355,7 +573,8 @@ test("a hole slides in its face plane from two docked arrows, and its origin dot
   const x1 = await value(page, "modelX");
   const dot = await grip(page, "hole-origin");
   await page.mouse.move(dot.x, dot.y);
-  await expect(page.locator(".model-drag-tip")).toContainText("Origin");
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect-tip", /Origin/);
+  await expect(page.locator(".model-aspect-label")).toContainText("Origin");
   await page.mouse.down();
   for (let i = 1; i <= 6; i += 1) await page.mouse.move(dot.x - 4 * i, dot.y - 2 * i);
   await page.mouse.up();

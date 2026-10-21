@@ -181,6 +181,31 @@ test("Preview 3D and the 2D layer view show the callouts and an honest scale bar
   expect(await barCollisions(solid)).toBe(0);
 });
 
+test("dimension labels sit off the solid and clear of each other", async ({ page }) => {
+  await quiet(page);
+  await openCube(page);
+  await page.locator("#tabPrepare").click();
+  const stage = page.locator("#prepareBody");
+  await expect(dims(stage)).toHaveCount(3);
+  const boxes = await stage.locator(".measure").evaluate((el) => {
+    const host = el.getBoundingClientRect();
+    const solid = (el as HTMLElement).dataset.solid!.split(",").map(Number);
+    const labels = [...el.querySelectorAll("text.m-dim")].map((node) => {
+      const r = node.getBoundingClientRect();
+      return { x: r.left - host.left, y: r.top - host.top, w: r.width, h: r.height };
+    });
+    return { solid: { x: solid[0]!, y: solid[1]!, w: solid[2]!, h: solid[3]! }, labels };
+  });
+  const hits = (a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }) =>
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  expect(boxes.labels).toHaveLength(3);
+  for (const label of boxes.labels) expect(hits(label, boxes.solid)).toBe(false);
+  for (let i = 0; i < boxes.labels.length; i++) {
+    for (let j = i + 1; j < boxes.labels.length; j++) expect(hits(boxes.labels[i]!, boxes.labels[j]!)).toBe(false);
+  }
+  if (process.env.LIME_SHOTS) await stage.screenshot({ path: `${process.env.LIME_SHOTS}/ux12-after-dims.png` });
+});
+
 test("the belt printer measures the part it prints and numbers its bed in 50 mm steps", async ({ page }) => {
   await quiet(page, beltCube);
   await page.addInitScript(() => localStorage.setItem("lime-slice-closed-groups", "[]"));

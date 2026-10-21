@@ -151,6 +151,8 @@ export interface ContextSeat {
   /** Toolbar, readout, titles, and other chrome the bar must not sit under. */
   obstacles: readonly ContextBox[];
   gap?: number;
+  /** `beside` puts a faded chip on a side of the solid. The open bar stays above the pointer. */
+  place?: "above" | "beside";
 }
 
 const MARGIN_PX = 8;
@@ -194,6 +196,17 @@ export function seatContextBar(input: ContextSeat): { x: number; y: number } {
   };
 
   const prefer = { x: pointer.x - width / 2, y: pointer.y - height - gap };
+  const solidFirst = input.solid;
+  if (input.place === "beside" && solidFirst) {
+    const sides = [
+      { x: solidFirst.x - width - gap, y: solidFirst.y },
+      { x: solidFirst.x + solidFirst.width + gap, y: solidFirst.y },
+    ];
+    for (const raw of sides) {
+      const point = clamp(raw);
+      if (clear(point)) return point;
+    }
+  }
   const candidates: { x: number; y: number }[] = [prefer, { x: pointer.x - width / 2, y: pointer.y + gap }];
   const solid = input.solid;
   if (solid) {

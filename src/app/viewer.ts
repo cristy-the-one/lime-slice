@@ -14,7 +14,7 @@ import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch, stale, previewFeatureRows } from "./settings";
 import { cycleLayerAction, layerMarkerText } from "../layer-actions";
-import { beginModelVisit, flushEdit, noteEdit } from "./history";
+import { beginModelVisit, flushEdit, modelVisitChanged, noteEdit } from "./history";
 import { currentRules } from "./rules";
 import { beginModifierEdit, endModifierEdit, nudgeModifier, selectModifier } from "./override-actions";
 import { bandFractions } from "../overrides";
@@ -99,6 +99,7 @@ function statusLine(): string {
     const layer = layers[state.layer];
     return layer ? `Layer ${state.layer + 1} / ${layers.length} · Z ${layer.z.toFixed(2)} mm` : "";
   }
+  if (state.stage === "prepare" && session.askSlice) return "Slice again to include your changes";
   if (state.stage === "prepare" && state.mesh && state.placed) {
     const { min, max } = state.placed.bounds;
     const size = [0, 1, 2].map((axis) => (max[axis] - min[axis]).toFixed(1)).join(" × ");
@@ -495,7 +496,36 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
   resize();
   paintSpark();
   if (stage === "model") showModel();
+  if (enteringModel) showModelPause(!!state.result);
+  else if (leavingModel) {
+    if (stage === "prepare" && modelVisitChanged()) session.askSlice = true;
+    showModelPause(false);
+    paintStatus();
+  }
   if (leavingModel) resumeAuto();
+}
+
+/** How long the "Slicing paused" line stays before it becomes the dot beside Slice. */
+const MODEL_PAUSE_MS = 4000;
+let modelPauseTimer = 0;
+
+/** A slice already on screen waits while Model is open. The line shows for four seconds, then a dot by Slice. */
+function showModelPause(on: boolean) {
+  const chip = document.querySelector<HTMLElement>("#modelPaused");
+  const dot = document.querySelector<HTMLElement>("#slicePauseDot");
+  window.clearTimeout(modelPauseTimer);
+  modelPauseTimer = 0;
+  if (!on) {
+    chip?.setAttribute("hidden", "");
+    dot?.setAttribute("hidden", "");
+    return;
+  }
+  chip?.removeAttribute("hidden");
+  dot?.setAttribute("hidden", "");
+  modelPauseTimer = window.setTimeout(() => {
+    chip?.setAttribute("hidden", "");
+    if (state.stage === "model") dot?.removeAttribute("hidden");
+  }, MODEL_PAUSE_MS);
 }
 
 /** Leaving the Model tab: the change made there slices once, as if it had just happened. */

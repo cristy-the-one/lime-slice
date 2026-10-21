@@ -1,4 +1,4 @@
-import { faceBoundarySegments, lastEdge, modelApplyReady, nextModelPicks, selectionCountLabel, shellFacesLabel } from "./model-select.ts";
+import { faceBoundarySegments, lastEdge, modelApplyReady, nextModelPicks, selectionChipLabel, selectionCountLabel, shellFacesLabel } from "./model-select.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -25,6 +25,8 @@ eq("shift on empty space still clears", nextModelPicks([face(1)], null, true), [
 eq("the same face clicked again stays the only selection", nextModelPicks([face(3), edge(1)], face(3), false), [face(3)]);
 
 eq("one face", selectionCountLabel([face(0)]), "1 face");
+eq("the chip names the face", selectionChipLabel([face(0)]), "1 face ▾");
+eq("the chip names the edges", selectionChipLabel([edge(0), edge(1), edge(2)]), "3 edges ▾");
 eq("faces and an edge", selectionCountLabel([face(0), face(1), edge(2)]), "2 faces · 1 edge");
 eq("nothing selected has no chip", selectionCountLabel([]), "");
 

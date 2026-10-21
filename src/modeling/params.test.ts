@@ -8,7 +8,7 @@ import { newTree, withChild, type ModelOp } from "../model-tree.ts";
 import { readSavedTree, savedTree } from "../model-tree-file.ts";
 import { withoutSketch } from "../model-request.ts";
 import { evaluateTable, expressionMentions, patchOpNumbers, stepOutOfDate, usedByCount, withExprs } from "./params.ts";
-import { panelParamMessage } from "../ui/parameters.ts";
+import { panelParamMessage, parametersFoldCount, parametersFoldId, parametersHiddenWhileSketching, readParametersFold, writeParametersFold } from "../ui/parameters.ts";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -103,6 +103,35 @@ check("a saved op keeps its expression", read?.nodes[1]?.op?.exprs?.modelDz === 
 check("a new solid keeps its expression", read?.rootExprs?.modelDz === "wallH");
 const bare = readSavedTree({ ...saved, rootPrimitive: tree.root.kind === "primitive" ? tree.root.solid : undefined });
 check("a tree with no rootExprs still opens", bare != null && bare.rootExprs == null);
+check("a sketch that names nothing hides Parameters", parametersHiddenWhileSketching(true, false, ["wallH"], "10"));
+check("a sketch that names a parameter shows Parameters", !parametersHiddenWhileSketching(true, false, ["wallH"], "wallH / 2"));
+check("an empty table hides Parameters while sketching", parametersHiddenWhileSketching(true, false, [], ""));
+check("closing the sketch shows Parameters", !parametersHiddenWhileSketching(false, false, ["wallH"], ""));
+check("Ctrl+Alt+P shows Parameters while sketching", !parametersHiddenWhileSketching(true, true, ["wallH"], ""));
+
+function memoryStorage(): Storage {
+  const data = new Map<string, string>();
+  return {
+    get length() { return data.size; },
+    clear() { data.clear(); },
+    getItem(key: string) { return data.has(key) ? data.get(key)! : null; },
+    key(index: number) { return [...data.keys()][index] ?? null; },
+    removeItem(key: string) { data.delete(key); },
+    setItem(key: string, value: string) { data.set(key, value); },
+  };
+}
+
+const folds = memoryStorage();
+check("an unsaved project shares one key", parametersFoldId("") === "unsaved" && parametersFoldId("  ") === "unsaved");
+check("a saved path is its own key", parametersFoldId("/jobs/plate.lime") === "/jobs/plate.lime");
+writeParametersFold(folds, "/jobs/plate.lime", false);
+check("the open state survives adding a part", readParametersFold(folds, "/jobs/plate.lime") === false && parametersFoldId("/jobs/plate.lime") === parametersFoldId("/jobs/plate.lime"));
+writeParametersFold(folds, "/jobs/other.lime", true);
+check("two saved paths remember different folds", readParametersFold(folds, "/jobs/plate.lime") === false && readParametersFold(folds, "/jobs/other.lime") === true);
+for (let i = 0; i < 60; i += 1) writeParametersFold(folds, `/jobs/p${i}.lime`, i % 2 === 0);
+check("sixty projects keep at most 50 fold keys", parametersFoldCount(folds) <= 50);
+check("the oldest fold is dropped", readParametersFold(folds, "/jobs/p0.lime") === null);
+check("a recent fold is kept", readParametersFold(folds, "/jobs/p59.lime") === false);
 
 if (failed) {
   console.error(`${failed} failed`);

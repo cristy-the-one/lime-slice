@@ -1,6 +1,14 @@
 export type ViewPreset = "top" | "front" | "iso";
 
+let viewPresetHook: ((preset: ViewPreset) => void) | null = null;
+
+/** The same camera change the Top, Front and Iso chips run. */
+export function applyViewPreset(preset: ViewPreset) {
+  viewPresetHook?.(preset);
+}
+
 export function mountViewport(hooks: { setViewPreset(preset: ViewPreset): void }) {
+  viewPresetHook = hooks.setViewPreset;
   mountViewKeys(hooks);
   mountEmptyDrop();
 }

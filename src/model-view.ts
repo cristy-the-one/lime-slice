@@ -18,7 +18,8 @@ const BLEND_GHOST_STEP_MM = 0.05;
 
 /** P1. The push/pull arrow's handle id (`pullHandles` in `model-drag.ts`). */
 const PULL_HANDLE_ID = "pull";
-import { axisValues, dragLabel, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
+import { axisValues, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
+import { aspectFor, aspectTip, meshPoint, type HandleAspect } from "./handle-emphasis";
 import { contextMaterial } from "./context-look";
 import type { ContextPart } from "./model-context";
 import { turnCentre, type PrimitiveSpec } from "./model-primitive";
@@ -116,8 +117,6 @@ const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
 const PRIMITIVE_CREASE_DEG = 25;
 /** A join's tool past this many triangles is drawn without its outline, which would take a noticeable while to find. */
 const OBJECT_OUTLINE_MAX_TRIANGLES = 150_000;
-/** How much more solid the ghost of the object being edited gets while a docked handle is in use. */
-const EMPHASIS_OPACITY = 0.45;
 /** Frames the view still draws after its last change, for anything that settles a frame late. */
 const STILL_FRAMES = 3;
 
@@ -212,6 +211,10 @@ export interface ModelView {
   pickSolid(x: number, y: number): { face: number; t: number } | null;
   /** The camera moved while a sketch is drawn. */
   onSketchView(cb: () => void): void;
+  /** Top, front, or the framed isometric pose. Z stays up. */
+  setCameraPreset(preset: "top" | "front" | "iso"): void;
+  /** A typed-value box outside the panel. Focusing it lights its handle. Settings fields are not passed here. */
+  watchFocus(element: HTMLElement): () => void;
 }
 
 /** --- S2 sketch --- What the view draws. Positions are in model space. */
@@ -269,6 +272,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   mountStudioLights(scene, "z-up");
   const viewHelper = mountViewHelper(camera, canvas);
+  // A pixel check reads the frame it just drew. Users do not keep the drawing buffer.
+  if (new URLSearchParams(location.search).get("perf") === "1") {
+    const host = window as unknown as { __renderModelFrame?: () => void };
+    host.__renderModelFrame = () => {
+      renderer.render(scene, camera);
+      renderViewHelper(renderer, viewHelper);
+    };
+  }
   let colors = themeColors();
   const bedRef = mountBedReference(scene, "z-up");
   let bed: BuildVolume = { x: 220, y: 220, z: 250 };
@@ -296,11 +307,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   posed.add(body);
   const ghosts = new THREE.Group();
   const handleGroup = new THREE.Group();
+  /** Aspect lines in model space. Body-space lines (a scaled solid's box) are added to `body` instead. */
+  const aspectGroup = new THREE.Group();
   /** The workplane datum: drawn once per size in its own U, V, W, and moved by a matrix to where the frame is. */
   const datum = new THREE.Group();
   datum.matrixAutoUpdate = false;
   datum.visible = false;
-  scene.add(context, posed, datum, ghosts, handleGroup);
+  scene.add(context, posed, datum, ghosts, handleGroup, aspectGroup);
   // --- P1: the dotted line to the face a drag lines up with. ---
   const alignLine = new THREE.Line(
     new THREE.BufferGeometry(),
@@ -386,8 +399,54 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const dockAt = new THREE.Vector3();
   /** The dock's seat for the canvas size it was worked out for: it changes only when the canvas does. */
   let seated: { width: number; height: number; seat: DockSeat } | null = null;
-  let emphasis = false;
+  let aspectDim = false;
+  /** Which side the live dimension sits on. -1 is the far side, used when the label would cover the knob. */
+  let aspectGapSign: 1 | -1 = 1;
+  let aspectGapFor = "";
+  /** Bumps when the ghost is rebuilt. An in-place size change does not bump it. */
+  let ghostSerial = 0;
+  /** Bumps when the same primitive's numbers are written into the ghost it already has. */
+  let ghostPose = 0;
+  /** The primitive ghost last built, so a size drag can scale it or write positions instead of rebuilding. */
+  let posedPrimitive: {
+    primitive: string;
+    soupCount: number;
+    group: THREE.Group;
+    shape: THREE.Mesh;
+    outline: THREE.LineSegments;
+    /** Sizes the geometry was built at. A later drag scales this mesh instead of replacing it. */
+    spec: PrimitiveSpec;
+  } | null = null;
+  /** The ghost's world box and face points. Rebuilt when the ghost is, and re-projected when only its pose changes. */
+  let ghostCache: { serial: number; pose: number; centre: THREE.Vector3; min: THREE.Vector3; max: THREE.Vector3; faces: Map<string, THREE.Vector3> } | null = null;
+  /** Label size from the last text change, so a frame does not measure it again. */
+  let labelMeasure = { text: "", width: 0, height: 0 };
+  let labelPlaced = { x: 0, y: 0, key: "" };
+  let aspectKey = "";
+  /** Model dock and HUD inputs, filled when the handles are set, so a drag does not search the document. */
+  const fieldInputs = new Map<string, HTMLInputElement[]>();
+  /** Aspect lines, in screen pixels. Full axis colour, thick enough to read on the ghost. */
+  const ASPECT_LINE_PX = 4;
+  /** The panel or HUD field that has focus, so its handle lights without a pointer. */
+  let focusedField: string | null = null;
+  /** Which sketch hole the focused depth belongs to, when several share one number. */
+  let focusedHole: number | null = null;
+  /** The panel's one depth field lights every hole, not the first knob's. */
+  let lightEveryHole = false;
+  let focusSyncs = 0;
+  let aspectNow: HandleAspect | null = null;
+  let aspectLines: LineSegments2 | null = null;
+  let aspectHidden: LineSegments2 | null = null;
+  let aspectBodyLines: LineSegments2 | null = null;
+  let aspectBodyHidden: LineSegments2 | null = null;
+  /** The lit segments, for a screen-space sample of the line colour. */
+  let aspectSample: { positions: number[]; body: boolean } | null = null;
+  /** Occlusion ray for a lit edge. A binding placed after the returned object would never initialise. */
+  const depthRay = new THREE.Raycaster();
+  let aspectSampleKey = "";
   let overHandle: string | null = null;
+  /** Keeps the lit aspect for a moment after the pointer leaves, so a gap between knobs does not flash. */
+  let aspectLeaveTimer: number | null = null;
   let drag: ActiveDrag | null = null;
   let handleCb: (drag: HandleDrag) => void = () => {};
   // --- P1 ---
@@ -422,6 +481,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   tip.className = "model-drag-tip";
   tip.hidden = true;
   canvas.parentElement?.append(tip);
+  const aspectLabel = document.createElement("div");
+  aspectLabel.className = "model-aspect-label";
+  aspectLabel.hidden = true;
+  canvas.parentElement?.append(aspectLabel);
 
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -468,6 +531,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
   });
+  canvas.dataset.solidOpacity = "1";
   const edgeMaterial = new THREE.LineBasicMaterial({ color: IDLE_EDGE });
 
   function clearPreview() {
@@ -540,6 +604,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function clearGhosts() {
+    posedPrimitive = null;
     for (const child of [...ghosts.children]) {
       ghosts.remove(child);
       // A split's offcut draws the solid's own geometry with a shared material: neither is the ghost's to free.
@@ -794,17 +859,24 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   /** `flat` for a mesh that carries no normals, as a grey object's buffers do. */
+  /** Faces of the ghost step back by at most a fifth while one aspect is lit. The solid stays as it is. */
+  function ghostFaceOpacity(base: number) {
+    return aspectDim ? base * 0.8 : base;
+  }
+
   function ghostMaterial(opacity: number, flat = false) {
-    return new THREE.MeshStandardMaterial({
+    const material = new THREE.MeshStandardMaterial({
       color: accent,
       roughness: 0.55,
       metalness: 0.05,
       flatShading: flat,
       transparent: true,
-      opacity: emphasis ? Math.min(0.7, opacity + EMPHASIS_OPACITY) : opacity,
+      opacity: ghostFaceOpacity(opacity),
       depthWrite: false,
       side: THREE.DoubleSide,
     });
+    material.userData.baseOpacity = opacity;
+    return material;
   }
 
   const contextMat = contextMaterial(colors.context);
@@ -967,12 +1039,165 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function rebuildGhost() {
+    ghostSerial += 1;
+    ghostPose = 0;
+    posedPrimitive = null;
+    canvas.dataset.ghostSerial = String(ghostSerial);
+    canvas.dataset.ghostPose = "0";
     clearGhosts();
     applyScale();
     clipToSplit();
     buildGhost();
+    rememberPrimitive();
+    restyleGhostLines();
     publishGhostBox();
     rebuildCap();
+  }
+
+  /** The primitive group `buildGhost` just added, when a later size change can reuse it. */
+  function rememberPrimitive() {
+    if (ghost?.kind !== "primitive") return;
+    const group = ghosts.children.find((child) => child instanceof THREE.Group);
+    const shape = group?.children.find((child) => child instanceof THREE.Mesh);
+    const outline = shape?.children.find((child) => child instanceof THREE.LineSegments);
+    if (!(group instanceof THREE.Group) || !(shape instanceof THREE.Mesh) || !(outline instanceof THREE.LineSegments)) return;
+    if (!shape.geometry.getAttribute("position") || !outline.geometry.getAttribute("position")) return;
+    const spec = ghost.spec;
+    posedPrimitive = {
+      primitive: spec.primitive,
+      soupCount: ghost.mesh.length,
+      group,
+      shape,
+      outline,
+      spec: { ...spec, origin: [...spec.origin], size: [...spec.size], turn: [...spec.turn] },
+    };
+  }
+
+  /** Axis scale from the built mesh, when the new primitive is that mesh grown from its own origin. */
+  function primitiveScale(built: PrimitiveSpec, next: PrimitiveSpec): [number, number, number] | null {
+    if (built.primitive !== next.primitive) return null;
+    const ratio = (from: number, to: number) => (Math.abs(from) > 1e-9 ? to / from : null);
+    if (next.primitive === "box" || next.primitive === "ellipsoid") {
+      const x = ratio(built.size[0], next.size[0]);
+      const y = ratio(built.size[1], next.size[1]);
+      const z = ratio(built.size[2], next.size[2]);
+      return x == null || y == null || z == null ? null : [x, y, z];
+    }
+    if (next.primitive === "sphere") {
+      const s = ratio(built.radius, next.radius);
+      return s == null ? null : [s, s, s];
+    }
+    if (next.primitive === "cylinder" || next.primitive === "tube") {
+      const s = ratio(built.radius, next.radius);
+      const z = ratio(built.height, next.height);
+      if (s == null || z == null) return null;
+      if (next.primitive === "tube") {
+        const inner = ratio(built.innerRadius ?? 0, next.innerRadius ?? 0);
+        if (inner == null || Math.abs(inner - s) > 1e-4) return null;
+      }
+      return [s, s, z];
+    }
+    if (next.primitive === "wedge") {
+      const x = ratio(built.size[0], next.size[0]);
+      const y = ratio(built.size[1], next.size[1]);
+      const z = ratio(built.size[2], next.size[2]);
+      if (x == null || y == null || z == null) return null;
+      const top = (built.topX ?? built.size[0]) * x;
+      if (Math.abs(top - (next.topX ?? next.size[0])) > 1e-3) return null;
+      return [x, y, z];
+    }
+    return null;
+  }
+
+  function writePositions(attr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, source: ArrayLike<number>) {
+    (attr.array as Float32Array).set(source);
+    attr.needsUpdate = true;
+  }
+
+  /**
+   * Same primitive, same vertex count: keep the meshes already on screen.
+   * A box and its kin were built at a real size, so they scale about that size. Anything else copies
+   * positions into the existing buffers. A `LineSegmentsGeometry` takes `setPositions`.
+   */
+  function posePrimitive(next: Extract<ModelGhost, { kind: "primitive" }>): boolean {
+    const held = posedPrimitive;
+    if (!held || ghost?.kind !== "primitive") return false;
+    if (held.primitive !== next.spec.primitive) return false;
+    const scale = primitiveScale(held.spec, next.spec);
+    // A new segment count builds a different soup. Scale only the mesh we already have.
+    if (scale && held.soupCount === next.mesh.length) {
+      held.shape.scale.set(scale[0], scale[1], scale[2]);
+      const centre = turnCentre(next.spec);
+      const [x, y, z] = next.spec.origin;
+      held.group.position.set(x + centre[0], y + centre[1], z + centre[2]);
+      held.group.quaternion.copy(turnQuaternion(next.spec.turn));
+      held.shape.position.set(-centre[0], -centre[1], -centre[2]);
+      ghostPose += 1;
+      canvas.dataset.ghostPose = String(ghostPose);
+      return true;
+    }
+    if (held.soupCount !== next.mesh.length) return false;
+    // The scale path may have run on an earlier size. These positions are already the new size.
+    held.shape.scale.set(1, 1, 1);
+    const soup = new THREE.BufferGeometry();
+    soup.setAttribute("position", new THREE.BufferAttribute(next.mesh, 3));
+    const shaded = toCreasedNormals(soup, (PRIMITIVE_CREASE_DEG * Math.PI) / 180);
+    soup.dispose();
+    const edges = new THREE.EdgesGeometry(shaded, PRIMITIVE_CREASE_DEG);
+    const shadedPos = shaded.getAttribute("position");
+    const shadedNorm = shaded.getAttribute("normal");
+    const edgePos = edges.getAttribute("position");
+    const livePos = held.shape.geometry.getAttribute("position");
+    const liveNorm = held.shape.geometry.getAttribute("normal");
+    const liveEdge = held.outline.geometry.getAttribute("position");
+    const fits = !!shadedPos && !!edgePos && !!livePos && !!liveEdge && shadedPos.count === livePos.count && edgePos.count === liveEdge.count;
+    if (!fits || !shadedPos || !edgePos || !livePos || !liveEdge) {
+      shaded.dispose();
+      edges.dispose();
+      return false;
+    }
+    writePositions(livePos, shadedPos.array);
+    if (liveNorm && shadedNorm && liveNorm.count === shadedNorm.count) writePositions(liveNorm, shadedNorm.array);
+    const line = held.outline.geometry as THREE.BufferGeometry & { setPositions?: (array: Float32Array) => void };
+    if (typeof line.setPositions === "function") line.setPositions(edgePos.array as Float32Array);
+    else writePositions(liveEdge, edgePos.array);
+    held.shape.geometry.computeBoundingBox();
+    held.shape.geometry.computeBoundingSphere();
+    held.outline.geometry.computeBoundingBox();
+    held.outline.geometry.computeBoundingSphere();
+    shaded.dispose();
+    edges.dispose();
+    const centre = turnCentre(next.spec);
+    const [x, y, z] = next.spec.origin;
+    held.group.position.set(x + centre[0], y + centre[1], z + centre[2]);
+    held.group.quaternion.copy(turnQuaternion(next.spec.turn));
+    held.shape.position.set(-centre[0], -centre[1], -centre[2]);
+    ghostPose += 1;
+    canvas.dataset.ghostPose = String(ghostPose);
+    return true;
+  }
+
+  /** The ghost's own edges step back while one aspect is lit, so the thick lines read on their own. */
+  function restyleGhostLines() {
+    ghosts.traverse((child) => {
+      if (!(child instanceof THREE.LineSegments)) return;
+      const material = child.material;
+      if (!(material instanceof THREE.LineBasicMaterial)) return;
+      material.transparent = true;
+      material.opacity = aspectDim ? 0.35 : 0.95;
+    });
+  }
+
+  function restyleGhostFaces() {
+    ghosts.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      const material = child.material;
+      if (!(material instanceof THREE.MeshStandardMaterial)) return;
+      const base = material.userData.baseOpacity;
+      if (typeof base !== "number") return;
+      material.opacity = ghostFaceOpacity(base);
+      material.needsUpdate = true;
+    });
   }
 
   /** The material that draws the side a split cuts off, tinted, shared by every split shown. */
@@ -1847,6 +2072,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   canvas.addEventListener("contextmenu", (ev) => {
     if (sketchLock || sketchCapture) ev.preventDefault();
   });
+  // A number field becomes a text field on focus, which blurs and refocuses it. Read the field after that settles.
+  // The dock only: a Settings field must not run this.
+  const modelDock = document.getElementById("modelPanel");
+  const onDockFocus = () => queueMicrotask(syncFocusedField);
+  modelDock?.addEventListener("focusin", onDockFocus);
+  modelDock?.addEventListener("focusout", onDockFocus);
 
   return {
     setSolid(next, at) {
@@ -1907,6 +2138,38 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       kick();
     },
     frame: frameBox,
+    setCameraPreset(preset) {
+      const box = solidBox
+        ? { min: [solidBox.min[0], solidBox.min[1], solidBox.min[2]] as Vec3, max: [solidBox.max[0], solidBox.max[1], solidBox.max[2]] as Vec3 }
+        : { min: [center.x - extent / 2, center.y - extent / 2, center.z - extent / 2] as Vec3, max: [center.x + extent / 2, center.y + extent / 2, center.z + extent / 2] as Vec3 };
+      const look = new THREE.Vector3((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);
+      const size = Math.max(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2], 1);
+      const radius = (size * Math.sqrt(3)) / 2;
+      const fov = (camera.fov * Math.PI) / 180;
+      const dist = (radius / Math.sin(fov / 2)) * 1.35;
+      const offset = preset === "top" ? new THREE.Vector3(0, -0.04, 1) : preset === "front" ? new THREE.Vector3(0, -1, 0.08) : new THREE.Vector3(1, -1.15, 0.72);
+      camera.near = Math.max(0.01, dist / 200);
+      camera.far = dist * 20;
+      controls.enableDamping = false;
+      controls.update();
+      camera.up.set(0, 0, 1);
+      camera.position.copy(look).add(offset.normalize().multiplyScalar(dist));
+      controls.target.copy(look);
+      camera.updateProjectionMatrix();
+      controls.update();
+      controls.enableDamping = true;
+      publishCamera();
+      kick();
+    },
+    watchFocus(element) {
+      const onFocus = () => queueMicrotask(syncFocusedField);
+      element.addEventListener("focusin", onFocus);
+      element.addEventListener("focusout", onFocus);
+      return () => {
+        element.removeEventListener("focusin", onFocus);
+        element.removeEventListener("focusout", onFocus);
+      };
+    },
     inView(box) {
       camera.updateMatrixWorld();
       for (let corner = 0; corner < 8; corner += 1) {
@@ -1938,6 +2201,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       // A drag moves the blend in steps finer than anyone sees: the strip is rebuilt once it grows by 0.05 mm.
       if (ghost?.kind === "blend" && next?.kind === "blend" && next.radius > 0 && ghost.radius > 0 && ghost.chamfer === next.chamfer
         && ghost.edges.join() === next.edges.join() && Math.abs(ghost.radius - next.radius) < BLEND_GHOST_STEP_MM) return;
+      if (next?.kind === "primitive" && posePrimitive(next)) {
+        ghost = next;
+        publishGhostBox();
+        kick();
+        return;
+      }
       ghost = next;
       rebuildGhost();
       kick();
@@ -2081,6 +2350,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       faceCb = cb;
     },
     projectPoint(at) {
+      // lookAt changes the quaternion and leaves the world matrix behind until the next draw.
+      camera.updateMatrixWorld();
       projected.set(at[0], at[1], at[2]);
       projected.project(camera);
       if (projected.z < -1 || projected.z > 1) return null;
@@ -2138,12 +2409,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     setSketchDim(on) {
       if (solidDimmed === on) return;
       solidDimmed = on;
-      solidMaterial.transparent = on || solidMaterial.opacity < 1;
+      solidMaterial.transparent = on;
       solidMaterial.opacity = on ? 0.35 : 1;
       solidMaterial.needsUpdate = true;
       edgeMaterial.transparent = on;
       edgeMaterial.opacity = on ? 0.35 : 1;
       edgeMaterial.needsUpdate = true;
+      canvas.dataset.solidOpacity = String(solidMaterial.opacity);
       kick();
     },
     setSketchDraw(mesh) {
@@ -2458,12 +2730,25 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function buildHandles(next: DragHandle[]) {
+    const same = handleParts.length === next.length && next.every((handle, index) => {
+      const held = handleParts[index]!.handle;
+      return held.id === handle.id && held.look === handle.look && held.kind === handle.kind;
+    });
+    // A size drag only changes numbers. Rebuilding the arrows each move kept their geometries alive past GC.
+    if (same) {
+      for (let index = 0; index < next.length; index += 1) handleParts[index]!.handle = next[index]!;
+      collectFieldInputs();
+      if (overHandle && !next.some((handle) => handle.id === overHandle)) overHandle = null;
+      paintHandles();
+      return;
+    }
     for (const part of handleParts) {
       handleGroup.remove(part.root);
       disposeObject(part.root);
     }
     handleParts = next.map((handle) => handlePart(handle));
     for (const part of handleParts) handleGroup.add(part.root);
+    collectFieldInputs();
     if (overHandle && !next.some((handle) => handle.id === overHandle)) overHandle = null;
     paintHandles();
   }
@@ -2525,13 +2810,32 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   function paintHandles() {
     const hot = hexToThree(colors.gizmoHot);
+    const lit = aspectHandle()?.id ?? null;
     for (const part of drawnHandles()) {
-      const on = drag?.handle.id === part.handle.id || (edgeDrag != null && part.handle.id === EDGE_KNOB_ID) || (!drag && !edgeDrag && overHandle === part.handle.id);
+      const on = part.handle.id === lit || (edgeDrag != null && part.handle.id === EDGE_KNOB_ID);
       part.material.color.setHex(on ? hot : handleColor(part.handle.color));
     }
     canvas.style.cursor = sketchCapture ? "crosshair" : drag || edgeDrag || faceDown?.moved ? "grabbing" : overHandle || (faceDrag && hover?.kind === "face") ? "grab" : "";
-    setEmphasis(handleParts.some((part) => part.handle.seat.at === "dock" && part.handle.id === (drag?.handle.id ?? overHandle)));
+    paintAspect();
     kick();
+  }
+
+  /** Drag, then the handle under the pointer, then the focused field. Nothing here lights the whole solid. */
+  function aspectHandle(): DragHandle | null {
+    lightEveryHole = false;
+    if (drag) return { ...drag.handle, values: drag.values };
+    if (overHandle) return drawnHandles().find((part) => part.handle.id === overHandle)?.handle ?? null;
+    if (focusedField) {
+      const matches = handleParts.filter((part) => part.handle.fields.includes(focusedField!));
+      if (focusedHole != null) {
+        const indexed = matches.find((part) => part.handle.holeIndex === focusedHole);
+        if (indexed) return indexed.handle;
+      }
+      const grouped = matches.filter((part) => part.handle.holeIndex != null);
+      if (focusedHole == null && grouped.length > 1) lightEveryHole = true;
+      return matches[0]?.handle ?? null;
+    }
+    return null;
   }
 
   function clearEdgeKnob() {
@@ -2564,17 +2868,504 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return { phase, x: ev.clientX, y: ev.clientY, alt: ev.altKey, ctrl: ev.ctrlKey, meta: ev.metaKey, shift: ev.shiftKey };
   }
 
-  /** A docked handle edits the tool's object, which is the ghost, so the ghost stands out while the handle is in use. */
-  function setEmphasis(next: boolean) {
-    if (emphasis === next) return;
-    emphasis = next;
-    canvas.dataset.ghostLit = next ? "1" : "0";
-    rebuildGhost();
+  /**
+   * An aspect dims the ghost only. The solid's material is left alone: a sketch dims it through `setSketchDim`,
+   * and a handle must not wash the part out.
+   */
+  function setAspectDim(next: boolean) {
+    if (aspectDim === next) return;
+    aspectDim = next;
+    canvas.dataset.aspectDim = next ? "1" : "0";
+    canvas.dataset.solidOpacity = String(solidMaterial.opacity);
+    restyleGhostFaces();
+    restyleGhostLines();
+    kick();
   }
 
   function setOverHandle(next: string | null) {
-    if (overHandle === next) return;
-    overHandle = next;
+    if (next) {
+      if (aspectLeaveTimer != null) {
+        window.clearTimeout(aspectLeaveTimer);
+        aspectLeaveTimer = null;
+      }
+      if (overHandle === next) return;
+      overHandle = next;
+      paintHandles();
+      return;
+    }
+    if (overHandle == null || aspectLeaveTimer != null) return;
+    aspectLeaveTimer = window.setTimeout(() => {
+      aspectLeaveTimer = null;
+      overHandle = null;
+      paintHandles();
+    }, 120);
+  }
+
+  function paintAspect() {
+    const handle = aspectHandle();
+    const id = handle?.id ?? "";
+    if (id !== aspectGapFor) {
+      aspectGapSign = 1;
+      aspectGapFor = id;
+    }
+    const valueKey = handle ? handle.values.map((value) => value.toFixed(4)).join(",") : "";
+    const key = `${id}|${aspectGapSign}|${valueKey}|${ghostSerial}`;
+    if (key === aspectKey) return;
+    aspectKey = key;
+    const aspect = handle ? aspectFor(handle, { ...aspectContext(handle), gapSign: aspectGapSign }) : null;
+    aspectNow = aspect;
+    const world = aspect?.space === "world" ? aspect.lines : [];
+    const bodyLines = aspect?.space === "body" ? aspect.lines : [];
+    const color = aspect ? handleColor(aspect.color) : accent;
+    aspectSample = world.length >= 6 ? { positions: world, body: false } : bodyLines.length >= 6 ? { positions: bodyLines, body: true } : null;
+    aspectLines = replaceAspect(aspectGroup, aspectLines, world, color, false);
+    aspectHidden = replaceAspect(aspectGroup, aspectHidden, world, color, true);
+    aspectBodyLines = replaceAspect(body, aspectBodyLines, bodyLines, color, false);
+    aspectBodyHidden = replaceAspect(body, aspectBodyHidden, bodyLines, color, true);
+    setAspectDim(aspect?.dim === true);
+    markAspectFields(aspect);
+    publishAspect(handle, aspect);
+    placeAspectLabel();
+  }
+
+  function aspectContext(handle: DragHandle): Parameters<typeof aspectFor>[1] {
+    const current = ghost;
+    const siblings: Record<string, number> = {};
+    for (const part of handleParts) {
+      if (part.handle.fields.length === 1) siblings[part.handle.fields[0]!] = part.handle.values[0] ?? 0;
+    }
+    if (drag && drag.handle.fields.length === 1) siblings[drag.handle.fields[0]!] = drag.values[0] ?? 0;
+    const framed = handle.frame ? handle : handleParts.find((part) => part.handle.frame)?.handle;
+    const at = framed && framed.seat.at === "feature" ? framed.seat.origin : undefined;
+    return {
+      spec: current?.kind === "primitive" ? current.spec : null,
+      pieces: current?.kind === "pieces" ? current.parts.map((part) => part.spec) : undefined,
+      hole: lightEveryHole ? null : current?.kind === "hole" ? current : current?.kind === "holes" ? current.holes[handle.holeIndex ?? 0] ?? current.holes[0] ?? null : null,
+      holes: lightEveryHole && current?.kind === "holes" ? current.holes : null,
+      edgePoints: current?.kind === "blend" ? worldEdgePoints(current.edges) : null,
+      soup: current?.kind === "soup" ? worldPoints(current.positions) : null,
+      measure: current?.kind === "measure" ? { a: current.a, b: current.b } : null,
+      plane: current?.kind === "plane" ? { origin: current.origin, normal: current.normal, span: Math.max(extent * 1.45, 30) } : null,
+      bodyBox: ownBox,
+      anchor: aspectAnchor(),
+      extent,
+      frame: framed?.frame as Workplane | undefined,
+      at,
+      siblings,
+      values: handle.values,
+    };
+  }
+
+  function aspectAnchor(): Vec3 {
+    if (solidBox) return [(solidBox.min[0] + solidBox.max[0]) / 2, (solidBox.min[1] + solidBox.max[1]) / 2, (solidBox.min[2] + solidBox.max[2]) / 2];
+    if (ghost?.kind === "primitive") return meshPoint(ghost.spec, turnCentre(ghost.spec));
+    return [0, 0, 0];
+  }
+
+  /** Solid-frame points, in model space, so a cap lines up with a handle that already sits in model space. */
+  function worldPoints(local: ArrayLike<number>): Float32Array {
+    body.updateMatrixWorld(true);
+    const out = new Float32Array(local.length);
+    const point = new THREE.Vector3();
+    for (let i = 0; i + 2 < local.length; i += 3) {
+      point.set(local[i]!, local[i + 1]!, local[i + 2]!).applyMatrix4(body.matrixWorld);
+      out[i] = point.x;
+      out[i + 1] = point.y;
+      out[i + 2] = point.z;
+    }
+    return out;
+  }
+
+  function worldEdgePoints(ids: readonly number[]): number[] {
+    if (!solid) return [];
+    const local: number[] = [];
+    for (const id of ids) {
+      const edge = solid.edges.find((item) => item.id === id);
+      if (edge) local.push(...edge.points);
+    }
+    return [...worldPoints(local)];
+  }
+
+  function dropAspect(parent: THREE.Object3D, current: LineSegments2 | null) {
+    if (!current) return;
+    parent.remove(current);
+    const material = current.material as LineMaterial;
+    const index = fatLines.indexOf(material);
+    if (index >= 0) fatLines.splice(index, 1);
+    disposeObject(current);
+  }
+
+  /** Full axis colour. The solid pass reads through the ghost; the dashed pass is only the part the solid hides. */
+  function replaceAspect(parent: THREE.Object3D, current: LineSegments2 | null, positions: number[], color: number, hidden: boolean): LineSegments2 | null {
+    if (positions.length < 6) {
+      dropAspect(parent, current);
+      return null;
+    }
+    const hex = hidden ? darkenHex(color, 0.6) : color;
+    if (current?.parent === parent) {
+      (current.geometry as LineSegmentsGeometry).setPositions(positions);
+      if (hidden) current.computeLineDistances();
+      const material = current.material as LineMaterial;
+      material.color.setHex(hex);
+      material.linewidth = ASPECT_LINE_PX;
+      if (hidden) applyDash(material);
+      return current;
+    }
+    dropAspect(parent, current);
+    const geometry = new LineSegmentsGeometry();
+    geometry.setPositions(positions);
+    const material = new LineMaterial({
+      color: hex,
+      linewidth: ASPECT_LINE_PX,
+      transparent: hidden,
+      opacity: 1,
+      depthTest: true,
+      depthWrite: false,
+      worldUnits: false,
+      dashed: hidden,
+      dashScale: 1,
+      dashSize: 1,
+      gapSize: 1,
+      toneMapped: false,
+    });
+    material.depthFunc = hidden ? THREE.GreaterDepth : THREE.LessEqualDepth;
+    if (hidden) applyDash(material);
+    material.resolution.copy(lineResolution());
+    fatLines.push(material);
+    const lines = new LineSegments2(geometry, material);
+    if (hidden) lines.computeLineDistances();
+    lines.renderOrder = hidden ? 9 : 8;
+    lines.raycast = () => undefined;
+    parent.add(lines);
+    return lines;
+  }
+
+  function rememberInput(input: HTMLInputElement) {
+    const id = input.id || input.dataset.field || "";
+    if (!id) return;
+    const list = fieldInputs.get(id) ?? [];
+    if (!list.includes(input)) list.push(input);
+    fieldInputs.set(id, list);
+  }
+
+  /** The dock's fields, taken once when the tool's handles are built. */
+  function collectFieldInputs() {
+    fieldInputs.clear();
+    document.getElementById("modelPanel")?.querySelectorAll<HTMLInputElement>("input").forEach(rememberInput);
+    document.querySelectorAll<HTMLInputElement>(".interact-hud input[data-field]").forEach(rememberInput);
+  }
+
+  function inputsFor(id: string): HTMLInputElement[] {
+    const known = (fieldInputs.get(id) ?? []).filter((input) => input.isConnected);
+    if (known.length > 0) {
+      fieldInputs.set(id, known);
+      return known;
+    }
+    const found: HTMLInputElement[] = [];
+    const byId = document.getElementById(id);
+    if (byId instanceof HTMLInputElement) found.push(byId);
+    const hud = document.querySelector<HTMLInputElement>(`.interact-hud input[data-field="${CSS.escape(id)}"]`);
+    if (hud && !found.includes(hud)) found.push(hud);
+    if (found.length > 0) fieldInputs.set(id, found);
+    return found;
+  }
+
+  function markAspectFields(aspect: HandleAspect | null) {
+    const wanted = new Set(aspect?.fields ?? []);
+    if (aspect) for (const id of aspect.fields) inputsFor(id);
+    for (const [id, inputs] of fieldInputs) {
+      const on = wanted.has(id);
+      for (const input of inputs) {
+        if (!input.isConnected) continue;
+        if (on && aspect) {
+          input.classList.add("is-aspect");
+          input.dataset.aspectColor = aspect.color;
+          input.setAttribute("aria-describedby", "modelAspectDesc");
+        } else if (input.classList.contains("is-aspect")) {
+          input.classList.remove("is-aspect");
+          delete input.dataset.aspectColor;
+          input.removeAttribute("aria-describedby");
+        }
+      }
+    }
+    placeAspectBadge(aspect);
+    writeAspectDescription(aspect);
+  }
+
+  function aspectDescription(aspect: HandleAspect): string {
+    const axis = aspect.color === "x" ? "X" : aspect.color === "y" ? "Y" : aspect.color === "z" ? "Z" : "";
+    const named = aspect.tip.replace(/ mm$/, " millimetres").replace(/°$/, " degrees").replace(/×$/, " times");
+    const sentence = named.replace(/(\s)(\d)/, ", $2");
+    const along = axis ? `lights the edges along ${axis}` : "lights the matching part";
+    return `${sentence}, ${along}`;
+  }
+
+  function writeAspectDescription(aspect: HandleAspect | null) {
+    let node = document.getElementById("modelAspectDesc");
+    if (!node) {
+      node = document.createElement("span");
+      node.id = "modelAspectDesc";
+      node.className = "sr-only";
+      document.getElementById("modelPanel")?.append(node);
+    }
+    node.textContent = aspect ? aspectDescription(aspect) : "";
+  }
+
+  function placeAspectBadge(aspect: HandleAspect | null) {
+    let badge = document.getElementById("modelAspectBadge");
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.id = "modelAspectBadge";
+      badge.className = "model-aspect-badge";
+      badge.setAttribute("aria-hidden", "true");
+      document.getElementById("modelPanel")?.append(badge);
+    }
+    const letter = aspect?.color === "x" ? "X" : aspect?.color === "y" ? "Y" : aspect?.color === "z" ? "Z" : "";
+    const input = aspect ? inputsFor(aspect.fields[0] ?? "").find((item) => item.id) : undefined;
+    const panel = document.getElementById("modelPanel");
+    if (!letter || !input || !panel) {
+      badge.hidden = true;
+      return;
+    }
+    badge.hidden = false;
+    badge.textContent = letter;
+    badge.dataset.color = aspect!.color;
+    const host = panel.getBoundingClientRect();
+    const box = input.getBoundingClientRect();
+    badge.style.left = `${Math.round(box.right - host.left - 16)}px`;
+    badge.style.top = `${Math.round(box.top - host.top + 3)}px`;
+  }
+
+  function publishAspect(handle: DragHandle | null, aspect: HandleAspect | null) {
+    if (!handle || !aspect) {
+      delete canvas.dataset.aspect;
+      delete canvas.dataset.aspectTip;
+      delete canvas.dataset.aspectField;
+      delete canvas.dataset.aspectMapped;
+      delete canvas.dataset.aspectLines;
+      delete canvas.dataset.aspectAt;
+      if (!aspectDim) canvas.dataset.aspectDim = "0";
+      return;
+    }
+    canvas.dataset.aspect = handle.id;
+    canvas.dataset.aspectTip = aspect.tip;
+    canvas.dataset.aspectField = aspect.fields.join(" ");
+    canvas.dataset.aspectMapped = aspect.mapped ? "1" : "0";
+    canvas.dataset.aspectLines = String(Math.floor(aspect.lines.length / 6));
+    publishAspectAt(handle);
+  }
+
+  /** The lit hole's centre, in canvas pixels, so a test can tell hole 2 from hole 1. */
+  function publishAspectAt(handle: DragHandle | null) {
+    const holes = ghost?.kind === "holes" ? ghost.holes : null;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (holes && holes.length > 0) {
+      const centres = holes.map((item) => {
+        const at = new THREE.Vector3(item.x, item.y, item.z).project(camera);
+        return `${Math.round((at.x * 0.5 + 0.5) * width)},${Math.round((-at.y * 0.5 + 0.5) * height)}`;
+      }).join(" ");
+      if (canvas.dataset.holeCentres !== centres) canvas.dataset.holeCentres = centres;
+    } else delete canvas.dataset.holeCentres;
+    const hole = holes && handle?.holeIndex != null ? holes[handle.holeIndex] : null;
+    if (!hole) {
+      delete canvas.dataset.aspectAt;
+      return;
+    }
+    const projectedAt = new THREE.Vector3(hole.x, hole.y, hole.z).project(camera);
+    const text = `${Math.round((projectedAt.x * 0.5 + 0.5) * width)},${Math.round((-projectedAt.y * 0.5 + 0.5) * height)}`;
+    if (canvas.dataset.aspectAt !== text) canvas.dataset.aspectAt = text;
+  }
+
+  /** Dashes of a few screen pixels, so a short walk along a hidden edge crosses a gap. */
+  function applyDash(material: LineMaterial) {
+    const dist = Math.max(1e-3, camera.position.distanceTo(controls.target));
+    const mm = (2 * dist * Math.tan((camera.fov * Math.PI) / 360)) / Math.max(1, canvas.clientHeight) / Math.max(1e-3, camera.zoom);
+    // Longer than a 5×5 patch, so a gap's sample is the part behind the dash and a dash's sample is the dash.
+    material.dashSize = mm * 12;
+    material.gapSize = mm * 12;
+  }
+
+  function darkenHex(color: number, factor: number): number {
+    const scale = (channel: number) => Math.max(0, Math.min(255, Math.round(channel * factor)));
+    return (scale((color >> 16) & 255) << 16) | (scale((color >> 8) & 255) << 8) | scale(color & 255);
+  }
+
+  /** A line point the solid sits in front of. A point on the surface still counts as seen. */
+  function lineHidden(point: THREE.Vector3): boolean {
+    if (!mesh) return false;
+    const dir = point.clone().sub(camera.position);
+    const dist = dir.length();
+    if (dist < 1e-4) return false;
+    depthRay.set(camera.position, dir.normalize());
+    return depthRay.intersectObject(mesh, false).some((hit) => hit.distance < dist - 0.4);
+  }
+
+  /**
+   * A seen midpoint (`data-aspect-sample`) and a point behind the solid (`data-aspect-hidden`,
+   * `x,y,dx,dy` with a unit screen direction along that edge).
+   */
+  function publishAspectSample() {
+    const sample = aspectSample;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const key = sample ? `${aspectKey}|${width}|${height}|${camera.matrixWorld.elements.join(",")}` : "";
+    if (key === aspectSampleKey) return;
+    aspectSampleKey = key;
+    if (!sample || sample.positions.length < 6) {
+      delete canvas.dataset.aspectSample;
+      delete canvas.dataset.aspectHidden;
+      return;
+    }
+    let visible: string | null = null;
+    let hidden: string | null = null;
+    const positions = sample.positions;
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const world = new THREE.Vector3();
+    // The middle of an edge sits on the face, and that face is more saturated than the axis line.
+    // Use the long run, in from the end that sticks furthest into empty space.
+    const ghostBox = ghostBounds();
+    const centreMark = ghostBox ? ghostBox.centre.clone().project(camera) : null;
+    const originX = centreMark && centreMark.z >= -1 && centreMark.z <= 1 ? (centreMark.x * 0.5 + 0.5) * width : width / 2;
+    const originY = centreMark && centreMark.z >= -1 && centreMark.z <= 1 ? (-centreMark.y * 0.5 + 0.5) * height : height / 2;
+    const project = (point: THREE.Vector3) => {
+      const mark = point.clone().project(camera);
+      return { x: (mark.x * 0.5 + 0.5) * width, y: (-mark.y * 0.5 + 0.5) * height, z: mark.z };
+    };
+    let bestLen = 0;
+    let bestAt: { x: number; y: number } | null = null;
+    for (let i = 0; i + 5 < positions.length; i += 6) {
+      a.set(positions[i]!, positions[i + 1]!, positions[i + 2]!);
+      b.set(positions[i + 3]!, positions[i + 4]!, positions[i + 5]!);
+      if (sample.body) {
+        body.localToWorld(a);
+        body.localToWorld(b);
+      }
+      const sa = project(a);
+      const sb = project(b);
+      const segLen = Math.hypot(sb.x - sa.x, sb.y - sa.y);
+      for (const t of [0.5, 0.25, 0.75]) {
+        world.lerpVectors(a, b, t);
+        const mark = project(world);
+        if (mark.z < -1 || mark.z > 1) continue;
+        if (mark.x < 1 || mark.y < 1 || mark.x > width - 1 || mark.y > height - 1) continue;
+        const behind = lineHidden(world);
+        if (behind && !hidden) {
+          const dx = sb.x - sa.x;
+          const dy = sb.y - sa.y;
+          const len = Math.hypot(dx, dy) || 1;
+          hidden = `${Math.round(mark.x)},${Math.round(mark.y)},${(dx / len).toFixed(3)},${(dy / len).toFixed(3)}`;
+        }
+        if (behind || segLen + 1e-3 < bestLen) continue;
+        const end = Math.hypot(sa.x - originX, sa.y - originY) >= Math.hypot(sb.x - originX, sb.y - originY) ? sa : sb;
+        const inward = 28;
+        const vx = mark.x - end.x;
+        const vy = mark.y - end.y;
+        const span = Math.hypot(vx, vy) || 1;
+        const dist = Math.min(inward, span / 2);
+        const x = end.x + (vx / span) * dist;
+        const y = end.y + (vy / span) * dist;
+        if (segLen > bestLen + 1e-3 || !bestAt) {
+          bestLen = segLen;
+          bestAt = { x, y };
+        }
+      }
+    }
+    if (bestAt) visible = `${Math.round(bestAt.x)},${Math.round(bestAt.y)}`;
+    if (visible) canvas.dataset.aspectSample = visible;
+    else delete canvas.dataset.aspectSample;
+    if (hidden) canvas.dataset.aspectHidden = hidden;
+    else delete canvas.dataset.aspectHidden;
+  }
+
+  function placeAspectLabel() {
+    const dimension = aspectNow?.dimension;
+    if (!dimension) {
+      aspectLabel.hidden = true;
+      aspectLabel.textContent = "";
+      labelMeasure.text = "";
+      return;
+    }
+    const mid: Vec3 = [
+      (dimension.from[0] + dimension.to[0]) / 2,
+      (dimension.from[1] + dimension.to[1]) / 2,
+      (dimension.from[2] + dimension.to[2]) / 2,
+    ];
+    const point = new THREE.Vector3(...mid);
+    if (aspectNow?.space === "body") body.localToWorld(point);
+    const projectedAt = point.project(camera);
+    if (projectedAt.z < -1 || projectedAt.z > 1) {
+      aspectLabel.hidden = true;
+      return;
+    }
+    const parent = canvas.parentElement?.getBoundingClientRect();
+    const rect = canvas.getBoundingClientRect();
+    if (!parent) return;
+    aspectLabel.hidden = false;
+    if (labelMeasure.text !== dimension.text) {
+      aspectLabel.textContent = dimension.text;
+      const measured = aspectLabel.getBoundingClientRect();
+      labelMeasure = { text: dimension.text, width: measured.width, height: measured.height };
+    }
+    aspectLabel.dataset.color = aspectNow?.color ?? "accent";
+    const x = rect.left + (projectedAt.x * 0.5 + 0.5) * rect.width - parent.left;
+    const y = rect.top + (-projectedAt.y * 0.5 + 0.5) * rect.height - parent.top;
+    aspectLabel.style.left = `${Math.round(x)}px`;
+    aspectLabel.style.top = `${Math.round(y)}px`;
+    const moved = Math.hypot(x - labelPlaced.x, y - labelPlaced.y) > 2 || aspectKey !== labelPlaced.key;
+    labelPlaced = { x, y, key: aspectKey };
+    if (moved && aspectGapSign === 1 && labelCoversKnob(x - (rect.left - parent.left), y - (rect.top - parent.top))) {
+      aspectGapSign = -1;
+      paintAspect();
+    }
+  }
+
+  /** The label's cached box against the knob's grip, both in canvas pixels. */
+  function labelCoversKnob(lx: number, ly: number): boolean {
+    const handle = aspectHandle();
+    if (!handle || aspectLabel.hidden) return false;
+    const part = drawnHandles().find((item) => item.handle.id === handle.id);
+    if (!part) return false;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const at = gripPoint(handle, part.root.position, part.root.scale.x).project(camera);
+    const kx = (at.x * 0.5 + 0.5) * width;
+    const ky = (-at.y * 0.5 + 0.5) * height;
+    const pad = 12;
+    return lx < kx + pad && lx + labelMeasure.width > kx - pad && ly < ky + pad && ly + labelMeasure.height > ky - pad;
+  }
+
+  function fieldOf(target: EventTarget | null): string | null {
+    if (!(target instanceof HTMLElement)) return null;
+    if (target instanceof HTMLInputElement) {
+      const id = target.id || target.dataset.field || "";
+      return id || null;
+    }
+    return target.dataset.field || null;
+  }
+
+  function holeOf(target: EventTarget | null): number | null {
+    if (!(target instanceof HTMLElement) || target.dataset.holeIndex == null || target.dataset.holeIndex === "") return null;
+    const index = Number(target.dataset.holeIndex);
+    return Number.isInteger(index) ? index : null;
+  }
+
+  function handleOwns(id: string): boolean {
+    return handleParts.some((part) => part.handle.fields.includes(id));
+  }
+
+  function syncFocusedField() {
+    focusSyncs += 1;
+    canvas.dataset.focusSyncs = String(focusSyncs);
+    const active = document.activeElement;
+    const id = fieldOf(active);
+    const hole = holeOf(active);
+    const next = id && handleOwns(id) ? id : null;
+    const nextHole = next ? hole : null;
+    if (next === focusedField && nextHole === focusedHole) return;
+    focusedField = next;
+    focusedHole = nextHole;
     paintHandles();
   }
 
@@ -2639,20 +3430,108 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return [minX, minY, maxX - minX, maxY - minY].map(Math.round).join(",");
   }
 
+  function canvasPoint(point: THREE.Vector3, width: number, height: number): { x: number; y: number } {
+    const mark = point.clone().project(camera);
+    return { x: (mark.x * 0.5 + 0.5) * width, y: (-mark.y * 0.5 + 0.5) * height };
+  }
+
+  /** World box of the ghost. The walk runs once per ghost, not once per frame. */
+  function ghostBounds(): { centre: THREE.Vector3; min: THREE.Vector3; max: THREE.Vector3 } | null {
+    if (ghosts.children.length === 0) {
+      ghostCache = null;
+      return null;
+    }
+    if (ghostCache?.serial === ghostSerial && ghostCache.pose === ghostPose) return ghostCache;
+    ghosts.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(ghosts);
+    if (box.isEmpty()) {
+      ghostCache = null;
+      return null;
+    }
+    ghostCache = { serial: ghostSerial, pose: ghostPose, centre: box.getCenter(new THREE.Vector3()), min: box.min.clone(), max: box.max.clone(), faces: new Map() };
+    return ghostCache;
+  }
+
+  /** The ghost's centre, its screen box, and a handle size that follows that box. */
+  function readGhost(width: number, height: number): { centre: THREE.Vector3; span: number; hits: boolean; size: number; screen: string } | null {
+    const box = ghostBounds();
+    if (!box) return null;
+    const centre = box.centre;
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const corner = new THREE.Vector3();
+    for (const x of [box.min.x, box.max.x]) {
+      for (const y of [box.min.y, box.max.y]) {
+        for (const z of [box.min.z, box.max.z]) {
+          const at = canvasPoint(corner.set(x, y, z), width, height);
+          xs.push(at.x);
+          ys.push(at.y);
+        }
+      }
+    }
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const span = Math.max(maxX - minX, maxY - minY);
+    const px = Math.min(96, Math.max(28, span * 0.22));
+    const size = gizmoRadiusForPixels(camera.position.distanceTo(centre), camera.fov, height, px, camera.zoom);
+    const mid = canvasPoint(centre, width, height);
+    return {
+      centre,
+      span,
+      hits: mid.x >= 8 && mid.x <= width - 8 && mid.y >= 8 && mid.y <= height - 8,
+      size,
+      screen: [minX, minY, maxX - minX, maxY - minY].map((value) => Math.round(value)).join(","),
+    };
+  }
+
+  /** The centre of the ghost's face that `dir` points at: the supporting plane through the centre. */
+  function facePoint(centre: THREE.Vector3, dir: THREE.Vector3): THREE.Vector3 {
+    const axis = dir.clone().normalize();
+    const key = `${axis.x.toFixed(5)},${axis.y.toFixed(5)},${axis.z.toFixed(5)}`;
+    const known = ghostCache?.faces.get(key);
+    if (known) return known.clone();
+    let half = 0;
+    const vertex = new THREE.Vector3();
+    ghosts.traverse((obj) => {
+      const geometry = (obj as THREE.Mesh).geometry;
+      const attr = geometry?.getAttribute?.("position");
+      if (!attr) return;
+      obj.updateWorldMatrix(true, false);
+      for (let i = 0; i < attr.count; i += 1) {
+        vertex.fromBufferAttribute(attr, i).applyMatrix4(obj.matrixWorld);
+        half = Math.max(half, vertex.sub(centre).dot(axis));
+      }
+    });
+    const at = centre.clone().addScaledVector(axis, Math.max(half, 0));
+    ghostCache?.faces.set(key, at.clone());
+    return at;
+  }
+
   function sizeHandles() {
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
     publishScreenBoxes(width, height);
     publishFaces(width, height);
+    camera.updateMatrixWorld();
+    const needsGhost = drawnHandles().some((part) => part.handle.seat.at === "ghost");
+    const ghostNow = needsGhost ? readGhost(width, height) : null;
+    const onGhost = ghostNow != null && ghostNow.hits && ghostNow.span >= 24;
+    if (ghostNow) canvas.dataset.ghostScreen = ghostNow.screen;
+    else delete canvas.dataset.ghostScreen;
+    const wantsDock = handleParts.some((part) => {
+      const seat = part.handle.seat;
+      return seat.at === "dock" || (seat.at === "ghost" && !onGhost);
+    });
     let dockSize = 0;
-    if (handleParts.some((part) => part.handle.seat.at === "dock")) {
-      camera.updateMatrixWorld();
+    if (wantsDock) {
       if (seated?.width !== width || seated.height !== height) seated = { width, height, seat: dockSeat(width, height, camera.fov, HANDLE_PX) };
       const { ndcX, ndcY, handlePx } = seated.seat;
       dockAt.set(ndcX, ndcY, controls.target.clone().project(camera).z).unproject(camera);
       dockSize = gizmoRadiusForPixels(camera.position.distanceTo(dockAt), camera.fov, height, handlePx, camera.zoom);
-      const mark = dockAt.clone().project(camera);
-      const text = `${Math.round((mark.x * 0.5 + 0.5) * width)},${Math.round((-mark.y * 0.5 + 0.5) * height)}`;
+      const mark = canvasPoint(dockAt, width, height);
+      const text = `${Math.round(mark.x)},${Math.round(mark.y)}`;
       if (canvas.dataset.gizmoAt !== text) canvas.dataset.gizmoAt = text;
       if (canvas.dataset.dockPx !== String(handlePx)) canvas.dataset.dockPx = String(handlePx);
     } else {
@@ -2660,21 +3539,38 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       delete canvas.dataset.dockPx;
     }
     const grips: string[] = [];
+    const seats: string[] = [];
     for (const part of drawnHandles()) {
       const seat = part.handle.seat;
+      const dir = new THREE.Vector3(...part.handle.dir).normalize();
       let size = dockSize;
-      if (seat.at === "dock") {
-        part.root.position.copy(dockAt).addScaledVector(new THREE.Vector3(...part.handle.dir).normalize(), seat.reach * dockSize);
-      } else {
+      if (seat.at === "ghost" && onGhost && ghostNow) {
+        const at = seat.role === "face" ? facePoint(ghostNow.centre, dir) : ghostNow.centre.clone();
+        if (seat.role === "face") at.addScaledVector(dir, HANDLE_KNOB_PICK * ghostNow.size);
+        part.root.position.copy(at);
+        size = ghostNow.size;
+      } else if (seat.at === "feature") {
         part.root.position.set(...seat.origin);
         size = gizmoRadiusForPixels(camera.position.distanceTo(part.root.position), camera.fov, height, HANDLE_PX, camera.zoom);
+      } else {
+        const reach = seat.at === "dock" ? seat.reach : seat.fallback;
+        part.root.position.copy(dockAt).addScaledVector(dir, reach * dockSize);
       }
       part.root.scale.setScalar(size);
+      const seatAt = canvasPoint(part.root.position, width, height);
+      seats.push(`${part.handle.id}:${Math.round(seatAt.x)},${Math.round(seatAt.y)}`);
       const at = gripPoint(part.handle, part.root.position, size).project(camera);
       grips.push(`${part.handle.id}:${Math.round((at.x * 0.5 + 0.5) * width)},${Math.round((-at.y * 0.5 + 0.5) * height)}`);
     }
+    const seatText = seats.join(" ");
+    if (canvas.dataset.handleSeat !== seatText) canvas.dataset.handleSeat = seatText;
     const text = grips.join(" ");
     if (canvas.dataset.handles !== text) canvas.dataset.handles = text;
+    if (aspectNow) {
+      placeAspectLabel();
+      // The sample is for a still view. Raycasting the solid on every drag frame dominates the frame.
+      if (!drag) publishAspectSample();
+    } else if (canvas.dataset.aspectSample) delete canvas.dataset.aspectSample;
     // --- A10. The section arrow, sized like a handle, drawn in model space.
     if (sectionPlaneWorld) {
       if (!sectionArrow) {
@@ -2825,14 +3721,19 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (next && next.some((value, i) => value !== current.values[i])) {
       current.values = next;
       handleCb({ handle, values: next, phase: "move" });
+      paintAspect();
     }
     showTip(ev, handle, current.values);
   }
 
   function showTip(ev: PointerEvent, handle: DragHandle, values: readonly number[]) {
+    if (aspectNow?.mapped && aspectNow.dimension) {
+      tip.hidden = true;
+      return;
+    }
     const parent = canvas.parentElement?.getBoundingClientRect();
     if (!parent) return;
-    tip.textContent = dragLabel(handle, values);
+    tip.textContent = aspectTip(handle, values);
     tip.hidden = false;
     // The dock sits at the right edge, so the tip flips to the pointer's left rather than run off the canvas.
     const right = ev.clientX - parent.left + 14;

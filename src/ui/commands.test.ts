@@ -1,4 +1,4 @@
-import { COMMANDS, fires, fuzzyScore, helpGroups, paletteCommands, rankCommands, resolveKey, shortcutOf, type KeyContext, type KeyEventLike } from "./commands.ts";
+import { COMMANDS, fires, fuzzyScore, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, resolveKey, shortcutOf, tipWithShortcut, type KeyContext, type KeyEventLike } from "./commands.ts";
 
 let failed = 0;
 
@@ -23,8 +23,9 @@ check("slice query finds force re-slice", sliceFirst.includes("force-slice"));
 const preview = rankCommands(COMMANDS, "prev").map((command) => command.label);
 check("prev matches Preview", preview.includes("Preview"), preview.join(","));
 eq("nonsense matches nothing", rankCommands(COMMANDS, "xyzqq").length, 0);
-eq("case insensitive top", rankCommands(COMMANDS, "TOP")[0]?.id, "view-top");
-check("sl prefers Slice over Samples", rankCommands(COMMANDS, "sl")[0]?.id === "slice");
+eq("case insensitive top", rankCommands(COMMANDS, "TOP")[0]?.label, "Top view");
+const slRank = rankCommands(COMMANDS, "sl").map((command) => command.id);
+check("sl prefers Slice over Samples", slRank.indexOf("slice") < slRank.indexOf("samples"), slRank.slice(0, 6).join(","));
 
 eq("fuzzy miss", fuzzyScore("xyz", "Slice"), null);
 check("fuzzy hit is positive", (fuzzyScore("sl", "Slice") ?? 0) > 0);
@@ -45,6 +46,10 @@ const BASE: KeyContext = {
   brushOn: false,
   editingSupports: false,
   inGcode: false,
+  sketchOpen: false,
+  sketchFeature: false,
+  sketchLoft: false,
+  layout: "desktop",
 };
 
 const NAMED: Record<string, string> = { Esc: "Escape", "↑": "ArrowUp", "↓": "ArrowDown", PgUp: "PageUp", PgDn: "PageDown", Del: "Delete" };
@@ -71,7 +76,8 @@ const contexts: KeyContext[] = [];
 for (const helpOpen of bools) for (const typing of bools) for (const hasResult of bools) for (const running of bools)
   for (const searching of bools) for (const brushOn of bools) for (const editingSupports of bools) for (const inGcode of bools)
     for (const stage of ["prepare", "preview", "gcode", "model"] as const)
-      contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode });
+      for (const layout of ["desktop", "compact"] as const)
+        contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode, sketchOpen: false, sketchFeature: false, sketchLoft: false, layout });
 const chords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
 for (const chord of chords) {
   for (const repeat of bools) {
@@ -107,7 +113,7 @@ eq("Esc does nothing when idle", press("Esc"), null);
 eq("Esc clears a Model selection", press("Esc", { stage: "model" }), "model-escape");
 eq("Esc still cancels a running slice on Model", press("Esc", { stage: "model", running: true }), "cancel-slice");
 eq("Q and W pick in Model", [press("Q"), press("Q", { stage: "model" }), press("W", { stage: "model" })], [null, "model-face", "model-edge"]);
-eq("Shift+E edits a Model step, E stays Edit supports", [press("Shift+E"), press("Shift+E", { stage: "model" }), press("E")], [null, "model-edit-step", "edit-supports"]);
+eq("Shift+E edits a Model step, E edits supports in Preview", [press("Shift+E"), press("Shift+E", { stage: "model" }), press("E"), press("E", { stage: "preview", hasResult: true })], [null, "model-edit-step", null, "edit-supports"]);
 eq("Shift+H is Model history, H stays Hole", [press("Shift+H"), press("Shift+H", { stage: "model" }), press("H", { stage: "model" })], [null, "model-history", "model-hole"]);
 eq("Shift+U is the workplane, and only in Model", [press("Shift+U"), press("Shift+U", { stage: "model" }), press("U", { stage: "model" })], [null, "model-workplane", null]);
 eq("Shift+K checks the solid, and K stays Paint seam", [press("Shift+K"), press("Shift+K", { stage: "model" }), press("K")], [null, "model-check", "paint-seam"]);
@@ -140,7 +146,7 @@ eq(
 eq("/ and Ctrl+F search, but not from a field", [press("/"), press("Ctrl+F"), press("/", { typing: true }), press("Ctrl+F", { typing: true })], ["search", "search", null, null]);
 eq("Ctrl+F stays the browser's in the G-code pane", press("Ctrl+F", { stage: "gcode", inGcode: true }), null);
 eq("a letter does nothing in a field", ["M", "R", "S", "F", "C", "E", "B", "K", "T", "Y", "I", "A", "V", "1"].map((chord) => press(chord, { typing: true })), Array(14).fill(null));
-eq("tools", ["M", "R", "S", "F", "C", "E", "B", "K"].map((chord) => press(chord)), ["tool-move", "tool-rotate", "tool-scale", "tool-layflat", "tool-section", "edit-supports", "paint-supports", "paint-seam"]);
+eq("Prepare tools", ["M", "R", "S", "F", "C", "B", "K", "N"].map((chord) => press(chord)), ["tool-move", "tool-rotate", "tool-scale", "tool-layflat", "tool-section", "paint-supports", "paint-seam", "paint-reinforce"]);
 eq("S in Model starts a sketch", press("S", { stage: "model" }), "model-sketch");
 eq("camera presets", ["T", "Y", "I"].map((chord) => press(chord)), ["view-top", "view-front", "view-iso"]);
 eq("Ctrl+E exports", press("Ctrl+E"), "export");
@@ -165,6 +171,224 @@ eq("the sheet spells the keys the old prose left out", ["Search settings", "Smal
 eq("groups appear once each", helpGroups().map((group) => group.group), [...new Set(helpGroups().map((group) => group.group))]);
 check("the palette hides sheet-only commands", paletteCommands().every((command) => command.show !== "help" && command.show !== "none"));
 check("the palette lists the shortcut of a keyed command", shortcutOf(COMMANDS.find((command) => command.id === "slice")!) === "Ctrl+Enter");
+for (const command of COMMANDS) {
+  if (command.keys?.length) continue;
+  const tip = tipWithShortcut(command.label, undefined);
+  check(`${command.id} tip has no empty shortcut`, tip === command.label && !tip.includes("()") && !/[·•|–—-]\s*$/.test(tip), tip);
+}
+eq("a keyed tip names the shortcut once", tipWithShortcut("Fillet", "L"), "Fillet (L)");
+eq("an empty slot is dropped", tipWithShortcut("Add ()", undefined), "Add");
+eq("a real shortcut is kept", tipWithShortcut("Arrange (A)", "A"), "Arrange (A)");
+
+// R3-01. A Prepare key is null wherever its button is not on screen, and the same command where it is.
+const STAGE_KEYS: Record<string, Partial<Record<"prepare" | "preview" | "gcode" | "model", string>>> = {
+  M: { prepare: "tool-move" },
+  R: { prepare: "tool-rotate" },
+  F: { prepare: "tool-layflat" },
+  B: { prepare: "paint-supports" },
+  K: { prepare: "paint-seam" },
+  N: { prepare: "paint-reinforce" },
+  E: { preview: "edit-supports", gcode: "edit-supports" },
+  C: { prepare: "tool-section", preview: "tool-section", gcode: "tool-section" },
+  T: { prepare: "view-top", model: "model-view-top" },
+  Y: { prepare: "view-front", model: "model-view-front" },
+  I: { prepare: "view-iso", model: "model-view-iso" },
+  "/": { prepare: "search", preview: "search", gcode: "search" },
+  "Ctrl+F": { prepare: "search", preview: "search", gcode: "search" },
+  "Shift+1": { prepare: "strategy-speed", preview: "strategy-speed" },
+  "Shift+M": { prepare: "measure", preview: "measure", gcode: "measure", model: "model-measure" },
+};
+for (const [chord, where] of Object.entries(STAGE_KEYS)) {
+  for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
+    eq(`${chord} in ${stage}`, press(chord, { stage, hasResult: stage === "preview" }), where[stage] ?? null);
+  }
+}
+
+// R3-05. Every chord, in every combination of stage and mode, fires at most one command,
+// and a targeted command fires only where that target is on screen.
+const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | "model")[]> = {
+  "#leftToggle": ["prepare", "preview", "gcode", "model"],
+  "#timing": ["prepare", "preview", "gcode", "model"],
+  "#contextBarRestore": ["model"],
+  "#compactChromeShow": ["prepare", "preview", "gcode", "model"],
+  "#slice": ["prepare", "preview", "gcode", "model"],
+  "#force": ["prepare", "preview", "gcode", "model"],
+  "#cancel": ["prepare", "preview", "gcode", "model"],
+  "#export": ["prepare", "preview", "gcode", "model"],
+  "#tabPrepare": ["prepare", "preview", "gcode", "model"],
+  "#tabPreview": ["prepare", "preview", "gcode", "model"],
+  "#tabGcode": ["prepare", "preview", "gcode", "model"],
+  "#tabModel": ["prepare", "preview", "gcode", "model"],
+  "#compactTabs [data-tab=prepare]": ["prepare", "preview", "gcode", "model"],
+  "#compactTabs [data-tab=preview]": ["prepare", "preview", "gcode", "model"],
+  "#compactTabs [data-tab=model]": ["prepare", "preview", "gcode", "model"],
+  "#compactIso": ["prepare"],
+  "#modelHistoryToggle": ["model"],
+  '[data-mode="flat"]': ["preview"],
+  '[data-mode="split"]': ["preview"],
+  '[data-mode="solid"]': ["preview"],
+  "#viewPresets button:nth-child(1)": ["prepare"],
+  "#viewPresets button:nth-child(2)": ["prepare"],
+  "#viewPresets button:nth-child(3)": ["prepare"],
+  "#measureField": ["prepare", "preview", "gcode"],
+  "#modelToolMeasure": ["model"],
+  "#modelToolNew": ["model"],
+  "#modelPickFace": ["model"],
+  "#modelPickEdge": ["model"],
+  "#modelToolBoolean": ["model"],
+  "#modelToolSplit": ["model"],
+  "#modelToolPull": ["model"],
+  "#modelToolSketch": ["model"],
+  "#modelToolFillet": ["model"],
+  "#modelToolChamfer": ["model"],
+  "#modelToolHole": ["model"],
+  "#modelToolFeatures": ["model"],
+  "#modelToolPattern": ["model"],
+  "#modelToolMirror": ["model"],
+  "#modelToolShell": ["model"],
+  "#modelToolScale": ["model"],
+  "#modelToolPlace": ["model"],
+  "#modelToolWorkplane": ["model"],
+  "#modelToolCheck": ["model"],
+  "#modelResetView": ["model"],
+  "#modelHistoryOpen": ["model"],
+  "#modelApply": ["model"],
+  '[data-card="speed"]': ["prepare", "preview"],
+  '[data-card="efficiency"]': ["prepare", "preview"],
+  '[data-card="toughness"]': ["prepare", "preview"],
+  '[data-card="layer"]': ["prepare", "preview"],
+  '[data-card="region"]': ["prepare", "preview"],
+  "#plateArrange": ["prepare"],
+  "#plateDuplicate": ["prepare"],
+  '#toolRail [data-tool="move"]': ["prepare"],
+  '#toolRail [data-tool="rotate"]': ["prepare"],
+  '#toolRail [data-tool="scale"]': ["prepare"],
+  "#layflat": ["prepare"],
+  '#toolRail [data-tool="layflat"]': ["prepare"],
+  '#toolRail [data-tool="section"]': ["prepare", "preview", "gcode"],
+  '#toolRail [data-tool="supports"]': ["preview", "gcode"],
+  '#toolRail [data-tool="paint"]': ["prepare"],
+  '#toolRail [data-tool="seam"]': ["prepare"],
+  '#toolRail [data-tool="reinforce"]': ["prepare"],
+  // Undo and Redo run in every stage. The Model buttons are the tooltip targets, and the handler clicks them only in Model.
+  "#modelUndo": ["prepare", "preview", "gcode", "model"],
+  "#modelRedo": ["prepare", "preview", "gcode", "model"],
+  '[data-sketch-tool="line"]': ["model"],
+  '[data-sketch-tool="rectangle"]': ["model"],
+  '[data-sketch-tool="circle"]': ["model"],
+  '[data-sketch-tool="arc"]': ["model"],
+  '[data-sketch-tool="polygon"]': ["model"],
+  '[data-sketch-tool="slot"]': ["model"],
+  '[data-sketch-tool="spline"]': ["model"],
+  '[data-sketch-tool="trim"]': ["model"],
+  '[data-sketch-tool="offset"]': ["model"],
+  '[data-sketch-tool="fillet"]': ["model"],
+  '[data-sketch-tool="use"]': ["model"],
+  '[data-sketch-tool="construction"]': ["model"],
+  "[data-sketch-look]": ["model"],
+  "[data-sketch-extrude]": ["model"],
+  "[data-sketch-revolve]": ["model"],
+  "[data-sketch-loft]": ["model"],
+  "[data-sketch-sweep]": ["model"],
+  "[data-sketch-holes]": ["model"],
+  "[data-sketch-ruled]": ["model"],
+};
+const TARGET_LAYOUTS: Record<string, readonly ("desktop" | "compact")[]> = {
+  "#tabPrepare": ["desktop"],
+  "#tabPreview": ["desktop"],
+  "#tabGcode": ["desktop"],
+  "#tabModel": ["desktop"],
+  "#compactTabs [data-tab=prepare]": ["compact"],
+  "#compactTabs [data-tab=preview]": ["compact"],
+  "#compactTabs [data-tab=model]": ["compact"],
+  "#viewPresets button:nth-child(1)": ["desktop"],
+  "#viewPresets button:nth-child(2)": ["desktop"],
+  "#viewPresets button:nth-child(3)": ["desktop"],
+  "#compactIso": ["compact"],
+  "#measureField": ["desktop"],
+  "#timing": ["desktop"],
+  "#export": ["desktop"],
+  "#force": ["desktop"],
+  "#modelHistoryOpen": ["compact"],
+  "#compactChromeShow": ["compact"],
+};
+for (const selector of Object.keys(TARGET_STAGES)) {
+  if (!(selector in TARGET_LAYOUTS)) TARGET_LAYOUTS[selector] = ["desktop", "compact"];
+}
+for (const command of COMMANDS) {
+  if (!command.target) continue;
+  for (const selector of command.target.split(",").map((part) => part.trim())) {
+    check(`target ${selector} is in the stage map`, selector in TARGET_STAGES, command.id);
+    check(`target ${selector} is in the layout map`, selector in TARGET_LAYOUTS, command.id);
+  }
+}
+const honestChords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
+for (const layout of ["desktop", "compact"] as const) {
+  for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
+    for (const sketchOpen of bools) for (const sketchFeature of bools) for (const sketchLoft of bools) for (const brushOn of bools)
+      for (const helpOpen of bools) for (const running of bools) for (const typing of bools) {
+        const ctx: KeyContext = {
+          ...BASE,
+          layout,
+          stage,
+          hasResult: stage === "preview",
+          sketchOpen,
+          sketchFeature,
+          sketchLoft,
+          brushOn,
+          helpOpen,
+          running,
+          typing,
+        };
+        for (const chord of honestChords) {
+          const hits = COMMANDS.filter((command) => fires(command, eventFor(chord), ctx));
+          if (hits.length > 1) check(`${chord} fires one command`, false, hits.map((command) => command.id).join(",") + ` in ${layout} ${stage}`);
+          const hit = hits[0];
+          if (!hit?.target) continue;
+          const parts = hit.target.split(",").map((part) => part.trim());
+          const stages = new Set(parts.flatMap((part) => TARGET_STAGES[part] ?? []));
+          check(`${hit.id} stays on screen in ${stage}`, stages.has(stage), chord);
+          const shown = parts.some((part) => (TARGET_LAYOUTS[part] ?? []).includes(layout));
+          check(`${hit.id} stays on screen in ${layout}`, shown, `${chord} in ${stage}`);
+        }
+      }
+  }
+}
+
+const sketchCtx = { stage: "model" as const, sketchOpen: true };
+for (const letter of "abcdefghijklmnopqrstuvwxyz") {
+  for (const sketchFeature of bools) for (const sketchLoft of bools) {
+    const id = press(letter, { ...sketchCtx, sketchFeature, sketchLoft });
+    const group = COMMANDS.find((command) => command.id === id)?.group;
+    check(`${letter} in a sketch is a sketch command or nothing`, group === undefined || group === "Sketch", id ?? "null");
+  }
+}
+eq("W in a sketch sweeps", press("W", sketchCtx), "sketch-sweep");
+eq("Shift+L in a sketch lofts", press("Shift+L", sketchCtx), "sketch-loft");
+eq("T in a sketch trims", press("T", sketchCtx), "sketch-trim");
+eq("L in a sketch is the line", press("L", sketchCtx), "sketch-line");
+eq("R in a sketch is the rectangle", press("R", sketchCtx), "sketch-rect");
+eq("R in a loft is smooth", press("R", { ...sketchCtx, sketchFeature: true, sketchLoft: true }), "sketch-smooth");
+eq("M cycles the feature", press("M", { ...sketchCtx, sketchFeature: true }), "sketch-mode");
+eq("M does nothing with no feature", press("M", sketchCtx), null);
+eq("Ctrl+Z undoes the sketch", press("Ctrl+Z", sketchCtx), "sketch-undo");
+eq("Ctrl+Z in a sketch field stays in the field", press("Ctrl+Z", { ...sketchCtx, typing: true }), null);
+eq("Esc cancels the sketch", press("Esc", sketchCtx), "sketch-escape");
+eq("Esc still cancels a running slice while sketching", press("Esc", { ...sketchCtx, running: true }), "cancel-slice");
+eq("2 types a size while sketching", press("2", sketchCtx), "sketch-size");
+eq("2 in a sketch field stays text", press("2", { ...sketchCtx, typing: true }), null);
+eq("2 still opens Preview outside a sketch", press("2"), "tab-preview");
+eq("a sketch digit does not switch stage", press("1", sketchCtx), "sketch-size");
+eq("Shift+M measures in Model", press("Shift+M", { stage: "model" }), "model-measure");
+eq("T, Y and I move the Model camera", ["T", "Y", "I"].map((chord) => press(chord, { stage: "model" })), ["model-view-top", "model-view-front", "model-view-iso"]);
+eq("T in a sketch still trims", press("T", sketchCtx), "sketch-trim");
+eq("Model scale is labelled Scale solid", COMMANDS.find((command) => command.id === "model-scale")?.label, "Scale solid");
+eq("export is labelled Export G-code", COMMANDS.find((command) => command.id === "export")?.label, "Export G-code");
+eq(
+  "Shift+click names Model and Paint",
+  MOUSE_HINTS.filter((hint) => hint.gesture === "Shift+click").map((hint) => hint.label),
+  ["Model: add or remove a face or edge", "Paint: a straight line from the last dab"],
+);
 
 if (failed) {
   console.error(`${failed} failed`);

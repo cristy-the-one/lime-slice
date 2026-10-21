@@ -151,25 +151,25 @@ export function drawAnchor(sketch: SketchData, state: DrawState, tool: DrawTool)
 export function drawReadout(tool: DrawTool): string {
   switch (tool) {
     case "circle":
-      return "Circle. Click the centre, then a point on the radius. Type a diameter.";
+      return "Circle. Click the centre. Type a diameter.";
     case "arc":
-      return "Arc. Click the start, the end, and a point on the arc. Hold Shift for an arc tangent to the last line. Type a radius and a sweep.";
+      return "Arc. Click the start, the end, and a point.";
     case "polygon":
-      return "Polygon. Click the centre, then a corner. Type across corners, across flats, and the sides.";
+      return "Polygon. Type across corners and the sides.";
     case "slot":
-      return "Slot. Click the first centre, the second centre, then the width. Type a length and a width.";
+      return "Slot. Click two centres, then the width.";
     case "spline":
-      return "Spline. Click through the points. Double-click or Esc ends it. Click the start point to close.";
+      return "Spline. Click points. Double-click ends it.";
     case "trim":
       return "Trim. Click the piece to remove.";
     case "offset":
-      return "Offset. Click a line or a chain and drag, or type a distance.";
+      return "Offset. Click a line and drag, or type.";
     case "fillet":
-      return "Fillet corner. Click two lines that meet and drag the radius, or type it.";
+      return "Fillet corner. Click two lines that meet.";
     case "construction":
-      return "Construction. Click a line to toggle it. X toggles the selection.";
+      return "Construction. Click a line to toggle it.";
     case "use":
-      return "Use. Click a faint edge, or the face outline, to copy it into the sketch.";
+      return "Use. Click a faint edge to copy it.";
   }
 }
 

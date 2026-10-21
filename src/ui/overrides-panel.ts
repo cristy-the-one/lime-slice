@@ -1,5 +1,5 @@
 import { Plus, X, createElement } from "lucide";
-import type { HeightRange, ModifierVolume, OverrideDocument, SettingOverride } from "../overrides.ts";
+import { volumeSizeAxis, volumeSizeShown, type HeightRange, type ModifierVolume, type OverrideDocument, type SettingOverride, type VolumeSizeField } from "../overrides.ts";
 
 function esc(value: string): string {
   return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch] ?? ch));
@@ -13,8 +13,8 @@ export function setModifierOpen(id: string, open: boolean) {
   else openItems.delete(id);
 }
 
-function num(field: string, label: string, value: string, min: number, max: number, step: number, span: 2 | 3): string {
-  return `<label class="setting span${span}" data-label="${esc(label.toLowerCase())}"><span class="scrub-label" data-scrub="field">${esc(label)}</span><input data-field="${field}" type="number" min="${min}" max="${max}" step="${step}" value="${esc(value)}" aria-label="${esc(label)}" /></label>`;
+function num(field: string, label: string, value: string, min: number, max: number, step: number, span: 2 | 3, tip = label): string {
+  return `<label class="setting span${span}" data-label="${esc(label.toLowerCase())}" data-tip="${esc(tip)}"><span class="scrub-label" data-scrub="field">${esc(label)}</span><input data-field="${field}" type="number" min="${min}" max="${max}" step="${step}" value="${esc(value)}" aria-label="${esc(label)}" /></label>`;
 }
 
 function optional(value: number | undefined, digits = 0): string {
@@ -61,19 +61,30 @@ function rangeItem(range: HeightRange): string {
     </details>`;
 }
 
+function sizeField(volume: ModifierVolume, field: VolumeSizeField): string {
+  const axis = volumeSizeAxis(volume.kind, field);
+  const shown = volumeSizeShown(volume.kind, field, volume[field]);
+  const min = axis.radius ? 0.1 : 0.2;
+  const max = axis.radius ? 500 : 1000;
+  return num(field, axis.label, String(shown), min, max, 0.1, 2);
+}
+
 function volumeItem(volume: ModifierVolume, selectedId: string | null): string {
   const selected = volume.id === selectedId;
   const label = volumeLabel(volume.kind);
+  const sizes = (["sx", "sy", "sz"] as const).map((field) => volumeSizeAxis(volume.kind, field).label);
+  const shown = (["sx", "sy", "sz"] as const).map((field) => mm(volumeSizeShown(volume.kind, field, volume[field])));
+  const badge = `${shown.join(" × ")} mm`;
   return `
     <details class="mod-item${selected ? " is-selected" : ""}" data-override-card data-volume="${esc(volume.id)}" data-mod="${esc(volume.id)}"${openItems.has(volume.id) ? " open" : ""}>
-      <summary data-override-select="${esc(volume.id)}" aria-current="${selected ? "true" : "false"}"><span class="mod-name scrub-label" data-scrub="scale">${label}</span><span class="mod-val">${mm(volume.sx)} × ${mm(volume.sy)} × ${mm(volume.sz)} mm</span>${removeButton("volume", label.toLowerCase())}</summary>
+      <summary data-override-select="${esc(volume.id)}" aria-current="${selected ? "true" : "false"}"><span class="mod-name scrub-label" data-scrub="scale">${label}</span><span class="mod-val" data-tip="${esc(sizes.join(", "))}" aria-label="${esc(`${sizes.join(", ")}: ${badge}`)}">${badge}</span>${removeButton("volume", label.toLowerCase())}</summary>
       <div class="mod-fields">
         ${num("x", "X mm", String(volume.x), -500, 1500, 0.1, 2)}
         ${num("y", "Y mm", String(volume.y), -500, 1500, 0.1, 2)}
         ${num("z", "Z mm", String(volume.z), -500, 1500, 0.1, 2)}
-        ${num("sx", "Size X mm", String(volume.sx), 0.2, 1000, 0.1, 2)}
-        ${num("sy", "Size Y mm", String(volume.sy), 0.2, 1000, 0.1, 2)}
-        ${num("sz", "Size Z mm", String(volume.sz), 0.2, 1000, 0.1, 2)}
+        ${sizeField(volume, "sx")}
+        ${sizeField(volume, "sy")}
+        ${sizeField(volume, "sz")}
         ${overrideFields(volume.override)}
       </div>
     </details>`;

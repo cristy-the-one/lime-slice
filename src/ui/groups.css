@@ -230,7 +230,24 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
 .separate-row { padding-top: var(--space-2); }
 .separate-row .btn { width: 100%; }
 .separate-row .btn:disabled { pointer-events: none; }
-.obj-tools { display: flex; gap: 2px; align-items: center; padding-top: var(--space-2); flex-wrap: wrap; }
+.obj-tools { display: flex; gap: 2px; align-items: center; margin-top: var(--space-2); flex-wrap: nowrap; min-width: 0; }
+.obj-more { position: relative; flex: 0 0 auto; }
+.obj-more > summary { list-style: none; }
+.obj-more > summary::-webkit-details-marker { display: none; }
+.obj-more-menu {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  top: calc(100% + 4px);
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+}
+.obj-more:not([open]) .obj-more-menu { display: none; }
 .tool-btn {
   position: relative;
   width: 28px;
