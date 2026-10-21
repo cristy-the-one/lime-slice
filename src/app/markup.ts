@@ -547,6 +547,36 @@ export function mountMarkup(root: HTMLElement) {
                 <p id="stressStatus" class="stress-note" role="status"></p>
                 <p id="stressNote" class="stress-note"></p>
               </fieldset>
+              <fieldset class="stress-group" id="stressVariants" data-stress-local>
+                <legend>Variants</legend>
+                <p class="stress-note">Print time stays off. A rough row is not met.</p>
+                <div class="stress-grid">
+                  <label>Load scale <input id="stressVariantScale" type="number" min="0.01" step="0.1" value="1" aria-label="Load scale" /></label>
+                  <label>Walls <input id="stressVariantWalls" type="number" min="1" max="12" step="1" aria-label="Variant walls" /></label>
+                  <label>Infill <input id="stressVariantInfill" type="number" min="0" max="1" step="0.05" aria-label="Variant infill" /></label>
+                  <label>Pattern
+                    <select id="stressVariantPattern" aria-label="Variant pattern">
+                      <option value="">As printed</option>
+                      <option value="lines">Lines</option>
+                      <option value="grid">Grid</option>
+                      <option value="gyroid">Gyroid</option>
+                      <option value="lightning">Lightning</option>
+                    </select>
+                  </label>
+                </div>
+                <button class="btn" id="stressVariantAdd" type="button">Add variant</button>
+                <p id="stressVariantList" class="stress-note"></p>
+                <div class="stress-grid">
+                  <label>Max deflection mm <input id="stressMaxDeflection" type="number" min="0" step="0.1" aria-label="Max deflection" /></label>
+                  <label>Min safety <input id="stressMinSafety" type="number" min="0" step="0.1" aria-label="Min safety factor" /></label>
+                </div>
+                <button class="btn" id="stressSweep" type="button">Run sweep</button>
+                <p id="stressSweepStatus" class="stress-note" role="status"></p>
+                <table id="stressSweepTable" class="stress-table" hidden>
+                  <thead><tr><th>Variant</th><th>Deflection mm</th><th>Safety</th><th>Met</th><th>Reason</th></tr></thead>
+                  <tbody id="stressSweepBody"></tbody>
+                </table>
+              </fieldset>
               <div class="model-params-bar">
                 <button class="btn" id="stressCancel" type="button">Cancel</button>
                 <button class="btn primary" id="stressRun" type="button">Run</button>

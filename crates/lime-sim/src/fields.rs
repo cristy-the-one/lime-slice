@@ -124,6 +124,7 @@ pub struct TrustReport {
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
     pub label: String,
+    #[serde(rename = "maxVonMisesMPa")]
     pub max_von_mises_mpa: f64,
     pub max_von_mises_at: [f64; 3],
     pub max_displacement_mm: f64,

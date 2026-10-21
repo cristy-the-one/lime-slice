@@ -270,6 +270,8 @@ html:not(.layout-compact) .model-dock .model-stress {
 .model-stress .model-params-bar .btn { flex: 1 1 auto; }
 .stress-label { margin: 0; font-weight: 600; }
 .stress-note { margin: 0; color: var(--text-dim); font-size: var(--fs-1); }
+.stress-table { width: 100%; border-collapse: collapse; font-size: var(--fs-1); }
+.stress-table th, .stress-table td { text-align: left; padding: 2px 4px; vertical-align: top; }
 .stress-legend {
   position: absolute;
   left: 12px;

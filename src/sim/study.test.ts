@@ -15,6 +15,7 @@ import {
   emptyStudy,
   formatProbe,
   holdLine,
+  constraintVerdict,
   holdRefusal,
   onBed,
   probeNearest,
@@ -96,6 +97,20 @@ const study = emptyStudy();
 study.holds = [{ kind: "bed", faces: [] }];
 eq("a study reads back", readStudy(JSON.parse(JSON.stringify(study))), study);
 eq("a damaged study is left out", readStudy({ holds: "bed" }), null);
+study.beam = { lengthMm: 100, widthMm: 10, heightMm: 10 };
+study.pattern = "grid";
+eq("a generated beam reads back", readStudy(JSON.parse(JSON.stringify(study))), study);
+eq("a damaged beam is left out", readStudy({ ...study, beam: { lengthMm: 0, widthMm: 10, heightMm: 10 } }), null);
+eq(
+  "a rough row is not met",
+  constraintVerdict({ provisional: true, trust: "rough", maxDisplacementMm: 0.01, minSafetyFactor: 4, massG: 1 }, { maxDeflectionMm: 1 }),
+  { met: false, reason: PROVISIONAL_SENTENCE },
+);
+eq(
+  "a converged row can pass",
+  constraintVerdict({ provisional: false, trust: "converged", maxDisplacementMm: 0.2, minSafetyFactor: 3, massG: 12 }, { maxDeflectionMm: 1, minSafetyFactor: 2 }),
+  { met: true, reason: "" },
+);
 
 const plate = oneObjectPlate({
   name: "beam",

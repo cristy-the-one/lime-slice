@@ -14,3 +14,7 @@ serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"
+
+[[bin]]
+name = "lime-sim"
+path = "src/bin/lime-sim.rs"

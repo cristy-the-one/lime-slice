@@ -18,6 +18,7 @@ import {
   emptyStudy,
   fieldLabel,
   formatProbe,
+  constraintVerdict,
   holdLine,
   holdRefusal,
   paintField,
@@ -25,6 +26,7 @@ import {
   restPositions,
   vertexColours,
   type CannedResult,
+  type ConstraintLimits,
   type ObjectStudy,
   type StressField,
   type StudyBox,
@@ -133,6 +135,8 @@ export function mountStress(next: StressHooks) {
     repaintField();
   });
   byId("#stressProbeGo")?.addEventListener("click", probeTyped);
+  byId("#stressVariantAdd")?.addEventListener("click", addVariant);
+  byId("#stressSweep")?.addEventListener("click", runSweep);
   byId("#stressCard")?.addEventListener("change", () => {
     cardTouched = false;
     readForm();
@@ -232,6 +236,12 @@ function loadDraft() {
   cardTouched = false;
   field = "vonMises";
   scaleOverride = undefined;
+  variants = [];
+  paintVariantList();
+  const table = byId<HTMLElement>("#stressSweepTable");
+  if (table) table.hidden = true;
+  const sweepStatus = byId("#stressSweepStatus");
+  if (sweepStatus) sweepStatus.textContent = "";
 }
 
 function currentCard(): MaterialCard | null {
@@ -268,7 +278,8 @@ function readForm() {
   if (cardId) draft.cardId = cardId;
   const bed = byId<HTMLInputElement>("#stressBed")?.checked === true;
   const faces = draft.holds.filter((hold) => hold.kind === "faces");
-  draft.holds = bed ? [{ kind: "bed", faces: [] }, ...faces] : faces;
+  const planes = draft.holds.filter((hold) => hold.kind === "plane");
+  draft.holds = [...(bed ? [{ kind: "bed" as const, faces: [] }] : []), ...faces, ...planes];
 }
 
 function commitDraft() {
@@ -285,6 +296,7 @@ function onChange(ev: Event) {
   const target = ev.target;
   if (!(target instanceof HTMLElement)) return;
   if (target.id === "stressField" || target.id === "stressScale" || target.id === "stressCard") return;
+  if (target.closest("[data-stress-local]")) return;
   if (target.id.startsWith("stressE") || target.id === "stressNu" || target.id.startsWith("stressS") || target.id === "stressDensity") {
     cardTouched = true;
     paintProvisional();
@@ -316,6 +328,114 @@ function addFaces(indexes: number[], which: "hold" | "load") {
   paintHolds();
   syncDraw();
   setStatus("");
+}
+
+const SWEEP_REFUSAL = "A sweep takes up to 16 variants.";
+
+interface PanelVariant {
+  loadScale: number;
+  walls?: number;
+  infill?: number;
+  pattern?: string;
+}
+
+let variants: PanelVariant[] = [];
+
+function readVariant(): PanelVariant {
+  const scale = num("#stressVariantScale", 1);
+  const wallsText = byId<HTMLInputElement>("#stressVariantWalls")?.value ?? "";
+  const infillText = byId<HTMLInputElement>("#stressVariantInfill")?.value ?? "";
+  const pattern = byId<HTMLSelectElement>("#stressVariantPattern")?.value ?? "";
+  const variant: PanelVariant = { loadScale: scale > 0 ? scale : 1 };
+  if (wallsText !== "") variant.walls = Math.round(Number(wallsText));
+  if (infillText !== "") variant.infill = Number(infillText);
+  if (pattern === "lines" || pattern === "grid" || pattern === "gyroid" || pattern === "lightning") variant.pattern = pattern;
+  return variant;
+}
+
+function variantLine(variant: PanelVariant): string {
+  const bits = [`scale ${variant.loadScale}`];
+  if (variant.walls !== undefined) bits.push(`${variant.walls} walls`);
+  if (variant.infill !== undefined) bits.push(`infill ${variant.infill}`);
+  if (variant.pattern) bits.push(variant.pattern);
+  return bits.join(", ");
+}
+
+function paintVariantList() {
+  const node = byId("#stressVariantList");
+  if (node) node.textContent = variants.map(variantLine).join("; ");
+}
+
+function addVariant() {
+  const status = byId("#stressSweepStatus");
+  if (variants.length >= 16) {
+    if (status) status.textContent = SWEEP_REFUSAL;
+    return;
+  }
+  variants.push(readVariant());
+  paintVariantList();
+  if (status) status.textContent = "";
+}
+
+function sweepLimits(): ConstraintLimits {
+  const read = (id: string) => {
+    const text = byId<HTMLInputElement>(id)?.value ?? "";
+    if (text === "") return undefined;
+    const value = Number(text);
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  };
+  return { maxDeflectionMm: read("#stressMaxDeflection"), minSafetyFactor: read("#stressMinSafety") };
+}
+
+function runSweep() {
+  readForm();
+  const status = byId("#stressSweepStatus");
+  const list = variants.length > 0 ? variants : [readVariant()];
+  if (list.length > 16) {
+    if (status) status.textContent = SWEEP_REFUSAL;
+    return;
+  }
+  const box = hooks?.bounds();
+  const card = currentCard();
+  const body = byId("#stressSweepBody");
+  const table = byId<HTMLElement>("#stressSweepTable");
+  if (!box || !card) {
+    if (status) status.textContent = "This part has no size to show.";
+    return;
+  }
+  if (body) body.replaceChildren();
+  for (const variant of list) {
+    const made = cannedBeam(draft, box, card, "vonMises");
+    const tr = document.createElement("tr");
+    const cells = [variantLine(variant), "—", "—", "no", ""];
+    if ("error" in made) cells[4] = made.error;
+    else {
+      const disp = Math.max(...made.nodes.map((node) => node.displacement)) * variant.loadScale;
+      const safety = Math.min(...made.nodes.map((node) => node.safety)) / variant.loadScale;
+      const volume = (box.max[0] - box.min[0]) * (box.max[1] - box.min[1]) * (box.max[2] - box.min[2]);
+      const infill = variant.infill ?? 1;
+      const mass = (volume * card.densityGCm3 * Math.min(1, Math.max(0, infill))) / 1000;
+      const verdict = constraintVerdict({
+        provisional: card.provisional,
+        trust: card.provisional ? "rough" : "usable",
+        maxDisplacementMm: disp,
+        minSafetyFactor: Number.isFinite(safety) ? safety : null,
+        massG: mass,
+      }, sweepLimits());
+      cells[1] = disp.toFixed(3);
+      cells[2] = Number.isFinite(safety) ? safety.toFixed(2) : "—";
+      cells[3] = verdict.met ? "yes" : "no";
+      cells[4] = verdict.reason;
+    }
+    for (const text of cells) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.append(td);
+    }
+    body?.append(tr);
+  }
+  if (table) table.hidden = false;
+  if (status) status.textContent = "";
 }
 
 function run() {

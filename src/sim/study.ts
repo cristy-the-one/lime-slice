@@ -11,10 +11,21 @@ export type TrustWord = "rough" | "usable" | "converged";
 export type StressField = "vonMises" | "displacement" | "safety";
 
 export interface StudyHold {
-  kind: "bed" | "faces";
-  /** Face indexes. Empty when the hold is the bed. */
+  kind: "bed" | "faces" | "plane";
+  /** Face indexes. Empty when the hold is the bed or a plane. */
   faces: number[];
+  /** A typed plane, in the part frame. */
+  normal?: Vec3;
+  origin?: Vec3;
 }
+
+export interface StudyBeam {
+  lengthMm: number;
+  widthMm: number;
+  heightMm: number;
+}
+
+export type SimPatternName = "lines" | "grid" | "gyroid" | "lightning";
 
 export interface StudyLoad {
   kind: "force" | "pressure";
@@ -36,6 +47,17 @@ export interface ObjectStudy {
   gravity: boolean;
   /** Edge length asked for, in millimetres. A later mesher reads it. */
   edgeMm: number;
+  /** A generated box. Absent on a study of a real part. */
+  beam?: StudyBeam;
+  /** Infill pattern for the smear, when a sweep sets one. */
+  pattern?: SimPatternName;
+}
+
+export interface ConstraintLimits {
+  maxDeflectionMm?: number;
+  minSafetyFactor?: number;
+  maxMassG?: number;
+  minMassG?: number;
 }
 
 export interface StudyBox {
@@ -84,7 +106,12 @@ export function emptyStudy(): ObjectStudy {
 
 export function cloneStudy(study: ObjectStudy): ObjectStudy {
   return {
-    holds: study.holds.map((hold) => ({ kind: hold.kind, faces: [...hold.faces] })),
+    holds: study.holds.map((hold) => ({
+      kind: hold.kind,
+      faces: [...hold.faces],
+      ...(hold.normal ? { normal: [...hold.normal] as Vec3 } : {}),
+      ...(hold.origin ? { origin: [...hold.origin] as Vec3 } : {}),
+    })),
     loads: study.loads.map((load) => ({
       kind: load.kind,
       faces: [...load.faces],
@@ -96,6 +123,8 @@ export function cloneStudy(study: ObjectStudy): ObjectStudy {
     buildAxis: [...study.buildAxis] as Vec3,
     gravity: study.gravity,
     edgeMm: study.edgeMm,
+    ...(study.beam ? { beam: { ...study.beam } } : {}),
+    ...(study.pattern ? { pattern: study.pattern } : {}),
   };
 }
 
@@ -127,9 +156,16 @@ export function readStudy(value: unknown): ObjectStudy | null {
   for (const item of row.holds) {
     if (!item || typeof item !== "object" || Array.isArray(item)) return null;
     const hold = item as Record<string, unknown>;
-    if (hold.kind !== "bed" && hold.kind !== "faces") return null;
-    const faces = facesOf(hold.faces);
+    if (hold.kind !== "bed" && hold.kind !== "faces" && hold.kind !== "plane") return null;
+    const faces = facesOf(hold.faces ?? []);
     if (!faces) return null;
+    if (hold.kind === "plane") {
+      const normal = vec3(hold.normal);
+      const origin = vec3(hold.origin);
+      if (!normal || !origin) return null;
+      holds.push({ kind: "plane", faces, normal, origin });
+      continue;
+    }
     holds.push({ kind: hold.kind, faces });
   }
   const loads: StudyLoad[] = [];
@@ -142,19 +178,66 @@ export function readStudy(value: unknown): ObjectStudy | null {
     if (!faces || !direction || !finite(load.magnitude)) return null;
     loads.push({ kind: load.kind, faces, magnitude: load.magnitude, direction });
   }
-  return { holds, loads, cardId: row.cardId, printer: row.printer, buildAxis, gravity: row.gravity, edgeMm: row.edgeMm };
+  const patterns = new Set(["lines", "grid", "gyroid", "lightning"]);
+  let pattern: SimPatternName | undefined;
+  if (row.pattern !== undefined) {
+    if (typeof row.pattern !== "string" || !patterns.has(row.pattern)) return null;
+    pattern = row.pattern as SimPatternName;
+  }
+  let beam: StudyBeam | undefined;
+  if (row.beam !== undefined) {
+    if (!row.beam || typeof row.beam !== "object" || Array.isArray(row.beam)) return null;
+    const box = row.beam as Record<string, unknown>;
+    if (!finite(box.lengthMm) || !finite(box.widthMm) || !finite(box.heightMm)) return null;
+    if ((box.lengthMm as number) <= 0 || (box.widthMm as number) <= 0 || (box.heightMm as number) <= 0) return null;
+    beam = { lengthMm: box.lengthMm as number, widthMm: box.widthMm as number, heightMm: box.heightMm as number };
+  }
+  return {
+    holds,
+    loads,
+    cardId: row.cardId,
+    printer: row.printer,
+    buildAxis,
+    gravity: row.gravity,
+    edgeMm: row.edgeMm,
+    ...(beam ? { beam } : {}),
+    ...(pattern ? { pattern } : {}),
+  };
 }
 
 /** Nothing is fixed: the rigid-body refusal. */
 export function holdRefusal(study: ObjectStudy): string | null {
-  const held = study.holds.some((hold) => hold.kind === "bed" || hold.faces.length > 0);
+  const held = study.holds.some((hold) => hold.kind === "bed" || hold.kind === "plane" || hold.faces.length > 0);
   return held ? null : NOT_HELD;
 }
 
 export function holdLine(hold: StudyHold): string {
   if (hold.kind === "bed") return "Bed";
+  if (hold.kind === "plane") return "A plane";
   const n = hold.faces.length;
   return n === 1 ? "1 face fixed" : `${n} faces fixed`;
+}
+
+/**
+ * A rough row is not met. A provisional card uses its own sentence, ahead of
+ * any other reason.
+ */
+export function constraintVerdict(
+  row: { provisional: boolean; trust: TrustWord; maxDisplacementMm: number; minSafetyFactor: number | null; massG: number },
+  limits: ConstraintLimits,
+): { met: boolean; reason: string } {
+  if (row.provisional) return { met: false, reason: PROVISIONAL_SENTENCE };
+  if (row.trust === "rough") return { met: false, reason: "This result is rough." };
+  if (limits.maxDeflectionMm !== undefined && row.maxDisplacementMm > limits.maxDeflectionMm) {
+    return { met: false, reason: `Deflection is ${row.maxDisplacementMm.toFixed(3)} mm.` };
+  }
+  if (limits.minSafetyFactor !== undefined && (row.minSafetyFactor === null || row.minSafetyFactor < limits.minSafetyFactor)) {
+    const value = row.minSafetyFactor === null ? "not defined" : row.minSafetyFactor.toFixed(2);
+    return { met: false, reason: `Safety factor is ${value}.` };
+  }
+  if (limits.maxMassG !== undefined && row.massG > limits.maxMassG) return { met: false, reason: `Mass is ${row.massG.toFixed(2)} g.` };
+  if (limits.minMassG !== undefined && row.massG < limits.minMassG) return { met: false, reason: `Mass is ${row.massG.toFixed(2)} g.` };
+  return { met: true, reason: "" };
 }
 
 /** Provisional cards stay rough. The sentence is the one the solver returns. */

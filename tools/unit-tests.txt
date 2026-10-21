@@ -100,6 +100,7 @@ mcp/export.test.ts
 mcp/golden.test.ts
 mcp/model.test.ts
 mcp/request.test.ts
+mcp/sim.test.ts
 src/sim/recipe.test.ts
 src/sim/study.test.ts
 mcp/numbers.test.ts

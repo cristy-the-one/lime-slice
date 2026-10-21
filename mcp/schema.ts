@@ -1,8 +1,8 @@
 /** Tool input schemas. They are the contract the handlers validate against. */
 
-const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from plate_list. Default: the selected object." };
-const jobHandle = { type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start, or from a long call that answered with a job." };
-const step = { type: "string", minLength: 1, maxLength: 80, description: "History step: node_N from model_history, or a step or batch label." };
+const handle = { type: "string", minLength: 1, maxLength: 64, description: "obj_N from plate_list." };
+const jobHandle = { type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start." };
+const step = { type: "string", minLength: 1, maxLength: 80, description: "node_N or a step label." };
 const cursor = { type: "string", minLength: 1, description: "Page start." };
 const vec3 = { type: "array", description: "3 numbers.", minItems: 3, maxItems: 3, items: { type: "number" } };
 const page = {
@@ -27,7 +27,7 @@ const at = {
 };
 
 const edgeList = {
-  description: "Indexes, {select} with the edges_find filters, or {fromNode, filter}: the edges a step made.",
+  description: "Indexes or a filter.",
   oneOf: [
     { type: "array", items: { type: "integer", minimum: 0 } },
     {
@@ -43,13 +43,13 @@ const edgeList = {
       type: "object",
       additionalProperties: false,
       required: ["select"],
-      properties: { select: { type: "object", description: "direction, withinDeg, onFace (index or {normal, nearPoint}), lengthMinMm, convex." } },
+      properties: { select: { type: "object", description: "onFace (index or {normal, nearPoint})." } },
     },
   ],
 };
 
 const label = { type: "string", maxLength: 80, description: "Step name." };
-const primitiveKind = { enum: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive. An ellipsoid is dx, dy, dz wide, placed by centre." };
+const primitiveKind = { enum: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." };
 const booleanKind = { enum: ["fuse", "cut", "common"], description: "cut, fuse, common." };
 
 /** The fields every primitive takes, as solid_new names them. */
@@ -95,8 +95,8 @@ const uv = {
   },
 };
 
-const faceIndex = { type: "integer", minimum: 0, description: "From faces_find. Else the workplane." };
-const faceSelector = { type: "object", description: "Or pick the flat face: {normal, withinDeg, nearPoint}; nearest, else largest." };
+const faceIndex = { type: "integer", minimum: 0, description: "Face index." };
+const faceSelector = { type: "object", description: "Flat face." };
 
 const pocketOp = (kind: "pocket" | "boss") => ({
   type: "object",
@@ -107,7 +107,7 @@ const pocketOp = (kind: "pocket" | "boss") => ({
     faceIndex,
     face: faceSelector,
     shape: { enum: ["rect", "circle", "arch"], description: "rect, circle, arch." },
-    from: { enum: ["centre", "corner", "bottom", "top"], description: "U, V = 0 at the face centre, min corner, or bottom or top edge middle." },
+    from: { enum: ["centre", "corner", "bottom", "top"], description: "Where U, V = 0." },
     at: { ...uv, description: "Centre on the face." },
     width: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "U size." },
     height: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "V size." },
@@ -223,12 +223,9 @@ const repeatFields = (inner: Record<string, unknown>) => ({
 const outerRepeat = repeatFields({ type: "object", description: "Op to repeat." });
 
 export const OP_HELP = [
-  "One edit, by kind; mm and degrees on the workplane, else the part frame.",
-  "pocket, boss, texture, array, ribs, text, pattern, and mirror are composite: checked step by step, one undo.",
-  "loft and sweep make organic shapes: tubes, bodies, horns, leaves.",
-  "Any [x, y, z] may be {anchor:\"label\", point:\"top\", offset:[0, 0, 1]}: a point of that step's box (model_anchors).",
-  "In op lists, {kind:\"each\", var:\"i\", count | values | from, to, step, ops} repeats ops; {kind:\"use\", part, with} places a model_define part.",
-  "Numbers may be text using model_params names. guide {topic:\"ops\"} has examples.",
+  "One edit, by kind. mm and degrees. guide {topic:\"ops\"}.",
+  "Composites are one undo. Points may be {anchor, point, offset}.",
+  "Numbers may be model_params names. each repeats ops; use places a part.",
 ].join(" ");
 
 const op = {
@@ -346,7 +343,7 @@ export const OP_WORDS: ReadonlySet<string> = (() => {
   return words;
 })();
 
-const opPointer = (what: string) => ({ type: "object", description: `${what} Same shape as model_apply's op (see its schema, or guide {topic:"ops"}).` });
+const opPointer = (what: string) => ({ type: "object", description: `${what} See model_apply's op.` });
 
 /** An op and every op nested in it, against the op branches. `plain` refuses the composite kinds. */
 function checkOp(value: unknown, path: string, plain: boolean, depth = 0): string | null {
@@ -366,7 +363,7 @@ function checkOp(value: unknown, path: string, plain: boolean, depth = 0): strin
 const profilePlace = {
   faceIndex,
   face: faceSelector,
-  from: { enum: ["centre", "corner", "bottom", "top"], description: "U, V = 0 at the face centre, min corner, or bottom or top edge middle." },
+  from: { enum: ["centre", "corner", "bottom", "top"], description: "Where U, V = 0." },
   origin: { ...vec3, description: "Plane origin, in place of a face." },
   turn: { ...vec3, description: "Plane turn, degrees X, Y, Z." },
 };
@@ -405,8 +402,8 @@ const loopsField = {
 };
 
 const profileShape = {
-  smooth: { type: "boolean", description: "Splines through the points, not straight edges." },
-  corners: { type: "array", maxItems: 200, items: { type: "integer", minimum: 0 }, description: "With smooth: indexes of sharp points; two in a row make a straight edge." },
+  smooth: { type: "boolean", description: "Spline through points." },
+  corners: { type: "array", maxItems: 200, items: { type: "integer", minimum: 0 }, description: "Sharp corners when smooth." },
 };
 const perPoint = (what: string) => ({ description: `${what}: one number, or one per path point.` });
 
@@ -683,6 +680,9 @@ export interface ToolSpec {
 
 const READ_ONLY = new Set([
   "guide",
+  "sim_run",
+  "sim_field",
+  "sim_cancel",
   "model_anchors",
   "session_info",
   "plate_list",
@@ -1257,7 +1257,7 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         ops: { type: "array", minItems: 1, maxItems: 1000, items: opPointer("One edit."), description: "Edits, in order; each and use expand first." },
         label: { type: "string", minLength: 1, maxLength: 80, description: "Batch name; node fields take it." },
-        onError: { enum: ["rollback", "stop", "skip"], description: "rollback (default), stop, or skip: leave refused ops out, report all." },
+        onError: { enum: ["rollback", "stop", "skip"], description: "rollback, stop, or skip." },
         params: { type: "object", description: "This call only, on top of model_params." },
       },
     },
@@ -1280,7 +1280,7 @@ export const TOOLS: ToolSpec[] = [
         params: { type: "object", description: "This call only, e.g. {\"wallH\": 35}." },
         name: { type: "string", minLength: 1, maxLength: 120, description: "Object name." },
         label: { type: "string", minLength: 1, maxLength: 80, description: "Name for the batch." },
-        onError: { enum: ["rollback", "stop", "skip"], description: "rollback (default), stop, or skip: leave refused ops out, report all." },
+        onError: { enum: ["rollback", "stop", "skip"], description: "rollback, stop, or skip." },
         commit: { type: "boolean", description: "Put the result on the plate (default true)." },
         resume: { type: "boolean", description: "Reuse a refused build with this base (default true)." },
         object: { type: "string", description: "An earlier build to rebuild in place, reusing its matching ops. Alone with params: rerun its recipe." },
@@ -1635,6 +1635,149 @@ export const TOOLS: ToolSpec[] = [
       required: ["index"],
       properties: { index: { type: "integer", minimum: 0, description: "Point from blend_compare." } },
     },
+  },
+  {
+    name: "sim_setup",
+    description: "Write a study. Does not solve.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: { type: "string", description: "Handle." },
+        beam: {
+          type: "object",
+          additionalProperties: false,
+          description: "Generated box, mm.",
+          properties: {
+            lengthMm: { type: "number", exclusiveMinimum: 0, description: "X." },
+            widthMm: { type: "number", exclusiveMinimum: 0, description: "Y." },
+            heightMm: { type: "number", exclusiveMinimum: 0, description: "Z." },
+          },
+        },
+        fixtures: {
+          type: "array",
+          maxItems: 8,
+          description: "Holds.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              kind: { enum: ["bed", "faces", "plane"], description: "bed, faces, or plane." },
+              faces: { type: "array", maxItems: 8, items: { type: "integer", minimum: 0 }, description: "Face indexes." },
+              normal: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Plane normal." },
+              origin: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Plane point." },
+            },
+          },
+        },
+        loads: {
+          type: "array",
+          maxItems: 8,
+          description: "Loads.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              kind: { enum: ["force", "pressure"], description: "force (N) or pressure (MPa)." },
+              faces: { type: "array", maxItems: 8, items: { type: "integer", minimum: 0 }, description: "Face indexes." },
+              magnitude: { type: "number", description: "N or MPa." },
+              direction: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Direction." },
+            },
+          },
+        },
+        card: { description: "Card id, or an inline card.", oneOf: [{ type: "string", minLength: 1 }, { type: "object" }] },
+        printer: { type: "boolean", description: "Use the printer axis." },
+        buildAxis: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Build direction." },
+        hMm: { type: "number", exclusiveMinimum: 0, description: "Edge length, mm." },
+        element: { type: "string", description: "Only tet10." },
+        gravity: { type: "boolean", description: "Self weight, off by default." },
+      },
+    },
+  },
+  {
+    name: "sim_run",
+    description: "Solve. No triangles.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: { type: "string", description: "Handle." },
+        includeSlicerMass: { type: "boolean", description: "Grams from a finished slice." },
+      },
+    },
+  },
+  {
+    name: "sim_field",
+    description: "One field, paged at 100.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["field"],
+      properties: {
+        object: { type: "string", description: "Handle." },
+        field: { type: "string", minLength: 1, description: "Field name." },
+        points: { type: "array", maxItems: 100, items: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" } }, description: "Points, mm." },
+        box: {
+          type: "object",
+          additionalProperties: false,
+          description: "Box, mm.",
+          properties: {
+            min: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Min corner." },
+            max: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Max corner." },
+          },
+        },
+        face: { type: "integer", minimum: 0, description: "Face index." },
+        stride: { type: "integer", minimum: 1, description: "Every nth node." },
+        limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+        cursor: { type: "string", description: "Page start." },
+      },
+    },
+  },
+  {
+    name: "sim_sweep",
+    description: "Up to 16 variants. Does not slice.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["variants"],
+      properties: {
+        object: { type: "string", description: "Handle." },
+        variants: {
+          type: "array",
+          maxItems: 32,
+          description: "Patches. Over 16 is refused.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              parameters: { type: "object", description: "model_params names." },
+              walls: { type: "integer", minimum: 1, maximum: 12, description: "Walls." },
+              infill: { type: "number", minimum: 0, maximum: 1, description: "0 to 1." },
+              pattern: { enum: ["lines", "grid", "gyroid", "lightning"], description: "Infill pattern." },
+              loadScale: { type: "number", exclusiveMinimum: 0, description: "Scales the loads." },
+            },
+          },
+        },
+        constraints: {
+          type: "object",
+          additionalProperties: false,
+          description: "A rough row is not met.",
+          properties: {
+            maxDeflectionMm: { type: "number", exclusiveMinimum: 0, description: "mm." },
+            minSafetyFactor: { type: "number", exclusiveMinimum: 0, description: "Max-stress." },
+            maxMassG: { type: "number", exclusiveMinimum: 0, description: "g." },
+            minMassG: { type: "number", exclusiveMinimum: 0, description: "g." },
+          },
+        },
+        commit: { type: "boolean", description: "Apply one variant. Default false." },
+        variant: { type: "integer", minimum: 0, description: "Index to keep." },
+        includePrintTime: { type: "boolean", description: "Off. Does not slice." },
+      },
+    },
+  },
+  {
+    name: "sim_cancel",
+    description: "Leave the last result.",
+    inputSchema: empty,
   },
 ];
 

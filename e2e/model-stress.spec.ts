@@ -66,6 +66,13 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await expect(page.locator("#stressLegend")).toContainText("In-house estimate");
   await expect(page.locator("#stressLegend")).toContainText("rough");
   await expect(page.locator("#stressLegend")).toContainText("Provisional card, not a measurement.");
+  await page.locator("#stressVariantScale").fill("2");
+  await page.locator("#stressVariantAdd").click();
+  await page.locator("#stressSweep").click();
+  await expect(page.locator("#stressSweepBody")).toContainText("no");
+  await expect(page.locator("#stressSweepBody")).toContainText("Provisional card, not a measurement.");
+  await page.locator("#stressVariants").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "/opt/cursor/artifacts/stress-sweep.png" });
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-view.png" });
 
   const canvas = page.locator("#model");
