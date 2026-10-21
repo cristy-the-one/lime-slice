@@ -24,6 +24,7 @@ pub mod recipe;
 pub mod skin;
 pub mod slice_field;
 pub mod sliced;
+pub mod sliced_study;
 pub mod solve;
 pub mod study;
 pub mod trust;
@@ -563,7 +564,8 @@ fn recover(
     let worst = solution
         .relative_energy_error
         .max(solution.peak_relative_error);
-    if solution.trust == TrustLevel::Rough && worst > 0.15 {
+    // A sliced study judges itself by two cell sizes; see `sliced_study`.
+    if solution.trust == TrustLevel::Rough && worst > 0.15 && req.representation != "sliced" {
         let pct = (worst * 100.0).round() as i64;
         solution.notes.push(format!(
             "The error estimate is {pct}%, which is only a rough result."

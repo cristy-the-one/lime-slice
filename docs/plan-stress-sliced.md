@@ -295,15 +295,28 @@ Formulas in the test, as in the main plan's §7. No copied benchmark text.
 
 ## 10. Trust for the sliced representation
 
-The staircase puts false stress peaks at re-entrant steps on sloped surfaces. Two rules keep them from deciding a
+The staircase puts false stress peaks at re-entrant steps on sloped surfaces. Three rules keep them from deciding a
 result:
 
+- **The peak used for margins is a grid-cell average**: the six tetrahedra of a cell, weighted by volume. (Added in
+  L4.) A Gauss point beside a step sits at a re-entrant corner whose stress has no finite limit. On the §9.4 shaft
+  (radius 8 mm, `T r / J` 0.746 MPa) the Gauss-point peak read +20% and didn't fall with the cell size. The cell
+  average read −3.2% at 1 mm, +0.6% at 0.71 mm and +1.9% at 0.5 mm.
 - **The peak used for margins excludes boundary cells with `φ` under 0.5**: a cell mostly outside the part.
-  The unfiltered peak is still reported as `rawPeak`, so the filter is visible.
-- **`converged` needs a two-resolution check.** The solve runs at `hXY` and at `hXY / √2` (about 2.8× the nodes,
-  so it fits the cap only for small parts), and the governing margin must move by under 5%. Otherwise the level is at
-  most `usable`, with the note "The sliced result moved n% between two cell sizes." Larger parts that can't afford
-  the second solve stay `usable` and say why. The SR-04 local error still applies within each solve.
+  The unfiltered Gauss-point minimum is still reported as `rawMinSafetyFactor`, so the filter is visible.
+- **Trust comes from a two-resolution check.** The solve runs at `hXY` and at `hXY / √2` (about 2.8× the nodes,
+  so it fits the cap only for small parts). The governing margin decides the word:
+  - a move of 5% or less is `converged`;
+  - up to 15% is `usable`;
+  - past 15% is `rough`.
+
+  Past 5%, the note says "The sliced result moved n% between two cell sizes." Larger parts that can't afford
+  the second solve stay `usable` and say why. A provisional card or bead section is `rough`.
+
+  The SR-04 estimator does **not** set the word for this representation. (Changed in L4.) Its recovery smooths across
+  the staircase's corners and across the real stress jump between cells of different `φ`, and reads both as error. On
+  the shaft it gave 0.34 and 0.25 globally and 0.64 and 0.61 near the peak, while the surface shear was within 3.2%
+  and 0.6%. It would have made every sliced result `rough`. Its numbers stay on the solution.
 
 ## 11. Milestones
 

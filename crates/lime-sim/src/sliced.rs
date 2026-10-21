@@ -106,6 +106,9 @@ pub struct SlicedMesh {
     pub cells: Vec<CellMaterial>,
     /// The grid cell each element came from, as `(i, j, slab)`.
     pub cell_of: Vec<(u32, u32, u32)>,
+    /// Whether each element's cell has a face on the part's surface: a
+    /// neighbour across one of its six faces is void.
+    pub boundary: Vec<bool>,
     pub h_xy: f64,
     /// The polymer volume the solid cells hold, mm³: what the solve weighs.
     pub solid_deposited_mm3: f64,
@@ -323,6 +326,19 @@ impl SlicedGrid {
             ));
         }
         solid.sort_unstable_by_key(|&(i, j, k)| (k, j, i));
+        let filled: std::collections::HashSet<(u32, u32, u32)> = solid.iter().copied().collect();
+        let on_surface = |(i, j, k): (u32, u32, u32)| {
+            let near = |di: i64, dj: i64, dk: i64| {
+                let (a, b, c) = (i64::from(i) + di, i64::from(j) + dj, i64::from(k) + dk);
+                a >= 0 && b >= 0 && c >= 0 && filled.contains(&(a as u32, b as u32, c as u32))
+            };
+            !(near(1, 0, 0)
+                && near(-1, 0, 0)
+                && near(0, 1, 0)
+                && near(0, -1, 0)
+                && near(0, 0, 1)
+                && near(0, 0, -1))
+        };
         let estimate = (solid.len() as f64 * NODES_PER_CELL) as usize;
         if estimate > NODE_CAP {
             return Err(self.cap_refusal(estimate));
@@ -333,6 +349,7 @@ impl SlicedGrid {
         let mut elements = Vec::with_capacity(solid.len() * 6);
         let mut cells = Vec::with_capacity(solid.len() * 6);
         let mut cell_of = Vec::with_capacity(solid.len() * 6);
+        let mut boundary = Vec::with_capacity(solid.len() * 6);
         let mut solid_deposited = 0.0;
         let h = self.h_xy;
         for key in solid {
@@ -368,6 +385,7 @@ impl SlicedGrid {
                 });
                 cells.push(material);
                 cell_of.push(key);
+                boundary.push(on_surface(key));
             }
         }
         if nodes.len() > NODE_CAP {
@@ -381,6 +399,7 @@ impl SlicedGrid {
             },
             cells,
             cell_of,
+            boundary,
             h_xy: h,
             solid_deposited_mm3: solid_deposited,
         })
