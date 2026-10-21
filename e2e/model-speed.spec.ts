@@ -399,7 +399,8 @@ test("a two second knob drag on a 3,000 face part stays with the orbit", async (
   expect(dragTimes.length).toBeGreaterThan(10);
   const dragMedian = medianOf(dragTimes);
   const serialAfter = await canvas.getAttribute("data-ghost-serial");
-  const detail = `${renderer}: orbit ${orbitMedian.toFixed(1)} ms from ${orbitTimes.length} frames, drag ${dragMedian.toFixed(1)} ms from ${dragTimes.length} frames`;
+    const detail = `${renderer}: orbit ${orbitMedian.toFixed(1)} ms from ${orbitTimes.length} frames, drag ${dragMedian.toFixed(1)} ms from ${dragTimes.length} frames`;
+    console.log(`${detail}; heap ${((after - before) / (1024 * 1024)).toFixed(2)} MB; ghost serial ${serialBefore}`);
   expect(dragMedian, detail).toBeLessThanOrEqual(orbitMedian * 1.5 + 4);
   if (software) test.info().annotations.push({ type: "skip-absolute", description: renderer });
   else expect(dragMedian, detail).toBeLessThanOrEqual(17);
