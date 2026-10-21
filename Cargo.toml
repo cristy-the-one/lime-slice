@@ -9,6 +9,7 @@ members = [
     "crates/lime-mcp-engine",
     "crates/lime-preview",
     "crates/lime-shell",
+    "crates/lime-sim",
     "src-tauri",
 ]
 
