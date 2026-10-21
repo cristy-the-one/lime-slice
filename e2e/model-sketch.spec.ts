@@ -404,6 +404,44 @@ test("Tab into the extrude size box lights that distance", async ({ page }) => {
   await expect(canvas).toHaveAttribute("data-aspect-field", /distance/);
 });
 
+test("the feature strip reads as a left-aligned form", async ({ page }) => {
+  await openBox(page);
+  await sketchRectangle(page);
+  const check = async (label: string) => {
+    const edges = await page.locator("[data-sketch-section=feature]").evaluate((strip) => {
+      const card = strip.closest(".sketch-card") as HTMLElement;
+      const cardBox = card.getBoundingClientRect();
+      const pad = Number.parseFloat(getComputedStyle(card).paddingLeft) || 0;
+      const left = cardBox.left + pad;
+      const apply = strip.querySelector("[data-sketch-apply]")!.getBoundingClientRect();
+      const cancel = strip.querySelector("[data-sketch-cancel]")!.getBoundingClientRect();
+      const name = strip.querySelector(".sketch-feature-name")!.getBoundingClientRect();
+      const prompt = strip.querySelector(".sketch-prompt-text") as HTMLElement | null;
+      const promptLeft = prompt && !prompt.hidden ? prompt.getBoundingClientRect().left : left;
+      return {
+        tops: Math.abs(apply.top - cancel.top),
+        primary: strip.querySelector("[data-sketch-apply]")!.classList.contains("primary"),
+        name: Math.abs(name.left - left),
+        prompt: Math.abs(promptLeft - left),
+      };
+    });
+    expect(edges.tops, label).toBeLessThanOrEqual(1);
+    expect(edges.primary, label).toBe(true);
+    expect(edges.name, label).toBeLessThanOrEqual(1);
+    expect(edges.prompt, label).toBeLessThanOrEqual(1);
+  };
+  await page.keyboard.press("e");
+  await expect(page.locator("[data-sketch-section=feature]")).toBeVisible();
+  await check("extrude");
+  await page.keyboard.press("Escape");
+  await page.locator("[data-sketch-loft]").click();
+  await expect(page.locator("[data-sketch-section=feature]")).toContainText("Loft");
+  await check("loft");
+  if (process.env.UPDATE_SCREENSHOTS === "1") {
+    await page.locator("#sketchCards").screenshot({ path: "docs/screenshots/ui-review-3-1/ux03-after-feature-strip.png" });
+  }
+});
+
 test("the size box sits on the extrude and revolve handles", async ({ page }) => {
   await openBox(page);
   const canvas = page.locator("#model");

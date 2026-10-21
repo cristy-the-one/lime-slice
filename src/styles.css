@@ -906,7 +906,18 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .sketch-modes .btn { border-radius: 0; }
 .sketch-modes .btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
 .sketch-modes .btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
-.sketch-feature-name { font-weight: 600; margin-right: 4px; }
+.sketch-section.sketch-feature { align-items: stretch; width: 100%; }
+.sketch-feature-row, .sketch-feature-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+.sketch-feature-actions { justify-content: flex-end; }
+.sketch-feature .sketch-prompt-text { flex: none; width: 100%; text-align: left; margin: 0; }
+.sketch-feature-name { font-weight: 600; margin: 0 4px 0 0; }
 .sketch-prompt-text { flex: 1 1 100%; margin: 0; }
 .sketch-value { display: inline-flex; align-items: center; gap: 4px; }
 .sketch-value input { width: 6ch; }

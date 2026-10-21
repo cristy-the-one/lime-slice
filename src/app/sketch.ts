@@ -1578,30 +1578,37 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     strip.dataset.sketchSection = "feature";
     const sentence = pickPrompt();
     const prompt = document.createElement("p");
-    prompt.className = "sketch-prompt-text";
+    prompt.className = "sketch-prompt-text model-note";
     prompt.setAttribute("role", "status");
     prompt.textContent = sentence;
     prompt.toggleAttribute("hidden", sentence === "");
     const name = document.createElement("p");
     name.className = "sketch-feature-name";
     name.textContent = gesture ? "Extrude" : revolve ? "Revolve" : loft ? "Loft" : "Sweep";
-    strip.append(prompt, name, modeControl());
-    if (revolve) strip.append(textButton("Flip", { sketchFlip: "" }));
+    const head = document.createElement("div");
+    head.className = "sketch-feature-row";
+    head.append(name, modeControl());
+    const options = document.createElement("div");
+    options.className = "sketch-feature-row";
+    if (revolve) options.append(textButton("Flip", { sketchFlip: "" }));
     if (loft) {
       const ruled = textButton(loft.ruled ? "Ruled (R)" : "Smooth (R)", { sketchRuled: loft.ruled ? "1" : "0" });
       ruled.dataset.tip = "R toggles smooth and ruled.";
       ruled.title = ruled.dataset.tip;
-      strip.append(ruled);
+      options.append(ruled);
     }
     const value = featureValue();
-    if (value) strip.append(value);
+    if (value) options.append(value);
     const kind = gesture ? "extrude" : revolve ? "revolve" : loft ? "loft" : "sweep";
-    strip.append(howControl(kind));
+    options.append(howControl(kind));
     const apply = textButton("Apply", { sketchApply: "" });
     apply.classList.add("primary");
     apply.dataset.tipIdle = "Keep this feature";
     markBlocked(apply, featureBlocked());
-    strip.append(apply, textButton("Cancel", { sketchCancel: "" }));
+    const actions = document.createElement("div");
+    actions.className = "sketch-feature-actions";
+    actions.append(apply, textButton("Cancel", { sketchCancel: "" }));
+    strip.append(prompt, head, options, actions);
     return strip;
   }
 
