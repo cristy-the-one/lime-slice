@@ -290,8 +290,12 @@ test("focusing hole 2's depth lights hole 2", async ({ page }) => {
     if (i > 0) await page.keyboard.up("Shift");
   }
   await page.keyboard.press("H");
-  await expect(page.locator("#modelHoleDepth-2")).toBeVisible();
-  await page.locator("#modelHoleDepth-2").focus();
+  await expect(page.locator("#modelHoleD")).toBeVisible();
+  await expect(page.locator("[id^='modelHoleDepth-']")).toHaveCount(0);
+  const box = (await canvas.boundingBox())!;
+  const grip = ((await canvas.getAttribute("data-handles")) ?? "").split(" ").find((item) => item.startsWith("hole-depth-1:"));
+  const atGrip = grip!.split(":")[1]!.split(",").map(Number);
+  await page.mouse.move(box.x + atGrip[0]!, box.y + atGrip[1]!);
   await expect(canvas).toHaveAttribute("data-aspect", "hole-depth-1");
   await expect(canvas).toHaveAttribute("data-aspect-at", /-?\d+,-?\d+/);
   const at = ((await canvas.getAttribute("data-aspect-at")) ?? "").split(",").map(Number);
@@ -299,4 +303,6 @@ test("focusing hole 2's depth lights hole 2", async ({ page }) => {
   const distance = (point: number[]) => Math.hypot(point[0]! - at[0]!, point[1]! - at[1]!);
   expect(distance(centres[1]!), "the lit circle is hole 2").toBeLessThan(distance(centres[0]!));
   expect(distance(centres[1]!)).toBeLessThan(8);
+  await page.locator("#modelHoleD").focus();
+  await expect.poll(async () => Number(await canvas.getAttribute("data-aspect-lines"))).toBeGreaterThanOrEqual(centres.length * 20);
 });

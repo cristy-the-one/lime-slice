@@ -1290,8 +1290,6 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
 .model-aspect-badge[data-color="x"] { background: var(--axis-x); }
 .model-aspect-badge[data-color="y"] { background: var(--axis-y); }
 .model-aspect-badge[data-color="z"] { background: var(--axis-z); }
-.model-hole-picks { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
-.model-hole-picks .btn { white-space: normal; }
 .model-aspect-label[data-color="x"] { border-color: var(--axis-x); }
 .model-aspect-label[data-color="y"] { border-color: var(--axis-y); }
 .model-aspect-label[data-color="z"] { border-color: var(--axis-z); }

@@ -419,6 +419,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let focusedField: string | null = null;
   /** Which sketch hole the focused depth belongs to, when several share one number. */
   let focusedHole: number | null = null;
+  /** The panel's one depth field lights every hole, not the first knob's. */
+  let lightEveryHole = false;
   let focusSyncs = 0;
   let aspectNow: HandleAspect | null = null;
   let aspectLines: LineSegments2 | null = null;
@@ -2658,6 +2660,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   /** Drag, then the handle under the pointer, then the focused field. Nothing here lights the whole solid. */
   function aspectHandle(): DragHandle | null {
+    lightEveryHole = false;
     if (drag) return { ...drag.handle, values: drag.values };
     if (overHandle) return drawnHandles().find((part) => part.handle.id === overHandle)?.handle ?? null;
     if (focusedField) {
@@ -2666,6 +2669,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         const indexed = matches.find((part) => part.handle.holeIndex === focusedHole);
         if (indexed) return indexed.handle;
       }
+      const grouped = matches.filter((part) => part.handle.holeIndex != null);
+      if (focusedHole == null && grouped.length > 1) lightEveryHole = true;
       return matches[0]?.handle ?? null;
     }
     return null;
@@ -2773,7 +2778,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return {
       spec: current?.kind === "primitive" ? current.spec : null,
       pieces: current?.kind === "pieces" ? current.parts.map((part) => part.spec) : undefined,
-      hole: current?.kind === "hole" ? current : current?.kind === "holes" ? current.holes[handle.holeIndex ?? 0] ?? current.holes[0] ?? null : null,
+      hole: lightEveryHole ? null : current?.kind === "hole" ? current : current?.kind === "holes" ? current.holes[handle.holeIndex ?? 0] ?? current.holes[0] ?? null : null,
+      holes: lightEveryHole && current?.kind === "holes" ? current.holes : null,
       edgePoints: current?.kind === "blend" ? worldEdgePoints(current.edges) : null,
       soup: current?.kind === "soup" ? worldPoints(current.positions) : null,
       measure: current?.kind === "measure" ? { a: current.a, b: current.b } : null,
@@ -2988,21 +2994,23 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   /** The lit hole's centre, in canvas pixels, so a test can tell hole 2 from hole 1. */
   function publishAspectAt(handle: DragHandle | null) {
     const holes = ghost?.kind === "holes" ? ghost.holes : null;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (holes && holes.length > 0) {
+      const centres = holes.map((item) => {
+        const at = new THREE.Vector3(item.x, item.y, item.z).project(camera);
+        return `${Math.round((at.x * 0.5 + 0.5) * width)},${Math.round((-at.y * 0.5 + 0.5) * height)}`;
+      }).join(" ");
+      if (canvas.dataset.holeCentres !== centres) canvas.dataset.holeCentres = centres;
+    } else delete canvas.dataset.holeCentres;
     const hole = holes && handle?.holeIndex != null ? holes[handle.holeIndex] : null;
     if (!hole) {
       delete canvas.dataset.aspectAt;
       return;
     }
     const projectedAt = new THREE.Vector3(hole.x, hole.y, hole.z).project(camera);
-    const width = canvas.clientWidth;
-    const height = canvas.clientHeight;
     const text = `${Math.round((projectedAt.x * 0.5 + 0.5) * width)},${Math.round((-projectedAt.y * 0.5 + 0.5) * height)}`;
     if (canvas.dataset.aspectAt !== text) canvas.dataset.aspectAt = text;
-    const centres = holes!.map((item) => {
-      const at = new THREE.Vector3(item.x, item.y, item.z).project(camera);
-      return `${Math.round((at.x * 0.5 + 0.5) * width)},${Math.round((-at.y * 0.5 + 0.5) * height)}`;
-    }).join(" ");
-    if (canvas.dataset.holeCentres !== centres) canvas.dataset.holeCentres = centres;
   }
 
   function darkenHex(color: number, factor: number): number {

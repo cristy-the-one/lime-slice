@@ -47,6 +47,8 @@ export interface AspectContext {
   spec?: PrimitiveSpec | null;
   pieces?: readonly PrimitiveSpec[];
   hole?: HoleMark | null;
+  /** Every hole in the group, when the shared depth field should light each rim. */
+  holes?: readonly HoleMark[] | null;
   /** A blend's edge, as a polyline in the solid's frame. */
   edgePoints?: ArrayLike<number> | null;
   /** An extrude or push/pull prism, in the solid's frame. */
@@ -110,6 +112,12 @@ export function aspectFor(handle: DragHandle, ctx: AspectContext = {}): HandleAs
   if (spec) {
     const local = primitiveLocal(spec, field, tip);
     if (local) return placeOnSpec(spec, done(local, "world"));
+  }
+  if (ctx.holes && ctx.holes.length > 1 && (field === "modelHoleD" || handle.id.startsWith("hole-depth"))) {
+    const lines: number[] = [];
+    for (const mark of ctx.holes) lines.push(...circle([mark.x, mark.y, mark.z], normalize(mark.dir ?? [0, 0, -1]), mark.radius));
+    const first = ctx.holes[0]!;
+    return done({ lines, dimension: { from: [first.x, first.y, first.z], to: [first.x, first.y, first.z], text: tip } }, "world");
   }
   if (ctx.hole && isHoleField(field)) {
     const local = holeLocal(ctx.hole, field, handle, tip);

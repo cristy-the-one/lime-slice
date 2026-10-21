@@ -1378,7 +1378,6 @@ export function openSketchHolePanel(count: number) {
   if (panel) panel.dataset.holes = "points";
   const note = document.querySelector("#modelHolePoints");
   if (note) note.textContent = holePointsSentence(count);
-  paintHolePicks(count);
   if (tool === "hole") {
     syncFields();
     refreshApply();
@@ -1396,34 +1395,6 @@ function clearSketchHoles() {
   if (panel) delete panel.dataset.holes;
   const note = document.querySelector("#modelHolePoints");
   if (note) note.textContent = "";
-  paintHolePicks(0);
-}
-
-/** One focusable depth for each sketch hole, so hole 2's depth lights hole 2. */
-function paintHolePicks(count: number) {
-  const note = document.querySelector("#modelHolePoints");
-  let row = document.querySelector<HTMLElement>("#modelHolePicks");
-  if (count < 2 || !note) {
-    row?.remove();
-    return;
-  }
-  if (!row) {
-    row = document.createElement("div");
-    row.id = "modelHolePicks";
-    row.className = "model-hole-picks";
-    note.insertAdjacentElement("afterend", row);
-  }
-  row.replaceChildren();
-  for (let index = 0; index < count; index += 1) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.id = `modelHoleDepth-${index + 1}`;
-    button.className = "btn mini";
-    button.dataset.field = "modelHoleD";
-    button.dataset.holeIndex = String(index);
-    button.textContent = `Hole ${index + 1} depth`;
-    row.append(button);
-  }
 }
 
 /** A hole that would miss the solid starts on the middle of its top. */
