@@ -3083,6 +3083,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (!dimension) {
       aspectLabel.hidden = true;
       aspectLabel.textContent = "";
+      labelMeasure.text = "";
       return;
     }
     const mid: Vec3 = [
