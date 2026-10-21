@@ -99,7 +99,8 @@ test("the toolbar fits at 1440 px with the Workplane tool, a pick chip and Bed",
   const fits = () => page.locator("#toolRail").evaluate((bar) => bar.scrollHeight <= bar.clientHeight + 1);
   expect(await fits()).toBe(true);
   await clickSide(page);
-  await expect(page.locator("#modelCount")).toBeVisible();
+  await expect(page.locator("#contextBarRestore")).toBeVisible();
+  await expect(page.locator("#contextBarRestore")).toContainText("face");
   expect(await fits(), "a pick's chip still fits").toBe(true);
   // E3. Bed is in the rail's View menu.
   await page.locator("#modelLookOpen").click();

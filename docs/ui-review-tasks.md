@@ -73,6 +73,8 @@ Status: done. A mapped handle draws extension lines, a dimension line with arrow
 
 Status: done. Box, wedge, and ellipsoid fields and handles say Width X, Depth Y, and Height Z. `SIZE_NAME` is gone, so the dimension uses that label. Modifier volumes say Extent X/Y/Z mm, which is the volume's size, not the primitive. `grep` of `src` finds no "Size X/Y/Z". Screenshot: `ph03-after-labels.png`.
 
+Follow-up: modifier sizes use the same names. A box is Width X, Depth Y, Height Z (full extents). A cylinder is Radius X, Radius Y, and Height Z. A sphere is Radius X, Radius Y, Radius Z. A radius field shows half the stored extent and writes twice that, floored at 0.2 mm full size. The badge and its tooltip use those names. The stored `size` array stays the full extent. Screenshots: `ph03-followup-before-extent.png`, `ph03-followup-after-sizes.png`.
+
 - **Seen**: the panel calls the field "Size Y", while the handle, the dimension and the tooltip call it "Depth (Y)"
   (`SIZE_NAME` in `src/handle-emphasis.ts`). Users see two names for one value.
 - **Change**: rename the panel labels for box, wedge and ellipsoid to "Width X", "Depth Y" and "Height Z" (markup in
@@ -290,6 +292,8 @@ Status: done. Move arrows and turn rings sit on the ghost's centre, and size kno
 
 Status: done. With no parameters the section starts collapsed (`Parameters · 0`), History sits above it, and one click or Ctrl+Alt+P opens it. The fold is stored per project. An empty section hides while a sketch is open; the Features menu and Ctrl+Alt+P still open it. Screenshots: `ux07-before-params.png` (the old expanded empty section), `ux07-after-params.png`.
 
+Follow-up: the section also hides while sketching when the table has values the open sketch does not use. It shows again when the sketch closes, and Ctrl+Alt+P still opens it during the sketch. The check reruns when the sketch's dimension expressions change.
+
 - **Seen**: every Model screenshot shows "PARAMETERS · 0", empty Name and Value fields, and "Add parameter", even
   while sketching, where it pushes the history down.
 - **Change**:
@@ -321,6 +325,8 @@ Status: done. History shows "Extrude Sketch 1, 20 mm" (and the same shape for re
 
 Status: done. The faded chip reads "1 face ▾" (or "3 edges ▾") in the dock surface colour, and sits beside the solid. The pick-filter count uses the same surface. Screenshots: `ux09-before-chip.png`, `ux09-after-chip.png`.
 
+Follow-up: `#modelCount` is gone. While something is selected the context chip stays at full contrast (`--text` on `--panel`, opacity 1) and does not fade, including while a tool is open. It fades only when nothing is selected, and that quiet chip still meets WCAG AA. The label keeps the space in "1 face ▾".
+
 - **Seen**: `after-selection-chip.png`. A white "Selection" chip floats above the box, and the "1 face" count is a
   low-contrast pill in the Face/Edge switch.
 - **Change**: the chip reads "1 face ▾" (or "3 edges ▾"), uses the dock surface style (dark, not white, in the dark
@@ -342,6 +348,8 @@ Status: done. With a slice already on screen, the line shows for 4 seconds when 
 ### UX-11 (P2). Prepare: the Objects toolbar wraps
 
 Status: done. The Objects toolbar is one line. What does not fit moves into the ⋯ menu. Tips name a shortcut when the command has one: Arrange (A), Duplicate (Ctrl+D), Lay flat (F). Check and Frame stay text. Screenshots: `ux11-before-tools.png`, `ux11-after-tools.png`.
+
+Follow-up: no new shortcuts. A tooltip names the tool and, when the command has a chord, that chord. An empty shortcut slot (a blank key cap, a dash, or a trailing separator) is omitted on the rail, the object tools, sketch icons, and menu key caps.
 
 - **Seen**: `prepare.png`. The Objects card's icon row wraps one icon (↻) onto a second line. The icons have no
   labels.

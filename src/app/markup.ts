@@ -484,7 +484,6 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode on" id="modelPickFace" type="button" aria-pressed="true" data-tip="Pick faces. Shift-click adds or removes.">Face</button>
                 <button class="btn mode" id="modelPickEdge" type="button" aria-pressed="false" data-tip="Pick edges. Shift-click adds or removes.">Edge</button>
               </div>
-              <span class="model-count" id="modelCount" hidden></span>
             </div>
             <div class="model-empty" id="modelEmpty" hidden>
               <p class="model-empty-title" id="modelEmptyTitle">No solid open</p>

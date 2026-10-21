@@ -659,21 +659,6 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
 }
 .model-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.model-count {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  margin-left: 4px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-1);
-  color: var(--text);
-  font: 500 var(--fs-2) / 1 var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.model-count[hidden] { display: none !important; }
 .model-paused {
   display: inline-flex;
   align-items: center;
@@ -1468,10 +1453,21 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
   box-shadow: none;
 }
 .context-bar-restore { display: none; }
+.context-bar.has-selection #contextBarRestore,
 .context-bar.is-faded #contextBarRestore {
   display: inline-flex;
-  background: var(--surface-1);
+  background: var(--panel);
   color: var(--text);
+  opacity: 1;
+  letter-spacing: 0;
+  word-spacing: normal;
+  white-space: pre;
+  font-family: var(--font-ui, ui-sans-serif, system-ui, sans-serif);
+}
+.context-bar.is-tool > :not(#contextBarRestore) { display: none !important; }
+.context-bar.is-faded {
+  background: var(--panel);
+  border-color: var(--border-strong);
 }
 .context-bar-split { display: inline-flex; align-items: center; }
 .context-bar-btn, .context-bar-caret, .context-bar-item {

@@ -218,6 +218,11 @@ function setFaded(next: boolean) {
 
 function armFade() {
   window.clearTimeout(timer);
+  if (pending && pending.picks.length > 0) {
+    if (faded) setFaded(false);
+    if (bar) bar.dataset.faded = "0";
+    return;
+  }
   if (faded) setFaded(false);
   else if (bar) bar.dataset.faded = "0";
   timer = window.setTimeout(() => {
@@ -377,7 +382,7 @@ function reseat() {
     solid: solid ? local(solid) : null,
     obstacles: [...obstacleBoxes(), ...(cube ? [cube] : [])].map(local),
     gap: CONTEXT_GAP_PX,
-    place: faded ? "beside" : "above",
+    place: faded || bar.classList.contains("is-tool") ? "beside" : "above",
   });
   bar.style.left = `${Math.round(view.left - frame.left + seat.x)}px`;
   bar.style.top = `${Math.round(view.top - frame.top + seat.y)}px`;
@@ -390,20 +395,28 @@ function render(state: ContextBarState) {
     hideContextBar();
     return;
   }
-  if (toolOpen() || host()?.hidden) {
+  if (host()?.hidden) {
+    hideContextBar();
+    return;
+  }
+  const selected = state.picks.length > 0;
+  if (toolOpen() && !selected) {
     bar.hidden = true;
+    bar.classList.remove("has-selection", "is-tool");
     closeMenu();
     stopFade();
     publish("");
     return;
   }
-  const actions = actionsFor(state.kind).filter(listed);
-  if (actions.length === 0) {
+  const actions = toolOpen() ? [] : actionsFor(state.kind).filter(listed);
+  if (actions.length === 0 && !selected) {
     hideContextBar();
     return;
   }
   renderButtons(actions);
   paintChip(state.picks);
+  bar.classList.toggle("has-selection", selected);
+  bar.classList.toggle("is-tool", toolOpen());
   bar.dataset.kind = state.kind;
   bar.dataset.actions = actions.map((action) => action.id).join(",");
   bar.hidden = false;
@@ -411,7 +424,11 @@ function render(state: ContextBarState) {
   publish(state.kind);
   if (shownCamera == null) shownCamera = canvas()?.dataset.camera ?? "";
   reseat();
-  armFade();
+  if (selected) {
+    window.clearTimeout(timer);
+    if (faded) setFaded(false);
+    bar.dataset.faded = "0";
+  } else armFade();
 }
 
 /** Build the bar once. Safe to call again: the second call does nothing. */
@@ -534,6 +551,7 @@ export function hideContextBar() {
   shownCamera = null;
   if (bar) {
     bar.hidden = true;
+    bar.classList.remove("has-selection", "is-tool");
     bar.removeAttribute("data-kind");
     bar.removeAttribute("data-actions");
   }

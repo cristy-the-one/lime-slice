@@ -251,24 +251,30 @@ test("an edge offers Fillet and Chamfer, and the bar fades until the pointer ret
   await expect(bar).toHaveAttribute("data-kind", "flat-face");
   await expect(bar).toHaveAttribute("data-faded", "0");
   await page.waitForTimeout(3200);
-  await expect(bar).toHaveAttribute("data-faded", "1");
-  await expect(bar.locator("#contextBarRestore"), "a count chip stays when the actions fade").toBeVisible();
+  await expect(bar, "a selection does not fade").toHaveAttribute("data-faded", "0");
+  await expect(bar.locator("#contextBarRestore")).toBeVisible();
   await expect(bar.locator("#contextBarRestore")).toHaveText("1 face ▾");
+  expect(await bar.locator("#contextBarRestore").innerText()).toBe("1 face ▾");
   const tone = await page.evaluate(() => {
-    const chip = getComputedStyle(document.querySelector("#contextBarRestore")!);
-    const dock = getComputedStyle(document.querySelector("#modelPanel")!);
-    return { chip: chip.backgroundColor, dock: dock.backgroundColor, ink: chip.color, dockInk: dock.color };
+    const chip = document.querySelector<HTMLElement>("#contextBarRestore")!;
+    const style = getComputedStyle(chip);
+    const ratio = (ink: string, paper: string) => {
+      const rgb = (text: string) => text.match(/\d+/g)!.slice(0, 3).map(Number);
+      const lin = (channel: number) => {
+        const s = channel / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      };
+      const L = (text: string) => rgb(text).reduce((sum, channel, index) => sum + lin(channel) * [0.2126, 0.7152, 0.0722][index]!, 0);
+      const lighter = Math.max(L(ink), L(paper));
+      const darker = Math.min(L(ink), L(paper));
+      return (lighter + 0.05) / (darker + 0.05);
+    };
+    return { contrast: ratio(style.color, style.backgroundColor), opacity: style.opacity };
   });
-  expect(tone.chip, "the chip uses the dock surface").toBe(tone.dock);
-  expect(tone.ink).toBe(tone.dockInk);
-  const canvasBox = (await canvas.boundingBox())!;
-  const [sx, , sw] = ((await canvas.getAttribute("data-solid-screen")) ?? "").split(",").map(Number);
-  const chipBox = (await bar.boundingBox())!;
-  const solidLeft = canvasBox.x + sx!;
-  const solidRight = solidLeft + sw!;
-  expect(chipBox.x + chipBox.width <= solidLeft + 2 || chipBox.x >= solidRight - 2, "the chip sits beside the solid").toBe(true);
-  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/ux09-after-chip.png` });
-  await expect(bar.locator("[data-action='push-pull']")).toBeHidden();
+  expect(tone.contrast, "the chip text is WCAG AA").toBeGreaterThanOrEqual(4.5);
+  expect(tone.opacity).toBe("1");
+  if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ux09-after-chip.png" });
+  await expect(bar.locator("[data-action='push-pull']"), "the actions stay while a face is selected").toBeVisible();
   const chip = (await bar.locator("#contextBarRestore").boundingBox())!;
   expect(chip.x, "the chip stays on screen").toBeGreaterThanOrEqual(0);
   expect(chip.y).toBeGreaterThanOrEqual(0);

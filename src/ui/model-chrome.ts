@@ -22,7 +22,7 @@ import { featureName, isFeatureTool, panelChoices, type FeatureChoices, type Fea
 import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices } from "../model-repeat";
 import { paintRepeatSources } from "./model-history";
 import type { Piece } from "../modeling/compose";
-import { lastEdge, modelApplyReady, selectionCountLabel, shellFacesLabel, type ModelPickRef } from "../model-select";
+import { lastEdge, modelApplyReady, shellFacesLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
 import { fx } from "../app/fx";
@@ -31,7 +31,7 @@ import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queue
 import { evaluate, type Params } from "../modeling/expr.ts";
 import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
 import { revealParameters } from "./parameters.ts";
-import { COMMANDS, shortcutOf } from "./commands.ts";
+import { COMMANDS, shortcutOf, tipWithShortcut } from "./commands.ts";
 import { revealDock } from "./dock-reveal.ts";
 import { diameterExpr, radiusExpr } from "./diameter-expr.ts";
 import "./model-dock.css";
@@ -304,15 +304,15 @@ let wpExact: Workplane = GLOBAL_WORKPLANE;
 /** Where the origin was when an arrow was grabbed: the arrow moves it by how far it slid, not to the rounded fields. */
 let wpGrab: readonly number[] | null = null;
 
-/** Put each tool's shortcut in its tip, so hover and focus name the key. */
+/** Put each tool's shortcut in its tip. A tool with no shortcut keeps the name and no empty key slot. */
 function nameRailTips() {
   for (const button of document.querySelectorAll<HTMLElement>("#railModel button, #railModelFoot button")) {
     const command = COMMANDS.find((item) => item.keys && item.target && button.matches(item.target));
     const key = command ? shortcutOf(command) : undefined;
-    if (!key) continue;
-    button.setAttribute("aria-keyshortcuts", key);
+    if (key) button.setAttribute("aria-keyshortcuts", key);
+    else button.removeAttribute("aria-keyshortcuts");
     const tip = button.dataset.tip ?? button.getAttribute("aria-label") ?? "";
-    if (tip && !tip.includes(key)) button.dataset.tip = `${tip} (${key})`;
+    if (tip) button.dataset.tip = tipWithShortcut(tip, key);
   }
 }
 
@@ -574,12 +574,6 @@ export function syncModelChrome(next: readonly ModelPickRef[]) {
   // A new face to cut from: the plane starts in the middle of the part behind it.
   if (tool === "split" && splitMode() === "face" && lastFace(picks) !== seatedFace) applySplitDefaults();
   if (tool === "workplane" && wpMode() === "face" && lastFace(picks) !== seatedWpFace) applyWpFace();
-  const label = selectionCountLabel(picks);
-  const chip = document.querySelector("#modelCount");
-  if (chip) {
-    chip.textContent = label;
-    chip.toggleAttribute("hidden", label.length === 0);
-  }
   refreshTools();
   refreshApply();
   refreshNote();
