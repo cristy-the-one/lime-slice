@@ -139,6 +139,7 @@ fn flank_stress_moves_toward_three() {
         (24, 16, "nr24-nt16"),
     ];
     let mut kt = Vec::new();
+    let mut trust = Vec::new();
     for (nr, nt, id) in cases {
         let solution = solve(nr, nt);
         let k = flank(&solution);
@@ -162,10 +163,33 @@ fn flank_stress_moves_toward_three() {
             1e-4,
             id,
         );
+        common::near_abs(
+            solution.peak_relative_error,
+            common::number(row, "peakRelativeError"),
+            1e-4,
+            id,
+        );
+        assert_eq!(
+            solution.trust.as_str(),
+            row["trust"].as_str().unwrap(),
+            "{id} trust"
+        );
+        trust.push(solution.trust);
         kt.push(k);
     }
     for k in &kt {
         assert!(*k > 2.0 && *k < 5.0, "Kt {k}");
+    }
+    // A flank stress more than 5% below the finest mesh's is not converged, however small the global error.
+    for (k, level) in kt.iter().zip(&trust) {
+        if (kt[2] - k) / kt[2] > 0.05 {
+            assert_ne!(
+                *level,
+                lime_sim::trust::TrustLevel::Converged,
+                "Kt {k} against {}",
+                kt[2]
+            );
+        }
     }
     let e0 = (kt[0] - 3.0).abs();
     let e2 = (kt[2] - 3.0).abs();

@@ -19,7 +19,9 @@
       "stressMPa": 2.082336,
       "stressRel": -0.013494,
       "sampleMm": [51.382, 2.764, 8.618],
-      "relativeEnergyError": 0.647261
+      "relativeEnergyError": 0.032616,
+      "peakRelativeError": 0.0224,
+      "trust": "converged"
     },
     "tet10-h2": {
       "element": "tet10",
@@ -30,7 +32,9 @@
       "stressMPa": 2.131417,
       "stressRel": -0.004392,
       "sampleMm": [50.691, 4.309, 8.618],
-      "relativeEnergyError": 0.210097
+      "relativeEnergyError": 0.018469,
+      "peakRelativeError": 0.0339,
+      "trust": "converged"
     },
     "tet4-h2": {
       "element": "tet4",
@@ -42,6 +46,8 @@
       "stressRel": 0.202797,
       "sampleMm": [51.250, 3.750, 7.500],
       "relativeEnergyError": 0.666315,
+      "peakRelativeError": 0.6260,
+      "trust": "rough",
       "note": "Same node count as tet10-h. Stiffer tip: the locking regression."
     },
     "tet10-h4": {
@@ -54,9 +60,11 @@
       "stressMPa": 2.750451,
       "stressRel": -0.001329,
       "sampleMm": [50.691, 5.345, 9.655],
-      "relativeEnergyError": 0.081772,
+      "relativeEnergyError": 0.023345,
+      "peakRelativeError": 0.068383,
+      "trust": "usable",
       "observedOrder": 2.205,
-      "note": "Skipped unless LIME_SIM_FINE=1. Order is ln(|tipRel h/2| / |tipRel h/4|) / ln 2 against the 3/2 reference."
+      "note": "Skipped unless LIME_SIM_FINE=1. Order is ln(|tipRel h/2| / |tipRel h/4|) / ln 2 against the 3/2 reference. The peak sits on the clamped corner, so this row is usable rather than converged."
     }
   }
 }

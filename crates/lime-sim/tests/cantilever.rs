@@ -158,6 +158,8 @@ struct Metrics {
     stress_rel: f64,
     sample: [f64; 3],
     energy: f64,
+    peak: f64,
+    trust: &'static str,
     nodes: usize,
 }
 
@@ -200,14 +202,26 @@ fn metrics(solution: &Solution) -> Metrics {
         stress_rel,
         sample,
         energy: solution.relative_energy_error,
+        peak: solution.peak_relative_error,
+        trust: solution.trust.as_str(),
         nodes: solution.mesh.nodes.len(),
     }
 }
 
 fn report(label: &str, m: &Metrics) {
     eprintln!(
-        "{label}: nodes {} tip {:.8} rel {:.6} stress {:.6} rel {:.6} at ({:.3},{:.3},{:.3}) energy {:.6}",
-        m.nodes, m.tip_down, m.tip_rel, m.stress, m.stress_rel, m.sample[0], m.sample[1], m.sample[2], m.energy
+        "{label}: nodes {} tip {:.8} rel {:.6} stress {:.6} rel {:.6} at ({:.3},{:.3},{:.3}) energy {:.6} peak {:.6} trust {}",
+        m.nodes,
+        m.tip_down,
+        m.tip_rel,
+        m.stress,
+        m.stress_rel,
+        m.sample[0],
+        m.sample[1],
+        m.sample[2],
+        m.energy,
+        m.peak,
+        m.trust
     );
 }
 
@@ -250,6 +264,13 @@ fn lock(id: &str, m: &Metrics) {
         1e-6,
         &format!("{id} energy"),
     );
+    common::near_abs(
+        m.peak,
+        common::number(row, "peakRelativeError"),
+        1e-4,
+        &format!("{id} peak"),
+    );
+    assert_eq!(m.trust, row["trust"].as_str().unwrap(), "{id} trust");
     let sample = row["sampleMm"].as_array().expect("sample");
     for k in 0..3 {
         common::near_abs(
@@ -272,6 +293,30 @@ fn coarse_and_mid_approach_the_beam_formulas() {
     lock("tet10-h", &coarse);
     lock("tet10-h2", &mid);
     lock("tet4-h2", &tet4);
+    // The trust word never gets worse as the beam is refined. The root is a clamped corner, a real singularity, so
+    // the error at the peak does not reach converged there.
+    let rank = |t: &str| {
+        ["rough", "usable", "converged"]
+            .iter()
+            .position(|w| *w == t)
+            .unwrap()
+    };
+    assert!(
+        rank(mid.trust) >= rank(coarse.trust),
+        "{} then {}",
+        coarse.trust,
+        mid.trust
+    );
+    assert!(mid.energy < coarse.energy, "the energy error falls with h");
+    // The local error at the clamped corner is not monotone on this pair. Both
+    // quadratic meshes stay inside the converged band, and the trust word does not get worse.
+    assert!(
+        coarse.peak < 0.05 && mid.peak < 0.05,
+        "peak {} then {}",
+        coarse.peak,
+        mid.peak
+    );
+    assert_eq!(tet4.trust, "rough", "TET4 stays rough");
     assert!(coarse.energy.is_finite() && coarse.energy > 0.0);
     assert!(mid.energy.is_finite());
     assert!(
