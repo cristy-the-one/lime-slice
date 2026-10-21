@@ -8,7 +8,7 @@ import { newTree, withChild, type ModelOp } from "../model-tree.ts";
 import { readSavedTree, savedTree } from "../model-tree-file.ts";
 import { withoutSketch } from "../model-request.ts";
 import { evaluateTable, expressionMentions, patchOpNumbers, stepOutOfDate, usedByCount, withExprs } from "./params.ts";
-import { panelParamMessage } from "../ui/parameters.ts";
+import { panelParamMessage, parametersHiddenWhileSketching } from "../ui/parameters.ts";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -103,6 +103,11 @@ check("a saved op keeps its expression", read?.nodes[1]?.op?.exprs?.modelDz === 
 check("a new solid keeps its expression", read?.rootExprs?.modelDz === "wallH");
 const bare = readSavedTree({ ...saved, rootPrimitive: tree.root.kind === "primitive" ? tree.root.solid : undefined });
 check("a tree with no rootExprs still opens", bare != null && bare.rootExprs == null);
+check("a sketch that names nothing hides Parameters", parametersHiddenWhileSketching(true, false, ["wallH"], "10"));
+check("a sketch that names a parameter shows Parameters", !parametersHiddenWhileSketching(true, false, ["wallH"], "wallH / 2"));
+check("an empty table hides Parameters while sketching", parametersHiddenWhileSketching(true, false, [], ""));
+check("closing the sketch shows Parameters", !parametersHiddenWhileSketching(false, false, ["wallH"], ""));
+check("Ctrl+Alt+P shows Parameters while sketching", !parametersHiddenWhileSketching(true, true, ["wallH"], ""));
 
 if (failed) {
   console.error(`${failed} failed`);

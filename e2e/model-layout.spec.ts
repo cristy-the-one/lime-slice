@@ -154,6 +154,23 @@ test("an empty Parameters section starts collapsed, and History sits above it", 
   await page.locator("[data-sketch-plane=XY]").click();
   await expect(page.locator("#model")).toHaveAttribute("data-sketch", "editing");
   await expect(page.locator("#modelParams"), "an empty Parameters section stays out of a sketch").toBeHidden();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#model")).not.toHaveAttribute("data-sketch", "editing");
+  await page.locator("#modelParamsToggle").click();
+  await page.locator("#modelParams [data-param-name]").fill("wallH");
+  await page.locator("#modelParams [data-param-value]").fill("12");
+  await page.locator("#modelParams [data-param-value]").blur();
+  await expect(page.locator("#modelParamsCount")).toHaveText("· 1");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(page.locator("#modelParams"), "a parameter the sketch does not use stays hidden").toBeHidden();
+  await page.keyboard.press("Control+Alt+p");
+  await expect(page.locator("#modelParams"), "Ctrl+Alt+P still opens it").toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#model")).not.toHaveAttribute("data-sketch", "editing");
+  await expect(page.locator("#modelParams"), "closing the sketch shows Parameters again").toBeVisible();
 });
 
 test("Ctrl+Alt+P opens Parameters from anywhere, and folds them from inside", async ({ page }) => {

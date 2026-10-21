@@ -4,7 +4,7 @@
  * told to add it above this row; the evaluator's own sentence stays for model_params.
  */
 import { PARAM_NAME } from "../modeling/expr.ts";
-import { appParamMessage, evaluateTable, isPlainNumber, type ParamTable } from "../modeling/params.ts";
+import { appParamMessage, evaluateTable, expressionMentions, isPlainNumber, type ParamTable } from "../modeling/params.ts";
 import { openDock } from "./dock-reveal.ts";
 
 export interface ParameterHooks {
@@ -20,6 +20,15 @@ export interface ParameterHooks {
 }
 
 let hooks: ParameterHooks | null = null;
+
+/**
+ * Hide Parameters while a sketch is open and none of its dimension expressions name a table entry.
+ * A sketch that is closed, or that the user opened with Ctrl+Alt+P, stays visible.
+ */
+export function parametersHiddenWhileSketching(sketching: boolean, revealed: boolean, names: readonly string[], exprs: string): boolean {
+  if (!sketching || revealed) return false;
+  return !names.some((name) => expressionMentions(exprs, name));
+}
 
 /** The panel never names the MCP tool. Other evaluator sentences pass through. */
 export function panelParamMessage(message: string): string {
@@ -79,7 +88,7 @@ export function mountParameters(next: ParameterHooks) {
   setFolded(readFolded(Object.keys(next.table()).length));
   paint(false);
   const canvas = document.querySelector("#model");
-  if (canvas) new MutationObserver(() => syncSketchVisibility()).observe(canvas, { attributes: true, attributeFilter: ["data-sketch"] });
+  if (canvas) new MutationObserver(() => syncSketchVisibility()).observe(canvas, { attributes: true, attributeFilter: ["data-sketch", "data-sketch-exprs"] });
 }
 
 function setFolded(on: boolean) {
@@ -114,14 +123,16 @@ export function revealParameters() {
   section?.scrollIntoView({ block: "nearest" });
 }
 
-/** While sketching, an unused empty Parameters section stays out of the way. */
+/** While sketching, Parameters stays out of the way unless a dimension names one of them. */
 function syncSketchVisibility() {
   const section = document.querySelector<HTMLElement>("#modelParams");
   if (!section) return;
-  const sketching = document.querySelector("#model")?.getAttribute("data-sketch") === "editing";
+  const canvas = document.querySelector("#model");
+  const sketching = canvas?.getAttribute("data-sketch") === "editing";
   if (!sketching) revealed = false;
-  const count = Object.keys(hooks?.table() ?? {}).length;
-  section.hidden = sketching && !revealed && count === 0;
+  const names = Object.keys(hooks?.table() ?? {});
+  const exprs = canvas?.getAttribute("data-sketch-exprs") ?? "";
+  section.hidden = parametersHiddenWhileSketching(sketching, revealed, names, exprs);
 }
 
 function openParameters(focus: boolean) {
@@ -149,6 +160,7 @@ export function syncRebuildCount() {
 export function syncParameters() {
   if (parametersOpen()) paint(false);
   else paintRebuild();
+  syncSketchVisibility();
 }
 
 function onInput(ev: Event) {
@@ -315,6 +327,7 @@ function readDom(): ParamTable {
 
 function writeFromDom() {
   hooks?.setTable(readDom());
+  syncSketchVisibility();
 }
 
 function paintRebuild() {

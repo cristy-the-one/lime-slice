@@ -7,6 +7,7 @@
  * Undo here is the sketch's own stack (`docs/plan-gui-cad-modeling.md` §4.3).
  */
 import { Circle, Hexagon, PenLine, Pencil, Radius, RectangleHorizontal, Spline, Square, createElement, type IconNode } from "lucide";
+import { tipWithShortcut } from "../ui/commands";
 import { pushToast } from "../ui/toasts";
 import { mountHud, type HudField } from "../interact/hud";
 import { gridSpacing } from "../interact/snap";
@@ -1419,6 +1420,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.sketchConstruction = String(sketch?.entities.filter((entity) => entity.construction).length ?? 0);
     const status = sketch && editor.phase === "editing" ? placedStatus(sketch) : null;
     host.canvas.dataset.sketchDims = String(sketch && editor.phase === "editing" ? dimensionLabels(sketch).length : 0);
+    const exprs = sketch && editor.phase === "editing" ? (sketch.dims ?? []).map((dim) => dim.expr).filter((expr): expr is string => !!expr).join("\n") : "";
+    if (exprs) host.canvas.dataset.sketchExprs = exprs;
+    else delete host.canvas.dataset.sketchExprs;
     host.canvas.dataset.sketchDefined = status ? (status.fullyDefined ? "1" : "0") : "";
     host.canvas.dataset.sketchDof = status ? String(status.dof) : "";
     host.canvas.dataset.sketchConstraints = String(sketch && editor.phase === "editing" ? parseConstraints(sketch).length : 0);
@@ -1967,7 +1971,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     node.classList.add("sketch-icon");
     node.replaceChildren(createElement(icon, { width: 16, height: 16, "aria-hidden": "true" }));
     node.setAttribute("aria-label", label);
-    node.dataset.tip = `${label} (${shortcut})`;
+    node.dataset.tip = tipWithShortcut(label, shortcut);
     node.title = node.dataset.tip;
     return node;
   }
