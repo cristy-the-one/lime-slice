@@ -406,6 +406,8 @@ The same rules as round 1 apply:
 
 ### R2-01 (P0). The frame-time check must run in the build Playwright tests
 
+Status: not done. The preview build records the gaps and the assertion prints the median: 40.3 ms from 46 frames. That is above 17 ms, so the check stays as written.
+
 - **Seen**:
   - `recordFrame` in `src/model-view.ts` writes `window.__frameTimes` only when `import.meta.env.DEV` is set.
   - Playwright serves `vite preview`, which is a production build, so the list stays empty.
@@ -422,6 +424,8 @@ The same rules as round 1 apply:
 
 ### R2-02 (P0). `preserveDrawingBuffer` off for users
 
+Status: done. `grep preserveDrawingBuffer src` finds nothing. The PH-01 colour check in `e2e/model-drag.spec.ts` passed on the preview build.
+
 - **Seen**: `new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true })` at
   `src/model-view.ts:254`. It was added so a test can read a pixel, but it slows every Model frame for every user.
 - **Change**:
@@ -433,6 +437,8 @@ The same rules as round 1 apply:
   `e2e/model-drag.spec.ts` still passes.
 
 ### R2-03 (P0). Draw the lit edges once: solid where seen, dashed where hidden
+
+Status: done. A visible edge midpoint matches the axis green. A hidden point is not that green, and a 20 px walk along it alternates with the part behind the dash (about 22 ΔE, so the check uses 15). `ph01-after-axis.png` and `ph08-after-badge.png` were retaken.
 
 - **Seen**: in `replaceAspect`:
   - The visible pass has `depthTest: false`, so it draws the whole edge through the solid.
@@ -453,6 +459,8 @@ The same rules as round 1 apply:
 
 ### R2-04 (P0). Typed-value boxes light their handle again
 
+Status: done. Tabbing into the extrude distance field sets `data-aspect-field`. Focusing the auto-slice setting does not change `data-focus-syncs`.
+
 - **Seen**:
   - PH-06 moved the `focusin`/`focusout` listeners to `#modelPanel`.
   - The typed-value box (`src/interact/hud.ts`) is mounted on the canvas's parent, outside the panel. It's mounted by
@@ -469,6 +477,8 @@ The same rules as round 1 apply:
   - Focusing a Settings field still leaves `data-focus-syncs` unchanged.
 
 ### R2-05 (P1). Work out the ghost seats once per ghost, not per frame
+
+Status: not done. The ghost box, its face points, and the label size are cached, and a drag does not raycast the solid for the edge sample. The 3,000-face median on the preview build is 40.3 ms from 46 frames, above 17 ms. There is no 40-hole timing case.
 
 - **Seen**: `sizeHandles()` runs every frame (`src/model-view.ts:1464`) and on every pointer move (`handleAt`). It
   now calls:
@@ -488,6 +498,8 @@ The same rules as round 1 apply:
 
 ### R2-06 (P1). Take out the "Hole N depth" buttons
 
+Status: done. Hovering hole 2's knob lights that hole. The shared depth field lights every hole. Nothing has an id starting with `modelHoleDepth-`.
+
 - **Seen**: PH-07 added a row of buttons, "Hole 1 depth", "Hole 2 depth" and so on (`paintHolePicks` in
   `src/ui/model-chrome.ts`). Their only job is to take focus. Clicking one changes nothing, and with 20 holes there are
   20 of them.
@@ -503,6 +515,8 @@ The same rules as round 1 apply:
   - No element has an id starting with `modelHoleDepth-`.
 
 ### R2-07 (P1). Remember Parameters open or closed per project, keyed properly
+
+Status: done. The fold key is the project title, unsaved projects share one key, and 60 writes keep at most 50. `src/modeling/params.test.ts` covers it. The `.lime` wire is unchanged.
 
 - **Seen**: the key comes from
   `projectId: () => state.plate.objects.map((object) => object.id).join(",")` in `src/app/model.ts:575`. That key:
@@ -521,6 +535,8 @@ The same rules as round 1 apply:
 
 ### R2-08 (P1). Rail headings fit, and stay on laptop screens
 
+Status: done. At 1440×900, 1366×768, and 1280×800 every heading is visible and no wider than its box. Measure stays on the rail at 800 px and above. At 768 px Inspect and Frame fold into flyouts. At 720 px Features folds too, and the dock test opens that flyout.
+
 - **Seen**:
   - "FEATURES" is clipped at the left edge in `ux02-after-disabled.png` and `ux09-after-chip.png`.
   - Below 820 px tall the headings are hidden (`@media (min-height: 820px)` in `src/ui/model-dock.css`). So at
@@ -534,6 +550,8 @@ The same rules as round 1 apply:
   `scrollWidth <= clientWidth`, and every rail tool is still reachable.
 
 ### R2-09 (P1). The sketch card's feature strip reads as a form, not a centred stack
+
+Status: done. Extrude and Loft keep Apply and Cancel on one row, Apply primary, and the name and prompt on the card's left edge. `ux03-after-feature-strip.png` was retaken.
 
 - **Seen**: in `ux03-after-feature-strip.png`, while Loft is active:
   - the prompt, the name, Join/Cut/New object, Smooth, Apply and Cancel are a centred column of different widths;
@@ -553,6 +571,8 @@ The same rules as round 1 apply:
   Retake both `ux03-after-*` screenshots after UX-02, so they show the dashed disabled style.
 
 ### R2-10 (P2). Small fixes
+
+Status: done. `ux05-after-hud.png` is a canvas shot. The selection chip's text is `1 face ▾`. Screenshots under `docs/screenshots/` write only when `UPDATE_SCREENSHOTS=1`. The engine byte comparison was not run: the unit runner reports `golden: SKIPPED` because this machine has no slicer binary.
 
 - **Screenshot for UX-05**: `ux05-after-hud.png` is a 40 px crop of the field. Replace it with a canvas shot that
   shows the box next to the extrude arrow it belongs to.
@@ -596,6 +616,10 @@ Rules:
 
 ### R3-01 (P0). Prepare's keys stop firing in other stages
 
+Status: done.
+- Pass: the unit matrix returns null for M, R, F, B, K, N, E, C, T, Y, I, /, Ctrl+F, and Shift+1 in stages whose button is not on screen, and the same command as before where it is.
+- Pass: in Model, M does not press Prepare's move tool (`e2e/model-layout.spec.ts`).
+
 - **Seen**: these commands have scope `always`, but the buttons they click (`target`) live in a rail set shown only in
   some stages (`railSet(...)` in `src/ui/chrome.ts`). In other stages, `runCommand` clicks a hidden button: nothing
   changes on screen, but the state of the other stage does.
@@ -635,6 +659,12 @@ Rules:
 
 ### R3-02 (P0). Declare the sketch's keys in the registry
 
+Status: done.
+- Pass: the `?` sheet lists Loft beside Shift+L while a sketch is open.
+- Pass: with a sketch open, letter keys resolve to a sketch command or null, never a Model command.
+- Pass: `e2e/model-sketch.spec.ts`, `model-loft`, and `model-holes` passed on the preview build. `model-revolve` and `model-sweep` were not in this run.
+- Pass: `grep 'ev.key === "w"' src/app/sketch.ts` finds nothing.
+
 - **Seen**: the sketch handles its own keys in `src/app/sketch.ts:417` and in `sketchKey` and `sketchHandlesKey`
   (`src/sketch/session.ts:457`). The keys are:
   - drawing tools: L Line, R Rectangle, C Circle, A Arc (Shift+A tangent arc), N Polygon, Shift+S Slot, B Spline;
@@ -673,6 +703,9 @@ Rules:
 
 ### R3-03 (P0). Number keys don't leave Model in the middle of a sketch
 
+Status: done.
+- Pass: typing 2, 5, Enter on a line mid-sketch stays on Model and the line is 25 mm.
+
 - **Seen**: `tab-prepare` to `tab-model` (1 to 4) are `always` and not `typing`. The sketch doesn't take digits, so
   typing "25" for a line's length before clicking into the size box switches the app to Preview mid-sketch.
 - **Change**: while `sketchOpen`, a digit, ".", "-" or "(" focuses the active tool's size box and goes into it, as
@@ -683,6 +716,10 @@ Rules:
   is still Model (`#tabModel[aria-selected="true"]`), and the line is 25 mm.
 
 ### R3-04 (P1). Same job, same key, in Model too
+
+Status: done.
+- Pass: in Model with no sketch, Shift+M is `model-measure` and T is `model-view-top`. In a sketch, T is Trim.
+- Pass: T then I moves the Model camera from top to iso.
 
 - **Measure**:
   - Seen: Shift+M toggles Prepare's rulers (`#measureField`). Model's own Measure tool (`#modelToolMeasure`) has no
@@ -713,6 +750,9 @@ Rules:
 
 ### R3-05 (P1). One test that keeps keys honest
 
+Status: done.
+- Pass: on the registry at `74c67fd` the same test reported 692 failures. `0c30fe2` cannot load it (`tipWithShortcut` is not there yet). It passes in `npm run test:unit` on this branch.
+
 - **Change**: extend `src/ui/commands.test.ts` with a table-driven check over every combination of:
   - stage (4);
   - sketch open or not;
@@ -731,6 +771,11 @@ Rules:
   - It runs from `tools/unit-tests.txt` (`npm run test:unit`).
 
 ### R3-06 (P2). Small fixes
+
+Status: done.
+- Pass: Arc and Fillet use different icon paths, and the drawing-tool tips name their keys.
+- Pass: the shortcut sheet lists each Shift+click meaning once.
+- Pass: sketch edit buttons show their keys in the tooltips.
 
 - **Duplicate icon**: after UX-01, the sketch's Arc button and Model's Fillet both use Lucide's `Radius`. Give Arc
   its own icon (a quarter-arc SVG drawn in the Lucide style; Spline already uses `Spline`) so the two never look the

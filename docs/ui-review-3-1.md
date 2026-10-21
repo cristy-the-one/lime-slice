@@ -256,4 +256,26 @@ Dimension labels stand off the solid. Each one clears the solid's projected box 
 - Playwright, against the dev server, for the specs this branch changes: `ui-review`, `model-sketch`, `model-context-bar`, `model-layout`, `model-features`, `model-parameters`, `window-fit`, `compact-layout`, `plate`, `view-rulers`
 - `tools/golden_ab.sh` needs a built slicer binary. This change does not touch the engine, the slice path, or G-code. The unit runner reports `golden: SKIPPED` when that binary is absent.
 
-At 1440×900 every Model tool is on the rail. At 1366×768 only the Frame group folds. Tools still take a typed value and a click. New actions went into existing menus and the command palette, not onto the toolbar.
+At 1440×900 every Model tool is on the rail. At 1366×768 the headings stay, and Inspect and Frame fold into flyouts. Tools still take a typed value and a click. New actions went into existing menus and the command palette, not onto the toolbar.
+
+## Rounds 2 and 3
+
+Lit edges are solid where the solid does not cover them and dashed, at 60% of the axis colour, where it does.
+
+![A size axis, solid in front and dashed behind](screenshots/ui-review-3-1/ph01-after-axis.png)
+
+![Depth Y focused, badge on the field](screenshots/ui-review-3-1/ph08-after-badge.png)
+
+Boolean sizes use the same names as the primitive: Width X, Depth Y, Height Z.
+
+![Boolean box sizes named Width, Depth, and Height](screenshots/ui-review-3-1/ph03-followup-after-sizes.png)
+
+The sketch feature strip is a left-aligned form. Apply is the primary button.
+
+![Loft strip: prompt, name, Smooth, Apply and Cancel](screenshots/ui-review-3-1/ux03-after-feature-strip.png)
+
+The extrude size box sits on the canvas next to its arrow.
+
+![Extrude distance beside the arrow](screenshots/ui-review-3-1/ux05-after-hud.png)
+
+The 3,000-face frame check runs on the preview build. Its median was 40.3 ms from 46 frames, above the 17 ms bar, so that task stays open. The engine byte comparison was not run: there is no slicer binary here (`golden: SKIPPED`).
