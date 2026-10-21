@@ -572,7 +572,7 @@ export function bindModelView() {
     rebuild() {
       void rebuildFromParameters();
     },
-    projectId: () => state.projectTitle?.trim() || "",
+    projectId: () => session.projectTitle?.trim() || "",
   });
   noteParametersBuilt();
   // --- E3. Inspect, the right dock in Model. ---
