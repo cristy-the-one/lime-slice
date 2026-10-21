@@ -303,6 +303,7 @@ test("focusing hole 2's depth lights hole 2", async ({ page }) => {
   const distance = (point: number[]) => Math.hypot(point[0]! - at[0]!, point[1]! - at[1]!);
   expect(distance(centres[1]!), "the lit circle is hole 2").toBeLessThan(distance(centres[0]!));
   expect(distance(centres[1]!)).toBeLessThan(8);
+  await page.mouse.move(box.x + 4, box.y + 4);
   await page.locator("#modelHoleD").focus();
   await expect.poll(async () => Number(await canvas.getAttribute("data-aspect-lines"))).toBeGreaterThanOrEqual(centres.length * 20);
 });
