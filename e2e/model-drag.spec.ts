@@ -430,8 +430,9 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
   }, hidden);
   expect(deltaE(hiddenRgb.at, [143, 206, 106]), `hidden pixel ${hiddenRgb.at.join(",")}`).toBeGreaterThan(15);
   const line = [143, 206, 106].map((channel) => Math.round(channel * 0.6));
-  const onLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) < 40);
-  const offLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) >= 40);
+  // The part behind a hidden edge is itself green, so a gap is only about 22 ΔE from the dash.
+  const onLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) < 15);
+  const offLine = hiddenRgb.along.filter((pixel) => deltaE(pixel, line) >= 15);
   expect(onLine.length, "dashed line pixels").toBeGreaterThan(0);
   expect(offLine.length, "dashed gaps").toBeGreaterThan(0);
   if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph03-after-labels.png" });

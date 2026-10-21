@@ -429,6 +429,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let aspectBodyHidden: LineSegments2 | null = null;
   /** The lit segments, for a screen-space sample of the line colour. */
   let aspectSample: { positions: number[]; body: boolean } | null = null;
+  /** Occlusion ray for a lit edge. A binding placed after the returned object would never initialise. */
+  const depthRay = new THREE.Raycaster();
+  let aspectSampleKey = "";
   let overHandle: string | null = null;
   /** Keeps the lit aspect for a moment after the pointer leaves, so a gap between knobs does not flash. */
   let aspectLeaveTimer: number | null = null;
@@ -2846,6 +2849,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const material = current.material as LineMaterial;
       material.color.setHex(hex);
       material.linewidth = ASPECT_LINE_PX;
+      if (hidden) applyDash(material);
       return current;
     }
     dropAspect(parent, current);
@@ -2861,11 +2865,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       worldUnits: false,
       dashed: hidden,
       dashScale: 1,
-      dashSize: 3,
-      gapSize: 2,
+      dashSize: 1,
+      gapSize: 1,
       toneMapped: false,
     });
     material.depthFunc = hidden ? THREE.GreaterDepth : THREE.LessEqualDepth;
+    if (hidden) applyDash(material);
     material.resolution.copy(lineResolution());
     fatLines.push(material);
     const lines = new LineSegments2(geometry, material);
@@ -3013,13 +3018,18 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (canvas.dataset.aspectAt !== text) canvas.dataset.aspectAt = text;
   }
 
+  /** Dashes of a few screen pixels, so a short walk along a hidden edge crosses a gap. */
+  function applyDash(material: LineMaterial) {
+    const dist = Math.max(1e-3, camera.position.distanceTo(controls.target));
+    const mm = (2 * dist * Math.tan((camera.fov * Math.PI) / 360)) / Math.max(1, canvas.clientHeight) / Math.max(1e-3, camera.zoom);
+    material.dashSize = mm * 4;
+    material.gapSize = mm * 3;
+  }
+
   function darkenHex(color: number, factor: number): number {
     const scale = (channel: number) => Math.max(0, Math.min(255, Math.round(channel * factor)));
     return (scale((color >> 16) & 255) << 16) | (scale((color >> 8) & 255) << 8) | scale(color & 255);
   }
-
-  const depthRay = new THREE.Raycaster();
-  let aspectSampleKey = "";
 
   /** A line point the solid sits in front of. A point on the surface still counts as seen. */
   function lineHidden(point: THREE.Vector3): boolean {
@@ -3375,7 +3385,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (canvas.dataset.handles !== text) canvas.dataset.handles = text;
     if (aspectNow) {
       placeAspectLabel();
-      publishAspectSample();
+      // The sample is for a still view. Raycasting the solid on every drag frame dominates the frame.
+      if (!drag) publishAspectSample();
     } else if (canvas.dataset.aspectSample) delete canvas.dataset.aspectSample;
     // --- A10. The section arrow, sized like a handle, drawn in model space.
     if (sectionPlaneWorld) {
