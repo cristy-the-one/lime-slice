@@ -21,6 +21,8 @@ function keyContext(ev: KeyboardEvent): KeyContext {
     brushOn: root.supportPaint === "1" || root.seamPaint === "1" || root.reinforcePaint === "1",
     editingSupports: document.querySelector('#toolRail [data-tool="supports"]')?.getAttribute("aria-pressed") === "true",
     inGcode: !!target && !!document.querySelector("#gcodePane")?.contains(target),
+    sketchOpen: state.stage === "model" && document.querySelector("#model")?.getAttribute("data-sketch") === "editing",
+    sketchFeature: document.querySelector("#model")?.getAttribute("data-sketch-feature") === "1",
   };
 }
 

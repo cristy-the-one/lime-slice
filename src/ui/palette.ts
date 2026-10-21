@@ -228,7 +228,9 @@ function escapeHtml(text: string) {
 }
 
 function click(selector: string) {
-  document.querySelector<HTMLElement>(selector)?.click();
+  const el = document.querySelector<HTMLElement>(selector);
+  if (!el?.isConnected || el.closest("[hidden]") || el.getClientRects().length === 0) return;
+  el.click();
 }
 
 function setTheme(value: string) {

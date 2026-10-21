@@ -45,6 +45,8 @@ const BASE: KeyContext = {
   brushOn: false,
   editingSupports: false,
   inGcode: false,
+  sketchOpen: false,
+  sketchFeature: false,
 };
 
 const NAMED: Record<string, string> = { Esc: "Escape", "↑": "ArrowUp", "↓": "ArrowDown", PgUp: "PageUp", PgDn: "PageDown", Del: "Delete" };
@@ -71,7 +73,7 @@ const contexts: KeyContext[] = [];
 for (const helpOpen of bools) for (const typing of bools) for (const hasResult of bools) for (const running of bools)
   for (const searching of bools) for (const brushOn of bools) for (const editingSupports of bools) for (const inGcode of bools)
     for (const stage of ["prepare", "preview", "gcode", "model"] as const)
-      contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode });
+      contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode, sketchOpen: false, sketchFeature: false });
 const chords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
 for (const chord of chords) {
   for (const repeat of bools) {
@@ -107,7 +109,7 @@ eq("Esc does nothing when idle", press("Esc"), null);
 eq("Esc clears a Model selection", press("Esc", { stage: "model" }), "model-escape");
 eq("Esc still cancels a running slice on Model", press("Esc", { stage: "model", running: true }), "cancel-slice");
 eq("Q and W pick in Model", [press("Q"), press("Q", { stage: "model" }), press("W", { stage: "model" })], [null, "model-face", "model-edge"]);
-eq("Shift+E edits a Model step, E stays Edit supports", [press("Shift+E"), press("Shift+E", { stage: "model" }), press("E")], [null, "model-edit-step", "edit-supports"]);
+eq("Shift+E edits a Model step, E edits supports in Preview", [press("Shift+E"), press("Shift+E", { stage: "model" }), press("E"), press("E", { stage: "preview", hasResult: true })], [null, "model-edit-step", null, "edit-supports"]);
 eq("Shift+H is Model history, H stays Hole", [press("Shift+H"), press("Shift+H", { stage: "model" }), press("H", { stage: "model" })], [null, "model-history", "model-hole"]);
 eq("Shift+U is the workplane, and only in Model", [press("Shift+U"), press("Shift+U", { stage: "model" }), press("U", { stage: "model" })], [null, "model-workplane", null]);
 eq("Shift+K checks the solid, and K stays Paint seam", [press("Shift+K"), press("Shift+K", { stage: "model" }), press("K")], [null, "model-check", "paint-seam"]);
@@ -140,7 +142,7 @@ eq(
 eq("/ and Ctrl+F search, but not from a field", [press("/"), press("Ctrl+F"), press("/", { typing: true }), press("Ctrl+F", { typing: true })], ["search", "search", null, null]);
 eq("Ctrl+F stays the browser's in the G-code pane", press("Ctrl+F", { stage: "gcode", inGcode: true }), null);
 eq("a letter does nothing in a field", ["M", "R", "S", "F", "C", "E", "B", "K", "T", "Y", "I", "A", "V", "1"].map((chord) => press(chord, { typing: true })), Array(14).fill(null));
-eq("tools", ["M", "R", "S", "F", "C", "E", "B", "K"].map((chord) => press(chord)), ["tool-move", "tool-rotate", "tool-scale", "tool-layflat", "tool-section", "edit-supports", "paint-supports", "paint-seam"]);
+eq("Prepare tools", ["M", "R", "S", "F", "C", "B", "K", "N"].map((chord) => press(chord)), ["tool-move", "tool-rotate", "tool-scale", "tool-layflat", "tool-section", "paint-supports", "paint-seam", "paint-reinforce"]);
 eq("S in Model starts a sketch", press("S", { stage: "model" }), "model-sketch");
 eq("camera presets", ["T", "Y", "I"].map((chord) => press(chord)), ["view-top", "view-front", "view-iso"]);
 eq("Ctrl+E exports", press("Ctrl+E"), "export");
@@ -173,6 +175,30 @@ for (const command of COMMANDS) {
 eq("a keyed tip names the shortcut once", tipWithShortcut("Fillet", "L"), "Fillet (L)");
 eq("an empty slot is dropped", tipWithShortcut("Add ()", undefined), "Add");
 eq("a real shortcut is kept", tipWithShortcut("Arrange (A)", "A"), "Arrange (A)");
+
+// R3-01. A Prepare key is null wherever its button is not on screen, and the same command where it is.
+const STAGE_KEYS: Record<string, Partial<Record<"prepare" | "preview" | "gcode" | "model", string>>> = {
+  M: { prepare: "tool-move" },
+  R: { prepare: "tool-rotate" },
+  F: { prepare: "tool-layflat" },
+  B: { prepare: "paint-supports" },
+  K: { prepare: "paint-seam" },
+  N: { prepare: "paint-reinforce" },
+  E: { preview: "edit-supports", gcode: "edit-supports" },
+  C: { prepare: "tool-section", preview: "tool-section", gcode: "tool-section" },
+  T: { prepare: "view-top" },
+  Y: { prepare: "view-front" },
+  I: { prepare: "view-iso" },
+  "/": { prepare: "search", preview: "search", gcode: "search" },
+  "Ctrl+F": { prepare: "search", preview: "search", gcode: "search" },
+  "Shift+1": { prepare: "strategy-speed", preview: "strategy-speed" },
+  "Shift+M": { prepare: "measure", preview: "measure", gcode: "measure" },
+};
+for (const [chord, where] of Object.entries(STAGE_KEYS)) {
+  for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
+    eq(`${chord} in ${stage}`, press(chord, { stage, hasResult: stage === "preview" }), where[stage] ?? null);
+  }
+}
 
 if (failed) {
   console.error(`${failed} failed`);

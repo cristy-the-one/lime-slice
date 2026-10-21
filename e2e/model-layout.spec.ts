@@ -220,3 +220,12 @@ test("in the drawer range, Esc ends an open tool first and closes the drawer onl
   await page.keyboard.press("Escape");
   await expect(dock, "with nothing open, Esc closes the drawer").toBeHidden();
 });
+
+test("M in Model does not change Prepare's move tool", async ({ page }) => {
+  await openModel(page, { width: 1440, height: 900 });
+  const move = page.locator('#toolRail [data-tool="move"]');
+  await expect(move).toHaveAttribute("aria-pressed", "false");
+  await page.keyboard.press("m");
+  await page.locator("#tabPrepare").click();
+  await expect(move).toHaveAttribute("aria-pressed", "false");
+});

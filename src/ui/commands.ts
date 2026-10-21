@@ -14,14 +14,16 @@ export type KeyScope =
   | "find"
   | "model";
 
+export type StageName = "prepare" | "preview" | "gcode" | "model";
+
 export interface CommandSpec {
   id: string;
   label: string;
   group: string;
   /** Chords in the sheet's own spelling: "Ctrl+Shift+Z", "Shift+1", "Esc", "↑", "PgUp", "Del". The first is shown in tooltips and palette rows. */
   keys?: string[];
-  /** Where the chords fire. Default "always", which means the shortcut sheet is closed. */
-  when?: KeyScope;
+  /** A named scope, or the stages whose button is on screen. Default "always" (the shortcut sheet is closed). */
+  when?: KeyScope | readonly StageName[];
   /** Fires while a text field has focus. */
   typing?: boolean;
   /** Fires on key auto-repeat. */
@@ -60,10 +62,10 @@ export const COMMANDS: CommandSpec[] = [
   { id: "view-2d", label: "2D preview", group: "View", target: '[data-mode="flat"]', keywords: "flat" },
   { id: "view-split", label: "Split preview", group: "View", target: '[data-mode="split"]' },
   { id: "view-3d", label: "3D preview", group: "View", target: '[data-mode="solid"]', keywords: "solid" },
-  { id: "view-top", label: "Top view", group: "View", keys: ["T"], target: "#viewPresets button:nth-child(1)", keywords: "camera prepare" },
-  { id: "view-front", label: "Front view", group: "View", keys: ["Y"], target: "#viewPresets button:nth-child(2)", keywords: "camera prepare" },
-  { id: "view-iso", label: "Iso view", group: "View", keys: ["I"], target: "#viewPresets button:nth-child(3)", keywords: "camera prepare isometric" },
-  { id: "measure", label: "Measure", group: "View", keys: ["Shift+M"], target: "#measureField", keywords: "ruler size dimensions scale bar millimetres" },
+  { id: "view-top", label: "Top view", group: "View", keys: ["T"], when: ["prepare"], target: "#viewPresets button:nth-child(1)", keywords: "camera prepare" },
+  { id: "view-front", label: "Front view", group: "View", keys: ["Y"], when: ["prepare"], target: "#viewPresets button:nth-child(2)", keywords: "camera prepare" },
+  { id: "view-iso", label: "Iso view", group: "View", keys: ["I"], when: ["prepare"], target: "#viewPresets button:nth-child(3)", keywords: "camera prepare isometric" },
+  { id: "measure", label: "Measure", group: "View", keys: ["Shift+M"], when: ["prepare", "preview", "gcode"], target: "#measureField", keywords: "ruler size dimensions scale bar millimetres" },
   { id: "model-new", label: "New solid", group: "Model", keys: ["Shift+N"], when: "model", target: "#modelToolNew", keywords: "create primitive box cylinder sphere cone torus wedge polygon hexagon tube empty" },
   { id: "model-face", label: "Pick faces", group: "Model", keys: ["Q"], when: "model", target: "#modelPickFace", keywords: "select face" },
   { id: "model-edge", label: "Pick edges", group: "Model", keys: ["W"], when: "model", target: "#modelPickEdge", keywords: "select edge" },
@@ -101,23 +103,23 @@ export const COMMANDS: CommandSpec[] = [
   { id: "layer-down-10", label: "Ten layers down", group: "Layers", keys: ["PgDn"], when: "preview", repeat: true, show: "help" },
   { id: "layer-first", label: "First layer", group: "Layers", keys: ["Home"], when: "preview", show: "help" },
   { id: "layer-last", label: "Last layer", group: "Layers", keys: ["End"], when: "preview", show: "help" },
-  { id: "strategy-speed", label: "Strategy: Speed", group: "Strategy", keys: ["Shift+1"], target: '[data-card="speed"]', keywords: "blend" },
-  { id: "strategy-efficiency", label: "Strategy: Efficiency", group: "Strategy", keys: ["Shift+2"], target: '[data-card="efficiency"]', keywords: "blend" },
-  { id: "strategy-toughness", label: "Strategy: Toughness", group: "Strategy", keys: ["Shift+3"], target: '[data-card="toughness"]', keywords: "blend" },
-  { id: "strategy-layer", label: "Strategy: By layer", group: "Strategy", keys: ["Shift+4"], target: '[data-card="layer"]', keywords: "blend" },
-  { id: "strategy-region", label: "Strategy: By region", group: "Strategy", keys: ["Shift+5"], target: '[data-card="region"]', keywords: "blend split plane" },
+  { id: "strategy-speed", label: "Strategy: Speed", group: "Strategy", keys: ["Shift+1"], when: ["prepare", "preview"], target: '[data-card="speed"]', keywords: "blend" },
+  { id: "strategy-efficiency", label: "Strategy: Efficiency", group: "Strategy", keys: ["Shift+2"], when: ["prepare", "preview"], target: '[data-card="efficiency"]', keywords: "blend" },
+  { id: "strategy-toughness", label: "Strategy: Toughness", group: "Strategy", keys: ["Shift+3"], when: ["prepare", "preview"], target: '[data-card="toughness"]', keywords: "blend" },
+  { id: "strategy-layer", label: "Strategy: By layer", group: "Strategy", keys: ["Shift+4"], when: ["prepare", "preview"], target: '[data-card="layer"]', keywords: "blend" },
+  { id: "strategy-region", label: "Strategy: By region", group: "Strategy", keys: ["Shift+5"], when: ["prepare", "preview"], target: '[data-card="region"]', keywords: "blend split plane" },
   { id: "plate-arrange", label: "Arrange plate", group: "Plate", keys: ["A"], when: "prepare", target: "#plateArrange", keywords: "objects pack" },
   { id: "plate-duplicate", label: "Duplicate object", group: "Plate", keys: ["Ctrl+D"], when: "prepare", target: "#plateDuplicate", keywords: "copy" },
   { id: "plate-remove", label: "Remove object", group: "Plate", keys: ["Del", "Backspace"], when: "objects", keywords: "delete" },
-  { id: "tool-move", label: "Move", group: "Tools", keys: ["M"], target: '#toolRail [data-tool="move"]', keywords: "translate gizmo" },
-  { id: "tool-rotate", label: "Rotate", group: "Tools", keys: ["R"], target: '#toolRail [data-tool="rotate"]', keywords: "gizmo" },
+  { id: "tool-move", label: "Move", group: "Tools", keys: ["M"], when: "prepare", target: '#toolRail [data-tool="move"]', keywords: "translate gizmo" },
+  { id: "tool-rotate", label: "Rotate", group: "Tools", keys: ["R"], when: "prepare", target: '#toolRail [data-tool="rotate"]', keywords: "gizmo" },
   { id: "tool-scale", label: "Scale", group: "Tools", keys: ["S"], when: "prepare", target: '#toolRail [data-tool="scale"]', keywords: "percent gizmo" },
-  { id: "tool-layflat", label: "Lay flat", group: "Tools", keys: ["F"], target: '#layflat, #toolRail [data-tool="layflat"]', keywords: "bed face" },
-  { id: "tool-section", label: "Section", group: "Tools", keys: ["C"], target: '#toolRail [data-tool="section"]', keywords: "clip cut" },
-  { id: "edit-supports", label: "Edit supports", group: "Tools", keys: ["E"], target: '#toolRail [data-tool="supports"]', keywords: "tree branch delete prune regrow" },
-  { id: "paint-supports", label: "Paint supports", group: "Tools", keys: ["B"], target: '#toolRail [data-tool="paint"]', keywords: "brush enforce block" },
-  { id: "paint-seam", label: "Paint seam", group: "Tools", keys: ["K"], target: '#toolRail [data-tool="seam"]', keywords: "brush" },
-  { id: "paint-reinforce", label: "Reinforce", group: "Tools", keys: ["N"], target: '#toolRail [data-tool="reinforce"]', keywords: "brush infill solid density depth" },
+  { id: "tool-layflat", label: "Lay flat", group: "Tools", keys: ["F"], when: "prepare", target: '#layflat, #toolRail [data-tool="layflat"]', keywords: "bed face" },
+  { id: "tool-section", label: "Section", group: "Tools", keys: ["C"], when: ["prepare", "preview", "gcode"], target: '#toolRail [data-tool="section"]', keywords: "clip cut" },
+  { id: "edit-supports", label: "Edit supports", group: "Tools", keys: ["E"], when: ["preview", "gcode"], target: '#toolRail [data-tool="supports"]', keywords: "tree branch delete prune regrow" },
+  { id: "paint-supports", label: "Paint supports", group: "Tools", keys: ["B"], when: "prepare", target: '#toolRail [data-tool="paint"]', keywords: "brush enforce block" },
+  { id: "paint-seam", label: "Paint seam", group: "Tools", keys: ["K"], when: "prepare", target: '#toolRail [data-tool="seam"]', keywords: "brush" },
+  { id: "paint-reinforce", label: "Reinforce", group: "Tools", keys: ["N"], when: "prepare", target: '#toolRail [data-tool="reinforce"]', keywords: "brush infill solid density depth" },
   { id: "brush-smaller", label: "Smaller brush", group: "Tools", keys: ["["], when: "brush", repeat: true, show: "help" },
   { id: "brush-larger", label: "Larger brush", group: "Tools", keys: ["]"], when: "brush", repeat: true, show: "help" },
   { id: "undo", label: "Undo", group: "Edit", keys: ["Ctrl+Z"], typing: true, target: "#modelUndo", keywords: "placement settings revert" },
@@ -157,7 +159,7 @@ export const MOUSE_HINTS: { gesture: string; label: string }[] = [
 export interface KeyContext {
   helpOpen: boolean;
   typing: boolean;
-  stage: "prepare" | "preview" | "gcode" | "model";
+  stage: StageName;
   hasResult: boolean;
   running: boolean;
   /** Focus is in the settings search, or a query is active and no other field has focus. */
@@ -167,6 +169,10 @@ export interface KeyContext {
   editingSupports: boolean;
   /** Focus is in the G-code pane, where Ctrl+F stays the browser's. */
   inGcode: boolean;
+  /** A sketch is open on the Model stage. */
+  sketchOpen: boolean;
+  /** Extrude, revolve, loft, or sweep is the active sketch feature. */
+  sketchFeature: boolean;
 }
 
 /** Scopes that share a chord must not overlap: Esc cancels a slice only when it is not clearing a search. */
@@ -179,7 +185,7 @@ const SCOPES: Record<KeyScope, (c: KeyContext) => boolean> = {
   running: (c) => !c.helpOpen && c.running && !c.searching,
   searching: (c) => !c.helpOpen && c.searching,
   brush: (c) => !c.helpOpen && c.stage === "prepare" && c.brushOn,
-  find: (c) => !c.helpOpen && !c.inGcode,
+  find: (c) => !c.helpOpen && !c.inGcode && c.stage !== "model",
   model: (c) => !c.helpOpen && c.stage === "model" && !c.running && !c.searching,
 };
 
@@ -210,9 +216,15 @@ export function chordMatches(chord: string, ev: KeyEventLike): boolean {
   return ev.key.toLowerCase() === key.toLowerCase();
 }
 
+function scopeAllows(command: CommandSpec, ctx: KeyContext): boolean {
+  const when = command.when ?? "always";
+  if (Array.isArray(when)) return !ctx.helpOpen && when.includes(ctx.stage);
+  return SCOPES[when](ctx);
+}
+
 export function fires(command: CommandSpec, ev: KeyEventLike, ctx: KeyContext): boolean {
   if (!command.keys) return false;
-  if (!SCOPES[command.when ?? "always"](ctx)) return false;
+  if (!scopeAllows(command, ctx)) return false;
   if (ctx.typing && !command.typing) return false;
   if (ev.repeat && !command.repeat) return false;
   return command.keys.some((chord) => chordMatches(chord, ev));
