@@ -76,6 +76,10 @@ pub struct Solution {
     pub gauss: Vec<GaussSample>,
     pub element_error: Vec<f64>,
     pub relative_energy_error: f64,
+    /// The relative error of the elements within two edge lengths of the peak stress.
+    pub peak_relative_error: f64,
+    /// How far the recovered peak von Mises is from the Gauss-point peak, over the larger of the two.
+    pub peak_gap: f64,
     pub residual: f64,
     pub mass_g: f64,
     pub solid_mass_g: f64,
@@ -101,6 +105,8 @@ pub struct Solution {
 pub struct TrustReport {
     pub level: TrustLevel,
     pub relative_energy_error: f64,
+    pub peak_relative_error: f64,
+    pub peak_gap: f64,
     pub residual: f64,
     pub element: String,
     pub h_mm: f64,
@@ -143,6 +149,8 @@ impl Solution {
             trust: TrustReport {
                 level: self.trust,
                 relative_energy_error: self.relative_energy_error,
+                peak_relative_error: self.peak_relative_error,
+                peak_gap: self.peak_gap,
                 residual: self.residual,
                 element: self.element.clone(),
                 h_mm: self.h_mm,

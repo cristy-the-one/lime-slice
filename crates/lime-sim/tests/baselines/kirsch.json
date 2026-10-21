@@ -12,7 +12,9 @@
       "nodes": 351,
       "kt": 2.4080,
       "gapTo3": 0.5920,
-      "relativeEnergyError": 0.0515
+      "relativeEnergyError": 0.0249,
+      "peakRelativeError": 0.1093,
+      "trust": "usable"
     },
     "nr12-nt8": {
       "nr": 12,
@@ -21,7 +23,9 @@
       "nodes": 1275,
       "kt": 2.6960,
       "gapTo3": 0.3040,
-      "relativeEnergyError": 0.0347
+      "relativeEnergyError": 0.0144,
+      "peakRelativeError": 0.0848,
+      "trust": "usable"
     },
     "nr24-nt16": {
       "nr": 24,
@@ -30,7 +34,9 @@
       "nodes": 4851,
       "kt": 2.8431,
       "gapTo3": 0.1569,
-      "relativeEnergyError": 0.0194
+      "relativeEnergyError": 0.0058,
+      "peakRelativeError": 0.0381,
+      "trust": "converged"
     }
   }
 }

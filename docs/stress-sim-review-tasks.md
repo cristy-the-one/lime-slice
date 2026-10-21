@@ -28,11 +28,11 @@ Each task is marked with who should take it:
 
 ## Who has what (2026-10-21)
 
-- **Claude**: SR-03 (done, in the commit after this note) and SR-04 (in progress).
+- **Claude**: SR-03 and SR-04, both done.
 - **Grok**: SR-02, SR-05, SR-06 and SR-07 first, then SR-01 last. SR-01 changes the recovery code in
-  `crates/lime-sim/src/lib.rs` that SR-04 rewrites, so start SR-01 only after the SR-04 commit has landed on this
-  branch. Pull before each task: SR-03 already rewrote `volume_fractions` in `recipe.rs`, which SR-02 option (a)
-  extends.
+  `crates/lime-sim/src/lib.rs` that SR-04 rewrote: SR-04 has landed, so pull first. The safety factor now also runs
+  over the Gauss samples in `recover`, so SR-01's volume fraction must reach both the nodal and the Gauss loop.
+  Pull before each task: SR-03 already rewrote `volume_fractions` in `recipe.rs`, which SR-02 option (a) extends.
 
 ## Rules for these tasks
 
@@ -135,7 +135,35 @@ meshed 4× coarser than its walls, the box turned 30°, and a tube's bore agains
 
 ### SR-04 (P0, Claude). `converged` must mean the peak numbers are converged
 
-Status: in progress (Claude).
+Status: done.
+
+- **Recovery** (`estimate::recover_nodal`): each TET10's linear stress through its four Gauss points is extrapolated
+  to its corners, its mid-edge nodes take the mean of their two corners, and each node averages over its elements by
+  volume. The drawn field, the safety factor and the estimator all use it. TET4 keeps the plain mean.
+- **Peaks**: the summary's `maxVonMisesMPa` and `minSafetyFactor` are the more severe of the recovered and the
+  Gauss-point values, never below the Gauss maxima.
+- **Local error**: `trust.peakRelativeError` is the ZZ error of the elements within 2h of the peak von Mises, and of
+  the lowest safety factor when it is finite. `trust.peakGap` is the gap between the recovered and the Gauss-point
+  peak, and is reported only.
+- **Trust**: `converged` needs both the global and the peak error at 0.05 or under, and `usable` both at 0.15 or
+  under.
+
+The baselines moved, reviewed:
+
+| Case | Global error, old → new | Peak error | Trust, old → new |
+|---|---|---|---|
+| Cantilever h | 0.650 → 0.070 | 0.081 | rough → usable |
+| Cantilever h/2 | 0.218 → 0.035 | 0.063 | rough → usable |
+| Cantilever h/4 (`LIME_SIM_FINE=1`) | 0.084 → 0.018 | 0.035 | rough → converged |
+| TET4 h/2 | 0.673 → 0.673 | 0.670 | rough → rough |
+| Plate with a hole, coarse (Kt 2.41) | 0.052 → 0.025 | 0.109 | usable → usable |
+| Plate with a hole, middle (Kt 2.70) | 0.035 → 0.014 | 0.085 | **converged → usable** |
+| Plate with a hole, fine (Kt 2.84) | 0.019 → 0.006 | 0.038 | converged → converged |
+| Lamé wedge | 0.085 → 0.009 | 0.010 | usable → converged |
+
+The beam's root is a clamped corner, a real singularity, so its peak error falls slowly. Usable at h and h/2 is the
+honest word there. The tests now assert each row's trust word, that it never gets worse as the beam refines, and
+that a Kirsch row whose flank stress is more than 5% below the finest row's is not `converged`.
 
 - **Seen**:
   - The trust level comes from the global ZZ relative energy error (`estimate.rs`), with nodal stress recovered as a

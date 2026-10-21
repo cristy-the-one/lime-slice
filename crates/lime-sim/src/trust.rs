@@ -25,6 +25,8 @@ pub struct TrustInput<'a> {
     pub provisional: bool,
     pub tet4: bool,
     pub relative_energy_error: Option<f64>,
+    /// The error near the peak. `None` falls back to the global number.
+    pub peak_relative_error: Option<f64>,
     pub rigid_failed: bool,
     pub estimator_ran: bool,
     pub pattern_unmeasured: bool,
@@ -32,9 +34,18 @@ pub struct TrustInput<'a> {
     pub notes: &'a [String],
 }
 
+/// `converged` and `usable` need both the global error and the error at the
+/// peak under their threshold. The global energy error alone can be small
+/// while the elements at a stress concentration are not: the plate with a
+/// hole read 3.5% globally with its flank stress 10% low.
 pub fn level_of(input: &TrustInput<'_>) -> TrustLevel {
     let err = input.relative_energy_error.filter(|e| e.is_finite());
-    let err_rough = err.map(|e| e > 0.15).unwrap_or(true);
+    let peak = input.peak_relative_error.filter(|e| e.is_finite()).or(err);
+    let worst = match (err, peak) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        _ => None,
+    };
+    let err_rough = worst.map(|e| e > 0.15).unwrap_or(true);
     if input.provisional
         || input.tet4
         || input.rigid_failed
@@ -44,9 +55,9 @@ pub fn level_of(input: &TrustInput<'_>) -> TrustLevel {
     {
         return TrustLevel::Rough;
     }
-    let err = err.unwrap_or(1.0);
+    let worst = worst.unwrap_or(1.0);
     let capped = input.pattern_unmeasured && input.has_infill_core;
-    if capped || err > 0.05 {
+    if capped || worst > 0.05 {
         TrustLevel::Usable
     } else {
         TrustLevel::Converged

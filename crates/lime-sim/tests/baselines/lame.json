@@ -16,5 +16,7 @@
   "formulaHoopAtSampleMPa": 15.8477,
   "surfaceRadialMPa": -10,
   "surfaceHoopMPa": 16.666666666666668,
-  "relativeEnergyError": 0.0851
+  "relativeEnergyError": 0.0089,
+  "peakRelativeError": 0.0097,
+  "trust": "converged"
 }

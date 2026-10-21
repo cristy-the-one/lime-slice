@@ -243,8 +243,6 @@ fn recover(
 ) -> Result<Solution, SimError> {
     let mesh = &req.mesh;
     let mut gauss = Vec::new();
-    let mut nodal_sum = vec![[0.0; 6]; mesh.nodes.len()];
-    let mut nodal_count = vec![0u32; mesh.nodes.len()];
     for (ei, cell) in mesh.elements.iter().enumerate() {
         let fraction = vf.get(ei).copied().unwrap_or(1.0);
         let coords: Vec<[f64; 3]> = cell.nodes.iter().map(|n| mesh.nodes[*n]).collect();
@@ -271,12 +269,6 @@ fn recover(
                     xyz[k] += weight * coords[a][k];
                 }
             }
-            for &node in &cell.nodes {
-                for k in 0..6 {
-                    nodal_sum[node][k] += sample.stress[k];
-                }
-                nodal_count[node] += 1;
-            }
             gauss.push(GaussSample {
                 element: ei,
                 xi: sample.xi,
@@ -289,15 +281,8 @@ fn recover(
         }
     }
 
-    let mut nodal_stress = vec![[0.0; 6]; mesh.nodes.len()];
-    for i in 0..mesh.nodes.len() {
-        if nodal_count[i] > 0 {
-            let scale = f64::from(nodal_count[i]);
-            for k in 0..6 {
-                nodal_stress[i][k] = nodal_sum[i][k] / scale;
-            }
-        }
-    }
+    // Extrapolated to the corners and averaged by volume. The same field the estimator smooths with.
+    let nodal_stress = estimate::recover_nodal(mesh, &gauss);
     let allow = req.material.allowables();
     let ctx = MaterialContext {
         build_axis: axis,
@@ -332,6 +317,27 @@ fn recover(
             min_sf_at = mesh.nodes[i];
         }
     }
+    // A peak is never below the Gauss points': the recovered field can still be smoother than them on a coarse mesh.
+    let recovered_peak = max_vm;
+    let mut gauss_peak: f64 = 0.0;
+    for sample in &gauss {
+        let vm = von_mises(&sample.stress);
+        gauss_peak = gauss_peak.max(vm);
+        if vm > max_vm {
+            max_vm = vm;
+            max_vm_at = sample.xyz;
+        }
+        let sf = MaxStress.safety(&Stress { v: sample.stress }, &allow, &ctx);
+        if sf < min_sf {
+            min_sf = sf;
+            min_sf_at = sample.xyz;
+        }
+    }
+    let peak_gap = if max_vm > 1e-30 {
+        (recovered_peak - gauss_peak).abs() / recovered_peak.max(gauss_peak)
+    } else {
+        0.0
+    };
     if !max_vm.is_finite() {
         max_vm = 0.0;
     }
@@ -352,6 +358,8 @@ fn recover(
         gauss,
         element_error: Vec::new(),
         relative_energy_error: 0.0,
+        peak_relative_error: 0.0,
+        peak_gap,
         residual,
         mass_g: mass_g(printed_volume, density),
         solid_mass_g: mass_g(solid_volume, density),
@@ -374,11 +382,25 @@ fn recover(
     let estimator = Zz::new();
     solution.element_error = estimator.element_error(&solution);
     solution.relative_energy_error = estimator.relative(&solution.element_error);
+    // The elements within two edge lengths of the peak stress, and of the lowest safety factor when that is a real number.
+    let radius = 2.0 * h_mm;
+    let mut peak_error =
+        estimate::local_relative(&solution, &solution.element_error, solution.max_von_mises_at, radius);
+    if solution.min_safety_factor < 1.0e9 {
+        peak_error = peak_error.max(estimate::local_relative(
+            &solution,
+            &solution.element_error,
+            solution.min_safety_at,
+            radius,
+        ));
+    }
+    solution.peak_relative_error = peak_error;
     let has_infill_core = vf.iter().any(|v| *v < 1.0 - 1e-9);
     solution.trust = level_of(&TrustInput {
         provisional: req.provisional,
         tet4: mesh.kind == ElementKind::Tet4,
         relative_energy_error: Some(solution.relative_energy_error),
+        peak_relative_error: Some(solution.peak_relative_error),
         rigid_failed: false,
         estimator_ran: true,
         pattern_unmeasured: !req.recipe.pattern_is_measured(),
@@ -395,8 +417,9 @@ fn recover(
             solution.notes.push(note.to_string());
         }
     }
-    if solution.trust == TrustLevel::Rough && solution.relative_energy_error > 0.15 {
-        let pct = (solution.relative_energy_error * 100.0).round() as i64;
+    let worst = solution.relative_energy_error.max(solution.peak_relative_error);
+    if solution.trust == TrustLevel::Rough && worst > 0.15 {
+        let pct = (worst * 100.0).round() as i64;
         solution.notes.push(format!(
             "The error estimate is {pct}%, which is only a rough result."
         ));

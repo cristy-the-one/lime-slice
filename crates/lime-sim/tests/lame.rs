@@ -163,6 +163,22 @@ fn inner_hoop_matches_lame_on_a_coarse_wedge() {
     assert!((at_a_h - 50.0 / 3.0).abs() < 1e-9);
     let solution = solve();
     let (r, radial, hoop) = sample_inner(&solution);
+    let doc_trust = common::load("lame.json");
+    assert_ne!(
+        solution.trust.as_str(),
+        "rough",
+        "Lamé stays at least usable on its coarsest wedge"
+    );
+    assert_eq!(
+        solution.trust.as_str(),
+        doc_trust["trust"].as_str().unwrap()
+    );
+    common::near_abs(
+        solution.peak_relative_error,
+        common::number(&doc_trust, "peakRelativeError"),
+        1e-4,
+        "lame peak",
+    );
     let (expect_r, expect_h) = lame(r);
     eprintln!(
         "lame r={r:.4} σr={radial:.4} (formula {expect_r:.4}, surface {}) σθ={hoop:.4} (formula {expect_h:.4}, surface {at_a_h:.4}) energy={:.4} nodes={}",
