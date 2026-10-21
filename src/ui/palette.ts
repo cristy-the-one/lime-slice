@@ -1,3 +1,4 @@
+import { fx } from "../app/fx";
 import { redoUserEdit, undoUserEdit } from "../app/history";
 import { runSketchKey } from "../app/sketch-keys";
 import { frameModel } from "../app/model";
@@ -359,6 +360,15 @@ export function runCommand(id: string) {
       return;
     case "model-escape":
       escapeModel();
+      return;
+    case "model-view-top":
+      fx.model?.setCameraPreset("top");
+      return;
+    case "model-view-front":
+      fx.model?.setCameraPreset("front");
+      return;
+    case "model-view-iso":
+      fx.model?.setCameraPreset("iso");
       return;
     case "model-join":
       openJoinTool();

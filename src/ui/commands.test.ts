@@ -23,7 +23,7 @@ check("slice query finds force re-slice", sliceFirst.includes("force-slice"));
 const preview = rankCommands(COMMANDS, "prev").map((command) => command.label);
 check("prev matches Preview", preview.includes("Preview"), preview.join(","));
 eq("nonsense matches nothing", rankCommands(COMMANDS, "xyzqq").length, 0);
-eq("case insensitive top", rankCommands(COMMANDS, "TOP")[0]?.id, "view-top");
+eq("case insensitive top", rankCommands(COMMANDS, "TOP")[0]?.label, "Top view");
 const slRank = rankCommands(COMMANDS, "sl").map((command) => command.id);
 check("sl prefers Slice over Samples", slRank.indexOf("slice") < slRank.indexOf("samples"), slRank.slice(0, 6).join(","));
 
@@ -188,13 +188,13 @@ const STAGE_KEYS: Record<string, Partial<Record<"prepare" | "preview" | "gcode" 
   N: { prepare: "paint-reinforce" },
   E: { preview: "edit-supports", gcode: "edit-supports" },
   C: { prepare: "tool-section", preview: "tool-section", gcode: "tool-section" },
-  T: { prepare: "view-top" },
-  Y: { prepare: "view-front" },
-  I: { prepare: "view-iso" },
+  T: { prepare: "view-top", model: "model-view-top" },
+  Y: { prepare: "view-front", model: "model-view-front" },
+  I: { prepare: "view-iso", model: "model-view-iso" },
   "/": { prepare: "search", preview: "search", gcode: "search" },
   "Ctrl+F": { prepare: "search", preview: "search", gcode: "search" },
   "Shift+1": { prepare: "strategy-speed", preview: "strategy-speed" },
-  "Shift+M": { prepare: "measure", preview: "measure", gcode: "measure" },
+  "Shift+M": { prepare: "measure", preview: "measure", gcode: "measure", model: "model-measure" },
 };
 for (const [chord, where] of Object.entries(STAGE_KEYS)) {
   for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
@@ -224,6 +224,7 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   "#viewPresets button:nth-child(2)": ["prepare"],
   "#viewPresets button:nth-child(3)": ["prepare"],
   "#measureField": ["prepare", "preview", "gcode"],
+  "#modelToolMeasure": ["model"],
   "#modelToolNew": ["model"],
   "#modelPickFace": ["model"],
   "#modelPickEdge": ["model"],
@@ -342,6 +343,11 @@ eq("2 types a size while sketching", press("2", sketchCtx), "sketch-size");
 eq("2 in a sketch field stays text", press("2", { ...sketchCtx, typing: true }), null);
 eq("2 still opens Preview outside a sketch", press("2"), "tab-preview");
 eq("a sketch digit does not switch stage", press("1", sketchCtx), "sketch-size");
+eq("Shift+M measures in Model", press("Shift+M", { stage: "model" }), "model-measure");
+eq("T, Y and I move the Model camera", ["T", "Y", "I"].map((chord) => press(chord, { stage: "model" })), ["model-view-top", "model-view-front", "model-view-iso"]);
+eq("T in a sketch still trims", press("T", sketchCtx), "sketch-trim");
+eq("Model scale is labelled Scale solid", COMMANDS.find((command) => command.id === "model-scale")?.label, "Scale solid");
+eq("export is labelled Export G-code", COMMANDS.find((command) => command.id === "export")?.label, "Export G-code");
 
 if (failed) {
   console.error(`${failed} failed`);

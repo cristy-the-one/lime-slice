@@ -61,7 +61,7 @@ export function mountMarkup(root: HTMLElement) {
             <nav><button type="button" id="force" hidden>Force re-slice</button></nav>
           </details>
         </div>
-        <button class="btn" id="export" type="button" disabled aria-label="Export G-code">Export</button>
+        <button class="btn" id="export" type="button" disabled aria-label="Export G-code" data-tip="Export G-code">Export</button>
       </div>
       <div class="gear-items" hidden>
         <label class="theme-field">Theme
@@ -98,7 +98,7 @@ export function mountMarkup(root: HTMLElement) {
             <!-- A2 shell -->
             <button class="model-tool" id="modelToolShell" type="button" data-tool="shell" aria-pressed="false" data-tip="Shell: hollow the solid to a wall thickness, with picked faces open">Shell</button>
             <button class="model-tool" id="modelToolSplit" type="button" data-tool="split" aria-pressed="false" data-tip="Split along X, Y, Z, or a picked flat face, and tilt the plane">Split</button>
-            <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale the solid about its centre">Scale</button>
+            <button class="model-tool" id="modelToolScale" type="button" data-tool="scale" aria-pressed="false" data-tip="Scale solid">Scale</button>
           </div>
         </div>
         <div class="rail-group" data-group="features" data-solid-only role="group" aria-label="Features">
@@ -155,7 +155,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
         <button class="model-tool" id="modelUndo" type="button" data-solid-only disabled data-tip="Undo the last solid edit">Undo</button>
         <button class="model-tool" id="modelRedo" type="button" data-solid-only disabled data-tip="Redo the last solid edit">Redo</button>
-        <button class="model-tool" id="modelStep" type="button" data-solid-only data-tip="Write this solid as AP214 STEP">STEP</button>
+        <button class="model-tool" id="modelStep" type="button" data-solid-only data-tip="Export this solid as a STEP file">STEP</button>
         <div class="rail-sep"></div>
       </div>
       <div class="rail-fly model-look-panel" id="modelLookPanel" role="dialog" aria-label="View" data-model-ui hidden>

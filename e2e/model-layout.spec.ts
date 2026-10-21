@@ -229,3 +229,23 @@ test("M in Model does not change Prepare's move tool", async ({ page }) => {
   await page.locator("#tabPrepare").click();
   await expect(move).toHaveAttribute("aria-pressed", "false");
 });
+
+test("T then I moves the Model camera from top to iso", async ({ page }) => {
+  await openModel(page, { width: 1440, height: 900 });
+  const canvas = page.locator("#model");
+  await page.evaluate(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) active.blur();
+  });
+  const before = (await canvas.getAttribute("data-camera")) ?? "";
+  await page.keyboard.press("t");
+  await expect(canvas).not.toHaveAttribute("data-camera", before);
+  const top = (await canvas.getAttribute("data-camera")) ?? "";
+  const [topEye, topAt] = top.split(";");
+  expect(Number(topEye?.split(",")[2])).toBeGreaterThan(Number(topAt?.split(",")[2]) + 10);
+  await page.keyboard.press("i");
+  await expect(canvas).not.toHaveAttribute("data-camera", top);
+  const iso = (await canvas.getAttribute("data-camera")) ?? "";
+  const [isoEye, isoAt] = iso.split(";");
+  expect(Math.abs(Number(isoEye?.split(",")[0]) - Number(isoAt?.split(",")[0]))).toBeGreaterThan(5);
+});

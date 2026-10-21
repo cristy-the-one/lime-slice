@@ -1580,8 +1580,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     strip.append(prompt, name, modeControl());
     if (revolve) strip.append(textButton("Flip", { sketchFlip: "" }));
     if (loft) {
-      const ruled = textButton(loft.ruled ? "Ruled" : "Smooth", { sketchRuled: loft.ruled ? "1" : "0" });
-      ruled.dataset.tip = tipWithShortcut("Toggle smooth and ruled", keyOf("sketch-smooth"));
+      const ruled = textButton(loft.ruled ? "Ruled (R)" : "Smooth (R)", { sketchRuled: loft.ruled ? "1" : "0" });
+      ruled.dataset.tip = "R toggles smooth and ruled.";
+      ruled.title = ruled.dataset.tip;
       strip.append(ruled);
     }
     const value = featureValue();

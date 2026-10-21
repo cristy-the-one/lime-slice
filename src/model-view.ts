@@ -211,6 +211,8 @@ export interface ModelView {
   pickSolid(x: number, y: number): { face: number; t: number } | null;
   /** The camera moved while a sketch is drawn. */
   onSketchView(cb: () => void): void;
+  /** Top, front, or the framed isometric pose. Z stays up. */
+  setCameraPreset(preset: "top" | "front" | "iso"): void;
 }
 
 /** --- S2 sketch --- What the view draws. Positions are in model space. */
@@ -1985,6 +1987,29 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       kick();
     },
     frame: frameBox,
+    setCameraPreset(preset) {
+      const box = solidBox
+        ? { min: [solidBox.min[0], solidBox.min[1], solidBox.min[2]] as Vec3, max: [solidBox.max[0], solidBox.max[1], solidBox.max[2]] as Vec3 }
+        : { min: [center.x - extent / 2, center.y - extent / 2, center.z - extent / 2] as Vec3, max: [center.x + extent / 2, center.y + extent / 2, center.z + extent / 2] as Vec3 };
+      const look = new THREE.Vector3((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);
+      const size = Math.max(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2], 1);
+      const radius = (size * Math.sqrt(3)) / 2;
+      const fov = (camera.fov * Math.PI) / 180;
+      const dist = (radius / Math.sin(fov / 2)) * 1.35;
+      const offset = preset === "top" ? new THREE.Vector3(0, -0.04, 1) : preset === "front" ? new THREE.Vector3(0, -1, 0.08) : new THREE.Vector3(1, -1.15, 0.72);
+      camera.near = Math.max(0.01, dist / 200);
+      camera.far = dist * 20;
+      controls.enableDamping = false;
+      controls.update();
+      camera.up.set(0, 0, 1);
+      camera.position.copy(look).add(offset.normalize().multiplyScalar(dist));
+      controls.target.copy(look);
+      camera.updateProjectionMatrix();
+      controls.update();
+      controls.enableDamping = true;
+      publishCamera();
+      kick();
+    },
     inView(box) {
       camera.updateMatrixWorld();
       for (let corner = 0; corner < 8; corner += 1) {
