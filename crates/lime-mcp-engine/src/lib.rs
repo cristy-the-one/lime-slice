@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use lime_sim::slice_field::{role_index, Header, LayerRow, Segment, SliceField, ROLES};
 use lime_slice_core::{slice_payload_watched, Job, Watch};
+use sha2::{Digest, Sha256};
 use serde_json::{json, Value};
 
 const JOB_KEEP: usize = 8;
@@ -288,6 +290,100 @@ fn pareto_json(body: &str) -> String {
     }
 }
 
+/// `slice-field-1` of one object: the beads its G-code extrudes, less the
+/// skirt, supports and ironing, which carry no load. The slicer is asked
+/// for the same slice an ordinary one-object request makes.
+fn slice_field(req: &lime_slice_core::SliceRequest, job: Job, watch: &Watch) -> Result<SliceField, String> {
+    let reply = lime_slice_core::slice_beads(req, job, watch)?;
+    let sliced = reply.beads.as_ref().expect("slice_beads keeps the beads");
+    let mut segments = Vec::with_capacity(sliced.beads.len());
+    let mut layers: Vec<LayerRow> = Vec::new();
+    for bead in &sliced.beads {
+        let Some(role) = role_index(bead.kind.as_str()) else {
+            continue;
+        };
+        let index = bead.layer as u32;
+        match layers.last_mut() {
+            Some(row) if row.index == index => row.bead_count += 1,
+            _ => {
+                let layer = sliced
+                    .layers
+                    .iter()
+                    .find(|l| l.index == bead.layer)
+                    .expect("a bead's layer is listed");
+                layers.push(LayerRow {
+                    index,
+                    z_mm: layer.z_mm,
+                    height_mm: layer.height_mm,
+                    bead_start: segments.len() as u32,
+                    bead_count: 1,
+                });
+            }
+        }
+        let f = |p: [f64; 3]| [p[0] as f32, p[1] as f32, p[2] as f32];
+        segments.push(Segment {
+            layer: index,
+            role,
+            from: f(bead.from),
+            to: f(bead.to),
+            width_mm: bead.width as f32,
+            bead_height_mm: bead.height as f32,
+            flow: bead.flow as f32,
+        });
+    }
+    if segments.is_empty() {
+        return Err("The slice has no beads that carry load.".into());
+    }
+    let hash = Sha256::digest(serde_json::to_vec(req).map_err(|e| e.to_string())?);
+    Ok(SliceField {
+        header: Header {
+            format: lime_sim::slice_field::FORMAT.into(),
+            slice_hash: hash.iter().map(|b| format!("{b:02x}")).collect(),
+            frame: sliced.frame,
+            layer_normal: sliced.layer_normal,
+            layers,
+            roles: ROLES.iter().map(|r| r.to_string()).collect(),
+            segment_count: segments.len() as u32,
+        },
+        segments,
+    })
+}
+
+/// `{ "request": <slice request>, "path": <file> }`: writes the object's
+/// `slice-field-1` to `path` and answers with its header and size.
+fn slice_field_json(body: &str) -> String {
+    let value: Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(err) => return json_error(format!("The slice field request is not JSON. {err}")),
+    };
+    let Some(path) = value.get("path").and_then(Value::as_str) else {
+        return json_error("The slice field request has no path.");
+    };
+    let req: lime_slice_core::SliceRequest = match value.get("request").cloned().map(serde_json::from_value) {
+        Some(Ok(req)) => req,
+        Some(Err(err)) => return json_error(err),
+        None => return json_error("The slice field request has no slice request."),
+    };
+    let field = match slice_field(&req, Job::default(), &Watch::idle()) {
+        Ok(field) => field,
+        Err(err) => return json_error(err),
+    };
+    let bytes = field.encode();
+    if let Err(err) = std::fs::write(path, &bytes) {
+        return json_error(format!("The slice field could not be written. {err}"));
+    }
+    json!({
+        "path": path,
+        "bytes": bytes.len(),
+        "sliceHash": field.header.slice_hash,
+        "layers": field.header.layers.len(),
+        "segments": field.header.segment_count,
+        "layerNormal": field.header.layer_normal,
+        "volumeMm3": field.total_volume_mm3(),
+    })
+    .to_string()
+}
+
 fn occt_ready() -> bool {
     let reply = model_tree_json(r#"{"call":"close","key":"lime-mcp-occt-probe"}"#);
     let missing = reply.contains("was not found") || reply.contains("Could not load the Open CASCADE bridge");
@@ -297,7 +393,8 @@ fn occt_ready() -> bool {
 #[cfg(not(test))]
 mod napi_host {
     use super::{
-        calibrate_json, cancel_slice, mesh_preview_json, model_tree_json, occt_ready, pareto_json, poll_slice, start_slice,
+        calibrate_json, cancel_slice, mesh_preview_json, model_tree_json, occt_ready, pareto_json, poll_slice,
+        slice_field_json, start_slice,
     };
     use serde_json::json;
     #[cfg(not(windows))]
@@ -595,6 +692,13 @@ unsafe extern "C" fn pareto_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValu
     return_string(env, &pareto_json(&body))
 }
 
+unsafe extern "C" fn slice_field_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &slice_field_json(&body))
+}
+
 unsafe fn export_fn(env: NapiEnv, exports: NapiValue, name: &str, cb: NapiCallback) {
     let c_name = CString::new(name).unwrap();
     let mut func: NapiValue = ptr::null_mut();
@@ -623,6 +727,7 @@ pub unsafe extern "C" fn napi_register_module_v1(env: NapiEnv, exports: NapiValu
     export_fn(env, exports, "occt", occt_cb);
     export_fn(env, exports, "calibrate", calibrate_cb);
     export_fn(env, exports, "pareto", pareto_cb);
+    export_fn(env, exports, "sliceField", slice_field_cb);
     exports
 }
 
@@ -690,6 +795,79 @@ mod tests {
     fn an_unknown_tower_is_a_sentence() {
         let reply: serde_json::Value = serde_json::from_str(&super::calibrate_json(r#"{"kind":"nope"}"#)).unwrap();
         assert!(reply["error"].as_str().unwrap().contains("pa"));
+    }
+
+    fn cube_request(extra: serde_json::Value) -> lime_slice_core::SliceRequest {
+        let mut body = serde_json::json!({
+            "filename": "cube.stl",
+            "dataB64": cube_stl(),
+            "layerHeight": 0.2,
+            "lineWidth": 0.45,
+            "baseline": false,
+            "compare": false,
+            "includePreview": false,
+            "includeGcode": true,
+        });
+        for (key, value) in extra.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        serde_json::from_value(body).unwrap()
+    }
+
+    /// The sliced plan's 9.1: the field holds the G-code's extrusion less
+    /// the skirt, and reads back. Its rows are f32, so it matches the beads
+    /// to the rounding of a millimetre value in a float.
+    #[test]
+    fn a_slice_field_is_the_writers_extrusion_less_what_carries_nothing() {
+        use lime_sim::slice_field::SliceField;
+        let req = cube_request(serde_json::json!({}));
+        let job = lime_slice_core::Job::default();
+        let field = super::slice_field(&req, job, &lime_slice_core::Watch::idle()).unwrap();
+        let reply = lime_slice_core::slice_beads(&req, job, &lime_slice_core::Watch::idle()).unwrap();
+        let sliced = reply.beads.as_ref().unwrap();
+        let area = std::f64::consts::PI * (1.75_f64 * 0.5).powi(2);
+        let fed = reply.estimate.filament_mm * area;
+        let all: f64 = sliced.beads.iter().map(|b| b.volume_mm3()).sum();
+        let idle: f64 = sliced
+            .beads
+            .iter()
+            .filter(|b| matches!(b.kind.as_str(), "skirt" | "support" | "support-interface" | "ironing"))
+            .map(|b| b.volume_mm3())
+            .sum();
+        assert!(idle > 0.0, "the cube's skirt is in the beads");
+        assert!(((all - fed) / fed).abs() < 1e-6, "beads {all}, G-code {fed}");
+        let kept = field.total_volume_mm3();
+        assert!(((kept - (all - idle)) / kept).abs() < 1e-5, "field {kept}, beads {}", all - idle);
+        // The rows are bytes and read back exactly. The header is JSON, whose
+        // default float parse can land one ulp away.
+        let back = SliceField::decode(&field.encode()).unwrap();
+        assert_eq!(back.segments, field.segments);
+        assert_eq!(back.header.layers.len(), field.header.layers.len());
+        for (a, b) in back.header.layers.iter().zip(&field.header.layers) {
+            assert_eq!((a.index, a.bead_start, a.bead_count), (b.index, b.bead_start, b.bead_count));
+            assert!((a.z_mm - b.z_mm).abs() < 1e-12 && (a.height_mm - b.height_mm).abs() < 1e-12);
+        }
+        assert_eq!(field.header.layer_normal, [0.0, 0.0, 1.0]);
+        assert_eq!(field.header.slice_hash.len(), 64);
+    }
+
+    #[test]
+    fn a_slice_field_is_written_where_it_is_asked_for() {
+        let dir = std::env::temp_dir().join(format!("lime-field-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cube.lsf");
+        let body = serde_json::json!({
+            "request": serde_json::to_value(cube_request(serde_json::json!({}))).unwrap(),
+            "path": path.to_str().unwrap(),
+        });
+        let reply: serde_json::Value = serde_json::from_str(&super::slice_field_json(&body.to_string())).unwrap();
+        assert!(reply.get("error").is_none(), "{reply}");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(reply["bytes"], bytes.len());
+        assert!(reply["segments"].as_u64().unwrap() > 1000);
+        let _ = std::fs::remove_dir_all(&dir);
+        let missing: serde_json::Value = serde_json::from_str(&super::slice_field_json(r#"{"request":{}}"#)).unwrap();
+        assert_eq!(missing["error"], "The slice field request has no path.");
     }
 
     #[test]

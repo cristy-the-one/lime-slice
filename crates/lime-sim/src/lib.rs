@@ -22,6 +22,7 @@ pub mod material;
 pub mod mesh;
 pub mod recipe;
 pub mod skin;
+pub mod slice_field;
 pub mod solve;
 pub mod study;
 pub mod trust;
