@@ -56,6 +56,15 @@ use units::{mass_g, norm, normalize, NODE_CAP};
 /// did not report as an exact zero pivot.
 const RIGID_DISPLACEMENT_MM: f64 = 1.0e8;
 
+/// A solved step whose residual is larger than this did not satisfy equilibrium.
+const RELATIVE_RESIDUAL_MAX: f64 = 1.0e-6;
+
+/// Peak displacement above this many bounding-box diagonals is a rigid swing.
+const DISPLACEMENT_OVER_DIAGONAL: f64 = 10.0;
+
+/// Smallest LDLᵀ pivot over the largest. Below this the part is not held.
+const PIVOT_RATIO_MIN: f64 = 1.0e-12;
+
 /// State a post-step sees. v1 has no post-step that succeeds.
 pub struct SolveState<'a> {
     pub displacement: &'a mut [[f64; 3]],
@@ -209,6 +218,17 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
         &final_assembly.system.residual,
         &final_assembly.system.external,
     );
+    let peak = u.iter().copied().map(norm).fold(0.0_f64, f64::max);
+    let diagonal = bbox_diagonal(&req.mesh.nodes);
+    let free = final_assembly.system.dof.n_free;
+    // The same predicate is what `level_of` reads. A failure refuses here,
+    // before recovery, so a mechanism never comes back as a rough result.
+    let rigid_failed = residual > RELATIVE_RESIDUAL_MAX
+        || peak > DISPLACEMENT_OVER_DIAGONAL * diagonal
+        || (free > 0 && solver.pivot_ratio() < PIVOT_RATIO_MIN);
+    if rigid_failed {
+        return Err(not_held());
+    }
     let h_mm = if req.h_mm > 0.0 {
         req.h_mm
     } else {
@@ -225,6 +245,7 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
         final_assembly.system.dof.n_free,
         h_mm,
         steps_run,
+        rigid_failed,
     )
 }
 
@@ -240,6 +261,7 @@ fn recover(
     dofs: usize,
     h_mm: f64,
     steps_run: usize,
+    rigid_failed: bool,
 ) -> Result<Solution, SimError> {
     let mesh = &req.mesh;
     let mut gauss = Vec::new();
@@ -405,7 +427,7 @@ fn recover(
         tet4: mesh.kind == ElementKind::Tet4,
         relative_energy_error: Some(solution.relative_energy_error),
         peak_relative_error: Some(solution.peak_relative_error),
-        rigid_failed: false,
+        rigid_failed,
         estimator_ran: true,
         pattern_unmeasured: !req.recipe.pattern_is_measured(),
         has_infill_core,
@@ -447,4 +469,21 @@ fn exploded(u: &[[f64; 3]]) -> bool {
     u.iter()
         .flatten()
         .any(|c| !c.is_finite() || c.abs() > RIGID_DISPLACEMENT_MM)
+}
+
+fn bbox_diagonal(nodes: &[[f64; 3]]) -> f64 {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for p in nodes {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let mut sum = 0.0;
+    for k in 0..3 {
+        let d = hi[k] - lo[k];
+        sum += d * d;
+    }
+    sum.sqrt()
 }

@@ -2,10 +2,12 @@
 //! a later factorisation would implement. Modal analysis is the trait that
 //! returns "not in this version".
 
+use std::cell::Cell;
+
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::prelude::ReborrowMut;
 use faer::sparse::linalg::cholesky::{
-    factorize_symbolic_cholesky, CholeskySymbolicParams, SymmetricOrdering,
+    factorize_symbolic_cholesky, CholeskySymbolicParams, SymbolicCholeskyRaw, SymmetricOrdering,
 };
 use faer::sparse::linalg::SupernodalThreshold;
 use faer::sparse::{SparseColMat, Triplet};
@@ -67,11 +69,21 @@ pub struct FaerLdlt {
     symbolic_n: usize,
     /// Triplets kept so `solve` factorises the matrix it was given.
     raw: Option<Factor>,
+    /// Smallest |pivot| over largest |pivot| from the last successful solve.
+    /// Faer stores each LDLᵀ pivot on the diagonal of the simplicial factor.
+    pivot_ratio: Cell<f64>,
 }
 
 struct Factor {
     n: usize,
     triplets: Vec<(usize, usize, f64)>,
+}
+
+impl FaerLdlt {
+    /// `|D_min| / |D_max|` of the last factor. Zero when no solve has run.
+    pub fn pivot_ratio(&self) -> f64 {
+        self.pivot_ratio.get()
+    }
 }
 
 impl LinearSolver for FaerLdlt {
@@ -95,13 +107,18 @@ impl LinearSolver for FaerLdlt {
             .raw
             .as_ref()
             .ok_or_else(|| SimError::new("The matrix has not been factored."))?;
-        let sol = numeric(&factor.triplets, factor.n, b)?;
+        let (sol, ratio) = numeric(&factor.triplets, factor.n, b)?;
+        self.pivot_ratio.set(ratio);
         x.copy_from_slice(&sol);
         Ok(())
     }
 }
 
-fn numeric(triplets: &[(usize, usize, f64)], n: usize, rhs: &[f64]) -> Result<Vec<f64>, SimError> {
+fn numeric(
+    triplets: &[(usize, usize, f64)],
+    n: usize,
+    rhs: &[f64],
+) -> Result<(Vec<f64>, f64), SimError> {
     let trips: Vec<Triplet<usize, usize, f64>> = triplets
         .iter()
         .copied()
@@ -139,7 +156,35 @@ fn numeric(triplets: &[(usize, usize, f64)], n: usize, rhs: &[f64]) -> Result<Ve
     let scratch = symbolic.solve_in_place_scratch::<f64>(1, par);
     let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
     ldlt.solve_in_place_with_conj(Conj::No, x.rb_mut(), par, MemStack::new(&mut mem));
-    Ok((0..n).map(|i| x[(i, 0)]).collect())
+    let ratio = match symbolic.raw() {
+        SymbolicCholeskyRaw::Simplicial(simplicial) => {
+            pivot_ratio_of(simplicial.col_ptr(), simplicial.row_idx(), &values)
+        }
+        // Supernodal factorisation is forced off. Its block diagonal is not read.
+        SymbolicCholeskyRaw::Supernodal(_) => 1.0,
+    };
+    Ok(((0..n).map(|i| x[(i, 0)]).collect(), ratio))
+}
+
+/// `|D_min| / |D_max|`. The diagonal entries of the simplicial factor are the pivots.
+fn pivot_ratio_of(col_ptr: &[usize], row_idx: &[usize], values: &[f64]) -> f64 {
+    let mut min_abs = f64::INFINITY;
+    let mut max_abs = 0.0_f64;
+    let n = col_ptr.len().saturating_sub(1);
+    for col in 0..n {
+        for k in col_ptr[col]..col_ptr[col + 1] {
+            if row_idx.get(k).copied() == Some(col) {
+                let pivot = values.get(k).copied().unwrap_or(0.0).abs();
+                min_abs = min_abs.min(pivot);
+                max_abs = max_abs.max(pivot);
+            }
+        }
+    }
+    if !min_abs.is_finite() || max_abs == 0.0 {
+        0.0
+    } else {
+        min_abs / max_abs
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +202,8 @@ mod tests {
         solver.solve(&[5.0, 4.0], &mut x).unwrap();
         assert!((x[0] - 1.0).abs() < 1e-12);
         assert!((x[1] - 1.0).abs() < 1e-12);
+        // D = diag(4, 3 - 1/4). The ratio is the smaller pivot over the larger.
+        assert!((solver.pivot_ratio() - 0.6875).abs() < 1e-12);
     }
 
     #[test]
