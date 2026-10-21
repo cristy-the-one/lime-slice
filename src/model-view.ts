@@ -1418,14 +1418,6 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
    * the same frame over and over took the processor the modeler needed (a check on the back cover ran 0.4 s alone and
    * 1.2 s beside the view in a browser drawing without a graphics card).
    */
-  /** Dev builds keep each frame's time so a drag can be measured without a second loop. */
-  function recordFrame(ms: number) {
-    const dev = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
-    if (!dev) return;
-    const host = window as unknown as { __frameTimes?: number[] };
-    (host.__frameTimes ??= []).push(ms);
-  }
-
   function kick() {
     still = 0;
     if (running) return;
@@ -1440,7 +1432,6 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const now = performance.now();
       const dt = Math.min(0.05, (now - lastPaint) / 1000);
       lastPaint = now;
-      const workStart = now;
       if (viewHelper.animating) {
         controls.enabled = false;
         viewHelper.update(dt);
@@ -1467,7 +1458,6 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       viewHelper.center.copy(controls.target);
       renderer.render(scene, camera);
       renderViewHelper(renderer, viewHelper);
-      recordFrame(performance.now() - workStart);
       drawMeasure();
       paintFit();
       still = moved || viewHelper.animating ? 0 : still + 1;

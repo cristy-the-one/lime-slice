@@ -330,7 +330,16 @@ test("a two second knob drag on a 3,000 face part stays within a frame", async (
   const y = box.y + at[1]!;
   const before = await page.evaluate(() => (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0);
   await page.evaluate(() => {
-    (window as unknown as { __frameTimes: number[] }).__frameTimes = [];
+    const w = window as unknown as { frameGaps: number[] };
+    w.frameGaps = [];
+    let last = performance.now();
+    const tick = () => {
+      const now = performance.now();
+      w.frameGaps.push(now - last);
+      last = now;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   });
   await page.mouse.move(x, y);
   await page.mouse.down();
@@ -342,7 +351,7 @@ test("a two second knob drag on a 3,000 face part stays within a frame", async (
   }
   await page.mouse.up();
   const after = await page.evaluate(() => (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0);
-  const times = await page.evaluate(() => (window as unknown as { __frameTimes?: number[] }).__frameTimes ?? []);
+  const times = await page.evaluate(() => (window as unknown as { frameGaps?: number[] }).frameGaps?.slice(3) ?? []);
   expect(times.length).toBeGreaterThan(10);
   const sorted = [...times].sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)]!;
