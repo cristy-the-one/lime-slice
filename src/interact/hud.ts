@@ -199,6 +199,8 @@ export interface HudMount {
   setParams(params: Params): void;
   /** Why the tool will not apply what the box holds, under it and in the live region. Empty clears it. */
   setNote(text: string): void;
+  /** Puts the keyboard back in the active field, its live number selected, so typing carries on. */
+  focus(): void;
   close(): void;
   destroy(): void;
   onCommit(cb: (commit: HudCommit) => void): void;
@@ -391,6 +393,12 @@ export function mountHud(parent: HTMLElement): HudMount {
       paint();
       inputs[0]?.focus({ preventScroll: true });
       selectLive(inputs[0]);
+    },
+    focus() {
+      if (!shown) return;
+      const input = inputs[model.active] ?? inputs[0];
+      input?.focus({ preventScroll: true });
+      selectLive(input);
     },
     move(spot, nextDirection) {
       at = spot;

@@ -588,6 +588,12 @@ test("Auto makes a new object of a sketch beside the part, and the face sketch's
   await expect(page.locator("[data-sketch-mode=new]")).toHaveAttribute("data-tip", "New object. M cycles Join, Cut, and New object");
   await expect(page.locator("[data-sketch-mode=fuse]")).toHaveAttribute("data-tip", "Join");
   await expect(page.locator("[data-sketch-mode=cut]")).toHaveAttribute("data-tip", "Cut");
+  // A segment picked with the pointer hands the keyboard back to the size box, so the distance is typed straight after.
+  await page.locator("[data-sketch-mode=cut]").click();
+  await expect(canvas).toHaveAttribute("data-extrude-mode", "cut");
+  await expect(hud.locator("input").nth(0)).toBeFocused();
+  await page.keyboard.type("7.5");
+  await expect(hud.locator("input").nth(0)).toHaveValue("7.5");
 });
 
 async function drawTypedCircle(page: Page) {

@@ -724,6 +724,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       else if (loft) loft = { ...loft, choice: next, note: "" };
       else if (revolve) revolve = { ...revolve, choice: next };
       else if (gesture) gesture = { ...gesture, choice: next };
+      // A mode picked with the pointer hands the keyboard back to the size box before the card is redrawn, so the
+      // distance can be typed straight after. With no size box open, the rebuilt card keeps focus on the segment.
+      hud.focus();
       publish("open");
       return;
     }
