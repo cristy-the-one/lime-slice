@@ -882,4 +882,120 @@ mod tests {
         assert!(reply["positionsB64"].as_str().unwrap().len() > 10);
         assert!(reply.get("error").is_none());
     }
+
+    fn box_stl(x: f64, y: f64, z: f64) -> String {
+        let faces = [
+            [[0.0, 0.0, 0.0], [x, 0.0, 0.0], [x, y, 0.0]],
+            [[0.0, 0.0, 0.0], [x, y, 0.0], [0.0, y, 0.0]],
+            [[0.0, 0.0, z], [x, y, z], [x, 0.0, z]],
+            [[0.0, 0.0, z], [0.0, y, z], [x, y, z]],
+            [[0.0, 0.0, 0.0], [x, 0.0, z], [x, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, z], [x, 0.0, z]],
+            [[0.0, y, 0.0], [x, y, 0.0], [x, y, z]],
+            [[0.0, y, 0.0], [x, y, z], [0.0, y, z]],
+            [[0.0, 0.0, 0.0], [0.0, y, 0.0], [0.0, y, z]],
+            [[0.0, 0.0, 0.0], [0.0, y, z], [0.0, 0.0, z]],
+            [[x, 0.0, 0.0], [x, y, z], [x, y, 0.0]],
+            [[x, 0.0, 0.0], [x, 0.0, z], [x, y, z]],
+        ];
+        let mut out = String::from("solid box\n");
+        for face in faces {
+            out.push_str("facet normal 0 0 0\nouter loop\n");
+            for v in face {
+                out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
+            }
+            out.push_str("endloop\nendfacet\n");
+        }
+        out.push_str("endsolid box\n");
+        out
+    }
+
+    /// Hold the face at the lowest X, pull the face at the highest X down by
+    /// 2 N, on an isotropic card.
+    fn bend(mesh: lime_sim::Mesh, representation: &str, cells: Vec<lime_sim::sliced::CellMaterial>, h: f64) -> lime_sim::Solution {
+        use lime_sim::{Hold, Load, NodeHold};
+        let lo = mesh.nodes.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+        let hi = mesh.nodes.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+        let holds = mesh
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| (p[0] - lo).abs() < 1e-6)
+            .map(|(node, _)| NodeHold { node, hold: Hold::Fixed })
+            .collect();
+        let tip = lime_sim::mesh::faces_on_plane(&mesh, 0, hi, 1e-6);
+        let area: f64 = tip.iter().map(|f| f.area).sum();
+        let loads = tip
+            .into_iter()
+            .map(|face| Load::Traction { nodes: face.nodes, traction: [0.0, 0.0, -2.0 / area] })
+            .collect();
+        lime_sim::solve_request(&lime_sim::study::Request {
+            mesh,
+            material: lime_sim::material::LinearOrthotropic::isotropic(2000.0, 0.35, 1.24),
+            recipe: lime_sim::recipe::Recipe::solid(),
+            build_axis: [0.0, 0.0, 1.0],
+            holds,
+            loads,
+            steps: vec![lime_sim::study::Step { factor: 1.0, max_iter: 1, tol: 1e-10 }],
+            linear: true,
+            gravity: None,
+            h_mm: h,
+            allow_linear_tets: false,
+            analysis: "static".into(),
+            temperature_c: None,
+            fibre_axis: None,
+            solver: "faer-ldlt".into(),
+            representation: representation.into(),
+            cells,
+            post_steps: Vec::new(),
+            provisional: false,
+            cancel: None,
+            on_progress: None,
+        })
+        .unwrap_or_else(|err| panic!("{}", err.message))
+    }
+
+    /// The sliced plan's 9.2 on a real slice: a 100% infill bar under
+    /// bending, its walls and its diagonal infill as the slicer lays them,
+    /// solved as sliced. On an isotropic card the tip lands within 3% of the
+    /// smeared bar on cells of the same size.
+    #[test]
+    fn a_solid_slice_bends_as_its_smear_does() {
+        use lime_sim::sliced::{SlicedGrid, PHI_MIN};
+        let (l, w, t) = (30.0, 6.0, 4.0);
+        let req: lime_slice_core::SliceRequest = serde_json::from_value(serde_json::json!({
+            "filename": "bar.stl",
+            "dataB64": base64::engine::general_purpose::STANDARD.encode(box_stl(l, w, t)),
+            "layerHeight": 0.2,
+            "lineWidth": 0.45,
+            "infill": 1.0,
+            "baseline": false,
+            "compare": false,
+            "includePreview": false,
+            "includeGcode": true,
+        }))
+        .unwrap();
+        let field = super::slice_field(&req, lime_slice_core::Job::default(), &lime_slice_core::Watch::idle()).unwrap();
+        let h = 1.0;
+        let grid = SlicedGrid::rasterize(&field, h).unwrap();
+        // Every bead of the field is in the grid, to the rounding of clipping
+        // thin f32 rectangles (the plan asks 2%), and the solid cells hold
+        // nearly all of it.
+        let total = field.total_volume_mm3();
+        assert!(((grid.deposited_mm3 - total) / total).abs() < 1e-6, "grid {} field {total}", grid.deposited_mm3);
+        let meshed = grid.mesh(PHI_MIN).unwrap();
+        assert!(meshed.solid_deposited_mm3 > 0.98 * total, "{} of {total}", meshed.solid_deposited_mm3);
+        let sliced = bend(meshed.mesh, "sliced", meshed.cells, h);
+        let div = [(l / h).round() as usize, (w / h).round() as usize, (t / h).round() as usize];
+        let smear = lime_sim::mesh::grid([0.0, 0.0, 0.0], [l, w, t], div, lime_sim::ElementKind::Tet10).unwrap();
+        let smeared = bend(smear, "smear", Vec::new(), h);
+        let rel = (sliced.max_displacement_mm - smeared.max_displacement_mm) / smeared.max_displacement_mm;
+        assert!(
+            rel.abs() < 0.03,
+            "sliced {:.5} mm, smeared {:.5} mm, {:+.2}%",
+            sliced.max_displacement_mm,
+            smeared.max_displacement_mm,
+            rel * 100.0
+        );
+    }
 }

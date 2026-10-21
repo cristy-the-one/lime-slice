@@ -23,6 +23,7 @@ pub mod mesh;
 pub mod recipe;
 pub mod skin;
 pub mod slice_field;
+pub mod sliced;
 pub mod solve;
 pub mod study;
 pub mod trust;
@@ -118,7 +119,12 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
     }
 
     stage(req, "mesh");
-    let vf = volume_fractions(&req.mesh, &req.recipe, axis);
+    let sliced = req.representation == "sliced";
+    let vf: Vec<f64> = if sliced {
+        req.cells.iter().map(|c| c.volume_fraction).collect()
+    } else {
+        volume_fractions(&req.mesh, &req.recipe, axis)
+    };
     let mut u = vec![[0.0; 3]; req.mesh.nodes.len()];
     let mut load_level = 0.0;
     let mut steps_run = 0;
@@ -478,7 +484,8 @@ fn recover(
         peak_relative_error: Some(solution.peak_relative_error),
         rigid_failed,
         estimator_ran: true,
-        pattern_unmeasured: !req.recipe.pattern_is_measured(),
+        // A sliced cell holds the real pattern's beads, not a smeared factor.
+        pattern_unmeasured: req.representation != "sliced" && !req.recipe.pattern_is_measured(),
         has_infill_core,
         notes: &[],
     });
@@ -493,7 +500,12 @@ fn recover(
             .notes
             .push("Provisional card, not a measurement.".into());
     }
-    if has_infill_core {
+    if req.representation == "sliced" {
+        solution.notes.push(format!(
+            "Solved as sliced, on cells of {} mm and whole layers.",
+            format_mm(h_mm)
+        ));
+    } else if has_infill_core {
         if let Some(note) = req.recipe.pattern.note() {
             solution.notes.push(note.to_string());
         }
@@ -508,6 +520,12 @@ fn recover(
         ));
     }
     Ok(solution)
+}
+
+/// Millimetres with at most two decimals and no trailing zeros.
+fn format_mm(mm: f64) -> String {
+    let text = format!("{mm:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 fn stage(req: &Request, name: &'static str) {

@@ -51,7 +51,7 @@ impl Mesher for StructuredMesher {
 
 /// Local hex corners, then six tets. Corner 0 is (i,j,k), 1 is +x, 2 is +x+y,
 /// 3 is +y, and 4..7 are those four at +z.
-const HEX_TETS: [[usize; 4]; 6] = [
+pub(crate) const HEX_TETS: [[usize; 4]; 6] = [
     [0, 1, 2, 6],
     [0, 2, 3, 6],
     [0, 1, 6, 5],
@@ -204,7 +204,7 @@ fn parent_with_mids(
     [c[0], c[1], c[2], c[3], m[0], m[1], m[2], m[3], m[4], m[5]]
 }
 
-fn tet10_nodes(
+pub(crate) fn tet10_nodes(
     corners: [usize; 4],
     nodes: &mut Vec<[f64; 3]>,
     mids: &mut HashMap<(usize, usize), usize>,

@@ -125,6 +125,7 @@ fn solve() -> Solution {
         fibre_axis: None,
         solver: "faer-ldlt".into(),
         representation: "smear".into(),
+        cells: Vec::new(),
         post_steps: Vec::new(),
         provisional: false,
         cancel: None,

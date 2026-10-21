@@ -12,6 +12,7 @@ use crate::error::{bead_refused, temperature_refused, tet4_refused, zero_axis, S
 use crate::material::LinearOrthotropic;
 use crate::mesh::Mesh;
 use crate::recipe::Recipe;
+use crate::sliced::CellMaterial;
 use crate::solve::{Csc, EigenSolver, ModalStub};
 use crate::units::{normalize, GRAVITY_MM_S2};
 
@@ -258,6 +259,9 @@ pub struct Request {
     pub fibre_axis: Option<[f64; 3]>,
     pub solver: String,
     pub representation: String,
+    /// One material per element for `representation: "sliced"`, from its
+    /// grid cell. Empty for a smear, whose fractions come from the recipe.
+    pub cells: Vec<CellMaterial>,
     pub post_steps: Vec<serde_json::Value>,
     pub provisional: bool,
     pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -335,6 +339,7 @@ impl Study {
             fibre_axis: self.fibre_axis,
             solver: self.solver.clone(),
             representation: self.representation.clone(),
+            cells: Vec::new(),
             post_steps: self.post_steps.clone(),
             provisional: self.card.provisional,
             cancel: None,
@@ -359,6 +364,11 @@ pub fn validate_study(study: &Study) -> Result<(), SimError> {
             "{} is not in this version.",
             study.solver
         )));
+    }
+    if study.representation == "sliced" {
+        return Err(SimError::new(
+            "A sliced study is built from its slice field, not from a mesh.",
+        ));
     }
     if study.representation != "smear" {
         return Err(bead_refused());
@@ -394,8 +404,22 @@ pub fn validate_request_fields(req: &Request) -> Result<(), SimError> {
             req.solver
         )));
     }
-    if req.representation != "smear" {
-        return Err(bead_refused());
+    match req.representation.as_str() {
+        "smear" if req.cells.is_empty() => {}
+        "smear" => {
+            return Err(SimError::new(
+                "A smeared study takes its fractions from the recipe, not from cells.",
+            ))
+        }
+        "sliced" if req.cells.len() == req.mesh.elements.len() => {}
+        "sliced" => {
+            return Err(SimError::new(format!(
+                "A sliced study needs one cell per element: {} cells for {} elements.",
+                req.cells.len(),
+                req.mesh.elements.len()
+            )))
+        }
+        _ => return Err(bead_refused()),
     }
     Ok(())
 }
