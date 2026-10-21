@@ -2,9 +2,21 @@
 //! written below. The stored rows lock the finite-element numbers; the
 //! tolerances against the formulas are the accuracy bar.
 //!
-//! δ = P L³ / (3 E I) + (6/5) P L / (A G)
+//! δ = P L³ / (3 E I) + (3/2) P L / (A G)
 //! σ(x, z) = P (L − x) (z − h/2) / I
 //! I = b h³ / 12, G = E / (2 (1 + ν))
+//!
+//! (6/5) is the work-equivalent shear factor: an average over the section.
+//! The neutral-axis displacement of a rectangle is (3/2) P L / (A G). The
+//! tip node sits on that axis, so the reference uses 3/2. With (6/5) the
+//! same node crosses the formula and the apparent order collapses.
+//!
+//! The formula clamps the section: no translation, no rotation. It does not
+//! set the transverse displacement to zero over the whole root face. That
+//! extra constraint blocks Poisson expansion. The root face is held in x.
+//! The section centre is held in y and z, and one mid-height node is held
+//! in z so the section cannot roll. Bending stress is read at mid-span,
+//! where the support layer has died out.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -33,8 +45,66 @@ fn analytic_tip() -> f64 {
     let i = inertia();
     let g = E / (2.0 * (1.0 + NU));
     let bending = P * L * L * L / (3.0 * E * i);
-    let shear = 1.2 * P * L / (B * H * g);
+    // Neutral-axis shear factor for a rectangle, not the 6/5 average.
+    let shear = 1.5 * P * L / (B * H * g);
     bending + shear
+}
+
+/// Beam-theory clamp. `ux = 0` on the root face, the centre pinned in y and z,
+/// and one other mid-height node pinned in z.
+fn beam_clamp(mesh: &lime_sim::Mesh) -> Vec<NodeHold> {
+    let mut holds = Vec::new();
+    let mut centre: Option<usize> = None;
+    let mut centre_d = f64::INFINITY;
+    let mut roll: Option<usize> = None;
+    let mut roll_d = f64::INFINITY;
+    for (i, p) in mesh.nodes.iter().enumerate() {
+        if p[0] > 1e-8 {
+            continue;
+        }
+        holds.push(NodeHold {
+            node: i,
+            hold: Hold::Axis {
+                axis: 0,
+                value: 0.0,
+            },
+        });
+        let dc = (p[1] - 0.5 * B).powi(2) + (p[2] - 0.5 * H).powi(2);
+        if dc < centre_d {
+            centre_d = dc;
+            centre = Some(i);
+        }
+        if p[1] < 0.5 * B - 1e-6 {
+            let dr = p[1] * p[1] + (p[2] - 0.5 * H).powi(2);
+            if dr < roll_d {
+                roll_d = dr;
+                roll = Some(i);
+            }
+        }
+    }
+    let centre = centre.expect("a node on the root");
+    holds.push(NodeHold {
+        node: centre,
+        hold: Hold::Axis {
+            axis: 1,
+            value: 0.0,
+        },
+    });
+    holds.push(NodeHold {
+        node: centre,
+        hold: Hold::Axis {
+            axis: 2,
+            value: 0.0,
+        },
+    });
+    holds.push(NodeHold {
+        node: roll.expect("a second root node"),
+        hold: Hold::Axis {
+            axis: 2,
+            value: 0.0,
+        },
+    });
+    holds
 }
 
 fn analytic_stress(x: f64, z: f64) -> f64 {
@@ -43,15 +113,7 @@ fn analytic_stress(x: f64, z: f64) -> f64 {
 
 fn solve(edge: f64, kind: ElementKind) -> Solution {
     let mesh = beam(L, B, H, edge, kind).unwrap();
-    let mut holds = Vec::new();
-    for (i, p) in mesh.nodes.iter().enumerate() {
-        if p[0] <= 1e-8 {
-            holds.push(NodeHold {
-                node: i,
-                hold: Hold::Fixed,
-            });
-        }
-    }
+    let holds = beam_clamp(&mesh);
     let traction = [0.0, 0.0, -P / (B * H)];
     let mut loads = Vec::new();
     for face in faces_on_plane(&mesh, 0, L, 1e-6) {
@@ -99,35 +161,36 @@ struct Metrics {
     nodes: usize,
 }
 
-fn metrics(solution: &Solution, edge: f64) -> Metrics {
-    let mut nodes = Vec::new();
-    for face in faces_on_plane(&solution.mesh, 0, L, 1e-6) {
-        for n in &face.nodes {
-            if !nodes.contains(n) {
-                nodes.push(*n);
-            }
+fn metrics(solution: &Solution) -> Metrics {
+    let mut tip_i = 0;
+    let mut tip_d = f64::INFINITY;
+    let target = [L, 0.5 * B, 0.5 * H];
+    for (i, p) in solution.mesh.nodes.iter().enumerate() {
+        let d = p
+            .iter()
+            .zip(target)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f64>();
+        if d < tip_d {
+            tip_d = d;
+            tip_i = i;
         }
     }
-    let tip_uz = nodes
-        .iter()
-        .map(|n| solution.displacement[*n][2])
-        .sum::<f64>()
-        / nodes.len() as f64;
-    let tip_down = -tip_uz;
+    let tip_down = -solution.displacement[tip_i][2];
     let tip_rel = (tip_down - analytic_tip()) / analytic_tip();
 
+    let target_s = [0.5 * L, 0.5 * B, H];
     let mut best: Option<(f64, [f64; 3], f64)> = None;
     for sample in &solution.gauss {
         let p = sample.xyz;
-        if p[0] <= 0.05 || p[0] > edge {
-            continue;
-        }
-        let score = p[2] - 0.05 * (p[1] - 0.5 * B).abs();
-        if best.map(|(s, _, _)| score > s).unwrap_or(true) {
-            best = Some((score, p, sample.stress[0]));
+        let d = (p[0] - target_s[0]).powi(2)
+            + (p[1] - target_s[1]).powi(2)
+            + (p[2] - target_s[2]).powi(2);
+        if best.map(|(s, _, _)| d < s).unwrap_or(true) {
+            best = Some((d, p, sample.stress[0]));
         }
     }
-    let (_, sample, stress) = best.expect("a gauss point in the first brick");
+    let (_, sample, stress) = best.expect("a gauss point near mid-span");
     let expect = analytic_stress(sample[0], sample[2]);
     let stress_rel = (stress - expect) / expect;
     Metrics {
@@ -200,9 +263,9 @@ fn lock(id: &str, m: &Metrics) {
 
 #[test]
 fn coarse_and_mid_approach_the_beam_formulas() {
-    let coarse = metrics(&solve(H, ElementKind::Tet10), H);
-    let mid = metrics(&solve(H / 2.0, ElementKind::Tet10), H / 2.0);
-    let tet4 = metrics(&solve(H / 2.0, ElementKind::Tet4), H / 2.0);
+    let coarse = metrics(&solve(H, ElementKind::Tet10));
+    let mid = metrics(&solve(H / 2.0, ElementKind::Tet10));
+    let tet4 = metrics(&solve(H / 2.0, ElementKind::Tet4));
     report("tet10 h", &coarse);
     report("tet10 h/2", &mid);
     report("tet4 h/2", &tet4);
@@ -211,9 +274,14 @@ fn coarse_and_mid_approach_the_beam_formulas() {
     lock("tet4-h2", &tet4);
     assert!(coarse.energy.is_finite() && coarse.energy > 0.0);
     assert!(mid.energy.is_finite());
-    assert!(coarse.tip_rel.abs() < 0.03, "coarse tip {}", coarse.tip_rel);
     assert!(
-        mid.tip_rel.abs() < coarse.tip_rel.abs(),
+        coarse.tip_rel.abs() < 0.005,
+        "coarse tip {}",
+        coarse.tip_rel
+    );
+    assert!(mid.tip_rel.abs() < 0.002, "mid tip {}", mid.tip_rel);
+    assert!(
+        mid.tip_rel.abs() < coarse.tip_rel.abs() * 0.5,
         "mid {} coarse {}",
         mid.tip_rel,
         coarse.tip_rel
@@ -226,8 +294,14 @@ fn coarse_and_mid_approach_the_beam_formulas() {
     );
     assert!(coarse.stress > 0.0, "top fibre should be in tension");
     assert!(
-        coarse.stress_rel.abs() < 0.35,
+        coarse.stress_rel.abs() < 0.02,
         "stress {}",
+        coarse.stress_rel
+    );
+    assert!(
+        mid.stress_rel.abs() < coarse.stress_rel.abs(),
+        "mid stress {} coarse {}",
+        mid.stress_rel,
         coarse.stress_rel
     );
 }
@@ -245,12 +319,12 @@ fn fine_beam_matches_its_baseline_row() {
     if std::env::var("LIME_SIM_FINE").ok().as_deref() != Some("1") {
         return;
     }
-    let fine = metrics(&solve(H / 4.0, ElementKind::Tet10), H / 4.0);
+    let fine = metrics(&solve(H / 4.0, ElementKind::Tet10));
     report("tet10 h/4", &fine);
-    lock("tet10-h4", &fine);
-    let mid = metrics(&solve(H / 2.0, ElementKind::Tet10), H / 2.0);
+    let mid = metrics(&solve(H / 2.0, ElementKind::Tet10));
     let order = (mid.tip_rel.abs() / fine.tip_rel.abs()).ln() / 2.0_f64.ln();
-    eprintln!("observed order on the last pair {order:.3}");
+    eprintln!("observed order on the last pair {order:.6}");
+    lock("tet10-h4", &fine);
     common::near_abs(
         order,
         common::number(row, "observedOrder"),
