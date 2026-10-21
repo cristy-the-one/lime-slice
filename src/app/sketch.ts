@@ -1689,9 +1689,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (resolved === "common") modes.push({ choice: "common", label: "Intersect" });
     for (const mode of modes) {
       const auto = choice === "auto" && mode.choice === resolved;
+      const selected = mode.choice === resolved;
       const button = textButton(auto ? `Auto · ${mode.label}` : mode.label, { sketchMode: mode.choice });
-      button.setAttribute("aria-pressed", mode.choice === resolved ? "true" : "false");
-      button.dataset.tip = tipWithShortcut("Cycle Join, Cut, and New object", keyOf("sketch-mode"));
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+      // Each segment names its own choice. The selected one says that M cycles the group.
+      button.dataset.tip = selected ? `${mode.label}. M cycles Join, Cut, and New object` : mode.label;
       button.title = button.dataset.tip;
       seg.append(button);
     }

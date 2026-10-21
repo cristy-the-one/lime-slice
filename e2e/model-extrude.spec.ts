@@ -585,6 +585,9 @@ test("Auto makes a new object of a sketch beside the part, and the face sketch's
   await expect(canvas).toHaveAttribute("data-extrude-mode", "new");
   await expect(page.locator("[data-sketch-mode=new]")).toContainText("New object");
   await expect(page.locator("[data-sketch-mode=new]")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-sketch-mode=new]")).toHaveAttribute("data-tip", "New object. M cycles Join, Cut, and New object");
+  await expect(page.locator("[data-sketch-mode=fuse]")).toHaveAttribute("data-tip", "Join");
+  await expect(page.locator("[data-sketch-mode=cut]")).toHaveAttribute("data-tip", "Cut");
 });
 
 async function drawTypedCircle(page: Page) {
