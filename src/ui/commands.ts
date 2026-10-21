@@ -12,7 +12,11 @@ export type KeyScope =
   | "searching"
   | "brush"
   | "find"
-  | "model";
+  | "model"
+  | "sketch"
+  | "sketch-feature"
+  | "sketch-draw"
+  | "sketch-loft";
 
 export type StageName = "prepare" | "preview" | "gcode" | "model";
 
@@ -97,6 +101,34 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-edit-step", label: "Edit step", group: "Model", keys: ["Shift+E"], when: "model", keywords: "history change numbers parameters size radius update fork" },
   { id: "model-apply", label: "Apply model edit", group: "Model", keys: ["Enter"], when: "model", target: "#modelApply", keywords: "confirm" },
   { id: "model-escape", label: "Cancel model tool or clear selection", group: "Model", keys: ["Esc"], when: "model", typing: true, keywords: "clear deselect" },
+  // --- R3-02. The sketch card's keys. Local code still does the work, through runSketchKey. ---
+  { id: "sketch-line", label: "Line", group: "Sketch", keys: ["L"], when: "sketch", show: "help", target: '[data-sketch-tool="line"]' },
+  { id: "sketch-rect", label: "Rectangle", group: "Sketch", keys: ["R"], when: "sketch-draw", show: "help", target: '[data-sketch-tool="rectangle"]' },
+  { id: "sketch-circle", label: "Circle", group: "Sketch", keys: ["C"], when: "sketch", show: "help", target: '[data-sketch-tool="circle"]' },
+  { id: "sketch-arc", label: "Arc", group: "Sketch", keys: ["A"], when: "sketch", show: "help", target: '[data-sketch-tool="arc"]' },
+  { id: "sketch-tangent", label: "Tangent arc", group: "Sketch", keys: ["Shift+A"], when: "sketch", show: "help", target: '[data-sketch-tool="arc"]' },
+  { id: "sketch-polygon", label: "Polygon", group: "Sketch", keys: ["N"], when: "sketch", show: "help", target: '[data-sketch-tool="polygon"]' },
+  { id: "sketch-slot", label: "Slot", group: "Sketch", keys: ["Shift+S"], when: "sketch", show: "help", target: '[data-sketch-tool="slot"]' },
+  { id: "sketch-spline", label: "Spline", group: "Sketch", keys: ["B"], when: "sketch", show: "help", target: '[data-sketch-tool="spline"]' },
+  { id: "sketch-trim", label: "Trim", group: "Sketch", keys: ["T"], when: "sketch", show: "help", target: '[data-sketch-tool="trim"]' },
+  { id: "sketch-offset", label: "Offset", group: "Sketch", keys: ["F"], when: "sketch", show: "help", target: '[data-sketch-tool="offset"]' },
+  { id: "sketch-fillet", label: "Fillet corner", group: "Sketch", keys: ["G"], when: "sketch", show: "help", target: '[data-sketch-tool="fillet"]' },
+  { id: "sketch-use", label: "Use", group: "Sketch", keys: ["U"], when: "sketch", show: "help", target: '[data-sketch-tool="use"]' },
+  { id: "sketch-construction", label: "Construction", group: "Sketch", keys: ["X"], when: "sketch", show: "help", target: '[data-sketch-tool="construction"]' },
+  { id: "sketch-look", label: "Look around", group: "Sketch", keys: ["O"], when: "sketch", show: "help", target: "[data-sketch-look]" },
+  { id: "sketch-extrude", label: "Extrude", group: "Sketch", keys: ["E"], when: "sketch", show: "help", target: "[data-sketch-extrude]" },
+  { id: "sketch-revolve", label: "Revolve", group: "Sketch", keys: ["V"], when: "sketch", show: "help", target: "[data-sketch-revolve]" },
+  { id: "sketch-loft", label: "Loft", group: "Sketch", keys: ["Shift+L"], when: "sketch", show: "help", target: "[data-sketch-loft]" },
+  { id: "sketch-sweep", label: "Sweep", group: "Sketch", keys: ["W"], when: "sketch", show: "help", target: "[data-sketch-sweep]" },
+  { id: "sketch-holes", label: "Holes", group: "Sketch", keys: ["H"], when: "sketch", show: "help", target: "[data-sketch-holes]" },
+  { id: "sketch-mode", label: "Join, cut, or new object", group: "Sketch", keys: ["M"], when: "sketch-feature", show: "help" },
+  { id: "sketch-smooth", label: "Smooth loft", group: "Sketch", keys: ["R"], when: "sketch-loft", show: "help", target: "[data-sketch-ruled]" },
+  { id: "sketch-enter", label: "Apply", group: "Sketch", keys: ["Enter"], when: "sketch", show: "help" },
+  { id: "sketch-escape", label: "Cancel", group: "Sketch", keys: ["Esc"], when: "sketch", show: "help" },
+  { id: "sketch-tab", label: "Next extrude distance", group: "Sketch", keys: ["Tab"], when: "sketch-feature", show: "help" },
+  { id: "sketch-delete", label: "Delete", group: "Sketch", keys: ["Del", "Backspace"], when: "sketch", show: "help" },
+  { id: "sketch-undo", label: "Undo sketch", group: "Sketch", keys: ["Ctrl+Z"], when: "sketch", show: "help" },
+  { id: "sketch-redo", label: "Redo sketch", group: "Sketch", keys: ["Ctrl+Y", "Ctrl+Shift+Z"], when: "sketch", show: "help" },
   { id: "layer-up", label: "Layer up", group: "Layers", keys: ["↑", "]"], when: "preview", repeat: true, show: "help" },
   { id: "layer-down", label: "Layer down", group: "Layers", keys: ["↓", "["], when: "preview", repeat: true, show: "help" },
   { id: "layer-up-10", label: "Ten layers up", group: "Layers", keys: ["PgUp"], when: "preview", repeat: true, show: "help" },
@@ -169,10 +201,17 @@ export interface KeyContext {
   editingSupports: boolean;
   /** Focus is in the G-code pane, where Ctrl+F stays the browser's. */
   inGcode: boolean;
-  /** A sketch is open on the Model stage. */
+  /** A sketch is open on the Model stage (editing, or still choosing a plane). */
   sketchOpen: boolean;
   /** Extrude, revolve, loft, or sweep is the active sketch feature. */
   sketchFeature: boolean;
+  /** Loft is the active feature, so R toggles smooth instead of choosing Rectangle. */
+  sketchLoft: boolean;
+}
+
+/** A sketch owns the Model stage, and a running slice or an open search still wins Esc. */
+function sketching(c: KeyContext): boolean {
+  return !c.helpOpen && !c.running && !c.searching && c.stage === "model" && c.sketchOpen;
 }
 
 /** Scopes that share a chord must not overlap: Esc cancels a slice only when it is not clearing a search. */
@@ -186,7 +225,11 @@ const SCOPES: Record<KeyScope, (c: KeyContext) => boolean> = {
   searching: (c) => !c.helpOpen && c.searching,
   brush: (c) => !c.helpOpen && c.stage === "prepare" && c.brushOn,
   find: (c) => !c.helpOpen && !c.inGcode && c.stage !== "model",
-  model: (c) => !c.helpOpen && c.stage === "model" && !c.running && !c.searching,
+  model: (c) => !c.helpOpen && c.stage === "model" && !c.running && !c.searching && !c.sketchOpen,
+  sketch: (c) => sketching(c),
+  "sketch-feature": (c) => sketching(c) && c.sketchFeature,
+  "sketch-draw": (c) => sketching(c) && !c.sketchLoft,
+  "sketch-loft": (c) => sketching(c) && c.sketchLoft,
 };
 
 export type KeyEventLike = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey" | "repeat">;
@@ -218,13 +261,15 @@ export function chordMatches(chord: string, ev: KeyEventLike): boolean {
 
 function scopeAllows(command: CommandSpec, ctx: KeyContext): boolean {
   const when = command.when ?? "always";
-  if (Array.isArray(when)) return !ctx.helpOpen && when.includes(ctx.stage);
+  if (typeof when !== "string") return !ctx.helpOpen && when.includes(ctx.stage);
   return SCOPES[when](ctx);
 }
 
 export function fires(command: CommandSpec, ev: KeyEventLike, ctx: KeyContext): boolean {
   if (!command.keys) return false;
   if (!scopeAllows(command, ctx)) return false;
+  // The sketch has its own undo. A field that is not the sketch HUD keeps the browser's undo.
+  if ((command.id === "undo" || command.id === "redo") && ctx.sketchOpen) return false;
   if (ctx.typing && !command.typing) return false;
   if (ev.repeat && !command.repeat) return false;
   return command.keys.some((chord) => chordMatches(chord, ev));
@@ -238,6 +283,14 @@ export function resolveKey(ev: KeyEventLike, ctx: KeyContext, commands: CommandS
 /** First chord: the one tooltips and palette rows show. */
 export function shortcutOf(command: CommandSpec): string | undefined {
   return command.keys?.[0];
+}
+
+/** A sketch command is using this chord, so a Model button hides it until the sketch closes. */
+export function shortcutShadowed(shortcut: string): boolean {
+  if (!shortcut || typeof document === "undefined") return false;
+  const phase = document.querySelector("#model")?.getAttribute("data-sketch");
+  if (phase !== "editing" && phase !== "choosing") return false;
+  return COMMANDS.some((command) => command.group === "Sketch" && command.keys?.includes(shortcut));
 }
 
 const EMPTY_SHORTCUT_SLOT = /(?:\s*[·•|–—]\s*|\s+-\s*|\s*\(\s*\))\s*$/;

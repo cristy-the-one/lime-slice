@@ -24,7 +24,8 @@ const preview = rankCommands(COMMANDS, "prev").map((command) => command.label);
 check("prev matches Preview", preview.includes("Preview"), preview.join(","));
 eq("nonsense matches nothing", rankCommands(COMMANDS, "xyzqq").length, 0);
 eq("case insensitive top", rankCommands(COMMANDS, "TOP")[0]?.id, "view-top");
-check("sl prefers Slice over Samples", rankCommands(COMMANDS, "sl")[0]?.id === "slice");
+const slRank = rankCommands(COMMANDS, "sl").map((command) => command.id);
+check("sl prefers Slice over Samples", slRank.indexOf("slice") < slRank.indexOf("samples"), slRank.slice(0, 6).join(","));
 
 eq("fuzzy miss", fuzzyScore("xyz", "Slice"), null);
 check("fuzzy hit is positive", (fuzzyScore("sl", "Slice") ?? 0) > 0);
@@ -47,6 +48,7 @@ const BASE: KeyContext = {
   inGcode: false,
   sketchOpen: false,
   sketchFeature: false,
+  sketchLoft: false,
 };
 
 const NAMED: Record<string, string> = { Esc: "Escape", "↑": "ArrowUp", "↓": "ArrowDown", PgUp: "PageUp", PgDn: "PageDown", Del: "Delete" };
@@ -73,7 +75,7 @@ const contexts: KeyContext[] = [];
 for (const helpOpen of bools) for (const typing of bools) for (const hasResult of bools) for (const running of bools)
   for (const searching of bools) for (const brushOn of bools) for (const editingSupports of bools) for (const inGcode of bools)
     for (const stage of ["prepare", "preview", "gcode", "model"] as const)
-      contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode, sketchOpen: false, sketchFeature: false });
+      contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode, sketchOpen: false, sketchFeature: false, sketchLoft: false });
 const chords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
 for (const chord of chords) {
   for (const repeat of bools) {
@@ -263,6 +265,25 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   // Undo and Redo run in every stage. The Model buttons are the tooltip targets, and the handler clicks them only in Model.
   "#modelUndo": ["prepare", "preview", "gcode", "model"],
   "#modelRedo": ["prepare", "preview", "gcode", "model"],
+  '[data-sketch-tool="line"]': ["model"],
+  '[data-sketch-tool="rectangle"]': ["model"],
+  '[data-sketch-tool="circle"]': ["model"],
+  '[data-sketch-tool="arc"]': ["model"],
+  '[data-sketch-tool="polygon"]': ["model"],
+  '[data-sketch-tool="slot"]': ["model"],
+  '[data-sketch-tool="spline"]': ["model"],
+  '[data-sketch-tool="trim"]': ["model"],
+  '[data-sketch-tool="offset"]': ["model"],
+  '[data-sketch-tool="fillet"]': ["model"],
+  '[data-sketch-tool="use"]': ["model"],
+  '[data-sketch-tool="construction"]': ["model"],
+  "[data-sketch-look]": ["model"],
+  "[data-sketch-extrude]": ["model"],
+  "[data-sketch-revolve]": ["model"],
+  "[data-sketch-loft]": ["model"],
+  "[data-sketch-sweep]": ["model"],
+  "[data-sketch-holes]": ["model"],
+  "[data-sketch-ruled]": ["model"],
 };
 for (const command of COMMANDS) {
   if (!command.target) continue;
@@ -272,7 +293,7 @@ for (const command of COMMANDS) {
 }
 const honestChords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
 for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
-  for (const sketchOpen of bools) for (const sketchFeature of bools) for (const brushOn of bools)
+  for (const sketchOpen of bools) for (const sketchFeature of bools) for (const sketchLoft of bools) for (const brushOn of bools)
     for (const helpOpen of bools) for (const running of bools) for (const typing of bools) {
       const ctx: KeyContext = {
         ...BASE,
@@ -280,6 +301,7 @@ for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
         hasResult: stage === "preview",
         sketchOpen,
         sketchFeature,
+        sketchLoft,
         brushOn,
         helpOpen,
         running,
@@ -295,6 +317,27 @@ for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
       }
     }
 }
+
+const sketchCtx = { stage: "model" as const, sketchOpen: true };
+for (const letter of "abcdefghijklmnopqrstuvwxyz") {
+  for (const sketchFeature of bools) for (const sketchLoft of bools) {
+    const id = press(letter, { ...sketchCtx, sketchFeature, sketchLoft });
+    const group = COMMANDS.find((command) => command.id === id)?.group;
+    check(`${letter} in a sketch is a sketch command or nothing`, group === undefined || group === "Sketch", id ?? "null");
+  }
+}
+eq("W in a sketch sweeps", press("W", sketchCtx), "sketch-sweep");
+eq("Shift+L in a sketch lofts", press("Shift+L", sketchCtx), "sketch-loft");
+eq("T in a sketch trims", press("T", sketchCtx), "sketch-trim");
+eq("L in a sketch is the line", press("L", sketchCtx), "sketch-line");
+eq("R in a sketch is the rectangle", press("R", sketchCtx), "sketch-rect");
+eq("R in a loft is smooth", press("R", { ...sketchCtx, sketchFeature: true, sketchLoft: true }), "sketch-smooth");
+eq("M cycles the feature", press("M", { ...sketchCtx, sketchFeature: true }), "sketch-mode");
+eq("M does nothing with no feature", press("M", sketchCtx), null);
+eq("Ctrl+Z undoes the sketch", press("Ctrl+Z", sketchCtx), "sketch-undo");
+eq("Ctrl+Z in a sketch field stays in the field", press("Ctrl+Z", { ...sketchCtx, typing: true }), null);
+eq("Esc cancels the sketch", press("Esc", sketchCtx), "sketch-escape");
+eq("Esc still cancels a running slice while sketching", press("Esc", { ...sketchCtx, running: true }), "cancel-slice");
 
 if (failed) {
   console.error(`${failed} failed`);

@@ -1,4 +1,5 @@
 import { redoUserEdit, undoUserEdit } from "../app/history";
+import { runSketchKey } from "../app/sketch-keys";
 import { frameModel } from "../app/model";
 import { escapeModel, openJoinTool } from "./model-chrome";
 import { editModelStep, toggleModelHistoryFocus } from "./model-history";
@@ -258,6 +259,10 @@ function sliceFromKey(selector: string) {
 
 /** Runs the command's own case, else clicks its `target`. */
 export function runCommand(id: string) {
+  if (id.startsWith("sketch-")) {
+    runSketchKey(id);
+    return;
+  }
   switch (id) {
     case "palette":
       document.dispatchEvent(new CustomEvent("lime-open-palette"));

@@ -453,3 +453,19 @@ test("extrude waits for a profile, and loft says what to pick", async ({ page })
   await expect(prompt).toHaveCount(0);
   await expect(canvas).toHaveAttribute("data-loft", "off");
 });
+
+test("the shortcut sheet lists Loft beside Shift+L while a sketch is open", async ({ page }) => {
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await expect(page.locator("#modelToolChamfer")).not.toHaveAttribute("aria-keyshortcuts", "Shift+L");
+  await expect(page.locator("#modelPickEdge")).not.toHaveAttribute("aria-keyshortcuts", "W");
+  await page.keyboard.press("?");
+  const sheet = page.locator("#help");
+  await expect(sheet).toBeVisible();
+  const sketch = sheet.locator(".help-group", { has: page.locator("h3", { hasText: /^Sketch$/ }) });
+  const loft = sketch.locator("li").filter({ has: page.locator("span", { hasText: /^Loft$/ }) });
+  await expect(loft.locator("kbd")).toHaveText("Shift+L");
+});

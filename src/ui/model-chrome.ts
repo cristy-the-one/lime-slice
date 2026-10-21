@@ -31,7 +31,7 @@ import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queue
 import { evaluate, type Params } from "../modeling/expr.ts";
 import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
 import { revealParameters } from "./parameters.ts";
-import { COMMANDS, shortcutOf, tipWithShortcut } from "./commands.ts";
+import { COMMANDS, shortcutOf, shortcutShadowed, tipWithShortcut } from "./commands.ts";
 import { revealDock } from "./dock-reveal.ts";
 import { diameterExpr, radiusExpr } from "./diameter-expr.ts";
 import "./model-dock.css";
@@ -305,14 +305,17 @@ let wpExact: Workplane = GLOBAL_WORKPLANE;
 let wpGrab: readonly number[] | null = null;
 
 /** Put each tool's shortcut in its tip. A tool with no shortcut keeps the name and no empty key slot. */
-function nameRailTips() {
+export function refreshModelRailTips() {
   for (const button of document.querySelectorAll<HTMLElement>("#railModel button, #railModelFoot button")) {
     const command = COMMANDS.find((item) => item.keys && item.target && button.matches(item.target));
-    const key = command ? shortcutOf(command) : undefined;
+    const owned = command ? shortcutOf(command) : undefined;
+    const key = owned && !shortcutShadowed(owned) ? owned : undefined;
     if (key) button.setAttribute("aria-keyshortcuts", key);
     else button.removeAttribute("aria-keyshortcuts");
-    const tip = button.dataset.tip ?? button.getAttribute("aria-label") ?? "";
-    if (tip) button.dataset.tip = tipWithShortcut(tip, key);
+    const raw = button.dataset.tip ?? button.getAttribute("aria-label") ?? "";
+    const mark = owned ? ` (${owned})` : "";
+    const base = mark && raw.endsWith(mark) ? raw.slice(0, -mark.length) : raw;
+    if (base) button.dataset.tip = tipWithShortcut(base, key);
   }
 }
 
@@ -352,7 +355,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   iconize("#modelBedToggle", Grid3x3);
   document.querySelector("#modelFeatureMore")?.replaceChildren(createElement(ChevronRight, { width: 10, height: 10, "aria-hidden": "true", class: "ico" }));
   iconize("#modelResetView", Focus);
-  nameRailTips();
+  refreshModelRailTips();
   setBed(readBedPref());
   document.querySelector("#modelBedToggle")?.addEventListener("click", () => {
     const on = document.querySelector("#modelBedToggle")?.getAttribute("aria-pressed") !== "true";
