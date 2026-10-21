@@ -33,3 +33,20 @@ fn dependency_names(manifest: &str) -> Vec<String> {
     }
     names
 }
+
+#[test]
+fn infill_pattern_strength_is_not_referenced() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for entry in std::fs::read_dir(&root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("InfillPattern"),
+            "{} must not read the slicer's strength heuristic",
+            path.display()
+        );
+    }
+}

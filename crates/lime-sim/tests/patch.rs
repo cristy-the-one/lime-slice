@@ -18,6 +18,7 @@ use lime_sim::mesh::{interior_nodes, patch_mesh};
 use lime_sim::recipe::Recipe;
 use lime_sim::solve_request;
 use lime_sim::study::Request;
+use lime_sim::trust::TrustLevel;
 
 const PARENT: [[f64; 3]; 4] = [
     [0.0, 0.0, 0.0],
@@ -140,4 +141,20 @@ fn interior_tet4_matches_the_analytic_stress() {
 #[test]
 fn interior_tet10_matches_the_analytic_stress() {
     assert_stress(ElementKind::Tet10, true);
+}
+
+/// The patch is inside the converged band. A provisional card still forces rough.
+#[test]
+fn a_provisional_card_forces_rough() {
+    let mut req = request(ElementKind::Tet10, false);
+    let plain = solve_request(&req).unwrap_or_else(|err| panic!("{}", err.message));
+    assert!(plain.relative_energy_error < 0.05);
+    assert_ne!(plain.trust, TrustLevel::Rough);
+    req.provisional = true;
+    let solution = solve_request(&req).unwrap_or_else(|err| panic!("{}", err.message));
+    assert_eq!(solution.trust, TrustLevel::Rough);
+    assert!(solution
+        .notes
+        .iter()
+        .any(|note| note == "Provisional card, not a measurement."));
 }

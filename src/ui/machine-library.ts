@@ -15,6 +15,7 @@ import { KLIPPER_NUMBERS, type KlipperLimits, type PrinterProfile } from "../pro
 import { ADVANCE, firmwareTakesArcs, type Firmware, type Rules } from "../settings-rules.ts";
 import { coerceHostKind, type MoonrakerConfigImport, type PrinterHostKind } from "./prusa-link.ts";
 import { fanDefaults, fanOf, readFan, withFan, type FanSettings } from "../fan.ts";
+import { provisionalCards, type MaterialCard } from "../sim/cards.ts";
 
 export const MACHINE_FILE_VERSION = 3;
 
@@ -89,6 +90,11 @@ export interface MachineLibrary {
   printerId: string;
   filamentId: string;
   nozzleMm: number;
+  /**
+   * Optional stress cards beside the filaments. Absent on a 3.5.0 library.
+   * The version stays 3. A reader that rebuilds each printer drops the array.
+   */
+  materialCards?: MaterialCard[];
 }
 
 export interface MachineFile {
@@ -274,7 +280,9 @@ export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
   const printerId = printers.some((row) => row.id === library.printerId) ? library.printerId : printers[0]!.id;
   const filamentId = filaments.some((row) => row.id === library.filamentId) ? library.filamentId : filaments[0]!.id;
   const nozzleMm = Number.isFinite(library.nozzleMm) && library.nozzleMm > 0 ? library.nozzleMm : 0.4;
-  return { version: MACHINE_FILE_VERSION, printers, filaments, printerId, filamentId, nozzleMm };
+  const next: MachineLibrary = { version: MACHINE_FILE_VERSION, printers, filaments, printerId, filamentId, nozzleMm };
+  if (library.materialCards !== undefined) next.materialCards = library.materialCards;
+  return next;
 }
 
 function refreshBuiltin(stored: PrinterRecord, catalog: PrinterRecord | undefined): PrinterRecord {
@@ -339,7 +347,8 @@ export function parseLibrary(text: string | null): MachineLibrary {
     const printers = doc.printers.map(readPrinter).filter((row): row is PrinterRecord => row !== null);
     const filaments = doc.filaments.map(readFilament).filter((row): row is FilamentRecord => row !== null);
     const nozzleMm = finite(doc.nozzleMm) && doc.nozzleMm > 0 ? doc.nozzleMm : 0.4;
-    return {
+    const materialCards = readMaterialCards(doc.materialCards);
+    const library: MachineLibrary = {
       version: MACHINE_FILE_VERSION,
       printers,
       filaments,
@@ -347,9 +356,66 @@ export function parseLibrary(text: string | null): MachineLibrary {
       filamentId: typeof doc.filamentId === "string" ? doc.filamentId : "",
       nozzleMm,
     };
+    if (materialCards !== undefined) library.materialCards = materialCards;
+    return library;
   } catch {
     return emptyLibrary();
   }
+}
+
+/** Cards on the library, or the four provisional placeholders when the file has none. */
+export function cardsOf(library: MachineLibrary): MaterialCard[] {
+  return library.materialCards ?? provisionalCards();
+}
+
+/** Write one card. The first save of an old library also stores the other placeholders. */
+export function saveMaterialCard(library: MachineLibrary, card: MaterialCard): MachineLibrary {
+  const cards = [...cardsOf(library)];
+  const at = cards.findIndex((row) => row.id === card.id);
+  if (at >= 0) cards[at] = card;
+  else cards.push(card);
+  return { ...library, materialCards: cards };
+}
+
+/** `undefined` when the key is absent, so an old library round-trips without gaining one. */
+function readMaterialCards(value: unknown): MaterialCard[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return [];
+  return value.map(readMaterialCard).filter((row): row is MaterialCard => row !== null);
+}
+
+function readMaterialCard(value: unknown): MaterialCard | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== "string" || row.id.trim() === "") return null;
+  if (typeof row.polymer !== "string" || row.polymer.trim() === "") return null;
+  if (typeof row.provisional !== "boolean") return null;
+  if (!finite(row.EInPlaneMPa) || row.EInPlaneMPa <= 0) return null;
+  if (!finite(row.EAcrossLayersMPa) || row.EAcrossLayersMPa <= 0) return null;
+  if (!finite(row.nu) || row.nu <= -1 || row.nu >= 0.5) return null;
+  if (!finite(row.strengthInPlaneMPa) || row.strengthInPlaneMPa <= 0) return null;
+  if (!finite(row.strengthAcrossLayersMPa) || row.strengthAcrossLayersMPa <= 0) return null;
+  if (!finite(row.densityGCm3) || row.densityGCm3 <= 0) return null;
+  if (row.measuredAtC !== null && row.measuredAtC !== undefined && !finite(row.measuredAtC)) return null;
+  if (typeof row.specimen !== "string") return null;
+  if (row.method !== null && row.method !== undefined && typeof row.method !== "string") return null;
+  if (typeof row.source !== "string") return null;
+  return {
+    id: row.id,
+    polymer: row.polymer,
+    provisional: row.provisional,
+    EInPlaneMPa: row.EInPlaneMPa,
+    EAcrossLayersMPa: row.EAcrossLayersMPa,
+    nu: row.nu,
+    strengthInPlaneMPa: row.strengthInPlaneMPa,
+    strengthAcrossLayersMPa: row.strengthAcrossLayersMPa,
+    densityGCm3: row.densityGCm3,
+    measuredAtC: finite(row.measuredAtC) ? row.measuredAtC : null,
+    specimen: row.specimen,
+    method: typeof row.method === "string" ? row.method : null,
+    source: row.source,
+    isotropic: row.isotropic === true,
+  };
 }
 
 /**
