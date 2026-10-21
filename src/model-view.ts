@@ -253,7 +253,7 @@ export interface SketchViewState {
 }
 
 export function createModelView(canvas: HTMLCanvasElement): ModelView {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
   // A split shows its two sides by clipping the solid at the plane.
   renderer.localClippingEnabled = true;
@@ -270,6 +270,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   mountStudioLights(scene, "z-up");
   const viewHelper = mountViewHelper(camera, canvas);
+  // A pixel check reads the frame it just drew. Users do not keep the drawing buffer.
+  if (new URLSearchParams(location.search).get("perf") === "1") {
+    const host = window as unknown as { __renderModelFrame?: () => void };
+    host.__renderModelFrame = () => {
+      renderer.render(scene, camera);
+      renderViewHelper(renderer, viewHelper);
+    };
+  }
   let colors = themeColors();
   const bedRef = mountBedReference(scene, "z-up");
   let bed: BuildVolume = { x: 220, y: 220, z: 250 };

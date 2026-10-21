@@ -74,7 +74,7 @@ async function openSolid(page: Page, probes: Record<string, unknown>[], solid = 
       return { ok: true };
     },
   });
-  await page.goto("/");
+  await page.goto("/?perf=1");
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
   // From 961 to 1200 px settings start in a closed drawer: open it from the rail, as a user would, then close it so
@@ -385,23 +385,24 @@ test("hovering a size knob lights that axis, its number, and a dimension", async
   await expect(page.locator("#model")).toHaveAttribute("data-aspect-sample", /-?\d+,-?\d+/);
   const sample = ((await page.locator("#model").getAttribute("data-aspect-sample")) ?? "0,0").split(",").map(Number);
   const rgb = await page.evaluate(([sx, sy]) => {
+    (window as unknown as { __renderModelFrame?: () => void }).__renderModelFrame?.();
     const canvas = document.querySelector<HTMLCanvasElement>("#model")!;
+    const gl = canvas.getContext("webgl2");
+    if (!gl) return [0, 0, 0];
     const scale = canvas.width / Math.max(1, canvas.clientWidth);
-    const off = document.createElement("canvas");
-    off.width = canvas.width;
-    off.height = canvas.height;
-    const ctx = off.getContext("2d")!;
-    ctx.drawImage(canvas, 0, 0);
+    const buf = new Uint8Array(4);
     let best = 1e9;
     let pick = [0, 0, 0];
     const target = [143, 206, 106];
     for (let dy = -3; dy <= 3; dy += 1) {
       for (let dx = -3; dx <= 3; dx += 1) {
-        const px = ctx.getImageData(Math.round(sx! * scale) + dx, Math.round(sy! * scale) + dy, 1, 1).data;
-        const err = Math.hypot(px[0]! - target[0]!, px[1]! - target[1]!, px[2]! - target[2]!);
+        const x = Math.round(sx! * scale) + dx;
+        const y = canvas.height - (Math.round(sy! * scale) + dy) - 1;
+        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        const err = Math.hypot(buf[0]! - target[0]!, buf[1]! - target[1]!, buf[2]! - target[2]!);
         if (err < best) {
           best = err;
-          pick = [px[0]!, px[1]!, px[2]!];
+          pick = [buf[0]!, buf[1]!, buf[2]!];
         }
       }
     }
