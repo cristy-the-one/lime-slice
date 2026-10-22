@@ -110,8 +110,11 @@ export function facePaint(args: {
   stepHover: boolean;
   colourByStep: boolean;
   accent: number;
+  /** A Stress hold or load tint. It shows over the step colours. */
+  study?: number | null;
 }): { hex: number; stepHex: string | null } {
   if (args.selected) return { hex: args.accent, stepHex: null };
+  if (args.study != null) return { hex: args.pickHover ? mixHex(args.study, 0xffffff, 0.3) : args.study, stepHex: null };
   const wobble = (Math.abs(args.index) * 17) % 7;
   const idle = mixHex(IDLE, IDLE_LIFT, wobble / 6);
   if (args.colourByStep && args.owner != null) {

@@ -23,13 +23,13 @@ check("another face is left out", faceTriangles(positions, triangles, [1]).lengt
 
 const study = emptyStudy();
 study.holds = [{ kind: "bed", faces: [] }];
+study.loads[0]!.faces = [4];
 study.edgeMm = 2;
 const body = buildStudyBody({
   request: { filename: "box.stl" },
   study,
   card: provisionalCards()[1]!,
   triangles: (indexes) => faceTriangles(positions, triangles, indexes),
-  bounds: { min: [0, 0, 0], max: [10, 4, 2] },
   checkResolution: false,
 });
 if (typeof body !== "string") {
@@ -38,7 +38,7 @@ if (typeof body !== "string") {
   const parsed = JSON.parse(body) as {
     study: {
       holds: { kind: string }[];
-      loads: { kind: string; force: number[]; region: { kind: string } }[];
+      loads: { kind: string; force: number[]; region: { kind: string; triangles: number[][][] } }[];
       checkResolution: boolean;
       hXy: number;
       constraints: { kind: string; value: number }[];
@@ -46,7 +46,7 @@ if (typeof body !== "string") {
   };
   check("Bed is a bed hold", parsed.study.holds[0]?.kind === "bed");
   check("the card goes with its bead section", (parsed.study as unknown as { card: { beads?: { EAlongBeadMPa: number } } }).card.beads?.EAlongBeadMPa === 1800);
-  check("a load with no face is the +X slab", parsed.study.loads[0]?.region.kind === "box" && parsed.study.loads[0]?.force[2] === -10);
+  check("a load on a face sends that face's triangles", parsed.study.loads[0]?.region.kind === "faces" && parsed.study.loads[0]?.region.triangles.length === 2 && parsed.study.loads[0]?.force[2] === -10);
   check("the edge length is hXy and the second size can be skipped", parsed.study.hXy === 2 && parsed.study.checkResolution === false);
   check("no target typed sends a safety factor of 1", parsed.study.constraints.length === 1 && parsed.study.constraints[0]?.kind === "minSafetyFactor" && parsed.study.constraints[0]?.value === 1);
 }
@@ -55,8 +55,7 @@ const targeted = buildStudyBody({
   request: { filename: "box.stl" },
   study,
   card: provisionalCards()[1]!,
-  triangles: () => [],
-  bounds: { min: [0, 0, 0], max: [10, 4, 2] },
+  triangles: (indexes) => faceTriangles(positions, triangles, indexes),
   constraints: [{ kind: "minSafetyFactor", value: 2 }, { kind: "maxDeflectionMm", value: 1.5 }],
 });
 if (typeof targeted !== "string") {
@@ -74,9 +73,18 @@ const refused = buildStudyBody({
   study: plane,
   card: provisionalCards()[0]!,
   triangles: () => [],
-  bounds: { min: [0, 0, 0], max: [1, 1, 1] },
 });
 check("a plane hold is refused", typeof refused !== "string" && refused.reason.startsWith("A plane hold"));
+
+const unloaded = emptyStudy();
+unloaded.holds = [{ kind: "bed", faces: [] }];
+const noFace = buildStudyBody({
+  request: {},
+  study: unloaded,
+  card: provisionalCards()[0]!,
+  triangles: (indexes) => faceTriangles(positions, triangles, indexes),
+});
+check("a load with no face is refused, not put on +X", typeof noFace !== "string" && noFace.reason === "Pick the faces the load pushes on.");
 
 function b64(values: number[]): string {
   const bytes = new Uint8Array(values.length * 4);

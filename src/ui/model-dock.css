@@ -318,19 +318,78 @@ html:not(.layout-compact) .model-dock .model-stress .model-params-main { padding
 .stress-group { border: 0; margin: 0 0 var(--space-2); padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .stress-group > legend { font-size: var(--fs-1); color: var(--text-dim); padding: 0; }
 .stress-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
-.stress-row { display: flex; flex-wrap: wrap; align-items: end; gap: 4px; }
+.stress-row { display: flex; align-items: end; gap: 4px; }
+.stress-row > label { flex: 1 1 0; }
 .model-stress label { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-1); min-width: 0; }
 .model-stress .stress-check { flex-direction: row; align-items: center; gap: 6px; }
 .model-stress input:not([type=checkbox], [type=radio]), .model-stress select { width: 100%; height: var(--control-h-sm); }
-.model-stress .model-params-bar {
+/* The foot stays under the scroll: what Run still needs, a solve's progress, then Cancel and Run. */
+.model-stress .stress-foot {
   flex: 0 0 auto;
   display: flex;
+  flex-direction: column;
   gap: 6px;
-  margin: 0;
   padding-top: var(--space-2);
   border-top: 1px solid var(--line);
 }
-.model-stress .model-params-bar .btn { flex: 1 1 auto; }
+.model-stress .stress-foot .model-params-bar { display: flex; gap: 6px; margin: 0; padding: 0; border: 0; }
+.model-stress .stress-foot .model-params-bar .btn { flex: 1 1 auto; }
+.model-stress #stressRun[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
+/* One line is always kept for the status, so the controls above do not move under a click when it empties. */
+.stress-status { margin: 0; min-height: 1lh; font-size: var(--fs-2); color: var(--text); }
+.stress-status[data-next] { color: var(--text-dim); }
+.model-stress .stress-foot { position: relative; }
+.stress-progress { top: -2px; height: 3px; overflow: hidden; }
+.stress-progress[hidden] { display: none; }
+/* Numbered steps: the number while a step is open, a check once it is done. */
+.model-stress-scroll > .stress-step:first-of-type { margin-top: var(--space-2); }
+:is(.stress-step, #stressResult) > legend { display: flex; align-items: center; gap: 6px; font-size: var(--fs-2); color: var(--text); font-weight: 600; margin-bottom: 2px; }
+.stress-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.stress-step[data-done] .stress-mark { border-color: var(--ok); background: var(--ok); color: var(--on-accent); }
+.model-stress .modes { align-self: flex-start; }
+.stress-pick-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.stress-pick-row[hidden] { display: none; }
+.model-stress .stress-pick { display: inline-flex; align-items: center; gap: 4px; height: var(--control-h-sm); padding: 0 var(--space-2); }
+.model-stress .stress-pick[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-text); font-weight: 600; }
+.stress-chips { display: contents; list-style: none; margin: 0; padding: 0; }
+.stress-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  padding: 0 4px 0 8px;
+  border-radius: 10px;
+  border: 1px solid var(--chip-tint);
+  background: color-mix(in srgb, var(--chip-tint) 18%, transparent);
+  color: var(--text);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+.stress-chip:hover { background: color-mix(in srgb, var(--chip-tint) 32%, transparent); }
+.stress-chip[data-chip="hold"] { --chip-tint: var(--paint-enforce); }
+.stress-chip[data-chip="load"] { --chip-tint: #c2410c; }
+.model-stress label.stress-inline { flex-direction: row; align-items: center; gap: var(--space-2); }
+.model-stress label.stress-inline > span:first-child { flex: 0 0 auto; min-width: 56px; }
+.stress-unit-field { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
+.stress-unit { flex: 0 0 auto; color: var(--text-dim); font-size: var(--fs-1); min-width: 24px; }
+.stress-axis { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; margin-top: 4px; }
+.stress-axis-label { grid-column: 1 / -1; font-size: var(--fs-1); }
+.stress-grid-2 { grid-template-columns: 1fr 1fr; }
+.stress-more { margin: 0 0 var(--space-2); }
+.stress-more > summary { font-size: var(--fs-1); color: var(--text-dim); padding: 2px 0; }
+.stress-more > summary:hover { color: var(--text); }
+.stress-more[open] > :not(summary) { margin-top: 4px; }
+.stress-group .stress-more { margin-bottom: 0; }
 .stress-label { margin: 0; font-weight: 600; }
 .stress-note { margin: 0; color: var(--text-dim); font-size: var(--fs-1); }
 .stress-table { width: 100%; border-collapse: collapse; font-size: var(--fs-1); }
