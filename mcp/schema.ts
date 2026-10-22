@@ -1,5 +1,7 @@
 /** Tool input schemas. They are the contract the handlers validate against. */
 
+import { GROUP_NAMES, groupOf, TOOLS_ENABLE_HELP } from "./groups.ts";
+
 const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from plate_list. Default: the selected object." };
 const jobHandle = { type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start, or from a long call that answered with a job." };
 const step = { type: "string", minLength: 1, maxLength: 80, description: "History step: node_N from model_history, or a step or batch label." };
@@ -1703,6 +1705,16 @@ export const TOOLS: ToolSpec[] = [
       properties: { index: { type: "integer", minimum: 0, description: "Point from blend_compare." } },
     },
   },
+  {
+    name: "tools_enable",
+    description: TOOLS_ENABLE_HELP,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["groups"],
+      properties: { groups: { type: "array", minItems: 1, maxItems: GROUP_NAMES.length, items: { enum: GROUP_NAMES }, description: "Group names." } },
+    },
+  },
 ];
 
 const FIELD_TEXT: Record<string, string> = {
@@ -1839,6 +1851,18 @@ export function advertisedTools(): ToolSpec[] {
     return { ...tool, inputSchema: { ...tool.inputSchema, properties: next } };
   });
   return advertisedCache;
+}
+
+/**
+ * The tools tools/list sends. With groups off (null), every tool but tools_enable, as before groups existed. With
+ * groups on, the core tools, tools_enable, and the tools of each enabled group.
+ */
+export function listedTools(groups: ReadonlySet<string> | null): ToolSpec[] {
+  if (groups === null) return advertisedTools().filter((tool) => tool.name !== "tools_enable");
+  return advertisedTools().filter((tool) => {
+    const group = groupOf(tool.name);
+    return group === null || groups.has(group);
+  });
 }
 
 export function toolByName(name: string): ToolSpec | undefined {

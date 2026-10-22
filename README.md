@@ -241,6 +241,8 @@ A long call sends progress notifications, so a client that restarts its timeout 
 
 Writes stay inside `LIME_MCP_WORKSPACE`. A path can be absolute, or relative to that workspace. Saving a project may overwrite a `.lime` file already in that folder. `app_open` saves the plate in the workspace and opens it in the desktop app. If no running app answers the live bridge, it starts the installed app with the file.
 
+Tool groups are an opt-in for clients that pay for every listed tool. Set `LIME_MCP_TOOL_GROUPS=1` in the server's `env`. The first tool list then has only the core tools: session, project, import, place, machines, settings, slice, export, `render_view`, and `guide`, plus `tools_enable`. That list is about 15 KB instead of about 53 KB. `tools_enable {groups: ["model"]}` adds a group, and the server sends `notifications/tools/list_changed`, so the client reads the list again. The groups are `model`, `paint`, `supports`, `plate`, `layers`, `calibration`, and `machines`. The `tools_enable` description says what each group holds. A call to a tool whose group is not enabled is refused, and the refusal names the `tools_enable` call to make. Without the variable, every tool is listed, as before. A client that ignores `list_changed` should not use groups.
+
 Release notes:
 
 - 2.1.0: `model_build`, extrude, revolve, shell, pocket, boss, texture, pattern, mirror, labels, `model_params`, `render_view`, `model_check`.

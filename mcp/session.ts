@@ -69,6 +69,7 @@ import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.t
 import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { reviewGcode } from "./review.ts";
 import { GUIDES, guideByUri } from "./guides.ts";
+import { GROUP_NAMES, groupOf, groupsOptedIn, TOOL_GROUPS } from "./groups.ts";
 import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
 import { standRegion } from "./plane-region.ts";
 import { closeCracks, edgeReport } from "../src/mesh-check.ts";
@@ -191,7 +192,7 @@ const DETACHABLE = new Set([
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
 const WHILE_BUSY = new Set([
-  "session_info", "guide", "plate_list", "slice_wait", "slice_cancel", "model_history", "settings_schema", "machine_list",
+  "session_info", "guide", "tools_enable", "plate_list", "slice_wait", "slice_cancel", "model_history", "settings_schema", "machine_list",
   "machine_get", "overrides_list", "layer_actions_list", "paint_list", "gcode_summary", "gcode_read", "layer_summary",
   "layer_detail", "mesh_stats", "support_trees",
 ]);
@@ -729,6 +730,10 @@ export class Session {
   clearanceMm = 0;
   gantryMm = 0;
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
+  /** The tool groups enabled, when the server lists groups (LIME_MCP_TOOL_GROUPS=1); null lists every tool. */
+  toolGroups: Set<string> | null = groupsOptedIn() ? new Set() : null;
+  /** Called when tools_enable changes the tool list, so the client is told. */
+  onToolsChanged: (() => void) | null = null;
   /** Names model ops may use in place of numbers. Set with model_params; the evaluated values. */
   params: Record<string, number> = {};
   /**
@@ -772,6 +777,8 @@ export class Session {
     }
     const busy = this.busyRefusal(name);
     if (busy) return Promise.resolve(busy);
+    const hidden = this.groupRefusal(name);
+    if (hidden) return Promise.resolve(hidden);
     const numbered = this.withNumbers(name, args);
     if ("reason" in numbered) return Promise.resolve({ ok: false, reason: numbered.reason });
     const picked = edgePicksAsTyped(numbered.args);
@@ -897,6 +904,23 @@ export class Session {
     if (!job || WHILE_BUSY.has(name)) return null;
     const at = job.ctx.stage ? `, ${job.ctx.stage}` : "";
     return { ok: false, job: job.handle, reason: `${job.tool}${job.object ? ` on ${job.object}` : ""} is still running in the background as ${job.handle}${at}. Call slice_wait {job:"${job.handle}"} until it is done, or slice_cancel to take it back, then call this again.` };
+  }
+
+  /** With groups on, a tool of a group not enabled is refused with the call that enables it. */
+  private groupRefusal(name: string): Record<string, unknown> | null {
+    const group = this.toolGroups ? groupOf(name) : null;
+    if (group === null || this.toolGroups!.has(group)) return null;
+    return { ok: false, group, reason: `${name} is in the ${group} group, which is not enabled. Call tools_enable {groups:["${group}"]}, then call ${name} again.` };
+  }
+
+  /** tools_enable: adds groups to the list and tells the client it changed. With groups off, every tool is already listed. */
+  private toolsEnable(input: Record<string, unknown>): Record<string, unknown> {
+    const asked = (input.groups as string[]).filter((group) => group in TOOL_GROUPS);
+    if (!this.toolGroups) return { ok: true, enabled: [...GROUP_NAMES], note: "Every tool is already listed." };
+    const added = asked.filter((group) => !this.toolGroups!.has(group));
+    for (const group of added) this.toolGroups.add(group);
+    if (added.length > 0) this.onToolsChanged?.();
+    return { ok: true, enabled: GROUP_NAMES.filter((group) => this.toolGroups!.has(group)), added: added.flatMap((group) => TOOL_GROUPS[group]!.tools) };
   }
 
   /** What the call is doing now, for its progress notifications and its job's wait. */
@@ -1175,6 +1199,7 @@ export class Session {
       case "blend_compare": return this.blendCompare(input);
       case "blend_apply": return this.blendApply(input);
       case "guide": return this.guide(input);
+      case "tools_enable": return this.toolsEnable(input);
       default: return this.model(name, input);
     }
   }

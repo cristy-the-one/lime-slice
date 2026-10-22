@@ -1,5 +1,6 @@
 import { occtHint } from "./engine.ts";
-import { advertisedTools, annotationsFor, OP_KINDS, OP_SUMMARY, TOOLS, validateTool } from "./schema.ts";
+import { groupOf, TOOL_GROUPS } from "./groups.ts";
+import { advertisedTools, annotationsFor, listedTools, OP_KINDS, OP_SUMMARY, TOOLS, validateTool, type ToolSpec } from "./schema.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean) {
@@ -69,13 +70,17 @@ check("every property has a description", undescribed.length === 0);
 // token for current tokenizers. The list was 78.8 KB (~19,700 tokens) before model_apply's op became kind names
 // and one line each (its full schema alone was 28.9 KB); guide {kind} serves a kind's full schema on demand.
 const tokens = (text: string) => Math.ceil(Buffer.byteLength(text) / 4);
-const rows = advertisedTools().map((tool) => ({
+const rowsOf = (tools: ToolSpec[]) => tools.map((tool) => ({
   name: tool.name,
   description: tool.description,
   inputSchema: tool.inputSchema,
   annotations: annotationsFor(tool.name),
 }));
-const listed = JSON.stringify({ tools: rows });
+// Every tool, tools_enable too, for the per-tool budget; the default list (groups off) for the total.
+const rows = rowsOf(advertisedTools());
+const listed = JSON.stringify({ tools: rowsOf(listedTools(null)) });
+const core = JSON.stringify({ tools: rowsOf(listedTools(new Set())) });
+console.log(`with tool groups on, the first tools/list is ${Buffer.byteLength(core)} bytes, ~${tokens(core)} tokens, ${listedTools(new Set()).length} tools`);
 const TOOL_BUDGET = 750;
 /** Tools allowed past TOOL_BUDGET, each with its reason. */
 const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }> = {
@@ -87,10 +92,15 @@ const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");
 check(`every tool fits its token budget${over.length ? `: ${overText}` : ""}`, over.length === 0);
 const total = tokens(listed);
-console.log(`tools/list is ${Buffer.byteLength(listed)} bytes, ~${total} tokens, ${rows.length} tools`);
+console.log(`tools/list is ${Buffer.byteLength(listed)} bytes, ~${total} tokens, ${listedTools(null).length} tools`);
 const largest = sized.slice(0, 10).map((row) => `${row.name} ~${row.tokens}`).join(", ");
 check(`tools/list fits ${TOTAL_BUDGET} tokens${total > TOTAL_BUDGET ? ` (it is ~${total}; largest: ${largest})` : ""}`, total <= TOTAL_BUDGET);
-check("model_apply lists every op kind by name", JSON.stringify(rows.find((row) => row.name === "model_apply")!.inputSchema).includes('"enum":["hole","fillet"'));
+const grouped = Object.values(TOOL_GROUPS).flatMap((row) => row.tools);
+check("every grouped tool is a tool, in one group", grouped.every((name) => names.has(name)) && new Set(grouped).size === grouped.length);
+check("groups off lists every tool but tools_enable", listedTools(null).length === TOOLS.length - 1 && !listedTools(null).some((tool) => tool.name === "tools_enable"));
+check("groups on lists the core and tools_enable first", listedTools(new Set()).every((tool) => groupOf(tool.name) === null) && listedTools(new Set()).some((tool) => tool.name === "tools_enable") && listedTools(new Set()).some((tool) => tool.name === "slice_start"));
+check("an enabled group adds its tools", listedTools(new Set(["paint"]).add("model")).some((tool) => tool.name === "model_apply" && listedTools(new Set(["paint"])).every((row) => row.name !== "model_apply")));
+check("model_apply lists every op kind by name",JSON.stringify(rows.find((row) => row.name === "model_apply")!.inputSchema).includes('"enum":["hole","fillet"'));
 
 const accepted: [string, unknown][] = [
   ["session_info", {}],

@@ -609,6 +609,8 @@ Short prompts, not tools. They tell the client which tools to call. They do not 
 
 A cube slice JSON with preview and G-code is far larger than a context window needs. The default tool result for `slice_wait` is the estimate, the warnings, and the handles. Budget: under 2 KB for that result. History pages are one line per node. Face and edge pages are the caller's `limit`. The tessellation stays in the server. This is the same split the UI already uses when it parks G-code and keeps the preview itself.
 
+Tool groups (`mcp/groups.ts`) are opt-in with `LIME_MCP_TOOL_GROUPS=1`. The server then declares `capabilities.tools.listChanged: true`, adds a sentence about groups to `instructions`, and lists only the core tools and `tools_enable` (27 tools, about 3,700 tokens). `tools_enable {groups}` adds `model`, `paint`, `supports`, `plate`, `layers`, `calibration`, or `machines`, and sends `notifications/tools/list_changed`. A call to a tool of a group that is not enabled answers `{ok: false, group, reason}`, and the reason names the `tools_enable` call. It does not enable the group itself, because a caller that has not seen a tool's schema should read it first. An environment variable was chosen over an `initialize` parameter: the client config already sets the server's environment, and no client has to send a field outside the protocol. Without the variable, the list is unchanged and `tools_enable` is not listed. If it is called, it says every tool is already listed.
+
 ## 5. Safety and trust
 
 ### Printers
