@@ -55,6 +55,7 @@ import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
 import { beltLayerNormal, cloneStudy, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type Vec3 as SimVec } from "../src/sim/study.ts";
 import { LABEL } from "../src/sim/label.ts";
+import { readBeadSection, withBeads } from "../src/sim/cards.ts";
 import {
   BEAM_SIZE,
   OPEN_MESH,
@@ -270,6 +271,7 @@ interface WorkJob {
 
 /** `layer_image` coloured by stress before any sliced study. */
 const STRESS_LAYER_NEEDS = "Run sim_run on a sliced study of this object, then colour by stress or safety.";
+const BEADS_REFUSAL = "A card's beads need every modulus and strength above 0, and a bridgeFactor above 0 and at most 1.";
 
 export interface PlateObject {
   id: string;
@@ -6186,6 +6188,8 @@ export class Session {
     const row = value as Record<string, unknown>;
     const base = (typeof row.id === "string" ? cards.find((card) => card.id === row.id) : undefined) ?? fallback;
     const num = (key: string, current: number) => (typeof row[key] === "number" && Number.isFinite(row[key] as number) ? (row[key] as number) : current);
+    const beads = row.beads === undefined ? base.beads : readBeadSection(row.beads);
+    if (beads === null) return { reason: BEADS_REFUSAL } as const;
     return {
       ...base,
       id: typeof row.id === "string" && row.id.trim() ? row.id : base.id,
@@ -6203,6 +6207,7 @@ export class Session {
       specimen: typeof row.specimen === "string" ? row.specimen : base.specimen,
       source: typeof row.source === "string" ? row.source : base.source,
       isotropic: row.isotropic === undefined ? base.isotropic : row.isotropic === true,
+      beads,
     };
   }
 
@@ -6526,7 +6531,7 @@ export class Session {
       });
     }
     if (loads.length === 0) return { ok: false, reason: "This study has no load." };
-    const sent: Record<string, unknown> = { ...card };
+    const sent: Record<string, unknown> = { ...withBeads(card) };
     for (const [key, value] of Object.entries(sent)) if (value === null || value === undefined) delete sent[key];
     const payload = JSON.stringify({
       request: body,

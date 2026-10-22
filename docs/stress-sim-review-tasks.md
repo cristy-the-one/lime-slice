@@ -659,7 +659,9 @@ moved 33% between the two sizes (0.28 to 0.42 mm), so it is honestly `rough`.
   fitted to it and the second runs only if its estimate fits too.
 - **The TypeScript cards carry no bead constants** (`src/sim/cards.ts`). So the desktop and the MCP solve every
   sliced cell as a smear, while the Rust placeholder cards carry a provisional bead section. The trial's notes say
-  so.
+  so. **Fixed:** a card has an optional `beads` section with the Rust names. `withBeads` derives the
+  provisional one from the card's own numbers when it is sent, so an edited or older card is never stale, and a
+  measured section is sent as given.
 
 ### The belt, end to end
 

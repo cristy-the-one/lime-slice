@@ -15,7 +15,7 @@ import { KLIPPER_NUMBERS, type KlipperLimits, type PrinterProfile } from "../pro
 import { ADVANCE, firmwareTakesArcs, type Firmware, type Rules } from "../settings-rules.ts";
 import { coerceHostKind, type MoonrakerConfigImport, type PrinterHostKind } from "./prusa-link.ts";
 import { fanDefaults, fanOf, readFan, withFan, type FanSettings } from "../fan.ts";
-import { provisionalCards, type MaterialCard } from "../sim/cards.ts";
+import { provisionalCards, readBeadSection, type MaterialCard } from "../sim/cards.ts";
 
 export const MACHINE_FILE_VERSION = 3;
 
@@ -404,6 +404,8 @@ function readMaterialCard(value: unknown): MaterialCard | null {
   if (typeof row.specimen !== "string") return null;
   if (row.method !== null && row.method !== undefined && typeof row.method !== "string") return null;
   if (typeof row.source !== "string") return null;
+  const beads = row.beads === undefined || row.beads === null ? undefined : readBeadSection(row.beads);
+  if (beads === null) return null;
   return {
     id: row.id,
     polymer: row.polymer,
@@ -422,6 +424,7 @@ function readMaterialCard(value: unknown): MaterialCard | null {
     method: typeof row.method === "string" ? row.method : null,
     source: row.source,
     isotropic: row.isotropic === true,
+    ...(beads ? { beads } : {}),
   };
 }
 

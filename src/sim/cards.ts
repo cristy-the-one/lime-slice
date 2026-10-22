@@ -23,6 +23,77 @@ export interface MaterialCard {
   method: string | null;
   source: string;
   isotropic: boolean;
+  /** Bead constants for the sliced representation, as `lime_sim::material::BeadSection` reads them. */
+  beads?: BeadSection;
+}
+
+/**
+ * A bead: along it, across it to the next bead, and across the layers. A
+ * provisional section is derived from the card's own numbers, so it never
+ * goes stale when the card is edited (see `withBeads`).
+ */
+export interface BeadSection {
+  provisional: boolean;
+  EAlongBeadMPa: number;
+  EAcrossBeadMPa: number;
+  EAcrossLayersMPa: number;
+  strengthAlongBeadMPa: number;
+  strengthAcrossBeadMPa: number;
+  strengthAcrossLayersMPa: number;
+  shearAcrossLayersMPa: number;
+  shearAcrossBeadMPa?: number;
+  bridgeFactor: number;
+}
+
+/**
+ * The placeholder section the Rust cards carry: the bond across beads is
+ * taken as the bond across layers, which is a placeholder, not a measurement.
+ */
+export function provisionalBeads(card: MaterialCard): BeadSection {
+  return {
+    provisional: true,
+    EAlongBeadMPa: card.EInPlaneMPa,
+    EAcrossBeadMPa: card.EAcrossLayersMPa,
+    EAcrossLayersMPa: card.EAcrossLayersMPa,
+    strengthAlongBeadMPa: card.strengthInPlaneMPa,
+    strengthAcrossBeadMPa: card.strengthAcrossLayersMPa,
+    strengthAcrossLayersMPa: card.strengthAcrossLayersMPa,
+    shearAcrossLayersMPa: card.shearAcrossLayersMPa,
+    bridgeFactor: 0.5,
+  };
+}
+
+/** The card as the solver takes it: a measured section is kept, any other is derived from the card. */
+export function withBeads(card: MaterialCard): MaterialCard {
+  if (card.beads && !card.beads.provisional) return card;
+  return { ...card, beads: provisionalBeads(card) };
+}
+
+/** A section from a file or a client, or `null` when a number is missing or out of range. */
+export function readBeadSection(value: unknown): BeadSection | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const positive = (key: string) => (typeof row[key] === "number" && Number.isFinite(row[key]) && (row[key] as number) > 0 ? (row[key] as number) : null);
+  const keys = ["EAlongBeadMPa", "EAcrossBeadMPa", "EAcrossLayersMPa", "strengthAlongBeadMPa", "strengthAcrossBeadMPa", "strengthAcrossLayersMPa", "shearAcrossLayersMPa"] as const;
+  const numbers = keys.map(positive);
+  if (numbers.some((n) => n === null)) return null;
+  const bridge = positive("bridgeFactor");
+  if (bridge === null || bridge > 1) return null;
+  const shearAcrossBead = row.shearAcrossBeadMPa === undefined || row.shearAcrossBeadMPa === null ? undefined : positive("shearAcrossBeadMPa");
+  if (shearAcrossBead === null) return null;
+  const [eAlong, eAcross, eLayers, sAlong, sAcross, sLayers, shearLayers] = numbers as number[];
+  return {
+    provisional: row.provisional === true,
+    EAlongBeadMPa: eAlong!,
+    EAcrossBeadMPa: eAcross!,
+    EAcrossLayersMPa: eLayers!,
+    strengthAlongBeadMPa: sAlong!,
+    strengthAcrossBeadMPa: sAcross!,
+    strengthAcrossLayersMPa: sLayers!,
+    shearAcrossLayersMPa: shearLayers!,
+    ...(shearAcrossBead !== undefined ? { shearAcrossBeadMPa: shearAcrossBead } : {}),
+    bridgeFactor: bridge,
+  };
 }
 
 function card(
@@ -35,7 +106,7 @@ function card(
   sZ: number,
   density: number,
 ): MaterialCard {
-  return {
+  return withBeads({
     id,
     polymer,
     provisional: true,
@@ -53,7 +124,7 @@ function card(
     method: null,
     source: "in-house",
     isotropic: false,
-  };
+  });
 }
 
 /** PLA, PETG, ABS, and TPU. No other polymer is invented. */

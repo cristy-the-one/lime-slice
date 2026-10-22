@@ -2,7 +2,7 @@
  * The JSON `lime_sim_bridge::study_json` reads, and the surface it draws.
  * Points stay in the model frame. Face triangles keep the solid's winding.
  */
-import type { MaterialCard } from "./cards.ts";
+import { withBeads, type MaterialCard } from "./cards.ts";
 import { LABEL } from "./label.ts";
 import {
   boxDiagonal,
@@ -128,7 +128,7 @@ export function buildStudyBody(input: StudyBodyInput): string | { reason: string
   if (loads.length === 0) return { reason: "This study has no load." };
   const study: Record<string, unknown> = {
     ...(input.study.edgeMm > 0 ? { hXy: input.study.edgeMm } : {}),
-    card: input.card,
+    card: withBeads(input.card),
     holds,
     loads,
     constraints: studyConstraints(input.constraints),

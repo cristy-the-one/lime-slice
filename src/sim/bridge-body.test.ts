@@ -45,6 +45,7 @@ if (typeof body !== "string") {
     };
   };
   check("Bed is a bed hold", parsed.study.holds[0]?.kind === "bed");
+  check("the card goes with its bead section", (parsed.study as unknown as { card: { beads?: { EAlongBeadMPa: number } } }).card.beads?.EAlongBeadMPa === 1800);
   check("a load with no face is the +X slab", parsed.study.loads[0]?.region.kind === "box" && parsed.study.loads[0]?.force[2] === -10);
   check("the edge length is hXy and the second size can be skipped", parsed.study.hXy === 2 && parsed.study.checkResolution === false);
   check("no target typed sends a safety factor of 1", parsed.study.constraints.length === 1 && parsed.study.constraints[0]?.kind === "minSafetyFactor" && parsed.study.constraints[0]?.value === 1);

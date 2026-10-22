@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { emptyOverrides, addRange, addVolume, defaultVolume } from "../overrides.ts";
 import { builtinLibrary, cardsOf, ensureBuiltins, parseLibrary, saveMaterialCard, serializeLibrary } from "../ui/machine-library.ts";
-import { provisionalCards } from "./cards.ts";
+import { provisionalCards, readBeadSection, withBeads } from "./cards.ts";
 import { recipeRefusal, REGIONS_REFUSAL, simRecipe } from "./recipe.ts";
 
 let failed = 0;
@@ -79,6 +79,27 @@ check("ensureBuiltins does not drop the array", ensureBuiltins(stored).materialC
 const edited = saveMaterialCard(plain, { ...provisionalCards()[1]!, provisional: false, specimen: "bars, 2026-10-21" });
 check("saving a card writes the array", edited.materialCards?.length === 4 && edited.materialCards?.find((card) => card.id === "inhouse-petg")?.provisional === false);
 check("the saved card comes back", parseLibrary(serializeLibrary(edited)).materialCards?.find((card) => card.id === "inhouse-petg")?.specimen === "bars, 2026-10-21");
+
+// Bead sections: the Rust placeholder cards' numbers, derived from the card so an edit can't leave them stale.
+check(
+  "PETG carries the Rust placeholder bead section",
+  JSON.stringify(petg?.beads) === JSON.stringify({
+    provisional: true, EAlongBeadMPa: 1800, EAcrossBeadMPa: 1500, EAcrossLayersMPa: 1500,
+    strengthAlongBeadMPa: 30, strengthAcrossBeadMPa: 15, strengthAcrossLayersMPa: 15, shearAcrossLayersMPa: 7.5, bridgeFactor: 0.5,
+  }),
+  JSON.stringify(petg?.beads),
+);
+const stiffer = withBeads({ ...petg!, EInPlaneMPa: 2400 });
+check("an edited card's provisional beads follow the edit", stiffer.beads?.EAlongBeadMPa === 2400);
+const measured = { ...petg!.beads!, provisional: false, bridgeFactor: 0.8 };
+check("a measured bead section is sent as given", withBeads({ ...petg!, EInPlaneMPa: 2400, beads: measured }).beads === measured);
+const { beads: _dropped, ...old } = petg!;
+check("a card saved before beads gets the placeholder section", withBeads(old).beads?.EAcrossBeadMPa === 1500);
+const kept = parseLibrary(serializeLibrary(saveMaterialCard(plain, { ...petg!, beads: measured })));
+check("a stored bead section comes back", JSON.stringify(kept.materialCards?.find((card) => card.id === "inhouse-petg")?.beads) === JSON.stringify(measured));
+const broken = parseLibrary(JSON.stringify({ ...JSON.parse(serializeLibrary(builtinLibrary())), materialCards: [{ ...petg!, beads: { ...measured, bridgeFactor: 1.5 } }] }));
+check("a card with a bridgeFactor past 1 is not read", broken.materialCards?.length === 0);
+check("a bead section with a missing modulus is not read", readBeadSection({ ...measured, EAcrossBeadMPa: undefined }) === null);
 
 if (failed) {
   console.error(`${failed} failed`);
