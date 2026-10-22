@@ -1,9 +1,10 @@
 /**
  * MCP over stdio. One JSON-RPC message per line. Logs stay off stdout.
  */
+import { GROUP_NAMES } from "./groups.ts";
 import { GUIDES } from "./guides.ts";
 import { imagesOf } from "./inline.ts";
-import { advertisedTools, annotationsFor } from "./schema.ts";
+import { annotationsFor, listedTools } from "./schema.ts";
 import type { CallMeta, Session } from "./session.ts";
 import { appVersion } from "./version.ts";
 
@@ -18,6 +19,8 @@ const INSTRUCTIONS = [
   "For a Model edit: faces_find, workplane_set, model_probe, model_apply, then model_commit so the plate uses the new solid.",
   "A refusal is a sentence and does not change the solid. Nothing is sent to a printer.",
 ].join(" ");
+
+const GROUPS_NOTE = `Only the core tools are listed. tools_enable {groups} adds a group: ${GROUP_NAMES.join(", ")}; a Model edit needs model.`;
 
 function guideText(name: "slice" | "model" | "paint" | "calibrate"): string {
   return GUIDES.find((guide) => guide.uri === `lime://guide/${name}`)?.text ?? "";
@@ -100,15 +103,15 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
       const protocolVersion = VERSIONS.includes(asked) ? asked : "2024-11-05";
       return result(id, {
         protocolVersion,
-        capabilities: { tools: {}, resources: {}, prompts: {} },
+        capabilities: { tools: session.toolGroups ? { listChanged: true } : {}, resources: {}, prompts: {} },
         serverInfo: { name: "lime-slice", version: appVersion() },
-        instructions: INSTRUCTIONS,
+        instructions: session.toolGroups ? `${INSTRUCTIONS} ${GROUPS_NOTE}` : INSTRUCTIONS,
       });
     }
     if (method === "ping") return result(id, {});
     if (method === "tools/list") {
       return result(id, {
-        tools: advertisedTools().map((tool) => ({
+        tools: listedTools(session.toolGroups).map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema,
@@ -220,6 +223,8 @@ export function serve(session: Session, input: NodeJS.ReadableStream = process.s
       params: { progressToken: token, progress, total: 1, ...(message ? { message } : {}) },
     });
   };
+
+  session.onToolsChanged = () => send({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
 
   session.onProgress = (_job, fraction, stage, token) => {
     if (token === undefined || !sent.has(token)) return;

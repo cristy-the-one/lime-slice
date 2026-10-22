@@ -1,0 +1,88 @@
+# Wall-clock frame-timing specs, kept out of the per-PR smoke run because they
+# measure frame times on SwiftShader software GL and fail on a slow runner.
+# They carry "@perf" in their title and live in e2e/model-speed.spec.ts.
+#
+# Run them locally exactly as before (after `npx vite build`):
+#   npm run test:perf
+# or the whole file, perf specs included:
+#   npx playwright test e2e/model-speed.spec.ts
+#
+# This workflow runs nightly, on demand, and on pull requests labelled ci:perf.
+name: Perf
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  perf:
+    name: frame-timing specs
+    # A pull request runs these only while it carries the ci:perf label.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:perf')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Frontend build
+        run: npx vite build
+
+      - name: Playwright browser version
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install Playwright Chromium
+        # A stuck apt mirror once held this step for over an hour. Each try
+        # gets five minutes, and a hung or failed try runs once more.
+        timeout-minutes: 12
+        run: |
+          for attempt in 1 2; do
+            timeout 300 npx playwright install --with-deps chromium && exit 0
+            echo "Playwright install try $attempt failed"
+          done
+          exit 1
+
+      - name: Playwright perf specs
+        run: npm run test:perf
+
+      # A failed nightly opens an issue, or adds a comment to the one already open.
+      - name: Report a failed nightly
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly perf specs failing"
+          body="The nightly frame-timing specs failed on ${GITHUB_SHA::8}: ${RUN_URL}"
+          gh label create ci:perf --color FBCA04 --description "Run the perf specs on this pull request" 2>/dev/null || true
+          number=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body" --label ci:perf
+          fi

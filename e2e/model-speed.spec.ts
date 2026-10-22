@@ -264,7 +264,7 @@ function tiledSlab(cols: number, rows: number, split: number) {
   return { volumeMm3: w * h * 5, positions, triangles, faces, edges: [] };
 }
 
-test("hovering and dragging a face of a part with thousands of faces keeps the view drawing", async ({ page }) => {
+test("hovering and dragging a face of a part with thousands of faces keeps the view drawing @perf", async ({ page }) => {
   const slab = tiledSlab(60, 50, 6);
   expect(slab.faces.length).toBeGreaterThan(3000);
   expect(slab.triangles.length).toBeGreaterThan(200_000);
@@ -316,7 +316,7 @@ function medianOf(times: number[]): number {
 
 test.use({ launchOptions: { args: ["--js-flags=--expose-gc", "--enable-precise-memory-info"] } });
 
-test("a two second knob drag on a 3,000 face part stays with the orbit", async ({ page }) => {
+test("a two second knob drag on a 3,000 face part stays with the orbit @perf", async ({ page }) => {
   const slab = tiledSlab(60, 50, 1);
   expect(slab.faces.length).toBeGreaterThan(3000);
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));

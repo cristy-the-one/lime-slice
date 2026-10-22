@@ -197,6 +197,27 @@ GUIDES.push({
   ].join("\n"),
 });
 
+GUIDES.push({
+  uri: "lime://guide/plans",
+  name: "Plans",
+  tools: ["plan_run", "solid_new", "faces_find", "workplane_set", "model_apply", "model_commit"],
+  text: [
+    "plan_run saves round trips when the next call needs only a handle or a number the last one returned, not a decision.",
+    "Each step runs as if called alone: the same checks, refusals, undo steps, and autosave. Up to 25 steps.",
+    "A string that is exactly \"$N.path\" becomes step N's result at that path. N counts from 1. The path is field names and list indexes split by dots: \"$1.object\", \"$2.faces.0.index\". \"$N\" alone is the whole result. \"$$\" starts a literal \"$\".",
+    "A new box with a hole in its top, in one call instead of five:",
+    "  plan_run {steps:[",
+    "    {tool:\"solid_new\", args:{primitive:\"box\", dx:40, dy:30, dz:10}},",
+    "    {tool:\"faces_find\", args:{object:\"$1.object\", normal:[0, 0, 1]}},",
+    "    {tool:\"workplane_set\", args:{object:\"$1.object\", faceIndex:\"$2.faces.0.index\"}},",
+    "    {tool:\"model_apply\", args:{object:\"$1.object\", op:{kind:\"hole\", diameterMm:5, through:true, at:{u:0, v:0}}, probe:true}},",
+    "    {tool:\"model_commit\", args:{object:\"$1.object\"}}]}",
+    "The plan stops at the first refused step. The reply has every step's result so far and failedStep; the steps before it stay applied, so fix that step and send the rest.",
+    "Call the tools one by one instead when you need to look at a result first: which face, whether a probe fits, what a render shows.",
+    "A plan past about 45 s answers with a job like a long call: slice_wait {job} returns the plan's result, and slice_cancel stops it at the step it is on.",
+  ].join("\n"),
+});
+
 export function guideByUri(uri: string): Guide | undefined {
   return GUIDES.find((guide) => guide.uri === uri);
 }

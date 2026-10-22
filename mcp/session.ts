@@ -98,13 +98,15 @@ import { occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts";
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
-import { pngImage, withImages, type InlineImage } from "./inline.ts";
+import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
+import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
 import { printFrame } from "../src/model-check.ts";
 import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
 import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { reviewGcode } from "./review.ts";
 import { GUIDES, guideByUri } from "./guides.ts";
+import { GROUP_NAMES, groupOf, groupsOptedIn, TOOL_GROUPS } from "./groups.ts";
 import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
 import { standRegion } from "./plane-region.ts";
 import { closeCracks, edgeReport } from "../src/mesh-check.ts";
@@ -112,7 +114,7 @@ import { lostVolume, notClosedReason, touchingEdges, touchingReason } from "./st
 import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
-import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./schema.ts";
+import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSchemaFor, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
@@ -230,7 +232,7 @@ const DETACHABLE = new Set([
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
 const WHILE_BUSY = new Set([
-  "session_info", "guide", "plate_list", "slice_wait", "slice_cancel", "model_history", "settings_schema", "machine_list",
+  "session_info", "guide", "tools_enable", "plate_list", "slice_wait", "slice_cancel", "model_history", "settings_schema", "machine_list",
   "machine_get", "overrides_list", "layer_actions_list", "paint_list", "gcode_summary", "gcode_read", "layer_summary",
   "layer_detail", "mesh_stats", "support_trees",
 ]);
@@ -817,6 +819,10 @@ export class Session {
   clearanceMm = 0;
   gantryMm = 0;
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
+  /** The tool groups enabled, when the server lists groups (LIME_MCP_TOOL_GROUPS=1); null lists every tool. */
+  toolGroups: Set<string> | null = groupsOptedIn() ? new Set() : null;
+  /** Called when tools_enable changes the tool list, so the client is told. */
+  onToolsChanged: (() => void) | null = null;
   /** Names model ops may use in place of numbers. Set with model_params; the evaluated values. */
   params: Record<string, number> = {};
   /**
@@ -860,6 +866,17 @@ export class Session {
     }
     const busy = this.busyRefusal(name);
     if (busy) return Promise.resolve(busy);
+    if (name === "plan_run") return this.planRun(args, meta);
+    return this.runCall(name, args, meta, false);
+  }
+
+  /**
+   * One tool call: numbers, validation, the autosave, the bridge mirror. A step of a plan runs here too, with inPlan:
+   * it never detaches on its own (the plan does, as a whole) and is not refused for the plan's own background job.
+   */
+  private runCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
+    const hidden = this.groupRefusal(name);
+    if (hidden) return Promise.resolve(hidden);
     const numbered = this.withNumbers(name, args);
     if ("reason" in numbered) return Promise.resolve({ ok: false, reason: numbered.reason });
     const picked = edgePicksAsTyped(numbered.args);
@@ -875,7 +892,7 @@ export class Session {
     this.inflight += 1;
     // A detachable call's work stops only for slice_cancel: the request's own cancel, which a client also sends when it
     // gives up waiting, hands the work to a background job instead of throwing it away.
-    const detachable = DETACHABLE.has(name);
+    const detachable = !inPlan && DETACHABLE.has(name);
     const stop = new AbortController();
     const ctx: CallMeta = detachable ? { progressToken: meta?.progressToken, signal: stop.signal } : (meta ?? {});
     let result: ReturnType<Session["dispatch"]>;
@@ -940,7 +957,7 @@ export class Session {
   private startWorkJob(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController): WorkJob {
     this.jobSeq += 1;
     const object = typeof input.object === "string" ? input.object : name.startsWith("model_") || name === "solid_new" ? this.selected : undefined;
-    const stoppable = name === "model_apply_batch" || name === "model_build" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
+    const stoppable = name === "plan_run" || name === "model_apply_batch" || name === "model_build" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
     const job: WorkJob = { handle: `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, stoppable, done: false, settled: Promise.resolve() };
     job.settled = work.then((value) => {
       job.result = value;
@@ -987,6 +1004,68 @@ export class Session {
     return { ok: false, job: job.handle, reason: `${job.tool}${job.object ? ` on ${job.object}` : ""} is still running in the background as ${job.handle}${at}. Call slice_wait {job:"${job.handle}"} until it is done, or slice_cancel to take it back, then call this again.` };
   }
 
+  /**
+   * plan_run: its steps in order through runCall, so each is checked, applied, and autosaved as if called alone. The
+   * plan as a whole is detachable: past replySeconds() it answers with a job, and slice_wait returns the plan's result.
+   */
+  private planRun(args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
+    const problem = validateTool("plan_run", args ?? {});
+    if (problem) throw new ProtocolError(problem);
+    const steps = (args as { steps: PlanStep[] }).steps;
+    const bad = planProblem(steps);
+    if (bad) throw new ProtocolError(bad);
+    if (this.inflight === 0) this.flushAutosave();
+    const stop = new AbortController();
+    const ctx: CallMeta = { progressToken: meta?.progressToken, signal: stop.signal };
+    const work = this.callContext.run(ctx, () => this.runPlan(steps, ctx));
+    return this.detachable("plan_run", args as Record<string, unknown>, work, ctx, stop, meta?.signal);
+  }
+
+  private async runPlan(steps: PlanStep[], ctx: CallMeta): Promise<Record<string, unknown>> {
+    const results: Record<string, unknown>[] = [];
+    const done: Record<string, unknown>[] = [];
+    const images: InlineImage[] = [];
+    const end = (head: Record<string, unknown>) => withImages({ ...head, steps: done }, images);
+    for (let i = 0; i < steps.length; i += 1) {
+      const n = i + 1;
+      const tool = steps[i]!.tool;
+      if (ctx.signal?.aborted) return end({ ok: false, failedStep: n, reason: `The plan was cancelled before step ${n} (${tool}). The steps before it stay applied.` });
+      const resolved = resolveReferences(steps[i]!.args ?? {}, results, n);
+      if ("reason" in resolved) return end({ ok: false, failedStep: n, reason: resolved.reason });
+      this.noteStage(`plan step ${n} of ${steps.length}: ${tool}`, i / steps.length);
+      let value: Record<string, unknown>;
+      try {
+        value = await this.runCall(tool, resolved.value, ctx, true);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : "The step failed.";
+        done.push({ step: n, tool, ok: false, reason });
+        return end({ ok: false, failedStep: n, reason: `Step ${n} (${tool}) failed: ${reason}` });
+      }
+      images.push(...imagesOf(value));
+      results.push(value);
+      done.push({ step: n, tool, result: value });
+      if (value.ok === false) return end({ ok: false, failedStep: n, reason: `Step ${n} (${tool}) was refused: ${typeof value.reason === "string" ? value.reason : "no reason given."}` });
+    }
+    return end({ ok: true });
+  }
+
+  /** With groups on, a tool of a group not enabled is refused with the call that enables it. */
+  private groupRefusal(name: string): Record<string, unknown> | null {
+    const group = this.toolGroups ? groupOf(name) : null;
+    if (group === null || this.toolGroups!.has(group)) return null;
+    return { ok: false, group, reason: `${name} is in the ${group} group, which is not enabled. Call tools_enable {groups:["${group}"]}, then call ${name} again.` };
+  }
+
+  /** tools_enable: adds groups to the list and tells the client it changed. With groups off, every tool is already listed. */
+  private toolsEnable(input: Record<string, unknown>): Record<string, unknown> {
+    const asked = (input.groups as string[]).filter((group) => group in TOOL_GROUPS);
+    if (!this.toolGroups) return { ok: true, enabled: [...GROUP_NAMES], note: "Every tool is already listed." };
+    const added = asked.filter((group) => !this.toolGroups!.has(group));
+    for (const group of added) this.toolGroups.add(group);
+    if (added.length > 0) this.onToolsChanged?.();
+    return { ok: true, enabled: GROUP_NAMES.filter((group) => this.toolGroups!.has(group)), added: added.flatMap((group) => TOOL_GROUPS[group]!.tools) };
+  }
+
   /** What the call is doing now, for its progress notifications and its job's wait. */
   private noteStage(stage: string, fraction?: number): void {
     const meta = this.callContext.getStore();
@@ -1014,7 +1093,7 @@ export class Session {
     }
     job.stop.abort();
     await Promise.race([job.settled, this.pause(SLICE_WAIT_DEFAULT_S * 1000)]);
-    if (!job.done) return { ok: true, job: job.handle, status: "cancelling", reason: "The work stops after the step it is on, and is then taken back. Call slice_wait for the outcome." };
+    if (!job.done) return { ok: true, job: job.handle, status: "cancelling", reason: job.tool === "plan_run" ? "The plan stops at the step it is on; a batch, build, or composite step is taken back, and the steps before it stay. Call slice_wait for the outcome." : "The work stops after the step it is on, and is then taken back. Call slice_wait for the outcome." };
     return this.workReply(job);
   }
 
@@ -1269,6 +1348,7 @@ export class Session {
       case "sim_field": return this.simField(input);
       case "sim_sweep": return this.simSweep(input);
       case "sim_cancel": return { ok: true, label: LABEL };
+      case "tools_enable": return this.toolsEnable(input);
       default: return this.model(name, input);
     }
   }
@@ -1315,11 +1395,21 @@ export class Session {
 
   /** The worked guides as a tool, for clients that do not read resources. */
   private guide(input: Record<string, unknown>): Record<string, unknown> {
+    if (typeof input.kind === "string") return this.opGuide(input.kind.trim());
     const topic = typeof input.topic === "string" ? input.topic.trim().toLowerCase() : "";
     if (!topic) return { ok: true, topics: GUIDES.map((row) => ({ topic: row.uri.replace("lime://guide/", ""), name: row.name, tools: row.tools })) };
     const found = guideByUri(`lime://guide/${topic}`);
     if (!found) return { ok: false, reason: `There is no guide named ${topic}. Topics: ${GUIDES.map((row) => row.uri.replace("lime://guide/", "")).join(", ")}.` };
     return { ok: true, topic, name: found.name, tools: found.tools, text: found.text };
+  }
+
+  /** One op kind's full schema, its line from tools/list, and the ops guide's lines about it. */
+  private opGuide(kind: string): Record<string, unknown> {
+    const schema = opSchemaFor(kind);
+    if (!schema) return { ok: false, reason: `There is no op kind ${kind}. Kinds: ${OP_KINDS.join(", ")}.` };
+    const ops = guideByUri("lime://guide/ops")?.text.split("\n") ?? [];
+    const examples = ops.filter((line) => new RegExp(`^\\s*(\\w+, )*${kind}[:,]`).test(line) || line.includes(`kind:\"${kind}\"`));
+    return { ok: true, kind, summary: OP_SUMMARY[kind], composite: isComposite(kind), schema, examples };
   }
 
   private printer(): PrinterRecord {

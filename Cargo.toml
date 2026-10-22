@@ -30,3 +30,9 @@ codegen-units = 1
 # Kirsch rows stay in this run.
 [profile.test.package.lime-sim]
 opt-level = 2
+
+# The slicer is float and geometry code. The slice_cube and solid_infill_speed
+# tests alone took three minutes unoptimised. opt-level 2 keeps `cargo test
+# -p lime-slice-core` fast. Optimisation does not change float results.
+[profile.test.package.lime-slice-core]
+opt-level = 2
