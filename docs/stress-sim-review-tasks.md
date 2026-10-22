@@ -603,7 +603,13 @@ Add them next to `mcp/layer-stress.test.ts`. `sim-sliced` needs the release engi
   - the test's captured flags live in an object, which TypeScript can follow through the callback.
 - **SR-23** runs the sim tests in the `mcp` job, after its release engine build.
 
-### SR-24 (P0, Grok). Move `pattern-slice.test.ts` out of the unit list
+### SR-24 (P0, Claude on the owner's ask). Move `pattern-slice.test.ts` out of the unit list
+
+Status: done, and wider than first written. `mcp/sim.test.ts` and `mcp/sim-sliced.test.ts` were in the unit list too,
+since S4: one spawns the `lime-sim` binary and the other loads the engine. In a copy with no `target/` and no
+installed app, the list failed nine checks and stopped. All three now run only in the `mcp` job, which also builds
+`lime-sim` in release. `solverPath` takes the release binary when there is one, else the debug one. The clean copy
+passes the whole list.
 
 - **The fault:** SR-20 added `mcp/pattern-slice.test.ts` to `tools/unit-tests.txt`. That list runs as
   `npm run test:unit` in the `ui` job too, which has no Rust toolchain and builds no engine. The test calls

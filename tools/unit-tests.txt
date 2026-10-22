@@ -100,13 +100,10 @@ mcp/export.test.ts
 mcp/golden.test.ts
 mcp/model.test.ts
 mcp/request.test.ts
-mcp/sim.test.ts
-mcp/sim-sliced.test.ts
 src/sim/recipe.test.ts
 src/sim/study.test.ts
 src/sim/bridge-body.test.ts
 src/sim/margin-text.test.ts
-mcp/pattern-slice.test.ts
 src/sim/study-mesh.test.ts
 src/sim/stress-cells.test.ts
 mcp/numbers.test.ts

@@ -4,6 +4,7 @@
  * solved in-process by the engine's `simStudy`. A sweep does not slice.
  */
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import type { MaterialCard } from "../src/sim/cards.ts";
@@ -52,8 +53,11 @@ export function representationOf(input: {
   return "smear";
 }
 
+/** The checkout's `lime-sim` binary: the release build when there is one, else the debug build. */
 export function solverPath(): string {
-  return fileURLToPath(new URL("../target/debug/lime-sim", import.meta.url));
+  const exe = process.platform === "win32" ? "lime-sim.exe" : "lime-sim";
+  const built = ["release", "debug"].map((profile) => fileURLToPath(new URL(`../target/${profile}/${exe}`, import.meta.url)));
+  return built.find((path) => existsSync(path)) ?? built[1]!;
 }
 
 export function boxPositions(length: number, width: number, height: number): Float32Array {
