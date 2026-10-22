@@ -360,6 +360,68 @@ pub struct SlicedReport {
     /// The second cell size's solve, when it ran.
     #[serde(skip)]
     pub finer: Option<(Solution, SlicedMesh)>,
+    /// Slice frame to the frame the study was given in, row-major.
+    #[serde(skip)]
+    pub frame: [[f64; 4]; 4],
+}
+
+/// The solved part's outer surface, ready to draw: three corners a
+/// triangle, in the study's frame. Each corner carries its node's
+/// displacement and its cell's averaged von Mises and safety factor, the
+/// values the margins read; a staircase cell under half full shows as
+/// unloaded rather than as its corner peaks.
+#[derive(Clone, Debug, Default)]
+pub struct DrawSurface {
+    pub positions: Vec<[f32; 3]>,
+    pub displacement: Vec<[f32; 3]>,
+    pub von_mises: Vec<f32>,
+    pub safety: Vec<f32>,
+}
+
+/// The first load case's surface at the first cell size.
+pub fn draw_surface(report: &SlicedReport, card: &Card) -> Option<DrawSurface> {
+    let solution = report.solution.as_ref()?;
+    let mesh = report.mesh.as_ref()?;
+    let to = Affine { m: report.frame };
+    let allow = card.material().allowables();
+    let axis = [0.0, 0.0, 1.0];
+    // Cell averages, by element: each cell's six elements share its value.
+    let mut by_cell: std::collections::HashMap<(u32, u32, u32), (f32, f32)> = Default::default();
+    for cell in cell_stresses(solution, mesh) {
+        let ctx = mesh.cells[cell.element].context(axis);
+        let sf = match &card.beads {
+            Some(b) => {
+                BeadMaxStress { beads: b }
+                    .safety_governed(&Stress { v: cell.stress }, &ctx)
+                    .0
+            }
+            None => MaxStress.safety(&Stress { v: cell.stress }, &allow, &ctx),
+        };
+        let (vm, sf) = if cell.staircase {
+            (0.0, f64::INFINITY)
+        } else {
+            (crate::material::von_mises(&cell.stress), sf)
+        };
+        let sf = if sf.is_finite() { sf.min(1.0e6) } else { 1.0e6 };
+        by_cell.insert(mesh.cell_of[cell.element], (vm as f32, sf as f32));
+    }
+    let mut out = DrawSurface::default();
+    for face in boundary_faces(&mesh.mesh) {
+        let (vm, sf) = by_cell
+            .get(&mesh.cell_of[face.element])
+            .copied()
+            .unwrap_or((0.0, 1.0e6));
+        for &node in &face.nodes[..3] {
+            let p = to.point(mesh.mesh.nodes[node]);
+            let u = to.vector(solution.displacement[node]);
+            out.positions.push([p[0] as f32, p[1] as f32, p[2] as f32]);
+            out.displacement
+                .push([u[0] as f32, u[1] as f32, u[2] as f32]);
+            out.von_mises.push(vm);
+            out.safety.push(sf);
+        }
+    }
+    Some(out)
 }
 
 /// An affine map, row-major, the last row `[0, 0, 0, 1]`.
@@ -618,6 +680,7 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
         case_solutions: std::mem::take(&mut case_solutions),
         mesh: Some(first.mesh),
         finer,
+        frame: field.header.frame,
     })
 }
 

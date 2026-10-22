@@ -28,6 +28,8 @@ pub struct BoundaryFace {
     pub normal: [f64; 3],
     pub area: f64,
     pub centroid: [f64; 3],
+    /// The element the face bounds.
+    pub element: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -451,14 +453,15 @@ pub fn boundary_faces(mesh: &Mesh) -> Vec<BoundaryFace> {
         }
     }
     let mut faces = Vec::new();
-    for elem in &mesh.elements {
+    for (ei, elem) in mesh.elements.iter().enumerate() {
         for face in 0..4 {
             let mut key = face_corners(elem, face);
             key.sort_unstable();
             if count[&key] != 1 {
                 continue;
             }
-            if let Some(built) = outward_face(mesh, elem, face) {
+            if let Some(mut built) = outward_face(mesh, elem, face) {
+                built.element = ei;
                 faces.push(built);
             }
         }
@@ -532,6 +535,7 @@ fn outward_face(mesh: &Mesh, elem: &Cell, face: usize) -> Option<BoundaryFace> {
         normal,
         area,
         centroid,
+        element: 0,
     })
 }
 

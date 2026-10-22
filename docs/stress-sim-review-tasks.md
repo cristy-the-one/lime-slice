@@ -326,6 +326,9 @@ Request:
   ids are in. The bridge undoes the object's pose and the slice's own frame.
 - **Faces:** a `faces` region carries the faces' **triangles**, because `lime-sim` has no B-rep. Take them from the
   solid's positions and its per-triangle face ids, the same arrays the view draws.
+- **Winding:** keep the triangles wound as the model's are, counter-clockwise from outside. A surface face of the grid
+  belongs to a model face only when their normals agree, so a face wound inward selects nothing. The reply then says
+  "A hold's region touches no surface of the sliced part."
 - **Regions:** the other kinds are `box` (`min`, `max`) and `near` (`point`, `radius`).
 
 Reply:
@@ -412,6 +415,9 @@ rather than scaling the formula.
 - The stress section is long. Put Run and Cancel where the other tools keep them, pinned at the foot of the dock.
 
 ### SR-14 (Claude). The bridge
+
+Status: done. `crates/lime-sim-bridge`, the engine's `simStudy` and `sliceField` call it, and `lime-sim`'s
+`sliced_study::draw_surface` builds the surface.
 
 As specified above, with Rust tests:
 - a placed box's result comes back in the model frame;

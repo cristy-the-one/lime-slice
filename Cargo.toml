@@ -10,6 +10,7 @@ members = [
     "crates/lime-preview",
     "crates/lime-shell",
     "crates/lime-sim",
+    "crates/lime-sim-bridge",
     "src-tauri",
 ]
 

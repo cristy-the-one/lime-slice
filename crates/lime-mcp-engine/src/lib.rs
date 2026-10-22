@@ -16,9 +16,8 @@ use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use lime_sim::slice_field::{role_index, Header, LayerRow, Segment, SliceField, ROLES};
+use lime_sim_bridge::slice_field;
 use lime_slice_core::{slice_payload_watched, Job, Watch};
-use sha2::{Digest, Sha256};
 use serde_json::{json, Value};
 
 const JOB_KEEP: usize = 8;
@@ -290,65 +289,6 @@ fn pareto_json(body: &str) -> String {
     }
 }
 
-/// `slice-field-1` of one object: the beads its G-code extrudes, less the
-/// skirt, supports and ironing, which carry no load. The slicer is asked
-/// for the same slice an ordinary one-object request makes.
-fn slice_field(req: &lime_slice_core::SliceRequest, job: Job, watch: &Watch) -> Result<SliceField, String> {
-    let reply = lime_slice_core::slice_beads(req, job, watch)?;
-    let sliced = reply.beads.as_ref().expect("slice_beads keeps the beads");
-    let mut segments = Vec::with_capacity(sliced.beads.len());
-    let mut layers: Vec<LayerRow> = Vec::new();
-    for bead in &sliced.beads {
-        let Some(role) = role_index(bead.kind.as_str()) else {
-            continue;
-        };
-        let index = bead.layer as u32;
-        match layers.last_mut() {
-            Some(row) if row.index == index => row.bead_count += 1,
-            _ => {
-                let layer = sliced
-                    .layers
-                    .iter()
-                    .find(|l| l.index == bead.layer)
-                    .expect("a bead's layer is listed");
-                layers.push(LayerRow {
-                    index,
-                    z_mm: layer.z_mm,
-                    height_mm: layer.height_mm,
-                    bead_start: segments.len() as u32,
-                    bead_count: 1,
-                });
-            }
-        }
-        let f = |p: [f64; 3]| [p[0] as f32, p[1] as f32, p[2] as f32];
-        segments.push(Segment {
-            layer: index,
-            role,
-            from: f(bead.from),
-            to: f(bead.to),
-            width_mm: bead.width as f32,
-            bead_height_mm: bead.height as f32,
-            flow: bead.flow as f32,
-        });
-    }
-    if segments.is_empty() {
-        return Err("The slice has no beads that carry load.".into());
-    }
-    let hash = Sha256::digest(serde_json::to_vec(req).map_err(|e| e.to_string())?);
-    Ok(SliceField {
-        header: Header {
-            format: lime_sim::slice_field::FORMAT.into(),
-            slice_hash: hash.iter().map(|b| format!("{b:02x}")).collect(),
-            frame: sliced.frame,
-            layer_normal: sliced.layer_normal,
-            layers,
-            roles: ROLES.iter().map(|r| r.to_string()).collect(),
-            segment_count: segments.len() as u32,
-        },
-        segments,
-    })
-}
-
 /// `{ "request": <slice request>, "path": <file> }`: writes the object's
 /// `slice-field-1` to `path` and answers with its header and size.
 fn slice_field_json(body: &str) -> String {
@@ -384,6 +324,11 @@ fn slice_field_json(body: &str) -> String {
     .to_string()
 }
 
+/// A stress study of one object as it is sliced: `lime_sim_bridge::study_json`.
+fn sim_study_json(body: &str) -> String {
+    lime_sim_bridge::study_json(body)
+}
+
 fn occt_ready() -> bool {
     let reply = model_tree_json(r#"{"call":"close","key":"lime-mcp-occt-probe"}"#);
     let missing = reply.contains("was not found") || reply.contains("Could not load the Open CASCADE bridge");
@@ -394,7 +339,7 @@ fn occt_ready() -> bool {
 mod napi_host {
     use super::{
         calibrate_json, cancel_slice, mesh_preview_json, model_tree_json, occt_ready, pareto_json, poll_slice,
-        slice_field_json, start_slice,
+        sim_study_json, slice_field_json, start_slice,
     };
     use serde_json::json;
     #[cfg(not(windows))]
@@ -699,6 +644,13 @@ unsafe extern "C" fn slice_field_cb(env: NapiEnv, info: NapiCallbackInfo) -> Nap
     return_string(env, &slice_field_json(&body))
 }
 
+unsafe extern "C" fn sim_study_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &sim_study_json(&body))
+}
+
 unsafe fn export_fn(env: NapiEnv, exports: NapiValue, name: &str, cb: NapiCallback) {
     let c_name = CString::new(name).unwrap();
     let mut func: NapiValue = ptr::null_mut();
@@ -728,6 +680,7 @@ pub unsafe extern "C" fn napi_register_module_v1(env: NapiEnv, exports: NapiValu
     export_fn(env, exports, "calibrate", calibrate_cb);
     export_fn(env, exports, "pareto", pareto_cb);
     export_fn(env, exports, "sliceField", slice_field_cb);
+    export_fn(env, exports, "simStudy", sim_study_cb);
     exports
 }
 

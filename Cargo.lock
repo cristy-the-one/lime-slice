@@ -2621,9 +2621,9 @@ dependencies = [
  "base64 0.22.1",
  "lime-model-load",
  "lime-sim",
+ "lime-sim-bridge",
  "lime-slice-core",
  "serde_json",
- "sha2",
 ]
 
 [[package]]
@@ -2678,6 +2678,18 @@ dependencies = [
  "faer",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lime-sim-bridge"
+version = "3.5.0"
+dependencies = [
+ "base64 0.22.1",
+ "lime-sim",
+ "lime-slice-core",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
