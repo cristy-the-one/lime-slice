@@ -2,7 +2,9 @@
  * The one-object slice body a stress study sends. A plate of several parts
  * still studies the open object alone. `sim` is not a slice field.
  */
+import { bytesToBase64 } from "../base64.ts";
 import { beltStamp } from "../ui/machine-library.ts";
+import { encodeStl, placeMesh } from "../mesh-place.ts";
 import { emptyOverrides } from "../overrides.ts";
 import { sourceFrame } from "../plate.ts";
 import { reinforcementRequestFields, normalInfillDensity } from "../reinforcement.ts";
@@ -67,14 +69,22 @@ function objectUsesTree(): boolean {
  * The body a one-object slice sends for the open part, plus `dataB64`.
  * Preview and G-code stay off: the study only needs the beads.
  * A patch replaces walls, infill, or the pattern for one variant.
+ * `mesh` is the tessellation the faces were picked on, already scaled.
+ * Its pose is recomputed when that tessellation is not the plate mesh.
  */
-export function stressSliceRequest(patch?: SlicePatch): Record<string, unknown> | null {
-  if (!state.mesh) return null;
+export function stressSliceRequest(
+  patch?: SlicePatch,
+  mesh?: { positions: Float32Array; unscaled: Float32Array },
+): Record<string, unknown> | null {
+  if (!state.mesh && !mesh) return null;
   const library = loadMachineLibrary();
   const rules = currentRules(library);
-  const name = state.mesh.name || "part";
+  const name = state.mesh?.name || "part";
   const filename = state.sourcePos ? name.replace(/\.(3mf|step|stp)$/i, ".stl") : name;
-  const pose = currentPlacement()?.pose;
+  const own = mesh && state.sourcePos !== mesh.unscaled;
+  const pose = own
+    ? placeMesh(mesh.unscaled, state.orient, state.partScale, state.profile.bedX, state.profile.bedY, state.centered, state.offset).pose
+    : currentPlacement()?.pose;
   const frame = state.sourcePos ? sourceFrame(state.sourcePos, state.partScale) : null;
   const one = {
     filename,
@@ -110,7 +120,7 @@ export function stressSliceRequest(patch?: SlicePatch): Record<string, unknown> 
     overrides: state.overrides ?? emptyOverrides(),
     includePreview: false,
   })) as Record<string, unknown>;
-  body.dataB64 = meshBase64();
+  body.dataB64 = mesh ? bytesToBase64(new Uint8Array(encodeStl(mesh.positions, filename))) : meshBase64();
   body.includeGcode = false;
   const selected = selectedObject();
   const walls = patch?.walls ?? selected?.settings.walls;

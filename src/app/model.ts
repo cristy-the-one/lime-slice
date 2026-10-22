@@ -155,6 +155,7 @@ import { appParamMessage, evaluateTable, stepOutOfDate, usedByCount } from "../m
 import { refreshOp } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
 import { faceTriangles } from "../sim/bridge-body.ts";
+import { chooseStudyMesh } from "../sim/study-mesh.ts";
 import { mountStress, stressOpen, stressUndoState, syncStress, takeStressRedo, takeStressUndo } from "../ui/stress.ts";
 import { stressSliceRequest } from "./stress-slice.ts";
 import { beltLayerNormal } from "../sim/study.ts";
@@ -606,9 +607,9 @@ export function bindModelView() {
       return solid ? faceCentre(solid.positions, solid.triangles, index) : null;
     },
     bounds() {
-      const solid = viewed();
-      if (!solid) return null;
-      const box = boxOf(solid.positions);
+      const mesh = stressMesh();
+      if (!mesh || "reason" in mesh) return null;
+      const box = boundsOf(mesh.positions);
       return { min: [box.min[0], box.min[1], box.min[2]], max: [box.max[0], box.max[1], box.max[2]] };
     },
     modelPoint: (at) => applyPose(openPose(), at),
@@ -625,10 +626,15 @@ export function bindModelView() {
     toolOpen: () => openModelTool() != null,
     undo: () => undoUserEdit(),
     redo: () => redoUserEdit(),
-    sliceRequest: (patch) => stressSliceRequest(patch),
+    sliceRequest(patch) {
+      const mesh = stressMesh();
+      if (mesh && "reason" in mesh) return { reason: mesh.reason };
+      return stressSliceRequest(patch, mesh ?? undefined);
+    },
     faceTriangles(faces) {
-      const solid = viewed();
-      return solid ? faceTriangles(solid.positions, solid.triangles, faces) : [];
+      const mesh = stressMesh();
+      if (!mesh || "reason" in mesh || !mesh.triangles) return [];
+      return faceTriangles(mesh.positions, mesh.triangles, faces);
     },
   });
   noteParametersBuilt();
@@ -4355,6 +4361,24 @@ function posePoints(points: ArrayLike<number>, pose: Affine): number[] {
 /** The solid on screen: a tool's step, else the open solid's shown step. Every tool, pick and handle reads this one. */
 function viewed(): ParsedSolid | null {
   return lens?.solid ?? open?.solid ?? null;
+}
+
+/**
+ * The tessellation a stress study slices. Faces and the STL share it, scaled
+ * the same way. A missing solid is refused while the scale is not 1 or the
+ * step on screen is not the one on the plate.
+ */
+function stressMesh() {
+  const solid = viewed();
+  const tree = treeOf(open);
+  const plate = state.sourcePos && state.sourcePos.length >= 9 ? state.sourcePos : null;
+  return chooseStudyMesh({
+    picked: solid && solid.positions.length >= 9 ? solid.positions : null,
+    pickedTriangles: solid?.triangles ?? null,
+    plate,
+    scale: state.partScale,
+    committed: !tree || tree.current === tree.committed,
+  });
 }
 
 /** The box of the solid on screen, in model space. */

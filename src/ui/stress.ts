@@ -55,8 +55,11 @@ export interface StressHooks {
   toolOpen(): boolean;
   undo(): boolean;
   redo(): boolean;
-  /** The open object's one-object slice body, with its pose and mesh. */
-  sliceRequest(patch?: { walls?: number; infill?: number; pattern?: "lines" | "grid" | "gyroid" | "lightning" }): Record<string, unknown> | null;
+  /**
+   * The open object's one-object slice body, with its pose and mesh.
+   * A `{ reason }` is a refusal: the faces and the mesh are not one tessellation.
+   */
+  sliceRequest(patch?: { walls?: number; infill?: number; pattern?: "lines" | "grid" | "gyroid" | "lightning" }): Record<string, unknown> | { reason: string } | null;
   /** Face triangles in the model frame, wound as the solid stores them. */
   faceTriangles(faces: readonly number[]): FaceTriangles;
 }
@@ -616,6 +619,7 @@ async function runSweep() {
 function studyText(patch?: { walls?: number; infill?: number; pattern?: "lines" | "grid" | "gyroid" | "lightning"; loadScale?: number }): string | { reason: string } {
   const request = hooks?.sliceRequest(patch);
   if (!request) return { reason: "Load a mesh first." };
+  if ("reason" in request && typeof request.reason === "string" && !("dataB64" in request)) return { reason: request.reason };
   const card = currentCard();
   if (!card) return { reason: "That card is not in the library." };
   return buildStudyBody({

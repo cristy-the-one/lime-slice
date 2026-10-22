@@ -49,6 +49,7 @@ import type { PathColumns } from "../src/preview-wire.ts";
 import type { ColorMode } from "../src/colors.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
+import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
 import { beltLayerNormal, cloneStudy, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type Vec3 as SimVec } from "../src/sim/study.ts";
 import { LABEL } from "../src/sim/label.ts";
 import {
@@ -6340,22 +6341,36 @@ export class Session {
   }
 
   /**
-   * The mesh the study slices. An uncommitted solid's plate mesh is not the
-   * model yet, so the study uses the solid.
+   * The mesh the study slices: the solid the faces were picked on, scaled the
+   * same way, or the committed plate mesh when that is the same shape.
+   * A triangle-count difference is not the test. A box parameter keeps the count.
    */
-  private studyPositions(obj: PlateObject): Float32Array {
+  private studyMesh(obj: PlateObject): StudyMesh | { reason: string } {
+    const committed = !obj.treeStale && obj.bytes.byteLength > 0 && (!obj.tree || obj.platedNode === obj.tree.current);
     const solid = obj.solid;
-    const fromSource = Math.floor(obj.source.length / 9);
-    const fromSolid = solid ? Math.floor(solid.positions.length / 9) : 0;
-    if (solid && fromSolid >= 1 && fromSolid !== fromSource) return solid.positions;
-    return scaledCanonical(obj.source, obj.scale);
+    const choice = chooseStudyMesh({
+      picked: solid && solid.positions.length >= 9 ? solid.positions : null,
+      pickedTriangles: solid?.triangles ?? null,
+      plate: obj.source.length >= 9 ? obj.source : null,
+      scale: obj.scale,
+      committed,
+    });
+    if (!choice) return { reason: STUDY_MESH_REFUSAL };
+    if ("reason" in choice) return choice;
+    return choice;
+  }
+
+  /** The pose of the tessellation being sliced, when it is not the plate mesh. */
+  private studyPose(obj: PlateObject, unscaled: Float32Array): RigidPose | null {
+    if (unscaled === obj.source) return null;
+    const printer = this.printer();
+    return placeMesh(unscaled, obj.orient, obj.scale, printer.bedX, printer.bedY, obj.centered, obj.offset).pose;
   }
 
   /** Face index of each triangle. A generated beam with no solid pairs triangles into faces. */
-  private faceIds(obj: PlateObject, study: ObjectStudy, count: number): number[] | null {
-    const solid = obj.solid;
-    if (solid && solid.triangles.length === count) return Array.from(solid.triangles);
-    if (study.beam && !solid) return Array.from({ length: count }, (_, index) => Math.floor(index / 2));
+  private faceIds(obj: PlateObject, study: ObjectStudy, count: number, triangleIds: ArrayLike<number> | null): number[] | null {
+    if (triangleIds && triangleIds.length === count) return Array.from(triangleIds);
+    if (study.beam && !obj.solid) return Array.from({ length: count }, (_, index) => Math.floor(index / 2));
     return null;
   }
 
@@ -6363,8 +6378,14 @@ export class Session {
    * A region's triangles in the mesh frame, before the pose. A generated beam
    * stores clockwise corners, so those are reversed to face outward.
    */
-  private slicedRegion(obj: PlateObject, study: ObjectStudy, faces: number[], role: "hold" | "load"): Record<string, unknown> | { reason: string } {
-    const corners = this.studyPositions(obj);
+  private slicedRegion(
+    obj: PlateObject,
+    study: ObjectStudy,
+    faces: number[],
+    role: "hold" | "load",
+    corners: Float32Array,
+    triangleIds: ArrayLike<number> | null,
+  ): Record<string, unknown> | { reason: string } {
     if (faces.length === 0) {
       if (role === "hold") return { reason: "A hold's region touches no surface of the sliced part." };
       let minX = Infinity;
@@ -6390,7 +6411,7 @@ export class Session {
       return { kind: "box", min: [maxX - thick, minY, minZ], max: [maxX, maxY, maxZ] };
     }
     const count = Math.floor(corners.length / 9);
-    const ids = this.faceIds(obj, study, count);
+    const ids = this.faceIds(obj, study, count, triangleIds);
     if (!ids) return { reason: "That face is not on this part." };
     const want = new Set(faces);
     const reverse = study.beam !== undefined && obj.solid === null;
@@ -6417,18 +6438,25 @@ export class Session {
     if (!study.holds.some((hold) => hold.kind === "bed" || hold.faces.length > 0)) return { ok: false, reason: "Nothing is held." };
     const card = cardsOf(this.library).find((row) => row.id === study.cardId);
     if (!card) return { ok: false, reason: "That card is not in the library." };
-    const { body, mesh } = this.sliceBody(obj, "object");
+    const { body } = this.sliceBody(obj, "object");
     body.includePreview = false;
     body.includeGcode = false;
     delete body.sim;
-    const positions = this.studyPositions(obj);
-    const encoded = obj.solid && positions === obj.solid.positions
-      ? bytesToBase64(stlBytes(positions, stlFileName(obj.fileName)))
-      : bytesToBase64(mesh);
+    const mesh = this.studyMesh(obj);
+    if ("reason" in mesh) return { ok: false, reason: mesh.reason };
+    const encoded = bytesToBase64(stlBytes(mesh.positions, stlFileName(obj.fileName)));
+    const pose = this.studyPose(obj, mesh.unscaled);
     if (Array.isArray(body.objects)) {
       const first = body.objects[0];
-      if (first && typeof first === "object" && !Array.isArray(first)) (first as Record<string, unknown>).dataB64 = encoded;
-    } else body.dataB64 = encoded;
+      if (first && typeof first === "object" && !Array.isArray(first)) {
+        const row = first as Record<string, unknown>;
+        row.dataB64 = encoded;
+        if (pose) row.pose = pose;
+      }
+    } else {
+      body.dataB64 = encoded;
+      if (pose) body.pose = pose;
+    }
     if (obj.objectSettings.walls !== undefined && !Array.isArray(body.objects)) body.walls = obj.objectSettings.walls;
     if (obj.objectSettings.infill !== undefined && !Array.isArray(body.objects)) body.infill = obj.objectSettings.infill;
     const holds: Record<string, unknown>[] = [];
@@ -6437,13 +6465,13 @@ export class Session {
         holds.push({ kind: "bed" });
         continue;
       }
-      const region = this.slicedRegion(obj, study, hold.faces, "hold");
+      const region = this.slicedRegion(obj, study, hold.faces, "hold", mesh.positions, mesh.triangles);
       if ("reason" in region) return { ok: false, reason: region.reason };
       holds.push({ kind: "region", region });
     }
     const loads: Record<string, unknown>[] = [];
     for (const load of study.loads) {
-      const region = this.slicedRegion(obj, study, load.faces, "load");
+      const region = this.slicedRegion(obj, study, load.faces, "load", mesh.positions, mesh.triangles);
       if ("reason" in region) return { ok: false, reason: region.reason };
       if (load.kind === "pressure") {
         loads.push({ kind: "pressure", region, mpa: load.magnitude });
