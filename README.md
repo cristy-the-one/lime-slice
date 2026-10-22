@@ -233,7 +233,7 @@ Paths use forward slashes. Set `LIME_MCP_WORKSPACE` the same way.
 
 The server drives the same plate, settings, paint, and Model operations the window commits. The builders are shared (`src/modeling`, `src/model-request`): extrude, revolve, loft, sweep, shell, push/pull (`faceExtrude`, `moveFaces`), holes, fillet, chamfer, split, scale, boolean, pocket, boss, texture, pattern, mirror, text, array, and ribs, plus history edit, parameters, and STEP export. An LLM session therefore builds the same solids and the same G-code. The interactive sketch and its constraint solver stay in the window. The server takes numeric profiles and the feature operations, not pointer drags. There is no send-to-printer tool. `render_view` and `layer_image` give the client a picture of the solid or a layer.
 
-A typical slice is `machine_list`, `machine_select`, `mesh_import`, `slice_start`, `slice_wait`, `gcode_summary`. A hole is `faces_find`, `workplane_set`, `model_probe`, `model_apply`, `model_commit`, then `slice_start`. The guides `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate` hold the same sequences. `guide {topic: "ops"}` lists every Model op with an example, and `guide {kind: "fillet"}` gives one kind's full fields; the tool list names the kinds with one line each to stay small.
+A typical slice is `machine_list`, `machine_select`, `mesh_import`, `slice_start`, `slice_wait`, `gcode_summary`. A hole is `faces_find`, `workplane_set`, `model_probe`, `model_apply`, `model_commit`, then `slice_start`. The guides `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate` hold the same sequences. `guide {topic: "ops"}` lists every Model op with an example. `model_apply` names each op kind in one line to keep the tool list small, and `guide {kind: "fillet"}` returns that kind's full schema.
 
 `model_build` makes a solid, runs a batch of edits, and commits it in one call. Each edit is checked before it is applied. A step that Open CASCADE reports as done but that loses the part, or leaves pieces that meet only along an edge, is taken back and refused. A commit refuses a mesh that does not close, and `model_check` lists open and touching edges with where they are.
 
@@ -241,11 +241,11 @@ A long call sends progress notifications, so a client that restarts its timeout 
 
 Writes stay inside `LIME_MCP_WORKSPACE`. A path can be absolute, or relative to that workspace. Saving a project may overwrite a `.lime` file already in that folder. `app_open` saves the plate in the workspace and opens it in the desktop app. If no running app answers the live bridge, it starts the installed app with the file.
 
-Tool groups are an opt-in for clients that pay for every listed tool. Set `LIME_MCP_TOOL_GROUPS=1` in the server's `env`. The first tool list then has only the core tools: session, project, import, place, machines, settings, slice, export, `render_view`, `guide`, and `plan_run`, plus `tools_enable`. That list is about 16 KB instead of about 54 KB. `tools_enable {groups: ["model"]}` adds a group, and the server sends `notifications/tools/list_changed`, so the client reads the list again. The groups are `model`, `paint`, `supports`, `plate`, `layers`, `calibration`, and `machines`. The `tools_enable` description says what each group holds. A call to a tool whose group is not enabled is refused, and the refusal names the `tools_enable` call to make. Without the variable, every tool is listed, as before. A client that ignores `list_changed` should not use groups.
+Tool groups are an opt-in for clients that pay for every listed tool. Set `LIME_MCP_TOOL_GROUPS=1` in the server's `env`. The first tool list then has only the core tools: session, project, import, place, machine list and select, settings, slice, export, `render_view`, `guide`, and `plan_run`, plus `tools_enable`. That list is about 16 KB instead of about 54 KB. `tools_enable {groups: ["model"]}` adds a group, and the server sends `notifications/tools/list_changed`, so the client reads the list again. The groups are `model`, `paint`, `supports`, `plate`, `layers`, `calibration`, and `machines` (machine load, read, set, and save). The `tools_enable` description says what each group holds. A call to a tool whose group is not enabled is refused, and the refusal names the `tools_enable` call to make. Without the variable, every tool is listed, as before. A client that ignores `list_changed` should not use groups.
 
 `plan_run {steps: [{tool, args}, ...]}` runs up to 25 calls in one request. Each step is checked and applied as if it were called alone. An argument that is exactly `"$N.path"` becomes step N's result at that path: `"$1.object"` or `"$2.faces.0.index"`. N counts from 1, and the path is field names and list indexes split by dots. The plan stops at the first refused step and returns every step's result so far, with `failedStep`. A plan that runs past about 45 seconds answers with a job, like any long call. No code from the client runs. `guide {topic: "plans"}` has a worked example.
 
-Release notes:
+MCP release notes from 2.1.0 to 2.6.0. Later changes are in `docs/mcp-server.md`:
 
 - 2.1.0: `model_build`, extrude, revolve, shell, pocket, boss, texture, pattern, mirror, labels, `model_params`, `render_view`, `model_check`.
 - 2.2.0: `array` and `ribs` over a face; lit, edge-lined renders.
@@ -395,7 +395,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (3.6.0). Publishing that draft is a separate step. Draft releases through v1.8.0 are already on the repository.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (3.6.0). Publishing that draft is a separate step. Draft releases through v3.5.0 are already on the repository.
 
 ## Headless slice and bench
 
@@ -620,10 +620,13 @@ Printer profile: generic Marlin, 0.4 mm nozzle, 1.75 mm PLA at 1.24 g/cm³, 200 
 cargo test -p lime-slice-core
 cargo run -p lime-slice --release -- bench samples/calibration_cube_20mm.stl
 npx tsc --noEmit
+npx tsc --noEmit -p mcp
 npm run test:unit
 ```
 
-`npm run test:unit` runs the TypeScript unit tests and the MCP server tests. The native-load test needs `cargo build -p lime-mcp-engine --release` first. The Model edits against real Open CASCADE are a separate run, `node --experimental-strip-types mcp/occt.test.ts`, with `LIME_OCCT_BRIDGE` pointing at the bridge; it skips without it.
+`npm run test:unit` runs the files listed in `tools/unit-tests.txt`: the TypeScript unit tests and the MCP server tests. The native-load test needs `cargo build -p lime-mcp-engine --release` first. The Model edits against real Open CASCADE are a separate run, `node --experimental-strip-types mcp/occt.test.ts`, with `LIME_OCCT_BRIDGE` pointing at the bridge; it skips without it.
+
+The browser specs need `npx vite build` first. `npm run test:smoke` runs the per-pull-request set, and CI splits it into four shards (`npm run test:smoke -- --shard=1/4`). `npm run test:engine` runs the specs that need a real engine. The frame-timing specs, tagged `@perf` in `e2e/model-speed.spec.ts`, are left out of smoke. `npm run test:perf` runs them, and `.github/workflows/perf.yml` runs them nightly, by hand, and on a pull request that carries the `ci:perf` label. The slicer's own tests build at opt-level 2 (`[profile.test.package.lime-slice-core]` in `Cargo.toml`), so `cargo test -p lime-slice-core` stays fast.
 
 ## Not in this slice
 
