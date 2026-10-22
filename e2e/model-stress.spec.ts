@@ -62,6 +62,29 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await expect(page.locator("#modelStressMain")).toBeVisible();
   await expect(page.locator("#modelStress")).toContainText("In-house estimate");
   await expect(page.locator("#stressProvisional")).toHaveText("Provisional card, not a measurement.");
+  const patternFits = await page.locator("#stressVariantPattern").evaluate((select) => {
+    const style = getComputedStyle(select);
+    const canvas = document.createElement("canvas").getContext("2d");
+    if (!canvas) return false;
+    canvas.font = style.font;
+    const text = canvas.measureText("As printed").width;
+    const pad = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+    return select.clientWidth >= text + pad + 24;
+  });
+  expect(patternFits).toBe(true);
+  const pinned = await page.locator("#stressRun").evaluate((button) => {
+    const dock = document.querySelector("#modelDock")?.getBoundingClientRect();
+    const scroll = document.querySelector(".model-stress-scroll");
+    if (!dock || !(scroll instanceof HTMLElement)) return false;
+    const before = button.getBoundingClientRect();
+    const top = scroll.scrollTop;
+    scroll.scrollTop = scroll.scrollHeight;
+    const after = button.getBoundingClientRect();
+    scroll.scrollTop = top;
+    return before.top >= dock.top - 1 && before.bottom <= dock.bottom + 1 && Math.abs(after.top - before.top) < 1;
+  });
+  expect(pinned).toBe(true);
+  await page.screenshot({ path: "/opt/cursor/artifacts/stress-dock.png" });
 
   await page.locator("#stressForce").fill("25");
   await page.locator("#stressBed").check();

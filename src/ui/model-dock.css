@@ -257,8 +257,22 @@ html:not(.layout-compact) .model-dock .model-stress {
   padding: var(--space-1) var(--space-2) var(--space-2);
   border-top: 1px solid var(--line);
 }
-.model-stress .model-params-main { min-height: 0; overflow-y: auto; max-height: 46vh; }
+html:not(.layout-compact) .model-dock .model-stress:not([hidden]) {
+  flex: 1 1 auto;
+}
+.model-stress .model-params-main:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
 .model-stress .model-params-main[hidden] { display: none; }
+.model-stress-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
 .stress-group { border: 0; margin: 0 0 var(--space-2); padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .stress-group > legend { font-size: var(--fs-1); color: var(--text-dim); padding: 0; }
 .stress-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
@@ -266,7 +280,14 @@ html:not(.layout-compact) .model-dock .model-stress {
 .model-stress label { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-1); min-width: 0; }
 .model-stress .stress-check { flex-direction: row; align-items: center; gap: 6px; }
 .model-stress input, .model-stress select { width: 100%; height: var(--control-h-sm); }
-.model-stress .model-params-bar { display: flex; gap: 6px; }
+.model-stress .model-params-bar {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
 .model-stress .model-params-bar .btn { flex: 1 1 auto; }
 .stress-label { margin: 0; font-weight: 600; }
 .stress-note { margin: 0; color: var(--text-dim); font-size: var(--fs-1); }

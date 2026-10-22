@@ -475,6 +475,7 @@ export function mountMarkup(root: HTMLElement) {
               <button class="model-params-toggle" id="modelStressToggle" type="button" aria-controls="modelStressMain" aria-expanded="false"><span>Stress</span></button>
             </div>
             <div class="model-params-main" id="modelStressMain" hidden>
+              <div class="model-stress-scroll">
               <p class="stress-label" id="stressLabel"></p>
               <p class="stress-note" id="stressProvisional" hidden></p>
               <fieldset class="stress-group">
@@ -554,16 +555,16 @@ export function mountMarkup(root: HTMLElement) {
                   <label>Load scale <input id="stressVariantScale" type="number" min="0.01" step="0.1" value="1" aria-label="Load scale" /></label>
                   <label>Walls <input id="stressVariantWalls" type="number" min="1" max="12" step="1" aria-label="Variant walls" /></label>
                   <label>Infill <input id="stressVariantInfill" type="number" min="0" max="1" step="0.05" aria-label="Variant infill" /></label>
-                  <label>Pattern
-                    <select id="stressVariantPattern" aria-label="Variant pattern">
-                      <option value="">As printed</option>
-                      <option value="lines">Lines</option>
-                      <option value="grid">Grid</option>
-                      <option value="gyroid">Gyroid</option>
-                      <option value="lightning">Lightning</option>
-                    </select>
-                  </label>
                 </div>
+                <label>Pattern
+                  <select id="stressVariantPattern" aria-label="Variant pattern">
+                    <option value="">As printed</option>
+                    <option value="lines">Lines</option>
+                    <option value="grid">Grid</option>
+                    <option value="gyroid">Gyroid</option>
+                    <option value="lightning">Lightning</option>
+                  </select>
+                </label>
                 <button class="btn" id="stressVariantAdd" type="button">Add variant</button>
                 <p id="stressVariantList" class="stress-note"></p>
                 <div class="stress-grid">
@@ -577,6 +578,7 @@ export function mountMarkup(root: HTMLElement) {
                   <tbody id="stressSweepBody"></tbody>
                 </table>
               </fieldset>
+              </div>
               <div class="model-params-bar">
                 <button class="btn" id="stressCancel" type="button">Cancel</button>
                 <button class="btn primary" id="stressRun" type="button">Run</button>
