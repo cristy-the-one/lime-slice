@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { provisionalCards } from "../src/sim/cards.ts";
 import { NOT_WIRED } from "../src/sim/label.ts";
 import { cannedBeam, emptyStudy, type CannedResult } from "../src/sim/study.ts";
+import { existsSync, readFileSync } from "node:fs";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type MockSolid } from "./model-tree-mock";
 
@@ -36,7 +37,41 @@ function volumeOf(request: Body): number {
   return 4000;
 }
 
+function f32b64(values: number[]): string {
+  const buf = Buffer.alloc(values.length * 4);
+  values.forEach((value, index) => buf.writeFloatLE(value, index * 4));
+  return buf.toString("base64");
+}
+
+/** A one-triangle reply, or the small box the desktop command solved when that file is present. */
+function studyReply(): string {
+  const saved = "/tmp/lime-stress-box.json";
+  if (existsSync(saved)) return readFileSync(saved, "utf8");
+  return JSON.stringify({
+    ok: true,
+    report: {
+      representation: "sliced",
+      trust: "usable",
+      notes: ["Solved at one cell size."],
+      margins: [{ kind: "minSafetyFactor", value: 2.5, margin: 1.5, met: true, note: "above the band", hotSpot: { at: [1, 2, 3], role: "outer", governs: "across-layers" } }],
+      maxDisplacementMm: 0.1,
+      minSafetyFactor: 2.5,
+      massG: 1,
+    },
+    surface: {
+      triangles: 1,
+      positionsB64: f32b64([0, 0, 0, 4, 0, 0, 0, 4, 0]),
+      displacementB64: f32b64([0, 0, 0, 0, 0, 0, 0, 0, -0.2]),
+      vonMisesB64: f32b64([1, 4, 9]),
+      safetyB64: f32b64([3, 2, 1]),
+    },
+  });
+}
+
 async function openModel(page: Page) {
+  await page.addInitScript((reply: string) => {
+    (window as unknown as { __limeSimStudy?: (body: string) => string }).__limeSimStudy = () => reply;
+  }, studyReply());
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: boxSolid(4000).positions } }));
@@ -89,8 +124,9 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await page.locator("#stressForce").fill("25");
   await page.locator("#stressBed").check();
   await page.locator("#stressRun").click();
-  await expect(page.locator("#stressStatus")).toHaveText(NOT_WIRED);
-  await expect(page.locator("#stressLegend")).toBeHidden();
+  await expect(page.locator("#stressStatus")).toHaveText("");
+  await expect(page.locator("#model")).toHaveAttribute("data-stress", /shown [1-9]/);
+  await expect(page.locator("#stressLegend")).toBeVisible();
   await page.locator("#stressVariantScale").fill("2");
   await page.locator("#stressVariantAdd").click();
   await page.locator("#stressSweep").click();

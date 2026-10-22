@@ -5,7 +5,9 @@
  */
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { ModelView, StressDraw } from "../model-view.ts";
+import { buildStudyBody, surfaceResult, type FaceTriangles } from "../sim/bridge-body.ts";
 import type { MaterialCard } from "../sim/cards.ts";
+import { solveStudy } from "../sim/desktop-solve.ts";
 import { LABEL, NOT_WIRED, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
 import {
   arrowLength,
@@ -49,6 +51,10 @@ export interface StressHooks {
   toolOpen(): boolean;
   undo(): boolean;
   redo(): boolean;
+  /** The open object's one-object slice body, with its pose and mesh. */
+  sliceRequest(patch?: { walls?: number; infill?: number; pattern?: "lines" | "grid" | "gyroid" | "lightning" }): Record<string, unknown> | null;
+  /** Face triangles in the model frame, wound as the solid stores them. */
+  faceTriangles(faces: readonly number[]): FaceTriangles;
 }
 
 let hooks: StressHooks | null = null;
@@ -62,6 +68,9 @@ let redos = 0;
 let boundId: string | null = null;
 let hud: HudMount | null = null;
 let cardTouched = false;
+/** Bumped by Cancel and by a newer Run, so a late reply cannot replace the result. */
+let solveGeneration = 0;
+let solving = false;
 
 function byId<T extends HTMLElement>(id: string): T | null {
   return document.querySelector<T>(id);
@@ -388,13 +397,71 @@ function runSweep() {
   if (status) status.textContent = NOT_WIRED;
 }
 
-function run() {
+function studyText(patch?: { walls?: number; infill?: number; pattern?: "lines" | "grid" | "gyroid" | "lightning"; loadScale?: number }): string | { reason: string } {
+  const request = hooks?.sliceRequest(patch);
+  if (!request) return { reason: "Load a mesh first." };
+  const card = currentCard();
+  if (!card) return { reason: "That card is not in the library." };
+  return buildStudyBody({
+    request,
+    study: draft,
+    card,
+    triangles: (faces) => hooks?.faceTriangles(faces) ?? [],
+    bounds: hooks?.bounds() ?? null,
+    loadScale: patch?.loadScale,
+  });
+}
+
+async function run() {
   readForm();
   commitDraft();
-  setStatus(NOT_WIRED);
+  const refused = holdRefusal(draft);
+  if (refused) {
+    setStatus(refused);
+    return;
+  }
+  const body = studyText();
+  if (typeof body !== "string") {
+    setStatus(body.reason);
+    return;
+  }
+  const token = ++solveGeneration;
+  if (!solving) previous = result;
+  solving = true;
+  setStatus("Solving");
+  let text: string;
+  try {
+    text = await solveStudy(body);
+  } catch (err) {
+    if (token !== solveGeneration) return;
+    solving = false;
+    result = previous;
+    previous = null;
+    setStatus(err instanceof Error && err.message ? err.message : "The stress solve did not finish.");
+    syncDraw();
+    return;
+  }
+  if (token !== solveGeneration) return;
+  solving = false;
+  const parsed = surfaceResult(text, field, scaleOverride);
+  if ("error" in parsed) {
+    result = previous;
+    previous = null;
+    setStatus(parsed.error);
+    syncDraw();
+    return;
+  }
+  result = parsed;
+  previous = null;
+  if (scaleOverride == null) setNum("#stressScale", parsed.scale);
+  setStatus("");
+  syncDraw();
 }
 
 function cancelSolve() {
+  if (!solving) return;
+  solveGeneration += 1;
+  solving = false;
   result = previous;
   previous = null;
   setStatus("");

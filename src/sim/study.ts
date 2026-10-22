@@ -75,6 +75,16 @@ export interface CannedNode {
   safety: number;
 }
 
+/** One margin from a sliced study, with its hot spot in the model frame. */
+export interface SlicedMargin {
+  kind: string;
+  value: number;
+  margin: number;
+  met: boolean;
+  note?: string;
+  at: Vec3;
+}
+
 export interface CannedResult {
   label: typeof LABEL;
   nodes: CannedNode[];
@@ -88,6 +98,13 @@ export interface CannedResult {
   trust: TrustWord;
   trustSentence: string;
   diagonal: number;
+  /** Set when the bridge solved the part as sliced. */
+  representation?: "sliced";
+  notes?: string[];
+  margins?: SlicedMargin[];
+  maxDisplacementMm?: number;
+  minSafetyFactor?: number | null;
+  massG?: number;
 }
 
 const BED_MM = 0.05;

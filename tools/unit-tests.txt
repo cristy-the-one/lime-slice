@@ -103,6 +103,7 @@ mcp/request.test.ts
 mcp/sim.test.ts
 src/sim/recipe.test.ts
 src/sim/study.test.ts
+src/sim/bridge-body.test.ts
 mcp/numbers.test.ts
 mcp/render.test.ts
 mcp/native-load.test.ts

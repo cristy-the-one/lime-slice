@@ -154,7 +154,9 @@ import type { Params } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, stepOutOfDate, usedByCount } from "../modeling/params.ts";
 import { refreshOp } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
+import { faceTriangles } from "../sim/bridge-body.ts";
 import { mountStress, stressOpen, stressUndoState, syncStress, takeStressRedo, takeStressUndo } from "../ui/stress.ts";
+import { stressSliceRequest } from "./stress-slice.ts";
 import { beltLayerNormal } from "../sim/study.ts";
 import { beltStamp, cardsOf, saveMaterialCard } from "../ui/machine-library.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
@@ -623,6 +625,11 @@ export function bindModelView() {
     toolOpen: () => openModelTool() != null,
     undo: () => undoUserEdit(),
     redo: () => redoUserEdit(),
+    sliceRequest: (patch) => stressSliceRequest(patch),
+    faceTriangles(faces) {
+      const solid = viewed();
+      return solid ? faceTriangles(solid.positions, solid.triangles, faces) : [];
+    },
   });
   noteParametersBuilt();
   // --- E3. Inspect, the right dock in Model. ---

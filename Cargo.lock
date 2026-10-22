@@ -2729,6 +2729,7 @@ version = "3.5.0"
 dependencies = [
  "base64 0.22.1",
  "lime-model-load",
+ "lime-sim-bridge",
  "lime-slice-core",
  "serde",
  "serde_json",
