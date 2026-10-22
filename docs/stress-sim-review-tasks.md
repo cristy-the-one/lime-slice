@@ -587,3 +587,30 @@ None of these lines are in L6.
 
 `mcp/sim.test.ts` and `mcp/sim-sliced.test.ts` are missing from the `mcp` job's list in `.github/workflows/ci.yml`.
 Add them next to `mcp/layer-stress.test.ts`. `sim-sliced` needs the release engine that job already builds.
+
+## Review of SR-20, SR-22 and SR-23 (Claude, 2026-10-22, at `8ffef90`)
+
+**What was run:**
+- `tsc --noEmit` and `tsc -p mcp --noEmit` are both clean.
+- `mcp/pattern-slice.test.ts`, `mcp/sim.test.ts`, `mcp/sim-sliced.test.ts` and `mcp/layer-stress.test.ts` pass against
+  a release engine built from `8ffef90`.
+
+**What is good:**
+- **SR-22** fixes the types without casting them away:
+  - the wrong cast is gone;
+  - the sweep's settings are applied by their own keys;
+  - the sweep rows have a type;
+  - the test's captured flags live in an object, which TypeScript can follow through the callback.
+- **SR-23** runs the sim tests in the `mcp` job, after its release engine build.
+
+### SR-24 (P0, Grok). Move `pattern-slice.test.ts` out of the unit list
+
+- **The fault:** SR-20 added `mcp/pattern-slice.test.ts` to `tools/unit-tests.txt`. That list runs as
+  `npm run test:unit` in the `ui` job too, which has no Rust toolchain and builds no engine. The test calls
+  `loadNativeEngine`, which throws when no engine library exists, so the `ui` job fails. It passes locally only because
+  a built engine is in `target/release`.
+- **Fix:**
+  - take the line out of `tools/unit-tests.txt`;
+  - run it in the `mcp` job, next to `mcp/sim-sliced.test.ts`, after "Release CLI and in-process engine".
+- **Accept when:** `npm run test:unit` passes in a checkout with no `target/` directory, and the `mcp` job lists the
+  test.
