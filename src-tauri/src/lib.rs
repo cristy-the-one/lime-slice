@@ -117,6 +117,18 @@ fn slice_with_progress(
     })
 }
 
+/// One sliced stress study. The reply is JSON, including `{ "ok": false, "reason" }`.
+fn run_sim_study(body: &str) -> String {
+    lime_sim_bridge::study_json(body)
+}
+
+#[tauri::command]
+async fn sim_study(body: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || run_sim_study(&body))
+        .await
+        .map_err(|err| err.to_string())
+}
+
 #[tauri::command]
 async fn slice_model(app: AppHandle, payload: String) -> Result<String, String> {
     let job = Job::start();
@@ -341,6 +353,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             slice_model,
             cancel_slice,
+            sim_study,
             calibrate_pa,
             calibrate_flow,
             calibrate_temp,
@@ -371,6 +384,12 @@ mod tests {
 
     fn stage_names() -> Vec<&'static str> {
         Stage::ALL.iter().map(|stage| stage.name()).collect()
+    }
+
+    fn object_keys(value: &Value) -> Vec<String> {
+        let mut keys: Vec<String> = value.as_object().map(|map| map.keys().cloned().collect()).unwrap_or_default();
+        keys.sort();
+        keys
     }
 
     #[test]
@@ -470,6 +489,106 @@ mod tests {
         let last = events.last().unwrap();
         assert_eq!(last["status"], "cancelled");
         assert_eq!(last["stage"], "part");
+    }
+
+    /// A closed box, outline in X–Z, extruded along Y. Winding matches the bridge's prism.
+    fn box_stl(length: f64, depth: f64, height: f64) -> String {
+        let outline = [[0.0, 0.0], [length, 0.0], [length, height], [0.0, height]];
+        let mut tris: Vec<[[f64; 3]; 3]> = Vec::new();
+        let at = |p: [f64; 2], y: f64| -> [f64; 3] { [p[0], y, p[1]] };
+        let n = outline.len();
+        for i in 1..n - 1 {
+            tris.push([at(outline[0], 0.0), at(outline[i], 0.0), at(outline[i + 1], 0.0)]);
+            tris.push([at(outline[0], depth), at(outline[i + 1], depth), at(outline[i], depth)]);
+        }
+        for i in 0..n {
+            let (a, b) = (outline[i], outline[(i + 1) % n]);
+            tris.push([at(a, 0.0), at(b, depth), at(b, 0.0)]);
+            tris.push([at(a, 0.0), at(a, depth), at(b, depth)]);
+        }
+        let mut out = String::from("solid box\n");
+        for t in tris {
+            out.push_str("facet normal 0 0 0\nouter loop\n");
+            for v in t {
+                out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
+            }
+            out.push_str("endloop\nendfacet\n");
+        }
+        out.push_str("endsolid box\n");
+        out
+    }
+
+    #[test]
+    fn sim_study_solves_a_small_box() {
+        let stl = box_stl(8.0, 6.0, 4.0);
+        let mesh = base64::engine::general_purpose::STANDARD.encode(stl.as_bytes());
+        let body = json!({
+            "request": {
+                "filename": "box.stl",
+                "dataB64": mesh,
+                "layerHeight": 0.2,
+                "lineWidth": 0.45,
+                "infill": 1.0,
+                "baseline": false,
+                "compare": false,
+                "includePreview": false,
+                "includeGcode": false
+            },
+            "study": {
+                "hXy": 2.0,
+                "card": {
+                    "id": "inhouse-pla",
+                    "polymer": "PLA",
+                    "provisional": true,
+                    "EInPlaneMPa": 1700.0,
+                    "EAcrossLayersMPa": 1400.0,
+                    "nu": 0.35,
+                    "strengthInPlaneMPa": 28.0,
+                    "strengthAcrossLayersMPa": 14.0,
+                    "compressionInPlaneMPa": 28.0,
+                    "compressionAcrossLayersMPa": 14.0,
+                    "shearAcrossLayersMPa": 7.0,
+                    "densityGCm3": 1.24,
+                    "measuredAtC": null,
+                    "specimen": "placeholder, not measured",
+                    "method": null,
+                    "source": "in-house",
+                    "isotropic": false
+                },
+                "holds": [{ "kind": "bed" }],
+                "loads": [{
+                    "kind": "force",
+                    "region": { "kind": "box", "min": [0.0, 0.0, 3.2], "max": [8.0, 6.0, 4.0] },
+                    "force": [0.0, 0.0, 2.0]
+                }],
+                "constraints": [{ "kind": "minSafetyFactor", "value": 1.0 }],
+                "checkResolution": false
+            }
+        })
+        .to_string();
+        let text = run_sim_study(&body);
+        let reply: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["report"]["representation"], "sliced");
+        assert!(reply["report"]["maxDisplacementMm"].as_f64().unwrap().is_finite());
+        assert!(reply["surface"]["triangles"].as_u64().unwrap() > 0);
+        let spot = &reply["report"]["margins"][0]["hotSpot"]["at"];
+        assert!(spot.is_array() && spot.as_array().unwrap().len() == 3, "{reply}");
+
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../e2e/fixtures/sim-study-box.json");
+        if std::env::var("LIME_STRESS_OUT").ok().as_deref() == Some("1") {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            std::fs::write(&path, &text).unwrap();
+        }
+        let fixture: Value = serde_json::from_reader(std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(object_keys(&reply), object_keys(&fixture), "top-level keys");
+        assert_eq!(object_keys(&reply["report"]), object_keys(&fixture["report"]), "report keys");
+        assert_eq!(object_keys(&reply["surface"]), object_keys(&fixture["surface"]), "surface keys");
+        assert!(fixture["surface"]["triangles"].as_u64().unwrap_or(0) > 0);
+        let saved = &fixture["report"]["margins"][0]["hotSpot"]["at"];
+        assert!(saved.is_array() && saved.as_array().unwrap().len() == 3, "{fixture}");
     }
 
     #[test]

@@ -192,6 +192,49 @@ for (const field of fields) {
 }
 check("the plate body has no lone mesh beside objects", !("filename" in sessionPlate) && Array.isArray((sessionPlate as { objects?: unknown }).objects));
 
+const study = { format: "lime-sim-1", loads: [{ kind: "force", newtons: 10 }] };
+function hasSim(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some(hasSim);
+  const record = value as Record<string, unknown>;
+  if ("sim" in record) return true;
+  return Object.values(record).some(hasSim);
+}
+const studiedPlate = {
+  objects: plate.objects.map((obj) => ({ ...obj, sim: study })),
+};
+const studied = rules.coerce(sliceRequest({
+  one: { filename: "cube.stl", sim: study },
+  plate: studiedPlate,
+  order,
+  settings: plateSettings,
+  stepToleranceMm: 0.05,
+  lineWidth: Math.min(1.2, Math.max(0.2, 0.4 * 1.125)),
+  blend: blendOf(plateSettings),
+  printer: appPlate.printer as Record<string, unknown>,
+  onBelt: false,
+  belt: null,
+  layerActions: actions,
+  overrides,
+  includePreview: true,
+}));
+const unstudied = rules.coerce(sliceRequest({
+  one: { filename: "cube.stl" },
+  plate,
+  order,
+  settings: plateSettings,
+  stepToleranceMm: 0.05,
+  lineWidth: Math.min(1.2, Math.max(0.2, 0.4 * 1.125)),
+  blend: blendOf(plateSettings),
+  printer: appPlate.printer as Record<string, unknown>,
+  onBelt: false,
+  belt: null,
+  layerActions: actions,
+  overrides,
+  includePreview: true,
+}));
+check("a study is absent from the slice body", !hasSim(studied) && JSON.stringify(studied) === JSON.stringify(unstudied));
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

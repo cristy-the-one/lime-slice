@@ -1,0 +1,22 @@
+{
+  "formula": "σr = a²p/(b²−a²)·(1 − b²/r²), σθ = a²p/(b²−a²)·(1 + b²/r²). Open ends.",
+  "aMm": 10,
+  "bMm": 20,
+  "pMPa": 10,
+  "wedgeRad": 0.2,
+  "thicknessMm": 4,
+  "nr": 4,
+  "nt": 1,
+  "nz": 2,
+  "nodes": 135,
+  "sampleRMm": 10.3220,
+  "sigmaRadialMPa": -9.2689,
+  "sigmaHoopMPa": 15.9142,
+  "formulaRadialAtSampleMPa": -9.1811,
+  "formulaHoopAtSampleMPa": 15.8477,
+  "surfaceRadialMPa": -10,
+  "surfaceHoopMPa": 16.666666666666668,
+  "relativeEnergyError": 0.0089,
+  "peakRelativeError": 0.0097,
+  "trust": "converged"
+}

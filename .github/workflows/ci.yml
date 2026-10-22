@@ -182,7 +182,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Release CLI and in-process engine
-        run: cargo build -p lime-slice -p lime-mcp-engine --release --locked
+        # lime-sim's binary solves the generated beam in mcp/sim.test.ts.
+        run: cargo build -p lime-slice -p lime-mcp-engine -p lime-sim --release --locked
 
       - name: New engine dependencies stay MIT or Apache-2.0
         run: |
@@ -190,6 +191,11 @@ jobs:
           cargo tree -p lime-mcp-engine --prefix none -e normal --format '{p} {l}' > /tmp/mcp-licences.txt
           if grep -Ei 'GPL|AGPL|SSPL' /tmp/mcp-licences.txt; then
             echo "a GPL-family licence is not allowed"
+            exit 1
+          fi
+          cargo tree -p lime-sim --locked --prefix none -e normal --format '{p} {l}' > /tmp/sim-licences.txt
+          if grep -Ei 'GPL|AGPL|SSPL|LGPL' /tmp/sim-licences.txt; then
+            echo "a GPL-family licence is not allowed on the stress solver"
             exit 1
           fi
 
@@ -213,6 +219,12 @@ jobs:
           node --experimental-strip-types mcp/request.test.ts
           node --experimental-strip-types mcp/numbers.test.ts
           node --experimental-strip-types mcp/render.test.ts
+          node --experimental-strip-types mcp/layer-stress.test.ts
+          node --experimental-strip-types mcp/sim.test.ts
+          node --experimental-strip-types mcp/sim-sliced.test.ts
+          node --experimental-strip-types mcp/pattern-slice.test.ts
+          node --experimental-strip-types mcp/sim-reslice.test.ts
+          node --experimental-strip-types mcp/sim-loop.test.ts
           node --experimental-strip-types mcp/thumb.test.ts
           node --experimental-strip-types mcp/export.test.ts
           LIME_MCP_GOLDEN=1 node --experimental-strip-types mcp/golden.test.ts

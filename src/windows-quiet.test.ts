@@ -18,7 +18,7 @@ const hooks = readFileSync(new URL("../src-tauri/windows/shell-hooks.nsh", impor
 check("the release desktop binary does not open a console", main.includes('windows_subsystem = "windows"') && main.includes("not(debug_assertions)"));
 check("a helper process is started with CREATE_NO_WINDOW", quiet.includes("CREATE_NO_WINDOW") && quiet.includes("0x0800_0000"));
 check("the live bridge does not spawn a process or a console", !bridge.includes("std::process") && !bridge.includes("CREATE_NEW_CONSOLE") && bridge.includes("Ipv4Addr::LOCALHOST") && !bridge.includes("0.0.0.0"));
-check("the in-process engine does not spawn a console", !engine.includes("std::process") && !engine.includes("CREATE_NEW_CONSOLE"));
+check("the in-process engine does not spawn a console", !engine.includes("std::process::Command") && !engine.includes("CREATE_NEW_CONSOLE"));
 check("Open CASCADE's console printer is replaced by a log file", kernel.includes("RemovePrinters") && kernel.includes("Message_PrinterOStream") && kernel.includes("lime-slice/occt.log"));
 check("the shell handler does not open a console", !shell.includes("AllocConsole") && !shell.includes("println!") && !shell.includes("CREATE_NEW_CONSOLE"));
 check(

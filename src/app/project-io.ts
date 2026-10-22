@@ -26,6 +26,7 @@ import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from 
 import { adoptSavedTrees, captureOpenSolid, historyToSave, noteParametersBuilt } from "./model.ts";
 import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
 import { copyWorkplane } from "../workplane.ts";
+import { cloneStudy } from "../sim/study.ts";
 import { solidFileName } from "../model-request.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome, stale } from "./settings.ts";
@@ -254,6 +255,7 @@ function fileObjects({ trees, tools }: Awaited<ReturnType<typeof historyToSave>>
     if (obj.brep) row.brep = record(solidFileName(obj.fileName, obj.brep), obj.brep);
     if (obj.modelPose) row.modelPose = { m: [...obj.modelPose.m], t: [...obj.modelPose.t] };
     if (obj.workplane) row.workplane = copyWorkplane(obj.workplane);
+    if (obj.sim) row.sim = cloneStudy(obj.sim);
     const seat = meshSeat(obj.bytes);
     if (seat !== undefined) row.meshSeatMm = seat;
     const saved = trees.get(obj.id);

@@ -46,21 +46,57 @@ import { seamRequestFields, type SeamDisk } from "../src/seam-paint.ts";
 import { addDiskToRegion, MAX_REINFORCE_REGIONS, normalInfillDensity, reinforcementRequestFields, totalReinforceDisks, type ReinforceDisk, type ReinforceRegion } from "../src/reinforcement.ts";
 import { coverRegion, onSelection, selectTriangles, type RegionQuery } from "../src/paint-region.ts";
 import type { PathColumns } from "../src/preview-wire.ts";
-import type { ColorMode } from "../src/colors.ts";
+import { readsStress, type ColorMode } from "../src/colors.ts";
+import { parseStressCells, type StressCells } from "../src/sim/stress-cells.ts";
+import { patternBlend } from "../src/sim/pattern-patch.ts";
+import { resolved } from "../src/strategy.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
+import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
+import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
+import { beltLayerNormal, cloneStudy, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type Vec3 as SimVec } from "../src/sim/study.ts";
+import { LABEL } from "../src/sim/label.ts";
+import { readBeadSection, withBeads } from "../src/sim/cards.ts";
+import {
+  BEAM_SIZE,
+  OPEN_MESH,
+  SLICED_FIELD,
+  SLICED_SWEEP,
+  RESLICE_BEAM,
+  RESLICE_PARAMETERS,
+  RESLICE_PATTERN_KEEP,
+  SWEEP_CAP,
+  SWEEP_REFUSAL,
+  ZERO_AXIS,
+  axisLength,
+  boxPositions,
+  constraintVerdict,
+  elementRefusal,
+  pageCursor,
+  pageLimit,
+  readLimits,
+  readPatch,
+  representationOf,
+  runSolver,
+  scaleLoads,
+  setupSentence,
+  solverJob,
+  vec3Of,
+  type ConstraintLimits,
+  type SweepPatch,
+} from "./sim.ts";
 import { orderFields, sequentialClearance, settingsRules, tallestLast, type PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
 import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, workplaneIn, workplaneOwn, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
 import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
 import { plateFileIsVersion2 } from "../src/plate.ts";
-import { advanceFor, builtinLibrary, adoptProfile, enginePrinter, fileFromSelection, heatFor, parseMachineFile, serializeMachineFile, setAdvance, setFlow, setGcode, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
+import { advanceFor, builtinLibrary, adoptProfile, cardsOf, enginePrinter, fileFromSelection, heatFor, parseMachineFile, saveMaterialCard, serializeMachineFile, setAdvance, setFlow, setGcode, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
 import { parseSettingsProfile, profileFileName, serializeSettingsProfile } from "../src/ui/settings-profiles.ts";
 
 import { openInApp, systemOpener, type AppOpener } from "./app-open.ts";
 import { mirror, type BridgeLink } from "./bridge-client.ts";
 import { occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
-import { layerPaths, pathsPng, pathsSvg } from "./layer-out.ts";
+import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts";
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
 import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
@@ -173,11 +209,13 @@ export function typedExprs(op: unknown): Record<string, string> | undefined {
  */
 function changesPlate(name: string): boolean {
   if (name === "model_export_step" || name === "model_check" || name === "model_params" || name === "model_define") return false;
+  if (name === "sim_setup" || name === "sim_sweep") return true;
   return /^(model_|object_|plate_|paint_|workplane_|support_edit|reinforce_|modifier_|range_|override_)/.test(name) || name === "solid_new" || name === "mesh_import" || name === "project_open" || name === "project_create";
 }
 
 /** Calls that can outlast a client's request timeout: the autosave is written before they start. */
-const LONG_CALLS = new Set(["model_apply_batch", "model_build", "model_edit", "project_open", "mesh_import"]);
+// A sweep that reslices is one slice and one solve per variant.
+const LONG_CALLS = new Set(["model_apply_batch", "model_build", "model_edit", "project_open", "mesh_import", "sim_sweep"]);
 const NAME_LIMIT = 120;
 /** Tools whose op fields may be text expressions. */
 
@@ -189,6 +227,7 @@ const NAME_LIMIT = 120;
 const DETACHABLE = new Set([
   "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
   "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
+  "sim_run", "sim_sweep",
 ]);
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
@@ -231,6 +270,10 @@ interface WorkJob {
   result?: Record<string, unknown>;
   error?: string;
 }
+
+/** `layer_image` coloured by stress before any sliced study. */
+const STRESS_LAYER_NEEDS = "Run sim_run on a sliced study of this object, then colour by stress or safety.";
+const BEADS_REFUSAL = "A card's beads need every modulus and strength above 0, and a bridgeFactor above 0 and at most 1.";
 
 export interface PlateObject {
   id: string;
@@ -280,6 +323,8 @@ export interface PlateObject {
   buildLog?: { base: string; start: number; steps: { key: string; node: number | null; first: number | null }[]; refused: boolean };
   /** The model_build call this object came from, before expansion: rerun it with new parameters, and saved with the project. */
   recipe?: Recipe;
+  /** Stress study. Absent until sim_setup. Not sent to the slicer. */
+  sim?: ObjectStudy;
 }
 
 /** A model_build's base, ops, parameters, and name, as typed. */
@@ -424,6 +469,7 @@ interface SnapObject {
   objectSettings: PlateObjectSettings;
   platedNode: number | null;
   brep?: Uint8Array;
+  sim?: ObjectStudy;
 }
 
 interface PlateSnap {
@@ -692,6 +738,46 @@ function xyGap(a: Bounds, b: Bounds): number {
   return Math.max(dx, dy);
 }
 
+/** The bridge reply, without the surface. Margins keep their hot spots. */
+function slicedRunReply(text: string): Record<string, unknown> {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return { ok: false, reason: "The stress solve did not finish." };
+  }
+  if (parsed.ok !== true) {
+    return { ok: false, reason: typeof parsed.reason === "string" && parsed.reason ? parsed.reason : "The stress solve did not finish." };
+  }
+  const report = parsed.report && typeof parsed.report === "object" ? (parsed.report as Record<string, unknown>) : null;
+  if (!report) return { ok: false, reason: "The stress solve did not finish." };
+  const level = report.trust === "rough" || report.trust === "usable" || report.trust === "converged" ? report.trust : "rough";
+  return {
+    ok: true,
+    label: LABEL,
+    representation: "sliced",
+    trust: { level },
+    notes: Array.isArray(report.notes) ? report.notes.filter((note): note is string => typeof note === "string") : [],
+    margins: Array.isArray(report.margins) ? report.margins : [],
+    maxDisplacementMm: typeof report.maxDisplacementMm === "number" ? report.maxDisplacementMm : 0,
+    minSafetyFactor: typeof report.minSafetyFactor === "number" ? report.minSafetyFactor : null,
+    massG: typeof report.massG === "number" ? report.massG : 0,
+    criterion: "max-stress",
+    stale: false,
+    ...sliceEstimateOf(parsed.slice),
+  };
+}
+
+/** The slicer's estimate of the slice a sliced study solved: free, since it was sliced anyway. */
+function sliceEstimateOf(value: unknown): { slicerSeconds?: number; slicerGrams?: number } {
+  if (!value || typeof value !== "object") return {};
+  const row = value as Record<string, unknown>;
+  return {
+    ...(typeof row.seconds === "number" ? { slicerSeconds: row.seconds } : {}),
+    ...(typeof row.filamentG === "number" ? { slicerGrams: row.filamentG } : {}),
+  };
+}
+
 export class Session {
   readonly objects: PlateObject[] = [];
   selected = "";
@@ -711,6 +797,8 @@ export class Session {
   private sourcePath = "";
   private profileTouched = false;
   private lastBridge: Record<string, unknown> | null = null;
+  /** The last sliced study's cells, for `layer_image`'s stress and safety colours. */
+  private stressCells: StressCells | null = null;
   private lastPreview: ReturnType<typeof rememberSolid> | null = null;
   private undoStack: PlateSnap[] = [];
   private redoStack: PlateSnap[] = [];
@@ -1168,6 +1256,7 @@ export class Session {
         offset: { ...row.offset },
         orient: [...row.orient],
         meshHash: this.meshHashOf(row.bytes),
+        ...(row.sim ? { sim: row.sim } : {}),
       })),
       ...(Object.keys(meshes).length > 0 ? { meshes } : {}),
       ...(obj ? { objectId: obj.id, objectName: obj.name } : {}),
@@ -1254,6 +1343,11 @@ export class Session {
       case "blend_compare": return this.blendCompare(input);
       case "blend_apply": return this.blendApply(input);
       case "guide": return this.guide(input);
+      case "sim_setup": return this.simSetup(input);
+      case "sim_run": return this.simRun(input);
+      case "sim_field": return this.simField(input);
+      case "sim_sweep": return this.simSweep(input);
+      case "sim_cancel": return { ok: true, label: LABEL };
       case "tools_enable": return this.toolsEnable(input);
       default: return this.model(name, input);
     }
@@ -1402,6 +1496,7 @@ export class Session {
       objectSettings: { ...obj.objectSettings },
       platedNode: obj.platedNode,
       ...(obj.brep ? { brep: obj.brep } : {}),
+      ...(obj.sim ? { sim: cloneStudy(obj.sim) } : {}),
     };
   }
 
@@ -1429,6 +1524,7 @@ export class Session {
       tree: null,
       solid: null,
       probes: new Map(),
+      ...(row.sim ? { sim: cloneStudy(row.sim) } : {}),
     };
   }
 
@@ -1457,6 +1553,7 @@ export class Session {
         kept.objectSettings = { ...row.objectSettings };
         kept.platedNode = row.platedNode;
         kept.brep = row.brep;
+        kept.sim = row.sim ? cloneStudy(row.sim) : undefined;
         next.push(kept);
       } else {
         next.push(this.revive(row));
@@ -1559,6 +1656,7 @@ export class Session {
           workplane: obj.workplane,
           brep: obj.brep ? base64ToBytes(obj.brep.bytesBase64) ?? undefined : undefined,
           meshSeatMm: obj.meshSeatMm,
+          sim: obj.sim,
         }))
       : [{
           id: undefined as string | undefined,
@@ -1576,6 +1674,7 @@ export class Session {
           workplane: undefined,
           brep: undefined as Uint8Array | undefined,
           meshSeatMm: undefined as number | undefined,
+          sim: undefined as ObjectStudy | undefined,
         }];
     const objects: { object: string; name: string }[] = [];
     for (const row of rows) {
@@ -1600,6 +1699,7 @@ export class Session {
         reinforcement: row.reinforcement.map((region) => structuredClone(region)),
         objectSettings: { ...row.objectSettings },
       }, row.id);
+      if (row.sim) obj.sim = cloneStudy(row.sim);
       if (row.modelPose) obj.modelPose = { m: [...row.modelPose.m] as Affine["m"], t: [...row.modelPose.t] as Affine["t"] };
       if (row.workplane) obj.workplane = { source: row.workplane.source, origin: [...row.workplane.origin] as Workplane["origin"], turn: [...row.workplane.turn] as Workplane["turn"] };
       if (row.brep) obj.brep = row.brep;
@@ -1694,6 +1794,7 @@ export class Session {
       ...(obj.brep ? { brep: meshRecord(solidFileName(obj.fileName, obj.brep), obj.brep), meshSeatMm: obj.seatMm } : {}),
       ...(obj.modelPose.t.some((value) => value !== 0) || obj.modelPose.m.some((value, index) => value !== [1, 0, 0, 0, 1, 0, 0, 0, 1][index]) ? { modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] } } : {}),
       ...(obj.workplane.source === "global" ? {} : { workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] } }),
+      ...(obj.sim ? { sim: cloneStudy(obj.sim) } : {}),
     };
   }
 
@@ -2306,6 +2407,7 @@ export class Session {
         seamPaint: source.seamPaint.map((disk) => structuredClone(disk)),
         reinforcement: source.reinforcement.map((region) => structuredClone(region)),
         objectSettings: { ...source.objectSettings },
+        ...(source.sim ? { sim: cloneStudy(source.sim) } : {}),
       };
       this.objects.push(copy);
       made.push(id);
@@ -5976,9 +6078,19 @@ export class Session {
   private layerImage(input: Record<string, unknown>): Record<string, unknown> {
     const layer = this.layerColumns(input);
     if ("reason" in layer) return { ok: false, reason: layer.reason };
-    const colourBy: ColorMode = input.colourBy === "speed" || input.colourBy === "weight" ? input.colourBy : "feature";
+    const colourBy: ColorMode = input.colourBy === "speed" || input.colourBy === "weight" || input.colourBy === "stress" || input.colourBy === "safety" ? input.colourBy : "feature";
+    let stress: LayerStress | undefined;
+    if (readsStress(colourBy)) {
+      const cells = this.stressCells;
+      if (!cells) return { ok: false, reason: STRESS_LAYER_NEEDS };
+      const objects = this.finished(typeof input.job === "string" ? input.job : undefined)?.wire?.objects;
+      const ids = Array.isArray(objects) ? objects.map((o) => (o && typeof o === "object" ? (o as { id?: unknown }).id : undefined)) : null;
+      // A plate reply names its objects; a one-object reply is the studied object's.
+      const studied = (object: number) => !ids || cells.objectId === null || ids[object] === cells.objectId;
+      stress = { cells, studied, layerZ: layer.z };
+    }
     const paths = layerPaths(layer.paths, layer.z, 0.05);
-    const png = pathsPng(paths, typeof input.longEdge === "number" ? input.longEdge : 256, colourBy);
+    const png = pathsPng(paths, typeof input.longEdge === "number" ? input.longEdge : 256, colourBy, stress);
     const path = resolveWrite(typeof input.name === "string" ? input.name : `layer-${layer.index}.png`, ".png");
     writeFileSync(path, png);
     const body = { ok: true, path, bytes: png.byteLength, sha256: createHash("sha256").update(png).digest("hex") };
@@ -6107,6 +6219,635 @@ export class Session {
   }
 
   /** The file Export writes, so the review sees the printer's start and end text. */
+  private printerBuildAxis(): SimVec {
+    const printer = this.printer();
+    return printer.kind === "belt" ? beltLayerNormal(printer.belt.angleDeg) : [0, 0, 1];
+  }
+
+  private readFixtures(value: unknown): StudyHold[] | { reason: string } {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) return { reason: "Fixtures are a list." };
+    const holds: StudyHold[] = [];
+    for (const item of value) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return { reason: "A fixture is an object." };
+      const row = item as Record<string, unknown>;
+      if (row.kind === "bed") {
+        holds.push({ kind: "bed", faces: [] });
+        continue;
+      }
+      if (row.kind === "faces") {
+        if (!Array.isArray(row.faces) || !row.faces.every((face) => Number.isInteger(face) && (face as number) >= 0)) return { reason: "Face indexes are whole numbers." };
+        holds.push({ kind: "faces", faces: [...row.faces] as number[] });
+        continue;
+      }
+      if (row.kind === "plane") {
+        const normal = vec3Of(row.normal);
+        const origin = vec3Of(row.origin);
+        if (!normal || !origin) return { reason: "A plane needs a normal and an origin." };
+        holds.push({ kind: "plane", faces: [], normal, origin });
+        continue;
+      }
+      return { reason: "A fixture is a bed, faces, or a plane." };
+    }
+    return holds;
+  }
+
+  private readLoads(value: unknown): StudyLoad[] | { reason: string } {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) return { reason: "Loads are a list." };
+    const loads: StudyLoad[] = [];
+    for (const item of value) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return { reason: "A load is an object." };
+      const row = item as Record<string, unknown>;
+      if (row.kind !== "force" && row.kind !== "pressure") return { reason: "A load is a force or a pressure." };
+      if (!Array.isArray(row.faces) || !row.faces.every((face) => Number.isInteger(face) && (face as number) >= 0)) return { reason: "Face indexes are whole numbers." };
+      if (typeof row.magnitude !== "number" || !Number.isFinite(row.magnitude)) return { reason: "The load magnitude has to be a number." };
+      const direction = vec3Of(row.direction) ?? [0, 0, -1];
+      loads.push({ kind: row.kind, faces: [...row.faces] as number[], magnitude: row.magnitude, direction });
+    }
+    return loads;
+  }
+
+  private simCard(value: unknown) {
+    const cards = cardsOf(this.library);
+    const fallback = cards.find((card) => card.id === "inhouse-petg") ?? cards[0];
+    if (!fallback) return { reason: "That card is not in the library." } as const;
+    if (value === undefined) return fallback;
+    if (typeof value === "string") return cards.find((card) => card.id === value) ?? ({ reason: "That card is not in the library." } as const);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { reason: "That card is not in the library." } as const;
+    const row = value as Record<string, unknown>;
+    const base = (typeof row.id === "string" ? cards.find((card) => card.id === row.id) : undefined) ?? fallback;
+    const num = (key: string, current: number) => (typeof row[key] === "number" && Number.isFinite(row[key] as number) ? (row[key] as number) : current);
+    const beads = row.beads === undefined ? base.beads : readBeadSection(row.beads);
+    if (beads === null) return { reason: BEADS_REFUSAL } as const;
+    return {
+      ...base,
+      id: typeof row.id === "string" && row.id.trim() ? row.id : base.id,
+      polymer: typeof row.polymer === "string" && row.polymer.trim() ? row.polymer : base.polymer,
+      provisional: row.provisional === false ? false : row.provisional === true ? true : base.provisional,
+      EInPlaneMPa: num("EInPlaneMPa", base.EInPlaneMPa),
+      EAcrossLayersMPa: num("EAcrossLayersMPa", base.EAcrossLayersMPa),
+      nu: num("nu", base.nu),
+      strengthInPlaneMPa: num("strengthInPlaneMPa", base.strengthInPlaneMPa),
+      strengthAcrossLayersMPa: num("strengthAcrossLayersMPa", base.strengthAcrossLayersMPa),
+      compressionInPlaneMPa: num("compressionInPlaneMPa", base.compressionInPlaneMPa),
+      compressionAcrossLayersMPa: num("compressionAcrossLayersMPa", base.compressionAcrossLayersMPa),
+      shearAcrossLayersMPa: num("shearAcrossLayersMPa", base.shearAcrossLayersMPa),
+      densityGCm3: num("densityGCm3", base.densityGCm3),
+      specimen: typeof row.specimen === "string" ? row.specimen : base.specimen,
+      source: typeof row.source === "string" ? row.source : base.source,
+      isotropic: row.isotropic === undefined ? base.isotropic : row.isotropic === true,
+      beads,
+    };
+  }
+
+  private beamOf(value: unknown): ObjectStudy["beam"] | { reason: string } | undefined {
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { reason: BEAM_SIZE };
+    const box = value as Record<string, unknown>;
+    if (typeof box.lengthMm !== "number" || typeof box.widthMm !== "number" || typeof box.heightMm !== "number") return { reason: BEAM_SIZE };
+    if (!(box.lengthMm > 0) || !(box.widthMm > 0) || !(box.heightMm > 0)) return { reason: BEAM_SIZE };
+    return { lengthMm: box.lengthMm, widthMm: box.widthMm, heightMm: box.heightMm };
+  }
+
+  private simSetup(input: Record<string, unknown>): Record<string, unknown> {
+    const element = elementRefusal(input.element);
+    if (element) return { ok: false, reason: element };
+    const beam = this.beamOf(input.beam);
+    if (beam && "reason" in beam) return { ok: false, reason: beam.reason };
+    const fixtures = this.readFixtures(input.fixtures);
+    if ("reason" in fixtures) return { ok: false, reason: fixtures.reason };
+    const loads = this.readLoads(input.loads);
+    if ("reason" in loads) return { ok: false, reason: loads.reason };
+    const card = this.simCard(input.card);
+    if ("reason" in card) return { ok: false, reason: card.reason };
+    const printer = input.printer === true;
+    let buildAxis: SimVec = printer ? this.printerBuildAxis() : [0, 0, 1];
+    if (!printer && input.buildAxis !== undefined) {
+      const axis = vec3Of(input.buildAxis);
+      if (!axis) return { ok: false, reason: ZERO_AXIS };
+      buildAxis = axis;
+    }
+    if (axisLength(buildAxis) <= 1e-12) return { ok: false, reason: ZERO_AXIS };
+    let edge = 5;
+    if (input.hMm !== undefined) {
+      if (typeof input.hMm !== "number" || !(input.hMm > 0)) return { ok: false, reason: BEAM_SIZE };
+      edge = input.hMm;
+    }
+    let representation: SimRepresentation | undefined;
+    if (input.representation !== undefined) {
+      if (input.representation !== "sliced" && input.representation !== "smear") return { ok: false, reason: "representation is sliced or smear." };
+      representation = input.representation;
+    }
+    const constraints = this.readSimConstraints(input.constraints);
+    if (constraints && "reason" in constraints) return { ok: false, reason: constraints.reason };
+    const requested = typeof input.object === "string" ? input.object : "";
+    let obj = requested ? this.find(requested) : this.selectedObject();
+    if (requested && !obj) return { ok: false, reason: UNKNOWN_OBJECT };
+    if (!obj && !beam) return { ok: false, reason: "Load a mesh first." };
+    this.remember("Stress");
+    if (!obj && beam) {
+      const source = boxPositions(beam.lengthMm, beam.widthMm, beam.heightMm);
+      obj = this.addObject({
+        name: "beam",
+        fileName: "beam.stl",
+        bytes: stlBytes(source, "beam.stl"),
+        source,
+        triangles: source.length / 9,
+        orient: [...ID_MATRIX] as Mat3,
+        scale: 1,
+        centered: false,
+        offset: { x: 0, y: 0, z: 0 },
+        seatMm: 0,
+      });
+    }
+    if (!obj) return { ok: false, reason: "Load a mesh first." };
+    if (input.card && typeof input.card === "object") this.library = saveMaterialCard(this.library, card);
+    const study: ObjectStudy = {
+      holds: fixtures,
+      loads,
+      cardId: card.id,
+      printer,
+      buildAxis,
+      gravity: input.gravity === true,
+      edgeMm: edge,
+      ...(beam ? { beam } : {}),
+      ...(obj.sim?.pattern ? { pattern: obj.sim.pattern } : {}),
+      ...(representation ? { representation } : {}),
+      ...(constraints ? { constraints } : {}),
+    };
+    obj.sim = study;
+    return { ok: true, object: obj.id, study, sentence: setupSentence(study, card.polymer, card.provisional), label: LABEL };
+  }
+
+  private smearOf(obj: PlateObject, patch?: SweepPatch) {
+    return simRecipe({
+      toughness: this.settings.toughness,
+      layerHeightMm: this.settings.layerHeight,
+      lineWidthMm: Math.min(1.2, Math.max(0.2, this.library.nozzleMm * 1.125)),
+      blendKind: this.settings.blendKind === "weight" || this.settings.blendKind === "byLayer" || this.settings.blendKind === "byRegion" ? this.settings.blendKind : "single",
+      strategy: this.settings.strategy === "toughness" ? "toughness" : "speed",
+      object: { walls: patch?.walls ?? obj.objectSettings.walls, infill: patch?.infill ?? obj.objectSettings.infill },
+      overrides: this.overrides,
+      reinforcementDensities: obj.reinforcement.map((region) => region.density),
+    });
+  }
+
+  private solveCopy(obj: PlateObject, patch: SweepPatch | undefined, op: "run" | "field", field?: Record<string, unknown>): Record<string, unknown> {
+    const saved = obj.sim;
+    if (!saved) return { ok: false, reason: "Set up a study first." };
+    const study = cloneStudy(saved);
+    if (study.printer) study.buildAxis = this.printerBuildAxis();
+    if (patch?.loadScale) study.loads = scaleLoads(study.loads, patch.loadScale);
+    if (patch?.pattern) study.pattern = patch.pattern;
+    const recipe = this.smearOf(obj, patch);
+    const refused = recipeRefusal(recipe);
+    if (refused) return { ok: false, reason: refused };
+    const card = cardsOf(this.library).find((row) => row.id === study.cardId);
+    if (!card) return { ok: false, reason: "That card is not in the library." };
+    const pattern = study.pattern ?? recipe.pattern;
+    const job = solverJob({
+      op,
+      study,
+      card,
+      walls: recipe.walls,
+      infill: recipe.infill,
+      pattern: pattern === "lines" || pattern === "grid" || pattern === "gyroid" || pattern === "lightning" ? pattern : undefined,
+      field: typeof field?.field === "string" ? field.field : undefined,
+      points: field?.points as SimVec[] | undefined,
+      box: field?.box as { min: SimVec; max: SimVec } | undefined,
+      face: typeof field?.face === "number" ? field.face : undefined,
+      stride: typeof field?.stride === "number" ? field.stride : undefined,
+      limit: typeof field?.limit === "number" ? field.limit : undefined,
+      cursor: typeof field?.cursor === "number" ? field.cursor : undefined,
+    });
+    if ("reason" in job) return { ok: false, reason: job.reason };
+    const reply = runSolver(job);
+    if (Array.isArray(reply.triangles)) delete reply.triangles;
+    if (Array.isArray(reply.nodes)) delete reply.nodes;
+    if ("stiffness" in reply) delete reply.stiffness;
+    return reply;
+  }
+
+  private async simRun(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const obj = this.simTarget(input);
+    if ("reason" in obj) return { ok: false, reason: obj.reason };
+    const saved = obj.sim;
+    if (!saved) return { ok: false, reason: "Set up a study first." };
+    const reply = this.representationFor(obj, saved) === "sliced"
+      ? await this.solveSliced(obj, saved, input.checkResolution !== false)
+      : this.solveCopy(obj, undefined, "run");
+    if (reply.ok === true && input.includeSlicerMass === true) {
+      const estimate = this.freshEstimate();
+      if (estimate) reply.slicerGrams = estimate.grams;
+    }
+    return reply;
+  }
+
+  private representationFor(obj: PlateObject, study: ObjectStudy): SimRepresentation {
+    return representationOf({
+      asked: study.representation,
+      beam: study.beam !== undefined,
+      printerId: this.library.printerId,
+      fileName: obj.fileName,
+    });
+  }
+
+  private readSimConstraints(value: unknown): StudyConstraint[] | { reason: string } | undefined {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value)) return { reason: "Constraints are a list of targets." };
+    if (value.length > 8) return { reason: "A study takes up to 8 targets." };
+    const kinds = new Set(["minSafetyFactor", "maxDeflectionMm", "maxMassG", "minMassG"]);
+    const out: StudyConstraint[] = [];
+    for (const item of value) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return { reason: "A target is an object." };
+      const row = item as Record<string, unknown>;
+      if (typeof row.kind !== "string" || !kinds.has(row.kind)) return { reason: "A target is minSafetyFactor, maxDeflectionMm, maxMassG, or minMassG." };
+      if (typeof row.value !== "number" || !(row.value > 0)) return { reason: "A target has to be a positive number." };
+      out.push({ kind: row.kind, value: row.value });
+    }
+    return out;
+  }
+
+  /**
+   * The mesh the study slices: the solid the faces were picked on, scaled the
+   * same way, or the committed plate mesh when that is the same shape.
+   * A triangle-count difference is not the test. A box parameter keeps the count.
+   */
+  private studyMesh(obj: PlateObject): StudyMesh | { reason: string } {
+    const committed = !obj.treeStale && obj.bytes.byteLength > 0 && (!obj.tree || obj.platedNode === obj.tree.current);
+    const solid = obj.solid;
+    const choice = chooseStudyMesh({
+      picked: solid && solid.positions.length >= 9 ? solid.positions : null,
+      pickedTriangles: solid?.triangles ?? null,
+      plate: obj.source.length >= 9 ? obj.source : null,
+      scale: obj.scale,
+      committed,
+    });
+    if (!choice) return { reason: STUDY_MESH_REFUSAL };
+    if ("reason" in choice) return choice;
+    return choice;
+  }
+
+  /** The pose of the tessellation being sliced, when it is not the plate mesh. */
+  private studyPose(obj: PlateObject, unscaled: Float32Array): RigidPose | null {
+    if (unscaled === obj.source) return null;
+    const printer = this.printer();
+    return placeMesh(unscaled, obj.orient, obj.scale, printer.bedX, printer.bedY, obj.centered, obj.offset).pose;
+  }
+
+  /** Face index of each triangle. A generated beam with no solid pairs triangles into faces. */
+  private faceIds(obj: PlateObject, study: ObjectStudy, count: number, triangleIds: ArrayLike<number> | null): number[] | null {
+    if (triangleIds && triangleIds.length === count) return Array.from(triangleIds);
+    if (study.beam && !obj.solid) return Array.from({ length: count }, (_, index) => Math.floor(index / 2));
+    return null;
+  }
+
+  /**
+   * A region's triangles in the mesh frame, before the pose. A generated beam
+   * stores clockwise corners, so those are reversed to face outward.
+   */
+  private slicedRegion(
+    obj: PlateObject,
+    study: ObjectStudy,
+    faces: number[],
+    role: "hold" | "load",
+    corners: Float32Array,
+    triangleIds: ArrayLike<number> | null,
+  ): Record<string, unknown> | { reason: string } {
+    if (faces.length === 0) {
+      if (role === "hold") return { reason: "A hold's region touches no surface of the sliced part." };
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      for (let i = 0; i < corners.length; i += 3) {
+        const x = corners[i] ?? 0;
+        const y = corners[i + 1] ?? 0;
+        const z = corners[i + 2] ?? 0;
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+        minZ = Math.min(minZ, z);
+        maxZ = Math.max(maxZ, z);
+      }
+      if (!Number.isFinite(minX)) return { reason: "Pick a face to load, or type its index." };
+      const span = Math.max(1e-3, maxX - minX);
+      const thick = Math.min(1, span * 0.05);
+      return { kind: "box", min: [maxX - thick, minY, minZ], max: [maxX, maxY, maxZ] };
+    }
+    const count = Math.floor(corners.length / 9);
+    const ids = this.faceIds(obj, study, count, triangleIds);
+    if (!ids) return { reason: "That face is not on this part." };
+    const want = new Set(faces);
+    const reverse = study.beam !== undefined && obj.solid === null;
+    const triangles: [number, number, number][][] = [];
+    for (let tri = 0; tri < count; tri += 1) {
+      if (!want.has(ids[tri] ?? -1)) continue;
+      const at = tri * 9;
+      const corner = (offset: number): [number, number, number] => [corners[at + offset] ?? 0, corners[at + offset + 1] ?? 0, corners[at + offset + 2] ?? 0];
+      const a = corner(0);
+      const b = corner(3);
+      const c = corner(6);
+      triangles.push(reverse ? [a, c, b] : [a, b, c]);
+    }
+    if (triangles.length === 0) {
+      return { reason: role === "hold" ? "A hold's region touches no surface of the sliced part." : "A load's region touches no surface of the sliced part." };
+    }
+    return { kind: "faces", triangles };
+  }
+
+  /**
+   * Solve the object as it is sliced. A sweep `patch` changes that one slice (walls, infill, the pattern) and
+   * scales the loads, without touching the plate.
+   */
+  private async solveSliced(obj: PlateObject, saved: ObjectStudy, checkResolution = true, patch?: SweepPatch): Promise<Record<string, unknown>> {
+    const study = cloneStudy(saved);
+    if (patch?.loadScale !== undefined && patch.loadScale !== 1) study.loads = scaleLoads(study.loads, patch.loadScale);
+    if (study.printer) study.buildAxis = this.printerBuildAxis();
+    if (study.holds.some((hold) => hold.kind === "plane")) return { ok: false, reason: "A plane hold is not on a sliced study. Hold the bed or faces." };
+    if (!study.holds.some((hold) => hold.kind === "bed" || hold.faces.length > 0)) return { ok: false, reason: "Nothing is held." };
+    const card = cardsOf(this.library).find((row) => row.id === study.cardId);
+    if (!card) return { ok: false, reason: "That card is not in the library." };
+    const { body } = this.sliceBody(obj, "object");
+    body.includePreview = false;
+    body.includeGcode = false;
+    delete body.sim;
+    const mesh = this.studyMesh(obj);
+    if ("reason" in mesh) return { ok: false, reason: mesh.reason };
+    const encoded = bytesToBase64(stlBytes(mesh.positions, stlFileName(obj.fileName)));
+    const pose = this.studyPose(obj, mesh.unscaled);
+    if (Array.isArray(body.objects)) {
+      const first = body.objects[0];
+      if (first && typeof first === "object" && !Array.isArray(first)) {
+        const row = first as Record<string, unknown>;
+        row.dataB64 = encoded;
+        if (pose) row.pose = pose;
+      }
+    } else {
+      body.dataB64 = encoded;
+      if (pose) body.pose = pose;
+    }
+    if (obj.objectSettings.walls !== undefined && !Array.isArray(body.objects)) body.walls = obj.objectSettings.walls;
+    if (obj.objectSettings.infill !== undefined && !Array.isArray(body.objects)) body.infill = obj.objectSettings.infill;
+    if (patch) this.patchSliceBody(body, obj, patch);
+    const holds: Record<string, unknown>[] = [];
+    for (const hold of study.holds) {
+      if (hold.kind === "bed") {
+        holds.push({ kind: "bed" });
+        continue;
+      }
+      const region = this.slicedRegion(obj, study, hold.faces, "hold", mesh.positions, mesh.triangles);
+      if ("reason" in region) return { ok: false, reason: region.reason };
+      holds.push({ kind: "region", region });
+    }
+    const loads: Record<string, unknown>[] = [];
+    for (const load of study.loads) {
+      const region = this.slicedRegion(obj, study, load.faces, "load", mesh.positions, mesh.triangles);
+      if ("reason" in region) return { ok: false, reason: region.reason };
+      if (load.kind === "pressure") {
+        loads.push({ kind: "pressure", region, mpa: load.magnitude });
+        continue;
+      }
+      const n = Math.hypot(load.direction[0], load.direction[1], load.direction[2]);
+      if (!(n > 1e-12)) return { ok: false, reason: "The load direction has zero length." };
+      loads.push({
+        kind: "force",
+        region,
+        force: [load.direction[0] / n * load.magnitude, load.direction[1] / n * load.magnitude, load.direction[2] / n * load.magnitude],
+      });
+    }
+    if (loads.length === 0) return { ok: false, reason: "This study has no load." };
+    const sent: Record<string, unknown> = { ...withBeads(card) };
+    for (const [key, value] of Object.entries(sent)) if (value === null || value === undefined) delete sent[key];
+    const payload = JSON.stringify({
+      request: body,
+      study: {
+        ...(study.edgeMm > 0 ? { hXy: study.edgeMm } : {}),
+        card: sent,
+        holds,
+        loads,
+        ...(study.constraints && study.constraints.length > 0 ? { constraints: study.constraints } : {}),
+        checkResolution,
+      },
+    });
+    let text: string;
+    try {
+      text = await Promise.resolve(this.engine.simStudy(payload));
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error && err.message ? err.message : "The stress solve did not finish." };
+    }
+    this.stressCells = parseStressCells(text, obj.id) ?? this.stressCells;
+    return slicedRunReply(text);
+  }
+
+  /**
+   * A sweep variant's print settings on a one-object slice body: on the object's own settings when the body lists
+   * it, else on the body. A pattern is a blend, which would also move walls and infill with its toughness, so they
+   * are pinned to what the object prints now, as the desktop's sweep does.
+   */
+  private patchSliceBody(body: Record<string, unknown>, obj: PlateObject, patch: SweepPatch): void {
+    const row = Array.isArray(body.objects) && body.objects[0] && typeof body.objects[0] === "object"
+      ? (body.objects[0] as Record<string, unknown>)
+      : null;
+    const target: Record<string, unknown> = row
+      ? ((row.settings && typeof row.settings === "object" ? row.settings : (row.settings = {})) as Record<string, unknown>)
+      : body;
+    if (patch.walls !== undefined) target.walls = patch.walls;
+    if (patch.infill !== undefined) target.infill = patch.infill;
+    if (patch.pattern) {
+      const width = Math.min(1.2, Math.max(0.2, this.library.nozzleMm * 1.125));
+      const card = resolved(this.settings.toughness, this.settings.layerHeight, width);
+      target.blend = patternBlend(patch.pattern);
+      if (target.walls === undefined) target.walls = obj.objectSettings.walls ?? card.walls;
+      if (target.infill === undefined) target.infill = obj.objectSettings.infill ?? card.density;
+    }
+  }
+
+  /** A sliced sweep: each variant one slice of the object alone and one solve. */
+  private async slicedSweep(obj: PlateObject, patches: SweepPatch[], limits: ConstraintLimits, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (patches.some((patch) => patch.parameters)) return { ok: false, reason: RESLICE_PARAMETERS };
+    const saved = obj.sim!;
+    const card = cardsOf(this.library).find((row) => row.id === saved.cardId);
+    const provisional = card?.provisional !== false;
+    // One cell size per variant unless asked: a sweep compares variants, and a second size doubles each solve.
+    const checkResolution = input.checkResolution === true;
+    type SweepRow = Record<string, unknown> & { ok?: boolean; met: boolean; reason: string };
+    const rows: SweepRow[] = [];
+    for (const patch of patches) {
+      const solved = await this.solveSliced(obj, saved, checkResolution, patch);
+      if (solved.ok !== true) {
+        rows.push({ ok: false, met: false, reason: typeof solved.reason === "string" ? solved.reason : "The stress solve did not finish." });
+        continue;
+      }
+      const trust = solved.trust as { level?: unknown } | undefined;
+      const level = trust?.level === "usable" || trust?.level === "converged" ? trust.level : "rough";
+      const verdict = constraintVerdict({
+        provisional,
+        trust: level,
+        maxDisplacementMm: typeof solved.maxDisplacementMm === "number" ? solved.maxDisplacementMm : 0,
+        minSafetyFactor: typeof solved.minSafetyFactor === "number" ? solved.minSafetyFactor : null,
+        massG: typeof solved.massG === "number" ? solved.massG : 0,
+      }, limits);
+      rows.push({ ...solved, met: verdict.met, reason: verdict.reason });
+    }
+    let committed = false;
+    if (input.commit === true) {
+      const index = typeof input.variant === "number" ? input.variant : patches.length === 1 ? 0 : -1;
+      if (!Number.isInteger(index) || index < 0 || index >= patches.length) return { ok: false, variants: rows, reason: "Name the variant to keep." };
+      const chosen = rows[index];
+      if (!chosen || chosen.ok === false) return { ok: false, variants: rows, reason: typeof chosen?.reason === "string" ? chosen.reason : "The stress solve did not finish." };
+      if (patches[index]!.pattern) return { ok: false, variants: rows, reason: RESLICE_PATTERN_KEEP };
+      this.remember("Sweep");
+      this.applySweepPatch(obj, patches[index]!);
+      committed = true;
+    }
+    return { ok: true, variants: rows, committed, note: "Each variant was sliced alone and solved. slicerSeconds and slicerGrams are that slice's." };
+  }
+
+  private simField(input: Record<string, unknown>): Record<string, unknown> {
+    const obj = this.simTarget(input);
+    if ("reason" in obj) return { ok: false, reason: obj.reason };
+    if (obj.sim && this.representationFor(obj, obj.sim) === "sliced") return { ok: false, reason: SLICED_FIELD };
+    const field = typeof input.field === "string" ? input.field : "";
+    const names = ["displacement", "von_mises", "stress", "safety_factor", "element_error"];
+    if (!names.includes(field)) return { ok: false, reason: `Unknown field. This result has ${names.join(", ")}.` };
+    let points: SimVec[] | undefined;
+    if (input.points !== undefined) {
+      if (!Array.isArray(input.points)) return { ok: false, reason: "A point is three numbers." };
+      points = [];
+      for (const item of input.points) {
+        const point = vec3Of(item);
+        if (!point) return { ok: false, reason: "A point is three numbers." };
+        points.push(point);
+      }
+    }
+    let box: { min: SimVec; max: SimVec } | undefined;
+    if (input.box !== undefined) {
+      if (!input.box || typeof input.box !== "object" || Array.isArray(input.box)) return { ok: false, reason: "A box needs a min and a max." };
+      const row = input.box as { min?: unknown; max?: unknown };
+      const min = vec3Of(row.min);
+      const max = vec3Of(row.max);
+      if (!min || !max) return { ok: false, reason: "A box needs a min and a max." };
+      box = { min, max };
+    }
+    let face: number | undefined;
+    if (input.face !== undefined) {
+      if (!Number.isInteger(input.face) || (input.face as number) < 0) return { ok: false, reason: "That face is not on this beam." };
+      face = input.face as number;
+    }
+    let stride: number | undefined;
+    if (input.stride !== undefined) {
+      if (!Number.isInteger(input.stride) || (input.stride as number) < 1) return { ok: false, reason: "A stride starts at 1." };
+      stride = input.stride as number;
+    }
+    if (!points && !box && face === undefined && stride === undefined) return { ok: false, reason: "Name points, a box, a face, or a stride." };
+    return this.solveCopy(obj, undefined, "field", { field, points, box, face, stride, limit: pageLimit(input.limit), cursor: pageCursor(input.cursor) });
+  }
+
+  private simTarget(input: Record<string, unknown>): PlateObject | { reason: string } {
+    const requested = typeof input.object === "string" ? input.object : "";
+    const obj = requested ? this.find(requested) : this.selectedObject();
+    if (!obj) return { reason: requested ? UNKNOWN_OBJECT : "Load a mesh first." };
+    return obj;
+  }
+
+  private sweepPatchProblem(patch: SweepPatch): string | null {
+    if (patch.parameters) {
+      const merged = this.mergeParams(patch.parameters);
+      if ("reason" in merged && typeof merged.reason === "string") return merged.reason;
+    }
+    if (patch.walls !== undefined) {
+      const applied = applyObjectSetting(this.settings, "walls", patch.walls, this.schemaContext());
+      if ("reason" in applied) return applied.reason;
+    }
+    if (patch.infill !== undefined) {
+      const applied = applyObjectSetting(this.settings, "infill", patch.infill, this.schemaContext());
+      if ("reason" in applied) return applied.reason;
+    }
+    return null;
+  }
+
+  private applySweepPatch(obj: PlateObject, patch: SweepPatch): void {
+    if (patch.parameters) this.paramsTool({ set: patch.parameters });
+    const next = { ...obj.objectSettings };
+    if (patch.walls !== undefined) {
+      const applied = applyObjectSetting(this.settings, "walls", patch.walls, this.schemaContext());
+      if (!("reason" in applied)) next.walls = applied.value as number;
+    }
+    if (patch.infill !== undefined) {
+      const applied = applyObjectSetting(this.settings, "infill", patch.infill, this.schemaContext());
+      if (!("reason" in applied)) next.infill = applied.value as number;
+    }
+    obj.objectSettings = next;
+    if (!obj.sim) return;
+    const study = cloneStudy(obj.sim);
+    if (patch.pattern) study.pattern = patch.pattern;
+    if (patch.loadScale !== undefined && patch.loadScale !== 1) study.loads = scaleLoads(study.loads, patch.loadScale);
+    obj.sim = study;
+  }
+
+  private async simSweep(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!Array.isArray(input.variants)) return { ok: false, reason: SWEEP_REFUSAL };
+    if (input.variants.length > SWEEP_CAP) return { ok: false, reason: SWEEP_REFUSAL };
+    const patches: SweepPatch[] = [];
+    for (const item of input.variants) {
+      const patch = readPatch(item);
+      if (typeof patch === "string") return { ok: false, reason: patch };
+      const problem = this.sweepPatchProblem(patch);
+      if (problem) return { ok: false, reason: problem };
+      patches.push(patch);
+    }
+    const limits = readLimits(input.constraints);
+    if (typeof limits === "string") return { ok: false, reason: limits };
+    const obj = this.simTarget(input);
+    if ("reason" in obj) return { ok: false, reason: obj.reason };
+    const sliced = obj.sim !== undefined && this.representationFor(obj, obj.sim) === "sliced";
+    if (sliced && input.reslice !== true) return { ok: false, reason: SLICED_SWEEP };
+    if (!sliced && input.reslice === true) return { ok: false, reason: RESLICE_BEAM };
+    if (sliced) return this.slicedSweep(obj, patches, limits as ConstraintLimits, input);
+    const card = cardsOf(this.library).find((row) => row.id === obj.sim?.cardId);
+    const provisional = card?.provisional !== false;
+    type SweepRow = Record<string, unknown> & { ok?: boolean; met: boolean; reason: string; slicerSeconds?: number };
+    const rows: SweepRow[] = patches.map((patch): SweepRow => {
+      const solved = this.solveCopy(obj, patch, "run");
+      if (solved.ok !== true) return { ok: false, met: false, reason: typeof solved.reason === "string" ? solved.reason : OPEN_MESH };
+      const trust = solved.trust as { level?: unknown } | undefined;
+      const level = trust?.level === "usable" || trust?.level === "converged" ? trust.level : "rough";
+      const verdict = constraintVerdict({
+        provisional,
+        trust: level,
+        maxDisplacementMm: typeof solved.maxDisplacementMm === "number" ? solved.maxDisplacementMm : 0,
+        minSafetyFactor: typeof solved.minSafetyFactor === "number" ? solved.minSafetyFactor : null,
+        massG: typeof solved.massG === "number" ? solved.massG : 0,
+      }, limits as ConstraintLimits);
+      return { ...solved, met: verdict.met, reason: verdict.reason };
+    });
+    const commit = input.commit === true;
+    let committed = false;
+    if (commit) {
+      const index = typeof input.variant === "number" ? input.variant : patches.length === 1 ? 0 : -1;
+      if (!Number.isInteger(index) || index < 0 || index >= patches.length) return { ok: false, variants: rows, reason: "Name the variant to keep." };
+      const chosen = rows[index];
+      if (!chosen || chosen.ok === false) return { ok: false, variants: rows, reason: typeof chosen?.reason === "string" ? chosen.reason : OPEN_MESH };
+      this.remember("Sweep");
+      this.applySweepPatch(obj, patches[index]!);
+      committed = true;
+    }
+    let note = "";
+    if (input.includePrintTime === true) {
+      const estimate = this.freshEstimate();
+      if (estimate) {
+        for (const row of rows) row.slicerSeconds = estimate.seconds;
+        note = "The slicer's estimate.";
+      } else note = "Print time was not estimated.";
+    }
+    return { ok: true, variants: rows, committed, ...(note ? { note } : {}) };
+  }
+
   private fileText(job: Job, now: Date): string {
     const summary = this.summarize(job);
     const printer = this.printer();

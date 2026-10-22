@@ -9,6 +9,7 @@ import { type ChildProcess, fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { encodePaths } from "../src/preview-wire.ts";
+import { SOLVER_STAND_IN } from "./sim.ts";
 import { appVersion } from "./version.ts";
 
 /**
@@ -58,6 +59,8 @@ export interface Engine {
   calibrate(body: string): string | Promise<string>;
   /** Blend estimates for one slice body. No G-code. */
   pareto(body: string): string | Promise<string>;
+  /** One sliced stress study: the same JSON `lime_sim_bridge::study_json` reads. */
+  simStudy(body: string): string | Promise<string>;
   /** Which library answers, and whether it is the installed app's, for session_info. */
   where?(): { path: string; installed: boolean } | Promise<{ path: string; installed: boolean }>;
   /** Drop a stuck modeler and start another. Slicing keeps its own worker. */
@@ -76,6 +79,7 @@ type NativeExports = {
   sliceCancel: (id: string) => string;
   calibrate?: (body: string) => string;
   pareto?: (body: string) => string;
+  simStudy?: (body: string) => string;
 };
 
 export function engineLibraryName(): string {
@@ -188,6 +192,7 @@ export function loadNativeEngine(root: string, expectVersion?: string): Engine &
     sliceCancel: (id) => native.sliceCancel(id),
     calibrate: (body) => native.calibrate?.(body) ?? JSON.stringify({ error: "Rebuild the in-process engine. This one has no calibration." }),
     pareto: (body) => native.pareto?.(body) ?? JSON.stringify({ error: "Rebuild the in-process engine. This one has no blend comparison." }),
+    simStudy: (body) => native.simStudy?.(body) ?? JSON.stringify({ ok: false, reason: "Rebuild the in-process engine. This one has no stress study." }),
     resetModeler: () => undefined,
   };
 }
@@ -357,6 +362,7 @@ export function loadEngineWorker(root: string): Engine {
     sliceCancel: (id) => slice.call("sliceCancel", id) as Promise<string>,
     calibrate: (body) => slice.call("calibrate", body) as Promise<string>,
     pareto: (body) => slice.call("pareto", body) as Promise<string>,
+    simStudy: (body) => slice.call("simStudy", body) as Promise<string>,
     resetModeler: () => model.restart(),
     resetPreview: () => preview.restart(),
   };
@@ -898,6 +904,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
       { label: "mix", toughness: 0.5, seconds: 14, filamentG: 0.28, score: 0.5 },
       { label: "tough", toughness: 1, seconds: 20, filamentG: 0.4, score: 0.9 },
     ]),
+    simStudy: () => JSON.stringify({ ok: false, reason: SOLVER_STAND_IN }),
   };
   return engine;
 }

@@ -1,4 +1,4 @@
-export type ColorMode = "feature" | "weight" | "speed";
+export type ColorMode = "feature" | "weight" | "speed" | "stress" | "safety";
 
 /**
  * Mid-tone hues on the dark stage. `colors.test.ts` holds the minimum CIEDE2000 distance
@@ -53,6 +53,32 @@ export const WEIGHT_RAMP: Ramp = ["#F0922B", "#D1478C", "#5A4BD8"];
 /** Effective speed across `SPEED_RANGE_MM_S` maps along these, slow blue to fast yellow. */
 export const SPEED_RAMP: Ramp = ["#3A4FD8", "#22A85A", "#F0D22A"];
 export const SPEED_RANGE_MM_S: [number, number] = [20, 180];
+/** Bead stress over the result's peak, cool to hot. */
+export const STRESS_RAMP: Ramp = ["#2A5FD6", "#F0D22A", "#C41E3A"];
+/** Safety factor, worst first: `SAFETY_RANGE[0]` and under is red, `SAFETY_RANGE[1]` and over is green. */
+export const SAFETY_RAMP: Ramp = ["#C41E3A", "#F0D22A", "#2FA36B"];
+export const SAFETY_RANGE: [number, number] = [1, 3];
+
+/** The colour modes that read a sliced stress result. */
+export function readsStress(mode: ColorMode): boolean {
+  return mode === "stress" || mode === "safety";
+}
+
+export function stressT(mpa: number, peakMpa: number): number {
+  return peakMpa > 0 ? clamp01(mpa / peakMpa) : 0;
+}
+
+export function safetyT(safety: number): number {
+  const [lo, hi] = SAFETY_RANGE;
+  return clamp01((safety - lo) / (hi - lo));
+}
+
+/** A bead's colour from the stress cell it sits in. No cell is the neutral grey. */
+export function colorForReading(mode: ColorMode, reading: { stressMpa: number; safety: number } | null, peakMpa: number): string {
+  if (!reading) return OTHER_COLOR;
+  if (mode === "safety") return rampColor(SAFETY_RAMP, safetyT(reading.safety));
+  return rampColor(STRESS_RAMP, stressT(reading.stressMpa, peakMpa));
+}
 
 export function featureColor(kind: string): string {
   return FEATURE_COLOR[kind] ?? OTHER_COLOR;
@@ -72,6 +98,8 @@ export function colorForPath(
   if (kind === "travel") return FEATURE_COLOR.travel;
   if (mode === "weight") return rampColor(WEIGHT_RAMP, clamp01(toughness));
   if (mode === "speed") return rampColor(SPEED_RAMP, speedT(effectiveSpeed));
+  // A path with no stress reading is grey; one that has them is coloured bead by bead.
+  if (readsStress(mode)) return OTHER_COLOR;
   return featureColor(kind);
 }
 

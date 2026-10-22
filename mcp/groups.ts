@@ -26,6 +26,7 @@ export const TOOL_GROUPS: Record<string, { holds: string; tools: string[] }> = {
   },
   calibration: { holds: "calibration towers and blends", tools: ["calibration_tower", "calibration_apply", "blend_compare", "blend_apply"] },
   machines: { holds: "printer and filament records: load, read, set, save, profiles", tools: ["machine_load", "machine_get", "machine_set", "machine_save", "profile_save"] },
+  stress: { holds: "stress studies: set up, solve, read a field, sweep variants", tools: ["sim_setup", "sim_run", "sim_field", "sim_sweep", "sim_cancel"] },
 };
 
 export const GROUP_NAMES = Object.keys(TOOL_GROUPS);

@@ -5,7 +5,8 @@ import { createModelView, type ModelView } from "../model-view";
 import { bindModelView, leaveModel, showModel } from "./model";
 import { createSliceView, type SliceView3d } from "../view3d";
 import { setPlateThumbnailCapture } from "./thumb-capture";
-import { FEATURE_LABEL, colorForPath } from "../colors";
+import { FEATURE_LABEL, colorForPath, colorForReading, readsStress } from "../colors";
+import { cellPieces, onStressCells, STRESS_NEEDS_RESULT, stressCellsFor, type StressCells } from "../sim/stress-cells";
 import { legendMarkup } from "../ui/legend";
 import { formatDuration } from "../format";
 import { syncLayerTip } from "../ui/layer-tip";
@@ -228,6 +229,52 @@ export function pathsOf(layer: PreviewLayer): PreviewPath[] {
  * Where each object of a plate result is drawn: its reply offset plus any X/Y move of
  * that object since the slice. One object at the origin when the result is not a plate.
  */
+/**
+ * The stress cells for the plate object at `index` of the preview, when the
+ * last sliced study was of that object.
+ */
+export function previewStressCells(index: number): StressCells | null {
+  const objects = state.result?.objects;
+  if (!objects) return stressCellsFor();
+  const id = objects[index]?.id;
+  return id ? stressCellsFor(id) : null;
+}
+
+let stressShown: StressCells | null | undefined;
+
+/** A new sliced study repaints the Preview in its colours. */
+onStressCells(() => draw());
+
+/**
+ * Keeps the 3D lookup, the colour menu and its note in step with the last
+ * sliced study. Stress and safety are offered only while there is one.
+ */
+export function syncStressColour() {
+  const cells = stressCellsFor();
+  if (cells !== stressShown) {
+    stressShown = cells;
+    fx.view3d.setStressField(cells, (object: number) => previewStressCells(object) !== null);
+  }
+  for (const value of ["stress", "safety"]) {
+    const option = document.querySelector<HTMLOptionElement>(`#colorBy option[value="${value}"]`);
+    if (!option) continue;
+    option.disabled = !cells;
+    option.title = cells ? "" : STRESS_NEEDS_RESULT;
+  }
+  const note = document.querySelector<HTMLElement>("#colorStressNote");
+  if (!note) return;
+  const on = readsStress(state.colorMode);
+  note.hidden = !on && !!cells;
+  if (!cells) {
+    note.textContent = STRESS_NEEDS_RESULT;
+    return;
+  }
+  const scale = state.colorMode === "safety"
+    ? "Safety factor: red at 1 or under, green at 3 or over."
+    : `Stress in the beads, 0 to ${cells.peakMpa.toFixed(cells.peakMpa < 10 ? 2 : 1)} MPa.`;
+  note.textContent = `In-house estimate · as sliced · ${cells.trust}. ${scale}`;
+}
+
 export function objectShownOffsets(): [number, number][] {
   const objects = state.result?.objects;
   if (!objects) return [[0, 0]];
@@ -1001,6 +1048,9 @@ export function draw() {
   const section = activeSection();
   const center = previewCenter();
   const layerZ = layer.z;
+  const layerH = layer.height;
+  const stressOn = readsStress(state.colorMode);
+  const shownOffsets = stressOn ? objectShownOffsets() : [];
   pathsOf(layer).forEach((path, pathIndex) => {
     if (state.hidden.has(path.kind)) return;
     if (path.kind === "travel" && !state.showTravel) return;
@@ -1020,7 +1070,27 @@ export function draw() {
     const runs = section && center
       ? clipPolyline(path.pts, path.zs, layerZ, from, to, center, section)
       : null;
-    if (!runs) {
+    const cells = stressOn && path.kind !== "travel" ? previewStressCells(path.object ?? 0) : null;
+    if (cells && !runs) {
+      // Each bead is cut where it crosses a cell line, and each piece takes its own cell,
+      // so a long bead changes colour exactly where its cells do.
+      const [ox, oy] = shownOffsets[path.object ?? 0] ?? [0, 0];
+      const half = (path.beadHeight || layerH || 0.2) / 2;
+      for (let i = from; i + 1 < to; i++) {
+        const a = path.pts[i];
+        const b = path.pts[i + 1];
+        const z = (path.zs?.[i] ?? layerZ) - half;
+        for (const { t0, t1, reading } of cellPieces(cells, [a[0] - ox, a[1] - oy], [b[0] - ox, b[1] - oy], z)) {
+          fx.ctx.strokeStyle = colorForReading(state.colorMode, reading, cells.peakMpa);
+          const [x0, y0] = map(a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0);
+          const [x1, y1] = map(a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1);
+          fx.ctx.beginPath();
+          fx.ctx.moveTo(x0, y0);
+          fx.ctx.lineTo(x1, y1);
+          fx.ctx.stroke();
+        }
+      }
+    } else if (!runs) {
       fx.ctx.beginPath();
       for (let i = from; i < to; i++) {
         const [x, y] = map(path.pts[i][0], path.pts[i][1]);
@@ -1185,6 +1255,7 @@ export function sync3d() {
   fx.view3d.setObjectOffsets(objectShownOffsets(), selectedObjectIndex());
   fx.view3d.setHidden(state.hidden);
   fx.view3d.setColorMode(state.colorMode);
+  syncStressColour();
   fx.view3d.setShowTravel(state.showTravel && !state.hidden.has("travel"));
   fx.view3d.setRange(state.rangeLow, state.layer);
   fx.view3d.setMeasureBox(printedBox());

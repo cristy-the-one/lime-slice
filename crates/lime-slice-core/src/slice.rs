@@ -526,6 +526,9 @@ pub struct SliceSettings {
     pub preview_base: Option<String>,
     /// The shell job this slice belongs to. A stale job stops with "cancelled".
     pub job: Job,
+    /// Keep the emitted beads on the response, for a stress study. Set only by
+    /// `slice_beads`; the G-code doesn't read it.
+    pub capture_beads: bool,
 }
 
 impl Default for SliceSettings {
@@ -605,6 +608,7 @@ impl Default for SliceSettings {
             include_skeleton: false,
             preview_base: None,
             job: Job::default(),
+            capture_beads: false,
         }
     }
 }
@@ -795,6 +799,7 @@ impl SliceSettings {
             include_skeleton: req.include_skeleton,
             preview_base: req.preview_base.clone(),
             job: Job::default(),
+            capture_beads: false,
         }
     }
 
@@ -1202,6 +1207,130 @@ pub struct SliceResponse {
     /// closed on its own. Response metadata only: G-code is unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<SliceWarning>,
+    /// The emitted beads, when `slice_beads` asked for them. Never on the wire.
+    #[serde(skip)]
+    pub beads: Option<Arc<SlicedBeads>>,
+}
+
+/// The beads a one-object slice extrudes, as the G-code writer lays them, and
+/// where they sit on the part. Built by `slice_beads` for a stress study.
+#[derive(Clone, Debug)]
+pub struct SlicedBeads {
+    /// Every extruding segment in print order, skirt and supports included:
+    /// the study decides what carries load.
+    pub beads: Vec<crate::gcode::Bead>,
+    /// One row per emitted layer that has beads, in order.
+    pub layers: Vec<BeadLayer>,
+    /// Slice frame to part frame, row-major, the last row `[0, 0, 0, 1]`.
+    /// The part frame is the request's mesh after its pose.
+    pub frame: [[f64; 4]; 4],
+    /// The direction layers stack in, in the part frame.
+    pub layer_normal: [f64; 3],
+}
+
+/// A layer of `SlicedBeads`: its beads are `beads[bead_start..][..bead_count]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeadLayer {
+    pub index: usize,
+    /// The layer top in the slice frame.
+    pub z_mm: f64,
+    pub height_mm: f64,
+    pub bead_start: usize,
+    pub bead_count: usize,
+}
+
+/// Slice one object and keep the beads its G-code extrudes. The reply is
+/// the ordinary one, with `beads` set. A plate of several objects is
+/// refused: `Extrusion` carries no object, so the study slices its object
+/// alone, with that object's settings.
+pub fn slice_beads(req: &SliceRequest, job: Job, watch: &Watch) -> Result<SliceResponse, String> {
+    if let Some(objects) = &req.objects {
+        if objects.len() != 1 {
+            return Err(format!(
+                "A study slices its object alone. This request has {} objects.",
+                objects.len()
+            ));
+        }
+    }
+    if req.belt.as_ref().is_some_and(|belt| belt.copies > 1) {
+        return Err("A study slices one copy. Set the belt copies to 1.".into());
+    }
+    let response = slice_request_inner(req, job, watch, true)?;
+    if response.beads.as_ref().is_none_or(|b| b.beads.is_empty()) {
+        return Err("The slice produced no beads.".into());
+    }
+    Ok(response)
+}
+
+/// The beads of `layers`, with the frame that takes them back to the part.
+fn sliced_beads(
+    layers: &[PlateLayer],
+    offsets: &[[f64; 2]],
+    flow: f64,
+    frame: [[f64; 4]; 4],
+) -> SlicedBeads {
+    let beads = crate::gcode::emitted_beads(layers, offsets, flow).collect::<Vec<_>>();
+    let mut rows: Vec<BeadLayer> = Vec::new();
+    for (k, bead) in beads.iter().enumerate() {
+        match rows.last_mut() {
+            Some(row) if row.index == bead.layer => row.bead_count += 1,
+            _ => {
+                let layer = layers
+                    .iter()
+                    .find(|l| l.index == bead.layer)
+                    .expect("a bead's layer is emitted");
+                rows.push(BeadLayer {
+                    index: layer.index,
+                    z_mm: layer.z,
+                    height_mm: layer.height,
+                    bead_start: k,
+                    bead_count: 1,
+                });
+            }
+        }
+    }
+    let layer_normal = [frame[0][2], frame[1][2], frame[2][2]];
+    SlicedBeads {
+        beads,
+        layers: rows,
+        frame,
+        layer_normal,
+    }
+}
+
+/// The slice-to-part map of a plate slice. On a cartesian printer the beads
+/// carry the object's bed offset, which comes off. On a belt the plate was
+/// moved to the bed, lifted onto any pad, and laid flat: `Frame::lab` undoes
+/// the lay-flat, then the move comes off.
+fn slice_to_part(belt: Option<&BeltJob>, offset: [f64; 2]) -> [[f64; 4]; 4] {
+    let Some(job) = belt else {
+        return [
+            [1.0, 0.0, 0.0, -offset[0]],
+            [0.0, 1.0, 0.0, -offset[1]],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+    };
+    let frame = &job.belt.frame;
+    let to_bed = job.offsets.first().copied().flatten().unwrap_or([0.0, 0.0]);
+    let lift = job.raft.as_ref().map_or(0.0, |r| r.top);
+    // lab(p) = A·p + b, read from the origin and the three unit points.
+    let o = frame.lab(0.0, 0.0, 0.0);
+    let cols = [
+        frame.lab(1.0, 0.0, 0.0),
+        frame.lab(0.0, 1.0, 0.0),
+        frame.lab(0.0, 0.0, 1.0),
+    ];
+    let shift = [to_bed[0], to_bed[1], lift];
+    let row = |r: usize| {
+        [
+            cols[0][r] - o[r],
+            cols[1][r] - o[r],
+            cols[2][r] - o[r],
+            o[r] - shift[r],
+        ]
+    };
+    [row(0), row(1), row(2), [0.0, 0.0, 0.0, 1.0]]
 }
 
 /// One plain-language notice for the results summary.
@@ -1460,6 +1589,15 @@ pub fn slice_request_watched(
     job: Job,
     watch: &Watch,
 ) -> Result<SliceResponse, String> {
+    slice_request_inner(req, job, watch, false)
+}
+
+fn slice_request_inner(
+    req: &SliceRequest,
+    job: Job,
+    watch: &Watch,
+    capture_beads: bool,
+) -> Result<SliceResponse, String> {
     watch.begin(Stage::Load, 1);
     if watch.stopped(job) {
         return Err("cancelled".into());
@@ -1517,6 +1655,7 @@ pub fn slice_request_watched(
     };
     let settings = SliceSettings {
         job,
+        capture_beads,
         ..SliceSettings::from_request(req)
     };
     slice_plate(
@@ -2467,6 +2606,15 @@ fn slice_plate(
         ))
     };
     let emit_layers: &[PlateLayer] = stamped.as_deref().unwrap_or(emit_held.as_slice());
+    let beads = settings.capture_beads.then(|| {
+        let offset = offsets.first().copied().unwrap_or([0.0, 0.0]);
+        Arc::new(sliced_beads(
+            emit_layers,
+            &offsets,
+            settings.flow,
+            slice_to_part(belt_job.as_ref(), offset),
+        ))
+    });
     let emit_started = Instant::now();
     let (gcode, gcode_text) = if settings.include_gcode {
         let gcode = emit_gcode(
@@ -2918,6 +3066,7 @@ fn slice_plate(
         objects: objects_view,
         collisions,
         warnings: mesh_warnings(repaired_layers, bridged_mm, dropped_chains),
+        beads,
     })
 }
 
@@ -7085,6 +7234,96 @@ mod tests {
 "
             )
         );
+    }
+
+    /// The beads the stress study reads are the writer's own: their volume is
+    /// the filament the G-code feeds, with scarf seams, a flow multiplier and
+    /// a plate offset on, with and without fuzzy skin. The post is round, so
+    /// its seams scarf; a cube's sharp corners keep them butt. Arc fitting is
+    /// off, because an arc's E follows the arc and a bead its chords.
+    #[test]
+    fn emitted_beads_are_the_extrusion_the_writer_feeds() {
+        let bytes = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/arc_post.stl"),
+        )
+        .unwrap();
+        let mesh = crate::load::load_mesh("arc_post.stl", &bytes).unwrap();
+        for fuzzy in [None, Some(crate::strategy::FuzzySkin::default())] {
+            let settings = SliceSettings {
+                baseline: false,
+                include_preview: false,
+                compare: false,
+                arc_fit: false,
+                flow: 0.93,
+                scarf_seam: ScarfSeam::All,
+                fuzzy_skin: fuzzy,
+                ..SliceSettings::default()
+            };
+            let profile = PrinterProfile::default();
+            let blend = BlendMode::Single {
+                strategy: StrategyId::Speed,
+            };
+            let planned = plan(&mesh, &blend, &settings, profile.nozzle_diameter)
+                .unwrap()
+                .layers
+                .into_iter()
+                .map(PlateLayer::single)
+                .collect::<Vec<_>>();
+            let offsets = [[3.0, -2.0]];
+            let stats = crate::gcode::emit_gcode(
+                &planned,
+                &profile,
+                &blend,
+                settings.layer_height,
+                settings.line_width,
+                &settings.feature_note(),
+                settings.arc_fit,
+                settings.classic_estimator,
+                settings.junction_deviation_mm,
+                &offsets,
+                None,
+                settings.flow,
+                crate::gcode::RetractEmit {
+                    length_mm: settings.retract_length,
+                    speed_mm_s: settings.retract_speed,
+                },
+                settings.min_layer(),
+                settings.job,
+                &Watch::idle(),
+            );
+            let beads =
+                crate::gcode::emitted_beads(&planned, &offsets, settings.flow).collect::<Vec<_>>();
+            let volume: f64 = beads.iter().map(|b| b.volume_mm3()).sum();
+            let area = std::f64::consts::PI * (profile.filament_diameter * 0.5).powi(2);
+            let fed = stats.filament_mm * area;
+            assert!(
+                ((volume - fed) / fed).abs() < 1e-9,
+                "beads {volume} mm³, writer {fed} mm³"
+            );
+            // A scarf moves the nozzle inside the layer, and the offset moves the part.
+            let ramps = beads
+                .iter()
+                .filter(|b| (b.from[2] - b.to[2]).abs() > 1e-6)
+                .count();
+            let scarfed = planned
+                .iter()
+                .flat_map(|l| l.paths())
+                .filter(|(_, p)| !p.z_frac.is_empty())
+                .count();
+            assert!(
+                ramps > 0,
+                "fuzzy {fuzzy:?}: {scarfed} paths carry z_frac, no bead ramps"
+            );
+            let min_x = beads
+                .iter()
+                .map(|b| b.from[0])
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                (min_x - stats.min_x).abs() < 1.0,
+                "beads from x {min_x}, G-code from {}",
+                stats.min_x
+            );
+        }
     }
 
     /// The cube, planned once and emitted for `profile` the way a slice does:

@@ -177,6 +177,27 @@ GUIDES.push(
 );
 
 GUIDES.push({
+  uri: "lime://guide/sim",
+  name: "Stress",
+  tools: ["sim_setup", "sim_run", "sim_field", "sim_sweep", "model_params", "settings_set", "slice_start", "gcode_summary"],
+  text: [
+    "A generated beam, then a sweep. No mesh file.",
+    "1. sim_setup {beam:{lengthMm:100, widthMm:10, heightMm:10}, hMm:20, fixtures:[{kind:\"faces\", faces:[0]}], loads:[{kind:\"force\", faces:[1], magnitude:10, direction:[0,0,-1]}], card:\"inhouse-petg\"}. printer:true writes the selected printer's build axis. element is tet10.",
+    "2. sim_run. Read trust. The label is In-house estimate. sim_field {field:\"von_mises\", stride:1, limit:100} pages one field.",
+    "3. model_params or settings_set, then sim_run again.",
+    "4. A generated beam: sim_sweep {variants:[{loadScale:1},{walls:4, infill:0.2}], constraints:{maxDeflectionMm:1}}. commit defaults to false. includePrintTime defaults to false, and the sweep does not slice. A sliced part: sim_sweep {reslice:true, variants:[{walls:2},{walls:4},{infill:0.4},{pattern:\"gyroid\"}]}. Each variant is one slice plus one solve, and its row carries slicerSeconds and slicerGrams, so time and grams are traded against the margins in one call. A pattern variant is not kept by commit: set the blend with settings_set.",
+    "5. Print time, when wanted, is slice_start and gcode_summary on the variant you keep.",
+    "A rough result is a reason to refine hMm or to stop using a provisional card. It is not a reason to change the solid. A usable result can reject a variant that fails by a wide margin. A converged result is the one to keep. None of the three is a promise that the printed part will hold the load.",
+    "An STL or STEP with a printer is solved as sliced: the printed part, not a smear. A generated beam stays a smear. sim_setup {representation:\"sliced\"} forces the sliced solve, and \"smear\" forces the beam solve. sim_run on a sliced part returns margins and hot spots.",
+    "governs on a hot spot says what to change:",
+    "across-layers or interlayer-shear: Orientation. workplane_print_up or the object's orient. More walls rarely help.",
+    "across-bead: Wall count, line width, or an infill pattern with more crossing (settings_set).",
+    "along-bead with role sparse: Infill density or reinforcement at the hot spot (reinforce_add).",
+    "along-bead with role outer or wall: Geometry. A fillet or a thicker section at nearestFace (model_apply).",
+  ].join("\n"),
+});
+
+GUIDES.push({
   uri: "lime://guide/plans",
   name: "Plans",
   tools: ["plan_run", "solid_new", "faces_find", "workplane_set", "model_apply", "model_commit"],

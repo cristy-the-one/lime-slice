@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use crate::progress::{Stage, Watch};
 use crate::strategy::{fan_pwm, BlendMode, Firmware, PrinterProfile};
-use crate::toolpath::{Extrusion, FanRole};
+use crate::toolpath::{Extrusion, FanRole, PathKind};
 
 #[derive(Clone, Debug)]
 pub struct GcodeStats {
@@ -954,7 +954,7 @@ impl EmitCfg {
             emit_pa: profile.pressure_advance > 0.0 || profile.linear_advance > 0.0,
             offsets,
             belt: belt.copied(),
-            flow_scale: if flow.is_finite() { flow } else { 1.0 },
+            flow_scale: flow_scale(flow),
             retract_length: retract.length_mm.filter(|n| n.is_finite()),
             retract_speed: retract
                 .speed_mm_s
@@ -1608,21 +1608,14 @@ impl Writer {
         } else {
             speed
         };
-        let layer_flow = if layer.own == 0 { 1.06 } else { 1.0 };
-        // `1.0` times the layer flow is the same float, so an unused multiplier
-        // leaves every E value where it was.
-        let flow = layer_flow * self.flow_scale;
+        let flow = path_flow(layer, path, self.flow_scale);
         if !self.quiet {
             self.comment(&format!("TYPE:{}", path.kind.as_str().to_ascii_uppercase()));
         }
         if path.points.is_empty() {
             return;
         }
-        let bead_h = if path.bead_height > 1e-6 {
-            path.bead_height
-        } else {
-            layer.height
-        };
+        let bead_h = bead_height(layer, path);
         self.kind = "travel";
         let travel_accel = cap_accel(path.travel_accel, self.max_accel);
         let print_accel = cap_accel(path.accel, self.max_accel);
@@ -1649,20 +1642,14 @@ impl Writer {
         );
         self.kind = path.kind.as_str();
         self.set_accel(print_accel);
-        let limited = limit_speed(
-            speed,
-            path.width,
-            bead_h,
-            flow * path.flow,
-            self.max_volumetric_mm3_s,
-        );
+        let limited = limit_speed(speed, path.width, bead_h, flow, self.max_volumetric_mm3_s);
         let (fit, loose) = chain_fit(self.arc_fit, path);
         self.emit_chain(
             &path.points,
             limited,
             path.width,
             bead_h,
-            flow * path.flow,
+            flow,
             self.filament_diameter,
             print_accel,
             fit,
@@ -2279,19 +2266,9 @@ impl Writer {
                 }
             }
             let p = points[i + 1];
-            let (h, seg_flow, z) = if scarfed {
-                let z0 = z_frac[i].clamp(0.0, 1.0);
-                let z1 = z_frac[i + 1].clamp(0.0, 1.0);
-                let f0 = flow_frac[i].clamp(0.0, 2.0);
-                let f1 = flow_frac[i + 1].clamp(0.0, 2.0);
-                (
-                    nominal_h * 0.5 * (z0 + z1),
-                    flow * 0.5 * (f0 + f1),
-                    Some(nozzle_z(layer_z, nominal_h, z1)),
-                )
-            } else {
-                (layer_h, flow, None)
-            };
+            let (h, seg_flow, z) = segment_bead(
+                i, scarfed, layer_h, flow, z_frac, flow_frac, layer_z, nominal_h,
+            );
             self.extrude(p[0], p[1], speed, width, h, seg_flow, filament_d, accel, z);
             i += 1;
         }
@@ -2331,19 +2308,9 @@ impl Writer {
                 continue;
             }
             let p = points[i + 1];
-            let (h, seg_flow, z) = if scarfed {
-                let z0 = z_frac[i].clamp(0.0, 1.0);
-                let z1 = z_frac[i + 1].clamp(0.0, 1.0);
-                let f0 = flow_frac[i].clamp(0.0, 2.0);
-                let f1 = flow_frac[i + 1].clamp(0.0, 2.0);
-                (
-                    nominal_h * 0.5 * (z0 + z1),
-                    flow * 0.5 * (f0 + f1),
-                    Some(nozzle_z(layer_z, nominal_h, z1)),
-                )
-            } else {
-                (layer_h, flow, None)
-            };
+            let (h, seg_flow, z) = segment_bead(
+                i, scarfed, layer_h, flow, z_frac, flow_frac, layer_z, nominal_h,
+            );
             self.extrude(p[0], p[1], speed, width, h, seg_flow, filament_d, accel, z);
             i += 1;
         }
@@ -2655,6 +2622,162 @@ fn feature_rows(
 
 fn hypot(x: f64, y: f64) -> f64 {
     x.hypot(y)
+}
+
+/// The job's flow multiplier as the writer applies it. A value that isn't
+/// finite is ignored.
+fn flow_scale(flow: f64) -> f64 {
+    if flow.is_finite() {
+        flow
+    } else {
+        1.0
+    }
+}
+
+/// The flow every segment of `path` takes before its per-point fraction:
+/// the first layer's 6% extra, the job's multiplier, and the path's own.
+/// `1.0` times the layer flow is the same float, so an unused multiplier
+/// leaves every E value where it was.
+fn path_flow(layer: &PlateLayer, path: &Extrusion, flow_scale: f64) -> f64 {
+    let layer_flow = if layer.own == 0 { 1.06 } else { 1.0 };
+    layer_flow * flow_scale * path.flow
+}
+
+/// The bead's height: the path's own when it sets one, else the layer's.
+fn bead_height(layer: &PlateLayer, path: &Extrusion) -> f64 {
+    if path.bead_height > 1e-6 {
+        path.bead_height
+    } else {
+        layer.height
+    }
+}
+
+/// Segment `i`'s bead height and flow, and the nozzle Z at its end when a
+/// scarf moves it. A scarfed segment takes the mean of its two points.
+#[allow(clippy::too_many_arguments)]
+fn segment_bead(
+    i: usize,
+    scarfed: bool,
+    layer_h: f64,
+    flow: f64,
+    z_frac: &[f64],
+    flow_frac: &[f64],
+    layer_z: f64,
+    nominal_h: f64,
+) -> (f64, f64, Option<f64>) {
+    if !scarfed {
+        return (layer_h, flow, None);
+    }
+    let z0 = z_frac[i].clamp(0.0, 1.0);
+    let z1 = z_frac[i + 1].clamp(0.0, 1.0);
+    let f0 = flow_frac[i].clamp(0.0, 2.0);
+    let f1 = flow_frac[i + 1].clamp(0.0, 2.0);
+    (
+        nominal_h * 0.5 * (z0 + z1),
+        flow * 0.5 * (f0 + f1),
+        Some(nozzle_z(layer_z, nominal_h, z1)),
+    )
+}
+
+/// One extruding segment as the nozzle lays it: what `extrude` writes an E
+/// value for. Points are in the slice frame with the object's plate offset
+/// added, so on a cartesian printer they are bed coordinates; a belt's
+/// gantry transform is not applied. `z` is the nozzle height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bead {
+    /// The plate layer's index.
+    pub layer: usize,
+    pub object: u16,
+    pub kind: PathKind,
+    pub from: [f64; 3],
+    pub to: [f64; 3],
+    pub width: f64,
+    pub height: f64,
+    /// Every multiplier the writer applies: first layer, job, path, and the
+    /// per-point fraction.
+    pub flow: f64,
+}
+
+impl Bead {
+    /// The deposited volume in mm³: the writer's E for this segment times
+    /// the filament's cross-section.
+    pub fn volume_mm3(&self) -> f64 {
+        let length = hypot(self.to[0] - self.from[0], self.to[1] - self.from[1]);
+        length * self.width * self.height.max(0.0) * self.flow.max(0.0)
+    }
+}
+
+/// Every segment the writer extrudes, in print order, with the same height
+/// and flow it writes E from. `flow` and `offsets` are what `emit_gcode`
+/// takes. Fuzzy skin and scarf seams are already in the paths. Arc fitting
+/// is a G-code encoding: the beads follow the planned points, whose chords
+/// lie within half a bead of the arcs the writer may send instead.
+pub(crate) fn emitted_beads<'a>(
+    layers: &'a [PlateLayer],
+    offsets: &'a [[f64; 2]],
+    flow: f64,
+) -> impl Iterator<Item = Bead> + 'a {
+    let scale = flow_scale(flow);
+    layers.iter().flat_map(move |layer| {
+        layer.runs.iter().flat_map(move |run| {
+            let offset = offsets
+                .get(run.object as usize)
+                .copied()
+                .unwrap_or([0.0, 0.0]);
+            run.layer.paths[run.paths.clone()]
+                .iter()
+                .flat_map(move |path| path_beads(layer, run.object, path, offset, scale))
+        })
+    })
+}
+
+fn path_beads<'a>(
+    layer: &'a PlateLayer,
+    object: u16,
+    path: &'a Extrusion,
+    offset: [f64; 2],
+    scale: f64,
+) -> impl Iterator<Item = Bead> + 'a {
+    let points = &path.points;
+    let scarfed = path.z_frac.len() == points.len() && path.flow_frac.len() == points.len();
+    let layer_h = bead_height(layer, path);
+    let flow = path_flow(layer, path, scale);
+    let mut z = if scarfed && !points.is_empty() {
+        nozzle_z(layer.z, layer.height, path.z_frac[0])
+    } else {
+        layer.z
+    };
+    (1..points.len().max(1)).filter_map(move |j| {
+        let i = j - 1;
+        let (h, seg_flow, end_z) = segment_bead(
+            i,
+            scarfed,
+            layer_h,
+            flow,
+            &path.z_frac,
+            &path.flow_frac,
+            layer.z,
+            layer.height,
+        );
+        let [x0, y0] = points[i];
+        let [x1, y1] = points[j];
+        let z0 = z;
+        z = end_z.unwrap_or(z);
+        // `extrude` writes no E for a step this short.
+        if hypot(x1 - x0, y1 - y0) < 1e-4 {
+            return None;
+        }
+        Some(Bead {
+            layer: layer.index,
+            object,
+            kind: path.kind,
+            from: [x0 + offset[0], y0 + offset[1], z0],
+            to: [x1 + offset[0], y1 + offset[1], z],
+            width: path.width,
+            height: h,
+            flow: seg_flow,
+        })
+    })
 }
 
 fn nozzle_z(layer_z: f64, layer_h: f64, frac: f64) -> f64 {

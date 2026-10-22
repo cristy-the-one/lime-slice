@@ -32,6 +32,7 @@ import { fnv1aHex } from "./slice-action.ts";
 import { base64ToBytes, bytesToBase64 } from "./base64.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
+import { readStudy } from "./sim/study.ts";
 import { isGlobalFrame, readWorkplane } from "./workplane.ts";
 import { dropEmptyReinforce, readReinforcement } from "./reinforcement.ts";
 import type { EditEntry } from "./support-edit-list.ts";
@@ -568,6 +569,11 @@ function readPlateObject(value: unknown): PlateFileObject | string {
   if (row.meshSeatMm !== undefined) {
     if (!finite(row.meshSeatMm)) return "This project's model space position is damaged.";
     object.meshSeatMm = row.meshSeatMm;
+  }
+  // A damaged study is left out, the way a damaged history is. The rest of the file still opens.
+  if (row.sim !== undefined) {
+    const sim = readStudy(row.sim);
+    if (sim) object.sim = sim;
   }
   if (row.brep !== undefined && row.brep !== null) {
     const brep = readMesh(row.brep);

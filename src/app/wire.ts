@@ -2,6 +2,7 @@ import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { arrangePlate, duplicatePlateObject, framePlateObject, removePlateObject, selectPlateObject } from "./plate-actions";
 import { requestModelCheck } from "./model";
+import { revealStress } from "../ui/stress.ts";
 import { separateShells } from "./shell-actions";
 import { applyTheme, type ThemeChoice } from "../theme";
 import { axisNormal, clampOffset, flipSection } from "../section-plane";
@@ -226,6 +227,13 @@ export function wireApp() {
       return;
     }
     // --- A7 model check ---
+    const plateStress = t.closest<HTMLElement>("[data-plate-stress]")?.dataset.plateStress;
+    if (plateStress) {
+      selectPlateObject(plateStress);
+      setStage("model");
+      revealStress();
+      return;
+    }
     const plateCheck = t.closest<HTMLElement>("[data-plate-check]")?.dataset.plateCheck;
     if (plateCheck) {
       requestModelCheck(plateCheck);

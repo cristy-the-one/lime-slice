@@ -33,7 +33,8 @@ pub use calibrate::{
     TempCalib, TempCalibOutput, TempCalibRequest,
 };
 pub use cancel::{cancel_all, Job};
-pub use gcode::GcodeText;
+pub use gcode::{Bead, GcodeText};
+pub use toolpath::PathKind;
 pub use inner_prof::{
     report as inner_profile, reset as reset_inner_profile, set_enabled as set_inner_profile,
 };
@@ -47,10 +48,11 @@ pub use reinforcement::Region;
 pub use slice::{
     contour_times, keep_support_bases, outline_tolerance_mm, pareto_estimates, pareto_request,
     slice_configured,
-    slice_configured_watched, slice_request, slice_request_watched, slice_with_baseline,
-    BeltCopies, BlendScore, CompareEstimate, EditOutcomeView, FeatureEstimate, HeightRangeSpec,
+    slice_beads, slice_configured_watched, slice_request, slice_request_watched,
+    slice_with_baseline,
+    BeadLayer, BeltCopies, BlendScore, CompareEstimate, EditOutcomeView, FeatureEstimate, HeightRangeSpec,
     ModifierVolumeSpec, PaintDiskSpec, ParetoPoint, PreviewLayer, PrintEstimate, RigidPose,
-    SiteSpec,     AdhesionType, LayerAction, LayerActionKind, SliceRequest, SliceResponse, SliceSettings, SupportEditSpec,
+    SiteSpec,     AdhesionType, LayerAction, LayerActionKind, SliceRequest, SliceResponse, SliceSettings, SlicedBeads, SupportEditSpec,
     SurfacePattern, VolumeKind,
 };
 pub use slice_cache::{slice_payload, slice_payload_watched, SliceCache};

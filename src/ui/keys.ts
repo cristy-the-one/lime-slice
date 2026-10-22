@@ -19,6 +19,7 @@ function keyContext(ev: KeyboardEvent): KeyContext {
   if (target?.dataset.sketchDimInput != null && ev.key === "Escape") typing = false;
   // Escape in Parameters still folds the section. The sketch also sees it, so two presses leave.
   if (target?.closest("#modelParams") && ev.key === "Escape") typing = false;
+  if (target?.closest("#modelStress") && ev.key === "Escape") typing = false;
   const root = document.documentElement.dataset;
   const sketchPhase = document.querySelector("#model")?.getAttribute("data-sketch");
   return {

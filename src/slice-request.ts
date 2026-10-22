@@ -52,12 +52,33 @@ export interface SliceRequestInput {
   includePreview: boolean;
 }
 
+/**
+ * A study is not a slice field. Drop `sim` on the object and on each plate
+ * object, and leave every other key in the order the caller wrote it.
+ * Absent `sim` returns the same record, so a slice without a study is unchanged.
+ */
+function withoutStudy(record: Record<string, unknown>): Record<string, unknown> {
+  const objects = record.objects;
+  const nested = Array.isArray(objects) && objects.some((item) => !!item && typeof item === "object" && "sim" in (item as object));
+  if (!("sim" in record) && !nested) return record;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (key === "sim") continue;
+    if (key === "objects" && Array.isArray(value)) {
+      out.objects = value.map((item) => (item && typeof item === "object" && !Array.isArray(item) ? withoutStudy(item as Record<string, unknown>) : item));
+    } else out[key] = value;
+  }
+  return out;
+}
+
 /** The object `rules.coerce` turns into the engine's request. Field order matches the app's previous body. */
 export function sliceRequest(input: SliceRequestInput): Record<string, unknown> {
   const settings = input.settings;
   const lineWidth = input.lineWidth;
+  const one = withoutStudy(input.one);
+  const plate = withoutStudy(input.plate);
   return {
-    ...input.one,
+    ...one,
     stepToleranceMm: input.stepToleranceMm,
     layerHeight: settings.layerHeight,
     ...adhesionSliceFields(
@@ -136,7 +157,7 @@ export function sliceRequest(input: SliceRequestInput): Record<string, unknown> 
     simplify: settings.simplify,
     simplifyErrorMm: settings.simplifyError,
     ...sliceOverrideFields(input.overrides),
-    ...input.plate,
+    ...plate,
     ...input.order,
   };
 }
