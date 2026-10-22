@@ -152,13 +152,21 @@ jobs:
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
       - name: Install Playwright Chromium
-        # A stuck apt mirror once held this step for over an hour. Each try
-        # gets five minutes, and a hung or failed try runs once more.
+        # A stuck apt mirror once held this step for over an hour. apt now
+        # gives up on a silent mirror itself and retries; each try still gets
+        # five minutes. A try killed by the timeout leaves its apt-get running
+        # as root, holding the dpkg lock (2026-10-22), so it is stopped and
+        # dpkg finished before the next try.
         timeout-minutes: 12
         run: |
+          { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
           for attempt in 1 2; do
             timeout 300 npx playwright install --with-deps chromium && exit 0
             echo "Playwright install try $attempt failed"
+            sudo pkill -x apt-get || true
+            sudo pkill -x dpkg || true
+            sleep 2
+            sudo dpkg --configure -a || true
           done
           exit 1
 
@@ -403,13 +411,21 @@ jobs:
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
       - name: Install Playwright Chromium
-        # A stuck apt mirror once held this step for over an hour. Each try
-        # gets five minutes, and a hung or failed try runs once more.
+        # A stuck apt mirror once held this step for over an hour. apt now
+        # gives up on a silent mirror itself and retries; each try still gets
+        # five minutes. A try killed by the timeout leaves its apt-get running
+        # as root, holding the dpkg lock (2026-10-22), so it is stopped and
+        # dpkg finished before the next try.
         timeout-minutes: 12
         run: |
+          { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
           for attempt in 1 2; do
             timeout 300 npx playwright install --with-deps chromium && exit 0
             echo "Playwright install try $attempt failed"
+            sudo pkill -x apt-get || true
+            sudo pkill -x dpkg || true
+            sleep 2
+            sudo dpkg --configure -a || true
           done
           exit 1
 
