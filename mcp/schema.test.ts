@@ -1,5 +1,6 @@
 import { occtHint } from "./engine.ts";
-import { advertisedTools, annotationsFor, TOOLS, validateTool } from "./schema.ts";
+import { groupOf, TOOL_GROUPS } from "./groups.ts";
+import { advertisedTools, annotationsFor, listedTools, OP_KINDS, OP_SUMMARY, TOOLS, validateTool, type ToolSpec } from "./schema.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean) {
@@ -41,6 +42,12 @@ check("layer height is 0.08 to 0.4", layerHeight.minimum === 0.08 && layerHeight
 check("layer height 0.9 is outside the schema", validateTool("settings_apply", { layerHeight: 0.9 }) !== null);
 check("model_apply uses the typed edit", JSON.stringify(TOOLS.find((tool) => tool.name === "model_apply")!.inputSchema).includes("oneOf"));
 check("a fillet can select edges", validateTool("model_probe", { object: "obj_1", op: { kind: "fillet", edges: { select: { direction: [0, 0, 1] } }, size: 1 } }) === null);
+check("every op kind has a one-line summary", OP_KINDS.length === Object.keys(OP_SUMMARY).length && OP_KINDS.every((kind) => typeof OP_SUMMARY[kind] === "string"));
+check(
+  "a chamfer without size names the field and a chamfer's fields",
+  validateTool("model_apply", { op: { kind: "chamfer", edges: [0] } }) === "input.op.size is required. A chamfer op takes edges (required, list or object), size (required, number), label (text). guide {kind:\"chamfer\"} has its full schema.",
+);
+check("a refused field outside an op is unchanged", validateTool("model_apply", { op: { kind: "scale", factor: 2 }, probe: 1 }) === "input.probe must be true or false.");
 check("settings and selectors are tools", ["settings_schema", "settings_set", "faces_find", "edges_find"].every((name) => names.has(name)));
 
 function missingDescriptions(node: unknown, missing: string[]): void {
@@ -58,20 +65,42 @@ function missingDescriptions(node: unknown, missing: string[]): void {
 const undescribed: string[] = [];
 for (const tool of TOOLS) missingDescriptions(tool.inputSchema, undescribed);
 check("every property has a description", undescribed.length === 0);
-const listed = JSON.stringify({
-  tools: advertisedTools().map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    inputSchema: tool.inputSchema,
-    annotations: annotationsFor(tool.name),
-  })),
-});
-// 51 KB held while model_apply listed eight op kinds. The typed composite kinds (pocket, boss, texture, pattern,
-// mirror) are listed once, on model_apply; the other Model tools point at it. surface_at, model_check, and the kernel's
-// extrude, revolve, and shell, the surface array and ribs, loft and sweep, and text, path patterns, model_define,
-// model_anchors, and render_view's looks, add the rest.
-console.log(`tools/list is ${Buffer.byteLength(listed)} bytes`);
-check("tools/list stays under 78 KB", Buffer.byteLength(listed) < 78 * 1024);
+// Every client reads the whole tools/list each session, so it is held to a token budget. Tokens are estimated as
+// UTF-8 bytes / 4, rounded up: no tokenizer runs here, and compact JSON schema text comes out at about four bytes a
+// token for current tokenizers. The list was 78.8 KB (~19,700 tokens) before model_apply's op became kind names
+// and one line each (its full schema alone was 28.9 KB); guide {kind} serves a kind's full schema on demand.
+const tokens = (text: string) => Math.ceil(Buffer.byteLength(text) / 4);
+const rowsOf = (tools: ToolSpec[]) => tools.map((tool) => ({
+  name: tool.name,
+  description: tool.description,
+  inputSchema: tool.inputSchema,
+  annotations: annotationsFor(tool.name),
+}));
+// Every tool, tools_enable too, for the per-tool budget; the default list (groups off) for the total.
+const rows = rowsOf(advertisedTools());
+const listed = JSON.stringify({ tools: rowsOf(listedTools(null)) });
+const core = JSON.stringify({ tools: rowsOf(listedTools(new Set())) });
+console.log(`with tool groups on, the first tools/list is ${Buffer.byteLength(core)} bytes, ~${tokens(core)} tokens, ${listedTools(new Set()).length} tools`);
+const TOOL_BUDGET = 750;
+/** Tools allowed past TOOL_BUDGET, each with its reason. */
+const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }> = {
+  model_apply: { budget: 900, reason: "lists every op kind with one line each, the map a caller picks a kind from" },
+};
+const TOTAL_BUDGET = 14_500;
+const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
+const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
+const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");
+check(`every tool fits its token budget${over.length ? `: ${overText}` : ""}`, over.length === 0);
+const total = tokens(listed);
+console.log(`tools/list is ${Buffer.byteLength(listed)} bytes, ~${total} tokens, ${listedTools(null).length} tools`);
+const largest = sized.slice(0, 10).map((row) => `${row.name} ~${row.tokens}`).join(", ");
+check(`tools/list fits ${TOTAL_BUDGET} tokens${total > TOTAL_BUDGET ? ` (it is ~${total}; largest: ${largest})` : ""}`, total <= TOTAL_BUDGET);
+const grouped = Object.values(TOOL_GROUPS).flatMap((row) => row.tools);
+check("every grouped tool is a tool, in one group", grouped.every((name) => names.has(name)) && new Set(grouped).size === grouped.length);
+check("groups off lists every tool but tools_enable", listedTools(null).length === TOOLS.length - 1 && !listedTools(null).some((tool) => tool.name === "tools_enable"));
+check("groups on lists the core and tools_enable first", listedTools(new Set()).every((tool) => groupOf(tool.name) === null) && listedTools(new Set()).some((tool) => tool.name === "tools_enable") && listedTools(new Set()).some((tool) => tool.name === "slice_start"));
+check("an enabled group adds its tools", listedTools(new Set(["paint"]).add("model")).some((tool) => tool.name === "model_apply" && listedTools(new Set(["paint"])).every((row) => row.name !== "model_apply")));
+check("model_apply lists every op kind by name",JSON.stringify(rows.find((row) => row.name === "model_apply")!.inputSchema).includes('"enum":["hole","fillet"'));
 
 const accepted: [string, unknown][] = [
   ["session_info", {}],

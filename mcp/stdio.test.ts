@@ -291,6 +291,61 @@ check("a ping after a malformed line is answered", ping.id === 2 && ping.result 
 check("the process is still alive", broken.child.exitCode === null);
 broken.child.kill();
 
+// Tool groups: off by default, opt-in with LIME_MCP_TOOL_GROUPS=1.
+{
+  type Row = { id?: number; method?: string; result?: { capabilities?: { tools?: { listChanged?: boolean } }; tools?: { name: string }[]; content?: { text?: string }[] } };
+  const listNames = async (io: RawClient, id: number): Promise<string[]> => {
+    io.send(rpc(id, "tools/list"));
+    for (;;) {
+      const row = JSON.parse(await io.next()) as Row;
+      if (row.id === id) return (row.result?.tools ?? []).map((tool) => tool.name);
+    }
+  };
+  const init = { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } };
+
+  const plain = startRaw();
+  plain.send(rpc(1, "initialize", init));
+  const plainInit = JSON.parse(await plain.next()) as Row;
+  const plainNames = await listNames(plain, 2);
+  check("without groups, initialize does not offer list changes", plainInit.result?.capabilities?.tools?.listChanged === undefined, JSON.stringify(plainInit.result?.capabilities));
+  check("without groups, every tool is listed and tools_enable is not", plainNames.includes("model_apply") && plainNames.includes("calibration_tower") && !plainNames.includes("tools_enable") && plainNames.length > 80, String(plainNames.length));
+  plain.child.kill();
+
+  const grouped = startRaw({ LIME_MCP_TOOL_GROUPS: "1" });
+  grouped.send(rpc(1, "initialize", init));
+  const groupedInit = JSON.parse(await grouped.next()) as Row;
+  check("with groups, initialize declares tools.listChanged", groupedInit.result?.capabilities?.tools?.listChanged === true, JSON.stringify(groupedInit.result?.capabilities));
+  const firstList = await listNames(grouped, 2);
+  check(
+    "with groups, the first tools/list is the core set and tools_enable",
+    firstList.includes("tools_enable") && firstList.includes("mesh_import") && firstList.includes("slice_start") && firstList.includes("guide") && !firstList.includes("model_apply") && firstList.length < 35,
+    firstList.join(","),
+  );
+  grouped.send(rpc(3, "tools/call", { name: "model_apply", arguments: { op: { kind: "scale", factor: 2 } } }));
+  let hiddenText = "";
+  for (;;) {
+    const row = JSON.parse(await grouped.next()) as Row;
+    if (row.id === 3) {
+      hiddenText = row.result?.content?.[0]?.text ?? "";
+      break;
+    }
+  }
+  check("a tool of a group not enabled says how to enable it", hiddenText.includes("model_apply is in the model group, which is not enabled. Call tools_enable {groups:[\\\"model\\\"]}"), hiddenText);
+  grouped.send(rpc(4, "tools/call", { name: "tools_enable", arguments: { groups: ["model"] } }));
+  let changed = false;
+  let enabledText = "";
+  for (let i = 0; i < 3 && !enabledText; i += 1) {
+    const row = JSON.parse(await grouped.next()) as Row;
+    if (row.method === "notifications/tools/list_changed") changed = true;
+    if (row.id === 4) enabledText = row.result?.content?.[0]?.text ?? "";
+  }
+  check("tools_enable sends notifications/tools/list_changed", changed, enabledText);
+  check("tools_enable names the tools it added", enabledText.includes("model_apply") && enabledText.includes("\"enabled\":[\"model\"]"), enabledText);
+  const nextList = await listNames(grouped, 5);
+  check("the next tools/list has the model group", nextList.includes("model_apply") && nextList.includes("faces_find") && !nextList.includes("paint_supports"), nextList.join(","));
+  grouped.child.kill();
+}
+
 const slow = startRaw({ LIME_MCP_FAKE_BLOCK_MS: "400" });
 slow.send('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}\n');
 await slow.next();
