@@ -30,17 +30,16 @@ function check(name: string, ok: boolean, detail = "") {
 const root = fileURLToPath(new URL("..", import.meta.url));
 const native = loadNativeEngine(root);
 const engine = fakeEngine();
-let defaultWasTrue = false;
-let lastRotation: number[] | null = null;
+const captured: { defaultResolution: boolean; rotation: number[] | null } = { defaultResolution: false, rotation: null };
 engine.simStudy = (body: string) => {
   const parsed = JSON.parse(body) as {
     request?: { pose?: { rotation?: number[] }; objects?: { pose?: { rotation?: number[] } }[] };
     study?: { checkResolution?: boolean };
   };
   const pose = parsed.request?.objects?.[0]?.pose ?? parsed.request?.pose;
-  if (pose?.rotation) lastRotation = pose.rotation;
+  if (pose?.rotation) captured.rotation = pose.rotation;
   if (parsed.study?.checkResolution === true) {
-    defaultWasTrue = true;
+    captured.defaultResolution = true;
     return JSON.stringify({
       ok: true,
       report: {
@@ -160,8 +159,8 @@ check(
 const flagged = await session.call("sim_run", { object: setup.object });
 check(
   "checkResolution defaults to true",
-  flagged.ok === true && defaultWasTrue === true && flagged.representation === "sliced",
-  JSON.stringify(flagged.reason ?? { defaultWasTrue, representation: flagged.representation }),
+  flagged.ok === true && captured.defaultResolution === true && flagged.representation === "sliced",
+  JSON.stringify(flagged.reason ?? { defaultResolution: captured.defaultResolution, representation: flagged.representation }),
 );
 
 /** A closed box, the same winding the stand-in uses, so a real slice accepts it. */
@@ -228,7 +227,7 @@ check(
 );
 const stlRun = await stlSession.call("sim_run", { object: stlObject, checkResolution: false });
 const stlSpot = (stlRun.margins as { hotSpot?: { at?: number[] } }[] | undefined)?.[0]?.hotSpot?.at;
-const turnedAway = lastRotation !== null && lastRotation.some((value, index) => Math.abs(value - identity[index]!) > 1e-6);
+const turnedAway = captured.rotation !== null && captured.rotation.some((value, index) => Math.abs(value - identity[index]!) > 1e-6);
 check(
   "a turned STL keeps the hot spot in the part frame",
   stlRun.ok === true
@@ -236,7 +235,7 @@ check(
     && Array.isArray(stlSpot)
     && inside(stlSpot, stlMin, stlMax)
     && turnedAway,
-  JSON.stringify(stlRun.reason ?? { spot: stlSpot, rotation: lastRotation, keys: Object.keys(stlRun) }),
+  JSON.stringify(stlRun.reason ?? { spot: stlSpot, rotation: captured.rotation, keys: Object.keys(stlRun) }),
 );
 
 if (failed) {

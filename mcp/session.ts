@@ -6575,13 +6575,14 @@ export class Session {
   private sweepPatchProblem(patch: SweepPatch): string | null {
     if (patch.parameters) {
       const merged = this.mergeParams(patch.parameters);
-      if ("reason" in merged) return merged.reason;
+      if ("reason" in merged && typeof merged.reason === "string") return merged.reason;
     }
-    const values: Record<string, unknown> = {};
-    if (patch.walls !== undefined) values.walls = patch.walls;
-    if (patch.infill !== undefined) values.infill = patch.infill;
-    for (const [key, value] of Object.entries(values)) {
-      const applied = applyObjectSetting(this.settings, key, value, this.schemaContext());
+    if (patch.walls !== undefined) {
+      const applied = applyObjectSetting(this.settings, "walls", patch.walls, this.schemaContext());
+      if ("reason" in applied) return applied.reason;
+    }
+    if (patch.infill !== undefined) {
+      const applied = applyObjectSetting(this.settings, "infill", patch.infill, this.schemaContext());
       if ("reason" in applied) return applied.reason;
     }
     return null;
@@ -6624,7 +6625,8 @@ export class Session {
     if (obj.sim && this.representationFor(obj, obj.sim) === "sliced") return { ok: false, reason: SLICED_SWEEP };
     const card = cardsOf(this.library).find((row) => row.id === obj.sim?.cardId);
     const provisional = card?.provisional !== false;
-    const rows = patches.map((patch) => {
+    type SweepRow = Record<string, unknown> & { ok?: boolean; met: boolean; reason: string; slicerSeconds?: number };
+    const rows: SweepRow[] = patches.map((patch): SweepRow => {
       const solved = this.solveCopy(obj, patch, "run");
       if (solved.ok !== true) return { ok: false, met: false, reason: typeof solved.reason === "string" ? solved.reason : OPEN_MESH };
       const trust = solved.trust as { level?: unknown } | undefined;

@@ -201,7 +201,7 @@ function hasSim(value: unknown): boolean {
   return Object.values(record).some(hasSim);
 }
 const studiedPlate = {
-  objects: (plate.objects as Record<string, unknown>[]).map((obj) => ({ ...obj, sim: study })),
+  objects: plate.objects.map((obj) => ({ ...obj, sim: study })),
 };
 const studied = rules.coerce(sliceRequest({
   one: { filename: "cube.stl", sim: study },
