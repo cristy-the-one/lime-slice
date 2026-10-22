@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { provisionalCards } from "../src/sim/cards.ts";
 import { cannedBeam, emptyStudy, type CannedResult } from "../src/sim/study.ts";
 import { autoSliceOff } from "./auto-slice";
@@ -42,7 +44,7 @@ function f32b64(values: number[]): string {
   return buf.toString("base64");
 }
 
-const SAVED_STUDY = "/tmp/lime-stress-box.json";
+const SAVED_STUDY = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "sim-study-box.json");
 
 /** A one-triangle reply the spec controls. The desktop box, when saved, is a second test. */
 function mockReply(): string {
@@ -229,7 +231,6 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
 });
 
 test("a saved desktop solve is drawn as sliced", async ({ page }) => {
-  test.skip(!existsSync(SAVED_STUDY), "the desktop command did not leave a reply");
   await openModel(page, readFileSync(SAVED_STUDY, "utf8"));
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuStress").click();

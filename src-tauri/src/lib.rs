@@ -386,6 +386,12 @@ mod tests {
         Stage::ALL.iter().map(|stage| stage.name()).collect()
     }
 
+    fn object_keys(value: &Value) -> Vec<String> {
+        let mut keys: Vec<String> = value.as_object().map(|map| map.keys().cloned().collect()).unwrap_or_default();
+        keys.sort();
+        keys
+    }
+
     #[test]
     fn every_stage_has_the_web_ui_label() {
         let labels: HashMap<String, String> =
@@ -561,16 +567,28 @@ mod tests {
         })
         .to_string();
         let text = run_sim_study(&body);
-        if std::env::var("LIME_STRESS_OUT").ok().as_deref() == Some("1") {
-            std::fs::write("/tmp/lime-stress-box.json", &text).unwrap();
-        }
         let reply: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(reply["ok"], true, "{reply}");
         assert_eq!(reply["report"]["representation"], "sliced");
         assert!(reply["report"]["maxDisplacementMm"].as_f64().unwrap().is_finite());
         assert!(reply["surface"]["triangles"].as_u64().unwrap() > 0);
         let spot = &reply["report"]["margins"][0]["hotSpot"]["at"];
-        assert!(spot.is_array(), "{reply}");
+        assert!(spot.is_array() && spot.as_array().unwrap().len() == 3, "{reply}");
+
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../e2e/fixtures/sim-study-box.json");
+        if std::env::var("LIME_STRESS_OUT").ok().as_deref() == Some("1") {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            std::fs::write(&path, &text).unwrap();
+        }
+        let fixture: Value = serde_json::from_reader(std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(object_keys(&reply), object_keys(&fixture), "top-level keys");
+        assert_eq!(object_keys(&reply["report"]), object_keys(&fixture["report"]), "report keys");
+        assert_eq!(object_keys(&reply["surface"]), object_keys(&fixture["surface"]), "surface keys");
+        assert!(fixture["surface"]["triangles"].as_u64().unwrap_or(0) > 0);
+        let saved = &fixture["report"]["margins"][0]["hotSpot"]["at"];
+        assert!(saved.is_array() && saved.as_array().unwrap().len() == 3, "{fixture}");
     }
 
     #[test]
