@@ -1690,12 +1690,26 @@ export const TOOLS: ToolSpec[] = [
         hMm: { type: "number", exclusiveMinimum: 0, description: "Edge length, mm." },
         element: { type: "string", description: "Only tet10." },
         gravity: { type: "boolean", description: "Self weight, off by default." },
+        representation: { enum: ["sliced", "smear"], description: "Default: sliced for STL or STEP with a printer." },
+        constraints: {
+          type: "array",
+          maxItems: 8,
+          description: "Targets. A sliced run returns margins.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              kind: { type: "string", description: "minSafetyFactor, maxDeflectionMm, maxMassG, or minMassG." },
+              value: { type: "number", exclusiveMinimum: 0, description: "The limit." },
+            },
+          },
+        },
       },
     },
   },
   {
     name: "sim_run",
-    description: "Solve. No triangles.",
+    description: "Solve. A sliced part returns margins. No triangles.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

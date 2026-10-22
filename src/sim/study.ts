@@ -27,6 +27,15 @@ export interface StudyBeam {
 
 export type SimPatternName = "lines" | "grid" | "gyroid" | "lightning";
 
+/** `sliced` is the printed part. `smear` is the generated-beam solve. Absent means choose again at run time. */
+export type SimRepresentation = "sliced" | "smear";
+
+/** A target the sliced solve turns into a margin. A band is not stored here. */
+export interface StudyConstraint {
+  kind: string;
+  value: number;
+}
+
 export interface StudyLoad {
   kind: "force" | "pressure";
   faces: number[];
@@ -51,6 +60,10 @@ export interface ObjectStudy {
   beam?: StudyBeam;
   /** Infill pattern for the smear, when a sweep sets one. */
   pattern?: SimPatternName;
+  /** Set when the caller named one. Absent means choose again from the part. */
+  representation?: SimRepresentation;
+  /** Targets for a sliced solve. Absent on a smear and on an older study. */
+  constraints?: StudyConstraint[];
 }
 
 export interface ConstraintLimits {
@@ -142,6 +155,8 @@ export function cloneStudy(study: ObjectStudy): ObjectStudy {
     edgeMm: study.edgeMm,
     ...(study.beam ? { beam: { ...study.beam } } : {}),
     ...(study.pattern ? { pattern: study.pattern } : {}),
+    ...(study.representation ? { representation: study.representation } : {}),
+    ...(study.constraints ? { constraints: study.constraints.map((row) => ({ ...row })) } : {}),
   };
 }
 
@@ -209,6 +224,22 @@ export function readStudy(value: unknown): ObjectStudy | null {
     if ((box.lengthMm as number) <= 0 || (box.widthMm as number) <= 0 || (box.heightMm as number) <= 0) return null;
     beam = { lengthMm: box.lengthMm as number, widthMm: box.widthMm as number, heightMm: box.heightMm as number };
   }
+  let representation: SimRepresentation | undefined;
+  if (row.representation !== undefined) {
+    if (row.representation !== "sliced" && row.representation !== "smear") return null;
+    representation = row.representation;
+  }
+  let constraints: StudyConstraint[] | undefined;
+  if (row.constraints !== undefined) {
+    if (!Array.isArray(row.constraints)) return null;
+    constraints = [];
+    for (const item of row.constraints) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const target = item as Record<string, unknown>;
+      if (typeof target.kind !== "string" || target.kind.trim() === "" || !finite(target.value) || target.value <= 0) return null;
+      constraints.push({ kind: target.kind, value: target.value });
+    }
+  }
   return {
     holds,
     loads,
@@ -219,6 +250,8 @@ export function readStudy(value: unknown): ObjectStudy | null {
     edgeMm: row.edgeMm,
     ...(beam ? { beam } : {}),
     ...(pattern ? { pattern } : {}),
+    ...(representation ? { representation } : {}),
+    ...(constraints ? { constraints } : {}),
   };
 }
 

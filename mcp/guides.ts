@@ -188,6 +188,12 @@ GUIDES.push({
     "4. sim_sweep {variants:[{loadScale:1},{walls:4, infill:0.2}], constraints:{maxDeflectionMm:1}}. commit defaults to false. includePrintTime defaults to false, and the sweep does not slice.",
     "5. Print time, when wanted, is slice_start and gcode_summary on the variant you keep.",
     "A rough result is a reason to refine hMm or to stop using a provisional card. It is not a reason to change the solid. A usable result can reject a variant that fails by a wide margin. A converged result is the one to keep. None of the three is a promise that the printed part will hold the load.",
+    "An STL or STEP with a printer is solved as sliced: the printed part, not a smear. A generated beam stays a smear. sim_setup {representation:\"sliced\"} forces the sliced solve, and \"smear\" forces the beam solve. sim_run on a sliced part returns margins and hot spots.",
+    "governs on a hot spot says what to change:",
+    "across-layers or interlayer-shear: Orientation. workplane_print_up or the object's orient. More walls rarely help.",
+    "across-bead: Wall count, line width, or an infill pattern with more crossing (settings_set).",
+    "along-bead with role sparse: Infill density or reinforcement at the hot spot (reinforce_add).",
+    "along-bead with role outer or wall: Geometry. A fillet or a thicker section at nearestFace (model_apply).",
   ].join("\n"),
 });
 

@@ -104,6 +104,12 @@ study.beam = { lengthMm: 100, widthMm: 10, heightMm: 10 };
 study.pattern = "grid";
 eq("a generated beam reads back", readStudy(JSON.parse(JSON.stringify(study))), study);
 eq("a damaged beam is left out", readStudy({ ...study, beam: { lengthMm: 0, widthMm: 10, heightMm: 10 } }), null);
+const sliced = emptyStudy();
+sliced.holds = [{ kind: "bed", faces: [] }];
+sliced.representation = "sliced";
+sliced.constraints = [{ kind: "minSafetyFactor", value: 2 }];
+eq("a sliced study reads back", readStudy(JSON.parse(JSON.stringify(sliced))), sliced);
+eq("a bad representation is left out", readStudy({ ...sliced, representation: "foam" }), null);
 eq(
   "a rough row is not met",
   constraintVerdict({ provisional: true, trust: "rough", maxDisplacementMm: 0.01, minSafetyFactor: 4, massG: 1 }, { maxDeflectionMm: 1 }),

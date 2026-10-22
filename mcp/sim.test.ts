@@ -5,7 +5,7 @@ import { LABEL, PROVISIONAL_SENTENCE } from "../src/sim/label.ts";
 import { beltLayerNormal } from "../src/sim/study.ts";
 
 import { fakeEngine } from "./engine.ts";
-import { OPEN_MESH, SWEEP_REFUSAL } from "./sim.ts";
+import { OPEN_MESH, SOLVER_STAND_IN, SWEEP_REFUSAL, representationOf } from "./sim.ts";
 import { Session } from "./session.ts";
 
 let failed = 0;
@@ -41,6 +41,20 @@ const guide = await session.call("guide", { topic: "sim" });
 const guideText = String(guide.text ?? "");
 check("the sim guide runs the beam sequence", guide.ok === true && guideText.includes("sim_setup") && guideText.includes("sim_run") && guideText.includes("sim_sweep") && guideText.includes("includePrintTime defaults to false"));
 check("the guide says rough is not a reason to change the solid", guideText.includes("not a reason to change the solid") && guideText.includes("None of the three is a promise"));
+check(
+  "the guide maps governs to a change",
+  guideText.includes("across-layers") && guideText.includes("interlayer-shear") && guideText.includes("workplane_print_up")
+    && guideText.includes("across-bead") && guideText.includes("settings_set")
+    && guideText.includes("along-bead") && guideText.includes("reinforce_add") && guideText.includes("model_apply"),
+);
+check("a beam stays a smear", representationOf({ beam: true, printerId: "lime-220", fileName: "beam.stl" }) === "smear");
+check("an STL with a printer is sliced", representationOf({ printerId: "lime-220", fileName: "part.stl" }) === "sliced");
+check("a STEP with a printer is sliced", representationOf({ printerId: "lime-220", fileName: "part.step" }) === "sliced");
+check("an stp with a printer is sliced", representationOf({ printerId: "lime-220", fileName: "part.stp" }) === "sliced");
+check("no printer stays a smear", representationOf({ printerId: "", fileName: "part.stl" }) === "smear");
+check("a 3mf stays a smear", representationOf({ printerId: "lime-220", fileName: "part.3mf" }) === "smear");
+check("an explicit smear stays a smear", representationOf({ asked: "smear", printerId: "lime-220", fileName: "part.stl" }) === "smear");
+check("an explicit sliced beam is sliced", representationOf({ asked: "sliced", beam: true, printerId: "lime-220", fileName: "beam.stl" }) === "sliced");
 
 const setup = await session.call("sim_setup", setupInput);
 check("sim_setup writes the study and does not solve", setup.ok === true && String(setup.sentence).includes("Held 1 face") && String(setup.sentence).includes("10 N on face 1") && String(setup.sentence).includes("provisional PETG"), String(setup.sentence ?? setup.reason));
@@ -122,7 +136,16 @@ const plainSetup = await plain.call("sim_setup", {
 });
 check("a study can be recorded on a part with no beam", plainSetup.ok === true, String(plainSetup.reason ?? ""));
 const plainRun = await plain.call("sim_run", { object: solid.object });
-check("a part with no volume mesh is refused", plainRun.ok === false && plainRun.reason === OPEN_MESH, String(plainRun.reason));
+check("a solid with a printer solves as sliced", plainRun.ok === false && plainRun.reason === SOLVER_STAND_IN, String(plainRun.reason));
+const smearSetup = await plain.call("sim_setup", {
+  object: solid.object,
+  representation: "smear",
+  fixtures: [{ kind: "bed" }],
+  loads: [{ kind: "force", faces: [1], magnitude: 1, direction: [0, 0, -1] }],
+});
+check("an explicit smear can be recorded", smearSetup.ok === true, String(smearSetup.reason ?? ""));
+const smearRun = await plain.call("sim_run", { object: solid.object });
+check("an explicit smear of a part with no beam is refused", smearRun.ok === false && smearRun.reason === OPEN_MESH, String(smearRun.reason));
 
 const ir3 = new Session(fakeEngine());
 const selected = await ir3.call("machine_select", { printerId: "ideaformer-ir3-v2", filamentId: "lime-pla" });

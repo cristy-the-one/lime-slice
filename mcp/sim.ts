@@ -1,7 +1,7 @@
 /**
- * Stress tools. The page draws a canned beam. A generated box is solved by
- * the `lime-sim` binary, which is the same factorisation as the Rust tests.
- * A sweep does not slice unless the caller already has a finished slice to quote.
+ * Stress tools. A generated beam is solved by the `lime-sim` binary, which is
+ * the same factorisation as the Rust tests. An STL or STEP with a printer is
+ * solved in-process by the engine's `simStudy`. A sweep does not slice.
  */
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ import {
   type ConstraintLimits,
   type ObjectStudy,
   type SimPatternName,
+  type SimRepresentation,
   type StudyHold,
   type StudyLoad,
   type Vec3,
@@ -21,6 +22,10 @@ import {
 export const SWEEP_CAP = 16;
 export const SWEEP_REFUSAL = "A sweep takes up to 16 variants.";
 export const OPEN_MESH = "This mesh is open, so it has no interior to mesh.";
+/** What a test stand-in answers when a sliced study asks it to solve. */
+export const SOLVER_STAND_IN = "The stress solver is not in this stand-in.";
+export const SLICED_SWEEP = "A sliced study is one sim_run. This sweep does not slice.";
+export const SLICED_FIELD = "A sliced result has no paged field. Read the margins from sim_run.";
 export const TET4_REFUSAL = "This study uses quadratic tetrahedra. Linear tetrahedra lock in bending.";
 export const ZERO_AXIS = "The build direction has zero length.";
 export const BEAM_SIZE = "The beam length and the edge length have to be positive.";
@@ -28,6 +33,24 @@ export { PROVISIONAL_SENTENCE, NOT_HELD, constraintVerdict };
 export type { ConstraintLimits };
 
 const PATTERNS = new Set<SimPatternName>(["lines", "grid", "gyroid", "lightning"]);
+
+/**
+ * `sliced` for an STL or STEP once a printer is chosen. A generated beam stays
+ * a smear, and so does a part with no printer, a 3mf, or an explicit smear.
+ */
+export function representationOf(input: {
+  asked?: SimRepresentation;
+  beam?: boolean;
+  printerId?: string;
+  fileName?: string;
+}): SimRepresentation {
+  if (input.asked) return input.asked;
+  if (input.beam) return "smear";
+  if (!input.printerId) return "smear";
+  const name = input.fileName ?? "";
+  if (/\.(stl|step|stp)$/i.test(name)) return "sliced";
+  return "smear";
+}
 
 export function solverPath(): string {
   return fileURLToPath(new URL("../target/debug/lime-sim", import.meta.url));
