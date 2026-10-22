@@ -5,7 +5,7 @@
  */
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { ModelView, StressDraw } from "../model-view.ts";
-import { buildStudyBody, surfaceResult, type FaceTriangles } from "../sim/bridge-body.ts";
+import { buildStudyBody, surfaceResult, type FaceTriangles, type StudyTarget } from "../sim/bridge-body.ts";
 import type { MaterialCard } from "../sim/cards.ts";
 import { solveStudy } from "../sim/desktop-solve.ts";
 import { AS_SLICED, LABEL, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
@@ -386,19 +386,39 @@ function variantReslices(variant: PanelVariant): boolean {
   return variant.walls !== undefined || variant.infill !== undefined || variant.pattern !== undefined;
 }
 
+function typedTarget(id: string, kind: StudyTarget["kind"]): StudyTarget | null {
+  const text = byId<HTMLInputElement>(id)?.value.trim() ?? "";
+  if (text === "") return null;
+  const value = Number(text);
+  if (!Number.isFinite(value) || !(value > 0)) return null;
+  return { kind, value };
+}
+
+/** The panel's targets. Empty means the body sends a safety factor of 1. */
+function panelTargets(): StudyTarget[] {
+  const rows: StudyTarget[] = [];
+  const safety = typedTarget("#stressMinSafety", "minSafetyFactor");
+  const deflection = typedTarget("#stressMaxDeflection", "maxDeflectionMm");
+  if (safety) rows.push(safety);
+  if (deflection) rows.push(deflection);
+  return rows;
+}
+
 function sweepLimits(): ConstraintLimits {
   const limits: ConstraintLimits = {};
-  const deflection = byId<HTMLInputElement>("#stressMaxDeflection")?.value.trim() ?? "";
-  const safety = byId<HTMLInputElement>("#stressMinSafety")?.value.trim() ?? "";
-  if (deflection !== "") {
-    const value = Number(deflection);
-    if (Number.isFinite(value)) limits.maxDeflectionMm = value;
-  }
-  if (safety !== "") {
-    const value = Number(safety);
-    if (Number.isFinite(value)) limits.minSafetyFactor = value;
+  for (const target of panelTargets()) {
+    if (target.kind === "maxDeflectionMm") limits.maxDeflectionMm = target.value;
+    if (target.kind === "minSafetyFactor") limits.minSafetyFactor = target.value;
   }
   return limits;
+}
+
+/** A resliced row is met when every margin the bridge returned is met. */
+function marginVerdict(margins: CannedResult["margins"]): { met: boolean; reason: string } {
+  if (!margins || margins.length === 0) return { met: false, reason: "The solve reported no margin." };
+  const unmet = margins.find((row) => !row.met);
+  if (unmet) return { met: false, reason: unmet.note || `${unmet.kind} is not met.` };
+  return { met: true, reason: margins.find((row) => row.note)?.note ?? "" };
 }
 
 function paintSweep(rows: SweepRow[]) {
@@ -576,12 +596,14 @@ async function runSweep() {
       rows.push({ label: variantLine(variant), deflection: null, safety: null, met: false, reason: parsed.error });
       continue;
     }
-    rows.push(verdictRow(variantLine(variant), {
-      maxDisplacementMm: parsed.maxDisplacementMm ?? 0,
-      minSafetyFactor: parsed.minSafetyFactor ?? null,
-      massG: parsed.massG ?? 0,
-      trust: parsed.trust,
-    }));
+    const verdict = marginVerdict(parsed.margins);
+    rows.push({
+      label: variantLine(variant),
+      deflection: parsed.maxDisplacementMm ?? null,
+      safety: parsed.minSafetyFactor ?? null,
+      met: verdict.met,
+      reason: verdict.reason,
+    });
   }
   if (token !== solveGeneration) return;
   solving = false;
@@ -603,6 +625,7 @@ function studyText(patch?: { walls?: number; infill?: number; pattern?: "lines" 
     triangles: (faces) => hooks?.faceTriangles(faces) ?? [],
     bounds: hooks?.bounds() ?? null,
     loadScale: patch?.loadScale,
+    constraints: panelTargets(),
   });
 }
 

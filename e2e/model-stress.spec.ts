@@ -161,13 +161,20 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await expect(page.locator("#stressSweepBody tr").nth(1)).toContainText("7 walls");
   await expect(page.locator("#stressSweepBody tr").nth(1)).toContainText("0.100");
   await expect(page.locator("#stressSweepBody tr").nth(1)).toContainText("2.50");
+  await expect(page.locator("#stressSweepBody tr").nth(1)).toContainText("above the band");
+  await expect(page.locator("#stressSweepBody tr").nth(1)).not.toContainText("not met");
+  await page.locator("#stressMinSafety").fill("2");
+  await page.locator("#stressMaxDeflection").fill("1.5");
+  await page.locator("#stressSweep").click();
+  await page.waitForFunction(() => ((window as unknown as { __limeSimBodies?: string[] }).__limeSimBodies?.length ?? 0) >= 3);
   const bodies = await page.evaluate(() => (window as unknown as { __limeSimBodies?: string[] }).__limeSimBodies ?? []);
-  const walls = bodies.map((text) => {
-    const parsed = JSON.parse(text) as { request?: { walls?: number } };
-    return parsed.request?.walls;
-  });
-  expect(bodies).toHaveLength(2);
-  expect(walls.filter((value) => value === 7)).toHaveLength(1);
+  const parsedBodies = bodies.map((text) => JSON.parse(text) as { request?: { walls?: number }; study?: { constraints?: { kind: string; value: number }[] } });
+  expect(parsedBodies).toHaveLength(3);
+  expect(parsedBodies.filter((body) => body.request?.walls === 7)).toHaveLength(2);
+  const first = parsedBodies[0]?.study?.constraints ?? [];
+  expect(first).toEqual([{ kind: "minSafetyFactor", value: 1 }]);
+  const targeted = parsedBodies[2]?.study?.constraints ?? [];
+  expect(targeted).toEqual([{ kind: "minSafetyFactor", value: 2 }, { kind: "maxDeflectionMm", value: 1.5 }]);
   await page.locator("#stressVariants").scrollIntoViewIfNeeded();
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-sweep.png" });
 

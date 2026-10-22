@@ -35,10 +35,35 @@ const body = buildStudyBody({
 if (typeof body !== "string") {
   check("a bed and a load build a body", false, body.reason);
 } else {
-  const parsed = JSON.parse(body) as { study: { holds: { kind: string }[]; loads: { kind: string; force: number[]; region: { kind: string } }[]; checkResolution: boolean; hXy: number } };
+  const parsed = JSON.parse(body) as {
+    study: {
+      holds: { kind: string }[];
+      loads: { kind: string; force: number[]; region: { kind: string } }[];
+      checkResolution: boolean;
+      hXy: number;
+      constraints: { kind: string; value: number }[];
+    };
+  };
   check("Bed is a bed hold", parsed.study.holds[0]?.kind === "bed");
   check("a load with no face is the +X slab", parsed.study.loads[0]?.region.kind === "box" && parsed.study.loads[0]?.force[2] === -10);
   check("the edge length is hXy and the second size can be skipped", parsed.study.hXy === 2 && parsed.study.checkResolution === false);
+  check("no target typed sends a safety factor of 1", parsed.study.constraints.length === 1 && parsed.study.constraints[0]?.kind === "minSafetyFactor" && parsed.study.constraints[0]?.value === 1);
+}
+
+const targeted = buildStudyBody({
+  request: { filename: "box.stl" },
+  study,
+  card: provisionalCards()[1]!,
+  triangles: () => [],
+  bounds: { min: [0, 0, 0], max: [10, 4, 2] },
+  constraints: [{ kind: "minSafetyFactor", value: 2 }, { kind: "maxDeflectionMm", value: 1.5 }],
+});
+if (typeof targeted !== "string") {
+  check("typed targets build a body", false, targeted.reason);
+} else {
+  const parsed = JSON.parse(targeted) as { study: { constraints: { kind: string; value: number }[] } };
+  const kinds = parsed.study.constraints.map((row) => `${row.kind}:${row.value}`);
+  check("the body carries the typed targets", kinds.join(",") === "minSafetyFactor:2,maxDeflectionMm:1.5", kinds.join(","));
 }
 
 const plane = emptyStudy();

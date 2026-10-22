@@ -48,6 +48,21 @@ export interface StudyBodyInput {
   loadScale?: number;
   /** Off skips the second cell size. The panel leaves this on. */
   checkResolution?: boolean;
+  /** Min safety and max deflection. Empty sends a safety factor of 1, so the worst spot is marked. */
+  constraints?: StudyTarget[];
+}
+
+/** A target the panel typed. The bridge turns these into margins. */
+export interface StudyTarget {
+  kind: "minSafetyFactor" | "maxDeflectionMm";
+  value: number;
+}
+
+/** No target typed: mark the worst spot against a safety factor of 1. */
+export function studyConstraints(targets?: readonly StudyTarget[]): StudyTarget[] {
+  const rows = (targets ?? []).filter((row) => Number.isFinite(row.value) && row.value > 0);
+  if (rows.length === 0) return [{ kind: "minSafetyFactor", value: 1 }];
+  return rows.map((row) => ({ kind: row.kind, value: row.value }));
 }
 
 const PLANE_HOLD = "A plane hold is not on a sliced study. Hold the bed or faces.";
@@ -116,6 +131,7 @@ export function buildStudyBody(input: StudyBodyInput): string | { reason: string
     card: input.card,
     holds,
     loads,
+    constraints: studyConstraints(input.constraints),
     checkResolution: input.checkResolution !== false,
   };
   return JSON.stringify({ request: input.request, study });
