@@ -9,6 +9,8 @@ members = [
     "crates/lime-mcp-engine",
     "crates/lime-preview",
     "crates/lime-shell",
+    "crates/lime-sim",
+    "crates/lime-sim-bridge",
     "src-tauri",
 ]
 
@@ -22,6 +24,12 @@ rust-version = "1.88.0"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The sparse factor is generic and monomorphised into lime-sim. opt-level 2
+# is what keeps `cargo test -p lime-sim` under a minute. Coarse and middle
+# Kirsch rows stay in this run.
+[profile.test.package.lime-sim]
+opt-level = 2
 
 # The slicer is float and geometry code. The slice_cube and solid_infill_speed
 # tests alone took three minutes unoptimised. opt-level 2 keeps `cargo test

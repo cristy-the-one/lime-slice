@@ -5,6 +5,7 @@ import { frameModel } from "../app/model";
 import { escapeModel, openJoinTool } from "./model-chrome";
 import { editModelStep, toggleModelHistoryFocus } from "./model-history";
 import { toggleParameters } from "./parameters";
+import { revealStress } from "./stress.ts";
 import {
   askProfileName,
   deleteSettingsProfile,
@@ -393,6 +394,9 @@ export function runCommand(id: string) {
       return;
     case "model-parameters":
       toggleParameters();
+      return;
+    case "model-stress":
+      revealStress();
       return;
     case "redo":
       // In Model this steps the solid's history only, never Prepare's, even with nothing left to redo.

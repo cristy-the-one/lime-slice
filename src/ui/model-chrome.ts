@@ -31,6 +31,7 @@ import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queue
 import { evaluate, type Params } from "../modeling/expr.ts";
 import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
 import { revealParameters } from "./parameters.ts";
+import { revealStress } from "./stress.ts";
 import { COMMANDS, shortcutOf, shortcutShadowed, tipWithShortcut } from "./commands.ts";
 import { revealDock } from "./dock-reveal.ts";
 import { diameterExpr, radiusExpr } from "./diameter-expr.ts";
@@ -380,6 +381,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (target?.closest("#modelMenuParameters")) {
       closeFeatureMenu();
       revealParameters();
+      return;
+    }
+    if (target?.closest("#modelMenuStress")) {
+      closeFeatureMenu();
+      revealStress();
       return;
     }
     const featureItem = target?.closest<HTMLButtonElement>("#modelFeatureMenu [data-tool]");

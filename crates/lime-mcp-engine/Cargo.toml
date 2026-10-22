@@ -14,5 +14,7 @@ crate-type = ["cdylib"]
 [dependencies]
 base64 = "0.22"
 lime-model-load = { path = "../lime-model-load" }
+lime-sim = { path = "../lime-sim" }
+lime-sim-bridge = { path = "../lime-sim-bridge" }
 lime-slice-core = { path = "../lime-slice-core" }
 serde_json = "1"

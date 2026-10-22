@@ -100,6 +100,12 @@ mcp/export.test.ts
 mcp/golden.test.ts
 mcp/model.test.ts
 mcp/request.test.ts
+src/sim/recipe.test.ts
+src/sim/study.test.ts
+src/sim/bridge-body.test.ts
+src/sim/margin-text.test.ts
+src/sim/study-mesh.test.ts
+src/sim/stress-cells.test.ts
 mcp/numbers.test.ts
 mcp/render.test.ts
 mcp/native-load.test.ts

@@ -130,7 +130,7 @@ import {
 import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
 import { lookPoseChanged, mountModelLook, resetModelLook, sectionFacePicked } from "../ui/model-look";
 import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
-import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withWorkplane, withoutObject, type PlateObject } from "../plate";
+import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
 import { livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
@@ -147,13 +147,20 @@ import { revolveOutlines, revolvePresetOf, sketchForRevolve } from "../sketch/re
 import { sweepEditOf } from "../sketch/sweep";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
-import { apiBase, apiToken, isStepName, plateObjectSizes } from "./settings";
+import { apiBase, apiToken, isStepName, plateObjectSizes, refreshObjectList } from "./settings";
 import { mountModelInspect, paintModelInspect, setInspectVolume } from "../ui/model-inspect";
 import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, stepOutOfDate, usedByCount } from "../modeling/params.ts";
 import { refreshOp } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
+import { faceTriangles } from "../sim/bridge-body.ts";
+import { chooseStudyMesh } from "../sim/study-mesh.ts";
+import { mountStress, stressOpen, stressUndoState, syncStress, takeStressRedo, takeStressUndo } from "../ui/stress.ts";
+import { stressSliceRequest } from "./stress-slice.ts";
+import { beltLayerNormal } from "../sim/study.ts";
+import { beltStamp, cardsOf, saveMaterialCard } from "../ui/machine-library.ts";
+import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
 import { axesOf, drillDown, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
@@ -360,6 +367,10 @@ export function bindModelView() {
       sketchUndo();
       return;
     }
+    if (stressOpen() && !openModelTool() && stressUndoState().undo) {
+      takeStressUndo();
+      return;
+    }
     if (openModelTool() === "place") placeStep("undo");
     else if (openModelTool() === "workplane") workplaneStep("undo");
     else void step("undo");
@@ -367,6 +378,10 @@ export function bindModelView() {
   document.querySelector("#modelRedo")?.addEventListener("click", () => {
     if (sketchHistoryButtons()) {
       sketchRedo();
+      return;
+    }
+    if (stressOpen() && !openModelTool() && stressUndoState().redo) {
+      takeStressRedo();
       return;
     }
     if (openModelTool() === "place") placeStep("redo");
@@ -573,6 +588,54 @@ export function bindModelView() {
       void rebuildFromParameters();
     },
     projectId: () => session.projectTitle?.trim() || "",
+  });
+  mountStress({
+    study: () => openObject()?.sim ?? null,
+    objectId: () => open?.objectId ?? state.plate.selectedId,
+    commit(study) {
+      const id = open?.objectId ?? state.plate.selectedId;
+      if (!id) return;
+      noteEdit();
+      state.plate = withStudy(state.plate, id, study);
+      flushEdit();
+      markProjectDirty();
+      refreshObjectList();
+    },
+    faces: () => picks.filter((pick) => pick.kind === "face").map((pick) => pick.index),
+    facePoint(index) {
+      const solid = viewed();
+      return solid ? faceCentre(solid.positions, solid.triangles, index) : null;
+    },
+    bounds() {
+      const mesh = stressMesh();
+      if (!mesh || "reason" in mesh) return null;
+      const box = boundsOf(mesh.positions);
+      return { min: [box.min[0], box.min[1], box.min[2]], max: [box.max[0], box.max[1], box.max[2]] };
+    },
+    modelPoint: (at) => applyPose(openPose(), at),
+    cards: () => cardsOf(loadMachineLibrary()),
+    saveCard(card) {
+      storeMachineLibrary(saveMaterialCard(loadMachineLibrary(), card));
+    },
+    view: () => fx.model ?? null,
+    changed: () => syncUndo(),
+    printerAxis() {
+      const belt = beltStamp(loadMachineLibrary());
+      return belt ? beltLayerNormal(belt.angleDeg) : [0, 0, 1];
+    },
+    toolOpen: () => openModelTool() != null,
+    undo: () => undoUserEdit(),
+    redo: () => redoUserEdit(),
+    sliceRequest(patch) {
+      const mesh = stressMesh();
+      if (mesh && "reason" in mesh) return { reason: mesh.reason };
+      return stressSliceRequest(patch, mesh ?? undefined);
+    },
+    faceTriangles(faces) {
+      const mesh = stressMesh();
+      if (!mesh || "reason" in mesh || !mesh.triangles) return [];
+      return faceTriangles(mesh.positions, mesh.triangles, faces);
+    },
   });
   noteParametersBuilt();
   // --- E3. Inspect, the right dock in Model. ---
@@ -4300,6 +4363,24 @@ function viewed(): ParsedSolid | null {
   return lens?.solid ?? open?.solid ?? null;
 }
 
+/**
+ * The tessellation a stress study slices. Faces and the STL share it, scaled
+ * the same way. A missing solid is refused while the scale is not 1 or the
+ * step on screen is not the one on the plate.
+ */
+function stressMesh() {
+  const solid = viewed();
+  const tree = treeOf(open);
+  const plate = state.sourcePos && state.sourcePos.length >= 9 ? state.sourcePos : null;
+  return chooseStudyMesh({
+    picked: solid && solid.positions.length >= 9 ? solid.positions : null,
+    pickedTriangles: solid?.triangles ?? null,
+    plate,
+    scale: state.partScale,
+    committed: !tree || tree.current === tree.committed,
+  });
+}
+
 /** The box of the solid on screen, in model space. */
 function openBox(): Bounds | null {
   const solid = viewed();
@@ -4567,6 +4648,7 @@ function showEdits(on: boolean) {
 }
 
 function syncUndo() {
+  syncStress();
   const tree = treeOf(open);
   const undo = document.querySelector<HTMLButtonElement>("#modelUndo");
   const redo = document.querySelector<HTMLButtonElement>("#modelRedo");
@@ -4578,10 +4660,14 @@ function syncUndo() {
   const remake = !busy && !jumping && !editing && canRemake();
   // --- S2: Undo and Redo step the sketch while one is open. ---
   const sketchHist = sketchHistoryButtons();
+  const stressHist = stressOpen() && !openModelTool() ? stressUndoState() : { undo: false, redo: false };
   if (undo) {
     if (sketchHist) {
       undo.disabled = !sketchHist.undo;
       undo.dataset.tip = "Undo the last sketch edit";
+    } else if (stressHist.undo || stressHist.redo) {
+      undo.disabled = !stressHist.undo;
+      undo.dataset.tip = "Undo the last hold or load";
     } else {
       undo.disabled = !(unmake && !placing && !framing) && (held || (placing ? placeUndo.length === 0 && !placeBefore : framing ? wpUndo.length === 0 && !wpBefore : undoNode(tree!) == null));
       undo.dataset.tip = placing ? "Undo the last move" : framing ? "Undo the last workplane move" : "Undo the last solid edit";
@@ -4591,6 +4677,9 @@ function syncUndo() {
     if (sketchHist) {
       redo.disabled = !sketchHist.redo;
       redo.dataset.tip = "Redo the last sketch edit";
+    } else if (stressHist.undo || stressHist.redo) {
+      redo.disabled = !stressHist.redo;
+      redo.dataset.tip = "Redo the last hold or load";
     } else {
       redo.disabled = !(remake && !placing && !framing) && (held || (placing ? placeRedo.length === 0 : framing ? wpRedo.length === 0 : redoNode(tree!) == null));
       redo.dataset.tip = placing ? "Redo the last move" : framing ? "Redo the last workplane move" : "Redo the last solid edit";

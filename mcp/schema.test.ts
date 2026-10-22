@@ -3,13 +3,13 @@ import { groupOf, TOOL_GROUPS } from "./groups.ts";
 import { advertisedTools, annotationsFor, listedTools, OP_KINDS, OP_SUMMARY, TOOLS, validateTool, type ToolSpec } from "./schema.ts";
 
 let failed = 0;
-function check(name: string, ok: boolean) {
+function check(name: string, ok: boolean, detail = "") {
   if (ok) {
     console.log(name);
     return;
   }
   failed += 1;
-  console.error(`FAIL ${name}`);
+  console.error(`FAIL ${name}${detail ? `: ${detail}` : ""}`);
 }
 
 const names = new Set(TOOLS.map((tool) => tool.name));
@@ -86,7 +86,9 @@ const TOOL_BUDGET = 750;
 const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }> = {
   model_apply: { budget: 900, reason: "lists every op kind with one line each, the map a caller picks a kind from" },
 };
-const TOTAL_BUDGET = 14_500;
+// 14,500 on main; the five stress tools (sim_*, ~1,500 tokens, each inside its own budget) add the rest. With
+// tool groups on they are in the stress group and stay out of the first list.
+const TOTAL_BUDGET = 16_000;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");

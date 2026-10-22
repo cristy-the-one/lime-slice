@@ -3,7 +3,8 @@
  */
 import { deflateSync } from "node:zlib";
 
-import { colorForPath, type ColorMode } from "../src/colors.ts";
+import { colorForPath, colorForReading, readsStress, type ColorMode } from "../src/colors.ts";
+import { cellPieces, type StressCells } from "../src/sim/stress-cells.ts";
 import { decodePaths, type PreviewPath } from "../src/preview-wire.ts";
 import type { PathColumns } from "../src/preview-wire.ts";
 
@@ -89,7 +90,17 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
 }
 
 /** A top view of the layer. `longEdge` is pixels on the longer side. */
-export function pathsPng(paths: readonly PreviewPath[], longEdge: number, colourBy: ColorMode): Uint8Array {
+/**
+ * A sliced stress result to colour by: its cells, which plate objects it is
+ * of, and the layer's height, for each bead's middle.
+ */
+export interface LayerStress {
+  cells: StressCells;
+  studied: (object: number) => boolean;
+  layerZ: number;
+}
+
+export function pathsPng(paths: readonly PreviewPath[], longEdge: number, colourBy: ColorMode, stress?: LayerStress): Uint8Array {
   const edge = Math.max(32, Math.min(1024, Math.round(longEdge)));
   const width = edge;
   const height = edge;
@@ -134,6 +145,19 @@ export function pathsPng(paths: readonly PreviewPath[], longEdge: number, colour
     }
   };
   for (const path of paths) {
+    if (stress && readsStress(colourBy) && path.kind !== "travel" && stress.studied(path.object ?? 0)) {
+      // Each bead cut where it crosses a cell line, each piece by its own cell.
+      const z = stress.layerZ - (path.beadHeight || 0.2) / 2;
+      for (let i = 1; i < path.pts.length; i += 1) {
+        const a = path.pts[i - 1]!;
+        const b = path.pts[i]!;
+        for (const { t0, t1, reading } of cellPieces(stress.cells, a, b, z)) {
+          const at = (t: number): [number, number] => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+          line(px(...at(t0)), px(...at(t1)), hex(colorForReading(colourBy, reading, stress.cells.peakMpa)));
+        }
+      }
+      continue;
+    }
     const color = hex(colorForPath(path.kind, colourBy, path.toughness, path.effectiveSpeed));
     for (let i = 1; i < path.pts.length; i += 1) line(px(...path.pts[i - 1]!), px(...path.pts[i]!), color);
   }

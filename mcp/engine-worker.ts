@@ -65,6 +65,9 @@ process.on("message", (msg: { id: number; method: string; arg: string; bytes?: U
       case "pareto":
         result = engine.pareto(msg.arg) as string;
         break;
+      case "simStudy":
+        result = engine.simStudy(msg.arg) as string;
+        break;
       default:
         throw new Error("That engine call is not on this worker.");
     }

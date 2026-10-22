@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use lime_sim_bridge::slice_field;
 use lime_slice_core::{slice_payload_watched, Job, Watch};
 use serde_json::{json, Value};
 
@@ -288,6 +289,46 @@ fn pareto_json(body: &str) -> String {
     }
 }
 
+/// `{ "request": <slice request>, "path": <file> }`: writes the object's
+/// `slice-field-1` to `path` and answers with its header and size.
+fn slice_field_json(body: &str) -> String {
+    let value: Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(err) => return json_error(format!("The slice field request is not JSON. {err}")),
+    };
+    let Some(path) = value.get("path").and_then(Value::as_str) else {
+        return json_error("The slice field request has no path.");
+    };
+    let req: lime_slice_core::SliceRequest = match value.get("request").cloned().map(serde_json::from_value) {
+        Some(Ok(req)) => req,
+        Some(Err(err)) => return json_error(err),
+        None => return json_error("The slice field request has no slice request."),
+    };
+    let field = match slice_field(&req, Job::default(), &Watch::idle()) {
+        Ok(field) => field,
+        Err(err) => return json_error(err),
+    };
+    let bytes = field.encode();
+    if let Err(err) = std::fs::write(path, &bytes) {
+        return json_error(format!("The slice field could not be written. {err}"));
+    }
+    json!({
+        "path": path,
+        "bytes": bytes.len(),
+        "sliceHash": field.header.slice_hash,
+        "layers": field.header.layers.len(),
+        "segments": field.header.segment_count,
+        "layerNormal": field.header.layer_normal,
+        "volumeMm3": field.total_volume_mm3(),
+    })
+    .to_string()
+}
+
+/// A stress study of one object as it is sliced: `lime_sim_bridge::study_json`.
+fn sim_study_json(body: &str) -> String {
+    lime_sim_bridge::study_json(body)
+}
+
 fn occt_ready() -> bool {
     let reply = model_tree_json(r#"{"call":"close","key":"lime-mcp-occt-probe"}"#);
     let missing = reply.contains("was not found") || reply.contains("Could not load the Open CASCADE bridge");
@@ -297,7 +338,8 @@ fn occt_ready() -> bool {
 #[cfg(not(test))]
 mod napi_host {
     use super::{
-        calibrate_json, cancel_slice, mesh_preview_json, model_tree_json, occt_ready, pareto_json, poll_slice, start_slice,
+        calibrate_json, cancel_slice, mesh_preview_json, model_tree_json, occt_ready, pareto_json, poll_slice,
+        sim_study_json, slice_field_json, start_slice,
     };
     use serde_json::json;
     #[cfg(not(windows))]
@@ -595,6 +637,20 @@ unsafe extern "C" fn pareto_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValu
     return_string(env, &pareto_json(&body))
 }
 
+unsafe extern "C" fn slice_field_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &slice_field_json(&body))
+}
+
+unsafe extern "C" fn sim_study_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &sim_study_json(&body))
+}
+
 unsafe fn export_fn(env: NapiEnv, exports: NapiValue, name: &str, cb: NapiCallback) {
     let c_name = CString::new(name).unwrap();
     let mut func: NapiValue = ptr::null_mut();
@@ -623,6 +679,8 @@ pub unsafe extern "C" fn napi_register_module_v1(env: NapiEnv, exports: NapiValu
     export_fn(env, exports, "occt", occt_cb);
     export_fn(env, exports, "calibrate", calibrate_cb);
     export_fn(env, exports, "pareto", pareto_cb);
+    export_fn(env, exports, "sliceField", slice_field_cb);
+    export_fn(env, exports, "simStudy", sim_study_cb);
     exports
 }
 
@@ -692,6 +750,79 @@ mod tests {
         assert!(reply["error"].as_str().unwrap().contains("pa"));
     }
 
+    fn cube_request(extra: serde_json::Value) -> lime_slice_core::SliceRequest {
+        let mut body = serde_json::json!({
+            "filename": "cube.stl",
+            "dataB64": cube_stl(),
+            "layerHeight": 0.2,
+            "lineWidth": 0.45,
+            "baseline": false,
+            "compare": false,
+            "includePreview": false,
+            "includeGcode": true,
+        });
+        for (key, value) in extra.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        serde_json::from_value(body).unwrap()
+    }
+
+    /// The sliced plan's 9.1: the field holds the G-code's extrusion less
+    /// the skirt, and reads back. Its rows are f32, so it matches the beads
+    /// to the rounding of a millimetre value in a float.
+    #[test]
+    fn a_slice_field_is_the_writers_extrusion_less_what_carries_nothing() {
+        use lime_sim::slice_field::SliceField;
+        let req = cube_request(serde_json::json!({}));
+        let job = lime_slice_core::Job::default();
+        let field = super::slice_field(&req, job, &lime_slice_core::Watch::idle()).unwrap();
+        let reply = lime_slice_core::slice_beads(&req, job, &lime_slice_core::Watch::idle()).unwrap();
+        let sliced = reply.beads.as_ref().unwrap();
+        let area = std::f64::consts::PI * (1.75_f64 * 0.5).powi(2);
+        let fed = reply.estimate.filament_mm * area;
+        let all: f64 = sliced.beads.iter().map(|b| b.volume_mm3()).sum();
+        let idle: f64 = sliced
+            .beads
+            .iter()
+            .filter(|b| matches!(b.kind.as_str(), "skirt" | "support" | "support-interface" | "ironing"))
+            .map(|b| b.volume_mm3())
+            .sum();
+        assert!(idle > 0.0, "the cube's skirt is in the beads");
+        assert!(((all - fed) / fed).abs() < 1e-6, "beads {all}, G-code {fed}");
+        let kept = field.total_volume_mm3();
+        assert!(((kept - (all - idle)) / kept).abs() < 1e-5, "field {kept}, beads {}", all - idle);
+        // The rows are bytes and read back exactly. The header is JSON, whose
+        // default float parse can land one ulp away.
+        let back = SliceField::decode(&field.encode()).unwrap();
+        assert_eq!(back.segments, field.segments);
+        assert_eq!(back.header.layers.len(), field.header.layers.len());
+        for (a, b) in back.header.layers.iter().zip(&field.header.layers) {
+            assert_eq!((a.index, a.bead_start, a.bead_count), (b.index, b.bead_start, b.bead_count));
+            assert!((a.z_mm - b.z_mm).abs() < 1e-12 && (a.height_mm - b.height_mm).abs() < 1e-12);
+        }
+        assert_eq!(field.header.layer_normal, [0.0, 0.0, 1.0]);
+        assert_eq!(field.header.slice_hash.len(), 64);
+    }
+
+    #[test]
+    fn a_slice_field_is_written_where_it_is_asked_for() {
+        let dir = std::env::temp_dir().join(format!("lime-field-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cube.lsf");
+        let body = serde_json::json!({
+            "request": serde_json::to_value(cube_request(serde_json::json!({}))).unwrap(),
+            "path": path.to_str().unwrap(),
+        });
+        let reply: serde_json::Value = serde_json::from_str(&super::slice_field_json(&body.to_string())).unwrap();
+        assert!(reply.get("error").is_none(), "{reply}");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(reply["bytes"], bytes.len());
+        assert!(reply["segments"].as_u64().unwrap() > 1000);
+        let _ = std::fs::remove_dir_all(&dir);
+        let missing: serde_json::Value = serde_json::from_str(&super::slice_field_json(r#"{"request":{}}"#)).unwrap();
+        assert_eq!(missing["error"], "The slice field request has no path.");
+    }
+
     #[test]
     fn preview_reads_a_cube_without_touching_the_slicer_binary() {
         let body = serde_json::json!({
@@ -703,5 +834,122 @@ mod tests {
         assert_eq!(reply["triangles"], 12);
         assert!(reply["positionsB64"].as_str().unwrap().len() > 10);
         assert!(reply.get("error").is_none());
+    }
+
+    fn box_stl(x: f64, y: f64, z: f64) -> String {
+        let faces = [
+            [[0.0, 0.0, 0.0], [x, 0.0, 0.0], [x, y, 0.0]],
+            [[0.0, 0.0, 0.0], [x, y, 0.0], [0.0, y, 0.0]],
+            [[0.0, 0.0, z], [x, y, z], [x, 0.0, z]],
+            [[0.0, 0.0, z], [0.0, y, z], [x, y, z]],
+            [[0.0, 0.0, 0.0], [x, 0.0, z], [x, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, z], [x, 0.0, z]],
+            [[0.0, y, 0.0], [x, y, 0.0], [x, y, z]],
+            [[0.0, y, 0.0], [x, y, z], [0.0, y, z]],
+            [[0.0, 0.0, 0.0], [0.0, y, 0.0], [0.0, y, z]],
+            [[0.0, 0.0, 0.0], [0.0, y, z], [0.0, 0.0, z]],
+            [[x, 0.0, 0.0], [x, y, z], [x, y, 0.0]],
+            [[x, 0.0, 0.0], [x, 0.0, z], [x, y, z]],
+        ];
+        let mut out = String::from("solid box\n");
+        for face in faces {
+            out.push_str("facet normal 0 0 0\nouter loop\n");
+            for v in face {
+                out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
+            }
+            out.push_str("endloop\nendfacet\n");
+        }
+        out.push_str("endsolid box\n");
+        out
+    }
+
+    /// Hold the face at the lowest X, pull the face at the highest X down by
+    /// 2 N, on an isotropic card.
+    fn bend(mesh: lime_sim::Mesh, representation: &str, cells: Vec<lime_sim::sliced::CellMaterial>, h: f64) -> lime_sim::Solution {
+        use lime_sim::{Hold, Load, NodeHold};
+        let lo = mesh.nodes.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+        let hi = mesh.nodes.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+        let holds = mesh
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| (p[0] - lo).abs() < 1e-6)
+            .map(|(node, _)| NodeHold { node, hold: Hold::Fixed })
+            .collect();
+        let tip = lime_sim::mesh::faces_on_plane(&mesh, 0, hi, 1e-6);
+        let area: f64 = tip.iter().map(|f| f.area).sum();
+        let loads = tip
+            .into_iter()
+            .map(|face| Load::Traction { nodes: face.nodes, traction: [0.0, 0.0, -2.0 / area] })
+            .collect();
+        lime_sim::solve_request(&lime_sim::study::Request {
+            mesh,
+            material: lime_sim::material::LinearOrthotropic::isotropic(2000.0, 0.35, 1.24),
+            recipe: lime_sim::recipe::Recipe::solid(),
+            build_axis: [0.0, 0.0, 1.0],
+            holds,
+            loads,
+            steps: vec![lime_sim::study::Step { factor: 1.0, max_iter: 1, tol: 1e-10 }],
+            linear: true,
+            gravity: None,
+            h_mm: h,
+            allow_linear_tets: false,
+            analysis: "static".into(),
+            temperature_c: None,
+            fibre_axis: None,
+            solver: "faer-ldlt".into(),
+            representation: representation.into(),
+            cells,
+            beads: None,
+            post_steps: Vec::new(),
+            provisional: false,
+            cancel: None,
+            on_progress: None,
+        })
+        .unwrap_or_else(|err| panic!("{}", err.message))
+    }
+
+    /// The sliced plan's 9.2 on a real slice: a 100% infill bar under
+    /// bending, its walls and its diagonal infill as the slicer lays them,
+    /// solved as sliced. On an isotropic card the tip lands within 3% of the
+    /// smeared bar on cells of the same size.
+    #[test]
+    fn a_solid_slice_bends_as_its_smear_does() {
+        use lime_sim::sliced::{SlicedGrid, PHI_MIN};
+        let (l, w, t) = (30.0, 6.0, 4.0);
+        let req: lime_slice_core::SliceRequest = serde_json::from_value(serde_json::json!({
+            "filename": "bar.stl",
+            "dataB64": base64::engine::general_purpose::STANDARD.encode(box_stl(l, w, t)),
+            "layerHeight": 0.2,
+            "lineWidth": 0.45,
+            "infill": 1.0,
+            "baseline": false,
+            "compare": false,
+            "includePreview": false,
+            "includeGcode": true,
+        }))
+        .unwrap();
+        let field = super::slice_field(&req, lime_slice_core::Job::default(), &lime_slice_core::Watch::idle()).unwrap();
+        let h = 1.0;
+        let grid = SlicedGrid::rasterize(&field, h).unwrap();
+        // Every bead of the field is in the grid, to the rounding of clipping
+        // thin f32 rectangles (the plan asks 2%), and the solid cells hold
+        // nearly all of it.
+        let total = field.total_volume_mm3();
+        assert!(((grid.deposited_mm3 - total) / total).abs() < 1e-6, "grid {} field {total}", grid.deposited_mm3);
+        let meshed = grid.mesh(PHI_MIN).unwrap();
+        assert!(meshed.solid_deposited_mm3 > 0.98 * total, "{} of {total}", meshed.solid_deposited_mm3);
+        let sliced = bend(meshed.mesh, "sliced", meshed.cells, h);
+        let div = [(l / h).round() as usize, (w / h).round() as usize, (t / h).round() as usize];
+        let smear = lime_sim::mesh::grid([0.0, 0.0, 0.0], [l, w, t], div, lime_sim::ElementKind::Tet10).unwrap();
+        let smeared = bend(smear, "smear", Vec::new(), h);
+        let rel = (sliced.max_displacement_mm - smeared.max_displacement_mm) / smeared.max_displacement_mm;
+        assert!(
+            rel.abs() < 0.03,
+            "sliced {:.5} mm, smeared {:.5} mm, {:+.2}%",
+            sliced.max_displacement_mm,
+            smeared.max_displacement_mm,
+            rel * 100.0
+        );
     }
 }

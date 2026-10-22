@@ -14,6 +14,7 @@
  * Duplicate copies the selected object only.
  */
 import type { SavedTree } from "./model-tree-file.ts";
+import { cloneStudy, type ObjectStudy } from "./sim/study.ts";
 import { IDENTITY_POSE, boxUnder, duplicatePose, inversePose, isIdentity, seatLift, thenPose, type Affine } from "./model-space.ts";
 import { copyWorkplane, isGlobalFrame, type Workplane } from "./workplane.ts";
 import type { EditEntry } from "./support-edit-list.ts";
@@ -112,6 +113,11 @@ export interface PlateFileObject {
   workplane?: Workplane;
   /** Optional: how far the mesh was lowered onto Z = 0 when it was read. Omitted while unknown. */
   meshSeatMm?: number;
+  /**
+   * Optional stress study. Omitted when the object has none. A slice drops it;
+   * an older app ignores the key and drops it on the next save.
+   */
+  sim?: ObjectStudy;
 }
 
 /** One solid on the plate. Geometry stays in the session, not in the undo JSON. */
@@ -142,6 +148,8 @@ export interface PlateObject {
   modelPose?: Affine;
   /** Local U, V, W frame, in the object's own frame, so it moves with `modelPose`. Absent is the global frame. The plate never reads it. */
   workplane?: Workplane;
+  /** Stress study. Absent until Stress writes one. The slice never reads it. */
+  sim?: ObjectStudy;
 }
 
 export interface PlateState {
@@ -168,6 +176,7 @@ export interface PlateSnapObject {
   modelTree?: string;
   modelPose?: Affine;
   workplane?: Workplane;
+  sim?: ObjectStudy;
 }
 
 export interface PlateSnap {
@@ -272,6 +281,20 @@ export function modelPoseOf(obj: { modelPose?: Affine }): Affine {
 }
 
 /** The plate with object `id` keeping `plane`, in its own frame. The global frame is not stored. */
+/** The plate with object `id`'s stress study replaced. Null removes it. The solid is unchanged. */
+export function withStudy(plate: PlateState, id: string, study: ObjectStudy | null): PlateState {
+  return {
+    ...plate,
+    objects: plate.objects.map((obj) => {
+      if (obj.id !== id) return obj;
+      const next = { ...obj };
+      if (!study) delete next.sim;
+      else next.sim = cloneStudy(study);
+      return next;
+    }),
+  };
+}
+
 export function withWorkplane(plate: PlateState, id: string, plane: Workplane | undefined): PlateState {
   return {
     ...plate,
@@ -360,6 +383,7 @@ export function plateFileIsVersion2(objects: {
   modelTree?: unknown;
   modelPose?: Affine;
   workplane?: Workplane;
+  sim?: unknown;
 }[]): boolean {
   if (objects.length !== 1) return objects.length > 1;
   const one = objects[0];
@@ -372,7 +396,8 @@ export function plateFileIsVersion2(objects: {
     one?.brep != null ||
     one?.modelTree != null ||
     !isIdentity(one?.modelPose) ||
-    one?.workplane != null
+    one?.workplane != null ||
+    one?.sim != null
   );
 }
 
@@ -554,6 +579,7 @@ export function addedCopy(plate: PlateState): PlateState | null {
     modelPose: duplicatePose(modelPoseOf(source), boxUnder(boundsOf(source.sourcePos), meshToModel(source))),
     // Kept in the part's own frame, the workplane moves over with the copy's pose.
     ...(source.workplane ? { workplane: copyWorkplane(source.workplane) } : {}),
+    ...(source.sim ? { sim: cloneStudy(source.sim) } : {}),
   };
   // The copy's edits are its own, so Model opens a tree of its own for it.
   delete copy.modelTree;
@@ -753,6 +779,7 @@ export function snapPlate(plate: PlateState): PlateSnap {
       modelTree: obj.modelTree,
       ...(obj.modelPose ? { modelPose: obj.modelPose } : {}),
       ...(obj.workplane ? { workplane: copyWorkplane(obj.workplane) } : {}),
+      ...(obj.sim ? { sim: cloneStudy(obj.sim) } : {}),
     })),
   };
 }
@@ -783,6 +810,7 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       modelTree: row.modelTree,
       ...(row.modelPose ? { modelPose: row.modelPose } : {}),
       ...(row.workplane ? { workplane: copyWorkplane(row.workplane) } : {}),
+      ...(row.sim ? { sim: cloneStudy(row.sim) } : {}),
     });
   }
   const selectedId = objects.some((obj) => obj.id === snap.selectedId) ? snap.selectedId : objects[0]?.id ?? null;
@@ -811,6 +839,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       brep: row.brepBytes,
       ...(row.modelPose && !isIdentity(row.modelPose) ? { modelPose: row.modelPose } : {}),
       ...(row.workplane && !isGlobalFrame(row.workplane) ? { workplane: copyWorkplane(row.workplane) } : {}),
+      ...(row.sim ? { sim: cloneStudy(row.sim) } : {}),
     };
     if (row.meshSeatMm !== undefined) setMeshSeat(row.bytes, row.meshSeatMm);
     // A Model step's mesh was saved as an STL already lowered, so reading it says 0; from a file before seats, Model learns it again.
