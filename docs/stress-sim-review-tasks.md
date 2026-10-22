@@ -362,6 +362,8 @@ later improvement smooths it for display only.
 
 ### SR-09 (P0, Grok). Run solves through the bridge
 
+Status: done (d1f2f4c3). Follow-ups: SR-15, SR-16, SR-18.
+
 - A Tauri command `sim_study(body)` calls `lime_sim_bridge::study_json` on a blocking thread. Add the crate to
   `src-tauri`'s dependencies.
 - **What the panel sends:**
@@ -376,6 +378,8 @@ later improvement smooths it for display only.
   - one `cargo test` in `src-tauri` runs the command on a small box.
 
 ### SR-10 (P0, Grok). Draw the sliced result
+
+Status: done (1196af95), but a real solve draws no hot spots or margins until SR-15 lands. Words: SR-19.
 
 - **The surface:**
   - draw `surface.positionsB64` displaced by `displacementB64 × scale`, coloured by the chosen field;
@@ -393,12 +397,16 @@ later improvement smooths it for display only.
 
 ### SR-11 (P1, Grok). The sweep reslices
 
+Status: done (e6847afb). Follow-ups: SR-17, SR-20.
+
 A variant of walls, infill or pattern is a different print, so each is one more `sim_study` with that setting on the
 object's slice request. Up to 16, as now, and the status line says each variant is a slice plus a solve. A load-scale
 variant may scale the base result: the solve is linear. Until this lands, refuse the print variants with a sentence
 rather than scaling the formula.
 
 ### SR-12 (P1, Grok). The MCP solves real parts (the sliced plan's L5)
+
+Status: done (9840536f), except `reslice` on `sim_sweep` (refused for now). Follow-ups: SR-16, SR-21.
 
 - `sim_setup` takes `representation: "sliced"` and defaults to it for an STL or STEP part with a printer chosen, as
   decided in the sliced plan's §12.
@@ -423,3 +431,118 @@ As specified above, with Rust tests:
 - a placed box's result comes back in the model frame;
 - the bracket's peak is at its corner;
 - the engine's `simStudy` napi call answers the same JSON.
+
+## Round 3: review of SR-09 to SR-12 (2026-10-22, at `9840536f`)
+
+**What was run:**
+- `cargo test -p lime-slice-desktop sim_study` passes (the small box goes through `sim_study`).
+- Clippy is clean on `lime-slice-desktop`.
+- The unit tests pass: `bridge-body`, `study` and `mcp/sim`.
+- `mcp/sim-sliced.test.ts` loads the native engine and calls `simStudy`. That closes the one gap left in SR-14: the
+  napi export now has a test.
+- `e2e/model-stress.spec.ts`: the first test passes. The second, "a saved desktop solve is drawn as sliced", skipped,
+  because `/tmp/lime-stress-box.json` was not there. It will skip in CI too (SR-18).
+
+**What is good:**
+- The solve runs on a blocking thread.
+- The generation counter keeps a late reply from replacing a newer result, and Cancel keeps the previous one.
+- Every refusal is a sentence.
+- The surface hides the solid, so nothing z-fights.
+- The MCP keeps the surface out of its reply.
+- The guide has the `governs` table.
+
+### SR-15 (P0, Grok). The panel sends its targets
+
+- **The fault:** `buildStudyBody` (`src/sim/bridge-body.ts`) sends `hXy`, `card`, `holds`, `loads` and
+  `checkResolution`, but no `constraints`. `sliced_study` builds `margins` only from `study.constraints`, so a real
+  solve from the panel comes back with no margins:
+  - no hot-spot markers;
+  - no margin rows;
+  - the sweep judges each variant with the client's own `constraintVerdict` instead of the bridge's margins.
+- **Why the tests pass:** the e2e mock reply carries a margin, so nothing catches this.
+- **Fix:**
+  - send the panel's targets, Min safety factor and Max deflection, as `constraints`;
+  - with no target typed, send `minSafetyFactor: 1`, so the worst spot is always marked;
+  - a resliced sweep row reads `met` from its reply's margins.
+- **Accept when:**
+  - a `bridge-body` unit test shows the body carries the targets;
+  - the e2e hook records the body it was sent and the spec checks for `constraints` in it.
+
+### SR-16 (P0, Grok). The sliced mesh and the picked faces are in the same frame
+
+- **The fault:** the study slices one mesh but takes its faces from another.
+- **Desktop:** the study slices `meshBase64()`, which is either the plate's committed mesh or
+  `scaledCanonical(source, partScale)`. But face triangles and `bounds` come from `viewed()`, the Modeler's solid
+  (or the lens), which is not scaled and may not be committed. When the scale isn't 1, or there's an uncommitted edit,
+  the holds miss the part ("touches no surface"), or land in the wrong place, and the hot spots don't sit on the solid
+  drawn.
+- **MCP:** `studyPositions` guesses that "the solid differs" when the triangle counts differ. An edit that keeps the
+  count, such as a box parameter, slices the old mesh. A solid path also ignores `obj.scale`.
+- **Fix:** slice the tessellation the faces were picked on, with the same scale applied to the mesh and to the face
+  triangles. If that isn't possible, refuse with a sentence while the scale isn't 1 or the solid is uncommitted.
+  Replace the triangle-count guess with the session's own committed or out-of-date state.
+- **Accept when:**
+  - a part at scale 2 with a face hold solves, with its hot spot inside the scaled bounds;
+  - an uncommitted edit that keeps the triangle count either solves the edited solid or is refused (Desktop and MCP).
+
+### SR-17 (P1, Grok). The sweep reuses the base only when it is the same study
+
+- **The fault:** `baseResult` reuses `result` whenever it is sliced. If you change the load, card or holds and then
+  sweep a load scale, the sweep scales the old result.
+- **Fix:** keep the body text that `result` was solved from, and reuse it only on an exact match.
+- **Accept when:** a unit test or spec changes the load, sweeps scale 2, and sees a new solve.
+
+### SR-18 (P1, Grok). Hermetic tests
+
+- **The fault:**
+  - the Rust test writes `/tmp/lime-stress-box.json` when `LIME_STRESS_OUT=1`, and the spec reads it if present;
+  - on Windows `/tmp` is `D:\tmp`;
+  - in CI the file is never there, so the sliced-drawing test always skips.
+- **Fix:**
+  - check in a real reply as `e2e/fixtures/sim-study-box.json` (it's small: an 8 × 6 × 4 box);
+  - the Rust test compares its reply's shape to the fixture: keys, triangle count > 0, margins with `hotSpot.at`;
+  - it rewrites the fixture only under `LIME_STRESS_OUT=1`, into the repo path from `CARGO_MANIFEST_DIR`;
+  - the spec always runs.
+- **Accept when:** no `/tmp` path is left in `src-tauri/src/lib.rs` or `e2e/`, and the second stress test runs in CI.
+
+### SR-19 (P2, Grok). Margins in words, and a cautious default
+
+- **Margin rows:** a row now reads `minSafetyFactor: 2.50, margin 1.50, met above the band`. Write it the way the
+  legend speaks: "Safety factor ≥ 1.0: 2.50 (margin 1.50) · met · above the band".
+- **`governs`:** add a line with `governs` and the change to try, the same table as the guide (the sliced plan's §7.2).
+  That line is what makes the loop guided.
+- **Default trust:** `trustOf` in `bridge-body.ts` turns an unknown trust into `usable`. Make it `rough`, as the MCP
+  already does.
+
+### SR-20 (P2, Grok, or Claude if it needs the engine). Prove the pattern variant
+
+- **The fault:** the slice request has no infill-pattern field. `stressSliceRequest` reaches a pattern through
+  `blend: { mode: "weight", toughness }` (`PATTERN_TOUGHNESS`), and nothing checks that toughness 0.9 really gives
+  gyroid.
+- **Fix:** add a test that slices each patch and reads the pattern back. The slice summary or the slice field may
+  already say it. If it doesn't, ask Claude for a `pattern` in the slice-field header, or an explicit `infillPattern`
+  request field.
+
+### SR-21 (P2, Grok). The MCP's sliced loop
+
+- **Trust:** `sim_run` sends `checkResolution: false`, so a sliced MCP result can never be `converged`, yet the guide
+  says "A converged result is the one to keep". Add `checkResolution` to `sim_run`: default true, and tests pass false.
+- **The guide:**
+  - step 4 says to use `sim_sweep`, which refuses a sliced study;
+  - until `reslice` lands (the rest of the plan's L5), step 4 should say: for a sliced part, change the setting, then
+    `sim_run`.
+- **Tests:** `mcp/sim-sliced.test.ts` forces `representation: "sliced"` on a generated beam. Add the default path: an
+  imported STL with a printer chosen and a pose that isn't identity, which is also the SR-16 frame case.
+
+### Still open in the sliced plan
+
+- **L5:** `reslice` on `sim_sweep` (Grok, after SR-21).
+- **L6:** Preview `colourBy: stress / safety` on the sliced layers. Only the Model heatmap exists so far. Grok, after
+  SR-15 and SR-16.
+
+### Order
+
+SR-15 and SR-16 first. They decide whether a real solve shows the right thing. Then SR-18, so CI sees the sliced
+drawing, then SR-17, SR-21, SR-19, SR-20, and then L5 and L6.
+
+Nothing new for Claude in this round, unless SR-20 needs the engine.
