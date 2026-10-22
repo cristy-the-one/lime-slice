@@ -346,7 +346,7 @@ export const OP_WORDS: ReadonlySet<string> = (() => {
   return words;
 })();
 
-const opPointer = (what: string) => ({ type: "object", description: `${what} Same shape as model_apply's op (see its schema, or guide {topic:"ops"}).` });
+const opPointer = (what: string) => ({ type: "object", description: `${what} Same shape as model_apply's op; guide {kind} has a kind's fields.` });
 
 /** An op and every op nested in it, against the op branches. `plain` refuses the composite kinds. */
 function checkOp(value: unknown, path: string, plain: boolean, depth = 0): string | null {
@@ -643,6 +643,70 @@ const surfaceOps = [
 ];
 (op.oneOf as unknown[]).push(...surfaceOps);
 
+/**
+ * One line per op kind. tools/list shows model_apply's op as these lines and the kind names, not every kind's full
+ * schema (that was a third of the list); guide {kind} serves a kind's full schema, and a refused op names its fields.
+ */
+export const OP_SUMMARY: Record<string, string> = {
+  hole: "hole {diameterMm | screw, through | depth, at:{u, v}}: on the workplane, or origin and axis.",
+  fillet: "fillet {edges, size}: round edges.",
+  chamfer: "chamfer {edges, size}: bevel edges.",
+  split: "split {origin, normal, keep}: cut in two.",
+  scale: "scale {factor}.",
+  extrude: "extrude {op, profile | loops, depth}: a sketch on the workplane or a face.",
+  revolve: "revolve {op, profile, axisOrigin, axisDir, angleDeg}: a sketch about an in-plane axis.",
+  loft: "loft {op, sections:[{origin, turn, radius | profile}]}: through cross-sections.",
+  sweep: "sweep {op, path:[[x, y, z], ...], radius}: a tube along a curve.",
+  shell: "shell {thickness, openFaces}: hollow the solid.",
+  faceExtrude: "faceExtrude {face, distance}: a prism on a face.",
+  moveFaces: "moveFaces {faces:[{face, distance}]}: push or pull faces.",
+  boolean: "boolean {op:cut|fuse|common, primitive, dx, dy, dz | radius, height, origin | centre, turn}.",
+  root: "root {primitive, sizes}: a new base solid.",
+  join: "join {toolObject, op}: another object's solid as the tool.",
+  pocket: "pocket {face | faceIndex, shape, at, width, height | diameter, depth}: a recess.",
+  boss: "boss: as pocket, raised.",
+  texture: "texture {face, pattern, pitch}: grooves over a face.",
+  pattern: "pattern {op, linear | polar | path}: copies of an op.",
+  mirror: "mirror {op, plane | normal, origin}: an op and its image.",
+  text: "text {text, height, depth, face, at}: raised or cut letters.",
+  array: "array {face, cell, pitch, depth}: a shape repeated over a face.",
+  ribs: "ribs {face, along, width, pitch | count, depth}: strips across a face.",
+};
+
+/** The op branch of one kind, as the server checks it. */
+function opBranch(kind: string): Record<string, unknown> | undefined {
+  return (op.oneOf as Record<string, unknown>[]).find((branch) => (branch.properties as { kind?: { const?: unknown } }).kind?.const === kind);
+}
+
+/** Every op kind, in schema order. */
+export const OP_KINDS: readonly string[] = (op.oneOf as Record<string, unknown>[]).map((branch) => String((branch.properties as { kind: { const: unknown } }).kind.const));
+
+/** A field's expected value in a few words, for a refusal. */
+function fieldShape(node: Record<string, unknown>): string {
+  if (Array.isArray(node.enum)) return node.enum.join("|");
+  if (Array.isArray(node.oneOf)) return "list or object";
+  switch (node.type) {
+    case "number": return "number";
+    case "integer": return "whole number";
+    case "string": return "text";
+    case "boolean": return "true or false";
+    case "array": return node.minItems === 3 && node.maxItems === 3 ? "[x, y, z]" : "list";
+    case "object": return "object";
+    default: return "index or {normal, nearPoint}";
+  }
+}
+
+/** The fields one op kind takes, as a sentence a refusal ends with. */
+export function opFields(kind: string): string | null {
+  const branch = opBranch(kind);
+  if (!branch) return null;
+  const required = new Set(Array.isArray(branch.required) ? branch.required as string[] : []);
+  const fields = Object.entries(branch.properties as Record<string, Record<string, unknown>>)
+    .filter(([name]) => name !== "kind")
+    .map(([name, node]) => `${name} (${required.has(name) ? "required, " : ""}${fieldShape(node)})`);
+  return `A ${kind} op takes ${fields.join(", ")}. guide {kind:"${kind}"} has its full schema.`;
+}
+
 
 /** A wrong field name inside an array's cell, with the right one. */
 const CELL_HINTS: Record<string, string> = {
@@ -734,11 +798,14 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "guide",
-    description: "Worked call sequences. No topic lists them.",
+    description: "Worked call sequences. No topic lists them. kind gives one Model op kind's full fields and examples.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      properties: { topic: { type: "string", minLength: 1, maxLength: 40, description: "Guide name, e.g. ops." } },
+      properties: {
+        topic: { type: "string", minLength: 1, maxLength: 40, description: "Guide name, e.g. ops." },
+        kind: { type: "string", minLength: 1, maxLength: 40, description: "An op kind, e.g. fillet." },
+      },
     },
   },
   {
@@ -1743,12 +1810,32 @@ function textNumbers(node: unknown): unknown {
 
 let advertisedCache: ToolSpec[] | null = null;
 
+/**
+ * model_apply's op as tools/list sends it: the kind names and one line each. The server still checks every call
+ * against the full op schema, and guide {kind} serves one kind's.
+ */
+const LEAN_OP = {
+  type: "object",
+  required: ["kind"],
+  description: `${OP_HELP} Kinds: ${OP_KINDS.map((kind) => OP_SUMMARY[kind]).join(" ")} guide {kind:"fillet"} gives a kind's full fields; a wrong field is refused with the fields its kind takes.`,
+  properties: { kind: { enum: [...OP_KINDS], description: "Edit kind." } },
+};
+
+/** One op kind's full schema, as a client may send it (numbers may be text, points anchors). */
+export function opSchemaFor(kind: string): Record<string, unknown> | null {
+  const branch = opBranch(kind);
+  return branch ? textNumbers(branch) as Record<string, unknown> : null;
+}
+
 /** TOOLS as tools/list sends them: the Model tools' op, ops, and base take text numbers and anchors. */
 export function advertisedTools(): ToolSpec[] {
   advertisedCache ??= TOOLS.map((tool) => {
     if (!EXPRESSION_TOOLS.has(tool.name)) return tool;
     const props = (tool.inputSchema.properties ?? {}) as Record<string, unknown>;
-    const next = Object.fromEntries(Object.entries(props).map(([name, value]) => [name, name === "op" || name === "ops" || name === "base" ? textNumbers(value) : value]));
+    const next = Object.fromEntries(Object.entries(props).map(([name, value]) => [
+      name,
+      tool.name === "model_apply" && name === "op" ? LEAN_OP : name === "op" || name === "ops" || name === "base" ? textNumbers(value) : value,
+    ]));
     return { ...tool, inputSchema: { ...tool.inputSchema, properties: next } };
   });
   return advertisedCache;
@@ -1854,7 +1941,39 @@ export function validate(schema: Record<string, unknown>, value: unknown, path =
   return null;
 }
 
+/** Tools that take an op or op list. */
+const OP_TOOLS = new Set(["model_probe", "model_edit", "render_view", "model_apply", "model_apply_batch", "model_build"]);
+
+/**
+ * A refusal of a field inside an op, ending with the fields that op's kind takes, so a caller that guessed the shape
+ * from the one-line summary learns it from the refusal. The innermost op on the refused path names the kind.
+ */
+function withOpFields(problem: string, input: unknown): string {
+  if (/\bkind must be one of\b/.test(problem)) return problem;
+  const path = (problem.split(" ")[0] ?? "").replace(/^input\./, "");
+  if (!/^ops?\b/.test(path)) return problem;
+  let node: unknown = input;
+  let kind: string | null = null;
+  let previous = "";
+  for (const token of path.split(/\.|(?=\[)/)) {
+    if (!node || typeof node !== "object") break;
+    const key = token.startsWith("[") ? Number(token.slice(1, -1)) : token;
+    node = (node as Record<string | number, unknown>)[key];
+    const isOp = token === "op" || (token.startsWith("[") && previous === "ops");
+    const found = node && typeof node === "object" ? (node as { kind?: unknown }).kind : undefined;
+    if (isOp && typeof found === "string" && OP_SUMMARY[found]) kind = found;
+    previous = token;
+  }
+  const fields = kind ? opFields(kind) : null;
+  return fields ? `${problem} ${fields}` : problem;
+}
+
 export function validateTool(name: string, input: unknown): string | null {
+  const problem = checkTool(name, input);
+  return problem && OP_TOOLS.has(name) ? withOpFields(problem, input ?? {}) : problem;
+}
+
+function checkTool(name: string, input: unknown): string | null {
   const tool = toolByName(name);
   if (!tool) return `There is no tool named ${name}.`;
   const problem = validate(tool.inputSchema, input ?? {});

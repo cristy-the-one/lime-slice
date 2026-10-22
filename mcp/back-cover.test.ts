@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { fakeEngine } from "./engine.ts";
 import { closeCracks, edgeReport } from "../src/mesh-check.ts";
 import { standRegion } from "./plane-region.ts";
-import { advertisedTools } from "./schema.ts";
+import { advertisedTools, opSchemaFor } from "./schema.ts";
 import { Session } from "./session.ts";
 
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-back-cover-"));
@@ -31,13 +31,13 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   const base = (build.inputSchema.properties as Record<string, { properties: Record<string, unknown> }>).base.properties;
   check("model_build.base.dx takes text as well as a number", same(base.dx, { exclusiveMinimum: 0, maximum: 1000, description: "Box X." }), JSON.stringify(base.dx));
   check("model_build.base takes a cone's top radius", same(base.topRadius, { minimum: 0, maximum: 500, description: "Cone top." }), JSON.stringify(base.topRadius));
-  const apply = advertisedTools().find((tool) => tool.name === "model_apply")!;
-  const ops = ((apply.inputSchema.properties as Record<string, { oneOf: { properties: Record<string, Record<string, unknown>> }[] }>).op.oneOf);
-  const ribs = ops.find((row) => (row.properties.kind as { const?: string }).const === "ribs")!;
+  // tools/list names the op kinds; guide {kind} serves each kind's schema as a client may send it.
+  const kindSchema = (kind: string) => opSchemaFor(kind) as { properties: Record<string, Record<string, unknown>> };
+  const ribs = kindSchema("ribs");
   check("ribs width takes text", ribs.properties.width!.type === undefined && ribs.properties.width!.maximum === 100);
-  const hole = ops.find((row) => (row.properties.kind as { const?: string }).const === "hole")!;
+  const hole = kindSchema("hole");
   check("a hole's origin takes an anchor object", hole.properties.origin!.type === undefined && hole.properties.origin!.maxItems === 3);
-  const fillet = ops.find((row) => (row.properties.kind as { const?: string }).const === "fillet")!;
+  const fillet = kindSchema("fillet");
   check("a fillet's edge select names onFace selectors", JSON.stringify(fillet.properties.edges).includes("onFace (index or {normal, nearPoint})"));
   const solidNew = advertisedTools().find((tool) => tool.name === "solid_new")!;
   check("solid_new lists radius and height", "radius" in (solidNew.inputSchema.properties as object) && "height" in (solidNew.inputSchema.properties as object));

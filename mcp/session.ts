@@ -76,7 +76,7 @@ import { lostVolume, notClosedReason, touchingEdges, touchingReason } from "./st
 import { edgesMatching, facesMatching } from "./selectors.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
-import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, validateTool } from "./schema.ts";
+import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSchemaFor, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
@@ -1221,11 +1221,21 @@ export class Session {
 
   /** The worked guides as a tool, for clients that do not read resources. */
   private guide(input: Record<string, unknown>): Record<string, unknown> {
+    if (typeof input.kind === "string") return this.opGuide(input.kind.trim());
     const topic = typeof input.topic === "string" ? input.topic.trim().toLowerCase() : "";
     if (!topic) return { ok: true, topics: GUIDES.map((row) => ({ topic: row.uri.replace("lime://guide/", ""), name: row.name, tools: row.tools })) };
     const found = guideByUri(`lime://guide/${topic}`);
     if (!found) return { ok: false, reason: `There is no guide named ${topic}. Topics: ${GUIDES.map((row) => row.uri.replace("lime://guide/", "")).join(", ")}.` };
     return { ok: true, topic, name: found.name, tools: found.tools, text: found.text };
+  }
+
+  /** One op kind's full schema, its line from tools/list, and the ops guide's lines about it. */
+  private opGuide(kind: string): Record<string, unknown> {
+    const schema = opSchemaFor(kind);
+    if (!schema) return { ok: false, reason: `There is no op kind ${kind}. Kinds: ${OP_KINDS.join(", ")}.` };
+    const ops = guideByUri("lime://guide/ops")?.text.split("\n") ?? [];
+    const examples = ops.filter((line) => new RegExp(`^\\s*(\\w+, )*${kind}[:,]`).test(line) || line.includes(`kind:\"${kind}\"`));
+    return { ok: true, kind, summary: OP_SUMMARY[kind], composite: isComposite(kind), schema, examples };
   }
 
   private printer(): PrinterRecord {

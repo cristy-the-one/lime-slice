@@ -151,6 +151,50 @@ for (const row of reopenedRows) {
 }
 check("reopening keeps the committed mesh", reopened.ok === true && keptMesh, JSON.stringify(reopened));
 
+// tools/list shows model_apply's op as kind names and one line each: a wrong guess learns the shape from the refusal.
+{
+  const lean = new Session(fakeEngine());
+  const box = await lean.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
+  const refusal = async (name: string, args: unknown) => {
+    try {
+      return JSON.stringify(await lean.call(name, args));
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  };
+  const wrong = await refusal("model_apply", { object: box.object, op: { kind: "fillet", edges: [0], radius: 1 } });
+  check(
+    "a fillet with a wrong field is refused with the fields a fillet takes",
+    wrong === "input.op.radius is not a field of this tool. A fillet op takes edges (required, list or object), size (required, number), label (text). guide {kind:\"fillet\"} has its full schema.",
+    wrong,
+  );
+  const missing = await refusal("model_apply", { object: box.object, op: { kind: "hole", through: true, at: { u: 0, v: "x" } } });
+  check(
+    "a hole with a wrong value names the field and the hole's fields",
+    missing.startsWith("input.op.at.v must be a number.") || missing.startsWith("op.at.v"),
+    missing,
+  );
+  const nested = await refusal("model_apply_batch", { object: box.object, ops: [{ kind: "scale", factor: 1 }, { kind: "pattern", op: { kind: "boolean", op: "cut", primitive: "box", size: 2 }, linear: { step: [5, 0, 0], count: 2 } }] });
+  check(
+    "a wrong field in a pattern's op names the inner kind's fields",
+    nested.startsWith("ops[1].op.size is not a field of this tool.") && nested.includes("A boolean op takes op (required, fuse|cut|common), primitive (required, box|"),
+    nested,
+  );
+  const right = await lean.call("model_apply", { object: box.object, op: { kind: "fillet", edges: [0], size: 1 }, probe: true });
+  check("the same fillet with size applies", right.ok === true, JSON.stringify(right));
+  const fillet = await lean.call("guide", { kind: "fillet" });
+  const schema = fillet.schema as { required?: string[]; properties?: Record<string, unknown> };
+  check(
+    "guide {kind} serves the kind's full schema and examples",
+    fillet.ok === true && JSON.stringify(schema.required) === JSON.stringify(["kind", "edges", "size"]) && "edges" in (schema.properties ?? {}) && (fillet.examples as string[]).length > 0,
+    JSON.stringify(fillet),
+  );
+  const chamfer = await lean.call("guide", { kind: "chamfer" });
+  check("guide {kind} finds a kind named second on an example line", chamfer.ok === true && (chamfer.examples as string[]).some((line) => line.startsWith("fillet, chamfer:")), JSON.stringify(chamfer.examples));
+  const unknown = await lean.call("guide", { kind: "twist" });
+  check("guide {kind} names the kinds for an unknown one", unknown.ok === false && String(unknown.reason).startsWith("There is no op kind twist. Kinds: hole, fillet,"), JSON.stringify(unknown));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
