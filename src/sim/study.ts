@@ -4,7 +4,7 @@
  * click does not wait on a factorisation.
  */
 import type { MaterialCard } from "./cards.ts";
-import { LABEL, NOT_HELD, PROVISIONAL_SENTENCE } from "./label.ts";
+import { HOLD_NEXT, LABEL, LOAD_FACES_NEXT, NOT_HELD, PROVISIONAL_SENTENCE } from "./label.ts";
 
 export type Vec3 = [number, number, number];
 export type TrustWord = "rough" | "usable" | "converged";
@@ -267,11 +267,20 @@ export function holdRefusal(study: ObjectStudy): string | null {
   return held ? null : NOT_HELD;
 }
 
-export function holdLine(hold: StudyHold): string {
-  if (hold.kind === "bed") return "Bed";
-  if (hold.kind === "plane") return "A plane";
-  const n = hold.faces.length;
-  return n === 1 ? "1 face fixed" : `${n} faces fixed`;
+/** The setup step a study still needs, with what to do next. Null when it can run. */
+export function setupGap(study: ObjectStudy): { step: "hold" | "load"; text: string } | null {
+  if (holdRefusal(study)) return { step: "hold", text: HOLD_NEXT };
+  const load = loadGap(study);
+  return load ? { step: "load", text: load } : null;
+}
+
+/** What the load still needs: a face, a size, and a direction. Null when it has all three. */
+export function loadGap(study: ObjectStudy): string | null {
+  const load = study.loads[0];
+  if (!load || load.faces.length === 0) return LOAD_FACES_NEXT;
+  if (!(Math.abs(load.magnitude) > 0)) return "Give the load a size above zero.";
+  if (!(Math.hypot(...load.direction) > 1e-12)) return "Give the load a direction.";
+  return null;
 }
 
 /**
@@ -557,13 +566,12 @@ export function sectionHides(point: readonly number[], origin: readonly number[]
   return along > 1e-6;
 }
 
-export function arrowSeat(study: ObjectStudy, box: StudyBox, faceAt: (index: number) => Vec3 | null): Vec3 {
-  const face = study.loads[0]?.faces[0];
-  if (face !== undefined) {
-    const at = faceAt(face);
-    if (at) return at;
-  }
-  return [box.max[0], (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
+/** The centre of the loaded faces, or null until the load has a face. */
+export function arrowSeat(study: ObjectStudy, faceAt: (index: number) => Vec3 | null): Vec3 | null {
+  const points = (study.loads[0]?.faces ?? []).map(faceAt).filter((at): at is Vec3 => at != null);
+  if (points.length === 0) return null;
+  const sum = points.reduce<Vec3>((acc, at) => [acc[0] + at[0], acc[1] + at[1], acc[2] + at[2]], [0, 0, 0]);
+  return [sum[0] / points.length, sum[1] / points.length, sum[2] / points.length];
 }
 
 /** Typing a larger magnitude lengthens the arrow, and it stays on the part. */

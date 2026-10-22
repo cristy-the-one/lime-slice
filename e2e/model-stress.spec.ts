@@ -4,95 +4,19 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { provisionalCards } from "../src/sim/cards.ts";
 import { cannedBeam, emptyStudy, type CannedResult } from "../src/sim/study.ts";
-import { autoSliceOff } from "./auto-slice";
-import { mockModelTree, type Body, type MockSolid } from "./model-tree-mock";
-
-type V = [number, number, number];
-
-function boxSolid(volumeMm3: number): MockSolid {
-  const c = (x: number, y: number, z: number): V => [x * 10, y * 10, z * 10];
-  const quads: V[][] = [
-    [c(0, 0, 0), c(0, 1, 0), c(1, 1, 0), c(1, 0, 0)],
-    [c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)],
-    [c(0, 0, 0), c(1, 0, 0), c(1, 0, 1), c(0, 0, 1)],
-    [c(0, 1, 0), c(0, 1, 1), c(1, 1, 1), c(1, 1, 0)],
-    [c(0, 0, 0), c(0, 0, 1), c(0, 1, 1), c(0, 1, 0)],
-    [c(1, 0, 0), c(1, 1, 0), c(1, 1, 1), c(1, 0, 1)],
-  ];
-  const positions: number[] = [];
-  const triangles: number[] = [];
-  quads.forEach((q, face) => {
-    for (const tri of [[0, 1, 2], [0, 2, 3]]) {
-      for (const i of tri) positions.push(...q[i]!);
-      triangles.push(face);
-    }
-  });
-  return { volumeMm3, positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 100 })), edges: [] };
-}
-
-function volumeOf(request: Body): number {
-  const primitive = request.primitive as { size?: number[] } | undefined;
-  const op = request.op as { kind?: string; size?: number[] } | undefined;
-  const size = primitive?.size ?? (op?.kind === "root" ? op.size : undefined);
-  if (size && size.length >= 3) return (size[0] ?? 0) * (size[1] ?? 0) * (size[2] ?? 0);
-  return 4000;
-}
-
-function f32b64(values: number[]): string {
-  const buf = Buffer.alloc(values.length * 4);
-  values.forEach((value, index) => buf.writeFloatLE(value, index * 4));
-  return buf.toString("base64");
-}
+import { facePoints, openStressModel as openModel } from "./stress-mock";
 
 const SAVED_STUDY = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "sim-study-box.json");
 
-/** A one-triangle reply the spec controls. The desktop box, when saved, is a second test. */
-function mockReply(): string {
-  return JSON.stringify({
-    ok: true,
-    report: {
-      representation: "sliced",
-      trust: "usable",
-      notes: ["Solved at one cell size."],
-      margins: [{ kind: "minSafetyFactor", limit: 1, value: 2.5, margin: 1.5, met: true, note: "above the band", hotSpot: { at: [1, 2, 3], role: "outer", governs: "across-layers" } }],
-      maxDisplacementMm: 0.1,
-      minSafetyFactor: 2.5,
-      massG: 1,
-    },
-    surface: {
-      triangles: 1,
-      positionsB64: f32b64([0, 0, 0, 4, 0, 0, 0, 4, 0]),
-      displacementB64: f32b64([0, 0, 0, 0, 0, 0, 0, 0, -0.2]),
-      vonMisesB64: f32b64([1, 4, 9]),
-      safetyB64: f32b64([3, 2, 1]),
-    },
-  });
-}
-
-async function openModel(page: Page, reply = mockReply()) {
-  await page.addInitScript((text: string) => {
-    const bag = window as unknown as { __limeSimStudy?: (body: string) => string; __limeSimBodies?: string[] };
-    bag.__limeSimBodies = [];
-    bag.__limeSimStudy = (body: string) => {
-      bag.__limeSimBodies?.push(body);
-      return text;
-    };
-  }, reply);
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
-  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: boxSolid(4000).positions } }));
-  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
-  await mockModelTree(page, {
-    open: (request) => boxSolid(volumeOf(request)),
-    apply: (request) => boxSolid(volumeOf(request)),
-    probe: () => ({ ok: true }),
-  });
-  await page.goto("/?stressFixture=1");
-  await autoSliceOff(page);
-  await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
-  await expect(page.locator("#objectList .obj").first()).toBeVisible();
-  await page.locator("#tabModel").click();
-  await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
+/** Load the top face through Stress's pick mode, as a user does. */
+async function loadTopFace(page: Page) {
+  const faces = await facePoints(page);
+  const top = [...faces.values()].find((at) => at.normal[2]! > 0.5);
+  if (!top) throw new Error("no top face on screen");
+  await page.locator("#stressLoadPick").click();
+  await page.mouse.click(top.x, top.y);
+  await expect(page.locator("#stressLoadChips .stress-chip")).toHaveCount(1);
+  await page.locator("#stressLoadPick").click();
 }
 
 test("stress menu, canned estimate, probe, section, and plate undo", async ({ page }) => {
@@ -103,6 +27,7 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await expect(page.locator("#modelStressMain")).toBeVisible();
   await expect(page.locator("#modelStress")).toContainText("In-house estimate");
   await expect(page.locator("#stressProvisional")).toHaveText("Provisional card, not a measurement.");
+  await page.locator("#stressVariants > summary").click();
   const patternFits = await page.locator("#stressVariantPattern").evaluate((select) => {
     const style = getComputedStyle(select);
     const canvas = document.createElement("canvas").getContext("2d");
@@ -127,8 +52,9 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   expect(pinned).toBe(true);
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-dock.png" });
 
+  await loadTopFace(page);
   await page.locator("#stressForce").fill("25");
-  await page.locator("#stressBed").check();
+  await page.locator("#stressBed").click();
   await page.locator("#stressRun").click();
   await expect(page.locator("#stressStatus")).toHaveText("");
   await expect(page.locator("#model")).toHaveAttribute("data-stress", /shown [1-9]/);
@@ -144,11 +70,6 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await expect(page.locator("#stressMargins")).toContainText("above the band");
   await expect(page.locator("#stressMargins")).toContainText("across-layers");
   await expect(page.locator("#stressMargins")).toContainText("workplane_print_up");
-  await page.locator("#stressProbeX").fill("0");
-  await page.locator("#stressProbeY").fill("0");
-  await page.locator("#stressProbeZ").fill("0");
-  await page.locator("#stressProbeGo").click();
-  await expect(page.locator("#stressProbe")).toContainText("1.00 MPa");
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-sliced.png" });
   await page.locator("#stressVariantScale").fill("2");
   await page.locator("#stressVariantAdd").click();
@@ -210,17 +131,11 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   const box = await canvas.boundingBox();
   if (!box) throw new Error("the model view has no box");
   await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
-  await expect(page.locator("#stressProbe")).toContainText(/\d/);
-
-  await page.locator("#stressProbeX").fill("10");
-  await page.locator("#stressProbeY").fill("5");
-  await page.locator("#stressProbeZ").fill("5");
-  await page.locator("#stressProbeGo").click();
-  await expect(page.locator("#stressProbe")).toContainText("MPa");
+  await expect(page.locator("#stressProbe")).toContainText(/\d.*MPa/);
 
   await expect(page.locator("#modelHistoryTree .mh-row")).toHaveCount(rows);
   await page.locator("#modelUndo").click();
-  await expect(page.locator("#stressBed")).not.toBeChecked();
+  await expect(page.locator("#stressBed")).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#modelHistoryTree .mh-row")).toHaveCount(rows);
 
   await page.locator("#modelLookOpen").click();
@@ -231,11 +146,11 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await page.locator("#stressForce").focus();
   await page.keyboard.press("Escape");
   await expect(page.locator("#modelStressMain")).toBeHidden();
-  await expect(page.locator("#stressLegend")).toBeHidden();
+  await expect(page.locator("#stressLegend"), "folding keeps the study on the part").toBeVisible();
 
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuStress").click();
-  await page.locator("#stressBed").check();
+  await page.locator("#stressBed").click();
   await page.locator("#tabPrepare").click();
   await expect(page.locator("[data-plate-stress]")).toHaveCount(1);
   await expect(page.locator("[data-plate-stress]")).toHaveText("In-house estimate");
@@ -245,7 +160,8 @@ test("a saved desktop solve is drawn as sliced", async ({ page }) => {
   await openModel(page, readFileSync(SAVED_STUDY, "utf8"));
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuStress").click();
-  await page.locator("#stressBed").check();
+  await loadTopFace(page);
+  await page.locator("#stressBed").click();
   await page.locator("#stressRun").click();
   await expect(page.locator("#stressLegend")).toContainText("In-house estimate · as sliced");
   await expect(page.locator("#stressLegend")).toContainText("rough");

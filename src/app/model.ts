@@ -157,7 +157,7 @@ import { refreshOp } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
 import { faceTriangles } from "../sim/bridge-body.ts";
 import { chooseStudyMesh } from "../sim/study-mesh.ts";
-import { mountStress, stressOpen, stressUndoState, syncStress, takeStressRedo, takeStressUndo } from "../ui/stress.ts";
+import { endStressPick, mountStress, stressOpen, stressPickFace, stressPicking, stressUndoState, syncStress, takeStressRedo, takeStressUndo } from "../ui/stress.ts";
 import { stressSliceRequest } from "./stress-slice.ts";
 import { beltLayerNormal } from "../sim/study.ts";
 import { beltStamp, cardsOf, saveMaterialCard } from "../ui/machine-library.ts";
@@ -415,6 +415,7 @@ export function bindModelView() {
       return splitLegal();
     },
     paramsChanged(typed) {
+      if (openModelTool()) endStressPick();
       // --- F4. The draft lives only while the Hole panel is the points layout. ---
       if (sketchHoleDraft && openModelTool() !== "hole" && !holdSketchHoles) sketchHoleDraft = null;
       // A size that cannot drill is said here, and nothing is sent for the engine to refuse.
@@ -602,7 +603,6 @@ export function bindModelView() {
       markProjectDirty();
       refreshObjectList();
     },
-    faces: () => picks.filter((pick) => pick.kind === "face").map((pick) => pick.index),
     facePoint(index) {
       const solid = viewed();
       return solid ? faceCentre(solid.positions, solid.triangles, index) : null;
@@ -625,6 +625,11 @@ export function bindModelView() {
       return belt ? beltLayerNormal(belt.angleDeg) : [0, 0, 1];
     },
     toolOpen: () => openModelTool() != null,
+    picking(on) {
+      if (on) setMode("face");
+      syncPullDrag?.();
+      edgeDrag?.sync();
+    },
     undo: () => undoUserEdit(),
     redo: () => redoUserEdit(),
     sliceRequest(patch) {
@@ -1416,7 +1421,7 @@ function syncPullDiameter() {
 function pullLiveNow(): boolean {
   // --- S2: a sketch being chosen or edited owns the left button. ---
   if (sketchOccupiesView()) return false;
-  if (state.stage !== "model" || busy || jumping) return false;
+  if (state.stage !== "model" || busy || jumping || stressPicking()) return false;
   const tool = openModelTool();
   if (tool && tool !== "pushpull") return false;
   if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") return false;
@@ -2029,6 +2034,7 @@ function forgetShown(key: string) {
 
 /** Leaving Model: the plate takes the shown node, the visit is one Prepare step, and its solid is written off the UI's path. */
 export function leaveModel() {
+  endStressPick();
   // A face push or an edge size still being typed ends with Model, so its box does not stay behind.
   endPullDrag?.();
   edgeDrag?.end();
@@ -2249,6 +2255,7 @@ function clearView() {
 }
 
 function setMode(mode: "face" | "edge") {
+  if (mode === "edge") endStressPick();
   fx.model?.setPickMode(mode);
   picks = [];
   fx.model?.highlight([]);
@@ -4156,7 +4163,7 @@ async function saveStepFile(bytes: ArrayBuffer, name: string) {
 /** P2. The idle edge knob is armed when no other tool is using the view and the solid can be edited. */
 function edgeArmed(): boolean {
   // --- S2: the edge knob waits while a sketch is open. ---
-  return state.stage === "model" && !openModelTool() && !sketchOccupiesView() && !(lens && !editing) && !!viewed()?.editable && !busy && !jumping;
+  return state.stage === "model" && !openModelTool() && !stressPicking() && !sketchOccupiesView() && !(lens && !editing) && !!viewed()?.editable && !busy && !jumping;
 }
 
 /** P2. Dry-run a fillet or chamfer on the solid on screen. The shape is drawn by the drag, not by the panel. */
@@ -4877,6 +4884,11 @@ let contextFromPick = false;
 async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: number; y: number }) {
   // --- B13. A loft or sweep in Look around takes the click as a section or a profile. ---
   if (sketchTakesPick(pointer.x, pointer.y)) return;
+  // A Stress pick mode takes face clicks as holds or loads; the selection stays as it was.
+  if (stressPicking()) {
+    if (pick?.kind === "face") stressPickFace(pick.index);
+    return;
+  }
   const at = open;
   const tree = treeOf(at);
   const solid = viewed();

@@ -117,6 +117,9 @@ const ARROW_HEAD = HANDLE_ARROW_TIP - 0.15;
 const PRIMITIVE_CREASE_DEG = 25;
 /** A join's tool past this many triangles is drawn without its outline, which would take a noticeable while to find. */
 const OBJECT_OUTLINE_MAX_TRIANGLES = 150_000;
+/** The load arrow, and the faces it pushes on. */
+const STRESS_LOAD = 0xc2410c;
+
 /** Frames the view still draws after its last change, for anything that settles a frame late. */
 const STILL_FRAMES = 3;
 
@@ -127,9 +130,12 @@ export interface StressDraw {
   colors: Float32Array;
   displacement: Float32Array;
   scale: number;
-  arrow: { at: Vec3; dir: Vec3; length: number } | null;
+  /** `fixed` while faces are picked: a press on the arrow is a click on the face under it, not a drag. */
+  arrow: { at: Vec3; dir: Vec3; length: number; fixed?: boolean } | null;
   /** Hot spots, in the solid's frame. Each one is a small marker. */
   markers?: Vec3[];
+  /** Held and loaded faces, tinted on the solid while there is no coloured result. */
+  faces?: { hold: number[]; load: number[] };
 }
 
 export interface ModelView {
@@ -421,6 +427,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let stressScale = 1;
   let stressSeat = new THREE.Vector3();
   let stressArrowLength = 8;
+  let stressArrowFixed = false;
+  let stressHold = new Set<number>();
+  let stressLoad = new Set<number>();
   let stressGesture: { pointerId: number } | null = null;
   let stressProbeCb: (at: Vec3) => void = () => {};
   let stressDirCb: (dir: Vec3, phase: "start" | "move" | "end", at: { x: number; y: number }) => void = () => {};
@@ -720,12 +729,20 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         stepHover: highlightStep != null && owner === highlightStep,
         colourByStep: look.colourByStep,
         accent: tint,
+        study: shape === solid ? stressTint(face) : null,
       });
       if (painted.stepHex) used.add(painted.stepHex);
       const offset = triangle * 9;
       for (let vertex = 0; vertex < 3; vertex += 1) writeColor(painted.hex, into, offset + vertex * 3);
     });
     return used;
+  }
+
+  /** The load wins over the hold on a face that is both, as the load arrow sits on it. */
+  function stressTint(face: number): number | null {
+    if (stressLoad.has(face)) return STRESS_LOAD;
+    if (stressHold.has(face)) return hexToThree(colors.paintEnforce);
+    return null;
   }
 
   function publishFaceColours(used: Set<string>) {
@@ -2178,9 +2195,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       });
       stressArrow = null;
     }
+    delete canvas.dataset.stressArrow;
     stressRest = null;
     stressDisp = null;
+    stressHold = new Set();
+    stressLoad = new Set();
     delete canvas.dataset.stress;
+    delete canvas.dataset.stressHold;
+    delete canvas.dataset.stressLoad;
     if (mesh && !preview) mesh.visible = true;
     canvas.dataset.stressSolid = "shown";
   }
@@ -2210,6 +2232,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function applyStress(draw: StressDraw | null) {
     clearStressDraw();
     if (!draw) {
+      paintFaces();
       kick();
       return;
     }
@@ -2229,7 +2252,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       stressGroup.add(stressMesh);
       if (mesh) mesh.visible = false;
       canvas.dataset.stressSolid = "hidden";
+    } else if (draw.faces) {
+      stressHold = new Set(draw.faces.hold);
+      stressLoad = new Set(draw.faces.load);
+      if (stressHold.size > 0) canvas.dataset.stressHold = [...stressHold].join(" ");
+      if (stressLoad.size > 0) canvas.dataset.stressLoad = [...stressLoad].join(" ");
     }
+    paintFaces();
     const spots = draw.markers ?? [];
     if (spots.length > 0) {
       let span = 1;
@@ -2263,7 +2292,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       dir.normalize();
       stressSeat.set(...draw.arrow.at);
       stressArrowLength = Math.max(1, draw.arrow.length);
-      stressArrow = new THREE.ArrowHelper(dir, stressSeat, stressArrowLength, 0xc2410c);
+      stressArrowFixed = draw.arrow.fixed === true;
+      canvas.dataset.stressArrow = draw.arrow.at.map((value) => value.toFixed(2)).join(",");
+      // The head touches the face it pushes on, so the shaft stays outside the part.
+      const tail = stressSeat.clone().addScaledVector(dir, -stressArrowLength);
+      stressArrow = new THREE.ArrowHelper(dir, tail, stressArrowLength, STRESS_LOAD);
       stressArrow.traverse((child) => {
         child.raycast = () => undefined;
       });
@@ -2276,10 +2309,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function stressArrowHit(x: number, y: number): boolean {
-    if (!stressArrow) return false;
+    if (!stressArrow || stressArrowFixed) return false;
     const rect = canvas.getBoundingClientRect();
-    const origin = stressSeat.clone();
-    const tip = stressSeat.clone().addScaledVector(new THREE.Vector3(0, 1, 0).applyQuaternion(stressArrow.quaternion), stressArrowLength);
+    const origin = stressArrow.position.clone();
+    const tip = stressSeat.clone();
     body.localToWorld(origin);
     body.localToWorld(tip);
     const projectWorld = (point: THREE.Vector3) => {
@@ -2300,7 +2333,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camDir, seat);
     const hit = new THREE.Vector3();
     if (!ray.intersectPlane(plane, hit)) return null;
-    hit.sub(seat);
+    // The pointer holds the tail: the load points from it to the face.
+    hit.subVectors(seat, hit);
     if (hit.lengthSq() < 1e-8) return null;
     hit.normalize();
     const local = hit.transformDirection(new THREE.Matrix4().copy(body.matrixWorld).invert());

@@ -4,6 +4,7 @@ import path from "node:path";
 import { rampColor, SAFETY_RAMP, STRESS_RAMP } from "../src/colors.ts";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type MockSolid } from "./model-tree-mock";
+import { facePoints } from "./stress-mock";
 
 type V = [number, number, number];
 
@@ -198,8 +199,12 @@ test("the Preview colours each bead by the sliced stress under it", async ({ pag
   await page.locator("#tabModel").click();
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuStress").click();
+  const top = [...(await facePoints(page)).values()].find((at) => at.normal[2]! > 0.5)!;
+  await page.locator("#stressLoadPick").click();
+  await page.mouse.click(top.x, top.y);
+  await page.locator("#stressLoadPick").click();
   await page.locator("#stressForce").fill("25");
-  await page.locator("#stressBed").check();
+  await page.locator("#stressBed").click();
   await page.locator("#stressRun").click();
   await expect(page.locator("#stressStatus")).toHaveText("");
 

@@ -3,7 +3,7 @@
  * Points stay in the model frame. Face triangles keep the solid's winding.
  */
 import { withBeads, type MaterialCard } from "./cards.ts";
-import { LABEL } from "./label.ts";
+import { LABEL, LOAD_FACES_NEXT } from "./label.ts";
 import {
   boxDiagonal,
   boxOf,
@@ -13,7 +13,6 @@ import {
   type ObjectStudy,
   type SlicedMargin,
   type StressField,
-  type StudyBox,
   type StudyLoad,
   type Vec3,
 } from "./study.ts";
@@ -43,7 +42,6 @@ export interface StudyBodyInput {
   study: ObjectStudy;
   card: MaterialCard;
   triangles(faces: readonly number[]): FaceTriangles;
-  bounds: StudyBox | null;
   /** Multiplies the loads. The solve is linear. */
   loadScale?: number;
   /** Off skips the second cell size. The panel leaves this on. */
@@ -67,7 +65,6 @@ export function studyConstraints(targets?: readonly StudyTarget[]): StudyTarget[
 
 const PLANE_HOLD = "A plane hold is not on a sliced study. Hold the bed or faces.";
 const NO_SURFACE = "A hold's region touches no surface of the sliced part.";
-const NO_LOAD = "Pick a face to load, or type its index.";
 const ZERO_DIR = "The load direction has zero length.";
 
 function unitForce(load: StudyLoad, scale: number): Vec3 | { reason: string } {
@@ -75,17 +72,6 @@ function unitForce(load: StudyLoad, scale: number): Vec3 | { reason: string } {
   if (!(n > 1e-12)) return { reason: ZERO_DIR };
   const mag = load.magnitude * scale;
   return [load.direction[0] / n * mag, load.direction[1] / n * mag, load.direction[2] / n * mag];
-}
-
-/** A thin slab on the +X face, where the arrow sits when no face is chosen. */
-function endSlab(bounds: StudyBox): { kind: "box"; min: Vec3; max: Vec3 } {
-  const span = Math.max(1e-3, bounds.max[0] - bounds.min[0]);
-  const thick = Math.min(1, span * 0.05);
-  return {
-    kind: "box",
-    min: [bounds.max[0] - thick, bounds.min[1], bounds.min[2]],
-    max: [bounds.max[0], bounds.max[1], bounds.max[2]],
-  };
 }
 
 /**
@@ -108,15 +94,10 @@ export function buildStudyBody(input: StudyBodyInput): string | { reason: string
   if (holds.length === 0) return { reason: "Nothing is held." };
   const loads: Record<string, unknown>[] = [];
   for (const load of input.study.loads) {
-    let region: Record<string, unknown>;
-    if (load.faces.length === 0) {
-      if (!input.bounds) return { reason: NO_LOAD };
-      region = endSlab(input.bounds);
-    } else {
-      const triangles = input.triangles(load.faces);
-      if (triangles.length === 0) return { reason: NO_SURFACE };
-      region = { kind: "faces", triangles };
-    }
+    if (load.faces.length === 0) return { reason: LOAD_FACES_NEXT };
+    const triangles = input.triangles(load.faces);
+    if (triangles.length === 0) return { reason: NO_SURFACE };
+    const region = { kind: "faces", triangles };
     if (load.kind === "pressure") {
       loads.push({ kind: "pressure", region, mpa: load.magnitude * scale });
       continue;

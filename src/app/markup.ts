@@ -481,58 +481,79 @@ export function mountMarkup(root: HTMLElement) {
               <div class="model-stress-scroll">
               <p class="stress-label" id="stressLabel"></p>
               <p class="stress-note" id="stressProvisional" hidden></p>
-              <fieldset class="stress-group">
-                <legend>Hold</legend>
-                <label class="stress-check"><input id="stressBed" type="checkbox" /> Bed</label>
-                <div class="stress-row">
-                  <button class="btn" id="stressUseFaces" type="button">Faces</button>
-                  <label>Face <input id="stressFaceIndex" type="number" min="0" step="1" aria-label="Face index" /></label>
-                  <button class="btn" id="stressFaceAdd" type="button">Add</button>
+              <fieldset class="stress-group stress-step" id="stressHoldStep" data-step="hold">
+                <legend><span class="stress-mark" data-step-mark>1</span>Hold</legend>
+                <div class="modes" role="group" aria-label="Hold">
+                  <button class="btn mode" id="stressBed" type="button" aria-pressed="false">Bed</button>
+                  <button class="btn mode" id="stressHoldFaces" type="button" aria-pressed="false">Faces</button>
                 </div>
-                <p id="stressHolds" class="stress-note"></p>
+                <p class="stress-note" id="stressBedHint" hidden>The faces that sit on the bed are held.</p>
+                <div class="stress-pick-row" id="stressHoldPickRow" hidden>
+                  <button class="btn stress-pick" id="stressHoldPick" type="button" aria-pressed="false">Pick faces</button>
+                  <ul class="stress-chips" id="stressHoldChips" aria-label="Held faces"></ul>
+                </div>
+                <p class="stress-note" id="stressHoldHint" hidden>Click faces on the part to hold them. Esc or Pick faces again to finish.</p>
               </fieldset>
-              <fieldset class="stress-group">
-                <legend>Load</legend>
-                <div class="stress-row">
-                  <label class="stress-check"><input id="stressLoadForce" type="radio" name="stressLoadKind" checked /> Force N</label>
-                  <label class="stress-check"><input id="stressLoadPressure" type="radio" name="stressLoadKind" /> Pressure MPa</label>
+              <fieldset class="stress-group stress-step" id="stressLoadStep" data-step="load">
+                <legend><span class="stress-mark" data-step-mark>2</span>Load</legend>
+                <div class="modes" role="group" aria-label="Load kind">
+                  <button class="btn mode" id="stressLoadForce" type="button" aria-pressed="true">Force N</button>
+                  <button class="btn mode" id="stressLoadPressure" type="button" aria-pressed="false">Pressure MPa</button>
                 </div>
-                <label>Magnitude <input id="stressForce" type="number" step="0.1" value="10" aria-label="Load magnitude" /></label>
-                <div class="stress-grid">
-                  <label>Direction X <input id="stressDirX" type="number" step="0.1" value="0" aria-label="Direction X" /></label>
-                  <label>Direction Y <input id="stressDirY" type="number" step="0.1" value="0" aria-label="Direction Y" /></label>
-                  <label>Direction Z <input id="stressDirZ" type="number" step="0.1" value="-1" aria-label="Direction Z" /></label>
+                <label class="stress-inline"><span id="stressForceLabel">Force</span>
+                  <span class="stress-unit-field"><input id="stressForce" type="number" step="0.1" value="10" aria-label="Load magnitude" /><span class="stress-unit" id="stressForceUnit">N</span></span>
+                </label>
+                <div class="stress-pick-row">
+                  <button class="btn stress-pick" id="stressLoadPick" type="button" aria-pressed="false">Pick faces</button>
+                  <ul class="stress-chips" id="stressLoadChips" aria-label="Loaded faces"></ul>
                 </div>
-                <div class="stress-row">
-                  <button class="btn" id="stressLoadFaces" type="button">Load faces</button>
-                  <label>Face <input id="stressLoadFace" type="number" min="0" step="1" aria-label="Load face index" /></label>
-                  <button class="btn" id="stressLoadFaceAdd" type="button">Add</button>
+                <p class="stress-note" id="stressLoadHint" hidden>Click the faces the load pushes on. Esc or Pick faces again to finish.</p>
+                <div class="stress-axis" role="group" aria-labelledby="stressDirLabel">
+                  <span class="stress-axis-label" id="stressDirLabel">Direction (X, Y, Z)</span>
+                  <input id="stressDirX" type="number" step="0.1" value="0" aria-label="Direction X" />
+                  <input id="stressDirY" type="number" step="0.1" value="0" aria-label="Direction Y" />
+                  <input id="stressDirZ" type="number" step="0.1" value="-1" aria-label="Direction Z" />
                 </div>
-                <p id="stressLoadList" class="stress-note"></p>
-                <label class="stress-check"><input id="stressGravity" type="checkbox" /> Gravity</label>
+                <p class="stress-note" id="stressDirHint">Or drag the arrow on the part.</p>
               </fieldset>
-              <fieldset class="stress-group">
-                <legend>Material</legend>
+              <fieldset class="stress-group stress-step" id="stressMaterialStep" data-step="material">
+                <legend><span class="stress-mark" data-step-mark>3</span>Material</legend>
                 <label>Card <select id="stressCard" aria-label="Material card"></select></label>
-                <div class="stress-grid">
-                  <label>E in plane MPa <input id="stressEIn" type="number" step="1" aria-label="E in plane" /></label>
-                  <label>E across MPa <input id="stressEZ" type="number" step="1" aria-label="E across layers" /></label>
-                  <label>ν <input id="stressNu" type="number" step="0.01" aria-label="Poisson ratio" /></label>
-                  <label>Strength in plane MPa <input id="stressSIn" type="number" step="0.1" aria-label="Strength in plane" /></label>
-                  <label>Strength across MPa <input id="stressSZ" type="number" step="0.1" aria-label="Strength across layers" /></label>
-                  <label>Density g/cm³ <input id="stressDensity" type="number" step="0.01" aria-label="Density" /></label>
-                </div>
-                <label class="stress-check"><input id="stressPrinter" type="checkbox" checked /> This printer</label>
-                <div class="stress-grid">
-                  <label>Direction X <input id="stressBuildX" type="number" step="0.01" value="0" aria-label="Build direction X" /></label>
-                  <label>Direction Y <input id="stressBuildY" type="number" step="0.01" value="0" aria-label="Build direction Y" /></label>
-                  <label>Direction Z <input id="stressBuildZ" type="number" step="0.01" value="1" aria-label="Build direction Z" /></label>
-                </div>
-                <button class="btn" id="stressSaveCard" type="button">Save card</button>
+                <details class="stress-more" id="stressCardNumbers">
+                  <summary>Edit numbers</summary>
+                  <div class="stress-grid">
+                    <label>E in plane MPa <input id="stressEIn" type="number" step="1" aria-label="E in plane" /></label>
+                    <label>E across MPa <input id="stressEZ" type="number" step="1" aria-label="E across layers" /></label>
+                    <label>ν <input id="stressNu" type="number" step="0.01" aria-label="Poisson ratio" /></label>
+                    <label>Strength in plane MPa <input id="stressSIn" type="number" step="0.1" aria-label="Strength in plane" /></label>
+                    <label>Strength across MPa <input id="stressSZ" type="number" step="0.1" aria-label="Strength across layers" /></label>
+                    <label>Density g/cm³ <input id="stressDensity" type="number" step="0.01" aria-label="Density" /></label>
+                  </div>
+                  <button class="btn" id="stressSaveCard" type="button">Save card</button>
+                </details>
               </fieldset>
-              <fieldset class="stress-group">
+              <fieldset class="stress-group" id="stressTargets" data-stress-local>
+                <legend>Targets (optional)</legend>
+                <div class="stress-grid stress-grid-2">
+                  <label>Min safety factor <input id="stressMinSafety" type="number" min="0" step="0.1" aria-label="Min safety factor" /></label>
+                  <label>Max deflection mm <input id="stressMaxDeflection" type="number" min="0" step="0.1" aria-label="Max deflection" /></label>
+                </div>
+              </fieldset>
+              <details class="stress-more" id="stressAdvanced">
+                <summary>Advanced</summary>
+                <label>Cell size mm <input id="stressEdge" type="number" min="0.2" step="0.1" value="5" aria-label="Cell size" /></label>
+                <label class="stress-check"><input id="stressGravity" type="checkbox" /> Gravity</label>
+                <label class="stress-check" data-stress-local><input id="stressCheckResolution" type="checkbox" checked /> Check at a second cell size</label>
+                <label class="stress-check"><input id="stressPrinter" type="checkbox" checked /> This printer</label>
+                <div class="stress-axis" role="group" aria-labelledby="stressBuildLabel">
+                  <span class="stress-axis-label" id="stressBuildLabel">Print direction (X, Y, Z)</span>
+                  <input id="stressBuildX" type="number" step="0.01" value="0" aria-label="Print direction X" />
+                  <input id="stressBuildY" type="number" step="0.01" value="0" aria-label="Print direction Y" />
+                  <input id="stressBuildZ" type="number" step="0.01" value="1" aria-label="Print direction Z" />
+                </div>
+              </details>
+              <fieldset class="stress-group" id="stressResult" hidden>
                 <legend>Result</legend>
-                <label>Edge mm <input id="stressEdge" type="number" min="0.2" step="0.1" value="5" aria-label="Edge length" /></label>
                 <label>Colour <select id="stressField" aria-label="Stress field">
                   <option value="vonMises">von Mises</option>
                   <option value="displacement">Displacement</option>
@@ -542,18 +563,12 @@ export function mountMarkup(root: HTMLElement) {
                   <label>Scale <input id="stressScale" type="number" min="0" step="0.1" aria-label="Displacement scale" /></label>
                   <button class="btn" id="stressTrueScale" type="button">True scale</button>
                 </div>
-                <div class="stress-grid">
-                  <label>X <input id="stressProbeX" type="number" step="0.1" aria-label="Probe X" /></label>
-                  <label>Y <input id="stressProbeY" type="number" step="0.1" aria-label="Probe Y" /></label>
-                  <label>Z <input id="stressProbeZ" type="number" step="0.1" aria-label="Probe Z" /></label>
-                </div>
-                <button class="btn" id="stressProbeGo" type="button">Probe</button>
-                <p id="stressStatus" class="stress-note" role="status"></p>
+                <p class="stress-note">Click the coloured part to read a value there.</p>
                 <div id="stressMargins"></div>
                 <p id="stressNote" class="stress-note"></p>
               </fieldset>
-              <fieldset class="stress-group" id="stressVariants" data-stress-local>
-                <legend>Variants</legend>
+              <details class="stress-more" id="stressVariants" data-stress-local>
+                <summary>Variants</summary>
                 <p class="stress-note">Print time stays off. A rough row is not met.</p>
                 <div class="stress-grid">
                   <label>Load scale <input id="stressVariantScale" type="number" min="0.01" step="0.1" value="1" aria-label="Load scale" /></label>
@@ -571,21 +586,21 @@ export function mountMarkup(root: HTMLElement) {
                 </label>
                 <button class="btn" id="stressVariantAdd" type="button">Add variant</button>
                 <p id="stressVariantList" class="stress-note"></p>
-                <div class="stress-grid">
-                  <label>Max deflection mm <input id="stressMaxDeflection" type="number" min="0" step="0.1" aria-label="Max deflection" /></label>
-                  <label>Min safety <input id="stressMinSafety" type="number" min="0" step="0.1" aria-label="Min safety factor" /></label>
-                </div>
                 <button class="btn" id="stressSweep" type="button">Run sweep</button>
                 <p id="stressSweepStatus" class="stress-note" role="status"></p>
                 <table id="stressSweepTable" class="stress-table" hidden>
                   <thead><tr><th>Variant</th><th>Deflection mm</th><th>Safety</th><th>Met</th><th>Reason</th></tr></thead>
                   <tbody id="stressSweepBody"></tbody>
                 </table>
-              </fieldset>
+              </details>
               </div>
-              <div class="model-params-bar">
-                <button class="btn" id="stressCancel" type="button">Cancel</button>
-                <button class="btn primary" id="stressRun" type="button">Run</button>
+              <div class="stress-foot">
+                <p id="stressStatus" class="stress-status" role="status"></p>
+                <div class="progress indeterminate stress-progress" id="stressProgress" hidden><span></span></div>
+                <div class="model-params-bar">
+                  <button class="btn" id="stressCancel" type="button">Cancel</button>
+                  <button class="btn primary" id="stressRun" type="button" aria-describedby="stressStatus">Run</button>
+                </div>
               </div>
             </div>
           </section>

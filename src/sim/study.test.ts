@@ -11,21 +11,23 @@ import { LABEL, NOT_HELD, PROVISIONAL_SENTENCE } from "./label.ts";
 import { loadArrow } from "./arrow.ts";
 import {
   arrowLength,
+  arrowSeat,
   beltLayerNormal,
   boxOf,
   cannedBeam,
   defaultScale,
   emptyStudy,
   formatProbe,
-  holdLine,
   constraintVerdict,
   holdRefusal,
   onBed,
   probeNearest,
   readStudy,
   sectionHides,
+  setupGap,
   shownTrust,
   vertexColours,
+  type Vec3,
 } from "./study.ts";
 import { MODEL_TOOLS } from "../model-drag.ts";
 import { COMMANDS } from "../ui/commands.ts";
@@ -50,9 +52,20 @@ const bare = emptyStudy();
 eq("nothing held is refused", holdRefusal(bare), NOT_HELD);
 bare.holds = [{ kind: "bed", faces: [] }];
 eq("the bed is a hold", holdRefusal(bare), null);
-eq("a bed reads as Bed", holdLine(bare.holds[0]!), "Bed");
-eq("two faces read as a count", holdLine({ kind: "faces", faces: [1, 4] }), "2 faces fixed");
-eq("one face stays singular", holdLine({ kind: "faces", faces: [3] }), "1 face fixed");
+{
+  const setup = emptyStudy();
+  eq("a new study asks for a hold first", setupGap(setup), { step: "hold", text: "Hold the part: the bed, or pick faces." });
+  setup.holds = [{ kind: "faces", faces: [2] }];
+  eq("held, it asks for the load's faces", setupGap(setup), { step: "load", text: "Pick the faces the load pushes on." });
+  setup.loads[0]!.faces = [5];
+  eq("a held part with a loaded face can run", setupGap(setup), null);
+  setup.loads[0]!.magnitude = 0;
+  eq("a zero load is not done", setupGap(setup)?.step, "load");
+  const centres: Record<number, Vec3> = { 1: [0, 0, 10], 5: [10, 0, 0] };
+  eq("no loaded face, no arrow", arrowSeat(emptyStudy(), (index) => centres[index] ?? null), null);
+  setup.loads[0]!.faces = [1, 5];
+  eq("the arrow sits at the loaded faces' centre", arrowSeat(setup, (index) => centres[index] ?? null), [5, 0, 5]);
+}
 
 eq("a provisional card is rough", shownTrust(petg), { level: "rough", sentence: PROVISIONAL_SENTENCE });
 eq("a measured card is not capped", shownTrust({ provisional: false }), { level: "usable", sentence: "" });

@@ -1,8 +1,9 @@
 /**
- * Stress in the Model dock: a hold, a load, and a material card.
+ * Stress in the Model dock, as numbered steps: a hold, a load, and a material card. Faces are picked on the part.
  * Run does not draw the canned beam. That field is a Playwright fixture only.
  * Undo of a hold or a load is a plate step.
  */
+import { Check, MousePointerClick, X, createElement } from "lucide";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { ModelView, StressDraw } from "../model-view.ts";
 import { buildStudyBody, surfaceResult, type FaceTriangles, type StudyTarget } from "../sim/bridge-body.ts";
@@ -22,11 +23,12 @@ import {
   emptyStudy,
   fieldLabel,
   formatProbe,
-  holdLine,
   holdRefusal,
+  loadGap,
   paintField,
   probeNearest,
   restPositions,
+  setupGap,
   vertexColours,
   type CannedResult,
   type ConstraintLimits,
@@ -42,7 +44,6 @@ export interface StressHooks {
   study(): ObjectStudy | null;
   objectId(): string | null;
   commit(study: ObjectStudy): void;
-  faces(): number[];
   facePoint(index: number): Vec3 | null;
   bounds(): StudyBox | null;
   /** A point in the solid's frame, in model space. */
@@ -56,6 +57,8 @@ export interface StressHooks {
   toolOpen(): boolean;
   undo(): boolean;
   redo(): boolean;
+  /** A Stress pick mode began or ended: the view picks faces, and a face press stops being a push. */
+  picking(on: boolean): void;
   /**
    * The open object's one-object slice body, with its pose and mesh.
    * A `{ reason }` is a refusal: the faces and the mesh are not one tessellation.
@@ -64,6 +67,12 @@ export interface StressHooks {
   /** Face triangles in the model frame, wound as the solid stores them. */
   faceTriangles(faces: readonly number[]): FaceTriangles;
 }
+
+/** Which faces a click on the part adds or removes. One at a time across Hold and Load. */
+type PickTarget = "hold" | "load";
+
+const SOLVING = "Slicing and solving…";
+const CARD_FIELDS = new Set(["stressEIn", "stressEZ", "stressNu", "stressSIn", "stressSZ", "stressDensity"]);
 
 let hooks: StressHooks | null = null;
 let draft: ObjectStudy = emptyStudy();
@@ -84,6 +93,13 @@ let solveGeneration = 0;
 let solving = false;
 /** True while a sweep is the solve Cancel should abandon. */
 let sweeping = false;
+/** The study is on screen. Folding the section keeps it; Cancel ends it. */
+let active = false;
+let picking: PickTarget | null = null;
+/** Bed and Faces are one choice. Faces with none picked yet holds nothing, but stays chosen. */
+let holdMode: "bed" | "faces" | null = null;
+/** A refusal, an error, or a note. A change to the setup clears it, and the next step shows again. */
+let message = "";
 
 function byId<T extends HTMLElement>(id: string): T | null {
   return document.querySelector<T>(id);
@@ -107,6 +123,18 @@ function setCheck(id: string, on: boolean) {
   el.checked = on;
 }
 
+function setPressed(id: string, on: boolean) {
+  const el = byId(id);
+  if (!el) return;
+  el.setAttribute("aria-pressed", on ? "true" : "false");
+  el.classList.toggle("on", on);
+}
+
+function show(id: string, on: boolean) {
+  const el = byId(id);
+  if (el && el.hidden === on) el.hidden = !on;
+}
+
 export function stressOpen(): boolean {
   return byId<HTMLElement>("#modelStressMain")?.hidden === false;
 }
@@ -115,28 +143,89 @@ export function stressUndoState(): { undo: boolean; redo: boolean } {
   return { undo: stressOpen() && steps > 0, redo: stressOpen() && redos > 0 };
 }
 
+/** A click on the part goes to Stress, not to the selection. */
+export function stressPicking(): boolean {
+  return picking != null;
+}
+
+/** Leaving Model, opening a tool, or the Edge filter ends a pick mode. */
+export function endStressPick() {
+  setPicking(null);
+}
+
+/** A face clicked while a pick mode is on: added, or removed when it is already in. */
+export function stressPickFace(index: number) {
+  if (!picking || !Number.isInteger(index) || index < 0) return;
+  readForm();
+  if (picking === "hold") {
+    const prior = draft.holds.find((hold) => hold.kind === "faces")?.faces ?? [];
+    const faces = toggled(prior, index);
+    const rest = draft.holds.filter((hold) => hold.kind !== "faces" && hold.kind !== "bed");
+    draft.holds = faces.length > 0 ? [...rest, { kind: "faces", faces }] : rest;
+  } else {
+    const load = draft.loads[0] ?? emptyStudy().loads[0]!;
+    draft.loads = [{ ...load, faces: toggled(load.faces, index), direction: [...load.direction] as Vec3 }];
+  }
+  commitDraft();
+  paintSetup();
+  syncDraw();
+}
+
+function toggled(faces: readonly number[], index: number): number[] {
+  return faces.includes(index) ? faces.filter((face) => face !== index) : [...faces, index];
+}
+
+function setPicking(next: PickTarget | null) {
+  if (picking === next) return;
+  picking = next;
+  hooks?.picking(next != null);
+  paintSetup();
+  syncDraw();
+}
+
 export function mountStress(next: StressHooks) {
   hooks = next;
   const main = byId("#modelStressMain");
+  // Capture: Escape on the canvas, where the picking happens, ends the pick mode before Model clears its selection.
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape" || !picking || document.documentElement.dataset.overlay) return;
+    ev.preventDefault();
+    setPicking(null);
+  }, true);
   main?.addEventListener("keydown", (ev) => {
-    if ((ev as KeyboardEvent).key !== "Escape") return;
+    if ((ev as KeyboardEvent).key !== "Escape" || ev.defaultPrevented) return;
     if (hooks?.toolOpen()) return;
     ev.preventDefault();
     ev.stopPropagation();
-    closeStress();
+    foldStress();
     byId<HTMLButtonElement>("#modelStressToggle")?.focus();
   });
   main?.addEventListener("change", onChange);
   byId("#modelStressToggle")?.addEventListener("click", () => {
-    if (stressOpen()) closeStress();
+    if (stressOpen()) foldStress();
     else revealStress();
   });
-  byId("#stressUseFaces")?.addEventListener("click", () => addFaces(hooks?.faces() ?? [], "hold"));
-  byId("#stressFaceAdd")?.addEventListener("click", () => addFaces([Math.round(num("#stressFaceIndex", -1))], "hold"));
-  byId("#stressLoadFaces")?.addEventListener("click", () => addFaces(hooks?.faces() ?? [], "load"));
-  byId("#stressLoadFaceAdd")?.addEventListener("click", () => addFaces([Math.round(num("#stressLoadFace", -1))], "load"));
+  byId("#stressBed")?.addEventListener("click", () => chooseHold("bed"));
+  byId("#stressHoldFaces")?.addEventListener("click", () => chooseHold("faces"));
+  byId("#stressHoldPick")?.addEventListener("click", () => setPicking(picking === "hold" ? null : "hold"));
+  byId("#stressLoadPick")?.addEventListener("click", () => setPicking(picking === "load" ? null : "load"));
+  byId("#stressLoadForce")?.addEventListener("click", () => chooseLoadKind("force"));
+  byId("#stressLoadPressure")?.addEventListener("click", () => chooseLoadKind("pressure"));
+  for (const which of ["hold", "load"] as const) {
+    byId(which === "hold" ? "#stressHoldChips" : "#stressLoadChips")?.addEventListener("click", (ev) => {
+      const chip = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-face]");
+      if (!chip) return;
+      removeFace(which, Number(chip.dataset.face));
+    });
+  }
+  for (const id of ["#stressHoldPick", "#stressLoadPick"]) {
+    byId(id)?.prepend(createElement(MousePointerClick, { width: 14, height: 14, "aria-hidden": "true", class: "ico" }));
+  }
   byId("#stressRun")?.addEventListener("click", run);
-  byId("#stressCancel")?.addEventListener("click", cancelSolve);
+  byId("#stressCancel")?.addEventListener("click", () => {
+    if (solving) cancelSolve();
+    else closeStress();
+  });
   byId("#stressSaveCard")?.addEventListener("click", saveCard);
   byId("#stressTrueScale")?.addEventListener("click", () => {
     scaleOverride = 1;
@@ -153,7 +242,6 @@ export function mountStress(next: StressHooks) {
     scaleOverride = value > 0 ? value : 1;
     repaintField();
   });
-  byId("#stressProbeGo")?.addEventListener("click", probeTyped);
   byId("#stressVariantAdd")?.addEventListener("click", addVariant);
   byId("#stressSweep")?.addEventListener("click", runSweep);
   byId("#stressCard")?.addEventListener("change", () => {
@@ -188,7 +276,7 @@ export function mountStress(next: StressHooks) {
   }
 }
 
-/** The Features menu and the command palette. */
+/** The Features menu, the command palette, and the header. A folded study opens as it was left. */
 export function revealStress() {
   const section = byId<HTMLElement>("#modelStress");
   if (section) section.hidden = false;
@@ -196,15 +284,35 @@ export function revealStress() {
   const main = byId<HTMLElement>("#modelStressMain");
   if (main) main.hidden = false;
   byId("#modelStressToggle")?.setAttribute("aria-expanded", "true");
-  loadDraft();
+  if (!active || boundId !== (hooks?.objectId() ?? null)) {
+    result = null;
+    previous = null;
+    steps = 0;
+    redos = 0;
+    loadDraft();
+  }
+  active = true;
   paint();
   syncDraw();
   bindView();
   section?.scrollIntoView({ block: "nearest" });
-  byId<HTMLInputElement>("#stressForce")?.focus();
+  byId<HTMLElement>(setupGap(draft)?.step === "hold" ? "#stressBed" : "#stressForce")?.focus();
 }
 
+/** The header folds the section only. The draft, the result, and the colours on the part stay. */
+function foldStress() {
+  const main = byId<HTMLElement>("#modelStressMain");
+  if (main) main.hidden = true;
+  byId("#modelStressToggle")?.setAttribute("aria-expanded", "false");
+  setPicking(null);
+  hud?.close();
+  hooks?.changed();
+}
+
+/** Cancel: the result and its colours go, and the section closes. */
 export function closeStress() {
+  setPicking(null);
+  active = false;
   const main = byId<HTMLElement>("#modelStressMain");
   if (main) main.hidden = true;
   byId("#modelStressToggle")?.setAttribute("aria-expanded", "false");
@@ -212,9 +320,11 @@ export function closeStress() {
   redos = 0;
   result = null;
   previous = null;
+  message = "";
   hooks?.view()?.setStress(null);
   hideLegend();
   hideProbe();
+  paintResult();
   hud?.close();
   hooks?.changed();
 }
@@ -241,16 +351,18 @@ export function takeStressRedo(): boolean {
   return true;
 }
 
-/** Another object is on screen. The open section follows its study. */
+/** Another object is on screen. The study on screen follows it. */
 export function syncStress() {
-  if (!stressOpen()) return;
+  if (!active) return;
   const id = hooks?.objectId() ?? null;
   if (id === boundId) return;
   boundId = id;
+  setPicking(null);
   result = null;
   previous = null;
   steps = 0;
   redos = 0;
+  holdMode = null;
   loadDraft();
   paint();
   syncDraw();
@@ -263,6 +375,7 @@ function loadDraft() {
   cardTouched = false;
   field = "vonMises";
   scaleOverride = undefined;
+  message = "";
   variants = [];
   paintVariantList();
   const table = byId<HTMLElement>("#stressSweepTable");
@@ -288,9 +401,9 @@ function currentCard(): MaterialCard | null {
   };
 }
 
+/** The typed fields into the draft. Holds, load faces, and the load kind are set by their own clicks. */
 function readForm() {
   const load = draft.loads[0] ?? emptyStudy().loads[0]!;
-  load.kind = byId<HTMLInputElement>("#stressLoadPressure")?.checked ? "pressure" : "force";
   load.magnitude = num("#stressForce", load.magnitude);
   load.direction = [num("#stressDirX", 0), num("#stressDirY", 0), num("#stressDirZ", -1)];
   draft.loads = [{ ...load, faces: [...load.faces], direction: [...load.direction] as Vec3 }];
@@ -303,10 +416,6 @@ function readForm() {
     : [num("#stressBuildX", 0), num("#stressBuildY", 0), num("#stressBuildZ", 1)];
   const cardId = byId<HTMLSelectElement>("#stressCard")?.value;
   if (cardId) draft.cardId = cardId;
-  const bed = byId<HTMLInputElement>("#stressBed")?.checked === true;
-  const faces = draft.holds.filter((hold) => hold.kind === "faces");
-  const planes = draft.holds.filter((hold) => hold.kind === "plane");
-  draft.holds = [...(bed ? [{ kind: "bed" as const, faces: [] }] : []), ...faces, ...planes];
 }
 
 function commitDraft() {
@@ -316,6 +425,7 @@ function commitDraft() {
   hooks?.commit(next);
   steps += 1;
   redos = 0;
+  message = "";
   hooks?.changed();
 }
 
@@ -324,37 +434,54 @@ function onChange(ev: Event) {
   if (!(target instanceof HTMLElement)) return;
   if (target.id === "stressField" || target.id === "stressScale" || target.id === "stressCard") return;
   if (target.closest("[data-stress-local]")) return;
-  if (target.id.startsWith("stressE") || target.id === "stressNu" || target.id.startsWith("stressS") || target.id === "stressDensity") {
+  if (CARD_FIELDS.has(target.id)) {
     cardTouched = true;
     paintProvisional();
     return;
   }
   readForm();
   commitDraft();
-  paintHolds();
+  paintSetup();
   syncDraw();
 }
 
-function addFaces(indexes: number[], which: "hold" | "load") {
-  const faces = indexes.filter((index) => Number.isInteger(index) && index >= 0);
-  if (faces.length === 0) {
-    setStatus(which === "hold" ? "Pick a face, or type its index." : "Pick a face to load, or type its index.");
-    return;
-  }
-  if (which === "hold") {
-    const prior = draft.holds.find((hold) => hold.kind === "faces");
-    const merged = [...new Set([...(prior?.faces ?? []), ...faces])];
-    draft.holds = [...draft.holds.filter((hold) => hold.kind !== "faces"), { kind: "faces", faces: merged }];
-  } else {
-    const load = draft.loads[0] ?? emptyStudy().loads[0]!;
-    load.faces = [...new Set([...load.faces, ...faces])];
-    draft.loads = [load];
-  }
+/** Bed holds what sits on the bed; Faces holds the faces picked. Choosing one drops the other's hold. */
+function chooseHold(mode: "bed" | "faces") {
   readForm();
+  holdMode = mode;
+  if (mode === "bed") {
+    if (picking === "hold") setPicking(null);
+    draft.holds = [{ kind: "bed", faces: [] }, ...draft.holds.filter((hold) => hold.kind === "plane")];
+  } else {
+    draft.holds = draft.holds.filter((hold) => hold.kind !== "bed");
+  }
   commitDraft();
-  paintHolds();
+  paintSetup();
   syncDraw();
-  setStatus("");
+}
+
+function chooseLoadKind(kind: "force" | "pressure") {
+  readForm();
+  const load = draft.loads[0] ?? emptyStudy().loads[0]!;
+  draft.loads = [{ ...load, kind, faces: [...load.faces], direction: [...load.direction] as Vec3 }];
+  commitDraft();
+  paintSetup();
+  syncDraw();
+}
+
+function removeFace(which: PickTarget, index: number) {
+  readForm();
+  if (which === "hold") {
+    draft.holds = draft.holds
+      .map((hold) => (hold.kind === "faces" ? { ...hold, faces: hold.faces.filter((face) => face !== index) } : hold))
+      .filter((hold) => hold.kind !== "faces" || hold.faces.length > 0);
+  } else {
+    const load = draft.loads[0];
+    if (load) draft.loads = [{ ...load, faces: load.faces.filter((face) => face !== index), direction: [...load.direction] as Vec3 }];
+  }
+  commitDraft();
+  paintSetup();
+  syncDraw();
 }
 
 const SWEEP_REFUSAL = "A sweep takes up to 16 variants.";
@@ -538,9 +665,9 @@ async function runSweep() {
     return;
   }
   readForm();
-  const refused = holdRefusal(draft);
-  if (refused) {
-    hideSweep(refused);
+  const gap = setupGap(draft);
+  if (gap) {
+    hideSweep(gap.text);
     return;
   }
   const reslice = variants.some(variantReslices);
@@ -549,7 +676,7 @@ async function runSweep() {
     previous = result;
     previousFrom = solvedFrom;
   }
-  solving = true;
+  setSolving(true);
   sweeping = true;
   if (status) status.textContent = reslice ? RESLICE_STATUS : LINEAR_STATUS;
 
@@ -558,7 +685,7 @@ async function runSweep() {
     const solved = await baseResult(token);
     if (solved === "cancelled" || token !== solveGeneration) return;
     if ("error" in solved) {
-      solving = false;
+      setSolving(false);
       sweeping = false;
       result = previous;
       solvedFrom = previousFrom;
@@ -621,7 +748,7 @@ async function runSweep() {
     });
   }
   if (token !== solveGeneration) return;
-  solving = false;
+  setSolving(false);
   sweeping = false;
   previous = null;
   previousFrom = null;
@@ -640,8 +767,8 @@ function studyText(patch?: { walls?: number; infill?: number; pattern?: "lines" 
     study: draft,
     card,
     triangles: (faces) => hooks?.faceTriangles(faces) ?? [],
-    bounds: hooks?.bounds() ?? null,
     loadScale: patch?.loadScale,
+    checkResolution: byId<HTMLInputElement>("#stressCheckResolution")?.checked !== false,
     constraints: panelTargets(),
   });
 }
@@ -649,47 +776,49 @@ function studyText(patch?: { walls?: number; infill?: number; pattern?: "lines" 
 async function run() {
   readForm();
   commitDraft();
-  const refused = holdRefusal(draft);
-  if (refused) {
-    setStatus(refused);
+  const gap = setupGap(draft);
+  if (gap) {
+    message = "";
+    paintStatus();
     return;
   }
   const body = studyText();
   if (typeof body !== "string") {
-    setStatus(body.reason);
+    say(body.reason);
     return;
   }
+  setPicking(null);
   const token = ++solveGeneration;
   if (!solving) {
     previous = result;
     previousFrom = solvedFrom;
   }
-  solving = true;
+  setSolving(true);
   sweeping = false;
-  setStatus("Solving");
+  say("");
   let text: string;
   try {
     text = await solveStudy(body);
   } catch (err) {
     if (token !== solveGeneration) return;
-    solving = false;
+    setSolving(false);
     result = previous;
     solvedFrom = previousFrom;
     previous = null;
     previousFrom = null;
-    setStatus(err instanceof Error && err.message ? err.message : "The stress solve did not finish.");
+    say(err instanceof Error && err.message ? err.message : "The stress solve did not finish.");
     syncDraw();
     return;
   }
   if (token !== solveGeneration) return;
-  solving = false;
+  setSolving(false);
   const parsed = surfaceResult(text, field, scaleOverride);
   if ("error" in parsed) {
     result = previous;
     solvedFrom = previousFrom;
     previous = null;
     previousFrom = null;
-    setStatus(parsed.error);
+    say(parsed.error);
     syncDraw();
     return;
   }
@@ -699,7 +828,7 @@ async function run() {
   previousFrom = null;
   rememberStressCells(hooks?.objectId() ?? null, text);
   if (scaleOverride == null) setNum("#stressScale", parsed.scale);
-  setStatus("");
+  say("");
   syncDraw();
 }
 
@@ -707,13 +836,13 @@ function cancelSolve() {
   if (!solving) return;
   const wasSweep = sweeping;
   solveGeneration += 1;
-  solving = false;
+  setSolving(false);
   sweeping = false;
   result = previous;
   solvedFrom = previousFrom;
   previous = null;
   previousFrom = null;
-  setStatus("");
+  say("");
   if (wasSweep) {
     const sweepStatus = byId("#stressSweepStatus");
     if (sweepStatus) sweepStatus.textContent = "";
@@ -739,16 +868,13 @@ function saveCard() {
   if (!next) return;
   hooks?.saveCard(next);
   paintProvisional();
-  setStatus(next.provisional ? PROVISIONAL_SENTENCE : "Card saved.");
+  say(next.provisional ? PROVISIONAL_SENTENCE : "Card saved.");
 }
 
 function paint() {
   const load = draft.loads[0];
-  setCheck("#stressBed", draft.holds.some((hold) => hold.kind === "bed"));
   setCheck("#stressGravity", draft.gravity);
   setCheck("#stressPrinter", draft.printer);
-  setCheck("#stressLoadForce", (load?.kind ?? "force") === "force");
-  setCheck("#stressLoadPressure", load?.kind === "pressure");
   if (load) {
     setNum("#stressForce", load.magnitude);
     setNum("#stressDirX", load.direction[0]);
@@ -763,10 +889,8 @@ function paint() {
   if (fieldSelect && document.activeElement !== fieldSelect) fieldSelect.value = field;
   paintCards();
   paintCard();
-  paintHolds();
+  paintSetup();
   paintProvisional();
-  const refused = holdRefusal(draft);
-  if (!result && refused) setStatus("");
   paintLegend();
 }
 
@@ -806,54 +930,145 @@ function paintProvisional() {
   const node = byId("#stressProvisional");
   const card = currentCard();
   if (!node) return;
-  const show = !!card?.provisional;
-  node.hidden = !show;
-  node.textContent = show ? PROVISIONAL_SENTENCE : "";
+  const on = !!card?.provisional;
+  node.hidden = !on;
+  node.textContent = on ? PROVISIONAL_SENTENCE : "";
 }
 
-function paintHolds() {
-  const holds = byId("#stressHolds");
-  if (holds) holds.textContent = draft.holds.length ? draft.holds.map(holdLine).join(", ") : "Nothing fixed.";
-  const load = byId("#stressLoadList");
-  const faces = draft.loads[0]?.faces ?? [];
-  if (load) load.textContent = faces.length === 0 ? "No face chosen. The arrow sits on +X." : faces.length === 1 ? "1 face loaded" : `${faces.length} faces loaded`;
-  const build = ["#stressBuildX", "#stressBuildY", "#stressBuildZ"];
-  for (const id of build) {
+/** The hold and load choices, the picked faces, each step's mark, and Run with what it still needs. */
+function paintSetup() {
+  const bed = draft.holds.some((hold) => hold.kind === "bed");
+  const held = draft.holds.find((hold) => hold.kind === "faces")?.faces ?? [];
+  if (bed) holdMode = "bed";
+  else if (held.length > 0) holdMode = "faces";
+  else if (holdMode === "bed") holdMode = null;
+  setPressed("#stressBed", holdMode === "bed");
+  setPressed("#stressHoldFaces", holdMode === "faces");
+  show("#stressBedHint", holdMode === "bed");
+  show("#stressHoldPickRow", holdMode === "faces");
+  setPressed("#stressHoldPick", picking === "hold");
+  show("#stressHoldHint", picking === "hold");
+  paintChips("#stressHoldChips", held, "hold");
+
+  const load = draft.loads[0];
+  const pressure = load?.kind === "pressure";
+  setPressed("#stressLoadForce", !pressure);
+  setPressed("#stressLoadPressure", pressure);
+  const label = byId("#stressForceLabel");
+  if (label) label.textContent = pressure ? "Pressure" : "Force";
+  const unit = byId("#stressForceUnit");
+  if (unit) unit.textContent = pressure ? "MPa" : "N";
+  setPressed("#stressLoadPick", picking === "load");
+  show("#stressLoadHint", picking === "load");
+  paintChips("#stressLoadChips", load?.faces ?? [], "load");
+
+  for (const id of ["#stressBuildX", "#stressBuildY", "#stressBuildZ"]) {
     const input = byId<HTMLInputElement>(id);
     if (input) input.disabled = draft.printer;
   }
+  paintMark("#stressHoldStep", "1", holdRefusal(draft) == null);
+  paintMark("#stressLoadStep", "2", loadGap(draft) == null);
+  paintMark("#stressMaterialStep", "3", currentCard() != null);
+  paintStatus();
 }
 
-function setStatus(text: string) {
+function paintChips(id: string, faces: readonly number[], which: PickTarget) {
+  const list = byId(id);
+  if (!list) return;
+  const shown = list.dataset.faces ?? "";
+  const next = faces.join(" ");
+  if (shown === next && list.childElementCount === faces.length) return;
+  list.dataset.faces = next;
+  list.replaceChildren(
+    ...faces.map((face) => {
+      const item = document.createElement("li");
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "stress-chip";
+      chip.dataset.face = String(face);
+      chip.dataset.chip = which;
+      chip.setAttribute("aria-label", `Remove face ${face + 1}`);
+      chip.append(`Face ${face + 1}`, createElement(X, { width: 12, height: 12, "aria-hidden": "true", class: "ico" }));
+      item.append(chip);
+      return item;
+    }),
+  );
+}
+
+function paintMark(id: string, number: string, done: boolean) {
+  const step = byId(id);
+  const mark = step?.querySelector<HTMLElement>("[data-step-mark]");
+  if (!step || !mark) return;
+  if (step.hasAttribute("data-done") === done && mark.dataset.painted) return;
+  mark.dataset.painted = "1";
+  step.toggleAttribute("data-done", done);
+  if (done) {
+    mark.replaceChildren(createElement(Check, { width: 12, height: 12, "aria-hidden": "true", class: "ico" }));
+    mark.setAttribute("role", "img");
+    mark.setAttribute("aria-label", "Done");
+  } else {
+    mark.textContent = number;
+    mark.removeAttribute("role");
+    mark.removeAttribute("aria-label");
+  }
+}
+
+function setSolving(next: boolean) {
+  solving = next;
+  paintStatus();
+}
+
+function say(text: string) {
+  message = text;
+  paintStatus();
+}
+
+/** The foot under the scroll: a solve in progress, the last message, or the step still missing. */
+function paintStatus() {
+  const gap = setupGap(draft);
   const node = byId("#stressStatus");
-  if (node) node.textContent = text;
+  const text = solving ? SOLVING : message || gap?.text || "";
+  if (node && node.textContent !== text) node.textContent = text;
+  byId("#stressStatus")?.toggleAttribute("data-next", !solving && !message && !!gap);
+  show("#stressProgress", solving);
+  const runButton = byId("#stressRun");
+  if (runButton) runButton.setAttribute("aria-disabled", gap ? "true" : "false");
+}
+
+function paintResult() {
+  show("#stressResult", !!result);
 }
 
 function syncDraw() {
+  paintResult();
+  paintStatus();
   const view = hooks?.view();
-  if (!view || !stressOpen()) {
+  if (!view || !active) {
     view?.setStress(null);
     hideLegend();
     return;
   }
   const box = hooks?.bounds() ?? null;
   const load = draft.loads[0];
-  const arrow = box && load
-    ? {
-        at: arrowSeat(draft, box, (index) => hooks?.facePoint(index) ?? null),
-        dir: load.direction,
-        length: arrowLength(load.magnitude, boxDiagonal(box)),
-      }
+  const seat = arrowSeat(draft, (index) => hooks?.facePoint(index) ?? null);
+  const arrow = box && load && seat
+    ? { at: seat, dir: load.direction, length: arrowLength(load.magnitude, boxDiagonal(box)), fixed: picking != null }
     : null;
-  const draw: StressDraw = result
+  // While faces are picked the solid is shown, so the click lands on its faces and the tint is seen.
+  const drawn = picking ? null : result;
+  const faces = {
+    hold: draft.holds.find((hold) => hold.kind === "faces")?.faces ?? [],
+    load: load?.faces ?? [],
+  };
+  const draw: StressDraw = drawn
     ? {
-        positions: restPositions(result),
-        triangles: Uint32Array.from(result.triangles),
-        colors: vertexColours(result),
-        displacement: displacements(result),
-        scale: result.scale,
+        positions: restPositions(drawn),
+        triangles: Uint32Array.from(drawn.triangles),
+        colors: vertexColours(drawn),
+        displacement: displacements(drawn),
+        scale: drawn.scale,
         arrow,
-        markers: result.margins?.map((margin) => margin.at) ?? [],
+        markers: drawn.margins?.map((margin) => margin.at) ?? [],
       }
     : {
         positions: new Float32Array(),
@@ -862,6 +1077,7 @@ function syncDraw() {
         displacement: new Float32Array(),
         scale: 1,
         arrow,
+        faces,
       };
   view.setStress(draw);
   paintLegend();
@@ -870,7 +1086,7 @@ function syncDraw() {
 function paintLegend() {
   const legend = byId<HTMLElement>("#stressLegend");
   if (!legend) return;
-  if (!result || !stressOpen()) {
+  if (!result || !active || picking) {
     hideLegend();
     return;
   }
@@ -892,7 +1108,7 @@ function paintMargins() {
   const host = byId("#stressMargins");
   if (!host) return;
   host.replaceChildren();
-  if (!result?.margins?.length || !stressOpen()) return;
+  if (!result?.margins?.length || !active) return;
   for (const margin of result.margins) {
     const row = document.createElement("p");
     row.className = "stress-note";
@@ -931,18 +1147,11 @@ function showProbe(at: Vec3, text: string) {
   probe.textContent = text;
 }
 
-function probeTyped() {
-  if (!result) return;
-  const at: Vec3 = [num("#stressProbeX", 0), num("#stressProbeY", 0), num("#stressProbeZ", 0)];
-  const hit = probeNearest(result, at, "rest");
-  showProbe(hit.at, formatProbe(hit.value, result.field));
-}
-
 function bindView() {
   const view = hooks?.view();
   if (!view) return;
   view.onStressProbe((at) => {
-    if (!result) return;
+    if (!result || picking) return;
     const hit = probeNearest(result, at, "deformed");
     showProbe(hit.at, formatProbe(hit.value, result.field));
   });
