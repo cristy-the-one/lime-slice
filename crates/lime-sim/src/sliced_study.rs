@@ -35,11 +35,11 @@ use crate::material::{BeadMaxStress, Governs, MaxStress, Stress};
 use crate::material::{FailureCriterion, MaterialModel};
 use crate::mesh::{boundary_faces, BoundaryFace, Mesh};
 use crate::slice_field::{SliceField, ROLES};
-use crate::sliced::{default_h_xy, SlicedGrid, SlicedMesh, PHI_MIN};
+use crate::sliced::{fitted_h_xy, nodes_for_memory, study_memory_mb, SlicedGrid, SlicedMesh, PHI_MIN};
 use crate::solve_cases;
 use crate::study::{Card, Request, Step};
 use crate::trust::TrustLevel;
-use crate::units::{cross, dot, norm, sub, NODE_CAP};
+use crate::units::{cross, dot, norm, sub};
 
 /// A boundary cell under this fraction is mostly outside the part. Its
 /// stress is the staircase's, so the peaks the margins read skip it.
@@ -213,7 +213,14 @@ pub struct SlicedStudy {
     /// quick look, and is at most `usable`.
     #[serde(default = "yes")]
     pub check_resolution: bool,
+    /// The memory a solve may use, MB. It sets the node budget the cell
+    /// size is fitted to, and whether the second cell size runs.
+    #[serde(default)]
+    pub memory_mb: Option<f64>,
 }
+
+/// The memory a study may use when it names none, MB.
+pub const DEFAULT_MEMORY_MB: f64 = 4096.0;
 
 fn yes() -> bool {
     true
@@ -655,7 +662,12 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
     let to_slice = to_part
         .inverse()
         .ok_or_else(|| SimError::new("The slice field's frame can't be inverted."))?;
-    let h = study.h_xy.unwrap_or_else(|| default_h_xy(field));
+    let memory_mb = study.memory_mb.filter(|m| m.is_finite() && *m > 0.0).unwrap_or(DEFAULT_MEMORY_MB);
+    let node_budget = nodes_for_memory(memory_mb);
+    let h = match study.h_xy {
+        Some(h) => h,
+        None => fitted_h_xy(field, node_budget)?,
+    };
     let first = solve_at(field, study, &cases, h, to_part, to_slice)?;
     let governing = first.governing(study)?;
     let mut resolutions = vec![first.resolution(governing, study)?];
@@ -668,10 +680,12 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
     let estimate = (first.mesh.mesh.nodes.len() as f64 * 2.83) as usize;
     let one_size_why = if !study.check_resolution {
         "The sliced result was solved at one cell size only.".to_string()
-    } else if estimate > NODE_CAP {
+    } else if estimate > node_budget {
         format!(
-            "This part is too large for a second cell size under the node cap, so the sliced result was not checked at {} mm.",
-            format_mm(fine)
+            "A second cell size of {} mm needs about {} MB, past the {} MB budget, so the sliced result was not checked there.",
+            format_mm(fine),
+            study_memory_mb(estimate).round(),
+            memory_mb.round()
         )
     } else {
         let second = solve_at(field, study, &cases, fine, to_part, to_slice)?;

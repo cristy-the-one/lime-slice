@@ -5,7 +5,7 @@ use lime_sim::material::LinearOrthotropic;
 use lime_sim::mesh::{faces_on_plane, grid};
 use lime_sim::recipe::Recipe;
 use lime_sim::slice_field::{Header, LayerRow, Segment, SliceField, FORMAT, ROLES};
-use lime_sim::sliced::{SlicedGrid, PHI_MIN};
+use lime_sim::sliced::{fitted_h_xy, nodes_for_memory, study_memory_mb, SlicedGrid, NODES_PER_SOLID_CELL, PHI_MIN};
 use lime_sim::study::{Request, Step};
 use lime_sim::{solve_request, ElementKind, Hold, Load, Mesh, NodeHold, Solution};
 
@@ -199,4 +199,76 @@ fn a_sliced_request_needs_a_cell_per_element() {
             n - 1
         )
     );
+}
+
+/// A square ring `side` mm across with walls of `beads` beads, `layers`
+/// high: a thin shell that fills a small share of its bounding box.
+fn ring(side: f64, beads: u32, layers: u32) -> SliceField {
+    let mut field = block(side, side, 0);
+    let s = side as f32;
+    for layer in 0..layers {
+        let start = field.segments.len() as u32;
+        let z = (layer + 1) as f32 * LAYER;
+        for n in 0..beads {
+            let o = (n as f32 + 0.5) * WIDTH;
+            let corners = [[o, o], [s - o, o], [s - o, s - o], [o, s - o]];
+            for k in 0..4 {
+                let (a, b) = (corners[k], corners[(k + 1) % 4]);
+                field.segments.push(Segment {
+                    layer,
+                    role: 0,
+                    from: [a[0], a[1], z],
+                    to: [b[0], b[1], z],
+                    width_mm: WIDTH,
+                    bead_height_mm: LAYER,
+                    flow: 1.0,
+                });
+            }
+        }
+        field.header.layers.push(LayerRow {
+            index: layer,
+            z_mm: f64::from(z),
+            height_mm: f64::from(LAYER),
+            bead_start: start,
+            bead_count: field.segments.len() as u32 - start,
+        });
+    }
+    field.header.segment_count = field.segments.len() as u32;
+    field
+}
+
+fn estimated_nodes(field: &SliceField, h: f64) -> f64 {
+    let grid = SlicedGrid::rasterize(field, h).unwrap();
+    grid.fractions().filter(|(_, phi)| *phi >= PHI_MIN).count() as f64 * NODES_PER_SOLID_CELL
+}
+
+#[test]
+fn a_thin_shell_gets_finer_cells_than_its_box_and_stays_in_budget() {
+    let field = ring(200.0, 4, 100);
+    let budget = 100_000;
+    let boxed = (8.0 * 200.0 * 200.0 * 20.0 / budget as f64).cbrt();
+    let fitted = fitted_h_xy(&field, budget).unwrap();
+    assert!(fitted < 0.6 * boxed, "fitted {fitted} vs box {boxed}");
+    let nodes = estimated_nodes(&field, fitted);
+    assert!(nodes <= budget as f64, "{nodes} nodes past {budget}");
+    assert!(nodes >= 0.5 * budget as f64, "{nodes} nodes leave the budget unused");
+}
+
+#[test]
+fn a_solid_block_is_fitted_within_budget_and_never_below_two_beads() {
+    let field = block(40.0, 40.0, 50);
+    let fitted = fitted_h_xy(&field, 5_000).unwrap();
+    assert!(estimated_nodes(&field, fitted) <= 5_000.0);
+    let fine = fitted_h_xy(&block(4.0, 4.0, 5), 1_000_000).unwrap();
+    assert!((fine - 2.0 * f64::from(WIDTH)).abs() < 1e-9, "{fine}");
+}
+
+#[test]
+fn the_memory_budget_follows_the_trial() {
+    assert!((nodes_for_memory(2176.0) as f64 - 73_558.0).abs() < 2.0);
+    assert!((study_memory_mb(136_452) - 4566.0).abs() / 4566.0 < 0.03);
+    let nodes = nodes_for_memory(4096.0);
+    assert!((study_memory_mb(nodes) - 4096.0).abs() < 1.0, "{nodes}");
+    assert!((115_000..=125_000).contains(&nodes), "{nodes}");
+    assert_eq!(nodes_for_memory(1e9), lime_sim::units::NODE_CAP);
 }

@@ -99,6 +99,7 @@ fn study(loads: Vec<SlicedLoad>, constraints: Vec<Constraint>) -> SlicedStudy {
         load_cases: Vec::new(),
         constraints,
         check_resolution: false,
+        memory_mb: None,
     }
 }
 
@@ -269,6 +270,7 @@ fn a_clip_reports_a_stiff_mount_and_a_latch_band_from_one_factorisation() {
                 },
             ],
             check_resolution: false,
+            memory_mb: None,
         },
     )
     .unwrap();

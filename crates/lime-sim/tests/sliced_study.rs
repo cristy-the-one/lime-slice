@@ -161,6 +161,7 @@ fn a_twisted_shaft_carries_t_r_over_j_at_its_surface() {
                 ..Default::default()
             }],
             check_resolution: true,
+            memory_mb: None,
         },
     )
     .unwrap();
@@ -254,6 +255,7 @@ fn a_bar_weak_across_layers_says_so() {
                 },
             ],
             check_resolution: false,
+            memory_mb: None,
         },
     )
     .unwrap();
@@ -348,6 +350,7 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
                 ..Default::default()
             }],
             check_resolution: false,
+            memory_mb: None,
         },
     )
     .unwrap();
@@ -374,6 +377,7 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
             }],
             constraints: Vec::new(),
             check_resolution: false,
+            memory_mb: None,
         },
     )
     .unwrap_err();

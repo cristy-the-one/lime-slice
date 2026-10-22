@@ -308,7 +308,8 @@ Request:
 {
   "request": { /* a SliceRequest for this object alone: the body a one-object slice sends, with its pose and settings */ },
   "study": {
-    "hXy": 1.0,                      // optional; absent picks the largest that fits the node cap
+    "hXy": 1.0,                      // optional; absent fits the finest that the memory budget holds
+    "memoryMb": 4096,                // optional; the memory a solve may use, default 4096
     "card": { /* a Card, as src/sim/cards.ts holds it; "beads" optional */ },
     "holds": [ { "kind": "bed" }, { "kind": "region", "region": { "kind": "faces", "triangles": [[[x,y,z],[x,y,z],[x,y,z]], ...] } } ],
     "loads": [ { "kind": "force", "region": { ... }, "force": [0, 0, -25] },
@@ -649,9 +650,13 @@ moved 33% between the two sizes (0.28 to 0.42 mm), so it is honestly `rough`.
 - **The default cell is far too coarse on thin parts.** `default_h_xy` sizes a dense grid of the bounding box. A
   cover fills a small part of its box, so the rear cover got 4.6 mm cells against ~0.9 mm walls and used a third of
   the node cap. The grid is too stiff, as the Telo cover's 33% move shows. Fix: count the solid cells of a coarse
-  rasterisation and size from those.
+  rasterisation and size from those. **Fixed:** `sliced::fitted_h_xy` rasterises, counts solid cells at 11.3
+  nodes each (measured on both covers), and refines to the finest size that fits the budget, never below two
+  bead widths.
 - **Memory, not the node cap, is the limit.** 73k nodes peaked at 2.2 GB and 136k at 4.6 GB, so the 200k cap would
-  need about 7 GB. The cap should come from a memory budget, or a node cap measured to fit one.
+  need about 7 GB. The cap should come from a memory budget, or a node cap measured to fit one. **Fixed:** a
+  study takes `memoryMb` (default 4096, about 120k nodes by `2176 · (n / 73558)^1.20` MB); the first size is
+  fitted to it and the second runs only if its estimate fits too.
 - **The TypeScript cards carry no bead constants** (`src/sim/cards.ts`). So the desktop and the MCP solve every
   sliced cell as a smear, while the Rust placeholder cards carry a provisional bead section. The trial's notes say
   so.

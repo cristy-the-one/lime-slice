@@ -119,11 +119,72 @@ pub struct SlicedMesh {
 }
 
 /// The cell size that keeps a dense grid of the field's bounding box under
-/// the node cap. A real part fills less of its box, so this errs coarse.
+/// the node cap. A real part fills less of its box, so this errs coarse; it
+/// is where [`fitted_h_xy`] starts.
 pub fn default_h_xy(field: &SliceField) -> f64 {
+    dense_h_xy(field, NODE_CAP)
+}
+
+fn dense_h_xy(field: &SliceField, node_budget: usize) -> f64 {
     let (lo, hi) = bounds(field);
     let volume = (hi[0] - lo[0]).max(0.1) * (hi[1] - lo[1]).max(0.1) * (hi[2] - lo[2]).max(0.1);
-    (NODES_PER_CELL * volume / NODE_CAP as f64).cbrt().max(0.25)
+    (NODES_PER_CELL * volume / node_budget.max(1) as f64).cbrt().max(0.25)
+}
+
+/// TET10 nodes per solid cell of a real part, boundary included: 11.3 on
+/// both covers of the 2026-10-22 trial (73,558 nodes on 6,529 cells, 62,603
+/// on 5,528). Larger than [`NODES_PER_CELL`]'s 8, which holds only deep
+/// inside a bulky part.
+pub const NODES_PER_SOLID_CELL: f64 = 11.3;
+
+/// Peak memory of a sliced study, MB, for a first solve of `nodes`: 2,176 MB
+/// at 73,558 nodes and 4,566 MB at 136,452 on the trial (Windows, faer's
+/// supernodal LDLᵀ, slicing included), which is `2176 · (n / 73558)^1.20`.
+pub fn study_memory_mb(nodes: usize) -> f64 {
+    2176.0 * (nodes as f64 / 73_558.0).powf(MEMORY_EXPONENT)
+}
+
+const MEMORY_EXPONENT: f64 = 1.20;
+
+/// The most nodes a solve may have within `memory_mb`, and never past the cap.
+pub fn nodes_for_memory(memory_mb: f64) -> usize {
+    let nodes = 73_558.0 * (memory_mb.max(1.0) / 2176.0).powf(1.0 / MEMORY_EXPONENT);
+    (nodes as usize).min(NODE_CAP)
+}
+
+/// The finest cell size whose solid cells fit `node_budget`, found by
+/// rasterising and counting: a cover fills a small share of its box, so the
+/// box alone picks cells several times too coarse. Never finer than two
+/// bead widths, which a cell can't resolve below.
+pub fn fitted_h_xy(field: &SliceField, node_budget: usize) -> Result<f64, SimError> {
+    let widest = field
+        .segments
+        .iter()
+        .map(|s| f64::from(s.width_mm))
+        .fold(0.0, f64::max);
+    let floor = (2.0 * widest).max(0.5);
+    let budget = node_budget.max(1) as f64;
+    let mut h = dense_h_xy(field, node_budget).max(floor);
+    let mut best: Option<f64> = None;
+    for _ in 0..8 {
+        let grid = SlicedGrid::rasterize(field, h)?;
+        let solid = grid.fractions().filter(|(_, phi)| *phi >= PHI_MIN).count() as f64;
+        let nodes = solid * NODES_PER_SOLID_CELL;
+        if nodes <= budget {
+            best = Some(best.map_or(h, |b: f64| b.min(h)));
+            if nodes >= 0.8 * budget || h <= floor {
+                break;
+            }
+        }
+        // Between a shell (cells go as h⁻²) and a block (h⁻³).
+        let step = (nodes / budget).powf(1.0 / 2.5).clamp(0.5, 1.6);
+        let next = (h * step).max(floor);
+        if (next - h).abs() < 1e-9 {
+            break;
+        }
+        h = next;
+    }
+    Ok(best.unwrap_or(h))
 }
 
 fn bounds(field: &SliceField) -> ([f64; 3], [f64; 3]) {
