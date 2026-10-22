@@ -451,7 +451,7 @@ export function mountMarkup(root: HTMLElement) {
           <!-- --- S2 sketch --- -->
           <div class="sketch-cards" id="sketchCards" hidden></div>
           <section class="model-history" id="modelHistory" aria-label="History" hidden>
-            <button class="model-history-toggle" id="modelHistoryToggle" type="button" aria-controls="modelHistoryTree" aria-expanded="true"><span>History</span> <span class="model-history-count" id="modelHistoryCount"></span></button>
+            <button class="model-history-toggle" id="modelHistoryToggle" type="button" data-pane-head aria-controls="modelHistoryTree" aria-expanded="true"><span>History</span> <span class="model-history-count" id="modelHistoryCount"></span></button>
             <div class="mh-position" id="modelPosition" role="group" aria-label="Position">
               <button class="mh-position-open" id="modelPositionOpen" type="button" data-tip="Where this object sits in model space. Click to open Place."><span class="mh-position-name">Position</span><span class="mh-position-text" id="modelPositionText"></span></button>
               <button class="mh-position-reset" id="modelPositionReset" type="button" aria-label="Reset position" data-tip="Back to where its file put it" hidden></button>
@@ -461,7 +461,7 @@ export function mountMarkup(root: HTMLElement) {
           <!-- --- A6 Parameters, under History as in Onshape. The header folds it. --- -->
           <section class="model-params" id="modelParams" aria-label="Parameters">
             <div class="model-params-head">
-              <button class="model-params-toggle" id="modelParamsToggle" type="button" aria-controls="modelParamsMain" aria-expanded="true"><span>Parameters</span> <span class="model-history-count" id="modelParamsCount"></span></button>
+              <button class="model-params-toggle" id="modelParamsToggle" type="button" data-pane-head aria-controls="modelParamsMain" aria-expanded="true"><span>Parameters</span> <span class="model-history-count" id="modelParamsCount"></span></button>
               <!-- Shown folded too, so a step out of date is never hidden. -->
               <button class="btn" id="modelParamsRebuild" type="button" hidden>Rebuild</button>
             </div>
@@ -475,7 +475,7 @@ export function mountMarkup(root: HTMLElement) {
           <!-- Stress sits under Parameters. Hidden until the menu opens it. Holds and loads are plate undo, not History. -->
           <section class="model-stress" id="modelStress" aria-label="Stress" hidden>
             <div class="model-params-head">
-              <button class="model-params-toggle" id="modelStressToggle" type="button" aria-controls="modelStressMain" aria-expanded="false"><span>Stress</span></button>
+              <button class="model-params-toggle" id="modelStressToggle" type="button" data-pane-head aria-controls="modelStressMain" aria-expanded="false"><span>Stress</span></button>
             </div>
             <div class="model-params-main" id="modelStressMain" hidden>
               <div class="model-stress-scroll">
