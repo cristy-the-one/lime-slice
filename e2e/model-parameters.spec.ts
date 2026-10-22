@@ -202,7 +202,7 @@ test("Parameters folds on Escape, Add focuses the new row, and the Features menu
   const items = page.locator("#modelFeatureMenu [role=menuitem]");
   await expect(items.first()).toBeFocused();
   await page.keyboard.press("ArrowUp");
-  await expect(page.locator("#modelMenuParameters"), "Up from the first goes round to the last").toBeFocused();
+  await expect(items.last(), "Up from the first goes round to the last").toBeFocused();
   await page.keyboard.press("Home");
   await expect(items.first()).toBeFocused();
   await page.keyboard.press("ArrowDown");
@@ -214,6 +214,9 @@ test("Parameters folds on Escape, Add focuses the new row, and the Features menu
 
   await page.keyboard.press("Enter");
   await page.keyboard.press("End");
+  await expect(items.last()).toBeFocused();
+  // Parameters is no longer the last item (Stress… follows it), so it is reached by name.
+  await page.locator("#modelMenuParameters").focus();
   await page.keyboard.press("Enter");
   await expect(page.locator("#modelParamsMain")).toBeVisible();
   await expect(page.locator("#modelParams th").last()).toHaveText("Order and delete");
