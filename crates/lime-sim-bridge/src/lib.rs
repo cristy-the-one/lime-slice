@@ -16,7 +16,7 @@
 
 use base64::Engine;
 use lime_sim::slice_field::{role_index, Header, LayerRow, Segment, SliceField, ROLES};
-use lime_sim::sliced_study::{draw_surface, run, SlicedStudy};
+use lime_sim::sliced_study::{cell_values, draw_surface, run, SlicedStudy};
 use lime_slice_core::{slice_beads, Job, SliceRequest, Watch};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -180,10 +180,12 @@ pub fn study_value(body: &str, job: Job, watch: &Watch) -> Result<Value, String>
     let parsed: StudyBody =
         serde_json::from_str(body).map_err(|err| format!("The study could not be read. {err}"))?;
     let mut field = slice_field(&parsed.request, job, watch)?;
+    let slice_to_part = field.header.frame;
     let to_model = part_to_model(&parsed.request)?;
-    field.header.frame = multiply(&to_model, &field.header.frame);
+    field.header.frame = multiply(&to_model, &slice_to_part);
     let report = run(&field, &parsed.study).map_err(|err| err.message)?;
     let surface = draw_surface(&report, &parsed.study.card).unwrap_or_default();
+    let cells = cells_json(&report, &parsed.study, &slice_to_part)?;
     Ok(json!({
         "ok": true,
         "report": serde_json::to_value(&report).map_err(|e| e.to_string())?,
@@ -194,5 +196,63 @@ pub fn study_value(body: &str, job: Job, watch: &Watch) -> Result<Value, String>
             "vonMisesB64": floats_b64(surface.von_mises.iter().copied()),
             "safetyB64": floats_b64(surface.safety.iter().copied()),
         },
+        "cells": cells,
     }))
+}
+
+/// The solved grid as a lookup for the Preview: a toolpath point in the
+/// object's part frame (where the slice reply's layers are) goes through
+/// `partToSlice`, then finds its cell from `originXy`, `hXy` and the slabs.
+/// Each cell is `u32 i, u32 j, u32 slab, f32 fraction, f32 bead von Mises,
+/// f32 safety`, little-endian. The part frame doesn't depend on where the
+/// object sits on the plate, so a plate slice's layers find their cells too.
+fn cells_json(
+    report: &lime_sim::sliced_study::SlicedReport,
+    study: &SlicedStudy,
+    slice_to_part: &M4,
+) -> Result<Value, String> {
+    let Some(mesh) = report.mesh.as_ref() else {
+        return Ok(Value::Null);
+    };
+    let part_to_slice = invert(slice_to_part).ok_or("The slice frame can't be inverted.")?;
+    let values = cell_values(report, &study.card);
+    let mut raw = Vec::with_capacity(values.len() * 24);
+    for c in &values {
+        for word in [c.key.0, c.key.1, c.key.2] {
+            raw.extend_from_slice(&word.to_le_bytes());
+        }
+        for v in [c.volume_fraction, c.bead_von_mises, c.safety] {
+            raw.extend_from_slice(&(v as f32).to_le_bytes());
+        }
+    }
+    Ok(json!({
+        "partToSlice": part_to_slice,
+        "originXy": mesh.origin,
+        "hXy": mesh.h_xy,
+        "slabs": mesh.slabs,
+        "count": values.len(),
+        "cellsB64": base64::engine::general_purpose::STANDARD.encode(raw),
+    }))
+}
+
+/// The inverse of an affine map whose last row is `[0, 0, 0, 1]`.
+fn invert(m: &M4) -> Option<M4> {
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let mut out = identity();
+    for i in 0..3 {
+        for j in 0..3 {
+            let (r1, r2) = ((j + 1) % 3, (j + 2) % 3);
+            let (c1, c2) = ((i + 1) % 3, (i + 2) % 3);
+            out[i][j] = (m[r1][c1] * m[r2][c2] - m[r1][c2] * m[r2][c1]) / det;
+        }
+    }
+    for i in 0..3 {
+        out[i][3] = -(0..3).map(|k| out[i][k] * m[k][3]).sum::<f64>();
+    }
+    Some(out)
 }

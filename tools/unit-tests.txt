@@ -107,6 +107,7 @@ src/sim/study.test.ts
 src/sim/bridge-body.test.ts
 src/sim/margin-text.test.ts
 src/sim/study-mesh.test.ts
+src/sim/stress-cells.test.ts
 mcp/numbers.test.ts
 mcp/render.test.ts
 mcp/native-load.test.ts

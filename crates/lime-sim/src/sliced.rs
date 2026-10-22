@@ -109,6 +109,10 @@ pub struct SlicedMesh {
     /// Whether each element's cell has a face on the part's surface: a
     /// neighbour across one of its six faces is void.
     pub boundary: Vec<bool>,
+    /// The grid's corner in the layer plane and its slabs, bottom first, so
+    /// a point in the slice frame can find its cell.
+    pub origin: [f64; 2],
+    pub slabs: Vec<[f64; 2]>,
     pub h_xy: f64,
     /// The polymer volume the solid cells hold, mm³: what the solve weighs.
     pub solid_deposited_mm3: f64,
@@ -400,6 +404,8 @@ impl SlicedGrid {
             cells,
             cell_of,
             boundary,
+            origin: self.origin,
+            slabs: self.slabs.clone(),
             h_xy: h,
             solid_deposited_mm3: solid_deposited,
         })
