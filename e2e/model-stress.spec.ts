@@ -54,7 +54,7 @@ function mockReply(): string {
       representation: "sliced",
       trust: "usable",
       notes: ["Solved at one cell size."],
-      margins: [{ kind: "minSafetyFactor", value: 2.5, margin: 1.5, met: true, note: "above the band", hotSpot: { at: [1, 2, 3], role: "outer", governs: "across-layers" } }],
+      margins: [{ kind: "minSafetyFactor", limit: 1, value: 2.5, margin: 1.5, met: true, note: "above the band", hotSpot: { at: [1, 2, 3], role: "outer", governs: "across-layers" } }],
       maxDisplacementMm: 0.1,
       minSafetyFactor: 2.5,
       massG: 1,
@@ -137,10 +137,13 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await expect(page.locator("#stressLegend")).toContainText("usable");
   await expect(page.locator("#stressLegend")).toContainText("Solved at one cell size.");
   await expect(page.locator("#model")).toHaveAttribute("data-stress-hotspot", /1\.000,2\.000,3\.000/);
-  await expect(page.locator("#stressMargins")).toContainText("minSafetyFactor");
+  await expect(page.locator("#stressMargins")).toContainText("Safety factor ≥ 1.0");
   await expect(page.locator("#stressMargins")).toContainText("2.50");
+  await expect(page.locator("#stressMargins")).toContainText("(margin 1.50)");
   await expect(page.locator("#stressMargins")).toContainText("met");
   await expect(page.locator("#stressMargins")).toContainText("above the band");
+  await expect(page.locator("#stressMargins")).toContainText("across-layers");
+  await expect(page.locator("#stressMargins")).toContainText("workplane_print_up");
   await page.locator("#stressProbeX").fill("0");
   await page.locator("#stressProbeY").fill("0");
   await page.locator("#stressProbeZ").fill("0");

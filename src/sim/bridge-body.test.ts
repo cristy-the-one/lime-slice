@@ -92,7 +92,7 @@ const reply = JSON.stringify({
     representation: "sliced",
     trust: "usable",
     notes: ["Solved at one cell size."],
-    margins: [{ kind: "minSafetyFactor", value: 2.5, margin: 1.5, met: true, hotSpot: { at: [1, 2, 3] } }],
+    margins: [{ kind: "minSafetyFactor", limit: 1, value: 2.5, margin: 1.5, met: true, hotSpot: { at: [1, 2, 3], role: "outer", governs: "across-layers" } }],
     maxDisplacementMm: 0.01,
     minSafetyFactor: 2.5,
     massG: 1.2,
@@ -112,6 +112,10 @@ if ("error" in drawn) {
   check("three corners are drawn", drawn.nodes.length === 3 && drawn.triangles.length === 3);
   check("the field is the corner's von Mises", drawn.nodes[2]!.vonMises === 9);
   check("the hot spot is kept", drawn.margins?.[0]?.at[0] === 1 && drawn.margins[0].at[2] === 3);
+  check(
+    "the limit, the role, and governs come back",
+    drawn.margins?.[0]?.limit === 1 && drawn.margins[0].role === "outer" && drawn.margins[0].governs === "across-layers",
+  );
   check("the note and the trust word come back", drawn.trust === "usable" && drawn.notes?.[0] === "Solved at one cell size.");
   check("it is marked as sliced", drawn.representation === "sliced");
   const safety = surfaceResult(reply, "safety");
@@ -121,6 +125,11 @@ if ("error" in drawn) {
     check("safety paints the low value hotter", (colours[6] ?? 0) > (colours[0] ?? 1));
   }
 }
+
+const unknownTrust = JSON.parse(reply) as { report: { trust: string } };
+unknownTrust.report.trust = "nope";
+const rough = surfaceResult(JSON.stringify(unknownTrust), "vonMises");
+check("an unknown trust is rough", !("error" in rough) && rough.trust === "rough", "error" in rough ? rough.error : rough.trust);
 
 const bad = surfaceResult(JSON.stringify({ ok: false, reason: "The slice has no beads that carry load." }), "vonMises");
 check("a refusal is the bridge's sentence", "error" in bad && bad.error === "The slice has no beads that carry load.");

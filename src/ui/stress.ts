@@ -9,6 +9,7 @@ import { buildStudyBody, surfaceResult, type FaceTriangles, type StudyTarget } f
 import type { MaterialCard } from "../sim/cards.ts";
 import { solveStudy } from "../sim/desktop-solve.ts";
 import { AS_SLICED, LABEL, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
+import { governsSentence, marginSentence } from "../sim/margin-text.ts";
 import {
   arrowLength,
   arrowSeat,
@@ -30,7 +31,6 @@ import {
   type ConstraintLimits,
   type ObjectStudy,
   type SimPatternName,
-  type SlicedMargin,
   type StressField,
   type StudyBox,
   type Vec3,
@@ -886,15 +886,6 @@ function paintLegend() {
   paintMargins();
 }
 
-function marginNumber(value: number): string {
-  return Math.abs(value) >= 100 ? value.toFixed(1) : value.toPrecision(3);
-}
-
-function marginLine(margin: SlicedMargin): string {
-  const note = margin.note ? ` ${margin.note}` : "";
-  return `${margin.kind}: ${marginNumber(margin.value)}, margin ${marginNumber(margin.margin)}, ${margin.met ? "met" : "not met"}${note}`;
-}
-
 function paintMargins() {
   const host = byId("#stressMargins");
   if (!host) return;
@@ -904,8 +895,14 @@ function paintMargins() {
     const row = document.createElement("p");
     row.className = "stress-note";
     row.dataset.margin = margin.kind;
-    row.textContent = marginLine(margin);
+    row.textContent = marginSentence(margin);
     host.append(row);
+    if (!margin.governs) continue;
+    const advice = document.createElement("p");
+    advice.className = "stress-note";
+    advice.dataset.governs = margin.governs;
+    advice.textContent = governsSentence(margin.governs, margin.role);
+    host.append(advice);
   }
 }
 

@@ -166,7 +166,7 @@ function vec3(value: unknown): Vec3 | null {
 
 function trustOf(value: unknown): CannedResult["trust"] {
   if (value === "rough" || value === "usable" || value === "converged") return value;
-  return "usable";
+  return "rough";
 }
 
 function marginsOf(value: unknown): SlicedMargin[] {
@@ -178,12 +178,17 @@ function marginsOf(value: unknown): SlicedMargin[] {
     const spot = row.hotSpot && typeof row.hotSpot === "object" ? (row.hotSpot as Record<string, unknown>) : null;
     const at = spot ? vec3(spot.at) : null;
     if (typeof row.kind !== "string" || !finite(row.value) || !finite(row.margin) || typeof row.met !== "boolean" || !at) continue;
+    const governs = spot && typeof spot.governs === "string" && spot.governs ? spot.governs : undefined;
+    const role = spot && typeof spot.role === "string" && spot.role ? spot.role : undefined;
     out.push({
       kind: row.kind,
       value: row.value,
       margin: row.margin,
       met: row.met,
       ...(typeof row.note === "string" && row.note ? { note: row.note } : {}),
+      ...(finite(row.limit) ? { limit: row.limit } : {}),
+      ...(role ? { role } : {}),
+      ...(governs ? { governs } : {}),
       at,
     });
   }

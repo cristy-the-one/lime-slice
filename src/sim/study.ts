@@ -95,6 +95,12 @@ export interface SlicedMargin {
   margin: number;
   met: boolean;
   note?: string;
+  /** The target the margin is measured against, when the reply sent one. */
+  limit?: number;
+  /** What the hot spot says is carrying the load. */
+  role?: string;
+  /** What the hot spot says to change. */
+  governs?: string;
   at: Vec3;
 }
 
