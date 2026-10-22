@@ -1716,6 +1716,7 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         object: { type: "string", description: "Handle." },
         includeSlicerMass: { type: "boolean", description: "Grams from a finished slice." },
+        checkResolution: { type: "boolean", description: "A second cell size. Default true." },
       },
     },
   },

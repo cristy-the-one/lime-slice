@@ -40,6 +40,7 @@ const session = new Session(engine);
 const guide = await session.call("guide", { topic: "sim" });
 const guideText = String(guide.text ?? "");
 check("the sim guide runs the beam sequence", guide.ok === true && guideText.includes("sim_setup") && guideText.includes("sim_run") && guideText.includes("sim_sweep") && guideText.includes("includePrintTime defaults to false"));
+check("a sliced part changes the setting, then sim_run", guideText.includes("For a sliced part, change the setting, then sim_run."));
 check("the guide says rough is not a reason to change the solid", guideText.includes("not a reason to change the solid") && guideText.includes("None of the three is a promise"));
 check(
   "the guide maps governs to a change",
@@ -135,7 +136,7 @@ const plainSetup = await plain.call("sim_setup", {
   loads: [{ kind: "force", faces: [1], magnitude: 1, direction: [0, 0, -1] }],
 });
 check("a study can be recorded on a part with no beam", plainSetup.ok === true, String(plainSetup.reason ?? ""));
-const plainRun = await plain.call("sim_run", { object: solid.object });
+const plainRun = await plain.call("sim_run", { object: solid.object, checkResolution: false });
 check("a solid with a printer solves as sliced", plainRun.ok === false && plainRun.reason === SOLVER_STAND_IN, String(plainRun.reason));
 const smearSetup = await plain.call("sim_setup", {
   object: solid.object,

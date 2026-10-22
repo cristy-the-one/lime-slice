@@ -1,9 +1,16 @@
 /**
  * SR-12. A sliced box is solved by the engine's simStudy, in process.
  * The generated-beam smear stays on the lime-sim binary, covered by mcp/sim.test.ts.
+ * SR-21. checkResolution defaults to true. An imported STL with a printer and a
+ * turn is sliced without asking for representation, and the hot spot stays in
+ * the part frame.
  */
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { encodeStl } from "../src/mesh-place.ts";
 import { LABEL } from "../src/sim/label.ts";
 import { STUDY_MESH_REFUSAL } from "../src/sim/study-mesh.ts";
 
@@ -23,7 +30,31 @@ function check(name: string, ok: boolean, detail = "") {
 const root = fileURLToPath(new URL("..", import.meta.url));
 const native = loadNativeEngine(root);
 const engine = fakeEngine();
-engine.simStudy = (body: string) => native.simStudy(body);
+let defaultWasTrue = false;
+let lastRotation: number[] | null = null;
+engine.simStudy = (body: string) => {
+  const parsed = JSON.parse(body) as {
+    request?: { pose?: { rotation?: number[] }; objects?: { pose?: { rotation?: number[] } }[] };
+    study?: { checkResolution?: boolean };
+  };
+  const pose = parsed.request?.objects?.[0]?.pose ?? parsed.request?.pose;
+  if (pose?.rotation) lastRotation = pose.rotation;
+  if (parsed.study?.checkResolution === true) {
+    defaultWasTrue = true;
+    return JSON.stringify({
+      ok: true,
+      report: {
+        trust: "rough",
+        notes: [],
+        margins: [],
+        maxDisplacementMm: 0,
+        minSafetyFactor: 1,
+        massG: 0,
+      },
+    });
+  }
+  return native.simStudy(body);
+};
 
 const session = new Session(engine);
 const setup = await session.call("sim_setup", {
@@ -40,7 +71,7 @@ check("a sliced box is set up", setup.ok === true && (setup.study as { represent
 const printed = await session.call("settings_set", { object: setup.object, values: { infill: 1, walls: 2 } });
 check("the box is printed solid", printed.ok === true, String(printed.reason ?? ""));
 
-const run = await session.call("sim_run", { object: setup.object });
+const run = await session.call("sim_run", { object: setup.object, checkResolution: false });
 const margins = run.margins as { kind?: string; hotSpot?: { at?: number[]; role?: string; governs?: string } }[] | undefined;
 const spot = margins?.[0]?.hotSpot;
 check(
@@ -83,7 +114,7 @@ const scaledSetup = await scaledSession.call("sim_setup", {
   constraints: [{ kind: "minSafetyFactor", value: 1 }],
 });
 check("a scaled box is set up", scaledSetup.ok === true, String(scaledSetup.reason ?? ""));
-const scaledRun = await scaledSession.call("sim_run", { object: scaledObject });
+const scaledRun = await scaledSession.call("sim_run", { object: scaledObject, checkResolution: false });
 const scaledSpot = (scaledRun.margins as { hotSpot?: { at?: number[] } }[] | undefined)?.[0]?.hotSpot?.at;
 const scaledMass = typeof scaledRun.massG === "number" ? scaledRun.massG : 0;
 check(
@@ -115,7 +146,7 @@ const editSetup = await editSession.call("sim_setup", {
   card: "inhouse-petg",
   constraints: [{ kind: "minSafetyFactor", value: 1 }],
 });
-const editRun = await editSession.call("sim_run", { object: editObject });
+const editRun = await editSession.call("sim_run", { object: editObject, checkResolution: false });
 const editSpot = (editRun.margins as { hotSpot?: { at?: number[] } }[] | undefined)?.[0]?.hotSpot?.at;
 const editMass = typeof editRun.massG === "number" ? editRun.massG : 0;
 const solvedEdited = editRun.ok === true && Array.isArray(editSpot) && inside(editSpot, [-8, -3, 0], [8, 3, 4]) && editMass > 0.35;
@@ -124,6 +155,88 @@ check(
   solvedEdited ? "an uncommitted size edit solves the edited solid" : "an uncommitted size edit is refused",
   editSetup.ok === true && (solvedEdited || refusedEdited),
   JSON.stringify(editRun.reason ?? { spot: editSpot, mass: editRun.massG, setup: editSetup.reason }),
+);
+
+const flagged = await session.call("sim_run", { object: setup.object });
+check(
+  "checkResolution defaults to true",
+  flagged.ok === true && defaultWasTrue === true && flagged.representation === "sliced",
+  JSON.stringify(flagged.reason ?? { defaultWasTrue, representation: flagged.representation }),
+);
+
+/** A closed box, the same winding the stand-in uses, so a real slice accepts it. */
+function boxPositions(min: number[], max: number[]): Float32Array {
+  const [x0, y0, z0] = min;
+  const [x1, y1, z1] = max;
+  const c = [
+    [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+    [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
+  ];
+  const quads = [
+    [4, 5, 6, 7],
+    [0, 3, 2, 1],
+    [1, 2, 6, 5],
+    [0, 4, 7, 3],
+    [3, 7, 6, 2],
+    [0, 1, 5, 4],
+  ];
+  const positions = new Float32Array(quads.length * 18);
+  quads.forEach((quad, face) => {
+    const corner = (index: number) => c[quad[index]!]!;
+    const write = (tri: number, a: number[], b: number[], d: number[]) => {
+      positions.set([...a, ...b, ...d], (face * 2 + tri) * 9);
+    };
+    write(0, corner(0), corner(1), corner(2));
+    write(1, corner(0), corner(2), corner(3));
+  });
+  return positions;
+}
+
+const stlMin = [-4, -3, 0];
+const stlMax = [4, 3, 4];
+const stlPositions = boxPositions(stlMin, stlMax);
+const stlDir = mkdtempSync(join(tmpdir(), "lime-sim-stl-"));
+const stlPath = join(stlDir, "turned-box.stl");
+writeFileSync(stlPath, Buffer.from(encodeStl(stlPositions, "turned-box")));
+
+const stlSession = new Session(engine);
+check("the session already has a printer", stlSession.library.printerId.length > 0, stlSession.library.printerId);
+const imported = await stlSession.call("mesh_import", { path: stlPath });
+const stlObject = String(imported.object ?? "");
+check("an STL imports", imported.ok === true && stlObject.length > 0, String(imported.reason ?? ""));
+const turned = await stlSession.call("object_place", { object: stlObject, turn: { axis: "z", degrees: 90 } });
+const orient = turned.orient as number[] | undefined;
+const identity = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+check(
+  "the STL pose is not identity",
+  turned.ok === true && Array.isArray(orient) && orient.length === 9 && orient.some((value, index) => Math.abs(value - identity[index]!) > 1e-6),
+  JSON.stringify(turned.reason ?? orient),
+);
+await stlSession.call("settings_set", { object: stlObject, values: { infill: 1, walls: 2 } });
+const stlSetup = await stlSession.call("sim_setup", {
+  object: stlObject,
+  hMm: 4,
+  fixtures: [{ kind: "bed" }],
+  loads: [{ kind: "force", faces: [], magnitude: 2, direction: [0, 0, 1] }],
+  card: "inhouse-petg",
+  constraints: [{ kind: "minSafetyFactor", value: 1 }],
+});
+check(
+  "an STL with a printer defaults to sliced",
+  stlSetup.ok === true && (stlSetup.study as { representation?: string } | undefined)?.representation === undefined,
+  String(stlSetup.reason ?? ""),
+);
+const stlRun = await stlSession.call("sim_run", { object: stlObject, checkResolution: false });
+const stlSpot = (stlRun.margins as { hotSpot?: { at?: number[] } }[] | undefined)?.[0]?.hotSpot?.at;
+const turnedAway = lastRotation !== null && lastRotation.some((value, index) => Math.abs(value - identity[index]!) > 1e-6);
+check(
+  "a turned STL keeps the hot spot in the part frame",
+  stlRun.ok === true
+    && stlRun.representation === "sliced"
+    && Array.isArray(stlSpot)
+    && inside(stlSpot, stlMin, stlMax)
+    && turnedAway,
+  JSON.stringify(stlRun.reason ?? { spot: stlSpot, rotation: lastRotation, keys: Object.keys(stlRun) }),
 );
 
 if (failed) {

@@ -6306,7 +6306,7 @@ export class Session {
     const saved = obj.sim;
     if (!saved) return { ok: false, reason: "Set up a study first." };
     const reply = this.representationFor(obj, saved) === "sliced"
-      ? await this.solveSliced(obj, saved)
+      ? await this.solveSliced(obj, saved, input.checkResolution !== false)
       : this.solveCopy(obj, undefined, "run");
     if (reply.ok === true && input.includeSlicerMass === true) {
       const estimate = this.freshEstimate();
@@ -6431,7 +6431,7 @@ export class Session {
     return { kind: "faces", triangles };
   }
 
-  private async solveSliced(obj: PlateObject, saved: ObjectStudy): Promise<Record<string, unknown>> {
+  private async solveSliced(obj: PlateObject, saved: ObjectStudy, checkResolution = true): Promise<Record<string, unknown>> {
     const study = cloneStudy(saved);
     if (study.printer) study.buildAxis = this.printerBuildAxis();
     if (study.holds.some((hold) => hold.kind === "plane")) return { ok: false, reason: "A plane hold is not on a sliced study. Hold the bed or faces." };
@@ -6496,7 +6496,7 @@ export class Session {
         holds,
         loads,
         ...(study.constraints && study.constraints.length > 0 ? { constraints: study.constraints } : {}),
-        checkResolution: false,
+        checkResolution,
       },
     });
     let text: string;
