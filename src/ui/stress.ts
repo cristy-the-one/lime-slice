@@ -8,12 +8,13 @@ import type { ModelView, StressDraw } from "../model-view.ts";
 import { buildStudyBody, surfaceResult, type FaceTriangles } from "../sim/bridge-body.ts";
 import type { MaterialCard } from "../sim/cards.ts";
 import { solveStudy } from "../sim/desktop-solve.ts";
-import { AS_SLICED, LABEL, NOT_WIRED, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
+import { AS_SLICED, LABEL, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
 import {
   arrowLength,
   arrowSeat,
   boxDiagonal,
   cloneStudy,
+  constraintVerdict,
   defaultScale,
   displacements,
   emptyStudy,
@@ -26,7 +27,9 @@ import {
   restPositions,
   vertexColours,
   type CannedResult,
+  type ConstraintLimits,
   type ObjectStudy,
+  type SimPatternName,
   type SlicedMargin,
   type StressField,
   type StudyBox,
@@ -72,6 +75,8 @@ let cardTouched = false;
 /** Bumped by Cancel and by a newer Run, so a late reply cannot replace the result. */
 let solveGeneration = 0;
 let solving = false;
+/** True while a sweep is the solve Cancel should abandon. */
+let sweeping = false;
 
 function byId<T extends HTMLElement>(id: string): T | null {
   return document.querySelector<T>(id);
@@ -345,12 +350,22 @@ function addFaces(indexes: number[], which: "hold" | "load") {
 }
 
 const SWEEP_REFUSAL = "A sweep takes up to 16 variants.";
+const RESLICE_STATUS = "Each variant is a slice plus a solve.";
+const LINEAR_STATUS = "Load scale uses the base result. The solve is linear.";
 
 interface PanelVariant {
   loadScale: number;
   walls?: number;
   infill?: number;
-  pattern?: string;
+  pattern?: SimPatternName;
+}
+
+interface SweepRow {
+  label: string;
+  deflection: number | null;
+  safety: number | null;
+  met: boolean;
+  reason: string;
 }
 
 let variants: PanelVariant[] = [];
@@ -365,6 +380,74 @@ function readVariant(): PanelVariant {
   if (infillText !== "") variant.infill = Number(infillText);
   if (pattern === "lines" || pattern === "grid" || pattern === "gyroid" || pattern === "lightning") variant.pattern = pattern;
   return variant;
+}
+
+function variantReslices(variant: PanelVariant): boolean {
+  return variant.walls !== undefined || variant.infill !== undefined || variant.pattern !== undefined;
+}
+
+function sweepLimits(): ConstraintLimits {
+  const limits: ConstraintLimits = {};
+  const deflection = byId<HTMLInputElement>("#stressMaxDeflection")?.value.trim() ?? "";
+  const safety = byId<HTMLInputElement>("#stressMinSafety")?.value.trim() ?? "";
+  if (deflection !== "") {
+    const value = Number(deflection);
+    if (Number.isFinite(value)) limits.maxDeflectionMm = value;
+  }
+  if (safety !== "") {
+    const value = Number(safety);
+    if (Number.isFinite(value)) limits.minSafetyFactor = value;
+  }
+  return limits;
+}
+
+function paintSweep(rows: SweepRow[]) {
+  const table = byId<HTMLElement>("#stressSweepTable");
+  const body = byId("#stressSweepBody");
+  if (!table || !body) return;
+  body.replaceChildren(
+    ...rows.map((row) => {
+      const tr = document.createElement("tr");
+      const cells = [
+        row.label,
+        row.deflection == null ? "" : row.deflection.toFixed(3),
+        row.safety == null ? "not defined" : row.safety.toFixed(2),
+        row.met ? "met" : "not met",
+        row.reason,
+      ];
+      for (const text of cells) {
+        const td = document.createElement("td");
+        td.textContent = text;
+        tr.append(td);
+      }
+      return tr;
+    }),
+  );
+  table.hidden = false;
+}
+
+function verdictRow(
+  label: string,
+  numbers: { maxDisplacementMm: number; minSafetyFactor: number | null; massG: number; trust: CannedResult["trust"] },
+): SweepRow {
+  const card = currentCard();
+  const verdict = constraintVerdict(
+    {
+      provisional: card?.provisional !== false,
+      trust: numbers.trust,
+      maxDisplacementMm: numbers.maxDisplacementMm,
+      minSafetyFactor: numbers.minSafetyFactor,
+      massG: numbers.massG,
+    },
+    sweepLimits(),
+  );
+  return {
+    label,
+    deflection: numbers.maxDisplacementMm,
+    safety: numbers.minSafetyFactor,
+    met: verdict.met,
+    reason: verdict.reason,
+  };
 }
 
 function variantLine(variant: PanelVariant): string {
@@ -391,11 +474,121 @@ function addVariant() {
   if (status) status.textContent = "";
 }
 
-function runSweep() {
+function hideSweep(text: string) {
   const status = byId("#stressSweepStatus");
   const table = byId<HTMLElement>("#stressSweepTable");
   if (table) table.hidden = true;
-  if (status) status.textContent = NOT_WIRED;
+  if (status) status.textContent = text;
+}
+
+/** The open result, or one base solve. A canned fixture is not scaled. */
+async function baseResult(token: number): Promise<CannedResult | { error: string } | "cancelled"> {
+  if (result?.representation === "sliced") return result;
+  const body = studyText();
+  if (typeof body !== "string") return { error: body.reason };
+  let text: string;
+  try {
+    text = await solveStudy(body);
+  } catch (err) {
+    if (token !== solveGeneration) return "cancelled";
+    return { error: err instanceof Error && err.message ? err.message : "The stress solve did not finish." };
+  }
+  if (token !== solveGeneration) return "cancelled";
+  return surfaceResult(text, field, scaleOverride);
+}
+
+async function runSweep() {
+  const status = byId("#stressSweepStatus");
+  if (variants.length === 0) {
+    hideSweep("Add a variant first.");
+    return;
+  }
+  readForm();
+  const refused = holdRefusal(draft);
+  if (refused) {
+    hideSweep(refused);
+    return;
+  }
+  const reslice = variants.some(variantReslices);
+  const token = ++solveGeneration;
+  if (!solving) previous = result;
+  solving = true;
+  sweeping = true;
+  if (status) status.textContent = reslice ? RESLICE_STATUS : LINEAR_STATUS;
+
+  let base: CannedResult | null = result?.representation === "sliced" ? result : null;
+  if (variants.some((variant) => !variantReslices(variant))) {
+    const solved = await baseResult(token);
+    if (solved === "cancelled" || token !== solveGeneration) return;
+    if ("error" in solved) {
+      solving = false;
+      sweeping = false;
+      result = previous;
+      previous = null;
+      hideSweep(solved.error);
+      syncDraw();
+      return;
+    }
+    base = solved;
+    if (result?.representation !== "sliced") {
+      result = solved;
+      syncDraw();
+    }
+  }
+
+  const rows: SweepRow[] = [];
+  for (const variant of variants) {
+    if (token !== solveGeneration) return;
+    if (!variantReslices(variant)) {
+      if (!base) continue;
+      const scale = variant.loadScale > 0 ? variant.loadScale : 1;
+      const safety = base.minSafetyFactor;
+      rows.push(verdictRow(variantLine(variant), {
+        maxDisplacementMm: (base.maxDisplacementMm ?? 0) * scale,
+        minSafetyFactor: safety == null ? null : safety / scale,
+        massG: base.massG ?? 0,
+        trust: base.trust,
+      }));
+      continue;
+    }
+    const text = studyText({
+      walls: variant.walls,
+      infill: variant.infill,
+      pattern: variant.pattern,
+      loadScale: variant.loadScale,
+    });
+    if (typeof text !== "string") {
+      rows.push({ label: variantLine(variant), deflection: null, safety: null, met: false, reason: text.reason });
+      continue;
+    }
+    let reply: string;
+    try {
+      reply = await solveStudy(text);
+    } catch (err) {
+      if (token !== solveGeneration) return;
+      const reason = err instanceof Error && err.message ? err.message : "The stress solve did not finish.";
+      rows.push({ label: variantLine(variant), deflection: null, safety: null, met: false, reason });
+      continue;
+    }
+    if (token !== solveGeneration) return;
+    const parsed = surfaceResult(reply, field, scaleOverride);
+    if ("error" in parsed) {
+      rows.push({ label: variantLine(variant), deflection: null, safety: null, met: false, reason: parsed.error });
+      continue;
+    }
+    rows.push(verdictRow(variantLine(variant), {
+      maxDisplacementMm: parsed.maxDisplacementMm ?? 0,
+      minSafetyFactor: parsed.minSafetyFactor ?? null,
+      massG: parsed.massG ?? 0,
+      trust: parsed.trust,
+    }));
+  }
+  if (token !== solveGeneration) return;
+  solving = false;
+  sweeping = false;
+  previous = null;
+  paintSweep(rows);
+  if (status) status.textContent = reslice ? RESLICE_STATUS : LINEAR_STATUS;
 }
 
 function studyText(patch?: { walls?: number; infill?: number; pattern?: "lines" | "grid" | "gyroid" | "lightning"; loadScale?: number }): string | { reason: string } {
@@ -429,6 +622,7 @@ async function run() {
   const token = ++solveGeneration;
   if (!solving) previous = result;
   solving = true;
+  sweeping = false;
   setStatus("Solving");
   let text: string;
   try {
@@ -461,11 +655,17 @@ async function run() {
 
 function cancelSolve() {
   if (!solving) return;
+  const wasSweep = sweeping;
   solveGeneration += 1;
   solving = false;
+  sweeping = false;
   result = previous;
   previous = null;
   setStatus("");
+  if (wasSweep) {
+    const sweepStatus = byId("#stressSweepStatus");
+    if (sweepStatus) sweepStatus.textContent = "";
+  }
   syncDraw();
   paintLegend();
 }

@@ -1,7 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
 import { provisionalCards } from "../src/sim/cards.ts";
-import { NOT_WIRED } from "../src/sim/label.ts";
 import { cannedBeam, emptyStudy, type CannedResult } from "../src/sim/study.ts";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type MockSolid } from "./model-tree-mock";
@@ -70,7 +69,12 @@ function mockReply(): string {
 
 async function openModel(page: Page, reply = mockReply()) {
   await page.addInitScript((text: string) => {
-    (window as unknown as { __limeSimStudy?: (body: string) => string }).__limeSimStudy = () => text;
+    const bag = window as unknown as { __limeSimStudy?: (body: string) => string; __limeSimBodies?: string[] };
+    bag.__limeSimBodies = [];
+    bag.__limeSimStudy = (body: string) => {
+      bag.__limeSimBodies?.push(body);
+      return text;
+    };
   }, reply);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
@@ -143,9 +147,29 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-sliced.png" });
   await page.locator("#stressVariantScale").fill("2");
   await page.locator("#stressVariantAdd").click();
+  await page.locator("#stressVariantWalls").fill("7");
+  await page.locator("#stressVariantScale").fill("1");
+  await page.locator("#stressVariantAdd").click();
   await page.locator("#stressSweep").click();
-  await expect(page.locator("#stressSweepStatus")).toHaveText(NOT_WIRED);
-  await expect(page.locator("#stressSweepTable")).toBeHidden();
+  await expect(page.locator("#stressSweepStatus")).toHaveText("Each variant is a slice plus a solve.");
+  await expect(page.locator("#stressSweepTable")).toBeVisible();
+  await expect(page.locator("#stressSweepBody tr")).toHaveCount(2);
+  await expect(page.locator("#stressSweepBody tr").nth(0)).toContainText("0.200");
+  await expect(page.locator("#stressSweepBody tr").nth(0)).toContainText("1.25");
+  await expect(page.locator("#stressSweepBody tr").nth(0)).toContainText("not met");
+  await expect(page.locator("#stressSweepBody tr").nth(0)).toContainText("Provisional card, not a measurement.");
+  await expect(page.locator("#stressSweepBody tr").nth(1)).toContainText("7 walls");
+  await expect(page.locator("#stressSweepBody tr").nth(1)).toContainText("0.100");
+  await expect(page.locator("#stressSweepBody tr").nth(1)).toContainText("2.50");
+  const bodies = await page.evaluate(() => (window as unknown as { __limeSimBodies?: string[] }).__limeSimBodies ?? []);
+  const walls = bodies.map((text) => {
+    const parsed = JSON.parse(text) as { request?: { walls?: number } };
+    return parsed.request?.walls;
+  });
+  expect(bodies).toHaveLength(2);
+  expect(walls.filter((value) => value === 7)).toHaveLength(1);
+  await page.locator("#stressVariants").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "/opt/cursor/artifacts/stress-sweep.png" });
 
   const study = emptyStudy();
   study.holds = [{ kind: "bed", faces: [] }];
@@ -160,8 +184,6 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await expect(page.locator("#stressLegend")).toContainText("In-house estimate");
   await expect(page.locator("#stressLegend")).toContainText("rough");
   await expect(page.locator("#stressLegend")).toContainText("Provisional card, not a measurement.");
-  await page.locator("#stressVariants").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: "/opt/cursor/artifacts/stress-sweep.png" });
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-view.png" });
 
   const canvas = page.locator("#model");
