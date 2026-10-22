@@ -628,3 +628,48 @@ passes the whole list.
   - run it in the `mcp` job, next to `mcp/sim-sliced.test.ts`, after "Release CLI and in-process engine".
 - **Accept when:** `npm run test:unit` passes in a checkout with no `target/` directory, and the `mcp` job lists the
   test.
+
+## Validation of the sliced study (Claude, 2026-10-22)
+
+### Real parts
+
+Two company STEP parts were read by path only, and nothing derived from them was kept. Each had a 10 mm end held, 20 N
+on the other end, the provisional PETG card, and the default cell size, through `lime_sim_bridge::study_json`.
+
+| Part | Size, mm | Cell | Nodes, first size | Second size | Study time | Peak memory | Mass, solved and sliced |
+|---|---|---|---|---|---|---|---|
+| Rear cover | 311 long | 4.6 mm | 73,558 | skipped: past the cap | 25 s | 2.2 GB | 203.3 g and 199.1 g |
+| Telo cover | 680 long | 6.3 mm | 62,603 | 4.4 mm, 136,452 nodes | 70 s | 4.6 GB | 403.6 g and 396.0 g |
+
+Mass agrees with the slicer within 2%, and the hot spots sit on the parts. The Telo cover's governing deflection
+moved 33% between the two sizes (0.28 to 0.42 mm), so it is honestly `rough`.
+
+**Three faults the trial found:**
+
+- **The default cell is far too coarse on thin parts.** `default_h_xy` sizes a dense grid of the bounding box. A
+  cover fills a small part of its box, so the rear cover got 4.6 mm cells against ~0.9 mm walls and used a third of
+  the node cap. The grid is too stiff, as the Telo cover's 33% move shows. Fix: count the solid cells of a coarse
+  rasterisation and size from those.
+- **Memory, not the node cap, is the limit.** 73k nodes peaked at 2.2 GB and 136k at 4.6 GB, so the 200k cap would
+  need about 7 GB. The cap should come from a memory budget, or a node cap measured to fit one.
+- **The TypeScript cards carry no bead constants** (`src/sim/cards.ts`). So the desktop and the MCP solve every
+  sliced cell as a smear, while the Rust placeholder cards carry a provisional bead section. The trial's notes say
+  so.
+
+### The belt, end to end
+
+`lime-sim-bridge/tests/bridge.rs`, `a_belt_slice_solves_the_same_bar_in_the_bar_s_frame`: a 20 × 6 × 4 bar on an
+isotropic card, solved on a cartesian printer and on the IR3 V2's 45° belt:
+- the tips agree within 2.3% (0.0954 and 0.0931 mm);
+- the belt's layer normal is (0, −0.707, 0.707) in the bar's frame;
+- every surface corner and the tip's hot spot land on the bar in its own frame.
+
+### L5 acceptance: the guide's loop
+
+`mcp/sim-loop.test.ts`, on the real engine, added to CI's `mcp` job. It follows the `sim` guide's loop: set up, run,
+sweep, keep, run again.
+- **A generated beam:** the smear, with no OCCT.
+- **An STL:** sliced, with no OCCT, and its stress-coloured layer image.
+- **The STEP sample:** sliced. It is skipped with the engine's reason where STEP can't be meshed.
+
+All three pass locally.

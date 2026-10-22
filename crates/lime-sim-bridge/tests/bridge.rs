@@ -224,6 +224,85 @@ fn a_bracket_is_weakest_at_the_corner_of_its_l() {
     assert!(spot["layer"].is_u64());
 }
 
+/// A 20 × 6 × 4 bar held at x = 0 and pushed down at x = 20, solved through
+/// the whole pipeline on a cartesian printer and on the IR3 V2's 45° belt.
+/// On an isotropic card the layers' direction can't matter, so the two tips
+/// agree to the staircase's tolerance; the belt's layers stack along its own
+/// normal; and the belt's result lands on the bar in the bar's frame, through
+/// the belt's mirror and tilt.
+#[test]
+fn a_belt_slice_solves_the_same_bar_in_the_bar_s_frame() {
+    let stl = prism_stl(&[[0.0, 0.0], [20.0, 0.0], [20.0, 4.0], [0.0, 4.0]], 6.0);
+    let isotropic = json!({
+        "id": "iso", "polymer": "PETG", "EInPlaneMPa": 1800.0, "EAcrossLayersMPa": 1800.0, "nu": 0.35,
+        "strengthInPlaneMPa": 30.0, "strengthAcrossLayersMPa": 30.0, "densityGCm3": 1.27, "isotropic": true
+    });
+    let solve = |belt: Option<Value>| {
+        let mut request = json!({
+            "filename": "bar.stl", "dataB64": b64(&stl),
+            "layerHeight": 0.2, "lineWidth": 0.45, "infill": 1.0,
+            "baseline": false, "compare": false, "includePreview": false, "includeGcode": false
+        });
+        if let Some(belt) = belt {
+            request["belt"] = belt;
+        }
+        study(json!({
+            "request": request,
+            "study": {
+                "hXy": 0.8,
+                "card": isotropic,
+                "holds": [{ "kind": "region", "region": quad([0.0, 0.0, 0.0], [0.0, 0.0, 4.0], [0.0, 6.0, 4.0], [0.0, 6.0, 0.0]) }],
+                "loads": [{ "kind": "force", "region": quad([20.0, 0.0, 0.0], [20.0, 6.0, 0.0], [20.0, 6.0, 4.0], [20.0, 0.0, 4.0]), "force": [0.0, 0.0, -2.0] }],
+                "constraints": [{ "kind": "maxDeflectionMm", "value": 1.0 }],
+                "checkResolution": false
+            }
+        }))
+    };
+    let flat = solve(None);
+    let belt = solve(Some(json!({
+        "angleDeg": 45.0, "axis": "z", "direction": 1, "widthMm": 220.0, "copies": 1, "gapMm": 0.0
+    })));
+    let tip = |reply: &Value| reply["report"]["maxDisplacementMm"].as_f64().unwrap();
+    let (a, b) = (tip(&flat), tip(&belt));
+    println!(
+        "tip: cartesian {a:.5} mm, belt {b:.5} mm ({:+.1}%)",
+        (b / a - 1.0) * 100.0
+    );
+    assert!((b / a - 1.0).abs() < 0.15, "cartesian {a} mm, belt {b} mm");
+
+    // The slice frame's layer normal, in the bar's frame: the slice's +Z is the
+    // third row of partToSlice for this rigid map.
+    let m: Vec<Vec<f64>> = serde_json::from_value(belt["cells"]["partToSlice"].clone()).unwrap();
+    let normal = [m[2][0], m[2][1], m[2][2]];
+    let expect = [
+        0.0,
+        -std::f64::consts::FRAC_1_SQRT_2,
+        std::f64::consts::FRAC_1_SQRT_2,
+    ];
+    for k in 0..3 {
+        assert!(
+            (normal[k] - expect[k]).abs() < 1e-9,
+            "layer normal {normal:?}"
+        );
+    }
+    let flat_normal: Vec<Vec<f64>> =
+        serde_json::from_value(flat["cells"]["partToSlice"].clone()).unwrap();
+    assert!((flat_normal[2][2] - 1.0).abs() < 1e-12);
+
+    // Every surface corner and the tip's hot spot are on the bar, in its frame.
+    let positions = floats(&belt["surface"]["positionsB64"]);
+    for p in positions.chunks_exact(3) {
+        assert!(
+            p[0] > -1.0 && p[0] < 21.0 && p[1] > -1.0 && p[1] < 7.0 && p[2] > -1.0 && p[2] < 5.0,
+            "{p:?}"
+        );
+    }
+    let spot = belt["report"]["margins"][0]["hotSpot"]["at"]
+        .as_array()
+        .unwrap();
+    assert!((spot[0].as_f64().unwrap() - 20.0).abs() < 1.5, "{spot:?}");
+}
+
 #[test]
 fn a_refusal_is_a_sentence() {
     let reply: Value = serde_json::from_str(&lime_sim_bridge::study_json("{}")).unwrap();
