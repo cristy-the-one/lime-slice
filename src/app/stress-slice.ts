@@ -17,22 +17,15 @@ import { paintRequestFields } from "../support-paint.ts";
 import { activeHeat, loadMachineLibrary } from "./machine-library.ts";
 import { currentRules } from "./rules.ts";
 import { blend } from "./settings.ts";
+import { patternBlend, type PatternName } from "../sim/pattern-patch.ts";
 import { state } from "./state.ts";
 import { currentPlacement, meshBase64 } from "./files.ts";
 
 export interface SlicePatch {
   walls?: number;
   infill?: number;
-  pattern?: "lines" | "grid" | "gyroid" | "lightning";
+  pattern?: PatternName;
 }
-
-/** Toughness that `mix` turns into that pattern, before walls and infill are pinned. */
-const PATTERN_TOUGHNESS: Record<NonNullable<SlicePatch["pattern"]>, number> = {
-  lightning: 0,
-  lines: 0.3,
-  grid: 0.6,
-  gyroid: 0.9,
-};
 
 function lineWidth(): number {
   return Math.min(1.2, Math.max(0.2, state.profile.nozzleDiameter * 1.125));
@@ -128,7 +121,7 @@ export function stressSliceRequest(
   if (walls !== undefined) body.walls = walls;
   if (infill !== undefined) body.infill = infill;
   if (patch?.pattern) {
-    body.blend = { mode: "weight", toughness: PATTERN_TOUGHNESS[patch.pattern] };
+    body.blend = patternBlend(patch.pattern);
     const card = resolved(state.toughness, state.layerHeight, width);
     if (body.walls === undefined) body.walls = selected?.settings.walls ?? card.walls;
     if (body.infill === undefined) body.infill = selected?.settings.infill ?? card.density;

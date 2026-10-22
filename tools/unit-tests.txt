@@ -106,6 +106,7 @@ src/sim/recipe.test.ts
 src/sim/study.test.ts
 src/sim/bridge-body.test.ts
 src/sim/margin-text.test.ts
+mcp/pattern-slice.test.ts
 src/sim/study-mesh.test.ts
 mcp/numbers.test.ts
 mcp/render.test.ts
