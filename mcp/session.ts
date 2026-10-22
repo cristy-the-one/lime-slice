@@ -48,6 +48,8 @@ import { coverRegion, onSelection, selectTriangles, type RegionQuery } from "../
 import type { PathColumns } from "../src/preview-wire.ts";
 import { readsStress, type ColorMode } from "../src/colors.ts";
 import { parseStressCells, type StressCells } from "../src/sim/stress-cells.ts";
+import { patternBlend } from "../src/sim/pattern-patch.ts";
+import { resolved } from "../src/strategy.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
@@ -58,6 +60,9 @@ import {
   OPEN_MESH,
   SLICED_FIELD,
   SLICED_SWEEP,
+  RESLICE_BEAM,
+  RESLICE_PARAMETERS,
+  RESLICE_PATTERN_KEEP,
   SWEEP_CAP,
   SWEEP_REFUSAL,
   ZERO_AXIS,
@@ -206,7 +211,8 @@ function changesPlate(name: string): boolean {
 }
 
 /** Calls that can outlast a client's request timeout: the autosave is written before they start. */
-const LONG_CALLS = new Set(["model_apply_batch", "model_build", "model_edit", "project_open", "mesh_import"]);
+// A sweep that reslices is one slice and one solve per variant.
+const LONG_CALLS = new Set(["model_apply_batch", "model_build", "model_edit", "project_open", "mesh_import", "sim_sweep"]);
 const NAME_LIMIT = 120;
 /** Tools whose op fields may be text expressions. */
 
@@ -218,6 +224,7 @@ const NAME_LIMIT = 120;
 const DETACHABLE = new Set([
   "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
   "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
+  "sim_run", "sim_sweep",
 ]);
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
@@ -753,6 +760,17 @@ function slicedRunReply(text: string): Record<string, unknown> {
     massG: typeof report.massG === "number" ? report.massG : 0,
     criterion: "max-stress",
     stale: false,
+    ...sliceEstimateOf(parsed.slice),
+  };
+}
+
+/** The slicer's estimate of the slice a sliced study solved: free, since it was sliced anyway. */
+function sliceEstimateOf(value: unknown): { slicerSeconds?: number; slicerGrams?: number } {
+  if (!value || typeof value !== "object") return {};
+  const row = value as Record<string, unknown>;
+  return {
+    ...(typeof row.seconds === "number" ? { slicerSeconds: row.seconds } : {}),
+    ...(typeof row.filamentG === "number" ? { slicerGrams: row.filamentG } : {}),
   };
 }
 
@@ -6447,8 +6465,13 @@ export class Session {
     return { kind: "faces", triangles };
   }
 
-  private async solveSliced(obj: PlateObject, saved: ObjectStudy, checkResolution = true): Promise<Record<string, unknown>> {
+  /**
+   * Solve the object as it is sliced. A sweep `patch` changes that one slice (walls, infill, the pattern) and
+   * scales the loads, without touching the plate.
+   */
+  private async solveSliced(obj: PlateObject, saved: ObjectStudy, checkResolution = true, patch?: SweepPatch): Promise<Record<string, unknown>> {
     const study = cloneStudy(saved);
+    if (patch?.loadScale !== undefined && patch.loadScale !== 1) study.loads = scaleLoads(study.loads, patch.loadScale);
     if (study.printer) study.buildAxis = this.printerBuildAxis();
     if (study.holds.some((hold) => hold.kind === "plane")) return { ok: false, reason: "A plane hold is not on a sliced study. Hold the bed or faces." };
     if (!study.holds.some((hold) => hold.kind === "bed" || hold.faces.length > 0)) return { ok: false, reason: "Nothing is held." };
@@ -6475,6 +6498,7 @@ export class Session {
     }
     if (obj.objectSettings.walls !== undefined && !Array.isArray(body.objects)) body.walls = obj.objectSettings.walls;
     if (obj.objectSettings.infill !== undefined && !Array.isArray(body.objects)) body.infill = obj.objectSettings.infill;
+    if (patch) this.patchSliceBody(body, obj, patch);
     const holds: Record<string, unknown>[] = [];
     for (const hold of study.holds) {
       if (hold.kind === "bed") {
@@ -6523,6 +6547,70 @@ export class Session {
     }
     this.stressCells = parseStressCells(text, obj.id) ?? this.stressCells;
     return slicedRunReply(text);
+  }
+
+  /**
+   * A sweep variant's print settings on a one-object slice body: on the object's own settings when the body lists
+   * it, else on the body. A pattern is a blend, which would also move walls and infill with its toughness, so they
+   * are pinned to what the object prints now, as the desktop's sweep does.
+   */
+  private patchSliceBody(body: Record<string, unknown>, obj: PlateObject, patch: SweepPatch): void {
+    const row = Array.isArray(body.objects) && body.objects[0] && typeof body.objects[0] === "object"
+      ? (body.objects[0] as Record<string, unknown>)
+      : null;
+    const target: Record<string, unknown> = row
+      ? ((row.settings && typeof row.settings === "object" ? row.settings : (row.settings = {})) as Record<string, unknown>)
+      : body;
+    if (patch.walls !== undefined) target.walls = patch.walls;
+    if (patch.infill !== undefined) target.infill = patch.infill;
+    if (patch.pattern) {
+      const width = Math.min(1.2, Math.max(0.2, this.library.nozzleMm * 1.125));
+      const card = resolved(this.settings.toughness, this.settings.layerHeight, width);
+      target.blend = patternBlend(patch.pattern);
+      if (target.walls === undefined) target.walls = obj.objectSettings.walls ?? card.walls;
+      if (target.infill === undefined) target.infill = obj.objectSettings.infill ?? card.density;
+    }
+  }
+
+  /** A sliced sweep: each variant one slice of the object alone and one solve. */
+  private async slicedSweep(obj: PlateObject, patches: SweepPatch[], limits: ConstraintLimits, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (patches.some((patch) => patch.parameters)) return { ok: false, reason: RESLICE_PARAMETERS };
+    const saved = obj.sim!;
+    const card = cardsOf(this.library).find((row) => row.id === saved.cardId);
+    const provisional = card?.provisional !== false;
+    // One cell size per variant unless asked: a sweep compares variants, and a second size doubles each solve.
+    const checkResolution = input.checkResolution === true;
+    type SweepRow = Record<string, unknown> & { ok?: boolean; met: boolean; reason: string };
+    const rows: SweepRow[] = [];
+    for (const patch of patches) {
+      const solved = await this.solveSliced(obj, saved, checkResolution, patch);
+      if (solved.ok !== true) {
+        rows.push({ ok: false, met: false, reason: typeof solved.reason === "string" ? solved.reason : "The stress solve did not finish." });
+        continue;
+      }
+      const trust = solved.trust as { level?: unknown } | undefined;
+      const level = trust?.level === "usable" || trust?.level === "converged" ? trust.level : "rough";
+      const verdict = constraintVerdict({
+        provisional,
+        trust: level,
+        maxDisplacementMm: typeof solved.maxDisplacementMm === "number" ? solved.maxDisplacementMm : 0,
+        minSafetyFactor: typeof solved.minSafetyFactor === "number" ? solved.minSafetyFactor : null,
+        massG: typeof solved.massG === "number" ? solved.massG : 0,
+      }, limits);
+      rows.push({ ...solved, met: verdict.met, reason: verdict.reason });
+    }
+    let committed = false;
+    if (input.commit === true) {
+      const index = typeof input.variant === "number" ? input.variant : patches.length === 1 ? 0 : -1;
+      if (!Number.isInteger(index) || index < 0 || index >= patches.length) return { ok: false, variants: rows, reason: "Name the variant to keep." };
+      const chosen = rows[index];
+      if (!chosen || chosen.ok === false) return { ok: false, variants: rows, reason: typeof chosen?.reason === "string" ? chosen.reason : "The stress solve did not finish." };
+      if (patches[index]!.pattern) return { ok: false, variants: rows, reason: RESLICE_PATTERN_KEEP };
+      this.remember("Sweep");
+      this.applySweepPatch(obj, patches[index]!);
+      committed = true;
+    }
+    return { ok: true, variants: rows, committed, note: "Each variant was sliced alone and solved. slicerSeconds and slicerGrams are that slice's." };
   }
 
   private simField(input: Record<string, unknown>): Record<string, unknown> {
@@ -6607,7 +6695,7 @@ export class Session {
     obj.sim = study;
   }
 
-  private simSweep(input: Record<string, unknown>): Record<string, unknown> {
+  private async simSweep(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (!Array.isArray(input.variants)) return { ok: false, reason: SWEEP_REFUSAL };
     if (input.variants.length > SWEEP_CAP) return { ok: false, reason: SWEEP_REFUSAL };
     const patches: SweepPatch[] = [];
@@ -6622,7 +6710,10 @@ export class Session {
     if (typeof limits === "string") return { ok: false, reason: limits };
     const obj = this.simTarget(input);
     if ("reason" in obj) return { ok: false, reason: obj.reason };
-    if (obj.sim && this.representationFor(obj, obj.sim) === "sliced") return { ok: false, reason: SLICED_SWEEP };
+    const sliced = obj.sim !== undefined && this.representationFor(obj, obj.sim) === "sliced";
+    if (sliced && input.reslice !== true) return { ok: false, reason: SLICED_SWEEP };
+    if (!sliced && input.reslice === true) return { ok: false, reason: RESLICE_BEAM };
+    if (sliced) return this.slicedSweep(obj, patches, limits as ConstraintLimits, input);
     const card = cardsOf(this.library).find((row) => row.id === obj.sim?.cardId);
     const provisional = card?.provisional !== false;
     type SweepRow = Record<string, unknown> & { ok?: boolean; met: boolean; reason: string; slicerSeconds?: number };

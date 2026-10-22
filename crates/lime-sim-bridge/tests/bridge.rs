@@ -137,6 +137,9 @@ fn a_placed_turned_part_answers_in_its_own_frame() {
     let root = margins[1]["hotSpot"]["at"].as_array().unwrap();
     assert!(root[0].as_f64().unwrap() < 4.0, "{root:?}");
     assert_eq!(reply["report"]["representation"], "sliced");
+    // The slice that was solved: what it prints.
+    assert!(reply["slice"]["seconds"].as_f64().unwrap() > 0.0);
+    assert!(reply["slice"]["filamentG"].as_f64().unwrap() > 0.0);
     // The Preview's lookup: a point in the part frame finds its cell. The
     // pose put model (x, y, z) at part (110 − y, 110 + x, z): its rotation,
     // then X and Y at the bed centre.

@@ -1570,7 +1570,7 @@ export const TOOLS: ToolSpec[] = [
         job: jobHandle,
         inline: { type: "boolean", description: "Default true." },
         layer: { type: "integer", minimum: 0, description: "Layer index." },
-        colourBy: { enum: ["feature", "speed", "weight", "stress", "safety"], description: "feature, speed, or weight; stress or safety colour each bead by the cell of the last sliced sim_run under it." },
+        colourBy: { enum: ["feature", "speed", "weight", "stress", "safety"], description: "stress and safety read the last sliced sim_run." },
         longEdge: { type: "integer", minimum: 32, maximum: 1024, description: "Pixels, 32–1024." },
         name: { type: "string", minLength: 1, description: "Workspace file." },
       },
@@ -1749,7 +1749,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "sim_sweep",
-    description: "Up to 16 variants. Does not slice.",
+    description: "Up to 16 variants. A sliced study needs reslice.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1786,6 +1786,8 @@ export const TOOLS: ToolSpec[] = [
         commit: { type: "boolean", description: "Apply one variant. Default false." },
         variant: { type: "integer", minimum: 0, description: "Index to keep." },
         includePrintTime: { type: "boolean", description: "Off. Does not slice." },
+        reslice: { type: "boolean", description: "Slice plus solve per variant." },
+        checkResolution: { type: "boolean", description: "Second cell size. Off." },
       },
     },
   },

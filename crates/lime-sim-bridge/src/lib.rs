@@ -27,7 +27,27 @@ use sha2::{Digest, Sha256};
 /// P-D4). The slicer is asked for the same slice an ordinary one-object
 /// request makes.
 pub fn slice_field(req: &SliceRequest, job: Job, watch: &Watch) -> Result<SliceField, String> {
+    sliced(req, job, watch).map(|(field, _)| field)
+}
+
+/// What the slice that a study solves would print: the slicer's own estimate.
+#[derive(Clone, Copy, Debug)]
+pub struct SliceEstimate {
+    pub seconds: f64,
+    pub filament_g: f64,
+}
+
+/// The slice field and the estimate of the same slice.
+pub fn sliced(
+    req: &SliceRequest,
+    job: Job,
+    watch: &Watch,
+) -> Result<(SliceField, SliceEstimate), String> {
     let reply = slice_beads(req, job, watch)?;
+    let estimate = SliceEstimate {
+        seconds: reply.estimate.seconds,
+        filament_g: reply.estimate.filament_g,
+    };
     let sliced = reply.beads.as_ref().expect("slice_beads keeps the beads");
     let mut segments = Vec::with_capacity(sliced.beads.len());
     let mut layers: Vec<LayerRow> = Vec::new();
@@ -68,7 +88,7 @@ pub fn slice_field(req: &SliceRequest, job: Job, watch: &Watch) -> Result<SliceF
         return Err("The slice has no beads that carry load.".into());
     }
     let hash = Sha256::digest(serde_json::to_vec(req).map_err(|e| e.to_string())?);
-    Ok(SliceField {
+    let field = SliceField {
         header: Header {
             format: lime_sim::slice_field::FORMAT.into(),
             slice_hash: hash.iter().map(|b| format!("{b:02x}")).collect(),
@@ -79,7 +99,8 @@ pub fn slice_field(req: &SliceRequest, job: Job, watch: &Watch) -> Result<SliceF
             segment_count: segments.len() as u32,
         },
         segments,
-    })
+    };
+    Ok((field, estimate))
 }
 
 type M4 = [[f64; 4]; 4];
@@ -179,7 +200,7 @@ pub fn study_json(body: &str) -> String {
 pub fn study_value(body: &str, job: Job, watch: &Watch) -> Result<Value, String> {
     let parsed: StudyBody =
         serde_json::from_str(body).map_err(|err| format!("The study could not be read. {err}"))?;
-    let mut field = slice_field(&parsed.request, job, watch)?;
+    let (mut field, estimate) = sliced(&parsed.request, job, watch)?;
     let slice_to_part = field.header.frame;
     let to_model = part_to_model(&parsed.request)?;
     field.header.frame = multiply(&to_model, &slice_to_part);
@@ -197,6 +218,8 @@ pub fn study_value(body: &str, job: Job, watch: &Watch) -> Result<Value, String>
             "safetyB64": floats_b64(surface.safety.iter().copied()),
         },
         "cells": cells,
+        // The slice the study solved, so a sweep that reslices reports what each variant prints.
+        "slice": { "seconds": estimate.seconds, "filamentG": estimate.filament_g },
     }))
 }
 

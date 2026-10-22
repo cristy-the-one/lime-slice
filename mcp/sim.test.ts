@@ -40,7 +40,7 @@ const session = new Session(engine);
 const guide = await session.call("guide", { topic: "sim" });
 const guideText = String(guide.text ?? "");
 check("the sim guide runs the beam sequence", guide.ok === true && guideText.includes("sim_setup") && guideText.includes("sim_run") && guideText.includes("sim_sweep") && guideText.includes("includePrintTime defaults to false"));
-check("a sliced part changes the setting, then sim_run", guideText.includes("For a sliced part, change the setting, then sim_run."));
+check("a sliced part sweeps by reslicing", guideText.includes("A sliced part: sim_sweep {reslice:true") && guideText.includes("slicerSeconds and slicerGrams"));
 check("the guide says rough is not a reason to change the solid", guideText.includes("not a reason to change the solid") && guideText.includes("None of the three is a promise"));
 check(
   "the guide maps governs to a change",

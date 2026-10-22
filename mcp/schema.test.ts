@@ -2,13 +2,13 @@ import { occtHint } from "./engine.ts";
 import { advertisedTools, annotationsFor, TOOLS, validateTool } from "./schema.ts";
 
 let failed = 0;
-function check(name: string, ok: boolean) {
+function check(name: string, ok: boolean, detail = "") {
   if (ok) {
     console.log(name);
     return;
   }
   failed += 1;
-  console.error(`FAIL ${name}`);
+  console.error(`FAIL ${name}${detail ? `: ${detail}` : ""}`);
 }
 
 const names = new Set(TOOLS.map((tool) => tool.name));
@@ -71,7 +71,25 @@ const listed = JSON.stringify({
 // extrude, revolve, and shell, the surface array and ribs, loft and sweep, and text, path patterns, model_define,
 // model_anchors, and render_view's looks, add the rest.
 console.log(`tools/list is ${Buffer.byteLength(listed)} bytes`);
-check("tools/list stays under 78 KB", Buffer.byteLength(listed) < 78 * 1024);
+// Each tool has its own budget, so growth fails on the tool that grew, with its name and size, instead of on
+// whichever change crosses the total next. A tool over its budget is moved to the guide or split, or its budget is
+// raised here on purpose. model_apply carries every op kind's schema.
+const TOOL_BUDGET = 3 * 1024;
+const TOOL_BUDGETS: Record<string, number> = { model_apply: 28 * 1024 };
+const sizes = (JSON.parse(listed) as { tools: { name: string }[] }).tools
+  .map((tool) => ({ name: tool.name, bytes: Buffer.byteLength(JSON.stringify(tool)) }))
+  .sort((a, b) => b.bytes - a.bytes);
+const over = sizes.filter((tool) => tool.bytes > (TOOL_BUDGETS[tool.name] ?? TOOL_BUDGET));
+check(
+  "every tool stays inside its budget",
+  over.length === 0,
+  over.map((tool) => `${tool.name} ${tool.bytes} B, budget ${TOOL_BUDGETS[tool.name] ?? TOOL_BUDGET} B`).join("; "),
+);
+check(
+  "tools/list stays under 78 KB",
+  Buffer.byteLength(listed) < 78 * 1024,
+  `largest: ${sizes.slice(0, 10).map((tool) => `${tool.name} ${tool.bytes} B`).join(", ")}`,
+);
 
 const accepted: [string, unknown][] = [
   ["session_info", {}],

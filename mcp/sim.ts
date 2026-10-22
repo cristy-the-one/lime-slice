@@ -25,7 +25,10 @@ export const SWEEP_REFUSAL = "A sweep takes up to 16 variants.";
 export const OPEN_MESH = "This mesh is open, so it has no interior to mesh.";
 /** What a test stand-in answers when a sliced study asks it to solve. */
 export const SOLVER_STAND_IN = "The stress solver is not in this stand-in.";
-export const SLICED_SWEEP = "A sliced study is one sim_run. This sweep does not slice.";
+export const SLICED_SWEEP = "A sliced study sweeps by reslicing: pass reslice true. Each variant is then a slice plus a solve.";
+export const RESLICE_BEAM = "reslice is for a sliced study. A generated beam's sweep does not slice.";
+export const RESLICE_PARAMETERS = "A resliced sweep varies walls, infill, pattern and load. Change a model parameter with model_params, then sim_run.";
+export const RESLICE_PATTERN_KEEP = "A pattern variant is the plate's blend, so it is not kept per object. Set the blend with settings_set, then sim_run.";
 export const SLICED_FIELD = "A sliced result has no paged field. Read the margins from sim_run.";
 export const TET4_REFUSAL = "This study uses quadratic tetrahedra. Linear tetrahedra lock in bending.";
 export const ZERO_AXIS = "The build direction has zero length.";

@@ -536,7 +536,15 @@ As specified above, with Rust tests:
 
 ### Still open in the sliced plan
 
-- **L5:** `reslice` on `sim_sweep` (Grok, after SR-21).
+- **L5:** done by Claude on the owner's ask, 2026-10-22.
+  - `sim_sweep {reslice: true}` slices each variant alone and solves it, and each row carries `slicerSeconds` and
+    `slicerGrams` from its own slice. The bridge now returns `slice: {seconds, filamentG}`, and `sim_run` reports
+    those too.
+  - `parameters` variants are refused, as are kept pattern variants, since the pattern is the plate's blend.
+  - Each variant solves at one cell size unless `checkResolution: true`.
+  - `sim_run` and `sim_sweep` detach into background jobs like the other long calls.
+  - The schema test now gives each tool a budget, 3 KB and 28 KB for `model_apply`. Growth fails on the tool that
+    grew, by name, instead of on whoever next crosses the 78 KB total.
 - **L6:** done by Claude on the owner's ask, 2026-10-22. See "L6 notes" below.
 
 ### Order
