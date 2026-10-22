@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { ID_MATRIX } from "../mesh-place.ts";
 import { oneObjectPlate, revivePlate, snapPlate } from "../plate.ts";
 import { defaultProfile } from "../profiles.ts";
@@ -155,6 +158,18 @@ const damaged = JSON.parse(serializeProject(saved)) as { objects: { sim?: unknow
 damaged.objects[0]!.sim = { holds: "bed" };
 const dropped = parseProject(JSON.stringify(damaged));
 check("a damaged study is omitted", dropped.ok && dropped.project.objects?.[0]?.sim === undefined);
+
+function tsSources(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...tsSources(path));
+    else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) out.push(path);
+  }
+  return out;
+}
+const callers = tsSources("src").filter((path) => readFileSync(path, "utf8").includes("cannedBeam("));
+eq("the canned beam is only defined, not run from the panel", callers, [join("src", "sim", "study.ts")]);
 
 if (failed) {
   console.error(`${failed} failed`);

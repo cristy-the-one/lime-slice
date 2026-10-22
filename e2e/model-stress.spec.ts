@@ -1,4 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
+import { provisionalCards } from "../src/sim/cards.ts";
+import { NOT_WIRED } from "../src/sim/label.ts";
+import { cannedBeam, emptyStudy, type CannedResult } from "../src/sim/study.ts";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type MockSolid } from "./model-tree-mock";
 
@@ -43,7 +46,7 @@ async function openModel(page: Page) {
     apply: (request) => boxSolid(volumeOf(request)),
     probe: () => ({ ok: true }),
   });
-  await page.goto("/");
+  await page.goto("/?stressFixture=1");
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
@@ -63,14 +66,27 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await page.locator("#stressForce").fill("25");
   await page.locator("#stressBed").check();
   await page.locator("#stressRun").click();
-  await expect(page.locator("#stressLegend")).toContainText("In-house estimate");
-  await expect(page.locator("#stressLegend")).toContainText("rough");
-  await expect(page.locator("#stressLegend")).toContainText("Provisional card, not a measurement.");
+  await expect(page.locator("#stressStatus")).toHaveText(NOT_WIRED);
+  await expect(page.locator("#stressLegend")).toBeHidden();
   await page.locator("#stressVariantScale").fill("2");
   await page.locator("#stressVariantAdd").click();
   await page.locator("#stressSweep").click();
-  await expect(page.locator("#stressSweepBody")).toContainText("no");
-  await expect(page.locator("#stressSweepBody")).toContainText("Provisional card, not a measurement.");
+  await expect(page.locator("#stressSweepStatus")).toHaveText(NOT_WIRED);
+  await expect(page.locator("#stressSweepTable")).toBeHidden();
+
+  const study = emptyStudy();
+  study.holds = [{ kind: "bed", faces: [] }];
+  study.loads = [{ kind: "force", faces: [], magnitude: 25, direction: [0, 0, -1] }];
+  const made = cannedBeam(study, { min: [0, 0, 0], max: [10, 10, 10] }, provisionalCards()[1]!, "vonMises");
+  if ("error" in made) throw new Error(made.error);
+  await page.evaluate((next: CannedResult) => {
+    const show = (window as unknown as { __limeStressFixture?: (value: CannedResult) => void }).__limeStressFixture;
+    if (!show) throw new Error("the stress fixture is not on this page");
+    show(next);
+  }, made);
+  await expect(page.locator("#stressLegend")).toContainText("In-house estimate");
+  await expect(page.locator("#stressLegend")).toContainText("rough");
+  await expect(page.locator("#stressLegend")).toContainText("Provisional card, not a measurement.");
   await page.locator("#stressVariants").scrollIntoViewIfNeeded();
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-sweep.png" });
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-view.png" });

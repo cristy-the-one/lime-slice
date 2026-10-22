@@ -1,24 +1,22 @@
 /**
- * Stress in the Model dock: a hold, a load, a material card, and a canned beam.
- * Run draws that beam. It does not edit the solid, and it does not factor a matrix.
+ * Stress in the Model dock: a hold, a load, and a material card.
+ * Run does not draw the canned beam. That field is a Playwright fixture only.
  * Undo of a hold or a load is a plate step.
  */
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { ModelView, StressDraw } from "../model-view.ts";
 import type { MaterialCard } from "../sim/cards.ts";
-import { LABEL, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
+import { LABEL, NOT_WIRED, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
 import {
   arrowLength,
   arrowSeat,
   boxDiagonal,
-  cannedBeam,
   cloneStudy,
   defaultScale,
   displacements,
   emptyStudy,
   fieldLabel,
   formatProbe,
-  constraintVerdict,
   holdLine,
   holdRefusal,
   paintField,
@@ -26,7 +24,6 @@ import {
   restPositions,
   vertexColours,
   type CannedResult,
-  type ConstraintLimits,
   type ObjectStudy,
   type StressField,
   type StudyBox,
@@ -159,6 +156,13 @@ export function mountStress(next: StressHooks) {
   if (note) note.textContent = UNDO_SENTENCE;
   const label = byId("#stressLabel");
   if (label) label.textContent = LABEL;
+  if (new URLSearchParams(location.search).has("stressFixture")) {
+    (window as unknown as { __limeStressFixture?: (next: CannedResult) => void }).__limeStressFixture = (next) => {
+      result = next;
+      if (scaleOverride == null) setNum("#stressScale", next.scale);
+      syncDraw();
+    };
+  }
 }
 
 /** The Features menu and the command palette. */
@@ -377,87 +381,17 @@ function addVariant() {
   if (status) status.textContent = "";
 }
 
-function sweepLimits(): ConstraintLimits {
-  const read = (id: string) => {
-    const text = byId<HTMLInputElement>(id)?.value ?? "";
-    if (text === "") return undefined;
-    const value = Number(text);
-    return Number.isFinite(value) && value > 0 ? value : undefined;
-  };
-  return { maxDeflectionMm: read("#stressMaxDeflection"), minSafetyFactor: read("#stressMinSafety") };
-}
-
 function runSweep() {
-  readForm();
   const status = byId("#stressSweepStatus");
-  const list = variants.length > 0 ? variants : [readVariant()];
-  if (list.length > 16) {
-    if (status) status.textContent = SWEEP_REFUSAL;
-    return;
-  }
-  const box = hooks?.bounds();
-  const card = currentCard();
-  const body = byId("#stressSweepBody");
   const table = byId<HTMLElement>("#stressSweepTable");
-  if (!box || !card) {
-    if (status) status.textContent = "This part has no size to show.";
-    return;
-  }
-  if (body) body.replaceChildren();
-  for (const variant of list) {
-    const made = cannedBeam(draft, box, card, "vonMises");
-    const tr = document.createElement("tr");
-    const cells = [variantLine(variant), "—", "—", "no", ""];
-    if ("error" in made) cells[4] = made.error;
-    else {
-      const disp = Math.max(...made.nodes.map((node) => node.displacement)) * variant.loadScale;
-      const safety = Math.min(...made.nodes.map((node) => node.safety)) / variant.loadScale;
-      const volume = (box.max[0] - box.min[0]) * (box.max[1] - box.min[1]) * (box.max[2] - box.min[2]);
-      const infill = variant.infill ?? 1;
-      const mass = (volume * card.densityGCm3 * Math.min(1, Math.max(0, infill))) / 1000;
-      const verdict = constraintVerdict({
-        provisional: card.provisional,
-        trust: card.provisional ? "rough" : "usable",
-        maxDisplacementMm: disp,
-        minSafetyFactor: Number.isFinite(safety) ? safety : null,
-        massG: mass,
-      }, sweepLimits());
-      cells[1] = disp.toFixed(3);
-      cells[2] = Number.isFinite(safety) ? safety.toFixed(2) : "—";
-      cells[3] = verdict.met ? "yes" : "no";
-      cells[4] = verdict.reason;
-    }
-    for (const text of cells) {
-      const td = document.createElement("td");
-      td.textContent = text;
-      tr.append(td);
-    }
-    body?.append(tr);
-  }
-  if (table) table.hidden = false;
-  if (status) status.textContent = "";
+  if (table) table.hidden = true;
+  if (status) status.textContent = NOT_WIRED;
 }
 
 function run() {
   readForm();
   commitDraft();
-  const box = hooks?.bounds();
-  const card = currentCard();
-  if (!box || !card) {
-    setStatus("This part has no size to show.");
-    return;
-  }
-  const made = cannedBeam(draft, box, card, field, scaleOverride);
-  if ("error" in made) {
-    setStatus(made.error);
-    return;
-  }
-  previous = result;
-  result = made;
-  setStatus("");
-  if (scaleOverride == null) setNum("#stressScale", result.scale);
-  syncDraw();
-  paintLegend();
+  setStatus(NOT_WIRED);
 }
 
 function cancelSolve() {

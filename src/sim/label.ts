@@ -12,3 +12,6 @@ export const NOT_HELD = "This part is not held. Fix a face, or the bed.";
 
 /** Plate undo and the solid's history are different gestures. */
 export const UNDO_SENTENCE = "Undo puts the last hold or load back. The solid's history is the History list.";
+
+/** Run, until the desktop calls the bridge. */
+export const NOT_WIRED = "The stress solve is not wired to the desktop yet.";
