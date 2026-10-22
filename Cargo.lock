@@ -2673,7 +2673,7 @@ dependencies = [
 
 [[package]]
 name = "lime-sim"
-version = "3.5.0"
+version = "3.6.0"
 dependencies = [
  "faer",
  "serde",
@@ -2682,7 +2682,7 @@ dependencies = [
 
 [[package]]
 name = "lime-sim-bridge"
-version = "3.5.0"
+version = "3.6.0"
 dependencies = [
  "base64 0.22.1",
  "lime-sim",
