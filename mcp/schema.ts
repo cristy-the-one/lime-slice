@@ -1,6 +1,7 @@
 /** Tool input schemas. They are the contract the handlers validate against. */
 
 import { GROUP_NAMES, groupOf, TOOLS_ENABLE_HELP } from "./groups.ts";
+import { MAX_PLAN_STEPS, PLAN_HELP } from "./plan.ts";
 
 const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from plate_list. Default: the selected object." };
 const jobHandle = { type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start, or from a long call that answered with a job." };
@@ -782,6 +783,8 @@ const DESTRUCTIVE = new Set([
   "model_export_step",
   "object_remove",
   "model_drop",
+  // Its steps may be any of the above.
+  "plan_run",
 ]);
 
 /** Hints a client uses to tell a read from a write. Every tool has one. */
@@ -1703,6 +1706,32 @@ export const TOOLS: ToolSpec[] = [
       additionalProperties: false,
       required: ["index"],
       properties: { index: { type: "integer", minimum: 0, description: "Point from blend_compare." } },
+    },
+  },
+  {
+    name: "plan_run",
+    description: PLAN_HELP,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["steps"],
+      properties: {
+        steps: {
+          type: "array",
+          minItems: 1,
+          maxItems: MAX_PLAN_STEPS,
+          description: "Calls, in order.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["tool"],
+            properties: {
+              tool: { type: "string", minLength: 1, maxLength: 64, description: "Tool name." },
+              args: { type: "object", description: "Its arguments; \"$N.path\" strings are references." },
+            },
+          },
+        },
+      },
     },
   },
   {
