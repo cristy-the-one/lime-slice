@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import { existsSync, readFileSync } from "node:fs";
 import { provisionalCards } from "../src/sim/cards.ts";
 import { NOT_WIRED } from "../src/sim/label.ts";
 import { cannedBeam, emptyStudy, type CannedResult } from "../src/sim/study.ts";
-import { existsSync, readFileSync } from "node:fs";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type MockSolid } from "./model-tree-mock";
 
@@ -43,10 +43,10 @@ function f32b64(values: number[]): string {
   return buf.toString("base64");
 }
 
-/** A one-triangle reply, or the small box the desktop command solved when that file is present. */
-function studyReply(): string {
-  const saved = "/tmp/lime-stress-box.json";
-  if (existsSync(saved)) return readFileSync(saved, "utf8");
+const SAVED_STUDY = "/tmp/lime-stress-box.json";
+
+/** A one-triangle reply the spec controls. The desktop box, when saved, is a second test. */
+function mockReply(): string {
   return JSON.stringify({
     ok: true,
     report: {
@@ -68,10 +68,10 @@ function studyReply(): string {
   });
 }
 
-async function openModel(page: Page) {
-  await page.addInitScript((reply: string) => {
-    (window as unknown as { __limeSimStudy?: (body: string) => string }).__limeSimStudy = () => reply;
-  }, studyReply());
+async function openModel(page: Page, reply = mockReply()) {
+  await page.addInitScript((text: string) => {
+    (window as unknown as { __limeSimStudy?: (body: string) => string }).__limeSimStudy = () => text;
+  }, reply);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: boxSolid(4000).positions } }));
@@ -126,7 +126,21 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await page.locator("#stressRun").click();
   await expect(page.locator("#stressStatus")).toHaveText("");
   await expect(page.locator("#model")).toHaveAttribute("data-stress", /shown [1-9]/);
-  await expect(page.locator("#stressLegend")).toBeVisible();
+  await expect(page.locator("#model")).toHaveAttribute("data-stress-solid", "hidden");
+  await expect(page.locator("#stressLegend")).toContainText("In-house estimate · as sliced");
+  await expect(page.locator("#stressLegend")).toContainText("usable");
+  await expect(page.locator("#stressLegend")).toContainText("Solved at one cell size.");
+  await expect(page.locator("#model")).toHaveAttribute("data-stress-hotspot", /1\.000,2\.000,3\.000/);
+  await expect(page.locator("#stressMargins")).toContainText("minSafetyFactor");
+  await expect(page.locator("#stressMargins")).toContainText("2.50");
+  await expect(page.locator("#stressMargins")).toContainText("met");
+  await expect(page.locator("#stressMargins")).toContainText("above the band");
+  await page.locator("#stressProbeX").fill("0");
+  await page.locator("#stressProbeY").fill("0");
+  await page.locator("#stressProbeZ").fill("0");
+  await page.locator("#stressProbeGo").click();
+  await expect(page.locator("#stressProbe")).toContainText("1.00 MPa");
+  await page.screenshot({ path: "/opt/cursor/artifacts/stress-sliced.png" });
   await page.locator("#stressVariantScale").fill("2");
   await page.locator("#stressVariantAdd").click();
   await page.locator("#stressSweep").click();
@@ -183,4 +197,19 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await page.locator("#tabPrepare").click();
   await expect(page.locator("[data-plate-stress]")).toHaveCount(1);
   await expect(page.locator("[data-plate-stress]")).toHaveText("In-house estimate");
+});
+
+test("a saved desktop solve is drawn as sliced", async ({ page }) => {
+  test.skip(!existsSync(SAVED_STUDY), "the desktop command did not leave a reply");
+  await openModel(page, readFileSync(SAVED_STUDY, "utf8"));
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuStress").click();
+  await page.locator("#stressBed").check();
+  await page.locator("#stressRun").click();
+  await expect(page.locator("#stressLegend")).toContainText("In-house estimate · as sliced");
+  await expect(page.locator("#stressLegend")).toContainText("rough");
+  await expect(page.locator("#model")).toHaveAttribute("data-stress", /shown [1-9]/);
+  await expect(page.locator("#model")).toHaveAttribute("data-stress-solid", "hidden");
+  await expect(page.locator("#model")).toHaveAttribute("data-stress-hotspot", /\d/);
+  await page.screenshot({ path: "/opt/cursor/artifacts/stress-solved.png" });
 });

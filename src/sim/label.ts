@@ -4,6 +4,9 @@
  */
 export const LABEL = "In-house estimate";
 
+/** The legend when the bridge solved the part as sliced. */
+export const AS_SLICED = "In-house estimate · as sliced";
+
 /** What a provisional card says in the section and on the result. */
 export const PROVISIONAL_SENTENCE = "Provisional card, not a measurement.";
 

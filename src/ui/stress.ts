@@ -8,7 +8,7 @@ import type { ModelView, StressDraw } from "../model-view.ts";
 import { buildStudyBody, surfaceResult, type FaceTriangles } from "../sim/bridge-body.ts";
 import type { MaterialCard } from "../sim/cards.ts";
 import { solveStudy } from "../sim/desktop-solve.ts";
-import { LABEL, NOT_WIRED, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
+import { AS_SLICED, LABEL, NOT_WIRED, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
 import {
   arrowLength,
   arrowSeat,
@@ -27,6 +27,7 @@ import {
   vertexColours,
   type CannedResult,
   type ObjectStudy,
+  type SlicedMargin,
   type StressField,
   type StudyBox,
   type Vec3,
@@ -600,6 +601,7 @@ function syncDraw() {
         displacement: displacements(result),
         scale: result.scale,
         arrow,
+        markers: result.margins?.map((margin) => margin.at) ?? [],
       }
     : {
         positions: new Float32Array(),
@@ -621,17 +623,46 @@ function paintLegend() {
     return;
   }
   legend.hidden = false;
+  const sliced = result.representation === "sliced";
   const title = byId("#stressLegendLabel");
-  if (title) title.textContent = LABEL;
+  if (title) title.textContent = sliced ? AS_SLICED : LABEL;
   const line = byId("#stressLegendText");
   if (line) line.textContent = `${fieldLabel(result.field)} ${formatProbe(result.peak, result.field)}`.trim();
   const trust = byId("#stressLegendTrust");
-  if (trust) trust.textContent = [result.trust, result.trustSentence].filter(Boolean).join(" · ");
+  if (trust) {
+    const notes = sliced ? (result.notes ?? []) : [result.trustSentence];
+    trust.textContent = [result.trust, ...notes].filter((part) => part && part.length > 0).join(" · ");
+  }
+  paintMargins();
+}
+
+function marginNumber(value: number): string {
+  return Math.abs(value) >= 100 ? value.toFixed(1) : value.toPrecision(3);
+}
+
+function marginLine(margin: SlicedMargin): string {
+  const note = margin.note ? ` ${margin.note}` : "";
+  return `${margin.kind}: ${marginNumber(margin.value)}, margin ${marginNumber(margin.margin)}, ${margin.met ? "met" : "not met"}${note}`;
+}
+
+function paintMargins() {
+  const host = byId("#stressMargins");
+  if (!host) return;
+  host.replaceChildren();
+  if (!result?.margins?.length || !stressOpen()) return;
+  for (const margin of result.margins) {
+    const row = document.createElement("p");
+    row.className = "stress-note";
+    row.dataset.margin = margin.kind;
+    row.textContent = marginLine(margin);
+    host.append(row);
+  }
 }
 
 function hideLegend() {
   const legend = byId<HTMLElement>("#stressLegend");
   if (legend) legend.hidden = true;
+  paintMargins();
 }
 
 function hideProbe() {

@@ -546,6 +546,7 @@ export function mountMarkup(root: HTMLElement) {
                 </div>
                 <button class="btn" id="stressProbeGo" type="button">Probe</button>
                 <p id="stressStatus" class="stress-note" role="status"></p>
+                <div id="stressMargins"></div>
                 <p id="stressNote" class="stress-note"></p>
               </fieldset>
               <fieldset class="stress-group" id="stressVariants" data-stress-local>

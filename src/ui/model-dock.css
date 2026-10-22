@@ -306,7 +306,7 @@ html:not(.layout-compact) .model-dock .model-stress:not([hidden]) {
   border: 1px solid var(--line);
   border-radius: 6px;
   pointer-events: none;
-  max-width: 280px;
+  max-width: min(440px, 46vw);
 }
 .stress-legend p { margin: 0; font-size: var(--fs-1); }
 .stress-ramp {

@@ -128,6 +128,8 @@ export interface StressDraw {
   displacement: Float32Array;
   scale: number;
   arrow: { at: Vec3; dir: Vec3; length: number } | null;
+  /** Hot spots, in the solid's frame. Each one is a small marker. */
+  markers?: Vec3[];
 }
 
 export interface ModelView {
@@ -411,6 +413,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let sectionGesture: { pointerId: number; base: number; origin: THREE.Vector3; normal: THREE.Vector3 } | null = null;
   let stressMesh: THREE.Mesh | null = null;
   let stressArrow: THREE.ArrowHelper | null = null;
+  let stressMarkers: THREE.Mesh[] = [];
+  let stressMarkerGeo: THREE.BufferGeometry | null = null;
+  let stressMarkerMat: THREE.Material | null = null;
   let stressRest: Float32Array | null = null;
   let stressDisp: Float32Array | null = null;
   let stressScale = 1;
@@ -2148,23 +2153,36 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   modelDock?.addEventListener("focusin", onDockFocus);
   modelDock?.addEventListener("focusout", onDockFocus);
 
+  function clearStressMarkers() {
+    for (const marker of stressMarkers) stressGroup.remove(marker);
+    stressMarkers = [];
+    stressMarkerGeo?.dispose();
+    stressMarkerMat?.dispose();
+    stressMarkerGeo = null;
+    stressMarkerMat = null;
+    delete canvas.dataset.stressHotspot;
+  }
+
   function clearStressDraw() {
     if (stressMesh) {
       stressGroup.remove(stressMesh);
       stressMesh.geometry.dispose();
       stressMesh = null;
     }
+    clearStressMarkers();
     if (stressArrow) {
       stressGroup.remove(stressArrow);
       stressArrow.traverse((child) => {
-        const mesh = child as THREE.Mesh;
-        mesh.geometry?.dispose();
+        const marker = child as THREE.Mesh;
+        marker.geometry?.dispose();
       });
       stressArrow = null;
     }
     stressRest = null;
     stressDisp = null;
     delete canvas.dataset.stress;
+    if (mesh && !preview) mesh.visible = true;
+    canvas.dataset.stressSolid = "shown";
   }
 
   function publishStressClip() {
@@ -2209,6 +2227,35 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       stressMesh = new THREE.Mesh(geometry, stressMaterial);
       stressMesh.renderOrder = 3;
       stressGroup.add(stressMesh);
+      if (mesh) mesh.visible = false;
+      canvas.dataset.stressSolid = "hidden";
+    }
+    const spots = draw.markers ?? [];
+    if (spots.length > 0) {
+      let span = 1;
+      if (draw.positions.length >= 6) {
+        const lo = [Infinity, Infinity, Infinity];
+        const hi = [-Infinity, -Infinity, -Infinity];
+        for (let i = 0; i < draw.positions.length; i += 3) {
+          for (let axis = 0; axis < 3; axis += 1) {
+            const value = draw.positions[i + axis] ?? 0;
+            if (value < lo[axis]!) lo[axis] = value;
+            if (value > hi[axis]!) hi[axis] = value;
+          }
+        }
+        span = Math.hypot(hi[0]! - lo[0]!, hi[1]! - lo[1]!, hi[2]! - lo[2]!);
+      }
+      stressMarkerGeo = new THREE.SphereGeometry(Math.max(0.35, span * 0.03), 12, 8);
+      stressMarkerMat = new THREE.MeshBasicMaterial({ color: 0x1c1917 });
+      for (const at of spots) {
+        const marker = new THREE.Mesh(stressMarkerGeo, stressMarkerMat);
+        marker.position.set(at[0], at[1], at[2]);
+        marker.name = "stress-hotspot";
+        marker.raycast = () => undefined;
+        stressGroup.add(marker);
+        stressMarkers.push(marker);
+      }
+      canvas.dataset.stressHotspot = spots.map((at) => at.map((value) => value.toFixed(3)).join(",")).join(";");
     }
     if (draw.arrow) {
       const dir = new THREE.Vector3(...draw.arrow.dir);

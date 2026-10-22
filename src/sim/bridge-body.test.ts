@@ -3,7 +3,7 @@
  */
 import { provisionalCards } from "./cards.ts";
 import { buildStudyBody, faceTriangles, surfaceResult } from "./bridge-body.ts";
-import { emptyStudy } from "./study.ts";
+import { emptyStudy, vertexColours } from "./study.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -89,6 +89,12 @@ if ("error" in drawn) {
   check("the hot spot is kept", drawn.margins?.[0]?.at[0] === 1 && drawn.margins[0].at[2] === 3);
   check("the note and the trust word come back", drawn.trust === "usable" && drawn.notes?.[0] === "Solved at one cell size.");
   check("it is marked as sliced", drawn.representation === "sliced");
+  const safety = surfaceResult(reply, "safety");
+  if ("error" in safety) check("safety colours", false, safety.error);
+  else {
+    const colours = vertexColours(safety);
+    check("safety paints the low value hotter", (colours[6] ?? 0) > (colours[0] ?? 1));
+  }
 }
 
 const bad = surfaceResult(JSON.stringify({ ok: false, reason: "The slice has no beads that carry load." }), "vonMises");
