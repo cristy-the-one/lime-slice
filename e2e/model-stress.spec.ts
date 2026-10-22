@@ -168,15 +168,23 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await page.locator("#stressMinSafety").fill("2");
   await page.locator("#stressMaxDeflection").fill("1.5");
   await page.locator("#stressSweep").click();
-  await page.waitForFunction(() => ((window as unknown as { __limeSimBodies?: string[] }).__limeSimBodies?.length ?? 0) >= 3);
+  await page.waitForFunction(() => ((window as unknown as { __limeSimBodies?: string[] }).__limeSimBodies?.length ?? 0) >= 4);
   const bodies = await page.evaluate(() => (window as unknown as { __limeSimBodies?: string[] }).__limeSimBodies ?? []);
-  const parsedBodies = bodies.map((text) => JSON.parse(text) as { request?: { walls?: number }; study?: { constraints?: { kind: string; value: number }[] } });
-  expect(parsedBodies).toHaveLength(3);
+  const parsedBodies = bodies.map((text) => JSON.parse(text) as { request?: { walls?: number }; study?: { constraints?: { kind: string; value: number }[]; loads?: { force?: number[] }[] } });
+  expect(parsedBodies).toHaveLength(4);
   expect(parsedBodies.filter((body) => body.request?.walls === 7)).toHaveLength(2);
   const first = parsedBodies[0]?.study?.constraints ?? [];
   expect(first).toEqual([{ kind: "minSafetyFactor", value: 1 }]);
-  const targeted = parsedBodies[2]?.study?.constraints ?? [];
+  const targeted = parsedBodies[3]?.study?.constraints ?? [];
   expect(targeted).toEqual([{ kind: "minSafetyFactor", value: 2 }, { kind: "maxDeflectionMm", value: 1.5 }]);
+  await page.locator("#stressForce").fill("40");
+  await page.locator("#stressSweep").click();
+  await page.waitForFunction(() => ((window as unknown as { __limeSimBodies?: string[] }).__limeSimBodies?.length ?? 0) >= 6);
+  const afterLoad = await page.evaluate(() => (window as unknown as { __limeSimBodies?: string[] }).__limeSimBodies ?? []);
+  const latest = JSON.parse(afterLoad[4] ?? "{}") as { study?: { loads?: { force?: number[] }[] } };
+  expect(latest.study?.loads?.[0]?.force).toEqual([0, 0, -40]);
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#stressForce")).toHaveValue("25");
   await page.locator("#stressVariants").scrollIntoViewIfNeeded();
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-sweep.png" });
 

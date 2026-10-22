@@ -67,7 +67,10 @@ export interface StressHooks {
 let hooks: StressHooks | null = null;
 let draft: ObjectStudy = emptyStudy();
 let result: CannedResult | null = null;
+/** The study body `result` was solved from. A load-scale sweep reuses it only on an exact match. */
+let solvedFrom: string | null = null;
 let previous: CannedResult | null = null;
+let previousFrom: string | null = null;
 let field: StressField = "vonMises";
 let scaleOverride: number | undefined;
 let steps = 0;
@@ -177,6 +180,7 @@ export function mountStress(next: StressHooks) {
   if (new URLSearchParams(location.search).has("stressFixture")) {
     (window as unknown as { __limeStressFixture?: (next: CannedResult) => void }).__limeStressFixture = (next) => {
       result = next;
+      solvedFrom = null;
       if (scaleOverride == null) setNum("#stressScale", next.scale);
       syncDraw();
     };
@@ -504,11 +508,11 @@ function hideSweep(text: string) {
   if (status) status.textContent = text;
 }
 
-/** The open result, or one base solve. A canned fixture is not scaled. */
+/** The open result when it was solved from this study, or one new base solve. */
 async function baseResult(token: number): Promise<CannedResult | { error: string } | "cancelled"> {
-  if (result?.representation === "sliced") return result;
   const body = studyText();
   if (typeof body !== "string") return { error: body.reason };
+  if (result?.representation === "sliced" && solvedFrom === body) return result;
   let text: string;
   try {
     text = await solveStudy(body);
@@ -517,7 +521,13 @@ async function baseResult(token: number): Promise<CannedResult | { error: string
     return { error: err instanceof Error && err.message ? err.message : "The stress solve did not finish." };
   }
   if (token !== solveGeneration) return "cancelled";
-  return surfaceResult(text, field, scaleOverride);
+  const parsed = surfaceResult(text, field, scaleOverride);
+  if (!("error" in parsed)) {
+    result = parsed;
+    solvedFrom = body;
+    syncDraw();
+  }
+  return parsed;
 }
 
 async function runSweep() {
@@ -534,12 +544,15 @@ async function runSweep() {
   }
   const reslice = variants.some(variantReslices);
   const token = ++solveGeneration;
-  if (!solving) previous = result;
+  if (!solving) {
+    previous = result;
+    previousFrom = solvedFrom;
+  }
   solving = true;
   sweeping = true;
   if (status) status.textContent = reslice ? RESLICE_STATUS : LINEAR_STATUS;
 
-  let base: CannedResult | null = result?.representation === "sliced" ? result : null;
+  let base: CannedResult | null = null;
   if (variants.some((variant) => !variantReslices(variant))) {
     const solved = await baseResult(token);
     if (solved === "cancelled" || token !== solveGeneration) return;
@@ -547,16 +560,14 @@ async function runSweep() {
       solving = false;
       sweeping = false;
       result = previous;
+      solvedFrom = previousFrom;
       previous = null;
+      previousFrom = null;
       hideSweep(solved.error);
       syncDraw();
       return;
     }
     base = solved;
-    if (result?.representation !== "sliced") {
-      result = solved;
-      syncDraw();
-    }
   }
 
   const rows: SweepRow[] = [];
@@ -612,6 +623,7 @@ async function runSweep() {
   solving = false;
   sweeping = false;
   previous = null;
+  previousFrom = null;
   paintSweep(rows);
   if (status) status.textContent = reslice ? RESLICE_STATUS : LINEAR_STATUS;
 }
@@ -647,7 +659,10 @@ async function run() {
     return;
   }
   const token = ++solveGeneration;
-  if (!solving) previous = result;
+  if (!solving) {
+    previous = result;
+    previousFrom = solvedFrom;
+  }
   solving = true;
   sweeping = false;
   setStatus("Solving");
@@ -658,7 +673,9 @@ async function run() {
     if (token !== solveGeneration) return;
     solving = false;
     result = previous;
+    solvedFrom = previousFrom;
     previous = null;
+    previousFrom = null;
     setStatus(err instanceof Error && err.message ? err.message : "The stress solve did not finish.");
     syncDraw();
     return;
@@ -668,13 +685,17 @@ async function run() {
   const parsed = surfaceResult(text, field, scaleOverride);
   if ("error" in parsed) {
     result = previous;
+    solvedFrom = previousFrom;
     previous = null;
+    previousFrom = null;
     setStatus(parsed.error);
     syncDraw();
     return;
   }
   result = parsed;
+  solvedFrom = body;
   previous = null;
+  previousFrom = null;
   if (scaleOverride == null) setNum("#stressScale", parsed.scale);
   setStatus("");
   syncDraw();
@@ -687,7 +708,9 @@ function cancelSolve() {
   solving = false;
   sweeping = false;
   result = previous;
+  solvedFrom = previousFrom;
   previous = null;
+  previousFrom = null;
   setStatus("");
   if (wasSweep) {
     const sweepStatus = byId("#stressSweepStatus");
