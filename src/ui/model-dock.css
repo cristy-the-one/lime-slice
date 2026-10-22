@@ -104,24 +104,87 @@ html[data-rail-labels="1"] :is(#railModel, #railModelFoot) button:is(.model-tool
   box-shadow: var(--shadow-pop);
 }
 
-/* ---------- Left dock: the tool, the sketch card, History, Parameters ---------- */
+/* ---------- Left dock: the tool, the sketch card, History, Parameters, Stress ---------- */
+/* When the panes' least heights don't fit, the dock scrolls rather than letting one pane cover another. */
 html:not(.layout-compact) .model-dock {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: var(--space-2) 0;
 }
-/* The tool's card: its name and Esc on top, the fields scrolling, Cancel and Apply pinned at its foot. */
-html:not(.layout-compact) .model-dock .model-panel {
-  flex: 0 1 auto;
-  min-height: 140px;
-  max-height: 64%;
+/*
+ * Panes (ui/dock-panes.ts): each a card like a Settings group, with a tick in its own colour. Folded, a pane is its
+ * header. Open, it starts at its content's height or the height its line was dragged to, gives way when the dock is
+ * short, and never goes under its header and a few rows. The last open pane takes what is left.
+ */
+html:not(.layout-compact) .model-dock > [data-pane] {
+  flex: 0 0 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  margin: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   background: var(--surface-1);
-  border-bottom: 1px solid var(--line);
+  overflow: hidden;
 }
+html:not(.layout-compact) .model-dock > [data-pane][data-pane-open] {
+  flex: 0 1 var(--pane-basis, auto);
+  min-height: var(--pane-min, 0);
+  max-height: max-content;
+}
+/* The pane that takes what is left also gives way first, so a short pane above it keeps its rows. */
+html:not(.layout-compact) .model-dock > [data-pane][data-pane-fill] { flex-grow: 1; flex-shrink: 1000; }
+[data-pane="tool"] { --pane-hue: var(--accent); }
+[data-pane="history"] { --pane-hue: var(--group-quality); }
+[data-pane="params"] { --pane-hue: var(--group-walls); }
+[data-pane="stress"] { --pane-hue: var(--group-temperature); }
+/* The gap between two cards is the line that shares their height: a grip at rest, the accent while held. */
+.pane-line { flex: 0 0 auto; position: relative; height: var(--space-2); }
+.pane-line[hidden] { display: none; }
+.pane-line[data-live] { cursor: row-resize; touch-action: none; }
+.pane-line[data-live]::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: calc(50% - 14px);
+  width: 28px;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background var(--dur) var(--ease), left var(--dur) var(--ease), width var(--dur) var(--ease);
+}
+.pane-line[data-live]:is(:hover, :focus-visible, .is-drag)::after { left: var(--space-3); width: calc(100% - 2 * var(--space-3)); background: var(--accent); }
+.pane-line:focus-visible { outline: none; }
+/* A pane's header: the tick, its name, a count, and the fold chevron on the right. */
+html:not(.layout-compact) .model-dock [data-pane-head] {
+  height: 32px;
+  padding: 0 var(--space-3);
+  gap: var(--space-2);
+  border-radius: 0;
+  color: var(--text);
+  font-size: var(--fs-2);
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+html:not(.layout-compact) .model-dock :is([data-pane-head], .model-panel-head)::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--pane-hue);
+}
+html:not(.layout-compact) .model-dock [data-pane-head]:hover { background: var(--surface-2); }
+.pane-chev { flex: 0 0 auto; margin-left: auto; color: var(--text-faint); transition: transform var(--dur) var(--ease); }
+[data-pane-head][aria-expanded="false"] .pane-chev { transform: rotate(-90deg); }
+html:not(.layout-compact) .model-dock > [data-pane][data-pane-open] :is(.model-params-head, .model-history-toggle) { border-bottom: 1px solid var(--line); }
+/* The tool's card: its name and Esc on top, the fields scrolling, Cancel and Apply pinned at its foot. */
+html:not(.layout-compact) .model-dock .model-panel { min-height: 140px; }
 .model-panel-head {
   flex: 0 0 auto;
   display: flex;
@@ -195,14 +258,9 @@ html:not(.layout-compact) .model-dock .sketch-card > .sketch-menu { flex: 1 1 ca
 html:not(.layout-compact) .model-dock .sketch-card > .sketch-menu > .btn { width: 100%; }
 html:not(.layout-compact) .model-dock .sketch-card .btn { justify-content: center; }
 
-/* History: below the tool, it gives way first on a short window, and keeps its header and a row. */
-html:not(.layout-compact) .model-dock .model-history {
-  flex: 0 8 auto;
-  min-height: 0;
-  padding: var(--space-1) var(--space-2) var(--space-2);
-  border-bottom: 1px solid var(--line);
-}
-html:not(.layout-compact) .model-dock .model-history:not([data-collapsed="1"]) { min-height: 96px; }
+/* History's position and recipe lines stay with its header, so they show while the tree is folded. */
+html:not(.layout-compact) .model-dock .model-history { padding-bottom: var(--space-1); }
+html:not(.layout-compact) .model-dock .model-history > :not(.model-history-toggle) { margin-inline: var(--space-2); }
 .model-history-toggle, .model-params-toggle {
   display: flex;
   align-items: center;
@@ -211,13 +269,7 @@ html:not(.layout-compact) .model-dock .model-history:not([data-collapsed="1"]) {
   height: 30px;
 }
 /* Parameters, under History as in Onshape. */
-html:not(.layout-compact) .model-dock .model-params {
-  flex: 0 4 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-1) var(--space-2) var(--space-2);
-}
+html:not(.layout-compact) .model-dock .model-params-main { flex: 1 1 auto; padding: var(--space-2); }
 .model-params-head { display: flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; }
 .model-params-head .model-params-toggle { flex: 1 1 auto; min-width: 0; }
 .model-params-head #modelParamsRebuild { flex: 0 0 auto; height: var(--control-h-sm); }
@@ -249,17 +301,7 @@ html:not(.layout-compact) .model-dock .model-params-table tr:has([data-param-nam
 html:not(.layout-compact) .model-dock .model-params-table input { width: 100%; height: var(--control-h-sm); }
 
 /* Stress, under Parameters. The same fold as Parameters, and it starts hidden. */
-html:not(.layout-compact) .model-dock .model-stress {
-  flex: 0 4 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-1) var(--space-2) var(--space-2);
-  border-top: 1px solid var(--line);
-}
-html:not(.layout-compact) .model-dock .model-stress:not([hidden]) {
-  flex: 1 1 auto;
-}
+html:not(.layout-compact) .model-dock .model-stress .model-params-main { padding-bottom: var(--space-2); }
 .model-stress .model-params-main:not([hidden]) {
   display: flex;
   flex-direction: column;
@@ -279,7 +321,7 @@ html:not(.layout-compact) .model-dock .model-stress:not([hidden]) {
 .stress-row { display: flex; flex-wrap: wrap; align-items: end; gap: 4px; }
 .model-stress label { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-1); min-width: 0; }
 .model-stress .stress-check { flex-direction: row; align-items: center; gap: 6px; }
-.model-stress input, .model-stress select { width: 100%; height: var(--control-h-sm); }
+.model-stress input:not([type=checkbox], [type=radio]), .model-stress select { width: 100%; height: var(--control-h-sm); }
 .model-stress .model-params-bar {
   flex: 0 0 auto;
   display: flex;

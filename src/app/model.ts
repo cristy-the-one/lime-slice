@@ -127,6 +127,7 @@ import {
   toolFrame,
   type PlacePhase,
 } from "../ui/model-chrome";
+import { mountDockPanes } from "../ui/dock-panes";
 import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
 import { lookPoseChanged, mountModelLook, resetModelLook, sectionFacePicked } from "../ui/model-look";
 import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
@@ -900,6 +901,8 @@ export function bindModelView() {
       return true;
     },
   });
+  // The tool, History, Parameters, and Stress share the dock's height; after History has its header.
+  mountDockPanes();
   // --- A10. Section view and colour by step, from the View menu in the model foot.
   if (fx.model) {
     mountModelLook({
