@@ -56,15 +56,22 @@ jobs:
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
       - name: Install Playwright Chromium
-        # A stuck apt mirror once held this step for over an hour. Each try
-        # gets five minutes, and a hung or failed try runs once more.
-        timeout-minutes: 12
+        # A stuck apt mirror once held this step for over an hour, and on
+        # 2026-10-22 a crawling one ran out two five-minute tries. apt now gives
+        # up on a silent mirror itself. The system packages are fonts and
+        # upgrades the runner image can do without, so when they don't arrive
+        # in ten minutes the browser goes in alone. A killed install leaves its
+        # apt-get running as root with the dpkg lock, so that is stopped first.
+        timeout-minutes: 18
         run: |
-          for attempt in 1 2; do
-            timeout 300 npx playwright install --with-deps chromium && exit 0
-            echo "Playwright install try $attempt failed"
-          done
-          exit 1
+          { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          timeout 600 npx playwright install --with-deps chromium && exit 0
+          echo "The system packages did not install; installing the browser without them"
+          sudo pkill -x apt-get || true
+          sudo pkill -x dpkg || true
+          sleep 2
+          sudo dpkg --configure -a || true
+          timeout 300 npx playwright install chromium
 
       - name: Playwright perf specs
         run: npm run test:perf
