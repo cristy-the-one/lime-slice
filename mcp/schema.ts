@@ -1570,7 +1570,7 @@ export const TOOLS: ToolSpec[] = [
         job: jobHandle,
         inline: { type: "boolean", description: "Default true." },
         layer: { type: "integer", minimum: 0, description: "Layer index." },
-        colourBy: { enum: ["feature", "speed", "weight"], description: "feature, speed, or weight." },
+        colourBy: { enum: ["feature", "speed", "weight", "stress", "safety"], description: "feature, speed, or weight; stress or safety colour each bead by the cell of the last sliced sim_run under it." },
         longEdge: { type: "integer", minimum: 32, maximum: 1024, description: "Pixels, 32–1024." },
         name: { type: "string", minLength: 1, description: "Workspace file." },
       },

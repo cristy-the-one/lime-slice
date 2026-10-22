@@ -6,6 +6,7 @@
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { ModelView, StressDraw } from "../model-view.ts";
 import { buildStudyBody, surfaceResult, type FaceTriangles, type StudyTarget } from "../sim/bridge-body.ts";
+import { rememberStressCells } from "../sim/stress-cells.ts";
 import type { MaterialCard } from "../sim/cards.ts";
 import { solveStudy } from "../sim/desktop-solve.ts";
 import { AS_SLICED, LABEL, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
@@ -696,6 +697,7 @@ async function run() {
   solvedFrom = body;
   previous = null;
   previousFrom = null;
+  rememberStressCells(hooks?.objectId() ?? null, text);
   if (scaleOverride == null) setNum("#stressScale", parsed.scale);
   setStatus("");
   syncDraw();

@@ -137,6 +137,40 @@ fn a_placed_turned_part_answers_in_its_own_frame() {
     let root = margins[1]["hotSpot"]["at"].as_array().unwrap();
     assert!(root[0].as_f64().unwrap() < 4.0, "{root:?}");
     assert_eq!(reply["report"]["representation"], "sliced");
+    // The Preview's lookup: a point in the part frame finds its cell. The
+    // pose put model (x, y, z) at part (110 − y, 110 + x, z): its rotation,
+    // then X and Y at the bed centre.
+    let cells = &reply["cells"];
+    let found = |model: V| -> Option<(f32, f32, f32)> {
+        let part = [110.0 - model[1], 110.0 + model[0], model[2]];
+        let m: Vec<Vec<f64>> = serde_json::from_value(cells["partToSlice"].clone()).unwrap();
+        let s: Vec<f64> = (0..3)
+            .map(|r| m[r][0] * part[0] + m[r][1] * part[1] + m[r][2] * part[2] + m[r][3])
+            .collect();
+        let h = cells["hXy"].as_f64().unwrap();
+        let origin: Vec<f64> = serde_json::from_value(cells["originXy"].clone()).unwrap();
+        let slabs: Vec<[f64; 2]> = serde_json::from_value(cells["slabs"].clone()).unwrap();
+        let i = ((s[0] - origin[0]) / h).floor() as i64;
+        let j = ((s[1] - origin[1]) / h).floor() as i64;
+        let k = slabs.iter().position(|b| s[2] >= b[0] && s[2] < b[1])? as i64;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(cells["cellsB64"].as_str().unwrap())
+            .unwrap();
+        raw.chunks_exact(24).find_map(|c| {
+            let w = |o: usize| i64::from(u32::from_le_bytes(c[o..o + 4].try_into().unwrap()));
+            let f = |o: usize| f32::from_le_bytes(c[o..o + 4].try_into().unwrap());
+            (w(0) == i && w(4) == j && w(8) == k).then(|| (f(12), f(16), f(20)))
+        })
+    };
+    let (phi, stress, safety) = found([10.0, 3.0, 2.0]).expect("mid-bar is a solid cell");
+    assert!(
+        phi > 0.5 && stress > 0.0 && safety > 0.0,
+        "{phi} {stress} {safety}"
+    );
+    assert!(
+        found([30.0, 3.0, 2.0]).is_none(),
+        "past the bar's end is no cell"
+    );
     assert_eq!(
         reply["surface"]["triangles"].as_u64().unwrap() as usize * 9,
         positions.len()

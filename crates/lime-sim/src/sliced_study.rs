@@ -378,33 +378,77 @@ pub struct DrawSurface {
     pub safety: Vec<f32>,
 }
 
+/// One solid cell's values, the ones the margins read.
+#[derive(Clone, Copy, Debug)]
+pub struct CellValue {
+    /// `(i, j, slab)` in the grid.
+    pub key: (u32, u32, u32),
+    pub volume_fraction: f64,
+    /// The cell's averaged von Mises: the smeared stress.
+    pub von_mises: f64,
+    /// That stress in the beads themselves: the smeared stress over the
+    /// fraction, which is what a strut of sparse infill carries.
+    pub bead_von_mises: f64,
+    pub safety: f64,
+    /// A boundary cell under half full.
+    pub staircase: bool,
+}
+
+/// Every solid cell's values for the first load case at the first cell size.
+pub fn cell_values(report: &SlicedReport, card: &Card) -> Vec<CellValue> {
+    let (Some(solution), Some(mesh)) = (report.solution.as_ref(), report.mesh.as_ref()) else {
+        return Vec::new();
+    };
+    let allow = card.material().allowables();
+    let axis = [0.0, 0.0, 1.0];
+    cell_stresses(solution, mesh)
+        .into_iter()
+        .map(|cell| {
+            let ctx = mesh.cells[cell.element].context(axis);
+            let safety = match &card.beads {
+                Some(b) => {
+                    BeadMaxStress { beads: b }
+                        .safety_governed(&Stress { v: cell.stress }, &ctx)
+                        .0
+                }
+                None => MaxStress.safety(&Stress { v: cell.stress }, &allow, &ctx),
+            };
+            let phi = mesh.cells[cell.element].volume_fraction;
+            let von_mises = crate::material::von_mises(&cell.stress);
+            CellValue {
+                key: mesh.cell_of[cell.element],
+                volume_fraction: phi,
+                von_mises,
+                bead_von_mises: von_mises / phi.max(0.05),
+                safety: if safety.is_finite() {
+                    safety.min(1.0e6)
+                } else {
+                    1.0e6
+                },
+                staircase: cell.staircase,
+            }
+        })
+        .collect()
+}
+
 /// The first load case's surface at the first cell size.
 pub fn draw_surface(report: &SlicedReport, card: &Card) -> Option<DrawSurface> {
     let solution = report.solution.as_ref()?;
     let mesh = report.mesh.as_ref()?;
     let to = Affine { m: report.frame };
-    let allow = card.material().allowables();
-    let axis = [0.0, 0.0, 1.0];
-    // Cell averages, by element: each cell's six elements share its value.
-    let mut by_cell: std::collections::HashMap<(u32, u32, u32), (f32, f32)> = Default::default();
-    for cell in cell_stresses(solution, mesh) {
-        let ctx = mesh.cells[cell.element].context(axis);
-        let sf = match &card.beads {
-            Some(b) => {
-                BeadMaxStress { beads: b }
-                    .safety_governed(&Stress { v: cell.stress }, &ctx)
-                    .0
-            }
-            None => MaxStress.safety(&Stress { v: cell.stress }, &allow, &ctx),
-        };
-        let (vm, sf) = if cell.staircase {
-            (0.0, f64::INFINITY)
-        } else {
-            (crate::material::von_mises(&cell.stress), sf)
-        };
-        let sf = if sf.is_finite() { sf.min(1.0e6) } else { 1.0e6 };
-        by_cell.insert(mesh.cell_of[cell.element], (vm as f32, sf as f32));
-    }
+    // Each cell's six elements share its value. A staircase cell shows as
+    // unloaded rather than as its corner peaks.
+    let by_cell: std::collections::HashMap<(u32, u32, u32), (f32, f32)> = cell_values(report, card)
+        .into_iter()
+        .map(|c| {
+            let shown = if c.staircase {
+                (0.0, 1.0e6)
+            } else {
+                (c.von_mises as f32, c.safety as f32)
+            };
+            (c.key, shown)
+        })
+        .collect();
     let mut out = DrawSurface::default();
     for face in boundary_faces(&mesh.mesh) {
         let (vm, sf) = by_cell

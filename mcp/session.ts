@@ -46,7 +46,8 @@ import { seamRequestFields, type SeamDisk } from "../src/seam-paint.ts";
 import { addDiskToRegion, MAX_REINFORCE_REGIONS, normalInfillDensity, reinforcementRequestFields, totalReinforceDisks, type ReinforceDisk, type ReinforceRegion } from "../src/reinforcement.ts";
 import { coverRegion, onSelection, selectTriangles, type RegionQuery } from "../src/paint-region.ts";
 import type { PathColumns } from "../src/preview-wire.ts";
-import type { ColorMode } from "../src/colors.ts";
+import { readsStress, type ColorMode } from "../src/colors.ts";
+import { parseStressCells, type StressCells } from "../src/sim/stress-cells.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
@@ -89,7 +90,7 @@ import { openInApp, systemOpener, type AppOpener } from "./app-open.ts";
 import { mirror, type BridgeLink } from "./bridge-client.ts";
 import { occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
-import { layerPaths, pathsPng, pathsSvg } from "./layer-out.ts";
+import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts";
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { pngImage, withImages, type InlineImage } from "./inline.ts";
 import { printFrame } from "../src/model-check.ts";
@@ -259,6 +260,9 @@ interface WorkJob {
   result?: Record<string, unknown>;
   error?: string;
 }
+
+/** `layer_image` coloured by stress before any sliced study. */
+const STRESS_LAYER_NEEDS = "Run sim_run on a sliced study of this object, then colour by stress or safety.";
 
 export interface PlateObject {
   id: string;
@@ -771,6 +775,8 @@ export class Session {
   private sourcePath = "";
   private profileTouched = false;
   private lastBridge: Record<string, unknown> | null = null;
+  /** The last sliced study's cells, for `layer_image`'s stress and safety colours. */
+  private stressCells: StressCells | null = null;
   private lastPreview: ReturnType<typeof rememberSolid> | null = null;
   private undoStack: PlateSnap[] = [];
   private redoStack: PlateSnap[] = [];
@@ -5962,9 +5968,19 @@ export class Session {
   private layerImage(input: Record<string, unknown>): Record<string, unknown> {
     const layer = this.layerColumns(input);
     if ("reason" in layer) return { ok: false, reason: layer.reason };
-    const colourBy: ColorMode = input.colourBy === "speed" || input.colourBy === "weight" ? input.colourBy : "feature";
+    const colourBy: ColorMode = input.colourBy === "speed" || input.colourBy === "weight" || input.colourBy === "stress" || input.colourBy === "safety" ? input.colourBy : "feature";
+    let stress: LayerStress | undefined;
+    if (readsStress(colourBy)) {
+      const cells = this.stressCells;
+      if (!cells) return { ok: false, reason: STRESS_LAYER_NEEDS };
+      const objects = this.finished(typeof input.job === "string" ? input.job : undefined)?.wire?.objects;
+      const ids = Array.isArray(objects) ? objects.map((o) => (o && typeof o === "object" ? (o as { id?: unknown }).id : undefined)) : null;
+      // A plate reply names its objects; a one-object reply is the studied object's.
+      const studied = (object: number) => !ids || cells.objectId === null || ids[object] === cells.objectId;
+      stress = { cells, studied, layerZ: layer.z };
+    }
     const paths = layerPaths(layer.paths, layer.z, 0.05);
-    const png = pathsPng(paths, typeof input.longEdge === "number" ? input.longEdge : 256, colourBy);
+    const png = pathsPng(paths, typeof input.longEdge === "number" ? input.longEdge : 256, colourBy, stress);
     const path = resolveWrite(typeof input.name === "string" ? input.name : `layer-${layer.index}.png`, ".png");
     writeFileSync(path, png);
     const body = { ok: true, path, bytes: png.byteLength, sha256: createHash("sha256").update(png).digest("hex") };
@@ -6505,6 +6521,7 @@ export class Session {
     } catch (err) {
       return { ok: false, reason: err instanceof Error && err.message ? err.message : "The stress solve did not finish." };
     }
+    this.stressCells = parseStressCells(text, obj.id) ?? this.stressCells;
     return slicedRunReply(text);
   }
 

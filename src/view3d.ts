@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { syncBedGrid } from "./bed-grid";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { featureColor, SPEED_RAMP, SPEED_RANGE_MM_S, WEIGHT_RAMP, type ColorMode, type Ramp } from "./colors";
+import type { StressCells } from "./sim/stress-cells";
+import { featureColor, OTHER_COLOR, SAFETY_RAMP, SAFETY_RANGE, SPEED_RAMP, SPEED_RANGE_MM_S, STRESS_RAMP, WEIGHT_RAMP, type ColorMode, type Ramp } from "./colors";
 import { buildCutPlane, disposeTree, previewFrame, splitDragAt } from "./cut-plane";
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
@@ -62,6 +63,12 @@ export interface SliceView3d {
   setShowTravel(show: boolean): void;
   setHidden(kinds: ReadonlySet<string>): void;
   setColorMode(mode: ColorMode): void;
+  /**
+   * The sliced stress result the stress and safety colour modes read, and which
+   * plate objects it is of; null clears it. Each fragment of a bead looks up the
+   * cell it sits in, so a long bead changes colour where its cells do.
+   */
+  setStressField(cells: StressCells | null, studied: (object: number) => boolean): void;
   setPlane(plane: { axis: "x" | "y"; at: number } | null): void;
   onPlane(cb: ((at: number) => void) | null): void;
   setBedOpacity(opacity: number): void;
@@ -101,6 +108,7 @@ const noopView: SliceView3d = {
   setShowTravel() {},
   setHidden() {},
   setColorMode() {},
+  setStressField() {},
   setPlane() {},
   onPlane() {},
   setBedOpacity() {},
@@ -245,8 +253,18 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     palette: { value: new Float32Array(MAX_KINDS * 3) },
     hiddenKinds: { value: new Float32Array(MAX_KINDS) },
     mode: { value: 0 },
+    valuePeak: { value: 1 },
+    stressGrid: { value: emptyGrid() },
+    slabLut: { value: emptyLut() },
+    partToSlice: { value: new THREE.Matrix4() },
+    gridOrigin: { value: new THREE.Vector2() },
+    gridH: { value: 1 },
+    gridDims: { value: new THREE.Vector3(1, 1, 1) },
+    lutZ: { value: new THREE.Vector3(0, 1, 1) },
+    centre: { value: new THREE.Vector2() },
     sectionPlane,
   };
+  let stressStudied: ((object: number) => boolean) | null = null;
   const marginMat = pathMaterial(pathUniforms, MARGIN_SHADE, 1, { side: THREE.DoubleSide });
   const faceMat = pathMaterial(pathUniforms, 1, 1, {
     side: THREE.DoubleSide,
@@ -796,6 +814,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
         first += chunk.indices.length;
       }
       dropChunks(shown.values());
+      pathUniforms.centre.value.set(origin.cx, origin.cy);
+      for (const meshes of chunks) markStudied(meshes, stressStudied);
       const size = placeBed(buffers.span, buffers.centerX, buffers.centerY);
       if (buffers.frame !== framed) {
         framed = buffers.frame;
@@ -816,7 +836,13 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       requestRender();
     },
     setColorMode(mode) {
-      pathUniforms.mode.value = mode === "weight" ? 1 : mode === "speed" ? 2 : 0;
+      pathUniforms.mode.value = mode === "weight" ? 1 : mode === "speed" ? 2 : mode === "stress" ? 3 : mode === "safety" ? 4 : 0;
+      requestRender();
+    },
+    setStressField(cells, studied) {
+      stressStudied = cells ? studied : null;
+      loadStressField(pathUniforms, cells);
+      for (const meshes of chunks) markStudied(meshes, stressStudied);
       requestRender();
     },
     setRange(nextLow, nextHigh) {
@@ -992,6 +1018,8 @@ interface PointDraw {
   meshes: (THREE.Mesh | THREE.LineSegments)[];
   xyz: THREE.InstancedInterleavedBuffer;
   style: THREE.InstancedInterleavedBuffer;
+  /** Stress and safety factor of the segment starting at each point; −1 has no reading. */
+  values: THREE.InstancedInterleavedBuffer;
   /** Point the instance attributes start at. */
   from: number;
 }
@@ -1021,8 +1049,99 @@ function pointDraw(run: PointRun, meshes: (THREE.Mesh | THREE.LineSegments)[]): 
     meshes,
     xyz: new THREE.InstancedInterleavedBuffer(run.xyz, 3),
     style: new THREE.InstancedInterleavedBuffer(run.style, STYLE_WORDS),
+    values: new THREE.InstancedInterleavedBuffer(new Float32Array((run.xyz.length / 3) * 2).fill(-1), 2),
     from: -1,
   };
+}
+
+/** Whether each bead segment belongs to the studied object: 1 if it does, −1 if not. */
+function markStudied(meshes: ChunkMeshes, studied: ((object: number) => boolean) | null) {
+  const values = meshes.beads.values.array as Float32Array;
+  values.fill(studied?.(meshes.chunk.object) ? 1 : -1);
+  meshes.beads.values.needsUpdate = true;
+}
+
+function emptyGrid(): THREE.Data3DTexture {
+  const texture = new THREE.Data3DTexture(new Float32Array([-1, -1]), 1, 1, 1);
+  texture.format = THREE.RGFormat;
+  texture.type = THREE.FloatType;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function emptyLut(): THREE.DataTexture {
+  const texture = new THREE.DataTexture(new Float32Array([-1]), 1, 1, THREE.RedFormat, THREE.FloatType);
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** Fine Z steps per slab of the thinnest slab, for the slab lookup table. */
+const LUT_PER_SLAB = 4;
+const LUT_MAX = 8192;
+
+/**
+ * The cells as textures the fragment shader reads: stress and safety per
+ * `(i, j, slab)`, −1 where there is no cell, and a table from fine Z steps to
+ * slab indices, since slabs are whole layers and not evenly spaced.
+ */
+function loadStressField(uniforms: Record<string, THREE.IUniform>, cells: StressCells | null) {
+  const old = [uniforms.stressGrid.value, uniforms.slabLut.value] as THREE.Texture[];
+  if (!cells || cells.values.size === 0 || cells.slabs.length === 0) {
+    uniforms.stressGrid.value = emptyGrid();
+    uniforms.slabLut.value = emptyLut();
+    uniforms.gridDims.value.set(1, 1, 1);
+    for (const texture of old) texture.dispose();
+    return;
+  }
+  let nx = 1;
+  let ny = 1;
+  for (const key of cells.values.keys()) {
+    const [i, j] = key.split(",").map(Number);
+    nx = Math.max(nx, i + 1);
+    ny = Math.max(ny, j + 1);
+  }
+  const nz = cells.slabs.length;
+  const grid = new Float32Array(nx * ny * nz * 2).fill(-1);
+  for (const [key, [, stress, safety]] of cells.values) {
+    const [i, j, k] = key.split(",").map(Number);
+    const at = ((k * ny + j) * nx + i) * 2;
+    grid[at] = stress;
+    grid[at + 1] = safety;
+  }
+  const texture = new THREE.Data3DTexture(grid, nx, ny, nz);
+  texture.format = THREE.RGFormat;
+  texture.type = THREE.FloatType;
+  texture.minFilter = THREE.NearestFilter;
+  texture.magFilter = THREE.NearestFilter;
+  texture.needsUpdate = true;
+  const z0 = cells.slabs[0][0];
+  const z1 = cells.slabs[nz - 1][1];
+  const thinnest = Math.min(...cells.slabs.map(([lo, hi]) => hi - lo));
+  const count = Math.min(LUT_MAX, Math.max(1, Math.ceil(((z1 - z0) / Math.max(thinnest, 1e-3)) * LUT_PER_SLAB)));
+  const step = (z1 - z0) / count;
+  const lut = new Float32Array(count).fill(-1);
+  for (let n = 0, k = 0; n < count; n++) {
+    const z = z0 + (n + 0.5) * step;
+    while (k < nz && z >= cells.slabs[k][1]) k++;
+    if (k < nz && z >= cells.slabs[k][0]) lut[n] = k;
+  }
+  const lutTexture = new THREE.DataTexture(lut, count, 1, THREE.RedFormat, THREE.FloatType);
+  lutTexture.needsUpdate = true;
+  uniforms.stressGrid.value = texture;
+  uniforms.slabLut.value = lutTexture;
+  const m = cells.partToSlice;
+  uniforms.partToSlice.value.set(
+    m[0][0], m[0][1], m[0][2], m[0][3],
+    m[1][0], m[1][1], m[1][2], m[1][3],
+    m[2][0], m[2][1], m[2][2], m[2][3],
+    0, 0, 0, 1,
+  );
+  uniforms.gridOrigin.value.set(cells.origin[0], cells.origin[1]);
+  uniforms.gridH.value = cells.h;
+  uniforms.gridDims.value.set(nx, ny, nz);
+  uniforms.lutZ.value.set(z0, step, count);
+  uniforms.valuePeak.value = cells.peakMpa > 0 ? cells.peakMpa : 1;
+  for (const texture of old) texture.dispose();
 }
 
 function instanced(corners: number[], index: number[] | null, sphere: THREE.Sphere) {
@@ -1054,6 +1173,7 @@ function showLayers(draw: PointDraw, run: PointRun, lo: number, hi: number) {
     geometry.setAttribute("segA", new THREE.InterleavedBufferAttribute(draw.xyz, 3, from * 3));
     geometry.setAttribute("segB", new THREE.InterleavedBufferAttribute(draw.xyz, 3, (from + 1) * 3));
     geometry.setAttribute("segStyle", new THREE.InterleavedBufferAttribute(draw.style, STYLE_WORDS, from * STYLE_WORDS));
+    geometry.setAttribute("segValue", new THREE.InterleavedBufferAttribute(draw.values, 2, from * 2));
   }
 }
 
@@ -1064,6 +1184,7 @@ const rgb = (hex: string) => `vec3(${linearRgb(hex).map((v) => v.toFixed(4)).joi
 const rampGlsl = (ramp: Ramp, t: string) =>
   `mix(mix(${rgb(ramp[0])}, ${rgb(ramp[1])}, clamp((${t}) * 2.0, 0.0, 1.0)), ${rgb(ramp[2])}, clamp((${t}) * 2.0 - 1.0, 0.0, 1.0))`;
 const [SPEED_LO, SPEED_HI] = SPEED_RANGE_MM_S;
+const [SAFETY_LO, SAFETY_HI] = SAFETY_RANGE;
 
 /**
  * Light on the beads, fixed to the camera so orbiting does not relight them: a key from the upper left,
@@ -1094,13 +1215,18 @@ attribute vec3 corner;
 attribute vec3 segA;
 attribute vec3 segB;
 attribute vec4 segStyle;
+attribute vec2 segValue;
 uniform vec3 palette[${MAX_KINDS}];
 uniform float hiddenKinds[${MAX_KINDS}];
 uniform int mode;
 uniform float shade;
 uniform vec4 sectionPlane;
+uniform vec2 centre;
 varying vec3 vColor;
 varying float vSectionDist;
+varying vec3 vPart;
+varying float vLit;
+varying float vStudied;
 void main() {
   float slot = floor(segStyle.x / ${KIND_SHIFT.toFixed(1)});
   int kind = int(slot);
@@ -1123,23 +1249,58 @@ void main() {
   vec3 color = palette[kind];
   if (mode == 1) color = ${rampGlsl(WEIGHT_RAMP, "weight")};
   if (mode == 2) color = ${rampGlsl(SPEED_RAMP, `clamp((speed - ${SPEED_LO.toFixed(1)}) / ${(SPEED_HI - SPEED_LO).toFixed(1)}, 0.0, 1.0)`)};
+  // Stress and safety are looked up per fragment; scene [x − cx, z, −(y − cy)] is part (x, y, z).
+  vPart = vec3(point.x + centre.x, centre.y - point.z, point.y);
+  vStudied = segValue.x;
   // A bead is a rounded roll: the crown (corner z 0) tilts outward toward its edge, the flank (z 1) faces sideways.
   vec3 outward = vec3(side.x, 0.0, side.y) * sign(corner.y);
   float tilt = mix(abs(corner.y) * ${CROWN_TILT.toFixed(2)}, 1.0, corner.z);
   vec3 normal = normalize(vec3(0.0, 1.0 - corner.z * ${FLANK_SAG.toFixed(2)}, 0.0) + outward * tilt);
   vec3 view = normalize(normalMatrix * normal);
   float lit = ${AMBIENT.toFixed(2)} + ${KEY.toFixed(2)} * max(dot(view, ${KEY_DIR}), 0.0) + ${FILL.toFixed(2)} * max(dot(view, ${FILL_DIR}), 0.0);
-  vColor = color * shade * lit * (1.0 - ${LAYER_ALTERNATION.toFixed(2)} * odd);
+  vLit = shade * lit * (1.0 - ${LAYER_ALTERNATION.toFixed(2)} * odd);
+  vColor = color * vLit;
   gl_Position = projectionMatrix * mvPosition;
 }`;
 
 const PATH_FRAGMENT = `
 uniform float alpha;
+uniform int mode;
+uniform float valuePeak;
+uniform highp sampler3D stressGrid;
+uniform sampler2D slabLut;
+uniform mat4 partToSlice;
+uniform vec2 gridOrigin;
+uniform float gridH;
+uniform vec3 gridDims;
+uniform vec3 lutZ;
 varying vec3 vColor;
 varying float vSectionDist;
+varying vec3 vPart;
+varying float vLit;
+varying float vStudied;
+/** The cell under a part-frame point: stress and safety, or −1 outside the solved part. */
+vec2 stressAt(vec3 part) {
+  vec3 s = (partToSlice * vec4(part, 1.0)).xyz;
+  float i = floor((s.x - gridOrigin.x) / gridH);
+  float j = floor((s.y - gridOrigin.y) / gridH);
+  float n = floor((s.z - lutZ.x) / lutZ.y);
+  if (i < 0.0 || j < 0.0 || n < 0.0 || i >= gridDims.x || j >= gridDims.y || n >= lutZ.z) return vec2(-1.0);
+  float k = texelFetch(slabLut, ivec2(int(n), 0), 0).r;
+  if (k < 0.0) return vec2(-1.0);
+  return texelFetch(stressGrid, ivec3(int(i), int(j), int(k)), 0).rg;
+}
 void main() {
   if (vSectionDist < -0.0001) discard;
-  gl_FragColor = vec4(vColor, alpha);
+  vec3 color = vColor;
+  if (mode >= 3) {
+    vec2 cell = vStudied > 0.0 ? stressAt(vPart) : vec2(-1.0);
+    vec3 base = ${rgb(OTHER_COLOR)};
+    if (mode == 3 && cell.x >= 0.0) base = ${rampGlsl(STRESS_RAMP, "clamp(cell.x / valuePeak, 0.0, 1.0)")};
+    if (mode == 4 && cell.y >= 0.0) base = ${rampGlsl(SAFETY_RAMP, `clamp((cell.y - ${SAFETY_LO.toFixed(1)}) / ${(SAFETY_HI - SAFETY_LO).toFixed(1)}, 0.0, 1.0)`)};
+    color = base * vLit;
+  }
+  gl_FragColor = vec4(color, alpha);
   #include <colorspace_fragment>
 }`;
 

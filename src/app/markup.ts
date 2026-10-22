@@ -183,8 +183,11 @@ export function mountMarkup(root: HTMLElement) {
             <option value="feature">Feature</option>
             <option value="weight">Blend weight</option>
             <option value="speed">Speed</option>
+            <option value="stress" disabled>Stress (as sliced)</option>
+            <option value="safety" disabled>Safety factor (as sliced)</option>
           </select>
         </label>
+        <p class="fly-note" id="colorStressNote"></p>
       </div>
       <div class="rail-fly" id="flyFeatures" role="dialog" aria-label="Features shown" hidden>
         <h3>Features shown</h3>

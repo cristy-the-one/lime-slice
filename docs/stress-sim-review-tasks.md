@@ -537,8 +537,7 @@ As specified above, with Rust tests:
 ### Still open in the sliced plan
 
 - **L5:** `reslice` on `sim_sweep` (Grok, after SR-21).
-- **L6:** Preview `colourBy: stress / safety` on the sliced layers. Only the Model heatmap exists so far. Grok, after
-  SR-15 and SR-16.
+- **L6:** done by Claude on the owner's ask, 2026-10-22. See "L6 notes" below.
 
 ### Order
 
@@ -546,3 +545,45 @@ SR-15 and SR-16 first. They decide whether a real solve shows the right thing. T
 drawing, then SR-17, SR-21, SR-19, SR-20, and then L5 and L6.
 
 Nothing new for Claude in this round, unless SR-20 needs the engine.
+
+## L6 notes, and two items for Grok (Claude, 2026-10-22)
+
+**What L6 adds:**
+- **The bridge reply has a `cells` block:**
+  - `partToSlice`, `originXy`, `hXy` and `slabs`;
+  - `cellsB64`, with `u32 i, j, slab` and `f32` fraction, bead von Mises and safety per solid cell.
+- **A Preview toolpath point in its object's part frame finds its cell.** The part frame doesn't depend on where the
+  object sits on the plate, so a plate slice's layers read a study sliced alone.
+- **The stress shown is the stress in the beads,** the cell's average over its fraction, so sparse infill reads what
+  its struts carry.
+- **Desktop:** `src/sim/stress-cells.ts` keeps the last solve's cells. The panel calls `rememberStressCells` after a
+  successful Run: one line in `stress.ts`.
+- **The Preview's Color by menu** has "Stress (as sliced)" and "Safety factor (as sliced)":
+  - they're disabled, with the reason, until a study ran;
+  - the note under the menu reads "In-house estimate · as sliced · <trust>." and the scale.
+- **Colouring follows the cells exactly:**
+  - **2D** cuts each bead where it crosses a cell line, and each piece takes its own cell;
+  - **3D** looks the cell up per fragment, from a 3D texture of the grid, so a long bead changes colour where its
+    cells do;
+  - colouring a whole segment by its midpoint painted a 20 mm infill line one colour, which was wrong.
+- **MCP:** `layer_image` takes `colourBy: stress | safety`, from the session's last sliced `sim_run`.
+- **Tests:**
+  - the bridge's frame round-trip through a pose;
+  - `src/sim/stress-cells.test.ts`;
+  - `mcp/layer-stress.test.ts`, added to the CI list;
+  - `e2e/preview-stress.spec.ts`, which checks the 2D split at the cell line, the 3D shader and the legend.
+- **`e2e/fixtures/sim-study-box.json`** was regenerated (`LIME_STRESS_OUT=1`), so it carries `cells`.
+
+### SR-22 (P0, Grok). `tsc -p mcp` fails on the branch
+
+CI's MCP job runs it, so the branch can't merge as is. At `f035fdd`:
+- `mcp/request.test.ts(204)`
+- `mcp/session.ts`: three errors, around `mergeParams`, the patch key and `slicerSeconds` in the sweep code
+- `mcp/sim-sliced.test.ts(163, 231)`
+
+None of these lines are in L6.
+
+### SR-23 (P1, Grok). The sim tests aren't in CI
+
+`mcp/sim.test.ts` and `mcp/sim-sliced.test.ts` are missing from the `mcp` job's list in `.github/workflows/ci.yml`.
+Add them next to `mcp/layer-stress.test.ts`. `sim-sliced` needs the release engine that job already builds.
