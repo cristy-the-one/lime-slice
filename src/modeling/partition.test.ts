@@ -188,6 +188,26 @@ const gridBox: Box = { min: [10, 20, 30], max: [510, 320, 50] };
 const offset = fitPrinter({ box: gridBox, target: lime, marginMm: 5, maxPieces: 12 });
 check("planes follow a box that does not start at zero", near(offset.cuts[0]!.origin[0], 10 + 500 / 3) && near(offset.cuts[0]!.origin[1], 170) && near(offset.cuts[0]!.origin[2], 40));
 check("a margin that eats the volume says so", show(fitPrinter({ box: bar, target: lime, marginMm: 120, maxPieces: 12, printerName: "Lime 220" }).notes) === show(["The margin leaves no room in the Lime 220 bed."]));
+// --- Fit the printer, turning the part for an export target.
+
+const telo: Box = { min: [0, 0, 0], max: [97, 680, 150] };
+const teloForm4 = fitPrinter({ box: telo, target: form4, marginMm: 10, maxPieces: 12, printerName: "Formlabs Form 4" });
+check("a 680 mm bar lying along the narrow axis is four pieces for the Form 4, not seven", teloForm4.pieces === 4 && teloForm4.cuts.length === 3, String(teloForm4.pieces));
+check("the cuts stay planes of the part's own frame, across its 680 mm length", teloForm4.cuts.every((c) => show(c.normal) === "[0,1,0]") && nearAll(teloForm4.cuts.map((c) => c.origin[1]), [170, 340, 510]), show(teloForm4.cuts.map((c) => c.origin)));
+check("the card's sentence names the axis that was matched", teloForm4.notes[0] === "Cut for the Formlabs Form 4 with the part's 680 mm along the volume's 210 mm height: 4 parts.", show(teloForm4.notes));
+const teloFdm = fitPrinter({ box: telo, target: lime, marginMm: 5, maxPieces: 12, printerName: "Lime 220" });
+check("an fdm target is not turned: the same three cuts and the same sentence as before", teloFdm.pieces === 4 && teloFdm.cuts.length === 3 && show(teloFdm.notes) === show(["This part is 680 mm along Y. The Lime 220 bed fits 210 mm. Three cuts are proposed."]), show(teloFdm.notes));
+const fdmAsResin = fitPrinter({ box: telo, target: { ...form4, process: "fdm" }, marginMm: 10, maxPieces: 12, printerName: "Form 4" });
+check("the volume's shape alone does not turn an fdm part", fdmAsResin.pieces === 7 && fdmAsResin.cuts.length === 6, String(fdmAsResin.pieces));
+const flat: Box = { min: [0, 0, 0], max: [680, 97, 150] };
+const flatForm4 = fitPrinter({ box: flat, target: form4, marginMm: 10, maxPieces: 12, printerName: "Form 4" });
+check("a tie keeps the plate's orientation", flatForm4.pieces === 4 && flatForm4.notes.every((n) => !n.startsWith("Cut for")) && flatForm4.cuts.every((c) => show(c.normal) === "[1,0,0]"), show(flatForm4.notes));
+check("a part that fits the plate's orientation is not turned", fitPrinter({ box: { min: [0, 0, 0], max: [100, 100, 180] }, target: form4, marginMm: 10, maxPieces: 12, printerName: "Form 4" }).notes[0] === "This part fits the Form 4 volume.");
+const tooLong = fitPrinter({ box: { min: [0, 0, 0], max: [97, 3000, 150] }, target: form4, marginMm: 10, maxPieces: 12, printerName: "Form 4" });
+check("over max pieces counts the best turn", tooLong.cuts.length === 0 && tooLong.notes[0] === "This part would take 16 pieces. Max pieces is 12. No cuts are proposed.", show(tooLong.notes));
+const tiltTurned = fitPrinter({ box: { min: [0, 0, 0], max: [97, 680, 150] }, target: form4, marginMm: 10, maxPieces: 12, printerName: "Form 4" });
+check("the tilt note reads the height of the part axis that stands up in the volume", tiltTurned.notes[2] === "Piece 1 is 170 mm tall. Tilted in PreForm it may not fit; a fourth cut would leave room.", show(tiltTurned.notes));
+
 check("split_reject margin is 2 % with a 0.25 mm floor", splitRejectMargin(100) === 2 && splitRejectMargin(5) === 0.25 && near(splitRejectMargin(20), 0.4));
 
 // --- Shaped cuts are parallel.

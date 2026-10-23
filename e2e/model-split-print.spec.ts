@@ -67,6 +67,9 @@ function pinsSolid(count: number): MockSolid {
 /** A 400 mm tall column: the Form 4 builds 210 mm, so it takes three pieces across Z. */
 const COLUMN = boxSolid([20, 20, 400]);
 
+/** The Telo's cut: 680 mm along Y, which is 7 pieces against the Form 4's 125 mm depth and 4 once the bar stands in its 210 mm height. */
+const LONG_BAR = boxSolid([97, 680, 150]);
+
 /** The boxes between the cuts across the axis they are square to, as the kernel orders them: negative side first. */
 function piecesOf(parent: MockSolid, cuts: Cut[]): MockSolid[] {
   const { min, max } = boxOf(parent);
@@ -399,6 +402,20 @@ test("Print on lists the plate's printer first and the Form 4 last; the Form 4 f
   if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
   await page.waitForTimeout(400);
   await view(page, "card-form4");
+});
+
+test("Print on the Form 4 over a long bar turns it to the volume's height: four pieces, and the sentence says which axis", async ({ page }) => {
+  await openBar(page, false, LONG_BAR);
+  await openCard(page);
+  await expect(page.locator("#modelPartNote"), "for the plate's printer the bar is cut where it lies").toContainText("This part is 680 mm along Y.");
+  await target(page).selectOption("formlabs-form-4");
+  await expect(page.locator("#modelPartNote")).toHaveText(/^Cut for the Formlabs Form 4 with the part's 680 mm along the volume's 210 mm height: 4 parts\. This part is 680 mm along Y\./);
+  await expect(cuts(page), "three cuts across the bar's own Y").toHaveCount(3);
+  await expect(page.locator("#modelPartPieces li")).toHaveCount(4);
+  await expect(page.locator("#modelPartCuts .scrub-label").first()).toHaveText("At Y");
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await page.waitForTimeout(400);
+  await view(page, "card-form4-turned");
 });
 
 test("a new target keeps the cuts the user edited, and refreshes only the note", async ({ page }) => {

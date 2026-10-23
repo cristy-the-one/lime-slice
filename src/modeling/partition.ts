@@ -552,17 +552,49 @@ export interface FitResult {
   notes: string[];
 }
 
+/** Which volume axis each of the part's axes goes against: `[0, 1, 2]` leaves the part as it stands. */
+type Turn = readonly [Axis, Axis, Axis];
+
+const VOLUME_AXIS_NAMES = ["width", "depth", "height"] as const;
+const IDENTITY_TURN: Turn = [0, 1, 2];
+const ALL_TURNS: Turn[] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+
+function turnCounts(span: Vec3, volume: Vec3, turn: Turn, marginMm: number, beltAxis: Axis | undefined): { usable: number[]; counts: number[]; total: number } {
+  const usable = [0, 1, 2].map((i) => (beltAxis === i ? Infinity : volume[turn[i]!] - 2 * marginMm));
+  const counts = span.map((s, i) => (s <= usable[i]! ? 1 : Math.ceil(s / usable[i]! - 1e-9)));
+  return { usable, counts, total: counts.reduce((a, b) => a * b, 1) };
+}
+
+/** The turn that gives the fewest pieces for an export target; the plate's own orientation wins a tie, then the longest against the longest. */
+function bestTurn(span: Vec3, volume: Vec3, marginMm: number): Turn {
+  const longestFirst = (v: ArrayLike<number>) => [0, 1, 2].sort((a, b) => v[b]! - v[a]! || a - b);
+  const partRank = longestFirst(span);
+  const volumeRank = longestFirst(volume);
+  const matched: Axis[] = [0, 0, 0];
+  partRank.forEach((partAxis, rank) => { matched[partAxis] = volumeRank[rank] as Axis; });
+  const candidates: Turn[] = [IDENTITY_TURN, matched as unknown as Turn, ...ALL_TURNS];
+  let best = IDENTITY_TURN;
+  let bestTotal = turnCounts(span, volume, IDENTITY_TURN, marginMm, undefined).total;
+  for (const turn of candidates) {
+    const total = turnCounts(span, volume, turn, marginMm, undefined).total;
+    if (total < bestTotal) {
+      best = turn;
+      bestTotal = total;
+    }
+  }
+  return best;
+}
+
 export function fitPrinter(input: FitInput): FitResult {
   const { box, target } = input;
   const name = input.printerName ?? target.printer;
   const bed = target.process === "resin" ? "volume" : "bed";
   const span: Vec3 = [box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]];
-  const usable = [0, 1, 2].map((i) => (input.belt?.axis === i ? Infinity : target.volumeMm[i]! - 2 * input.marginMm));
-  if (usable.some((length) => length <= 0)) {
+  if ([0, 1, 2].some((i) => input.belt?.axis !== i && target.volumeMm[i]! - 2 * input.marginMm <= 0)) {
     return { cuts: [], pieces: 1, notes: [`The margin leaves no room in the ${name} ${bed}.`] };
   }
-  const counts = span.map((s, i) => (s <= usable[i]! ? 1 : Math.ceil(s / usable[i]! - 1e-9)));
-  const total = counts.reduce((a, b) => a * b, 1);
+  const turn: Turn = target.process !== "fdm" && !input.belt ? bestTurn(span, target.volumeMm, input.marginMm) : IDENTITY_TURN;
+  const { usable, counts, total } = turnCounts(span, target.volumeMm, turn, input.marginMm, input.belt?.axis);
   const maxPieces = clampPieces(input.maxPieces);
   if (total > maxPieces) {
     return {
@@ -576,6 +608,14 @@ export function fitPrinter(input: FitInput): FitResult {
     .sort((a, b) => span[b] - span[a] || a - b);
   const cuts: Cut[] = [];
   const notes: string[] = [];
+  const turned = turn.some((v, i) => v !== i);
+  if (turned && total > 1) {
+    const longest = ([0, 1, 2] as Axis[]).reduce((a, b) => (span[b] > span[a] ? b : a));
+    notes.push(
+      `Cut for the ${name} with the part's ${mm(span[longest])} mm along the volume's ${mm(target.volumeMm[turn[longest]])} mm ` +
+        `${VOLUME_AXIS_NAMES[turn[longest]]}: ${total} parts.`,
+    );
+  }
   const centre: Vec3 = [
     (box.min[0] + box.max[0]) / 2,
     (box.min[1] + box.max[1]) / 2,
@@ -601,13 +641,15 @@ export function fitPrinter(input: FitInput): FitResult {
     );
   }
   if (total === 1) notes.push(`This part fits the ${name} ${bed}.`);
-  if (target.process === "resin") notes.push(...resinHeightNotes(span, counts, usable[2]!, axes, cuts.length));
+  if (target.process === "resin") notes.push(...resinHeightNotes(span, counts, usable, axes, cuts.length, turn));
   return { cuts, pieces: total, notes };
 }
 
 /** One sentence per piece within 15 % of the usable height. Pieces are numbered in assembly order. */
-function resinHeightNotes(span: Vec3, counts: number[], usableHeight: number, axes: Axis[], cutCount: number): string[] {
-  const height = span[2] / counts[2]!;
+function resinHeightNotes(span: Vec3, counts: number[], usable: number[], axes: Axis[], cutCount: number, turn: Turn): string[] {
+  const up = turn.indexOf(2);
+  const usableHeight = usable[up]!;
+  const height = span[up]! / counts[up]!;
   if (!(height <= usableHeight) || !(height >= usableHeight * (1 - TILT_NEAR_FRACTION))) return [];
   const sizes = axes.length > 0 ? axes.map((a) => counts[a]!) : [1];
   const pieces = sizes.reduce((a, b) => a * b, 1);
