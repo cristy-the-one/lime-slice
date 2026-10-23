@@ -2155,6 +2155,8 @@ export function leaveModel() {
   closeSketchSession();
   endModelVisit();
   void writeSteps();
+  // Prepare's list notes a part split for an export target, which Model's steps decide.
+  refreshObjectList();
 }
 
 /** The object whose View settings (section, colour by step) are showing. */
@@ -4571,8 +4573,8 @@ function ghostId(): string | null {
  */
 function paintExplode(parts: ContextPart[]): ContextPart[] {
   const canvas = document.querySelector<HTMLElement>("#model");
-  const look = explodeLook();
   showExplode(!!open && canExplode(open.key, parts));
+  const look = explodeLook();
   const exploded = open && look.on ? explodeContext(open.objectId, open.key, boundsOf(open.solid.positions), objectPose(), parts, look.gapMm) : null;
   fx.model?.setTags(exploded?.tags ?? []);
   if (canvas) {
@@ -5769,6 +5771,23 @@ export function exportedPart(): string | null {
   return null;
 }
 
+/**
+ * Prepare's note on a plate object whose Model step is past a split to print for an export target: the pieces are held in
+ * Model, off the plate, so nothing in Prepare says the part is split. Null for any other object.
+ */
+export function exportSplitNote(objectId: string): string | null {
+  const key = state.plate.objects.find((obj) => obj.id === objectId)?.modelTree;
+  const tree = key ? modelTrees.get(key) : undefined;
+  if (!tree) return null;
+  let cut: { op: PartitionModelOp; parts: number } | null = null;
+  for (const id of pathTo(tree, tree.current)) {
+    const node = tree.nodes.get(id);
+    if (node?.op?.kind === "partition" && exportsPieces(node.op)) cut = { op: node.op, parts: (node.pieces?.length ?? 0) + 1 };
+  }
+  if (!cut) return null;
+  return `Split for the ${targetName(cut.op)} in Model, ${cut.parts} parts. The plate keeps it whole, and Slice and the 3MF wait while Model is on the split.`;
+}
+
 /** The op the tree stores for the card's cuts, in the solid's own frame, or why it cannot be cut. */
 function splitStored(typed: PartitionOp): ({ op: PartitionModelOp } & Placement) | { reason: string } | null {
   const solid = viewed();
@@ -6301,4 +6320,4 @@ async function post(payload: Body): Promise<Body> {
   }
 }
 
-Object.assign(fx, { refreshModelContext, commitModel, exportedPart, forgetModelTrees, followSelection, releaseModelTrees });
+Object.assign(fx, { refreshModelContext, commitModel, exportedPart, exportSplitNote,forgetModelTrees, followSelection, releaseModelTrees });
