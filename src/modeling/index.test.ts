@@ -15,7 +15,7 @@ const dir = new URL(".", import.meta.url);
 const library = readdirSync(dir)
   .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
   .sort();
-const expected = ["anchors.ts", "compose.ts", "expr.ts", "frames.ts", "macro.ts", "params.ts", "sweep.ts", "text.ts", "thin.ts"];
+const expected = ["anchors.ts", "compose.ts", "expr.ts", "frames.ts", "macro.ts", "params.ts", "partition.ts", "sweep.ts", "text.ts", "thin.ts"];
 if (library.join() !== expected.join()) {
   throw new Error(`src/modeling should be ${expected.join(", ")}, found ${library.join(", ")}`);
 }
