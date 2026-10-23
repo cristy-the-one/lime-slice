@@ -33,6 +33,7 @@ import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome, stale } from "./settings.ts";
 import { customGcodeNotice } from "../layer-actions.ts";
 import { setProjectTitle } from "./project-title.ts";
+import { projectFileName } from "../project-file-name.ts";
 import { session, state } from "./state.ts";
 
 /** A picture opened with the file. Kept when a later save cannot draw and the geometry is unchanged. */
@@ -91,7 +92,7 @@ export async function saveCurrentProject() {
     if (drawn) project.thumbnail = drawn;
   }
   if (!project.thumbnail && keptThumb?.meshHash === hash) project.thumbnail = keptThumb;
-  const name = `${state.mesh.name.replace(/\.(stl|3mf|step|stp|lime)$/i, "")}.lime`;
+  const name = projectFileName(session.projectTitle, state.mesh.name);
   const wrote = await saveProjectText(await encodeProject(project), name);
   if (!wrote) return;
   setProjectTitle(name);
