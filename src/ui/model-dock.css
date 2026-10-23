@@ -501,3 +501,53 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
   /* The floating rail sits at the view's left edge: the pick filter moves past it. */
   html:not(.layout-compact) .model-pick { left: 56px; }
 }
+
+/* --- Split to print (D10): a card of its own in the tool pane. While it holds the pane the tools' fields stand aside. --- */
+.model-panel[data-card] .model-panel-body > :not([data-card-for]) { display: none !important; }
+.model-panel[data-card] #modelWpPrint { display: none; }
+.model-split-print[hidden] { display: none !important; }
+.model-split-print .sp-fit { margin: 0 0 var(--space-2); color: var(--text); }
+.model-split-print .sp-fit[hidden] { display: none; }
+.model-split-print h4 { margin: 0; color: var(--text-dim); font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+.model-split-print .sp-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-2) 0 var(--space-1); }
+.model-split-print .sp-head h4 { flex: 1 1 auto; }
+/* The steps open under the heading, in the flow, so they never cover the controls below. */
+.model-split-print .sp-how { display: contents; }
+.model-split-print .sp-how .sketch-how-pop { order: 2; font-size: var(--fs-2); }
+.model-split-print .sp-cuts { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.model-split-print .sp-cut {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px 2px 2px var(--space-1);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+.model-split-print .sp-cut.is-on { border-color: var(--border-strong); background: var(--surface-2); }
+.model-split-print .sp-cut-pick { min-width: 46px; padding: 0 var(--space-1); border: 0; background: transparent; color: var(--text-dim); font-size: var(--fs-2); text-align: left; cursor: pointer; }
+.model-split-print .sp-cut.is-on .sp-cut-pick { color: var(--text); font-weight: 600; }
+.model-split-print .sp-cut-at { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-1); min-width: 0; color: var(--text-dim); font-size: var(--fs-1); }
+.model-split-print .sp-cut-at input {
+  width: 100%;
+  min-width: 0;
+  height: var(--control-h);
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text);
+  font: 500 var(--fs-2) / 1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.model-split-print .sp-unit { color: var(--text-faint); }
+.model-split-print .sp-cut-drop { width: 24px; min-width: 24px; height: 24px; padding: 0; color: var(--text-dim); }
+.model-split-print .sp-actions { margin-top: var(--space-2); }
+.model-split-print .sp-plane { margin-top: var(--space-3); }
+.model-split-print .sp-plane[hidden] { display: none; }
+.model-split-print .sp-plane h4 { margin-bottom: var(--space-1); }
+.model-split-print .sp-plane .model-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.model-split-print .sp-pieces-head { margin-top: var(--space-3); }
+.model-split-print .sp-pieces { margin: var(--space-1) 0 0; padding-left: 0; list-style: none; color: var(--text); font-size: var(--fs-2); line-height: 1.5; font-variant-numeric: tabular-nums; }
+.model-split-print .sp-pieces:empty { display: none; }
+.model-split-print .sketch-how-pop ol { margin: 0; padding-left: 0; }

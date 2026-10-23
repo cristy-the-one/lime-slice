@@ -466,6 +466,26 @@ export function makesParts(node: ModelNode | undefined): boolean {
   return !!node?.piece || (node?.pieces ?? []).some((key) => key != null);
 }
 
+/**
+ * --- D9. The steps a split to print's piece had after its root, which a rebuild of that piece replays, oldest first: those
+ * on the way to the step shown, then a branch kept broken under it by an earlier rebuild (its newest), so a step that did
+ * not build once is tried again rather than lost.
+ */
+export function keptSteps(tree: ModelTree): NodeId[] {
+  const steps = pathTo(tree, tree.current).slice(1);
+  let at = tree.current;
+  let broken = false;
+  for (;;) {
+    const below = childrenOf(tree, at).filter((id) => broken || tree.nodes.get(id)?.broken);
+    const next = below.at(-1);
+    if (next === undefined) break;
+    broken = true;
+    steps.push(next);
+    at = next;
+  }
+  return steps.filter((id) => tree.nodes.get(id)?.op);
+}
+
 /** How many parts a split to print made, read from its node's `pieces`. Undefined for any other step. */
 export function partsOf(node: Pick<ModelNode, "op" | "pieces">): number | undefined {
   return node.op?.kind === "partition" && node.pieces ? node.pieces.length + 1 : undefined;

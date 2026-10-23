@@ -686,6 +686,21 @@ export function addedSplit(plate: PlateState, mesh: IncomingMesh): PlateState | 
   return { objects: [...plate.objects, draft], selectedId: parent.id };
 }
 
+/**
+ * --- Split to print (D9). Object `id` takes a rebuilt piece: its mesh and its tree's key. Where it sits, its paint and its
+ * settings stay; its STEP was the old piece's, so it goes until the new one is written.
+ */
+export function withPieceMesh(plate: PlateState, id: string, mesh: { fileName: string; bytes: ArrayBuffer; sourcePos: Float32Array }, modelTree: string): PlateState {
+  const objects = plate.objects.map((obj) => {
+    if (obj.id !== id) return obj;
+    const { brep: _old, ...rest } = obj;
+    const next: PlateObject = { ...rest, fileName: mesh.fileName, bytes: mesh.bytes, sourcePos: mesh.sourcePos, modelTree };
+    hold(next);
+    return next;
+  });
+  return { ...plate, objects };
+}
+
 /** Every object's placed triangles, in plate order, so one 3MF mesh can carry the whole plate. */
 export function platePlacedPositions(objects: readonly PlateObject[], bedX: number, bedY: number): Float32Array {
   const parts = objects.map((obj) => placeObject(obj, bedX, bedY).positions);
@@ -928,8 +943,23 @@ export function arrangeBoxes(boxes: ArrangeBox[], bedX: number, gap = ARRANGE_GA
   return out;
 }
 
-/** `gap` is the space left between objects; a one-at-a-time plate leaves its toolhead clearance. */
-export function arrangedObjects(objects: PlateObject[], bedX: number, bedY: number, gap = ARRANGE_GAP_MM): PlateObject[] {
+/**
+ * `gap` is the space left between objects; a one-at-a-time plate leaves its toolhead clearance. The objects `keep` names
+ * stay where they are, and the others are laid out around them in turn, each where an added object would land: what a
+ * split to print's lay out does with its new pieces (docs/plan-split-connectors.md, section 10).
+ */
+export function arrangedObjects(objects: PlateObject[], bedX: number, bedY: number, gap = ARRANGE_GAP_MM, keep?: ReadonlySet<string>): PlateObject[] {
+  if (keep && keep.size > 0) {
+    const around = objects.filter((obj) => keep.has(obj.id));
+    const moved = new Map<string, PlateObject>();
+    for (const obj of objects) {
+      if (keep.has(obj.id)) continue;
+      const next = parkClear(obj, around, bedX, bedY, gap);
+      around.push(next);
+      moved.set(obj.id, next);
+    }
+    return objects.map((obj) => moved.get(obj.id) ?? obj);
+  }
   const placed = objects.map((obj) => ({ obj, part: placeObject(obj, bedX, bedY) }));
   const moves = arrangeBoxes(placed.map(({ obj, part }) => ({
     id: obj.id,
@@ -1061,19 +1091,19 @@ export function boundsSize(bounds: Bounds): string {
   return bounds.max.map((value, index) => String(Number((value - bounds.min[index]).toFixed(1)))).join(" × ");
 }
 
-function parkClear(incoming: PlateObject, existing: readonly PlateObject[], bedX: number, bedY: number): PlateObject {
+function parkClear(incoming: PlateObject, existing: readonly PlateObject[], bedX: number, bedY: number, gap = ARRANGE_GAP_MM): PlateObject {
   const parked = placeObject({ ...incoming, centered: false, offset: { x: 0, y: 0, z: 0 } }, bedX, bedY).bounds;
   const width = parked.max[0] - parked.min[0];
   const height = parked.max[1] - parked.min[1];
   const obstacles = existing.map((obj) => placeObject(obj, bedX, bedY).bounds);
-  const spot = clearSpot(obstacles, width, height, bedX, bedY);
+  const spot = clearSpot(obstacles, width, height, bedX, bedY, gap);
   return {
     ...incoming,
     centered: false,
     offset: {
       x: round3(spot.minX - parked.min[0]),
       y: round3(spot.minY - parked.min[1]),
-      z: 0,
+      z: incoming.centered ? 0 : incoming.offset.z,
     },
   };
 }

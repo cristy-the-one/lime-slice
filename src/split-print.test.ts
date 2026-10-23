@@ -1,0 +1,172 @@
+/**
+ * Split to print's card (docs/plan-split-connectors.md, milestone 4): the cut list as the card keeps it, each cut's plane
+ * as Split names it, the op it stores, the planner's proposal in model space, the preview's pieces, a rebuilt piece's
+ * kept steps (D9), and the command that opens it.
+ */
+import { readFileSync } from "node:fs";
+import { COMMANDS } from "./ui/commands.ts";
+import { MODEL_TOOLS } from "./model-drag.ts";
+import { ID_MATRIX } from "./mesh-place.ts";
+import { IDENTITY_POSE, type Affine } from "./model-space.ts";
+import { keptSteps, newTree, withChild, type ModelOp, type ModelTree, type PartitionModelOp, type Vec3 } from "./model-tree.ts";
+import { forked } from "./model-edit.ts";
+import {
+  bedFrame,
+  cardFromFit,
+  cardFromOp,
+  cardOp,
+  cardPlanes,
+  cutFieldName,
+  cutFromPlane,
+  cutPlane,
+  cutSummary,
+  emptyCard,
+  fitOnBed,
+  pieceLines,
+  pieceRegions,
+  sameCard,
+  storedPartition,
+  withCutAdded,
+  withCutChanged,
+  withCutDeleted,
+  withCutMode,
+  withCutsCleared,
+  withSelected,
+  SPLIT_PRINT_TITLE,
+  type Card,
+  type CardCut,
+  type CardFrame,
+} from "./split-print.ts";
+
+let failed = 0;
+function check(name: string, ok: boolean, detail = "") {
+  if (ok) return;
+  failed += 1;
+  console.error(`FAIL ${name}${detail ? `: ${detail}` : ""}`);
+}
+const eq = (name: string, actual: unknown, expected: unknown) => check(name, JSON.stringify(actual) === JSON.stringify(expected), `${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`);
+const near = (a: readonly number[] | undefined, b: readonly number[], tol = 1e-9) => !!a && a.length === b.length && a.every((v, i) => Math.abs(v - b[i]!) < tol);
+
+/** A 500 × 20 × 20 bar from the origin, as a box's corners in a triangle soup. */
+const bar = new Float32Array([0, 0, 0, 500, 0, 0, 500, 20, 0, 0, 20, 20, 500, 20, 20, 0, 0, 20, 500, 0, 20, 0, 20, 0, 0, 0, 0]);
+const box = { min: [0, 0, 0] as Vec3, max: [500, 20, 20] as Vec3 };
+const center: Vec3 = [250, 10, 10];
+const cut = (patch: Partial<CardCut> = {}): CardCut => ({ mode: "x", value: 100, tiltA: 0, tiltB: 0, face: null, flip: false, ...patch });
+
+// --- The command (D10): a menu item, no key, and no rail tool.
+const command = COMMANDS.find((row) => row.id === "model-split-print");
+eq("Split to print is a Model command with no key, and D10's keywords", command ? [command.label, command.group, command.keys ?? [], command.keywords] : null, ["Split to print", "Model", [], "split cut connector peg dowel bed resin export"]);
+check("it is not a toolbar tool", !(MODEL_TOOLS as readonly string[]).some((tool) => /partition|split-print/.test(tool)));
+const markup = readFileSync(new URL("./app/markup.ts", import.meta.url), "utf8");
+check("its menu item comes after Stress", /id="modelMenuStress"[^\n]*\n[^\n]*\n\s*<button id="modelMenuSplitPrint" type="button" role="menuitem"[^>]*>Split to print…<\/button>/.test(markup));
+check("the card's title stays within 40 characters", SPLIT_PRINT_TITLE.length <= 40);
+
+// --- A cut's plane, as Split names it: At X is where the plane crosses X through the solid's middle.
+const at100 = cutPlane(cut(), center)!;
+check("At X 100 cuts square to X at 100", near(at100.origin, [100, 10, 10]) && near(at100.normal, [1, 0, 0]), JSON.stringify(at100));
+const tilted = cutPlane(cut({ tiltA: 15 }), center)!;
+const a = (15 * Math.PI) / 180;
+check("Tilt A turns the normal about the in-plane axis as Split's does", near(tilted.normal, [Math.cos(a), 0, -Math.sin(a)]), JSON.stringify(tilted));
+const back = cutFromPlane(tilted.origin, tilted.normal, center);
+check("a plane reads back as the row it came from", back.mode === "x" && Math.abs(back.value - 100) < 1e-9 && Math.abs(back.tiltA - 15) < 1e-9 && Math.abs(back.tiltB) < 1e-9 && !back.flip, JSON.stringify(back));
+const down = cutFromPlane([300, 3, 4], [-1, 0, 0], center);
+eq("a normal down its axis keeps that side, so the pieces keep their order", [down.mode, down.value, down.flip], ["x", 300, true]);
+check("and makes the same plane again", near(cutPlane(down, center)!.normal, [-1, 0, 0]) && Math.abs(cutPlane(down, center)!.origin[0] - 300) < 1e-9);
+const offPlane = cutFromPlane([200, 0, 0], [0, 0.6, 0.8], center);
+check("a plane nearest Z is At Z where it crosses the middle's Z line", offPlane.mode === "z" && Math.abs(offPlane.value + 7.5) < 1e-9, JSON.stringify(offPlane));
+eq("its field names", [cutFieldName(cut()), cutFieldName(cut({ mode: "z" })), cutFieldName(cut({ mode: "face" }))], ["At X", "At Z", "Offset"]);
+eq("the row's tip", [cutSummary(cut(), 0), cutSummary(cut({ tiltA: 15 }), 1), cutSummary(cut({ mode: "face" }), 2)], ["Cut 1 · At X 100 mm", "Cut 2 · At X 100 mm, tilt 15° / 0°", "Cut 3 · on a face"]);
+
+// On a local workplane, X, Y, and Z are its U, V, and W from its origin, as Split reads them.
+const frame: CardFrame = { origin: [50, 0, 0], axes: [[0, 1, 0], [-1, 0, 0], [0, 0, 1]] };
+const onU = cutPlane(cut({ value: 5 }), center, frame)!;
+check("At U 5 is 5 mm along U from the workplane's origin", near(onU.origin, [50, 5, 0]) && near(onU.normal, [0, 1, 0]), JSON.stringify(onU));
+eq("and is named for U", cutFieldName(cut(), frame), "At U");
+const onUBack = cutFromPlane(onU.origin, onU.normal, center, frame);
+eq("and reads back", [onUBack.mode, onUBack.value, onUBack.flip], ["x", 5, false]);
+
+// A face cut waits for its face, then offsets into the part from it.
+const top = { point: [250, 10, 20] as Vec3, normal: [0, 0, 1] as Vec3 };
+const facing: Card = { cuts: [cut()], selected: 0, layout: true };
+const waiting = withCutMode(facing, 0, "face", box, center);
+eq("a face cut with no face has no plane yet", [cardPlanes(waiting, center)[0], cardOp(waiting, center)], [null, null]);
+const aimed = withCutMode(facing, 0, "face", box, center, null, top);
+const aimedPlane = cutPlane(aimed.cuts[0]!, center)!;
+check("a picked face opens the cut halfway into the part behind it, parallel to the face", near(aimedPlane.origin, [250, 10, 10]) && near(aimedPlane.normal, [0, 0, 1]), JSON.stringify(aimedPlane));
+const onY = withCutMode(aimed, 0, "y", box, center);
+eq("an axis puts the plane in the middle of the part on it, untilted", [onY.cuts[0]!.mode, onY.cuts[0]!.value, onY.cuts[0]!.face], ["y", 10, null]);
+
+// --- The list: add, delete, select, clear.
+let card: Card = emptyCard();
+card = withCutAdded(card, box, center);
+eq("Add cut on an empty list cuts the longest axis in the middle", card.cuts.map((row) => [row.mode, row.value]), [["x", 250]]);
+card = withCutAdded(card, box, center);
+eq("the next goes in the middle of the largest piece left", card.cuts.map((row) => row.value), [250, 125]);
+eq("and is the selected cut", card.selected, 1);
+card = withCutAdded(withSelected(card, 0), box, center);
+eq("then the largest piece is the far one", card.cuts.map((row) => row.value), [250, 125, 375]);
+card = withCutChanged(card, 2, { tiltA: 120 });
+eq("a tilt stops at Split's 85°", card.cuts[2]!.tiltA, 85);
+const fewer = withCutDeleted(withSelected(card, 2), 0);
+eq("deleting a cut before the selected one keeps that cut selected", [fewer.cuts.map((row) => row.value), fewer.selected], [[125, 375], 1]);
+eq("deleting the last one leaves none selected", withCutDeleted({ cuts: [cut()], selected: 0, layout: true }, 0).selected, -1);
+eq("Clear cuts empties the list", [withCutsCleared(card).cuts.length, withCutsCleared(card).selected], [0, -1]);
+const typed = cardOp({ cuts: [cut({ value: 166.67 })], selected: 0, layout: false }, center);
+eq("the op as typed, with Lay out", typed, { cuts: [{ origin: [166.67, 10, 10], normal: [1, 0, 0] }], arrange: false });
+
+// --- Fit the bed: the planner's proposal for the bar as the plate prints it, in model space.
+const lime: [number, number, number] = [220, 220, 250];
+const fit = fitOnBed(bedFrame(bar, [...ID_MATRIX], 1, IDENTITY_POSE), { printer: "lime-220", process: "fdm", volumeMm: lime }, 5, 12, "Lime 220", false);
+eq("a 500 mm bar on the Lime 220 is three pieces", [fit.pieces, fit.planes.length, fit.notes], [3, 2, ["This part is 500 mm along X. The Lime 220 bed fits 210 mm. Two cuts are proposed."]]);
+const proposed = cardFromFit(fit, center);
+check("the card opens on those cuts, At X a third and two thirds along", proposed.cuts.length === 2 && Math.abs(proposed.cuts[0]!.value - 500 / 3) < 1e-6 && Math.abs(proposed.cuts[1]!.value - 1000 / 3) < 1e-6 && proposed.selected === 0, JSON.stringify(proposed));
+const turned = fitOnBed(bedFrame(bar, [0, -1, 0, 1, 0, 0, 0, 0, 1], 1, IDENTITY_POSE), { printer: "lime-220", process: "fdm", volumeMm: lime }, 5, 12, "Lime 220", false);
+check("turned on the plate, the bar is still cut across its length in model space", turned.planes.every((plane) => Math.abs(Math.abs(plane.normal[0]) - 1) < 1e-9), JSON.stringify(turned.planes));
+const belt = fitOnBed(bedFrame(new Float32Array([0, 0, 0, 20, 500, 20, 0, 0, 0]), [...ID_MATRIX], 1, IDENTITY_POSE), { printer: "ir3-v2", process: "fdm", volumeMm: [250, 250, 250] }, 5, 12, "IR3 V2", true);
+eq("along a belt the bar is one piece", [belt.pieces, belt.planes.length], [1, 0]);
+
+// --- Stored, then back in the card for the pencil: the same cuts, untouched.
+const ctx = { plateTarget: { printer: "lime-220", process: "fdm" as const, volumeMm: lime }, featureMm: 0.4, layerMm: 0.2, material: "PLA", box };
+const pose: Affine = { m: [0, -1, 0, 1, 0, 0, 0, 0, 1], t: [30, 0, 0] };
+// The bar turned a quarter about Z and moved 30 mm along X in model space: its middle is at (20, 250, 10) there.
+const modelCenter: Vec3 = [20, 250, 10];
+const shownCard: Card = { cuts: [cutFromPlane([20, 150, 10], [0, 1, 0], modelCenter)], selected: 0, layout: true };
+const storedOp = storedPartition(cardOp(shownCard, modelCenter)!, ctx, pose);
+check("the card's op is stored in the solid's own frame, straight, connectors off", "op" in storedOp && near(storedOp.op.cuts[0]!.origin, [150, 10, 10]) && near(storedOp.op.cuts[0]!.normal, [1, 0, 0]) && JSON.stringify(storedOp.op.cuts[0]!.connectors) === JSON.stringify({ on: false }), JSON.stringify(storedOp));
+const reopened = cardFromOp((storedOp as { op: PartitionModelOp }).op, pose, modelCenter);
+check("the pencil fills the card with the same cut", sameCard(reopened, shownCard), `${JSON.stringify(reopened)} vs ${JSON.stringify(shownCard)}`);
+check("and a change is not the same card", !sameCard(withCutChanged(reopened, 0, { value: 1 }), shownCard));
+eq("no cut is refused with the planner's sentence", storedPartition({ cuts: [] }, ctx, IDENTITY_POSE), { reason: "A partition needs at least one cut. model_probe with plan: true proposes them." });
+
+// --- The preview: each piece is the half-spaces that bound it, neighbours in two tones.
+const slabs = pieceRegions([{ origin: [333, 0, 0], normal: [1, 0, 0] }, { origin: [166, 0, 0], normal: [-1, 0, 0] }]);
+eq("two parallel cuts are three slabs, in order along the first cut's normal", slabs.map((region) => region.bounds.length), [1, 2, 1]);
+eq("their tones alternate", slabs.map((region) => region.tone), [0, 1, 0]);
+const inside = (region: (typeof slabs)[number], p: Vec3) => region.bounds.every((half) => half.normal[0] * p[0] + half.normal[1] * p[1] + half.normal[2] * p[2] + half.constant >= 0);
+eq("each point of the bar is in one piece", [[100, 5, 5], [250, 5, 5], [400, 5, 5]].map((p) => slabs.findIndex((region) => inside(region, p as Vec3))), [0, 1, 2]);
+const grid = pieceRegions([{ origin: [250, 0, 0], normal: [1, 0, 0] }, { origin: [0, 10, 0], normal: [0, 1, 0] }]);
+eq("cuts that meet make every slab across every slab, as a checkerboard", [grid.length, grid.map((region) => region.tone)], [4, [0, 1, 1, 0]]);
+eq("no plane, no piece", pieceRegions([]), []);
+eq("the most pieces tinted is the hard stop", pieceRegions(Array.from({ length: 30 }, (_, i) => ({ origin: [i * 10, 0, 0] as Vec3, normal: [1, 0, 0] as Vec3 }))).length, 24);
+
+// --- The piece list.
+eq("each piece's volume and size, the first naming the object it stays", pieceLines([{ volumeMm3: 66666.667, min: [0, 0, 0], max: [166.667, 20, 20] }, { volumeMm3: 1000 }]), ["Part 1 · 66666.67 mm³ · 166.67 × 20 × 20 mm · stays this object", "Part 2 · 1000 mm³"]);
+
+// --- D9's kept steps: a rebuild replays the steps on the way to the piece's step, then a branch kept broken under it.
+const hole: ModelOp = { kind: "hole", origin: [5, 5, 20], axis: [0, 0, -1], radius: 1, depth: 5 };
+const scale: ModelOp = { kind: "scale", factor: 1.1 };
+const fp = { volumeMm3: 1, faces: 6, edges: 12 };
+let piece: ModelTree = newTree("p#1", { kind: "piece", tree: "bar#1", node: 1, index: 2 }, "Part 2", fp);
+piece = withChild(piece, 0, { id: 1, op: hole, label: "Hole", fingerprint: fp });
+piece = withChild(piece, 1, { id: 2, op: scale, label: "Scale", fingerprint: fp });
+eq("a piece's later steps are the ones on the way to its step", keptSteps(piece), [1, 2]);
+eq("a piece on its root has none", keptSteps({ ...piece, current: 0 }), []);
+const kept = forked(newTree("p#2", { kind: "piece", tree: "bar#1", node: 4, index: 2 }, "Part 2", fp), 0, [{ id: 1, op: hole, fingerprint: null, broken: "The hole missed this solid" }, { id: 2, op: scale, fingerprint: null }], 0);
+eq("a rebuild that kept the first step broken shows the root", kept.current, 0);
+eq("the next rebuild still replays that broken step and the one under it", keptSteps(kept), [1, 2]);
+
+if (failed) {
+  console.error(`${failed} failed`);
+  process.exit(1);
+}
+console.log("split print card: ok");

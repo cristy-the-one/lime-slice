@@ -39,6 +39,7 @@ import {
   closeOrder,
   dropped,
   jumped,
+  keptSteps,
   newTree,
   nodeWithMesh,
   opLabel,
@@ -65,6 +66,7 @@ import {
   type ModelRoot,
   type ModelTree,
   type NodeId,
+  type PartitionModelOp,
   type PlateMesh,
   type PrepareKeep,
   type Vec3,
@@ -79,6 +81,7 @@ import { averagePoint, contextKind, polylineMid } from "../context-bar";
 import { hideContextBar, mountContextBar, showContextBar } from "../context-bar-ui";
 import {
   closeModelTool,
+  modelCardOpen,
   editedPanel,
   fieldNumber,
   fieldPrimitive,
@@ -131,7 +134,7 @@ import { mountDockPanes } from "../ui/dock-panes";
 import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
 import { lookPoseChanged, mountModelLook, resetModelLook, sectionFacePicked } from "../ui/model-look";
 import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
-import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
+import { addedSolid, addedSplit, arrangedObjects, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withPieceMesh, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
 import { livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
@@ -160,7 +163,10 @@ import { chooseStudyMesh } from "../sim/study-mesh.ts";
 import { endStressPick, mountStress, stressOpen, stressPickFace, stressPicking, stressUndoState, syncStress, takeStressRedo, takeStressUndo } from "../ui/stress.ts";
 import { stressSliceRequest } from "./stress-slice.ts";
 import { beltLayerNormal } from "../sim/study.ts";
-import { beltStamp, cardsOf, saveMaterialCard } from "../ui/machine-library.ts";
+import { beltStamp, cardsOf, saveMaterialCard, selection } from "../ui/machine-library.ts";
+import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, splitPrintOpen, splitPrintPicked, type SplitPrintCheck } from "../ui/split-print.ts";
+import { bedFrame, fitOnBed, storedPartition, type CardFrame, type FitOnBed, type PieceCheck } from "../split-print.ts";
+import { clampPieces, defaultsFor, type FillContext, type PartitionOp } from "../modeling/partition.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
@@ -576,6 +582,29 @@ export function bindModelView() {
     },
     parameters: () => currentParams(),
   });
+  // --- Split to print: the Features menu's card.
+  mountSplitPrint({
+    solidBox: () => (viewed()?.editable && !lens ? openBox() : null),
+    frame: splitPrintFrame,
+    plan(base, cut) {
+      const at = viewed();
+      if (!at) return null;
+      const pose = openPose();
+      return planeFor(base, cut.value, [cut.tiltA, cut.tiltB], (normal) => modelExtent(at, pose, normal), kernelBox(at, pose));
+    },
+    fit: fitSplitPrint,
+    pickedFace() {
+      const solid = viewed();
+      const face = lastFace(picks);
+      if (!solid || face == null) return null;
+      return posedFace(flatFace(solid, face)) ?? "curved";
+    },
+    check: checkSplitPrint,
+    cancelled: cancelEdit,
+    parameters: () => currentParams(),
+    view: () => fx.model ?? null,
+    readout,
+  });
   mountParameters({
     table: () => session.parameters,
     setTable(table) {
@@ -624,7 +653,7 @@ export function bindModelView() {
       const belt = beltStamp(loadMachineLibrary());
       return belt ? beltLayerNormal(belt.angleDeg) : [0, 0, 1];
     },
-    toolOpen: () => openModelTool() != null,
+    toolOpen: () => openModelTool() != null || modelCardOpen() != null,
     picking(on) {
       if (on) setMode("face");
       syncPullDrag?.();
@@ -1423,7 +1452,7 @@ function pullLiveNow(): boolean {
   if (sketchOccupiesView()) return false;
   if (state.stage !== "model" || busy || jumping || stressPicking()) return false;
   const tool = openModelTool();
-  if (tool && tool !== "pushpull") return false;
+  if ((tool && tool !== "pushpull") || modelCardOpen()) return false;
   if (document.querySelector("#modelPickFace")?.getAttribute("aria-pressed") !== "true") return false;
   const solid = viewed();
   if (!solid?.editable) return false;
@@ -1824,12 +1853,12 @@ function liveKeep(): PrepareKeep {
   }) as PrepareKeep;
 }
 
-function meshOf(solid: ParsedSolid): PlateMesh {
+function meshOf(solid: ParsedSolid, named?: string): PlateMesh {
   // The kernel meshes faces apart; where two sample a shared curved edge at different points, the plate mesh would
   // have a crack the slicer guesses across ("The mesh has gaps on 2333 layers"). Those cracks are closed here.
   const positions = closeCracks(solid.positions);
   const seat = settleBy(positions);
-  const name = stlName(state.mesh?.name ?? "solid");
+  const name = named ?? stlName(state.mesh?.name ?? "solid");
   const bytes = encodeStl(positions, name);
   setMeshSeat(bytes, seat);
   return { name, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
@@ -2636,6 +2665,13 @@ function blendWorking(kind: "fillet" | "chamfer", op: ModelOp): string {
 
 async function applyTool() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
+  if (splitPrintOpen()) {
+    const typed = splitPrintOp();
+    if (!typed || !button || button.disabled) return;
+    if (editing) await updateSplitPrint(editing, typed);
+    else await applySplitPrint(typed);
+    return;
+  }
   const tool = modelTool();
   if (editing) {
     if (button && !button.disabled) await runEdit(editing);
@@ -2882,6 +2918,11 @@ async function startOwnEdit(node: NodeId) {
   if (!shown || !now || now.key !== run.key || now.solid.id !== parent) {
     editing = null;
     syncUndo();
+    return;
+  }
+  // --- Split to print: its own card, filled from the step, on the parent solid.
+  if (op.kind === "partition") {
+    openSplitPrintEdit(op, openPose(), editHead(latest, node));
     return;
   }
   openEditPanel(run, editHead(latest, node));
@@ -3280,6 +3321,7 @@ function dropEdit() {
   sketchRootEdit = false;
   rootEditFrom = null;
   if (editedPanel()) closeModelTool();
+  closeSplitPrint();
   if (sketching) closeSketchSession();
 }
 
@@ -4168,7 +4210,7 @@ async function saveStepFile(bytes: ArrayBuffer, name: string) {
 /** P2. The idle edge knob is armed when no other tool is using the view and the solid can be edited. */
 function edgeArmed(): boolean {
   // --- S2: the edge knob waits while a sketch is open. ---
-  return state.stage === "model" && !openModelTool() && !stressPicking() && !sketchOccupiesView() && !(lens && !editing) && !!viewed()?.editable && !busy && !jumping;
+  return state.stage === "model" && !openModelTool() && !modelCardOpen() && !stressPicking() && !sketchOccupiesView() && !(lens && !editing) && !!viewed()?.editable && !busy && !jumping;
 }
 
 /** P2. Dry-run a fillet or chamfer on the solid on screen. The shape is drawn by the drag, not by the panel. */
@@ -4265,6 +4307,8 @@ function matchedEdgeIds(op: ModelOp): number[] {
  * another object opened, and stays put otherwise. A tool's step looked at outside an edit is read-only: the tools wait.
  */
 function present(parsed: ParsedSolid, message: string, view: Lens | null = null) {
+  // Split to print's card was worked out on the solid that was on screen.
+  closeSplitPrint();
   lens = view;
   picks = [];
   hideEmpty();
@@ -4911,6 +4955,7 @@ async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: numb
     sectionFacePicked(own ? { origin: own.point, normal: own.normal } : "curved");
   }
   syncModelChrome(picks);
+  if (splitPrintOpen()) splitPrintPicked();
   const seq = ++measureSeq;
   if (picks.length === 0) {
     readout(`${about(solid)} Pick a face or an edge.`);
@@ -5445,6 +5490,400 @@ async function rebuildPiece(parentKey: string, split: NodeId, pieceKey: string, 
   await dropInEngine(parentKey, spare);
   return text(body.error) || null;
 }
+
+// --- Split to print (docs/plan-split-connectors.md, milestone 4): the card's frame, its check, its Apply, and the
+// pencil's Update. Keep this block together. ---
+
+/** The planner's context: the plate's printer as the target, its nozzle, the layer, the filament, the brim, the box. */
+function partitionContext(solid: ParsedSolid): FillContext {
+  const picked = selection(loadMachineLibrary());
+  const box = boxOf(solid.positions);
+  return {
+    plateTarget: { printer: picked?.printer.id ?? "plate", process: "fdm", volumeMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ] },
+    featureMm: state.profile.nozzleDiameter,
+    layerMm: state.layerHeight,
+    material: picked?.filament.material ?? "",
+    adhesion: state.adhesion,
+    brimWidthMm: state.brimWidthMm,
+    box: { min: [...box.min], max: [...box.max] },
+  };
+}
+
+/** The open object's local workplane as the card reads it, or null in model space. */
+function splitPrintFrame(): CardFrame | null {
+  const plane = workplaneOfOpen();
+  return isIdentityFrame(plane) ? null : { origin: [plane.origin[0], plane.origin[1], plane.origin[2]], axes: axesOf(plane) };
+}
+
+/** Fit the bed: the planner's cuts for the open part as the plate prints it, in model space. */
+function fitSplitPrint(): FitOnBed | null {
+  const solid = viewed();
+  const obj = plateObjectOpen();
+  if (!solid?.editable || !obj || solid.positions.length < 9) return null;
+  const ctx = partitionContext(solid);
+  const defaults = defaultsFor(ctx.plateTarget, ctx);
+  const selected = obj.id === state.plate.selectedId;
+  const frame = bedFrame(solid.positions, selected ? state.orient : obj.orient, selected ? state.partScale : obj.partScale, openPose());
+  const picked = selection(loadMachineLibrary());
+  return fitOnBed(frame, ctx.plateTarget, defaults.bedMarginMm, defaults.maxPieces, picked?.printer.name ?? state.profile.name, picked?.printer.kind === "belt");
+}
+
+/** The op the tree stores for the card's cuts, in the solid's own frame, or why it cannot be cut. */
+function splitStored(typed: PartitionOp): { op: PartitionModelOp } | { reason: string } | null {
+  const solid = viewed();
+  return solid ? storedPartition(typed, partitionContext(solid), openPose()) : null;
+}
+
+let splitCheckTimer = 0;
+let splitCheckSerial = 0;
+/** Kernel answers for the card, by `probeName`, so going back to cuts just checked asks nothing. */
+const splitAnswers = new Map<string, SplitPrintCheck>();
+
+/** The card's cuts changed: the kernel cuts a copy once they rest `wait` ms. No call while a plane is dragged. */
+function checkSplitPrint(typed: PartitionOp | null, wait: number) {
+  window.clearTimeout(splitCheckTimer);
+  const serial = ++splitCheckSerial;
+  const at = open;
+  const tree = treeOf(at);
+  const stored = typed && at && tree ? splitStored(typed) : null;
+  if (!stored || !at || !tree) {
+    setSplitPrintCheck(null);
+    return;
+  }
+  if ("reason" in stored) {
+    setSplitPrintCheck({ phase: "done", ok: false, error: stored.reason });
+    return;
+  }
+  const node = tree.current;
+  const key = probeName(at.key, node, stored.op);
+  const known = splitAnswers.get(key);
+  if (known) {
+    setSplitPrintCheck(known);
+    return;
+  }
+  setSplitPrintCheck({ phase: "checking" });
+  splitCheckTimer = window.setTimeout(() => void sendSplitCheck(serial, key, at.key, node, stored.op), wait);
+}
+
+async function sendSplitCheck(serial: number, key: string, treeKey: string, node: NodeId, op: PartitionModelOp) {
+  if (serial !== splitCheckSerial || state.stage !== "model") return;
+  const body = await treeCall(treeKey, node, probeRequest(treeKey, node, op));
+  const view: SplitPrintCheck = body.ok === true
+    ? { phase: "done", ok: true, parts: readParts(body.parts) }
+    : { phase: "done", ok: false, error: sentence(plainModelError(text(body.error) || "These planes do not cut this solid.")) };
+  if (typeof body.ok === "boolean") {
+    if (splitAnswers.size >= 64) splitAnswers.clear();
+    splitAnswers.set(key, view);
+  }
+  if (serial === splitCheckSerial && state.stage === "model") setSplitPrintCheck(view);
+}
+
+/** A probe's pieces, as the kernel cut them: each one's volume and box. */
+function readParts(value: unknown): PieceCheck[] {
+  if (!Array.isArray(value)) return [];
+  const vec = (v: unknown): Vec3 | undefined => (Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number") ? (v as Vec3) : undefined);
+  return value.map((part) => {
+    const row = (part ?? {}) as { volumeMm3?: unknown; min?: unknown; max?: unknown };
+    const min = vec(row.min);
+    const max = vec(row.max);
+    return { volumeMm3: Number(row.volumeMm3) || 0, ...(min && max ? { min, max } : {}) };
+  });
+}
+
+/** The keys the kernel opens each piece's tree under, one for every piece Max pieces allows after the first. */
+function partKeys(objectId: string, op: PartitionModelOp): string[] {
+  return Array.from({ length: clampPieces(op.maxPieces ?? 12) - 1 }, () => freshTreeKey(`${objectId}-part`));
+}
+
+type PieceReply = { key: string; solid: ParsedSolid } | null;
+
+/** An apply's or an edit's `pieces`, in partition order from piece 2; a string when one could not be read. */
+function readPieces(value: unknown): PieceReply[] | string {
+  if (!Array.isArray(value)) return [];
+  const out: PieceReply[] = [];
+  for (const entry of value as unknown[]) {
+    if (!entry || typeof entry !== "object") {
+      out.push(null);
+      continue;
+    }
+    const solid = decodeSolid(entry as Body);
+    if (typeof solid === "string") return solid;
+    out.push({ key: String((entry as Body).key), solid });
+  }
+  return out;
+}
+
+/**
+ * Apply of Split to print's card: the part keeps its plate id and the first piece (D8); every other piece is a new plate
+ * object in the part's place and pose, the root of its own tree, and with Lay out on the bed the new ones go around what
+ * is already on the plate. One step in History, and one Prepare step for the visit.
+ */
+async function applySplitPrint(typed: PartitionOp) {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || busy || jumping || !state.mesh) return;
+  if (at.objectId !== state.plate.selectedId) {
+    followSelection();
+    return;
+  }
+  const stored = splitStored(typed);
+  if (!stored) return;
+  if ("reason" in stored) {
+    readout(stored.reason);
+    return;
+  }
+  const op = stored.op;
+  parked = null;
+  editBack = null;
+  const parent = tree.current;
+  const [reserved, node] = reserveId(tree);
+  modelTrees.set(at.key, reserved);
+  const keys = partKeys(at.objectId, op);
+  const chord = state.stepTolerance;
+  const mine = ticket;
+  busy = true;
+  setSplitPrintWaiting(true);
+  syncUndo();
+  readout("Cutting the part…");
+  const body = await treeCall(at.key, parent, applyRequest(at.key, parent, node, op, chord, null, keys));
+  if (mine === ticket) busy = false;
+  setSplitPrintWaiting(false);
+  syncUndo();
+  const latest = modelTrees.get(at.key);
+  if (mine !== ticket || state.stage !== "model" || !latest) return;
+  if (failed(at.key, body)) return;
+  const parsed = decodeSolid(body);
+  const pieces = readPieces(body.pieces);
+  if (typeof parsed === "string" || typeof pieces === "string") {
+    void dropInEngine(at.key, node);
+    for (const key of keys) void post({ call: "close", key });
+    readout(typeof parsed === "string" ? parsed : (pieces as string));
+    return;
+  }
+  const storedOp = isOp(body.op) ? body.op : op;
+  const placed = putPieces(at, node, parsed, pieces.map((piece) => (piece ? { ...piece, was: null } : null)), op.arrange !== false);
+  modelTrees.set(at.key, withChild(modelTrees.get(at.key) ?? latest, parent, { id: node, op: storedOp, label: opLabel(storedOp, placed.keys.length + 1), fingerprint: parsed.fingerprint, pieces: placed.keys }));
+  keepSolid(at.key, node, chord, parsed);
+  open = { ...at, solid: parsed };
+  splitPrintApplied();
+  present(parsed, `${opLabel(storedOp, placed.keys.length + 1)}. ${about(parsed)} ${laidSentence(op, placed.fresh.length)}${leavingNotes(false)}`);
+}
+
+/** What the readout says of the new pieces on the plate. */
+function laidSentence(op: PartitionModelOp, fresh: number): string {
+  if (fresh === 0) return "";
+  if (op.arrange === false) return "On the plate the new pieces share one spot: Arrange lays them side by side.";
+  return fresh === 1 ? "The new piece is laid out on the bed, around the other objects." : "The new pieces are laid out on the bed, around the other objects.";
+}
+
+/**
+ * The pieces on the plate, in one Prepare step: a piece with `was`, an object that held the same part number before an
+ * edit, takes the new mesh and tree in place; any other is a new object in the part's place, and with `layout` the new
+ * ones are laid out around every object already there, the part's own first piece where its new mesh will land. The
+ * keys each piece's tree has, in order, and the new objects' ids.
+ */
+function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key: string; solid: ParsedSolid; was: string | null; tree?: ModelTree; shown?: ParsedSolid } | null)[], layout: boolean): { keys: (string | null)[]; fresh: string[] } {
+  const keys: (string | null)[] = [];
+  const fresh: string[] = [];
+  if (!state.mesh) return { keys: pieces.map(() => null), fresh };
+  noteEdit();
+  syncPlateFromState();
+  const stem = stlName(state.mesh.name).replace(/\.stl$/i, "");
+  pieces.forEach((piece, at2) => {
+    if (!piece) {
+      keys.push(null);
+      return;
+    }
+    const index = at2 + 2;
+    const shown = piece.shown ?? piece.solid;
+    const owner = piece.was ? state.plate.objects.find((obj) => obj.modelTree === piece.was) : undefined;
+    const mesh = meshOf(shown, `${owner ? stlName(owner.name).replace(/\.stl$/i, "") : `${stem} part ${index}`}.stl`);
+    let name = owner?.name ?? null;
+    if (owner) state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, piece.key);
+    else name = placePiece(piece.key, mesh);
+    if (!name) {
+      keys.push(null);
+      return;
+    }
+    const root = newTree(piece.key, { kind: "piece", tree: at.key, node, index }, `Part ${index}`, piece.solid.fingerprint);
+    const tree = piece.tree ?? root;
+    // A piece's tree is saved from its root's STEP, so the root keeps its mesh when later steps were replayed on it.
+    const rooted = tree.current === ROOT ? tree : withNode(tree, ROOT, { mesh: meshOf(piece.solid, mesh.name) });
+    modelTrees.set(piece.key, { ...withNode(rooted, tree.current, { mesh }), committed: tree.current });
+    keepSolid(piece.key, tree.current, state.stepTolerance, shown);
+    keys.push(piece.key);
+    if (!owner) fresh.push(state.plate.objects.find((obj) => obj.modelTree === piece.key)!.id);
+  });
+  if (layout && fresh.length > 0) layOutPieces(at.objectId, first, fresh);
+  applySelectedToState(state.plate);
+  place();
+  flushEdit();
+  markModelEdit();
+  return { keys, fresh };
+}
+
+/**
+ * Lay out (plan section 10): the new pieces only, around the objects already on the plate, which stay; the part itself
+ * counts where its first piece will land once the plate takes it.
+ */
+function layOutPieces(partId: string, first: ParsedSolid, fresh: readonly string[]) {
+  const objects = state.plate.objects.map((obj) => (obj.id === partId ? { ...obj, sourcePos: first.positions } : obj));
+  const moving = new Set(fresh);
+  const keep = new Set(objects.filter((obj) => !moving.has(obj.id)).map((obj) => obj.id));
+  const laid = new Map(arrangedObjects(objects, state.profile.bedX, state.profile.bedY, undefined, keep).map((obj) => [obj.id, obj]));
+  state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (moving.has(obj.id) ? { ...obj, centered: laid.get(obj.id)!.centered, offset: { ...laid.get(obj.id)!.offset } } : obj)) };
+}
+
+/**
+ * --- D9. A rebuilt piece's later steps, replayed on the new piece under its new key: those on the way to the step its
+ * object showed, and a branch an earlier rebuild kept broken. A step that no longer builds is kept, broken, with the rest
+ * under it, and its row says why; the piece on the plate is the last step that built. The tree, the solid it shows, and
+ * a sentence when a step broke.
+ */
+async function replayPiece(key: string, parentKey: string, node: NodeId, index: number, solid: ParsedSolid, before: ModelTree | undefined, name: string): Promise<{ tree: ModelTree; shown: ParsedSolid; note: string | null }> {
+  const root = newTree(key, { kind: "piece", tree: parentKey, node, index }, name, solid.fingerprint);
+  modelTrees.set(key, withNode(root, ROOT, {}));
+  const later = before ? keptSteps(before) : [];
+  if (!before || later.length === 0) return { tree: root, shown: solid, note: null };
+  const ids = later.map((_, at) => at + 1);
+  const renamed = stepIds(later, ids);
+  const ops = later.map((id) => renumberedSteps(before.nodes.get(id)!.op!, renamed));
+  const replay = ops.slice(1).map((op, at) => ({ id: ids[at + 1]!, op }));
+  const body = await treeCall(key, ROOT, { ...editRequest(key, ROOT, ids[0]!, ops[0]!, replay, state.stepTolerance), keepBroken: true });
+  const error = text(body.error);
+  const parsed = error ? null : decodeSolid(body);
+  const built = builtSteps(body.built);
+  if (!parsed || typeof parsed === "string" || !built) return { tree: root, shown: solid, note: `${name}'s later steps did not build on the new cut (${sentence(plainModelError(error || DAMAGED))}), so it is the new piece as cut.` };
+  const broken = brokenStep(body.broken);
+  const steps: ForkStep[] = ids.map((id, at) => {
+    const old = before.nodes.get(later[at]!);
+    return {
+      id,
+      op: keepSketch(built.get(id)?.op ?? ops[at]!, ops[at]!),
+      fingerprint: built.get(id)?.fingerprint ?? null,
+      ...(old?.name ? { name: old.name } : {}),
+      ...(broken?.id === id ? { broken: broken.error } : {}),
+    };
+  });
+  const tree = forked(root, ROOT, steps, parsed.id);
+  const failure = broken ? tree.nodes.get(broken.id) : undefined;
+  const note = broken && failure ? `${name}'s step ${pathTo(tree, broken.id).length - 1}, “${stepLabel(failure)}”, did not build on the new cut: ${sentence(plainModelError(broken.error))} It stays in that piece's history.` : null;
+  return { tree, shown: parsed, note };
+}
+
+/**
+ * Update of a split to print from its card (D9): the step built again as a sibling, the part's later steps replayed on
+ * it, and every piece of it rebuilt in the same Prepare step. The object of each part number that is still there takes
+ * its new piece, with its own later steps replayed; a new part number is a new object, laid out; a part number gone
+ * takes its object off the plate.
+ */
+async function updateSplitPrint(run: Editing, typed: PartitionOp) {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || at.key !== run.target || busy || jumping || !state.mesh) return;
+  if (at.objectId !== state.plate.selectedId) {
+    followSelection();
+    return;
+  }
+  const stored = splitStored(typed);
+  if (!stored) return;
+  if ("reason" in stored) {
+    readout(stored.reason);
+    return;
+  }
+  const op = stored.op;
+  const olds = [run.node, ...run.replay].map((id) => tree.nodes.get(id));
+  if (olds.some((old) => !old)) {
+    readout("This step is no longer in the history.");
+    return;
+  }
+  let reserved = tree;
+  const ids: NodeId[] = [];
+  while (ids.length < olds.length) {
+    const [next, id] = reserveId(reserved);
+    reserved = next;
+    ids.push(id);
+  }
+  modelTrees.set(at.key, reserved);
+  const renamed = stepIds([run.node, ...run.replay], ids);
+  const replay = run.replay.map((id, i) => ({ id: ids[i + 1]!, op: renumberedSteps(tree.nodes.get(id)!.op!, renamed) }));
+  const keys = partKeys(at.objectId, op);
+  const level: EditLevel = { key: at.key, parent: run.parent, node: ids[0]!, op, replay, old: [run.node, ...run.replay] };
+  const chord = state.stepTolerance;
+  const mine = ticket;
+  busy = true;
+  setSplitPrintWaiting(true);
+  syncUndo();
+  readout(ids.length === 1 ? "Cutting the part again…" : `Rebuilding ${ids.length} steps…`);
+  const body = await treeCall(at.key, run.parent, crossEditRequest([level], chord, keys));
+  const pieces = readPieces(body.pieces);
+  const old = tree.nodes.get(run.node)?.pieces ?? [];
+  // Each part number still there replays its own later steps on its new piece, before the plate changes at all.
+  const rebuilt: ({ key: string; solid: ParsedSolid; was: string | null; tree?: ModelTree; shown?: ParsedSolid } | null)[] = [];
+  const notes: string[] = [];
+  if (typeof body.error !== "string" && typeof pieces !== "string") {
+    for (const [i, piece] of pieces.entries()) {
+      if (!piece) {
+        rebuilt.push(null);
+        continue;
+      }
+      const was = old[i] ?? null;
+      const owner = was ? state.plate.objects.find((obj) => obj.modelTree === was) : undefined;
+      if (!owner) {
+        rebuilt.push({ ...piece, was: null });
+        continue;
+      }
+      const replayed = await replayPiece(piece.key, at.key, ids[0]!, i + 2, piece.solid, modelTrees.get(was!), owner.name);
+      if (replayed.note) notes.push(replayed.note);
+      rebuilt.push({ ...piece, was, tree: replayed.tree, shown: replayed.shown });
+    }
+  }
+  if (mine === ticket) busy = false;
+  setSplitPrintWaiting(false);
+  syncUndo();
+  const latest = modelTrees.get(at.key);
+  if (editing !== run || mine !== ticket || state.stage !== "model" || !latest) {
+    if (typeof body.error !== "string") void dropInEngine(at.key, ids[0]!);
+    return;
+  }
+  if (failed(at.key, body)) return;
+  const parsed = decodeSolid(body);
+  const built = builtSteps(body.built);
+  if (typeof parsed === "string" || typeof pieces === "string" || !built?.has(parsed.id)) {
+    void dropInEngine(at.key, ids[0]!);
+    readout(typeof parsed === "string" ? parsed : typeof pieces === "string" ? pieces : DAMAGED);
+    return;
+  }
+  const broken = brokenStep(body.broken);
+  const placed = putPieces(at, ids[0]!, parsed, rebuilt, op.arrange !== false);
+  // A part number the new cut no longer makes takes its object off the plate.
+  const gone = old.slice(pieces.length).flatMap((key) => state.plate.objects.filter((obj) => key && obj.modelTree === key).map((obj) => obj.id));
+  if (gone.length > 0) {
+    noteEdit();
+    syncPlateFromState();
+    for (const id of gone) state.plate = withoutObject(state.plate, id);
+    applySelectedToState(state.plate);
+    place();
+    flushEdit();
+    markModelEdit();
+  }
+  const steps = forkSteps(latest, level, built, broken);
+  steps[0] = { ...steps[0]!, pieces: placed.keys };
+  const next = forked(latest, run.parent, steps, parsed.id);
+  modelTrees.set(at.key, next);
+  keepSolid(at.key, parsed.id, chord, parsed);
+  open = { ...at, solid: parsed };
+  editing = null;
+  editBack = { key: at.key, tip: parsed.id, back: run.from, undone: false };
+  splitPrintApplied();
+  const label = (id: NodeId) => stepLabel(next.nodes.get(id)!);
+  const after = replay.length === 0 ? "" : replay.length === 1 ? " and rebuilt the step after it" : ` and rebuilt ${replay.length} steps after it`;
+  const failure = broken ? ` Step ${pathTo(next, broken.id).length - 1}, “${label(broken.id)}”, could not be rebuilt: ${sentence(broken.error)}` : "";
+  const left = gone.length === 0 ? "" : gone.length === 1 ? " One piece left the plate." : ` ${gone.length} pieces left the plate.`;
+  present(parsed, [`Updated “${label(ids[0]!)}”${after}. ${about(parsed)}${failure} ${laidSentence(op, placed.fresh.length)}${left}`.replace(/\s+/g, " ").trim(), ...notes].join(" "));
+}
+
+// --- end Split to print ---
 
 async function post(payload: Body): Promise<Body> {
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;

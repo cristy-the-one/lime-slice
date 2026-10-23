@@ -561,6 +561,12 @@ fn partition_refusal(
     None
 }
 
+/// What an edit asks of its own tree's step: a split to print's `pieceKeys`, and `keepBroken`.
+struct OwnEdit {
+    piece_keys: Vec<Option<String>>,
+    keep_broken: bool,
+}
+
 /// Where an apply's other pieces go: a split's `otherKey`, or a split to print's `pieceKeys`.
 struct PieceKeys {
     other: Option<String>,
@@ -897,6 +903,11 @@ enum Request {
         /// --- Split to print: as an apply's, for the edited step when it is a split to print (D9).
         #[serde(default)]
         piece_keys: Vec<Option<String>>,
+        /// --- Split to print (D9). The steps a rebuilt piece had after its root, replayed on the new piece: when the
+        /// first of them no longer builds, it is kept broken with the rest under it, as a later replayed step would
+        /// be, instead of the edit keeping nothing. Only for an edit of the tree's own step, with no tools.
+        #[serde(default)]
+        keep_broken: bool,
     },
     Goto {
         key: String,
@@ -1787,7 +1798,13 @@ impl Store {
                 tools,
                 chord_mm,
                 piece_keys,
+                keep_broken,
             } => {
+                if keep_broken && !tools.is_empty() {
+                    return Err(Failure::Message(
+                        "keepBroken is only for an edit of one tree".into(),
+                    ));
+                }
                 let mut levels = tools;
                 levels.push(ToolEdit {
                     key,
@@ -1796,7 +1813,11 @@ impl Store {
                     op,
                     replay,
                 });
-                self.edit(levels, chord_mm, piece_keys)
+                let own = OwnEdit {
+                    piece_keys,
+                    keep_broken,
+                };
+                self.edit(levels, chord_mm, own)
             }
             Request::Goto {
                 key,
@@ -2392,18 +2413,13 @@ impl Store {
     /// `levels` is the tool trees' edits, deepest first, then the tree's own last, all under the one lock. Each after the
     /// first is a join that takes the tip of the one before. A tool step that no longer builds is kept broken as in any
     /// replay, and so is the join above it, which has no tool to take. A failure of the edited op, or of a join whose tool
-    /// built, keeps nothing in any tree.
-    fn edit(
-        &mut self,
-        levels: Vec<ToolEdit>,
-        chord: f64,
-        piece_keys: Vec<Option<String>>,
-    ) -> Result<Answer, Failure> {
+    /// built, keeps nothing in any tree, unless `keepBroken` asks to keep it broken (`OwnEdit`).
+    fn edit(&mut self, levels: Vec<ToolEdit>, chord: f64, own: OwnEdit) -> Result<Answer, Failure> {
         self.edit_checks(&levels)?;
-        let own = levels.last().expect("an edit has its own tree last");
-        piece_keys_refusal(&own.key, &own.op, &piece_keys)?;
+        let last = levels.last().expect("an edit has its own tree last");
+        piece_keys_refusal(&last.key, &last.op, &own.piece_keys)?;
         let mut kept: Vec<(String, HashSet<NodeId>, NodeId)> = Vec::new();
-        let result = self.edit_levels(&levels, chord, &piece_keys, &mut kept);
+        let result = self.edit_levels(&levels, chord, &own, &mut kept);
         if result.is_err() {
             for (key, fresh, previous) in kept {
                 if let Some(doc) = self.docs.get_mut(&key) {
@@ -2487,9 +2503,10 @@ impl Store {
         &mut self,
         levels: &[ToolEdit],
         chord: f64,
-        piece_keys: &[Option<String>],
+        own_edit: &OwnEdit,
         kept: &mut Vec<(String, HashSet<NodeId>, NodeId)>,
     ) -> Result<Answer, Failure> {
+        let piece_keys = own_edit.piece_keys.as_slice();
         let last = levels.len() - 1;
         let mut tools = Vec::new();
         let mut below: Option<Tip> = None;
@@ -2519,7 +2536,16 @@ impl Store {
                     level.op.clone(),
                     format!("The tool object's step could not be rebuilt: {message}"),
                 )),
-                _ => Ok(self.edited(key, level.parent, &level.op)?),
+                _ => match self.edited(key, level.parent, &level.op) {
+                    Ok(built) => Ok(built),
+                    // --- Split to print (D9). A rebuilt piece's first later step is kept, broken, with the rest.
+                    Err(Failure::Message(message) | Failure::GroupFailed { message, .. })
+                        if own && own_edit.keep_broken =>
+                    {
+                        Err((level.op.clone(), message))
+                    }
+                    Err(failure) => return Err(failure),
+                },
             };
             // --- Split to print (D9). The edited step's pieces start their trees once the edit is kept.
             let mut pieces = Vec::new();

@@ -32,7 +32,7 @@ import { thinWalls } from "../src/modeling/thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "../src/modeling/anchors.ts";
 import { expandOps, type PartDef } from "../src/modeling/macro.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
+import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { decodeProject, encodeProject, finishProject, prepareProject } from "../src/project-codec.ts";
@@ -5531,7 +5531,7 @@ export class Session {
     const key = typeof entry.key === "string" ? entry.key : "";
     if (!solid || !key || !obj.tree) return null;
     const before = piece.tree;
-    const later = before ? pathTo(before, before.current).slice(1).filter((id) => before.nodes.get(id)?.op) : [];
+    const later = before ? keptSteps(before) : [];
     if (before) await this.closeTree(piece);
     let tree = newTree(key, { kind: "piece", tree: obj.tree.key, node, index }, `Part ${index}`, solid.fingerprint);
     piece.solid = solid;
@@ -5544,7 +5544,8 @@ export class Session {
       const replay = ops.slice(1).map((op, at) => ({ id: ids[at + 1]!, op }));
       let built: Record<string, unknown>;
       try {
-        built = await this.treeCall(editRequest(key, 0, ids[0]!, ops[0]!, replay, piece.stepTolerance || CHORD), "edit", this.replayBudgetMs(ids.length));
+        // D9: a later step that no longer builds is kept, broken, with the rest under it, the first one too.
+        built = await this.treeCall({ ...editRequest(key, 0, ids[0]!, ops[0]!, replay, piece.stepTolerance || CHORD), keepBroken: true }, "edit", this.replayBudgetMs(ids.length));
       } catch (err) {
         if (!(err instanceof ModelRunaway)) throw err;
         built = { error: err.message };
@@ -5561,7 +5562,7 @@ export class Session {
           ...(before.nodes.get(later[at]!)?.name ? { name: before.nodes.get(later[at]!)!.name! } : {}),
           ...(broken?.id === id ? { broken: broken.error } : {}),
         }));
-        const tip = [...steps].reverse().find((step) => !step.broken)?.id ?? 0;
+        const tip = [...ids].reverse().find((id) => made?.has(id)) ?? 0;
         tree = forked(tree, 0, steps, tip);
         const shown = rememberSolid(built);
         if (shown) piece.solid = shown;
@@ -5581,7 +5582,7 @@ export class Session {
     const tree = obj.tree;
     const out = { committed: [] as string[], refused: [] as { object: string; reason: string }[], arranged: false };
     if (!tree) return out;
-    let arrange = false;
+    const laid: string[] = [];
     for (const id of pathTo(tree, tree.current)) {
       const node = tree.nodes.get(id);
       if (node?.op?.kind !== "partition") continue;
@@ -5594,11 +5595,31 @@ export class Session {
           continue;
         }
         out.committed.push(piece.id);
-        if (node.op.arrange !== false) arrange = true;
+        if (node.op.arrange !== false) laid.push(piece.id);
       }
     }
-    if (arrange && this.objects.length > 1) out.arranged = this.plateArrange({}).ok === true;
+    if (laid.length > 0) out.arranged = this.layOutPieces(laid);
     return out;
+  }
+
+  /**
+   * --- Plan section 10. Lay out places only the new pieces, around what is already on the plate, the part's own first
+   * piece included, which all stay where they are; Arrange would move every object.
+   */
+  private layOutPieces(ids: readonly string[]): boolean {
+    const printer = this.printer();
+    const fresh = new Set(ids);
+    const keep = new Set(this.objects.filter((row) => !fresh.has(row.id)).map((row) => row.id));
+    const clearance = sequentialClearance(this.sliceRules(this.objects.length), this.order());
+    const gap = clearance === null ? ARRANGE_GAP_MM : clearance + 0.01;
+    const arranged = arrangedObjects(this.objects.map((obj) => this.asBed(obj)), printer.bedX, printer.bedY, gap, keep);
+    for (const row of arranged) {
+      const live = fresh.has(row.id) ? this.find(row.id) : undefined;
+      if (!live) continue;
+      live.centered = row.centered;
+      live.offset = { ...row.offset };
+    }
+    return true;
   }
 
   // --- end Split to print ---

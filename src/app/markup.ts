@@ -112,7 +112,7 @@ export function mountMarkup(root: HTMLElement) {
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
               <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters, stress"></button>
+              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters, stress, split to print"></button>
               <div class="model-feature-menu" id="modelFeatureMenu" role="menu" aria-label="Features" hidden>
                 <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
@@ -123,6 +123,8 @@ export function mountMarkup(root: HTMLElement) {
                 <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
                 <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
                 <button id="modelMenuStress" type="button" role="menuitem" data-tip="Hold, load, and an in-house estimate. The solid is not edited.">Stress…</button>
+                <!-- --- Split to print (D10): a card of its own, not a rail tool. The rail's Split stays one plane. --- -->
+                <button id="modelMenuSplitPrint" type="button" role="menuitem" data-tip="Cut a part too large for the printer into pieces that fit, each an object on the plate.">Split to print…</button>
               </div>
             </div>
           </div>
@@ -441,6 +443,8 @@ export function mountMarkup(root: HTMLElement) {
               </div>
               <!-- --- end A4 --- -->
               <p class="model-note" id="modelNote" hidden role="status"></p>
+              <!-- --- Split to print: the card's form, drawn by ui/split-print.ts while that card holds the pane. --- -->
+              <div class="model-split-print" id="modelSplitPrint" data-card-for="split-print" hidden></div>
             </div>
             <div class="model-actions">
               <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>

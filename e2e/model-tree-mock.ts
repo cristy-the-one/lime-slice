@@ -17,8 +17,8 @@ export interface MockSolid {
 
 export type Body = Record<string, unknown>;
 
-/** What one Apply builds from its parent: a solid, a split's two pieces, or a refusal. */
-export type Built = MockSolid | { kept: MockSolid; other: MockSolid } | { error: string; broken?: number };
+/** What one Apply builds from its parent: a solid, a split's two pieces, a split to print's pieces, or a refusal. */
+export type Built = MockSolid | { kept: MockSolid; other: MockSolid } | { kept: MockSolid; pieces: MockSolid[] } | { error: string; broken?: number };
 
 export interface TreeMock {
   /** Every request to `/api/model/tree`, in order. */
@@ -133,6 +133,7 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       return { error: "Each tool tree's edit must feed the join above it" };
     }
     const solidOf = (made: Built) => ("error" in made ? made : "kept" in made ? made.kept : made);
+    let ownPieces: MockSolid[] = [];
     const parts: Body[] = [];
     let below: { tip: number } | { error: string } | null = null;
     for (const [at, level] of levels.entries()) {
@@ -153,9 +154,12 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
         let made: MockSolid | { error: string } | null = null;
         if (!broken && index === 0 && below && "error" in below) broken = { id: step.id, error: `The tool object's step could not be rebuilt: ${below.error}` };
         if (!broken) {
-          made = solidOf(build({ call: "apply", key: level.key, op: step.op, parent: last, node: step.id }, doc.get(last)!.solid));
+          const whole = build({ call: "apply", key: level.key, op: step.op, parent: last, node: step.id }, doc.get(last)!.solid);
+          if (own && index === 0 && "pieces" in whole) ownPieces = whole.pieces;
+          made = solidOf(whole);
           if ("error" in made) {
-            if (index === 0) return undo(made);
+            // --- D9. keepBroken keeps a rebuilt piece's first later step broken, as the engine does.
+            if (index === 0 && !(own && request.keepBroken === true)) return undo(made);
             broken = { id: step.id, error: made.error };
             made = null;
           }
@@ -175,9 +179,20 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
         below = broken ? { error: broken.error } : { tip: last };
         continue;
       }
-      return { ...reply(doc.get(last)!.solid, last), built, ...(broken ? { broken } : {}), ...(parts.length > 0 ? { tools: parts } : {}) };
+      const pieceFields = (request.op as Body | undefined)?.kind === "partition" ? { parts: ownPieces.length + 1, pieces: startPieces(request, ownPieces) } : {};
+      return { ...reply(doc.get(last)!.solid, last), built, ...(broken ? { broken } : {}), ...(parts.length > 0 ? { tools: parts } : {}), ...pieceFields };
     }
     return { error: "no levels" };
+  };
+  /** --- Split to print. Each piece after the first with a key starts its own tree, as the engine's `start_pieces` does. */
+  const startPieces = (request: Body, pieces: MockSolid[]) => {
+    const keys = (request.pieceKeys ?? []) as (string | null)[];
+    return pieces.map((piece, at) => {
+      const key = keys[at];
+      if (!key) return null;
+      docs.set(key, new Map([[0, { solid: piece, parent: null, step: "" }]]));
+      return { ...reply(piece, 0), key, part: at + 2 };
+    });
   };
   const answer = async (request: Body): Promise<Body> => {
     const key = String(request.key);
@@ -274,6 +289,11 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     }
     const built = build(request, base.solid);
     if ("error" in built) return built;
+    if ("pieces" in built) {
+      doc.set(id, { solid: built.kept, parent: node, step: stepOf(request), op: request.op as Body });
+      const keyed = ((request.pieceKeys ?? []) as unknown[]).length > 0;
+      return { ...reply(built.kept, id), op: request.op, parts: built.pieces.length + 1, ...(keyed ? { pieces: startPieces(request, built.pieces) } : {}) };
+    }
     if ("kept" in built) {
       doc.set(id, { solid: built.kept, parent: node, step: stepOf(request), op: request.op as Body });
       // As the engine: the piece goes out only to start its own tree.

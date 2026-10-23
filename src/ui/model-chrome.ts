@@ -5,7 +5,7 @@
 import { Axis3d, Box, Boxes, ChevronRight, CircleDot, Cone, Copy, Cylinder, Disc, Download, Egg, Eye, FlipHorizontal2, Focus, Globe, Grid2x2, Grid3x3, Hash, Hexagon, Layers, ListChecks, Move3d, MoveVertical, Plus, Radius, Redo2, Rows3, Ruler, Scaling, SquareArrowUp, SquareSplitHorizontal, SquareSquare, SquaresUnite, Torus, Triangle, TriangleRight, Type, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
-import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type ModelTool, type Vec3 } from "../model-drag";
+import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type DragHandle, type ModelTool, type Vec3 } from "../model-drag";
 import type { Affine, PlaceFields } from "../model-space";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { pushToast } from "./toasts";
@@ -204,8 +204,11 @@ function shownExpr(id: string, text: string): string {
 /** The left dock opened for the open tool. It closes again with the tool, unless the user opened or closed it since. */
 let releaseDock: (() => void) | null = null;
 
-/** The open tool on the view's overlay and on the dock (for styles and observers), its card's title, and the dock it needs. */
-function paintOpenTool(next: ModelTool | null) {
+/**
+ * The open tool on the view's overlay and on the dock (for styles and observers), its card's title, and the dock it needs.
+ * A card that is not a tool (`openModelCard`) passes its own id and title.
+ */
+function paintOpenTool(next: string | null, cardTitle?: string) {
   for (const id of ["#modelBar", "#modelDock"]) {
     const node = document.querySelector<HTMLElement>(id);
     if (!node) continue;
@@ -213,7 +216,7 @@ function paintOpenTool(next: ModelTool | null) {
     else delete node.dataset.tool;
   }
   const title = document.querySelector("#modelPanelTitle");
-  if (title) title.textContent = next ? toolTitle(next) : "";
+  if (title) title.textContent = next ? cardTitle ?? toolTitle(next as ModelTool) : "";
   if (next) {
     releaseDock ??= revealDock("left");
     // On the phone's strip the open tool scrolls into sight.
@@ -476,6 +479,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
     noteChanged: () => refreshNote(),
   });
   document.querySelector("#modelPanel")?.addEventListener("change", (ev) => {
+    // An open card hears its own fields.
+    if (card) return;
     // --- A5. The step list and the step number are the same step. ---
     if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelEdgeStep") {
       const id = Number(ev.target.value);
@@ -513,6 +518,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (tool === "check") queueModelCheck(false);
   });
   document.querySelector("#modelPanel")?.addEventListener("input", (ev) => {
+    if (card) return;
     // A box or the screw list changes on `change`, all at once.
     if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed")) return;
     if (tool === "place") {
@@ -560,6 +566,68 @@ export function mountModelChrome(next: ModelChromeHooks) {
   refreshTools();
 }
 
+/**
+ * --- Split to print (D10). A card opened from the Features menu that is not a rail tool: while it is open it owns the
+ * tool pane, the ghost and the handles, as a tool does, and Esc, Cancel, or another tool close it.
+ */
+export interface ModelCard {
+  id: string;
+  title: string;
+  ghost(): ModelGhost | null;
+  handles(): DragHandle[];
+  drag(drag: HandleDrag): void;
+  /** The card left the pane: Esc, Cancel, another tool, or a solid that can no longer be edited. */
+  closed(): void;
+}
+
+let card: ModelCard | null = null;
+
+export function openModelCard(next: ModelCard) {
+  if (card && card !== next) closeModelCard();
+  if (tool) closeTool();
+  card = next;
+  closeFeatureMenu();
+  paintOpenTool(next.id, next.title);
+  const panel = document.querySelector<HTMLElement>("#modelPanel");
+  if (panel) {
+    panel.dataset.card = next.id;
+    panel.hidden = false;
+  }
+  const cancel = document.querySelector("#modelCancel");
+  if (cancel) cancel.textContent = "Cancel";
+  refreshGhost();
+  hooks?.paramsChanged();
+}
+
+export function closeModelCard() {
+  const was = card;
+  if (!was) return;
+  card = null;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active.closest("#modelPanel")) active.blur();
+  const panel = document.querySelector<HTMLElement>("#modelPanel");
+  if (panel) {
+    delete panel.dataset.card;
+    if (!tool) panel.hidden = true;
+  }
+  if (!tool) paintOpenTool(null);
+  fx.model?.setGhost(null);
+  fx.model?.setHandles([]);
+  was.closed();
+  refreshGhost();
+  hooks?.paramsChanged();
+}
+
+/** The open card's id, or null. */
+export function modelCardOpen(): string | null {
+  return card?.id ?? null;
+}
+
+/** The card's numbers changed: its ghost and handles follow. */
+export function refreshModelCard() {
+  if (card) refreshGhost();
+}
+
 /** Esc cancels the open tool first, and clears the selection when no tool is open. */
 export function escapeModel() {
   // --- A3 composite features: the menu closes before the tool does. ---
@@ -568,6 +636,10 @@ export function escapeModel() {
     return;
   }
   // --- end A3 ---
+  if (card) {
+    closeModelCard();
+    return;
+  }
   if (tool) {
     closeTool();
     return;
@@ -628,6 +700,7 @@ export function openModelTool(): ModelTool | null {
 /** Whether the open shape can be edited. Surfaces only can be measured and placed, so the edit tools turn off. */
 export function setModelEditable(next: boolean) {
   editable = next;
+  if (!editable && card) closeModelCard();
   if (!editable && tool && !KEEPS_SOLID.has(tool)) closeTool();
   refreshTools();
 }
@@ -636,6 +709,7 @@ export function setModelEditable(next: boolean) {
 export function setModelLocked(why: string | null) {
   if (locked === why) return;
   locked = why;
+  if (why && card) closeModelCard();
   if (why && tool && tool !== "create") closeTool();
   refreshTools();
 }
@@ -681,6 +755,7 @@ let depthGroup: keyof typeof featureDepths = "other";
 
 /** Open `next`, or close it when it is open. Opening another tool ends an edit, which takes the view back. */
 function toggleTool(next: ModelTool, editing = false) {
+  if (card) closeModelCard();
   // --- F4. Leaving Hole drops the one-hole-per-point layout. Opening Hole keeps a count set just before. ---
   if (next !== "hole") clearSketchHoles();
   if (tool === next && !editing) {
@@ -859,6 +934,7 @@ function picksObject(): boolean {
 }
 
 function closeTool() {
+  if (card) closeModelCard();
   // --- F4. A closed Hole is a single hole again. ---
   clearSketchHoles();
   // --- A3 composite features ---
@@ -1617,7 +1693,8 @@ function refreshSketchTool() {
 
 function refreshApply() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
-  if (!button) return;
+  // An open card says when its Apply is ready.
+  if (!button || card) return;
   // --- P1: Apply moves the selected faces once the distance is a real change and the dry-run agrees. ---
   if (tool === "pushpull") {
     const distance = num("#modelPull");
@@ -1753,6 +1830,13 @@ export function modelPreviewFresh(): boolean {
 function refreshGhost() {
   const view = fx.model;
   if (!view) return;
+  if (card && state.stage === "model") {
+    view.setGhost(card.ghost());
+    view.setHandles(card.handles());
+    view.setRemovedFaces(false);
+    refreshDatum();
+    return;
+  }
   // --- P1 ---
   if (pullLive?.()) {
     view.setRemovedFaces(false);
@@ -1806,6 +1890,10 @@ function dragContext(): DragContext {
 
 /** A viewport handle moved. Its fields change as if typed, so the ghost, the dry-run, and Apply follow. */
 function onHandleDrag(drag: HandleDrag) {
+  if (card) {
+    card.drag(drag);
+    return;
+  }
   if (!tool) return;
   writeFields(drag.handle.fields, drag.values);
   if (tool === "place") {
@@ -2333,7 +2421,7 @@ function settleExpression(input: HTMLInputElement) {
 
 function onEnter(ev: KeyboardEvent) {
   if (ev.key !== "Enter" || ev.repeat || ev.ctrlKey || ev.metaKey || ev.altKey) return;
-  if (state.stage !== "model" || !tool) return;
+  if (state.stage !== "model" || (!tool && !card)) return;
   const target = ev.target instanceof Element ? ev.target : null;
   // A button in the panel (a primitive, Corners or Flats, Fuse) takes Enter as its own click.
   if (!target?.closest("#modelPanel") || target.closest("button")) return;

@@ -91,6 +91,8 @@ export interface DragHandle {
   frame?: Workplane;
   /** Which sketch hole this knob changes, when one depth is shared by several holes. */
   holeIndex?: number;
+  /** --- Split to print. Which cut's plane this handle moves or turns, so only that plane lights. */
+  cutIndex?: number;
 }
 
 /**
