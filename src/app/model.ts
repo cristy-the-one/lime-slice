@@ -166,7 +166,7 @@ import { endStressPick, mountStress, stressOpen, stressPickFace, stressPicking, 
 import { stressSliceRequest } from "./stress-slice.ts";
 import { beltLayerNormal } from "../sim/study.ts";
 import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
-import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
+import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
 import { bedFrame, exportedCommit, exportsPieces, fitOnBed, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, pieceNames } from "../modeling/partition-export.ts";
@@ -4174,7 +4174,7 @@ async function exportPieceFiles(row?: RowKey) {
       await saveBytes(encode3mf(meshes, names), files["3mf"][0]!, "3mf", "model/3mf");
       saved = files["3mf"];
     } else {
-      const bytes = await exportSolid(at.key, node, "step", held.map((piece) => ({ key: piece.key, node: piece.node })));
+      const bytes = await exportSolid(at.key, node, "step", held.map((piece) => ({ key: piece.key, node: piece.node })), names);
       if (typeof bytes === "string") problem = bytes;
       else {
         await saveStepFile(bytes, files.step[0]!);
@@ -4235,8 +4235,8 @@ async function brepRoot(key: string) {
 }
 
 /** The node's solid as `format`: `brep`, which the plate object keeps and a project saves, or `step` for the STEP button. */
-async function exportSolid(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[]): Promise<ArrayBuffer | string> {
-  const body = await treeCall(key, node, exportRequest(key, node, format, pieces));
+async function exportSolid(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[], names?: readonly string[]): Promise<ArrayBuffer | string> {
+  const body = await treeCall(key, node, exportRequest(key, node, format, pieces, names));
   const problem = text(body.error);
   if (problem) return problem;
   if (typeof body.bytesBase64 !== "string") return "Open CASCADE did not write this solid.";
@@ -5821,9 +5821,10 @@ async function applySplitPrint(typed: PartitionOp) {
   keepSolid(at.key, node, chord, parsed);
   open = { ...at, solid: parsed };
   const sentences = kernelNotes(body);
-  splitPrintApplied(held ? heldResult(storedOp as PartitionModelOp, placed.keys.length + 1, sentences) : undefined);
+  splitPrintApplied();
   const where = held ? heldSentence(targetName(storedOp as PartitionModelOp)) : laidSentence(op, placed.fresh.length);
   present(parsed, `${opLabel(storedOp, placed.keys.length + 1)}. ${about(parsed)} ${where}${sentences.map((note) => ` ${note}`).join("")}${leavingNotes(false)}`);
+  if (held) showSplitPrintDone(heldResult(storedOp as PartitionModelOp, placed.keys.length + 1, sentences));
 }
 
 /** The sentences the kernel adds to a cut's reply, such as a part number with no room. */
@@ -6054,12 +6055,13 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
   editing = null;
   editBack = { key: at.key, tip: parsed.id, back: run.from, undone: false };
   const sentences = kernelNotes(body);
-  splitPrintApplied(held ? heldResult(next.nodes.get(ids[0]!)!.op as PartitionModelOp, placed.keys.length + 1, sentences) : undefined);
+  splitPrintApplied();
   const label = (id: NodeId) => stepLabel(next.nodes.get(id)!);
   const after = replay.length === 0 ? "" : replay.length === 1 ? " and rebuilt the step after it" : ` and rebuilt ${replay.length} steps after it`;
   const failure = broken ? ` Step ${pathTo(next, broken.id).length - 1}, “${label(broken.id)}”, could not be rebuilt: ${sentence(broken.error)}` : "";
   const left = gone.length === 0 ? "" : gone.length === 1 ? " One piece left the plate." : ` ${gone.length} pieces left the plate.`;
   present(parsed, [`Updated “${label(ids[0]!)}”${after}. ${about(parsed)}${failure} ${held ? heldSentence(targetName(op)) : laidSentence(op, placed.fresh.length)}${left}`.replace(/\s+/g, " ").trim(), ...sentences, ...notes].join(" "));
+  if (held) showSplitPrintDone(heldResult(next.nodes.get(ids[0]!)!.op as PartitionModelOp, placed.keys.length + 1, sentences));
 }
 
 // --- end Split to print ---

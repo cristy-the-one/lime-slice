@@ -302,28 +302,32 @@ function closed() {
   if (wasEdit) host?.cancelled();
 }
 
-/**
- * The card closes after its Apply: the edit, if any, ended with it. An Apply for an export target leaves the card open
- * on what it left in Model, with Export… in the foot (D12).
- */
-export function splitPrintApplied(result?: SplitPrintDone) {
+/** The card closes after its Apply: the edit, if any, ended with it. */
+export function splitPrintApplied() {
   edit = null;
-  if (!result) {
-    closeSplitPrint();
-    return;
-  }
-  done = result;
+  closeSplitPrint();
+}
+
+/**
+ * An Apply for an export target leaves the card open on what it left in Model, with Export… in the foot (D12). It is
+ * called once the solid is on screen, which closes the card that was worked out on the one before.
+ */
+export function showSplitPrintDone(result: SplitPrintDone) {
+  if (!host) return;
+  edit = null;
+  card = emptyCard();
   check = null;
   dragging = null;
   hud?.close();
-  host?.check(null, 0);
+  done = result;
+  root()?.toggleAttribute("hidden", false);
+  openModelCard({ id: CARD_ID, title: SPLIT_PRINT_TITLE, ghost, handles, drag, closed });
   const head = document.querySelector<HTMLElement>("#modelEditHead");
   if (head) head.hidden = true;
   document.querySelector("#modelPanel")?.setAttribute("aria-labelledby", "modelPanelTitle");
   const apply = document.querySelector("#modelApply");
   if (apply) apply.textContent = "Apply";
   paintMode();
-  refreshModelCard();
 }
 
 /** The form, or what an export Apply left; Export… and Close in the foot only for the second. */
@@ -748,6 +752,7 @@ function setTarget(id: string) {
   if (fit && !card.edited) card = cardFromFit(fit, center, frame, card.layout, { target: row.target, numbers: card.numbers });
   renderCuts();
   changed(0);
+  host?.readout(notes[0] ?? "Add a cut, drag its plane, or type where it goes.");
 }
 
 function readField(ev: Event): boolean {
