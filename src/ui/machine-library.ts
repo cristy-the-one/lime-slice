@@ -481,7 +481,72 @@ export function parseMachineFile(
   return readFile(migrated.doc);
 }
 
+// ---------------------------------------------------------------------------
+// --- Split to print (docs/plan-split-connectors.md, D11): export-only printers.
+// ---------------------------------------------------------------------------
+
+/**
+ * A printer parts are cut for that this app does not slice for. `exportOnly` marks it: it is not a `PrinterRecord`, it
+ * is never in `printers`, so it is never the plate's printer and `enginePrinter` cannot take it. It is listed only
+ * where a split to print's target printer is chosen, and its pieces are exported.
+ */
+export interface ExportPrinterRecord {
+  id: string;
+  name: string;
+  exportOnly: true;
+  process: "resin";
+  bedX: number;
+  bedY: number;
+  bedZ: number;
+  /** The material it prints by default. */
+  material: string;
+}
+
+/** The printer split to print is for: build volume as Formlabs gives it, confirmed on its About screen (2026-10-23). */
+export const FORMLABS_FORM_4: ExportPrinterRecord = {
+  id: "formlabs-form-4",
+  name: "Formlabs Form 4",
+  exportOnly: true,
+  process: "resin",
+  bedX: 200,
+  bedY: 125,
+  bedZ: 210,
+  material: "Tough 2000",
+};
+
+export const EXPORT_PRINTERS: readonly ExportPrinterRecord[] = [FORMLABS_FORM_4];
+
+/** Any printer a split to print can be cut for. */
+export type TargetPrinter = PrinterRecord | ExportPrinterRecord;
+
+export function isExportOnly(printer: TargetPrinter): printer is ExportPrinterRecord {
+  return "exportOnly" in printer && printer.exportOnly === true;
+}
+
+/** The Print on list: the plate's printer first, the library's other printers, then the export-only ones. */
+export function targetPrinters(library: MachineLibrary): TargetPrinter[] {
+  const plate = library.printers.filter((row) => row.id === library.printerId);
+  return [...plate, ...library.printers.filter((row) => row.id !== library.printerId), ...EXPORT_PRINTERS];
+}
+
+export function targetPrinter(library: MachineLibrary, id: string): TargetPrinter | undefined {
+  return targetPrinters(library).find((row) => row.id === id);
+}
+
+/** A split to print's stored `target` (D11): the id, the process, and the build volume as it is now. */
+export function printerTarget(printer: TargetPrinter): { printer: string; process: "fdm" | "resin"; volumeMm: [number, number, number] } {
+  return { printer: printer.id, process: isExportOnly(printer) ? printer.process : "fdm", volumeMm: [printer.bedX, printer.bedY, printer.bedZ] };
+}
+
+/** Why an export-only printer cannot be the plate's printer, or null for any other id. */
+export function exportOnlyRefusal(printerId: string): string | null {
+  const row = EXPORT_PRINTERS.find((printer) => printer.id === printerId);
+  return row ? `The ${row.name} is a resin printer this app cuts parts for and does not slice for. Choose it as a split to print's target, then export the pieces.` : null;
+}
+
 export function selectIn(library: MachineLibrary, printerId: string, filamentId: string, nozzleMm: number): MachineLibrary | string {
+  const exportOnly = exportOnlyRefusal(printerId);
+  if (exportOnly) return exportOnly;
   if (!library.printers.some((row) => row.id === printerId)) return "That printer is no longer saved.";
   if (!library.filaments.some((row) => row.id === filamentId)) return "That filament is no longer saved.";
   if (!Number.isFinite(nozzleMm) || nozzleMm <= 0) return "Choose a nozzle size.";

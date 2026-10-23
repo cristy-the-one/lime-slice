@@ -13,7 +13,8 @@ const CRC_TABLE = (() => {
   return table;
 })();
 
-function crc32(bytes: Uint8Array): number {
+/** CRC-32 (IEEE), as PNG chunks and zip entries carry it. */
+export function crc32(bytes: Uint8Array): number {
   let c = 0xffffffff;
   for (const byte of bytes) c = CRC_TABLE[(c ^ byte) & 0xff]! ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;

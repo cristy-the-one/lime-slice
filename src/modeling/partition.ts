@@ -2,6 +2,7 @@
  * Split to print, planner (docs/plan-split-connectors.md, milestone 1).
  * Pure TypeScript: it proposes cuts, checks sizes, and places connectors. The kernel builds the solids.
  */
+import { textStrokes } from "./text.ts";
 
 export type Vec3 = [number, number, number];
 export type UV = [number, number];
@@ -620,19 +621,52 @@ function resinHeightNotes(span: Vec3, counts: number[], usableHeight: number, ax
 }
 
 // ---------------------------------------------------------------------------
-// What the kernel builds yet (milestone 3). The same sentences as `partition_refusal` in tree.rs.
+// What the kernel builds yet (milestone 3b). The same sentences as `partition_refusal` in tree.rs.
 // ---------------------------------------------------------------------------
 
 export const PROFILE_LATER = "Only straight cuts are built yet. Leave the profile out, or make it straight.";
 export const CONNECTORS_LATER = "Connectors are not built yet. Leave them off for a plain cut.";
-export const RESIN_LATER = "A resin target needs the export, which comes later. Cut for the plate's printer.";
 
-/** Why the kernel does not cut this op yet, before anything is built: a shaped profile, connectors on, or a resin target. */
-export function notBuiltYet(op: Pick<PartitionOp, "cuts" | "target">): string | null {
+/**
+ * Why the kernel does not cut this op yet, before anything is built: a shaped profile, or connectors on. A resin target
+ * cuts since milestone 3b; its pieces are exported, not sliced (D12).
+ */
+export function notBuiltYet(op: Pick<PartitionOp, "cuts">): string | null {
   if (op.cuts.some((cut) => cut.profile && cut.profile.kind !== "straight")) return PROFILE_LATER;
   if (op.cuts.some((cut) => cut.connectors?.on === true)) return CONNECTORS_LATER;
-  if (op.target?.process === "resin") return RESIN_LATER;
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Part numbers (sections 2 and 10): engraved on the cut faces, built from the stroke font.
+// ---------------------------------------------------------------------------
+
+/** The stroke width of a part number, as a fraction of its height: `compose.ts`'s text default. */
+export const NUMBER_STROKE_FRACTION = 0.15;
+
+/** What the kernel cuts a stored op's part numbers from: each piece's strokes, `[u, v, length, angleDeg]`, centred. */
+export interface PartitionNumbers {
+  digits: [number, number, number, number][][];
+  strokeMm: number;
+  depthMm: number;
+  insetMm: number;
+}
+
+/**
+ * The numbers' strokes for a stored op, one per piece Max pieces allows, or null when its labels are not on. Only an
+ * explicit `labels.on: true` cuts numbers: an op stored before milestone 3b has none, and its pieces stay as they were
+ * on a replay. The label keeps the wall floor from a face's edge.
+ */
+export function partitionNumbers(op: Pick<PartitionOp, "labels" | "target" | "maxPieces">): PartitionNumbers | null {
+  if (op.labels?.on !== true) return null;
+  const d = partitionDefaults({ process: op.target?.process ?? "fdm", material: "" });
+  const height = op.labels.height ?? d.numberHeightMm;
+  const strokeMm = height * NUMBER_STROKE_FRACTION;
+  const digits = Array.from({ length: clampPieces(op.maxPieces ?? DEFAULT_MAX_PIECES) }, (_, at) => {
+    const strokes = textStrokes(String(at + 1), height, strokeMm, undefined, "centre");
+    return "reason" in strokes ? [] : strokes.map((s): [number, number, number, number] => [s.centre[0], s.centre[1], s.length, s.angleDeg]);
+  });
+  return { digits, strokeMm, depthMm: op.labels.depth ?? d.numberDepthMm, insetMm: d.wallFloorMm };
 }
 
 // ---------------------------------------------------------------------------

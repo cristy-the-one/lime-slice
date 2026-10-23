@@ -52,6 +52,19 @@ pub fn partition_primitive(solid: &str, planes: &[[f64; 6]]) -> Result<Vec<Parti
     }
 }
 
+/// The solids a STEP file holds, each checked as a partition's piece: what a split to print's STEP export reads back as.
+pub fn step_solids(step: &[u8]) -> Result<Vec<PartitionPiece>, String> {
+    #[cfg(lime_occt)]
+    {
+        tree::step_solids(step)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = step;
+        Err("OCCT_ROOT is not set, so Open CASCADE is not linked".into())
+    }
+}
+
 /// How long a new group (an Apply or a probe) may build before it stops; 60 s unless set. Without the kernel
 /// this does nothing.
 pub fn set_group_budget(budget: std::time::Duration) {

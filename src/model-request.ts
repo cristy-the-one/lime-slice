@@ -6,6 +6,7 @@ import { bytesToBase64 } from "./base64.ts";
 import { rootSpec, type PrimitiveSpec } from "./model-primitive.ts";
 import { relativePose, type Affine } from "./model-space.ts";
 import type { EditLevel } from "./model-edit.ts";
+import { partitionNumbers } from "./modeling/partition.ts";
 import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
 export type TreeRequest = Record<string, unknown>;
@@ -270,6 +271,10 @@ export function withoutSketch(op: ModelOp): ModelOp {
       return child;
     });
     if (changed) next = { ...op, steps };
+  } else if (op.kind === "partition") {
+    // --- Split to print, part numbers: the engine-only strokes go the other way, added for every call and never echoed.
+    const numbers = partitionNumbers(op);
+    if (numbers) next = { ...op, numbers } as ModelOp;
   }
   if (!next.exprs) return next;
   const { exprs: _exprs, ...rest } = next;
@@ -319,8 +324,9 @@ export function gotoRequest(key: string, node: NodeId, chordMm: number): TreeReq
  * The step's solid as a file: `step` to hand on (the STEP button, `model_export_step`), or `brep`, the binary a project
  * keeps (`isBrep`), which reads back as the same solid, face and edge numbers included.
  */
-export function exportRequest(key: string, node: NodeId, format: "step" | "brep"): TreeRequest {
-  return { call: "export", key, node, format };
+/** `pieces`, a split to print's other pieces by tree and step, join this solid in one STEP file of separate solids. */
+export function exportRequest(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[]): TreeRequest {
+  return { call: "export", key, node, format, ...(pieces?.length ? { pieces: pieces.map((piece) => ({ key: piece.key, node: piece.node })) } : {}) };
 }
 
 /** The first bytes of a solid the engine wrote in `brep`. A STEP file starts with `ISO-10303-21`. */

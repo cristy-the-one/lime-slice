@@ -19,8 +19,9 @@ import { align, centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, off
 import { decodeSolid } from "../src/model-reply.ts";
 import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, turnedAxis, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
-import { clampPieces, type FillContext } from "../src/modeling/partition.ts";
-import { bedFrame, PLAN_KIND, planPartition, readPartition, storedPartition } from "./partition.ts";
+import { clampPieces, type FillContext, type Target } from "../src/modeling/partition.ts";
+import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, readPartition, storedPartition } from "./partition.ts";
+import { pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
 import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
@@ -91,7 +92,7 @@ import type { LayerAction } from "../src/layer-actions.ts";
 import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, workplaneIn, workplaneOwn, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
 import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
 import { plateFileIsVersion2 } from "../src/plate.ts";
-import { advanceFor, builtinLibrary, adoptProfile, cardsOf, enginePrinter, fileFromSelection, heatFor, parseMachineFile, saveMaterialCard, serializeMachineFile, setAdvance, setFlow, setGcode, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
+import { advanceFor, builtinLibrary, adoptProfile, cardsOf, enginePrinter, exportOnlyRefusal, fileFromSelection, heatFor, printerTarget, targetPrinter, parseMachineFile, saveMaterialCard, serializeMachineFile, setAdvance, setFlow, setGcode, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
 import { parseSettingsProfile, profileFileName, serializeSettingsProfile } from "../src/ui/settings-profiles.ts";
 
 import { openInApp, systemOpener, type AppOpener } from "./app-open.ts";
@@ -365,6 +366,25 @@ interface SliceSummary {
 }
 
 type SolidView = NonNullable<ReturnType<typeof rememberSolid>>;
+
+/** --- Split to print. The kernel's sentence for each piece whose number had no room. */
+function numberNotes(reply: Record<string, unknown>): string[] {
+  return Array.isArray(reply.notes) ? reply.notes.filter((note): note is string => typeof note === "string") : [];
+}
+
+/** --- Split to print. Where each piece's number was cut, in model space: on cut N's face (from 1), or on a side face. */
+function numbered(reply: Record<string, unknown>, pose: Affine): { numbers?: { part: number; faces: { face: string; cut?: number; at: number[] }[] }[] } {
+  if (!Array.isArray(reply.numbers)) return {};
+  const mm = (value: number) => Math.round(value * 100) / 100 + 0;
+  const numbers = (reply.numbers as { part?: unknown; faces?: unknown }[]).map((row, index) => ({
+    part: typeof row.part === "number" ? row.part : index + 1,
+    faces: (Array.isArray(row.faces) ? (row.faces as { face?: unknown; cut?: unknown; at?: unknown }[]) : []).map((face) => {
+      const at = Array.isArray(face.at) && face.at.length === 3 ? applyPose(pose, face.at as [number, number, number]).map(mm) : [];
+      return { face: face.face === "side" ? "side" : "cut", ...(typeof face.cut === "number" ? { cut: face.cut + 1 } : {}), at };
+    }),
+  }));
+  return { numbers };
+}
 
 function rememberSolid(body: Record<string, unknown>) {
   const solid = decodeSolid(body);
@@ -1330,7 +1350,7 @@ export class Session {
       case "slice_cancel": return this.sliceCancel(String(input.job));
       case "gcode_summary": return this.gcodeSummary(typeof input.job === "string" ? input.job : undefined);
       case "gcode_export": return this.gcodeExport(input);
-      case "export_3mf": return this.export3mf(String(input.name));
+      case "export_3mf": return input.pieces === true ? this.exportPieceMeshes(input) : this.export3mf(String(input.name));
       case "mesh_stats": return this.meshStats(String(input.object));
       case "layer_summary": return this.layerSummary(typeof input.job === "string" ? input.job : undefined);
       case "render_view": return this.renderView(input);
@@ -2788,6 +2808,9 @@ export class Session {
   }
 
   private machineSelect(printerId: string, filamentId: string, nozzle: unknown): Record<string, unknown> {
+    // --- Split to print (D11). An export-only printer is a target for the pieces, never the plate's printer.
+    const exportOnly = exportOnlyRefusal(printerId);
+    if (exportOnly) return { ok: false, reason: exportOnly };
     const printer = this.library.printers.find((row) => row.id === printerId);
     const filament = this.library.filaments.find((row) => row.id === filamentId);
     if (!printer || !filament) return { ok: false, reason: "That printer or filament is not in the library." };
@@ -3573,7 +3596,8 @@ export class Session {
     if (name === "model_params") return this.paramsTool(input);
     if (name === "model_define") return this.defineTool(input);
     const requested = typeof input.object === "string" ? input.object : "";
-    const obj = this.find(requested !== "" ? requested : this.selected);
+    // --- Split to print (D12). An export target's piece is off the plate and still a part to model.
+    const obj = this.find(requested !== "" ? requested : this.selected) ?? this.piecesOffPlate.find((row) => row.id === requested && this.exportCut(row) !== null) ?? null;
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
     switch (name) {
       case "model_describe": return this.describe(obj, input);
@@ -3602,7 +3626,7 @@ export class Session {
       case "model_drop": return this.drop(obj, this.nodeOf(obj, input.node));
       case "model_rename": return this.rename(obj, this.nodeOf(obj, input.node), String(input.label ?? ""));
       case "model_commit": return this.commit(obj);
-      case "model_export_step": return this.exportStep(obj, String(input.name));
+      case "model_export_step": return input.pieces === true ? this.exportPieceStep(obj, String(input.name)) : this.exportStep(obj, String(input.name));
       case "measure": return this.measure(obj, input);
       default: throw new ProtocolError(`There is no tool named ${name}.`);
     }
@@ -4026,7 +4050,7 @@ export class Session {
     }
     // --- Split to print. Defaults are filled from the plate's printer and settings now, as at Apply (D11).
     if (kind === "partition") {
-      const typed = readPartition(spec);
+      const typed = readPartition(spec, (id) => this.partitionTarget(id));
       if ("reason" in typed) return typed;
       const stored = storedPartition(typed, this.partitionContext(obj), obj.modelPose);
       if ("reason" in stored) return stored;
@@ -5344,12 +5368,40 @@ export class Session {
     if (spec.kind !== "partition") return { ok: false, reason: PLAN_KIND };
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
-    const typed = readPartition(spec);
+    const typed = readPartition(spec, (id) => this.partitionTarget(id));
     if ("reason" in typed) return { ok: false, reason: typed.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
     const printer = this.printer();
     const frame = bedFrame(obj.solid.positions, obj.orient, obj.scale, obj.modelPose);
-    return planPartition(typed, this.partitionContext(obj), frame, { name: printer.name, belt: printer.kind === "belt" });
+    const targetName = typed.target ? targetPrinter(this.library, typed.target.printer)?.name : undefined;
+    return planPartition(typed, this.partitionContext(obj), frame, { name: printer.name, belt: printer.kind === "belt", ...(targetName ? { targetName } : {}) });
+  }
+
+  /** --- D11. A target typed by its printer alone: the library's printer, or an export-only one such as the Form 4. */
+  private partitionTarget(id: string): Target | null {
+    const row = targetPrinter(this.library, id);
+    return row ? printerTarget(row) : null;
+  }
+
+  /** The name a target's sentences use: the library's, or the id when the library has no such printer. */
+  private targetName(op: PartitionModelOp): string {
+    const id = op.target?.printer ?? this.printer().id;
+    return targetPrinter(this.library, id)?.name ?? id;
+  }
+
+  /** --- D12. The split to print for an export target on the way to the part's step, or on the way to a piece's root. */
+  private exportCut(obj: PlateObject): PartitionModelOp | null {
+    const tree = obj.tree;
+    if (!tree) return null;
+    for (const id of pathTo(tree, tree.current)) {
+      const op = tree.nodes.get(id)?.op;
+      if (op?.kind === "partition" && exportsPieces(op)) return op;
+    }
+    if (tree.root.kind === "piece") {
+      const parent = this.byTreeKey(tree.root.tree)?.tree?.nodes.get(tree.root.node)?.op;
+      if (parent?.kind === "partition" && exportsPieces(parent)) return parent;
+    }
+    return null;
   }
 
   /** The kernel cuts a copy: every piece's volume and box in model space. The solid does not change. */
@@ -5371,7 +5423,8 @@ export class Session {
       return { part: index + 1, volumeMm3: mm(Number(part.volumeMm3)), ...(placed ? { min: placed.min.map(mm), max: placed.max.map(mm) } : {}) };
     });
     obj.probes.set(probeKey(String(at), op), true);
-    return { ok: true, reason: `This cut makes ${parts.length} pieces.`, parts: parts.length, pieces };
+    const notes = numberNotes(reply);
+    return { ok: true, reason: `This cut makes ${parts.length} pieces.`, parts: parts.length, pieces, ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) };
   }
 
   /** The keys the kernel opens each piece's tree under, one for every piece Max pieces allows after the first. */
@@ -5400,8 +5453,9 @@ export class Session {
     const keys: (string | null)[] = [];
     const objects: string[] = [];
     const listed = Array.isArray(reply.pieces) ? (reply.pieces as unknown[]) : [];
+    const exported = exportsPieces(op);
     listed.forEach((entry, at) => {
-      const id = entry && typeof entry === "object" ? this.partitionPiece(obj, entry as Record<string, unknown>, node, at + 2) : null;
+      const id = entry && typeof entry === "object" ? this.partitionPiece(obj, entry as Record<string, unknown>, node, at + 2, exported) : null;
       keys.push(id ? String((entry as { key?: unknown }).key) : null);
       if (id) objects.push(id);
     });
@@ -5410,25 +5464,36 @@ export class Session {
     if (solid) obj.solid = solid;
     obj.probes.clear();
     this.followPieces(obj);
+    const notes = numberNotes(reply);
+    const note = exported
+      ? exportedNote(this.targetName(op))
+      : op.arrange === false
+        ? "On the plate the pieces share one spot: Arrange lays them side by side."
+        : "model_commit puts every piece on the plate and lays them out.";
     return {
       ok: true,
       node: nodeHandle(node),
       parts: keys.length + 1,
       pieces: objects,
-      note: op.arrange === false ? "On the plate the pieces share one spot: Arrange lays them side by side." : "model_commit puts every piece on the plate and lays them out.",
+      note,
+      ...numbered(reply, obj.modelPose),
+      ...(notes.length ? { notes } : {}),
       stored: cleanOp(op as unknown as Record<string, unknown>),
       typed,
     };
   }
 
-  /** One piece after the first as a plate object: the part's orientation, pose and settings, its own tree, empty paint. */
-  private partitionPiece(obj: PlateObject, entry: Record<string, unknown>, node: number, index: number): string | null {
+  /**
+   * One piece after the first as a plate object: the part's orientation, pose and settings, its own tree, empty paint.
+   * An export target's piece is held off the plate from the start (D12): it is exported, never sliced.
+   */
+  private partitionPiece(obj: PlateObject, entry: Record<string, unknown>, node: number, index: number, exported = false): string | null {
     const solid = rememberSolid(entry);
     const key = typeof entry.key === "string" ? entry.key : "";
     if (!solid || !key || !obj.tree) return null;
     this.seq += 1;
     const id = `obj_${this.seq}`;
-    this.objects.push({
+    (exported ? this.piecesOffPlate : this.objects).push({
       id,
       name: `${obj.name} part ${index}`,
       fileName: obj.fileName,
@@ -5471,7 +5536,9 @@ export class Session {
     const path = new Set(pathTo(tree, tree.current));
     const wanted = new Map<string, boolean>();
     for (const node of tree.nodes.values()) {
-      for (const key of node.pieces ?? []) if (key) wanted.set(key, wanted.get(key) === true || path.has(node.id));
+      // An export target's pieces stay off the plate on every step (D12).
+      const on = path.has(node.id) && !exportsPieces(node.op);
+      for (const key of node.pieces ?? []) if (key) wanted.set(key, wanted.get(key) === true || on);
     }
     const back: string[] = [];
     const left: string[] = [];
@@ -5498,7 +5565,7 @@ export class Session {
    * still there takes the new piece, with its later steps replayed on it; a piece past the old count is a new object; an
    * old piece past the new count leaves the plate.
    */
-  private async rebuildPieces(obj: PlateObject, old: readonly (string | null)[], reply: Record<string, unknown>, node: number): Promise<{ keys: (string | null)[]; objects: string[]; notes: string[] }> {
+  private async rebuildPieces(obj: PlateObject, old: readonly (string | null)[], reply: Record<string, unknown>, node: number, exported: boolean): Promise<{ keys: (string | null)[]; objects: string[]; notes: string[] }> {
     const listed = Array.isArray(reply.pieces) ? (reply.pieces as unknown[]) : [];
     const keys: (string | null)[] = [];
     const objects: string[] = [];
@@ -5510,7 +5577,7 @@ export class Session {
       }
       const row = entry as Record<string, unknown>;
       const was = old[at] ? this.objectOfKey(old[at]!) : undefined;
-      const id = was ? await this.replayPiece(obj, was, row, node, at + 2, notes) : this.partitionPiece(obj, row, node, at + 2);
+      const id = was ? await this.replayPiece(obj, was, row, node, at + 2, notes) : this.partitionPiece(obj, row, node, at + 2, exported);
       keys.push(id ? String(row.key) : null);
       if (id) objects.push(id);
     }
@@ -5599,6 +5666,120 @@ export class Session {
     }
     if (arrange && this.objects.length > 1) out.arranged = this.plateArrange({}).ok === true;
     return out;
+  }
+
+  /**
+   * --- D12. Every piece of the last split to print on the way to the part's step, in assembly order: the part itself,
+   * then each piece's object as it stands now. An export target's pieces are not saved with a project, so one that no
+   * object holds any more is cut again from the stored op on a spare step, as the app's `rebuildPiece` does.
+   */
+  private async partitionPieces(obj: PlateObject): Promise<{ pieces: PlateObject[]; op: PartitionModelOp } | { reason: string }> {
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return tree;
+    const at = [...pathTo(tree, tree.current)].reverse().find((id) => tree.nodes.get(id)?.op?.kind === "partition");
+    const node = at === undefined ? undefined : tree.nodes.get(at);
+    if (!node || node.op?.kind !== "partition" || node.parent === null) return { reason: "This part has no split to print on the way to its step. pieces: true exports a split to print's pieces." };
+    const op = node.op;
+    const keys = [...(node.pieces ?? [])];
+    const pieces: (PlateObject | null)[] = [];
+    for (const key of keys) {
+      const piece = key ? this.objectOfKey(key) : undefined;
+      const opened = piece ? await this.opened(piece) : null;
+      pieces.push(piece && opened && !("reason" in opened) && piece.solid ? piece : null);
+    }
+    const missing = pieces.findIndex((piece) => !piece);
+    // A plate piece the user removed is not made again by an export, which would put it back on the plate.
+    if (missing >= 0 && !exportsPieces(op)) return { reason: `Part ${missing + 2} of this cut is no longer on the plate. model_edit the cut to make it again.` };
+    if (missing >= 0) {
+      const [reserved, spare] = reserveId(tree);
+      obj.tree = reserved;
+      const fresh = pieces.map((piece, index) => (piece ? null : `mcp-part-${obj.id}-${node.id}-${index + 2}-r${spare}`));
+      let reply: Record<string, unknown>;
+      try {
+        reply = await this.treeCall(applyRequest(tree.key, node.parent, spare, op, CHORD, null, fresh), "partition");
+      } catch (err) {
+        const lost = this.lostReply(err);
+        if (lost) return { reason: String(lost.reason) };
+        throw err;
+      }
+      await this.treeCall({ call: "drop", key: tree.key, node: spare }).catch(() => ({}));
+      if (typeof reply.error === "string" && reply.error) return { reason: plainModelError(reply.error) };
+      const listed = Array.isArray(reply.pieces) ? (reply.pieces as unknown[]) : [];
+      if (listed.length !== keys.length) return { reason: "This cut no longer makes the pieces its step names. Edit it with model_edit." };
+      for (const [index, key] of fresh.entries()) {
+        const entry = listed[index];
+        if (!key || !entry || typeof entry !== "object") continue;
+        const id = this.partitionPiece(obj, entry as Record<string, unknown>, node.id, index + 2, true);
+        const made = id ? this.objectOfKey(key) : undefined;
+        if (!made) return { reason: `Part ${index + 2} could not be cut again.` };
+        pieces[index] = made;
+        keys[index] = key;
+      }
+      obj.tree = withNode(obj.tree ?? tree, node.id, { pieces: keys });
+    }
+    if (!obj.solid) return { reason: "This solid could not be read." };
+    return { pieces: [obj, ...(pieces as PlateObject[])], op };
+  }
+
+  /** --- D12. export_3mf with pieces: true. One 3MF of every piece, named `<name>-<n>`, or with stl: true one STL each. */
+  private async exportPieceMeshes(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const requested = typeof input.object === "string" ? input.object : "";
+    const obj = this.find(requested !== "" ? requested : this.selected) ?? this.piecesOffPlate.find((row) => row.id === requested) ?? null;
+    if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+    const got = await this.partitionPieces(obj);
+    if ("reason" in got) return { ok: false, reason: got.reason };
+    const name = String(input.name);
+    const names = pieceNames(name, got.pieces.length);
+    const folder = name.slice(0, Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1);
+    const meshes = got.pieces.map((piece) => featureSolidInModel(piece.solid!, piece.modelPose).positions);
+    const rows = this.pieceRows(got.pieces, names);
+    if (input.stl === true) {
+      const files = meshes.map((mesh, index) => {
+        const path = resolveWrite(`${folder}${names[index]}`, ".stl");
+        const bytes = stlBytes(Float32Array.from(mesh), `${names[index]}.stl`);
+        writeFileSync(path, bytes);
+        return { path, bytes: bytes.byteLength };
+      });
+      return { ok: true, files, parts: got.pieces.length, pieces: rows, note: SUPPORT_NOTE };
+    }
+    const bytes = encode3mf(meshes.map((mesh) => Float32Array.from(mesh)), names);
+    const path = resolveWrite(name, ".3mf");
+    writeFileSync(path, bytes);
+    return { ok: true, path, bytes: bytes.byteLength, parts: got.pieces.length, pieces: rows, note: SUPPORT_NOTE };
+  }
+
+  /** --- D12. model_export_step with pieces: true. One STEP file holding every piece as a separate solid, in order. */
+  private async exportPieceStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
+    const got = await this.partitionPieces(obj);
+    if ("reason" in got) return { ok: false, reason: got.reason };
+    const [first, ...rest] = got.pieces.map((piece) => piece.tree!);
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(exportRequest(first!.key, first!.current, "step", rest.map((tree) => ({ key: tree.key, node: tree.current }))), "export");
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
+    const step = this.stepBytes(reply);
+    if (!step) return { ok: false, reason: typeof reply.error === "string" ? plainModelError(reply.error) : "The pieces were not exported." };
+    const path = resolveWrite(name, ".step");
+    writeFileSync(path, step);
+    const names = pieceNames(name, got.pieces.length);
+    return {
+      ok: true,
+      path,
+      bytes: step.byteLength,
+      parts: got.pieces.length,
+      solids: typeof reply.solids === "number" ? reply.solids : got.pieces.length,
+      pieces: this.pieceRows(got.pieces, names),
+      names: "The STEP file holds the pieces as separate solids in this order, without names; the 3MF and STL exports name them.",
+      note: SUPPORT_NOTE,
+    };
+  }
+
+  private pieceRows(pieces: readonly PlateObject[], names: readonly string[]): { part: number; name: string; object: string; volumeMm3: number }[] {
+    return pieces.map((piece, index) => ({ part: index + 1, name: names[index]!, object: piece.id, volumeMm3: Math.round((piece.solid?.volumeMm3 ?? 0) * 1000) / 1000 }));
   }
 
   // --- end Split to print ---
@@ -5785,7 +5966,7 @@ export class Session {
         ...(older ? { pieces: older } : {}),
       };
     });
-    const rebuilt = pieceKeys ? await this.rebuildPieces(obj, tree.nodes.get(node)?.pieces ?? [], reply, own.node) : null;
+    const rebuilt = pieceKeys ? await this.rebuildPieces(obj, tree.nodes.get(node)?.pieces ?? [], reply, own.node, exportsPieces(baked.op)) : null;
     if (rebuilt) steps[0] = { ...steps[0]!, pieces: rebuilt.keys };
     const tip = [...steps].reverse().find((step) => !step.broken)?.id ?? ids[0]!;
     const host = obj.tree ?? tree;
@@ -5795,7 +5976,8 @@ export class Session {
     if (solid) obj.solid = solid;
     obj.probes.clear();
     this.followPieces(obj);
-    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(rebuilt.notes.length ? { notes: rebuilt.notes } : {}) } : {};
+    const notes = rebuilt ? [...numberNotes(reply), ...rebuilt.notes] : [];
+    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) } : {};
     return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null, ...parts };
   }
 
@@ -5881,6 +6063,9 @@ export class Session {
   /** The plate mesh becomes the solid on screen. A second commit of the same node does not export again. */
   private async commitObject(obj: PlateObject): Promise<string | null> {
     if (!obj.tree) return null;
+    // --- Split to print (D12). A part cut for an export target is exported, and the plate keeps what it had.
+    const exported = this.exportCut(obj);
+    if (exported) return exportedCommit(shownName(obj.name), this.targetName(exported));
     // A history the modeler lost in a restart is built again before its export.
     let tree: ModelTree;
     try {

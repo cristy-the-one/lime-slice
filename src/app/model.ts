@@ -129,7 +129,8 @@ import {
 } from "../ui/model-chrome";
 import { mountDockPanes } from "../ui/dock-panes";
 import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
-import { lookPoseChanged, mountModelLook, resetModelLook, sectionFacePicked } from "../ui/model-look";
+import { explodeLook, lookPoseChanged, mountModelLook, onExplode, resetModelLook, sectionFacePicked, showExplode } from "../ui/model-look";
+import { canExplode, explodeContext } from "./model-explode";
 import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
 import { addedSolid, addedSplit, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
@@ -918,6 +919,7 @@ export function bindModelView() {
         return { origin: at.point, normal: at.normal };
       },
     });
+    onExplode(() => refreshModelContext());
   }
 }
 
@@ -4337,8 +4339,10 @@ export function refreshModelContext() {
     // object, if Keep left it there, would only stand in its way.
     const tool = lens.joins.at(-1)?.op.tool.object;
     fx.model?.setContext([...parts.filter((part) => part.id !== tool), { id: open.objectId, positions: open.solid.positions, matrix: objectPose() }]);
+    showExplode(false);
+    fx.model?.setTags([]);
   } else {
-    fx.model?.setContext(parts);
+    fx.model?.setContext(paintExplode(parts));
   }
   const canvas = document.querySelector<HTMLElement>("#model");
   const obj = open ? state.plate.objects.find((item) => item.id === open!.objectId) : undefined;
@@ -4352,6 +4356,29 @@ export function refreshModelContext() {
 function ghostId(): string | null {
   const op = editing?.panel ? editing.op : null;
   return joinPick() ?? (op?.kind === "join" ? op.tool.object : null);
+}
+
+/**
+ * --- Split to print, Explode (D12). The context with the open part's pieces spread when Explode is on, each number
+ * tagged; `data-explode` on `#model` is the gap and `data-explode-parts` each part's shift. A view only: nothing moves
+ * on the plate or in a saved file.
+ */
+function paintExplode(parts: ContextPart[]): ContextPart[] {
+  const canvas = document.querySelector<HTMLElement>("#model");
+  const look = explodeLook();
+  showExplode(!!open && canExplode(open.key, parts));
+  const exploded = open && look.on ? explodeContext(open.objectId, open.key, boundsOf(open.solid.positions), objectPose(), parts, look.gapMm) : null;
+  fx.model?.setTags(exploded?.tags ?? []);
+  if (canvas) {
+    if (exploded) {
+      canvas.dataset.explode = String(look.gapMm);
+      canvas.dataset.explodeParts = exploded.shifts;
+    } else {
+      delete canvas.dataset.explode;
+      delete canvas.dataset.explodeParts;
+    }
+  }
+  return exploded?.parts ?? parts;
 }
 
 /** The open object's pose into model space. */

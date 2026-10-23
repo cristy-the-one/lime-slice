@@ -29,6 +29,7 @@ import {
   type UV,
   type Vec3,
 } from "./partition.ts";
+import { FORMLABS_FORM_4, printerTarget } from "../ui/machine-library.ts";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -108,7 +109,8 @@ check("every row is a starting fit", Object.values(CLEARANCE_TABLE).every((r) =>
 // --- Filling absent fields.
 
 const lime: Target = { printer: "lime-220", process: "fdm", volumeMm: [220, 220, 250] };
-const form4: Target = { printer: "formlabs-form-4", process: "resin", volumeMm: [200, 125, 210] };
+// --- 3b. The Form 4 is the export-only library record, as Print on gives it.
+const form4: Target = printerTarget(FORMLABS_FORM_4);
 const ctx = { plateTarget: lime, featureMm: 0.4, layerMm: 0.2, material: "PLA", adhesion: "brim", box: { min: [0, 0, 0], max: [100, 50, 80] } as Box };
 const plain = fillPartition({ cuts: [{ origin: [0, 0, 40], normal: [0, 0, 1] }] }, ctx);
 check("a bare cut is a straight cut on U = X", show(plain.cuts[0]) === show({

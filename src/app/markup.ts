@@ -173,6 +173,11 @@ export function mountMarkup(root: HTMLElement) {
         <label class="model-keep"><input id="modelSectionFlip" type="checkbox"> Flip</label>
         <label class="model-keep"><input id="modelColourSteps" type="checkbox"> Colour by step</label>
         <p class="model-note" id="modelSectionNote" hidden></p>
+        <!-- --- Split to print, Explode (D12): a view of the pieces, never saved. Shown when the part has pieces. --- -->
+        <div class="model-explode" id="modelExplodeRow" hidden>
+          <label class="model-keep" data-tip="Spread the split to print's pieces apart along each cut, with their numbers. Saves nothing"><input id="modelExplode" type="checkbox"> Explode</label>
+          <label class="model-look-offset">Gap <input id="modelExplodeGap" type="number" min="0" max="500" step="1" value="10" aria-label="Explode gap, millimetres"></label>
+        </div>
         <hr />
         <button class="btn model-look-toggle" id="modelBedToggle" type="button" aria-pressed="true" data-tip="Show the bed and build volume for size">Bed and build volume</button>
         <label class="model-keep"><input id="modelRulers" type="checkbox"> Sizes and scale bar</label>

@@ -9,8 +9,6 @@ use serde_json::{json, Value};
 const PROFILE_LATER: &str =
     "Only straight cuts are built yet. Leave the profile out, or make it straight.";
 const CONNECTORS_LATER: &str = "Connectors are not built yet. Leave them off for a plain cut.";
-const RESIN_LATER: &str =
-    "A resin target needs the export, which comes later. Cut for the plate's printer.";
 
 fn call(request: Value) -> Value {
     let text = lime_model_occt::tree(&request.to_string());
@@ -221,9 +219,6 @@ fn refusals_leave_the_solid_as_it_was() {
     let mut dowels = partition(&[30.0]);
     dowels["cuts"][0]["connectors"] = json!({ "on": true, "types": [{ "type": "dowel" }] });
     refused(dowels, CONNECTORS_LATER);
-    let mut resin = partition(&[30.0]);
-    resin["target"] = json!({ "printer": "formlabs-form-4", "process": "resin", "volumeMm": [200.0, 125.0, 210.0] });
-    refused(resin, RESIN_LATER);
     let mut three = partition(&[10.0, 20.0, 30.0]);
     three["maxPieces"] = json!(3.0);
     refused(three, "This cut makes 4 pieces. Max pieces is 3.");

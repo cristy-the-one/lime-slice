@@ -1,4 +1,5 @@
 /** Client-side mesh placement. Positions are XYZ triples in millimetres. */
+import { crc32 } from "./png-rgba.ts";
 
 export interface Bounds {
   min: [number, number, number];
@@ -423,12 +424,13 @@ export function offBed(b: Bounds, bedX: number, bedY: number, bedZ: number, belt
   return notes;
 }
 
-export function encode3mf(pos: Float32Array | readonly Float32Array[]) {
+/** `names`, when given, names each part's object in the file, as a split to print's export names its pieces. */
+export function encode3mf(pos: Float32Array | readonly Float32Array[], names?: readonly string[]) {
   const parts = Array.isArray(pos) ? pos : [pos as Float32Array];
   const objectsXml: string[] = [];
   const itemsXml: string[] = [];
   let nextId = 1;
-  for (const part of parts) {
+  for (const [index, part] of parts.entries()) {
     if (part.length < 9) continue;
     const verts: string[] = [];
     const tris: string[] = [];
@@ -451,8 +453,10 @@ export function encode3mf(pos: Float32Array | readonly Float32Array[]) {
     }
     if (tris.length === 0) continue;
     const id = nextId++;
+    const name = names?.[index];
+    const named = name ? ` name="${name.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}"` : "";
     objectsXml.push(
-      `<object id="${id}" type="model"><mesh><vertices>${verts.join("")}</vertices><triangles>${tris.join("")}</triangles></mesh></object>`,
+      `<object id="${id}"${named} type="model"><mesh><vertices>${verts.join("")}</vertices><triangles>${tris.join("")}</triangles></mesh></object>`,
     );
     itemsXml.push(`<item objectid="${id}" />`);
   }
@@ -486,8 +490,13 @@ function storeZip(files: [string, string][]) {
     const named = enc.encode(name);
     const local = new Uint8Array(30 + named.length + data.length);
     const view = new DataView(local.buffer);
+    // Each entry carries its CRC-32 and the version that reads it (2.0): a reader that checks them, as the slicer's
+    // 3MF reader and PreForm's do, refused a file without them.
+    const crc = crc32(data);
     view.setUint32(0, 0x04034b50, true);
+    view.setUint16(4, 20, true);
     view.setUint16(8, 0, true);
+    view.setUint32(14, crc, true);
     view.setUint32(18, data.length, true);
     view.setUint32(22, data.length, true);
     view.setUint16(26, named.length, true);
@@ -497,6 +506,9 @@ function storeZip(files: [string, string][]) {
     const cen = new Uint8Array(46 + named.length);
     const cv = new DataView(cen.buffer);
     cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
+    cv.setUint32(16, crc, true);
     cv.setUint32(20, data.length, true);
     cv.setUint32(24, data.length, true);
     cv.setUint16(28, named.length, true);

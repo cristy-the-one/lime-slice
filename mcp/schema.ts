@@ -667,10 +667,10 @@ const partitionOp = {
         },
       },
     },
-    target: { type: "object", description: "{printer, process:\"fdm\", volumeMm}. Default the plate's printer." },
+    target: { type: "object", description: "{printer:\"formlabs-form-4\"} (resin, exported) or a machine_list id, or {printer, process, volumeMm}. Default the plate's printer." },
     orient: { description: "keep: each piece keeps the part's plate orientation.", oneOf: [{ enum: ["keep"] }, { type: "array", items: { enum: ["keep", "joint"] } }] },
-    arrange: { type: "boolean", description: "model_commit lays the pieces out. Default true." },
-    labels: { type: "object", description: "Part numbers. Stored, not cut yet." },
+    arrange: { type: "boolean", description: "model_commit lays the pieces out. Default true; false for an export target." },
+    labels: { type: "object", description: "Part numbers on the cut faces: {on, height, depth}. Default on." },
     bedMarginMm: { type: "number", minimum: 0, maximum: 100, description: "Kept from the build volume's edge." },
     maxPieces: { type: "integer", minimum: 2, maximum: 24, description: "Default 12." },
     label,
@@ -1203,7 +1203,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "export_3mf",
     description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 } } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 }, object: handle, pieces: { type: "boolean", description: "Instead: the object's split to print pieces, named <name>-<n>." }, stl: { type: "boolean", description: "With pieces: one STL each." } } },
   },
   {
     name: "mesh_stats",
@@ -1485,7 +1485,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_export_step",
     description: "Write a .step file in the workspace. Overwrites the same name.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { object: handle, name: { type: "string", minLength: 1 } } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { object: handle, name: { type: "string", minLength: 1 }, pieces: { type: "boolean", description: "Its split to print pieces, a solid each." } } },
   },
   {
     name: "measure",

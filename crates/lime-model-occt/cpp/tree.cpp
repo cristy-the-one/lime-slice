@@ -9,7 +9,9 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <locale>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -17,13 +19,16 @@
 #include <BRepBndLib.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
+#include <BRep_Builder.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_VersionInfo.hxx>
 #include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopTools_ListIteratorOfListOfShape.hxx>
 
 #include "kernel.h"
@@ -505,7 +510,22 @@ LimeShape* lime_tree_split(const LimeShape* from, const double* p, LimeShape** o
 
 /// `p` is `count` planes of x, y, z, nx, ny, nz. `out` has room for 24 pieces; the pieces are in partition order, and
 /// the answer is how many there are, or -1 with `error` set and no piece made.
-int lime_tree_partition(const LimeShape* from, const double* p, int count, LimeShape** out, char** error) {
+///
+/// --- Split to print, part numbers. With `digit_count` above 0, piece `i`'s number is `stroke_counts[i]` strokes of
+/// u, v, length, angle from `strokes`, one piece after another; `us` is each cut's U, and `sizes` the stroke width, the
+/// depth and the inset. `placed` then gets, per piece, the list of `{cut, at, normal}` where its number was cut.
+int lime_tree_partition(
+    const LimeShape* from,
+    const double* p,
+    int count,
+    const double* us,
+    const int* stroke_counts,
+    int digit_count,
+    const double* strokes,
+    const double* sizes,
+    LimeShape** out,
+    char** placed,
+    char** error) {
     try {
         LIME_CATCH_FAULTS;
         std::vector<std::array<double, 6>> planes;
@@ -519,6 +539,43 @@ int lime_tree_partition(const LimeShape* from, const double* p, int count, LimeS
         if (!build_partition(from->held.shape, planes, pieces, message)) {
             set_error(error, message);
             return -1;
+        }
+        if (digit_count > 0) {
+            PartitionNumbers numbers;
+            numbers.width = sizes[0];
+            numbers.depth = sizes[1];
+            numbers.inset = sizes[2];
+            for (int index = 0; index < count; ++index) {
+                numbers.us.push_back({us[3 * index], us[3 * index + 1], us[3 * index + 2]});
+            }
+            const double* at = strokes;
+            for (int digit = 0; digit < digit_count; ++digit) {
+                std::vector<NumberStroke> one;
+                for (int stroke = 0; stroke < stroke_counts[digit]; ++stroke, at += 4) {
+                    one.push_back({at[0], at[1], at[2], at[3]});
+                }
+                numbers.digits.push_back(one);
+            }
+            std::vector<std::vector<NumberPlace>> where;
+            engrave_numbers(pieces, planes, numbers, where);
+            std::ostringstream text;
+            text.imbue(std::locale::classic());
+            text.precision(17);
+            text << '[';
+            for (size_t index = 0; index < where.size(); ++index) {
+                text << (index > 0 ? "," : "") << '[';
+                for (size_t k = 0; k < where[index].size(); ++k) {
+                    const NumberPlace& place = where[index][k];
+                    text << (k > 0 ? "," : "") << "{\"cut\":" << place.cut << ",\"at\":[" << place.at[0] << ','
+                         << place.at[1] << ',' << place.at[2] << "],\"normal\":[" << place.normal[0] << ','
+                         << place.normal[1] << ',' << place.normal[2] << "]}";
+                }
+                text << ']';
+            }
+            text << ']';
+            if (placed != nullptr) {
+                *placed = alloc(text.str());
+            }
         }
         std::vector<std::unique_ptr<LimeShape>> made;
         for (const PartitionPiece& piece : pieces) {
@@ -1548,6 +1605,53 @@ int lime_tree_write_step(const LimeShape* shape, const char* path, char** error)
     } catch (...) {
         set_error(error, "Open CASCADE failed");
         return 0;
+    }
+}
+
+/// --- Split to print (D12). `count` solids written as one STEP file, each a solid of its own in one compound. The
+/// writer is the one-solid export's; the solids carry no names, which would need the XCAF document writer.
+int lime_tree_write_step_many(const LimeShape* const* shapes, int count, const char* path, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        TopoDS_Compound compound;
+        BRep_Builder builder;
+        builder.MakeCompound(compound);
+        for (int index = 0; index < count; ++index) {
+            builder.Add(compound, shapes[index]->held.shape);
+        }
+        std::string message;
+        if (!write_step(compound, path, message)) {
+            set_error(error, message);
+            return 0;
+        }
+        return 1;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return 0;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return 0;
+    }
+}
+
+/// --- Split to print. Each solid of `shape` held on its own, up to `max` of them, in the order the shape lists them;
+/// the answer is how many there are, or -1 when there are more.
+int lime_tree_solids(const LimeShape* shape, LimeShape** out, int max) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<std::unique_ptr<LimeShape>> made;
+        for (TopExp_Explorer explorer(shape->held.shape, TopAbs_SOLID); explorer.More(); explorer.Next()) {
+            if (static_cast<int>(made.size()) >= max) {
+                return -1;
+            }
+            made.push_back(hold(explorer.Current(), volume_of(explorer.Current())));
+        }
+        for (size_t index = 0; index < made.size(); ++index) {
+            out[index] = made[index].release();
+        }
+        return static_cast<int>(made.size());
+    } catch (...) {
+        return -1;
     }
 }
 

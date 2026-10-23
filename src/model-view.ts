@@ -159,6 +159,8 @@ export interface ModelView {
   setPreview(shape: ModelSolid | null): void;
   /** The other plate objects, drawn grey behind the open solid. They are never picked, framed, or measured. */
   setContext(parts: ContextPart[]): void;
+  /** --- Split to print, Explode (D12). Short labels pinned to points in model space, such as each piece's number. */
+  setTags(tags: readonly { text: string; at: [number, number, number] }[]): void;
   /** The active printer's build volume, in millimetres. The bed plane is Z = 0. */
   setBed(x: number, y: number, z: number): void;
   setTheme(): void;
@@ -990,6 +992,36 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     kick();
   }
 
+  const tags: { el: HTMLDivElement; at: THREE.Vector3 }[] = [];
+
+  function setTags(next: readonly { text: string; at: [number, number, number] }[]) {
+    for (const tag of tags.splice(0)) tag.el.remove();
+    for (const one of next) {
+      const el = document.createElement("div");
+      el.className = "model-part-tag";
+      el.textContent = one.text;
+      canvas.parentElement?.append(el);
+      tags.push({ el, at: new THREE.Vector3(...one.at) });
+    }
+    if (next.length > 0) canvas.dataset.tags = next.map((one) => one.text).join(" ");
+    else delete canvas.dataset.tags;
+    placeTags();
+    kick();
+  }
+
+  /** Each tag over its point, where the camera now sees it; hidden behind the camera. */
+  function placeTags() {
+    if (tags.length === 0) return;
+    const box = canvas.getBoundingClientRect();
+    const parent = canvas.parentElement?.getBoundingClientRect() ?? box;
+    for (const tag of tags) {
+      const at = tag.at.clone().project(camera);
+      tag.el.hidden = at.z > 1;
+      tag.el.style.left = `${Math.round(box.left - parent.left + ((at.x + 1) / 2) * box.width)}px`;
+      tag.el.style.top = `${Math.round(box.top - parent.top + ((1 - at.y) / 2) * box.height)}px`;
+    }
+  }
+
   function paintBedColors() {
     bedRef.setColors(hexToThree(colors.bed), hexToThree(colors.bedMinor), hexToThree(colors.line), hexToThree(colors.teal));
   }
@@ -1685,6 +1717,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       renderViewHelper(renderer, viewHelper);
       drawMeasure();
       paintFit();
+      placeTags();
       still = moved || viewHelper.animating ? 0 : still + 1;
       if (still > STILL_FRAMES) {
         running = false;
@@ -2511,6 +2544,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       kick();
     },
     setContext,
+    setTags,
     setBed(x, y, z) {
       bed = { x, y, z };
       bedRef.setSize(x, y, z);
