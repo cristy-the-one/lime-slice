@@ -57,18 +57,13 @@ test("the seam position is left out at Blend, sent otherwise, and kept in a pres
   const seam = page.locator("#seam");
   await expect(seam).toHaveValue("blend");
   await expect(seam.locator("option")).toHaveText(["Blend (strategy)", "Nearest", "Aligned", "Rear"]);
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(1);
-  await sliceSettled(page);
-  expect(bodies[0]).not.toHaveProperty("seam");
-  expect(bodies[0]).toHaveProperty("scarfSeam", "blend");
+  const first = await sliceClick(page, bodies);
+  expect(first).not.toHaveProperty("seam");
+  expect(first).toHaveProperty("scarfSeam", "blend");
 
   await seam.selectOption("rear");
   await expect(page.locator("label.setting", { has: page.locator("#seam") })).toHaveClass(/is-modified/);
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(2);
-  await sliceSettled(page);
-  expect(bodies[1]).toHaveProperty("seam", "rear");
+  expect(await sliceClick(page, bodies)).toHaveProperty("seam", "rear");
 
   await page.locator("#left .profile-more > summary").click();
   await page.locator("#profileName").fill("Back seam");
@@ -76,18 +71,12 @@ test("the seam position is left out at Blend, sent otherwise, and kept in a pres
   await expect(page.locator("#profilePick option:checked")).toHaveText("Back seam");
   await page.locator("#seam").selectOption("blend");
   await expect(page.locator("#seam")).toHaveValue("blend");
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(3);
-  await sliceSettled(page);
-  expect(bodies[2]).not.toHaveProperty("seam");
+  // Blend and then the profile's Rear are recipes the app already sliced, so each may refresh by itself first.
+  expect(await sliceClick(page, bodies)).not.toHaveProperty("seam");
 
   await page.locator("#profilePick").selectOption({ label: "Back seam" });
   await expect(page.locator("#seam")).toHaveValue("rear");
-  // The profile brings back a recipe the app already stored, so it may refresh by itself
-  // before this click lands: a slow runner sends that request and then the click's.
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBeGreaterThanOrEqual(4);
-  expect(bodies.at(-1)).toHaveProperty("seam", "rear");
+  expect(await sliceClick(page, bodies)).toHaveProperty("seam", "rear");
 
   await page.reload();
   await loadCube(page);
