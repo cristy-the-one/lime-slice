@@ -65,8 +65,9 @@ pub fn step_solids(step: &[u8]) -> Result<Vec<PartitionPiece>, String> {
     }
 }
 
-/// The free shapes of a STEP file with the product name each carries, each checked as a partition's piece, in the
-/// file's order: what a named STEP export reads back as in an XCAF document.
+/// The solids of a STEP file with the product name of the free shape each came from (empty when that shape holds
+/// several), each checked as a partition's piece, in the file's order: what a named STEP export reads back as in an
+/// XCAF document. The `stepSolids` tree call answers the same for the app.
 pub fn step_named_solids(step: &[u8]) -> Result<Vec<(String, PartitionPiece)>, String> {
     #[cfg(lime_occt)]
     {

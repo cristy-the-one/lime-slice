@@ -48,6 +48,8 @@ interface Handlers {
   distanceMm?: number;
   /** How long an export takes, so a test can act while one is still on its way. */
   exportMs?: number;
+  /** The answer to a `stepSolids` call. Absent answers one unnamed solid. */
+  stepSolids?(request: Body): Body;
 }
 
 interface MockNode {
@@ -307,6 +309,11 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
   };
   await page.route("**/api/model/tree", async (route: Route) => {
     const request = route.request().postDataJSON() as Body;
+    // The import's count of a STEP file's solids is no step of a tree: one solid, unless the spec says otherwise.
+    if (request.call === "stepSolids") {
+      await route.fulfill({ json: handlers.stepSolids?.(request) ?? { solids: [{ name: "", volumeMm3: 0 }] } });
+      return;
+    }
     calls.push(request);
     const body = await answer(request);
     // As the engine: a step's answer lists the steps of its tree that hold a solid; the mock holds them all.

@@ -705,18 +705,40 @@ pub fn partition_primitive(
         .collect())
 }
 
-/// --- Split to print (D12). The free shapes of a STEP file with their product names, each checked as a partition's
-/// piece, in the file's order.
+/// --- Split to print (D12). The solids of a STEP file with their product names, each checked as a partition's piece, in
+/// the file's order (see `named_solids_of`).
 pub fn step_named_solids(step: &[u8]) -> Result<Vec<(String, crate::PartitionPiece)>, String> {
     let _store = lock();
+    Ok(named_solids_of(step)?
+        .into_iter()
+        .map(|(name, shape)| (name, shape.check()))
+        .collect())
+}
+
+/// The most solids a STEP file opens as pieces.
+const STEP_SOLIDS_MAX: usize = 256;
+
+/// The solids of a STEP file in the file's order, each with the product name of the free shape it came from when that
+/// shape is this one solid, and an empty name when the shape holds several or has no name. Read through the XCAF
+/// document reader, so a split to print's STEP export reads back as its named pieces.
+fn named_solids_of(step: &[u8]) -> Result<Vec<(String, Shape)>, String> {
     let path = temp_step("read-named");
     std::fs::write(&path, step).map_err(|err| err.to_string())?;
     let read = Shape::read_step_named(&path);
     let _ = std::fs::remove_file(&path);
-    Ok(read?
-        .into_iter()
-        .map(|(name, shape)| (name, shape.check()))
-        .collect())
+    let more = format!("This STEP file has more than {STEP_SOLIDS_MAX} solids");
+    let mut out = Vec::new();
+    for (name, shape) in read? {
+        let solids = shape.solids_up_to(STEP_SOLIDS_MAX, &more)?;
+        let name = if solids.len() == 1 { name.trim().to_string() } else { String::new() };
+        for solid in solids {
+            if out.len() == STEP_SOLIDS_MAX {
+                return Err(more);
+            }
+            out.push((name.clone(), solid));
+        }
+    }
+    Ok(out)
 }
 
 /// --- Split to print (D12). The solids a STEP file holds, each checked as a partition's piece, in the file's order.
@@ -814,7 +836,10 @@ pub fn call(request: &str) -> String {
         Err(err) => return Failure::Message(format!("Bad tree request: {err}")).json(),
     };
     let mut store = lock();
-    let transient = matches!(&request, Request::MeshStep { .. } | Request::Capabilities);
+    let transient = matches!(
+        &request,
+        Request::MeshStep { .. } | Request::Capabilities | Request::StepSolids { .. }
+    );
     let answer = store.handle(request);
     if !transient {
         store.evict();
@@ -854,6 +879,13 @@ enum Request {
         chord_mm: f64,
     },
     Capabilities,
+    /// Stateless, as `meshStep`: the solids of a STEP file, each with its product name and volume. With `files`, each
+    /// also comes back as a STEP file of its own: that solid alone, a product of the same name, where the file placed it.
+    StepSolids {
+        data_b64: String,
+        #[serde(default)]
+        files: bool,
+    },
 
     /// Open a tree from its root: a STEP, a primitive built from its numbers, or a feature (an extrude, a
     /// revolve, or a loft) built against nothing. With `nodes`,
@@ -1777,6 +1809,24 @@ impl Store {
                 }
                 let mut shape = root_shape(Some(data_b64), None, None, None, None)?;
                 Ok(Answer::Plain(shape.reply(ROOT, chord_mm)?))
+            }
+            Request::StepSolids { data_b64, files } => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(data_b64.trim())
+                    .map_err(|err| Failure::Message(err.to_string()))?;
+                let solids = named_solids_of(&bytes).map_err(Failure::Message)?;
+                let mut rows = Vec::with_capacity(solids.len());
+                for (name, solid) in &solids {
+                    let mut row = json!({ "name": name, "volumeMm3": solid.check().volume_mm3 });
+                    if files {
+                        let piece = Shape::step_bytes_of(&[solid.raw()], std::slice::from_ref(name))
+                            .map_err(Failure::Message)?;
+                        row["bytesBase64"] =
+                            json!(base64::engine::general_purpose::STANDARD.encode(&piece));
+                    }
+                    rows.push(row);
+                }
+                Ok(Answer::Plain(json!({ "solids": rows }).to_string()))
             }
             Request::Open {
                 key,
@@ -4988,11 +5038,12 @@ impl Shape {
         bytes
     }
 
-    /// --- Split to print (D12). The free shapes of a STEP file with their product names, in the file's order, at most 24.
+    /// --- Split to print (D12). The free shapes of a STEP file with their product names, in the file's order, at most
+    /// `STEP_SOLIDS_MAX`.
     fn read_step_named(path: &std::path::Path) -> Result<Vec<(String, Shape)>, String> {
-        const MAX_SOLIDS: usize = 24;
+        const MAX_SOLIDS: usize = STEP_SOLIDS_MAX;
         let path = c_path(path)?;
-        let mut out = [std::ptr::null_mut::<RawShape>(); MAX_SOLIDS];
+        let mut out = vec![std::ptr::null_mut::<RawShape>(); MAX_SOLIDS];
         let mut names: *mut c_char = std::ptr::null_mut();
         let mut error: *mut c_char = std::ptr::null_mut();
         // SAFETY: `out` has room for `MAX_SOLIDS` shapes, and `path` is NUL-terminated.
@@ -5023,11 +5074,16 @@ impl Shape {
 
     /// --- Split to print. Each solid of this shape on its own, at most 24.
     fn solids(&self) -> Result<Vec<Shape>, String> {
-        const MAX_SOLIDS: usize = 24;
-        let mut out = [std::ptr::null_mut::<RawShape>(); MAX_SOLIDS];
-        // SAFETY: `out` has room for `MAX_SOLIDS` shapes.
-        let made = unsafe { lime_tree_solids(self.raw(), out.as_mut_ptr(), MAX_SOLIDS as c_int) };
-        let made = usize::try_from(made).map_err(|_| "More solids than a partition makes".to_string())?;
+        self.solids_up_to(24, "More solids than a partition makes")
+    }
+
+    /// Each solid of this shape on its own, at most `max`, or `more` when it has more.
+    fn solids_up_to(&self, max: usize, more: &str) -> Result<Vec<Shape>, String> {
+        let mut out = vec![std::ptr::null_mut::<RawShape>(); max];
+        let count = c_int::try_from(max).map_err(|_| more.to_string())?;
+        // SAFETY: `out` has room for `max` shapes.
+        let made = unsafe { lime_tree_solids(self.raw(), out.as_mut_ptr(), count) };
+        let made = usize::try_from(made).map_err(|_| more.to_string())?;
         Ok(out[..made]
             .iter()
             .filter_map(|piece| NonNull::new(*piece).map(Shape))

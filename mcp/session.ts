@@ -107,6 +107,7 @@ import { printFrame } from "../src/model-check.ts";
 import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
 import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
+import { offsetInPlace, pieceFileName, separateBy, solidNames, stepSolidHint } from "../src/step-solids.ts";
 import { reviewGcode } from "./review.ts";
 import { GUIDES, guideByUri } from "./guides.ts";
 import { GROUP_NAMES, groupOf, groupsOptedIn, TOOL_GROUPS } from "./groups.ts";
@@ -1317,7 +1318,7 @@ export class Session {
       case "project_create": return this.projectCreate();
       case "project_save": return this.projectSave(String(input.name), input.ifExists === "refuse");
       case "app_open": return this.appOpen(typeof input.path === "string" ? input.path : undefined);
-      case "mesh_import": return this.meshImport(String(input.path), typeof input.stepToleranceMm === "number" ? input.stepToleranceMm : STEP);
+      case "mesh_import": return this.meshImport(String(input.path), typeof input.stepToleranceMm === "number" ? input.stepToleranceMm : STEP, input.pieces === true);
       case "plate_list": return this.plateList(input);
       case "plate_undo": return this.plateUndo();
       case "plate_redo": return this.plateRedo();
@@ -2128,7 +2129,7 @@ export class Session {
     return openInApp(String(saved.path), this.appOpener, true);
   }
 
-  private async meshImport(path: string, tolerance: number): Promise<Record<string, unknown>> {
+  private async meshImport(path: string, tolerance: number, pieces = false): Promise<Record<string, unknown>> {
     await new Promise((resolve) => setImmediate(resolve));
     const full = resolveRead(path, "mesh");
     const bytes = new Uint8Array(await readFile(full));
@@ -2153,17 +2154,76 @@ export class Session {
       stepTolerance: tolerance,
       ...(note ? { note } : {}),
     });
+    const solids = /\.(step|stp)$/i.test(fileName) ? stepSolidHint(bytes) : 0;
+    const split = pieces && solids >= 2 ? await this.splitSolids(obj, false) : null;
+    if (split) return split;
     const placed = this.placed(obj);
     const overlap = this.overlaps(obj) ? OVERLAP : "";
-    const combined = [note, overlap].filter((line) => line).join(" ");
+    const several = solids >= 2 && !pieces ? `This STEP file holds ${solids} solids. mesh_import with pieces: true opens each as an object; object_split_shells splits this one.` : "";
+    const combined = [note, overlap, several].filter((line) => line).join(" ");
     return {
       ok: true,
       object: obj.id,
       name: shownName(obj.name),
       triangles: obj.triangles,
       bboxMm: { min: placed.bounds.min, max: placed.bounds.max },
+      ...(several ? { solids } : {}),
       ...(combined ? { note: combined } : {}),
     };
+  }
+
+  /**
+   * One object per solid of `obj`'s STEP file, named from the file, each where it sat in `obj` and a solid Model edits.
+   * Null when the kernel reads one solid or none, so the caller goes on as for a mesh.
+   */
+  private async splitSolids(obj: PlateObject, undoable: boolean): Promise<Record<string, unknown> | null> {
+    let written: Record<string, unknown>;
+    try {
+      written = JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify({ call: "stepSolids", dataB64: bytesToBase64(obj.bytes), files: true })))) as Record<string, unknown>;
+    } catch (err) {
+      written = { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (typeof written.error === "string") return { ok: false, reason: written.error };
+    const rows = Array.isArray(written.solids) ? (written.solids as { name?: unknown; bytesBase64?: unknown }[]) : [];
+    if (rows.length < 2) return null;
+    const files = rows.map((row) => (typeof row.bytesBase64 === "string" ? base64ToBytes(row.bytesBase64) : null));
+    if (files.some((file) => !file)) return { ok: false, reason: "The kernel did not write the solids of this STEP file." };
+    const names = solidNames(obj.fileName, rows.map((row) => ({ name: typeof row.name === "string" ? row.name : "" })));
+    const read = [];
+    for (const [index, file] of files.entries()) read.push({ name: names[index]!, fileName: pieceFileName(names[index]!), bytes: file!, ...(await this.preview(pieceFileName(names[index]!), file!, obj.stepTolerance)) });
+    if (undoable) this.remember("Separate solids");
+    const printer = this.printer();
+    const posed = { source: obj.source, orient: obj.orient, scale: obj.scale, centered: obj.centered, offset: obj.offset };
+    const at = this.objects.indexOf(obj);
+    const made = read.map((piece, index): PlateObject => ({
+      ...obj,
+      id: index === 0 ? obj.id : this.takeId(),
+      name: piece.name,
+      fileName: piece.fileName,
+      bytes: piece.bytes,
+      source: piece.source,
+      triangles: piece.triangles,
+      seatMm: piece.seatMm,
+      orient: [...obj.orient] as Mat3,
+      centered: false,
+      offset: offsetInPlace(posed, piece.source, piece.seatMm - obj.seatMm, printer.bedX, printer.bedY),
+      modelPose: { m: [...obj.modelPose.m] as PlateObject["modelPose"]["m"], t: [...obj.modelPose.t] as PlateObject["modelPose"]["t"] },
+      workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] },
+      tree: null,
+      solid: null,
+      probes: new Map(),
+      platedNode: null,
+      brep: undefined,
+      note: undefined,
+      supportEdits: [],
+      supportPaint: [],
+      seamPaint: [],
+      reinforcement: [],
+      objectSettings: { ...obj.objectSettings },
+    }));
+    this.objects.splice(at, 1, ...made);
+    this.selected = made[0]!.id;
+    return { ok: true, objects: made.map((piece) => piece.id), names: made.map((piece) => piece.name), solids: made.length, label: "Separate solids" };
   }
 
   private placed(obj: PlateObject) {
@@ -2444,9 +2504,11 @@ export class Session {
     return { ok: true, objects: made, label: "Duplicate" };
   }
 
-  private splitShells(id: string): Record<string, unknown> {
+  private async splitShells(id: string): Promise<Record<string, unknown>> {
     const obj = this.find(id);
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+    const split = separateBy(obj.fileName, stepSolidHint(obj.bytes)) === "solids" ? await this.splitSolids(obj, true) : null;
+    if (split) return split;
     const groups = shellGroups(obj.source);
     if (!groups) return { ok: false, reason: "This mesh is one shell." };
     const pieces = takeGroups(obj.source, groups.groups);
