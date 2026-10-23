@@ -2038,6 +2038,161 @@ bool build_split(
     return true;
 }
 
+bool every_edge_shared_by_two(const TopoDS_Shape& shape) {
+    TopTools_IndexedMapOfShape edges;
+    std::vector<int> uses;
+    for (TopExp_Explorer face(shape, TopAbs_FACE); face.More(); face.Next()) {
+        for (TopExp_Explorer edge(face.Current(), TopAbs_EDGE); edge.More(); edge.Next()) {
+            if (BRep_Tool::Degenerated(TopoDS::Edge(edge.Current()))) {
+                continue;
+            }
+            const int at = edges.Add(edge.Current());
+            if (static_cast<size_t>(at) > uses.size()) {
+                uses.resize(static_cast<size_t>(at), 0);
+            }
+            uses[static_cast<size_t>(at - 1)] += 1;
+        }
+    }
+    return !uses.empty() && std::all_of(uses.begin(), uses.end(), [](int count) { return count == 2; });
+}
+
+bool build_partition(
+    const TopoDS_Shape& current,
+    const std::vector<std::array<double, 6>>& planes,
+    std::vector<PartitionPiece>& pieces,
+    std::string& error) {
+    pieces.clear();
+    if (planes.empty()) {
+        error = "A partition needs at least one plane";
+        return false;
+    }
+    if (planes.size() >= kMaxPartitionPieces) {
+        error = "A partition makes at most 24 pieces";
+        return false;
+    }
+    Bnd_Box bounds;
+    BRepBndLib::Add(current, bounds, Standard_False);
+    if (bounds.IsVoid()) {
+        error = "This solid has no extent";
+        return false;
+    }
+    double xmin = 0;
+    double ymin = 0;
+    double zmin = 0;
+    double xmax = 0;
+    double ymax = 0;
+    double zmax = 0;
+    bounds.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    const gp_Pnt center((xmin + xmax) * 0.5, (ymin + ymax) * 0.5, (zmin + zmax) * 0.5);
+    const double span = std::sqrt(
+                            (xmax - xmin) * (xmax - xmin) + (ymax - ymin) * (ymax - ymin) + (zmax - zmin) * (zmax - zmin)) +
+                        1.0;
+    std::vector<gp_Pnt> origins;
+    std::vector<gp_Dir> normals;
+    TopTools_ListOfShape tools;
+    for (const std::array<double, 6>& plane : planes) {
+        const double length = std::sqrt(plane[3] * plane[3] + plane[4] * plane[4] + plane[5] * plane[5]);
+        if (!(length > 1e-12)) {
+            error = "The plane needs a direction";
+            return false;
+        }
+        const gp_Dir normal(plane[3] / length, plane[4] / length, plane[5] / length);
+        const gp_Pnt origin(plane[0], plane[1], plane[2]);
+        if (const char* reject = split_reject(origin, normal, xmin, ymin, zmin, xmax, ymax, zmax)) {
+            error = reject;
+            return false;
+        }
+        const gp_Vec toward(origin, center);
+        const gp_Pnt face_center = center.Translated(gp_Vec(normal).Multiplied(-toward.Dot(gp_Vec(normal))));
+        BRepBuilderAPI_MakeFace face(gp_Pln(face_center, normal), -span, span, -span, span);
+        face.Build();
+        if (!face.IsDone()) {
+            error = "Open CASCADE did not build the plane";
+            return false;
+        }
+        tools.Append(face.Shape());
+        origins.push_back(origin);
+        normals.push_back(normal);
+    }
+    constexpr double kThinnest = 0.25;
+    for (size_t a = 0; a < planes.size(); ++a) {
+        for (size_t b = a + 1; b < planes.size(); ++b) {
+            if (std::abs(gp_Vec(normals[a]).Dot(gp_Vec(normals[b]))) > 1.0 - 1e-9 &&
+                std::abs(gp_Vec(origins[a], origins[b]).Dot(gp_Vec(normals[a]))) < kThinnest) {
+                error = "Two planes are too close together. Move them apart.";
+                return false;
+            }
+        }
+    }
+    TopTools_ListOfShape arguments;
+    arguments.Append(current);
+    BRepAlgoAPI_Splitter splitter;
+    splitter.SetArguments(arguments);
+    splitter.SetTools(tools);
+    splitter.SetNonDestructive(Standard_True);
+    g_stats.builds += 1;
+    Handle(Message_ProgressIndicator) watch;
+    splitter.Build(deadline_range(watch));
+    if (!splitter.IsDone() || splitter.HasErrors() || splitter.Shape().IsNull()) {
+        error = past_deadline() ? deadline_message() : "Open CASCADE did not split this solid";
+        return false;
+    }
+    struct Part {
+        TopoDS_Shape shape;
+        std::vector<int> signs;
+        double along;
+    };
+    std::vector<Part> parts;
+    for (TopExp_Explorer explorer(splitter.Shape(), TopAbs_SOLID); explorer.More(); explorer.Next()) {
+        GProp_GProps props;
+        integrate(explorer.Current(), props);
+        Part part{explorer.Current(), {}, gp_Vec(origins[0], props.CentreOfMass()).Dot(gp_Vec(normals[0]))};
+        for (size_t index = 0; index < planes.size(); ++index) {
+            part.signs.push_back(gp_Vec(origins[index], props.CentreOfMass()).Dot(gp_Vec(normals[index])) < 0.0 ? 0 : 1);
+        }
+        parts.push_back(part);
+    }
+    std::stable_sort(parts.begin(), parts.end(), [](const Part& a, const Part& b) {
+        return a.signs != b.signs ? a.signs < b.signs : a.along < b.along;
+    });
+    // Every plane spans the whole part, so each solid the splitter returns is one connected piece. Two solids on the
+    // same side of every plane (the arms of a U cut across) do not touch, so each stays a piece of its own.
+    for (const Part& part : parts) {
+        TopoDS_Shape solid = as_solid(part.shape);
+        if (solid.IsNull() || solid.ShapeType() != TopAbs_SOLID) {
+            error = "The planes did not cut this solid into whole pieces";
+            return false;
+        }
+        if (!BRepCheck_Analyzer(solid).IsValid()) {
+            ShapeFix_Solid fix;
+            fix.Init(TopoDS::Solid(solid));
+            fix.Perform();
+            solid = fix.Solid();
+        }
+        if (!BRepCheck_Analyzer(solid).IsValid() || !every_edge_shared_by_two(solid)) {
+            error = "The planes did not cut this solid into closed pieces";
+            return false;
+        }
+        const double volume = volume_of(solid);
+        if (!(volume > 1e-6)) {
+            error = "The planes did not cut this solid into whole pieces";
+            return false;
+        }
+        pieces.push_back({solid, volume});
+    }
+    if (pieces.size() < 2) {
+        pieces.clear();
+        error = "The planes did not split this solid";
+        return false;
+    }
+    if (pieces.size() > kMaxPartitionPieces) {
+        pieces.clear();
+        error = "A partition makes at most 24 pieces";
+        return false;
+    }
+    return true;
+}
+
 TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string& error) {
     if (!(factor > 0.0)) {
         error = "Scale needs a positive factor";

@@ -5,6 +5,7 @@
 // until the node is evicted. Nothing here locks: the Rust store serialises every call.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -13,10 +14,13 @@
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_VersionInfo.hxx>
+#include <TopExp.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopTools_ListIteratorOfListOfShape.hxx>
 
@@ -495,6 +499,57 @@ LimeShape* lime_tree_split(const LimeShape* from, const double* p, LimeShape** o
         set_error(error, "Open CASCADE failed");
         return nullptr;
     }
+}
+
+/// `p` is `count` planes of x, y, z, nx, ny, nz. `out` has room for 24 pieces; the pieces are in partition order, and
+/// the answer is how many there are, or -1 with `error` set and no piece made.
+int lime_tree_partition(const LimeShape* from, const double* p, int count, LimeShape** out, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<std::array<double, 6>> planes;
+        for (int index = 0; index < count; ++index) {
+            std::array<double, 6> plane;
+            std::copy(p + 6 * index, p + 6 * index + 6, plane.begin());
+            planes.push_back(plane);
+        }
+        std::string message;
+        std::vector<PartitionPiece> pieces;
+        if (!build_partition(from->held.shape, planes, pieces, message)) {
+            set_error(error, message);
+            return -1;
+        }
+        std::vector<std::unique_ptr<LimeShape>> made;
+        for (const PartitionPiece& piece : pieces) {
+            std::unique_ptr<LimeShape> one = adopt(
+                piece.shape, piece.volume, "The planes did not split this solid", error, made.empty() ? from : nullptr);
+            if (one == nullptr) {
+                return -1;
+            }
+            made.push_back(std::move(one));
+        }
+        for (size_t index = 0; index < made.size(); ++index) {
+            out[index] = made[index].release();
+        }
+        return static_cast<int>(made.size());
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return -1;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return -1;
+    }
+}
+
+/// `out` is the solid count, the face count, 1 when `BRepCheck_Analyzer` accepts the shape, and 1 when every edge lies
+/// on exactly two faces.
+void lime_tree_check(const LimeShape* shape, int* out) {
+    const TopoDS_Shape& solid = shape->held.shape;
+    TopTools_IndexedMapOfShape solids;
+    TopExp::MapShapes(solid, TopAbs_SOLID, solids);
+    out[0] = solids.Extent();
+    out[1] = shape->held.faces.Extent();
+    out[2] = BRepCheck_Analyzer(solid).IsValid() ? 1 : 0;
+    out[3] = every_edge_shared_by_two(solid) ? 1 : 0;
 }
 
 LimeShape* lime_tree_scale(const LimeShape* from, double factor, char** error) {

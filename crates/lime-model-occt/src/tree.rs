@@ -531,6 +531,16 @@ impl Default for Limits {
     }
 }
 
+pub fn partition_primitive(
+    solid: &str,
+    planes: &[[f64; 6]],
+) -> Result<Vec<crate::PartitionPiece>, String> {
+    let solid: Solid = serde_json::from_str(solid).map_err(|err| err.to_string())?;
+    let _store = lock();
+    let whole = Shape::primitive(&solid)?;
+    Ok(whole.partition(planes)?.iter().map(Shape::check).collect())
+}
+
 pub fn set_limits(limits: Limits) {
     lock().limits = limits;
 }
@@ -3818,6 +3828,14 @@ extern "C" {
         other: *mut *mut RawShape,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    fn lime_tree_partition(
+        from: *const RawShape,
+        p: *const f64,
+        count: c_int,
+        out: *mut *mut RawShape,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    fn lime_tree_check(shape: *const RawShape, out: *mut c_int);
     fn lime_tree_scale(
         from: *const RawShape,
         factor: f64,
@@ -4338,6 +4356,47 @@ impl Shape {
         match NonNull::new(shape) {
             Some(shape) => Ok(Shape(shape)),
             None => Err(message.unwrap_or_else(|| "Open CASCADE failed".into())),
+        }
+    }
+
+    /// Cuts this solid along every plane (x, y, z, nx, ny, nz) at once. The pieces are in partition order, and none is
+    /// made unless all are.
+    fn partition(&self, planes: &[[f64; 6]]) -> Result<Vec<Shape>, String> {
+        const MAX_PIECES: usize = 24;
+        let count = c_int::try_from(planes.len()).map_err(|_| "Too many planes".to_string())?;
+        let flat: Vec<f64> = planes.iter().flatten().copied().collect();
+        let mut out = [std::ptr::null_mut::<RawShape>(); MAX_PIECES];
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let _budget = GroupBudget::start();
+        // SAFETY: `flat` holds `count` planes, and `out` has room for the most pieces the kernel returns.
+        let made = unsafe {
+            lime_tree_partition(self.raw(), flat.as_ptr(), count, out.as_mut_ptr(), &mut error)
+        };
+        let message = take_text(error);
+        let Ok(made) = usize::try_from(made) else {
+            return Err(message.unwrap_or_else(|| "Open CASCADE failed".into()));
+        };
+        Ok(out[..made]
+            .iter()
+            .filter_map(|piece| NonNull::new(*piece).map(Shape))
+            .collect())
+    }
+
+    fn check(&self) -> crate::PartitionPiece {
+        let mut out = [0 as c_int; 4];
+        let mut volume = 0.0;
+        let (mut faces, mut edges) = (0, 0);
+        // SAFETY: `out` has four slots, and the fingerprint writes one number and two counts.
+        unsafe {
+            lime_tree_check(self.raw(), out.as_mut_ptr());
+            lime_tree_fingerprint(self.raw(), &mut volume, &mut faces, &mut edges);
+        }
+        crate::PartitionPiece {
+            volume_mm3: volume,
+            solids: out[0],
+            faces: out[1],
+            valid: out[2] != 0,
+            closed: out[3] != 0,
         }
     }
 
