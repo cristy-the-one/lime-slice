@@ -49,11 +49,12 @@ let paintedColours: boolean | null = null;
 
 // --- Split to print, Explode (D12). A view of a split to print's pieces, off with each new object and never saved.
 let explode = { on: false, gapMm: EXPLODE_GAP_MM };
+let explodeAvailable = false;
 let explodeChanged: () => void = () => {};
 
-/** Whether Explode is on, and its gap in millimetres. */
+/** Whether Explode applies now (it is on, and the open part has pieces), and its gap in millimetres. */
 export function explodeLook(): { on: boolean; gapMm: number } {
-  return explode;
+  return { on: explode.on && explodeAvailable, gapMm: explode.gapMm };
 }
 
 /** Model draws the pieces again when Explode or its gap changes. */
@@ -61,15 +62,11 @@ export function onExplode(cb: () => void) {
   explodeChanged = cb;
 }
 
-/** The open part has pieces to explode, or not: the row shows only then, and a part without them turns it off. */
+/** The open part has pieces to explode, or not: the row shows only then. A setting turned on stays on, to apply again when they are. */
 export function showExplode(available: boolean) {
+  explodeAvailable = available;
   const row = byId<HTMLElement>("#modelExplodeRow");
   if (row) row.hidden = !available;
-  if (!available && explode.on) {
-    explode = { ...explode, on: false };
-    const box = byId<HTMLInputElement>("#modelExplode");
-    if (box) box.checked = false;
-  }
 }
 
 function paintAxis(axis: SectionAxis) {
