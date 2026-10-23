@@ -705,6 +705,20 @@ pub fn partition_primitive(
         .collect())
 }
 
+/// --- Split to print (D12). The free shapes of a STEP file with their product names, each checked as a partition's
+/// piece, in the file's order.
+pub fn step_named_solids(step: &[u8]) -> Result<Vec<(String, crate::PartitionPiece)>, String> {
+    let _store = lock();
+    let path = temp_step("read-named");
+    std::fs::write(&path, step).map_err(|err| err.to_string())?;
+    let read = Shape::read_step_named(&path);
+    let _ = std::fs::remove_file(&path);
+    Ok(read?
+        .into_iter()
+        .map(|(name, shape)| (name, shape.check()))
+        .collect())
+}
+
 /// --- Split to print (D12). The solids a STEP file holds, each checked as a partition's piece, in the file's order.
 pub fn step_solids(step: &[u8]) -> Result<Vec<crate::PartitionPiece>, String> {
     let _store = lock();
@@ -980,6 +994,10 @@ enum Request {
         /// separate solids, in this order.
         #[serde(default)]
         pieces: Vec<TreeStep>,
+        /// --- Split to print: the product name of each solid of that file, this one first and then `pieces`, never
+        /// echoed. With pieces, one for each is required.
+        #[serde(default)]
+        names: Vec<String>,
     },
 }
 
@@ -1912,6 +1930,7 @@ impl Store {
                 node,
                 format,
                 pieces,
+                names,
             } if !pieces.is_empty() => {
                 if format != ExportFormat::Step {
                     return Err(Failure::Message(
@@ -1921,6 +1940,13 @@ impl Store {
                 let all: Vec<(String, NodeId)> = std::iter::once((key, node))
                     .chain(pieces.into_iter().map(|at| (at.key, at.node)))
                     .collect();
+                if names.len() != all.len() {
+                    return Err(Failure::Message(format!(
+                        "A STEP file of {} pieces needs a name for each, and {} came.",
+                        all.len(),
+                        names.len()
+                    )));
+                }
                 for (key, node) in &all {
                     self.ensure(key, *node)?;
                 }
@@ -1928,7 +1954,7 @@ impl Store {
                 for (key, node) in &all {
                     raw.push(doc_in(&mut self.docs, key)?.shape(*node).raw());
                 }
-                let bytes = Shape::step_bytes_of(&raw).map_err(Failure::Message)?;
+                let bytes = Shape::step_bytes_of(&raw, &names).map_err(Failure::Message)?;
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 Ok(Answer::Plain(format!(
                     "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{},\"format\":\"step\",\"solids\":{}}}",
@@ -4328,8 +4354,16 @@ extern "C" {
     ) -> c_int;
     fn lime_tree_write_step_many(
         shapes: *const *const RawShape,
+        names: *const *const c_char,
         count: c_int,
         path: *const c_char,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    fn lime_tree_read_step_named(
+        path: *const c_char,
+        out: *mut *mut RawShape,
+        max: c_int,
+        names: *mut *mut c_char,
         error: *mut *mut c_char,
     ) -> c_int;
     fn lime_tree_solids(shape: *const RawShape, out: *mut *mut RawShape, max: c_int) -> c_int;
@@ -4921,15 +4955,29 @@ impl Shape {
         Ok((pieces, placed))
     }
 
-    /// --- Split to print (D12). These solids as one STEP file, each a solid of its own. Every shape in `raw` is held
-    /// by a node until this returns.
-    fn step_bytes_of(raw: &[*const RawShape]) -> Result<Vec<u8>, String> {
+    /// --- Split to print (D12). These solids as one STEP file, each a product of its own named by the same place in
+    /// `names`. Every shape in `raw` is held by a node until this returns.
+    fn step_bytes_of(raw: &[*const RawShape], names: &[String]) -> Result<Vec<u8>, String> {
         let path = temp_step("export");
         let c = c_path(&path)?;
         let count = c_int::try_from(raw.len()).map_err(|_| "Too many solids".to_string())?;
+        let named = names
+            .iter()
+            .map(|name| CString::new(name.as_str()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "A piece's name is not a C string".to_string())?;
+        let pointers: Vec<*const c_char> = named.iter().map(|name| name.as_ptr()).collect();
         let mut error: *mut c_char = std::ptr::null_mut();
-        // SAFETY: `raw` holds `count` live shapes, and `c` is a NUL-terminated path.
-        let ok = unsafe { lime_tree_write_step_many(raw.as_ptr(), count, c.as_ptr(), &mut error) };
+        // SAFETY: `raw` holds `count` live shapes, `pointers` as many NUL-terminated names, and `c` is a NUL-terminated path.
+        let ok = unsafe {
+            lime_tree_write_step_many(
+                raw.as_ptr(),
+                pointers.as_ptr(),
+                count,
+                c.as_ptr(),
+                &mut error,
+            )
+        };
         let message = take_text(error);
         let bytes = if ok == 0 {
             Err(message.unwrap_or_else(|| "Open CASCADE did not write these solids".into()))
@@ -4938,6 +4986,39 @@ impl Shape {
         };
         let _ = std::fs::remove_file(&path);
         bytes
+    }
+
+    /// --- Split to print (D12). The free shapes of a STEP file with their product names, in the file's order, at most 24.
+    fn read_step_named(path: &std::path::Path) -> Result<Vec<(String, Shape)>, String> {
+        const MAX_SOLIDS: usize = 24;
+        let path = c_path(path)?;
+        let mut out = [std::ptr::null_mut::<RawShape>(); MAX_SOLIDS];
+        let mut names: *mut c_char = std::ptr::null_mut();
+        let mut error: *mut c_char = std::ptr::null_mut();
+        // SAFETY: `out` has room for `MAX_SOLIDS` shapes, and `path` is NUL-terminated.
+        let made = unsafe {
+            lime_tree_read_step_named(
+                path.as_ptr(),
+                out.as_mut_ptr(),
+                MAX_SOLIDS as c_int,
+                &mut names,
+                &mut error,
+            )
+        };
+        let message = take_text(error);
+        let names = take_text(names).unwrap_or_default();
+        let made = usize::try_from(made).map_err(|_| {
+            message.unwrap_or_else(|| "Open CASCADE could not read this STEP file".into())
+        })?;
+        Ok(names
+            .lines()
+            .map(str::to_string)
+            .zip(
+                out[..made]
+                    .iter()
+                    .filter_map(|solid| NonNull::new(*solid).map(Shape)),
+            )
+            .collect())
     }
 
     /// --- Split to print. Each solid of this shape on its own, at most 24.

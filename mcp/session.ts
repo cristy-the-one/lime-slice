@@ -5749,14 +5749,15 @@ export class Session {
     return { ok: true, path, bytes: bytes.byteLength, parts: got.pieces.length, pieces: rows, note: SUPPORT_NOTE };
   }
 
-  /** --- D12. model_export_step with pieces: true. One STEP file holding every piece as a separate solid, in order. */
+  /** --- D12. model_export_step with pieces: true. One STEP file holding every piece as a named solid, in order. */
   private async exportPieceStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
     const got = await this.partitionPieces(obj);
     if ("reason" in got) return { ok: false, reason: got.reason };
+    const names = pieceNames(name, got.pieces.length);
     const [first, ...rest] = got.pieces.map((piece) => piece.tree!);
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(exportRequest(first!.key, first!.current, "step", rest.map((tree) => ({ key: tree.key, node: tree.current }))), "export");
+      reply = await this.treeCall(exportRequest(first!.key, first!.current, "step", rest.map((tree) => ({ key: tree.key, node: tree.current })), names), "export");
     } catch (err) {
       const lost = this.lostReply(err);
       if (lost) return lost;
@@ -5766,7 +5767,6 @@ export class Session {
     if (!step) return { ok: false, reason: typeof reply.error === "string" ? plainModelError(reply.error) : "The pieces were not exported." };
     const path = resolveWrite(name, ".step");
     writeFileSync(path, step);
-    const names = pieceNames(name, got.pieces.length);
     return {
       ok: true,
       path,
@@ -5774,7 +5774,7 @@ export class Session {
       parts: got.pieces.length,
       solids: typeof reply.solids === "number" ? reply.solids : got.pieces.length,
       pieces: this.pieceRows(got.pieces, names),
-      names: "The STEP file holds the pieces as separate solids in this order, without names; the 3MF and STL exports name them.",
+      names: "The STEP file holds the pieces as separate named solids in this order, named as in the 3MF and the STL files.",
       note: SUPPORT_NOTE,
     };
   }

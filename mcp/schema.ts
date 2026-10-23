@@ -1485,7 +1485,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_export_step",
     description: "Write a .step file in the workspace. Overwrites the same name.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { object: handle, name: { type: "string", minLength: 1 }, pieces: { type: "boolean", description: "Its split to print pieces, a solid each." } } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { object: handle, name: { type: "string", minLength: 1 }, pieces: { type: "boolean", description: "Its split to print pieces, a named solid each." } } },
   },
   {
     name: "measure",

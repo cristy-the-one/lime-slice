@@ -1,6 +1,6 @@
 //! Split to print for a printer this app does not slice for (docs/plan-split-connectors.md, milestone 3b): a resin
 //! target cuts, part numbers are engraved on both mating cut faces (or a side face, or skipped with a sentence), and the
-//! pieces export as one STEP file of separate solids that reads back with the same volumes.
+//! pieces export as one STEP file of separate named solids that reads back with the same volumes.
 //! `LIME_REQUIRE_OCCT=1` makes a missing kernel a failure.
 //!
 //! The store is process-wide, so everything runs in one test, in order.
@@ -313,15 +313,32 @@ fn the_pieces_round_trip_as_one_step_file() {
         .iter()
         .map(|(key, node)| volume(&ok(json!({ "call": "goto", "key": key, "node": node }))))
         .collect();
+    let pieces = json!([{ "key": "tall-2", "node": 0 }, { "key": "tall-3", "node": 0 }]);
     let exported = ok(json!({
         "call": "export", "key": "tall", "node": 1, "format": "step",
-        "pieces": [{ "key": "tall-2", "node": 0 }, { "key": "tall-3", "node": 0 }],
+        "pieces": pieces, "names": ["tall-1", "tall-2", "tall-3"],
     }));
     assert_eq!(exported["solids"], 3, "{exported}");
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(exported["bytesBase64"].as_str().expect("bytesBase64"))
         .expect("base64");
     assert_eq!(exported["byteLength"].as_u64(), Some(bytes.len() as u64));
+    let named =
+        lime_model_occt::step_named_solids(&bytes).expect("the file reads as an XCAF document");
+    assert_eq!(
+        named
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["tall-1", "tall-2", "tall-3"]
+    );
+    for ((_, solid), expected) in named.iter().zip(&expected) {
+        assert!(
+            solid.valid && solid.closed && solid.solids == 1,
+            "{solid:?}"
+        );
+        within(solid.volume_mm3, *expected, 1e-3);
+    }
     let solids = lime_model_occt::step_solids(&bytes).expect("the file reads");
     assert_eq!(solids.len(), 3, "{solids:?}");
     for (solid, expected) in solids.iter().zip(&expected) {
@@ -331,9 +348,17 @@ fn the_pieces_round_trip_as_one_step_file() {
         );
         within(solid.volume_mm3, *expected, 1e-3);
     }
+    let unnamed = call(json!({
+        "call": "export", "key": "tall", "node": 1, "format": "step",
+        "pieces": pieces, "names": ["tall-1"],
+    }));
+    assert_eq!(
+        unnamed,
+        json!({ "error": "A STEP file of 3 pieces needs a name for each, and 1 came." })
+    );
     let brep = call(json!({
         "call": "export", "key": "tall", "node": 1, "format": "brep",
-        "pieces": [{ "key": "tall-2", "node": 0 }],
+        "pieces": [{ "key": "tall-2", "node": 0 }], "names": ["tall-1", "tall-2"],
     }));
     assert_eq!(
         brep,

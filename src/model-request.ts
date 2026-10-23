@@ -324,9 +324,19 @@ export function gotoRequest(key: string, node: NodeId, chordMm: number): TreeReq
  * The step's solid as a file: `step` to hand on (the STEP button, `model_export_step`), or `brep`, the binary a project
  * keeps (`isBrep`), which reads back as the same solid, face and edge numbers included.
  */
-/** `pieces`, a split to print's other pieces by tree and step, join this solid in one STEP file of separate solids. */
-export function exportRequest(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[]): TreeRequest {
-  return { call: "export", key, node, format, ...(pieces?.length ? { pieces: pieces.map((piece) => ({ key: piece.key, node: piece.node })) } : {}) };
+/**
+ * `pieces`, a split to print's other pieces by tree and step, join this solid in one STEP file of separate solids.
+ * `names` is each solid's product name, this one first and then the pieces in order (`pieceNames`); the engine refuses
+ * pieces without one for each.
+ */
+export function exportRequest(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[], names?: readonly string[]): TreeRequest {
+  return {
+    call: "export",
+    key,
+    node,
+    format,
+    ...(pieces?.length ? { pieces: pieces.map((piece) => ({ key: piece.key, node: piece.node })), names: [...(names ?? [])] } : {}),
+  };
 }
 
 /** The first bytes of a solid the engine wrote in `brep`. A STEP file starts with `ISO-10303-21`. */
