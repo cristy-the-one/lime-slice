@@ -23,7 +23,7 @@ export function askPieceExport(files: Record<PieceFormat, string[]>, note: strin
   const stl = files.stl;
   hint("#splitExportStl", stl.length > 2 ? `${stl[0]}, ${stl[1]}, … ${stl.at(-1)}` : stl.join(", "));
   hint("#splitExport3mf", `${files["3mf"][0]}, every piece named`);
-  hint("#splitExportStep", `${files.step[0]}, every piece a separate solid`);
+  hint("#splitExportStep", `${files.step[0]}, every piece named`);
   hint("#splitExportNote", note);
   sheet.hidden = false;
   document.documentElement.dataset.overlay = "splitExport";
