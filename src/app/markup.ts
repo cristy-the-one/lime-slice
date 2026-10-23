@@ -453,6 +453,7 @@ export function mountMarkup(root: HTMLElement) {
             </div>
             <div class="model-actions">
               <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>
+              <button class="btn model-actions-lead" id="modelPartExport" type="button" data-tip="Save the pieces as one STL each, one 3MF, or one STEP file" hidden>Export…</button>
               <button class="btn" id="modelCancel" type="button">Cancel</button>
               <button class="btn primary" id="modelApply" type="button">Apply</button>
             </div>
@@ -750,6 +751,18 @@ export function mountMarkup(root: HTMLElement) {
         <button class="btn" type="button" data-unsaved="discard">Don't save</button>
         <button class="btn" type="button" data-unsaved="cancel">Cancel</button>
       </div>
+    </div>
+  </div>
+  <div id="splitExport" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="splitExportTitle">
+    <div class="sheet-card split-export-card">
+      <h2 id="splitExportTitle">Export the pieces</h2>
+      <div class="split-export-formats" role="group" aria-label="Format">
+        <button class="split-export-format" type="button" data-format="stl"><span>STL per piece</span><small id="splitExportStl"></small></button>
+        <button class="split-export-format" type="button" data-format="3mf"><span>One 3MF</span><small id="splitExport3mf"></small></button>
+        <button class="split-export-format" type="button" data-format="step"><span>One STEP</span><small id="splitExportStep"></small></button>
+      </div>
+      <p class="split-export-note" id="splitExportNote"></p>
+      <div class="unsaved-actions"><button class="btn" type="button" data-format="cancel">Cancel</button></div>
     </div>
   </div>
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">

@@ -325,7 +325,7 @@ export function gotoRequest(key: string, node: NodeId, chordMm: number): TreeReq
  * keeps (`isBrep`), which reads back as the same solid, face and edge numbers included.
  */
 /**
- * `pieces`, a split to print's other pieces by tree and step, join this solid in one STEP file of separate solids.
+ * `pieces`, a split to print's other pieces by tree and step, join this solid in one STEP file of named solids.
  * `names` is each solid's product name, this one first and then the pieces in order (`pieceNames`); the engine refuses
  * pieces without one for each.
  */

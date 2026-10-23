@@ -25,6 +25,10 @@ interface ModelHistoryHooks {
   editRefusal(row: RowKey): string | null;
   /** Open this step's tool with its numbers, to change them; null is the step shown. A refusal goes to the readout. */
   edit(row: RowKey | null): void;
+  /** Whether this row is a split to print for an export target, whose menu offers Export…. */
+  exportable?(row: RowKey): boolean;
+  /** Export… on that row: the save dialog for the pieces it left in Model. */
+  exportPieces?(row: RowKey): void;
   /** The Position row was clicked: Place opens. */
   openPlace(): void;
   /** The Position row's Reset: the open object goes back to where its file put it, as one Place step. */
@@ -863,6 +867,7 @@ function buildMenu(): HTMLElement {
   root.innerHTML = `
     <button type="button" role="menuitem" data-act="edit"><span>Edit step</span><kbd>Shift+E</kbd><small class="mh-why"></small></button>
     <button type="button" role="menuitem" data-act="rename"><span>Rename</span><kbd>F2</kbd></button>
+    <button type="button" role="menuitem" data-act="export" hidden><span>Export…</span></button>
     <button type="button" role="menuitem" data-act="drop"><span>Delete branch</span><kbd>Del</kbd><small class="mh-why"></small></button>`;
   root.addEventListener("click", (ev) => {
     const item = (ev.target as Element).closest<HTMLButtonElement>("[role=menuitem]");
@@ -871,11 +876,12 @@ function buildMenu(): HTMLElement {
     if (item.getAttribute("aria-disabled") === "true") return;
     closeMenu(false);
     if (item.dataset.act === "edit") editStep(id);
+    else if (item.dataset.act === "export") hooks?.exportPieces?.(id);
     else if (item.dataset.act === "rename") startRename(id);
     else dropBranch(id);
   });
   root.addEventListener("keydown", (ev) => {
-    const items = [...root.querySelectorAll<HTMLButtonElement>("[role=menuitem]")];
+    const items = [...root.querySelectorAll<HTMLButtonElement>("[role=menuitem]:not([hidden])")];
     const at = items.indexOf(document.activeElement as HTMLButtonElement);
     if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
       ev.preventDefault();
@@ -905,6 +911,7 @@ function openMenu(id: RowKey, at?: { x: number; y: number }) {
   const held = folded && !folded.expanded ? "Expand the group to change one of its steps." : null;
   const rename = menu.querySelector<HTMLElement>('[data-act="rename"]')!;
   rename.setAttribute("aria-disabled", held ? "true" : "false");
+  menu.querySelector<HTMLElement>('[data-act="export"]')!.hidden = !hooks.exportable?.(id);
   for (const [act, refusal] of [["edit", held ?? hooks.editRefusal(id)], ["drop", held ?? hooks.dropRefusal(id)]] as const) {
     const item = menu.querySelector<HTMLElement>(`[data-act="${act}"]`)!;
     item.setAttribute("aria-disabled", refusal ? "true" : "false");

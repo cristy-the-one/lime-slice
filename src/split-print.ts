@@ -46,6 +46,12 @@ export interface Card {
   selected: number;
   /** Lay out on the bed: the new pieces go around the objects already there. */
   layout: boolean;
+  /** Print on: the printer the cuts are for. Null is the plate's printer. */
+  target: Target | null;
+  /** Part numbers: each piece gets its number cut into a face. */
+  numbers: boolean;
+  /** The cuts were typed, dragged, added or cleared, so a new target keeps them. A proposal nobody touched is not. */
+  edited: boolean;
 }
 
 /**
@@ -58,7 +64,7 @@ export interface CardFrame {
 }
 
 export function emptyCard(): Card {
-  return { cuts: [], selected: -1, layout: true };
+  return { cuts: [], selected: -1, layout: true, target: null, numbers: true, edited: false };
 }
 
 const AXES = ["x", "y", "z"] as const;
@@ -162,7 +168,7 @@ export function withCutAdded(card: Card, box: Box, center: Vec3, frame: CardFram
   let best = 0;
   for (let i = 1; i + 1 < bounds.length; i += 1) if (bounds[i + 1]! - bounds[i]! > bounds[best + 1]! - bounds[best]!) best = i;
   const cut: CardCut = { ...BLANK, mode, value: tidy((bounds[best]! + bounds[best + 1]!) / 2) };
-  return { ...card, cuts: [...card.cuts, cut], selected: card.cuts.length };
+  return { ...card, cuts: [...card.cuts, cut], selected: card.cuts.length, edited: true };
 }
 
 const BLANK: CardCut = { mode: "x", value: 0, tiltA: 0, tiltB: 0, face: null, flip: false };
@@ -171,11 +177,11 @@ export function withCutDeleted(card: Card, index: number): Card {
   if (index < 0 || index >= card.cuts.length) return card;
   const cuts = card.cuts.filter((_, at) => at !== index);
   const selected = cuts.length === 0 ? -1 : Math.min(card.selected > index ? card.selected - 1 : card.selected, cuts.length - 1);
-  return { ...card, cuts, selected };
+  return { ...card, cuts, selected, edited: true };
 }
 
 export function withCutsCleared(card: Card): Card {
-  return { ...card, cuts: [], selected: -1 };
+  return { ...card, cuts: [], selected: -1, edited: true };
 }
 
 export function withSelected(card: Card, index: number): Card {
@@ -187,7 +193,7 @@ export function withCutChanged(card: Card, index: number, patch: Partial<CardCut
   const cut = card.cuts[index];
   if (!cut) return card;
   const next = { ...cut, ...patch, tiltA: clampTilt(patch.tiltA ?? cut.tiltA), tiltB: clampTilt(patch.tiltB ?? cut.tiltB) };
-  return { ...card, cuts: card.cuts.map((row, at) => (at === index ? next : row)) };
+  return { ...card, cuts: card.cuts.map((row, at) => (at === index ? next : row)), edited: true };
 }
 
 /**
@@ -208,24 +214,52 @@ export function cardPlanes(card: Card, center: Vec3, frame: CardFrame | null = n
   return card.cuts.map((cut) => cutPlane(cut, center, frame));
 }
 
-/** The op the card describes, as typed, in model space; null while a cut waits for its face. */
-export function cardOp(card: Card, center: Vec3, frame: CardFrame | null = null): PartitionOp | null {
+/** The number height and depth the target's process gives (`partitionDefaults`), which Part numbers on writes into the op. */
+export interface LabelSizes {
+  height: number;
+  depth: number;
+}
+
+/**
+ * The op the card describes, as typed, in model space; null while a cut waits for its face. Print on writes `target`,
+ * and Part numbers writes `labels`: on in full with `sizes`, or `{on: false}`.
+ */
+export function cardOp(card: Card, center: Vec3, frame: CardFrame | null, sizes: LabelSizes): PartitionOp | null {
   const planes = cardPlanes(card, center, frame);
   if (planes.some((plane) => !plane)) return null;
-  return { cuts: planes.map((plane) => ({ origin: plane!.origin, normal: plane!.normal })), arrange: card.layout };
+  return {
+    cuts: planes.map((plane) => ({ origin: plane!.origin, normal: plane!.normal })),
+    ...(card.target ? { target: card.target } : {}),
+    arrange: card.layout,
+    labels: card.numbers ? { on: true, face: "cut", height: sizes.height, depth: sizes.depth } : { on: false },
+  };
 }
 
-/** A stored op, back in the card: each cut in model space at `pose`, and Lay out from `arrange`. */
-export function cardFromOp(op: PartitionModelOp, pose: Affine, center: Vec3, frame: CardFrame | null = null): Card {
+/**
+ * A stored op, back in the card: each cut in model space at `pose`, Lay out from `arrange`, the target and the numbers.
+ * The stored target of the plate's printer (`plate`) is the card's null, which follows the plate.
+ */
+export function cardFromOp(op: PartitionModelOp, pose: Affine, center: Vec3, frame: CardFrame | null = null, plate: string | null = null): Card {
   const shown = fromSolidOp(op, pose) as PartitionModelOp;
   const cuts = shown.cuts.map((cut) => cutFromPlane(cut.origin, cut.normal, center, frame));
-  return { cuts, selected: cuts.length > 0 ? 0 : -1, layout: shown.arrange !== false };
+  const target = shown.target && shown.target.printer !== plate ? { ...shown.target } : null;
+  return { cuts, selected: cuts.length > 0 ? 0 : -1, layout: shown.arrange !== false, target, numbers: shown.labels?.on === true, edited: true };
 }
 
-/** Whether two cards describe the same cuts and layout, so an untouched edit offers no Update. */
+/** Whether two cards describe the same cuts, layout, target and numbers, so an untouched edit offers no Update. */
 export function sameCard(a: Card, b: Card): boolean {
-  const key = (card: Card) => JSON.stringify({ cuts: card.cuts, layout: card.layout });
+  const key = (card: Card) => JSON.stringify({ cuts: card.cuts, layout: card.layout, target: card.target, numbers: card.numbers });
   return key(a) === key(b);
+}
+
+/** Whether the card's target is one this app exports pieces for: they stay in Model, off the plate (D12). */
+export function exportTarget(target: Target | null): boolean {
+  return target !== null && target.process !== "fdm";
+}
+
+/** The fit button's name: the bed of the plate's printer, or the volume of an export printer. */
+export function fitLabel(target: Target | null): string {
+  return exportTarget(target) ? "Fit the printer" : "Fit the bed";
 }
 
 // ---------------------------------------------------------------------------
@@ -264,18 +298,18 @@ export function fitOnBed(frame: PrintFrame, target: Target, marginMm: number, ma
   return { planes: fit.cuts.map((cut) => ({ origin: frame.point(cut.origin), normal: frame.direction(cut.normal) })), pieces: fit.pieces, notes: fit.notes };
 }
 
-/** The card's cuts from the planner's proposal. */
-export function cardFromFit(fit: FitOnBed, center: Vec3, frame: CardFrame | null = null, layout = true): Card {
+/** The card's cuts from the planner's proposal; `keep` carries the card's Print on and Part numbers over. */
+export function cardFromFit(fit: FitOnBed, center: Vec3, frame: CardFrame | null = null, layout = true, keep: Partial<Pick<Card, "target" | "numbers">> = {}): Card {
   const cuts = fit.planes.map((plane) => cutFromPlane(plane.origin, plane.normal, center, frame));
-  return { cuts, selected: cuts.length > 0 ? 0 : -1, layout };
+  return { ...emptyCard(), cuts, selected: cuts.length > 0 ? 0 : -1, layout, ...keep };
 }
 
 /**
  * The op the tree stores, in the solid's own frame: each cut a straight plane with its U, connectors off, and the
  * target, orientation, layout, margin and Max pieces filled as at Apply (D11), so a replay cuts the same pieces after
- * the library or the settings change. Labels are written in full, `on: true` unless typed off: only an explicit `on`
- * cuts part numbers, so an op stored before milestone 3b, with none, gains no digits on a replay. A sentence when this
- * milestone does not build the op.
+ * the library or the settings change. Labels are written in full while on, and as `{on: false}` alone when off: only an
+ * explicit `on` cuts part numbers, so an op stored before milestone 3b, with none, gains no digits on a replay. A
+ * sentence when this milestone does not build the op.
  */
 export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine): { op: PartitionModelOp } | { reason: string } {
   if (op.cuts.length === 0) return { reason: NEEDS_CUTS };
@@ -288,7 +322,7 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine)
     target: filled.target,
     orient: filled.orient,
     arrange: filled.arrange,
-    labels: { ...filled.labels },
+    labels: filled.labels.on ? { ...filled.labels } : { on: false },
     bedMarginMm: filled.bedMarginMm,
     maxPieces: filled.maxPieces,
   };

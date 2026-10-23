@@ -45,12 +45,22 @@ const FILE = Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n");
 
 type Cut = { origin: V; normal: V };
 
-/** The boxes between the cuts across X, as the kernel orders them: negative side first. */
+/** A 400 mm tall column: the Form 4 builds 210 mm, so it takes three pieces across Z. */
+const COLUMN = boxSolid([20, 20, 400]);
+
+/** The boxes between the cuts across the axis they are square to, as the kernel orders them: negative side first. */
 function piecesOf(parent: MockSolid, cuts: Cut[]): MockSolid[] {
   const { min, max } = boxOf(parent);
-  const stops = cuts.map((cut) => cut.origin[0]).sort((a, b) => a - b);
-  const bounds = [min[0], ...stops, max[0]];
-  return bounds.slice(1).map((hi, k) => boxSolid([hi - bounds[k]!, max[1] - min[1], max[2] - min[2]], [bounds[k]!, min[1], min[2]]));
+  const axis = [0, 1, 2].reduce((best, i) => (Math.abs(cuts[0]!.normal[i]!) > Math.abs(cuts[0]!.normal[best]!) ? i : best), 0);
+  const stops = cuts.map((cut) => cut.origin[axis]!).sort((a, b) => a - b);
+  const bounds = [min[axis]!, ...stops, max[axis]!];
+  return bounds.slice(1).map((hi, k) => {
+    const size: V = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    const from: V = [min[0], min[1], min[2]];
+    size[axis] = hi - bounds[k]!;
+    from[axis] = bounds[k]!;
+    return boxSolid(size, from);
+  });
 }
 
 function built(request: Body, parent: MockSolid): Built {
@@ -68,13 +78,13 @@ function built(request: Body, parent: MockSolid): Built {
   return parent;
 }
 
-async function openBar(page: Page, compact = false): Promise<TreeMock> {
+async function openBar(page: Page, compact = false, part: MockSolid = BAR): Promise<TreeMock> {
   await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
-  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: BAR.positions } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: part.positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   const tree = await mockModelTree(page, {
-    open: () => BAR,
+    open: () => part,
     apply: built,
     probe(request, on) {
       const op = request.op as { kind: string; cuts?: Cut[] };
@@ -141,6 +151,18 @@ async function openObject(page: Page, n: number) {
 }
 
 const shot = (page: Page, name: string) => page.screenshot({ path: `test-results/split-print/${name}.png` });
+const target = (page: Page) => page.locator("#modelPartTarget");
+
+/** The left dock and the canvas, as the owner sees them: the shots `verify-ui` asks for. */
+const view = (page: Page, name: string) => page.screenshot({ path: `test-results/split-print-export/${name}.png` });
+
+async function applyForForm4(page: Page) {
+  await target(page).selectOption("formlabs-form-4");
+  await expect(page.locator("#modelPartPieces li")).toHaveCount(3);
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(page.locator("#modelPartDone")).toBeVisible();
+}
 
 test.use({ viewport: { width: 1440, height: 1000 } });
 
@@ -331,6 +353,136 @@ test("an edit that moves a piece away from its later step keeps that step, broke
   await openObject(page, 1);
   await expect(labels(page), "the later step is still in piece 2's history").toHaveCount(2);
   await expect(page.locator("#modelHistoryTree .mh-row[data-broken]"), "and its row says it did not build").toHaveCount(1);
+});
+
+const FORM4_NOTE = "This part is 400 mm along Z. The Formlabs Form 4 volume fits 190 mm. Two cuts are proposed.";
+
+test("Print on lists the plate's printer first and the Form 4 last; the Form 4 fits its volume and proposes the cuts again", async ({ page }) => {
+  await openBar(page, false, COLUMN);
+  await openCard(page);
+  const names = await target(page).locator("option").allTextContents();
+  expect(names.at(-1), "the Form 4 is last").toBe("Formlabs Form 4");
+  expect(names.length).toBeGreaterThan(1);
+  await expect(target(page).locator("option:checked"), "the plate's printer is the one shown").toHaveText(names[0]!);
+  await expect(page.locator("#modelPartFit")).toHaveText("Fit the bed");
+  await target(page).selectOption("formlabs-form-4");
+  await expect(page.locator("#modelPartNote"), "the note names the Form 4's volume").toHaveText(FORM4_NOTE);
+  await expect(page.locator("#modelPartFit")).toHaveText("Fit the printer");
+  await expect(cuts(page), "the planner proposes again: two cuts, three pieces").toHaveCount(2);
+  await expect(page.locator("#modelPartPieces li")).toHaveCount(3);
+  await expect(page.locator("#modelPartLayout"), "nothing is laid out for an export target").toBeHidden();
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await page.waitForTimeout(400);
+  await view(page, "card-form4");
+});
+
+test("a new target keeps the cuts the user edited, and refreshes only the note", async ({ page }) => {
+  await openBar(page, false, COLUMN);
+  await openCard(page);
+  await page.locator("#modelPartAdd").click();
+  const count = await cuts(page).count();
+  const typed = await at(page, 1).inputValue();
+  await target(page).selectOption("formlabs-form-4");
+  await expect(page.locator("#modelPartNote")).toHaveText(FORM4_NOTE);
+  await expect(cuts(page), "the cuts stay").toHaveCount(count);
+  await expect(at(page, 1)).toHaveValue(typed);
+});
+
+test("Part numbers are on by default and write the labels in full; off stores labels {on: false}", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await expect(page.locator("#modelPartNumbers")).toBeChecked();
+  await expect(page.locator("#modelPartNumbersNote")).toHaveText("The number is cut into the part, so renaming the object does not change it.");
+  await expect(apply(page)).toBeEnabled();
+  await expect.poll(() => (tree.of("probe").at(-1)?.op as { labels?: unknown } | undefined)?.labels).toEqual({ on: true, face: "cut", height: 4, depth: 0.4 });
+  await page.locator("#modelPartNumbers").uncheck();
+  await expect.poll(() => (tree.of("probe").at(-1)?.op as { labels?: unknown } | undefined)?.labels).toEqual({ on: false });
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(labels(page)).toHaveText(["bar.step", "Split to print, 3 parts"]);
+  expect((tree.of("apply").at(-1)!.op as { labels: unknown }).labels).toEqual({ on: false });
+});
+
+test("Apply for the Form 4 leaves the plate as it was, the commit and a slice refuse, and Explode shows three pieces", async ({ page }) => {
+  const tree = await openBar(page, false, COLUMN);
+  await openCard(page);
+  await applyForForm4(page);
+  const applied = tree.of("apply").at(-1)!;
+  expect((applied.op as { target: { printer: string } }).target.printer).toBe("formlabs-form-4");
+  expect((applied.pieceKeys as unknown[]).length).toBe(11);
+  await expect(page.locator("#modelPartDonePieces li")).toHaveText(["Part 1 · bar-1", "Part 2 · bar-2", "Part 3 · bar-3"]);
+  await expect(page.locator("#modelPartDoneSupport")).toHaveText("Keep supports off the cut faces. They carry the fit and the part number.");
+  await expect(page.locator("#modelPartExport")).toBeVisible();
+  await expect(labels(page)).toHaveText(["bar.step", "Split to print for Formlabs Form 4, 3 parts"]);
+  await expect(page.locator("#objectList .obj"), "no piece is a plate object").toHaveCount(1);
+
+  await page.locator("#modelLookOpen").click();
+  await expect(page.locator("#modelExplodeRow")).toBeVisible();
+  await page.locator("#modelExplode").check();
+  await expect(page.locator("#model")).toHaveAttribute("data-explode-parts", "1:0,0,0 2:0,0,10 3:0,0,20");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(500);
+  await view(page, "explode-form4");
+
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(1);
+  const sentence = "bar.step is cut for the Formlabs Form 4, which this app does not slice for. Export its pieces with export_3mf or model_export_step and pieces: true, or model_goto a step before the cut to print it here.";
+  await page.locator("#slice").click();
+  await expect(page.locator("#banner")).toContainText(sentence);
+  const downloads: string[] = [];
+  page.on("download", (download) => downloads.push(download.suggestedFilename()));
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#export3mf").click();
+  await page.waitForTimeout(400);
+  expect(downloads, "the plate's 3MF is refused too").toEqual([]);
+  await expect(page.locator("#banner")).toContainText(sentence);
+});
+
+test("Export… offers STL per piece, one 3MF and one STEP, and writes the expected file names", async ({ page }) => {
+  const tree = await openBar(page, false, COLUMN);
+  await openCard(page);
+  await applyForForm4(page);
+  const dialog = page.locator("#splitExport");
+  const seen: string[] = [];
+  page.on("download", (download) => seen.push(download.suggestedFilename()));
+  const choose = async (format: string, count: number) => {
+    await page.locator("#modelPartExport").click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator("[data-format]:not([data-format=cancel])")).toHaveCount(3);
+    await expect(dialog.locator("#splitExportNote")).toHaveText("Keep supports off the cut faces. They carry the fit and the part number.");
+    if (format === "stl") await view(page, "export-dialog");
+    await dialog.locator(`[data-format="${format}"]`).click();
+    await expect.poll(() => seen.length).toBe(count);
+    await expect(dialog).toBeHidden();
+    await expect(readout(page)).toContainText("Keep supports off the cut faces.");
+  };
+  await choose("stl", 3);
+  expect(seen).toEqual(["bar-1.stl", "bar-2.stl", "bar-3.stl"]);
+  await expect(readout(page)).toContainText("Saved bar-1.stl, bar-2.stl, bar-3.stl.");
+  await choose("3mf", 4);
+  await choose("step", 5);
+  expect(seen.slice(3)).toEqual(["bar.3mf", "bar.step"]);
+  const request = tree.of("export").at(-1)!;
+  expect((request.pieces as unknown[]).length, "the STEP asks for the other two pieces' trees").toBe(2);
+  expect(request.names, "and names every solid as the 3MF and the STLs do").toEqual(["bar-1", "bar-2", "bar-3"]);
+  await page.locator("#modelPartExport").click();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  expect(seen.length, "Cancel writes nothing").toBe(5);
+});
+
+test("the partition row's menu offers Export… for an export target", async ({ page }) => {
+  await openBar(page, false, COLUMN);
+  await openCard(page);
+  await applyForForm4(page);
+  await page.locator("#modelCancel").click();
+  const row = page.getByRole("treeitem", { name: /^Split to print for Formlabs Form 4, 3 parts/ });
+  await row.locator(".mh-more").click();
+  await expect(page.locator("#modelHistoryMenu [data-act=export]")).toBeVisible();
+  await page.locator("#modelHistoryMenu [data-act=export]").click();
+  await expect(page.locator("#splitExport")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#splitExport")).toBeHidden();
 });
 
 test.describe("short window", () => {

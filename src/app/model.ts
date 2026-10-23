@@ -1,5 +1,6 @@
-import { base64ToBytes, bytesToBase64 } from "../base64";
-import { boundsOf, encodeStl, settleBy, type Bounds, type Mat3 } from "../mesh-place";
+import { base64ToBytes } from "../base64";
+import { saveBytes } from "./save-bytes";
+import { boundsOf, encode3mf, encodeStl, settleBy, type Bounds, type Mat3 } from "../mesh-place";
 import {
   IDENTITY_POSE,
   applyPose,
@@ -133,7 +134,7 @@ import {
 import { mountDockPanes } from "../ui/dock-panes";
 import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
 import { explodeLook, lookPoseChanged, mountModelLook, onExplode, resetModelLook, sectionFacePicked, showExplode } from "../ui/model-look";
-import { canExplode, explodeContext } from "./model-explode";
+import { canExplode, explodeContext, heldParts, heldPiece } from "./model-explode";
 import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
 import { addedSolid, addedSplit, arrangedObjects, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withPieceMesh, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
@@ -164,10 +165,12 @@ import { chooseStudyMesh } from "../sim/study-mesh.ts";
 import { endStressPick, mountStress, stressOpen, stressPickFace, stressPicking, stressUndoState, syncStress, takeStressRedo, takeStressUndo } from "../ui/stress.ts";
 import { stressSliceRequest } from "./stress-slice.ts";
 import { beltLayerNormal } from "../sim/study.ts";
-import { beltStamp, cardsOf, saveMaterialCard, selection } from "../ui/machine-library.ts";
-import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, splitPrintOpen, splitPrintPicked, type SplitPrintCheck } from "../ui/split-print.ts";
-import { bedFrame, fitOnBed, storedPartition, type CardFrame, type FitOnBed, type PieceCheck } from "../split-print.ts";
-import { clampPieces, defaultsFor, type FillContext, type PartitionOp } from "../modeling/partition.ts";
+import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
+import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
+import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
+import { bedFrame, exportedCommit, exportsPieces, fitOnBed, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck } from "../split-print.ts";
+import { SUPPORT_NOTE, exportStem, pieceNames } from "../modeling/partition-export.ts";
+import { clampPieces, defaultsFor, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
@@ -594,6 +597,10 @@ export function bindModelView() {
       return planeFor(base, cut.value, [cut.tiltA, cut.tiltB], (normal) => modelExtent(at, pose, normal), kernelBox(at, pose));
     },
     fit: fitSplitPrint,
+    printers: splitPrinters,
+    plate: () => selection(loadMachineLibrary())?.printer.id ?? null,
+    numberSizes: labelSizes,
+    exportPieces: () => void exportPieceFiles(),
     pickedFace() {
       const solid = viewed();
       const face = lastFace(picks);
@@ -915,6 +922,8 @@ export function bindModelView() {
       if (row != null) void startEdit(row);
       else if (tree && !editing) void startEdit(lens?.row ?? rowKey([], tree.current));
     },
+    exportable: exportsRow,
+    exportPieces: (row) => void exportPieceFiles(row),
     openPlace: openPlaceTool,
     resetPosition: resetPose,
     // --- A10. Hovering or focusing a row tints the faces that step made.
@@ -1804,6 +1813,8 @@ export function commitModel() {
   const solid = held == null || held === at?.solid.id ? at?.solid : recentSolid(at!.key, held, state.stepTolerance);
   const plan = tree ? visitStep(held == null ? tree : { ...tree, current: held }) : null;
   if (!at || !tree || !plan || !state.mesh || at.objectId !== state.plate.selectedId || parked === at.key) return;
+  // --- D12. A part cut for an export target stays as the plate had it: `exportedPart` says why, where it matters.
+  if (exportCutTo(tree, plan.to)) return;
   const node = tree.nodes.get(plan.to);
   const mesh = solid?.id === plan.to ? node?.mesh ?? meshOf(solid) : held != null ? node?.mesh : null;
   if (!node || !mesh) return;
@@ -4101,6 +4112,83 @@ async function runExport() {
   readout(`Saved STEP. ${about(at.solid)}`);
 }
 
+/** Whether History row `row` is a split to print for an export target: its menu offers Export…. */
+function exportsRow(row: RowKey): boolean {
+  const tree = treeOf(open);
+  const id = ownStep(row);
+  return !!tree && id != null && exportsPieces(tree.nodes.get(id)?.op);
+}
+
+/**
+ * --- D12. Export…: the pieces of the split to print for an export target on the way to the open part's step (or the one
+ * `row` names), as one STL each, one 3MF, or one STEP, through the save path File's exports use. The pieces are the
+ * part's own solid and the trees Apply held; the step is shown first so the part's solid is the one cut. The pins file
+ * of milestone 5 joins `pieceFiles` and the meshes here, as one more name after the last piece.
+ */
+async function exportPieceFiles(row?: RowKey) {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || busy || jumping || state.stage !== "model") return;
+  const node = row != null ? ownStep(row) : [...pathTo(tree, tree.current)].reverse().find((id) => exportsPieces(tree.nodes.get(id)?.op)) ?? null;
+  const step = node == null ? undefined : tree.nodes.get(node);
+  if (node == null || step?.op?.kind !== "partition" || !exportsPieces(step.op)) {
+    readout("This part has no split to print for an export target to export.");
+    return;
+  }
+  if (tree.current !== node) await jumpTo(node);
+  const shown = treeOf(open);
+  const owner = state.plate.objects.find((obj) => obj.modelTree === at.key);
+  if (!open || !shown || shown.current !== node || open.solid.id !== node || !owner) {
+    readout("Show the cut in History first, then export.");
+    return;
+  }
+  const held: { key: string; node: NodeId; positions: Float32Array }[] = [];
+  for (const [index, key] of (step.pieces ?? []).entries()) {
+    const piece = key ? modelTrees.get(key) : undefined;
+    const mesh = key && piece ? heldPiece(key, owner) : null;
+    if (!key || !piece || !mesh) {
+      readout(`Part ${index + 2} of this cut is no longer held in Model. Edit the cut and Update to make it again.`);
+      return;
+    }
+    held.push({ key, node: piece.current, positions: Float32Array.from(posePoints(mesh.positions, mesh.pose)) });
+  }
+  const stem = exportStem(owner.name);
+  const names = pieceNames(owner.name, held.length + 1);
+  const files = pieceFiles(stem, names);
+  const format = await askPieceExport(files, SUPPORT_NOTE);
+  if (!format) return;
+  const meshes = [Float32Array.from(posePoints(open.solid.positions, objectPose())), ...held.map((piece) => piece.positions)];
+  busy = true;
+  syncUndo();
+  readout("Writing the pieces…");
+  const mine = ticket;
+  let saved: string[] = [];
+  let problem = "";
+  try {
+    if (format === "stl") {
+      for (const [index, name] of files.stl.entries()) {
+        await saveBytes(encodeStl(meshes[index]!, name), name, "stl", "model/stl");
+        saved.push(name);
+      }
+    } else if (format === "3mf") {
+      await saveBytes(encode3mf(meshes, names), files["3mf"][0]!, "3mf", "model/3mf");
+      saved = files["3mf"];
+    } else {
+      const bytes = await exportSolid(at.key, node, "step", held.map((piece) => ({ key: piece.key, node: piece.node })), names);
+      if (typeof bytes === "string") problem = bytes;
+      else {
+        await saveStepFile(bytes, files.step[0]!);
+        saved = files.step;
+      }
+    }
+  } finally {
+    if (mine === ticket) busy = false;
+    syncUndo();
+  }
+  if (mine !== ticket || state.stage !== "model") return;
+  readout(problem || `Saved ${saved.join(", ")}. ${SUPPORT_NOTE}`);
+}
+
 /**
  * Write the solid (`brep`) of each plate object's step that has none yet, and give it to every plate object
  * and Prepare step with that mesh. Returns the mesh tokens the engine could not write.
@@ -4147,8 +4235,8 @@ async function brepRoot(key: string) {
 }
 
 /** The node's solid as `format`: `brep`, which the plate object keeps and a project saves, or `step` for the STEP button. */
-async function exportSolid(key: string, node: NodeId, format: "step" | "brep"): Promise<ArrayBuffer | string> {
-  const body = await treeCall(key, node, exportRequest(key, node, format));
+async function exportSolid(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[], names?: readonly string[]): Promise<ArrayBuffer | string> {
+  const body = await treeCall(key, node, exportRequest(key, node, format, pieces, names));
   const problem = text(body.error);
   if (problem) return problem;
   if (typeof body.bytesBase64 !== "string") return "Open CASCADE did not write this solid.";
@@ -4195,18 +4283,7 @@ function stepFileName(name: string) {
 }
 
 async function saveStepFile(bytes: ArrayBuffer, name: string) {
-  const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-  if (tauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("save_text_file", { text: "", defaultName: name, extension: "step", bytesB64: bytesToBase64(new Uint8Array(bytes)) });
-    return;
-  }
-  const blob = new Blob([bytes], { type: "application/step" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = name;
-  link.click();
-  URL.revokeObjectURL(link.href);
+  await saveBytes(bytes, name, "step", "application/step");
 }
 
 /** P2. The idle edge knob is armed when no other tool is using the view and the solid can be edited. */
@@ -4422,7 +4499,7 @@ function paintExplode(parts: ContextPart[]): ContextPart[] {
       delete canvas.dataset.explodeParts;
     }
   }
-  return exploded?.parts ?? parts;
+  return exploded?.parts ?? [...parts, ...(open ? heldParts(open.key) : [])];
 }
 
 /** The open object's pose into model space. */
@@ -5542,17 +5619,66 @@ function splitPrintFrame(): CardFrame | null {
   return isIdentityFrame(plane) ? null : { origin: [plane.origin[0], plane.origin[1], plane.origin[2]], axes: axesOf(plane) };
 }
 
-/** Fit the bed: the planner's cuts for the open part as the plate prints it, in model space. */
-function fitSplitPrint(): FitOnBed | null {
+/** The Print on list: the plate's printer first, with no target of its own, then the library's others, the Form 4 last. */
+function splitPrinters(): PrintOn[] {
+  const library = loadMachineLibrary();
+  const picked = selection(library);
+  const plate = picked?.printer.id ?? "plate";
+  const others = targetPrinters(library).filter((row) => row.id !== plate);
+  return [{ id: plate, name: picked?.printer.name ?? state.profile.name, target: null }, ...others.map((row) => ({ id: row.id, name: row.name, target: printerTarget(row) }))];
+}
+
+/** The number height and depth Part numbers writes: the target process's `partitionDefaults`. */
+function labelSizes(target: Target | null): LabelSizes {
+  const solid = viewed();
+  if (!solid) return { height: 4, depth: 0.4 };
+  const ctx = partitionContext(solid);
+  const defaults = defaultsFor(target ?? ctx.plateTarget, ctx);
+  return { height: defaults.numberHeightMm, depth: defaults.numberDepthMm };
+}
+
+/** Fit the bed, or the printer `target` is: the planner's cuts for the open part as the plate prints it, in model space. */
+function fitSplitPrint(target: Target | null): FitOnBed | null {
   const solid = viewed();
   const obj = plateObjectOpen();
   if (!solid?.editable || !obj || solid.positions.length < 9) return null;
   const ctx = partitionContext(solid);
-  const defaults = defaultsFor(ctx.plateTarget, ctx);
+  const aimed = target ?? ctx.plateTarget;
+  const defaults = defaultsFor(aimed, ctx);
   const selected = obj.id === state.plate.selectedId;
   const frame = bedFrame(solid.positions, selected ? state.orient : obj.orient, selected ? state.partScale : obj.partScale, openPose());
   const picked = selection(loadMachineLibrary());
-  return fitOnBed(frame, ctx.plateTarget, defaults.bedMarginMm, defaults.maxPieces, picked?.printer.name ?? state.profile.name, picked?.printer.kind === "belt");
+  const own = aimed.printer === ctx.plateTarget.printer;
+  const name = own ? picked?.printer.name ?? state.profile.name : targetPrinter(loadMachineLibrary(), aimed.printer)?.name ?? aimed.printer;
+  return fitOnBed(frame, aimed, defaults.bedMarginMm, defaults.maxPieces, name, own && picked?.printer.kind === "belt");
+}
+
+/** The name a split to print's sentences give its target printer. */
+function targetName(op: PartitionModelOp): string {
+  const id = op.target?.printer ?? selection(loadMachineLibrary())?.printer.id ?? "";
+  return targetPrinter(loadMachineLibrary(), id)?.name ?? id;
+}
+
+/** Whether a split to print for an export target is on the way to `node`: the part is cut for a printer this app does not slice for. */
+function exportCutTo(tree: ModelTree, node: NodeId): PartitionModelOp | null {
+  for (const id of pathTo(tree, node)) {
+    const op = tree.nodes.get(id)?.op;
+    if (op?.kind === "partition" && exportsPieces(op)) return op;
+  }
+  return null;
+}
+
+/**
+ * --- D12. The sentence for the first plate object whose step is past a cut for an export target, or null. The plate keeps
+ * the part as it was before the cut; a slice and the plate's 3MF refuse with this, as a commit does.
+ */
+export function exportedPart(): string | null {
+  for (const obj of state.plate.objects) {
+    const tree = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+    const cut = tree ? exportCutTo(tree, tree.current) : null;
+    if (cut) return exportedCommit(obj.name, targetName(cut));
+  }
+  return null;
 }
 
 /** The op the tree stores for the card's cuts, in the solid's own frame, or why it cannot be cut. */
@@ -5596,7 +5722,7 @@ async function sendSplitCheck(serial: number, key: string, treeKey: string, node
   if (serial !== splitCheckSerial || state.stage !== "model") return;
   const body = await treeCall(treeKey, node, probeRequest(treeKey, node, op));
   const view: SplitPrintCheck = body.ok === true
-    ? { phase: "done", ok: true, parts: readParts(body.parts) }
+    ? { phase: "done", ok: true, parts: readParts(body.parts), notes: kernelNotes(body) }
     : { phase: "done", ok: false, error: sentence(plainModelError(text(body.error) || "These planes do not cut this solid.")) };
   if (typeof body.ok === "boolean") {
     if (splitAnswers.size >= 64) splitAnswers.clear();
@@ -5688,12 +5814,32 @@ async function applySplitPrint(typed: PartitionOp) {
     return;
   }
   const storedOp = isOp(body.op) ? body.op : op;
-  const placed = putPieces(at, node, parsed, pieces.map((piece) => (piece ? { ...piece, was: null } : null)), op.arrange !== false);
+  // --- D12. An export target's pieces are held in Model with their trees and never go on the plate.
+  const held = exportsPieces(op);
+  const placed = putPieces(at, node, parsed, pieces.map((piece) => (piece ? { ...piece, was: null } : null)), op.arrange !== false && !held, held);
   modelTrees.set(at.key, withChild(modelTrees.get(at.key) ?? latest, parent, { id: node, op: storedOp, label: opLabel(storedOp, placed.keys.length + 1), fingerprint: parsed.fingerprint, pieces: placed.keys }));
   keepSolid(at.key, node, chord, parsed);
   open = { ...at, solid: parsed };
+  const sentences = kernelNotes(body);
   splitPrintApplied();
-  present(parsed, `${opLabel(storedOp, placed.keys.length + 1)}. ${about(parsed)} ${laidSentence(op, placed.fresh.length)}${leavingNotes(false)}`);
+  const where = held ? heldSentence(targetName(storedOp as PartitionModelOp)) : laidSentence(op, placed.fresh.length);
+  present(parsed, `${opLabel(storedOp, placed.keys.length + 1)}. ${about(parsed)} ${where}${sentences.map((note) => ` ${note}`).join("")}${leavingNotes(false)}`);
+  if (held) showSplitPrintDone(heldResult(storedOp as PartitionModelOp, placed.keys.length + 1, sentences));
+}
+
+/** The sentences the kernel adds to a cut's reply, such as a part number with no room. */
+function kernelNotes(body: Body): string[] {
+  return Array.isArray(body.notes) ? body.notes.filter((note): note is string => typeof note === "string") : [];
+}
+
+/** What the card says an export Apply left in Model. */
+function heldResult(op: PartitionModelOp, count: number, notes: string[]): SplitPrintDone {
+  return { printer: targetName(op), names: pieceNames(state.mesh?.name ?? "part", count), notes };
+}
+
+/** What the readout says of an export target's pieces: in Model, off the plate, until they are exported. */
+function heldSentence(printer: string): string {
+  return `The pieces are for the ${printer}, which this app does not slice for: they stay in Model, off the plate. Export… saves them.`;
 }
 
 /** What the readout says of the new pieces on the plate. */
@@ -5707,14 +5853,17 @@ function laidSentence(op: PartitionModelOp, fresh: number): string {
  * The pieces on the plate, in one Prepare step: a piece with `was`, an object that held the same part number before an
  * edit, takes the new mesh and tree in place; any other is a new object in the part's place, and with `layout` the new
  * ones are laid out around every object already there, the part's own first piece where its new mesh will land. The
- * keys each piece's tree has, in order, and the new objects' ids.
+ * keys each piece's tree has, in order, and the new objects' ids. With `held`, an export target's (D12), no piece goes on
+ * the plate: each is the root of a tree of its own, held in Model, and the plate does not change.
  */
-function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key: string; solid: ParsedSolid; was: string | null; tree?: ModelTree; shown?: ParsedSolid } | null)[], layout: boolean): { keys: (string | null)[]; fresh: string[] } {
+function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key: string; solid: ParsedSolid; was: string | null; tree?: ModelTree; shown?: ParsedSolid } | null)[], layout: boolean, held = false): { keys: (string | null)[]; fresh: string[] } {
   const keys: (string | null)[] = [];
   const fresh: string[] = [];
   if (!state.mesh) return { keys: pieces.map(() => null), fresh };
-  noteEdit();
-  syncPlateFromState();
+  if (!held) {
+    noteEdit();
+    syncPlateFromState();
+  }
   const stem = stlName(state.mesh.name).replace(/\.stl$/i, "");
   pieces.forEach((piece, at2) => {
     if (!piece) {
@@ -5726,7 +5875,8 @@ function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key:
     const owner = piece.was ? state.plate.objects.find((obj) => obj.modelTree === piece.was) : undefined;
     const mesh = meshOf(shown, `${owner ? stlName(owner.name).replace(/\.stl$/i, "") : `${stem} part ${index}`}.stl`);
     let name = owner?.name ?? null;
-    if (owner) state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, piece.key);
+    if (held) name = mesh.name;
+    else if (owner) state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, piece.key);
     else name = placePiece(piece.key, mesh);
     if (!name) {
       keys.push(null);
@@ -5739,8 +5889,9 @@ function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key:
     modelTrees.set(piece.key, { ...withNode(rooted, tree.current, { mesh }), committed: tree.current });
     keepSolid(piece.key, tree.current, state.stepTolerance, shown);
     keys.push(piece.key);
-    if (!owner) fresh.push(state.plate.objects.find((obj) => obj.modelTree === piece.key)!.id);
+    if (!owner && !held) fresh.push(state.plate.objects.find((obj) => obj.modelTree === piece.key)!.id);
   });
+  if (held) return { keys, fresh };
   if (layout && fresh.length > 0) layOutPieces(at.objectId, first, fresh);
   applySelectedToState(state.plate);
   place();
@@ -5835,6 +5986,7 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
   const renamed = stepIds([run.node, ...run.replay], ids);
   const replay = run.replay.map((id, i) => ({ id: ids[i + 1]!, op: renumberedSteps(tree.nodes.get(id)!.op!, renamed) }));
   const keys = partKeys(at.objectId, op);
+  const held = exportsPieces(op);
   const level: EditLevel = { key: at.key, parent: run.parent, node: ids[0]!, op, replay, old: [run.node, ...run.replay] };
   const chord = state.stepTolerance;
   const mine = ticket;
@@ -5856,7 +6008,7 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
       }
       const was = old[i] ?? null;
       const owner = was ? state.plate.objects.find((obj) => obj.modelTree === was) : undefined;
-      if (!owner) {
+      if (!owner || held) {
         rebuilt.push({ ...piece, was: null });
         continue;
       }
@@ -5882,9 +6034,9 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
     return;
   }
   const broken = brokenStep(body.broken);
-  const placed = putPieces(at, ids[0]!, parsed, rebuilt, op.arrange !== false);
-  // A part number the new cut no longer makes takes its object off the plate.
-  const gone = old.slice(pieces.length).flatMap((key) => state.plate.objects.filter((obj) => key && obj.modelTree === key).map((obj) => obj.id));
+  const placed = putPieces(at, ids[0]!, parsed, rebuilt, op.arrange !== false && !held, held);
+  // A part number the new cut no longer makes takes its object off the plate, and every one does when the cut is now for an export target.
+  const gone = (held ? old : old.slice(pieces.length)).flatMap((key) => state.plate.objects.filter((obj) => key && obj.modelTree === key).map((obj) => obj.id));
   if (gone.length > 0) {
     noteEdit();
     syncPlateFromState();
@@ -5902,12 +6054,14 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
   open = { ...at, solid: parsed };
   editing = null;
   editBack = { key: at.key, tip: parsed.id, back: run.from, undone: false };
+  const sentences = kernelNotes(body);
   splitPrintApplied();
   const label = (id: NodeId) => stepLabel(next.nodes.get(id)!);
   const after = replay.length === 0 ? "" : replay.length === 1 ? " and rebuilt the step after it" : ` and rebuilt ${replay.length} steps after it`;
   const failure = broken ? ` Step ${pathTo(next, broken.id).length - 1}, “${label(broken.id)}”, could not be rebuilt: ${sentence(broken.error)}` : "";
   const left = gone.length === 0 ? "" : gone.length === 1 ? " One piece left the plate." : ` ${gone.length} pieces left the plate.`;
-  present(parsed, [`Updated “${label(ids[0]!)}”${after}. ${about(parsed)}${failure} ${laidSentence(op, placed.fresh.length)}${left}`.replace(/\s+/g, " ").trim(), ...notes].join(" "));
+  present(parsed, [`Updated “${label(ids[0]!)}”${after}. ${about(parsed)}${failure} ${held ? heldSentence(targetName(op)) : laidSentence(op, placed.fresh.length)}${left}`.replace(/\s+/g, " ").trim(), ...sentences, ...notes].join(" "));
+  if (held) showSplitPrintDone(heldResult(next.nodes.get(ids[0]!)!.op as PartitionModelOp, placed.keys.length + 1, sentences));
 }
 
 // --- end Split to print ---
@@ -5938,4 +6092,4 @@ async function post(payload: Body): Promise<Body> {
   }
 }
 
-Object.assign(fx, { refreshModelContext, commitModel, forgetModelTrees, followSelection, releaseModelTrees });
+Object.assign(fx, { refreshModelContext, commitModel, exportedPart, forgetModelTrees, followSelection, releaseModelTrees });

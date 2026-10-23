@@ -551,3 +551,29 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-split-print .sp-pieces { margin: var(--space-1) 0 0; padding-left: 0; list-style: none; color: var(--text); font-size: var(--fs-2); line-height: 1.5; font-variant-numeric: tabular-nums; }
 .model-split-print .sp-pieces:empty { display: none; }
 .model-split-print .sketch-how-pop ol { margin: 0; padding-left: 0; }
+
+/* --- Split to print: Print on, Part numbers, and what an export Apply leaves. --- */
+.model-split-print .sp-print { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); color: var(--text-dim); font-size: var(--fs-1); }
+.model-split-print .sp-print select { min-width: 0; font-size: var(--fs-2); }
+.model-split-print .sp-form[hidden], .model-split-print .sp-done[hidden] { display: none; }
+.model-split-print .sp-done-head { margin: 0 0 var(--space-2); color: var(--text); font-size: var(--fs-2); }
+.model-split-print .sp-done .model-note { margin-top: var(--space-2); }
+
+/* --- Split to print's Export… dialog. --- */
+.split-export-card { width: min(440px, calc(100% - 32px)); }
+.split-export-formats { display: grid; gap: var(--space-2); margin-bottom: var(--space-3); }
+.split-export-format {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.split-export-format:hover, .split-export-format:focus-visible { border-color: var(--border-strong); background: var(--surface-1); }
+.split-export-format span { font-size: var(--fs-3); font-weight: 600; }
+.split-export-format small { color: var(--text-dim); font-size: var(--fs-2); overflow-wrap: anywhere; }
+.split-export-note { margin: 0 0 var(--space-4); color: var(--text-dim); font-size: var(--fs-2); }

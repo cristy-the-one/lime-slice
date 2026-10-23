@@ -3,6 +3,7 @@ import { state, session, STEP_TOLERANCE_DEFAULT } from "./state";
 import { centeringShift, eulerOrient, formatDeg, ID_MATRIX, orientEuler, readStl, settleBy, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
 import { meshKeyHex } from "../slice-action";
 import { bytesToBase64 } from "../base64";
+import { saveBytes } from "./save-bytes";
 import { needsEngine, apiBase, apiToken, markEngineDown, isStepName, renderChrome, markStale, stale, card, shownGrams } from "./settings";
 import { withFooterGrams } from "../estimate";
 import { legacyStockEnd, legacyStockStart, spliceText } from "../machine-gcode";
@@ -457,6 +458,12 @@ export async function exportGcode() {
 
 export async function export3mf() {
   fx.commitModel?.();
+  const exported: string | null = fx.exportedPart?.() ?? null;
+  if (exported) {
+    state.error = exported;
+    renderChrome();
+    return;
+  }
   if (!state.placed) return;
   syncPlateFromState();
   const objects = livePlate();
@@ -465,17 +472,7 @@ export async function export3mf() {
     : state.placed.positions;
   const bytes = encode3mf(positions);
   const name = `${(state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "")}.3mf`;
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("save_text_file", { text: "", defaultName: name, extension: "3mf", bytesB64: bytesToBase64(bytes) });
-    return;
-  }
-  const blob = new Blob([bytes], { type: "model/3mf" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  await saveBytes(bytes, name, "3mf", "model/3mf");
 }
 
 export function download(text: string, name: string) {
