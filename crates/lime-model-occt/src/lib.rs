@@ -26,6 +26,32 @@ pub fn tree(request: &str) -> String {
     }
 }
 
+/// One piece of a partition, as the kernel reports it. For tests.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartitionPiece {
+    pub volume_mm3: f64,
+    pub solids: i32,
+    pub faces: i32,
+    /// `BRepCheck_Analyzer` accepts it.
+    pub valid: bool,
+    /// Every edge lies on exactly two faces.
+    pub closed: bool,
+}
+
+/// Builds a `Solid` (as JSON), cuts it along every plane (x, y, z, nx, ny, nz) at once, and reports each piece in
+/// order, or the kernel's one-sentence refusal. A test path: the history op that holds the pieces comes later.
+pub fn partition_primitive(solid: &str, planes: &[[f64; 6]]) -> Result<Vec<PartitionPiece>, String> {
+    #[cfg(lime_occt)]
+    {
+        tree::partition_primitive(solid, planes)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (solid, planes);
+        Err("OCCT_ROOT is not set, so Open CASCADE is not linked".into())
+    }
+}
+
 /// How long a new group (an Apply or a probe) may build before it stops; 60 s unless set. Without the kernel
 /// this does nothing.
 pub fn set_group_budget(budget: std::time::Duration) {

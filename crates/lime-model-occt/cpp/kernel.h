@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -208,6 +209,23 @@ bool build_split(
     TopoDS_Shape& other,
     double& kept_volume,
     double& other_volume,
+    std::string& error);
+/// One solid of a partition and its volume, integrated once.
+struct PartitionPiece {
+    TopoDS_Shape shape;
+    double volume;
+};
+constexpr size_t kMaxPartitionPieces = 24;
+/// True when every edge of `shape`, a degenerate one aside, lies on exactly two faces: the shell has no hole and no
+/// fin.
+bool every_edge_shared_by_two(const TopoDS_Shape& shape);
+/// Cuts `current` along every plane at once, each plane given as x, y, z, nx, ny, nz. The pieces come back in the
+/// order of the planes' signs, negative first, the first plane's sign most significant. Each is one valid, closed
+/// solid; if any is not, or there are more than `kMaxPartitionPieces`, nothing is returned.
+bool build_partition(
+    const TopoDS_Shape& current,
+    const std::vector<std::array<double, 6>>& planes,
+    std::vector<PartitionPiece>& pieces,
     std::string& error);
 /// A uniform scale about the centre. The result's volume is the original's times `factor` cubed.
 TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string& error);
