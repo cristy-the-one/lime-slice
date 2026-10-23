@@ -14,7 +14,7 @@ export const PROVISIONAL_SENTENCE = "Provisional card, not a measurement.";
 export const NOT_HELD = "This part is not held. Fix a face, or the bed.";
 
 /** What Model's Stress asks for while its setup is not done. */
-export const HOLD_NEXT = "Hold the part: the bed, or pick faces.";
+export const HOLD_NEXT = "Hold the part: pick the faces that are fixed, or the bed.";
 export const LOAD_FACES_NEXT = "Pick the faces the load pushes on.";
 
 /** Plate undo and the solid's history are different gestures. */

@@ -6,7 +6,7 @@
 import { Check, MousePointerClick, X, createElement } from "lucide";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { ModelView, StressDraw } from "../model-view.ts";
-import { buildStudyBody, surfaceResult, type FaceTriangles, type StudyTarget } from "../sim/bridge-body.ts";
+import { buildStudyBody, inSolidFrame, surfaceResult, type FaceTriangles, type StudyTarget } from "../sim/bridge-body.ts";
 import { rememberStressCells } from "../sim/stress-cells.ts";
 import type { MaterialCard } from "../sim/cards.ts";
 import { solveStudy } from "../sim/desktop-solve.ts";
@@ -25,9 +25,11 @@ import {
   formatProbe,
   holdRefusal,
   loadGap,
+  notShown,
   paintField,
   probeNearest,
   restPositions,
+  scalarOf,
   setupGap,
   vertexColours,
   type CannedResult,
@@ -66,6 +68,11 @@ export interface StressHooks {
   sliceRequest(patch?: { walls?: number; infill?: number; pattern?: "lines" | "grid" | "gyroid" | "lightning" }): Record<string, unknown> | { reason: string } | null;
   /** Face triangles in the model frame, wound as the solid stores them. */
   faceTriangles(faces: readonly number[]): FaceTriangles;
+  /**
+   * The part's triangles in the model frame, split to `edgeMm`, for the bridge to paint, and the map from that
+   * frame to the frame the solid is drawn in. Null when no solid is on screen: the bridge then draws its cells.
+   */
+  paintSurface(edgeMm: number): { corners: Float32Array; toSolid(at: Vec3): Vec3 } | null;
 }
 
 /** Which faces a click on the part adds or removes. One at a time across Hold and Load. */
@@ -83,6 +90,8 @@ let previous: CannedResult | null = null;
 let previousFrom: string | null = null;
 let field: StressField = "vonMises";
 let scaleOverride: number | undefined;
+/** The deformed shape is opt-in. Off, the colours sit on the part as it is. */
+let deformed = false;
 let steps = 0;
 let redos = 0;
 let boundId: string | null = null;
@@ -227,6 +236,10 @@ export function mountStress(next: StressHooks) {
     else closeStress();
   });
   byId("#stressSaveCard")?.addEventListener("click", saveCard);
+  byId("#stressDeform")?.addEventListener("change", () => {
+    deformed = byId<HTMLInputElement>("#stressDeform")?.checked === true;
+    repaintField();
+  });
   byId("#stressTrueScale")?.addEventListener("click", () => {
     scaleOverride = 1;
     setNum("#stressScale", 1);
@@ -296,7 +309,7 @@ export function revealStress() {
   syncDraw();
   bindView();
   section?.scrollIntoView({ block: "nearest" });
-  byId<HTMLElement>(setupGap(draft)?.step === "hold" ? "#stressBed" : "#stressForce")?.focus();
+  byId<HTMLElement>(setupGap(draft)?.step === "hold" ? "#stressHoldFaces" : "#stressForce")?.focus();
 }
 
 /** The header folds the section only. The draft, the result, and the colours on the part stay. */
@@ -375,6 +388,8 @@ function loadDraft() {
   cardTouched = false;
   field = "vonMises";
   scaleOverride = undefined;
+  deformed = false;
+  setCheck("#stressDeform", false);
   message = "";
   variants = [];
   paintVariantList();
@@ -432,7 +447,7 @@ function commitDraft() {
 function onChange(ev: Event) {
   const target = ev.target;
   if (!(target instanceof HTMLElement)) return;
-  if (target.id === "stressField" || target.id === "stressScale" || target.id === "stressCard") return;
+  if (target.id === "stressField" || target.id === "stressScale" || target.id === "stressDeform" || target.id === "stressCard") return;
   if (target.closest("[data-stress-local]")) return;
   if (CARD_FIELDS.has(target.id)) {
     cardTouched = true;
@@ -638,7 +653,8 @@ function hideSweep(text: string) {
 
 /** The open result when it was solved from this study, or one new base solve. */
 async function baseResult(token: number): Promise<CannedResult | { error: string } | "cancelled"> {
-  const body = studyText();
+  const surface = paintSurface();
+  const body = studyText(undefined, surface?.corners);
   if (typeof body !== "string") return { error: body.reason };
   if (result?.representation === "sliced" && solvedFrom === body) return result;
   let text: string;
@@ -649,7 +665,7 @@ async function baseResult(token: number): Promise<CannedResult | { error: string
     return { error: err instanceof Error && err.message ? err.message : "The stress solve did not finish." };
   }
   if (token !== solveGeneration) return "cancelled";
-  const parsed = surfaceResult(text, field, scaleOverride);
+  const parsed = drawnResult(text, surface);
   if (!("error" in parsed)) {
     result = parsed;
     solvedFrom = body;
@@ -756,7 +772,22 @@ async function runSweep() {
   if (status) status.textContent = reslice ? RESLICE_STATUS : LINEAR_STATUS;
 }
 
-function studyText(patch?: { walls?: number; infill?: number; pattern?: "lines" | "grid" | "gyroid" | "lightning"; loadScale?: number }): string | { reason: string } {
+/** The part's surface to paint, split to the cell size the study asks for: the colours change no faster than that. */
+function paintSurface() {
+  return hooks?.paintSurface(draft.edgeMm > 0 ? draft.edgeMm : 5) ?? null;
+}
+
+/** The bridge reply as the drawn result: in the solid's frame when the bridge painted the part's own surface. */
+function drawnResult(text: string, surface: ReturnType<typeof paintSurface>): CannedResult | { error: string } {
+  const parsed = surfaceResult(text, field, scaleOverride);
+  if ("error" in parsed || !surface || !parsed.painted) return parsed;
+  return inSolidFrame(parsed, surface.toSolid);
+}
+
+function studyText(
+  patch?: { walls?: number; infill?: number; pattern?: "lines" | "grid" | "gyroid" | "lightning"; loadScale?: number },
+  paint?: Float32Array,
+): string | { reason: string } {
   const request = hooks?.sliceRequest(patch);
   if (!request) return { reason: "Load a mesh first." };
   if ("reason" in request && typeof request.reason === "string" && !("dataB64" in request)) return { reason: request.reason };
@@ -770,6 +801,7 @@ function studyText(patch?: { walls?: number; infill?: number; pattern?: "lines" 
     loadScale: patch?.loadScale,
     checkResolution: byId<HTMLInputElement>("#stressCheckResolution")?.checked !== false,
     constraints: panelTargets(),
+    paint,
   });
 }
 
@@ -782,7 +814,8 @@ async function run() {
     paintStatus();
     return;
   }
-  const body = studyText();
+  const surface = paintSurface();
+  const body = studyText(undefined, surface?.corners);
   if (typeof body !== "string") {
     say(body.reason);
     return;
@@ -812,7 +845,7 @@ async function run() {
   }
   if (token !== solveGeneration) return;
   setSolving(false);
-  const parsed = surfaceResult(text, field, scaleOverride);
+  const parsed = drawnResult(text, surface);
   if ("error" in parsed) {
     result = previous;
     solvedFrom = previousFrom;
@@ -1035,8 +1068,35 @@ function paintStatus() {
   if (runButton) runButton.setAttribute("aria-disabled", gap ? "true" : "false");
 }
 
+/** Why the result on hand is not drawn, or null when it is. */
+function unshown(): string | null {
+  const card = currentCard();
+  return result && card ? notShown(result, draft, card) : null;
+}
+
+/** The factor the view moves vertices by: zero unless the deformed shape is on. */
+function drawnScale(): number {
+  return deformed && result ? result.scale : 0;
+}
+
+function scaleText(scale: number): string {
+  return scale >= 100 ? Math.round(scale).toLocaleString("en-US") : String(Number(scale.toPrecision(3)));
+}
+
 function paintResult() {
   show("#stressResult", !!result);
+  const why = unshown();
+  const nothing = byId("#stressNothing");
+  if (nothing && nothing.textContent !== (why ?? "")) nothing.textContent = why ?? "";
+  show("#stressNothing", !!why);
+  for (const id of ["#stressField", "#stressDeform", "#stressProbeHint", "#stressMargins"]) {
+    const el = byId(id);
+    const row = el?.closest("label") ?? el;
+    if (row instanceof HTMLElement && row.hidden !== !!why) row.hidden = !!why;
+  }
+  show("#stressScaleRow", !why && deformed);
+  const label = byId("#stressDeformLabel");
+  if (label) label.textContent = result && deformed ? `Deformed shape ×${scaleText(result.scale)}` : "Deformed shape";
 }
 
 function syncDraw() {
@@ -1055,7 +1115,8 @@ function syncDraw() {
     ? { at: seat, dir: load.direction, length: arrowLength(load.magnitude, boxDiagonal(box)), fixed: picking != null }
     : null;
   // While faces are picked the solid is shown, so the click lands on its faces and the tint is seen.
-  const drawn = picking ? null : result;
+  // A result with nothing to show leaves the setup on the part instead of colouring it.
+  const drawn = picking || unshown() ? null : result;
   const faces = {
     hold: draft.holds.find((hold) => hold.kind === "faces")?.faces ?? [],
     load: load?.faces ?? [],
@@ -1066,7 +1127,7 @@ function syncDraw() {
         triangles: Uint32Array.from(drawn.triangles),
         colors: vertexColours(drawn),
         displacement: displacements(drawn),
-        scale: drawn.scale,
+        scale: drawnScale(),
         arrow,
         markers: drawn.margins?.map((margin) => margin.at) ?? [],
       }
@@ -1086,7 +1147,7 @@ function syncDraw() {
 function paintLegend() {
   const legend = byId<HTMLElement>("#stressLegend");
   if (!legend) return;
-  if (!result || !active || picking) {
+  if (!result || !active || picking || unshown()) {
     hideLegend();
     return;
   }
@@ -1095,7 +1156,16 @@ function paintLegend() {
   const title = byId("#stressLegendLabel");
   if (title) title.textContent = sliced ? AS_SLICED : LABEL;
   const line = byId("#stressLegendText");
-  if (line) line.textContent = `${fieldLabel(result.field)} ${formatProbe(result.peak, result.field)}`.trim();
+  const safety = result.field === "safety";
+  if (line) line.textContent = `${fieldLabel(result.field)}, ${safety ? "lowest" : "peak"} ${formatProbe(result.peak, result.field)}`;
+  const values = result.nodes.map((node) => scalarOf(node, result!.field));
+  const low = values.reduce((min, value) => Math.min(min, value), Infinity);
+  const high = values.reduce((max, value) => Math.max(max, value), -Infinity);
+  // The ramp is red at the top: the highest stress, or the lowest safety factor.
+  const top = byId("#stressLegendHigh");
+  if (top) top.textContent = formatProbe(safety ? low : high, result.field);
+  const bottom = byId("#stressLegendLow");
+  if (bottom) bottom.textContent = formatProbe(safety ? Math.min(high, 1e6) : low, result.field);
   const trust = byId("#stressLegendTrust");
   if (trust) {
     const notes = sliced ? (result.notes ?? []) : [result.trustSentence];
@@ -1152,7 +1222,7 @@ function bindView() {
   if (!view) return;
   view.onStressProbe((at) => {
     if (!result || picking) return;
-    const hit = probeNearest(result, at, "deformed");
+    const hit = probeNearest({ ...result, scale: drawnScale() }, at, "deformed");
     showProbe(hit.at, formatProbe(hit.value, result.field));
   });
   view.onStressDirection((dir, phase, at) => {

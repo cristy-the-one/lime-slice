@@ -20,6 +20,7 @@ import {
   formatProbe,
   constraintVerdict,
   holdRefusal,
+  notShown,
   onBed,
   probeNearest,
   readStudy,
@@ -54,7 +55,7 @@ bare.holds = [{ kind: "bed", faces: [] }];
 eq("the bed is a hold", holdRefusal(bare), null);
 {
   const setup = emptyStudy();
-  eq("a new study asks for a hold first", setupGap(setup), { step: "hold", text: "Hold the part: the bed, or pick faces." });
+  eq("a new study asks for a hold first", setupGap(setup), { step: "hold", text: "Hold the part: pick the faces that are fixed, or the bed." });
   setup.holds = [{ kind: "faces", faces: [2] }];
   eq("held, it asks for the load's faces", setupGap(setup), { step: "load", text: "Pick the faces the load pushes on." });
   setup.loads[0]!.faces = [5];
@@ -189,6 +190,31 @@ function tsSources(dir: string): string[] {
 }
 const callers = tsSources("src").filter((path) => readFileSync(path, "utf8").includes("cannedBeam("));
 eq("the canned beam is only defined, not run from the panel", callers, [join("src", "sim", "study.ts")]);
+
+{
+  // The owner's case: a bar on the bed, 10 N pressing it down. 0.001 MPa is noise, not a shape.
+  const node = (vonMises: number) => ({ at: [0, 0, 0] as Vec3, u: [0, 0, 0] as Vec3, vonMises, displacement: 0, safety: 1e6 });
+  const study = emptyStudy();
+  study.holds = [{ kind: "bed", faces: [] }];
+  study.loads = [{ kind: "force", faces: [5], magnitude: 10, direction: [0, 0, -1] }];
+  eq(
+    "a load pressing a bed-held part into the bed is not drawn",
+    notShown({ nodes: [node(0.001)], moved: 0.99 }, study, petg),
+    "Nothing bends this part: the bed holds it, and the load presses it into the bed (peak 0.00100 MPa). Hold one end with Faces, and load the other end.",
+  );
+  study.holds = [{ kind: "faces", faces: [0] }];
+  eq(
+    "a tiny peak elsewhere says how small it is",
+    notShown({ nodes: [node(0.002)], moved: null }, study, petg),
+    "Nothing loads this part enough to show: the peak is 0.00200 MPa, under 0.1% of its strength. Raise the load, or hold and load faces farther apart.",
+  );
+  eq(
+    "two cell sizes that disagree past the rough line are not drawn",
+    notShown({ nodes: [node(12)], moved: 0.34 }, study, petg),
+    "The two cell sizes disagree by 34%, so colours would mislead. Set a smaller cell size under Advanced, and run again.",
+  );
+  eq("a loaded part that holds still between sizes is drawn", notShown({ nodes: [node(12)], moved: 0.04 }, study, petg), null);
+}
 
 if (failed) {
   console.error(`${failed} failed`);

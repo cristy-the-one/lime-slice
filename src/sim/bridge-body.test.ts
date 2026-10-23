@@ -2,7 +2,7 @@
  * The bridge body keeps face winding, and a reply becomes corners the view can draw.
  */
 import { provisionalCards } from "./cards.ts";
-import { buildStudyBody, faceTriangles, surfaceResult } from "./bridge-body.ts";
+import { buildStudyBody, faceTriangles, inSolidFrame, resolutionMove, surfaceResult } from "./bridge-body.ts";
 import { emptyStudy, vertexColours } from "./study.ts";
 
 let failed = 0;
@@ -142,6 +142,32 @@ check("an unknown trust is rough", !("error" in rough) && rough.trust === "rough
 
 const bad = surfaceResult(JSON.stringify({ ok: false, reason: "The slice has no beads that carry load." }), "vonMises");
 check("a refusal is the bridge's sentence", "error" in bad && bad.error === "The slice has no beads that carry load.");
+
+check("the move between sizes is read as the solver reads it", Math.abs((resolutionMove([{ governingValue: 1 }, { governingValue: 0.66 }]) ?? 0) - 0.34) < 1e-12);
+check("one cell size has no move", resolutionMove([{ governingValue: 1 }]) === null);
+{
+  // The plate mesh sits 10 mm lower than the solid on screen: the colours follow the solid.
+  const shifted = inSolidFrame(
+    {
+      label: "In-house estimate", field: "vonMises", scale: 1, peak: 0, unit: "", trust: "rough", trustSentence: "", diagonal: 1,
+      triangles: [0], nodes: [{ at: [1, 2, 0], u: [0, 0, -0.5], vonMises: 3, displacement: 0.5, safety: 2 }],
+      margins: [{ kind: "minSafetyFactor", value: 2, margin: 1, met: true, at: [0, 0, 0] }],
+    },
+    (at) => [at[0], at[1], at[2] + 10],
+  );
+  check("a node moves into the solid's frame", JSON.stringify(shifted.nodes[0]?.at) === "[1,2,10]" && JSON.stringify(shifted.nodes[0]?.u) === "[0,0,-0.5]", JSON.stringify(shifted.nodes[0]));
+  check("a hot spot moves with it", JSON.stringify(shifted.margins?.[0]?.at) === "[0,0,10]");
+}
+{
+  const body = JSON.parse(buildStudyBody({
+    request: { dataB64: "AA==" },
+    study: { ...emptyStudy(), holds: [{ kind: "bed", faces: [] }], loads: [{ kind: "force", faces: [0], magnitude: 1, direction: [0, 0, -1] }] },
+    card: provisionalCards()[0]!,
+    triangles: () => [[[0, 0, 0], [1, 0, 0], [0, 1, 0]]],
+    paint: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+  }) as string) as { paint?: string };
+  check("the part's corners go to the bridge as little-endian floats", body.paint === Buffer.from(Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer).toString("base64"));
+}
 
 if (failed) {
   console.error(`${failed} failed`);

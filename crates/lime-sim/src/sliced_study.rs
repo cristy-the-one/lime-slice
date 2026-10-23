@@ -475,6 +475,214 @@ pub fn draw_surface(report: &SlicedReport, card: &Card) -> Option<DrawSurface> {
     Some(out)
 }
 
+/// The first load case's result painted on the part's own surface: each of
+/// `corners` (triangle corners in the study's frame) takes its values from
+/// the cells around it, so the colours sit on the faces the user drew and
+/// not on the grid's staircase. Each value is a weighted plane fitted to
+/// those cells and read at the corner: the display recovery the sliced
+/// plan's Model view asks for. The margins still read cell averages. Cells
+/// the margins trust come first; a boundary cell under half full is used
+/// only where no trusted cell is in reach. Safety is fitted as utilisation,
+/// `1 / safety`, so an unloaded cell's cap doesn't swamp its neighbours.
+/// Displacement is fitted from each cell's mean node displacement, for an
+/// opt-in deformed view.
+pub fn paint_surface(
+    report: &SlicedReport,
+    card: &Card,
+    corners: &[[f64; 3]],
+) -> Option<DrawSurface> {
+    let solution = report.solution.as_ref()?;
+    let mesh = report.mesh.as_ref()?;
+    let to_slice = Affine { m: report.frame }.inverse()?;
+    let slabs = &mesh.slabs;
+    if slabs.is_empty() || mesh.h_xy <= 0.0 {
+        return None;
+    }
+    // Per cell: summed node displacement and node count, over its elements.
+    let mut moved: std::collections::HashMap<(u32, u32, u32), ([f64; 3], usize)> =
+        std::collections::HashMap::new();
+    for (element, cell) in mesh.mesh.elements.iter().enumerate() {
+        let entry = moved.entry(mesh.cell_of[element]).or_insert(([0.0; 3], 0));
+        for &node in &cell.nodes {
+            let u = solution.displacement[node];
+            for k in 0..3 {
+                entry.0[k] += u[k];
+            }
+            entry.1 += 1;
+        }
+    }
+    #[derive(Clone, Copy)]
+    struct Shown {
+        von_mises: f64,
+        utilisation: f64,
+        u: [f64; 3],
+    }
+    type Cells = std::collections::HashMap<(u32, u32, u32), Shown>;
+    let mut trusted = Cells::new();
+    let mut every = Cells::new();
+    for c in cell_values(report, card) {
+        let (sum, n) = moved.get(&c.key).copied().unwrap_or(([0.0; 3], 1));
+        let shown = Shown {
+            von_mises: c.von_mises,
+            utilisation: if c.safety > 0.0 { 1.0 / c.safety } else { 0.0 },
+            u: [sum[0] / n as f64, sum[1] / n as f64, sum[2] / n as f64],
+        };
+        every.insert(c.key, shown);
+        if !c.staircase {
+            trusted.insert(c.key, shown);
+        }
+    }
+    if every.is_empty() {
+        return None;
+    }
+    let h = mesh.h_xy;
+    let centre = |key: (u32, u32, u32)| -> [f64; 3] {
+        let slab = slabs[(key.2 as usize).min(slabs.len() - 1)];
+        [
+            mesh.origin[0] + (key.0 as f64 + 0.5) * h,
+            mesh.origin[1] + (key.1 as f64 + 0.5) * h,
+            0.5 * (slab[0] + slab[1]),
+        ]
+    };
+    let slab_of = |z: f64| -> usize { slabs.partition_point(|s| s[1] < z).min(slabs.len() - 1) };
+    // The cells around `q`, fitted with a plane by weighted least squares and
+    // read at `q`, or None when none is in reach. The weight is a tent of a
+    // cell and a half on each axis, so the 27 cells around `q` all count. A
+    // plane is exact for the linear stress across a bent section, so a face
+    // half a cell past the last cell centre reads the surface value, not the
+    // cell's average. A small ridge on the slope keeps a part one cell thick
+    // (no spread to fit along that axis) at the plain weighted mean.
+    let fit = |cells: &Cells, q: [f64; 3]| -> Option<Shown> {
+        let i = ((q[0] - mesh.origin[0]) / h).floor() as i64;
+        let j = ((q[1] - mesh.origin[1]) / h).floor() as i64;
+        let k = slab_of(q[2]) as i64;
+        let mut normal = [[0.0f64; 4]; 4];
+        let mut rhs = [[0.0f64; 4]; 5];
+        let mut weight = 0.0;
+        for a in i - 1..=i + 1 {
+            for b in j - 1..=j + 1 {
+                for c in k - 1..=k + 1 {
+                    if a < 0 || b < 0 || c < 0 || c as usize >= slabs.len() {
+                        continue;
+                    }
+                    let key = (a as u32, b as u32, c as u32);
+                    let Some(cell) = cells.get(&key) else {
+                        continue;
+                    };
+                    let d = sub(centre(key), q);
+                    let slab = slabs[c as usize];
+                    let tz = (slab[1] - slab[0]).max(1e-9);
+                    let w = (1.0 - d[0].abs() / (1.5 * h)).max(0.0)
+                        * (1.0 - d[1].abs() / (1.5 * h)).max(0.0)
+                        * (1.0 - d[2].abs() / (1.5 * tz)).max(0.0);
+                    if w <= 0.0 {
+                        continue;
+                    }
+                    weight += w;
+                    let basis = [1.0, d[0], d[1], d[2]];
+                    let values = [
+                        cell.von_mises,
+                        cell.utilisation,
+                        cell.u[0],
+                        cell.u[1],
+                        cell.u[2],
+                    ];
+                    for r in 0..4 {
+                        for col in 0..4 {
+                            normal[r][col] += w * basis[r] * basis[col];
+                        }
+                        for (v, value) in values.iter().enumerate() {
+                            rhs[v][r] += w * value * basis[r];
+                        }
+                    }
+                }
+            }
+        }
+        if weight <= 1e-12 {
+            return None;
+        }
+        let ridge = 1e-3 * weight * h * h;
+        for r in 1..4 {
+            normal[r][r] += ridge;
+        }
+        let at_q = |b: [f64; 4]| solve4(normal, b).map(|x| x[0]);
+        let mean = |b: [f64; 4]| b[0] / weight;
+        let read = |b: [f64; 4]| at_q(b).unwrap_or_else(|| mean(b));
+        Some(Shown {
+            von_mises: read(rhs[0]).max(0.0),
+            utilisation: read(rhs[1]).max(0.0),
+            u: [read(rhs[2]), read(rhs[3]), read(rhs[4])],
+        })
+    };
+    let nearest = |cells: &Cells, q: [f64; 3]| -> Option<Shown> {
+        cells
+            .iter()
+            .min_by(|x, y| {
+                let dx = sub(centre(*x.0), q);
+                let dy = sub(centre(*y.0), q);
+                dot(dx, dx).total_cmp(&dot(dy, dy))
+            })
+            .map(|(_, cell)| *cell)
+    };
+    let to = Affine { m: report.frame };
+    let mut out = DrawSurface::default();
+    for p in corners {
+        let q = to_slice.point(*p);
+        // Trusted cells first. A thin part of sparse infill may have none
+        // near a face, and then the cells under it are what there is.
+        let Shown {
+            von_mises: vm,
+            utilisation,
+            u,
+        } = fit(&trusted, q)
+            .or_else(|| fit(&every, q))
+            .or_else(|| nearest(&trusted, q))
+            .or_else(|| nearest(&every, q))
+            .unwrap_or(Shown {
+                von_mises: 0.0,
+                utilisation: 0.0,
+                u: [0.0; 3],
+            });
+        let shown_u = to.vector(u);
+        out.positions.push([p[0] as f32, p[1] as f32, p[2] as f32]);
+        out.displacement
+            .push([shown_u[0] as f32, shown_u[1] as f32, shown_u[2] as f32]);
+        out.von_mises.push(vm as f32);
+        out.safety.push(if utilisation > 1.0e-6 {
+            (1.0 / utilisation) as f32
+        } else {
+            1.0e6
+        });
+    }
+    Some(out)
+}
+
+/// `x` with `m x = b`, by elimination with partial pivoting. None when `m`
+/// is singular.
+fn solve4(mut m: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
+    for col in 0..4 {
+        let pivot = (col..4).max_by(|&x, &y| m[x][col].abs().total_cmp(&m[y][col].abs()))?;
+        if m[pivot][col].abs() < 1e-300 {
+            return None;
+        }
+        m.swap(col, pivot);
+        b.swap(col, pivot);
+        for r in col + 1..4 {
+            let f = m[r][col] / m[col][col];
+            for c in col..4 {
+                m[r][c] -= f * m[col][c];
+            }
+            b[r] -= f * b[col];
+        }
+    }
+    let mut x = [0.0; 4];
+    for r in (0..4).rev() {
+        let tail: f64 = (r + 1..4).map(|c| m[r][c] * x[c]).sum();
+        x[r] = (b[r] - tail) / m[r][r];
+    }
+    x.iter().all(|v| v.is_finite()).then_some(x)
+}
+
 /// An affine map, row-major, the last row `[0, 0, 0, 1]`.
 #[derive(Clone, Copy, Debug)]
 struct Affine {
@@ -662,7 +870,10 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
     let to_slice = to_part
         .inverse()
         .ok_or_else(|| SimError::new("The slice field's frame can't be inverted."))?;
-    let memory_mb = study.memory_mb.filter(|m| m.is_finite() && *m > 0.0).unwrap_or(DEFAULT_MEMORY_MB);
+    let memory_mb = study
+        .memory_mb
+        .filter(|m| m.is_finite() && *m > 0.0)
+        .unwrap_or(DEFAULT_MEMORY_MB);
     let node_budget = nodes_for_memory(memory_mb);
     let h = match study.h_xy {
         Some(h) => h,

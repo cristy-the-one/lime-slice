@@ -48,6 +48,8 @@ export interface StudyBodyInput {
   checkResolution?: boolean;
   /** Min safety and max deflection. Empty sends a safety factor of 1, so the worst spot is marked. */
   constraints?: StudyTarget[];
+  /** The part's triangle corners in the model frame. The reply paints these instead of the solved cells. */
+  paint?: Float32Array;
 }
 
 /** A target the panel typed. The bridge turns these into margins. */
@@ -115,7 +117,14 @@ export function buildStudyBody(input: StudyBodyInput): string | { reason: string
     constraints: studyConstraints(input.constraints),
     checkResolution: input.checkResolution !== false,
   };
-  return JSON.stringify({ request: input.request, study });
+  return JSON.stringify({ request: input.request, study, ...(input.paint ? { paint: base64Of(input.paint) } : {}) });
+}
+
+function base64Of(values: Float32Array): string {
+  const bytes = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
 }
 
 function bytesOf(b64: string): Uint8Array {
@@ -177,6 +186,37 @@ function marginsOf(value: unknown): SlicedMargin[] {
 }
 
 /**
+ * How far the governing value moved between the two cell sizes, as a share of
+ * the larger, as `sliced_trust` reads it. Null when one size ran.
+ */
+export function resolutionMove(value: unknown): number | null {
+  if (!Array.isArray(value) || value.length < 2) return null;
+  const read = (row: unknown) =>
+    row && typeof row === "object" && finite((row as Record<string, unknown>).governingValue)
+      ? ((row as Record<string, unknown>).governingValue as number)
+      : null;
+  const first = read(value[0]);
+  const second = read(value[value.length - 1]);
+  if (first === null || second === null) return null;
+  return Math.abs(second - first) / Math.max(Math.abs(first), Math.abs(second), 1e-30);
+}
+
+/**
+ * A result from the study's frame (the mesh the slicer was sent) into the
+ * frame the solid is drawn in. `toSolid` is affine, so a displacement maps as
+ * the difference of two points.
+ */
+export function inSolidFrame(result: CannedResult, toSolid: (at: Vec3) => Vec3): CannedResult {
+  const nodes = result.nodes.map((node) => {
+    const at = toSolid(node.at);
+    const tip = toSolid([node.at[0] + node.u[0], node.at[1] + node.u[1], node.at[2] + node.u[2]]);
+    const u: Vec3 = [tip[0] - at[0], tip[1] - at[1], tip[2] - at[2]];
+    return { ...node, at, u };
+  });
+  return { ...result, nodes, margins: result.margins?.map((margin) => ({ ...margin, at: toSolid(margin.at) })) };
+}
+
+/**
  * The bridge reply as the view's result. Corners stay in the order the
  * surface lists them, so a probe reads the nearest one.
  */
@@ -232,6 +272,8 @@ export function surfaceResult(text: string, field: StressField, scale?: number):
     trustSentence: notes.join(" "),
     diagonal,
     representation: "sliced",
+    painted: surface.painted === true,
+    moved: resolutionMove(report.resolutions),
     notes,
     margins: marginsOf(report.margins),
     maxDisplacementMm: finite(report.maxDisplacementMm) ? report.maxDisplacementMm : peakDisp,

@@ -16,7 +16,7 @@
 
 use base64::Engine;
 use lime_sim::slice_field::{role_index, Header, LayerRow, Segment, SliceField, ROLES};
-use lime_sim::sliced_study::{cell_values, draw_surface, run, SlicedStudy};
+use lime_sim::sliced_study::{cell_values, draw_surface, paint_surface, run, SlicedStudy};
 use lime_slice_core::{slice_beads, Job, SliceRequest, Watch};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -174,6 +174,24 @@ pub fn part_to_model(req: &SliceRequest) -> Result<M4, String> {
 struct StudyBody {
     request: SliceRequest,
     study: SlicedStudy,
+    /// The part's own triangle corners in the model frame, little-endian
+    /// f32 `x y z`, base64. Given, the surface is these corners painted with
+    /// the result; absent, it is the solved cells' boundary.
+    #[serde(default)]
+    paint: Option<String>,
+}
+
+fn corners_of(b64: &str) -> Result<Vec<[f64; 3]>, String> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|_| "The part's surface could not be read.".to_string())?;
+    if raw.len() % 36 != 0 {
+        return Err("The part's surface is not whole triangles.".into());
+    }
+    let f = |at: usize| f32::from_le_bytes([raw[at], raw[at + 1], raw[at + 2], raw[at + 3]]) as f64;
+    Ok((0..raw.len() / 12)
+        .map(|i| [f(i * 12), f(i * 12 + 4), f(i * 12 + 8)])
+        .collect())
 }
 
 fn floats_b64(values: impl Iterator<Item = f32>) -> String {
@@ -185,6 +203,7 @@ fn floats_b64(values: impl Iterator<Item = f32>) -> String {
 }
 
 /// `{ "request": <a one-object slice request>, "study": <a sliced study> }`
+/// (with an optional `"paint"`, the part's corners to colour)
 /// in, `{ "ok": true, "report", "surface" }` out, or `{ "ok": false,
 /// "reason": <sentence> }`. The JSON is specified in
 /// `docs/stress-sim-review-tasks.md`, SR-14.
@@ -205,13 +224,19 @@ pub fn study_value(body: &str, job: Job, watch: &Watch) -> Result<Value, String>
     let to_model = part_to_model(&parsed.request)?;
     field.header.frame = multiply(&to_model, &slice_to_part);
     let report = run(&field, &parsed.study).map_err(|err| err.message)?;
-    let surface = draw_surface(&report, &parsed.study.card).unwrap_or_default();
+    let painted = parsed.paint.as_deref().map(corners_of).transpose()?;
+    let surface = match &painted {
+        Some(corners) => paint_surface(&report, &parsed.study.card, corners),
+        None => draw_surface(&report, &parsed.study.card),
+    }
+    .unwrap_or_default();
     let cells = cells_json(&report, &parsed.study, &slice_to_part)?;
     Ok(json!({
         "ok": true,
         "report": serde_json::to_value(&report).map_err(|e| e.to_string())?,
         "surface": {
             "triangles": surface.positions.len() / 3,
+            "painted": painted.is_some(),
             "positionsB64": floats_b64(surface.positions.iter().flatten().copied()),
             "displacementB64": floats_b64(surface.displacement.iter().flatten().copied()),
             "vonMisesB64": floats_b64(surface.von_mises.iter().copied()),
