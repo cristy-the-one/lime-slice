@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { fakeEngine } from "./engine.ts";
 import { Session } from "./session.ts";
 import { readFileSync } from "node:fs";
-import { CONNECTORS_LATER, fitPrinter, PROFILE_LATER } from "../src/modeling/partition.ts";
+import { fitPrinter, KEYS_LATER, PROFILE_LATER } from "../src/modeling/partition.ts";
 import { SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { exportOnlyRefusal, FORMLABS_FORM_4 } from "../src/ui/machine-library.ts";
 import { exportedCommit, exportedNote } from "./partition.ts";
@@ -65,7 +65,8 @@ check("plan is for a partition", notPartition.ok === false && notPartition.reaso
 const op = plan.op as Record<string, unknown>;
 const refusals: [string, Record<string, unknown>, string][] = [
   ["a lap profile", { ...op, cuts: [{ ...cuts[0]!, profile: { kind: "lap" } }] }, PROFILE_LATER],
-  ["connectors on", { ...op, cuts: [{ ...cuts[0]!, connectors: { on: true } }] }, CONNECTORS_LATER],
+  ["a key", { ...op, cuts: [{ ...cuts[0]!, connectors: { on: true, types: [{ type: "key" }] } }] }, KEYS_LATER],
+  ["a dovetail", { ...op, cuts: [{ ...cuts[0]!, connectors: { on: true, types: [{ type: "dovetail" }] } }] }, KEYS_LATER],
   ["no cuts", { kind: "partition", cuts: [] }, "A partition needs at least one cut. model_probe with plan: true proposes them."],
 ];
 for (const [what, typed, sentence] of refusals) {
@@ -240,6 +241,48 @@ check("its export cuts the pieces again: three, named in order", again3mf.ok ===
 const againStep = await reopenedSession.call("model_export_step", { object: reopenedTall, name: "tall-again", pieces: true });
 check("and the STEP export reuses the pieces it cut", againStep.ok === true && againStep.solids === 3, JSON.stringify(againStep));
 check("the reopened plate does not gain them either", ((await reopenedSession.call("plate_list", {})).objects as unknown[]).length === (reopenedResin.objects as unknown[]).length);
+
+// --- Milestone 5: dowels. The planner places them on each cut's section; the pins are one more object.
+const wide = String((await call("solid_new", { primitive: "box", dx: 500, dy: 60, dz: 20 })).object);
+const dowelCuts = [{ origin: [0, 0, 10], normal: [1, 0, 0], connectors: { on: true, types: [{ type: "dowel", count: 4 }] } }];
+const dowelCalls = engine.calls.length;
+const dowelPlan = await call("model_probe", { object: wide, op: { kind: "partition", cuts: dowelCuts }, plan: true });
+const planned = dowelPlan.connectors as { placed: { id: string }[]; dropped: { id: string; sentence: string }[] } | undefined;
+check("plan: true places the dowels, with no kernel call", dowelPlan.ok === true && engine.calls.length === dowelCalls && JSON.stringify(planned?.placed.map((row) => row.id)) === JSON.stringify(["c1-2", "c1-3"]), JSON.stringify(dowelPlan));
+check("and names the ones that do not fit", JSON.stringify(planned?.dropped.map((row) => row.id)) === JSON.stringify(["c1-1", "c1-4"]) && (dowelPlan.notes as string[]).includes("Cut 1: 2 of 4 dowels fit."), JSON.stringify(dowelPlan.notes));
+const dowelOp = { kind: "partition", cuts: dowelCuts, labels: { on: false } };
+const dowelProbe = await call("model_probe", { object: wide, op: dowelOp });
+check("the probe says how many fit, and counts the pins", dowelProbe.ok === true && (dowelProbe.notes as string[]).includes("Cut 1: 2 of 4 dowels fit.") && (dowelProbe.pins as { count: number }).count === 2, JSON.stringify(dowelProbe));
+const dowelApplied = await call("model_apply", { object: wide, op: dowelOp });
+const pinsId = String(dowelApplied.pins);
+const pinsObject = session.objects.find((row) => row.id === pinsId);
+const wideObject = session.objects.find((row) => row.id === wide)!;
+check("apply makes the pins one more object", dowelApplied.ok === true && dowelApplied.parts === 2 && !!pinsObject && pinsObject.name === "box pins", JSON.stringify(dowelApplied));
+check("in the part's plate orientation, rooted as this cut's pins", JSON.stringify(pinsObject?.orient) === JSON.stringify(wideObject.orient) && (pinsObject?.tree?.root as { pins?: boolean } | undefined)?.pins === true, JSON.stringify(pinsObject?.tree?.root));
+const dowelStored = dowelApplied.stored as { cuts: { connectors: { placed: { id: string }[] } }[]; up?: number[] };
+check("the stored op keeps the dowels the kernel built, and the print's up", dowelStored.cuts[0]!.connectors.placed.length === 2 && JSON.stringify(dowelStored.up) === JSON.stringify([0, 0, 1]), JSON.stringify(dowelStored));
+const dowelRows = (await call("model_history", { object: wide })).nodes as { label: string }[];
+check("the row says dowels", dowelRows.at(-1)?.label === "Split to print, 2 parts, dowels", JSON.stringify(dowelRows));
+const dowelCommit = await call("model_commit", { object: wide });
+check("commit puts the pins on the plate with the pieces", dowelCommit.ok === true && (dowelCommit.pieces as string[]).includes(pinsId) && (await plate()).some((row) => row.object === pinsId), JSON.stringify(dowelCommit));
+const dowelUndo = await call("model_undo", { object: wide });
+check("undo takes the pins off with the pieces", dowelUndo.ok === true && (dowelUndo.piecesLeftPlate as string[]).includes(pinsId), JSON.stringify(dowelUndo));
+await call("model_redo", { object: wide });
+await call("model_probe", { object: wide, op: { ...dowelOp, cuts: [{ ...dowelCuts[0]!, connectors: { on: false } }] }, node: "node_0" });
+const plainAgain = await call("model_edit", { object: wide, node: "node_1", op: { ...dowelOp, cuts: [{ ...dowelCuts[0]!, connectors: { on: false } }] } });
+check("an edit to a plain cut takes the pins away", plainAgain.ok === true && plainAgain.pins === undefined && !(await plate()).some((row) => row.object === pinsId), JSON.stringify(plainAgain));
+
+// The Form 4 with dowels: the pins export as <source>-pins, after the pieces, in the 3MF and the named STEP.
+const column = String((await call("solid_new", { primitive: "box", dx: 100, dy: 80, dz: 400 })).object);
+const columnOp = { ...resinOp, cuts: resinCuts.map((one) => ({ ...one, connectors: { on: true } })) };
+await call("model_probe", { object: column, op: columnOp });
+const columnApplied = await call("model_apply", { object: column, op: columnOp });
+check("the Form 4's pins are held off the plate with its pieces", columnApplied.ok === true && typeof columnApplied.pins === "string" && !(await plate()).some((row) => row.object === columnApplied.pins), JSON.stringify(columnApplied));
+const pinned3mf = await call("export_3mf", { object: column, name: "column", pieces: true });
+check("the 3MF names the pins last", pinned3mf.ok === true && JSON.stringify((pinned3mf.pieces as { name: string }[]).map((row) => row.name)) === JSON.stringify(["column-1", "column-2", "column-3", "column-pins"]), JSON.stringify(pinned3mf.pieces));
+const pinnedStep = await call("model_export_step", { object: column, name: "column", pieces: true });
+const pinnedText = Buffer.from(readFileSync(String(pinnedStep.path))).toString("latin1");
+check("and the named STEP has a column-pins product", pinnedStep.ok === true && pinnedText.includes("PRODUCT('column-pins'") && pinnedText.indexOf("PRODUCT('column-3'") < pinnedText.indexOf("PRODUCT('column-pins'"), JSON.stringify(pinnedStep));
 
 // --- guide {kind}: the op's full schema, on demand.
 const guide = await call("guide", { kind: "partition" });

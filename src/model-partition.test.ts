@@ -8,7 +8,7 @@ import { applyRequest, crossEditRequest } from "./model-request.ts";
 import { toSolidOp, type Affine } from "./model-space.ts";
 import { dropped, jumped, makesParts, newTree, opLabel, partsOf, reachableTrees, withChild, type ModelOp, type ModelTree, type PartitionModelOp } from "./model-tree.ts";
 import { slicePlateFields, type PlateObject } from "./plate.ts";
-import { CONNECTORS_LATER, notBuiltYet, NUMBER_STROKE_FRACTION, partitionNumbers, PROFILE_LATER } from "./modeling/partition.ts";
+import { KEYS_LATER, notBuiltYet, NUMBER_STROKE_FRACTION, partitionNumbers, PROFILE_LATER } from "./modeling/partition.ts";
 import { textStrokes, type StrokeBox } from "./modeling/text.ts";
 
 let failed = 0;
@@ -130,7 +130,10 @@ check("its normal and U turn with it", near(own.cuts[0]!.normal, [0, -1, 0]) && 
 
 // What the kernel does not build yet is refused with the kernel's own sentence.
 eq("a lap is later", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "lap" } }] }), PROFILE_LATER);
-eq("connectors are later", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true } }] }), CONNECTORS_LATER);
+eq("dowels are built since milestone 5", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true } }] }), null);
+eq("a key is later", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true, types: [{ type: "key" }] } }] }), KEYS_LATER);
+eq("a dovetail is later", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true, types: [{ type: "dovetail" }] } }] }), KEYS_LATER);
+eq("a key with connectors off is a plain cut", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: false, types: [{ type: "key" }] } }] }), null);
 eq("a straight plain cut is built", notBuiltYet({ cuts: [cut(1), { origin: [0, 0, 0], normal: [0, 0, 1] }] }), null);
 const form4 = { ...partition, target: { printer: "formlabs-form-4", process: "resin" as const, volumeMm: [200, 125, 210] as [number, number, number] }, arrange: false };
 eq("a resin target is built since milestone 3b", notBuiltYet(form4), null);

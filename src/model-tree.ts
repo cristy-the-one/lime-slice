@@ -109,6 +109,8 @@ export interface PartitionModelOp {
   labels?: Labels;
   bedMarginMm?: number;
   maxPieces?: number;
+  /** --- Milestone 5. The print's up in the solid's frame at Apply, which teardrop roofs and the pins follow. */
+  up?: Vec3;
 }
 
 /** One edge of a loop, from the previous end (the loop's start, for the first) to `to`. */
@@ -329,6 +331,8 @@ export interface ModelNode {
    * holds, so the list still counts the parts.
    */
   pieces?: (string | null)[];
+  /** A split to print with dowels: the key of the tree its pins root (plan section 11). */
+  pins?: string | null;
   keep?: PrepareKeep;
   mesh?: PlateMesh;
 }
@@ -348,7 +352,7 @@ export type ModelRoot =
   | { kind: "step"; name: string; bytes: ArrayBuffer }
   | { kind: "primitive"; solid: PrimitiveSpec; exprs?: Record<string, string> }
   | { kind: "feature"; op: FeatureOp }
-  | { kind: "piece"; tree: string; node: NodeId; index?: number };
+  | { kind: "piece"; tree: string; node: NodeId; index?: number; pins?: true };
 
 export interface ModelTree {
   key: string;
@@ -464,7 +468,7 @@ export function dropped(tree: ModelTree, id: NodeId): ModelTree | null {
 
 /** Whether a split or a split to print at `node` made a part that a tree of its own roots. */
 export function makesParts(node: ModelNode | undefined): boolean {
-  return !!node?.piece || (node?.pieces ?? []).some((key) => key != null);
+  return !!node?.piece || (node?.pieces ?? []).some((key) => key != null) || !!node?.pins;
 }
 
 /**
@@ -589,6 +593,7 @@ export function reachableTrees(trees: ReadonlyMap<string, ModelTree>, refs: Iter
     for (const node of tree.nodes.values()) {
       if (node.piece) queue.push(node.piece);
       for (const piece of node.pieces ?? []) if (piece) queue.push(piece);
+      if (node.pins) queue.push(node.pins);
       if (node.op?.kind === "join") queue.push(node.op.tool.key);
     }
   }
@@ -802,7 +807,8 @@ export function opLabel(op: ModelOp, parts?: number): string {
       // --- 3b. An export target names its printer (plan section 11).
       const printer = op.target?.process === "resin" ? (EXPORT_PRINTERS.find((row) => row.id === op.target!.printer)?.name ?? op.target.printer) : null;
       const head = printer ? `Split to print for ${printer}` : "Split to print";
-      return parts != null ? `${head}, ${parts} parts` : head;
+      const joined = parts != null ? jointWord(op) : null;
+      return parts != null ? `${head}, ${parts} parts${joined ? `, ${joined}` : ""}` : head;
     }
     case "moveFaces": {
       const count = op.faces.length;
@@ -812,6 +818,18 @@ export function opLabel(op: ModelOp, parts?: number): string {
       return shared ? `Move ${count} faces ${n(distance)} mm` : `Move ${count} faces`;
     }
   }
+}
+
+/**
+ * --- Split to print (plan section 11). What a split to print's built connectors are called on its row: "dowels", "plugs",
+ * "holes" (hardware), or the first of them and "connectors" when a cut mixes types. Null with none built.
+ */
+function jointWord(op: PartitionModelOp): string | null {
+  const types = new Set(op.cuts.flatMap((cut) => (cut.connectors?.on ? (cut.connectors.placed ?? []).map((row) => row.type) : [])));
+  if (types.size === 0) return null;
+  if (types.size > 1) return "connectors";
+  const [only] = types;
+  return only === "hardware" ? "holes" : `${only}s`;
 }
 
 /** The sketch card's name, or "Sketch N" when the drawing was stored without one. */

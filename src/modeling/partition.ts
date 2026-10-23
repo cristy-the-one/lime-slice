@@ -38,7 +38,7 @@ interface Spread {
 interface RoundSpec extends Spread {
   radius?: number;
   depth?: number;
-  clearance?: ClearanceInput;
+  clearance?: ClearanceInput | null;
   endGap?: number;
   hole?: HoleShape;
 }
@@ -46,9 +46,9 @@ interface RoundSpec extends Spread {
 export type ConnectorSpec =
   | ({ type: "dowel" } & RoundSpec)
   | ({ type: "plug"; side?: Side } & RoundSpec)
-  | ({ type: "hardware"; diameter?: number; depth?: number; clearance?: ClearanceInput } & Spread)
-  | ({ type: "key"; width?: number; height?: number; depth?: number; clearance?: ClearanceInput } & Spread)
-  | ({ type: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide; clearance?: ClearanceInput } & Spread);
+  | ({ type: "hardware"; diameter?: number; depth?: number; clearance?: ClearanceInput | null; endGap?: number } & Spread)
+  | ({ type: "key"; width?: number; height?: number; depth?: number; clearance?: ClearanceInput | null } & Spread)
+  | ({ type: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide; clearance?: ClearanceInput | null } & Spread);
 
 export type ConnectorType = ConnectorSpec["type"];
 
@@ -70,7 +70,7 @@ interface ResolvedRound extends ResolvedSpread {
 export type ResolvedConnector =
   | ({ type: "dowel" } & ResolvedRound)
   | ({ type: "plug"; side: Side } & ResolvedRound)
-  | ({ type: "hardware"; diameter: number; depth: number; clearance: number | null } & ResolvedSpread)
+  | ({ type: "hardware"; diameter: number; depth: number; clearance: number | null; endGap: number } & ResolvedSpread)
   | ({ type: "key"; width: number; height: number; depth: number; clearance: number | null } & ResolvedSpread)
   | ({ type: "dovetail"; width: number; angle: number; depth: number; slide: Slide; clearance: number | null } & ResolvedSpread);
 
@@ -96,7 +96,8 @@ export interface Cut {
   normal: Vec3;
   u: Vec3;
   profile: Profile;
-  connectors: { on?: boolean; types?: ConnectorSpec[] };
+  /** `placed` is what the planner placed at Apply and the kernel built (D6); the tree stores it, a client need not send it. */
+  connectors: { on?: boolean; types?: ConnectorSpec[]; placed?: StoredConnector[] };
 }
 
 export type CutInput = Omit<Cut, "u" | "profile" | "connectors"> & Partial<Pick<Cut, "u" | "profile" | "connectors">>;
@@ -291,7 +292,7 @@ export function connectorDepth(d: PartitionDefaults, allowanceMm?: number): numb
 // Filling absent fields.
 // ---------------------------------------------------------------------------
 
-function resolveClearance(input: ClearanceInput | undefined, d: PartitionDefaults): number | null {
+function resolveClearance(input: ClearanceInput | null | undefined, d: PartitionDefaults): number | null {
   if (typeof input === "number") return input;
   if (!d.clearance) return null;
   return d.clearance[input ?? "snug"];
@@ -326,7 +327,7 @@ export function fillConnector(spec: ConnectorSpec, d: PartitionDefaults): Resolv
     }
     case "hardware": {
       const diameter = spec.diameter ?? 2 * d.radiusMm;
-      return { type: "hardware", diameter, depth: spec.depth ?? d.depthMm, clearance, ...spread(spec, diameter / 2, clearance, d) };
+      return { type: "hardware", diameter, depth: spec.depth ?? d.depthMm, clearance, endGap: spec.endGap ?? d.endGapMm, ...spread(spec, diameter / 2, clearance, d) };
     }
     case "key": {
       const width = spec.width ?? d.tongueWidthMm;
@@ -621,20 +622,63 @@ function resinHeightNotes(span: Vec3, counts: number[], usableHeight: number, ax
 }
 
 // ---------------------------------------------------------------------------
-// What the kernel builds yet (milestone 3b). The same sentences as `partition_refusal` in tree.rs.
+// What the kernel builds yet (milestone 5). The same sentences as `partition_refusal` in tree.rs.
 // ---------------------------------------------------------------------------
 
 export const PROFILE_LATER = "Only straight cuts are built yet. Leave the profile out, or make it straight.";
-export const CONNECTORS_LATER = "Connectors are not built yet. Leave them off for a plain cut.";
+/** Keys and dovetails come with the zig-zag and dovetail profiles (milestone 9), which share their prism builder. */
+export const KEYS_LATER = "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.";
 
 /**
- * Why the kernel does not cut this op yet, before anything is built: a shaped profile, or connectors on. A resin target
- * cuts since milestone 3b; its pieces are exported, not sliced (D12).
+ * Why the kernel does not cut this op yet, before anything is built: a shaped profile, or a key or a dovetail on a cut
+ * whose connectors are on. Dowels, plugs and hardware holes are built since milestone 5.
  */
 export function notBuiltYet(op: Pick<PartitionOp, "cuts">): string | null {
   if (op.cuts.some((cut) => cut.profile && cut.profile.kind !== "straight")) return PROFILE_LATER;
-  if (op.cuts.some((cut) => cut.connectors?.on === true)) return CONNECTORS_LATER;
+  if (op.cuts.some((cut) => cut.connectors?.on === true && (cut.connectors.types ?? []).some((spec) => spec.type === "key" || spec.type === "dovetail"))) return KEYS_LATER;
   return null;
+}
+
+/** The XY hole compensation note (plan section 2): the slice setting changes the hole again; the solid's clearance stays. */
+export function holeCompensationNote(mm: number): string | null {
+  return mm === 0 || !Number.isFinite(mm) ? null : `XY hole compensation is ${mm} mm. It changes the hole again when slicing. Clearance here is the solid.`;
+}
+
+/** "Cut 1: 2 of 4 dowels fit.": how many of a typed count fit, which **Use N** writes back as the count. */
+export interface ConnectorFit {
+  /** One-based. */
+  cut: number;
+  type: ConnectorType;
+  placed: number;
+  wanted: number;
+}
+
+/** A connector type's name in a sentence and a label: "dowel" and "dowels". */
+export function connectorNames(type: ConnectorType): { one: string; many: string } {
+  return TYPE_NAMES[type];
+}
+
+/**
+ * Every connector of a resolved cut placed on `section` (plan section 9), one type after another, the ids numbered on
+ * the cut as one list: `c{cut}-1`, `c{cut}-2`, … The fit of each typed count, for **Use N**.
+ */
+export function placeCut(cut: number, section: Section, types: readonly ResolvedConnector[], wallFloorMm: number): PlacementResult & { fits: ConnectorFit[] } {
+  const placed: PlacedConnector[] = [];
+  const dropped: DroppedConnector[] = [];
+  const notes: string[] = [];
+  const fits: ConnectorFit[] = [];
+  let offset = 0;
+  for (const spec of types) {
+    const one = placeConnectors({ cut, section, spec, wallFloorMm });
+    const renumber = (index: number) => `c${cut}-${index + offset}`;
+    placed.push(...one.placed.map((row) => ({ ...row, id: renumber(Number(row.id.slice(row.id.lastIndexOf("-") + 1))) })));
+    dropped.push(...one.dropped.map((row) => ({ ...row, id: renumber(row.index) })));
+    notes.push(...one.notes);
+    const wanted = one.placed.length + one.dropped.length;
+    if ((spec.place === "fixed" || spec.count !== "fit") && one.dropped.length > 0) fits.push({ cut, type: spec.type, placed: one.placed.length, wanted });
+    offset += wanted;
+  }
+  return { placed, dropped, notes, fits };
 }
 
 // ---------------------------------------------------------------------------
@@ -842,6 +886,9 @@ const TYPE_NAMES: Record<ConnectorType, { one: string; many: string }> = {
   key: { one: "key", many: "keys" },
   dovetail: { one: "dovetail", many: "dovetails" },
 };
+
+/** A placed connector as the op stores it on its cut (D6). */
+export type StoredConnector = PlacedConnector;
 
 export interface PlacedConnector {
   id: string;

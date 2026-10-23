@@ -474,8 +474,11 @@ pub enum Op {
     /// answered once, in the apply reply, and with `pieceKeys` each becomes the root of its own tree. `target`,
     /// `orient`, `arrange`, `labels`, `bedMarginMm` and `maxPieces` are stored as sent; only `maxPieces` is read here.
     /// `numbers` is the part numbers' strokes the client builds from `labels` for every request, and is never echoed.
+    /// `up` is the print's up in the solid's frame at Apply, which a teardrop's roof and the pins follow.
     Partition {
         cuts: Vec<PartitionCut>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up: Option<[f64; 3]>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<PartitionTarget>,
         #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -507,7 +510,7 @@ pub struct PartitionNumbers {
 }
 
 /// --- Split to print. One cut: the plane through `origin` square to `normal`. `u`, `profile` and `connectors` are
-/// stored as sent. Only a straight cut with connectors off is built yet.
+/// stored as sent. Only a straight cut is built yet; its connectors are `{on, types, placed}` (plan section 11, D6).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PartitionCut {
@@ -539,8 +542,7 @@ pub enum PrintProcess {
 
 const PARTITION_PROFILE_LATER: &str =
     "Only straight cuts are built yet. Leave the profile out, or make it straight.";
-const PARTITION_CONNECTORS_LATER: &str =
-    "Connectors are not built yet. Leave them off for a plain cut.";
+const PARTITION_KEYS_LATER: &str = "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.";
 
 /// The planner's Max pieces (`clampPieces` in `src/modeling/partition.ts`): 12 when absent, from 2 to 24.
 fn partition_max(max_pieces: Option<f64>) -> usize {
@@ -551,8 +553,9 @@ fn partition_max(max_pieces: Option<f64>) -> usize {
     wanted.clamp(2.0, 24.0) as usize
 }
 
-/// Why this milestone does not build a partition, before anything is cut: a shaped profile, or connectors. Each is a
-/// sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced (D12).
+/// Why this milestone does not build a partition, before anything is cut: a shaped profile, or a key or a dovetail
+/// connector. Each is a sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced
+/// (D12).
 fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
     let straight = |profile: &Value| {
         profile.is_null() || profile.get("kind").and_then(Value::as_str) == Some("straight")
@@ -560,18 +563,231 @@ fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
     if !cuts.iter().all(|cut| straight(&cut.profile)) {
         return Some(PARTITION_PROFILE_LATER);
     }
-    if cuts
-        .iter()
-        .any(|cut| cut.connectors.get("on").and_then(Value::as_bool) == Some(true))
-    {
-        return Some(PARTITION_CONNECTORS_LATER);
+    let later = |cut: &PartitionCut| {
+        connectors_on(cut)
+            && cut
+                .connectors
+                .get("types")
+                .and_then(Value::as_array)
+                .is_some_and(|types| {
+                    types.iter().any(|spec| {
+                        matches!(
+                            spec.get("type").and_then(Value::as_str),
+                            Some("key" | "dovetail")
+                        )
+                    })
+                })
+    };
+    if cuts.iter().any(later) {
+        return Some(PARTITION_KEYS_LATER);
     }
     None
+}
+
+fn connectors_on(cut: &PartitionCut) -> bool {
+    cut.connectors.get("on").and_then(Value::as_bool) == Some(true)
+}
+
+// --- Split to print, connectors (plan sections 7, 8 and 9). The planner places them (`placeConnectors` in
+// src/modeling/partition.ts) and stores `placed` on each cut; the kernel builds each one on the real solids and keeps
+// the ones that build (D6). ---
+
+/// The numbers `lime_tree_partition` reads for one connector (`kJointStride` in kernel.h).
+const JOINT_STRIDE: usize = 11;
+
+/// One placed connector of a stored op: the cut it is on, counting from 0, its id `c{cut}-{index}`, its type, and the
+/// numbers the kernel builds it from.
+struct Joint {
+    cut: usize,
+    id: String,
+    index: usize,
+    kind: &'static str,
+    numbers: [f64; JOINT_STRIDE],
+}
+
+/// A connector type's names in a sentence, and its code in kernel.h. The planner's `TYPE_NAMES` say the same.
+fn joint_kind(kind: &str) -> Option<(&'static str, &'static str, f64)> {
+    match kind {
+        "dowel" => Some(("dowel", "dowels", 0.0)),
+        "plug" => Some(("plug", "plugs", 1.0)),
+        "hardware" => Some(("hardware hole", "hardware holes", 2.0)),
+        _ => None,
+    }
+}
+
+/// Every placed connector of the op's cuts, in order. A cut whose connectors are off, or whose `placed` is empty, has
+/// none: it is a plain cut.
+fn stored_joints(cuts: &[PartitionCut]) -> Result<Vec<Joint>, String> {
+    let number = |spec: &Value, field: &str| spec.get(field).and_then(Value::as_f64);
+    let mut joints = Vec::new();
+    for (at, cut) in cuts.iter().enumerate() {
+        if !connectors_on(cut) {
+            continue;
+        }
+        let types = cut
+            .connectors
+            .get("types")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let placed = cut
+            .connectors
+            .get("placed")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for (order, row) in placed.iter().enumerate() {
+            let kind = row.get("type").and_then(Value::as_str).unwrap_or("dowel");
+            let Some((name, _, code)) = joint_kind(kind) else {
+                return Err(PARTITION_KEYS_LATER.into());
+            };
+            let Some(spec) = types
+                .iter()
+                .find(|spec| spec.get("type").and_then(Value::as_str) == Some(kind))
+            else {
+                return Err(format!(
+                    "Cut {}: a placed {name} has no {kind} in its types.",
+                    at + 1
+                ));
+            };
+            let id = row
+                .get("id")
+                .and_then(Value::as_str)
+                .map_or_else(|| format!("c{}-{}", at + 1, order + 1), str::to_owned);
+            let index = id
+                .rsplit('-')
+                .next()
+                .and_then(|tail| tail.parse().ok())
+                .unwrap_or(order + 1);
+            let pair = |field: &str| {
+                row.get(field)
+                    .and_then(Value::as_array)
+                    .filter(|pair| pair.len() == 2)
+                    .and_then(|pair| Some([pair[0].as_f64()?, pair[1].as_f64()?]))
+            };
+            let (fraction, [a, b]) = match (pair("fraction"), pair("uvMm")) {
+                (Some(fraction), _) => (1.0, fraction),
+                (None, Some(at_mm)) => (0.0, at_mm),
+                (None, None) => {
+                    return Err(format!("Connector {id} needs a fraction or uvMm."));
+                }
+            };
+            let radius = if kind == "hardware" {
+                number(spec, "diameter").map(|diameter| diameter / 2.0)
+            } else {
+                number(spec, "radius")
+            };
+            let (Some(radius), Some(depth)) = (radius, number(spec, "depth")) else {
+                return Err(format!("Connector {id} needs its size and its depth."));
+            };
+            let Some(clearance) = number(spec, "clearance") else {
+                continue;
+            };
+            let end_gap = number(spec, "endGap").unwrap_or(0.0);
+            let teardrop = spec.get("hole").and_then(Value::as_str) == Some("teardrop");
+            let side = if spec.get("side").and_then(Value::as_str) == Some("negative") {
+                -1.0
+            } else {
+                1.0
+            };
+            joints.push(Joint {
+                cut: at,
+                id,
+                index,
+                kind: name,
+                numbers: [
+                    at as f64,
+                    code,
+                    fraction,
+                    a,
+                    b,
+                    radius,
+                    clearance,
+                    depth,
+                    end_gap,
+                    f64::from(u8::from(teardrop)),
+                    side,
+                ],
+            });
+        }
+    }
+    Ok(joints)
+}
+
+/// What the kernel answered for one connector (`JointResult` in kernel.h).
+#[derive(Clone, Debug, Deserialize)]
+struct JointAnswer {
+    status: i32,
+    at: [f64; 3],
+    teardrop: bool,
+}
+
+/// --- Split to print. What became of an op's connectors: the reply's `connectors`, its sentences, and the ids built.
+#[derive(Clone, Debug, Default)]
+struct Joined {
+    reply: Value,
+    notes: Vec<String>,
+    kept: HashSet<String>,
+}
+
+/// The reply's `placed` and `dropped`, with the planner's sentences (section 9): one per connector left out, and "Cut
+/// N: no dowel fits. It is a plain cut." for a cut whose every connector was.
+fn joined_of(joints: &[Joint], answers: &[JointAnswer]) -> Joined {
+    let mut placed = Vec::new();
+    let mut dropped = Vec::new();
+    let mut notes = Vec::new();
+    let mut kept = HashSet::new();
+    for (joint, answer) in joints.iter().zip(answers) {
+        if answer.status == 0 {
+            kept.insert(joint.id.clone());
+            placed.push(json!({ "id": joint.id, "at": answer.at, "teardrop": answer.teardrop }));
+            continue;
+        }
+        let head = format!("Cut {}: {} {}", joint.cut + 1, joint.kind, joint.index);
+        let (reason, sentence) = if answer.status == 1 {
+            ("outside", format!("{head} lies outside the section. It was left out."))
+        } else {
+            (
+                "breaks",
+                format!("{head} would break through the outline or a neighbour. It was left out."),
+            )
+        };
+        notes.push(sentence.clone());
+        dropped.push(json!({ "id": joint.id, "reason": reason, "sentence": sentence }));
+    }
+    let mut cuts: Vec<usize> = joints.iter().map(|joint| joint.cut).collect();
+    cuts.dedup();
+    for cut in cuts {
+        let mine: Vec<&Joint> = joints.iter().filter(|joint| joint.cut == cut).collect();
+        if mine.iter().all(|joint| !kept.contains(&joint.id)) {
+            let one = mine.first().map_or("connector", |joint| joint.kind);
+            notes.push(format!("Cut {}: no {one} fits. It is a plain cut.", cut + 1));
+        }
+    }
+    Joined {
+        reply: json!({ "placed": placed, "dropped": dropped }),
+        notes,
+        kept,
+    }
+}
+
+/// The stored op keeps only the connectors that were built (D6), so a replay builds those and finds no new set.
+fn keep_built(cuts: &mut [PartitionCut], kept: &HashSet<String>) {
+    for cut in cuts.iter_mut() {
+        if let Some(Value::Array(placed)) = cut.connectors.get_mut("placed") {
+            placed.retain(|row| {
+                row.get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| kept.contains(id))
+            });
+        }
+    }
 }
 
 /// What an edit asks of its own tree's step: a split to print's `pieceKeys`, and `keepBroken`.
 struct OwnEdit {
     piece_keys: Vec<Option<String>>,
+    pins_key: Option<String>,
     keep_broken: bool,
 }
 
@@ -579,6 +795,8 @@ struct OwnEdit {
 struct PieceKeys {
     other: Option<String>,
     list: Vec<Option<String>>,
+    /// --- Split to print: where the pins' tree opens.
+    pins: Option<String>,
 }
 
 /// Every key a split to print names for its pieces is a tree of its own, apart from `key` and from each other.
@@ -697,12 +915,65 @@ pub fn partition_primitive(
     let _store = lock();
     let whole = Shape::primitive(&solid)?;
     let _budget = GroupBudget::start();
+    let plain = JointCut {
+        us: vec![[0.0; 3]; planes.len()],
+        joints: Vec::new(),
+        up: [0.0, 0.0, 1.0],
+    };
     Ok(whole
-        .partition(planes, None)?
-        .0
+        .partition(planes, None, &plain)?
+        .pieces
         .iter()
         .map(Shape::check)
         .collect())
+}
+
+/// --- Split to print, connectors, for tests. A primitive cut by a stored partition op as the tree builds it: each
+/// piece and the pins as `{volumeMm3, solids, valid, closed, surfaces}` (`lime_tree_surfaces`), each pin's volume, the
+/// reply's `connectors` and `notes`, and the op the tree would store.
+pub fn partition_joints(solid: &str, op: &str) -> Result<String, String> {
+    let solid: Solid = serde_json::from_str(solid).map_err(|err| err.to_string())?;
+    let op: Op = serde_json::from_str(op).map_err(|err| err.to_string())?;
+    let _store = lock();
+    let mut whole = Shape::primitive(&solid)?;
+    let _budget = GroupBudget::start();
+    let steps = Steps::new();
+    let resolved = resolve(&mut whole, &op, &steps)?;
+    let built = build(&mut whole, resolved, false, None, &steps).map_err(|fail| fail.message)?;
+    let report = |shape: &Shape| -> Result<Value, String> {
+        let check = shape.check();
+        let surfaces = take_text(unsafe { lime_tree_surfaces(shape.raw()) })
+            .ok_or_else(|| "No surfaces".to_string())?;
+        Ok(json!({
+            "volumeMm3": check.volume_mm3,
+            "solids": check.solids,
+            "valid": check.valid,
+            "closed": check.closed,
+            "surfaces": serde_json::from_str::<Value>(&surfaces).map_err(|err| err.to_string())?,
+        }))
+    };
+    let pieces = std::iter::once(&built.kept)
+        .chain(&built.pieces)
+        .map(report)
+        .collect::<Result<Vec<_>, _>>()?;
+    let pins = match built.pins.as_ref() {
+        Some(pins) => {
+            let mut one = report(pins)?;
+            let each: Vec<Value> = pins
+                .solids()?
+                .iter()
+                .map(|pin| json!(pin.check().volume_mm3))
+                .collect();
+            one["each"] = json!(each);
+            one
+        }
+        None => Value::Null,
+    };
+    let mut out = json!({ "pieces": pieces, "pins": pins, "op": built.op });
+    for (name, value) in partition_fields(built.numbered.as_deref(), built.joined.as_ref()) {
+        out[name] = value;
+    }
+    Ok(out.to_string())
 }
 
 /// --- Split to print (D12). The free shapes of a STEP file with their product names, each checked as a partition's
@@ -897,6 +1168,8 @@ enum Request {
         /// key at its place. A null, or no key at that place, leaves that piece unseen.
         #[serde(default)]
         piece_keys: Vec<Option<String>>,
+        /// --- Split to print only: the pins of its dowels open as the root of their own tree under this key.
+        pins_key: Option<String>,
     },
     /// --- 3.1 F1. The steps from `parent` down to `last`, each already applied, become the one group `node` under
     /// `parent`, with the solid `last` holds: nothing is built again. `op` is the group, its steps the chain's ops in
@@ -940,6 +1213,8 @@ enum Request {
         /// --- Split to print: as an apply's, for the edited step when it is a split to print (D9).
         #[serde(default)]
         piece_keys: Vec<Option<String>>,
+        /// --- Split to print: as an apply's.
+        pins_key: Option<String>,
         /// --- Split to print (D9). The steps a rebuilt piece had after its root, replayed on the new piece: when the
         /// first of them no longer builds, it is kept broken with the rest under it, as a later replayed step would
         /// be, instead of the edit keeping nothing. Only for an edit of the tree's own step, with no tools.
@@ -1209,6 +1484,8 @@ struct Node {
     piece: Option<String>,
     /// --- Split to print: its `pieceKeys`, for the same reason.
     pieces: Vec<Option<String>>,
+    /// --- Split to print: its `pinsKey`, for the same reason.
+    pins: Option<String>,
     /// The edges this step made or changed, read once from its solid when a later blend first picks them.
     created: Option<Vec<EdgeRef>>,
     /// --- A10. The node that made each face of this solid, in the kernel's face order. Empty until the solid is held.
@@ -1263,6 +1540,7 @@ impl Doc {
                 broken: None,
                 piece: None,
                 pieces: Vec::new(),
+                pins: None,
                 created: None,
                 face_owners: Vec::new(),
                 seeded: false,
@@ -1295,6 +1573,7 @@ impl Doc {
             broken: None,
             piece: None,
             pieces: Vec::new(),
+            pins: None,
             created: None,
             face_owners: Vec::new(),
             seeded: false,
@@ -1819,10 +2098,12 @@ impl Store {
                 chord_mm,
                 other_key,
                 piece_keys,
+                pins_key,
             } => {
                 let keys = PieceKeys {
                     other: other_key,
                     list: piece_keys,
+                    pins: pins_key,
                 };
                 self.apply(key, parent, node, op, chord_mm, keys)
             }
@@ -1850,6 +2131,7 @@ impl Store {
                 tools,
                 chord_mm,
                 piece_keys,
+                pins_key,
                 keep_broken,
             } => {
                 if keep_broken && !tools.is_empty() {
@@ -1867,6 +2149,7 @@ impl Store {
                 });
                 let own = OwnEdit {
                     piece_keys,
+                    pins_key,
                     keep_broken,
                 };
                 self.edit(levels, chord_mm, own)
@@ -2133,7 +2416,18 @@ impl Store {
         let PieceKeys {
             other: other_key,
             list: piece_keys,
+            pins: pins_key,
         } = keys;
+        if pins_key.is_some() && !matches!(op, Op::Partition { .. }) {
+            return Err(Failure::Message("pinsKey is only for a split to print".into()));
+        }
+        if pins_key.as_deref() == Some(key.as_str())
+            || pins_key
+                .as_ref()
+                .is_some_and(|pins| piece_keys.iter().flatten().any(|piece| piece == pins))
+        {
+            return Err(Failure::Message("Each piece needs a key of its own".into()));
+        }
         if other_key.is_some() && !matches!(op, Op::Split { .. }) {
             return Err(Failure::Message("otherKey is only for a split".into()));
         }
@@ -2148,6 +2442,7 @@ impl Store {
             let same = existing.parent == Some(parent)
                 && existing.piece == other_key
                 && existing.pieces == piece_keys
+                && (existing.pins.is_none() || existing.pins == pins_key)
                 && existing
                     .op
                     .as_ref()
@@ -2177,7 +2472,9 @@ impl Store {
             }
         };
         let mut built = match reused {
-            // The op stored is the one applied: a join's `keepTool` and its tool's name build nothing.
+            // The op stored is the one applied: a join's `keepTool` and its tool's name build nothing. A split to
+            // print's is the one its build stored, with only the connectors that built.
+            Some(reused) if matches!(reused.op, Op::Partition { .. }) => reused,
             Some(reused) => Built { op: op.op, ..reused },
             None => {
                 let tool = self.join_tool(&key, &op.op)?;
@@ -2197,6 +2494,7 @@ impl Store {
         node.shape = Some(built.kept);
         node.piece = other_key.clone();
         node.pieces = piece_keys.clone();
+        node.pins = pins_key.clone().filter(|_| built.pins.is_some());
         node.used = self.clock;
         doc.current = id;
         // --- A10.
@@ -2246,12 +2544,39 @@ impl Store {
         if matches!(built.op, Op::Partition { .. }) {
             fields.push(("parts", Part::Json((built.pieces.len() + 1).to_string())));
         }
-        push_numbers(&mut fields, built.numbered.as_deref());
+        push_numbers(&mut fields, built.numbered.as_deref(), built.joined.as_ref());
         if !piece_keys.is_empty() {
             let list = self.start_pieces(built.pieces, &piece_keys, pieces, chord);
             fields.push(("pieces", Part::Json(list)));
         }
+        if let (Some(pins), Some(pins_key)) = (built.pins, pins_key) {
+            let list = self.start_pins(pins, &pins_key, chord)?;
+            fields.push(("pins", Part::Json(list)));
+        }
         Ok(Answer::Held { key, text, fields })
+    }
+
+    /// --- Split to print. The pins start their own tree under `pins_key`, as a piece does; the answer is their reply
+    /// with that `key`, cached under it.
+    fn start_pins(&mut self, mut pins: Shape, pins_key: &str, chord: f64) -> Result<String, Failure> {
+        let reply = pins.reply(ROOT, chord)?;
+        self.clock += 1;
+        self.replies.retain(|cached| cached.key != pins_key);
+        let owners = vec![ROOT; pins.fingerprint().faces.max(0) as usize];
+        self.docs
+            .insert(pins_key.to_string(), Doc::new(pins, self.clock));
+        let text = Arc::new(with_fields(
+            &reply,
+            &[("stepFaces", Part::Json(json!(owners).to_string()))],
+        ));
+        self.remember(pins_key, ROOT, chord, Arc::clone(&text));
+        let mut out = String::new();
+        write_object(
+            &mut out,
+            &text,
+            &[("key", Part::Json(json!(pins_key).to_string()))],
+        );
+        Ok(out)
     }
 
     /// --- Split to print. Each keyed piece starts its own tree, as a split's other piece does, and its reply is cached
@@ -2429,6 +2754,7 @@ impl Store {
             .map(|node| node.face_owners.clone())
             .unwrap_or_default();
         let from = doc.shape(id);
+        let mut asked = op.clone();
         let result = tool
             .and_then(|tool| steps.map(|found| (tool, found)))
             .and_then(|(tool, found)| from.editable().map(|()| (tool, found)))
@@ -2439,6 +2765,7 @@ impl Store {
                     .map_err(BuildFail::plain)
             })
             .and_then(|(resolved, tool, found)| {
+                asked = resolved.op.clone();
                 let _budget = GroupBudget::start();
                 let _new = NewGroup::start();
                 build(from, resolved, true, tool, &found)
@@ -2472,14 +2799,23 @@ impl Store {
                         })
                         .collect();
                     let _ = write!(metrics, ",\"parts\":{}", Value::Array(parts));
-                    if let Some(numbered) = built.numbered.as_deref() {
-                        let (numbers, notes) = number_fields(numbered);
-                        let _ = write!(metrics, ",\"numbers\":{numbers},\"notes\":{}", json!(notes));
+                    if let Some(pins) = built.pins.as_ref() {
+                        let _ = write!(metrics, ",\"pins\":{}", pins_metrics(pins));
+                    }
+                    for (name, value) in partition_fields(built.numbered.as_deref(), built.joined.as_ref()) {
+                        let _ = write!(metrics, ",\"{name}\":{value}");
                     }
                 }
+                // A split to print's stored op keeps only the connectors that built; an Apply of the op the probe was
+                // asked is the same cut.
+                let probed = if matches!(built.op, Op::Partition { .. }) {
+                    asked.clone()
+                } else {
+                    built.op.clone()
+                };
                 doc.probe = Some(Probed {
                     parent: id,
-                    op: built.op.clone(),
+                    op: probed,
                     built,
                 });
                 Ok(Answer::Plain(match shown {
@@ -2646,10 +2982,14 @@ impl Store {
             // --- Split to print (D9). The edited step's pieces start their trees once the edit is kept.
             let mut pieces = Vec::new();
             let mut numbered = None;
+            let mut pins = None;
+            let mut joined = None;
             let first = first.map(|mut built| {
                 if own {
                     pieces = std::mem::take(&mut built.pieces);
                     numbered = built.numbered.take();
+                    pins = built.pins.take();
+                    joined = built.joined.take();
                 }
                 built
             });
@@ -2678,8 +3018,10 @@ impl Store {
             }
             let doc = doc_in(&mut self.docs, key)?;
             doc.current = tip;
+            let pins_key = own_edit.pins_key.clone().filter(|_| pins.is_some());
             if let Some(node) = doc.nodes.get_mut(&level.node) {
                 node.pieces = piece_keys.to_vec();
+                node.pins = pins_key.clone();
             }
             let text = self.reply(key, tip, chord)?;
             let replies = piece_replies(&mut pieces, piece_keys, chord)?;
@@ -2693,10 +3035,14 @@ impl Store {
             if matches!(level.op, Op::Partition { .. }) {
                 fields.push(("parts", Part::Json((pieces.len() + 1).to_string())));
             }
-            push_numbers(&mut fields, numbered.as_deref());
+            push_numbers(&mut fields, numbered.as_deref(), joined.as_ref());
             if !piece_keys.is_empty() {
                 let list = self.start_pieces(pieces, piece_keys, replies, chord);
                 fields.push(("pieces", Part::Json(list)));
+            }
+            if let (Some(pins), Some(pins_key)) = (pins, pins_key) {
+                let list = self.start_pins(pins, &pins_key, chord)?;
+                fields.push(("pins", Part::Json(list)));
             }
             if let Some((node, error)) = broken {
                 fields.push((
@@ -3476,6 +3822,32 @@ fn probe_metrics(from: &Shape, built: &Shape, skipped: Option<u32>) -> String {
 /// Whether `incoming` asks for the op `stored` already is. A stored edge matches an index pick by
 /// index and a reference by midpoint and length, since a rebuild may have renumbered it.
 fn same_request(stored: &Op, incoming: &Op) -> bool {
+    // --- Split to print. The stored op keeps only the connectors that built (D6), so a retried apply of the op as
+    // asked is the same step when what it placed holds what was kept.
+    if let (Op::Partition { cuts: kept, .. }, Op::Partition { cuts: asked, .. }) = (stored, incoming) {
+        let ids = |cut: &PartitionCut| -> HashSet<String> {
+            cut.connectors
+                .get("placed")
+                .and_then(Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|row| row.get("id").and_then(Value::as_str).map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        if kept.len() == asked.len() && kept.iter().zip(asked).all(|(k, a)| ids(k).is_subset(&ids(a))) {
+            let mut trimmed = asked.clone();
+            let built: HashSet<String> = kept.iter().flat_map(ids).collect();
+            keep_built(&mut trimmed, &built);
+            let mut asked_op = incoming.clone();
+            if let Op::Partition { cuts, .. } = &mut asked_op {
+                *cuts = trimmed;
+            }
+            return stored == &asked_op;
+        }
+        return false;
+    }
     let (stored_edges, incoming_edges) = match (stored, incoming) {
         (Op::Fillet { edges: a, size: x }, Op::Fillet { edges: b, size: y })
         | (Op::Chamfer { edges: a, size: x }, Op::Chamfer { edges: b, size: y })
@@ -3634,8 +4006,12 @@ struct Built {
     other: Option<Shape>,
     /// --- Split to print: pieces 2, 3, ... in partition order. Empty for any other op.
     pieces: Vec<Shape>,
+    /// --- Split to print: the pins of its placed dowels, one shape, when there are any.
+    pins: Option<Shape>,
     /// --- Split to print: where each piece's number was cut, in partition order, when part numbers are on.
     numbered: Option<Numbered>,
+    /// --- Split to print: what became of each connector, when a cut has them on.
+    joined: Option<Joined>,
     /// Steps of a group whose tool missed the solid. 0 for any other op.
     skipped: u32,
 }
@@ -3657,10 +4033,25 @@ fn side_or_cut<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Option<usize
     Ok(usize::try_from(index).ok())
 }
 
-/// --- Split to print. What `Shape::partition` needs to cut the part numbers: the strokes, and each cut's U.
+/// --- Split to print. What `Shape::partition` needs to cut the part numbers: the strokes.
 struct Labels<'a> {
     numbers: &'a PartitionNumbers,
+}
+
+/// --- Split to print. Each cut's U, the connectors to build, and the print's up in the solid's frame.
+struct JointCut {
     us: Vec<[f64; 3]>,
+    joints: Vec<Joint>,
+    up: [f64; 3],
+}
+
+/// --- Split to print. What the kernel cut: the pieces in partition order, where each number went, the pins, and what
+/// became of each connector, in the order sent.
+struct Partitioned {
+    pieces: Vec<Shape>,
+    numbered: Option<Numbered>,
+    pins: Option<Shape>,
+    answers: Vec<JointAnswer>,
 }
 
 /// --- Split to print. Each piece's number as the reply sends it, `{part, faces}`, and a sentence for each piece that
@@ -3691,13 +4082,40 @@ fn number_fields(numbered: &[Vec<NumberPlace>]) -> (Value, Vec<String>) {
     (Value::Array(list), notes)
 }
 
-/// --- Split to print. An apply's or an edit's `numbers` and `notes`, when part numbers were cut.
-fn push_numbers(fields: &mut Vec<(&'static str, Part)>, numbered: Option<&[Vec<NumberPlace>]>) {
-    if let Some(numbered) = numbered {
-        let (numbers, notes) = number_fields(numbered);
-        fields.push(("numbers", Part::Json(numbers.to_string())));
-        fields.push(("notes", Part::Json(json!(notes).to_string())));
+/// --- Split to print. An apply's, an edit's or a probe's `numbers`, `connectors` (`placed` and `dropped`) and
+/// `notes`: the connectors' sentences first, then the numbers'. Nothing when neither was asked for.
+fn partition_fields(numbered: Option<&[Vec<NumberPlace>]>, joined: Option<&Joined>) -> Vec<(&'static str, Value)> {
+    let mut fields = Vec::new();
+    let mut notes: Vec<String> = joined.map(|joined| joined.notes.clone()).unwrap_or_default();
+    if let Some(joined) = joined {
+        fields.push(("connectors", joined.reply.clone()));
     }
+    if let Some(numbered) = numbered {
+        let (numbers, more) = number_fields(numbered);
+        fields.push(("numbers", numbers));
+        notes.extend(more);
+    }
+    if numbered.is_some() || joined.is_some() {
+        fields.push(("notes", json!(notes)));
+    }
+    fields
+}
+
+fn push_numbers(fields: &mut Vec<(&'static str, Part)>, numbered: Option<&[Vec<NumberPlace>]>, joined: Option<&Joined>) {
+    for (name, value) in partition_fields(numbered, joined) {
+        fields.push((name, Part::Json(value.to_string())));
+    }
+}
+
+/// --- Split to print. The pins' volume, count and box, for a probe's `pins`.
+fn pins_metrics(pins: &Shape) -> Value {
+    let check = pins.check();
+    let mut part = json!({ "volumeMm3": check.volume_mm3, "count": check.solids });
+    if let Some([x0, y0, z0, x1, y1, z1]) = pins.bounds() {
+        part["min"] = json!([x0, y0, z0]);
+        part["max"] = json!([x1, y1, z1]);
+    }
+    part
 }
 
 /// Why `build` refused. `failed_step` is set for a group, counting from 1.
@@ -3887,7 +4305,9 @@ fn build_group(
         kept,
         other: None,
         pieces: Vec::new(),
+        pins: None,
         numbered: None,
+        joined: None,
         skipped,
     })
 }
@@ -3917,6 +4337,9 @@ fn build(
     let mut other = None;
     let mut pieces = Vec::new();
     let mut numbered = None;
+    let mut pins = None;
+    let mut joined = None;
+    let mut stored: Option<Op> = None;
     let kept = match &op {
         Op::Join {
             op: which,
@@ -3991,6 +4414,7 @@ fn build(
         // --- Split to print. The node keeps the first piece; the rest go to the apply reply.
         Op::Partition {
             cuts,
+            up,
             max_pieces,
             numbers,
             ..
@@ -4005,14 +4429,32 @@ fn build(
                     [x, y, z, nx, ny, nz]
                 })
                 .collect();
-            let labels = numbers.as_ref().map(|numbers| Labels {
-                numbers,
+            let labels = numbers.as_ref().map(|numbers| Labels { numbers });
+            let joints = stored_joints(cuts).map_err(BuildFail::plain)?;
+            let cut = JointCut {
                 us: cuts.iter().map(|cut| cut.u.unwrap_or([0.0; 3])).collect(),
-            });
-            let (mut made, placed) = from
-                .partition(&planes, labels.as_ref())
+                joints,
+                up: up.unwrap_or([0.0, 0.0, 1.0]),
+            };
+            let partitioned = from
+                .partition(&planes, labels.as_ref(), &cut)
                 .map_err(BuildFail::plain)?;
-            numbered = placed;
+            let mut made = partitioned.pieces;
+            numbered = partitioned.numbered;
+            pins = partitioned.pins;
+            if !cut.joints.is_empty() {
+                let found = joined_of(&cut.joints, &partitioned.answers);
+                let mut trimmed = cuts.clone();
+                keep_built(&mut trimmed, &found.kept);
+                if &trimmed != cuts {
+                    let mut stored_op = op.clone();
+                    if let Op::Partition { cuts, .. } = &mut stored_op {
+                        *cuts = trimmed;
+                    }
+                    stored = Some(stored_op);
+                }
+                joined = Some(found);
+            }
             let max = partition_max(*max_pieces);
             if made.len() > max {
                 return Err(BuildFail::plain(format!(
@@ -4050,7 +4492,9 @@ fn build(
                     kept,
                     other: None,
                     pieces: Vec::new(),
+                    pins: None,
                     numbered: None,
+                    joined: None,
                     skipped: 0,
                 }),
                 Err(message) => Err(BuildFail {
@@ -4245,11 +4689,13 @@ fn build(
     };
     match kept {
         Ok(kept) => Ok(Built {
-            op,
+            op: stored.unwrap_or(op),
             kept,
             other,
             pieces,
+            pins,
             numbered,
+            joined,
             skipped: 0,
         }),
         Err(message) => Err(BuildFail::plain(message)),
@@ -4339,6 +4785,7 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn lime_tree_partition(
         from: *const RawShape,
         p: *const f64,
@@ -4348,8 +4795,13 @@ extern "C" {
         digit_count: c_int,
         strokes: *const f64,
         sizes: *const f64,
+        joints: *const f64,
+        joint_count: c_int,
+        up: *const f64,
         out: *mut *mut RawShape,
         placed: *mut *mut c_char,
+        pins: *mut *mut RawShape,
+        joined: *mut *mut c_char,
         error: *mut *mut c_char,
     ) -> c_int;
     fn lime_tree_write_step_many(
@@ -4368,6 +4820,7 @@ extern "C" {
     ) -> c_int;
     fn lime_tree_solids(shape: *const RawShape, out: *mut *mut RawShape, max: c_int) -> c_int;
     fn lime_tree_check(shape: *const RawShape, out: *mut c_int);
+    fn lime_tree_surfaces(shape: *const RawShape) -> *mut c_char;
     fn lime_tree_bounds(shape: *const RawShape, out: *mut f64) -> c_int;
     fn lime_tree_scale(
         from: *const RawShape,
@@ -4851,7 +5304,9 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, BuildFail> 
             kept,
             other: None,
             pieces: Vec::new(),
+            pins: None,
             numbered: None,
+            joined: None,
             skipped: 0,
         }),
         Err(message) => Err(BuildFail::plain(message)),
@@ -4895,19 +5350,28 @@ impl Shape {
     }
 
     /// Cuts this solid along every plane (x, y, z, nx, ny, nz) at once. The pieces are in partition order, and none is
-    /// made unless all are. The caller's budget, if any, applies. With `labels`, each piece's number is cut into it, and
-    /// the second answer is where.
+    /// made unless all are. The caller's budget, if any, applies. `cut.joints` are built on the pieces next, each kept
+    /// only when it builds, with the pins of the dowels kept. With `labels`, each piece's number is cut into it last.
     fn partition(
         &self,
         planes: &[[f64; 6]],
         labels: Option<&Labels>,
-    ) -> Result<(Vec<Shape>, Option<Numbered>), String> {
+        cut: &JointCut,
+    ) -> Result<Partitioned, String> {
         const MAX_PIECES: usize = 24;
         let count = c_int::try_from(planes.len()).map_err(|_| "Too many planes".to_string())?;
         let flat: Vec<f64> = planes.iter().flatten().copied().collect();
-        let us: Vec<f64> = labels
-            .map(|labels| labels.us.iter().flatten().copied().collect())
-            .unwrap_or_default();
+        let us: Vec<f64> = cut.us.iter().flatten().copied().collect();
+        if us.len() != flat.len() / 2 {
+            return Err("Each cut needs its U".into());
+        }
+        let joints: Vec<f64> = cut
+            .joints
+            .iter()
+            .flat_map(|joint| joint.numbers)
+            .collect();
+        let joint_count =
+            c_int::try_from(cut.joints.len()).map_err(|_| "Too many connectors".to_string())?;
         let digits = labels.map_or(&[][..], |labels| &labels.numbers.digits[..]);
         let stroke_counts: Vec<c_int> = digits
             .iter()
@@ -4921,9 +5385,12 @@ impl Shape {
         let digit_count = c_int::try_from(digits.len()).map_err(|_| "Too many numbers".to_string())?;
         let mut out = [std::ptr::null_mut::<RawShape>(); MAX_PIECES];
         let mut placed: *mut c_char = std::ptr::null_mut();
+        let mut pins: *mut RawShape = std::ptr::null_mut();
+        let mut joined: *mut c_char = std::ptr::null_mut();
         let mut error: *mut c_char = std::ptr::null_mut();
-        // SAFETY: `flat` holds `count` planes and `us` a U for each when there are digits; `strokes` holds the strokes
-        // `stroke_counts` counts, and `out` has room for the most pieces the kernel returns.
+        // SAFETY: `flat` holds `count` planes and `us` a U for each; `strokes` holds the strokes `stroke_counts` counts;
+        // `joints` holds `joint_count` connectors of `JOINT_STRIDE` numbers, and `up` three; `out` has room for the most
+        // pieces the kernel returns.
         let made = unsafe {
             lime_tree_partition(
                 self.raw(),
@@ -4934,13 +5401,20 @@ impl Shape {
                 digit_count,
                 strokes.as_ptr(),
                 sizes.as_ptr(),
+                joints.as_ptr(),
+                joint_count,
+                cut.up.as_ptr(),
                 out.as_mut_ptr(),
                 &mut placed,
+                &mut pins,
+                &mut joined,
                 &mut error,
             )
         };
         let message = take_text(error);
         let placed = take_text(placed);
+        let joined = take_text(joined);
+        let pins = NonNull::new(pins).map(Shape);
         let Ok(made) = usize::try_from(made) else {
             return Err(message.unwrap_or_else(|| "Open CASCADE failed".into()));
         };
@@ -4948,11 +5422,20 @@ impl Shape {
             .iter()
             .filter_map(|piece| NonNull::new(*piece).map(Shape))
             .collect();
-        let placed = match placed {
+        let numbered = match placed {
             Some(text) => Some(serde_json::from_str(&text).map_err(|err| err.to_string())?),
             None => None,
         };
-        Ok((pieces, placed))
+        let answers = match joined {
+            Some(text) => serde_json::from_str(&text).map_err(|err| err.to_string())?,
+            None => Vec::new(),
+        };
+        Ok(Partitioned {
+            pieces,
+            numbered,
+            pins,
+            answers,
+        })
     }
 
     /// --- Split to print (D12). These solids as one STEP file, each a product of its own named by the same place in
