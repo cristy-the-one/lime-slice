@@ -202,7 +202,9 @@ A belt printer's volume is its belt width and its gantry height; the axis along 
 
 ### D12. A target this app does not slice for gets an export
 
-When `target.process` is not the plate's, or the user chooses **Export**, Apply leaves the pieces in Model, in place, and the card offers the export: one file per piece (STL or 3MF), one 3MF with every piece named, or one STEP assembly. PreForm imports all three, and it keeps a STEP assembly as an assembly. The pins are exported as one more part. Piece names carry the part number and the source name: `cover-1.stl`, `cover-2.stl`, `cover-pins.stl`. No support, tilt, or hollowing is added; the resin slicer does those. The export note says to keep supports off the cut faces, which carry the fit and the number.
+When `target.process` is not the plate's, or the user chooses **Export**, Apply leaves the pieces in Model, in place, and the card offers the export: one STL per piece, one 3MF with every piece named, or one STEP file with every piece as a separate solid. PreForm imports all three. The pins are exported as one more part. Piece names carry the part number and the source name: `cover-1.stl`, `cover-2.stl`, `cover-pins.stl`. No support, tilt, or hollowing is added; the resin slicer does those. The export note says to keep supports off the cut faces, which carry the fit and the number.
+
+As built in 3b: the pieces of an export target are trees of their own, as an FDM target's are, held as objects off the plate. They are never plate objects, never committed, and never sent to the slicer: a commit, a slice, or a plate 3MF of a part whose step is past such a cut is refused with a sentence that says to export. They are not saved with the project; the op is, with its target and volume (D11), so an export after a reopen cuts the missing pieces again from the stored op on a spare step. The STEP file's solids carry no names, since that needs the XCAF document writer (`STEPCAFControl_Writer`); the 3MF and the STL files name every piece. The XCAF toolkits (`TKXCAF`, `TKLCAF`, `TKCAF`, and `STEPCAFControl` inside `TKDESTEP`) are already linked and shipped for the STEP reader, so a named STEP assembly adds no library: it is the owner's call, after 3b.
 
 For reassembly, Model already keeps the pieces where they were cut. **Explode** spreads them along each cut's normal by a typed gap and shows each number on its cut face. It is a view, not an op, and it changes nothing that is saved.
 
@@ -358,7 +360,7 @@ A shaped joint that touches the bed only on its teeth, with Joint down on, gets 
 
 **Lay out on the bed** places only the new pieces, with `ARRANGE_GAP_MM` on the plate's printer, around the objects already on the plate, which stay where they are (`arrangedObjects` with `keep`); the part's own first piece counts where its new mesh lands. It runs once the pieces have plate meshes: in the app that is the Apply that makes them, as a split's piece; on the MCP it is the `model_commit` that first puts them on the plate (milestone 3). An Update lays out only a part number that is new. Off leaves the pieces sharing one spot, and the readout uses Split's sentence about Arrange. Dowel pins go on the plate as one more object, standing upright.
 
-Part numbers are engraved, not a separate object. The string is the index, "1", "2", "3". Height and Depth are the label fields. The default face is the cut face (section 2), so the number is hidden once the parts are assembled, and both mating faces of a cut carry their numbers side by side. A drag moves it. A later rename of the plate object does not change the engraved digit, because the digit is geometry. The note under the checkbox says that. **Part numbers** off stores no text and cuts no digits.
+Part numbers are engraved, not a separate object. The string is the index, "1", "2", "3". Height and Depth are the label fields. The strokes are `textStrokes`'s, 0.15 of the height wide as `compose.ts` draws text; the client builds them and the kernel places them, since only the kernel sees the cut faces. A label keeps the wall floor (`2 × f`) from the face's edge and from any hole in it. A side face is used only when no cut face of that piece has room. A new partition stores `labels: {on: true, face, height, depth}` in full; an op stored before 3b has no `labels` and cuts no number on a replay. The default face is the cut face (section 2), so the number is hidden once the parts are assembled, and both mating faces of a cut carry their numbers side by side. A drag moves it. A later rename of the plate object does not change the engraved digit, because the digit is geometry. The note under the checkbox says that. **Part numbers** off stores no text and cuts no digits.
 
 These choices are fields of the op (`orient`, `arrange`, `labels`, `target`). Edit shows them again. They are not slicer settings.
 
@@ -370,7 +372,7 @@ The row label comes from the stored op, in the part's own frame, as Split's labe
 - "Split to print, 3 parts, dowels"
 - "Split to print, lap, 2 parts"
 - "Split to print, sketch, 2 parts"
-- "Split to print for Form 4, 3 parts" (an export target names its printer)
+- "Split to print for Formlabs Form 4, 3 parts" (an export target names its printer, as the library names it)
 
 The pencil reopens this panel on the parent solid, the solid before the op, with the planes, the profiles, the connectors, and the checkboxes filled from the op. Update replaces the node and rebuilds the piece objects (D9). Undo returns the parent and removes the pieces, in the one Prepare step the Model visit already uses for an edit.
 
@@ -475,7 +477,7 @@ No new tool. Since #405, `model_apply` lists its op kinds by name and `guide {ki
 | `model_edit` | Replaces the node from the same op the pencil writes. A split to print is always cut again, never matched to an earlier branch with the same numbers, since that branch's pieces went to the edit that replaced it (D9). `model_undo` above the node takes its pieces off the plate and `model_redo` brings them back, as a join's tool. |
 | `model_history` | The row label. `model_goto`, `model_undo`, `model_redo`, `model_drop`, and `model_rename` work because the node is an ordinary step. |
 
-| `export_3mf`, `model_export_step` | Take the piece objects of a partition (and its pins) to write one 3MF or one STEP assembly for an export target. Per-piece STL is the existing mesh export per object. |
+| `export_3mf`, `model_export_step` | `{object, name, pieces: true}` takes the pieces of the last split to print on the way to the part's step (and, from M5, its pins): one 3MF with each piece named `<name>-<n>`, or one STEP of separate solids in that order. There is no per-object mesh export tool, so per-piece STL is `export_3mf` with `stl: true`: one `<name>-<n>.stl` each. Every reply carries the support note. |
 
 `lime://guide/model` gains a short sequence: plan (`model_probe` with `plan: true`), probe, apply, commit, export, and the plain-cut op with connectors off. A `plan_run` can chain them (#405). Replies stay small. The mesh stays in the engine for the app.
 
@@ -506,7 +508,8 @@ Precision is the B-rep, not the triangles.
 | Defaults table formulas at nozzle 0.4 and 0.8, layer 0.2 and 0.28, and on the resin floors | exact | the same |
 | Orientation: an FDM piece keeps the parent's plate orientation unless Joint down is set for it | exact matrix | the same |
 | Part numbers land on the cut face, both mates of a cut, clear of connectors | the face id | the kernel test |
-| Export: one STEP assembly of a partition holds every piece and the pins, named in assembly order | names and solid count | `mcp/` export test |
+| Export: one STEP of a partition holds every piece (and, from M5, the pins) as a separate solid in assembly order, and reads back with each piece's volume; the 3MF and the STL files are named in assembly order | solid count, volumes within 1e-3 mm³, names | `tests/partition_export.rs`, `mcp/partition.test.ts`, `mcp/occt.test.ts` |
+| Part numbers: both mates of a cut carry their number on the cut face; a number with no room on any cut face goes on a side face, and with none at all is left out with "Part N has no room for a number."; the volume lost is the number's area times its depth | exact on planar strokes (1e-6 mm³) | `tests/partition_export.rs` |
 | `partition` is not in `MODEL_TOOLS`; the command has no keys | exact | beside the stress checks |
 | Reader: a v4 file without the op is unchanged; `piece` still only on `split` | exact | `src/model-tree-file` test |
 | Slice request of a plate that holds pieces has no new field | exact JSON | a unit test on the request builder |
@@ -555,7 +558,7 @@ The plan is written to the recommendation in each row. Review can change any of 
 | 14 | Max pieces | 12, editable up to 24. |
 | 15 | Target printer | The op stores `target` (printer, process, volume) from milestone 1. Absent means the plate's printer. A resin printer is an export-only library record. |
 | 16 | The Formlabs model | Form 4, 200 × 125 × 210 mm. Confirmed on the printer's About screen (2026-10-23). |
-| 17 | Export format for PreForm | STL per piece, one 3MF, or one STEP assembly; PreForm imports all three and keeps a STEP assembly. The default is the STEP assembly, which keeps the B-rep and the names. |
+| 17 | Export format for PreForm | STL per piece, one 3MF, or one STEP of separate solids; PreForm imports all three. The default is the STEP, which keeps the B-rep. Its solids are unnamed until the XCAF writer is used (D12); the 3MF and STL carry the names. |
 
 ## 17. Constraints
 
@@ -592,3 +595,24 @@ Milestone 4 adds the card and closes what milestone 3 left open. It changed seve
 5. **An edit through a join is refused.** A split to print in a tool's tree, reached through another part's History, says "Edit this split to print from the part it cut."; its own part edits it.
 6. **Model Undo leaves the pieces on the plate**, as it leaves a split's piece (the owner's rule that jumping back before a Split keeps its piece); the visit's one Prepare step is what takes an Apply or an Update back whole. The MCP's `model_undo` still takes them off, as milestone 3 built it.
 7. **The planes stop at the section.** Each cut's square is twice the part's furthest corner from it, in its plane, rather than Split's 1.45 times the part's largest side, so a long bar's cuts stay readable and the lit outline is that cut's own.
+
+## 20. Milestone 3b as built, and what the card wires after milestone 4
+
+3b ran beside milestone 4, so it is the engine, the library, the export, the MCP and the Explode view. The card (`src/split-print.ts`, `src/ui/split-print.ts`) is now on `main`; its 3b controls are a small follow-up. The op both write is `storedPartition` in `src/split-print.ts`, so a card Apply already stores `labels` in full and cuts part numbers, and `exportsPieces`, `exportedNote` and `exportedCommit` sit beside it for the card to use.
+
+Built:
+
+- **Resin target.** The kernel and the server cut a `target.process: "resin"` op. `model_probe` with `plan: true` takes `target: {printer: "formlabs-form-4"}` and fits the Form 4's volume, with the resin floors and the 10 mm margin; `arrange` is stored false and `orient` keep.
+- **The Form 4.** `FORMLABS_FORM_4` in `src/ui/machine-library.ts` is an `ExportPrinterRecord`, marked `exportOnly: true`. It is not a `PrinterRecord`, so it is never in `printers`, `enginePrinter` cannot take it, and `selectIn` and `machine_select` refuse it with a sentence. `targetPrinters(library)` is the Print on list (the plate's printer first, the Form 4 last) and `printerTarget(row)` the op's `target`.
+- **Pieces of an export target** are held off the plate (D12, as built).
+- **Part numbers** (section 10). `partitionNumbers` in `src/modeling/partition.ts` builds the strokes; the kernel places and cuts them, and answers `numbers` and `notes`.
+- **Export.** `export_3mf {object, name, pieces: true}` (one 3MF, or `stl: true` for one STL each) and `model_export_step {object, name, pieces: true}` (one STEP of separate solids), every reply with `SUPPORT_NOTE`. Names come from `pieceNames` in `src/modeling/partition-export.ts`. The 3MF writer now writes each zip entry's CRC-32: the slicer's own 3MF reader refused the file without it, and so would any reader that checks.
+- **Explode.** In Model's View menu, shown when the open part has a split to print with pieces on screen. `data-explode` on `#model` is the gap, `data-explode-parts` each part's shift, and a tag over each piece shows its number. It saves nothing.
+
+The card follow-up wires:
+
+1. **Print on**, a menu of `targetPrinters(library)` by name, the plate's printer selected. Choosing one writes `target: printerTarget(row)` into the op the card applies; for an export-only row the fit button reads **Fit the printer** and the planner call (`fitPrinter`, `fillPartition`) already reads the target.
+2. **Part numbers**, a checkbox, on by default (the stored op already says on). On writes `labels: {on: true, face: "cut", height, depth}` with `partitionDefaults(...).numberHeightMm` and `numberDepthMm` for the target's process; off writes `{on: false}`. The note under it says the digit is geometry and a rename does not change it. Show the apply reply's `notes` ("Part 2 has no room for a number.") in the card.
+3. **Apply for an export target** in the app. Send `pieceKeys` as today, but hold each piece's tree in `modelTrees` without a plate object (do not `placePiece`), and have `commitModel` leave a part whose step is past such a cut off the plate with `exportedCommit`'s sentence (`src/split-print.ts`). Lay out (section 19, item 1) skips such pieces, since they never reach the plate. Then `members()` in `src/app/model-explode.ts` must also take those off-plate pieces, from their trees' meshes, since today it finds pieces by plate object.
+4. **Export…**, the card's second button for an export target: a save dialog with STL per piece, one 3MF, or one STEP, built from `pieceNames`, `encode3mf(meshes, names)`, `encodeStl`, and `exportRequest(key, node, "step", pieces)`, with `SUPPORT_NOTE` beside it. The pins file joins `pieceNames` as `<source>-pins` in milestone 5.
+5. **Playwright** for those controls, beside `e2e/model-split-print.spec.ts`.

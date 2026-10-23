@@ -7,8 +7,9 @@ import type { Vec3 } from "../src/model-tree.ts";
 import { fillPartition, fitPrinter, notBuiltYet, profileRefusals, defaultsFor, shapedCutsSentence, type Axis, type CutInput, type FillContext, type PartitionOp, type Profile, type Target } from "../src/modeling/partition.ts";
 import type { PrintFrame } from "../src/split-print.ts";
 
-// The op the tree stores and the frame Fit the printer plans in are the card's too (`src/split-print.ts`).
-export { bedFrame, NEEDS_CUTS, storedPartition, type PrintFrame } from "../src/split-print.ts";
+// The op the tree stores, the frame Fit the printer plans in, and what an export target's pieces say are the card's too
+// (`src/split-print.ts`).
+export { bedFrame, exportedCommit, exportedNote, exportsPieces, NEEDS_CUTS, storedPartition, type PrintFrame } from "../src/split-print.ts";
 
 /** The planner's sentence when model_probe is asked to plan an op of another kind. */
 export const PLAN_KIND = "plan: true plans a partition. Other kinds are probed without it.";
@@ -21,8 +22,11 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-/** The op as typed, in model space, checked field by field. `cuts` may be absent or empty only for a plan. */
-export function readPartition(raw: Record<string, unknown>): PartitionOp | { reason: string } {
+/**
+ * The op as typed, in model space, checked field by field. `cuts` may be absent or empty only for a plan. A target that
+ * names only its printer takes the process and the build volume from `library` (D11): `{printer: "formlabs-form-4"}`.
+ */
+export function readPartition(raw: Record<string, unknown>, library: (printer: string) => Target | null = () => null): PartitionOp | { reason: string } {
   const cuts: CutInput[] = [];
   if (raw.cuts !== undefined && !Array.isArray(raw.cuts)) return { reason: "cuts is a list of {origin, normal}." };
   for (const [index, value] of ((raw.cuts as unknown[] | undefined) ?? []).entries()) {
@@ -42,11 +46,17 @@ export function readPartition(raw: Record<string, unknown>): PartitionOp | { rea
   let target: Target | undefined;
   if (raw.target !== undefined) {
     const typed = record(raw.target);
-    const volumeMm = vec3(typed?.volumeMm);
-    if (!typed || typeof typed.printer !== "string" || (typed.process !== "fdm" && typed.process !== "resin") || !volumeMm) {
-      return { reason: "target is {printer, process: fdm or resin, volumeMm: [x, y, z]}." };
+    if (typed && typeof typed.printer === "string" && typed.process === undefined && typed.volumeMm === undefined) {
+      const known = library(typed.printer);
+      if (!known) return { reason: `No printer in the library is ${typed.printer}. Give target {printer, process, volumeMm}, or a printer id machine_list shows, or formlabs-form-4.` };
+      target = known;
+    } else {
+      const volumeMm = vec3(typed?.volumeMm);
+      if (!typed || typeof typed.printer !== "string" || (typed.process !== "fdm" && typed.process !== "resin") || !volumeMm) {
+        return { reason: "target is {printer}, or {printer, process: fdm or resin, volumeMm: [x, y, z]}." };
+      }
+      target = { printer: typed.printer, process: typed.process, volumeMm };
     }
-    target = { printer: typed.printer, process: typed.process, volumeMm };
   }
   const orient = raw.orient;
   if (orient !== undefined && orient !== "keep" && !(Array.isArray(orient) && orient.every((one) => one === "keep" || one === "joint"))) {
@@ -73,6 +83,8 @@ export function readPartition(raw: Record<string, unknown>): PartitionOp | { rea
 export interface PlanPrinter {
   name: string;
   belt: boolean;
+  /** The target's own name when it is not the plate's printer: "Formlabs Form 4". */
+  targetName?: string;
 }
 
 /**
@@ -90,7 +102,7 @@ export function planPartition(op: PartitionOp, ctx: FillContext, frame: PrintFra
   let pieces: number | null;
   if (op.cuts.length === 0) {
     const belt = printer.belt && target.printer === ctx.plateTarget.printer ? { belt: { axis: 1 as Axis } } : {};
-    const fit = fitPrinter({ box: frame.box, target, marginMm: filled.bedMarginMm, maxPieces: filled.maxPieces, printerName: target.printer === ctx.plateTarget.printer ? printer.name : target.printer, ...belt });
+    const fit = fitPrinter({ box: frame.box, target, marginMm: filled.bedMarginMm, maxPieces: filled.maxPieces, printerName: target.printer === ctx.plateTarget.printer ? printer.name : (printer.targetName ?? target.printer), ...belt });
     cuts = fit.cuts.map((cut) => ({ origin: round(frame.point(cut.origin)), normal: round(frame.direction(cut.normal)), u: round(frame.direction(cut.u)), profile: { kind: "straight" }, connectors: { on: false } }));
     notes = fit.notes;
     pieces = fit.pieces;
@@ -100,7 +112,7 @@ export function planPartition(op: PartitionOp, ctx: FillContext, frame: PrintFra
     notes = [shapedCutsSentence(filled.cuts), ...op.cuts.flatMap((cut) => (cut.profile ? profileRefusals(cut.profile, d) : []))].filter((note): note is string => !!note);
     pieces = null;
   }
-  const proposal = { kind: "partition", cuts, ...(op.target ? { target: op.target } : {}), ...(op.maxPieces !== undefined ? { maxPieces: op.maxPieces } : {}), ...(op.bedMarginMm !== undefined ? { bedMarginMm: op.bedMarginMm } : {}) };
+  const proposal = { kind: "partition", cuts, ...(op.target ? { target: op.target } : {}), labels: { ...filled.labels }, ...(op.maxPieces !== undefined ? { maxPieces: op.maxPieces } : {}), ...(op.bedMarginMm !== undefined ? { bedMarginMm: op.bedMarginMm } : {}) };
   return {
     ok: later === null,
     plan: true,

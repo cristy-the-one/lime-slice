@@ -9,7 +9,11 @@ import { join } from "node:path";
 
 import { fakeEngine } from "./engine.ts";
 import { Session } from "./session.ts";
-import { CONNECTORS_LATER, fitPrinter, PROFILE_LATER, RESIN_LATER } from "../src/modeling/partition.ts";
+import { readFileSync } from "node:fs";
+import { CONNECTORS_LATER, fitPrinter, PROFILE_LATER } from "../src/modeling/partition.ts";
+import { SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
+import { exportOnlyRefusal, FORMLABS_FORM_4 } from "../src/ui/machine-library.ts";
+import { exportedCommit, exportedNote } from "./partition.ts";
 
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-mcp-partition-"));
 
@@ -62,7 +66,6 @@ const op = plan.op as Record<string, unknown>;
 const refusals: [string, Record<string, unknown>, string][] = [
   ["a lap profile", { ...op, cuts: [{ ...cuts[0]!, profile: { kind: "lap" } }] }, PROFILE_LATER],
   ["connectors on", { ...op, cuts: [{ ...cuts[0]!, connectors: { on: true } }] }, CONNECTORS_LATER],
-  ["a resin target", { ...op, target: { printer: "formlabs-form-4", process: "resin", volumeMm: [200, 125, 210] } }, RESIN_LATER],
   ["no cuts", { kind: "partition", cuts: [] }, "A partition needs at least one cut. model_probe with plan: true proposes them."],
 ];
 for (const [what, typed, sentence] of refusals) {
@@ -163,11 +166,87 @@ check("three objects open again", opened.ok === true && reopened.length === 3, J
 const reopenedRows = (await again.call("model_history", { object: reopened[0]!.object })).nodes as { label: string }[];
 check("the part's history keeps its rows", reopenedRows.slice(1).map((row) => row.label).join(" | ") === "Split to print, 3 parts | Split to print, 2 parts | Split to print, 3 parts", JSON.stringify(reopenedRows));
 
+// --- Milestone 3b: a 400 mm tall part cut for the Formlabs Form 4, kept in Model, and exported.
+const refusedPrinter = await call("machine_select", { printerId: "formlabs-form-4", filamentId: "lime-pla" });
+check("machine_select refuses the Form 4", refusedPrinter.ok === false && refusedPrinter.reason === exportOnlyRefusal("formlabs-form-4"), JSON.stringify(refusedPrinter));
+check("the plate's printer is still the Lime 220", (await call("session_info", {})).printer === "Lime 220");
+const listed = (await call("machine_list", {})).printers as { id: string }[];
+check("machine_list does not list it", !listed.some((row) => row.id === "formlabs-form-4"), JSON.stringify(listed));
+const tall = String((await call("solid_new", { primitive: "box", dx: 100, dy: 80, dz: 400 })).object);
+const plateBefore = (await plate()).length;
+const resinPlan = await call("model_probe", { object: tall, op: { kind: "partition", target: { printer: "formlabs-form-4" } }, plan: true });
+const resinCuts = resinPlan.cuts as { origin: number[]; normal: number[] }[];
+check("the Form 4 plan is three pieces across the height", resinPlan.ok === true && resinPlan.pieces === 3 && resinCuts.length === 2 && resinCuts.every((one) => one.normal[2] === 1) && near(resinCuts[0]!.origin[2], 400 / 3, 1e-4) && near(resinCuts[1]!.origin[2], 800 / 3, 1e-4), JSON.stringify(resinPlan));
+check("it reads the Form 4's volume, not the plate's", resinPlan.reason === "This part is 400 mm along Z. The Formlabs Form 4 volume fits 190 mm. Two cuts are proposed." && JSON.stringify(resinPlan.target) === JSON.stringify({ printer: "formlabs-form-4", process: "resin", volumeMm: [200, 125, 210] }) && resinPlan.bedMarginMm === 10, JSON.stringify(resinPlan));
+const resinOp = resinPlan.op as Record<string, unknown>;
+check("the planner's op writes part numbers on", JSON.stringify(resinOp.labels) === JSON.stringify({ on: true, face: "cut", height: 4, depth: 0.4 }), JSON.stringify(resinOp.labels));
+const resinProbe = await call("model_probe", { object: tall, op: resinOp });
+check("the probe cuts three slabs", resinProbe.ok === true && resinProbe.parts === 3 && (resinProbe.pieces as { volumeMm3: number }[]).every((piece) => near(piece.volumeMm3, (100 * 80 * 400) / 3, 1)), JSON.stringify(resinProbe));
+const engraved = engine.calls.length;
+const resinApplied = await call("model_apply", { object: tall, op: resinOp });
+const resinPieces = resinApplied.pieces as string[];
+check("apply cuts the part in three", resinApplied.ok === true && resinApplied.parts === 3 && resinPieces.length === 2, JSON.stringify(resinApplied));
+check("and says where the pieces are", resinApplied.note === exportedNote("Formlabs Form 4"), String(resinApplied.note));
+const storedOp = resinApplied.stored as { target?: unknown; arrange?: unknown; labels?: unknown; bedMarginMm?: unknown; orient?: unknown };
+check("the stored op names the Form 4, keeps the pieces as cut, and does not lay them out", JSON.stringify(storedOp.target) === JSON.stringify({ printer: "formlabs-form-4", process: "resin", volumeMm: [FORMLABS_FORM_4.bedX, FORMLABS_FORM_4.bedY, FORMLABS_FORM_4.bedZ] }) && storedOp.arrange === false && storedOp.orient === "keep" && storedOp.bedMarginMm === 10, JSON.stringify(storedOp));
+check("with its part numbers on", JSON.stringify(storedOp.labels) === JSON.stringify({ on: true, face: "cut", height: 4, depth: 0.4 }), JSON.stringify(storedOp.labels));
+check("the apply sent the numbers' strokes to the engine", engine.calls.length > engraved);
+const onPlateNow = await plate();
+check("the pieces stay in Model: the plate does not gain them", onPlateNow.length === plateBefore && !onPlateNow.some((row) => resinPieces.includes(row.object)), JSON.stringify(onPlateNow.map((row) => row.object)));
+const resinHistory = ((await call("model_history", { object: resinPieces[0] })).nodes ?? []) as { label: string }[];
+check("a piece is still a part to model", resinHistory[0]?.label === "Part 2", JSON.stringify(resinHistory));
+const committedResin = await call("model_commit", { object: tall });
+check("model_commit refuses a part cut for the Form 4", committedResin.ok === false && committedResin.reason === exportedCommit("box", "Formlabs Form 4"), JSON.stringify(committedResin));
+await call("object_select", { object: tall });
+const sliceResin = await call("slice_start", {});
+check("so does a slice of it: the Form 4's pieces never reach the slicer", sliceResin.ok === false && sliceResin.reason === exportedCommit("box", "Formlabs Form 4"), JSON.stringify(sliceResin));
+const undoneResin = await call("model_undo", { object: tall });
+const redoneResin = await call("model_redo", { object: tall });
+check("undo and redo leave the pieces off the plate", undoneResin.ok === true && redoneResin.ok === true && redoneResin.piecesBack === undefined && (await plate()).length === plateBefore, JSON.stringify(redoneResin));
+
+const names = ["tall-1", "tall-2", "tall-3"];
+const threeMf = await call("export_3mf", { object: tall, name: "tall", pieces: true });
+const threeMfText = Buffer.from(readFileSync(String(threeMf.path))).toString("latin1");
+check("export_3mf of the pieces writes one 3MF", threeMf.ok === true && threeMf.parts === 3 && String(threeMf.path).endsWith("tall.3mf"), JSON.stringify(threeMf));
+check("every piece named <source>-<n> in assembly order", names.every((name) => threeMfText.includes(`name="${name}"`)) && threeMfText.indexOf('name="tall-1"') < threeMfText.indexOf('name="tall-2"') && (threeMfText.match(/<object /g) ?? []).length === 3, threeMfText.slice(0, 200));
+check("the reply lists the pieces in order with their objects", JSON.stringify((threeMf.pieces as { name: string; object: string }[]).map((row) => [row.name, row.object])) === JSON.stringify([["tall-1", tall], ["tall-2", resinPieces[0]], ["tall-3", resinPieces[1]]]), JSON.stringify(threeMf.pieces));
+check("and carries the support note", threeMf.note === SUPPORT_NOTE);
+const stls = await call("export_3mf", { object: tall, name: "tall", pieces: true, stl: true });
+const files = (stls.files ?? []) as { path: string; bytes: number }[];
+check("stl: true writes one STL per piece, named in assembly order", stls.ok === true && files.length === 3 && files.every((file, at) => file.path.endsWith(`${names[at]}.stl`) && readFileSync(file.path).byteLength === file.bytes), JSON.stringify(stls));
+check("each STL holds its piece", files.every((file) => readFileSync(file.path).readUInt32LE(80) > 0));
+check("with the support note", stls.note === SUPPORT_NOTE);
+const step = await call("model_export_step", { object: tall, name: "tall", pieces: true });
+check("model_export_step of the pieces writes one STEP of three solids", step.ok === true && step.parts === 3 && step.solids === 3 && String(step.path).endsWith("tall.step"), JSON.stringify(step));
+check("with the support note", step.note === SUPPORT_NOTE);
+const noCut = await call("model_export_step", { object, name: "bar-pieces", pieces: true });
+check("pieces: true on a part with a split to print on its way exports those pieces", noCut.ok === true && noCut.parts === 3, JSON.stringify(noCut));
+const plainSolid = String((await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 })).object);
+const none = await call("export_3mf", { object: plainSolid, name: "plain", pieces: true });
+check("a part with no split to print says so", none.ok === false && String(none.reason).startsWith("This part has no split to print"), JSON.stringify(none));
+
+// Saved and opened again: an export target's pieces are not saved, and the export cuts them again from the op.
+const savedResin = await call("project_save", { name: "tall.lime" });
+const reopenedSession = new Session(engine);
+const reopenedResin = await reopenedSession.call("project_open", { path: String(savedResin.path) });
+const reopenedTall = (reopenedResin.objects as { object: string; name: string }[]).find((row) => row.object === tall)?.object;
+const resinRows = (await reopenedSession.call("model_history", { object: reopenedTall })).nodes as { label: string }[];
+check("the reopened part keeps its row", savedResin.ok === true && reopenedResin.ok === true && resinRows.at(-1)?.label === "Split to print for Formlabs Form 4, 3 parts", JSON.stringify(resinRows));
+const again3mf = await reopenedSession.call("export_3mf", { object: reopenedTall, name: "tall-again", pieces: true });
+check("its export cuts the pieces again: three, named in order", again3mf.ok === true && again3mf.parts === 3 && JSON.stringify((again3mf.pieces as { name: string }[]).map((row) => row.name)) === JSON.stringify(["tall-again-1", "tall-again-2", "tall-again-3"]), JSON.stringify(again3mf));
+const againStep = await reopenedSession.call("model_export_step", { object: reopenedTall, name: "tall-again", pieces: true });
+check("and the STEP export reuses the pieces it cut", againStep.ok === true && againStep.solids === 3, JSON.stringify(againStep));
+check("the reopened plate does not gain them either", ((await reopenedSession.call("plate_list", {})).objects as unknown[]).length === (reopenedResin.objects as unknown[]).length);
+
 // --- guide {kind}: the op's full schema, on demand.
 const guide = await call("guide", { kind: "partition" });
 const schema = guide.schema as { required?: string[]; properties?: Record<string, unknown> };
 check("guide {kind: partition} returns its schema", guide.ok === true && JSON.stringify(schema.required) === JSON.stringify(["kind"]) && ["cuts", "target", "orient", "arrange", "labels", "bedMarginMm", "maxPieces"].every((field) => field in (schema.properties ?? {})), JSON.stringify(guide));
 check("with the guide's line for it", (guide.examples as string[]).some((line) => line.startsWith("partition (split to print):")), JSON.stringify(guide.examples));
+check("and the resin export sequence: plan with the Form 4, probe, apply, export", (guide.examples as string[]).some((line) => line.includes("formlabs-form-4") && line.includes("model_export_step") && line.includes("pieces:true")), JSON.stringify(guide.examples));
+const modelGuide = await session.resource("lime://guide/model");
+const modelGuideText = typeof modelGuide === "string" ? modelGuide : JSON.stringify(modelGuide);
+check("lime://guide/model has the same sequence", modelGuideText.includes("formlabs-form-4") && modelGuideText.includes("export_3mf"), modelGuideText.slice(0, 200));
 
 if (failed) {
   console.error(`${failed} failed`);

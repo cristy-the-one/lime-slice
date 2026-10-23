@@ -876,7 +876,9 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         const head = (req as { format?: string }).format === "brep" ? "LIMEBREP 1 fake 0 *\n" : "ISO-10303-21;\n";
         const step = `${head}/* ${SOLID_MARK}${encoded} */\nENDSEC;\n`;
         const bytes = Buffer.from(step, "utf8");
-        return JSON.stringify({ bytesBase64: bytes.toString("base64"), byteLength: bytes.length });
+        // --- Split to print: a STEP of a partition's pieces holds one solid for this tree and one for each piece named.
+        const pieces = (req as { pieces?: unknown[] }).pieces;
+        return JSON.stringify({ bytesBase64: bytes.toString("base64"), byteLength: bytes.length, ...(Array.isArray(pieces) ? { solids: 1 + pieces.length } : {}) });
       }
       if (req.call === "close") return JSON.stringify({ ok: true });
       // --- 3.1 F1. A run folds into one group with the solid its last step left. LIME_MCP_FAKE_NO_FOLD acts as an engine

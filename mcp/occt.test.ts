@@ -261,7 +261,8 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const volume = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);
   const plan = await call("model_probe", { object: bar, op: { kind: "partition" }, plan: true });
   check("plan proposes two cuts for a 500 mm bar on the Lime 220", plan.ok === true && plan.pieces === 3 && (plan.cuts as unknown[]).length === 2, JSON.stringify(plan));
-  const op = plan.op as Record<string, unknown>;
+  // Part numbers off, so the thirds are exact; the Form 4 block below cuts them.
+  const op = { ...(plan.op as Record<string, unknown>), labels: { on: false } };
   const probe = await call("model_probe", { object: bar, op });
   const parts = (probe.pieces ?? []) as { volumeMm3: number; min: number[]; max: number[] }[];
   const sum = parts.reduce((total, part) => total + part.volumeMm3, 0);
@@ -279,13 +280,43 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   check("each is a third of the bar", thirds.every((v) => near(v, 200_000 / 3, 0.05)), JSON.stringify(thirds));
   const rows = (await call("model_history", { object: bar })).nodes as { label: string }[];
   check("the history row says the parts", rows[1]?.label === "Split to print, 3 parts", JSON.stringify(rows));
-  const one = { kind: "partition", cuts: [{ origin: [100, 0, 10], normal: [1, 0, 0] }] };
+  const one = { kind: "partition", cuts: [{ origin: [100, 0, 10], normal: [1, 0, 0] }], labels: { on: false } };
   await call("model_probe", { object: bar, op: one, node: "node_0" });
   const edited = await call("model_edit", { object: bar, node: "node_1", op: one });
   const after = ((await call("plate_list", { limit: 100 })).objects as { object: string }[]).map((row) => row.object);
   check("an edit cuts every piece again: two parts, the third leaves the plate", edited.ok === true && edited.parts === 2 && JSON.stringify(edited.pieces) === JSON.stringify([pieces[0]]) && !after.includes(pieces[1]!), JSON.stringify(edited));
   const halves = await Promise.all([bar, pieces[0]!].map(volume));
   check("the bar keeps X -250 to 100 and piece 2 the rest", near(halves[0]!, 140_000, 0.05) && near(halves[1]!, 60_000, 0.05), JSON.stringify(halves));
+}
+
+// --- Split to print, milestone 3b: a 400 mm tall part for the Formlabs Form 4, numbered on its cut faces, kept off the
+// plate, and exported as one STEP of three solids, one 3MF, and an STL each, against real Open CASCADE.
+{
+  const tall = String((await call("solid_new", { primitive: "box", dx: 100, dy: 80, dz: 400 })).object);
+  const plan = await call("model_probe", { object: tall, op: { kind: "partition", target: { printer: "formlabs-form-4" } }, plan: true });
+  check("the Form 4 plan cuts a 400 mm part in three", plan.ok === true && plan.pieces === 3, JSON.stringify(plan));
+  const op = plan.op as Record<string, unknown>;
+  const probe = await call("model_probe", { object: tall, op });
+  const faces = ((probe.numbers ?? []) as { faces: { face: string; cut?: number }[] }[]).map((row) => row.faces.map((face) => `${face.face}${face.cut ?? ""}`).join(" "));
+  check("each number is on its piece's cut faces: both mates of each cut", probe.ok === true && JSON.stringify(faces) === JSON.stringify(["cut1", "cut1 cut2", "cut2"]) && probe.notes === undefined, JSON.stringify(probe));
+  const slab = (100 * 80 * 400) / 3;
+  const lost = ((probe.pieces ?? []) as { volumeMm3: number }[]).map((piece) => slab - piece.volumeMm3);
+  // Each "1", "2" or "3" at 4 mm is under 6 mm² of strokes cut 0.4 mm deep, so a face loses between 0.5 and 2.5 mm³; the
+  // planner's cut heights are rounded to 1e-4 mm, worth 0.8 mm³ on a 100 × 80 mm section either way.
+  check("each piece loses its numbers' volume and no more", lost.length === 3 && near(lost[0]!, 1.5, 1.8) && near(lost[1]!, 3, 3) && near(lost[2]!, 1.5, 1.8), JSON.stringify(lost));
+  const applied = await call("model_apply", { object: tall, op });
+  const pieces = (applied.pieces ?? []) as string[];
+  const listed = ((await call("plate_list", { limit: 100 })).objects as { object: string }[]).map((row) => row.object);
+  check("the pieces stay off the plate", applied.ok === true && pieces.length === 2 && !pieces.some((id) => listed.includes(id)), JSON.stringify(applied));
+  const stepFile = await call("model_export_step", { object: tall, name: "tall-form4", pieces: true });
+  const threeMf = await call("export_3mf", { object: tall, name: "tall-form4", pieces: true });
+  const stls = await call("export_3mf", { object: tall, name: "tall-form4", pieces: true, stl: true });
+  check("the STEP holds three solids", stepFile.ok === true && stepFile.solids === 3, JSON.stringify(stepFile));
+  check("the 3MF and the STLs are written", threeMf.ok === true && (stls.files as unknown[] | undefined)?.length === 3, JSON.stringify({ threeMf, stls }));
+  const back = await call("mesh_import", { path: String(stepFile.path) });
+  const total = Number((await call("model_describe", { object: String(back.object), limit: 1 })).volumeMm3);
+  const sum = ((stepFile.pieces ?? []) as { volumeMm3: number }[]).reduce((acc, piece) => acc + piece.volumeMm3, 0);
+  check("the STEP reads back with the pieces' volume", back.ok === true && near(total, sum, 0.05), JSON.stringify({ total, sum, path: stepFile.path, bytes: stepFile.bytes, threeMf: threeMf.bytes }));
 }
 
 if (failed) {

@@ -1283,6 +1283,22 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   pointer-events: none;
 }
 .model-aspect-label[hidden] { display: none; }
+/* --- Split to print, Explode: each piece's number over the piece. Read-only, so clicks pass through to the view. */
+.model-part-tag {
+  position: absolute;
+  z-index: 3;
+  transform: translate(-50%, -50%);
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 9px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font: 600 12px/16px var(--font-mono, ui-monospace, monospace);
+  text-align: center;
+  pointer-events: none;
+}
+.model-part-tag[hidden] { display: none; }
 .model-panel { position: relative; }
 .model-aspect-badge {
   position: absolute;

@@ -8,7 +8,7 @@ import { printFrame } from "./model-check.ts";
 import { boundsOf, type Mat3 } from "./mesh-place.ts";
 import { clampTilt, formatMm, splitBase, tiltedNormal, tiltOf, type FacePlane, type SplitBase } from "./model-plane.ts";
 import { applyPose, fromSolidOp, toSolidOp, turnDir, type Affine } from "./model-space.ts";
-import type { PartitionModelOp, Vec3 } from "./model-tree.ts";
+import type { ModelOp, PartitionModelOp, Vec3 } from "./model-tree.ts";
 import { fillPartition, fitPrinter, notBuiltYet, type Axis, type Box, type FillContext, type PartitionOp, type Target } from "./modeling/partition.ts";
 
 /** The status title: within `TITLE_LIMIT` (`src/sketch/hints.ts`), as every card's is. */
@@ -273,8 +273,9 @@ export function cardFromFit(fit: FitOnBed, center: Vec3, frame: CardFrame | null
 /**
  * The op the tree stores, in the solid's own frame: each cut a straight plane with its U, connectors off, and the
  * target, orientation, layout, margin and Max pieces filled as at Apply (D11), so a replay cuts the same pieces after
- * the library or the settings change. Labels are kept only when typed: part numbers are not cut yet. A sentence when
- * this milestone does not build the op.
+ * the library or the settings change. Labels are written in full, `on: true` unless typed off: only an explicit `on`
+ * cuts part numbers, so an op stored before milestone 3b, with none, gains no digits on a replay. A sentence when this
+ * milestone does not build the op.
  */
 export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine): { op: PartitionModelOp } | { reason: string } {
   if (op.cuts.length === 0) return { reason: NEEDS_CUTS };
@@ -287,7 +288,7 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine)
     target: filled.target,
     orient: filled.orient,
     arrange: filled.arrange,
-    ...(op.labels ? { labels: op.labels } : {}),
+    labels: { ...filled.labels },
     bedMarginMm: filled.bedMarginMm,
     maxPieces: filled.maxPieces,
   };
@@ -295,6 +296,24 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine)
 }
 
 export const NEEDS_CUTS = "A partition needs at least one cut. model_probe with plan: true proposes them.";
+
+/**
+ * --- 3b, D12. A split to print for a printer this app does not slice for (a resin target): its pieces stay in Model,
+ * off the plate, and are exported; none of them, and not the part as cut, reaches the slicer.
+ */
+export function exportsPieces(op: ModelOp | null | undefined): boolean {
+  return op?.kind === "partition" && op.target !== undefined && op.target.process !== "fdm";
+}
+
+/** What an Apply says of an export target's pieces. */
+export function exportedNote(printer: string): string {
+  return `These pieces are for the ${printer}: they stay in Model, off the plate. Export them with export_3mf or model_export_step, the part as object and pieces: true.`;
+}
+
+/** Why a part cut for an export target is not put on the plate (a commit, a slice, the plate's 3MF). */
+export function exportedCommit(name: string, printer: string): string {
+  return `${name} is cut for the ${printer}, which this app does not slice for. Export its pieces with export_3mf or model_export_step and pieces: true, or model_goto a step before the cut to print it here.`;
+}
 
 // ---------------------------------------------------------------------------
 // The preview: each piece between the planes, as the half-spaces that bound it.

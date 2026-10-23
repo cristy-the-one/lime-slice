@@ -8,7 +8,8 @@ import { applyRequest, crossEditRequest } from "./model-request.ts";
 import { toSolidOp, type Affine } from "./model-space.ts";
 import { dropped, jumped, makesParts, newTree, opLabel, partsOf, reachableTrees, withChild, type ModelOp, type ModelTree, type PartitionModelOp } from "./model-tree.ts";
 import { slicePlateFields, type PlateObject } from "./plate.ts";
-import { CONNECTORS_LATER, notBuiltYet, PROFILE_LATER, RESIN_LATER } from "./modeling/partition.ts";
+import { CONNECTORS_LATER, notBuiltYet, NUMBER_STROKE_FRACTION, partitionNumbers, PROFILE_LATER } from "./modeling/partition.ts";
+import { textStrokes, type StrokeBox } from "./modeling/text.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -130,8 +131,25 @@ check("its normal and U turn with it", near(own.cuts[0]!.normal, [0, -1, 0]) && 
 // What the kernel does not build yet is refused with the kernel's own sentence.
 eq("a lap is later", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "lap" } }] }), PROFILE_LATER);
 eq("connectors are later", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true } }] }), CONNECTORS_LATER);
-eq("a resin target is later", notBuiltYet({ cuts: [cut(1)], target: { printer: "formlabs-form-4", process: "resin", volumeMm: [200, 125, 210] } }), RESIN_LATER);
 eq("a straight plain cut is built", notBuiltYet({ cuts: [cut(1), { origin: [0, 0, 0], normal: [0, 0, 1] }] }), null);
+const form4 = { ...partition, target: { printer: "formlabs-form-4", process: "resin" as const, volumeMm: [200, 125, 210] as [number, number, number] }, arrange: false };
+eq("a resin target is built since milestone 3b", notBuiltYet(form4), null);
+eq("an export target's row names its printer", opLabel(form4, 3), "Split to print for Formlabs Form 4, 3 parts");
+
+// --- 3b. Part numbers: the strokes go to the engine beside the op, only when labels are on in the op itself.
+eq("an op stored before 3b has no labels, so no number is cut on a replay", partitionNumbers(partition), null);
+eq("labels off cut no number", partitionNumbers({ ...partition, labels: { on: false } }), null);
+const labelled: PartitionModelOp = { ...form4, labels: { on: true, face: "cut", height: 4, depth: 0.4 } };
+const numbers = partitionNumbers(labelled)!;
+const one = textStrokes("1", 4, 4 * NUMBER_STROKE_FRACTION, undefined, "centre") as StrokeBox[];
+eq("one number per piece Max pieces allows", numbers.digits.length, 12);
+eq("piece 1's number is the stroke font's 1, centred", numbers.digits[0], one.map((s) => [s.centre[0], s.centre[1], s.length, s.angleDeg]));
+eq("piece 12 is two digits", numbers.digits[11]!.length, (textStrokes("12", 4, 4 * NUMBER_STROKE_FRACTION, undefined, "centre") as StrokeBox[]).length);
+eq("strokes 0.15 of the height, the depth stored, the resin wall floor as the inset", [numbers.strokeMm, numbers.depthMm, numbers.insetMm], [4 * 0.15, 0.4, 1]);
+const sentOp = applyRequest("bar#1", 0, 1, labelled, 0.05, null, ["k2"]).op as Record<string, unknown>;
+eq("an apply sends the numbers with the op", sentOp.numbers, numbers);
+eq("and keeps the stored op as it is", (labelled as unknown as Record<string, unknown>).numbers, undefined);
+eq("an op without labels goes as it is", applyRequest("bar#1", 0, 1, partition, 0.05).op === partition, true);
 
 // Plan section 14: the slice request of a plate that holds the pieces has no new field. Each piece is a plate object
 // like any other, with its tree's key and its solid beside it, which the slice never reads.

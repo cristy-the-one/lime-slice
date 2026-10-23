@@ -31,6 +31,12 @@ import {
   heatFor,
   heatNotes,
   heatWarnings,
+  exportOnlyRefusal,
+  FORMLABS_FORM_4,
+  isExportOnly,
+  printerTarget,
+  targetPrinter,
+  targetPrinters,
   type MachineNumbers,
 } from "./machine-library.ts";
 import { defaultBelt } from "../belt.ts";
@@ -395,6 +401,27 @@ check("a corrupt library grows the built-ins back", restored.printers.some((prin
   const oldParsed = parseMachineFile(JSON.stringify(oldFile));
   check("an old machine file without the key loads", oldParsed.ok && oldParsed.file.printer.firmwareArcs === undefined);
   check("and its Klipper printer gets no arcs", oldParsed.ok && !acceptsArcs(oldParsed.file.printer));
+}
+
+// --- Split to print (D11). The Form 4 is export-only: a target for split to print, never the plate's printer.
+{
+  const form4 = FORMLABS_FORM_4;
+  check("the Form 4 record", JSON.stringify(form4) === JSON.stringify({ id: "formlabs-form-4", name: "Formlabs Form 4", exportOnly: true, process: "resin", bedX: 200, bedY: 125, bedZ: 210, material: "Tough 2000" }), JSON.stringify(form4));
+  check("it is export-only", isExportOnly(form4) && !library.printers.some((printer) => isExportOnly(printer)));
+  check("it is not a printer in the library", !library.printers.some((printer) => printer.id === form4.id) && !ensureBuiltins(library).printers.some((printer) => printer.id === form4.id));
+  const chosen = selectIn(library, form4.id, "lime-pla", 0.4);
+  check("it cannot be chosen as the plate's printer", typeof chosen === "string" && chosen === exportOnlyRefusal(form4.id), String(chosen));
+  check("the refusal names it", typeof chosen === "string" && chosen.startsWith("The Formlabs Form 4 is a resin printer this app cuts parts for and does not slice for."), String(chosen));
+  check("a slicing printer is not refused", exportOnlyRefusal("lime-220") === null);
+  const targets = targetPrinters(library);
+  check("Print on lists the plate's printer first and the Form 4 last", targets[0]?.id === library.printerId && targets.at(-1)?.id === form4.id && targets.length === library.printers.length + 1, targets.map((row) => row.id).join(","));
+  check("its target is resin with its own volume", JSON.stringify(printerTarget(form4)) === JSON.stringify({ printer: "formlabs-form-4", process: "resin", volumeMm: [200, 125, 210] }));
+  check("a library printer's target is FDM with its bed", JSON.stringify(printerTarget(library.printers[0]!)) === JSON.stringify({ printer: "lime-220", process: "fdm", volumeMm: [220, 220, 250] }));
+  check("it is found by id among the targets", targetPrinter(library, form4.id) === form4 && targetPrinter(library, "nope") === undefined);
+  const sliced = selection(library);
+  check("the plate's selection never is the Form 4", sliced !== null && !isExportOnly(sliced.printer));
+  // @ts-expect-error The slicer takes a library printer only: an export-only record is not one.
+  void (() => enginePrinter(form4, sliced!.filament, 0.4));
 }
 
 if (failed) {

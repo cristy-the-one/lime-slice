@@ -1,9 +1,11 @@
 /**
- * --- A10. Model's View menu: section (a plane dragged by one arrow, or typed) and colour by step.
+ * --- A10. Model's View menu: section (a plane dragged by one arrow, or typed), colour by step, and, for a split to
+ * print's part, Explode.
  * The menu sits in the model foot, beside Reset view. It changes only how the solid is drawn.
  * The settings belong to the open object: opening another one, or a new plate, starts them over.
  */
 import { idleLook, offsetAfterDrag, stepHex, type LookState, type Plane, type SectionAxis } from "../model-look.ts";
+import { EXPLODE_GAP_MM } from "../model-explode.ts";
 import { syncStepColours } from "./model-history.ts";
 
 export interface ModelLookView {
@@ -44,6 +46,31 @@ function push() {
 }
 
 let paintedColours: boolean | null = null;
+
+// --- Split to print, Explode (D12). A view of a split to print's pieces, off with each new object and never saved.
+let explode = { on: false, gapMm: EXPLODE_GAP_MM };
+let explodeChanged: () => void = () => {};
+
+/** Whether Explode is on, and its gap in millimetres. */
+export function explodeLook(): { on: boolean; gapMm: number } {
+  return explode;
+}
+
+/** Model draws the pieces again when Explode or its gap changes. */
+export function onExplode(cb: () => void) {
+  explodeChanged = cb;
+}
+
+/** The open part has pieces to explode, or not: the row shows only then, and a part without them turns it off. */
+export function showExplode(available: boolean) {
+  const row = byId<HTMLElement>("#modelExplodeRow");
+  if (row) row.hidden = !available;
+  if (!available && explode.on) {
+    explode = { ...explode, on: false };
+    const box = byId<HTMLInputElement>("#modelExplode");
+    if (box) box.checked = false;
+  }
+}
 
 function paintAxis(axis: SectionAxis) {
   for (const button of document.querySelectorAll<HTMLButtonElement>("#modelSectionAxis [data-axis]")) {
@@ -124,6 +151,17 @@ export function mountModelLook(next: ModelLookView) {
     state = { ...state, colourByStep: (ev.target as HTMLInputElement).checked };
     push();
   });
+  byId<HTMLInputElement>("#modelExplode")?.addEventListener("change", (ev) => {
+    explode = { ...explode, on: (ev.target as HTMLInputElement).checked };
+    explodeChanged();
+  });
+  const gap = byId<HTMLInputElement>("#modelExplodeGap");
+  gap?.addEventListener("input", () => {
+    const value = Number(gap.value);
+    if (gap.value.trim() === "" || !Number.isFinite(value) || value < 0) return;
+    explode = { ...explode, gapMm: value };
+    if (explode.on) explodeChanged();
+  });
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" && panel && !panel.hidden) {
       closePanel();
@@ -155,10 +193,15 @@ export function resetModelLook() {
   faceArmed = false;
   dragOffset = 0;
   note = "";
-  for (const id of ["#modelSection", "#modelSectionFlip", "#modelColourSteps"]) {
+  for (const id of ["#modelSection", "#modelSectionFlip", "#modelColourSteps", "#modelExplode"]) {
     const box = byId<HTMLInputElement>(id);
     if (box) box.checked = false;
   }
+  const wasExploded = explode.on;
+  explode = { on: false, gapMm: EXPLODE_GAP_MM };
+  const gap = byId<HTMLInputElement>("#modelExplodeGap");
+  if (gap) gap.value = String(EXPLODE_GAP_MM);
+  if (wasExploded) queueMicrotask(() => explodeChanged());
   paintAxis(state.axis);
   closePanel();
   push();

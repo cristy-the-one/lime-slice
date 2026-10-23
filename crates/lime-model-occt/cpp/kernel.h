@@ -227,6 +227,32 @@ bool build_partition(
     const std::vector<std::array<double, 6>>& planes,
     std::vector<PartitionPiece>& pieces,
     std::string& error);
+/// --- Split to print, part numbers. One stroke of a number in the label's own U, V: its centre, its length along
+/// `angle_deg` from U, as `textStrokes` in src/modeling/text.ts draws it, centred on the label.
+struct NumberStroke {
+    double u = 0, v = 0, length = 0, angle_deg = 0;
+};
+/// Each piece's strokes in partition order, the stroke width, how deep the number is cut, how far the label keeps
+/// from a face's edge, and each cut's U (the direction the number reads along on its face).
+struct PartitionNumbers {
+    std::vector<std::vector<NumberStroke>> digits;
+    std::vector<std::array<double, 3>> us;
+    double width = 0, depth = 0, inset = 0;
+};
+/// Where a number was cut: on the face of cut `cut` (-1 for a side face), centred at `at`, the face's outward normal.
+struct NumberPlace {
+    int cut = -1;
+    double at[3] = {0, 0, 0};
+    double normal[3] = {0, 0, 0};
+};
+/// Engraves each piece's number on every face it has on a cut plane, where the label fits inside the face less the
+/// inset, or, when no cut face has room, on its largest side face that does. A piece with no room anywhere, or whose
+/// cut does not give one closed solid, keeps its shape and gets no place. `placed` has one list per piece.
+void engrave_numbers(
+    std::vector<PartitionPiece>& pieces,
+    const std::vector<std::array<double, 6>>& planes,
+    const PartitionNumbers& numbers,
+    std::vector<std::vector<NumberPlace>>& placed);
 /// A uniform scale about the centre. The result's volume is the original's times `factor` cubed.
 TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string& error);
 

@@ -8,6 +8,7 @@ import { primitiveLabel, type PrimitiveSpec } from "./model-primitive.ts";
 import type { Affine } from "./model-space.ts";
 import type { CutInput, Labels, Target } from "./modeling/partition.ts";
 import type { SketchData } from "./sketch/model.ts";
+import { EXPORT_PRINTERS } from "./ui/machine-library.ts";
 import type { ReinforceRegion } from "./reinforcement.ts";
 import type { SeamDisk } from "./seam-paint.ts";
 import type { EditEntry } from "./support-edit-list.ts";
@@ -797,8 +798,12 @@ export function opLabel(op: ModelOp, parts?: number): string {
       return `${verb} face ${n(Math.abs(op.distance))} mm${draft}${until}`;
     }
     // --- Split to print (plan section 11). Profiles, connectors and an export target join the label in later milestones.
-    case "partition":
-      return parts != null ? `Split to print, ${parts} parts` : "Split to print";
+    case "partition": {
+      // --- 3b. An export target names its printer (plan section 11).
+      const printer = op.target?.process === "resin" ? (EXPORT_PRINTERS.find((row) => row.id === op.target!.printer)?.name ?? op.target.printer) : null;
+      const head = printer ? `Split to print for ${printer}` : "Split to print";
+      return parts != null ? `${head}, ${parts} parts` : head;
+    }
     case "moveFaces": {
       const count = op.faces.length;
       const distance = op.faces[0]?.distance;

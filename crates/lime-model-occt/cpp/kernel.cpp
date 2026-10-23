@@ -2193,6 +2193,300 @@ bool build_partition(
     return true;
 }
 
+namespace {
+
+/// A label's frame on a flat face: the point it is centred on, U along the reading direction, V = N × U up the
+/// letters, and N the face's outward normal, so the number reads from outside the piece.
+struct LabelFrame {
+    gp_Pnt origin;
+    gp_Dir u;
+    gp_Dir v;
+    gp_Dir n;
+};
+
+gp_Pnt label_point(const LabelFrame& frame, double u, double v) {
+    return frame.origin.Translated(gp_Vec(frame.u).Multiplied(u) + gp_Vec(frame.v).Multiplied(v));
+}
+
+/// A stroke's corners in the label's U, V, the label turned a quarter when `turned`.
+std::array<gp_XY, 4> stroke_corners(const NumberStroke& stroke, double width, bool turned) {
+    const double angle = stroke.angle_deg * (std::acos(-1.0) / 180.0);
+    const gp_XY along(std::cos(angle) * stroke.length / 2, std::sin(angle) * stroke.length / 2);
+    const gp_XY across(-std::sin(angle) * width / 2, std::cos(angle) * width / 2);
+    const gp_XY centre(stroke.u, stroke.v);
+    std::array<gp_XY, 4> corners = {centre - along - across, centre + along - across, centre + along + across, centre - along + across};
+    if (turned) {
+        for (gp_XY& corner : corners) {
+            corner = gp_XY(-corner.Y(), corner.X());
+        }
+    }
+    return corners;
+}
+
+/// Whether the rectangle `lo`..`hi` around the frame's origin lies inside `face`: its centre is on the face, its
+/// outline keeps clear of every edge of the face, and no wire of the face (a hole's) lies inside it.
+bool rectangle_inside(const TopoDS_Face& face, const LabelFrame& frame, const gp_XY& lo, const gp_XY& hi) {
+    BRepClass_FaceClassifier classify(face, label_point(frame, (lo.X() + hi.X()) / 2, (lo.Y() + hi.Y()) / 2), 1e-7);
+    if (classify.State() != TopAbs_IN) {
+        return false;
+    }
+    BRepBuilderAPI_MakePolygon outline(
+        label_point(frame, lo.X(), lo.Y()),
+        label_point(frame, hi.X(), lo.Y()),
+        label_point(frame, hi.X(), hi.Y()),
+        label_point(frame, lo.X(), hi.Y()),
+        Standard_True);
+    if (!outline.IsDone()) {
+        return false;
+    }
+    for (TopExp_Explorer wire(face, TopAbs_WIRE); wire.More(); wire.Next()) {
+        BRepExtrema_DistShapeShape distance(outline.Wire(), wire.Current());
+        if (!distance.IsDone() || distance.Value() < 1e-6) {
+            return false;
+        }
+        TopExp_Explorer vertex(wire.Current(), TopAbs_VERTEX);
+        if (vertex.More()) {
+            const gp_Vec offset(frame.origin, BRep_Tool::Pnt(TopoDS::Vertex(vertex.Current())));
+            const double u = offset.Dot(gp_Vec(frame.u));
+            const double v = offset.Dot(gp_Vec(frame.v));
+            if (u > lo.X() && u < hi.X() && v > lo.Y() && v < hi.Y()) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// The flat face's outward normal, or false for a face that is not flat.
+bool outward_normal(const TopoDS_Face& face, gp_Dir& normal, gp_Pln& plane) {
+    BRepAdaptor_Surface surface(face);
+    if (surface.GetType() != GeomAbs_Plane) {
+        return false;
+    }
+    plane = surface.Plane();
+    normal = plane.Axis().Direction();
+    if (face.Orientation() == TopAbs_REVERSED) {
+        normal.Reverse();
+    }
+    return true;
+}
+
+/// Finds a spot on `face` for the strokes, from its centre of area outward on a grid, reading along `hint` and then
+/// turned a quarter. On success the stroke prisms join `tools`, cut `depth` into the solid.
+bool place_number(
+    const TopoDS_Face& face,
+    const gp_Dir& hint,
+    const std::vector<NumberStroke>& strokes,
+    const PartitionNumbers& numbers,
+    TopTools_ListOfShape& tools,
+    NumberPlace& place) {
+    gp_Dir normal;
+    gp_Pln plane;
+    if (!outward_normal(face, normal, plane)) {
+        return false;
+    }
+    gp_Vec along = gp_Vec(hint) - gp_Vec(normal).Multiplied(gp_Vec(hint).Dot(gp_Vec(normal)));
+    if (along.Magnitude() < 1e-6) {
+        along = gp_Vec(plane.XAxis().Direction());
+    }
+    GProp_GProps area;
+    BRepGProp::SurfaceProperties(face, area);
+    LabelFrame frame{area.CentreOfMass(), gp_Dir(along), gp_Dir(gp_Vec(normal).Crossed(along)), normal};
+    Bnd_Box box;
+    BRepBndLib::Add(face, box, Standard_False);
+    double x0 = 0, y0 = 0, z0 = 0, x1 = 0, y1 = 0, z1 = 0;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    gp_XY face_lo(1e300, 1e300);
+    gp_XY face_hi(-1e300, -1e300);
+    for (int corner = 0; corner < 8; ++corner) {
+        const gp_Vec offset(frame.origin, gp_Pnt(corner & 1 ? x1 : x0, corner & 2 ? y1 : y0, corner & 4 ? z1 : z0));
+        const gp_XY at(offset.Dot(gp_Vec(frame.u)), offset.Dot(gp_Vec(frame.v)));
+        face_lo.SetCoord(std::min(face_lo.X(), at.X()), std::min(face_lo.Y(), at.Y()));
+        face_hi.SetCoord(std::max(face_hi.X(), at.X()), std::max(face_hi.Y(), at.Y()));
+    }
+    for (const bool turned : {false, true}) {
+        gp_XY lo(1e300, 1e300);
+        gp_XY hi(-1e300, -1e300);
+        for (const NumberStroke& stroke : strokes) {
+            for (const gp_XY& corner : stroke_corners(stroke, numbers.width, turned)) {
+                lo.SetCoord(std::min(lo.X(), corner.X()), std::min(lo.Y(), corner.Y()));
+                hi.SetCoord(std::max(hi.X(), corner.X()), std::max(hi.Y(), corner.Y()));
+            }
+        }
+        lo -= gp_XY(numbers.inset, numbers.inset);
+        hi += gp_XY(numbers.inset, numbers.inset);
+        const gp_XY first(face_lo.X() - lo.X(), face_lo.Y() - lo.Y());
+        const gp_XY last(face_hi.X() - hi.X(), face_hi.Y() - hi.Y());
+        if (first.X() > last.X() || first.Y() > last.Y()) {
+            continue;
+        }
+        constexpr int kSteps = 8;
+        std::vector<gp_XY> spots = {gp_XY(0, 0)};
+        for (int i = 0; i <= kSteps; ++i) {
+            for (int j = 0; j <= kSteps; ++j) {
+                spots.emplace_back(
+                    first.X() + (last.X() - first.X()) * i / kSteps, first.Y() + (last.Y() - first.Y()) * j / kSteps);
+            }
+        }
+        std::stable_sort(spots.begin(), spots.end(), [](const gp_XY& a, const gp_XY& b) {
+            return a.SquareModulus() < b.SquareModulus();
+        });
+        for (const gp_XY& spot : spots) {
+            if (!rectangle_inside(face, frame, lo + spot, hi + spot)) {
+                continue;
+            }
+            constexpr double kLift = 0.05;
+            for (const NumberStroke& stroke : strokes) {
+                const std::array<gp_XY, 4> corners = stroke_corners(stroke, numbers.width, turned);
+                BRepBuilderAPI_MakePolygon outline;
+                for (const gp_XY& corner : corners) {
+                    outline.Add(label_point(frame, corner.X() + spot.X(), corner.Y() + spot.Y())
+                                    .Translated(gp_Vec(normal).Multiplied(kLift)));
+                }
+                outline.Close();
+                BRepBuilderAPI_MakeFace base(outline.Wire(), Standard_True);
+                if (!base.IsDone()) {
+                    return false;
+                }
+                BRepPrimAPI_MakePrism prism(base.Face(), gp_Vec(normal).Multiplied(-(numbers.depth + kLift)));
+                if (!prism.IsDone()) {
+                    return false;
+                }
+                tools.Append(prism.Shape());
+            }
+            const gp_Pnt at = label_point(frame, spot.X(), spot.Y());
+            place.at[0] = at.X();
+            place.at[1] = at.Y();
+            place.at[2] = at.Z();
+            place.normal[0] = normal.X();
+            place.normal[1] = normal.Y();
+            place.normal[2] = normal.Z();
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The faces of `shape` on the plane through `origin` square to `normal`, largest first.
+std::vector<TopoDS_Face> faces_on_plane(const TopoDS_Shape& shape, const gp_Pnt& origin, const gp_Dir& normal) {
+    std::vector<std::pair<double, TopoDS_Face>> found;
+    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+        const TopoDS_Face& face = TopoDS::Face(explorer.Current());
+        gp_Dir outward;
+        gp_Pln plane;
+        if (!outward_normal(face, outward, plane) || std::abs(gp_Vec(outward).Dot(gp_Vec(normal))) < 1.0 - 1e-9 ||
+            std::abs(gp_Vec(origin, plane.Location()).Dot(gp_Vec(normal))) > 1e-6) {
+            continue;
+        }
+        GProp_GProps area;
+        BRepGProp::SurfaceProperties(face, area);
+        found.emplace_back(area.Mass(), face);
+    }
+    std::stable_sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::vector<TopoDS_Face> faces;
+    for (const auto& [area, face] : found) {
+        faces.push_back(face);
+    }
+    return faces;
+}
+
+}  // namespace
+
+void engrave_numbers(
+    std::vector<PartitionPiece>& pieces,
+    const std::vector<std::array<double, 6>>& planes,
+    const PartitionNumbers& numbers,
+    std::vector<std::vector<NumberPlace>>& placed) {
+    placed.assign(pieces.size(), {});
+    if (planes.empty() || !(numbers.depth > 0.0) || !(numbers.width > 0.0)) {
+        return;
+    }
+    std::vector<gp_Pnt> origins;
+    std::vector<gp_Dir> normals;
+    std::vector<gp_Dir> us;
+    for (size_t index = 0; index < planes.size(); ++index) {
+        const std::array<double, 6>& plane = planes[index];
+        origins.emplace_back(plane[0], plane[1], plane[2]);
+        normals.emplace_back(plane[3], plane[4], plane[5]);
+        const std::array<double, 3> u = index < numbers.us.size() ? numbers.us[index] : std::array<double, 3>{0, 0, 0};
+        const gp_Vec hint(u[0], u[1], u[2]);
+        us.push_back(hint.Magnitude() > 1e-9 ? gp_Dir(hint) : gp_Pln(origins.back(), normals.back()).XAxis().Direction());
+    }
+    for (size_t index = 0; index < pieces.size(); ++index) {
+        if (index >= numbers.digits.size() || numbers.digits[index].empty()) {
+            continue;
+        }
+        const std::vector<NumberStroke>& strokes = numbers.digits[index];
+        PartitionPiece& piece = pieces[index];
+        TopTools_ListOfShape tools;
+        std::vector<NumberPlace> here;
+        for (size_t cut = 0; cut < planes.size(); ++cut) {
+            for (const TopoDS_Face& face : faces_on_plane(piece.shape, origins[cut], normals[cut])) {
+                NumberPlace place;
+                place.cut = static_cast<int>(cut);
+                if (place_number(face, us[cut], strokes, numbers, tools, place)) {
+                    here.push_back(place);
+                    break;
+                }
+            }
+        }
+        if (here.empty()) {
+            std::vector<std::pair<double, TopoDS_Face>> sides;
+            for (TopExp_Explorer explorer(piece.shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+                const TopoDS_Face& face = TopoDS::Face(explorer.Current());
+                gp_Dir outward;
+                gp_Pln plane;
+                if (!outward_normal(face, outward, plane)) {
+                    continue;
+                }
+                bool on_cut = false;
+                for (size_t cut = 0; cut < planes.size() && !on_cut; ++cut) {
+                    on_cut = std::abs(gp_Vec(outward).Dot(gp_Vec(normals[cut]))) > 1.0 - 1e-9 &&
+                             std::abs(gp_Vec(origins[cut], plane.Location()).Dot(gp_Vec(normals[cut]))) < 1e-6;
+                }
+                if (on_cut) {
+                    continue;
+                }
+                GProp_GProps area;
+                BRepGProp::SurfaceProperties(face, area);
+                sides.emplace_back(area.Mass(), face);
+            }
+            std::stable_sort(sides.begin(), sides.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+            for (const auto& [area, face] : sides) {
+                NumberPlace place;
+                if (place_number(face, normals[0], strokes, numbers, tools, place)) {
+                    here.push_back(place);
+                    break;
+                }
+            }
+        }
+        if (here.empty()) {
+            continue;
+        }
+        TopTools_ListOfShape arguments;
+        arguments.Append(piece.shape);
+        BRepAlgoAPI_Cut cut;
+        cut.SetArguments(arguments);
+        cut.SetTools(tools);
+        cut.SetNonDestructive(Standard_True);
+        cut.SetToFillHistory(Standard_False);
+        g_stats.builds += 1;
+        Handle(Message_ProgressIndicator) watch;
+        cut.Build(deadline_range(watch));
+        if (!cut.IsDone() || cut.HasErrors() || cut.Shape().IsNull()) {
+            continue;
+        }
+        const TopoDS_Shape engraved = as_solid(cut.Shape());
+        if (engraved.IsNull() || engraved.ShapeType() != TopAbs_SOLID || !BRepCheck_Analyzer(engraved).IsValid() ||
+            !every_edge_shared_by_two(engraved)) {
+            continue;
+        }
+        piece.shape = engraved;
+        piece.volume = volume_of(engraved);
+        placed[index] = here;
+    }
+}
+
 TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string& error) {
     if (!(factor > 0.0)) {
         error = "Scale needs a positive factor";

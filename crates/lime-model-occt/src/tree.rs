@@ -473,6 +473,7 @@ pub enum Op {
     /// The solid cut along every plane at once. The node keeps the first piece in partition order; the others are
     /// answered once, in the apply reply, and with `pieceKeys` each becomes the root of its own tree. `target`,
     /// `orient`, `arrange`, `labels`, `bedMarginMm` and `maxPieces` are stored as sent; only `maxPieces` is read here.
+    /// `numbers` is the part numbers' strokes the client builds from `labels` for every request, and is never echoed.
     Partition {
         cuts: Vec<PartitionCut>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -487,7 +488,22 @@ pub enum Op {
         bed_margin_mm: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_pieces: Option<f64>,
+        #[serde(default, skip_serializing)]
+        numbers: Option<PartitionNumbers>,
     },
+}
+
+/// --- Split to print, part numbers (plan sections 2 and 10). Each piece's number as `textStrokes` draws it, centred
+/// on the label: `digits[i]` is piece `i + 1`'s strokes, each `[u, v, length, angleDeg]`. The strokes are `strokeMm`
+/// wide and cut `depthMm` deep, and the label keeps `insetMm` from a face's edge.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartitionNumbers {
+    pub digits: Vec<Vec<[f64; 4]>>,
+    pub stroke_mm: f64,
+    pub depth_mm: f64,
+    #[serde(default)]
+    pub inset_mm: f64,
 }
 
 /// --- Split to print. One cut: the plane through `origin` square to `normal`. `u`, `profile` and `connectors` are
@@ -525,8 +541,6 @@ const PARTITION_PROFILE_LATER: &str =
     "Only straight cuts are built yet. Leave the profile out, or make it straight.";
 const PARTITION_CONNECTORS_LATER: &str =
     "Connectors are not built yet. Leave them off for a plain cut.";
-const PARTITION_RESIN_LATER: &str =
-    "A resin target needs the export, which comes later. Cut for the plate's printer.";
 
 /// The planner's Max pieces (`clampPieces` in `src/modeling/partition.ts`): 12 when absent, from 2 to 24.
 fn partition_max(max_pieces: Option<f64>) -> usize {
@@ -537,12 +551,9 @@ fn partition_max(max_pieces: Option<f64>) -> usize {
     wanted.clamp(2.0, 24.0) as usize
 }
 
-/// Why this milestone does not build a partition, before anything is cut: a shaped profile, connectors, or a resin
-/// target. Each is a sentence, and the solid is unchanged.
-fn partition_refusal(
-    cuts: &[PartitionCut],
-    target: Option<&PartitionTarget>,
-) -> Option<&'static str> {
+/// Why this milestone does not build a partition, before anything is cut: a shaped profile, or connectors. Each is a
+/// sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced (D12).
+fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
     let straight = |profile: &Value| {
         profile.is_null() || profile.get("kind").and_then(Value::as_str) == Some("straight")
     };
@@ -554,9 +565,6 @@ fn partition_refusal(
         .any(|cut| cut.connectors.get("on").and_then(Value::as_bool) == Some(true))
     {
         return Some(PARTITION_CONNECTORS_LATER);
-    }
-    if target.is_some_and(|target| target.process == PrintProcess::Resin) {
-        return Some(PARTITION_RESIN_LATER);
     }
     None
 }
@@ -689,7 +697,22 @@ pub fn partition_primitive(
     let _store = lock();
     let whole = Shape::primitive(&solid)?;
     let _budget = GroupBudget::start();
-    Ok(whole.partition(planes)?.iter().map(Shape::check).collect())
+    Ok(whole
+        .partition(planes, None)?
+        .0
+        .iter()
+        .map(Shape::check)
+        .collect())
+}
+
+/// --- Split to print (D12). The solids a STEP file holds, each checked as a partition's piece, in the file's order.
+pub fn step_solids(step: &[u8]) -> Result<Vec<crate::PartitionPiece>, String> {
+    let _store = lock();
+    let path = temp_step("read");
+    std::fs::write(&path, step).map_err(|err| err.to_string())?;
+    let read = Shape::read_step(&path);
+    let _ = std::fs::remove_file(&path);
+    Ok(read?.solids()?.iter().map(Shape::check).collect())
 }
 
 pub fn set_limits(limits: Limits) {
@@ -953,7 +976,18 @@ enum Request {
         node: NodeId,
         #[serde(default)]
         format: ExportFormat,
+        /// --- Split to print (D12): the other pieces, each a tree's step, written with this one as one STEP file of
+        /// separate solids, in this order.
+        #[serde(default)]
+        pieces: Vec<TreeStep>,
     },
+}
+
+/// --- Split to print. A step of a tree by its key.
+#[derive(Deserialize)]
+struct TreeStep {
+    key: String,
+    node: NodeId,
 }
 
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -1873,7 +1907,38 @@ impl Store {
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
                 Err(Failure::Message(shape.test_fault()))
             }
-            Request::Export { key, node, format } => {
+            Request::Export {
+                key,
+                node,
+                format,
+                pieces,
+            } if !pieces.is_empty() => {
+                if format != ExportFormat::Step {
+                    return Err(Failure::Message(
+                        "A split to print's pieces export as STEP".into(),
+                    ));
+                }
+                let all: Vec<(String, NodeId)> = std::iter::once((key, node))
+                    .chain(pieces.into_iter().map(|at| (at.key, at.node)))
+                    .collect();
+                for (key, node) in &all {
+                    self.ensure(key, *node)?;
+                }
+                let mut raw = Vec::with_capacity(all.len());
+                for (key, node) in &all {
+                    raw.push(doc_in(&mut self.docs, key)?.shape(*node).raw());
+                }
+                let bytes = Shape::step_bytes_of(&raw).map_err(Failure::Message)?;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                Ok(Answer::Plain(format!(
+                    "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{},\"format\":\"step\",\"solids\":{}}}",
+                    bytes.len(),
+                    raw.len()
+                )))
+            }
+            Request::Export {
+                key, node, format, ..
+            } => {
                 self.ensure(&key, node)?;
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
                 let bytes = match format {
@@ -2155,6 +2220,7 @@ impl Store {
         if matches!(built.op, Op::Partition { .. }) {
             fields.push(("parts", Part::Json((built.pieces.len() + 1).to_string())));
         }
+        push_numbers(&mut fields, built.numbered.as_deref());
         if !piece_keys.is_empty() {
             let list = self.start_pieces(built.pieces, &piece_keys, pieces, chord);
             fields.push(("pieces", Part::Json(list)));
@@ -2380,6 +2446,10 @@ impl Store {
                         })
                         .collect();
                     let _ = write!(metrics, ",\"parts\":{}", Value::Array(parts));
+                    if let Some(numbered) = built.numbered.as_deref() {
+                        let (numbers, notes) = number_fields(numbered);
+                        let _ = write!(metrics, ",\"numbers\":{numbers},\"notes\":{}", json!(notes));
+                    }
                 }
                 doc.probe = Some(Probed {
                     parent: id,
@@ -2549,9 +2619,11 @@ impl Store {
             };
             // --- Split to print (D9). The edited step's pieces start their trees once the edit is kept.
             let mut pieces = Vec::new();
+            let mut numbered = None;
             let first = first.map(|mut built| {
                 if own {
                     pieces = std::mem::take(&mut built.pieces);
+                    numbered = built.numbered.take();
                 }
                 built
             });
@@ -2595,6 +2667,7 @@ impl Store {
             if matches!(level.op, Op::Partition { .. }) {
                 fields.push(("parts", Part::Json((pieces.len() + 1).to_string())));
             }
+            push_numbers(&mut fields, numbered.as_deref());
             if !piece_keys.is_empty() {
                 let list = self.start_pieces(pieces, piece_keys, replies, chord);
                 fields.push(("pieces", Part::Json(list)));
@@ -3535,8 +3608,70 @@ struct Built {
     other: Option<Shape>,
     /// --- Split to print: pieces 2, 3, ... in partition order. Empty for any other op.
     pieces: Vec<Shape>,
+    /// --- Split to print: where each piece's number was cut, in partition order, when part numbers are on.
+    numbered: Option<Numbered>,
     /// Steps of a group whose tool missed the solid. 0 for any other op.
     skipped: u32,
+}
+
+/// --- Split to print. Where each piece's number was cut, in partition order.
+type Numbered = Vec<Vec<NumberPlace>>;
+
+/// --- Split to print. A part number cut on the face of cut `cut`, or on a side face when `cut` is None.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct NumberPlace {
+    #[serde(deserialize_with = "side_or_cut")]
+    cut: Option<usize>,
+    at: [f64; 3],
+    normal: [f64; 3],
+}
+
+fn side_or_cut<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Option<usize>, D::Error> {
+    let index = i64::deserialize(from)?;
+    Ok(usize::try_from(index).ok())
+}
+
+/// --- Split to print. What `Shape::partition` needs to cut the part numbers: the strokes, and each cut's U.
+struct Labels<'a> {
+    numbers: &'a PartitionNumbers,
+    us: Vec<[f64; 3]>,
+}
+
+/// --- Split to print. Each piece's number as the reply sends it, `{part, faces}`, and a sentence for each piece that
+/// had no room for its number.
+fn number_fields(numbered: &[Vec<NumberPlace>]) -> (Value, Vec<String>) {
+    let mut notes = Vec::new();
+    let list = numbered
+        .iter()
+        .enumerate()
+        .map(|(index, places)| {
+            if places.is_empty() {
+                notes.push(format!("Part {} has no room for a number.", index + 1));
+            }
+            let faces: Vec<Value> = places
+                .iter()
+                .map(|place| {
+                    json!({
+                        "face": if place.cut.is_some() { "cut" } else { "side" },
+                        "cut": place.cut,
+                        "at": place.at,
+                        "normal": place.normal,
+                    })
+                })
+                .collect();
+            json!({ "part": index + 1, "faces": faces })
+        })
+        .collect();
+    (Value::Array(list), notes)
+}
+
+/// --- Split to print. An apply's or an edit's `numbers` and `notes`, when part numbers were cut.
+fn push_numbers(fields: &mut Vec<(&'static str, Part)>, numbered: Option<&[Vec<NumberPlace>]>) {
+    if let Some(numbered) = numbered {
+        let (numbers, notes) = number_fields(numbered);
+        fields.push(("numbers", Part::Json(numbers.to_string())));
+        fields.push(("notes", Part::Json(json!(notes).to_string())));
+    }
 }
 
 /// Why `build` refused. `failed_step` is set for a group, counting from 1.
@@ -3726,6 +3861,7 @@ fn build_group(
         kept,
         other: None,
         pieces: Vec::new(),
+        numbered: None,
         skipped,
     })
 }
@@ -3754,6 +3890,7 @@ fn build(
     }
     let mut other = None;
     let mut pieces = Vec::new();
+    let mut numbered = None;
     let kept = match &op {
         Op::Join {
             op: which,
@@ -3828,11 +3965,11 @@ fn build(
         // --- Split to print. The node keeps the first piece; the rest go to the apply reply.
         Op::Partition {
             cuts,
-            target,
             max_pieces,
+            numbers,
             ..
         } => {
-            if let Some(why) = partition_refusal(cuts, target.as_ref()) {
+            if let Some(why) = partition_refusal(cuts) {
                 return Err(BuildFail::plain(why));
             }
             let planes: Vec<[f64; 6]> = cuts
@@ -3842,7 +3979,14 @@ fn build(
                     [x, y, z, nx, ny, nz]
                 })
                 .collect();
-            let mut made = from.partition(&planes).map_err(BuildFail::plain)?;
+            let labels = numbers.as_ref().map(|numbers| Labels {
+                numbers,
+                us: cuts.iter().map(|cut| cut.u.unwrap_or([0.0; 3])).collect(),
+            });
+            let (mut made, placed) = from
+                .partition(&planes, labels.as_ref())
+                .map_err(BuildFail::plain)?;
+            numbered = placed;
             let max = partition_max(*max_pieces);
             if made.len() > max {
                 return Err(BuildFail::plain(format!(
@@ -3880,6 +4024,7 @@ fn build(
                     kept,
                     other: None,
                     pieces: Vec::new(),
+                    numbered: None,
                     skipped: 0,
                 }),
                 Err(message) => Err(BuildFail {
@@ -4078,6 +4223,7 @@ fn build(
             kept,
             other,
             pieces,
+            numbered,
             skipped: 0,
         }),
         Err(message) => Err(BuildFail::plain(message)),
@@ -4166,13 +4312,27 @@ extern "C" {
         other: *mut *mut RawShape,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    #[allow(clippy::too_many_arguments)]
     fn lime_tree_partition(
         from: *const RawShape,
         p: *const f64,
         count: c_int,
+        us: *const f64,
+        stroke_counts: *const c_int,
+        digit_count: c_int,
+        strokes: *const f64,
+        sizes: *const f64,
         out: *mut *mut RawShape,
+        placed: *mut *mut c_char,
         error: *mut *mut c_char,
     ) -> c_int;
+    fn lime_tree_write_step_many(
+        shapes: *const *const RawShape,
+        count: c_int,
+        path: *const c_char,
+        error: *mut *mut c_char,
+    ) -> c_int;
+    fn lime_tree_solids(shape: *const RawShape, out: *mut *mut RawShape, max: c_int) -> c_int;
     fn lime_tree_check(shape: *const RawShape, out: *mut c_int);
     fn lime_tree_bounds(shape: *const RawShape, out: *mut f64) -> c_int;
     fn lime_tree_scale(
@@ -4657,6 +4817,7 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, BuildFail> 
             kept,
             other: None,
             pieces: Vec::new(),
+            numbered: None,
             skipped: 0,
         }),
         Err(message) => Err(BuildFail::plain(message)),
@@ -4700,21 +4861,92 @@ impl Shape {
     }
 
     /// Cuts this solid along every plane (x, y, z, nx, ny, nz) at once. The pieces are in partition order, and none is
-    /// made unless all are. The caller's budget, if any, applies.
-    fn partition(&self, planes: &[[f64; 6]]) -> Result<Vec<Shape>, String> {
+    /// made unless all are. The caller's budget, if any, applies. With `labels`, each piece's number is cut into it, and
+    /// the second answer is where.
+    fn partition(
+        &self,
+        planes: &[[f64; 6]],
+        labels: Option<&Labels>,
+    ) -> Result<(Vec<Shape>, Option<Numbered>), String> {
         const MAX_PIECES: usize = 24;
         let count = c_int::try_from(planes.len()).map_err(|_| "Too many planes".to_string())?;
         let flat: Vec<f64> = planes.iter().flatten().copied().collect();
+        let us: Vec<f64> = labels
+            .map(|labels| labels.us.iter().flatten().copied().collect())
+            .unwrap_or_default();
+        let digits = labels.map_or(&[][..], |labels| &labels.numbers.digits[..]);
+        let stroke_counts: Vec<c_int> = digits
+            .iter()
+            .map(|digit| c_int::try_from(digit.len()).unwrap_or(0))
+            .collect();
+        let strokes: Vec<f64> = digits.iter().flatten().flatten().copied().collect();
+        let sizes = labels.map_or([0.0; 3], |labels| {
+            let numbers = labels.numbers;
+            [numbers.stroke_mm, numbers.depth_mm, numbers.inset_mm]
+        });
+        let digit_count = c_int::try_from(digits.len()).map_err(|_| "Too many numbers".to_string())?;
         let mut out = [std::ptr::null_mut::<RawShape>(); MAX_PIECES];
+        let mut placed: *mut c_char = std::ptr::null_mut();
         let mut error: *mut c_char = std::ptr::null_mut();
-        // SAFETY: `flat` holds `count` planes, and `out` has room for the most pieces the kernel returns.
+        // SAFETY: `flat` holds `count` planes and `us` a U for each when there are digits; `strokes` holds the strokes
+        // `stroke_counts` counts, and `out` has room for the most pieces the kernel returns.
         let made = unsafe {
-            lime_tree_partition(self.raw(), flat.as_ptr(), count, out.as_mut_ptr(), &mut error)
+            lime_tree_partition(
+                self.raw(),
+                flat.as_ptr(),
+                count,
+                us.as_ptr(),
+                stroke_counts.as_ptr(),
+                digit_count,
+                strokes.as_ptr(),
+                sizes.as_ptr(),
+                out.as_mut_ptr(),
+                &mut placed,
+                &mut error,
+            )
         };
         let message = take_text(error);
+        let placed = take_text(placed);
         let Ok(made) = usize::try_from(made) else {
             return Err(message.unwrap_or_else(|| "Open CASCADE failed".into()));
         };
+        let pieces = out[..made]
+            .iter()
+            .filter_map(|piece| NonNull::new(*piece).map(Shape))
+            .collect();
+        let placed = match placed {
+            Some(text) => Some(serde_json::from_str(&text).map_err(|err| err.to_string())?),
+            None => None,
+        };
+        Ok((pieces, placed))
+    }
+
+    /// --- Split to print (D12). These solids as one STEP file, each a solid of its own. Every shape in `raw` is held
+    /// by a node until this returns.
+    fn step_bytes_of(raw: &[*const RawShape]) -> Result<Vec<u8>, String> {
+        let path = temp_step("export");
+        let c = c_path(&path)?;
+        let count = c_int::try_from(raw.len()).map_err(|_| "Too many solids".to_string())?;
+        let mut error: *mut c_char = std::ptr::null_mut();
+        // SAFETY: `raw` holds `count` live shapes, and `c` is a NUL-terminated path.
+        let ok = unsafe { lime_tree_write_step_many(raw.as_ptr(), count, c.as_ptr(), &mut error) };
+        let message = take_text(error);
+        let bytes = if ok == 0 {
+            Err(message.unwrap_or_else(|| "Open CASCADE did not write these solids".into()))
+        } else {
+            std::fs::read(&path).map_err(|err| err.to_string())
+        };
+        let _ = std::fs::remove_file(&path);
+        bytes
+    }
+
+    /// --- Split to print. Each solid of this shape on its own, at most 24.
+    fn solids(&self) -> Result<Vec<Shape>, String> {
+        const MAX_SOLIDS: usize = 24;
+        let mut out = [std::ptr::null_mut::<RawShape>(); MAX_SOLIDS];
+        // SAFETY: `out` has room for `MAX_SOLIDS` shapes.
+        let made = unsafe { lime_tree_solids(self.raw(), out.as_mut_ptr(), MAX_SOLIDS as c_int) };
+        let made = usize::try_from(made).map_err(|_| "More solids than a partition makes".to_string())?;
         Ok(out[..made]
             .iter()
             .filter_map(|piece| NonNull::new(*piece).map(Shape))
