@@ -580,3 +580,10 @@ The first draft was FDM-only and oriented every piece joint-down. Review changed
 7. **A target printer on the op** (D11). Cutting is for a printer, which need not be the plate's. The use case is a Formlabs resin printer whose volume is too short for the parts.
 8. **Floors come from the process** (section 2). FDM floors scale with the nozzle and layer; resin gets its own floors, clearance row, and coupon, labelled Starting fit.
 9. **Export and reassembly** (D12, milestone 3b). STL, 3MF, or a STEP assembly for PreForm, the support note, part numbers on the mating faces, and Explode in Model. Milestone 3b delivers the resin use case right after the straight cut and the history row.
+
+## 19. Open from milestone 3, for milestone 4
+
+Milestone 3 reaches the op through the MCP and the saved file only. Two things it does less well than this plan asks, both to settle when the panel's Apply and Edit land in milestone 4:
+
+1. **Lay out moves the whole plate.** `model_commit` runs the plate's Arrange, so other objects the user placed move too. Lay out should place only the new pieces, around what is already on the plate.
+2. **D9's kept steps.** When an edit rebuilds a piece and the first of that piece's later steps no longer builds, those steps are not kept as a row that says why; the piece becomes the new cut's piece. D9 keeps them, so the user's later work on a piece is never lost.
