@@ -63,12 +63,12 @@ const ROW_NAMES =
 
 const fdm = (featureMm: number, layerMm: number) => partitionDefaults({ process: "fdm", featureMm, layerMm, material: "PLA", adhesion: "brim" });
 const expectedRows: Array<[string, ReturnType<typeof partitionDefaults>, number[]]> = [
-  ["nozzle 0.4, layer 0.2", fdm(0.4, 0.2), [0.8, 3, 4, 0.4, 3.8, 4, 0.4, 8, 0.8, 10, 5, 3, 6, 3, 8, 20, 3]],
-  ["nozzle 0.8, layer 0.28", fdm(0.8, 0.28), [1.6, 3.2, 4, 0.56, 4.8, 6.4, 0.56, 8, 1.6, 10, 5, 3, 6, 3, 8, 20, 3]],
-  ["nozzle 0.8, layer 0.2", fdm(0.8, 0.2), [1.6, 3.2, 4, 0.4, 4.8, 6.4, 0.4, 8, 1.6, 10, 5, 3, 6, 3, 8, 20, 3]],
-  ["nozzle 0.4, layer 0.28", fdm(0.4, 0.28), [0.8, 3, 4, 0.56, 3.8, 4, 0.56, 8, 0.84, 10, 5, 3, 6, 3, 8, 20, 3]],
-  ["nozzle 1.5, layer 0.6", fdm(1.5, 0.6), [3, 6, 4.8, 1.2, 9, 12, 1.2, 9, 3, 12, 6, 3.6, 9, 3.6, 12, 20, 3.6]],
-  ["resin floors", partitionDefaults({ process: "resin", material: "Tough 2000" }), [1, 3, 4, 0.4, 4, 4, 0.4, 8, 1, 10, 5, 3, 6, 3, 8, 20, 3]],
+  ["nozzle 0.4, layer 0.2", fdm(0.4, 0.2), [0.8, 3, 4, 0.4, 3.95, 4, 0.4, 8, 0.8, 10, 5, 3, 6, 3, 8, 20, 3]],
+  ["nozzle 0.8, layer 0.28", fdm(0.8, 0.28), [1.6, 3.2, 4, 0.56, 4.95, 6.4, 0.56, 8, 1.6, 10, 5, 3, 6, 3, 8, 20, 3]],
+  ["nozzle 0.8, layer 0.2", fdm(0.8, 0.2), [1.6, 3.2, 4, 0.4, 4.95, 6.4, 0.4, 8, 1.6, 10, 5, 3, 6, 3, 8, 20, 3]],
+  ["nozzle 0.4, layer 0.28", fdm(0.4, 0.28), [0.8, 3, 4, 0.56, 3.95, 4, 0.56, 8, 0.84, 10, 5, 3, 6, 3, 8, 20, 3]],
+  ["nozzle 1.5, layer 0.6", fdm(1.5, 0.6), [3, 6, 4.8, 1.2, 9.15, 12, 1.2, 9, 3, 12, 6, 3.6, 9, 3.6, 12, 20, 3.6]],
+  ["resin floors", partitionDefaults({ process: "resin", material: "Tough 2000" }), [1, 3, 4, 0.4, 4.1, 4, 0.4, 8, 1, 10, 5, 3, 6, 3, 8, 20, 3]],
 ];
 for (const [name, d, want] of expectedRows) {
   const got = row(d);
@@ -118,14 +118,14 @@ check("a bare op targets the plate and lays out", plain.target === lime && plain
 check("a bare op carries the label, margin, and piece defaults", show(plain.labels) === show({ on: true, face: "cut", height: 4, depth: 0.4 }) && plain.bedMarginMm === 5 && plain.maxPieces === 12);
 const on = fillPartition({ cuts: [{ origin: [0, 0, 40], normal: [0, 0, 1], connectors: { on: true } }] }, ctx);
 check("connectors on with no types adds the dowel row", show(on.cuts[0]!.connectors.types) === show([
-  { type: "dowel", count: "fit", margin: 3.8, place: "fit", at: [], radius: 3, depth: 4, clearance: 0.15, endGap: 0.4, hole: "teardrop" },
+  { type: "dowel", count: "fit", margin: 3.95, place: "fit", at: [], radius: 3, depth: 4, clearance: 0.15, endGap: 0.4, hole: "teardrop" },
 ]), show(on.cuts[0]!.connectors.types));
 const exported = fillPartition({ cuts: [{ origin: [0, 0, 100], normal: [0, 0, 1], connectors: { on: true } }], target: form4 }, ctx);
 check("an export target does not lay out and takes the resin floors", exported.arrange === false && exported.bedMarginMm === 10 && exported.maxPieces === 12);
 const resinDowel = exported.cuts[0]!.connectors.types[0]!;
-check("a resin dowel is round with the resin clearance", resinDowel.type === "dowel" && resinDowel.hole === "round" && resinDowel.clearance === 0.1 && resinDowel.margin === 4);
+check("a resin dowel is round with the resin clearance", resinDowel.type === "dowel" && resinDowel.hole === "round" && resinDowel.clearance === 0.1 && resinDowel.margin === 4.1);
 check("typed fields survive filling", show(fillPartition({ cuts: [{ origin: [0, 0, 0], normal: [0, 0, 1], connectors: { on: true, types: [{ type: "dowel", radius: 4, clearance: "loose", count: 2 }] } }], maxPieces: 99, bedMarginMm: 7 }, ctx).cuts[0]!.connectors.types[0]) === show(
-  { type: "dowel", count: 2, margin: 4.8, place: "fit", at: [], radius: 4, depth: 4, clearance: 0.25, endGap: 0.4, hole: "teardrop" }));
+  { type: "dowel", count: 2, margin: 5.05, place: "fit", at: [], radius: 4, depth: 4, clearance: 0.25, endGap: 0.4, hole: "teardrop" }));
 check("max pieces is clamped when filling", fillPartition({ cuts: [], maxPieces: 99 }, ctx).maxPieces === 24);
 const lap = fillPartition({ cuts: [{ origin: [0, 0, 40], normal: [0, 0, 1], profile: { kind: "lap" } }] }, ctx).cuts[0]!.profile;
 check("a lap defaults to half the section along V", show(lap) === show({ kind: "lap", depth: 8, height: 25, side: "positive" }), show(lap));
@@ -248,6 +248,12 @@ check("Fit stores fractions of the section box", fitRow.placed.every((p) => !p.f
 check("Fit with room for all has nothing to say", fitRow.notes.length === 0 && fitRow.dropped.length === 0);
 check("ids carry the cut number", place(4, rect(100, 20), spec()).placed[0]!.id === "c4-1");
 check("a short section holds one", show(uvs(place(1, rect(40, 20), spec()))) === show([[20, 10]]));
+// The default margin is the hole (radius plus clearance) plus the wall floor, so a section just twice the margin
+// tall keeps every default dowel, with a wall of at least the floor. Radius alone plus the floor left 0.65 mm.
+const tight = place(1, rect(100, 2 * 3.95 + 0.02), spec());
+const tightWall = 3.95 + 0.01 - (3 + 0.15);
+check("a section just over twice the default margin keeps its dowels", tight.placed.length === 3 && tight.dropped.length === 0, show(tight.notes));
+check("and the wall it leaves is at least the floor", tightWall >= base.wallFloorMm, String(tightWall));
 const plugRow = place(1, rect(100, 20), spec({}, "plug"));
 check("a plug is placed the same way", plugRow.placed.length === 3 && plugRow.placed.every((p) => p.type === "plug"));
 check("a wider pin widens the pitch", show(uvs(place(1, rect(100, 20), spec({ radius: 5 }))).map((p) => p[0])) === show([10, 50, 90]));

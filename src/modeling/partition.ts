@@ -240,7 +240,7 @@ export function partitionDefaults(input: DefaultsInput): PartitionDefaults {
     radiusMm,
     depthMm: Math.max(4, 8 * l),
     endGapMm: Math.max(0.4, 2 * l),
-    marginMm: Math.max(radiusMm + 2 * f, 3),
+    marginMm: Math.max(radiusMm + (clearance?.snug ?? 0) + 2 * f, 3),
     numberHeightMm: Math.max(4, 8 * f),
     numberDepthMm: Math.max(0.4, 2 * l),
     lapDepthMm: Math.max(8, 6 * f),
@@ -296,10 +296,11 @@ function resolveClearance(input: ClearanceInput | undefined, d: PartitionDefault
   return d.clearance[input ?? "snug"];
 }
 
-function spread(spec: Spread, nominalRadius: number, d: PartitionDefaults): ResolvedSpread {
+function spread(spec: Spread, nominalRadius: number, clearance: number | null, d: PartitionDefaults): ResolvedSpread {
   return {
     count: spec.count ?? "fit",
-    margin: spec.margin ?? Math.max(nominalRadius + 2 * d.featureMm, 3),
+    // The hole is the radius plus the clearance; the wall floor is kept outside it.
+    margin: spec.margin ?? Math.max(nominalRadius + (clearance ?? 0) + d.wallFloorMm, 3),
     place: spec.place ?? "fit",
     at: spec.at ?? [],
   };
@@ -313,7 +314,7 @@ export function fillConnector(spec: ConnectorSpec, d: PartitionDefaults): Resolv
     case "plug": {
       const radius = spec.radius ?? d.radiusMm;
       const round: ResolvedRound = {
-        ...spread(spec, radius, d),
+        ...spread(spec, radius, clearance, d),
         radius,
         depth: spec.depth ?? d.depthMm,
         clearance,
@@ -324,7 +325,7 @@ export function fillConnector(spec: ConnectorSpec, d: PartitionDefaults): Resolv
     }
     case "hardware": {
       const diameter = spec.diameter ?? 2 * d.radiusMm;
-      return { type: "hardware", diameter, depth: spec.depth ?? d.depthMm, clearance, ...spread(spec, diameter / 2, d) };
+      return { type: "hardware", diameter, depth: spec.depth ?? d.depthMm, clearance, ...spread(spec, diameter / 2, clearance, d) };
     }
     case "key": {
       const width = spec.width ?? d.tongueWidthMm;
@@ -335,7 +336,7 @@ export function fillConnector(spec: ConnectorSpec, d: PartitionDefaults): Resolv
         height,
         depth: spec.depth ?? d.tongueDepthMm,
         clearance,
-        ...spread(spec, Math.hypot(width, height) / 2, d),
+        ...spread(spec, Math.hypot(width, height) / 2, clearance, d),
       };
     }
     case "dovetail": {
@@ -347,7 +348,7 @@ export function fillConnector(spec: ConnectorSpec, d: PartitionDefaults): Resolv
         depth: spec.depth ?? d.dovetailDepthMm,
         slide: spec.slide ?? "u",
         clearance,
-        ...spread(spec, width / 2, d),
+        ...spread(spec, width / 2, clearance, d),
       };
     }
   }
