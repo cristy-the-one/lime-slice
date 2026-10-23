@@ -8,11 +8,11 @@ import type { DragHandle } from "../model-drag";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { Params } from "../modeling/expr.ts";
 import { formatMm, type FacePlane, type SplitBase, type SplitPlan } from "../model-plane";
-import type { Box, PartitionOp, Target } from "../modeling/partition.ts";
+import { fillConnector, holeCompensationNote, mm, NO_FIT_SENTENCE, STARTING_FIT_LABEL, type Box, type PartitionDefaults, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
-import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withSelected, type Card, type CardCut, type CardFrame, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck } from "../split-print";
+import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointsOn, withJointType, withSelected, type Card, type CardCut, type CardFrame, type CardJointType, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print";
 import { closeModelCard, fieldNumber, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { pushToast } from "./toasts";
 
@@ -39,6 +39,12 @@ export interface SplitPrintHost {
   pickedFace(): FacePlane | "curved" | null;
   /** Ask the kernel about `op` after `wait` ms, unless its answer is known. Null clears the check. */
   check(op: PartitionOp | null, wait: number): void;
+  /** The planner's connectors for `op` on the open solid's sections: its sentences, the counts that do not fit, the ghost. */
+  connectors(op: PartitionOp): Placement | null;
+  /** The defaults and floors `target`'s process gives (null: the plate's printer), for the connector fields. */
+  defaults(target: Target | null): PartitionDefaults | null;
+  /** The slice setting XY hole compensation, in millimetres; its note shows while it is not 0. */
+  holeCompensation(): number;
   /** The card closed without Apply: an edit goes back to the step shown before it. */
   cancelled(): void;
   parameters(): Params;
@@ -54,12 +60,18 @@ export interface PrintOn {
 }
 
 /** The kernel's answer for the card's op, as the card shows it; `notes` are its sentences, such as a part number with no room. */
-export type SplitPrintCheck = { phase: "checking" } | { phase: "done"; ok: true; parts: PieceCheck[]; notes?: string[] } | { phase: "done"; ok: false; error: string } | null;
+export type SplitPrintCheck =
+  | { phase: "checking" }
+  | { phase: "done"; ok: true; parts: PieceCheck[]; notes?: string[]; pins?: { count: number; volumeMm3: number }; placed?: string[] }
+  | { phase: "done"; ok: false; error: string }
+  | null;
 
 /** What an Apply for an export target leaves, as the card shows it: the printer, each piece's file name, the kernel's notes. */
 export interface SplitPrintDone {
   printer: string;
   names: string[];
+  /** The pins' file name, `<source>-pins`, when the cut has dowels. */
+  pins?: string;
   notes: string[];
 }
 
@@ -70,6 +82,8 @@ let center: Vec3 = [0, 0, 0];
 let frame: CardFrame | null = null;
 let notes: string[] = [];
 let check: SplitPrintCheck = null;
+/** The planner's connectors for the card's op, worked out when the card changes. */
+let placement: Placement | null = null;
 /** While a step is edited: the card as the step filled it, so an untouched card offers no Update, and its header. */
 let edit: { opened: Card; head: string } | null = null;
 let waiting = false;
@@ -136,6 +150,36 @@ export function mountSplitPrint(next: SplitPrintHost) {
       <div class="model-fields">
         <label data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelPartTiltA" type="number" step="1" min="-85" max="85" value="0" aria-label="Tilt A, degrees"></label>
         <label data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelPartTiltB" type="number" step="1" min="-85" max="85" value="0" aria-label="Tilt B, degrees"></label>
+      </div>
+    </section>
+    <section class="sp-joints" id="modelPartJoints" aria-label="Connectors">
+      <label class="model-keep" data-tip="Dowels, plugs or holes on this cut. Off is a plain cut."><input id="modelPartJointsOn" type="checkbox"> Connectors</label>
+      <div class="sp-joint-fields" id="modelPartJointFields" hidden>
+        <label class="sp-print"><span class="scrub-label">Type</span><select id="modelPartJointType" aria-label="Connector type">
+          <option value="dowel">Dowel</option><option value="plug">Plug</option><option value="hardware">Hardware hole</option>
+        </select></label>
+        <div class="model-fields">
+          <label data-joint-for="round"><span class="scrub-label" data-scrub>Radius</span><input id="modelPartJointRadius" type="number" step="0.1" min="0" aria-label="Radius, millimetres"></label>
+          <label data-joint-for="hardware"><span class="scrub-label" data-scrub>Diameter</span><input id="modelPartJointDiameter" type="number" step="0.1" min="0" aria-label="Diameter, millimetres"></label>
+          <label><span class="scrub-label" data-scrub>Depth</span><input id="modelPartJointDepth" type="number" step="0.5" min="0" aria-label="Depth, along the cut, millimetres"></label>
+          <label><span class="scrub-label">Count</span><input id="modelPartJointCount" type="text" inputmode="numeric" placeholder="Fit" aria-label="Count, Fit or a number"></label>
+          <label><span class="scrub-label" data-scrub>Margin</span><input id="modelPartJointMargin" type="number" step="0.5" min="0" aria-label="Margin, inset from the section outline, millimetres"></label>
+          <label><span class="scrub-label" data-scrub>End gap</span><input id="modelPartJointGap" type="number" step="0.1" min="0" aria-label="End gap, millimetres"></label>
+        </div>
+        <label class="sp-print"><span class="scrub-label">Clearance</span><select id="modelPartJointFit" aria-label="Clearance">
+          <option value="snug">Snug</option><option value="loose">Loose</option><option value="press">Press</option><option value="typed">Typed</option>
+        </select></label>
+        <div class="model-fields" id="modelPartJointTypedRow" hidden>
+          <label><span class="scrub-label" data-scrub>Clearance</span><input id="modelPartJointClearance" type="number" step="0.01" min="0" aria-label="Clearance, each side, millimetres"></label>
+        </div>
+        <p class="model-note" id="modelPartJointFitNote"></p>
+        <label class="sp-print" data-joint-for="round"><span class="scrub-label">Hole shape</span><select id="modelPartJointHole" aria-label="Hole shape">
+          <option value="round">Round</option><option value="teardrop">Teardrop</option>
+        </select></label>
+        <label class="sp-print" data-joint-for="plug"><span class="scrub-label">Plug side</span><select id="modelPartJointSide" aria-label="Plug side">
+          <option value="positive">Positive</option><option value="negative">Negative</option>
+        </select></label>
+        <div class="sp-joint-notes"><p class="model-note" id="modelPartJointNotes" role="status" hidden></p><button class="btn" id="modelPartJointUse" type="button" hidden></button></div>
       </div>
     </section>
     <h4 class="sp-pieces-head" id="modelPartPiecesHead">Pieces</h4>
@@ -262,6 +306,11 @@ export function setSplitPrintCheck(next: SplitPrintCheck) {
   check = next;
   paintPieces();
   paintFoot();
+  // The kernel's verdict on the connectors: its sentences, and the ghost keeps only the ones it built.
+  if (card.cuts.some((cut) => cut.joints.on) && splitPrintOpen()) {
+    paintJoints();
+    refreshModelCard();
+  }
 }
 
 /** A face was picked while the card is open: a Face cut takes it. */
@@ -345,10 +394,10 @@ function paintMode() {
       const node = $<HTMLElement>(selector);
       if (node) node.textContent = value;
     };
-    text("#modelPartDoneHead", `Cut for the ${done.printer}. ${done.names.length} pieces stay in Model, off the plate.`);
+    text("#modelPartDoneHead", `Cut for the ${done.printer}. ${done.names.length} pieces${done.pins ? " and their pins" : ""} stay in Model, off the plate.`);
     text("#modelPartDoneSupport", SUPPORT_NOTE);
     const list = $<HTMLOListElement>("#modelPartDonePieces");
-    list?.replaceChildren(...done.names.map((name, at) => Object.assign(document.createElement("li"), { textContent: `Part ${at + 1} · ${name}` })));
+    list?.replaceChildren(...[...done.names.map((name, at) => `Part ${at + 1} · ${name}`), ...(done.pins ? [`Pins · ${done.pins}`] : [])].map((line) => Object.assign(document.createElement("li"), { textContent: line })));
     const sentences = $<HTMLElement>("#modelPartDoneNotes");
     if (sentences) {
       sentences.textContent = done.notes.join(" ");
@@ -384,8 +433,11 @@ export function splitPrintOp(): PartitionOp | null {
 
 /** The card changed: its rows, its ghost, and the kernel's check after `wait` (none while a drag moves). */
 function changed(wait: number | null) {
+  const typed = op();
+  placement = typed && card.cuts.some((cut) => cut.joints.on) ? host?.connectors(typed) ?? null : null;
   paintRows();
   paintPlane();
+  paintJoints();
   paintFit();
   refreshModelCard();
   // No kernel call while a plane is dragged: the release asks.
@@ -490,6 +542,78 @@ function paintPlane() {
   }
 }
 
+/** The selected cut's Connectors: the switch, and with it on every field filled from the planner's defaults. */
+function paintJoints() {
+  const section = $<HTMLElement>("#modelPartJoints");
+  const cut = card.cuts[card.selected];
+  if (section) section.hidden = !cut;
+  if (!cut) return;
+  const on = $<HTMLInputElement>("#modelPartJointsOn");
+  if (on) on.checked = cut.joints.on;
+  const fields = $<HTMLElement>("#modelPartJointFields");
+  // Off hides the fields, not merely disables them, so a plain cut shows a plain card (section 12).
+  if (fields) fields.hidden = !cut.joints.on;
+  if (!cut.joints.on) return;
+  const d = host?.defaults(card.target) ?? null;
+  if (!d) return;
+  const spec = cut.joints.spec;
+  const filled = fillConnector(spec, d);
+  const round = filled.type === "dowel" || filled.type === "plug";
+  root()?.querySelectorAll<HTMLElement>("#modelPartJointFields [data-joint-for]").forEach((row) => {
+    const kind = row.dataset.jointFor;
+    row.hidden = kind === "round" ? !round : kind !== filled.type;
+  });
+  const put = (id: string, value: string) => {
+    const input = $<HTMLInputElement | HTMLSelectElement>(id);
+    if (input && document.activeElement !== input && !(input as HTMLInputElement).dataset?.expr) input.value = value;
+  };
+  put("#modelPartJointType", filled.type);
+  if (filled.type === "dowel" || filled.type === "plug") {
+    put("#modelPartJointRadius", mm(filled.radius));
+    put("#modelPartJointHole", filled.hole);
+  }
+  if (filled.type === "hardware") put("#modelPartJointDiameter", mm(filled.diameter));
+  if (filled.type === "plug") put("#modelPartJointSide", filled.side);
+  if ("depth" in filled) put("#modelPartJointDepth", mm(filled.depth));
+  if ("endGap" in filled) put("#modelPartJointGap", mm(filled.endGap));
+  put("#modelPartJointMargin", mm(filled.margin));
+  put("#modelPartJointCount", filled.count === "fit" ? "" : String(filled.count));
+  const named = typeof spec.clearance === "string" ? spec.clearance : spec.clearance == null && d.clearance ? "snug" : "typed";
+  put("#modelPartJointFit", named);
+  const typedRow = $<HTMLElement>("#modelPartJointTypedRow");
+  if (typedRow) typedRow.hidden = named !== "typed";
+  if (named === "typed") put("#modelPartJointClearance", filled.clearance == null ? "" : mm(filled.clearance));
+  const fitNote = $<HTMLElement>("#modelPartJointFitNote");
+  if (fitNote) {
+    const each = filled.clearance;
+    const sizes = each == null ? NO_FIT_SENTENCE : `${mm(each)} mm each side (${mm(2 * each)} mm on the diameter).`;
+    const starting = each != null && named !== "typed" && d.clearance?.startingFit ? `${STARTING_FIT_LABEL}. ` : "";
+    const compensation = holeCompensationNote(host?.holeCompensation() ?? 0);
+    fitNote.textContent = `${starting}${sizes}${compensation ? ` ${compensation}` : ""}`;
+  }
+  const cutNumber = card.selected + 1;
+  const mine = (placement?.notes ?? []).filter((note) => note.startsWith(`Cut ${cutNumber}:`));
+  const kernel = check && check.phase === "done" && check.ok ? (check.notes ?? []).filter((note) => note.startsWith(`Cut ${cutNumber}:`)) : [];
+  // "Cut 1: 2 of 4 dowels fit." leads, beside Use N; the sentence for each one left out follows.
+  const summary = (note: string) => / fit\.$|It is a plain cut\.$/.test(note);
+  const shown = [...new Set([...mine, ...kernel])].sort((a, b) => Number(summary(b)) - Number(summary(a)));
+  const notesLine = $<HTMLElement>("#modelPartJointNotes");
+  if (notesLine) {
+    notesLine.textContent = shown.join(" ");
+    notesLine.hidden = shown.length === 0;
+  }
+  const fit = placement?.fits.find((row) => row.cut === cutNumber);
+  const use = $<HTMLButtonElement>("#modelPartJointUse");
+  if (use) {
+    use.hidden = !fit || fit.placed === 0;
+    if (fit) {
+      use.textContent = `Use ${fit.placed}`;
+      use.dataset.count = String(fit.placed);
+      use.dataset.tip = `Set Count to the ${fit.placed} that fit`;
+    }
+  }
+}
+
 function paintFit() {
   const note = $<HTMLElement>("#modelPartNote");
   if (!note) return;
@@ -512,7 +636,7 @@ function paintPieces() {
   let bad = "";
   if (card.cuts.length === 0) lines = [];
   else if (!check || check.phase === "checking") lines = ["Checking the cut…"];
-  else if (check.ok) lines = pieceLines(check.parts);
+  else if (check.ok) lines = [...pieceLines(check.parts), ...(check.pins && check.pins.count > 0 ? [`Pins · ${check.pins.count} · ${mm(check.pins.volumeMm3)} mm³ · ${check.pins.count === 1 ? "one more object" : "one more object, standing upright"}`] : [])];
   else bad = check.error;
   list.replaceChildren(...lines.map((line) => Object.assign(document.createElement("li"), { textContent: line })));
   list.dataset.pieces = check && check.phase === "done" && check.ok ? String(check.parts.length) : "";
@@ -553,7 +677,10 @@ function paintFoot() {
 function ghost(): ModelGhost | null {
   if (done) return null;
   const planes = cardPlanes(card, center, frame).filter((plane): plane is { origin: Vec3; normal: Vec3 } => !!plane);
-  return planes.length > 0 ? { kind: "cuts", planes } : null;
+  // The planner's connectors; once the kernel has cut, only those it built.
+  const built = check && check.phase === "done" && check.ok ? check.placed : undefined;
+  const marks = (placement?.marks ?? []).filter((mark) => !built || built.includes(mark.id));
+  return planes.length > 0 ? { kind: "cuts", planes, ...(marks.length > 0 ? { marks } : {}) } : null;
 }
 
 function axisColor(dir: Vec3): DragHandle["color"] {
@@ -718,6 +845,12 @@ function onClick(ev: Event) {
     changed(0);
     return;
   }
+  const use = target.closest<HTMLElement>("#modelPartJointUse");
+  if (use && card.cuts[card.selected]) {
+    card = withJointCount(card, card.selected, Number(use.dataset.count));
+    changed(0);
+    return;
+  }
   if (target.closest("#modelPartClear")) {
     card = withCutsCleared(card);
     renderCuts();
@@ -766,6 +899,28 @@ function readField(ev: Event): boolean {
     card = { ...card, numbers: input.checked };
     return true;
   }
+  if (input.id === "modelPartJointsOn") {
+    card = withJointsOn(card, card.selected, input.checked);
+    return true;
+  }
+  if (input.id === "modelPartJointCount") {
+    const text = input.value.trim().toLowerCase();
+    if (text === "" || text === "fit") card = withJointField(card, card.selected, { count: undefined });
+    else if (/^\d+$/.test(text)) card = withJointField(card, card.selected, { count: Number(text) });
+    else return false;
+    return true;
+  }
+  const jointField = JOINT_FIELDS[input.id];
+  if (jointField) {
+    if (input.value.trim() === "") {
+      card = withJointField(card, card.selected, { [jointField]: undefined });
+      return true;
+    }
+    const typed = fieldNumber(input.id);
+    if (!Number.isFinite(typed) || typed < 0) return false;
+    card = withJointField(card, card.selected, { [jointField]: typed });
+    return true;
+  }
   const value = fieldNumber(input.id);
   if (input.value.trim() === "" || !Number.isFinite(value)) return false;
   const at = fieldIndex(input.id);
@@ -785,9 +940,49 @@ function onInput(ev: Event) {
   changed(ev.target instanceof HTMLInputElement && ev.target.type === "checkbox" ? 0 : 300);
 }
 
+/** The connector fields that are a number, and the spec field each writes. */
+const JOINT_FIELDS: Record<string, string> = {
+  modelPartJointRadius: "radius",
+  modelPartJointDiameter: "diameter",
+  modelPartJointDepth: "depth",
+  modelPartJointMargin: "margin",
+  modelPartJointGap: "endGap",
+  modelPartJointClearance: "clearance",
+};
+
+/** A connector menu changed: the type takes its own defaults; Clearance names a fit or asks for a number. */
+function setJointMenu(select: HTMLSelectElement): boolean {
+  const at = card.selected;
+  if (!card.cuts[at]) return false;
+  switch (select.id) {
+    case "modelPartJointType":
+      card = withJointType(card, at, select.value as CardJointType);
+      return true;
+    case "modelPartJointFit": {
+      const filled = host?.defaults(card.target);
+      const now = card.cuts[at]!.joints.spec.clearance;
+      const typed = typeof now === "number" ? now : (filled?.clearance?.[(now ?? "snug") as "snug"] ?? undefined);
+      card = withJointField(card, at, { clearance: select.value === "typed" ? typed : select.value });
+      return true;
+    }
+    case "modelPartJointHole":
+      card = withJointField(card, at, { hole: select.value });
+      return true;
+    case "modelPartJointSide":
+      card = withJointField(card, at, { side: select.value });
+      return true;
+    default:
+      return false;
+  }
+}
+
 function onChange(ev: Event) {
   if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartTarget") {
     setTarget(ev.target.value);
+    return;
+  }
+  if (ev.target instanceof HTMLSelectElement && setJointMenu(ev.target)) {
+    changed(0);
     return;
   }
   const input = ev.target instanceof HTMLInputElement ? ev.target : null;

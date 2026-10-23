@@ -321,6 +321,60 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   check("the STEP reads back with the pieces' volume", back.ok === true && near(total, sum, 0.05), JSON.stringify({ total, sum, path: stepFile.path, bytes: stepFile.bytes, threeMf: threeMf.bytes }));
 }
 
+// --- Split to print, milestone 5: dowels on the 500 mm bar for the Lime 220, the pins standing on the plate, and the
+// same bar for the Form 4 exported with its pins, against real Open CASCADE.
+{
+  const bar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 20, dz: 20 })).object);
+  const volume = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);
+  const plan = await call("model_probe", { object: bar, op: { kind: "partition" }, plan: true });
+  const cuts = (plan.cuts as Record<string, unknown>[]).map((cut) => ({ ...cut, connectors: { on: true } }));
+  const op = { ...(plan.op as Record<string, unknown>), cuts, labels: { on: false } };
+  const planned = await call("model_probe", { object: bar, op, plan: true });
+  const placed = ((planned.connectors as { placed?: { id: string }[] } | undefined)?.placed ?? []).map((row) => row.id);
+  check("plan: true places one dowel on each 20 mm section", planned.ok === true && JSON.stringify(placed) === JSON.stringify(["c1-1", "c2-1"]), JSON.stringify(planned));
+  // Default dowel on PLA at 0.4 mm: radius 3, 4 mm long, 0.15 mm a side, 0.4 mm end gap; each hole 2.4 mm deep, a teardrop.
+  const hole = 3.15;
+  const side = (0.75 * Math.PI + 1) * hole * hole * 2.4;
+  const pin = Math.PI * 9 * 4 - 2 * Math.PI * 0.25 * (3 - 0.5 / 3);
+  const probe = await call("model_probe", { object: bar, op });
+  const parts = ((probe.pieces ?? []) as { volumeMm3: number }[]).map((part) => part.volumeMm3);
+  const third = 200_000 / 3;
+  check("the probe takes a teardrop hole from each mate", probe.ok === true && parts.length === 3 && near(parts[0]!, third - side, 0.05) && near(parts[1]!, third - 2 * side, 0.05) && near(parts[2]!, third - side, 0.05), JSON.stringify(parts));
+  check("and measures the two pins", (probe.pins as { count?: number; volumeMm3?: number } | undefined)?.count === 2 && near((probe.pins as { volumeMm3: number }).volumeMm3, 2 * pin, 1e-3), JSON.stringify(probe.pins));
+  const built = ((probe.connectors as { placed?: { teardrop: boolean }[] } | undefined)?.placed ?? []).map((row) => row.teardrop);
+  check("each hole across the layers is a teardrop on FDM", JSON.stringify(built) === JSON.stringify([true, true]), JSON.stringify(probe.connectors));
+  const applied = await call("model_apply", { object: bar, op });
+  const pins = String(applied.pins);
+  check("apply makes two pieces and the pins", applied.ok === true && (applied.pieces as unknown[]).length === 2 && pins.startsWith("obj_"), JSON.stringify(applied));
+  const rows = (await call("model_history", { object: bar })).nodes as { label: string }[];
+  check("the row says dowels", rows.at(-1)?.label === "Split to print, 3 parts, dowels", JSON.stringify(rows));
+  const committed = await call("model_commit", { object: bar });
+  const listed = (await call("plate_list", { limit: 100 })).objects as { object: string; bboxMm: { min: number[]; max: number[] } }[];
+  const standing = listed.find((row) => row.object === pins);
+  const size = standing ? standing.bboxMm.max.map((value, i) => value - standing.bboxMm.min[i]!) : [];
+  check("the pins are on the plate, standing upright: 4 mm tall, 6 mm across each", committed.ok === true && !!standing && near(size[2]!, 4, 1e-3) && Math.min(size[0]!, size[1]!) > 6 - 1e-3 - 0.1 && Math.min(size[0]!, size[1]!) < 6 + 0.1, JSON.stringify({ committed, size }));
+  const volumes = await Promise.all([bar, ...(applied.pieces as string[]), pins].map(volume));
+  check("the pins' object holds both pins", near(volumes[3]!, 2 * pin, 1e-3), JSON.stringify(volumes));
+  console.log(`occt: dowelled bar for the Lime 220, pieces ${volumes.slice(0, 3).map((v) => v.toFixed(3)).join(", ")} mm³, pins ${volumes[3]!.toFixed(3)} mm³`);
+
+  // The same bar for the Form 4: the pins export as one more named solid, <name>-pins, after the pieces.
+  const resin = String((await call("solid_new", { primitive: "box", dx: 500, dy: 20, dz: 20 })).object);
+  const resinPlan = await call("model_probe", { object: resin, op: { kind: "partition", target: { printer: "formlabs-form-4" } }, plan: true });
+  const resinOp = { ...(resinPlan.op as Record<string, unknown>), cuts: (resinPlan.cuts as Record<string, unknown>[]).map((cut) => ({ ...cut, connectors: { on: true } })) };
+  await call("model_probe", { object: resin, op: resinOp });
+  const resinApplied = await call("model_apply", { object: resin, op: resinOp });
+  const step = await call("model_export_step", { object: resin, name: "bar-form4", pieces: true });
+  const products = [...readFileSync(String(step.path)).toString("latin1").matchAll(/PRODUCT\('([^']*)'/g)].map((found) => found[1]);
+  const pieceCount = Number(resinApplied.parts);
+  const expected = [...Array.from({ length: pieceCount }, (_, at) => `bar-form4-${at + 1}`), "bar-form4-pins"];
+  check("the Form 4's named STEP holds every piece and the pins, last", resinApplied.ok === true && typeof resinApplied.pins === "string" && step.ok === true && JSON.stringify(products) === JSON.stringify(expected), JSON.stringify({ products, step }));
+  const resinRound = ((resinApplied.connectors as { placed?: { teardrop: boolean }[] } | undefined)?.placed ?? []).every((row) => row.teardrop === false);
+  check("a resin hole stays round", resinRound, JSON.stringify(resinApplied.connectors));
+  console.log(`occt: the bar for the Form 4, STEP products ${products.join(", ")}`);
+  const keyed = await call("model_probe", { object: resin, op: { ...resinOp, cuts: (resinOp.cuts as Record<string, unknown>[]).map((cut) => ({ ...cut, connectors: { on: true, types: [{ type: "key" }] } })) } });
+  check("a key is refused with its sentence", keyed.ok === false && keyed.reason === "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.", JSON.stringify(keyed));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

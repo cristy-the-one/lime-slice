@@ -49,6 +49,7 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <GC_MakeEllipse.hxx>
@@ -2603,6 +2604,343 @@ void engrave_numbers(
         piece.shape = engraved;
         piece.volume = volume_of(engraved);
         placed[index] = here;
+    }
+}
+
+namespace {
+
+/// One closed, valid solid with every edge on two faces, or null.
+TopoDS_Shape whole_solid(const TopoDS_Shape& shape) {
+    if (shape.IsNull()) {
+        return {};
+    }
+    const TopoDS_Shape solid = as_solid(shape);
+    if (solid.IsNull() || solid.ShapeType() != TopAbs_SOLID || !BRepCheck_Analyzer(solid).IsValid() ||
+        !every_edge_shared_by_two(solid)) {
+        return {};
+    }
+    return solid;
+}
+
+/// `piece` less `tool`, or `piece` with `tool`, as one checked solid; null when either fails.
+TopoDS_Shape joint_boolean(const TopoDS_Shape& piece, const TopoDS_Shape& tool, bool fuse) {
+    TopTools_ListOfShape arguments;
+    arguments.Append(piece);
+    TopTools_ListOfShape tools;
+    tools.Append(tool);
+    g_stats.builds += 1;
+    Handle(Message_ProgressIndicator) watch;
+    if (fuse) {
+        BRepAlgoAPI_Fuse op;
+        op.SetArguments(arguments);
+        op.SetTools(tools);
+        op.SetNonDestructive(Standard_True);
+        op.SetToFillHistory(Standard_False);
+        op.Build(deadline_range(watch));
+        return op.IsDone() && !op.HasErrors() ? whole_solid(op.Shape()) : TopoDS_Shape();
+    }
+    BRepAlgoAPI_Cut op;
+    op.SetArguments(arguments);
+    op.SetTools(tools);
+    op.SetNonDestructive(Standard_True);
+    op.SetToFillHistory(Standard_False);
+    op.Build(deadline_range(watch));
+    return op.IsDone() && !op.HasErrors() ? whole_solid(op.Shape()) : TopoDS_Shape();
+}
+
+/// A round bar of `radius` from `from` along `axis` for `length`, and, with `roof`, the 45° roof that makes it a
+/// teardrop: a prism of the two tangents from the apex `radius × √2` along `roof`, fused onto the cylinder.
+TopoDS_Shape hole_tool(const gp_Pnt& from, const gp_Dir& axis, double radius, double length, const gp_Dir* roof) {
+    BRepPrimAPI_MakeCylinder cylinder(gp_Ax2(from, axis), radius, length);
+    cylinder.Build();
+    if (!cylinder.IsDone()) {
+        return {};
+    }
+    if (roof == nullptr) {
+        return cylinder.Shape();
+    }
+    const gp_Vec up(*roof);
+    const gp_Vec across = gp_Vec(axis).Crossed(up);
+    const double half = radius / std::sqrt(2.0);
+    BRepBuilderAPI_MakePolygon outline(
+        from,
+        from.Translated(across.Multiplied(half) + up.Multiplied(half)),
+        from.Translated(up.Multiplied(radius * std::sqrt(2.0))),
+        from.Translated(across.Multiplied(-half) + up.Multiplied(half)),
+        Standard_True);
+    if (!outline.IsDone()) {
+        return {};
+    }
+    BRepBuilderAPI_MakeFace base(outline.Wire(), Standard_True);
+    if (!base.IsDone()) {
+        return {};
+    }
+    BRepPrimAPI_MakePrism prism(base.Face(), gp_Vec(axis).Multiplied(length));
+    if (!prism.IsDone()) {
+        return {};
+    }
+    const TopoDS_Shape joined = joint_boolean(cylinder.Shape(), prism.Shape(), true);
+    return joined;
+}
+
+/// The box of cut `plane`'s section in its own U, V from its origin: every face of the pieces on that plane that faces
+/// along its normal, the negative side's caps. False when no piece has one.
+bool section_box(
+    const std::vector<PartitionPiece>& pieces,
+    const gp_Pnt& origin,
+    const gp_Dir& normal,
+    const gp_Dir& u,
+    double& u0,
+    double& v0,
+    double& u1,
+    double& v1) {
+    gp_Trsf into;
+    into.SetTransformation(gp_Ax3(origin, normal, u));
+    Bnd_Box box;
+    for (const PartitionPiece& piece : pieces) {
+        for (const TopoDS_Face& face : faces_on_plane(piece.shape, origin, normal)) {
+            gp_Dir outward;
+            gp_Pln plane;
+            if (!outward_normal(face, outward, plane) || gp_Vec(outward).Dot(gp_Vec(normal)) < 0.0) {
+                continue;
+            }
+            BRepBuilderAPI_Transform moved(face, into, Standard_True);
+            if (moved.IsDone()) {
+                BRepBndLib::AddOptimal(moved.Shape(), box, Standard_False, Standard_False);
+            }
+        }
+    }
+    if (box.IsVoid()) {
+        return false;
+    }
+    double z0 = 0;
+    double z1 = 0;
+    box.Get(u0, v0, z0, u1, v1, z1);
+    return true;
+}
+
+/// The piece that holds `point` inside, or -1.
+int piece_at(const std::vector<PartitionPiece>& pieces, const gp_Pnt& point) {
+    for (size_t index = 0; index < pieces.size(); ++index) {
+        BRepClass3d_SolidClassifier classify(pieces[index].shape, point, 1e-7);
+        if (classify.State() == TopAbs_IN) {
+            return static_cast<int>(index);
+        }
+    }
+    return -1;
+}
+
+/// Whether a cut took exactly the tool's volume: the tool lies inside the piece, so the hole breaks through nothing.
+bool took(double before, double after, double tool) {
+    return std::abs((before - after) - tool) <= 1e-6 * std::max(1.0, tool) + 1e-9 * std::abs(before);
+}
+
+}  // namespace
+
+TopoDS_Shape make_pin(const gp_Pnt& base, const gp_Dir& axis, double radius, double length) {
+    const double chamfer = std::min({kPinChamfer, radius / 2, length / 4});
+    gp_Dir side = std::abs(axis.X()) < 0.9 ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0);
+    side = gp_Dir(gp_Vec(side) - gp_Vec(axis).Multiplied(gp_Vec(side).Dot(gp_Vec(axis))));
+    const gp_Vec out(side);
+    const gp_Vec along(axis);
+    auto at = [&](double r, double h) { return base.Translated(out.Multiplied(r) + along.Multiplied(h)); };
+    BRepBuilderAPI_MakePolygon outline;
+    outline.Add(at(0, 0));
+    outline.Add(at(radius - chamfer, 0));
+    outline.Add(at(radius, chamfer));
+    outline.Add(at(radius, length - chamfer));
+    outline.Add(at(radius - chamfer, length));
+    outline.Add(at(0, length));
+    outline.Close();
+    if (!outline.IsDone()) {
+        return {};
+    }
+    BRepBuilderAPI_MakeFace face(outline.Wire(), Standard_True);
+    if (!face.IsDone()) {
+        return {};
+    }
+    BRepPrimAPI_MakeRevol revol(face.Face(), gp_Ax1(base, axis), 2 * std::acos(-1.0), Standard_True);
+    revol.Build();
+    if (!revol.IsDone()) {
+        return {};
+    }
+    return whole_solid(revol.Shape());
+}
+
+void build_joints(
+    std::vector<PartitionPiece>& pieces,
+    const std::vector<std::array<double, 6>>& planes,
+    const std::vector<std::array<double, 3>>& us,
+    const std::vector<JointSpec>& joints,
+    const gp_Dir& up,
+    std::vector<JointResult>& results,
+    TopoDS_Shape& pins) {
+    results.assign(joints.size(), {});
+    pins.Nullify();
+    struct Frame {
+        gp_Pnt origin;
+        gp_Dir w, u, v;
+        bool boxed = false;
+        double u0 = 0, v0 = 0, u1 = 0, v1 = 0;
+    };
+    std::vector<Frame> frames;
+    for (size_t index = 0; index < planes.size(); ++index) {
+        const std::array<double, 6>& plane = planes[index];
+        Frame frame;
+        frame.origin = gp_Pnt(plane[0], plane[1], plane[2]);
+        frame.w = gp_Dir(plane[3], plane[4], plane[5]);
+        const std::array<double, 3> hint = index < us.size() ? us[index] : std::array<double, 3>{0, 0, 0};
+        gp_Vec u = gp_Vec(hint[0], hint[1], hint[2]);
+        u -= gp_Vec(frame.w).Multiplied(u.Dot(gp_Vec(frame.w)));
+        frame.u = u.Magnitude() > 1e-9 ? gp_Dir(u) : gp_Pln(frame.origin, frame.w).XAxis().Direction();
+        frame.v = gp_Dir(gp_Vec(frame.w).Crossed(gp_Vec(frame.u)));
+        frames.push_back(frame);
+    }
+    struct Pin {
+        double radius, length;
+    };
+    std::vector<Pin> made;
+    const double tilt = std::cos(std::acos(-1.0) / 4);
+    for (size_t index = 0; index < joints.size(); ++index) {
+        const JointSpec& joint = joints[index];
+        JointResult& result = results[index];
+        result.status = kJointOutside;
+        if (joint.cut < 0 || static_cast<size_t>(joint.cut) >= frames.size() || !(joint.radius > 0) || !(joint.depth > 0)) {
+            continue;
+        }
+        Frame& frame = frames[static_cast<size_t>(joint.cut)];
+        if (joint.fraction && !frame.boxed) {
+            if (!section_box(pieces, frame.origin, frame.w, frame.u, frame.u0, frame.v0, frame.u1, frame.v1)) {
+                continue;
+            }
+            frame.boxed = true;
+        }
+        const double a = joint.fraction ? frame.u0 + joint.a * (frame.u1 - frame.u0) : joint.a;
+        const double b = joint.fraction ? frame.v0 + joint.b * (frame.v1 - frame.v0) : joint.b;
+        const gp_Pnt centre = frame.origin.Translated(gp_Vec(frame.u).Multiplied(a) + gp_Vec(frame.v).Multiplied(b));
+        result.at[0] = centre.X();
+        result.at[1] = centre.Y();
+        result.at[2] = centre.Z();
+        const gp_Vec w(frame.w);
+        const int below = piece_at(pieces, centre.Translated(w.Multiplied(-1e-3)));
+        const int above = piece_at(pieces, centre.Translated(w.Multiplied(1e-3)));
+        if (below < 0 || above < 0 || below == above) {
+            continue;
+        }
+        result.status = kJointBreaks;
+        gp_Vec roof = gp_Vec(up) - w.Multiplied(gp_Vec(up).Dot(w));
+        const bool flat = std::abs(gp_Vec(up).Dot(w)) <= tilt + 1e-9 && roof.Magnitude() > 1e-9;
+        const gp_Dir roof_dir = flat ? gp_Dir(roof) : gp_Dir(0, 0, 1);
+        result.teardrop = joint.teardrop && flat;
+        const gp_Dir* shaped = result.teardrop ? &roof_dir : nullptr;
+        const double hole = joint.radius + joint.clearance;
+        PartitionPiece& low = pieces[static_cast<size_t>(below)];
+        PartitionPiece& high = pieces[static_cast<size_t>(above)];
+        if (joint.type == kJointPlug) {
+            PartitionPiece& carrier = joint.side >= 0 ? high : low;
+            PartitionPiece& mate = joint.side >= 0 ? low : high;
+            const gp_Dir into_mate = joint.side >= 0 ? frame.w.Reversed() : frame.w;
+            const gp_Vec toward(into_mate);
+            constexpr double kOverlap = 0.001;
+            const TopoDS_Shape plug = hole_tool(centre.Translated(toward.Multiplied(-kOverlap)), into_mate, joint.radius, joint.depth + kOverlap, nullptr);
+            const TopoDS_Shape socket = hole_tool(centre.Translated(toward.Multiplied(-kOverlap)), into_mate, hole, joint.depth + joint.end_gap + kOverlap, shaped);
+            if (plug.IsNull() || socket.IsNull()) {
+                continue;
+            }
+            const double pi = std::acos(-1.0);
+            const double socket_volume = volume_of(socket) * (joint.depth + joint.end_gap) / (joint.depth + joint.end_gap + kOverlap);
+            const TopoDS_Shape fused = joint_boolean(carrier.shape, plug, true);
+            const TopoDS_Shape cut = joint_boolean(mate.shape, socket, false);
+            if (fused.IsNull() || cut.IsNull()) {
+                continue;
+            }
+            const double fused_volume = volume_of(fused);
+            const double cut_volume = volume_of(cut);
+            if (!took(fused_volume, carrier.volume, pi * joint.radius * joint.radius * joint.depth) ||
+                !took(mate.volume, cut_volume, socket_volume)) {
+                continue;
+            }
+            carrier.shape = fused;
+            carrier.volume = fused_volume;
+            mate.shape = cut;
+            mate.volume = cut_volume;
+        } else {
+            const double reach = joint.depth / 2 + joint.end_gap;
+            const TopoDS_Shape tool = hole_tool(centre.Translated(w.Multiplied(-reach)), frame.w, hole, 2 * reach, shaped);
+            if (tool.IsNull()) {
+                continue;
+            }
+            const double half = volume_of(tool) / 2;
+            const TopoDS_Shape cut_low = joint_boolean(low.shape, tool, false);
+            const TopoDS_Shape cut_high = joint_boolean(high.shape, tool, false);
+            if (cut_low.IsNull() || cut_high.IsNull()) {
+                continue;
+            }
+            const double low_volume = volume_of(cut_low);
+            const double high_volume = volume_of(cut_high);
+            if (!took(low.volume, low_volume, half) || !took(high.volume, high_volume, half)) {
+                continue;
+            }
+            low.shape = cut_low;
+            low.volume = low_volume;
+            high.shape = cut_high;
+            high.volume = high_volume;
+            if (joint.type == kJointDowel) {
+                made.push_back({joint.radius, joint.depth});
+            }
+        }
+        result.status = kJointPlaced;
+    }
+    if (made.empty()) {
+        return;
+    }
+    // The pins stand along `up` in a row beside the part, past its far side, on the floor it stands on.
+    gp_Dir row = frames.empty() ? gp_Dir(1, 0, 0) : frames.front().u;
+    gp_Vec flat = gp_Vec(row) - gp_Vec(up).Multiplied(gp_Vec(row).Dot(gp_Vec(up)));
+    if (flat.Magnitude() < 1e-6) {
+        flat = gp_Vec(gp_Pln(gp_Pnt(0, 0, 0), up).XAxis().Direction());
+    }
+    row = gp_Dir(flat);
+    const gp_Dir away(gp_Vec(up).Crossed(gp_Vec(row)));
+    gp_Trsf into;
+    into.SetTransformation(gp_Ax3(gp_Pnt(0, 0, 0), up, row));
+    Bnd_Box whole;
+    for (const PartitionPiece& piece : pieces) {
+        BRepBuilderAPI_Transform moved(piece.shape, into, Standard_True);
+        if (moved.IsDone()) {
+            BRepBndLib::AddOptimal(moved.Shape(), whole, Standard_False, Standard_False);
+        }
+    }
+    double x0 = 0, y0 = 0, z0 = 0, x1 = 0, y1 = 0, z1 = 0;
+    if (!whole.IsVoid()) {
+        whole.Get(x0, y0, z0, x1, y1, z1);
+    }
+    constexpr double kPinGap = 3.0;
+    const gp_Pnt start = gp_Pnt(0, 0, 0)
+                             .Translated(gp_Vec(row).Multiplied(x0) + gp_Vec(away).Multiplied(y1 + kPinGap) +
+                                         gp_Vec(up).Multiplied(z0));
+    BRep_Builder builder;
+    TopoDS_Compound all;
+    builder.MakeCompound(all);
+    double along = 0;
+    int count = 0;
+    TopoDS_Shape single;
+    for (const Pin& pin : made) {
+        along += pin.radius;
+        const gp_Pnt base = start.Translated(gp_Vec(row).Multiplied(along) + gp_Vec(away).Multiplied(pin.radius));
+        const TopoDS_Shape one = make_pin(base, up, pin.radius, pin.length);
+        along += pin.radius + kPinGap;
+        if (one.IsNull()) {
+            continue;
+        }
+        builder.Add(all, one);
+        single = one;
+        count += 1;
+    }
+    if (count == 1) {
+        pins = single;
+    } else if (count > 1) {
+        pins = all;
     }
 }
 

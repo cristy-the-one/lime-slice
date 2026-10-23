@@ -20,7 +20,7 @@ import { decodeSolid } from "../src/model-reply.ts";
 import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, turnedAxis, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
 import { clampPieces, type FillContext, type Target } from "../src/modeling/partition.ts";
-import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, readPartition, storedPartition } from "./partition.ts";
+import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateUp, readPartition, storedPartition } from "./partition.ts";
 import { pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
 import { SCREWS, throughLength } from "../src/model-hole.ts";
@@ -370,6 +370,30 @@ type SolidView = NonNullable<ReturnType<typeof rememberSolid>>;
 /** --- Split to print. The kernel's sentence for each piece whose number had no room. */
 function numberNotes(reply: Record<string, unknown>): string[] {
   return Array.isArray(reply.notes) ? reply.notes.filter((note): note is string => typeof note === "string") : [];
+}
+
+/**
+ * --- Split to print, milestone 5. The connectors the kernel built and left out, in model space: each placed one's id,
+ * centre and whether its holes got the teardrop roof; each dropped one's id and sentence.
+ */
+function joined(reply: Record<string, unknown>, pose: Affine): { connectors?: { placed: { id: string; at: number[]; teardrop: boolean }[]; dropped: { id: string; reason: string; sentence: string }[] } } {
+  const connectors = reply.connectors as { placed?: unknown; dropped?: unknown } | undefined;
+  if (!connectors || typeof connectors !== "object") return {};
+  const mm = (value: number) => Math.round(value * 100) / 100 + 0;
+  const placed = (Array.isArray(connectors.placed) ? (connectors.placed as { id?: unknown; at?: unknown; teardrop?: unknown }[]) : []).map((row) => ({
+    id: String(row.id),
+    at: Array.isArray(row.at) && row.at.length === 3 ? applyPose(pose, row.at as [number, number, number]).map(mm) : [],
+    teardrop: row.teardrop === true,
+  }));
+  const dropped = (Array.isArray(connectors.dropped) ? (connectors.dropped as { id?: unknown; reason?: unknown; sentence?: unknown }[]) : []).map((row) => ({ id: String(row.id), reason: String(row.reason), sentence: String(row.sentence) }));
+  return { connectors: { placed, dropped } };
+}
+
+/** --- Split to print, milestone 5. A probe's pins: how many, and their volume. */
+function pinsOf(reply: Record<string, unknown>): { pins?: { count: number; volumeMm3: number } } {
+  const pins = reply.pins as { count?: unknown; volumeMm3?: unknown } | undefined;
+  if (!pins || typeof pins !== "object") return {};
+  return { pins: { count: Number(pins.count) || 0, volumeMm3: Math.round(Number(pins.volumeMm3) * 1000) / 1000 } };
 }
 
 /** --- Split to print. Where each piece's number was cut, in model space: on cut N's face (from 1), or on a side face. */
@@ -4038,7 +4062,7 @@ export class Session {
     return { ok: true, x, y, z, turnX: turn.rx, turnY: turn.ry, turnZ: turn.rz };
   }
 
-  private bake(obj: PlateObject, raw: unknown): { op: ModelOp; typed: Record<string, unknown> } | { reason: string } {
+  private bake(obj: PlateObject, raw: unknown): { op: ModelOp; typed: Record<string, unknown>; notes?: string[] } | { reason: string } {
     if (!raw || typeof raw !== "object") return { reason: "The edit needs an op." };
     const spec = raw as Record<string, unknown>;
     const kind = spec.kind;
@@ -4052,9 +4076,9 @@ export class Session {
     if (kind === "partition") {
       const typed = readPartition(spec, (id) => this.partitionTarget(id));
       if ("reason" in typed) return typed;
-      const stored = storedPartition(typed, this.partitionContext(obj), obj.modelPose);
+      const stored = storedPartition(typed, this.partitionContext(obj), obj.modelPose, obj.solid ? { positions: obj.solid.positions, up: plateUp(obj.orient) } : undefined);
       if ("reason" in stored) return stored;
-      return { op: stored.op, typed: cleanOp(spec) };
+      return { op: stored.op, typed: cleanOp(spec), notes: stored.notes };
     }
     if (kind === "split") {
       const origin = (Array.isArray(spec.origin) ? spec.origin : [0, 0, 0]) as [number, number, number];
@@ -4410,7 +4434,7 @@ export class Session {
    * The check before an apply, for an op already in the solid's frame. A probe that passes is remembered for `at`.
    * `measure` asks the modeler for the built shape too, for model_probe's metrics; a batch step does not need it.
    */
-  private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown> }, measure = false, composite = false, budgetMs?: number): Promise<Record<string, unknown>> {
+  private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown>; notes?: string[] }, measure = false, composite = false, budgetMs?: number): Promise<Record<string, unknown>> {
     const picked = baked.op.kind === "fillet" || baked.op.kind === "chamfer" ? { edges: baked.typed.edges } : {};
     const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed), ...turnEcho(baked.typed) });
     if (baked.op.kind === "scale") {
@@ -4427,7 +4451,7 @@ export class Session {
       obj.probes.set(probeKey(String(at), baked.op), true);
       return answer({ ok: true, reason: note.text });
     }
-    if (baked.op.kind === "partition") return answer(await this.probePartition(obj, tree, at, baked.op, budgetMs));
+    if (baked.op.kind === "partition") return answer(await this.probePartition(obj, tree, at, baked.op, budgetMs, baked.notes ?? []));
     if (baked.op.kind === "boolean" && obj.solid) {
       const missed = disjointBoolean(obj.solid.bounds, baked.op, baked.op.op);
       if (missed) {
@@ -5374,7 +5398,7 @@ export class Session {
     const printer = this.printer();
     const frame = bedFrame(obj.solid.positions, obj.orient, obj.scale, obj.modelPose);
     const targetName = typed.target ? targetPrinter(this.library, typed.target.printer)?.name : undefined;
-    return planPartition(typed, this.partitionContext(obj), frame, { name: printer.name, belt: printer.kind === "belt", ...(targetName ? { targetName } : {}) });
+    return planPartition(typed, this.partitionContext(obj), frame, { name: printer.name, belt: printer.kind === "belt", ...(targetName ? { targetName } : {}) }, { positions: obj.solid.positions, up: plateUp(obj.orient), pose: obj.modelPose });
   }
 
   /** --- D11. A target typed by its printer alone: the library's printer, or an export-only one such as the Form 4. */
@@ -5405,7 +5429,7 @@ export class Session {
   }
 
   /** The kernel cuts a copy: every piece's volume and box in model space. The solid does not change. */
-  private async probePartition(obj: PlateObject, tree: ModelTree, at: number, op: PartitionModelOp, budgetMs?: number): Promise<Record<string, unknown>> {
+  private async probePartition(obj: PlateObject, tree: ModelTree, at: number, op: PartitionModelOp, budgetMs?: number, planned: readonly string[] = []): Promise<Record<string, unknown>> {
     let reply: Record<string, unknown>;
     try {
       reply = await this.treeCall(probeRequest(tree.key, at, op), "partition", budgetMs);
@@ -5423,8 +5447,15 @@ export class Session {
       return { part: index + 1, volumeMm3: mm(Number(part.volumeMm3)), ...(placed ? { min: placed.min.map(mm), max: placed.max.map(mm) } : {}) };
     });
     obj.probes.set(probeKey(String(at), op), true);
-    const notes = numberNotes(reply);
-    return { ok: true, reason: `This cut makes ${parts.length} pieces.`, parts: parts.length, pieces, ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) };
+    // The planner's sentences first (a count that does not fit, a wall too thin), then the kernel's.
+    const notes = [...new Set([...planned, ...numberNotes(reply)])];
+    return { ok: true, reason: `This cut makes ${parts.length} pieces.`, parts: parts.length, pieces, ...pinsOf(reply), ...joined(reply, obj.modelPose), ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) };
+  }
+
+  /** --- Milestone 5. The key the pins' tree opens under, when a cut of `op` has a dowel placed. */
+  private pinsKey(obj: PlateObject, node: number, op: PartitionModelOp): string | null {
+    const dowels = op.cuts.some((cut) => cut.connectors?.on && (cut.connectors.placed ?? []).some((row) => row.type === "dowel"));
+    return dowels ? `mcp-pins-${obj.id}-${node}` : null;
   }
 
   /** The keys the kernel opens each piece's tree under, one for every piece Max pieces allows after the first. */
@@ -5443,7 +5474,7 @@ export class Session {
     obj.tree = reserved;
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(applyRequest(tree.key, tree.current, node, op, CHORD, null, this.pieceKeys(obj, node, op)), "partition", budgetMs);
+      reply = await this.treeCall(applyRequest(tree.key, tree.current, node, op, CHORD, null, this.pieceKeys(obj, node, op), this.pinsKey(obj, node, op)), "partition", budgetMs);
     } catch (err) {
       const lost = this.lostReply(err);
       if (lost) return lost;
@@ -5459,7 +5490,10 @@ export class Session {
       keys.push(id ? String((entry as { key?: unknown }).key) : null);
       if (id) objects.push(id);
     });
-    obj.tree = withChild(obj.tree, tree.current, { id: node, op, label: opLabel(op, keys.length + 1), fingerprint: null, pieces: keys });
+    // --- Milestone 5. The pins of the cut's dowels: one more object, in the part's orientation, which stands them up.
+    const pins = reply.pins && typeof reply.pins === "object" ? this.partitionPins(obj, reply.pins as Record<string, unknown>, node, exported) : null;
+    const stored = reply.op && typeof reply.op === "object" && (reply.op as ModelOp).kind === "partition" ? (reply.op as PartitionModelOp) : op;
+    obj.tree = withChild(obj.tree, tree.current, { id: node, op: stored, label: opLabel(stored, keys.length + 1), fingerprint: null, pieces: keys, ...(pins ? { pins: pins.key } : {}) });
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     obj.probes.clear();
@@ -5475,12 +5509,27 @@ export class Session {
       node: nodeHandle(node),
       parts: keys.length + 1,
       pieces: objects,
+      ...(pins ? { pins: pins.id } : {}),
       note,
+      ...joined(reply, obj.modelPose),
       ...numbered(reply, obj.modelPose),
       ...(notes.length ? { notes } : {}),
-      stored: cleanOp(op as unknown as Record<string, unknown>),
+      stored: cleanOp(stored as unknown as Record<string, unknown>),
       typed,
     };
+  }
+
+  /**
+   * --- Milestone 5. The pins as one more object (plan section 10): the part's plate orientation, which stands each pin
+   * along the plate's Z, its own tree rooted as this node's pins, held off the plate for an export target. Its id and key.
+   */
+  private partitionPins(obj: PlateObject, entry: Record<string, unknown>, node: number, exported: boolean): { id: string; key: string } | null {
+    const id = this.partitionPiece(obj, entry, node, 0, exported);
+    const made = id ? [...this.objects, ...this.piecesOffPlate].find((row) => row.id === id) : undefined;
+    if (!made?.tree) return null;
+    made.name = `${obj.name} pins`;
+    made.tree = newTree(made.tree.key, { kind: "piece", tree: obj.tree!.key, node, pins: true }, "Pins", made.tree.nodes.get(0)?.fingerprint ?? null);
+    return { id: made.id, key: made.tree.key };
   }
 
   /**
@@ -5538,7 +5587,7 @@ export class Session {
     for (const node of tree.nodes.values()) {
       // An export target's pieces stay off the plate on every step (D12).
       const on = path.has(node.id) && !exportsPieces(node.op);
-      for (const key of node.pieces ?? []) if (key) wanted.set(key, wanted.get(key) === true || on);
+      for (const key of [...(node.pieces ?? []), node.pins ?? null]) if (key) wanted.set(key, wanted.get(key) === true || on);
     }
     const back: string[] = [];
     const left: string[] = [];
@@ -5590,6 +5639,18 @@ export class Session {
       await this.closeTree(gone);
     }
     return { keys, objects, notes };
+  }
+
+  /** --- Milestone 5. The edited cut's pins: the old pins object leaves, and the reply's pins, if any, are a new one. */
+  private async rebuildPins(obj: PlateObject, old: string | null, reply: Record<string, unknown>, node: number, exported: boolean): Promise<{ id: string; key: string } | null> {
+    const gone = old ? this.objectOfKey(old) : undefined;
+    if (gone) {
+      if (this.objects.includes(gone)) this.objects.splice(this.objects.indexOf(gone), 1);
+      this.piecesOffPlate = this.piecesOffPlate.filter((row) => row !== gone);
+      if (this.selected === gone.id) this.selected = obj.id;
+      await this.closeTree(gone);
+    }
+    return reply.pins && typeof reply.pins === "object" ? this.partitionPins(obj, reply.pins as Record<string, unknown>, node, exported) : null;
   }
 
   /** `piece` takes part `index` of the edited cut as its new root, and the steps it had after its root are built again on it. */
@@ -5653,7 +5714,7 @@ export class Session {
     for (const id of pathTo(tree, tree.current)) {
       const node = tree.nodes.get(id);
       if (node?.op?.kind !== "partition") continue;
-      for (const key of node.pieces ?? []) {
+      for (const key of [...(node.pieces ?? []), node.pins ?? null]) {
         const piece = key ? this.objectOfKey(key) : undefined;
         if (!piece || !this.objects.includes(piece) || !piece.tree || (piece.platedNode === piece.tree.current && piece.bytes.byteLength > 0)) continue;
         const reason = await this.commitObject(piece);
@@ -5674,7 +5735,7 @@ export class Session {
    * then each piece's object as it stands now. An export target's pieces are not saved with a project, so one that no
    * object holds any more is cut again from the stored op on a spare step, as the app's `rebuildPiece` does.
    */
-  private async partitionPieces(obj: PlateObject): Promise<{ pieces: PlateObject[]; op: PartitionModelOp } | { reason: string }> {
+  private async partitionPieces(obj: PlateObject): Promise<{ pieces: PlateObject[]; op: PartitionModelOp; pins: PlateObject | null } | { reason: string }> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return tree;
     const at = [...pathTo(tree, tree.current)].reverse().find((id) => tree.nodes.get(id)?.op?.kind === "partition");
@@ -5719,7 +5780,33 @@ export class Session {
       obj.tree = withNode(obj.tree ?? tree, node.id, { pieces: keys });
     }
     if (!obj.solid) return { reason: "This solid could not be read." };
-    return { pieces: [obj, ...(pieces as PlateObject[])], op };
+    // --- Milestone 5. The pins, when the cut has dowels, export as one more part after the last piece.
+    let pins: PlateObject | null = null;
+    if (node.pins) {
+      const held = this.objectOfKey(node.pins);
+      const opened = held ? await this.opened(held) : null;
+      if (held && opened && !("reason" in opened) && held.solid) pins = held;
+      else if (exportsPieces(op)) {
+        const [reserved, spare] = reserveId(obj.tree ?? tree);
+        obj.tree = reserved;
+        const key = `mcp-pins-${obj.id}-${node.id}-r${spare}`;
+        let reply: Record<string, unknown>;
+        try {
+          reply = await this.treeCall(applyRequest(tree.key, node.parent, spare, op, CHORD, null, undefined, key), "partition");
+        } catch (err) {
+          const lost = this.lostReply(err);
+          if (lost) return { reason: String(lost.reason) };
+          throw err;
+        }
+        await this.treeCall({ call: "drop", key: tree.key, node: spare }).catch(() => ({}));
+        if (typeof reply.error === "string" && reply.error) return { reason: plainModelError(reply.error) };
+        const made = reply.pins && typeof reply.pins === "object" ? this.partitionPins(obj, reply.pins as Record<string, unknown>, node.id, true) : null;
+        pins = made ? (this.objectOfKey(made.key) ?? null) : null;
+        if (!pins) return { reason: "This cut's pins could not be cut again." };
+        obj.tree = withNode(obj.tree ?? tree, node.id, { pins: made!.key });
+      } else return { reason: "This cut's pins are no longer on the plate. model_edit the cut to make them again." };
+    }
+    return { pieces: [obj, ...(pieces as PlateObject[])], op, pins };
   }
 
   /** --- D12. export_3mf with pieces: true. One 3MF of every piece, named `<name>-<n>`, or with stl: true one STL each. */
@@ -5730,10 +5817,11 @@ export class Session {
     const got = await this.partitionPieces(obj);
     if ("reason" in got) return { ok: false, reason: got.reason };
     const name = String(input.name);
-    const names = pieceNames(name, got.pieces.length);
+    const parts = got.pins ? [...got.pieces, got.pins] : got.pieces;
+    const names = pieceNames(name, got.pieces.length, !!got.pins);
     const folder = name.slice(0, Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1);
-    const meshes = got.pieces.map((piece) => featureSolidInModel(piece.solid!, piece.modelPose).positions);
-    const rows = this.pieceRows(got.pieces, names);
+    const meshes = parts.map((piece) => featureSolidInModel(piece.solid!, piece.modelPose).positions);
+    const rows = this.pieceRows(parts, names);
     if (input.stl === true) {
       const files = meshes.map((mesh, index) => {
         const path = resolveWrite(`${folder}${names[index]}`, ".stl");
@@ -5753,8 +5841,9 @@ export class Session {
   private async exportPieceStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
     const got = await this.partitionPieces(obj);
     if ("reason" in got) return { ok: false, reason: got.reason };
-    const names = pieceNames(name, got.pieces.length);
-    const [first, ...rest] = got.pieces.map((piece) => piece.tree!);
+    const parts = got.pins ? [...got.pieces, got.pins] : got.pieces;
+    const names = pieceNames(name, got.pieces.length, !!got.pins);
+    const [first, ...rest] = parts.map((piece) => piece.tree!);
     let reply: Record<string, unknown>;
     try {
       reply = await this.treeCall(exportRequest(first!.key, first!.current, "step", rest.map((tree) => ({ key: tree.key, node: tree.current })), names), "export");
@@ -5772,8 +5861,8 @@ export class Session {
       path,
       bytes: step.byteLength,
       parts: got.pieces.length,
-      solids: typeof reply.solids === "number" ? reply.solids : got.pieces.length,
-      pieces: this.pieceRows(got.pieces, names),
+      solids: typeof reply.solids === "number" ? reply.solids : parts.length,
+      pieces: this.pieceRows(parts, names),
       names: "The STEP file holds the pieces as separate named solids in this order, named as in the 3MF and the STL files.",
       note: SUPPORT_NOTE,
     };
@@ -5960,9 +6049,10 @@ export class Session {
     const replayed = levels.reduce((sum, level) => sum + 1 + level.replay.reduce((inner, step) => inner + 1 + (step.op.kind === "group" ? step.op.steps.length : 0), 0), 0);
     // --- Split to print (D9): the edited cut makes its pieces again in the same call.
     const pieceKeys = baked.op.kind === "partition" ? this.pieceKeys(obj, own.node, baked.op) : undefined;
+    const pinsKey = baked.op.kind === "partition" ? this.pinsKey(obj, own.node, baked.op) : null;
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(crossEditRequest(levels, obj.stepTolerance || CHORD, pieceKeys), "edit", this.replayBudgetMs(replayed));
+      reply = await this.treeCall(crossEditRequest(levels, obj.stepTolerance || CHORD, pieceKeys, pinsKey), "edit", this.replayBudgetMs(replayed));
     } catch (err) {
       const lost = this.lostReply(err);
       if (lost) return lost;
@@ -5988,7 +6078,9 @@ export class Session {
       };
     });
     const rebuilt = pieceKeys ? await this.rebuildPieces(obj, tree.nodes.get(node)?.pieces ?? [], reply, own.node, exportsPieces(baked.op)) : null;
-    if (rebuilt) steps[0] = { ...steps[0]!, pieces: rebuilt.keys };
+    // --- Milestone 5. The pins are made again with the pieces: the old object goes, the new one joins (D9).
+    const pins = pieceKeys ? await this.rebuildPins(obj, tree.nodes.get(node)?.pins ?? null, reply, own.node, exportsPieces(baked.op)) : null;
+    if (rebuilt) steps[0] = { ...steps[0]!, pieces: rebuilt.keys, ...(pins ? { pins: pins.key } : {}) };
     const tip = [...steps].reverse().find((step) => !step.broken)?.id ?? ids[0]!;
     const host = obj.tree ?? tree;
     obj.tree = forked(host, own.parent, steps, tip);
@@ -5997,8 +6089,8 @@ export class Session {
     if (solid) obj.solid = solid;
     obj.probes.clear();
     this.followPieces(obj);
-    const notes = rebuilt ? [...numberNotes(reply), ...rebuilt.notes] : [];
-    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) } : {};
+    const notes = rebuilt ? [...(baked.notes ?? []), ...numberNotes(reply), ...rebuilt.notes] : [];
+    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(pins ? { pins: pins.id } : {}), ...joined(reply, obj.modelPose), ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) } : {};
     return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null, ...parts };
   }
 

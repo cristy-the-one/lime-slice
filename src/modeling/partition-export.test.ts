@@ -3,7 +3,8 @@
  */
 import { encode3mf } from "../mesh-place.ts";
 import { crc32 } from "../png-rgba.ts";
-import { exportStem, pieceNames, SUPPORT_NOTE } from "./partition-export.ts";
+import { exportStem, pieceNames, pinsName, SUPPORT_NOTE } from "./partition-export.ts";
+import { pieceFiles } from "../ui/split-export.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -15,6 +16,9 @@ const show = (value: unknown) => JSON.stringify(value);
 
 check("pieces are named in assembly order, part 1 first", show(pieceNames("cover", 3)) === show(["cover-1", "cover-2", "cover-3"]), show(pieceNames("cover", 3)));
 check("the files are those names with their extension", show(pieceNames("cover", 2).map((name) => `${name}.stl`)) === show(["cover-1.stl", "cover-2.stl"]));
+// --- Milestone 5: the pins are one more part, after the last piece, in every format.
+check("the pins come last, as <source>-pins", show(pieceNames("bar.step", 3, true)) === show(["bar-1", "bar-2", "bar-3", "bar-pins"]) && pinsName("exports/bar.step") === "bar-pins", show(pieceNames("bar.step", 3, true)));
+check("and each format names them", show(pieceFiles("bar", pieceNames("bar", 2, true)).stl) === show(["bar-1.stl", "bar-2.stl", "bar-pins.stl"]), show(pieceFiles("bar", pieceNames("bar", 2, true))));
 check("ten pieces and more keep their order", pieceNames("bar", 12).at(9) === "bar-10" && pieceNames("bar", 12).at(11) === "bar-12");
 check("a file name drops its folder and its extension", exportStem("exports/Telo cover.step") === "Telo cover" && exportStem("C:\\parts\\cover.3mf") === "cover");
 check("characters a file name cannot hold become dashes", exportStem('a:b*c?"d"') === "a-b-c--d-", exportStem('a:b*c?"d"'));

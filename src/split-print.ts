@@ -9,7 +9,8 @@ import { boundsOf, type Mat3 } from "./mesh-place.ts";
 import { clampTilt, formatMm, splitBase, tiltedNormal, tiltOf, type FacePlane, type SplitBase } from "./model-plane.ts";
 import { applyPose, fromSolidOp, toSolidOp, turnDir, type Affine } from "./model-space.ts";
 import type { ModelOp, PartitionModelOp, Vec3 } from "./model-tree.ts";
-import { fillPartition, fitPrinter, notBuiltYet, type Axis, type Box, type FillContext, type PartitionOp, type Target } from "./modeling/partition.ts";
+import { connectorNames, defaultsFor, fillPartition, fitPrinter, notBuiltYet, placeCut, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
+import { sectionLoops } from "./section-cap.ts";
 
 /** The status title: within `TITLE_LIMIT` (`src/sketch/hints.ts`), as every card's is. */
 export const SPLIT_PRINT_TITLE = "Split to print";
@@ -38,7 +39,18 @@ export interface CardCut {
   face: FacePlane | null;
   /** The normal points down its axis, as an edited cut may: kept, since it orders the pieces. */
   flip: boolean;
+  /** Connectors on this cut: off is a plain cut. `spec` holds what was typed; an absent size is the planner's default. */
+  joints: CardJoints;
 }
+
+/** One cut's connectors as the card edits them (D4: the first panel edits one type a cut). */
+export interface CardJoints {
+  on: boolean;
+  spec: ConnectorSpec;
+}
+
+/** The connector types the card offers; key and dovetail wait for milestone 9. */
+export type CardJointType = "dowel" | "plug" | "hardware";
 
 export interface Card {
   cuts: CardCut[];
@@ -117,7 +129,7 @@ export function cutFromPlane(origin: Vec3, normal: Vec3, center: Vec3, frame: Ca
   const flip = dot(axes[axis], n) < 0;
   if (flip) n = [-n[0], -n[1], -n[2]];
   const [tiltA, tiltB] = tiltOf(axes[axis], n).map(tidy) as [number, number];
-  const row: CardCut = { mode: AXES[axis]!, value: 0, tiltA, tiltB, face: null, flip };
+  const row: CardCut = { mode: AXES[axis]!, value: 0, tiltA, tiltB, face: null, flip, joints: plainJoints() };
   const base = cutBase(row, center, frame)!;
   return { ...row, value: tidy(dot(sub(origin, base.base), n) / dot(base.dir, n)) };
 }
@@ -171,7 +183,40 @@ export function withCutAdded(card: Card, box: Box, center: Vec3, frame: CardFram
   return { ...card, cuts: [...card.cuts, cut], selected: card.cuts.length, edited: true };
 }
 
-const BLANK: CardCut = { mode: "x", value: 0, tiltA: 0, tiltB: 0, face: null, flip: false };
+const BLANK: CardCut = { mode: "x", value: 0, tiltA: 0, tiltB: 0, face: null, flip: false, joints: plainJoints() };
+
+/** Connectors off, a dowel waiting for the switch (section 2's first type). */
+export function plainJoints(): CardJoints {
+  return { on: false, spec: { type: "dowel" } };
+}
+
+/** The cut's Connectors switch: on adds the dowel row with every default, off hides the fields and keeps what was typed. */
+export function withJointsOn(card: Card, index: number, on: boolean): Card {
+  const cut = card.cuts[index];
+  return cut ? withCutChanged(card, index, { joints: { ...cut.joints, on } }) : card;
+}
+
+/** A new connector type takes section 2's sizes for that type (section 8); the count carries over. */
+export function withJointType(card: Card, index: number, type: CardJointType): Card {
+  const cut = card.cuts[index];
+  if (!cut || cut.joints.spec.type === type) return card;
+  const count = cut.joints.spec.count;
+  return withCutChanged(card, index, { joints: { on: true, spec: { type, ...(count !== undefined ? { count } : {}) } as ConnectorSpec } });
+}
+
+/** One typed connector field merged in; `undefined` puts that field back to its default. */
+export function withJointField(card: Card, index: number, patch: Partial<Record<string, unknown>>): Card {
+  const cut = card.cuts[index];
+  if (!cut) return card;
+  const spec = { ...cut.joints.spec, ...patch } as Record<string, unknown>;
+  for (const key of Object.keys(patch)) if (patch[key] === undefined) delete spec[key];
+  return withCutChanged(card, index, { joints: { on: true, spec: spec as unknown as ConnectorSpec } });
+}
+
+/** **Use N**: the count that fits, written back as the cut's typed count. */
+export function withJointCount(card: Card, index: number, count: number): Card {
+  return withJointField(card, index, { count: Math.max(0, Math.round(count)) });
+}
 
 export function withCutDeleted(card: Card, index: number): Card {
   if (index < 0 || index >= card.cuts.length) return card;
@@ -202,7 +247,7 @@ export function withCutChanged(card: Card, index: number, patch: Partial<CardCut
  */
 export function withCutMode(card: Card, index: number, mode: CutMode, box: Box, center: Vec3, frame: CardFrame | null = null, face: FacePlane | null = null): Card {
   if (!card.cuts[index]) return card;
-  const row: CardCut = { ...BLANK, mode, face: mode === "face" ? face : null };
+  const row: CardCut = { ...BLANK, mode, face: mode === "face" ? face : null, joints: card.cuts[index]!.joints };
   const base = cutBase(row, center, frame);
   if (!base) return withCutChanged(card, index, row);
   const span = spanOf(box, base);
@@ -228,7 +273,10 @@ export function cardOp(card: Card, center: Vec3, frame: CardFrame | null, sizes:
   const planes = cardPlanes(card, center, frame);
   if (planes.some((plane) => !plane)) return null;
   return {
-    cuts: planes.map((plane) => ({ origin: plane!.origin, normal: plane!.normal })),
+    cuts: planes.map((plane, at) => {
+      const joints = card.cuts[at]!.joints;
+      return { origin: plane!.origin, normal: plane!.normal, ...(joints.on ? { connectors: { on: true, types: [{ ...joints.spec }] } } : {}) };
+    }),
     ...(card.target ? { target: card.target } : {}),
     arrange: card.layout,
     labels: card.numbers ? { on: true, face: "cut", height: sizes.height, depth: sizes.depth } : { on: false },
@@ -241,9 +289,17 @@ export function cardOp(card: Card, center: Vec3, frame: CardFrame | null, sizes:
  */
 export function cardFromOp(op: PartitionModelOp, pose: Affine, center: Vec3, frame: CardFrame | null = null, plate: string | null = null): Card {
   const shown = fromSolidOp(op, pose) as PartitionModelOp;
-  const cuts = shown.cuts.map((cut) => cutFromPlane(cut.origin, cut.normal, center, frame));
+  const cuts = shown.cuts.map((cut) => ({ ...cutFromPlane(cut.origin, cut.normal, center, frame), joints: jointsOf(cut.connectors) }));
   const target = shown.target && shown.target.printer !== plate ? { ...shown.target } : null;
   return { cuts, selected: cuts.length > 0 ? 0 : -1, layout: shown.arrange !== false, target, numbers: shown.labels?.on === true, edited: true };
+}
+
+/** A stored cut's connectors back in the card: its first type as stored, every size typed. */
+function jointsOf(connectors: PartitionModelOp["cuts"][number]["connectors"]): CardJoints {
+  const first = connectors?.types?.[0];
+  if (!first) return { ...plainJoints(), on: connectors?.on === true };
+  const { at: _at, place: _place, ...typed } = first as ConnectorSpec & { at?: unknown; place?: unknown };
+  return { on: connectors?.on === true, spec: typed as ConnectorSpec };
 }
 
 /** Whether two cards describe the same cuts, layout, target and numbers, so an untouched edit offers no Update. */
@@ -304,21 +360,75 @@ export function cardFromFit(fit: FitOnBed, center: Vec3, frame: CardFrame | null
   return { ...emptyCard(), cuts, selected: cuts.length > 0 ? 0 : -1, layout, ...keep };
 }
 
+/** The solid a split to print is planned on: its mesh in its own frame, and the print's up there (the plate's Z). */
+export interface PartitionSolid {
+  positions: ArrayLike<number>;
+  up: Vec3;
+}
+
+/** The plate's up in the solid's own frame: the third row of the plate orientation, which takes the solid onto the plate. */
+export function plateUp(orient: readonly number[]): Vec3 {
+  const up: Vec3 = [orient[6] ?? 0, orient[7] ?? 0, orient[8] ?? 1];
+  const length = Math.hypot(...up);
+  return length > 1e-12 ? [up[0] / length, up[1] / length, up[2] / length] : [0, 0, 1];
+}
+
+/** One connector the planner placed, for the ghost: its centre on the cut and the cut's normal in model space, the hole. */
+export interface ConnectorMark {
+  id: string;
+  at: Vec3;
+  normal: Vec3;
+  radius: number;
+  depth: number;
+}
+
+/** What the planner said of the connectors: its sentences, each typed count that does not fit (Use N), and the marks. */
+export interface Placement {
+  notes: string[];
+  fits: ConnectorFit[];
+  marks: ConnectorMark[];
+  /** The connectors the planner left out, by id, with its sentence. */
+  dropped: { id: string; sentence: string }[];
+}
+
+/** The hole a resolved connector leaves, and how far it reaches across the cut, for the ghost. */
+function holeOf(spec: ResolvedConnector): { radius: number; depth: number } {
+  const clearance = spec.clearance ?? 0;
+  switch (spec.type) {
+    case "dowel":
+      return { radius: spec.radius + clearance, depth: spec.depth + 2 * spec.endGap };
+    case "plug":
+      return { radius: spec.radius + clearance, depth: spec.depth + spec.endGap };
+    case "hardware":
+      return { radius: spec.diameter / 2 + clearance, depth: spec.depth + 2 * spec.endGap };
+    default:
+      return { radius: 0, depth: 0 };
+  }
+}
+
 /**
- * The op the tree stores, in the solid's own frame: each cut a straight plane with its U, connectors off, and the
- * target, orientation, layout, margin and Max pieces filled as at Apply (D11), so a replay cuts the same pieces after
- * the library or the settings change. Labels are written in full while on, and as `{on: false}` alone when off: only an
- * explicit `on` cuts part numbers, so an op stored before milestone 3b, with none, gains no digits on a replay. A
- * sentence when this milestone does not build the op.
+ * The op the tree stores, in the solid's own frame: each cut a straight plane with its U, and the target, orientation,
+ * layout, margin and Max pieces filled as at Apply (D11), so a replay cuts the same pieces after the library or the
+ * settings change. Labels are written in full while on, and as `{on: false}` alone when off: only an explicit `on` cuts
+ * part numbers, so an op stored before milestone 3b, with none, gains no digits on a replay. A cut with connectors on
+ * stores its types filled and `placed`, the planner's placement on the section `solid` has there (D5, D6), and the op
+ * then stores `up`. A sentence when this milestone does not build the op.
  */
-export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine): { op: PartitionModelOp } | { reason: string } {
+export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine, solid?: PartitionSolid): ({ op: PartitionModelOp } & Placement) | { reason: string } {
   if (op.cuts.length === 0) return { reason: NEEDS_CUTS };
   const later = notBuiltYet(op);
   if (later) return { reason: later };
   const filled = fillPartition(op, ctx);
+  const jointed = filled.cuts.some((cut) => cut.connectors.on);
   const typed: PartitionModelOp = {
     kind: "partition",
-    cuts: filled.cuts.map((cut) => ({ origin: [...cut.origin], normal: [...cut.normal], u: [...cut.u], profile: { kind: "straight" }, connectors: { on: false } })),
+    cuts: filled.cuts.map((cut) => ({
+      origin: [...cut.origin],
+      normal: [...cut.normal],
+      u: [...cut.u],
+      profile: { kind: "straight" },
+      connectors: cut.connectors.on ? { on: true, types: cut.connectors.types.map((spec) => structuredClone(spec)) } : { on: false },
+    })),
     target: filled.target,
     orient: filled.orient,
     arrange: filled.arrange,
@@ -326,7 +436,33 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine)
     bedMarginMm: filled.bedMarginMm,
     maxPieces: filled.maxPieces,
   };
-  return { op: toSolidOp(typed, pose) as PartitionModelOp };
+  const own = toSolidOp(typed, pose) as PartitionModelOp;
+  const placement: Placement = { notes: [], fits: [], marks: [], dropped: [] };
+  if (!jointed) return { op: own, ...placement };
+  const floor = defaultsFor(filled.target, ctx).wallFloorMm;
+  const cuts = own.cuts.map((cut, at) => {
+    const resolved = filled.cuts[at]!.connectors;
+    if (!resolved.on) return cut;
+    const section = solid ? sectionLoops(solid.positions, cut.origin, cut.normal, cut.u!) : null;
+    if (!section) {
+      placement.notes.push(`Cut ${at + 1}: the plane misses the part, so no ${connectorNames(resolved.types[0]?.type ?? "dowel").one} is placed.`);
+      return { ...cut, connectors: { ...cut.connectors, placed: [] } };
+    }
+    const placed = placeCut(at + 1, section, resolved.types, floor);
+    placement.notes.push(...placed.notes);
+    placement.dropped.push(...placed.dropped.map((row) => ({ id: row.id, sentence: row.sentence })));
+    placement.fits.push(...placed.fits);
+    const w = cut.normal;
+    const u = cut.u!;
+    const v: Vec3 = [w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0]];
+    for (const row of placed.placed) {
+      const spec = resolved.types.find((one) => one.type === row.type)!;
+      const point: Vec3 = [0, 1, 2].map((i) => cut.origin[i]! + u[i]! * row.uvMm[0] + v[i]! * row.uvMm[1]) as Vec3;
+      placement.marks.push({ id: row.id, at: applyPose(pose, point), normal: turnDir(pose, w), ...holeOf(spec) });
+    }
+    return { ...cut, connectors: { ...cut.connectors, placed: placed.placed.map((row) => ({ ...row })) } };
+  });
+  return { op: { ...own, cuts, up: solid?.up ?? [0, 0, 1] }, ...placement };
 }
 
 export const NEEDS_CUTS = "A partition needs at least one cut. model_probe with plan: true proposes them.";

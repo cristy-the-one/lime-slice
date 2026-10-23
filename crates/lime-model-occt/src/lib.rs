@@ -52,6 +52,21 @@ pub fn partition_primitive(solid: &str, planes: &[[f64; 6]]) -> Result<Vec<Parti
     }
 }
 
+/// Builds a `Solid` (as JSON) and cuts it with a stored split to print op (as JSON), connectors and all, as the history
+/// tree builds it. The answer is JSON: each piece and the pins with their volume, checks and surfaces, each pin's
+/// volume, the `connectors` and `notes` a reply carries, and the op the tree stores. A test path.
+pub fn partition_joints(solid: &str, op: &str) -> Result<String, String> {
+    #[cfg(lime_occt)]
+    {
+        tree::partition_joints(solid, op)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = (solid, op);
+        Err("OCCT_ROOT is not set, so Open CASCADE is not linked".into())
+    }
+}
+
 /// The solids a STEP file holds, each checked as a partition's piece: what a split to print's STEP export reads back as.
 pub fn step_solids(step: &[u8]) -> Result<Vec<PartitionPiece>, String> {
     #[cfg(lime_occt)]

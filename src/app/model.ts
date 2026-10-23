@@ -168,8 +168,8 @@ import { beltLayerNormal } from "../sim/study.ts";
 import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
-import { bedFrame, exportedCommit, exportsPieces, fitOnBed, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck } from "../split-print.ts";
-import { SUPPORT_NOTE, exportStem, pieceNames } from "../modeling/partition-export.ts";
+import { bedFrame, exportedCommit, exportsPieces, fitOnBed, plateUp, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
+import { SUPPORT_NOTE, exportStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
 import { clampPieces, defaultsFor, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { closeCracks } from "../mesh-check";
@@ -608,6 +608,17 @@ export function bindModelView() {
       return posedFace(flatFace(solid, face)) ?? "curved";
     },
     check: checkSplitPrint,
+    connectors(typed) {
+      const stored = splitStored(typed);
+      return stored && !("reason" in stored) ? { notes: stored.notes, fits: stored.fits, marks: stored.marks, dropped: stored.dropped } : null;
+    },
+    defaults(target) {
+      const solid = viewed();
+      if (!solid) return null;
+      const ctx = partitionContext(solid);
+      return defaultsFor(target ?? ctx.plateTarget, ctx);
+    },
+    holeCompensation: () => state.xyHoleCompensationMm,
     cancelled: cancelEdit,
     parameters: () => currentParams(),
     view: () => fx.model ?? null,
@@ -4122,8 +4133,8 @@ function exportsRow(row: RowKey): boolean {
 /**
  * --- D12. Export…: the pieces of the split to print for an export target on the way to the open part's step (or the one
  * `row` names), as one STL each, one 3MF, or one STEP, through the save path File's exports use. The pieces are the
- * part's own solid and the trees Apply held; the step is shown first so the part's solid is the one cut. The pins file
- * of milestone 5 joins `pieceFiles` and the meshes here, as one more name after the last piece.
+ * part's own solid and the trees Apply held; the step is shown first so the part's solid is the one cut. The pins, when
+ * the cut has dowels, are one more part after the last piece, `<source>-pins`.
  */
 async function exportPieceFiles(row?: RowKey) {
   const at = open;
@@ -4143,17 +4154,18 @@ async function exportPieceFiles(row?: RowKey) {
     return;
   }
   const held: { key: string; node: NodeId; positions: Float32Array }[] = [];
-  for (const [index, key] of (step.pieces ?? []).entries()) {
+  // The pins, when the cut has dowels, are one more part after the last piece: `<source>-pins`.
+  for (const [index, key] of [...(step.pieces ?? []), ...(step.pins ? [step.pins] : [])].entries()) {
     const piece = key ? modelTrees.get(key) : undefined;
     const mesh = key && piece ? heldPiece(key, owner) : null;
     if (!key || !piece || !mesh) {
-      readout(`Part ${index + 2} of this cut is no longer held in Model. Edit the cut and Update to make it again.`);
+      readout(index < (step.pieces ?? []).length ? `Part ${index + 2} of this cut is no longer held in Model. Edit the cut and Update to make it again.` : "This cut's pins are no longer held in Model. Edit the cut and Update to make them again.");
       return;
     }
     held.push({ key, node: piece.current, positions: Float32Array.from(posePoints(mesh.positions, mesh.pose)) });
   }
   const stem = exportStem(owner.name);
-  const names = pieceNames(owner.name, held.length + 1);
+  const names = pieceNames(owner.name, (step.pieces ?? []).length + 1, !!step.pins);
   const files = pieceFiles(stem, names);
   const format = await askPieceExport(files, SUPPORT_NOTE);
   if (!format) return;
@@ -5556,7 +5568,7 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
   if (seed || missing.includes(ROOT)) {
     // `open` registers every saved node, so nothing else is missing.
     if (tree.root.kind !== "piece") return openWhole(key, node);
-    const problem = await rebuildPiece(tree.root.tree, tree.root.node, key, tree.root.index);
+    const problem = await rebuildPiece(tree.root.tree, tree.root.node, key, tree.root.index, tree.root.pins === true);
     if (problem) return problem;
   }
   // A piece's tree comes back as its root only: its steps are applied again down to `node`. A split
@@ -5581,16 +5593,19 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
 
 /**
  * The piece a split cut off comes back by running that split again on a spare node, which then goes. A split to print's
- * piece `index` comes back the same way, its key at its place and none for the others, whose trees stay as they are.
+ * piece `index` comes back the same way, its key at its place and none for the others, whose trees stay as they are;
+ * its pins, with `pins`, under their key alone.
  */
-async function rebuildPiece(parentKey: string, split: NodeId, pieceKey: string, index?: number): Promise<string | null> {
+async function rebuildPiece(parentKey: string, split: NodeId, pieceKey: string, index?: number, pins = false): Promise<string | null> {
   const parent = modelTrees.get(parentKey);
   const splitNode = parent?.nodes.get(split);
   if (!parent || !splitNode?.op || splitNode.parent === null) return "The part this piece was split from is no longer open.";
   const [reserved, spare] = reserveId(parent);
   modelTrees.set(parentKey, reserved);
-  const keys = splitNode.op.kind === "partition" && index != null ? (splitNode.pieces ?? []).map((_, at) => (at === index - 2 ? pieceKey : null)) : null;
-  const body = await treeCall(parentKey, splitNode.parent, applyRequest(parentKey, splitNode.parent, spare, splitNode.op, state.stepTolerance, keys ? null : pieceKey, keys ?? undefined));
+  const partition = splitNode.op.kind === "partition";
+  const keys = partition && !pins && index != null ? (splitNode.pieces ?? []).map((_, at) => (at === index - 2 ? pieceKey : null)) : null;
+  const other = keys || pins ? null : pieceKey;
+  const body = await treeCall(parentKey, splitNode.parent, applyRequest(parentKey, splitNode.parent, spare, splitNode.op, state.stepTolerance, other, keys ?? undefined, partition && pins ? pieceKey : null));
   await dropInEngine(parentKey, spare);
   return text(body.error) || null;
 }
@@ -5682,9 +5697,12 @@ export function exportedPart(): string | null {
 }
 
 /** The op the tree stores for the card's cuts, in the solid's own frame, or why it cannot be cut. */
-function splitStored(typed: PartitionOp): { op: PartitionModelOp } | { reason: string } | null {
+function splitStored(typed: PartitionOp): ({ op: PartitionModelOp } & Placement) | { reason: string } | null {
   const solid = viewed();
-  return solid ? storedPartition(typed, partitionContext(solid), openPose()) : null;
+  const obj = plateObjectOpen();
+  if (!solid) return null;
+  const orient = obj && obj.id !== state.plate.selectedId ? obj.orient : state.orient;
+  return storedPartition(typed, partitionContext(solid), openPose(), { positions: solid.positions, up: plateUp(orient) });
 }
 
 let splitCheckTimer = 0;
@@ -5722,13 +5740,40 @@ async function sendSplitCheck(serial: number, key: string, treeKey: string, node
   if (serial !== splitCheckSerial || state.stage !== "model") return;
   const body = await treeCall(treeKey, node, probeRequest(treeKey, node, op));
   const view: SplitPrintCheck = body.ok === true
-    ? { phase: "done", ok: true, parts: readParts(body.parts), notes: kernelNotes(body) }
+    ? { phase: "done", ok: true, parts: readParts(body.parts), notes: kernelNotes(body), ...readPinsCheck(body.pins), ...readPlacedIds(body.connectors) }
     : { phase: "done", ok: false, error: sentence(plainModelError(text(body.error) || "These planes do not cut this solid.")) };
   if (typeof body.ok === "boolean") {
     if (splitAnswers.size >= 64) splitAnswers.clear();
     splitAnswers.set(key, view);
   }
   if (serial === splitCheckSerial && state.stage === "model") setSplitPrintCheck(view);
+}
+
+/** A probe's pins: how many, and their volume. Nothing when the cut has none. */
+function readPinsCheck(value: unknown): { pins?: { count: number; volumeMm3: number } } {
+  if (!value || typeof value !== "object") return {};
+  const row = value as { count?: unknown; volumeMm3?: unknown };
+  return { pins: { count: Number(row.count) || 0, volumeMm3: Number(row.volumeMm3) || 0 } };
+}
+
+/** The ids of the connectors the kernel built, from a probe's `connectors`. Nothing when the cut has none on. */
+function readPlacedIds(value: unknown): { placed?: string[] } {
+  const placed = value && typeof value === "object" ? (value as { placed?: unknown }).placed : undefined;
+  if (!Array.isArray(placed)) return {};
+  return { placed: placed.map((row) => String((row as { id?: unknown } | null)?.id ?? "")) };
+}
+
+/** An apply's or an edit's `pins`: the pins' key and solid, null with none, or a string when they could not be read. */
+function readPins(value: unknown): { key: string; solid: ParsedSolid } | null | string {
+  if (!value || typeof value !== "object") return null;
+  const solid = decodeSolid(value as Body);
+  return typeof solid === "string" ? solid : { key: String((value as Body).key), solid };
+}
+
+/** The key the pins' tree opens under, when a cut of `op` has a dowel placed (plan section 10). */
+function pinsKeyFor(objectId: string, op: PartitionModelOp): string | null {
+  const dowels = op.cuts.some((cut) => cut.connectors?.on && (cut.connectors.placed ?? []).some((row) => row.type === "dowel"));
+  return dowels ? freshTreeKey(`${objectId}-pins`) : null;
 }
 
 /** A probe's pieces, as the kernel cut them: each one's volume and box. */
@@ -5792,13 +5837,14 @@ async function applySplitPrint(typed: PartitionOp) {
   const [reserved, node] = reserveId(tree);
   modelTrees.set(at.key, reserved);
   const keys = partKeys(at.objectId, op);
+  const pinsKey = pinsKeyFor(at.objectId, op);
   const chord = state.stepTolerance;
   const mine = ticket;
   busy = true;
   setSplitPrintWaiting(true);
   syncUndo();
   readout("Cutting the part…");
-  const body = await treeCall(at.key, parent, applyRequest(at.key, parent, node, op, chord, null, keys));
+  const body = await treeCall(at.key, parent, applyRequest(at.key, parent, node, op, chord, null, keys, pinsKey));
   if (mine === ticket) busy = false;
   setSplitPrintWaiting(false);
   syncUndo();
@@ -5807,17 +5853,18 @@ async function applySplitPrint(typed: PartitionOp) {
   if (failed(at.key, body)) return;
   const parsed = decodeSolid(body);
   const pieces = readPieces(body.pieces);
-  if (typeof parsed === "string" || typeof pieces === "string") {
+  const pins = readPins(body.pins);
+  if (typeof parsed === "string" || typeof pieces === "string" || typeof pins === "string") {
     void dropInEngine(at.key, node);
-    for (const key of keys) void post({ call: "close", key });
-    readout(typeof parsed === "string" ? parsed : (pieces as string));
+    for (const key of [...keys, ...(pinsKey ? [pinsKey] : [])]) void post({ call: "close", key });
+    readout(typeof parsed === "string" ? parsed : typeof pieces === "string" ? pieces : (pins as string));
     return;
   }
   const storedOp = isOp(body.op) ? body.op : op;
   // --- D12. An export target's pieces are held in Model with their trees and never go on the plate.
   const held = exportsPieces(op);
-  const placed = putPieces(at, node, parsed, pieces.map((piece) => (piece ? { ...piece, was: null } : null)), op.arrange !== false && !held, held);
-  modelTrees.set(at.key, withChild(modelTrees.get(at.key) ?? latest, parent, { id: node, op: storedOp, label: opLabel(storedOp, placed.keys.length + 1), fingerprint: parsed.fingerprint, pieces: placed.keys }));
+  const placed = putPieces(at, node, parsed, pieces.map((piece) => (piece ? { ...piece, was: null } : null)), op.arrange !== false && !held, held, pins ? { ...pins, was: null } : null);
+  modelTrees.set(at.key, withChild(modelTrees.get(at.key) ?? latest, parent, { id: node, op: storedOp, label: opLabel(storedOp, placed.keys.length + 1), fingerprint: parsed.fingerprint, pieces: placed.keys, ...(placed.pins ? { pins: placed.pins } : {}) }));
   keepSolid(at.key, node, chord, parsed);
   open = { ...at, solid: parsed };
   const sentences = kernelNotes(body);
@@ -5834,7 +5881,9 @@ function kernelNotes(body: Body): string[] {
 
 /** What the card says an export Apply left in Model. */
 function heldResult(op: PartitionModelOp, count: number, notes: string[]): SplitPrintDone {
-  return { printer: targetName(op), names: pieceNames(state.mesh?.name ?? "part", count), notes };
+  const pins = op.cuts.some((cut) => (cut.connectors?.placed ?? []).some((row) => row.type === "dowel"));
+  const source = state.mesh?.name ?? "part";
+  return { printer: targetName(op), names: pieceNames(source, count), ...(pins ? { pins: pinsName(source) } : {}), notes };
 }
 
 /** What the readout says of an export target's pieces: in Model, off the plate, until they are exported. */
@@ -5856,10 +5905,10 @@ function laidSentence(op: PartitionModelOp, fresh: number): string {
  * keys each piece's tree has, in order, and the new objects' ids. With `held`, an export target's (D12), no piece goes on
  * the plate: each is the root of a tree of its own, held in Model, and the plate does not change.
  */
-function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key: string; solid: ParsedSolid; was: string | null; tree?: ModelTree; shown?: ParsedSolid } | null)[], layout: boolean, held = false): { keys: (string | null)[]; fresh: string[] } {
+function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key: string; solid: ParsedSolid; was: string | null; tree?: ModelTree; shown?: ParsedSolid } | null)[], layout: boolean, held = false, pins: { key: string; solid: ParsedSolid; was: string | null } | null = null): { keys: (string | null)[]; fresh: string[]; pins: string | null } {
   const keys: (string | null)[] = [];
   const fresh: string[] = [];
-  if (!state.mesh) return { keys: pieces.map(() => null), fresh };
+  if (!state.mesh) return { keys: pieces.map(() => null), fresh, pins: null };
   if (!held) {
     noteEdit();
     syncPlateFromState();
@@ -5891,13 +5940,35 @@ function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key:
     keys.push(piece.key);
     if (!owner && !held) fresh.push(state.plate.objects.find((obj) => obj.modelTree === piece.key)!.id);
   });
-  if (held) return { keys, fresh };
+  const pinned = pins ? putPinsObject(at, node, pins, stem, held, fresh) : null;
+  if (held) return { keys, fresh, pins: pinned };
   if (layout && fresh.length > 0) layOutPieces(at.objectId, first, fresh);
   applySelectedToState(state.plate);
   place();
   flushEdit();
   markModelEdit();
-  return { keys, fresh };
+  return { keys, fresh, pins: pinned };
+}
+
+/**
+ * --- Milestone 5. The pins of a dowelled cut, in the same Prepare step as the pieces (plan section 10): on the plate's
+ * printer one more plate object in the part's orientation, which stands each pin along the plate's Z, laid out with
+ * the new pieces; for an export target a tree held in Model, exported as `<source>-pins`. The object that held the pins
+ * before an Update takes the new ones in place. Their tree's key, or null.
+ */
+function putPinsObject(at: Opened, node: NodeId, pins: { key: string; solid: ParsedSolid; was: string | null }, stem: string, held: boolean, fresh: string[]): string | null {
+  const owner = pins.was ? state.plate.objects.find((obj) => obj.modelTree === pins.was) : undefined;
+  const mesh = meshOf(pins.solid, `${owner ? stlName(owner.name).replace(/\.stl$/i, "") : `${stem} pins`}.stl`);
+  let name: string | null = owner?.name ?? null;
+  if (held) name = mesh.name;
+  else if (owner) state.plate = withPieceMesh(state.plate, owner.id, { fileName: mesh.name, bytes: mesh.bytes, sourcePos: new Float32Array(mesh.sourcePos) }, pins.key);
+  else name = placePiece(pins.key, mesh);
+  if (!name) return null;
+  const root = newTree(pins.key, { kind: "piece", tree: at.key, node, pins: true }, "Pins", pins.solid.fingerprint);
+  modelTrees.set(pins.key, { ...withNode(root, ROOT, { mesh }), committed: ROOT });
+  keepSolid(pins.key, ROOT, state.stepTolerance, pins.solid);
+  if (!owner && !held) fresh.push(state.plate.objects.find((obj) => obj.modelTree === pins.key)!.id);
+  return pins.key;
 }
 
 /**
@@ -5986,6 +6057,7 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
   const renamed = stepIds([run.node, ...run.replay], ids);
   const replay = run.replay.map((id, i) => ({ id: ids[i + 1]!, op: renumberedSteps(tree.nodes.get(id)!.op!, renamed) }));
   const keys = partKeys(at.objectId, op);
+  const pinsKey = pinsKeyFor(at.objectId, op);
   const held = exportsPieces(op);
   const level: EditLevel = { key: at.key, parent: run.parent, node: ids[0]!, op, replay, old: [run.node, ...run.replay] };
   const chord = state.stepTolerance;
@@ -5994,9 +6066,11 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
   setSplitPrintWaiting(true);
   syncUndo();
   readout(ids.length === 1 ? "Cutting the part again…" : `Rebuilding ${ids.length} steps…`);
-  const body = await treeCall(at.key, run.parent, crossEditRequest([level], chord, keys));
+  const body = await treeCall(at.key, run.parent, crossEditRequest([level], chord, keys, pinsKey));
   const pieces = readPieces(body.pieces);
+  const pins = readPins(body.pins);
   const old = tree.nodes.get(run.node)?.pieces ?? [];
+  const oldPins = tree.nodes.get(run.node)?.pins ?? null;
   // Each part number still there replays its own later steps on its new piece, before the plate changes at all.
   const rebuilt: ({ key: string; solid: ParsedSolid; was: string | null; tree?: ModelTree; shown?: ParsedSolid } | null)[] = [];
   const notes: string[] = [];
@@ -6028,15 +6102,17 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
   if (failed(at.key, body)) return;
   const parsed = decodeSolid(body);
   const built = builtSteps(body.built);
-  if (typeof parsed === "string" || typeof pieces === "string" || !built?.has(parsed.id)) {
+  if (typeof parsed === "string" || typeof pieces === "string" || typeof pins === "string" || !built?.has(parsed.id)) {
     void dropInEngine(at.key, ids[0]!);
-    readout(typeof parsed === "string" ? parsed : typeof pieces === "string" ? pieces : DAMAGED);
+    readout(typeof parsed === "string" ? parsed : typeof pieces === "string" ? pieces : typeof pins === "string" ? pins : DAMAGED);
     return;
   }
   const broken = brokenStep(body.broken);
-  const placed = putPieces(at, ids[0]!, parsed, rebuilt, op.arrange !== false && !held, held);
-  // A part number the new cut no longer makes takes its object off the plate, and every one does when the cut is now for an export target.
-  const gone = (held ? old : old.slice(pieces.length)).flatMap((key) => state.plate.objects.filter((obj) => key && obj.modelTree === key).map((obj) => obj.id));
+  const placed = putPieces(at, ids[0]!, parsed, rebuilt, op.arrange !== false && !held, held, pins ? { ...pins, was: held ? null : oldPins } : null);
+  // A part number the new cut no longer makes takes its object off the plate, and every one does when the cut is now for
+  // an export target; so do the pins when the new cut has none, or is for an export target.
+  const leaving = [...(held ? old : old.slice(pieces.length)), ...(oldPins && (held || !pins) ? [oldPins] : [])];
+  const gone = leaving.flatMap((key) => state.plate.objects.filter((obj) => key && obj.modelTree === key).map((obj) => obj.id));
   if (gone.length > 0) {
     noteEdit();
     syncPlateFromState();
@@ -6047,7 +6123,7 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
     markModelEdit();
   }
   const steps = forkSteps(latest, level, built, broken);
-  steps[0] = { ...steps[0]!, pieces: placed.keys };
+  steps[0] = { ...steps[0]!, pieces: placed.keys, ...(placed.pins ? { pins: placed.pins } : {}) };
   const next = forked(latest, run.parent, steps, parsed.id);
   modelTrees.set(at.key, next);
   keepSolid(at.key, parsed.id, chord, parsed);

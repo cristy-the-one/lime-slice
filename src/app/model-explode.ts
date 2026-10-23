@@ -37,7 +37,8 @@ function partitionOf(openKey: string): { found: NonNullable<ReturnType<typeof sh
   if (own) return { found: own, ownerKey: openKey, open: 1 };
   if (tree.root.kind !== "piece") return null;
   const node = modelTrees.get(tree.root.tree)?.nodes.get(tree.root.node);
-  return node?.op?.kind === "partition" ? { found: { op: node.op, pieces: node.pieces ?? [] }, ownerKey: tree.root.tree, open: tree.root.index ?? 2 } : null;
+  const open = tree.root.pins ? PINS_PART : (tree.root.index ?? 2);
+  return node?.op?.kind === "partition" ? { found: { op: node.op, pieces: node.pieces ?? [], pins: node.pins ?? null }, ownerKey: tree.root.tree, open } : null;
 }
 
 /**
@@ -53,14 +54,17 @@ export function heldPiece(key: string, owner: PlateObject): { positions: Float32
 
 const heldId = (key: string) => `held:${key}`;
 
+/** The pins' place among the members: before piece 1, and tagged "Pins", not a number. */
+const PINS_PART = 0;
+
 /** The open part's split to print pieces that are held off the plate, as grey context where they were cut. */
 export function heldParts(openKey: string): ContextPart[] {
   const at = partitionOf(openKey);
   const owner = at ? state.plate.objects.find((obj) => obj.modelTree === at.ownerKey) : undefined;
   if (!at || !owner) return [];
   const out: ContextPart[] = [];
-  for (const [index, key] of at.found.pieces.entries()) {
-    if (!key || index + 2 === at.open || state.plate.objects.some((row) => row.modelTree === key)) continue;
+  for (const [index, key] of [...at.found.pieces.map((key, i) => [i + 2, key] as const), [PINS_PART, at.found.pins ?? null] as const]) {
+    if (!key || index === at.open || state.plate.objects.some((row) => row.modelTree === key)) continue;
     const piece = heldPiece(key, owner);
     if (piece) out.push({ id: heldId(key), positions: piece.positions, matrix: piece.pose });
   }
@@ -75,17 +79,19 @@ function members(openId: string, openKey: string, openBox: Bounds, openPose: Aff
   const owner = state.plate.objects.find((obj) => obj.modelTree === ownerKey);
   if (!owner) return null;
   const list: Member[] = [];
-  for (const [index, key] of [ownerKey, ...found.pieces].entries()) {
-    if (index + 1 === open) {
+  // The pins come last, as in the export, after every piece.
+  const rows = [...[ownerKey, ...found.pieces].map((key, index) => [index + 1, key] as const), [PINS_PART, found.pins ?? null] as const];
+  for (const [part, key] of rows) {
+    if (part === open) {
       list.push({ part: open, id: openId, centre: posedCentre(openBox, openPose) });
       continue;
     }
     const obj = key ? state.plate.objects.find((row) => row.modelTree === key) : undefined;
-    const shown = obj ? parts.find((part) => part.id === obj.id) : undefined;
-    if (shown) list.push({ part: index + 1, id: shown.id, centre: posedCentre(boundsOf(shown.positions), shown.matrix) });
+    const shown = obj ? parts.find((one) => one.id === obj.id) : undefined;
+    if (shown) list.push({ part, id: shown.id, centre: posedCentre(boundsOf(shown.positions), shown.matrix) });
     else if (key && !obj) {
       const piece = heldPiece(key, owner);
-      if (piece) list.push({ part: index + 1, id: heldId(key), centre: posedCentre(boundsOf(piece.positions), piece.pose), held: { positions: piece.positions, matrix: piece.pose } });
+      if (piece) list.push({ part, id: heldId(key), centre: posedCentre(boundsOf(piece.positions), piece.pose), held: { positions: piece.positions, matrix: piece.pose } });
     }
   }
   return list.length > 1 ? { cuts: cutsInModel(found.op, modelPoseOf(owner)), members: list, open } : null;
@@ -96,8 +102,8 @@ export function canExplode(openKey: string, parts: readonly ContextPart[]): bool
   const at = partitionOf(openKey);
   if (!at) return false;
   const shown = new Set(parts.map((part) => part.id));
-  return [at.ownerKey, ...at.found.pieces].some((key, index) => {
-    if (!key || index + 1 === at.open) return false;
+  return [...[at.ownerKey, ...at.found.pieces].map((key, index) => [index + 1, key] as const), [PINS_PART, at.found.pins ?? null] as const].some(([part, key]) => {
+    if (!key || part === at.open) return false;
     const obj = state.plate.objects.find((row) => row.modelTree === key);
     return obj ? shown.has(obj.id) : modelTrees.has(key);
   });
@@ -118,7 +124,7 @@ export function explodeContext(openId: string, openKey: string, openBox: Bounds,
       const shift = moved.get(part.id);
       return shift ? { ...part, matrix: shiftedPose(part.matrix, shift) } : part;
     }),
-    tags: found.members.map((member, at) => ({ text: String(member.part), at: member.centre.map((value, i) => value + relative[at]![i]!) as Vec3 })),
+    tags: found.members.map((member, at) => ({ text: member.part === PINS_PART ? "Pins" : String(member.part), at: member.centre.map((value, i) => value + relative[at]![i]!) as Vec3 })),
     shifts: found.members.map((member, at) => `${member.part}:${relative[at]!.map(round).join(",")}`).join(" "),
   };
 }
