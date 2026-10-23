@@ -98,7 +98,8 @@ test("a saved project with a split to print opens with its row, and its pieces a
   await expect(readout(page)).toContainText("Volume");
   await expect(labels(page), "the history shows the row").toHaveText(["bar.step", "Split to print, 3 parts"]);
   const row = page.getByRole("treeitem", { name: /^Split to print, 3 parts/ });
-  await expect(row.locator(".mh-edit"), "its panel comes in a later milestone").toBeHidden();
+  await row.hover();
+  await expect(row.locator(".mh-edit"), "its pencil reopens the Split to print card").toBeVisible();
   expect(tree.calls.slice(opens).some((request) => (request.op as Body | undefined)?.kind === "partition" && request.call === "apply"), "nothing is cut again").toBe(false);
 
   // Saved again, the step still names both pieces by their plate objects.

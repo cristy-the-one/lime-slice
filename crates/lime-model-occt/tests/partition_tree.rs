@@ -1,5 +1,6 @@
 //! Split to print through the history tree, as the app and the MCP server send it: the op, its pieces each opening a
-//! tree of their own, the order, a replay, an edit, the probe's pieces, and this milestone's refusals.
+//! tree of their own, the order, a replay, an edit, a rebuilt piece's kept steps, the probe's pieces, and this
+//! milestone's refusals.
 //! `LIME_REQUIRE_OCCT=1` makes a missing kernel a failure.
 //!
 //! The store is process-wide, so everything runs in one test, in order.
@@ -80,6 +81,7 @@ fn split_to_print_in_the_history_tree() {
     a_replay_keeps_the_first_piece_and_leaves_the_others();
     the_probe_measures_every_piece();
     an_edit_cuts_new_pieces();
+    a_rebuilt_piece_keeps_its_later_steps();
     refusals_leave_the_solid_as_it_was();
 }
 
@@ -203,6 +205,72 @@ fn an_edit_cuts_new_pieces() {
         "a refused edit keeps nothing"
     );
     ok(json!({ "call": "goto", "key": "bar", "node": 1 }));
+}
+
+/// D9: piece 3 had a hole at X 45 and a scale after it. An edit that cuts it from X 50 to 60 replays both on the new
+/// piece; the hole misses it. Without `keepBroken` the replay keeps nothing; with it, the hole is kept broken, the scale
+/// unbuilt under it, and the piece shows its new root, so the user's later steps stay in its tree.
+fn a_rebuilt_piece_keeps_its_later_steps() {
+    let edited = ok(
+        json!({ "call": "edit", "key": "bar", "parent": 0, "node": 6,
+        "op": partition(&[10.0, 50.0]), "pieceKeys": ["bar-2k", "bar-3k"] }),
+    );
+    let pieces = edited["pieces"].as_array().expect("pieces");
+    assert_eq!(pieces[1]["key"], "bar-3k");
+    within(volume(&pieces[1]), 1000.0, 1e-6);
+
+    let hole = json!({ "kind": "hole", "origin": [45.0, 5.0, 10.0], "radius": 1.0, "depth": 20.0 });
+    let replay = json!([{ "id": 2, "op": { "kind": "scale", "factor": 1.1 } }]);
+    let replayed = |keep: bool| {
+        call(
+            json!({ "call": "edit", "key": "bar-3k", "parent": 0, "node": 1, "op": hole, "replay": replay, "keepBroken": keep }),
+        )
+    };
+    let lost = replayed(false);
+    assert!(
+        lost["error"].as_str().unwrap_or("").contains("missed"),
+        "{lost}"
+    );
+    let unkept = call(json!({ "call": "goto", "key": "bar-3k", "node": 1 }));
+    assert_eq!(
+        unkept,
+        json!({ "error": "unknown", "missing": [1] }),
+        "without keepBroken nothing is kept"
+    );
+
+    let kept = replayed(true);
+    assert!(kept.get("error").is_none(), "{kept}");
+    assert_eq!(kept["id"], 0, "the piece shows its new root: {kept}");
+    within(volume(&kept), 1000.0, 1e-6);
+    assert_eq!(kept["built"], json!([]), "{kept}");
+    let broken = &kept["broken"];
+    assert_eq!(broken["id"], 1, "{kept}");
+    assert!(
+        broken["error"].as_str().unwrap_or("").contains("missed"),
+        "the row says why: {kept}"
+    );
+    for node in [1, 2] {
+        let jump = call(json!({ "call": "goto", "key": "bar-3k", "node": node }));
+        assert_eq!(
+            jump["broken"], 1,
+            "step {node} is kept, under the broken hole: {jump}"
+        );
+    }
+    let root = ok(json!({ "call": "goto", "key": "bar-3k", "node": 0 }));
+    within(volume(&root), 1000.0, 1e-6);
+
+    let tools = call(
+        json!({ "call": "edit", "key": "bar-3k", "parent": 0, "node": 3, "op": hole, "keepBroken": true,
+        "tools": [{ "key": "bar-2k", "parent": 0, "node": 1, "op": { "kind": "scale", "factor": 1.1 } }] }),
+    );
+    assert_eq!(
+        tools,
+        json!({ "error": "keepBroken is only for an edit of one tree" })
+    );
+    ok(json!({ "call": "goto", "key": "bar", "node": 1 }));
+    for key in ["bar-2k", "bar-3k"] {
+        ok(json!({ "call": "close", "key": key }));
+    }
 }
 
 fn refusals_leave_the_solid_as_it_was() {

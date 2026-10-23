@@ -27,6 +27,7 @@ import { boxUnder, posedBounds, type Affine } from "./model-space";
 import { facePaint, idleLook, sectionPlane, type LookState } from "./model-look";
 import { faceBoundarySegments } from "./model-select";
 import { sectionCap } from "./section-cap";
+import { pieceRegions } from "./split-print";
 import { faceTable } from "./interact/face-table";
 import { framePose, localPoint, sameWorkplane, type Workplane } from "./workplane";
 import { hexToThree, themeColors } from "./theme";
@@ -58,6 +59,8 @@ export interface ModelSolid {
 export type ModelGhost =
   | { kind: "primitive"; spec: PrimitiveSpec; mesh: Float32Array }
   | { kind: "plane"; origin: Vec3; normal: Vec3 }
+  /** --- Split to print. Every cut's plane, and each piece between them tinted on the solid by clipping planes. */
+  | { kind: "cuts"; planes: { origin: Vec3; normal: Vec3 }[] }
   | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }
   /** --- F4. One cylinder per sketch point. `failed` (from 1) is the hole a probe refused. --- */
   | { kind: "holes"; holes: { x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }[]; failed?: number }
@@ -1263,6 +1266,20 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   /** The material that draws the side a split cuts off, tinted, shared by every split shown. */
   const offcutMaterial = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.05, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
+  /** --- Split to print. One material per piece, since each clips to its own slab; kept and reused, never freed. */
+  const pieceMaterials: THREE.MeshStandardMaterial[] = [];
+  /** A plane every point is behind: the solid draws nothing while its pieces draw it. */
+  const HIDE_SOLID = new THREE.Plane(new THREE.Vector3(0, 0, 1), -1e9);
+
+  function pieceMaterial(index: number, tone: 0 | 1): THREE.MeshStandardMaterial {
+    let material = pieceMaterials[index];
+    if (!material) {
+      material = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide });
+      pieceMaterials[index] = material;
+    }
+    material.color.setHex(tone === 0 ? accent : hexToThree(colors.teal));
+    return material;
+  }
 
   /**
    * While a split's plane is up, the solid is drawn as the two parts it makes: the side the part keeps (behind the plane's
@@ -1293,14 +1310,32 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       keep.push(clip);
       off.push(clip);
     }
+    // --- Split to print: each piece is the solid clipped to its slab, in its own tint; the solid itself steps aside and
+    // its edges stay drawn over the pieces.
+    const cuts = ghost?.kind === "cuts" && mesh ? pieceRegions(ghost.planes) : [];
+    cuts.forEach((region, index) => {
+      const material = pieceMaterial(index, region.tone);
+      const planes = [...region.bounds.map((half) => new THREE.Plane(new THREE.Vector3(...half.normal), half.constant)), ...(section ? [keep[keep.length - 1]!] : [])];
+      if ((material.clippingPlanes?.length ?? 0) !== planes.length) material.needsUpdate = true;
+      material.clippingPlanes = planes;
+      const piece = new THREE.Mesh(mesh!.geometry, material);
+      piece.matrixAutoUpdate = false;
+      piece.matrix.copy(posed.matrix);
+      piece.renderOrder = 1;
+      piece.raycast = () => undefined;
+      piece.userData.borrowed = true;
+      ghosts.add(piece);
+    });
+    canvas.dataset.cutPieces = String(cuts.length);
+    const solidPlanes = cuts.length > 0 ? [...keep, HIDE_SOLID] : keep;
     clipHighlights(section ? [keep[keep.length - 1]!] : []);
     offcutMaterial.clippingPlanes = off;
     // The cap lies on the section plane, so that plane must not clip it. A split still does.
     sectionCapMaterial.clippingPlanes = keep.slice(0, plane ? 1 : 0);
     // A new count of planes compiles the shader again; new planes of the same count are only new numbers.
-    if ((solidMaterial.clippingPlanes?.length ?? 0) !== keep.length) solidMaterial.needsUpdate = true;
+    if ((solidMaterial.clippingPlanes?.length ?? 0) !== solidPlanes.length) solidMaterial.needsUpdate = true;
     if ((edgeMaterial.clippingPlanes?.length ?? 0) !== keep.length) edgeMaterial.needsUpdate = true;
-    solidMaterial.clippingPlanes = keep;
+    solidMaterial.clippingPlanes = solidPlanes;
     edgeMaterial.clippingPlanes = keep;
     if ((stressMaterial.clippingPlanes?.length ?? 0) !== keep.length) stressMaterial.needsUpdate = true;
     stressMaterial.clippingPlanes = keep;
@@ -1551,15 +1586,23 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       });
       return;
     }
-    if (current.kind === "plane") {
+    if (current.kind === "plane" || current.kind === "cuts") {
       // Drawn square around the solid's centre, dropped onto the plane, and turned with its tilt.
       const span = Math.max(extent * 1.45, 30);
       // The plane is in model space, so it is centred on the solid's middle there.
       const box = solidBox ?? { min: [0, 0, 0], max: [0, 0, 0] };
       const mid = new THREE.Vector3((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);
-      const normal = new THREE.Vector3(...current.normal).normalize();
-      const middle = mid.clone().addScaledVector(normal, -normal.dot(mid.clone().sub(new THREE.Vector3(...current.origin))));
-      addGhostMesh(new THREE.PlaneGeometry(span, span), middle, 0.2).quaternion.setFromUnitVectors(zAxis, normal);
+      // Split to print's planes each stop just past the part's section and draw fainter, so the pieces read through them.
+      if (current.kind === "plane") {
+        const normal = new THREE.Vector3(...current.normal).normalize();
+        const middle = mid.clone().addScaledVector(normal, -normal.dot(mid.clone().sub(new THREE.Vector3(...current.origin))));
+        addGhostMesh(new THREE.PlaneGeometry(span, span), middle, 0.2).quaternion.setFromUnitVectors(zAxis, normal);
+        return;
+      }
+      for (const plane of current.planes) {
+        const shown = cutSquare(plane);
+        addGhostMesh(new THREE.PlaneGeometry(shown.span, shown.span), new THREE.Vector3(...shown.origin), 0.1).quaternion.setFromUnitVectors(zAxis, new THREE.Vector3(...plane.normal).normalize());
+      }
       return;
     }
     if (current.kind === "blend") {
@@ -3238,7 +3281,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       edgePoints: current?.kind === "blend" ? worldEdgePoints(current.edges) : null,
       soup: current?.kind === "soup" ? worldPoints(current.positions) : null,
       measure: current?.kind === "measure" ? { a: current.a, b: current.b } : null,
-      plane: current?.kind === "plane" ? { origin: current.origin, normal: current.normal, span: Math.max(extent * 1.45, 30) } : null,
+      plane: current?.kind === "plane" ? { origin: current.origin, normal: current.normal, span: Math.max(extent * 1.45, 30) } : cutOf(current, handle),
       bodyBox: ownBox,
       anchor: aspectAnchor(),
       extent,
@@ -3247,6 +3290,29 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       siblings,
       values: handle.values,
     };
+  }
+
+  /** --- Split to print. The one plane a cut's arrow or its tilt rings change, so only that plane's outline lights. */
+  function cutOf(current: ModelGhost | null, handle: DragHandle): { origin: Vec3; normal: Vec3; span: number } | null {
+    const plane = current?.kind === "cuts" && handle.cutIndex != null ? current.planes[handle.cutIndex] : undefined;
+    return plane ? { ...cutSquare(plane), normal: plane.normal } : null;
+  }
+
+  /**
+   * A cut's square: centred where the solid's middle drops onto the plane, and twice as wide as the furthest corner of the
+   * solid's box from there, in the plane, so it clears the section however the plane turns about its normal.
+   */
+  function cutSquare(plane: { origin: Vec3; normal: Vec3 }): { origin: Vec3; span: number } {
+    const box = solidBox ?? { min: [0, 0, 0], max: [0, 0, 0] };
+    const mid = new THREE.Vector3((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);
+    const normal = new THREE.Vector3(...plane.normal).normalize();
+    const middle = mid.clone().addScaledVector(normal, -normal.dot(mid.clone().sub(new THREE.Vector3(...plane.origin))));
+    let far = 0;
+    for (let corner = 0; corner < 8; corner += 1) {
+      const d = new THREE.Vector3(corner & 1 ? box.max[0] : box.min[0], corner & 2 ? box.max[1] : box.min[1], corner & 4 ? box.max[2] : box.min[2]).sub(middle);
+      far = Math.max(far, d.addScaledVector(normal, -d.dot(normal)).length());
+    }
+    return { origin: [middle.x, middle.y, middle.z], span: Math.max(far * 2.3, 20) };
   }
 
   function aspectAnchor(): Vec3 {

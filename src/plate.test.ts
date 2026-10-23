@@ -121,6 +121,20 @@ check("arrange does not rotate", arranged.every((obj) => obj.orient.every((value
 check("the first box starts at the left edge", near(bounds[0]!.min[0], 0) && near(bounds[0]!.min[1], 0));
 check("the second box sits one gap to the right", near(bounds[1]!.min[0], 22) && near(bounds[1]!.min[1], 0));
 
+// Split to print's lay out: the objects already on the plate stay; the new pieces go around them and each other.
+const keptObj = object(40, "kept", false, { x: 90, y: 90, z: 0 });
+const keptAt = placeObject(keptObj, bed, bed).bounds;
+const pieces = [object(30, "p2", false, { x: 90, y: 90, z: 0 }), object(30, "p3", false, { x: 90, y: 90, z: 0 })];
+const piecesLaid = arrangedObjects([keptObj, ...pieces], bed, bed, undefined, new Set(["kept"]));
+const piecesAt = piecesLaid.map((obj) => placeObject(obj, bed, bed).bounds);
+check("a kept object is the same object, untouched", piecesLaid[0] === keptObj);
+check("and stays where it was", JSON.stringify(piecesAt[0]) === JSON.stringify(keptAt), JSON.stringify(piecesAt[0]));
+check("the pieces clear it and each other", !boxesOverlapXY(piecesAt[0]!, piecesAt[1]!) && !boxesOverlapXY(piecesAt[0]!, piecesAt[2]!) && !boxesOverlapXY(piecesAt[1]!, piecesAt[2]!), JSON.stringify(piecesAt));
+check("by the arrange gap or more", piecesAt.slice(1).every((box) => [piecesAt[0]!, ...piecesAt.slice(1).filter((other) => other !== box)].every((other) => box.min[0] >= other.max[0] + 2 - 1e-6 || other.min[0] >= box.max[0] + 2 - 1e-6 || box.min[1] >= other.max[1] + 2 - 1e-6 || other.min[1] >= box.max[1] + 2 - 1e-6)), JSON.stringify(piecesAt));
+check("on the bed", piecesAt.every((box) => box.min[0] >= -0.05 && box.min[1] >= -0.05 && box.max[0] <= bed + 0.05 && box.max[1] <= bed + 0.05), JSON.stringify(piecesAt));
+check("the first piece takes the first clear spot, the bed's corner", near(piecesAt[1]!.min[0], 0) && near(piecesAt[1]!.min[1], 0), JSON.stringify(piecesAt[1]));
+check("an empty keep is the whole-plate arrange", JSON.stringify(arrangedObjects([keptObj, ...pieces], bed, bed, undefined, new Set())) === JSON.stringify(arrangedObjects([keptObj, ...pieces], bed, bed)));
+
 const wide = arrangeBoxes([
   { id: "a", minX: 0, minY: 0, maxX: 100, maxY: 20 },
   { id: "b", minX: 0, minY: 0, maxX: 100, maxY: 20 },

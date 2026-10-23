@@ -281,8 +281,9 @@ export function mountHud(parent: HTMLElement): HudMount {
       const focused = document.activeElement === input;
       const text = index === model.active && model.draft != null ? model.draft : focused && expression && stored ? stored.trim() : formatNumber(field.value, field.places ?? 1);
       if ((force || !(focused && model.draft != null)) && input.value !== text) input.value = text;
-      // A21. The padding and border on top of the characters, so a size is never clipped by a pixel.
-      input.style.width = `calc(${Math.min(24, Math.max(4, text.length + 1))}ch + 10px)`;
+      // A21. The padding and border on top of the characters, so a size is never clipped by a pixel; the unit sits in the
+      // field's right padding (1.8em in styles.css), which the box-sizing counts in the width too.
+      input.style.width = `calc(${Math.min(24, Math.max(4, text.length + 1))}ch + 10px + 1.8em)`;
       input.classList.toggle("is-active", index === model.active);
       input.setAttribute("aria-invalid", model.error && index === model.active ? "true" : "false");
       const mark = input.parentElement?.querySelector<HTMLElement>(":scope > .expr-mark");

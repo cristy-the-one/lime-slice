@@ -90,8 +90,8 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
  */
 export const FEATURE_ROOT_EDIT = "This solid started from a sketch. Open the sketch to change it.";
 
-/** --- Split to print. Its panel is a later milestone; until then the MCP server's model_edit changes it. */
-export const SPLIT_TO_PRINT_EDIT = "Split to print has no panel yet. Change it with the MCP server's model_edit.";
+/** --- Split to print. Its card edits it on its own part; through a join it is another part's step. */
+export const SPLIT_TO_PRINT_EDIT = "Edit this split to print from the part it cut.";
 
 /** Why step `id` cannot be edited, in plain words, or null when it can. */
 export function editRefusal(tree: ModelTree, id: NodeId): string | null {
@@ -103,7 +103,6 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
     return null;
   }
   if (pathTo(tree, node.parent).some((at) => tree.nodes.get(at)?.broken)) return "A step above this one cannot be rebuilt. Edit or delete that step first.";
-  if (node.op?.kind === "partition") return SPLIT_TO_PRINT_EDIT;
   if (node.op && !hasPanel(node.op)) return "This step has no edit panel yet. Delete it and apply it again with new numbers.";
   return null;
 }
@@ -258,7 +257,8 @@ export function crossPlan(tool: ModelTree, joins: readonly ToolLink[], node: Nod
 
 /** Why step `id` of a tool's tree, reached through `joins`, cannot be edited from the open tree's history, or null. */
 export function toolEditRefusal(tool: ModelTree, joins: readonly ToolLink[], id: NodeId): string | null {
-  return editRefusal(tool, id) ?? joins.map((join) => editRefusal(join.tree, join.id)).find((why) => why != null) ?? null;
+  if (tool.nodes.get(id)?.op?.kind === "partition") return SPLIT_TO_PRINT_EDIT;
+  return editRefusal(tool, id) ??joins.map((join) => editRefusal(join.tree, join.id)).find((why) => why != null) ?? null;
 }
 
 /** A tool's pose in model space: the open solid's, then each join's placement, the open tree's first. */
@@ -385,7 +385,7 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "revolve":
     case "loft":
     case "partition":
-      // `editRefusal` turns these away before a panel opens.
+      // `editRefusal` turns a feature away before a panel opens; a split to print reopens its own card.
       throw new Error(`No edit panel for a ${op.kind} step`);
     case "group": {
       // --- A3 composite features ---
