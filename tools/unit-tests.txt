@@ -84,6 +84,7 @@ src/interact/edge-drag.test.ts
 src/section-plane.test.ts
 src/ui/brush-radius.test.ts
 src/mesh-shells.test.ts
+src/step-solids.test.ts
 src/edge-strip.test.ts
 src/model-context.test.ts
 src/model-space.test.ts

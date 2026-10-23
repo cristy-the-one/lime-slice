@@ -1747,7 +1747,7 @@ int lime_tree_write_step_many(const LimeShape* const* shapes, const char* const*
     }
 }
 
-/// --- Split to print (D12), for tests. The free shapes of a STEP file, up to `max`, each held on its own in `out`, and
+/// --- Split to print (D12). The free shapes of a STEP file, up to `max`, each held on its own in `out`, and
 /// their product names, one per line, in `names`. The answer is how many there are, or -1 with `error`.
 int lime_tree_read_step_named(const char* path, LimeShape** out, int max, char** names, char** error) {
     try {

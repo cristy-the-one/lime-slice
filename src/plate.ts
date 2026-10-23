@@ -17,6 +17,7 @@ import type { SavedTree } from "./model-tree-file.ts";
 import { cloneStudy, type ObjectStudy } from "./sim/study.ts";
 import { IDENTITY_POSE, boxUnder, duplicatePose, inversePose, isIdentity, seatLift, thenPose, type Affine } from "./model-space.ts";
 import { copyWorkplane, isGlobalFrame, type Workplane } from "./workplane.ts";
+import { offsetInPlace } from "./step-solids.ts";
 import type { EditEntry } from "./support-edit-list.ts";
 import {
   dropEmptyReinforce,
@@ -1213,6 +1214,60 @@ export function replaceWithShells(plate: PlateState, id: string, worlds: readonl
   return {
     objects: [...plate.objects.slice(0, index), ...pieces, ...plate.objects.slice(index + 1)],
     selectedId: pieces[0]!.id,
+  };
+}
+
+/** One solid of a STEP object read on its own: its own STEP file, its mesh on Z = 0, and how far that was lowered. */
+export interface SolidPiece {
+  name: string;
+  fileName: string;
+  bytes: ArrayBuffer;
+  sourcePos: Float32Array;
+  seatMm: number;
+}
+
+/**
+ * Replace `id` with one object per solid of its STEP file, in the file's order. Each piece keeps the parent's turn and
+ * scale and stays where it was on the bed, lifted when it floats, and in model space where it was in the parent.
+ * Each keeps its own STEP file, so Model opens it as a solid. Paint stays behind. The first piece keeps the id.
+ */
+export function replaceWithSolids(plate: PlateState, id: string, pieces: readonly SolidPiece[], bedX: number, bedY: number): PlateState | null {
+  if (pieces.length < 2) return null;
+  const index = plate.objects.findIndex((obj) => obj.id === id);
+  const parent = plate.objects[index];
+  if (!parent) return null;
+  // The parent's mesh is the whole file lowered by its seat; the lowest piece was lowered by the same.
+  const parentSeat = meshSeat(parent.bytes) ?? Math.min(...pieces.map((piece) => piece.seatMm));
+  const posed = { source: parent.sourcePos, orient: parent.orient, scale: parent.partScale, centered: parent.centered, offset: parent.offset };
+  const taken = new Set(plate.objects.filter((obj) => obj.id !== id).map((obj) => obj.name));
+  const made: PlateObject[] = pieces.map((piece, nth) => {
+    const name = taken.has(piece.name) ? unusedName(taken, piece.name, 2) : piece.name;
+    taken.add(name);
+    const draft: PlateObject = {
+      id: nth === 0 ? parent.id : freshPlateId(),
+      name,
+      fileName: piece.fileName,
+      bytes: piece.bytes,
+      sourcePos: piece.sourcePos,
+      orient: [...parent.orient] as Mat3,
+      partScale: parent.partScale,
+      centered: false,
+      offset: offsetInPlace(posed, piece.sourcePos, piece.seatMm - parentSeat, bedX, bedY),
+      stepTolerance: parent.stepTolerance,
+      supportEdits: [],
+      supportPaint: [],
+      seamPaint: [],
+      reinforcement: [],
+      settings: { ...parent.settings },
+      ...(parent.modelPose ? { modelPose: parent.modelPose } : {}),
+    };
+    setMeshSeat(piece.bytes, piece.seatMm);
+    hold(draft);
+    return draft;
+  });
+  return {
+    objects: [...plate.objects.slice(0, index), ...made, ...plate.objects.slice(index + 1)],
+    selectedId: made[0]!.id,
   };
 }
 

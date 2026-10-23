@@ -22,6 +22,7 @@ import { clearEdits } from "../support-edit-list";
 import { clearEditHistory, flushEdit, noteEdit } from "./history";
 import { extractForeign3mfRecipe, foreign3mfMessage, foreignRecipeOffer, foreignSlicer3mf, type ForeignRecipe } from "../foreign-3mf";
 import { assemblyNotice, shellCount } from "../mesh-shells";
+import { solidsOffer, stepSolidHint } from "../step-solids";
 import { emptyOverrides } from "../overrides";
 import { isLimeProject } from "../file-drop";
 import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setMeshSeat, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
@@ -102,7 +103,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     seamPaint: state.seamPaint,
     reinforcement: state.reinforcement,
   });
-  offerAssemblySplit(name, state.sourcePos, state.plate.selectedId);
+  offerAssemblySplit(name, bytes, state.sourcePos, state.plate.selectedId);
   place("load");
   await offerForeignRecipe(name, bytes);
   fx.setStage("prepare");
@@ -561,7 +562,7 @@ async function addMeshNow(name: string, bytes: ArrayBuffer) {
   state.error = "";
   state.plate = next;
   applySelectedToState(state.plate);
-  offerAssemblySplit(name, sourcePos, state.plate.selectedId);
+  offerAssemblySplit(name, bytes, sourcePos, state.plate.selectedId);
   place();
   flushEdit();
   fx.followSelection?.();
@@ -599,8 +600,17 @@ function applyForeignRecipe(recipe: ForeignRecipe) {
   flushEdit();
 }
 
-function offerAssemblySplit(name: string, positions: Float32Array | null, id: string | null) {
+/** A STEP file of several solids offers to open as its pieces; one of several shells offers to split. */
+function offerAssemblySplit(name: string, bytes: ArrayBuffer, positions: Float32Array | null, id: string | null) {
   if (session.projectRestoring || !positions || !id) return;
+  const offer = isStepName(name) ? solidsOffer(stepSolidHint(bytes)) : null;
+  if (offer) {
+    pushToast(offer.message, "info", [
+      { label: offer.pieces, run: () => { fx.separateShells?.(id); } },
+      { label: offer.whole, run: () => {} },
+    ]);
+    return;
+  }
   const notice = assemblyNotice(name, shellCount(positions));
   if (!notice) return;
   pushToast(notice.message, "info", { label: notice.label, run: () => { fx.separateShells?.(id); } });

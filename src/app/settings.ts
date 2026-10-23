@@ -14,6 +14,7 @@ import { filamentCost, filamentGrams } from "../estimate";
 import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
 import { featureRows, featureTableMarkup } from "../ui/legend";
 import { shellCount } from "../mesh-shells";
+import { separateBy, stepSolidHint } from "../step-solids";
 import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
 import { LABEL } from "../sim/label.ts";
@@ -703,6 +704,13 @@ export function fitObjectTools() {
 if (typeof window !== "undefined") window.addEventListener("resize", () => fitObjectTools());
 
 function separateShellsHtml(): string {
+  const mesh = state.mesh;
+  const solids = mesh && isStepName(mesh.name) ? stepSolidHint(mesh.bytes) : 0;
+  if (mesh && separateBy(mesh.name, solids) === "solids") {
+    const label = `Separate into ${solids} objects`;
+    const tip = `Make ${solids} objects from the solids of this STEP file. They stay where they are, each a solid Model can edit.`;
+    return `<div class="separate-row" data-tip="${escapeHtml(tip)}"><button class="btn" id="separateShells" type="button" aria-label="${escapeHtml(label)}">${escapeHtml(label)}</button></div>`;
+  }
   const shells = state.sourcePos ? shellCount(state.sourcePos) : 0;
   const ready = shells >= 2;
   const tip = ready
