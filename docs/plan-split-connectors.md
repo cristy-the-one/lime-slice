@@ -196,7 +196,7 @@ Today, editing a Split leaves the old second piece on the plate and `olderSplitN
 
 A cut is for a printer. The op stores `target: { printer, process, volumeMm }`: the library id, `"fdm"` or `"resin"`, and the build volume at the time of Apply, so a replay cuts the same pieces after the library changes. Absent means the plate's printer. Fit the printer, the floors (section 2), the clearance row, the orientation rule, and the bed margin all read `target`.
 
-A resin printer is an export-only record in the machine library: a name, a build volume, `process: "resin"`, and a default resin. It cannot be chosen as the plate's printer and is not sent to the slicer. The first record is the Formlabs printer this feature is for. Formlabs gives the Form 4 as 200 × 125 × 210 mm and the Form 3+ as 145 × 145 × 193 mm (its pages also give 185 mm). The record uses the model on the bench, to confirm before M3b.
+A resin printer is an export-only record in the machine library: a name, a build volume, `process: "resin"`, and a default resin. It cannot be chosen as the plate's printer and is not sent to the slicer. The first record is the printer this feature is for, a Formlabs Form 4 (confirmed on its About screen, 2026-10-23): id `formlabs-form-4`, build volume 200 × 125 × 210 mm as Formlabs gives it, default resin Tough 2000.
 
 A belt printer's volume is its belt width and its gantry height; the axis along the belt has no limit. The same rule belongs in Check, which today calls a long part on the IR3 V2 "Too large"; that is a separate fix.
 
@@ -399,7 +399,7 @@ Changing a parameter that this op's expressions use marks Rebuild, as it does fo
 }
 ```
 
-`orient` is `"keep"` or a per-piece list of `"keep"` and `"joint"`. A resin target stores `"target": { "printer": "formlabs-form-4", "process": "resin", "volumeMm": [200, 125, 210] }`, `"arrange": false`, and a 10 mm margin; the id and the volume are the ones the library record carries once the model is confirmed (D11).
+`orient` is `"keep"` or a per-piece list of `"keep"` and `"joint"`. A resin target stores `"target": { "printer": "formlabs-form-4", "process": "resin", "volumeMm": [200, 125, 210] }`, `"arrange": false`, and a 10 mm margin; the id and the volume are the Form 4 record's (D11).
 
 A lap cut stores `"profile": { "kind": "lap", "depth": 8, "height": 5, "side": "positive" }`. A sketch cut stores `"profile": { "kind": "sketch", "sketch": { "v": 1 } }` and the engine sees the solved chain, not `sketch`. Connectors on:
 
@@ -522,7 +522,7 @@ Each milestone leaves the app usable, leaves Split as it is, and leaves the gold
 1. **Planner.** `src/modeling/partition.ts` and its test: `target` with the FDM and resin floors, cuts, Fit the printer (the belt and resin examples included), profiles' sizes, connector placement, warnings. No kernel and no UI.
 2. **Straight kernel cut.** `partition` with plane tools only, watertight pieces, volume tests. No plate change yet.
 3. **History and plate.** One row, `pieces` keys, piece objects, pose kept and plate orientation kept, MCP probe (with `plan`) and apply for a straight plain cut. Edit round-trips. Connectors and profiles beyond straight are refused with a sentence.
-3b. **Resin target and export.** The export-only resin record for the confirmed Formlabs model, **Print on**, part numbers on the cut faces, export as STL per piece, one 3MF, or one STEP assembly, the support note, and Explode. After 3b, a tall part can be cut, exported, printed in PreForm, and assembled: the use case this feature is for.
+3b. **Resin target and export.** The export-only Form 4 record, **Print on**, part numbers on the cut faces, export as STL per piece, one 3MF, or one STEP assembly, the support note, and Explode. After 3b, a tall part can be cut, exported, printed in PreForm, and assembled: the use case this feature is for.
 4. **Panel.** The menu item, the card, typed and dragged planes, hover on the plane only, Playwright. No shortcut, rail unchanged. (3b's controls get their Playwright here.)
 5. **Dowels and plugs.** Dowel holes and pins, the plug and its socket, the hardware hole, teardrops on FDM, pairing, thin-wall warnings, **Use N**. Key and dovetail still refused.
 6. **Fit table.** Material clearances including the resin row, the Starting fit sentence, XY compensation warning, the FDM and resin coupon solids generated and checked. The prints are the human step after this milestone.
@@ -553,7 +553,7 @@ The plan is written to the recommendation in each row. Review can change any of 
 | 13 | Custom sketch in the first milestones | After the named profiles (milestone 10). Straight through dovetail cover the joints Marius listed; the sketch is the escape hatch. |
 | 14 | Max pieces | 12, editable up to 24. |
 | 15 | Target printer | The op stores `target` (printer, process, volume) from milestone 1. Absent means the plate's printer. A resin printer is an export-only library record. |
-| 16 | The Formlabs model | Form 4 (200 × 125 × 210 mm) or Form 3+ (145 × 145 × 193 mm, also given as 185 mm). To confirm on the printer's About screen before milestone 3b. |
+| 16 | The Formlabs model | Form 4, 200 × 125 × 210 mm. Confirmed on the printer's About screen (2026-10-23). |
 | 17 | Export format for PreForm | STL per piece, one 3MF, or one STEP assembly; PreForm imports all three and keeps a STEP assembly. The default is the STEP assembly, which keeps the B-rep and the names. |
 
 ## 17. Constraints
