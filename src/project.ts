@@ -141,15 +141,18 @@ export interface ToolTree {
 
 /**
  * --- Split to print, D12. A piece of a cut for an export target, which Model holds off the plate: the part's plate object
- * (`object`), the cut's step in its tree (`node`), and the part number (`index`, from 2). It keeps its mesh as a plate
- * object does (`mesh`, `meshSeatMm`) and its solid (`brep`), so a reopened project has the piece as it was cut. The cut's
- * `pieces` still say null for it, as an app before this wrote them: that app ignores `heldPieces` and cuts the pieces
- * again on export, and a file it saved reads here with its pieces to cut again (`piecesToCut`).
+ * (`object`), the cut's step in its tree (`node`), and the part number (`index`, from 2), or `pins: true` for the cut's pins
+ * (milestone 5). It keeps its mesh as a plate object does (`mesh`, `meshSeatMm`) and its solid (`brep`), so a reopened
+ * project has the piece as it was cut. The cut's `pieces` and `pins` still say null for it, as an app before this wrote
+ * them: that app ignores `heldPieces` and cuts the pieces again on export, and a file it saved reads here with its pieces
+ * to cut again (`piecesToCut`).
  */
 export interface HeldPiece {
   object: string;
   node: NodeId;
-  index: number;
+  /** The part number; absent on the pins' row. */
+  index?: number;
+  pins?: true;
   mesh: ProjectMesh;
   brep?: ProjectMesh;
   meshSeatMm?: number;
@@ -555,35 +558,36 @@ function readHeldPieces(value: unknown, objects: readonly PlateFileObject[]): He
   for (const item of value) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const row = item as Record<string, unknown>;
-    if (typeof row.object !== "string" || !Number.isInteger(row.node) || !Number.isInteger(row.index)) continue;
+    const pins = row.pins === true;
+    if (typeof row.object !== "string" || !Number.isInteger(row.node) || pins === Number.isInteger(row.index)) continue;
     const node = row.node as number;
-    const index = row.index as number;
+    const index = pins ? undefined : (row.index as number);
     const cut = objects.find((obj) => obj.id === row.object)?.modelTree?.nodes.find((step) => step.id === node);
-    if (!cut || !exportsPieces(cut.op?.kind === "partition" ? cut.op : null) || index < 2 || cut.pieces?.[index - 2] !== null) continue;
+    if (!cut || !exportsPieces(cut.op?.kind === "partition" ? cut.op : null)) continue;
+    if (index === undefined ? cut.pins !== null : index < 2 || cut.pieces?.[index - 2] !== null) continue;
     const mesh = readMesh(row.mesh);
     const brep = row.brep === undefined ? undefined : readMesh(row.brep);
-    const id = `${row.object}#${node}#${index}`;
+    const id = `${row.object}#${node}#${index ?? "pins"}`;
     if (typeof mesh === "string" || typeof brep === "string" || seen.has(id)) continue;
     seen.add(id);
-    out.push({ object: row.object, node, index, mesh, ...(brep ? { brep } : {}), ...(finite(row.meshSeatMm) ? { meshSeatMm: row.meshSeatMm as number } : {}) });
+    out.push({ object: row.object, node, ...(index === undefined ? { pins: true as const } : { index }), mesh, ...(brep ? { brep } : {}), ...(finite(row.meshSeatMm) ? { meshSeatMm: row.meshSeatMm as number } : {}) });
   }
   return out;
 }
 
 /**
  * The pieces of each cut for an export target that a project holds no saved piece for, as a file 3.8.0 wrote: each
- * plate object's cut, its step, and the part numbers to cut again.
+ * plate object's cut, its step, the part numbers to cut again, and `pins` when its pins are to be made again too.
  */
-export function piecesToCut(project: LimeProject): { object: string; node: NodeId; indexes: number[] }[] {
-  const out: { object: string; node: NodeId; indexes: number[] }[] = [];
+export function piecesToCut(project: LimeProject): { object: string; node: NodeId; indexes: number[]; pins?: true }[] {
+  const out: { object: string; node: NodeId; indexes: number[]; pins?: true }[] = [];
   for (const obj of project.objects ?? []) {
     for (const step of obj.modelTree?.nodes ?? []) {
       if (!exportsPieces(step.op?.kind === "partition" ? step.op : null) || !step.pieces) continue;
-      const indexes = step.pieces.flatMap((piece, at) => {
-        const index = at + 2;
-        return piece === null && !project.heldPieces?.some((held) => held.object === obj.id && held.node === step.id && held.index === index) ? [index] : [];
-      });
-      if (indexes.length > 0) out.push({ object: obj.id, node: step.id, indexes });
+      const kept = (index?: number) => !!project.heldPieces?.some((held) => held.object === obj.id && held.node === step.id && (index === undefined ? held.pins === true : held.index === index));
+      const indexes = step.pieces.flatMap((piece, at) => (piece === null && !kept(at + 2) ? [at + 2] : []));
+      const pins = step.pins === null && !kept();
+      if (indexes.length > 0 || pins) out.push({ object: obj.id, node: step.id, indexes, ...(pins ? { pins: true as const } : {}) });
     }
   }
   return out;

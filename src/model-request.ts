@@ -54,8 +54,8 @@ export function wholeTreeRequest(
  * Build `op` on `parent` as `node`. `otherKey` starts the tree of a split's other piece; `pieceKeys` the trees of a split
  * to print's pieces 2, 3, … in partition order, null leaving that piece unseen.
  */
-export function applyRequest(key: string, parent: NodeId, node: NodeId, op: ModelOp, chordMm: number, otherKey?: string | null, pieceKeys?: readonly (string | null)[]): TreeRequest {
-  return { call: "apply", key, parent, node, op: withoutSketch(op), chordMm, ...(otherKey ? { otherKey } : {}), ...(pieceKeys?.length ? { pieceKeys: [...pieceKeys] } : {}) };
+export function applyRequest(key: string, parent: NodeId, node: NodeId, op: ModelOp, chordMm: number, otherKey?: string | null, pieceKeys?: readonly (string | null)[], pinsKey?: string | null): TreeRequest {
+  return { call: "apply", key, parent, node, op: withoutSketch(op), chordMm, ...(otherKey ? { otherKey } : {}), ...(pieceKeys?.length ? { pieceKeys: [...pieceKeys] } : {}), ...(pinsKey ? { pinsKey } : {}) };
 }
 
 /**
@@ -233,10 +233,10 @@ export function editRequest(key: string, parent: NodeId, node: NodeId, op: Model
  * first, each feeding the join above it, and the engine keeps nothing if the edited step or a join whose tool built fails.
  * `pieceKeys` are an edited split to print's, as `applyRequest` sends them.
  */
-export function crossEditRequest(levels: readonly EditLevel[], chordMm: number, pieceKeys?: readonly (string | null)[]): TreeRequest {
+export function crossEditRequest(levels: readonly EditLevel[], chordMm: number, pieceKeys?: readonly (string | null)[], pinsKey?: string | null): TreeRequest {
   const own = levels.at(-1)!;
   const tools = levels.slice(0, -1).map(({ key, parent, node, op, replay }) => ({ key, parent, node, op: withoutSketch(op), replay: replay.map((step) => ({ id: step.id, op: withoutSketch(step.op) })) }));
-  return { ...editRequest(own.key, own.parent, own.node, own.op, own.replay, chordMm), ...(tools.length > 0 ? { tools } : {}), ...(pieceKeys?.length ? { pieceKeys: [...pieceKeys] } : {}) };
+  return { ...editRequest(own.key, own.parent, own.node, own.op, own.replay, chordMm), ...(tools.length > 0 ? { tools } : {}), ...(pieceKeys?.length ? { pieceKeys: [...pieceKeys] } : {}), ...(pinsKey ? { pinsKey } : {}) };
 }
 
 /** A dry-run of `op` on `node`. With `previewMm`, a build that works answers its shape, tessellated at that chord, as `preview`. */

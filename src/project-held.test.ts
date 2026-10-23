@@ -1,5 +1,5 @@
 /**
- * Split to print, D12: the pieces a cut for an export target holds off the plate, kept in `.lime` (`heldPieces`), back
+ * Split to print, D12: the pieces and the pins a cut for an export target holds off the plate, kept in `.lime` (`heldPieces`), back
  * byte for byte; a file 3.8.0 wrote, with the cut and not its pieces, reads with them to cut again; and the new key is
  * the only change an older reader could see.
  */
@@ -34,12 +34,12 @@ const op: PartitionModelOp = { kind: "partition", cuts: [cut(133), cut(266)], ta
 const fp = (volumeMm3: number) => ({ volumeMm3, faces: 6, edges: 12 });
 const rootStep = solid(0);
 let tree = newTree("part#run1.1", { kind: "step", name: "column.step", bytes: rootStep.buffer.slice(0) as ArrayBuffer }, "column.step", fp(160000));
-tree = withChild(jumped(tree, 0), 0, { id: 1, op, label: opLabel(op, 3), fingerprint: fp(53200), pieces: ["part-part#run1.2", "part-part#run1.3"] });
+tree = withChild(jumped(tree, 0), 0, { id: 1, op, label: opLabel(op, 3), fingerprint: fp(53200), pieces: ["part-part#run1.2", "part-part#run1.3"], pins: "part-pins#run1.4" });
 const placement = { orient: [1, 0, 0, 0, 1, 0, 0, 0, 1] as LimeProject["placement"]["orient"], scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, stepTolerance: 0.05 };
 const own = stl(400, 1);
-const meshes = [stl(300, 2), stl(320, 3)];
-const solids = [solid(2), solid(3)];
-const held: HeldPiece[] = meshes.map((mesh, at) => ({
+const meshes = [stl(300, 2), stl(320, 3), stl(40, 4)];
+const solids = [solid(2), solid(3), solid(4)];
+const pieceRows: HeldPiece[] = meshes.slice(0, 2).map((mesh, at) => ({
   object: "part",
   node: 1,
   index: at + 2,
@@ -47,6 +47,8 @@ const held: HeldPiece[] = meshes.map((mesh, at) => ({
   brep: meshRecord(`column part ${at + 2}.brep`, solids[at]!),
   meshSeatMm: 133 * (at + 1),
 }));
+// Milestone 5: a dowelled cut's pins, one more row, keyed by `pins` in place of a part number.
+const held: HeldPiece[] = [...pieceRows, { object: "part", node: 1, pins: true, mesh: meshRecord("column pins.stl", meshes[2]!), brep: meshRecord("column pins.brep", solids[2]!) }];
 
 const older: LimeProject = {
   version: 2,
@@ -77,12 +79,12 @@ check("a project with held pieces opens", opened.ok);
 if (opened.ok) {
   const back = opened.project;
   const pieces = [back.objects![0]!.mesh, ...(back.heldPieces ?? []).map((piece) => piece.mesh)];
-  check("three pieces come back", pieces.length === 3, String(pieces.length));
+  check("three pieces and the pins come back", pieces.length === 4, String(pieces.length));
   check("with the same mesh hashes", JSON.stringify(pieces.map((mesh) => mesh.hash)) === JSON.stringify([own, ...meshes].map((bytes) => meshRecord("x", bytes).hash)));
   check("each held mesh byte for byte", (back.heldPieces ?? []).every((piece, at) => Buffer.from(base64ToBytes(piece.mesh.bytesBase64)!).equals(meshes[at]!)));
   check("each held solid byte for byte", (back.heldPieces ?? []).every((piece, at) => Buffer.from(base64ToBytes(piece.brep!.bytesBase64)!).equals(solids[at]!)));
-  check("by object, cut step, and part number, with the seat", JSON.stringify((back.heldPieces ?? []).map((piece) => [piece.object, piece.node, piece.index, piece.meshSeatMm])) === JSON.stringify([["part", 1, 2, 133], ["part", 1, 3, 266]]));
-  check("the cut still names no piece, as 3.8.0 wrote it", JSON.stringify(back.objects![0]!.modelTree!.nodes[1]!.pieces) === JSON.stringify([null, null]));
+  check("by object, cut step, and part number or pins, with the seat", JSON.stringify((back.heldPieces ?? []).map((piece) => [piece.object, piece.node, piece.index ?? null, piece.pins ?? null, piece.meshSeatMm ?? null])) === JSON.stringify([["part", 1, 2, null, 133], ["part", 1, 3, null, 266], ["part", 1, null, true, null]]));
+  check("the cut still names no piece and no pins, as written before", JSON.stringify([back.objects![0]!.modelTree!.nodes[1]!.pieces, back.objects![0]!.modelTree!.nodes[1]!.pins]) === JSON.stringify([[null, null], null]));
   check("and nothing is left to cut", piecesToCut(back).length === 0);
 }
 const wire = JSON.parse(text) as { heldPieces: { mesh: Record<string, unknown>; brep: Record<string, unknown> }[] };
@@ -92,9 +94,11 @@ check("held meshes and solids are stored compressed", wire.heldPieces.every((pie
 const olderText = await encodeProject(older);
 const olderOpened = await decodeProject(olderText);
 check("a file without held pieces opens", olderOpened.ok && olderOpened.project.heldPieces === undefined);
-if (olderOpened.ok) check("and reports its pieces to cut again", JSON.stringify(piecesToCut(olderOpened.project)) === JSON.stringify([{ object: "part", node: 1, indexes: [2, 3] }]), JSON.stringify(piecesToCut(olderOpened.project)));
+if (olderOpened.ok) check("and reports its pieces to cut again", JSON.stringify(piecesToCut(olderOpened.project)) === JSON.stringify([{ object: "part", node: 1, indexes: [2, 3], pins: true }]), JSON.stringify(piecesToCut(olderOpened.project)));
 const one = await decodeProject(await encodeProject({ ...older, heldPieces: [held[0]!] }));
-if (one.ok) check("a file with one of two pieces cuts the other", JSON.stringify(piecesToCut(one.project)) === JSON.stringify([{ object: "part", node: 1, indexes: [3] }]));
+if (one.ok) check("a file with one of two pieces cuts the other and the pins", JSON.stringify(piecesToCut(one.project)) === JSON.stringify([{ object: "part", node: 1, indexes: [3], pins: true }]));
+const noPins = await decodeProject(await encodeProject({ ...older, heldPieces: pieceRows }));
+if (noPins.ok) check("a file with the pieces and not the pins makes the pins again", JSON.stringify(piecesToCut(noPins.project)) === JSON.stringify([{ object: "part", node: 1, indexes: [], pins: true }]));
 
 // The old reader's rule: it reads only the keys it knows. Every one of them is exactly what 3.8.0 writes for this
 // project; `heldPieces` is the one key more, so a reader that skips it opens the file 3.8.0 would have written.
@@ -111,7 +115,7 @@ odd.heldPieces.push({ ...odd.heldPieces[1]!, index: 9 }, { object: "part" }, "no
 const oddOpened = await decodeProject(JSON.stringify(odd));
 check("a file with odd rows opens", oddOpened.ok);
 if (oddOpened.ok) {
-  check("keeping only the rows that name a held piece", JSON.stringify(oddOpened.project.heldPieces?.map((piece) => piece.index)) === JSON.stringify([3]));
+  check("keeping only the rows that name a held piece", JSON.stringify(oddOpened.project.heldPieces?.map((piece) => piece.index ?? "pins")) === JSON.stringify([3, "pins"]));
   check("and the rest is cut again", JSON.stringify(piecesToCut(oddOpened.project)) === JSON.stringify([{ object: "part", node: 1, indexes: [2] }]));
 }
 
@@ -119,4 +123,4 @@ if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
 }
-console.log("project-held: held pieces round trip, a 3.8.0 file to cut again, and the old reader's view ok");
+console.log("project-held: held pieces and pins round trip, a 3.8.0 file to cut again, and the old reader's view ok");

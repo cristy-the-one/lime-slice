@@ -2,7 +2,7 @@
  * Split to print's Export… (docs/plan-split-connectors.md, D12): the dialog that asks which file to write for the pieces an
  * export target left in Model. It only asks; `app/split-export.ts` writes the files.
  *
- * Milestone 5's `<source>-pins` file is one more name after the last piece in `names`, and one more line in each hint.
+ * The pins of a dowelled cut, `<source>-pins`, are one more name after the last piece in `names`, and one more line in each hint.
  */
 
 export type PieceFormat = "stl" | "3mf" | "step";

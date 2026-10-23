@@ -265,12 +265,12 @@ function fileObjects({ trees, tools, pieces }: Awaited<ReturnType<typeof history
     if (saved) row.modelTree = fileTree(saved);
     return row;
   });
-  const held = pieces.map(({ object, node, index, mesh }): HeldPiece => {
+  const held = pieces.map(({ object, node, index, pins, mesh }): HeldPiece => {
     const seat = meshSeat(mesh.bytes);
     return {
       object,
       node,
-      index,
+      ...(pins ? { pins } : { index }),
       mesh: record(mesh.name, mesh.bytes),
       ...(mesh.step ? { brep: record(solidFileName(mesh.name, mesh.step), mesh.step) } : {}),
       ...(seat !== undefined ? { meshSeatMm: seat } : {}),
@@ -356,7 +356,7 @@ async function loadPlateObjects(objects: PlateFileObject[], tools: readonly Tool
     if (!bytes || !sourcePos) continue;
     const solid = piece.brep ? decode(piece.brep) : null;
     if (piece.meshSeatMm !== undefined) setMeshSeat(bytes, piece.meshSeatMm);
-    pieces.push({ object: piece.object, node: piece.node, index: piece.index, mesh: { name: piece.mesh.name, bytes, sourcePos, token: meshTokenOf(bytes), ...(solid ? { step: solid } : {}) } });
+    pieces.push({ object: piece.object, node: piece.node, ...(piece.pins ? { pins: piece.pins } : { index: piece.index }), mesh: { name: piece.mesh.name, bytes, sourcePos, token: meshTokenOf(bytes), ...(solid ? { step: solid } : {}) } });
   }
   return { plate: assemblePlate(rows), trees, unread, pieces };
 }

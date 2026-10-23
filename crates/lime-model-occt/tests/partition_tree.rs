@@ -5,11 +5,13 @@
 //!
 //! The store is process-wide, so everything runs in one test, in order.
 
+use std::f64::consts::PI;
+
 use serde_json::{json, Value};
 
 const PROFILE_LATER: &str =
     "Only straight cuts are built yet. Leave the profile out, or make it straight.";
-const CONNECTORS_LATER: &str = "Connectors are not built yet. Leave them off for a plain cut.";
+const KEYS_LATER: &str = "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.";
 
 fn call(request: Value) -> Value {
     let text = lime_model_occt::tree(&request.to_string());
@@ -81,6 +83,73 @@ fn split_to_print_in_the_history_tree() {
     an_edit_cuts_new_pieces();
     a_rebuilt_piece_keeps_its_later_steps();
     refusals_leave_the_solid_as_it_was();
+    dowels_open_a_pins_tree();
+}
+
+/// Milestone 5. A dowel on the cut: the probe measures the pins and names the connector built; the apply opens the pins'
+/// tree under `pinsKey`, stores only what was built, and an edit rebuilds the pins under a new key.
+fn dowels_open_a_pins_tree() {
+    let mut op = partition(&[30.0]);
+    op["up"] = json!([0.0, 0.0, 1.0]);
+    op["cuts"][0]["connectors"] = json!({
+        "on": true,
+        "types": [{ "type": "dowel", "radius": 2.0, "depth": 8.0, "clearance": 0.15, "endGap": 0.4, "hole": "round",
+            "count": "fit", "margin": 4.0, "place": "fit", "at": [] }],
+        "placed": [
+            { "id": "c1-1", "type": "dowel", "uvMm": [0.0, 0.0], "fraction": [0.5, 0.5], "fixed": false },
+            { "id": "c1-2", "type": "dowel", "uvMm": [0.0, 0.0], "fraction": [0.05, 0.5], "fixed": false }
+        ]
+    });
+    ok(json!({ "call": "open", "key": "dowel-bar", "box": [60.0, 10.0, 10.0] }));
+    let probe = ok(json!({ "call": "probe", "key": "dowel-bar", "node": 0, "op": op }));
+    let pin = PI * 4.0 * 8.0 - 2.0 * PI * 0.25 * (2.0 - 0.5 / 3.0);
+    within(
+        probe["pins"]["volumeMm3"].as_f64().expect("pins"),
+        pin,
+        1e-6,
+    );
+    assert_eq!(probe["pins"]["count"], 1);
+    assert_eq!(probe["connectors"]["placed"][0]["id"], "c1-1");
+    assert_eq!(probe["connectors"]["dropped"][0]["id"], "c1-2");
+    let applied = call(
+        json!({ "call": "apply", "key": "dowel-bar", "parent": 0, "node": 30, "op": op,
+        "pieceKeys": ["bar-d2"], "pinsKey": "bar-pins" }),
+    );
+    assert!(applied.get("error").is_none(), "{applied}");
+    let hole = PI * 2.15 * 2.15 * 4.4;
+    within(volume(&applied), 3000.0 - hole, 1e-6);
+    within(volume(&applied["pieces"][0]), 3000.0 - hole, 1e-6);
+    assert_eq!(applied["pins"]["key"], "bar-pins");
+    within(volume(&applied["pins"]), pin, 1e-6);
+    assert_eq!(
+        applied["op"]["cuts"][0]["connectors"]["placed"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        applied["notes"],
+        json!(["Cut 1: dowel 2 would break through the outline or a neighbour. It was left out."])
+    );
+    let pins = ok(json!({ "call": "goto", "key": "bar-pins", "node": 0 }));
+    within(volume(&pins), pin, 1e-6);
+
+    let mut longer = applied["op"].clone();
+    longer["cuts"][0]["connectors"]["types"][0]["depth"] = json!(10.0);
+    let edited = ok(
+        json!({ "call": "edit", "key": "dowel-bar", "parent": 0, "node": 31, "op": longer,
+        "pieceKeys": ["bar-d2b"], "pinsKey": "bar-pins-b" }),
+    );
+    assert_eq!(edited["pins"]["key"], "bar-pins-b");
+    within(
+        volume(&edited["pins"]),
+        PI * 4.0 * 10.0 - 2.0 * PI * 0.25 * (2.0 - 0.5 / 3.0),
+        1e-6,
+    );
+    ok(json!({ "call": "goto", "key": "dowel-bar", "node": 0 }));
+    for key in ["bar-d2", "bar-pins", "bar-d2b", "bar-pins-b", "dowel-bar"] {
+        ok(json!({ "call": "close", "key": key }));
+    }
 }
 
 /// Cuts at X 10 and 30 make 10, 20 and 30 mm long pieces: 1000, 2000 and 3000 mm³, negative side first.
@@ -284,9 +353,11 @@ fn refusals_leave_the_solid_as_it_was() {
     let mut sketch = partition(&[30.0]);
     sketch["cuts"][0]["profile"] = json!({ "kind": "sketch", "sketch": { "v": 1 } });
     refused(sketch, PROFILE_LATER);
-    let mut dowels = partition(&[30.0]);
-    dowels["cuts"][0]["connectors"] = json!({ "on": true, "types": [{ "type": "dowel" }] });
-    refused(dowels, CONNECTORS_LATER);
+    for kind in ["key", "dovetail"] {
+        let mut keyed = partition(&[30.0]);
+        keyed["cuts"][0]["connectors"] = json!({ "on": true, "types": [{ "type": kind }] });
+        refused(keyed, KEYS_LATER);
+    }
     let mut three = partition(&[10.0, 20.0, 30.0]);
     three["maxPieces"] = json!(3.0);
     refused(three, "This cut makes 4 pieces. Max pieces is 3.");

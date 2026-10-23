@@ -1,6 +1,6 @@
 # Plan: split a solid into printable parts
 
-Status: plan, for review. Written 2026-10-22 against `main` at v3.7.0 (`5d1e7e9`). Revised 2026-10-23 after review (section 18 lists what changed and why). No code in this change.
+Status: plan, for review. Written 2026-10-22 against `main` at v3.7.0 (`5d1e7e9`). Revised 2026-10-23 after review (section 18 lists what changed and why). Milestones 1 to 5 are built; sections 19 to 21 record what they changed.
 
 A long or tall solid can be cut into parts that fit a printer, printed separately, and put back together. Connectors and shaped joints are available on every cut. Each one is off until the user turns it on. A plain planar cut, with no peg and no step, is a complete use of the feature.
 
@@ -178,7 +178,7 @@ A Fit connector stores its position as fractions of the section's box in U and V
 
 ### D7. Pieces stay paired because the ids are in the op
 
-A connector id is `c{cut}-{index}`. A dowel is a hole in both pieces, coaxial, and one pin object per cut with the count on it; the pins are identical, so they need no pairing. A plug is fused to one piece and its socket is cut from the mate. The kernel refuses a spec that names a plug without its socket, or a dowel hole without its mate. Piece order is along W of the first cut, negative to positive, then along the next cut. Part numbers follow that order.
+A connector id is `c{cut}-{index}`. A dowel is a hole in both pieces, coaxial, and a pin; the count is the cut's `placed` list, and every cut's pins are one pins object (section 21); the pins are identical, so they need no pairing. A plug is fused to one piece and its socket is cut from the mate. The kernel refuses a spec that names a plug without its socket, or a dowel hole without its mate. Piece order is along W of the first cut, negative to positive, then along the next cut. Part numbers follow that order.
 
 ### D8. One object keeps the plate id
 
@@ -314,7 +314,7 @@ Connectors are optional per cut. The switch defaults off. Turning it on adds one
 |---|---|---|
 | Dowel | Radius, Depth (the pin's full length), Clearance, End gap, Hole shape | A hole in each piece and a separate pin, chamfered, exported or placed on the plate with the pieces. |
 | Plug | Radius, Depth, Clearance, End gap, Hole shape | Cylinder fused to the plug side, larger cylinder cut from the mate. |
-| Hardware hole | Diameter, Depth, Clearance | A hole in each piece for a bought pin or magnet; nothing is made to go in it. |
+| Hardware hole | Diameter, Depth, Clearance, End gap | A hole in each piece for a bought pin or magnet; nothing is made to go in it. Depth is the bought part's whole length, as a dowel pin's. |
 | Key | Width along U, Height along V, Depth along W, Clearance | A rectangular prism pair. |
 | Dovetail | Width, Angle, Depth, Slide, Clearance | One sliding trapezoid pair. The edge dovetail is the profile; this is a single key. |
 
@@ -420,9 +420,15 @@ A lap cut stores `"profile": { "kind": "lap", "depth": 8, "height": 5, "side": "
       "margin": 5,
       "place": "fit"
     }
+  ],
+  "placed": [
+    { "id": "c1-1", "type": "dowel", "uvMm": [-12, 0], "fraction": [0.3, 0.5], "fixed": false },
+    { "id": "c1-2", "type": "dowel", "uvMm": [12, 0], "fraction": [0.7, 0.5], "fixed": false }
   ]
 }
 ```
+
+`placed` is what the planner placed at Apply and the kernel built (D6); the tree stores only the ones that built, so a replay builds those. An op with connectors on also stores `"up": [x, y, z]`, the print's up in the solid's frame at Apply (the third row of the plate orientation), which a teardrop's roof and the pins follow.
 
 For a dowel, Depth is the pin's whole length and each piece's hole takes half of it plus the end gap. A plug stores `"type": "plug"` and `"side"`. Absent fields mean the section 2 default. A saved file from before this op has no `partition`, and it opens unchanged.
 
@@ -530,7 +536,7 @@ Each milestone leaves the app usable, leaves Split as it is, and leaves the gold
 4. **Panel.** The menu item, the card, typed and dragged planes, hover on the plane only, Playwright. No shortcut, rail unchanged. (3b's controls get their Playwright here.)
 5. **Dowels and plugs.** Dowel holes and pins, the plug and its socket, the hardware hole, teardrops on FDM, pairing, thin-wall warnings, **Use N**. Key and dovetail still refused.
 6. **Fit table.** Material clearances including the resin row, the Starting fit sentence, XY compensation warning, the FDM and resin coupon solids generated and checked. The prints are the human step after this milestone.
-7. **Bed.** Joint down per piece, lay out, pins placed upright, with the orientations in the tests.
+7. **Bed.** Joint down per piece and lay out, with the orientations in the tests. (Pins placed upright came with milestone 5, section 21.)
 8. **Lap and tongue.** Profile parameters, drag handles, volume and face tests.
 9. **Zig-zag and dovetail.** Including the discrete dovetail key, which shares the prism builder.
 10. **Sketch profile.** Sketch card, solver dimensions, sweep, edit reopens the chain.
@@ -604,7 +610,7 @@ Built:
 
 - **Resin target.** The kernel and the server cut a `target.process: "resin"` op. `model_probe` with `plan: true` takes `target: {printer: "formlabs-form-4"}` and fits the Form 4's volume, with the resin floors and the 10 mm margin; `arrange` is stored false and `orient` keep.
 - **The Form 4.** `FORMLABS_FORM_4` in `src/ui/machine-library.ts` is an `ExportPrinterRecord`, marked `exportOnly: true`. It is not a `PrinterRecord`, so it is never in `printers`, `enginePrinter` cannot take it, and `selectIn` and `machine_select` refuse it with a sentence. `targetPrinters(library)` is the Print on list (the plate's printer first, the Form 4 last) and `printerTarget(row)` the op's `target`.
-- **Pieces of an export target** are held off the plate (D12, as built), and saved with the project. `.lime` keeps them in `heldPieces`, a list beside `objects`, one row per piece: the part's plate object (`object`), the cut's step in its tree (`node`), and the part number (`index`, from 2), with the piece's mesh (`mesh`, `meshSeatMm`) and its solid (`brep`), records as a plate object's are, compressed in version 4. The project version stays 4, and the cut's `pieces` still say null, as 3.8.0 wrote them, so an older app ignores the key and opens the file as its own. A reopen holds each piece again under a fresh key, its tree opened in the engine from its saved solid when a STEP export first needs it, with no cut. A file 3.8.0 saved, with the op and not its pieces, cuts them again when Model shows the cut, on a spare step as `export_3mf` does (`partitionPieces`), and the next save keeps them. Model opens on such a cut when it is the part's latest step: the plate still holds the step before it.
+- **Pieces of an export target** are held off the plate (D12, as built), and saved with the project. `.lime` keeps them in `heldPieces`, a list beside `objects`, one row per piece: the part's plate object (`object`), the cut's step in its tree (`node`), and the part number (`index`, from 2) or `pins: true` for a dowelled cut's pins (section 21, item 5), with the piece's mesh (`mesh`, `meshSeatMm`) and its solid (`brep`), records as a plate object's are, compressed in version 4. The project version stays 4, and the cut's `pieces` and `pins` still say null, as the app wrote them before, so an older app ignores the key and opens the file as its own. A reopen holds each piece again under a fresh key, its tree opened in the engine from its saved solid when a STEP export first needs it, with no cut. A file 3.8.0 saved, with the op and not its pieces, cuts them again, and its pins with them, when Model shows the cut, on a spare step as `export_3mf` does (`partitionPieces`), and the next save keeps them. Model opens on such a cut when it is the part's latest step: the plate still holds the step before it.
 - **Part numbers** (section 10). `partitionNumbers` in `src/modeling/partition.ts` builds the strokes; the kernel places and cuts them, and answers `numbers` and `notes`.
 - **Export.** `export_3mf {object, name, pieces: true}` (one 3MF, or `stl: true` for one STL each) and `model_export_step {object, name, pieces: true}` (one STEP assembly of named solids), every reply with `SUPPORT_NOTE`. Names come from `pieceNames` in `src/modeling/partition-export.ts`. The 3MF writer now writes each zip entry's CRC-32: the slicer's own 3MF reader refused the file without it, and so would any reader that checks.
 - **Explode.** In Model's View menu, shown when the open part has a split to print with pieces on screen. `data-explode` on `#model` is the gap, `data-explode-parts` each part's shift, and a tag over each piece shows its number. It saves nothing.
@@ -626,3 +632,17 @@ Done in the card follow-up (`claude/partition-card-export`), all five, with thes
 - **Export…** is `exportPieceFiles` in `src/app/model.ts`, from the card's foot and from a partition row's menu. `src/ui/split-export.ts` is the dialog and `pieceFiles`, the one place the file names are made: milestone 5's `<source>-pins` is one more name there and one more mesh in `exportPieceFiles`. Saves go through `saveBytes` (`src/app/save-bytes.ts`), which File, Export 3MF and Model's STEP button now share: the desktop save dialog, or a download in the web build. The STEP request carries `names`.
 
 Not done: in the desktop app STL per piece opens one save dialog per file, since `save_text_file` saves one file. A folder picker would need a new Tauri command.
+
+## 21. Changes in milestone 5 (2026-10-23)
+
+Milestone 5 builds dowels, plugs and hardware holes, and lifts milestone 3's refusal of `connectors.on` for those three; a key or a dovetail is still refused, with "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole." It changed nine things:
+
+1. **The planner places on the mesh's section.** `sectionLoops` in `src/section-cap.ts` cuts the solid's mesh at each cut, in the cut's U and V, and `placeCut` in `src/modeling/partition.ts` runs `placeConnectors` on it for each type of the cut, numbering the ids along the cut. `storedPartition` (`src/split-print.ts`) takes the mesh and the plate's up and writes each cut's filled `types` and `placed`, so the card, `model_probe` with `plan: true` and an Apply all store the same placement (D6). The section is the largest outline and the holes inside it; a cut through two separate regions places on the larger one.
+2. **The kernel builds each placed connector on the real pieces, then the numbers.** `build_joints` in kernel.cpp applies each fraction to the box of the section the split made (D5: the negative side's caps on that plane), finds the two pieces that meet at the centre, and cuts or fuses there. A connector whose centre is on no cut face of two pieces is dropped as `outside`; one whose cut does not take exactly its tool's volume from each piece, or whose result is not one valid, closed solid, is dropped as `breaks`, which is how a hole that would break through the outline shows on the real solid. The kernel has no wall measure of its own: the planner's wall floor is the thin-wall check. Numbers are engraved after the connectors, so a label keeps clear of every hole.
+3. **The reply and the stored op.** Probe, apply and edit answer `connectors: {placed: [{id, at, teardrop}], dropped: [{id, reason, sentence}]}`, and the dropped sentences, then "Cut N: no dowel fits. It is a plain cut." for a cut whose every connector was dropped, come first in `notes`. The stored op keeps only the placed ones; a retried apply of the op as asked is still the same step.
+4. **The teardrop is the cylinder fused with a prism, as section 7 says.** The prism is the kite of the two tangents from the apex `r√2` along the roof and the centre, so the hole keeps its `Geom_CylindricalSurface` and the roof is two planes at 45° to up. The roof follows `up` projected off the hole's axis; an axis within 45° of vertical, or a round hole asked for, stays round. Resin defaults to round, FDM to teardrop (`fillConnector`).
+5. **The pins are one object for the whole cut, not one per cut.** D7 said one pin object per cut; one plate object is what section 10 and the node's `pins: string | null` say, so every placed dowel's pin is one solid in one compound, under `pinsKey` on apply and edit, rooted as `{kind: "piece", tree, node, pins: true}`. Each pin is a revolve of its chamfered outline, 0.5 mm at each end (less on a very small pin), standing along `up` in a row beside the part on the floor it stands on, so the pins object takes the part's plate orientation like a piece and stands upright on the plate; Lay out places it with the new pieces. For an export target the pins are held off the plate and export last, `<source>-pins`, in the STL set, the 3MF and the named STEP (`pieceNames(source, count, pins)`). Undo and redo, an Update and the MCP's edit take the pins with the pieces.
+6. **Hardware holes have an end gap.** Section 8 listed Diameter, Depth and Clearance; with Depth the bought part's whole length, each hole is half of it plus the end gap, as a dowel's, so the type takes `endGap` too.
+7. **The card.** Each cut has a **Connectors** checkbox below its plane; off hides every field. On shows Type, Radius or Diameter, Depth, Count (empty is Fit), Margin, End gap, Clearance (Snug, Loose, Press or Typed, with "Starting fit" and the per-side and on-diameter text, and the XY hole compensation note when it is not 0), Hole shape, and Plug side for a plug. The planner's sentences for the selected cut show under the fields, with **Use N** when a typed count does not fit. The ghost draws each placed connector's hole across its cut; once the kernel has checked the cut, it keeps only the ones the kernel built. The card's check asks for no preview mesh, so the probe does not replace the ghost with a cut mesh, as section 7 planned for the other tools.
+8. **Dragging a connector is left for later.** Typed positions are the MCP's `place: "fixed"` with `at` in millimetres on the cut; the card places by Fit or a count. **Refit** waits for the drag.
+9. **History rows** name the connectors that were built: "Split to print, 3 parts, dowels", "…, plugs", "…, holes", or "…, connectors" for mixed types. A cut whose every connector was dropped is a plain row.

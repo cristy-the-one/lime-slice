@@ -43,7 +43,26 @@ function boxOf(solid: MockSolid): { min: V; max: V } {
 const BAR = boxSolid([500, 20, 20]);
 const FILE = Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n");
 
-type Cut = { origin: V; normal: V };
+type Placed = { id: string; type: string };
+type Cut = { origin: V; normal: V; connectors?: { on?: boolean; placed?: Placed[] } };
+
+/** A 500 mm bar 60 mm wide: four dowels typed across its section, at four diameters' pitch, leave two that fit. */
+const WIDE = boxSolid([500, 60, 20]);
+
+/** The connectors a stored op placed, every cut's, as the kernel would build them all. */
+const placedOf = (cuts: Cut[]) => cuts.flatMap((cut) => (cut.connectors?.on ? (cut.connectors.placed ?? []) : []));
+
+/** The pins of `count` dowels: 6 × 6 × 8 mm posts standing in a row, as one solid. */
+function pinsSolid(count: number): MockSolid {
+  const posts = Array.from({ length: count }, (_, at) => boxSolid([6, 6, 8], [at * 9, 40, 0]));
+  return {
+    volumeMm3: posts.reduce((sum, post) => sum + post.volumeMm3, 0),
+    positions: posts.flatMap((post) => post.positions),
+    triangles: posts.flatMap((post, at) => post.triangles.map((face) => face + 6 * at)),
+    faces: posts.flatMap((post, at) => post.faces.map((face) => ({ ...face, id: face.id + 6 * at }))),
+    edges: [],
+  };
+}
 
 /** A 400 mm tall column: the Form 4 builds 210 mm, so it takes three pieces across Z. */
 const COLUMN = boxSolid([20, 20, 400]);
@@ -67,7 +86,10 @@ function built(request: Body, parent: MockSolid): Built {
   const op = request.op as { kind: string; cuts?: Cut[]; op?: string; origin?: V; size?: V };
   if (op.kind === "partition") {
     const [kept, ...pieces] = piecesOf(parent, op.cuts!);
-    return { kept: kept!, pieces };
+    const placed = placedOf(op.cuts!);
+    const dowels = placed.filter((row) => row.type === "dowel").length;
+    const joints = placed.length > 0 ? { connectors: { placed: placed.map((row) => ({ id: row.id, at: [0, 0, 0], teardrop: true })), dropped: [] } } : {};
+    return { kept: kept!, pieces, ...(dowels > 0 ? { pins: pinsSolid(dowels) } : {}), ...joints };
   }
   // A Boolean cut takes its box out of the part, and misses a part it does not reach.
   if (op.kind === "boolean" && op.origin && op.size) {
@@ -90,7 +112,10 @@ async function openBar(page: Page, compact = false, part: MockSolid = BAR): Prom
       const op = request.op as { kind: string; cuts?: Cut[] };
       if (op.kind !== "partition") return { ok: true };
       const parts = piecesOf(on, op.cuts!).map((piece) => ({ volumeMm3: piece.volumeMm3, ...boxOf(piece) }));
-      return { ok: true, volumeMm3: parts[0]!.volumeMm3, parts };
+      const placed = placedOf(op.cuts!);
+      const dowels = placed.filter((row) => row.type === "dowel").length;
+      const joints = placed.length > 0 ? { connectors: { placed: placed.map((row) => ({ id: row.id, at: [0, 0, 0], teardrop: true })), dropped: [] }, notes: [] } : {};
+      return { ok: true, volumeMm3: parts[0]!.volumeMm3, parts, ...(dowels > 0 ? { pins: { count: dowels, volumeMm3: pinsSolid(dowels).volumeMm3 } } : {}), ...joints };
     },
   });
   await page.goto(compact ? "/?layout=compact" : "/");
@@ -580,6 +605,139 @@ test("a file 3.8.0 saved, with the cut but not its pieces, cuts them again when 
   await expectEveryPiece(page, tree, "healed");
   const doc = await saveAndReopen(page);
   expect((doc.heldPieces as unknown[]).length, "the next save keeps them").toBe(2);
+});
+
+// --- Milestone 5: connectors on a cut.
+const jointsOn = (page: Page) => page.locator("#modelPartJointsOn");
+const jointFields = (page: Page) => page.locator("#modelPartJointFields");
+
+test("Connectors on shows the fields with the planner's defaults and the ghost's holes; off hides them", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await expect(jointsOn(page)).not.toBeChecked();
+  await expect(jointFields(page), "a plain cut shows a plain card").toBeHidden();
+  await jointsOn(page).check();
+  await expect(jointFields(page)).toBeVisible();
+  await expect(page.locator("#modelPartJointType")).toHaveValue("dowel");
+  await expect(page.locator("#modelPartJointRadius")).toHaveValue("3");
+  await expect(page.locator("#modelPartJointDepth")).toHaveValue("4");
+  await expect(page.locator("#modelPartJointCount")).toHaveValue("");
+  await expect(page.locator("#modelPartJointCount")).toHaveAttribute("placeholder", "Fit");
+  await expect(page.locator("#modelPartJointMargin")).toHaveValue("3.95");
+  await expect(page.locator("#modelPartJointGap")).toHaveValue("0.4");
+  await expect(page.locator("#modelPartJointFit")).toHaveValue("snug");
+  await expect(page.locator("#modelPartJointFitNote")).toHaveText("Starting fit. 0.15 mm each side (0.3 mm on the diameter).");
+  await expect(page.locator("#modelPartJointHole")).toHaveValue("teardrop");
+  await expect(page.locator("#modelPartJointDiameter"), "a hardware hole's diameter waits for its type").toBeHidden();
+  await expect(page.locator("#modelPartJointSide"), "and so does the plug's side").toBeHidden();
+  await expect(page.locator("#model"), "the ghost shows the planner's dowel on the selected cut").toHaveAttribute("data-connectors", "1");
+  await expect.poll(() => ((tree.of("probe").at(-1)?.op as { cuts: Cut[] } | undefined)?.cuts[0]?.connectors?.placed ?? []).map((row) => row.id), "the check sends the placed dowel").toEqual(["c1-1"]);
+  await expect(page.locator("#modelPartPieces li").last()).toContainText("Pins · 1");
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await page.waitForTimeout(500);
+  await shot(page, "connectors-on");
+
+  await page.locator("#modelPartJointType").selectOption("plug");
+  await expect(page.locator("#modelPartJointSide")).toBeVisible();
+  await expect(page.locator("#modelPartJointSide")).toHaveValue("positive");
+  await page.locator("#modelPartJointType").selectOption("hardware");
+  await expect(page.locator("#modelPartJointDiameter")).toBeVisible();
+  await expect(page.locator("#modelPartJointRadius")).toBeHidden();
+  await expect(page.locator("#modelPartJointHole")).toBeHidden();
+  await page.locator("#modelPartJointFit").selectOption("typed");
+  await expect(page.locator("#modelPartJointClearance")).toHaveValue("0.15");
+  await page.locator("#modelPartJointClearance").fill("0.2");
+  await page.locator("#modelPartJointClearance").dispatchEvent("change");
+  await expect(page.locator("#modelPartJointFitNote")).toHaveText("0.2 mm each side (0.4 mm on the diameter).");
+
+  await jointsOn(page).uncheck();
+  await expect(jointFields(page), "off hides every connector field").toBeHidden();
+  await expect(page.locator("#model"), "and the ghost's holes").toHaveAttribute("data-connectors", "0");
+  await expect(page.locator("#modelPartPieces li"), "the plain cut's check: three pieces and no pins").toHaveCount(3);
+});
+
+test("a typed count that does not fit says 2 of 4 and Use 2 writes the count", async ({ page }) => {
+  await openBar(page, false, WIDE);
+  await openCard(page);
+  await jointsOn(page).check();
+  await page.locator("#modelPartJointCount").fill("4");
+  await page.locator("#modelPartJointCount").dispatchEvent("change");
+  await expect(page.locator("#modelPartJointNotes")).toContainText("Cut 1: 2 of 4 dowels fit.");
+  const use = page.locator("#modelPartJointUse");
+  await expect(use).toBeVisible();
+  await expect(use).toHaveText("Use 2");
+  await expect(page.locator("#model")).toHaveAttribute("data-connectors", "2");
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await page.waitForTimeout(500);
+  await shot(page, "two-of-four");
+  await use.click();
+  await expect(page.locator("#modelPartJointCount")).toHaveValue("2");
+  await expect(use).toBeHidden();
+  await expect(page.locator("#modelPartJointNotes")).toBeHidden();
+  await expect(apply(page)).toBeEnabled();
+});
+
+test("Apply with dowels makes the pins one more object, and Explode shows them with the pieces", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await jointsOn(page).check();
+  await expect(page.locator("#modelPartPieces li").last()).toContainText("Pins · 1");
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(labels(page)).toHaveText(["bar.step", "Split to print, 3 parts, dowels"]);
+  const applied = tree.of("apply").at(-1)!;
+  expect(typeof applied.pinsKey, "the apply asks for the pins' tree").toBe("string");
+  expect((applied.op as { up?: unknown }).up, "and stores the print's up").toEqual([0, 0, 1]);
+  await expect(page.locator("#objectList .obj"), "two pieces and the pins join the plate").toHaveCount(4);
+  await expect(page.locator("#objectList .obj").nth(3)).toContainText("bar pins");
+  await page.locator("#modelLookOpen").click();
+  await page.locator("#modelExplode").check();
+  await expect(page.locator("#model"), "the pins are exploded with the pieces").toHaveAttribute("data-explode-parts", /(^| )0:/);
+  await page.keyboard.press("Escape");
+
+  // One Prepare undo takes the pieces and the pins back together.
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(4);
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#objectList .obj"), "one undo takes the pins with the pieces").toHaveCount(1);
+});
+
+test("a Form 4 cut with dowels keeps its pins through save and reopen, and a file without them makes them again", async ({ page }) => {
+  const tree = await openBar(page, false, COLUMN);
+  await openCard(page);
+  await target(page).selectOption("formlabs-form-4");
+  await jointsOn(page).check();
+  await expect(page.locator("#modelPartPieces li").last()).toContainText("Pins");
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(page.locator("#modelPartDone")).toBeVisible();
+  expect(typeof tree.of("apply").at(-1)!.pinsKey, "the apply asks for the pins' tree").toBe("string");
+  const doc = await saveAndReopen(page);
+  const held = doc.heldPieces as { index?: number; pins?: boolean }[];
+  expect(held.map((piece) => piece.index ?? (piece.pins ? "pins" : null)), "the pins are kept beside the pieces").toEqual([2, 3, "pins"]);
+  const cut = tree.of("apply").length;
+  const explodeHasPins = async () => {
+    await expect(page.getByRole("treeitem", { name: /^Split to print for Formlabs Form 4, 3 parts, dowels/ })).toHaveAttribute("aria-selected", "true");
+    await page.locator("#modelLookOpen").click();
+    await page.locator("#modelExplode").check();
+    await expect(page.locator("#model"), "the pins explode with the pieces").toHaveAttribute("data-explode-parts", /^(?=.*(^| )0:)(?=.*(^| )3:)/);
+    await page.keyboard.press("Escape");
+    const seen: string[] = [];
+    page.on("download", (download) => seen.push(download.suggestedFilename()));
+    await page.getByRole("treeitem", { name: /^Split to print for Formlabs Form 4/ }).locator(".mh-more").click();
+    await page.locator("#modelHistoryMenu [data-act=export]").click();
+    await page.locator('#splitExport [data-format="stl"]').click();
+    await expect.poll(() => seen, "the pins export last").toEqual(["bar-1.stl", "bar-2.stl", "bar-3.stl", "bar-pins.stl"]);
+  };
+  await page.locator("#tabModel").click();
+  await explodeHasPins();
+  expect(tree.of("apply").length, "nothing is cut again").toBe(cut);
+
+  await saveAndReopen(page, (file) => delete file.heldPieces);
+  await page.locator("#tabModel").click();
+  await expect.poll(() => tree.of("apply").length, "one cut on a spare step").toBe(cut + 1);
+  expect(typeof tree.of("apply").at(-1)!.pinsKey, "which makes the pins again").toBe("string");
+  await explodeHasPins();
 });
 
 test.describe("short window", () => {

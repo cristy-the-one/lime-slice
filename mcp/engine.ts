@@ -762,9 +762,14 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         const refused = !pieces ? "The plane is outside the part" : pieces.length > max ? `This cut makes ${pieces.length} pieces. Max pieces is ${max}.` : null;
         if (refused || !pieces) return JSON.stringify(req.call === "probe" ? { ok: false, error: refused } : { error: refused });
         const [first, ...rest] = pieces;
+        // --- Milestone 5: every placed connector is built; the dowels' pins are a 10 mm cube of their own.
+        const placedIds = ((req.op as { cuts?: { connectors?: { on?: boolean; placed?: { id?: string; type?: string }[] } }[] }).cuts ?? []).flatMap((one) => (one.connectors?.on ? (one.connectors.placed ?? []) : []));
+        const dowels = placedIds.filter((row) => row.type === "dowel").length;
+        const joints = placedIds.length > 0 ? { connectors: { placed: placedIds.map((row) => ({ id: row.id, at: [0, 0, 0], teardrop: false })), dropped: [] }, notes: [] } : {};
+        const pinsSolid: KeptSolid | null = dowels > 0 ? { volume: 1000, positions: boxSolid([0, 30, 0], [10, 40, 10], 1000).positions, min: [0, 30, 0], max: [10, 40, 10] } : null;
         if (req.call === "probe") {
           const measure = (solid: KeptSolid) => ({ volumeMm3: solid.volume, solids: 1, shells: 1 });
-          return JSON.stringify({ ok: true, ...measure(first!), before: measure(from), parts: pieces.map((piece) => ({ volumeMm3: piece.volume, min: piece.min, max: piece.max })) });
+          return JSON.stringify({ ok: true, ...measure(first!), before: measure(from), parts: pieces.map((piece) => ({ volumeMm3: piece.volume, min: piece.min, max: piece.max })), ...(pinsSolid ? { pins: { volumeMm3: 1000, count: dowels } } : {}), ...joints });
         }
         if ((req.pieceKeys?.length ?? 0) > 0 && rest.length > req.pieceKeys!.length) {
           return JSON.stringify({ error: `This cut makes ${pieces.length} pieces, and keys came for ${req.pieceKeys!.length + 1}.` });
@@ -776,7 +781,14 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         const wire = remember(key, first!);
         wire.id = tip;
         const listed = startPieces(rest);
-        const fields = { parts: pieces.length, ...((req.pieceKeys?.length ?? 0) > 0 ? { pieces: listed } : {}) };
+        const pinsKey = (req as { pinsKey?: string }).pinsKey;
+        let pinsReply: Record<string, unknown> | null = null;
+        if (pinsSolid && pinsKey) {
+          atNode.delete(pinsKey);
+          keepNode(pinsKey, 0, pinsSolid);
+          pinsReply = { ...remember(pinsKey, pinsSolid), key: pinsKey };
+        }
+        const fields = { parts: pieces.length, ...((req.pieceKeys?.length ?? 0) > 0 ? { pieces: listed } : {}), ...(pinsReply ? { pins: pinsReply } : {}), ...joints };
         if (req.call === "apply") return JSON.stringify({ ...wire, op: req.op, ...fields });
         const steps = [{ id: req.node ?? 1, op: req.op }, ...replay.map((step) => ({ id: step.id, op: step.op }))];
         return JSON.stringify({ ...wire, built: steps.map((step) => ({ id: step.id, op: step.op, fingerprint: wire.fingerprint })), ...fields });
