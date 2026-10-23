@@ -294,6 +294,15 @@ const modelGuide = await session.resource("lime://guide/model");
 const modelGuideText = typeof modelGuide === "string" ? modelGuide : JSON.stringify(modelGuide);
 check("lime://guide/model has the same sequence", modelGuideText.includes("formlabs-form-4") && modelGuideText.includes("export_3mf"), modelGuideText.slice(0, 200));
 
+// --- Split to print turns the part for an export target (the Telo's 7 pieces became 4).
+const teloBar = String((await call("solid_new", { primitive: "box", dx: 97, dy: 680, dz: 150 })).object);
+const teloPlan = await call("model_probe", { object: teloBar, op: { kind: "partition", target: { printer: "formlabs-form-4" } }, plan: true });
+const teloCuts = teloPlan.cuts as { origin: number[]; normal: number[] }[];
+check("a 680 mm bar lying along Y is four pieces for the Form 4, turned to its height", teloPlan.ok === true && teloPlan.pieces === 4 && teloCuts.length === 3 && teloCuts.every((one) => one.normal[1] === 1), JSON.stringify(teloPlan));
+check("with the sentence that names the matched axis", teloPlan.reason === "Cut for the Formlabs Form 4 with the part's 680 mm along the volume's 210 mm height: 4 parts.", String(teloPlan.reason));
+const teloLime = await call("model_probe", { object: teloBar, op: { kind: "partition" }, plan: true });
+check("the same bar for the plate's printer is cut as before", teloLime.pieces === 4 && !String(teloLime.reason).startsWith("Cut for"), JSON.stringify(teloLime));
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
