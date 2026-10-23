@@ -14,8 +14,10 @@
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBndLib.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
+#include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_VersionInfo.hxx>
@@ -550,6 +552,22 @@ void lime_tree_check(const LimeShape* shape, int* out) {
     out[1] = shape->held.faces.Extent();
     out[2] = BRepCheck_Analyzer(solid).IsValid() ? 1 : 0;
     out[3] = every_edge_shared_by_two(solid) ? 1 : 0;
+}
+
+/// The solid's box, x, y, z least then greatest, from its geometry rather than its mesh. 0 when it has no extent.
+int lime_tree_bounds(const LimeShape* shape, double* out) {
+    try {
+        LIME_CATCH_FAULTS;
+        Bnd_Box box;
+        BRepBndLib::AddOptimal(shape->held.shape, box, Standard_False, Standard_False);
+        if (box.IsVoid()) {
+            return 0;
+        }
+        box.Get(out[0], out[1], out[2], out[3], out[4], out[5]);
+        return 1;
+    } catch (...) {
+        return 0;
+    }
 }
 
 LimeShape* lime_tree_scale(const LimeShape* from, double factor, char** error) {

@@ -18,19 +18,21 @@ import { plainModelError } from "../src/app/model-error.ts";
 import { align, centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
 import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, turnedAxis, type ProbedTool } from "../src/model-feasibility.ts";
-import { builtBranch, crossEdit, editRefusal, forked, replayChain, type ToolLink } from "../src/model-edit.ts";
+import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
+import { clampPieces, type FillContext } from "../src/modeling/partition.ts";
+import { bedFrame, PLAN_KIND, planPartition, readPartition, storedPartition } from "./partition.ts";
 import { dropRefusal } from "../src/model-history.ts";
 import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
 import { isPrimitiveKind, rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
-import { applyRequest, crossEditRequest, exportRequest, extrudeOp, faceExtrudeOp, gotoRequest, isBrep, joinOp, keepSketch, loftOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, solidFileName, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
+import { applyRequest, crossEditRequest, editRequest, exportRequest, extrudeOp, faceExtrudeOp, gotoRequest, isBrep, joinOp, keepSketch, loftOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, solidFileName, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
 import { sweepSections, type SweepSpec } from "../src/modeling/sweep.ts";
 import { thinWalls } from "../src/modeling/thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "../src/modeling/anchors.ts";
 import { expandOps, type PartDef } from "../src/modeling/macro.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
-import { dropped, jumped, newTree, opLabel, pathTo, redoTarget, reserveId, rootLabel, undoTarget, withChild, withNode, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
+import { dropped, jumped, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { decodeProject, encodeProject, finishProject, prepareProject } from "../src/project-codec.ts";
@@ -837,6 +839,11 @@ export class Session {
    * an edit that replays the join builds the tool again, and a save keeps them as the project's modelTools.
    */
   private toolsOffPlate: PlateObject[] = [];
+  /**
+   * --- Split to print. Pieces of a split to print that is not on the way to its part's current step: model_undo above
+   * it takes them off the plate, and a redo brings them back (D9). Not saved.
+   */
+  private piecesOffPlate: PlateObject[] = [];
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
   private pendingRecipe: Recipe | null = null;
   /** --- D25. Each typed op's expression fields from the call being run, by op index; set before its numbers resolve. */
@@ -1380,7 +1387,7 @@ export class Session {
       filament: this.filament().name,
       printerSend: false,
       model: {
-        ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "split", "scale", "join", "root"],
+        ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "split", "partition", "scale", "join", "root"],
         composite: [...COMPOSITE_KINDS],
         primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"],
         // --- 3.1 F16. A limit per call, as the app's composite tools have it, not per history: one object's history
@@ -2295,13 +2302,14 @@ export class Session {
   }
 
   private async forgetObjects(): Promise<void> {
-    for (const obj of [...this.objects, ...this.toolsOffPlate]) await this.closeTree(obj);
+    for (const obj of [...this.objects, ...this.toolsOffPlate, ...this.piecesOffPlate]) await this.closeTree(obj);
     this.toolsOffPlate = [];
+    this.piecesOffPlate = [];
   }
 
-  /** The object, on the plate or taken off it by a join, whose tree has this engine key. */
+  /** The object, on the plate or taken off it by a join or an undone split to print, whose tree has this engine key. */
   private byTreeKey(key: string): PlateObject | undefined {
-    return this.objects.find((row) => row.tree?.key === key) ?? this.toolsOffPlate.find((row) => row.tree?.key === key);
+    return [...this.objects, ...this.toolsOffPlate, ...this.piecesOffPlate].find((row) => row.tree?.key === key);
   }
 
   /** A join without keepTool takes its tool off the plate, as the desktop does; its tree stays for replays and the save. */
@@ -3576,7 +3584,10 @@ export class Session {
       case "model_place": return this.modelPlace(obj, input);
       case "model_probe": {
         const anchored = this.anchored(obj, input.op as Record<string, unknown>);
-        return "reason" in anchored ? { ok: false, reason: anchored.reason } : this.probeMeasured(obj, { ...input, op: anchored.op });
+        if ("reason" in anchored) return { ok: false, reason: anchored.reason };
+        // --- Split to print: plan runs the planner alone, with no kernel call.
+        if (input.plan === true) return this.planTool(obj, anchored.op);
+        return this.probeMeasured(obj, { ...input, op: anchored.op });
       }
       case "surface_at": return this.surfaceAt(obj, input);
       case "model_check": return this.modelCheck(obj, input);
@@ -3680,7 +3691,7 @@ export class Session {
     }
     // Each history stays; its tree is built again from the root and ops when it is next used. A piece's tree, which
     // starts from another tree's split, reopens from its plate bytes as before.
-    for (const obj of [...this.objects, ...this.toolsOffPlate]) {
+    for (const obj of [...this.objects, ...this.toolsOffPlate, ...this.piecesOffPlate]) {
       obj.probes = new Map();
       if (obj.tree && obj.tree.root.kind !== "piece") obj.treeStale = true;
       else {
@@ -4013,6 +4024,14 @@ export class Session {
       if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 0.1 || factor > 20) return { reason: "Scale is a factor from 0.1 to 20." };
       return { op: toSolidOp({ kind: "scale", factor }, obj.modelPose), typed: { kind: "scale", factor } };
     }
+    // --- Split to print. Defaults are filled from the plate's printer and settings now, as at Apply (D11).
+    if (kind === "partition") {
+      const typed = readPartition(spec);
+      if ("reason" in typed) return typed;
+      const stored = storedPartition(typed, this.partitionContext(obj), obj.modelPose);
+      if ("reason" in stored) return stored;
+      return { op: stored.op, typed: cleanOp(spec) };
+    }
     if (kind === "split") {
       const origin = (Array.isArray(spec.origin) ? spec.origin : [0, 0, 0]) as [number, number, number];
       const normal = (Array.isArray(spec.normal) ? spec.normal : [0, 0, 1]) as [number, number, number];
@@ -4245,7 +4264,7 @@ export class Session {
       const op: ModelOp = { kind: "root", ...solid };
       return { op, typed: { kind: "root", ...solid } };
     }
-    return { reason: "That edit is not one of hole, fillet, chamfer, split, scale, boolean, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, join, or root." };
+    return { reason: "That edit is not one of hole, fillet, chamfer, split, partition, scale, boolean, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, join, or root." };
   }
 
   /** K4. A face as a shell's open face: an index, a stored `{index}`, or a `{normal, nearPoint}` selector. */
@@ -4384,6 +4403,7 @@ export class Session {
       obj.probes.set(probeKey(String(at), baked.op), true);
       return answer({ ok: true, reason: note.text });
     }
+    if (baked.op.kind === "partition") return answer(await this.probePartition(obj, tree, at, baked.op, budgetMs));
     if (baked.op.kind === "boolean" && obj.solid) {
       const missed = disjointBoolean(obj.solid.bounds, baked.op, baked.op.op);
       if (missed) {
@@ -4527,6 +4547,7 @@ export class Session {
   }
 
   private async applyBaked(obj: PlateObject, tree: ModelTree, baked: { op: ModelOp; typed: Record<string, unknown> }, raw: unknown, budgetMs?: number): Promise<Record<string, unknown>> {
+    if (baked.op.kind === "partition") return this.applyPartition(obj, tree, baked.op, baked.typed, budgetMs);
     if (baked.op.kind === "split") {
       const note = this.splitCheck(obj, baked.op);
       if (note.bad) return { ok: false, reason: note.text };
@@ -5300,6 +5321,288 @@ export class Session {
     return id;
   }
 
+  // --- Split to print (docs/plan-split-connectors.md, D8, D9, sections 10 and 13). Keep this block together. ---
+
+  /** What the planner fills defaults from: the plate's printer as the target, the nozzle, the layer, the filament, the brim. */
+  private partitionContext(obj: PlateObject): FillContext {
+    const printer = this.printer();
+    const box = obj.solid ? (isIdentity(obj.modelPose) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, obj.modelPose).positions)) : null;
+    return {
+      plateTarget: { printer: printer.id, process: "fdm", volumeMm: [printer.bedX, printer.bedY, printer.bedZ] },
+      featureMm: this.library.nozzleMm,
+      layerMm: this.settings.layerHeight,
+      material: this.filament().material,
+      adhesion: this.settings.adhesion,
+      brimWidthMm: this.settings.brimWidthMm,
+      ...(box ? { box: { min: [...box.min], max: [...box.max] } } : {}),
+    };
+  }
+
+  /** model_probe with plan: true. The planner alone: the solid is read, nothing is cut. */
+  private async planTool(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
+    const spec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    if (spec.kind !== "partition") return { ok: false, reason: PLAN_KIND };
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
+    const typed = readPartition(spec);
+    if ("reason" in typed) return { ok: false, reason: typed.reason };
+    if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
+    const printer = this.printer();
+    const frame = bedFrame(obj.solid.positions, obj.orient, obj.scale, obj.modelPose);
+    return planPartition(typed, this.partitionContext(obj), frame, { name: printer.name, belt: printer.kind === "belt" });
+  }
+
+  /** The kernel cuts a copy: every piece's volume and box in model space. The solid does not change. */
+  private async probePartition(obj: PlateObject, tree: ModelTree, at: number, op: PartitionModelOp, budgetMs?: number): Promise<Record<string, unknown>> {
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(probeRequest(tree.key, at, op), "partition", budgetMs);
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
+    if (reply.ok !== true) return { ok: false, reason: plainModelError(typeof reply.error === "string" ? reply.error : "This does not fit.") };
+    const parts = Array.isArray(reply.parts) ? (reply.parts as { volumeMm3?: unknown; min?: unknown; max?: unknown }[]) : [];
+    const mm = (value: number) => Math.round(value * 100) / 100;
+    const pieces = parts.map((part, index) => {
+      const corners = Array.isArray(part.min) && Array.isArray(part.max) ? [part.min as number[], part.max as number[]] : null;
+      const placed = corners ? boundsOf([0, 1, 2, 3, 4, 5, 6, 7].flatMap((k) => applyPose(obj.modelPose, [corners[k & 1]![0]!, corners[(k >> 1) & 1]![1]!, corners[(k >> 2) & 1]![2]!]))) : null;
+      return { part: index + 1, volumeMm3: mm(Number(part.volumeMm3)), ...(placed ? { min: placed.min.map(mm), max: placed.max.map(mm) } : {}) };
+    });
+    obj.probes.set(probeKey(String(at), op), true);
+    return { ok: true, reason: `This cut makes ${parts.length} pieces.`, parts: parts.length, pieces };
+  }
+
+  /** The keys the kernel opens each piece's tree under, one for every piece Max pieces allows after the first. */
+  private pieceKeys(obj: PlateObject, node: number, op: PartitionModelOp): string[] {
+    return Array.from({ length: clampPieces(op.maxPieces ?? 12) - 1 }, (_, at) => `mcp-part-${obj.id}-${node}-${at + 2}`);
+  }
+
+  /**
+   * model_apply of a split to print. The part keeps its plate id, its tree and its study, which goes stale by the solid's
+   * fingerprint (D8); every other piece is a new plate object in the part's plate orientation and model pose, its own tree
+   * rooted at this node, with no paint, seam, reinforcement or support edit of its own.
+   */
+  private async applyPartition(obj: PlateObject, tree: ModelTree, op: PartitionModelOp, typed: Record<string, unknown>, budgetMs?: number): Promise<Record<string, unknown>> {
+    if (!obj.probes.has(probeKey(String(tree.current), op))) return { ok: false, reason: "Probe this edit first, or pass probe: true. It was not applied." };
+    const [reserved, node] = reserveId(tree);
+    obj.tree = reserved;
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(applyRequest(tree.key, tree.current, node, op, CHORD, null, this.pieceKeys(obj, node, op)), "partition", budgetMs);
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
+    if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
+    const keys: (string | null)[] = [];
+    const objects: string[] = [];
+    const listed = Array.isArray(reply.pieces) ? (reply.pieces as unknown[]) : [];
+    listed.forEach((entry, at) => {
+      const id = entry && typeof entry === "object" ? this.partitionPiece(obj, entry as Record<string, unknown>, node, at + 2) : null;
+      keys.push(id ? String((entry as { key?: unknown }).key) : null);
+      if (id) objects.push(id);
+    });
+    obj.tree = withChild(obj.tree, tree.current, { id: node, op, label: opLabel(op, keys.length + 1), fingerprint: null, pieces: keys });
+    const solid = rememberSolid(reply);
+    if (solid) obj.solid = solid;
+    obj.probes.clear();
+    this.followPieces(obj);
+    return {
+      ok: true,
+      node: nodeHandle(node),
+      parts: keys.length + 1,
+      pieces: objects,
+      note: op.arrange === false ? "On the plate the pieces share one spot: Arrange lays them side by side." : "model_commit puts every piece on the plate and lays them out.",
+      stored: cleanOp(op as unknown as Record<string, unknown>),
+      typed,
+    };
+  }
+
+  /** One piece after the first as a plate object: the part's orientation, pose and settings, its own tree, empty paint. */
+  private partitionPiece(obj: PlateObject, entry: Record<string, unknown>, node: number, index: number): string | null {
+    const solid = rememberSolid(entry);
+    const key = typeof entry.key === "string" ? entry.key : "";
+    if (!solid || !key || !obj.tree) return null;
+    this.seq += 1;
+    const id = `obj_${this.seq}`;
+    this.objects.push({
+      id,
+      name: `${obj.name} part ${index}`,
+      fileName: obj.fileName,
+      bytes: new Uint8Array(),
+      source: Float32Array.from(solid.positions),
+      triangles: solid.positions.length / 9,
+      orient: [...obj.orient] as Mat3,
+      scale: obj.scale,
+      centered: obj.centered,
+      offset: { ...obj.offset },
+      seatMm: obj.seatMm,
+      stepTolerance: obj.stepTolerance,
+      modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] },
+      workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] },
+      tree: newTree(key, { kind: "piece", tree: obj.tree.key, node, index }, `Part ${index}`, solid.fingerprint),
+      solid,
+      probes: new Map(),
+      supportEdits: [],
+      supportPaint: [],
+      seamPaint: [],
+      reinforcement: [],
+      objectSettings: { ...obj.objectSettings },
+      platedNode: null,
+    });
+    return id;
+  }
+
+  /** The object, on the plate or off it, whose tree is `key`; a reopened project's piece has none open yet, and goes by its id. */
+  private objectOfKey(key: string): PlateObject | undefined {
+    return this.byTreeKey(key) ?? [...this.objects, ...this.piecesOffPlate].find((row) => !row.tree && `mcp-${row.id}` === key);
+  }
+
+  /**
+   * --- D9. A split to print's pieces are on the plate while that step is on the way to its part's current step, as a
+   * join's tool is off it: model_undo or a goto above the cut takes them off, and a redo brings them back.
+   */
+  private followPieces(obj: PlateObject): { back: string[]; left: string[] } {
+    const tree = obj.tree;
+    if (!tree) return { back: [], left: [] };
+    const path = new Set(pathTo(tree, tree.current));
+    const wanted = new Map<string, boolean>();
+    for (const node of tree.nodes.values()) {
+      for (const key of node.pieces ?? []) if (key) wanted.set(key, wanted.get(key) === true || path.has(node.id));
+    }
+    const back: string[] = [];
+    const left: string[] = [];
+    for (const [key, on] of wanted) {
+      const piece = this.objectOfKey(key);
+      if (!piece) continue;
+      const placed = this.objects.includes(piece);
+      if (on && !placed) {
+        this.piecesOffPlate.splice(this.piecesOffPlate.indexOf(piece), 1);
+        this.objects.push(piece);
+        back.push(piece.id);
+      } else if (!on && placed) {
+        this.objects.splice(this.objects.indexOf(piece), 1);
+        this.piecesOffPlate.push(piece);
+        if (this.selected === piece.id) this.selected = obj.id;
+        left.push(piece.id);
+      }
+    }
+    return { back, left };
+  }
+
+  /**
+   * --- D9. The pieces of an edited split to print, from the edit's reply. The plate object of each part number that is
+   * still there takes the new piece, with its later steps replayed on it; a piece past the old count is a new object; an
+   * old piece past the new count leaves the plate.
+   */
+  private async rebuildPieces(obj: PlateObject, old: readonly (string | null)[], reply: Record<string, unknown>, node: number): Promise<{ keys: (string | null)[]; objects: string[]; notes: string[] }> {
+    const listed = Array.isArray(reply.pieces) ? (reply.pieces as unknown[]) : [];
+    const keys: (string | null)[] = [];
+    const objects: string[] = [];
+    const notes: string[] = [];
+    for (const [at, entry] of listed.entries()) {
+      if (!entry || typeof entry !== "object") {
+        keys.push(null);
+        continue;
+      }
+      const row = entry as Record<string, unknown>;
+      const was = old[at] ? this.objectOfKey(old[at]!) : undefined;
+      const id = was ? await this.replayPiece(obj, was, row, node, at + 2, notes) : this.partitionPiece(obj, row, node, at + 2);
+      keys.push(id ? String(row.key) : null);
+      if (id) objects.push(id);
+    }
+    for (const key of old.slice(listed.length)) {
+      const gone = key ? this.objectOfKey(key) : undefined;
+      if (!gone) continue;
+      if (this.objects.includes(gone)) this.objects.splice(this.objects.indexOf(gone), 1);
+      this.piecesOffPlate = this.piecesOffPlate.filter((row) => row !== gone);
+      if (this.selected === gone.id) this.selected = obj.id;
+      await this.closeTree(gone);
+    }
+    return { keys, objects, notes };
+  }
+
+  /** `piece` takes part `index` of the edited cut as its new root, and the steps it had after its root are built again on it. */
+  private async replayPiece(obj: PlateObject, piece: PlateObject, entry: Record<string, unknown>, node: number, index: number, notes: string[]): Promise<string | null> {
+    const solid = rememberSolid(entry);
+    const key = typeof entry.key === "string" ? entry.key : "";
+    if (!solid || !key || !obj.tree) return null;
+    const before = piece.tree;
+    const later = before ? pathTo(before, before.current).slice(1).filter((id) => before.nodes.get(id)?.op) : [];
+    if (before) await this.closeTree(piece);
+    let tree = newTree(key, { kind: "piece", tree: obj.tree.key, node, index }, `Part ${index}`, solid.fingerprint);
+    piece.solid = solid;
+    piece.probes = new Map();
+    piece.platedNode = null;
+    if (before && later.length > 0) {
+      const ids = later.map((_, at) => at + 1);
+      const renamed = stepIds(later, ids);
+      const ops = later.map((id) => renumberedSteps(before.nodes.get(id)!.op!, renamed));
+      const replay = ops.slice(1).map((op, at) => ({ id: ids[at + 1]!, op }));
+      let built: Record<string, unknown>;
+      try {
+        built = await this.treeCall(editRequest(key, 0, ids[0]!, ops[0]!, replay, piece.stepTolerance || CHORD), "edit", this.replayBudgetMs(ids.length));
+      } catch (err) {
+        if (!(err instanceof ModelRunaway)) throw err;
+        built = { error: err.message };
+      }
+      if (typeof built.error === "string" && built.error) {
+        notes.push(`${piece.name}'s later steps did not build on the new cut (${plainModelError(built.error)}), so it is the new piece as cut.`);
+      } else {
+        const made = readBuilt(built.built);
+        const broken = readBroken(built.broken);
+        const steps = ids.map((id, at) => ({
+          id,
+          op: made?.get(id)?.op ?? ops[at]!,
+          fingerprint: made?.get(id)?.fingerprint ?? null,
+          ...(before.nodes.get(later[at]!)?.name ? { name: before.nodes.get(later[at]!)!.name! } : {}),
+          ...(broken?.id === id ? { broken: broken.error } : {}),
+        }));
+        const tip = [...steps].reverse().find((step) => !step.broken)?.id ?? 0;
+        tree = forked(tree, 0, steps, tip);
+        const shown = rememberSolid(built);
+        if (shown) piece.solid = shown;
+        if (broken) notes.push(`${piece.name}'s step ${steps.findIndex((step) => step.id === broken.id) + 1} did not build on the new cut: ${plainModelError(broken.error)}`);
+      }
+    }
+    piece.tree = tree;
+    return piece.id;
+  }
+
+  /**
+   * --- D8. A commit of the part puts its split-to-print pieces on the plate as they now stand: each piece on the way to
+   * the part's step that the plate does not hold at its own step is committed too. With the cut's arrange on, the plate is
+   * then laid out, as Arrange does.
+   */
+  private async commitPieces(obj: PlateObject): Promise<{ committed: string[]; refused: { object: string; reason: string }[]; arranged: boolean }> {
+    const tree = obj.tree;
+    const out = { committed: [] as string[], refused: [] as { object: string; reason: string }[], arranged: false };
+    if (!tree) return out;
+    let arrange = false;
+    for (const id of pathTo(tree, tree.current)) {
+      const node = tree.nodes.get(id);
+      if (node?.op?.kind !== "partition") continue;
+      for (const key of node.pieces ?? []) {
+        const piece = key ? this.objectOfKey(key) : undefined;
+        if (!piece || !this.objects.includes(piece) || !piece.tree || (piece.platedNode === piece.tree.current && piece.bytes.byteLength > 0)) continue;
+        const reason = await this.commitObject(piece);
+        if (reason) {
+          out.refused.push({ object: piece.id, reason });
+          continue;
+        }
+        out.committed.push(piece.id);
+        if (node.op.arrange !== false) arrange = true;
+      }
+    }
+    if (arrange && this.objects.length > 1) out.arranged = this.plateArrange({}).ok === true;
+    return out;
+  }
+
+  // --- end Split to print ---
+
   private async history(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const opened = obj.tree ?? await this.opened(obj);
     if ("reason" in opened) return { ok: false, reason: opened.reason };
@@ -5335,7 +5638,15 @@ export class Session {
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     const tools = await this.followJoins(obj);
-    return { ok: true, node: nodeHandle(node), ...(tools.back.length ? { toolsBack: tools.back } : {}), ...(tools.left.length ? { toolsLeftPlate: tools.left } : {}) };
+    const pieces = this.followPieces(obj);
+    return {
+      ok: true,
+      node: nodeHandle(node),
+      ...(tools.back.length ? { toolsBack: tools.back } : {}),
+      ...(tools.left.length ? { toolsLeftPlate: tools.left } : {}),
+      ...(pieces.back.length ? { piecesBack: pieces.back } : {}),
+      ...(pieces.left.length ? { piecesLeftPlate: pieces.left } : {}),
+    };
   }
 
   private async step(obj: PlateObject, direction: "undo" | "redo"): Promise<Record<string, unknown>> {
@@ -5424,6 +5735,9 @@ export class Session {
     if (baked.op.kind === "split") {
       const note = this.splitCheck(obj, baked.op);
       if (note.bad) return { ok: false, reason: note.text };
+    } else if (baked.op.kind === "partition") {
+      const checked = await this.treeCall(probeRequest(tree.key, parent, baked.op));
+      if (checked.ok !== true) return { ok: false, reason: plainModelError(typeof checked.error === "string" ? checked.error : "This does not fit.") };
     } else if (baked.op.kind !== "scale") {
       const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
       const checked = await this.treeCall(probeRequest(tree.key, parent, baked.op));
@@ -5433,7 +5747,8 @@ export class Session {
     }
     const replayIds = replayChain(tree, node, tree.current);
     const replayOps = replayIds.map((id) => tree.nodes.get(id)?.op).filter((op): op is ModelOp => op != null);
-    const twin = builtBranch(tree, parent, baked.op, replayOps);
+    // A split to print is always cut again: an earlier branch's pieces went to the edit that replaced it (D9).
+    const twin = baked.op.kind === "partition" ? null : builtBranch(tree, parent, baked.op, replayOps);
     if (twin != null) return this.gotoNode(obj, twin);
     const joins = this.toolLinks(tree, [node, ...replayIds]);
     const levels = crossEdit(tree, joins, node, baked.op, replayIds, (key, need) => this.reserveOn(key, need));
@@ -5441,9 +5756,11 @@ export class Session {
     if (!own) return { ok: false, reason: "That step could not be rebuilt." };
     // --- 3.1 F9. An edit replays every step after the one edited, and the tools its joins take: a budget for all of them.
     const replayed = levels.reduce((sum, level) => sum + 1 + level.replay.reduce((inner, step) => inner + 1 + (step.op.kind === "group" ? step.op.steps.length : 0), 0), 0);
+    // --- Split to print (D9): the edited cut makes its pieces again in the same call.
+    const pieceKeys = baked.op.kind === "partition" ? this.pieceKeys(obj, own.node, baked.op) : undefined;
     let reply: Record<string, unknown>;
     try {
-      reply = await this.treeCall(crossEditRequest(levels, obj.stepTolerance || CHORD), "edit", this.replayBudgetMs(replayed));
+      reply = await this.treeCall(crossEditRequest(levels, obj.stepTolerance || CHORD, pieceKeys), "edit", this.replayBudgetMs(replayed));
     } catch (err) {
       const lost = this.lostReply(err);
       if (lost) return lost;
@@ -5453,18 +5770,23 @@ export class Session {
     const built = readBuilt(reply.built);
     const broken = readBroken(reply.broken);
     const ids = [own.node, ...own.replay.map((step) => step.id)];
-    const steps = ids.map((id, index) => {
+    const steps: ForkStep[] = ids.map((id, index) => {
       const made = built?.get(id);
       // --- D25. The engine's echo has no sketch and no expressions: each step keeps its own, and the edited step the
       // expressions this call typed.
       const source = index === 0 ? withExprs(own.op, exprs) : own.replay[index - 1]!.op;
+      // A split to print replayed under this edit keeps the parts its older cut made, as a split's piece stays.
+      const older = index === 0 ? undefined : tree.nodes.get(replayIds[index - 1]!)?.pieces;
       return {
         id,
         op: made ? keepSketch(made.op, source) : source,
         fingerprint: made?.fingerprint ?? null,
         ...(broken?.id === id ? { broken: broken.error } : {}),
+        ...(older ? { pieces: older } : {}),
       };
     });
+    const rebuilt = pieceKeys ? await this.rebuildPieces(obj, tree.nodes.get(node)?.pieces ?? [], reply, own.node) : null;
+    if (rebuilt) steps[0] = { ...steps[0]!, pieces: rebuilt.keys };
     const tip = [...steps].reverse().find((step) => !step.broken)?.id ?? ids[0]!;
     const host = obj.tree ?? tree;
     obj.tree = forked(host, own.parent, steps, tip);
@@ -5472,7 +5794,9 @@ export class Session {
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     obj.probes.clear();
-    return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null };
+    this.followPieces(obj);
+    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(rebuilt.notes.length ? { notes: rebuilt.notes } : {}) } : {};
+    return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null, ...parts };
   }
 
   /** Fresh ids on the tree `key` names. An edit spends them even when the engine keeps only some. */
@@ -5542,7 +5866,16 @@ export class Session {
     if (blocked) return { ok: false, reason: blocked };
     const reason = await this.commitObject(obj);
     if (reason) return { ok: false, reason };
-    return { ok: true, scalePercent: obj.scale * 100, triangles: obj.triangles, ...(obj.commitWarning ? { warning: obj.commitWarning } : {}) };
+    const pieces = await this.commitPieces(obj);
+    return {
+      ok: true,
+      scalePercent: obj.scale * 100,
+      triangles: obj.triangles,
+      ...(obj.commitWarning ? { warning: obj.commitWarning } : {}),
+      ...(pieces.committed.length ? { pieces: pieces.committed } : {}),
+      ...(pieces.refused.length ? { piecesRefused: pieces.refused } : {}),
+      ...(pieces.arranged ? { arranged: true } : {}),
+    };
   }
 
   /** The plate mesh becomes the solid on screen. A second commit of the same node does not export again. */

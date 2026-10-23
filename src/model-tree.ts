@@ -6,6 +6,7 @@
 import { formatMm, splitLabel } from "./model-plane.ts";
 import { primitiveLabel, type PrimitiveSpec } from "./model-primitive.ts";
 import type { Affine } from "./model-space.ts";
+import type { CutInput, Labels, Target } from "./modeling/partition.ts";
 import type { SketchData } from "./sketch/model.ts";
 import type { ReinforceRegion } from "./reinforcement.ts";
 import type { SeamDisk } from "./seam-paint.ts";
@@ -83,7 +84,8 @@ type ModelOpBase =
   | ShellOp
   | GroupOp
   | FaceExtrudeOp
-  | MoveFacesOp;
+  | MoveFacesOp
+  | PartitionModelOp;
 
 /**
  * --- A6. `exprs` is the expression text for a panel field (`modelDz` → `"wallH / 2"`).
@@ -91,6 +93,22 @@ type ModelOpBase =
  * Stripped before the engine sees the op.
  */
 export type ModelOp = ModelOpBase & { exprs?: Record<string, string> };
+
+/**
+ * --- Split to print (docs/plan-split-connectors.md, D1). The solid cut along every plane at once, in its own frame. The
+ * node keeps the first piece in partition order; the others root trees of their own (`pieces`). Absent fields are the
+ * planner's defaults (`fillPartition`).
+ */
+export interface PartitionModelOp {
+  kind: "partition";
+  cuts: CutInput[];
+  target?: Target;
+  orient?: "keep" | ("keep" | "joint")[];
+  arrange?: boolean;
+  labels?: Labels;
+  bedMarginMm?: number;
+  maxPieces?: number;
+}
 
 /** One edge of a loop, from the previous end (the loop's start, for the first) to `to`. */
 export type ProfileSegment =
@@ -305,6 +323,11 @@ export interface ModelNode {
   broken?: string;
   /** A split: the key of the tree its other piece roots. */
   piece?: string;
+  /**
+   * A split to print: the keys of the trees its pieces 2, 3, … root, in partition order. Null for a piece no tree here
+   * holds, so the list still counts the parts.
+   */
+  pieces?: (string | null)[];
   keep?: PrepareKeep;
   mesh?: PlateMesh;
 }
@@ -316,12 +339,15 @@ export function isFeatureOp(op: ModelOp): op is FeatureOp {
   return op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft";
 }
 
-/** Where the root solid comes from: STEP bytes, a primitive built from its numbers, a feature built against nothing, or the piece a split cut off in another tree. */
+/**
+ * Where the root solid comes from: STEP bytes, a primitive built from its numbers, a feature built against nothing, or the
+ * piece a split cut off in another tree. A split to print's piece names its part number, `index` (2, 3, …).
+ */
 export type ModelRoot =
   | { kind: "step"; name: string; bytes: ArrayBuffer }
   | { kind: "primitive"; solid: PrimitiveSpec; exprs?: Record<string, string> }
   | { kind: "feature"; op: FeatureOp }
-  | { kind: "piece"; tree: string; node: NodeId };
+  | { kind: "piece"; tree: string; node: NodeId; index?: number };
 
 export interface ModelTree {
   key: string;
@@ -424,7 +450,7 @@ export function dropped(tree: ModelTree, id: NodeId): ModelTree | null {
   if (!node || node.parent === null) return null;
   const gone = subtree(tree, id);
   if (gone.has(tree.current) || gone.has(tree.committed)) return null;
-  if ([...gone].some((at) => tree.nodes.get(at)?.mesh || tree.nodes.get(at)?.piece)) return null;
+  if ([...gone].some((at) => tree.nodes.get(at)?.mesh || makesParts(tree.nodes.get(at)))) return null;
   const nodes = new Map([...tree.nodes].filter(([key]) => !gone.has(key)));
   const lastChild = new Map([...tree.lastChild].filter(([from]) => !gone.has(from)));
   if (gone.has(lastChild.get(node.parent) ?? -1)) {
@@ -433,6 +459,16 @@ export function dropped(tree: ModelTree, id: NodeId): ModelTree | null {
     else lastChild.delete(node.parent);
   }
   return { ...tree, nodes, lastChild };
+}
+
+/** Whether a split or a split to print at `node` made a part that a tree of its own roots. */
+export function makesParts(node: ModelNode | undefined): boolean {
+  return !!node?.piece || (node?.pieces ?? []).some((key) => key != null);
+}
+
+/** How many parts a split to print made, read from its node's `pieces`. Undefined for any other step. */
+export function partsOf(node: Pick<ModelNode, "op" | "pieces">): number | undefined {
+  return node.op?.kind === "partition" && node.pieces ? node.pieces.length + 1 : undefined;
 }
 
 /**
@@ -531,6 +567,7 @@ export function reachableTrees(trees: ReadonlyMap<string, ModelTree>, refs: Iter
     if (tree.root.kind === "piece") queue.push(tree.root.tree);
     for (const node of tree.nodes.values()) {
       if (node.piece) queue.push(node.piece);
+      for (const piece of node.pieces ?? []) if (piece) queue.push(piece);
       if (node.op?.kind === "join") queue.push(node.op.tool.key);
     }
   }
@@ -676,8 +713,8 @@ export function withFeatureRoot(tree: ModelTree, op: FeatureOp): ModelTree {
   return { ...tree, root, nodes };
 }
 
-/** A short name for the step, for the history list. */
-export function opLabel(op: ModelOp): string {
+/** A short name for the step, for the history list. `parts` is how many pieces a split to print made, when known. */
+export function opLabel(op: ModelOp, parts?: number): string {
   const n = formatMm;
   switch (op.kind) {
     case "boolean":
@@ -739,6 +776,9 @@ export function opLabel(op: ModelOp): string {
       const until = op.upTo !== undefined ? ", up to a face" : "";
       return `${verb} face ${n(Math.abs(op.distance))} mm${draft}${until}`;
     }
+    // --- Split to print (plan section 11). Profiles, connectors and an export target join the label in later milestones.
+    case "partition":
+      return parts != null ? `Split to print, ${parts} parts` : "Split to print";
     case "moveFaces": {
       const count = op.faces.length;
       const distance = op.faces[0]?.distance;

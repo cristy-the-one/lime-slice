@@ -254,6 +254,40 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   check("a refused shell names the thin place and the thickest wall that fits", shell.ok === false && (shell.where as { thinnestMm?: number } | undefined)?.thinnestMm !== undefined && typeof shell.maxMm === "number" && shell.maxMm < 3, JSON.stringify(shell));
 }
 
+// --- Split to print (docs/plan-split-connectors.md, milestone 3): plan, probe, apply, commit, and an edit that cuts
+// every piece again, against real Open CASCADE.
+{
+  const bar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 20, dz: 20 })).object);
+  const volume = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);
+  const plan = await call("model_probe", { object: bar, op: { kind: "partition" }, plan: true });
+  check("plan proposes two cuts for a 500 mm bar on the Lime 220", plan.ok === true && plan.pieces === 3 && (plan.cuts as unknown[]).length === 2, JSON.stringify(plan));
+  const op = plan.op as Record<string, unknown>;
+  const probe = await call("model_probe", { object: bar, op });
+  const parts = (probe.pieces ?? []) as { volumeMm3: number; min: number[]; max: number[] }[];
+  const sum = parts.reduce((total, part) => total + part.volumeMm3, 0);
+  check(
+    "the kernel's probe cuts three thirds in order, summing to the bar",
+    probe.ok === true && parts.length === 3 && parts.every((part) => near(part.volumeMm3, 200_000 / 3, 0.05)) && near(sum, 200_000, 0.05) && near(parts[0]!.min[0], -250, 0.01) && near(parts[1]!.min[0], -250 + 500 / 3, 0.01) && near(parts[2]!.max[0], 250, 0.01),
+    JSON.stringify(probe),
+  );
+  const applied = await call("model_apply", { object: bar, op });
+  const pieces = (applied.pieces ?? []) as string[];
+  const committed = await call("model_commit", { object: bar });
+  const listed = ((await call("plate_list", { limit: 100 })).objects as { object: string }[]).map((row) => row.object);
+  check("apply and commit leave the bar and two new plate objects", applied.ok === true && committed.ok === true && pieces.length === 2 && [bar, ...pieces].every((id) => listed.includes(id)), JSON.stringify({ applied, committed }));
+  const thirds = await Promise.all([bar, ...pieces].map(volume));
+  check("each is a third of the bar", thirds.every((v) => near(v, 200_000 / 3, 0.05)), JSON.stringify(thirds));
+  const rows = (await call("model_history", { object: bar })).nodes as { label: string }[];
+  check("the history row says the parts", rows[1]?.label === "Split to print, 3 parts", JSON.stringify(rows));
+  const one = { kind: "partition", cuts: [{ origin: [100, 0, 10], normal: [1, 0, 0] }] };
+  await call("model_probe", { object: bar, op: one, node: "node_0" });
+  const edited = await call("model_edit", { object: bar, node: "node_1", op: one });
+  const after = ((await call("plate_list", { limit: 100 })).objects as { object: string }[]).map((row) => row.object);
+  check("an edit cuts every piece again: two parts, the third leaves the plate", edited.ok === true && edited.parts === 2 && JSON.stringify(edited.pieces) === JSON.stringify([pieces[0]]) && !after.includes(pieces[1]!), JSON.stringify(edited));
+  const halves = await Promise.all([bar, pieces[0]!].map(volume));
+  check("the bar keeps X -250 to 100 and piece 2 the rest", near(halves[0]!, 140_000, 0.05) && near(halves[1]!, 60_000, 0.05), JSON.stringify(halves));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

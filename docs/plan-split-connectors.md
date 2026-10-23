@@ -356,7 +356,7 @@ A shaped joint that touches the bed only on its teeth, with Joint down on, gets 
 
 **Resin, exported.** The export keeps every piece as cut, in model space. PreForm tilts and supports it. The export note says: "Keep supports off the cut faces. They carry the fit and the part number." The pins are one more part in the export.
 
-**Lay out on the bed** runs `arrangedObjects` with `ARRANGE_GAP_MM` on the plate's printer. Off leaves the pieces sharing one spot, and the readout uses Split's sentence about Arrange. Dowel pins go on the plate as one more object, standing upright.
+**Lay out on the bed** runs `arrangedObjects` with `ARRANGE_GAP_MM` on the plate's printer, as Arrange does, once the pieces have plate meshes: on the MCP that is the `model_commit` that first puts them on the plate (milestone 3). Off leaves the pieces sharing one spot, and the readout uses Split's sentence about Arrange. Dowel pins go on the plate as one more object, standing upright.
 
 Part numbers are engraved, not a separate object. The string is the index, "1", "2", "3". Height and Depth are the label fields. The default face is the cut face (section 2), so the number is hidden once the parts are assembled, and both mating faces of a cut carry their numbers side by side. A drag moves it. A later rename of the plate object does not change the engraved digit, because the digit is geometry. The note under the checkbox says that. **Part numbers** off stores no text and cuts no digits.
 
@@ -374,7 +374,7 @@ The row label comes from the stored op, in the part's own frame, as Split's labe
 
 The pencil reopens this panel on the parent solid, the solid before the op, with the planes, the profiles, the connectors, and the checkboxes filled from the op. Update replaces the node and rebuilds the piece objects (D9). Undo returns the parent and removes the pieces, in the one Prepare step the Model visit already uses for an edit.
 
-The node stores `pieces: string[]`, the engine keys of the piece trees, in assembly order, and `pins: string | null`, the key of the pins object when a cut has dowels. `piece` stays the Split field. A `pieces` list on a split, or a `piece` on a partition, is a damaged tree.
+The node stores `pieces: (string | null)[]`, the engine keys of the trees of pieces 2, 3, … in assembly order (piece 1 is the node's own solid), and `pins: string | null`, the key of the pins object when a cut has dowels. A null is a piece no tree holds, such as a piece whose plate object was not saved; the list still counts the parts, so the row's label survives a save. The file writes each key as that piece's plate object id, or null. `piece` stays the Split field. A `pieces` list on a split, or a `piece` on a partition, is a damaged tree. The engine takes the keys as `pieceKeys` on `apply` and on an edited step's `edit` (`docs/step-modeler.md`); a key per piece Max pieces allows is sent, since the count is known only once the kernel has cut.
 
 Changing a parameter that this op's expressions use marks Rebuild, as it does for any other step. Rebuild replays from this node.
 
@@ -472,7 +472,7 @@ No new tool. Since #405, `model_apply` lists its op kinds by name and `guide {ki
 |---|---|
 | `model_probe` | Accepts `{kind: "partition", ...}`. With `plan: true` it runs only the planner: the proposed cuts, the placed and dropped connectors, the fit against the target, and the warning sentences, with no kernel call and no mesh. Without it, it also cuts and returns volume and box per piece, `placed`, `dropped`, and the sentences. The solid is unchanged either way. |
 | `model_apply` | The same op, after a probe or with `probe: true`. One undo step. Then `model_commit`, as for any other edit. |
-| `model_edit` | Replaces the node from the same op the pencil writes. |
+| `model_edit` | Replaces the node from the same op the pencil writes. A split to print is always cut again, never matched to an earlier branch with the same numbers, since that branch's pieces went to the edit that replaced it (D9). `model_undo` above the node takes its pieces off the plate and `model_redo` brings them back, as a join's tool. |
 | `model_history` | The row label. `model_goto`, `model_undo`, `model_redo`, `model_drop`, and `model_rename` work because the node is an ordinary step. |
 
 | `export_3mf`, `model_export_step` | Take the piece objects of a partition (and its pins) to write one 3MF or one STEP assembly for an export target. Per-piece STL is the existing mesh export per object. |
@@ -522,7 +522,7 @@ Each milestone leaves the app usable, leaves Split as it is, and leaves the gold
 
 1. **Planner.** `src/modeling/partition.ts` and its test: `target` with the FDM and resin floors, cuts, Fit the printer (the belt and resin examples included), profiles' sizes, connector placement, warnings. No kernel and no UI.
 2. **Straight kernel cut.** `partition` with plane tools only, watertight pieces, volume tests. No plate change yet.
-3. **History and plate.** One row, `pieces` keys, piece objects, pose kept and plate orientation kept, MCP probe (with `plan`) and apply for a straight plain cut. Edit round-trips. Connectors and profiles beyond straight are refused with a sentence.
+3. **History and plate.** One row, `pieces` keys, piece objects, pose kept and plate orientation kept, MCP probe (with `plan`) and apply for a straight plain cut. Edit round-trips. Connectors and profiles beyond straight are refused with a sentence. A resin target is refused too until 3b's export. `labels` is stored only when it is typed, since no number is cut yet: a default `{on: true}` stored now would cut numbers into old pieces on a 3b replay. The app has no panel yet; its history row reads the op, and the pencil says to use the MCP's `model_edit`.
 3b. **Resin target and export.** The export-only Form 4 record, **Print on**, part numbers on the cut faces, export as STL per piece, one 3MF, or one STEP assembly, the support note, and Explode. After 3b, a tall part can be cut, exported, printed in PreForm, and assembled: the use case this feature is for.
 4. **Panel.** The menu item, the card, typed and dragged planes, hover on the plane only, Playwright. No shortcut, rail unchanged. (3b's controls get their Playwright here.)
 5. **Dowels and plugs.** Dowel holes and pins, the plug and its socket, the hardware hole, teardrops on FDM, pairing, thin-wall warnings, **Use N**. Key and dovetail still refused.

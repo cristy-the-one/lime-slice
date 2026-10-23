@@ -643,6 +643,41 @@ const surfaceOps = [
 ];
 (op.oneOf as unknown[]).push(...surfaceOps);
 
+/** --- Split to print (docs/plan-split-connectors.md, section 13). One name on the list; guide {kind} has its fields. */
+const partitionOp = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind"],
+  properties: {
+    kind: { const: "partition" },
+    cuts: {
+      type: "array",
+      maxItems: 23,
+      description: "Planes, all cut at once. model_probe plan:true proposes them.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["origin", "normal"],
+        properties: {
+          origin: vec3,
+          normal: vec3,
+          u: { ...vec3, description: "Along the cut. Default: the section's longer side." },
+          profile: { type: "object", description: "{kind:\"straight\"}, the default and the only one built yet." },
+          connectors: { type: "object", description: "{on:false}, the default. Connectors are not built yet." },
+        },
+      },
+    },
+    target: { type: "object", description: "{printer, process:\"fdm\", volumeMm}. Default the plate's printer." },
+    orient: { description: "keep: each piece keeps the part's plate orientation.", oneOf: [{ enum: ["keep"] }, { type: "array", items: { enum: ["keep", "joint"] } }] },
+    arrange: { type: "boolean", description: "model_commit lays the pieces out. Default true." },
+    labels: { type: "object", description: "Part numbers. Stored, not cut yet." },
+    bedMarginMm: { type: "number", minimum: 0, maximum: 100, description: "Kept from the build volume's edge." },
+    maxPieces: { type: "integer", minimum: 2, maximum: 24, description: "Default 12." },
+    label,
+  },
+};
+(op.oneOf as unknown[]).push(partitionOp);
+
 /**
  * One line per op kind. tools/list shows model_apply's op as these lines and the kind names, not every kind's full
  * schema (that was a third of the list); guide {kind} serves a kind's full schema, and a refused op names its fields.
@@ -652,6 +687,7 @@ export const OP_SUMMARY: Record<string, string> = {
   fillet: "fillet {edges, size}: round edges.",
   chamfer: "chamfer {edges, size}: bevel edges.",
   split: "split {origin, normal, keep}: cut in two.",
+  partition: "partition {cuts:[{origin, normal}]}: split to print; model_probe plan:true proposes the cuts.",
   scale: "scale {factor}.",
   extrude: "extrude {op, profile | loops, depth}: a sketch on the workplane or a face.",
   revolve: "revolve {op, profile, axisOrigin, axisDir, angleDeg}: a sketch about an in-plane axis.",
@@ -1274,7 +1310,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_probe",
     description: "Check one plain edit; the solid does not change. Ok adds metrics: volume, bbox, and shells before and after, and warns on separate pieces. Then model_apply the same op.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step, plan: { type: "boolean", description: "partition: propose cuts for the printer; nothing is cut." } } },
   },
   {
     name: "surface_at",

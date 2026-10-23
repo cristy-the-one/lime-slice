@@ -1800,10 +1800,13 @@ export function commitModel() {
     return op?.kind === "join" && !op.keepTool ? [op.tool.key] : [];
   }));
   for (const id of down) {
-    const key = tree.nodes.get(id)?.piece;
-    const piece = key ? modelTrees.get(key) : undefined;
-    const pieceMesh = piece?.nodes.get(piece.committed)?.mesh;
-    if (key && pieceMesh && !joined.has(key) && !state.plate.objects.some((obj) => obj.modelTree === key)) placePiece(key, pieceMesh);
+    const node = tree.nodes.get(id);
+    // A split to print's pieces come back the same way as a split's.
+    for (const key of [node?.piece, ...(node?.pieces ?? [])]) {
+      const piece = key ? modelTrees.get(key) : undefined;
+      const pieceMesh = piece?.nodes.get(piece.committed)?.mesh;
+      if (key && pieceMesh && !joined.has(key) && !state.plate.objects.some((obj) => obj.modelTree === key)) placePiece(key, pieceMesh);
+    }
   }
   place();
   flushEdit();
@@ -1883,7 +1886,7 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
       queue.push(node.op.tool.key);
     }
   }
-  const named = new Set([...heldKeys].flatMap((key) => [...treeOfKey(key).nodes.values()].flatMap((node) => (node.piece ? [node.piece] : []))));
+  const named = new Set([...heldKeys].flatMap((key) => [...treeOfKey(key).nodes.values()].flatMap((node) => [node.piece, ...(node.pieces ?? [])].filter((piece): piece is string => !!piece))));
   for (const key of toolOf.keys()) named.add(key);
   // A tool no plate object holds goes under the id its join names, or one of its own when a plate object has that id.
   const ids = new Set(state.plate.objects.map((obj) => obj.id));
@@ -3691,6 +3694,8 @@ function forkSteps(tree: ModelTree, level: EditLevel, built: Built, broken: { id
       fingerprint: made?.fingerprint ?? null,
       ...(old?.name ? { name: old.name } : {}),
       ...(broken?.id === id ? { broken: broken.error } : {}),
+      // A split to print replayed under an edit above it keeps the parts its older cut made, as a split's piece stays.
+      ...(i > 0 && old?.pieces ? { pieces: old.pieces } : {}),
     };
   });
 }
@@ -5402,7 +5407,7 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
   if (seed || missing.includes(ROOT)) {
     // `open` registers every saved node, so nothing else is missing.
     if (tree.root.kind !== "piece") return openWhole(key, node);
-    const problem = await rebuildPiece(tree.root.tree, tree.root.node, key);
+    const problem = await rebuildPiece(tree.root.tree, tree.root.node, key, tree.root.index);
     if (problem) return problem;
   }
   // A piece's tree comes back as its root only: its steps are applied again down to `node`. A split
@@ -5425,14 +5430,18 @@ async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<st
   return null;
 }
 
-/** The piece a split cut off comes back by running that split again on a spare node, which then goes. */
-async function rebuildPiece(parentKey: string, split: NodeId, pieceKey: string): Promise<string | null> {
+/**
+ * The piece a split cut off comes back by running that split again on a spare node, which then goes. A split to print's
+ * piece `index` comes back the same way, its key at its place and none for the others, whose trees stay as they are.
+ */
+async function rebuildPiece(parentKey: string, split: NodeId, pieceKey: string, index?: number): Promise<string | null> {
   const parent = modelTrees.get(parentKey);
   const splitNode = parent?.nodes.get(split);
   if (!parent || !splitNode?.op || splitNode.parent === null) return "The part this piece was split from is no longer open.";
   const [reserved, spare] = reserveId(parent);
   modelTrees.set(parentKey, reserved);
-  const body = await treeCall(parentKey, splitNode.parent, applyRequest(parentKey, splitNode.parent, spare, splitNode.op, state.stepTolerance, pieceKey));
+  const keys = splitNode.op.kind === "partition" && index != null ? (splitNode.pieces ?? []).map((_, at) => (at === index - 2 ? pieceKey : null)) : null;
+  const body = await treeCall(parentKey, splitNode.parent, applyRequest(parentKey, splitNode.parent, spare, splitNode.op, state.stepTolerance, keys ? null : pieceKey, keys ?? undefined));
   await dropInEngine(parentKey, spare);
   return text(body.error) || null;
 }

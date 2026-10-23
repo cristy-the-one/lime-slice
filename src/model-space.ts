@@ -174,6 +174,9 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
       return { ...op, origin: point(op.origin), axis: turnDir(back, op.axis) };
     case "split":
       return { ...op, origin: point(op.origin), normal: turnDir(back, op.normal) };
+    // --- Split to print: each cut's plane as a split's, and its U turned with it. ---
+    case "partition":
+      return { ...op, cuts: op.cuts.map((cut) => ({ ...cut, origin: point(cut.origin), normal: turnDir(back, cut.normal), ...(cut.u ? { u: turnDir(back, cut.u) } : {}) })) };
     case "extrude":
     case "revolve": {
       // The profile's plane is a frame: its origin goes through the pose and its turn takes the pose's turn.

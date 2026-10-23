@@ -620,6 +620,22 @@ function resinHeightNotes(span: Vec3, counts: number[], usableHeight: number, ax
 }
 
 // ---------------------------------------------------------------------------
+// What the kernel builds yet (milestone 3). The same sentences as `partition_refusal` in tree.rs.
+// ---------------------------------------------------------------------------
+
+export const PROFILE_LATER = "Only straight cuts are built yet. Leave the profile out, or make it straight.";
+export const CONNECTORS_LATER = "Connectors are not built yet. Leave them off for a plain cut.";
+export const RESIN_LATER = "A resin target needs the export, which comes later. Cut for the plate's printer.";
+
+/** Why the kernel does not cut this op yet, before anything is built: a shaped profile, connectors on, or a resin target. */
+export function notBuiltYet(op: Pick<PartitionOp, "cuts" | "target">): string | null {
+  if (op.cuts.some((cut) => cut.profile && cut.profile.kind !== "straight")) return PROFILE_LATER;
+  if (op.cuts.some((cut) => cut.connectors?.on === true)) return CONNECTORS_LATER;
+  if (op.target?.process === "resin") return RESIN_LATER;
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Shaped cuts are parallel (D3).
 // ---------------------------------------------------------------------------
 
