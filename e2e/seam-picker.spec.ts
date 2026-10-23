@@ -34,6 +34,19 @@ async function sliceSettled(page: Page) {
   await expect(page.locator("#slice")).toBeEnabled();
 }
 
+/**
+ * The body this Slice click sends. A quiet refresh can add a request before the click, so
+ * counting requests is not enough. The click disables the button until its own reply lands,
+ * and nothing is sent after it, so the last body once the button is back is the click's.
+ */
+async function sliceClick(page: Page, bodies: Record<string, unknown>[]) {
+  const before = bodies.length;
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBeGreaterThan(before);
+  await sliceSettled(page);
+  return bodies.at(-1)!;
+}
+
 test("the seam position is left out at Blend, sent otherwise, and kept in a preset", async ({ page }) => {
   await quiet(page);
   const bodies = await captureSlices(page);
@@ -117,33 +130,26 @@ test("ironing is sent only while on, without a toast, and undone", async ({ page
   await page.locator("#seam").selectOption("blend");
   await page.waitForTimeout(400);
 
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(1);
-  expect(bodies[0]).not.toHaveProperty("seam");
-  expect(bodies[0]).not.toHaveProperty("ironing");
+  const first = await sliceClick(page, bodies);
+  expect(first).not.toHaveProperty("seam");
+  expect(first).not.toHaveProperty("ironing");
 
   await page.locator("#seam").selectOption("nearest");
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(2);
-  expect(bodies[1]).toHaveProperty("seam", "nearest");
-  expect(bodies[1]).not.toHaveProperty("ironing");
+  const nearest = await sliceClick(page, bodies);
+  expect(nearest).toHaveProperty("seam", "nearest");
+  expect(nearest).not.toHaveProperty("ironing");
 
   await page.locator("#seam").selectOption("aligned");
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(3);
-  expect(bodies[2]).toHaveProperty("seam", "aligned");
+  expect(await sliceClick(page, bodies)).toHaveProperty("seam", "aligned");
 
   await page.locator("#seam").selectOption("rear");
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(4);
-  expect(bodies[3]).toHaveProperty("seam", "rear");
+  expect(await sliceClick(page, bodies)).toHaveProperty("seam", "rear");
 
+  // Blend is the first slice's recipe, so the app may refresh it by itself before this click lands.
   await page.locator("#seam").selectOption("blend");
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(5);
-  await page.waitForTimeout(400);
-  expect(bodies[4]).not.toHaveProperty("seam");
-  expect(bodies[4]).not.toHaveProperty("ironing");
+  const blend = await sliceClick(page, bodies);
+  expect(blend).not.toHaveProperty("seam");
+  expect(blend).not.toHaveProperty("ironing");
 
   await page.locator("#ironing").check();
   await expect(page.locator("#ironflow")).toHaveValue("10");
@@ -159,10 +165,9 @@ test("ironing is sent only while on, without a toast, and undone", async ({ page
   await expect(page.locator("#ironspeed")).toHaveValue("30");
   await expect(page.locator("#ironspace")).toHaveValue("0.2");
   await page.waitForTimeout(400);
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(6);
-  expect(bodies[5]).not.toHaveProperty("seam");
-  expect(bodies[5]).toHaveProperty("ironing", { flow: 0.15, speed: 30, spacing: 0.2 });
+  const ironed = await sliceClick(page, bodies);
+  expect(ironed).not.toHaveProperty("seam");
+  expect(ironed).toHaveProperty("ironing", { flow: 0.15, speed: 30, spacing: 0.2 });
   await expect(page.locator("#toasts").getByRole("status").filter({ hasText: /ironing/i })).toHaveCount(0);
 
   await page.keyboard.press("Control+z");
@@ -173,9 +178,7 @@ test("ironing is sent only while on, without a toast, and undone", async ({ page
   await page.keyboard.press("Control+z");
   await expect(page.locator("#ironflow")).toHaveValue("10");
   await expect(page.locator("#ironing")).toBeChecked();
-  await page.locator("#slice").click();
-  await expect.poll(() => bodies.length).toBe(7);
-  expect(bodies[6]).toHaveProperty("ironing", {});
+  expect(await sliceClick(page, bodies)).toHaveProperty("ironing", {});
   await page.keyboard.press("Control+z");
   await expect(page.locator("#ironing")).not.toBeChecked();
 });
