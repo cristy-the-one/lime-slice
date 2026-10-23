@@ -52,6 +52,8 @@ export interface ForkStep {
   name?: string;
   /** Why the engine could not build it. The steps after it are under it, unbuilt. */
   broken?: string;
+  /** A split to print rebuilt with its pieces (D9): their trees' keys, as `ModelNode.pieces`. */
+  pieces?: (string | null)[];
 }
 
 /**
@@ -69,10 +71,11 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
       id: step.id,
       parent: up,
       op: step.op,
-      label: opLabel(step.op),
+      label: opLabel(step.op, step.pieces ? step.pieces.length + 1 : undefined),
       fingerprint: step.fingerprint,
       ...(step.name ? { name: step.name } : {}),
       ...(step.broken ? { broken: step.broken } : {}),
+      ...(step.pieces ? { pieces: step.pieces } : {}),
     });
     if (!step.broken && (follow || up !== parent)) lastChild.set(up, step.id);
     up = step.id;
@@ -87,6 +90,9 @@ export function forked(tree: ModelTree, parent: NodeId, steps: readonly ForkStep
  */
 export const FEATURE_ROOT_EDIT = "This solid started from a sketch. Open the sketch to change it.";
 
+/** --- Split to print. Its panel is a later milestone; until then the MCP server's model_edit changes it. */
+export const SPLIT_TO_PRINT_EDIT = "Split to print has no panel yet. Change it with the MCP server's model_edit.";
+
 /** Why step `id` cannot be edited, in plain words, or null when it can. */
 export function editRefusal(tree: ModelTree, id: NodeId): string | null {
   const node = tree.nodes.get(id);
@@ -97,6 +103,7 @@ export function editRefusal(tree: ModelTree, id: NodeId): string | null {
     return null;
   }
   if (pathTo(tree, node.parent).some((at) => tree.nodes.get(at)?.broken)) return "A step above this one cannot be rebuilt. Edit or delete that step first.";
+  if (node.op?.kind === "partition") return SPLIT_TO_PRINT_EDIT;
   if (node.op && !hasPanel(node.op)) return "This step has no edit panel yet. Delete it and apply it again with new numbers.";
   return null;
 }
@@ -377,6 +384,7 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "extrude":
     case "revolve":
     case "loft":
+    case "partition":
       // `editRefusal` turns these away before a panel opens.
       throw new Error(`No edit panel for a ${op.kind} step`);
     case "group": {
@@ -537,9 +545,11 @@ export function olderSplitNote(trees: ReadonlyMap<string, ModelTree>, tree: Mode
 export function editNotes(trees: ReadonlyMap<string, ModelTree>, tree: ModelTree, old: readonly NodeId[], pieceName: (key: string) => string | null): string[] {
   const notes: string[] = [];
   for (const id of old) {
-    const key = tree.nodes.get(id)?.piece;
-    const name = key ? pieceName(key) : null;
-    if (name) notes.push(`${name} stays as the older split cut it.`);
+    const node = tree.nodes.get(id);
+    for (const key of [node?.piece, ...(node?.pieces ?? [])]) {
+      const name = key ? pieceName(key) : null;
+      if (name) notes.push(`${name} stays as the older split cut it.`);
+    }
   }
   const user = toolUser(trees, tree.key, new Set(old));
   if (user) notes.push(`“${stepLabel(user)}” in another part still uses this part as it was before the edit.`);

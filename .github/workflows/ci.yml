@@ -222,6 +222,7 @@ jobs:
           node --experimental-strip-types mcp/schema.test.ts
           node --experimental-strip-types mcp/scenario.test.ts
           node --experimental-strip-types mcp/model.test.ts
+          node --experimental-strip-types mcp/partition.test.ts
           node --experimental-strip-types mcp/plan.test.ts
           node --experimental-strip-types mcp/request.test.ts
           node --experimental-strip-types mcp/numbers.test.ts

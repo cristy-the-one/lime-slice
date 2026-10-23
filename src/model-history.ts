@@ -6,7 +6,7 @@
 import { formatMm } from "./model-plane.ts";
 import type { PlaceFields } from "./model-space.ts";
 import type { ToolLink } from "./model-edit.ts";
-import { ROOT, childrenOf, historyCaption, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
+import { ROOT, childrenOf, historyCaption, makesParts, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
 
 /** Where a row sits against the shown step: before it in its history, it, after it on the branch Redo follows, or elsewhere. */
 export type RowState = "past" | "current" | "redo" | "other";
@@ -350,6 +350,7 @@ export function dropRefusal(tree: ModelTree, id: NodeId, trees: ReadonlyMap<stri
   if (gone.has(tree.committed)) return "The plate still holds a step on this branch.";
   if ([...gone].some((at) => tree.nodes.get(at)?.mesh)) return "The plate held a step on this branch, and Prepare undo can bring it back.";
   if ([...gone].some((at) => tree.nodes.get(at)?.piece)) return "A split on this branch made a part of its own.";
+  if ([...gone].some((at) => makesParts(tree.nodes.get(at)))) return "A split to print on this branch made parts of their own.";
   const user = toolUser(trees, tree.key, gone);
   if (user) return `“${user.name ?? user.label}” in another part's history uses a step on this branch as its tool.`;
   return null;

@@ -1,14 +1,16 @@
 /**
  * A Model history tree as `.lime` keeps it: the ops, names, and fingerprints of every node, which
  * node the view and the plate were on, and the root STEP, or a new solid's root primitive. Engine keys are not saved: they name a
- * tree for one page load. A split names its piece, and a join its tool, by that plate object's id instead.
+ * tree for one page load. A split names its piece, a split to print its pieces, and a join its tool, by that plate
+ * object's id instead.
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
 import { readLoftDrawing } from "./sketch/loft.ts";
 import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
-import { jumped, opLabel, rootLabel, type BooleanKind, type EdgePick, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
+import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
+import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type EdgePick, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
 
 type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
@@ -26,6 +28,8 @@ interface SavedNode {
   fingerprint: Fingerprint | null;
   /** A split whose other piece is on the plate: that object's id. */
   piece?: string;
+  /** A split to print: each piece after the first, in partition order, as its plate object's id, or null when not saved. */
+  pieces?: (string | null)[];
 }
 
 /**
@@ -65,6 +69,7 @@ export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: strin
     .sort((a, b) => a.id - b.id)
     .map((node) => {
       const piece = node.piece ? owner(node.piece) : undefined;
+      const pieces = node.pieces?.map((key) => (key ? owner(key) ?? null : null));
       // --- A8. A renamed step keeps its name. An MCP composite writes "prefix k/n" onto the label; that is kept
       // as the name too, so the app can fold those rows after the file opens. ---
       const name = savedName(node);
@@ -75,6 +80,7 @@ export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: strin
         ...(name ? { name } : {}),
         fingerprint: node.fingerprint,
         ...(piece ? { piece } : {}),
+        ...(pieces && pieces.length > 0 ? { pieces } : {}),
       };
     });
   return { nodes, current: tree.current, committed, nextId: tree.nextId };
@@ -86,7 +92,7 @@ function savedName(node: ModelNode): string {
   if (named) return named.slice(0, 80);
   if (!node.op) return "";
   const label = node.label.trim();
-  if (!label || label === opLabel(node.op)) return "";
+  if (!label || label === opLabel(node.op, partsOf(node))) return "";
   return label.slice(0, 80);
 }
 
@@ -138,15 +144,17 @@ export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, f
   const nodes = new Map<NodeId, ModelNode>();
   for (const node of saved.nodes) {
     const piece = node.piece ? objectKey(node.piece) : undefined;
+    const pieces = node.pieces?.map((id) => (id ? objectKey(id) ?? null : null));
     const op: ModelOp | null = node.op?.kind === "join" ? { ...node.op, tool: { object: node.op.tool.object, key: objectKey(node.op.tool.object) ?? "", node: node.op.tool.node, name: node.op.tool.name } } : node.op;
     nodes.set(node.id, {
       id: node.id,
       parent: node.parent,
       op,
-      label: op ? opLabel(op) : rootLabel(root, fileLabel),
+      label: op ? opLabel(op, pieces ? pieces.length + 1 : undefined) : rootLabel(root, fileLabel),
       fingerprint: node.fingerprint,
       ...(node.name ? { name: node.name } : {}),
       ...(piece ? { piece } : {}),
+      ...(pieces ? { pieces } : {}),
       ...(mesh && node.id === saved.committed ? { mesh } : {}),
     });
   }
@@ -169,6 +177,8 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
     // Parents come first, so a parent always has the smaller id; only the root has none.
     if (ids.has(node.id) || (node.parent === null) !== (node.id === 0) || (node.parent !== null && !ids.has(node.parent))) return null;
     if ((node.op === null) !== (node.parent === null) || (node.piece !== undefined && node.op?.kind !== "split")) return null;
+    // --- Split to print. `pieces` belongs to a split to print as `piece` does to a split, and to nothing else.
+    if (node.pieces !== undefined && node.op?.kind !== "partition") return null;
     // An edited primitive root is built again right under the root, and only there.
     if (node.op?.kind === "root" && node.parent !== 0) return null;
     ids.add(node.id);
@@ -205,6 +215,8 @@ function readNode(value: unknown): SavedNode | null {
   if (fingerprint === undefined) return null;
   if (value.name !== undefined && typeof value.name !== "string") return null;
   if (value.piece !== undefined && (typeof value.piece !== "string" || !value.piece)) return null;
+  const pieces = value.pieces === undefined ? undefined : readPieces(value.pieces);
+  if (pieces === null) return null;
   const name = typeof value.name === "string" ? value.name.trim() : "";
   return {
     id: value.id,
@@ -213,6 +225,39 @@ function readNode(value: unknown): SavedNode | null {
     ...(name ? { name } : {}),
     fingerprint,
     ...(typeof value.piece === "string" ? { piece: value.piece } : {}),
+    ...(pieces ? { pieces } : {}),
+  };
+}
+
+/** A split to print's pieces: one object id, or null, for each piece after the first. Null when damaged. */
+function readPieces(value: unknown): (string | null)[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length >= MAX_PIECES_HARD_STOP) return null;
+  return value.every((id) => id === null || (typeof id === "string" && id.length > 0)) ? [...value] as (string | null)[] : null;
+}
+
+/** --- Split to print. The printer a partition was cut for (D11). Undefined when absent, null when damaged. */
+function readTarget(value: unknown): Target | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || typeof value.printer !== "string" || (value.process !== "fdm" && value.process !== "resin")) return null;
+  const volumeMm = vec(value.volumeMm);
+  return volumeMm ? { printer: value.printer, process: value.process, volumeMm } : null;
+}
+
+/** --- Split to print. One cut: a plane, and its U, profile and connectors as stored. Null when damaged. */
+function readCut(value: unknown): CutInput | null {
+  if (!isRecord(value)) return null;
+  const origin = vec(value.origin);
+  const normal = vec(value.normal);
+  const u = value.u === undefined ? undefined : vec(value.u);
+  if (!origin || !normal || u === null) return null;
+  if (value.profile !== undefined && (!isRecord(value.profile) || typeof value.profile.kind !== "string")) return null;
+  if (value.connectors !== undefined && !isRecord(value.connectors)) return null;
+  return {
+    origin,
+    normal,
+    ...(u ? { u } : {}),
+    ...(value.profile !== undefined ? { profile: value.profile as unknown as Profile } : {}),
+    ...(value.connectors !== undefined ? { connectors: value.connectors as CutInput["connectors"] } : {}),
   };
 }
 
@@ -463,6 +508,32 @@ function readOpBody(value: unknown): SavedOp | undefined {
         faces.push({ face, distance: raw.distance });
       }
       return { kind: "moveFaces", faces };
+    }
+    // --- Split to print. The fields a later milestone builds are kept as stored, so the file round-trips. ---
+    case "partition": {
+      if (!Array.isArray(value.cuts) || value.cuts.length === 0 || value.cuts.length >= MAX_PIECES_HARD_STOP) return undefined;
+      const cuts: CutInput[] = [];
+      for (const raw of value.cuts) {
+        const cut = readCut(raw);
+        if (!cut) return undefined;
+        cuts.push(cut);
+      }
+      const target = readTarget(value.target);
+      if (target === null) return undefined;
+      const orient = value.orient;
+      const orientOk = orient === undefined || orient === "keep" || (Array.isArray(orient) && orient.every((one) => one === "keep" || one === "joint"));
+      if (!orientOk || (value.arrange !== undefined && typeof value.arrange !== "boolean") || (value.labels !== undefined && !isRecord(value.labels))) return undefined;
+      if ((value.bedMarginMm !== undefined && !finite(value.bedMarginMm)) || (value.maxPieces !== undefined && !finite(value.maxPieces))) return undefined;
+      return {
+        kind: "partition",
+        cuts,
+        ...(target ? { target } : {}),
+        ...(orient !== undefined ? { orient: (Array.isArray(orient) ? [...orient] : orient) as PartitionModelOp["orient"] } : {}),
+        ...(typeof value.arrange === "boolean" ? { arrange: value.arrange } : {}),
+        ...(isRecord(value.labels) ? { labels: value.labels as Labels } : {}),
+        ...(finite(value.bedMarginMm) ? { bedMarginMm: value.bedMarginMm } : {}),
+        ...(finite(value.maxPieces) ? { maxPieces: value.maxPieces } : {}),
+      };
     }
     default:
       return undefined;

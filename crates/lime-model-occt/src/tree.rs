@@ -468,6 +468,150 @@ pub enum Op {
     },
     /// Faces offset along their outward normals. Neighbours extend or trim; the other faces stay put.
     MoveFaces { faces: Vec<FaceMove> },
+    // --- Split to print (docs/plan-split-connectors.md, D1). Keep this variant, and the arms marked the same way, in
+    // one block. ---
+    /// The solid cut along every plane at once. The node keeps the first piece in partition order; the others are
+    /// answered once, in the apply reply, and with `pieceKeys` each becomes the root of its own tree. `target`,
+    /// `orient`, `arrange`, `labels`, `bedMarginMm` and `maxPieces` are stored as sent; only `maxPieces` is read here.
+    Partition {
+        cuts: Vec<PartitionCut>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<PartitionTarget>,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        orient: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arrange: Option<bool>,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        labels: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bed_margin_mm: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_pieces: Option<f64>,
+    },
+}
+
+/// --- Split to print. One cut: the plane through `origin` square to `normal`. `u`, `profile` and `connectors` are
+/// stored as sent. Only a straight cut with connectors off is built yet.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartitionCut {
+    pub origin: [f64; 3],
+    pub normal: [f64; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub u: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub profile: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub connectors: Value,
+}
+
+/// --- Split to print (D11). The printer the pieces are for, as it was at Apply.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartitionTarget {
+    pub printer: String,
+    pub process: PrintProcess,
+    pub volume_mm: [f64; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrintProcess {
+    Fdm,
+    Resin,
+}
+
+const PARTITION_PROFILE_LATER: &str =
+    "Only straight cuts are built yet. Leave the profile out, or make it straight.";
+const PARTITION_CONNECTORS_LATER: &str =
+    "Connectors are not built yet. Leave them off for a plain cut.";
+const PARTITION_RESIN_LATER: &str =
+    "A resin target needs the export, which comes later. Cut for the plate's printer.";
+
+/// The planner's Max pieces (`clampPieces` in `src/modeling/partition.ts`): 12 when absent, from 2 to 24.
+fn partition_max(max_pieces: Option<f64>) -> usize {
+    let wanted = max_pieces
+        .filter(|value| value.is_finite())
+        .unwrap_or(12.0)
+        .round();
+    wanted.clamp(2.0, 24.0) as usize
+}
+
+/// Why this milestone does not build a partition, before anything is cut: a shaped profile, connectors, or a resin
+/// target. Each is a sentence, and the solid is unchanged.
+fn partition_refusal(
+    cuts: &[PartitionCut],
+    target: Option<&PartitionTarget>,
+) -> Option<&'static str> {
+    let straight = |profile: &Value| {
+        profile.is_null() || profile.get("kind").and_then(Value::as_str) == Some("straight")
+    };
+    if !cuts.iter().all(|cut| straight(&cut.profile)) {
+        return Some(PARTITION_PROFILE_LATER);
+    }
+    if cuts
+        .iter()
+        .any(|cut| cut.connectors.get("on").and_then(Value::as_bool) == Some(true))
+    {
+        return Some(PARTITION_CONNECTORS_LATER);
+    }
+    if target.is_some_and(|target| target.process == PrintProcess::Resin) {
+        return Some(PARTITION_RESIN_LATER);
+    }
+    None
+}
+
+/// Where an apply's other pieces go: a split's `otherKey`, or a split to print's `pieceKeys`.
+struct PieceKeys {
+    other: Option<String>,
+    list: Vec<Option<String>>,
+}
+
+/// Every key a split to print names for its pieces is a tree of its own, apart from `key` and from each other.
+fn piece_keys_refusal(key: &str, op: &Op, piece_keys: &[Option<String>]) -> Result<(), Failure> {
+    if piece_keys.is_empty() {
+        return Ok(());
+    }
+    if !matches!(op, Op::Partition { .. }) {
+        return Err(Failure::Message(
+            "pieceKeys is only for a split to print".into(),
+        ));
+    }
+    let mut seen = HashSet::new();
+    for piece in piece_keys.iter().flatten() {
+        if piece == key || !seen.insert(piece.as_str()) {
+            return Err(Failure::Message("Each piece needs a key of its own".into()));
+        }
+    }
+    Ok(())
+}
+
+/// A cut that makes more pieces than keys were sent for keeps nothing: a piece with nowhere to go would be lost.
+fn partition_keys_cover(more: usize, piece_keys: &[Option<String>]) -> Result<(), Failure> {
+    if piece_keys.is_empty() || more <= piece_keys.len() {
+        return Ok(());
+    }
+    Err(Failure::Message(format!(
+        "This cut makes {} pieces, and keys came for {}.",
+        more + 1,
+        piece_keys.len() + 1
+    )))
+}
+
+/// Each keyed piece's reply as the root of its own tree; none for a piece sent no key.
+fn piece_replies(
+    pieces: &mut [Shape],
+    piece_keys: &[Option<String>],
+    chord: f64,
+) -> Result<Vec<Option<String>>, Failure> {
+    pieces
+        .iter_mut()
+        .enumerate()
+        .map(|(index, piece)| match piece_keys.get(index) {
+            Some(Some(_)) => piece.reply(ROOT, chord).map(Some),
+            _ => Ok(None),
+        })
+        .collect()
 }
 
 /// One cross-section of a loft, on the plane at `origin` turned by `turn`: a profile of `[u, v]` points, or a circle of
@@ -538,6 +682,7 @@ pub fn partition_primitive(
     let solid: Solid = serde_json::from_str(solid).map_err(|err| err.to_string())?;
     let _store = lock();
     let whole = Shape::primitive(&solid)?;
+    let _budget = GroupBudget::start();
     Ok(whole.partition(planes)?.iter().map(Shape::check).collect())
 }
 
@@ -705,6 +850,10 @@ enum Request {
         chord_mm: f64,
         /// Split only: the piece cut off opens as the root of its own tree under this key.
         other_key: Option<String>,
+        /// --- Split to print only: piece 2, 3, ... in partition order opens as the root of its own tree under the
+        /// key at its place. A null, or no key at that place, leaves that piece unseen.
+        #[serde(default)]
+        piece_keys: Vec<Option<String>>,
     },
     /// --- 3.1 F1. The steps from `parent` down to `last`, each already applied, become the one group `node` under
     /// `parent`, with the solid `last` holds: nothing is built again. `op` is the group, its steps the chain's ops in
@@ -745,6 +894,9 @@ enum Request {
         tools: Vec<ToolEdit>,
         #[serde(default = "default_chord")]
         chord_mm: f64,
+        /// --- Split to print: as an apply's, for the edited step when it is a split to print (D9).
+        #[serde(default)]
+        piece_keys: Vec<Option<String>>,
     },
     Goto {
         key: String,
@@ -992,6 +1144,8 @@ struct Node {
     broken: Option<String>,
     /// A split's `otherKey`, so a retried apply can be told from a different one.
     piece: Option<String>,
+    /// --- Split to print: its `pieceKeys`, for the same reason.
+    pieces: Vec<Option<String>>,
     /// The edges this step made or changed, read once from its solid when a later blend first picks them.
     created: Option<Vec<EdgeRef>>,
     /// --- A10. The node that made each face of this solid, in the kernel's face order. Empty until the solid is held.
@@ -1045,6 +1199,7 @@ impl Doc {
                 fingerprint: Some(fingerprint),
                 broken: None,
                 piece: None,
+                pieces: Vec::new(),
                 created: None,
                 face_owners: Vec::new(),
                 seeded: false,
@@ -1076,6 +1231,7 @@ impl Doc {
             fingerprint: None,
             broken: None,
             piece: None,
+            pieces: Vec::new(),
             created: None,
             face_owners: Vec::new(),
             seeded: false,
@@ -1599,7 +1755,14 @@ impl Store {
                 op,
                 chord_mm,
                 other_key,
-            } => self.apply(key, parent, node, op, chord_mm, other_key),
+                piece_keys,
+            } => {
+                let keys = PieceKeys {
+                    other: other_key,
+                    list: piece_keys,
+                };
+                self.apply(key, parent, node, op, chord_mm, keys)
+            }
             Request::Fold {
                 key,
                 parent,
@@ -1623,6 +1786,7 @@ impl Store {
                 replay,
                 tools,
                 chord_mm,
+                piece_keys,
             } => {
                 let mut levels = tools;
                 levels.push(ToolEdit {
@@ -1632,7 +1796,7 @@ impl Store {
                     op,
                     replay,
                 });
-                self.edit(levels, chord_mm)
+                self.edit(levels, chord_mm, piece_keys)
             }
             Request::Goto {
                 key,
@@ -1852,8 +2016,12 @@ impl Store {
         id: NodeId,
         op: Op,
         chord: f64,
-        other_key: Option<String>,
+        keys: PieceKeys,
     ) -> Result<Answer, Failure> {
+        let PieceKeys {
+            other: other_key,
+            list: piece_keys,
+        } = keys;
         if other_key.is_some() && !matches!(op, Op::Split { .. }) {
             return Err(Failure::Message("otherKey is only for a split".into()));
         }
@@ -1862,10 +2030,12 @@ impl Store {
                 "The split piece needs a key of its own".into(),
             ));
         }
+        piece_keys_refusal(&key, &op, &piece_keys)?;
         let doc = doc_in(&mut self.docs, &key)?;
         if let Some(existing) = doc.nodes.get(&id) {
             let same = existing.parent == Some(parent)
                 && existing.piece == other_key
+                && existing.pieces == piece_keys
                 && existing
                     .op
                     .as_ref()
@@ -1905,6 +2075,7 @@ impl Store {
                 build(from, op, false, tool, &steps).map_err(Failure::from)?
             }
         };
+        partition_keys_cover(built.pieces.len(), &piece_keys)?;
         let doc = doc_in(&mut self.docs, &key)?;
         let fingerprint = built.kept.fingerprint();
         self.clock += 1;
@@ -1913,6 +2084,7 @@ impl Store {
         node.fingerprint = Some(fingerprint);
         node.shape = Some(built.kept);
         node.piece = other_key.clone();
+        node.pieces = piece_keys.clone();
         node.used = self.clock;
         doc.current = id;
         // --- A10.
@@ -1924,9 +2096,11 @@ impl Store {
                 (Some(other), Some(_)) => Some(other.reply(ROOT, chord)?),
                 _ => None,
             };
-            Ok((text, other))
+            // --- Split to print: each piece with a key, as the split's other piece.
+            let pieces = piece_replies(&mut built.pieces, &piece_keys, chord)?;
+            Ok((text, other, pieces))
         });
-        let (text, other) = match rendered {
+        let (text, other, pieces) = match rendered {
             Ok(rendered) => rendered,
             Err(failure) => {
                 if let Some(doc) = self.docs.get_mut(&key) {
@@ -1957,7 +2131,62 @@ impl Store {
             let key_field = ("key", Part::Json(json!(other_key).to_string()));
             fields.push(("other", Part::Object(other, vec![key_field])));
         }
+        if matches!(built.op, Op::Partition { .. }) {
+            fields.push(("parts", Part::Json((built.pieces.len() + 1).to_string())));
+        }
+        if !piece_keys.is_empty() {
+            let list = self.start_pieces(built.pieces, &piece_keys, pieces, chord);
+            fields.push(("pieces", Part::Json(list)));
+        }
         Ok(Answer::Held { key, text, fields })
+    }
+
+    /// --- Split to print. Each keyed piece starts its own tree, as a split's other piece does, and its reply is cached
+    /// under that key. The answer is the replies in partition order from piece 2, each with its `key` and `part`
+    /// number, and null for a piece sent no key.
+    fn start_pieces(
+        &mut self,
+        made: Vec<Shape>,
+        piece_keys: &[Option<String>],
+        replies: Vec<Option<String>>,
+        chord: f64,
+    ) -> String {
+        let mut list = String::from("[");
+        for (index, ((piece, reply), wanted)) in made
+            .into_iter()
+            .zip(replies)
+            .zip(piece_keys.iter().chain(std::iter::repeat(&None)))
+            .enumerate()
+        {
+            if index > 0 {
+                list.push(',');
+            }
+            let (Some(piece_key), Some(reply)) = (wanted, reply) else {
+                list.push_str("null");
+                continue;
+            };
+            self.clock += 1;
+            self.replies.retain(|cached| &cached.key != piece_key);
+            // --- A10. A piece starts its own tree, so every face it keeps belongs to that root.
+            let owners = vec![ROOT; piece.fingerprint().faces.max(0) as usize];
+            self.docs
+                .insert(piece_key.clone(), Doc::new(piece, self.clock));
+            let text = Arc::new(with_fields(
+                &reply,
+                &[("stepFaces", Part::Json(json!(owners).to_string()))],
+            ));
+            self.remember(piece_key, ROOT, chord, Arc::clone(&text));
+            write_object(
+                &mut list,
+                &text,
+                &[
+                    ("key", Part::Json(json!(piece_key).to_string())),
+                    ("part", Part::Json((index + 2).to_string())),
+                ],
+            );
+        }
+        list.push(']');
+        list
     }
 
     /// --- 3.1 F1. A composite the MCP server applied piece by piece, each piece checked, becomes one group without
@@ -2115,7 +2344,22 @@ impl Store {
                 });
                 // --- A1 group: the same measures as one op, plus how many steps missed the solid. ---
                 let skipped = matches!(built.op, Op::Group { .. }).then_some(built.skipped);
-                let metrics = probe_metrics(from, &built.kept, skipped);
+                let mut metrics = probe_metrics(from, &built.kept, skipped);
+                // --- Split to print: every piece's volume and box, in partition order.
+                if matches!(built.op, Op::Partition { .. }) {
+                    let parts: Vec<Value> = std::iter::once(&built.kept)
+                        .chain(&built.pieces)
+                        .map(|piece| {
+                            let mut part = json!({ "volumeMm3": piece.fingerprint().volume_mm3 });
+                            if let Some([x0, y0, z0, x1, y1, z1]) = piece.bounds() {
+                                part["min"] = json!([x0, y0, z0]);
+                                part["max"] = json!([x1, y1, z1]);
+                            }
+                            part
+                        })
+                        .collect();
+                    let _ = write!(metrics, ",\"parts\":{}", Value::Array(parts));
+                }
                 doc.probe = Some(Probed {
                     parent: id,
                     op: built.op.clone(),
@@ -2149,10 +2393,17 @@ impl Store {
     /// first is a join that takes the tip of the one before. A tool step that no longer builds is kept broken as in any
     /// replay, and so is the join above it, which has no tool to take. A failure of the edited op, or of a join whose tool
     /// built, keeps nothing in any tree.
-    fn edit(&mut self, levels: Vec<ToolEdit>, chord: f64) -> Result<Answer, Failure> {
+    fn edit(
+        &mut self,
+        levels: Vec<ToolEdit>,
+        chord: f64,
+        piece_keys: Vec<Option<String>>,
+    ) -> Result<Answer, Failure> {
         self.edit_checks(&levels)?;
+        let own = levels.last().expect("an edit has its own tree last");
+        piece_keys_refusal(&own.key, &own.op, &piece_keys)?;
         let mut kept: Vec<(String, HashSet<NodeId>, NodeId)> = Vec::new();
-        let result = self.edit_levels(&levels, chord, &mut kept);
+        let result = self.edit_levels(&levels, chord, &piece_keys, &mut kept);
         if result.is_err() {
             for (key, fresh, previous) in kept {
                 if let Some(doc) = self.docs.get_mut(&key) {
@@ -2236,6 +2487,7 @@ impl Store {
         &mut self,
         levels: &[ToolEdit],
         chord: f64,
+        piece_keys: &[Option<String>],
         kept: &mut Vec<(String, HashSet<NodeId>, NodeId)>,
     ) -> Result<Answer, Failure> {
         let last = levels.len() - 1;
@@ -2269,6 +2521,17 @@ impl Store {
                 )),
                 _ => Ok(self.edited(key, level.parent, &level.op)?),
             };
+            // --- Split to print (D9). The edited step's pieces start their trees once the edit is kept.
+            let mut pieces = Vec::new();
+            let first = first.map(|mut built| {
+                if own {
+                    pieces = std::mem::take(&mut built.pieces);
+                }
+                built
+            });
+            if own {
+                partition_keys_cover(pieces.len(), piece_keys)?;
+            }
             let previous = doc_in(&mut self.docs, key)?.current;
             kept.push((key.to_string(), level.ids().collect(), previous));
             let replay = level
@@ -2289,8 +2552,13 @@ impl Store {
                 });
                 continue;
             }
-            doc_in(&mut self.docs, key)?.current = tip;
+            let doc = doc_in(&mut self.docs, key)?;
+            doc.current = tip;
+            if let Some(node) = doc.nodes.get_mut(&level.node) {
+                node.pieces = piece_keys.to_vec();
+            }
             let text = self.reply(key, tip, chord)?;
+            let replies = piece_replies(&mut pieces, piece_keys, chord)?;
             let mut fields = vec![
                 (
                     "built",
@@ -2298,6 +2566,13 @@ impl Store {
                 ),
                 ("replayed", Part::Json(replayed.to_string())),
             ];
+            if matches!(level.op, Op::Partition { .. }) {
+                fields.push(("parts", Part::Json((pieces.len() + 1).to_string())));
+            }
+            if !piece_keys.is_empty() {
+                let list = self.start_pieces(pieces, piece_keys, replies, chord);
+                fields.push(("pieces", Part::Json(list)));
+            }
             if let Some((node, error)) = broken {
                 fields.push((
                     "broken",
@@ -3232,6 +3507,8 @@ struct Built {
     op: Op,
     kept: Shape,
     other: Option<Shape>,
+    /// --- Split to print: pieces 2, 3, ... in partition order. Empty for any other op.
+    pieces: Vec<Shape>,
     /// Steps of a group whose tool missed the solid. 0 for any other op.
     skipped: u32,
 }
@@ -3317,6 +3594,8 @@ fn group_step_refusal(step: &Op) -> Option<&'static str> {
         Op::FaceExtrude { .. } => Some("A group cannot contain a face extrude."),
         Op::MoveFaces { .. } => Some("A group cannot contain a face move."),
         Op::Group { .. } => Some("A group cannot contain another group."),
+        // --- Split to print.
+        Op::Partition { .. } => Some("A group cannot contain a split to print."),
     }
 }
 
@@ -3420,6 +3699,7 @@ fn build_group(
         },
         kept,
         other: None,
+        pieces: Vec::new(),
         skipped,
     })
 }
@@ -3447,6 +3727,7 @@ fn build(
         return build_group(from, label, source, steps, probe, edge_steps);
     }
     let mut other = None;
+    let mut pieces = Vec::new();
     let kept = match &op {
         Op::Join {
             op: which,
@@ -3518,6 +3799,35 @@ fn build(
             other = NonNull::new(piece).map(Shape);
             kept
         }
+        // --- Split to print. The node keeps the first piece; the rest go to the apply reply.
+        Op::Partition {
+            cuts,
+            target,
+            max_pieces,
+            ..
+        } => {
+            if let Some(why) = partition_refusal(cuts, target.as_ref()) {
+                return Err(BuildFail::plain(why));
+            }
+            let planes: Vec<[f64; 6]> = cuts
+                .iter()
+                .map(|cut| {
+                    let ([x, y, z], [nx, ny, nz]) = (cut.origin, cut.normal);
+                    [x, y, z, nx, ny, nz]
+                })
+                .collect();
+            let mut made = from.partition(&planes).map_err(BuildFail::plain)?;
+            let max = partition_max(*max_pieces);
+            if made.len() > max {
+                return Err(BuildFail::plain(format!(
+                    "This cut makes {} pieces. Max pieces is {max}.",
+                    made.len()
+                )));
+            }
+            pieces = made.split_off(1);
+            made.pop()
+                .ok_or_else(|| "The planes did not split this solid".to_string())
+        }
         Op::Fillet { size, .. } | Op::Chamfer { size, .. } => {
             let chamfer = matches!(op, Op::Chamfer { .. });
             let indexes = &picks;
@@ -3543,6 +3853,7 @@ fn build(
                     op,
                     kept,
                     other: None,
+                    pieces: Vec::new(),
                     skipped: 0,
                 }),
                 Err(message) => Err(BuildFail {
@@ -3740,6 +4051,7 @@ fn build(
             op,
             kept,
             other,
+            pieces,
             skipped: 0,
         }),
         Err(message) => Err(BuildFail::plain(message)),
@@ -3836,6 +4148,7 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> c_int;
     fn lime_tree_check(shape: *const RawShape, out: *mut c_int);
+    fn lime_tree_bounds(shape: *const RawShape, out: *mut f64) -> c_int;
     fn lime_tree_scale(
         from: *const RawShape,
         factor: f64,
@@ -4317,6 +4630,7 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, BuildFail> 
             op,
             kept,
             other: None,
+            pieces: Vec::new(),
             skipped: 0,
         }),
         Err(message) => Err(BuildFail::plain(message)),
@@ -4360,14 +4674,13 @@ impl Shape {
     }
 
     /// Cuts this solid along every plane (x, y, z, nx, ny, nz) at once. The pieces are in partition order, and none is
-    /// made unless all are.
+    /// made unless all are. The caller's budget, if any, applies.
     fn partition(&self, planes: &[[f64; 6]]) -> Result<Vec<Shape>, String> {
         const MAX_PIECES: usize = 24;
         let count = c_int::try_from(planes.len()).map_err(|_| "Too many planes".to_string())?;
         let flat: Vec<f64> = planes.iter().flatten().copied().collect();
         let mut out = [std::ptr::null_mut::<RawShape>(); MAX_PIECES];
         let mut error: *mut c_char = std::ptr::null_mut();
-        let _budget = GroupBudget::start();
         // SAFETY: `flat` holds `count` planes, and `out` has room for the most pieces the kernel returns.
         let made = unsafe {
             lime_tree_partition(self.raw(), flat.as_ptr(), count, out.as_mut_ptr(), &mut error)
@@ -4380,6 +4693,14 @@ impl Shape {
             .iter()
             .filter_map(|piece| NonNull::new(*piece).map(Shape))
             .collect())
+    }
+
+    /// --- Split to print. The solid's box from its geometry, least corner then greatest; None when it has no extent.
+    fn bounds(&self) -> Option<[f64; 6]> {
+        let mut out = [0.0; 6];
+        // SAFETY: `out` has the six slots the kernel writes.
+        let found = unsafe { lime_tree_bounds(self.raw(), out.as_mut_ptr()) };
+        (found != 0).then_some(out)
     }
 
     fn check(&self) -> crate::PartitionPiece {

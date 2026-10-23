@@ -514,6 +514,37 @@ interface KeptSolid {
   max: number[];
 }
 
+/**
+ * A split to print on the stand-in's box: every cut is square to an axis, and the box falls into the boxes between the
+ * cuts, in the kernel's order (the first cut's axis outermost, negative side first). Null when a cut misses the box.
+ */
+function partitioned(prior: KeptSolid, op: { cuts?: { origin?: number[]; normal?: number[] }[] }): KeptSolid[] | null {
+  const stops = new Map<number, number[]>();
+  for (const cut of op.cuts ?? []) {
+    const normal = cut.normal ?? [0, 0, 1];
+    const axis = [0, 1, 2].reduce((best, i) => (Math.abs(normal[i] ?? 0) > Math.abs(normal[best] ?? 0) ? i : best), 0);
+    const at = cut.origin?.[axis] ?? 0;
+    if (!(at > (prior.min[axis] ?? 0) && at < (prior.max[axis] ?? 0))) return null;
+    stops.set(axis, [...(stops.get(axis) ?? []), at].sort((a, b) => a - b));
+  }
+  let boxes: { min: number[]; max: number[] }[] = [{ min: [...prior.min], max: [...prior.max] }];
+  for (const [axis, at] of [...stops].reverse()) {
+    const bounds = [prior.min[axis] ?? 0, ...at, prior.max[axis] ?? 0];
+    boxes = bounds.slice(1).flatMap((hi, k) => boxes.map((box) => {
+      const min = [...box.min];
+      const max = [...box.max];
+      min[axis] = bounds[k]!;
+      max[axis] = hi;
+      return { min, max };
+    }));
+  }
+  const whole = [0, 1, 2].reduce((v, i) => v * ((prior.max[i] ?? 0) - (prior.min[i] ?? 0)), 1) || 1;
+  return boxes.map(({ min, max }) => {
+    const volume = (prior.volume * [0, 1, 2].reduce((v, i) => v * ((max[i] ?? 0) - (min[i] ?? 0)), 1)) / whole;
+    return { volume, positions: boxSolid(min, max, volume).positions, min, max };
+  });
+}
+
 /** What the stand-in makes of an op: a scale, a hole's mark, a box cut that cleaves the part in two, or a group's steps in order. */
 function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: string; primitive?: string; origin?: number[]; size?: number[]; steps?: unknown[] } | undefined): KeptSolid {
   // --- A9. A group is the steps that landed, walked from the shape before them. Touch and lost-fuse checks stay on the outer op. ---
@@ -684,7 +715,9 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         key?: string;
         op?: { kind?: string; radius?: number; factor?: number; edges?: number[] };
         node?: number;
+        parent?: number;
         otherKey?: string;
+        pieceKeys?: (string | null)[];
         aIndex?: number;
         bIndex?: number;
         preview?: boolean;
@@ -708,6 +741,45 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
       if (process.env.LIME_MCP_HANG_MODEL === "1" && req.op?.kind === "fillet" && (req.call === "probe" || req.call === "apply") && !engine.hung) {
         engine.hung = true;
         return new Promise<string>(() => undefined);
+      }
+      const fallback = (): KeptSolid => ({ volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] });
+      // --- Split to print: the box between the cuts, each piece after the first a tree of its own under its key.
+      const cut = (from: KeptSolid) => partitioned(from, req.op as { cuts?: { origin?: number[]; normal?: number[] }[] });
+      const startPieces = (rest: KeptSolid[]) => {
+        const keys = req.pieceKeys ?? [];
+        return rest.map((piece, at) => {
+          const pieceKey = keys[at];
+          if (!pieceKey) return null;
+          atNode.delete(pieceKey);
+          keepNode(pieceKey, 0, piece);
+          return { ...remember(pieceKey, piece), key: pieceKey, part: at + 2 };
+        });
+      };
+      if (req.op?.kind === "partition" && (req.call === "probe" || req.call === "apply" || req.call === "edit")) {
+        const from = atNode.get(key)?.get(req.call === "probe" ? (req.node ?? 0) : (req.parent ?? 0)) ?? kept.get(key) ?? fallback();
+        const pieces = cut(from);
+        const max = Math.min(24, Math.max(2, Math.round(Number((req.op as { maxPieces?: unknown }).maxPieces ?? 12))));
+        const refused = !pieces ? "The plane is outside the part" : pieces.length > max ? `This cut makes ${pieces.length} pieces. Max pieces is ${max}.` : null;
+        if (refused || !pieces) return JSON.stringify(req.call === "probe" ? { ok: false, error: refused } : { error: refused });
+        const [first, ...rest] = pieces;
+        if (req.call === "probe") {
+          const measure = (solid: KeptSolid) => ({ volumeMm3: solid.volume, solids: 1, shells: 1 });
+          return JSON.stringify({ ok: true, ...measure(first!), before: measure(from), parts: pieces.map((piece) => ({ volumeMm3: piece.volume, min: piece.min, max: piece.max })) });
+        }
+        if ((req.pieceKeys?.length ?? 0) > 0 && rest.length > req.pieceKeys!.length) {
+          return JSON.stringify({ error: `This cut makes ${pieces.length} pieces, and keys came for ${req.pieceKeys!.length + 1}.` });
+        }
+        const replay = req.call === "edit" && Array.isArray(req.replay) ? req.replay : [];
+        const tip = replay.length > 0 ? (replay[replay.length - 1]!.id ?? 1) : (req.node ?? 1);
+        keepNode(key, req.node ?? 1, first!);
+        if (tip !== req.node) keepNode(key, tip, first!);
+        const wire = remember(key, first!);
+        wire.id = tip;
+        const listed = startPieces(rest);
+        const fields = { parts: pieces.length, ...((req.pieceKeys?.length ?? 0) > 0 ? { pieces: listed } : {}) };
+        if (req.call === "apply") return JSON.stringify({ ...wire, op: req.op, ...fields });
+        const steps = [{ id: req.node ?? 1, op: req.op }, ...replay.map((step) => ({ id: step.id, op: step.op }))];
+        return JSON.stringify({ ...wire, built: steps.map((step) => ({ id: step.id, op: step.op, fingerprint: wire.fingerprint })), ...fields });
       }
       if (req.call === "probe") {
         const radius = req.op?.radius ?? 0;

@@ -105,6 +105,7 @@ GUIDES.push(
       "hole: {kind:\"hole\", diameterMm, through:true | depth, at:{u, v}} on the workplane, or screw:\"M3\".",
       "fillet, chamfer: {edges:[index] | {select:{direction, onFace, convex}} | {fromNode:\"roof\", filter:\"convex\"}, size}. fromNode takes the edges a step made, found again after edits. A pick is one object; [{fromNode}] reads as it.",
       "split: {origin, normal, keep}. scale: {factor}.",
+      "partition (split to print): model_probe {op:{kind:\"partition\"}, plan:true} proposes straight cuts that fit the plate's printer, with no cut made. model_probe the op it returns, model_apply it, then model_commit: the part keeps the first piece and each other piece is a new object in the same plate orientation, laid out unless arrange:false. A plain cut is {kind:\"partition\", cuts:[{origin, normal}]}. model_edit rebuilds every piece; model_undo takes the pieces off the plate.",
       "join: {kind:\"join\", toolObject:\"obj_N\", op:\"cut\"|\"fuse\"|\"common\", keepTool}. Another object's solid as the tool, where it stands. Without keepTool the tool leaves the plate, as in the app; model_undo of the join or model_goto before it puts it back.",
       "pocket: {kind:\"pocket\", faceIndex, shape:\"rect\"|\"circle\"|\"arch\", at:{u, v}, width, height | diameter, depth, bars:{vertical, horizontal, width}}.",
       "  On a wall or a roof slope U is level and V runs up the face. A window: {kind:\"pocket\", faceIndex:2, at:{u:18, v:2.5}, width:10, height:10, depth:1.5, bars:{vertical:1, horizontal:1}}.",
