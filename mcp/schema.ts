@@ -919,7 +919,7 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       required: ["path"],
-      properties: { path: { type: "string", minLength: 1 }, stepToleranceMm: { type: "number", exclusiveMinimum: 0, maximum: 1 } },
+      properties: { path: { type: "string", minLength: 1 }, stepToleranceMm: { type: "number", exclusiveMinimum: 0, maximum: 1 }, pieces: { type: "boolean", description: "A STEP of several solids: an object per solid." } },
     },
   },
   {
@@ -1100,7 +1100,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "object_split_shells",
-    description: "After mesh_import of a mesh with separate shells. Each shell becomes an object. Then plate_arrange.",
+    description: "After mesh_import of a mesh with separate shells, or a STEP of several solids. Each shell or solid becomes an object. Then plate_arrange.",
     inputSchema: { type: "object", additionalProperties: false, required: ["object"], properties: { object: handle } },
   },
   {
