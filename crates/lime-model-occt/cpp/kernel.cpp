@@ -2155,33 +2155,10 @@ bool build_partition(
     std::stable_sort(parts.begin(), parts.end(), [](const Part& a, const Part& b) {
         return a.signs != b.signs ? a.signs < b.signs : a.along < b.along;
     });
-    size_t first = 0;
-    while (first < parts.size()) {
-        size_t last = first + 1;
-        while (last < parts.size() && parts[last].signs == parts[first].signs) {
-            ++last;
-        }
-        TopoDS_Shape acc = parts[first].shape;
-        for (size_t index = first + 1; index < last; ++index) {
-            // Built once: the two-shape constructor would build it a first time, destructively.
-            TopTools_ListOfShape objects;
-            objects.Append(acc);
-            TopTools_ListOfShape others;
-            others.Append(parts[index].shape);
-            BRepAlgoAPI_Fuse fuse;
-            fuse.SetArguments(objects);
-            fuse.SetTools(others);
-            fuse.SetNonDestructive(Standard_True);
-            fuse.SetToFillHistory(Standard_False);
-            Handle(Message_ProgressIndicator) joining;
-            fuse.Build(deadline_range(joining));
-            if (!fuse.IsDone() || fuse.HasErrors() || fuse.Shape().IsNull()) {
-                error = past_deadline() ? deadline_message() : "Open CASCADE did not join the split pieces";
-                return false;
-            }
-            acc = fuse.Shape();
-        }
-        TopoDS_Shape solid = as_solid(acc);
+    // Every plane spans the whole part, so each solid the splitter returns is one connected piece. Two solids on the
+    // same side of every plane (the arms of a U cut across) do not touch, so each stays a piece of its own.
+    for (const Part& part : parts) {
+        TopoDS_Shape solid = as_solid(part.shape);
         if (solid.IsNull() || solid.ShapeType() != TopAbs_SOLID) {
             error = "The planes did not cut this solid into whole pieces";
             return false;
@@ -2202,7 +2179,6 @@ bool build_partition(
             return false;
         }
         pieces.push_back({solid, volume});
-        first = last;
     }
     if (pieces.size() < 2) {
         pieces.clear();

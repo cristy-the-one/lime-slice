@@ -262,3 +262,16 @@ fn more_than_twenty_four_pieces_are_refused() {
     let message = refusal(&cube([30.0, 30.0, 30.0]), &grid).expect("kernel");
     assert_eq!(message, SENTENCE);
 }
+
+#[test]
+fn a_region_in_two_parts_is_two_pieces() {
+    // Two planes through a tube's hole: the slab between them is two bands of wall that do not touch.
+    let tube = json!({ "primitive": "tube", "origin": [0.0, 0.0, 0.0], "radius": 10.0, "innerRadius": 6.0, "height": 5.0 })
+        .to_string();
+    let Some(made) = pieces(&tube, &[plane([-3.0, 0.0, 0.0], X), plane([3.0, 0.0, 0.0], X)]) else {
+        return;
+    };
+    assert_eq!(made.len(), 4, "{made:?}");
+    whole(&made);
+    within(volumes(&made).iter().sum::<f64>(), PI * (100.0 - 36.0) * 5.0, 1e-4);
+}

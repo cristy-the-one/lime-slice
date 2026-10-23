@@ -283,9 +283,9 @@ For each cut the kernel builds a tool:
 - Straight: the finite plane face `build_split` builds, large enough to clear the bounding box.
 - Any other profile: the profile wire swept with `BRepPrimAPI_MakePrism` along U, as a shell.
 
-One `BRepAlgoAPI_Splitter` call takes the solid and every tool. `SetNonDestructive` is on, as in `build_split`. Each resulting solid is classified by which side of each cut its centre of mass lies on. Solids on the same side are fused, then passed through `as_solid`. `ShapeFix_Solid` closes a shell that came back open. `BRepCheck_Analyzer` has to accept each piece. A piece that is not one closed solid fails the op and the parent is unchanged.
+One `BRepAlgoAPI_Splitter` call takes the solid and every tool. `SetNonDestructive` is on, as in `build_split`. Each resulting solid is classified by which side of each cut its centre of mass lies on. That side vector orders the pieces. Each solid is its own piece: two solids on the same side of every cut, such as the arms of a U cut across, do not touch, and fusing them would not make one solid. Each is passed through `as_solid`. `ShapeFix_Solid` closes a shell that came back open. `BRepCheck_Analyzer` has to accept each piece. A piece that is not one closed solid fails the op and the parent is unchanged.
 
-The splitter sews the section into each piece, so the cut face is part of the solid. A straight cut of a box produces two solids of seven faces each: the original faces split, plus the cap. That face count is a test. A profiled cut's cap is the swept profile, and its area matches the section area within 1e-4 mm² on a box.
+The splitter sews the section into each piece, so the cut face is part of the solid. A straight cut square to a box's sides produces two solids of six faces each: four split sides, one end, and the cap. A cut through all six faces of a cube gives seven faces a half. That face count is a test. A profiled cut's cap is the swept profile, and its area matches the section area within 1e-4 mm² on a box.
 
 Connectors run after the split, on the pieces:
 
@@ -494,7 +494,8 @@ Precision is the B-rep, not the triangles.
 | A horizontal FDM hole is a teardrop with a 45° roof; a resin hole stays round | 1e-6 mm | the same |
 | Lap step face at the typed Height | 1e-6 mm | plane of that face |
 | Each piece is one solid, `BRepCheck_Analyzer` valid, every edge shared by two faces | exact | the same |
-| A box cut once has seven faces a half | exact | the same |
+| A box cut square to its sides has six faces a half; a cube cut through all six faces has seven | exact | the same |
+| Two planes through a tube's hole give four pieces: the middle slab is two bands that do not touch | exact | the same |
 | Each placed id has its two holes, or one plug and one socket, coaxial | 1e-6 mm | the same |
 | Tessellation at chord 0.05 mm has no free edge longer than the chord | chord | mesh check on the kernel mesh |
 | Planner: 500 mm bar, 220 mm bed, 5 mm margin → three pieces | exact positions | `src/modeling/partition.test.ts` |
