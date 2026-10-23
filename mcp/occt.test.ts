@@ -313,6 +313,8 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const stls = await call("export_3mf", { object: tall, name: "tall-form4", pieces: true, stl: true });
   check("the STEP holds three solids", stepFile.ok === true && stepFile.solids === 3, JSON.stringify(stepFile));
   check("the 3MF and the STLs are written", threeMf.ok === true && (stls.files as unknown[] | undefined)?.length === 3, JSON.stringify({ threeMf, stls }));
+  const products = [...readFileSync(String(stepFile.path)).toString("latin1").matchAll(/PRODUCT\('([^']*)'/g)].map((found) => found[1]);
+  check("the STEP names its solids <source>-<n> in assembly order", JSON.stringify(products) === JSON.stringify(["tall-form4-1", "tall-form4-2", "tall-form4-3"]), JSON.stringify(products));
   const back = await call("mesh_import", { path: String(stepFile.path) });
   const total = Number((await call("model_describe", { object: String(back.object), limit: 1 })).volumeMm3);
   const sum = ((stepFile.pieces ?? []) as { volumeMm3: number }[]).reduce((acc, piece) => acc + piece.volumeMm3, 0);

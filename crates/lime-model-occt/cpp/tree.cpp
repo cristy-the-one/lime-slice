@@ -1608,19 +1608,19 @@ int lime_tree_write_step(const LimeShape* shape, const char* path, char** error)
     }
 }
 
-/// --- Split to print (D12). `count` solids written as one STEP file, each a solid of its own in one compound. The
-/// writer is the one-solid export's; the solids carry no names, which would need the XCAF document writer.
-int lime_tree_write_step_many(const LimeShape* const* shapes, int count, const char* path, char** error) {
+/// --- Split to print (D12). `count` solids written as one STEP file of free shapes, each a product named by the
+/// matching entry of `names` (UTF-8), through the XCAF document writer.
+int lime_tree_write_step_many(const LimeShape* const* shapes, const char* const* names, int count, const char* path, char** error) {
     try {
         LIME_CATCH_FAULTS;
-        TopoDS_Compound compound;
-        BRep_Builder builder;
-        builder.MakeCompound(compound);
+        std::vector<TopoDS_Shape> solids;
+        std::vector<std::string> product_names;
         for (int index = 0; index < count; ++index) {
-            builder.Add(compound, shapes[index]->held.shape);
+            solids.push_back(shapes[index]->held.shape);
+            product_names.emplace_back(names[index]);
         }
         std::string message;
-        if (!write_step(compound, path, message)) {
+        if (!write_step_named(solids, product_names, path, message)) {
             set_error(error, message);
             return 0;
         }
@@ -1631,6 +1631,38 @@ int lime_tree_write_step_many(const LimeShape* const* shapes, int count, const c
     } catch (...) {
         set_error(error, "Open CASCADE failed");
         return 0;
+    }
+}
+
+/// --- Split to print (D12), for tests. The free shapes of a STEP file, up to `max`, each held on its own in `out`, and
+/// their product names, one per line, in `names`. The answer is how many there are, or -1 with `error`.
+int lime_tree_read_step_named(const char* path, LimeShape** out, int max, char** names, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<std::pair<std::string, TopoDS_Shape>> read;
+        std::string message;
+        if (!read_step_named(path, read, message)) {
+            set_error(error, message);
+            return -1;
+        }
+        if (static_cast<int>(read.size()) > max) {
+            set_error(error, "This STEP file has more solids than were asked for");
+            return -1;
+        }
+        std::string lines;
+        for (size_t index = 0; index < read.size(); ++index) {
+            out[index] = hold(read[index].second, volume_of(read[index].second)).release();
+            lines += read[index].first;
+            lines += '\n';
+        }
+        *names = alloc(lines);
+        return static_cast<int>(read.size());
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return -1;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return -1;
     }
 }
 

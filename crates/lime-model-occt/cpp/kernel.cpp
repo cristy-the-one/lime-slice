@@ -156,6 +156,16 @@
 #include <set>
 #include <STEPControl_StepModelType.hxx>
 #include <STEPControl_Writer.hxx>
+#include <STEPCAFControl_Reader.hxx>
+#include <STEPCAFControl_Writer.hxx>
+#include <TCollection_ExtendedString.hxx>
+#include <TDF_Label.hxx>
+#include <TDF_LabelSequence.hxx>
+#include <TDataStd_Name.hxx>
+#include <TDocStd_Document.hxx>
+#include <XCAFApp_Application.hxx>
+#include <XCAFDoc_DocumentTool.hxx>
+#include <XCAFDoc_ShapeTool.hxx>
 #endif
 
 /// OCCT's default messenger prints STEP transfer statistics on std::cout.
@@ -1863,6 +1873,115 @@ bool write_step(const TopoDS_Shape& shape, const char* path, std::string& error)
         writer.Write(path) != IFSelect_RetDone) {
         error = "Open CASCADE did not write this solid";
         return false;
+    }
+    return true;
+#endif
+}
+
+#ifdef LIME_OCCT_STEP
+namespace {
+
+/// An XCAF document that is closed on every way out, an exception included.
+struct XcafDocument {
+    Handle(TDocStd_Document) document;
+
+    XcafDocument() {
+        XCAFApp_Application::GetApplication()->NewDocument("MDTV-XCAF", document);
+    }
+
+    ~XcafDocument() {
+        if (!document.IsNull()) {
+            XCAFApp_Application::GetApplication()->Close(document);
+        }
+    }
+
+    XcafDocument(const XcafDocument&) = delete;
+    XcafDocument& operator=(const XcafDocument&) = delete;
+};
+
+}  // namespace
+#endif
+
+bool write_step_named(
+    const std::vector<TopoDS_Shape>& solids,
+    const std::vector<std::string>& names,
+    const char* path,
+    std::string& error) {
+#ifndef LIME_OCCT_STEP
+    (void)solids;
+    (void)names;
+    (void)path;
+    error = "STEP writer is not linked";
+    return false;
+#else
+    route_occt_log();
+    if (path == nullptr || path[0] == '\0') {
+        error = "STEP path is empty";
+        return false;
+    }
+    if (solids.size() != names.size()) {
+        error = "Each solid needs a name";
+        return false;
+    }
+    std::lock_guard<std::mutex> step_lock(step_mutex());
+    XcafDocument held;
+    if (held.document.IsNull()) {
+        error = "Open CASCADE did not write these solids";
+        return false;
+    }
+    const Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(held.document->Main());
+    for (size_t index = 0; index < solids.size(); ++index) {
+        const TDF_Label label = shapes->AddShape(solids[index], Standard_False);
+        TDataStd_Name::Set(label, TCollection_ExtendedString(names[index].c_str(), Standard_True));
+    }
+    Interface_Static::SetCVal("write.step.schema", "AP214IS");
+    STEPCAFControl_Writer writer;
+    writer.SetNameMode(Standard_True);
+    Interface_Static::SetIVal("write.surfacecurve.mode", 0);
+    writer.ChangeWriter().Model()->InternalParameters.WriteSurfaceCurMode = false;
+    if (!writer.Transfer(held.document, STEPControl_ManifoldSolidBrep) ||
+        writer.Write(path) != IFSelect_RetDone) {
+        error = "Open CASCADE did not write these solids";
+        return false;
+    }
+    return true;
+#endif
+}
+
+bool read_step_named(
+    const char* path,
+    std::vector<std::pair<std::string, TopoDS_Shape>>& out,
+    std::string& error) {
+#ifndef LIME_OCCT_STEP
+    (void)path;
+    (void)out;
+    error = "STEP reader is not linked";
+    return false;
+#else
+    route_occt_log();
+    if (path == nullptr || path[0] == '\0') {
+        error = "STEP path is empty";
+        return false;
+    }
+    std::lock_guard<std::mutex> step_lock(step_mutex());
+    XcafDocument held;
+    STEPCAFControl_Reader reader;
+    reader.SetNameMode(Standard_True);
+    if (held.document.IsNull() || reader.ReadFile(path) != IFSelect_RetDone ||
+        !reader.Transfer(held.document)) {
+        error = "Open CASCADE could not read this STEP file";
+        return false;
+    }
+    const Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(held.document->Main());
+    TDF_LabelSequence free;
+    shapes->GetFreeShapes(free);
+    for (Standard_Integer index = 1; index <= free.Length(); ++index) {
+        Handle(TDataStd_Name) name;
+        std::string text;
+        if (free.Value(index).FindAttribute(TDataStd_Name::GetID(), name)) {
+            text = TCollection_AsciiString(name->Get()).ToCString();
+        }
+        out.emplace_back(text, XCAFDoc_ShapeTool::GetShape(free.Value(index)));
     }
     return true;
 #endif
