@@ -167,8 +167,7 @@ check("the resin note says volume and the usable height", show(tall.notes) === s
 
 const near356 = fitPrinter({ box: { min: [0, 0, 0], max: [100, 100, 356] }, target: form4, marginMm: 10, maxPieces: 12, printerName: "Form 4" });
 check("a resin piece within 15 % of the usable height is named", show(near356.notes.slice(1)) === show([
-  "Piece 1 is 178 mm tall. Tilted in PreForm it may not fit; a second cut would leave room.",
-  "Piece 2 is 178 mm tall. Tilted in PreForm it may not fit; a second cut would leave room.",
+  "Pieces 1, 2 are 178 mm tall. Tilted in PreForm they may not fit; a second cut would leave room.",
 ]), show(near356.notes));
 const fdmNear = fitPrinter({ box: { min: [0, 0, 0], max: [100, 100, 356] }, target: lime, marginMm: 5, maxPieces: 12 });
 check("an fdm piece gets no tilt note", fdmNear.notes.every((n) => !n.includes("PreForm")));
@@ -206,7 +205,11 @@ check("a part that fits the plate's orientation is not turned", fitPrinter({ box
 const tooLong = fitPrinter({ box: { min: [0, 0, 0], max: [97, 3000, 150] }, target: form4, marginMm: 10, maxPieces: 12, printerName: "Form 4" });
 check("over max pieces counts the best turn", tooLong.cuts.length === 0 && tooLong.notes[0] === "This part would take 16 pieces. Max pieces is 12. No cuts are proposed.", show(tooLong.notes));
 const tiltTurned = fitPrinter({ box: { min: [0, 0, 0], max: [97, 680, 150] }, target: form4, marginMm: 10, maxPieces: 12, printerName: "Form 4" });
-check("the tilt note reads the height of the part axis that stands up in the volume", tiltTurned.notes[2] === "Piece 1 is 170 mm tall. Tilted in PreForm it may not fit; a fourth cut would leave room.", show(tiltTurned.notes));
+check("the tilt note reads the height of the part axis that stands up in the volume", show(tiltTurned.notes) === show([
+  "Cut for the Form 4 with the part's 680 mm along the volume's 210 mm height: 4 parts.",
+  "Three cuts are proposed.",
+  "Pieces 1–4 are 170 mm tall. Tilted in PreForm they may not fit; a fourth cut would leave room.",
+]), show(tiltTurned.notes));
 
 check("split_reject margin is 2 % with a 0.25 mm floor", splitRejectMargin(100) === 2 && splitRejectMargin(5) === 0.25 && near(splitRejectMargin(20), 0.4));
 

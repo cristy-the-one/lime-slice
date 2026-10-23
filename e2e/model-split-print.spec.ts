@@ -409,7 +409,7 @@ test("Print on the Form 4 over a long bar turns it to the volume's height: four 
   await openCard(page);
   await expect(page.locator("#modelPartNote"), "for the plate's printer the bar is cut where it lies").toContainText("This part is 680 mm along Y.");
   await target(page).selectOption("formlabs-form-4");
-  await expect(page.locator("#modelPartNote")).toHaveText(/^Cut for the Formlabs Form 4 with the part's 680 mm along the volume's 210 mm height: 4 parts\. This part is 680 mm along Y\./);
+  await expect(page.locator("#modelPartNote")).toHaveText(/^Cut for the Formlabs Form 4 with the part's 680 mm along the volume's 210 mm height: 4 parts\. Three cuts are proposed\. Pieces 1–4 are 170 mm tall\. Tilted in PreForm they may not fit; a fourth cut would leave room\.$/);
   await expect(cuts(page), "three cuts across the bar's own Y").toHaveCount(3);
   await expect(page.locator("#modelPartPieces li")).toHaveCount(4);
   await expect(page.locator("#modelPartCuts .scrub-label").first()).toHaveText("At Y");

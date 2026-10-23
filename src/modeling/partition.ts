@@ -635,11 +635,14 @@ export function fitPrinter(input: FitInput): FitResult {
       cuts.push({ origin, normal, u: defaultU(normal, box), profile: { kind: "straight" }, connectors: { on: false } });
     }
     const made = n - 1;
-    notes.push(
-      `This part is ${mm(span[axis])} mm along ${AXIS_NAMES[axis]}. The ${name} ${bed} fits ${mm(usable[axis]!)} mm. ` +
-        `${capital(countWord(made))} ${made === 1 ? "cut is" : "cuts are"} proposed.`,
-    );
+    if (!turned) {
+      notes.push(
+        `This part is ${mm(span[axis])} mm along ${AXIS_NAMES[axis]}. The ${name} ${bed} fits ${mm(usable[axis]!)} mm. ` +
+          `${capital(countWord(made))} ${made === 1 ? "cut is" : "cuts are"} proposed.`,
+      );
+    }
   }
+  if (turned && cuts.length > 0) notes.push(`${capital(countWord(cuts.length))} ${cuts.length === 1 ? "cut is" : "cuts are"} proposed.`);
   if (total === 1) notes.push(`This part fits the ${name} ${bed}.`);
   if (target.process === "resin") notes.push(...resinHeightNotes(span, counts, usable, axes, cuts.length, turn));
   return { cuts, pieces: total, notes };
@@ -653,14 +656,9 @@ function resinHeightNotes(span: Vec3, counts: number[], usable: number[], axes: 
   if (!(height <= usableHeight) || !(height >= usableHeight * (1 - TILT_NEAR_FRACTION))) return [];
   const sizes = axes.length > 0 ? axes.map((a) => counts[a]!) : [1];
   const pieces = sizes.reduce((a, b) => a * b, 1);
-  const notes: string[] = [];
-  for (let piece = 1; piece <= pieces; piece += 1) {
-    notes.push(
-      `Piece ${piece} is ${mm(height)} mm tall. Tilted in PreForm it may not fit; ` +
-        `${withArticle(ordinalWord(cutCount + 1))} cut would leave room.`,
-    );
-  }
-  return notes;
+  const which = pieces === 1 ? "Piece 1 is" : pieces === 2 ? "Pieces 1, 2 are" : `Pieces 1–${pieces} are`;
+  const may = pieces === 1 ? "it may" : "they may";
+  return [`${which} ${mm(height)} mm tall. Tilted in PreForm ${may} not fit; ${withArticle(ordinalWord(cutCount + 1))} cut would leave room.`];
 }
 
 // ---------------------------------------------------------------------------
