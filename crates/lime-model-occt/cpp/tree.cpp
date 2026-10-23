@@ -16,6 +16,10 @@
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRep_Tool.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <TopLoc_Location.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
@@ -30,6 +34,7 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopTools_ListIteratorOfListOfShape.hxx>
+#include <gp_Vec.hxx>
 
 #include "kernel.h"
 
@@ -514,6 +519,11 @@ LimeShape* lime_tree_split(const LimeShape* from, const double* p, LimeShape** o
 /// --- Split to print, part numbers. With `digit_count` above 0, piece `i`'s number is `stroke_counts[i]` strokes of
 /// u, v, length, angle from `strokes`, one piece after another; `us` is each cut's U, and `sizes` the stroke width, the
 /// depth and the inset. `placed` then gets, per piece, the list of `{cut, at, normal}` where its number was cut.
+///
+/// --- Split to print, connectors. `joints` is `joint_count` connectors of `kJointStride` numbers each (cut, type,
+/// fraction, a, b, radius, clearance, depth, end gap, teardrop, side), built after the cut and before the numbers; `up`
+/// is the print's up in the solid's frame. `joined` then gets one `{status, at, teardrop}` for each, and `pins` the pins
+/// of the placed dowels, or null with none. `us` holds each cut's U whenever there are digits or connectors.
 int lime_tree_partition(
     const LimeShape* from,
     const double* p,
@@ -523,8 +533,13 @@ int lime_tree_partition(
     int digit_count,
     const double* strokes,
     const double* sizes,
+    const double* joints,
+    int joint_count,
+    const double* up,
     LimeShape** out,
     char** placed,
+    LimeShape** pins,
+    char** joined,
     char** error) {
     try {
         LIME_CATCH_FAULTS;
@@ -540,14 +555,55 @@ int lime_tree_partition(
             set_error(error, message);
             return -1;
         }
+        std::vector<std::array<double, 3>> cut_us;
+        if (digit_count > 0 || joint_count > 0) {
+            for (int index = 0; index < count; ++index) {
+                cut_us.push_back({us[3 * index], us[3 * index + 1], us[3 * index + 2]});
+            }
+        }
+        TopoDS_Shape pin_shape;
+        if (joint_count > 0) {
+            std::vector<JointSpec> specs;
+            for (int index = 0; index < joint_count; ++index) {
+                const double* at = joints + kJointStride * index;
+                JointSpec spec;
+                spec.cut = static_cast<int>(at[0]);
+                spec.type = static_cast<int>(at[1]);
+                spec.fraction = at[2] != 0.0;
+                spec.a = at[3];
+                spec.b = at[4];
+                spec.radius = at[5];
+                spec.clearance = at[6];
+                spec.depth = at[7];
+                spec.end_gap = at[8];
+                spec.teardrop = at[9] != 0.0;
+                spec.side = at[10] < 0.0 ? -1 : 1;
+                specs.push_back(spec);
+            }
+            const gp_Vec lift(up[0], up[1], up[2]);
+            std::vector<JointResult> results;
+            build_joints(pieces, planes, cut_us, specs, lift.Magnitude() > 1e-9 ? gp_Dir(lift) : gp_Dir(0, 0, 1), results, pin_shape);
+            std::ostringstream text;
+            text.imbue(std::locale::classic());
+            text.precision(17);
+            text << '[';
+            for (size_t index = 0; index < results.size(); ++index) {
+                const JointResult& result = results[index];
+                text << (index > 0 ? "," : "") << "{\"status\":" << result.status << ",\"at\":[" << result.at[0] << ','
+                     << result.at[1] << ',' << result.at[2] << "],\"teardrop\":" << (result.teardrop ? "true" : "false")
+                     << '}';
+            }
+            text << ']';
+            if (joined != nullptr) {
+                *joined = alloc(text.str());
+            }
+        }
         if (digit_count > 0) {
             PartitionNumbers numbers;
             numbers.width = sizes[0];
             numbers.depth = sizes[1];
             numbers.inset = sizes[2];
-            for (int index = 0; index < count; ++index) {
-                numbers.us.push_back({us[3 * index], us[3 * index + 1], us[3 * index + 2]});
-            }
+            numbers.us = cut_us;
             const double* at = strokes;
             for (int digit = 0; digit < digit_count; ++digit) {
                 std::vector<NumberStroke> one;
@@ -586,8 +642,18 @@ int lime_tree_partition(
             }
             made.push_back(std::move(one));
         }
+        std::unique_ptr<LimeShape> pin_held;
+        if (!pin_shape.IsNull()) {
+            pin_held = adopt(pin_shape, volume_of(pin_shape), "The pins did not build", error, nullptr);
+            if (pin_held == nullptr) {
+                return -1;
+            }
+        }
         for (size_t index = 0; index < made.size(); ++index) {
             out[index] = made[index].release();
+        }
+        if (pins != nullptr) {
+            *pins = pin_held.release();
         }
         return static_cast<int>(made.size());
     } catch (const Standard_Failure& failure) {
@@ -596,6 +662,53 @@ int lime_tree_partition(
     } catch (...) {
         set_error(error, "Open CASCADE failed");
         return -1;
+    }
+}
+
+/// --- Split to print, for tests. Each face's surface as JSON: a cylinder's radius, a point on its axis and the axis, read
+/// from its `Geom_CylindricalSurface`; a plane's outward normal, centre of area and area; anything else as its kind.
+char* lime_tree_surfaces(const LimeShape* shape) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::ostringstream text;
+        text.imbue(std::locale::classic());
+        text.precision(17);
+        text << '[';
+        bool first = true;
+        for (TopExp_Explorer explorer(shape->held.shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+            const TopoDS_Face& face = TopoDS::Face(explorer.Current());
+            text << (first ? "" : ",");
+            first = false;
+            TopLoc_Location where;
+            const Handle(Geom_Surface) surface = BRep_Tool::Surface(face, where);
+            const Handle(Geom_CylindricalSurface) cylinder = Handle(Geom_CylindricalSurface)::DownCast(surface);
+            if (!cylinder.IsNull()) {
+                const gp_Ax1 axis = cylinder->Axis().Transformed(where.Transformation());
+                text << "{\"kind\":\"cylinder\",\"radius\":" << cylinder->Radius() << ",\"at\":[" << axis.Location().X()
+                     << ',' << axis.Location().Y() << ',' << axis.Location().Z() << "],\"axis\":[" << axis.Direction().X()
+                     << ',' << axis.Direction().Y() << ',' << axis.Direction().Z() << "]}";
+                continue;
+            }
+            BRepAdaptor_Surface adaptor(face);
+            if (adaptor.GetType() == GeomAbs_Plane) {
+                gp_Dir normal = adaptor.Plane().Axis().Direction();
+                if (face.Orientation() == TopAbs_REVERSED) {
+                    normal.Reverse();
+                }
+                GProp_GProps area;
+                BRepGProp::SurfaceProperties(face, area);
+                const gp_Pnt centre = area.CentreOfMass();
+                text << "{\"kind\":\"plane\",\"normal\":[" << normal.X() << ',' << normal.Y() << ',' << normal.Z()
+                     << "],\"at\":[" << centre.X() << ',' << centre.Y() << ',' << centre.Z() << "],\"area\":" << area.Mass()
+                     << '}';
+                continue;
+            }
+            text << "{\"kind\":\"" << static_cast<int>(adaptor.GetType()) << "\"}";
+        }
+        text << ']';
+        return alloc(text.str());
+    } catch (...) {
+        return nullptr;
     }
 }
 

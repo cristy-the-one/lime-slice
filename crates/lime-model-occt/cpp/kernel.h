@@ -13,6 +13,8 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pnt.hxx>
 
 #include <BRepTools_History.hxx>
 #include <Standard_ErrorHandler.hxx>
@@ -265,6 +267,53 @@ void engrave_numbers(
     const std::vector<std::array<double, 6>>& planes,
     const PartitionNumbers& numbers,
     std::vector<std::vector<NumberPlace>>& placed);
+/// --- Split to print, connectors (plan sections 7 and 9). One connector on cut `cut`: a dowel (holes in both pieces and a
+/// pin), a plug (fused to the `side` piece, +1 positive or -1 negative, with a socket in the mate), or a hardware hole
+/// (holes in both pieces, no pin). `a`, `b` are fractions of the section's box along the cut's U and V when `fraction`,
+/// and millimetres from the cut's origin otherwise. `radius` is the pin's, the plug's, or half the bought part's
+/// diameter; the hole is that plus `clearance`. `depth` is the pin's or the bought part's whole length (each hole takes
+/// half of it plus `end_gap`), or how far a plug stands (its socket is `end_gap` deeper). `teardrop` asks for a 45° roof
+/// on a hole whose axis lies within 45° of horizontal.
+struct JointSpec {
+    int cut = 0;
+    int type = 0;
+    bool fraction = true;
+    double a = 0.5, b = 0.5;
+    double radius = 0, clearance = 0, depth = 0, end_gap = 0;
+    bool teardrop = false;
+    int side = 1;
+};
+constexpr int kJointStride = 11;
+constexpr int kJointDowel = 0;
+constexpr int kJointPlug = 1;
+constexpr int kJointHardware = 2;
+/// What became of one connector: `placed`, or why it was left out, `outside` (its centre is on no cut face of two
+/// pieces) or `breaks` (a tool reaches past a piece, or a result is not one valid, closed solid). `at` is its centre on the
+/// cut, and `teardrop` whether its holes got the roof.
+struct JointResult {
+    int status = 0;
+    double at[3] = {0, 0, 0};
+    bool teardrop = false;
+};
+constexpr int kJointPlaced = 0;
+constexpr int kJointOutside = 1;
+constexpr int kJointBreaks = 2;
+/// The pin's chamfer at each end, so it starts into its hole (plan section 7).
+constexpr double kPinChamfer = 0.5;
+/// Builds each connector on the pieces a partition cut, in order, each checked on the real solids; one that fails
+/// leaves the pieces as they were and is reported. `us` is each cut's U, and `up` the print's up in the solid's frame,
+/// which a teardrop's roof points along. `pins` gets every placed dowel's pin, standing along `up` in a row beside the
+/// part, or stays null with none.
+void build_joints(
+    std::vector<PartitionPiece>& pieces,
+    const std::vector<std::array<double, 6>>& planes,
+    const std::vector<std::array<double, 3>>& us,
+    const std::vector<JointSpec>& joints,
+    const gp_Dir& up,
+    std::vector<JointResult>& results,
+    TopoDS_Shape& pins);
+/// A dowel pin standing on `base` along `axis`: `radius`, `length` long, with `kPinChamfer` at each end.
+TopoDS_Shape make_pin(const gp_Pnt& base, const gp_Dir& axis, double radius, double length);
 /// A uniform scale about the centre. The result's volume is the original's times `factor` cubed.
 TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string& error);
 

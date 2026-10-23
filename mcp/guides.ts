@@ -42,6 +42,10 @@ export const GUIDES: Guide[] = [
       "1. model_probe {op:{kind:\"partition\", target:{printer:\"formlabs-form-4\"}}, plan:true}. The planner fits the Form 4; nothing is cut.",
       "2. model_probe the op it returns, then model_apply it. The pieces stay in Model, off the plate, each numbered on its cut faces.",
       "3. model_export_step {object, name, pieces:true} for one STEP, or export_3mf {object, name, pieces:true}, with stl:true for one STL a piece. Keep supports off the cut faces.",
+      "Split to print with dowels, on the plate's printer:",
+      "1. model_probe {op:{kind:\"partition\", cuts:[{origin, normal, connectors:{on:true}}]}, plan:true}: the planner places the dowels on each cut and names the ones that do not fit.",
+      "2. model_probe the same op without plan, then model_apply it. Each placed dowel is a hole in both pieces; the pins are one more object, standing upright. A typed count that does not fit says how many do: \"Cut 1: 2 of 4 dowels fit.\"",
+      "3. model_commit lays the pieces and the pins out on the bed. For a resin target the pins export as <name>-pins.",
     ].join("\n"),
   },
   {
@@ -110,6 +114,7 @@ GUIDES.push(
       "fillet, chamfer: {edges:[index] | {select:{direction, onFace, convex}} | {fromNode:\"roof\", filter:\"convex\"}, size}. fromNode takes the edges a step made, found again after edits. A pick is one object; [{fromNode}] reads as it.",
       "split: {origin, normal, keep}. scale: {factor}.",
       "partition (split to print): model_probe {op:{kind:\"partition\"}, plan:true} proposes straight cuts that fit the plate's printer, with no cut made. model_probe the op it returns, model_apply it, then model_commit: the part keeps the first piece and each other piece is a new object in the same plate orientation, laid out unless arrange:false. A plain cut is {kind:\"partition\", cuts:[{origin, normal}]}. Each piece's number is engraved on its cut faces; labels:{on:false} leaves them out. model_edit rebuilds every piece; model_undo takes the pieces off the plate.",
+      "  Connectors are off by default. A dowelled cut: {kind:\"partition\", cuts:[{origin:[0, 0, 10], normal:[1, 0, 0], connectors:{on:true, types:[{type:\"dowel\", radius:3, depth:8, count:\"fit\", clearance:\"snug\"}]}}]}. Each dowel is a hole in both pieces, a teardrop on FDM when it lies on its side; the pins are one more object, standing upright. type:\"plug\" fuses a peg to one piece (side) with a socket in the other; type:\"hardware\" with diameter cuts holes for a bought pin or magnet. The reply's connectors lists placed and dropped by id (c1-1, c1-2, …), with a sentence for each one left out. Key and dovetail are not built yet.",
       "  For a resin printer: model_probe {op:{kind:\"partition\", target:{printer:\"formlabs-form-4\"}}, plan:true} fits the Formlabs Form 4 (200 × 125 × 210 mm). model_probe the op it returns and model_apply it: the pieces stay in Model, off the plate, and are never sliced. Then model_export_step {object, name, pieces:true} writes one STEP of every piece, each solid named <name>-1, <name>-2, …, or export_3mf {object, name, pieces:true} one 3MF named <name>-1, <name>-2, …, with stl:true one STL each. Keep supports off the cut faces in PreForm.",
       "join: {kind:\"join\", toolObject:\"obj_N\", op:\"cut\"|\"fuse\"|\"common\", keepTool}. Another object's solid as the tool, where it stands. Without keepTool the tool leaves the plate, as in the app; model_undo of the join or model_goto before it puts it back.",
       "pocket: {kind:\"pocket\", faceIndex, shape:\"rect\"|\"circle\"|\"arch\", at:{u, v}, width, height | diameter, depth, bars:{vertical, horizontal, width}}.",

@@ -30,6 +30,8 @@ interface SavedNode {
   piece?: string;
   /** A split to print: each piece after the first, in partition order, as its plate object's id, or null when not saved. */
   pieces?: (string | null)[];
+  /** A split to print with dowels: its pins' plate object's id, or null when not saved. */
+  pins?: string | null;
 }
 
 /**
@@ -70,6 +72,7 @@ export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: strin
     .map((node) => {
       const piece = node.piece ? owner(node.piece) : undefined;
       const pieces = node.pieces?.map((key) => (key ? owner(key) ?? null : null));
+      const pins = node.pins ? owner(node.pins) ?? null : undefined;
       // --- A8. A renamed step keeps its name. An MCP composite writes "prefix k/n" onto the label; that is kept
       // as the name too, so the app can fold those rows after the file opens. ---
       const name = savedName(node);
@@ -81,6 +84,7 @@ export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: strin
         fingerprint: node.fingerprint,
         ...(piece ? { piece } : {}),
         ...(pieces && pieces.length > 0 ? { pieces } : {}),
+        ...(pins !== undefined ? { pins } : {}),
       };
     });
   return { nodes, current: tree.current, committed, nextId: tree.nextId };
@@ -145,6 +149,7 @@ export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, f
   for (const node of saved.nodes) {
     const piece = node.piece ? objectKey(node.piece) : undefined;
     const pieces = node.pieces?.map((id) => (id ? objectKey(id) ?? null : null));
+    const pins = node.pins ? objectKey(node.pins) ?? null : node.pins === null ? null : undefined;
     const op: ModelOp | null = node.op?.kind === "join" ? { ...node.op, tool: { object: node.op.tool.object, key: objectKey(node.op.tool.object) ?? "", node: node.op.tool.node, name: node.op.tool.name } } : node.op;
     nodes.set(node.id, {
       id: node.id,
@@ -155,6 +160,7 @@ export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, f
       ...(node.name ? { name: node.name } : {}),
       ...(piece ? { piece } : {}),
       ...(pieces ? { pieces } : {}),
+      ...(pins !== undefined ? { pins } : {}),
       ...(mesh && node.id === saved.committed ? { mesh } : {}),
     });
   }
@@ -178,7 +184,7 @@ export function readSavedTree(value: unknown): SavedTree<unknown> | null {
     if (ids.has(node.id) || (node.parent === null) !== (node.id === 0) || (node.parent !== null && !ids.has(node.parent))) return null;
     if ((node.op === null) !== (node.parent === null) || (node.piece !== undefined && node.op?.kind !== "split")) return null;
     // --- Split to print. `pieces` belongs to a split to print as `piece` does to a split, and to nothing else.
-    if (node.pieces !== undefined && node.op?.kind !== "partition") return null;
+    if ((node.pieces !== undefined || node.pins !== undefined) && node.op?.kind !== "partition") return null;
     // An edited primitive root is built again right under the root, and only there.
     if (node.op?.kind === "root" && node.parent !== 0) return null;
     ids.add(node.id);
@@ -217,6 +223,7 @@ function readNode(value: unknown): SavedNode | null {
   if (value.piece !== undefined && (typeof value.piece !== "string" || !value.piece)) return null;
   const pieces = value.pieces === undefined ? undefined : readPieces(value.pieces);
   if (pieces === null) return null;
+  if (value.pins !== undefined && value.pins !== null && (typeof value.pins !== "string" || !value.pins)) return null;
   const name = typeof value.name === "string" ? value.name.trim() : "";
   return {
     id: value.id,
@@ -226,6 +233,7 @@ function readNode(value: unknown): SavedNode | null {
     fingerprint,
     ...(typeof value.piece === "string" ? { piece: value.piece } : {}),
     ...(pieces ? { pieces } : {}),
+    ...(value.pins !== undefined ? { pins: value.pins as string | null } : {}),
   };
 }
 
@@ -524,6 +532,8 @@ function readOpBody(value: unknown): SavedOp | undefined {
       const orientOk = orient === undefined || orient === "keep" || (Array.isArray(orient) && orient.every((one) => one === "keep" || one === "joint"));
       if (!orientOk || (value.arrange !== undefined && typeof value.arrange !== "boolean") || (value.labels !== undefined && !isRecord(value.labels))) return undefined;
       if ((value.bedMarginMm !== undefined && !finite(value.bedMarginMm)) || (value.maxPieces !== undefined && !finite(value.maxPieces))) return undefined;
+      const up = value.up === undefined ? undefined : vec(value.up);
+      if (up === null) return undefined;
       return {
         kind: "partition",
         cuts,
@@ -533,6 +543,7 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(isRecord(value.labels) ? { labels: value.labels as Labels } : {}),
         ...(finite(value.bedMarginMm) ? { bedMarginMm: value.bedMarginMm } : {}),
         ...(finite(value.maxPieces) ? { maxPieces: value.maxPieces } : {}),
+        ...(up ? { up } : {}),
       };
     }
     default:

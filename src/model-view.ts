@@ -60,7 +60,8 @@ export type ModelGhost =
   | { kind: "primitive"; spec: PrimitiveSpec; mesh: Float32Array }
   | { kind: "plane"; origin: Vec3; normal: Vec3 }
   /** --- Split to print. Every cut's plane, and each piece between them tinted on the solid by clipping planes. */
-  | { kind: "cuts"; planes: { origin: Vec3; normal: Vec3 }[] }
+  /** Split to print's planes, and `marks`, the planner's connectors on them: each hole, across its cut, in model space. */
+  | { kind: "cuts"; planes: { origin: Vec3; normal: Vec3 }[]; marks?: { at: Vec3; normal: Vec3; radius: number; depth: number }[] }
   | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }
   /** --- F4. One cylinder per sketch point. `failed` (from 1) is the hole a probe refused. --- */
   | { kind: "holes"; holes: { x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }[]; failed?: number }
@@ -1140,6 +1141,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     posedPrimitive = null;
     canvas.dataset.ghostSerial = String(ghostSerial);
     canvas.dataset.ghostPose = "0";
+    delete canvas.dataset.connectors;
     clearGhosts();
     applyScale();
     clipToSplit();
@@ -1635,6 +1637,20 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         const shown = cutSquare(plane);
         addGhostMesh(new THREE.PlaneGeometry(shown.span, shown.span), new THREE.Vector3(...shown.origin), 0.1).quaternion.setFromUnitVectors(zAxis, new THREE.Vector3(...plane.normal).normalize());
       }
+      // Each connector the planner placed: its hole, through the cut, half in each piece. The holes are inside the
+      // solid, so they draw over it.
+      for (const mark of current.marks ?? []) {
+        const cylinder = pointCylinder(mark.at[0], mark.at[1], mark.at[2], mark.radius, mark.depth);
+        if (!cylinder) continue;
+        cylinder.quaternion.setFromUnitVectors(yAxis, new THREE.Vector3(...mark.normal).normalize());
+        cylinder.renderOrder = 4;
+        for (const part of [cylinder, ...cylinder.children]) {
+          const material = (part as THREE.Mesh).material as THREE.Material;
+          material.depthTest = false;
+          (part as THREE.Mesh).renderOrder = 4;
+        }
+      }
+      canvas.dataset.connectors = String(current.marks?.length ?? 0);
       return;
     }
     if (current.kind === "blend") {

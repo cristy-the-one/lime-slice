@@ -8,7 +8,7 @@ import { COMMANDS } from "./ui/commands.ts";
 import { MODEL_TOOLS } from "./model-drag.ts";
 import { ID_MATRIX } from "./mesh-place.ts";
 import { IDENTITY_POSE, type Affine } from "./model-space.ts";
-import { keptSteps, newTree, withChild, type ModelOp, type ModelTree, type PartitionModelOp, type Vec3 } from "./model-tree.ts";
+import { keptSteps, newTree, opLabel, withChild, type ModelOp, type ModelTree, type PartitionModelOp, type Vec3 } from "./model-tree.ts";
 import { forked } from "./model-edit.ts";
 import {
   bedFrame,
@@ -33,6 +33,12 @@ import {
   withCutDeleted,
   withCutMode,
   withCutsCleared,
+  withJointCount,
+  withJointField,
+  withJointsOn,
+  withJointType,
+  plainJoints,
+  plateUp,
   withSelected,
   SPLIT_PRINT_TITLE,
   type Card,
@@ -54,7 +60,7 @@ const bar = new Float32Array([0, 0, 0, 500, 0, 0, 500, 20, 0, 0, 20, 20, 500, 20
 const box = { min: [0, 0, 0] as Vec3, max: [500, 20, 20] as Vec3 };
 const center: Vec3 = [250, 10, 10];
 const SIZES = { height: 4, depth: 0.4 };
-const cut = (patch: Partial<CardCut> = {}): CardCut => ({ mode: "x", value: 100, tiltA: 0, tiltB: 0, face: null, flip: false, ...patch });
+const cut = (patch: Partial<CardCut> = {}): CardCut => ({ mode: "x", value: 100, tiltA: 0, tiltB: 0, face: null, flip: false, joints: plainJoints(), ...patch });
 
 // --- The command (D10): a menu item, no key, and no rail tool.
 const command = COMMANDS.find((row) => row.id === "model-split-print");
@@ -182,6 +188,58 @@ eq("a piece on its root has none", keptSteps({ ...piece, current: 0 }), []);
 const kept = forked(newTree("p#2", { kind: "piece", tree: "bar#1", node: 4, index: 2 }, "Part 2", fp), 0, [{ id: 1, op: hole, fingerprint: null, broken: "The hole missed this solid" }, { id: 2, op: scale, fingerprint: null }], 0);
 eq("a rebuild that kept the first step broken shows the root", kept.current, 0);
 eq("the next rebuild still replays that broken step and the one under it", keptSteps(kept), [1, 2]);
+
+// --- Milestone 5: connectors on a cut. The switch, the type, the typed sizes, the planner's placement and Use N.
+/** A closed box as a triangle soup, twelve triangles. */
+function boxMesh(size: Vec3): Float32Array {
+  const c = (x: number, y: number, z: number): number[] => [x * size[0], y * size[1], z * size[2]];
+  const quads = [
+    [c(0, 0, 0), c(0, 1, 0), c(1, 1, 0), c(1, 0, 0)],
+    [c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)],
+    [c(0, 0, 0), c(1, 0, 0), c(1, 0, 1), c(0, 0, 1)],
+    [c(0, 1, 0), c(0, 1, 1), c(1, 1, 1), c(1, 1, 0)],
+    [c(0, 0, 0), c(0, 0, 1), c(0, 1, 1), c(0, 1, 0)],
+    [c(1, 0, 0), c(1, 1, 0), c(1, 1, 1), c(1, 0, 1)],
+  ];
+  return Float32Array.from(quads.flatMap((q) => [0, 1, 2, 0, 2, 3].flatMap((i) => q[i]!)));
+}
+const wide = boxMesh([500, 60, 20]);
+const wideBox = { min: [0, 0, 0] as Vec3, max: [500, 60, 20] as Vec3 };
+const wideCtx = { ...ctx, box: wideBox };
+const wideCenter: Vec3 = [250, 30, 10];
+const plain: Card = { ...emptyCard(), cuts: [cutFromPlane([250, 30, 10], [1, 0, 0], wideCenter)], selected: 0 };
+eq("a new cut's connectors are off, a dowel waiting", plain.cuts[0]!.joints, { on: false, spec: { type: "dowel" } });
+eq("off, the op has no connectors at all: a plain cut", "connectors" in cardOp(plain, wideCenter, null, SIZES)!.cuts[0]!, false);
+const jointed = withJointsOn(plain, 0, true);
+eq("Connectors on writes one dowel with every default", cardOp(jointed, wideCenter, null, SIZES)!.cuts[0]!.connectors, { on: true, types: [{ type: "dowel" }] });
+const typedRadius = withJointField(jointed, 0, { radius: 4, count: 3 });
+eq("a typed size is written, and clearing it is the default again", [typedRadius.cuts[0]!.joints.spec, withJointField(typedRadius, 0, { radius: undefined }).cuts[0]!.joints.spec], [{ type: "dowel", radius: 4, count: 3 }, { type: "dowel", count: 3 }]);
+eq("a new type takes its own defaults and keeps the count", withJointType(typedRadius, 0, "plug").cuts[0]!.joints.spec, { type: "plug", count: 3 });
+eq("off keeps what was typed, for when it comes back on", withJointsOn(typedRadius, 0, false).cuts[0]!.joints, { on: false, spec: { type: "dowel", radius: 4, count: 3 } });
+eq("a new axis keeps the cut's connectors", withCutMode(typedRadius, 0, "y", wideBox, wideCenter).cuts[0]!.joints, typedRadius.cuts[0]!.joints);
+
+const four = withJointField(jointed, 0, { count: 4 });
+const placedFour = storedPartition(cardOp(four, wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: plateUp([...ID_MATRIX]) });
+const fourOk = "op" in placedFour ? placedFour : null;
+check("four typed dowels on a 60 mm section: two fit, and the planner says so", !!fourOk && fourOk.notes.includes("Cut 1: 2 of 4 dowels fit."), JSON.stringify(fourOk?.notes));
+eq("Use N reads the fit", fourOk?.fits, [{ cut: 1, type: "dowel", placed: 2, wanted: 4 }]);
+eq("the stored cut keeps its filled type and the two placed, by id", fourOk ? [fourOk.op.cuts[0]!.connectors!.types![0]!.type, fourOk.op.cuts[0]!.connectors!.placed!.map((row) => row.id)] : null, ["dowel", ["c1-2", "c1-3"]]);
+check("placed at fractions of the section's box (D5)", !!fourOk && near(fourOk.op.cuts[0]!.connectors!.placed![0]!.fraction ?? [], [0.3, 0.5]) && near(fourOk.op.cuts[0]!.connectors!.placed![1]!.fraction ?? [], [0.7, 0.5]), JSON.stringify(fourOk?.op.cuts[0]!.connectors));
+eq("the op stores the print's up, which teardrops and the pins follow", fourOk?.op.up, [0, 0, 1]);
+eq("the ghost has a hole for each placed dowel, the hole's radius and its reach", fourOk?.marks.map((mark) => [mark.id, mark.radius, mark.depth]), [["c1-2", 3.15, 4.8], ["c1-3", 3.15, 4.8]]);
+const useTwo = withJointCount(four, 0, 2);
+const placedTwo = storedPartition(cardOp(useTwo, wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("Use 2 writes the count, and then both fit with nothing to say", "op" in placedTwo ? [placedTwo.op.cuts[0]!.connectors!.placed!.length, placedTwo.fits, placedTwo.notes] : placedTwo, [2, [], []]);
+const reopenedJoints = cardFromOp((placedTwo as { op: PartitionModelOp }).op, IDENTITY_POSE, wideCenter, null, "lime-220");
+eq("the pencil reads the connectors back on", reopenedJoints.cuts[0]!.joints.on, true);
+const tpu = storedPartition(cardOp(jointed, wideCenter, null, SIZES)!, { ...wideCtx, material: "TPU" }, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+check("TPU has no fit: nothing is placed, and the sentence says why", "op" in tpu && tpu.op.cuts[0]!.connectors!.placed!.length === 0 && tpu.notes.includes("No fit for this material. Type a clearance, or leave connectors off."), JSON.stringify(tpu));
+eq("the plate's up in the solid's frame is the third row of its orientation", [plateUp([...ID_MATRIX]), plateUp([1, 0, 0, 0, 0, -1, 0, 1, 0])], [[0, 0, 1], [0, 1, 0]]);
+
+// --- History rows name what the cut has: "Split to print, 3 parts, dowels", "…, plugs", "…, holes".
+const rowOf = (type: "dowel" | "plug" | "hardware") => opLabel({ kind: "partition", cuts: [{ origin: [0, 0, 0], normal: [1, 0, 0], connectors: { on: true, types: [{ type }], placed: [{ id: "c1-1", type, uvMm: [0, 0], fraction: [0.5, 0.5], fixed: false }] } }] }, 3);
+eq("a row names its connectors", [rowOf("dowel"), rowOf("plug"), rowOf("hardware")], ["Split to print, 3 parts, dowels", "Split to print, 3 parts, plugs", "Split to print, 3 parts, holes"]);
+eq("a cut whose every connector was dropped is a plain row", opLabel({ kind: "partition", cuts: [{ origin: [0, 0, 0], normal: [1, 0, 0], connectors: { on: true, types: [{ type: "dowel" }], placed: [] } }] }, 3), "Split to print, 3 parts");
 
 if (failed) {
   console.error(`${failed} failed`);

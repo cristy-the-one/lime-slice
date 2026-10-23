@@ -224,6 +224,47 @@ export function sectionCap(
   return fillHoles(loopsOf(segments), o, u, v);
 }
 
+/**
+ * --- Split to print (plan section 9). The section a plane cuts from a triangle mesh, in the plane's own `u` and `v` =
+ * `normal × u` from `origin`: the largest outline and the loops inside it, its holes. Null when the plane misses the mesh.
+ */
+export function sectionLoops(
+  positions: ArrayLike<number>,
+  origin: readonly number[],
+  normal: readonly number[],
+  u: readonly number[],
+): { outer: [number, number][]; holes: [number, number][][] } | null {
+  const o: Vec3 = [origin[0]!, origin[1]!, origin[2]!];
+  const n = unit([normal[0]!, normal[1]!, normal[2]!]);
+  const along = dot([u[0]!, u[1]!, u[2]!], n);
+  const uu = unit([u[0]! - along * n[0], u[1]! - along * n[1], u[2]! - along * n[2]]);
+  const vv = cross(n, uu);
+  const segments: Segment[] = [];
+  const count = Math.floor(positions.length / 9);
+  for (let tri = 0; tri < count; tri += 1) {
+    const verts = [0, 1, 2].map((which) => corner(positions, tri, which));
+    const dist = verts.map((p) => dot(sub(p, o), n));
+    let exit: Vec3 | null = null;
+    let entry: Vec3 | null = null;
+    for (let edge = 0; edge < 3; edge += 1) {
+      const a = dist[edge]!;
+      const b = dist[(edge + 1) % 3]!;
+      if (!((a < -EPS && b > EPS) || (a > EPS && b < -EPS))) continue;
+      const point = lerp(verts[edge]!, verts[(edge + 1) % 3]!, a / (a - b));
+      if (a < 0) exit = point;
+      else entry = point;
+    }
+    if (exit && entry) segments.push({ from: exit, to: entry });
+  }
+  const flats = loopsOf(segments).map((loop) => loop.map((p) => project(p, o, uu, vv)));
+  if (flats.length === 0) return null;
+  const sizes = flats.map((flat) => Math.abs(signedArea(flat)));
+  const biggest = sizes.indexOf(Math.max(...sizes));
+  const outer = flats[biggest]!;
+  const holes = flats.filter((flat, at) => at !== biggest && sizes[at]! > 1e-8 && pointIn(outer, flat[0]!));
+  return { outer, holes };
+}
+
 function fillHoles(loops: Vec3[][], origin: Vec3, u: Vec3, v: Vec3): Float32Array {
   const flats = loops.map((loop) => loop.map((p) => project(p, origin, u, v)));
   const areas = flats.map((flat) => signedArea(flat));

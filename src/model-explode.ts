@@ -11,11 +11,11 @@ type Vec3 = [number, number, number];
 /** The gap Explode opens with, in millimetres. */
 export const EXPLODE_GAP_MM = 10;
 
-/** The last split to print on the way to the tree's current step, and the keys of its pieces 2, 3, … Null when none. */
-export function shownPartition(tree: ModelTree): { op: PartitionModelOp; pieces: (string | null)[] } | null {
+/** The last split to print on the way to the tree's current step, the keys of its pieces 2, 3, …, and of its pins. Null when none. */
+export function shownPartition(tree: ModelTree): { op: PartitionModelOp; pieces: (string | null)[]; pins?: string | null } | null {
   for (const id of pathTo(tree, tree.current).reverse()) {
     const node = tree.nodes.get(id);
-    if (node?.op?.kind === "partition") return { op: node.op, pieces: node.pieces ?? [] };
+    if (node?.op?.kind === "partition") return { op: node.op, pieces: node.pieces ?? [], ...(node.pins ? { pins: node.pins } : {}) };
   }
   return null;
 }
