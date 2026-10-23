@@ -21,6 +21,8 @@ import {
   cutPlane,
   cutSummary,
   emptyCard,
+  exportTarget,
+  fitLabel,
   fitOnBed,
   pieceLines,
   pieceRegions,
@@ -51,6 +53,7 @@ const near = (a: readonly number[] | undefined, b: readonly number[], tol = 1e-9
 const bar = new Float32Array([0, 0, 0, 500, 0, 0, 500, 20, 0, 0, 20, 20, 500, 20, 20, 0, 0, 20, 500, 0, 20, 0, 20, 0, 0, 0, 0]);
 const box = { min: [0, 0, 0] as Vec3, max: [500, 20, 20] as Vec3 };
 const center: Vec3 = [250, 10, 10];
+const SIZES = { height: 4, depth: 0.4 };
 const cut = (patch: Partial<CardCut> = {}): CardCut => ({ mode: "x", value: 100, tiltA: 0, tiltB: 0, face: null, flip: false, ...patch });
 
 // --- The command (D10): a menu item, no key, and no rail tool.
@@ -87,9 +90,9 @@ eq("and reads back", [onUBack.mode, onUBack.value, onUBack.flip], ["x", 5, false
 
 // A face cut waits for its face, then offsets into the part from it.
 const top = { point: [250, 10, 20] as Vec3, normal: [0, 0, 1] as Vec3 };
-const facing: Card = { cuts: [cut()], selected: 0, layout: true };
+const facing: Card = { ...emptyCard(), cuts: [cut()], selected: 0 };
 const waiting = withCutMode(facing, 0, "face", box, center);
-eq("a face cut with no face has no plane yet", [cardPlanes(waiting, center)[0], cardOp(waiting, center)], [null, null]);
+eq("a face cut with no face has no plane yet", [cardPlanes(waiting, center)[0], cardOp(waiting, center, null, SIZES)], [null, null]);
 const aimed = withCutMode(facing, 0, "face", box, center, null, top);
 const aimedPlane = cutPlane(aimed.cuts[0]!, center)!;
 check("a picked face opens the cut halfway into the part behind it, parallel to the face", near(aimedPlane.origin, [250, 10, 10]) && near(aimedPlane.normal, [0, 0, 1]), JSON.stringify(aimedPlane));
@@ -109,10 +112,10 @@ card = withCutChanged(card, 2, { tiltA: 120 });
 eq("a tilt stops at Split's 85°", card.cuts[2]!.tiltA, 85);
 const fewer = withCutDeleted(withSelected(card, 2), 0);
 eq("deleting a cut before the selected one keeps that cut selected", [fewer.cuts.map((row) => row.value), fewer.selected], [[125, 375], 1]);
-eq("deleting the last one leaves none selected", withCutDeleted({ cuts: [cut()], selected: 0, layout: true }, 0).selected, -1);
+eq("deleting the last one leaves none selected", withCutDeleted({ ...emptyCard(), cuts: [cut()], selected: 0 }, 0).selected, -1);
 eq("Clear cuts empties the list", [withCutsCleared(card).cuts.length, withCutsCleared(card).selected], [0, -1]);
-const typed = cardOp({ cuts: [cut({ value: 166.67 })], selected: 0, layout: false }, center);
-eq("the op as typed, with Lay out", typed, { cuts: [{ origin: [166.67, 10, 10], normal: [1, 0, 0] }], arrange: false });
+const typed = cardOp({ ...emptyCard(), cuts: [cut({ value: 166.67 })], selected: 0, layout: false }, center, null, SIZES);
+eq("the op as typed, with Lay out and the numbers on", typed, { cuts: [{ origin: [166.67, 10, 10], normal: [1, 0, 0] }], arrange: false, labels: { on: true, face: "cut", height: 4, depth: 0.4 } });
 
 // --- Fit the bed: the planner's proposal for the bar as the plate prints it, in model space.
 const lime: [number, number, number] = [220, 220, 250];
@@ -130,13 +133,28 @@ const ctx = { plateTarget: { printer: "lime-220", process: "fdm" as const, volum
 const pose: Affine = { m: [0, -1, 0, 1, 0, 0, 0, 0, 1], t: [30, 0, 0] };
 // The bar turned a quarter about Z and moved 30 mm along X in model space: its middle is at (20, 250, 10) there.
 const modelCenter: Vec3 = [20, 250, 10];
-const shownCard: Card = { cuts: [cutFromPlane([20, 150, 10], [0, 1, 0], modelCenter)], selected: 0, layout: true };
-const storedOp = storedPartition(cardOp(shownCard, modelCenter)!, ctx, pose);
+const shownCard: Card = { ...emptyCard(), cuts: [cutFromPlane([20, 150, 10], [0, 1, 0], modelCenter)], selected: 0 };
+const storedOp = storedPartition(cardOp(shownCard, modelCenter, null, SIZES)!, ctx, pose);
 check("the card's op is stored in the solid's own frame, straight, connectors off", "op" in storedOp && near(storedOp.op.cuts[0]!.origin, [150, 10, 10]) && near(storedOp.op.cuts[0]!.normal, [1, 0, 0]) && JSON.stringify(storedOp.op.cuts[0]!.connectors) === JSON.stringify({ on: false }), JSON.stringify(storedOp));
-const reopened = cardFromOp((storedOp as { op: PartitionModelOp }).op, pose, modelCenter);
+const reopened = cardFromOp((storedOp as { op: PartitionModelOp }).op, pose, modelCenter, null, "lime-220");
 check("the pencil fills the card with the same cut", sameCard(reopened, shownCard), `${JSON.stringify(reopened)} vs ${JSON.stringify(shownCard)}`);
 check("and a change is not the same card", !sameCard(withCutChanged(reopened, 0, { value: 1 }), shownCard));
 eq("no cut is refused with the planner's sentence", storedPartition({ cuts: [] }, ctx, IDENTITY_POSE), { reason: "A partition needs at least one cut. model_probe with plan: true proposes them." });
+
+// --- Print on and Part numbers (milestone 3b's card): the op the card writes, and when a new target keeps the cuts.
+const form4 = { printer: "formlabs-form-4", process: "resin" as const, volumeMm: [200, 125, 210] as Vec3 };
+const onForm4 = { ...shownCard, target: form4 };
+eq("Print on the Form 4 writes its target, and Part numbers on writes the labels in full", [cardOp(onForm4, modelCenter, null, SIZES)!.target, cardOp(onForm4, modelCenter, null, SIZES)!.labels], [form4, { on: true, face: "cut", height: 4, depth: 0.4 }]);
+eq("the plate's printer writes no target", "target" in cardOp(shownCard, modelCenter, null, SIZES)!, false);
+eq("Part numbers off writes {on: false}", cardOp({ ...shownCard, numbers: false }, modelCenter, null, SIZES)!.labels, { on: false });
+const numbersOff = storedPartition(cardOp({ ...shownCard, numbers: false }, modelCenter, null, SIZES)!, ctx, pose);
+eq("and the stored op keeps that alone", "op" in numbersOff ? numbersOff.op.labels : numbersOff, { on: false });
+const storedForm4 = storedPartition(cardOp(onForm4, modelCenter, null, SIZES)!, ctx, pose);
+const reopenedForm4 = cardFromOp((storedForm4 as { op: PartitionModelOp }).op, pose, modelCenter, null, "lime-220");
+check("the pencil reads the target and the numbers back", sameCard(reopenedForm4, onForm4), `${JSON.stringify(reopenedForm4)} vs ${JSON.stringify(onForm4)}`);
+eq("an export target is a resin one, and names its fit button", [exportTarget(form4), exportTarget(null), exportTarget({ ...form4, process: "fdm" }), fitLabel(form4), fitLabel(null)], [true, false, false, "Fit the printer", "Fit the bed"]);
+eq("a proposal nobody touched is not edited, and any change to the cuts is", [emptyCard().edited, cardFromFit(fit, center).edited, withCutAdded(cardFromFit(fit, center), box, center).edited, withCutChanged(cardFromFit(fit, center), 0, { value: 1 }).edited, withCutsCleared(cardFromFit(fit, center)).edited], [false, false, true, true, true]);
+eq("a proposal for a new target keeps Print on and Part numbers", ((card) => [card.target, card.numbers])(cardFromFit(fit, center, null, true, { target: form4, numbers: false })), [form4, false]);
 
 // --- The preview: each piece is the half-spaces that bound it, neighbours in two tones.
 const slabs = pieceRegions([{ origin: [333, 0, 0], normal: [1, 0, 0] }, { origin: [166, 0, 0], normal: [-1, 0, 0] }]);

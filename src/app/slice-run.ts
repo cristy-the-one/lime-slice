@@ -291,6 +291,13 @@ function attachMeshes(req: Record<string, unknown>, named: MeshRefs | null): { b
 export async function runSlice(force = false) {
   // A slice asked for inside Model slices the solid on screen.
   fx.commitModel?.();
+  // A part cut for a printer this app does not slice for is exported, never sliced (split to print, D12).
+  const exported: string | null = fx.exportedPart?.() ?? null;
+  if (exported) {
+    state.error = exported;
+    renderChrome();
+    return;
+  }
   if (!state.mesh) {
     state.error = "Load a mesh first.";
     renderChrome();

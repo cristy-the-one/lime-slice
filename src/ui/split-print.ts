@@ -8,10 +8,11 @@ import type { DragHandle } from "../model-drag";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { Params } from "../modeling/expr.ts";
 import { formatMm, type FacePlane, type SplitBase, type SplitPlan } from "../model-plane";
-import type { Box, PartitionOp } from "../modeling/partition.ts";
+import type { Box, PartitionOp, Target } from "../modeling/partition.ts";
+import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
-import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withSelected, type Card, type CardCut, type CardFrame, type CutMode, type FitOnBed, type PieceCheck } from "../split-print";
+import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withSelected, type Card, type CardCut, type CardFrame, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck } from "../split-print";
 import { closeModelCard, fieldNumber, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { pushToast } from "./toasts";
 
@@ -24,8 +25,16 @@ export interface SplitPrintHost {
   frame(): CardFrame | null;
   /** Split's plane from `base` for a cut's number and tilts, with the window the kernel cuts in. */
   plan(base: SplitBase, cut: CardCut): SplitPlan | null;
-  /** Fit the bed for the open part, in model space. */
-  fit(): FitOnBed | null;
+  /** Fit the printer `target` is (null: the plate's) for the open part, in model space. */
+  fit(target: Target | null): FitOnBed | null;
+  /** The Print on list: the plate's printer first, with a null target, and the export printers last. */
+  printers(): PrintOn[];
+  /** The id of the plate's printer, which the card's null target stands for. */
+  plate(): string | null;
+  /** The number height and depth Part numbers writes for `target`'s process. */
+  numberSizes(target: Target | null): LabelSizes;
+  /** Export…: the save dialog for the pieces the last Apply left in Model. */
+  exportPieces(): void;
   /** The last picked face as a flat plane in model space, "curved", or null with none picked. */
   pickedFace(): FacePlane | "curved" | null;
   /** Ask the kernel about `op` after `wait` ms, unless its answer is known. Null clears the check. */
@@ -37,8 +46,22 @@ export interface SplitPrintHost {
   readout(text: string): void;
 }
 
-/** The kernel's answer for the card's op, as the card shows it. */
-export type SplitPrintCheck = { phase: "checking" } | { phase: "done"; ok: true; parts: PieceCheck[] } | { phase: "done"; ok: false; error: string } | null;
+/** One row of the Print on menu. `target` is what the op stores for it; the plate's own printer stores none. */
+export interface PrintOn {
+  id: string;
+  name: string;
+  target: Target | null;
+}
+
+/** The kernel's answer for the card's op, as the card shows it; `notes` are its sentences, such as a part number with no room. */
+export type SplitPrintCheck = { phase: "checking" } | { phase: "done"; ok: true; parts: PieceCheck[]; notes?: string[] } | { phase: "done"; ok: false; error: string } | null;
+
+/** What an Apply for an export target leaves, as the card shows it: the printer, each piece's file name, the kernel's notes. */
+export interface SplitPrintDone {
+  printer: string;
+  names: string[];
+  notes: string[];
+}
 
 let host: SplitPrintHost | null = null;
 let card: Card = emptyCard();
@@ -50,6 +73,9 @@ let check: SplitPrintCheck = null;
 /** While a step is edited: the card as the step filled it, so an untouched card offers no Update, and its header. */
 let edit: { opened: Card; head: string } | null = null;
 let waiting = false;
+let printers: PrintOn[] = [];
+/** After an Apply for an export target: the card says what was left in Model and offers Export…, in place of the form. */
+let done: SplitPrintDone | null = null;
 /** A handle is held down: the card follows it, and the kernel waits for the release. */
 let moving = false;
 /** A drag under way: the cut it moves, and the card before it, which Esc in the heads-up field puts back. */
@@ -82,12 +108,20 @@ export function mountSplitPrint(next: SplitPrintHost) {
     if (ev.target instanceof Element && ev.target.closest("#modelMenuSplitPrint")) openSplitPrint();
   });
   body.innerHTML = `
+    <div class="sp-done" id="modelPartDone" role="status" hidden>
+      <p class="sp-done-head" id="modelPartDoneHead"></p>
+      <ol class="sp-pieces" id="modelPartDonePieces" aria-label="Pieces left in Model"></ol>
+      <p class="model-note" id="modelPartDoneNotes" hidden></p>
+      <p class="model-note" id="modelPartDoneSupport"></p>
+    </div>
+    <div class="sp-form" id="modelPartForm">
+    <label class="sp-print"><span class="scrub-label">Print on</span><select id="modelPartTarget" aria-label="Print on, the printer these cuts are for"></select></label>
     <p class="model-note sp-fit" id="modelPartNote" role="status"></p>
     <div class="sp-head"><h4 id="modelPartCutsHead">Cuts</h4>${howMarkup()}</div>
     <ol class="sp-cuts" id="modelPartCuts" aria-labelledby="modelPartCutsHead"></ol>
     <div class="modes sp-actions" role="group" aria-label="Cuts">
       <button class="btn" id="modelPartAdd" type="button" data-tip="A cut in the middle of the largest piece">Add cut</button>
-      <button class="btn" id="modelPartFit" type="button" data-tip="The fewest straight cuts that fit the plate's printer">Fit the bed</button>
+      <button class="btn" id="modelPartFit" type="button">Fit the bed</button>
       <button class="btn" id="modelPartClear" type="button">Clear cuts</button>
     </div>
     <p class="model-note" id="modelPartStatus" role="status" hidden></p>
@@ -106,7 +140,12 @@ export function mountSplitPrint(next: SplitPrintHost) {
     </section>
     <h4 class="sp-pieces-head" id="modelPartPiecesHead">Pieces</h4>
     <ol class="sp-pieces" id="modelPartPieces" aria-labelledby="modelPartPiecesHead" aria-live="polite"></ol>
-    <label class="model-keep" data-tip="The new pieces go around the objects already on the plate. Those stay where they are."><input id="modelPartLayout" type="checkbox" checked> Lay out on the bed</label>`;
+    <label class="model-keep" data-tip="The new pieces go around the objects already on the plate. Those stay where they are."><input id="modelPartLayout" type="checkbox" checked> Lay out on the bed</label>
+    <label class="model-keep" data-tip="Each piece gets its number cut into a cut face."><input id="modelPartNumbers" type="checkbox" checked> Part numbers</label>
+    <p class="model-note" id="modelPartNumbersNote">The number is cut into the part, so renaming the object does not change it.</p>
+    <p class="model-note" id="modelPartNumberNotes" role="status" hidden></p>
+    </div>`;
+  document.querySelector("#modelPartExport")?.addEventListener("click", () => host?.exportPieces());
   body.addEventListener("click", onClick);
   body.addEventListener("input", onInput);
   body.addEventListener("change", onChange);
@@ -143,7 +182,7 @@ export function openSplitPrint() {
     pushToast("Open a solid to split it for printing.", "info");
     return;
   }
-  const fit = host.fit();
+  const fit = host.fit(null);
   edit = null;
   begin(solid, fit ? cardFromFit(fit, middle(solid), host.frame()) : emptyCard(), fit?.notes ?? []);
 }
@@ -157,7 +196,7 @@ export function openSplitPrintEdit(op: PartitionModelOp, pose: Affine, head: str
   if (!host) return;
   const solid = host.solidBox();
   if (!solid) return;
-  const filled = cardFromOp(op, pose, middle(solid), host.frame());
+  const filled = cardFromOp(op, pose, middle(solid), host.frame(), host.plate());
   edit = { opened: structuredClone(filled), head };
   begin(solid, filled, []);
 }
@@ -168,6 +207,8 @@ function begin(solid: Box, filled: Card, fitNotes: string[]) {
   frame = host?.frame() ?? null;
   card = filled;
   notes = fitNotes;
+  done = null;
+  printers = host?.printers() ?? [];
   root()?.querySelectorAll<HTMLButtonElement>("#modelPartModes [data-cut-mode]").forEach((button, i) => {
     if (i < 3) button.textContent = (frame ? "UVW" : "XYZ")[i]!;
   });
@@ -187,6 +228,10 @@ function begin(solid: Box, filled: Card, fitNotes: string[]) {
   if (apply) apply.textContent = edit ? "Update" : "Apply";
   const layout = $<HTMLInputElement>("#modelPartLayout");
   if (layout) layout.checked = card.layout;
+  const numbers = $<HTMLInputElement>("#modelPartNumbers");
+  if (numbers) numbers.checked = card.numbers;
+  renderTargets();
+  paintMode();
   // The steps show the first three times the card opens, as the sketch card's do; the ? brings them back.
   const how = $<HTMLElement>("#modelPartHow");
   const shown = howTimes() <= 3;
@@ -251,23 +296,86 @@ function closed() {
   const wasEdit = edit;
   edit = null;
   check = null;
+  done = null;
+  paintMode();
   host?.check(null, 0);
   if (wasEdit) host?.cancelled();
 }
 
-/** The card closes after its Apply: the edit, if any, ended with it. */
-export function splitPrintApplied() {
+/**
+ * The card closes after its Apply: the edit, if any, ended with it. An Apply for an export target leaves the card open
+ * on what it left in Model, with Export… in the foot (D12).
+ */
+export function splitPrintApplied(result?: SplitPrintDone) {
   edit = null;
-  closeSplitPrint();
+  if (!result) {
+    closeSplitPrint();
+    return;
+  }
+  done = result;
+  check = null;
+  dragging = null;
+  hud?.close();
+  host?.check(null, 0);
+  const head = document.querySelector<HTMLElement>("#modelEditHead");
+  if (head) head.hidden = true;
+  document.querySelector("#modelPanel")?.setAttribute("aria-labelledby", "modelPanelTitle");
+  const apply = document.querySelector("#modelApply");
+  if (apply) apply.textContent = "Apply";
+  paintMode();
+  refreshModelCard();
+}
+
+/** The form, or what an export Apply left; Export… and Close in the foot only for the second. */
+function paintMode() {
+  const form = $<HTMLElement>("#modelPartForm");
+  const result = $<HTMLElement>("#modelPartDone");
+  if (form) form.hidden = !!done;
+  if (result) result.hidden = !done;
+  const exportButton = document.querySelector<HTMLElement>("#modelPartExport");
+  if (exportButton) exportButton.hidden = !done;
+  const cancel = document.querySelector("#modelCancel");
+  if (cancel) cancel.textContent = done ? "Close" : "Cancel";
+  if (done) {
+    const text = (selector: string, value: string) => {
+      const node = $<HTMLElement>(selector);
+      if (node) node.textContent = value;
+    };
+    text("#modelPartDoneHead", `Cut for the ${done.printer}. ${done.names.length} pieces stay in Model, off the plate.`);
+    text("#modelPartDoneSupport", SUPPORT_NOTE);
+    const list = $<HTMLOListElement>("#modelPartDonePieces");
+    list?.replaceChildren(...done.names.map((name, at) => Object.assign(document.createElement("li"), { textContent: `Part ${at + 1} · ${name}` })));
+    const sentences = $<HTMLElement>("#modelPartDoneNotes");
+    if (sentences) {
+      sentences.textContent = done.notes.join(" ");
+      sentences.hidden = done.notes.length === 0;
+    }
+  }
+  paintFoot();
 }
 
 function op(): PartitionOp | null {
-  return card.cuts.length > 0 ? cardOp(card, center, frame) : null;
+  return card.cuts.length > 0 ? cardOp(card, center, frame, host?.numberSizes(card.target) ?? { height: 4, depth: 0.4 }) : null;
+}
+
+/** The Print on menu: the plate's printer first, the export printers last; a target the library no longer lists stays, by its id. */
+function renderTargets() {
+  const select = $<HTMLSelectElement>("#modelPartTarget");
+  if (!select) return;
+  const rows = [...printers];
+  if (card.target && !rows.some((row) => row.id === card.target!.printer)) rows.push({ id: card.target.printer, name: card.target.printer, target: card.target });
+  select.replaceChildren(...rows.map((row) => Object.assign(document.createElement("option"), { value: row.id, textContent: row.name })));
+  select.value = card.target?.printer ?? printers[0]?.id ?? "";
+}
+
+/** The printer a card's target names, for the sentences that name it. */
+function printerName(): string {
+  return printers.find((row) => row.id === (card.target?.printer ?? printers[0]?.id))?.name ?? card.target?.printer ?? "printer";
 }
 
 /** The op Apply or Update takes, as the card says it in model space; null while it has nothing to cut. */
 export function splitPrintOp(): PartitionOp | null {
-  return splitPrintOpen() ? op() : null;
+  return splitPrintOpen() && !done ? op() : null;
 }
 
 /** The card changed: its rows, its ghost, and the kernel's check after `wait` (none while a drag moves). */
@@ -383,6 +491,14 @@ function paintFit() {
   if (!note) return;
   note.textContent = notes.join(" ");
   note.hidden = notes.length === 0;
+  const name = printerName();
+  const fitButton = $<HTMLButtonElement>("#modelPartFit");
+  if (fitButton) {
+    fitButton.textContent = fitLabel(card.target);
+    fitButton.dataset.tip = `The fewest straight cuts that fit the ${name}${exportTarget(card.target) ? "'s build volume" : ""}`;
+  }
+  // Pieces for an export target never reach the plate, so there is nothing to lay out.
+  $<HTMLInputElement>("#modelPartLayout")?.closest("label")?.toggleAttribute("hidden", exportTarget(card.target));
 }
 
 function paintPieces() {
@@ -401,6 +517,12 @@ function paintPieces() {
   else if (face?.mode === "face" && !face.face) status(PICK_FACE, false);
   else if (bad) status(bad, true);
   else status("", false);
+  const sentences = $<HTMLElement>("#modelPartNumberNotes");
+  const kernel = check && check.phase === "done" && check.ok && card.numbers ? (check.notes ?? []) : [];
+  if (sentences) {
+    sentences.textContent = kernel.join(" ");
+    sentences.hidden = kernel.length === 0;
+  }
 }
 
 function status(text: string, bad: boolean) {
@@ -417,7 +539,7 @@ function paintFoot() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button || !splitPrintOpen()) return;
   const ready = card.cuts.length > 0 && !!op() && check?.phase === "done" && check.ok;
-  button.disabled = waiting || !ready || splitPrintUntouched();
+  button.disabled = waiting || !ready || splitPrintUntouched() || !!done;
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +547,7 @@ function paintFoot() {
 // ---------------------------------------------------------------------------
 
 function ghost(): ModelGhost | null {
+  if (done) return null;
   const planes = cardPlanes(card, center, frame).filter((plane): plane is { origin: Vec3; normal: Vec3 } => !!plane);
   return planes.length > 0 ? { kind: "cuts", planes } : null;
 }
@@ -440,7 +563,7 @@ function axisColor(dir: Vec3): DragHandle["color"] {
  * selected cut's two tilt rings on the dock. Ctrl snaps the number to whole millimetres and a tilt to 15°.
  */
 function handles(): DragHandle[] {
-  if (!host) return [];
+  if (!host || done) return [];
   const out: DragHandle[] = [];
   card.cuts.forEach((cut, index) => {
     const base = cutBase(cut, center, frame);
@@ -583,10 +706,10 @@ function onClick(ev: Event) {
     return;
   }
   if (target.closest("#modelPartFit")) {
-    const fit = host?.fit();
+    const fit = host?.fit(card.target);
     if (!fit) return;
     notes = fit.notes;
-    card = cardFromFit(fit, center, frame, card.layout);
+    card = cardFromFit(fit, center, frame, card.layout, { target: card.target, numbers: card.numbers });
     renderCuts();
     changed(0);
     return;
@@ -612,11 +735,30 @@ function fieldIndex(id: string): number | null {
   return match ? Number(match[1]) - 1 : null;
 }
 
+/**
+ * Print on changed: the planner proposes again for the new volume only while the cuts are the proposal as it came; typed,
+ * dragged, added or cleared cuts stay, and only the note follows the target.
+ */
+function setTarget(id: string) {
+  const row = printers.find((item) => item.id === id);
+  if (!row) return;
+  card = { ...card, target: row.target };
+  const fit = host?.fit(row.target) ?? null;
+  notes = fit?.notes ?? [];
+  if (fit && !card.edited) card = cardFromFit(fit, center, frame, card.layout, { target: row.target, numbers: card.numbers });
+  renderCuts();
+  changed(0);
+}
+
 function readField(ev: Event): boolean {
   const input = ev.target instanceof HTMLInputElement ? ev.target : null;
   if (!input) return false;
   if (input.id === "modelPartLayout") {
     card = { ...card, layout: input.checked };
+    return true;
+  }
+  if (input.id === "modelPartNumbers") {
+    card = { ...card, numbers: input.checked };
     return true;
   }
   const value = fieldNumber(input.id);
@@ -639,6 +781,10 @@ function onInput(ev: Event) {
 }
 
 function onChange(ev: Event) {
+  if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartTarget") {
+    setTarget(ev.target.value);
+    return;
+  }
   const input = ev.target instanceof HTMLInputElement ? ev.target : null;
   if (!input) return;
   // A typed tilt past the limit shows the limit the plane uses.

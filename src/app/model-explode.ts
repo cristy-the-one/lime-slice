@@ -7,7 +7,8 @@ import { boundsOf, type Bounds } from "../mesh-place";
 import type { ContextPart } from "../model-context";
 import { cutsInModel, explodeShifts, posedCentre, shiftedPose, shownPartition } from "../model-explode";
 import type { Affine } from "../model-space";
-import { modelPoseOf } from "../plate";
+import { ROOT } from "../model-tree";
+import { meshToModel, modelPoseOf, type PlateObject } from "../plate";
 import { modelTrees } from "./model-trees";
 import { state } from "./state";
 
@@ -24,6 +25,8 @@ interface Member {
   part: number;
   id: string;
   centre: Vec3;
+  /** An export target's piece, held off the plate: the part to draw, since `parts` has none for it. */
+  held?: { positions: Float32Array; matrix: Affine };
 }
 
 /** The split to print the open part's tree is on: its own, or, for a piece, its part's. */
@@ -37,7 +40,34 @@ function partitionOf(openKey: string): { found: NonNullable<ReturnType<typeof sh
   return node?.op?.kind === "partition" ? { found: { op: node.op, pieces: node.pieces ?? [] }, ownerKey: tree.root.tree, open: tree.root.index ?? 2 } : null;
 }
 
-/** The pieces of the split to print the open part belongs to, or null when it has none whose pieces are on screen. */
+/**
+ * An export target's piece (D12): held in Model by its tree, with no plate object. Its mesh is the tree's, and it sits where
+ * the part's own plate object puts a mesh of that seat in model space. Null when the tree holds no mesh.
+ */
+export function heldPiece(key: string, owner: PlateObject): { positions: Float32Array; pose: Affine } | null {
+  const tree = modelTrees.get(key);
+  const mesh = tree?.nodes.get(tree.current)?.mesh ?? tree?.nodes.get(ROOT)?.mesh;
+  if (!mesh || mesh.sourcePos.length < 9) return null;
+  return { positions: mesh.sourcePos, pose: meshToModel({ ...owner, bytes: mesh.bytes, sourcePos: mesh.sourcePos }) };
+}
+
+const heldId = (key: string) => `held:${key}`;
+
+/** The open part's split to print pieces that are held off the plate, as grey context where they were cut. */
+export function heldParts(openKey: string): ContextPart[] {
+  const at = partitionOf(openKey);
+  const owner = at ? state.plate.objects.find((obj) => obj.modelTree === at.ownerKey) : undefined;
+  if (!at || !owner) return [];
+  const out: ContextPart[] = [];
+  for (const [index, key] of at.found.pieces.entries()) {
+    if (!key || index + 2 === at.open || state.plate.objects.some((row) => row.modelTree === key)) continue;
+    const piece = heldPiece(key, owner);
+    if (piece) out.push({ id: heldId(key), positions: piece.positions, matrix: piece.pose });
+  }
+  return out;
+}
+
+/** The pieces of the split to print the open part belongs to, or null when it has none whose pieces are on screen or held. */
 function members(openId: string, openKey: string, openBox: Bounds, openPose: Affine, parts: readonly ContextPart[]): { cuts: { origin: Vec3; normal: Vec3 }[]; members: Member[]; open: number } | null {
   const at = partitionOf(openKey);
   if (!at) return null;
@@ -53,6 +83,10 @@ function members(openId: string, openKey: string, openBox: Bounds, openPose: Aff
     const obj = key ? state.plate.objects.find((row) => row.modelTree === key) : undefined;
     const shown = obj ? parts.find((part) => part.id === obj.id) : undefined;
     if (shown) list.push({ part: index + 1, id: shown.id, centre: posedCentre(boundsOf(shown.positions), shown.matrix) });
+    else if (key && !obj) {
+      const piece = heldPiece(key, owner);
+      if (piece) list.push({ part: index + 1, id: heldId(key), centre: posedCentre(boundsOf(piece.positions), piece.pose), held: { positions: piece.positions, matrix: piece.pose } });
+    }
   }
   return list.length > 1 ? { cuts: cutsInModel(found.op, modelPoseOf(owner)), members: list, open } : null;
 }
@@ -65,7 +99,7 @@ export function canExplode(openKey: string, parts: readonly ContextPart[]): bool
   return [at.ownerKey, ...at.found.pieces].some((key, index) => {
     if (!key || index + 1 === at.open) return false;
     const obj = state.plate.objects.find((row) => row.modelTree === key);
-    return !!obj && shown.has(obj.id);
+    return obj ? shown.has(obj.id) : modelTrees.has(key);
   });
 }
 
@@ -78,8 +112,9 @@ export function explodeContext(openId: string, openKey: string, openBox: Bounds,
   const relative = shifts.map((shift) => shift.map((value, i) => value - still[i]! + 0) as Vec3);
   const moved = new Map(found.members.map((member, at) => [member.id, relative[at]!]));
   const round = (value: number) => Math.round(value * 1000) / 1000 + 0;
+  const drawn = [...parts, ...found.members.flatMap((member) => (member.held && !parts.some((part) => part.id === member.id) ? [{ id: member.id, ...member.held }] : []))];
   return {
-    parts: parts.map((part) => {
+    parts: drawn.map((part) => {
       const shift = moved.get(part.id);
       return shift ? { ...part, matrix: shiftedPose(part.matrix, shift) } : part;
     }),
