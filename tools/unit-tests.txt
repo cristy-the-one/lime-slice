@@ -34,6 +34,7 @@ src/playback.test.ts
 src/project.test.ts
 src/project-blank.test.ts
 src/project-codec.test.ts
+src/project-held.test.ts
 src/project-thumb.test.ts
 src/ironing.test.ts
 src/overrides.test.ts

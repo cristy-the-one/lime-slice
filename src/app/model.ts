@@ -1909,7 +1909,7 @@ type TreeToSave = SavedTree<{ name: string; bytes: ArrayBuffer }>;
  * saved, except a tool's that a saved join names (`tools`), under the object id the join gives, and
  * a tree whose join's tool tree could not be saved is left out too. Run after `captureOpenSolid`.
  */
-export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>; tools: { id: string; name: string; tree: TreeToSave }[]; unsaved: string[] }> {
+export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>; tools: { id: string; name: string; tree: TreeToSave }[]; pieces: HeldToSave[]; unsaved: string[] }> {
   const held = new Map<string, { name: string; key: string; node: NodeId }>();
   for (const obj of state.plate.objects) {
     const token = meshTokenOf(obj.bytes);
@@ -1985,7 +1985,52 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
     if (held.has(id)) trees.set(id, tree);
     else tools.push({ id, name, tree });
   }
-  return { trees, tools, unsaved };
+  return { trees, tools, pieces: await heldToSave(trees.keys()), unsaved };
+}
+
+/** --- D12. A piece Model holds off the plate, as a project saves it: its part's object, its cut's step, its number, its mesh. */
+export type HeldToSave = { object: string; node: NodeId; index: number; mesh: PlateMesh };
+
+/** The held pieces of the cuts for an export target in the saved objects' trees, each with its solid, written here if Model has not. */
+async function heldToSave(objects: Iterable<string>): Promise<HeldToSave[]> {
+  const out: HeldToSave[] = [];
+  for (const id of [...objects]) {
+    const key = state.plate.objects.find((obj) => obj.id === id)?.modelTree;
+    for (const step of (key ? modelTrees.get(key)?.nodes.values() : undefined) ?? []) {
+      if (!exportsPieces(step.op)) continue;
+      for (const [at, piece] of (step.pieces ?? []).entries()) {
+        const mesh = piece && !state.plate.objects.some((obj) => obj.modelTree === piece) ? modelTrees.get(piece)?.nodes.get(ROOT)?.mesh : undefined;
+        if (!piece || !mesh) continue;
+        const solid = mesh.step ?? (await writeStep(mesh.token, piece, ROOT));
+        out.push({ object: id, node: step.id, index: at + 2, mesh: typeof solid === "string" ? mesh : { ...mesh, step: solid } });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * --- D12. A project's held pieces: each the root of a tree of its own again, held off the plate as Apply held it, and
+ * named in its cut's `pieces`. A piece with its solid opens in the engine from that solid when a call first needs it;
+ * one without is cut again from its part, as after an engine restart. Run after `adoptSavedTrees`.
+ */
+export function adoptHeldPieces(pieces: readonly HeldToSave[]) {
+  for (const piece of pieces) {
+    const owner = state.plate.objects.find((obj) => obj.id === piece.object)?.modelTree;
+    const tree = owner ? modelTrees.get(owner) : undefined;
+    const cut = tree?.nodes.get(piece.node);
+    const at = piece.index - 2;
+    if (!owner || !tree || !cut?.pieces || !exportsPieces(cut.op) || at < 0 || at >= cut.pieces.length || cut.pieces[at]) continue;
+    const key = freshTreeKey(`${piece.object}-part`);
+    const solid = piece.mesh.step;
+    const root: ModelRoot = solid ? { kind: "step", name: stepFileName(piece.mesh.name), bytes: solid } : { kind: "piece", tree: owner, node: piece.node, index: piece.index };
+    modelTrees.set(key, withNode(newTree(key, root, `Part ${piece.index}`, null), ROOT, { mesh: piece.mesh }));
+    if (solid) {
+      unopened.add(key);
+      stepKnown.add(piece.mesh.token);
+    }
+    modelTrees.set(owner, withNode(tree, piece.node, { pieces: cut.pieces.map((other, i) => (i === at ? key : other)) }));
+  }
 }
 
 /**
@@ -2186,7 +2231,7 @@ export function showModel() {
     // The plate holds this node: Model resumes there, with the other branches kept and the open tool still open.
     modelTrees.set(known.key, { ...jumped(known, node), committed: node });
     if (obj?.modelTree !== known.key) setTreeKey(objectId, known.key);
-    void resume(mine, objectId, known.key, node);
+    void resume(mine, objectId, known.key, openingStep(known, node));
     return;
   }
   clearView();
@@ -2260,13 +2305,28 @@ function setTreeKey(objectId: string, key: string) {
   };
 }
 
-/** Back into Model on the node the plate holds. If it no longer rebuilds, on the last step above it that does. */
+/**
+ * --- D12. The step Model opens on for a part whose plate step is `node`: that one, unless the part's latest step, the end
+ * of Redo from there, is a split to print for an export target. The plate keeps the part whole, and that split's pieces
+ * are only in Model, so Model opens on it.
+ */
+function openingStep(tree: ModelTree, node: NodeId): NodeId {
+  let end = node;
+  for (let next = tree.lastChild.get(end); next != null && tree.nodes.has(next); next = tree.lastChild.get(end)) end = next;
+  return end !== node && exportsPieces(tree.nodes.get(end)?.op) ? end : node;
+}
+
+/** Back into Model on the node the plate holds, or `openingStep`'s. If it no longer rebuilds, on the last step above it that does. */
 async function resume(mine: number, objectId: string, key: string, node: NodeId) {
   // A split piece whose part was edited past its split keeps a note of it: the piece is the older split's.
   const known = modelTrees.get(key);
   const older = known ? olderSplitNote(modelTrees, known) : null;
   const greeting = (solid: ParsedSolid) => `${about(solid)} ${older ? `${older} ` : ""}Pick a face or an edge.`;
-  if (await showNode(mine, objectId, key, node, greeting) || mine !== ticket) return;
+  if (await showNode(mine, objectId, key, node, greeting)) {
+    await cutHeldAgain(mine);
+    return;
+  }
+  if (mine !== ticket) return;
   const tree = modelTrees.get(key);
   const good = tree ? lastGood(tree, node) : null;
   if (good != null && good !== node && (await showNode(mine, objectId, key, good, (solid) => `${BROKEN} ${greeting(solid)}`))) {
@@ -2510,7 +2570,9 @@ async function jumpTo(node: NodeId) {
   editBack = null;
   // A step picked in the history ends an edit: the view goes there, not back.
   dropEdit();
-  if (await showNode(ticket, at.objectId, at.key, node, about)) noteParametersBuilt();
+  if (!(await showNode(ticket, at.objectId, at.key, node, about))) return;
+  noteParametersBuilt();
+  await cutHeldAgain(ticket);
 }
 
 /** The open solid's own step a History row names, or null for a tool's step. */
@@ -4136,6 +4198,7 @@ async function exportPieceFiles(row?: RowKey) {
     return;
   }
   if (tree.current !== node) await jumpTo(node);
+  else await cutHeldAgain(ticket);
   const shown = treeOf(open);
   const owner = state.plate.objects.find((obj) => obj.modelTree === at.key);
   if (!open || !shown || shown.current !== node || open.solid.id !== node || !owner) {
@@ -4143,7 +4206,7 @@ async function exportPieceFiles(row?: RowKey) {
     return;
   }
   const held: { key: string; node: NodeId; positions: Float32Array }[] = [];
-  for (const [index, key] of (step.pieces ?? []).entries()) {
+  for (const [index, key] of (shown.nodes.get(node)?.pieces ?? []).entries()) {
     const piece = key ? modelTrees.get(key) : undefined;
     const mesh = key && piece ? heldPiece(key, owner) : null;
     if (!key || !piece || !mesh) {
@@ -4174,7 +4237,9 @@ async function exportPieceFiles(row?: RowKey) {
       await saveBytes(encode3mf(meshes, names), files["3mf"][0]!, "3mf", "model/3mf");
       saved = files["3mf"];
     } else {
-      const bytes = await exportSolid(at.key, node, "step", held.map((piece) => ({ key: piece.key, node: piece.node })), names);
+      // A piece a project kept opens in the engine from its own solid first: the export names its tree.
+      for (const piece of held) problem ||= unopened.has(piece.key) ? ((await restoreShared(piece.key, piece.node)) ?? "") : "";
+      const bytes = problem || (await exportSolid(at.key, node, "step", held.map((piece) => ({ key: piece.key, node: piece.node })), names));
       if (typeof bytes === "string") problem = bytes;
       else {
         await saveStepFile(bytes, files.step[0]!);
@@ -5840,6 +5905,62 @@ function heldResult(op: PartitionModelOp, count: number, notes: string[]): Split
 /** What the readout says of an export target's pieces: in Model, off the plate, until they are exported. */
 function heldSentence(printer: string): string {
   return `The pieces are for the ${printer}, which this app does not slice for: they stay in Model, off the plate. Export… saves them.`;
+}
+
+/** The cut for an export target being cut again, by tree and step, so a jump and an Export… on it share one cut. */
+const cuttingAgain = new Map<string, Promise<void>>();
+
+/**
+ * --- D12. The open step's split to print for an export target, when pieces of it are not held (a project 3.8.0 saved
+ * kept the cut but not its pieces): those pieces are cut again from the stored op on a spare step, as the MCP's export
+ * does (`partitionPieces`), and held as Apply holds them. The plate and Undo do not change; the next save keeps them.
+ */
+function cutHeldAgain(mine: number): Promise<void> {
+  const at = open;
+  const tree = treeOf(at);
+  const node = tree ? [...pathTo(tree, tree.current)].reverse().find((id) => exportsPieces(tree.nodes.get(id)?.op)) : undefined;
+  const step = node == null ? undefined : tree?.nodes.get(node);
+  if (!at || !tree || node == null || !step?.pieces || step.op?.kind !== "partition" || step.parent === null) return Promise.resolve();
+  const name = `${at.key}#${node}`;
+  const running = cuttingAgain.get(name);
+  if (running) return running;
+  const missing = step.pieces.map((key) => !key || !modelTrees.has(key));
+  if (!missing.some(Boolean) || busy) return Promise.resolve();
+  const { op, parent } = step;
+  const known = step.pieces;
+  const run = (async () => {
+    const [reserved, spare] = reserveId(tree);
+    modelTrees.set(at.key, reserved);
+    const fresh = missing.map((gone) => (gone ? freshTreeKey(`${at.objectId}-part`) : null));
+    busy = true;
+    syncUndo();
+    readout("Cutting the pieces again…");
+    const body = await treeCall(at.key, parent, applyRequest(at.key, parent, spare, op, state.stepTolerance, null, fresh));
+    void dropInEngine(at.key, spare);
+    if (mine === ticket) busy = false;
+    syncUndo();
+    const pieces = readPieces(body.pieces);
+    const shown = open;
+    const dropFresh = () => {
+      for (const key of fresh) if (key) void post({ call: "close", key });
+    };
+    if (mine !== ticket || state.stage !== "model" || shown?.key !== at.key || !modelTrees.has(at.key)) {
+      dropFresh();
+      return;
+    }
+    const problem = text(body.error) ? sentence(plainModelError(text(body.error))) : typeof pieces === "string" ? pieces : pieces.length !== known.length ? "This cut no longer makes the pieces its step names. Edit the cut and Update." : "";
+    if (problem || typeof pieces === "string") {
+      dropFresh();
+      readout(`${problem} Only Part 1 is in Model.`);
+      return;
+    }
+    const placed = putPieces(shown, node, shown.solid, pieces.map((piece, i) => (piece && fresh[i] ? { ...piece, was: null } : null)), false, true);
+    modelTrees.set(at.key, withNode(modelTrees.get(at.key)!, node, { pieces: known.map((key, i) => placed.keys[i] ?? key) }));
+    refreshModelContext();
+    readout(`${about(shown.solid)} This project was saved without the pieces of its cut for the ${targetName(op)}, so they were cut again from the step. Saving keeps them.`);
+  })().finally(() => cuttingAgain.delete(name));
+  cuttingAgain.set(name, run);
+  return run;
 }
 
 /** What the readout says of the new pieces on the plate. */

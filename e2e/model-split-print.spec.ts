@@ -485,6 +485,103 @@ test("the partition row's menu offers Export… for an export target", async ({ 
   await expect(page.locator("#splitExport")).toBeHidden();
 });
 
+/** Save from Prepare through the app's save path, reload, and open that file; `edit` changes the file first. */
+async function saveAndReopen(page: Page, edit?: (doc: Record<string, unknown>) => void): Promise<Record<string, unknown>> {
+  await page.locator("#tabPrepare").click();
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const { readFile } = await import("node:fs/promises");
+  let file = await readFile((await download.path())!);
+  const doc = JSON.parse(file.toString("utf8")) as Record<string, unknown>;
+  if (edit) {
+    edit(doc);
+    file = Buffer.from(JSON.stringify(doc));
+  }
+  await page.reload();
+  await page.locator("#projectFile").setInputFiles({ name: "bar.lime", mimeType: "application/json", buffer: file });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  return doc;
+}
+
+const SPLIT_ROW = /^Split to print for Formlabs Form 4, 3 parts/;
+
+/** Model on the reopened file: on the split, with every piece, Explode spreading them, and Export… naming each one. */
+async function expectEveryPiece(page: Page, tree: TreeMock, name: string) {
+  await expect(page.getByRole("treeitem", { name: SPLIT_ROW }), "Model opens on the split").toHaveAttribute("aria-selected", "true");
+  await page.locator("#modelLookOpen").click();
+  await expect(page.locator("#modelExplodeRow")).toBeVisible();
+  await page.locator("#modelExplode").check();
+  await expect(page.locator("#model")).toHaveAttribute("data-explode-parts", "1:0,0,0 2:0,0,10 3:0,0,20");
+  await page.keyboard.press("Escape");
+  const box = (await page.locator("#model").boundingBox())!;
+  await page.mouse.move(box.x + box.width * 0.15, box.y + box.height * 0.85);
+  await page.mouse.wheel(0, 1500);
+  await page.mouse.move(box.x + 4, box.y + box.height - 4);
+  await page.waitForTimeout(800);
+  await view(page, `${name}-explode`);
+  const dialog = page.locator("#splitExport");
+  const seen: string[] = [];
+  page.on("download", (download) => seen.push(download.suggestedFilename()));
+  const choose = async (format: string) => {
+    await page.getByRole("treeitem", { name: SPLIT_ROW }).locator(".mh-more").click();
+    await page.locator("#modelHistoryMenu [data-act=export]").click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator("#splitExportStl")).toHaveText("bar-1.stl, bar-2.stl, … bar-3.stl");
+    if (format === "stl") await view(page, `${name}-export`);
+    await dialog.locator(`[data-format="${format}"]`).click();
+    await expect(dialog).toBeHidden();
+  };
+  await choose("stl");
+  await expect.poll(() => seen, "one file for every piece").toEqual(["bar-1.stl", "bar-2.stl", "bar-3.stl"]);
+  await choose("step");
+  await expect.poll(() => seen.slice(3)).toEqual(["bar.step"]);
+  const request = tree.of("export").at(-1)!;
+  expect((request.pieces as unknown[]).length, "the STEP takes the other two pieces").toBe(2);
+  expect(request.names).toEqual(["bar-1", "bar-2", "bar-3"]);
+}
+
+test("a Form 4 cut keeps its pieces through save and reopen: Model opens on the split, Explode and Export… have every piece", async ({ page }) => {
+  const tree = await openBar(page, false, COLUMN);
+  await openCard(page);
+  await applyForForm4(page);
+  const doc = await saveAndReopen(page);
+  const held = doc.heldPieces as { object: string; node: number; index: number; mesh: { encoding?: string }; brep?: { encoding?: string } }[];
+  expect(held.map((piece) => [piece.object, piece.node, piece.index]), "each piece by its part's object, the cut's step and its number").toEqual([["part", 1, 2], ["part", 1, 3]]);
+  for (const piece of held) expect([piece.mesh.encoding, piece.brep?.encoding], "the mesh and the solid, compressed").toEqual(["gzip+base64", "gzip+base64"]);
+  await expect(page.locator("#objectList .obj"), "the pieces stay off the plate").toHaveCount(1);
+  const cut = tree.of("apply").length;
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume");
+  await expectEveryPiece(page, tree, "reopened");
+  expect(tree.of("apply").length, "nothing is cut again").toBe(cut);
+  const pieceOpens = tree.of("open").filter((request) => String(request.key).startsWith("part-part#"));
+  expect(pieceOpens.map((request) => Buffer.from(String(request.dataB64), "base64").toString().slice(0, 9)), "the STEP opens each piece from its saved solid").toEqual(["LIMEBREP ", "LIMEBREP "]);
+  await expect(labels(page)).toHaveText(["bar.step", "Split to print for Formlabs Form 4, 3 parts"]);
+  await page.locator("#modelUndo").click();
+  await expect(page.getByRole("treeitem", { name: /^bar\.step/ }), "one Undo takes the Apply back").toHaveAttribute("aria-selected", "true");
+  await page.locator("#tabPrepare").click();
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#objectList .obj"), "the reopen left no Prepare step to undo").toHaveCount(1);
+});
+
+test("a file 3.8.0 saved, with the cut but not its pieces, cuts them again when Model opens, and the next save keeps them", async ({ page }) => {
+  const tree = await openBar(page, false, COLUMN);
+  await openCard(page);
+  await applyForForm4(page);
+  await saveAndReopen(page, (doc) => delete doc.heldPieces);
+  const cut = tree.of("apply").length;
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume");
+  await expect(page.getByRole("treeitem", { name: SPLIT_ROW })).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => tree.of("apply").length, "one cut on a spare step").toBe(cut + 1);
+  const again = tree.of("apply").at(-1)!;
+  expect((again.op as { kind: string }).kind).toBe("partition");
+  expect((again.pieceKeys as unknown[]).length, "a key for each missing piece").toBe(2);
+  await expect(readout(page)).toContainText("cut again");
+  await expectEveryPiece(page, tree, "healed");
+  const doc = await saveAndReopen(page);
+  expect((doc.heldPieces as unknown[]).length, "the next save keeps them").toBe(2);
+});
+
 test.describe("short window", () => {
   test.use({ viewport: { width: 1100, height: 800 } });
 

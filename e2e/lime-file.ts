@@ -9,7 +9,7 @@ type Row = Record<string, unknown>;
  */
 export function unpackLime(file: Buffer): Buffer {
   const doc = JSON.parse(file.toString("utf8")) as Row;
-  const holders = [...((doc.objects as Row[] | undefined) ?? []), ...((doc.modelTools as Row[] | undefined) ?? [])];
+  const holders = [...((doc.objects as Row[] | undefined) ?? []), ...((doc.modelTools as Row[] | undefined) ?? []), ...((doc.heldPieces as Row[] | undefined) ?? [])];
   for (const holder of holders) {
     const tree = holder.modelTree as Row | undefined;
     for (const record of [holder.mesh, holder.brep, tree?.rootStep] as (Row | undefined)[]) {
