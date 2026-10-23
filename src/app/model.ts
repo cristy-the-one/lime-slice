@@ -5765,27 +5765,37 @@ function exportCutTo(tree: ModelTree, node: NodeId): PartitionModelOp | null {
 export function exportedPart(): string | null {
   for (const obj of state.plate.objects) {
     const tree = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
-    const cut = tree ? exportCutTo(tree, tree.current) : null;
+    const cut = tree && !exportSplitEnds(tree) ? exportCutTo(tree, tree.current) : null;
     if (cut) return exportedCommit(obj.name, targetName(cut));
   }
   return null;
 }
 
 /**
- * Prepare's note on a plate object whose Model step is past a split to print for an export target: the pieces are held in
+ * A tree whose shown step is a split to print for an export target and nothing more: the plate holds the root, which is
+ * the part whole, and the pieces never reach it, so Model is not ahead of the plate. Any step after the cut, or a second
+ * cut before it, is.
+ */
+function exportSplitEnds(tree: ModelTree): { op: PartitionModelOp; parts: number } | null {
+  const path = pathTo(tree, tree.current);
+  const node = tree.nodes.get(path.at(-1)!);
+  if (node?.op?.kind !== "partition" || !exportsPieces(node.op)) return null;
+  const earlier = path.slice(0, -1).some((id) => {
+    const op = tree.nodes.get(id)?.op;
+    return op?.kind === "partition" && exportsPieces(op);
+  });
+  return earlier ? null : { op: node.op, parts: (node.pieces?.length ?? 0) + 1 };
+}
+
+/**
+ * Prepare's note on a plate object whose Model step is a split to print for an export target: the pieces are held in
  * Model, off the plate, so nothing in Prepare says the part is split. Null for any other object.
  */
 export function exportSplitNote(objectId: string): string | null {
   const key = state.plate.objects.find((obj) => obj.id === objectId)?.modelTree;
   const tree = key ? modelTrees.get(key) : undefined;
-  if (!tree) return null;
-  let cut: { op: PartitionModelOp; parts: number } | null = null;
-  for (const id of pathTo(tree, tree.current)) {
-    const node = tree.nodes.get(id);
-    if (node?.op?.kind === "partition" && exportsPieces(node.op)) cut = { op: node.op, parts: (node.pieces?.length ?? 0) + 1 };
-  }
-  if (!cut) return null;
-  return `Split for the ${targetName(cut.op)} in Model, ${cut.parts} parts. The plate keeps it whole, and Slice and the 3MF wait while Model is on the split.`;
+  const split = tree ? exportSplitEnds(tree) : null;
+  return split ? `Split for the ${targetName(split.op)} in Model, ${split.parts} parts. The plate prints it whole.` : null;
 }
 
 /** The op the tree stores for the card's cuts, in the solid's own frame, or why it cannot be cut. */

@@ -198,7 +198,7 @@ test("Prepare notes a part split for the Form 4, with its count, and says nothin
   await split(page, "formlabs-form-4");
   await page.locator("#tabPrepare").click();
   await expect(note(page)).toHaveCount(1);
-  await expect(note(page)).toHaveText("Split for the Formlabs Form 4 in Model, 3 parts. The plate keeps it whole, and Slice and the 3MF wait while Model is on the split.");
+  await expect(note(page)).toHaveText("Split for the Formlabs Form 4 in Model, 3 parts. The plate prints it whole.");
   await page.waitForTimeout(300);
   await page.screenshot({ path: "test-results/model-session-look/prepare-note.png" });
 });

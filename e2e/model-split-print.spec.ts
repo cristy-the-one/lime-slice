@@ -428,7 +428,12 @@ test("Part numbers are on by default and write the labels in full; off stores la
   expect((tree.of("apply").at(-1)!.op as { labels: unknown }).labels).toEqual({ on: false });
 });
 
-test("Apply for the Form 4 leaves the plate as it was, the commit and a slice refuse, and Explode shows three pieces", async ({ page }) => {
+test("Apply for the Form 4 leaves the plate as it was, Model on the split slices the whole part, a later step refuses, and Explode shows three pieces", async ({ page }) => {
+  let slices = 0;
+  await page.route("**/api/slice", (route) => {
+    slices += 1;
+    return route.fulfill({ status: 500, json: { error: "not sliced in this test" } });
+  });
   const tree = await openBar(page, false, COLUMN);
   await openCard(page);
   await applyForForm4(page);
@@ -453,14 +458,28 @@ test("Apply for the Form 4 leaves the plate as it was, the commit and a slice re
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   const sentence = "bar.step is cut for the Formlabs Form 4, which this app does not slice for. Export its pieces with export_3mf or model_export_step and pieces: true, or model_goto a step before the cut to print it here.";
   await page.locator("#slice").click();
-  await expect(page.locator("#banner")).toContainText(sentence);
+  await expect.poll(() => slices, "Model on the split is not ahead of the plate: the part slices whole").toBe(1);
+  await expect(page.locator("#banner")).not.toContainText(sentence);
   const downloads: string[] = [];
   page.on("download", (download) => downloads.push(download.suggestedFilename()));
   await page.locator("#fileMenu > summary").click();
   await page.locator("#export3mf").click();
-  await page.waitForTimeout(400);
-  expect(downloads, "the plate's 3MF is refused too").toEqual([]);
+  await expect.poll(() => downloads, "the plate's 3MF is the whole part").toEqual(["bar.3mf"]);
+
+  // A step after the cut is Model ahead of the plate again.
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume");
+  await page.locator("#modelToolBoolean").click();
+  if ((await page.locator("#modelCut").getAttribute("aria-pressed")) !== "true") await page.locator("#modelCut").click();
+  await page.locator("#modelX").fill("5");
+  await page.locator("#modelX").dispatchEvent("input");
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(labels(page)).toHaveCount(3);
+  await page.locator("#tabPrepare").click();
+  await page.locator("#slice").click();
   await expect(page.locator("#banner")).toContainText(sentence);
+  expect(slices, "no second slice started").toBe(1);
 });
 
 test("Export… offers STL per piece, one 3MF and one STEP, and writes the expected file names", async ({ page }) => {
@@ -586,6 +605,27 @@ test("a Form 4 cut keeps its pieces through save and reopen: Model opens on the 
   await page.locator("#tabPrepare").click();
   await page.keyboard.press("Control+z");
   await expect(page.locator("#objectList .obj"), "the reopen left no Prepare step to undo").toHaveCount(1);
+});
+
+test("a reopened Form 4 project opens Model on the split, and Prepare slices the whole part", async ({ page }) => {
+  let slices = 0;
+  await page.route("**/api/slice", (route) => {
+    slices += 1;
+    return route.fulfill({ status: 500, json: { error: "not sliced in this test" } });
+  });
+  await openBar(page, false, COLUMN);
+  await openCard(page);
+  await applyForForm4(page);
+  await saveAndReopen(page);
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume");
+  await expect(page.getByRole("treeitem", { name: SPLIT_ROW })).toHaveAttribute("aria-selected", "true");
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj-split")).toHaveText("Split for the Formlabs Form 4 in Model, 3 parts. The plate prints it whole.");
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.locator("#slice").click();
+  await expect.poll(() => slices).toBe(1);
+  await expect(page.locator("#banner")).not.toContainText("does not slice for");
 });
 
 test("a file 3.8.0 saved, with the cut but not its pieces, cuts them again when Model opens, and the next save keeps them", async ({ page }) => {
