@@ -80,9 +80,16 @@ test("Supports is one control with Off, Automatic and Painted only, and Painted 
   await expect(page.locator("#stage")).not.toHaveClass(/stale/);
 
   // Back to Automatic, and the angle returns with its value.
+  // This recipe was sliced before, so the app refreshes it by itself after a 200 ms pause.
+  // A Slice click here would race that refresh and send a second request.
+  const before = bodies.length;
   await setSupports(page, "auto");
   await expect(group(page).locator("#sangle")).toHaveValue("45");
-  const again = await sliceOnce(page, bodies);
+  await expect.poll(() => bodies.length).toBe(before + 1);
+  await expect(page.locator("#slice")).toBeEnabled();
+  await page.waitForTimeout(500);
+  expect(bodies.length, "one refresh, no duplicate").toBe(before + 1);
+  const again = bodies[before] as Record<string, unknown>;
   expect(again).not.toHaveProperty("supportSource");
   expect(again.supportAngle).toBe(45);
 });
