@@ -3,15 +3,16 @@
  * tree stores, and model_probe's plan. Every default and every proposal comes from the planner,
  * `src/modeling/partition.ts`; nothing here has a number of its own.
  */
-import { printFrame } from "../src/model-check.ts";
-import { applyPose, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
-import type { ModelOp, PartitionModelOp, Vec3 } from "../src/model-tree.ts";
-import { boundsOf, type Mat3 } from "../src/mesh-place.ts";
-import { fillPartition, fitPrinter, notBuiltYet, profileRefusals, defaultsFor, shapedCutsSentence, type Axis, type Box, type CutInput, type FillContext, type PartitionOp, type Profile, type Target } from "../src/modeling/partition.ts";
+import type { Vec3 } from "../src/model-tree.ts";
+import { fillPartition, fitPrinter, notBuiltYet, profileRefusals, defaultsFor, shapedCutsSentence, type Axis, type CutInput, type FillContext, type PartitionOp, type Profile, type Target } from "../src/modeling/partition.ts";
+import type { PrintFrame } from "../src/split-print.ts";
+
+// The op the tree stores, the frame Fit the printer plans in, and what an export target's pieces say are the card's too
+// (`src/split-print.ts`).
+export { bedFrame, exportedCommit, exportedNote, exportsPieces, NEEDS_CUTS, storedPartition, type PrintFrame } from "../src/split-print.ts";
 
 /** The planner's sentence when model_probe is asked to plan an op of another kind. */
 export const PLAN_KIND = "plan: true plans a partition. Other kinds are probed without it.";
-export const NEEDS_CUTS = "A partition needs at least one cut. model_probe with plan: true proposes them.";
 
 function vec3(value: unknown): Vec3 | null {
   return Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === "number" && Number.isFinite(n)) ? [value[0], value[1], value[2]] : null;
@@ -76,68 +77,6 @@ export function readPartition(raw: Record<string, unknown>, library: (printer: s
     ...(labels ? { labels: labels as PartitionOp["labels"] } : {}),
     ...(typeof raw.bedMarginMm === "number" ? { bedMarginMm: raw.bedMarginMm } : {}),
     ...(typeof raw.maxPieces === "number" ? { maxPieces: raw.maxPieces } : {}),
-  };
-}
-
-/**
- * The op the tree stores, in the solid's own frame: each cut a straight plane with its U, connectors off, and the
- * target, orientation, layout, margin and Max pieces filled as at Apply (D11), so a replay cuts the same pieces after
- * the library or the settings change. Labels are written in full, `on: true` unless typed off: only an explicit `on`
- * cuts part numbers, so an op stored before milestone 3b, with none, gains no digits on a replay. Null with the sentence
- * when this milestone does not build the op.
- */
-export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine): { op: PartitionModelOp } | { reason: string } {
-  if (op.cuts.length === 0) return { reason: NEEDS_CUTS };
-  const later = notBuiltYet(op);
-  if (later) return { reason: later };
-  const filled = fillPartition(op, ctx);
-  const typed: PartitionModelOp = {
-    kind: "partition",
-    cuts: filled.cuts.map((cut) => ({ origin: [...cut.origin], normal: [...cut.normal], u: [...cut.u], profile: { kind: "straight" }, connectors: { on: false } })),
-    target: filled.target,
-    orient: filled.orient,
-    arrange: filled.arrange,
-    labels: { ...filled.labels },
-    bedMarginMm: filled.bedMarginMm,
-    maxPieces: filled.maxPieces,
-  };
-  return { op: toSolidOp(typed, pose) as PartitionModelOp };
-}
-
-/**
- * --- D12. A split to print for a printer this app does not slice for (a resin target): its pieces stay in Model, off
- * the plate, and are exported; none of them, and not the part as cut, reaches the slicer.
- */
-export function exportsPieces(op: ModelOp | null | undefined): boolean {
-  return op?.kind === "partition" && op.target !== undefined && op.target.process !== "fdm";
-}
-
-/** What model_apply says of an export target's pieces. */
-export function exportedNote(printer: string): string {
-  return `These pieces are for the ${printer}: they stay in Model, off the plate. Export them with export_3mf or model_export_step, the part as object and pieces: true.`;
-}
-
-/** Why a part cut for an export target is not put on the plate (model_commit, a slice, the plate's 3MF). */
-export function exportedCommit(name: string, printer: string): string {
-  return `${name} is cut for the ${printer}, which this app does not slice for. Export its pieces with export_3mf or model_export_step and pieces: true, or model_goto a step before the cut to print it here.`;
-}
-
-/** The part as it stands on the bed: its box in the print frame, and the way back to model space for a cut planned there. */
-export interface PrintFrame {
-  box: Box;
-  point: (p: Vec3) => Vec3;
-  direction: (d: Vec3) => Vec3;
-}
-
-/** The solid's `positions` as the plate places them (`printFrame`, which `model_check` reads too): the frame Fit the printer plans in. */
-export function bedFrame(positions: Float32Array, orient: Mat3, scale: number, pose: Affine): PrintFrame {
-  const placed = printFrame(positions, orient, scale > 0 ? scale : 1);
-  const bounds = boundsOf(placed.positions);
-  const own = placed.toSource;
-  return {
-    box: { min: [...bounds.min], max: [...bounds.max] },
-    point: (p) => applyPose(pose, applyPose(own, p)),
-    direction: (d) => turnDir(pose, turnDir(own, d)),
   };
 }
 

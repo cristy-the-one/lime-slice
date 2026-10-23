@@ -94,6 +94,7 @@ src/model-request.test.ts
 src/model-edit.test.ts
 src/model-partition.test.ts
 src/model-explode.test.ts
+src/split-print.test.ts
 src/fan.test.ts
 src/bridge.test.ts
 mcp/schema.test.ts

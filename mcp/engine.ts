@@ -843,6 +843,19 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         const replay = Array.isArray(req.replay) ? req.replay : [];
         const steps = [{ id: req.node ?? 1, op: req.op }, ...replay.map((step) => ({ id: step.id, op: step.op }))];
         const prior = kept.get(key);
+        // --- D9. A hole whose origin is off the stand-in's box misses it: the edit keeps nothing, or with keepBroken
+        // the first step that misses is kept broken with the rest, and the tree shows the last step that built.
+        const misses = (op: unknown) => {
+          const hole = op as { kind?: string; origin?: number[] } | undefined;
+          return !!prior && hole?.kind === "hole" && Array.isArray(hole.origin) && [0, 1].some((i) => (hole.origin![i] ?? 0) < (prior.min[i] ?? 0) - 1e-6 || (hole.origin![i] ?? 0) > (prior.max[i] ?? 0) + 1e-6);
+        };
+        const missed = steps.findIndex((step) => misses(step.op));
+        if (missed === 0 && !(req as { keepBroken?: boolean }).keepBroken) return JSON.stringify({ error: "The hole missed this solid" });
+        if (missed === 0 && prior) {
+          const wire = remember(key, prior);
+          wire.id = req.parent ?? 0;
+          return JSON.stringify({ ...wire, built: [], broken: { id: steps[0]!.id, error: "The hole missed this solid" } });
+        }
         const volume = prior ? Math.max(1, prior.volume / 2) : 500;
         const base = prior ?? { volume, positions: boxSolid([0, 0, 0], [20, 20, 20], volume).positions, min: [0, 0, 0], max: [20, 20, 20] };
         const edited = { ...base, volume, positions: new Float32Array(base.positions) };

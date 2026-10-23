@@ -138,7 +138,7 @@ export function aspectFor(handle: DragHandle, ctx: AspectContext = {}): HandleAs
   if (ctx.measure && (handle.id === "measure-a" || handle.id === "measure-b")) {
     return done(measureLocal(ctx.measure, handle, tip), "world");
   }
-  if (ctx.plane && (handle.id === "plane" || field === "modelPlane")) {
+  if (ctx.plane && (handle.id === "plane" || handle.id.startsWith("cut-") || field === "modelPlane")) {
     return done(planeLocal(ctx.plane, handle, tip), "world");
   }
   if ((handle.id.startsWith("tilt-") || field === "modelTiltA" || field === "modelTiltB") && ctx.plane) {

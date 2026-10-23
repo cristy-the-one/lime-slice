@@ -130,8 +130,9 @@ check("its tree is closed in the engine", engine.calls.includes("close"));
 const second = session.objects.find((row) => row.id === pieces[0])!;
 const secondRoot = second.tree?.root as { kind: string; node?: number; index?: number } | undefined;
 check("piece 2 is the new cut's piece", secondRoot?.kind === "piece" && `node_${secondRoot.node}` === edited.node && secondRoot.index === 2, JSON.stringify(secondRoot));
-const secondRows = (await call("model_history", { object: pieces[0] })).nodes as { label: string }[];
-check("and its hole is replayed on it", secondRows.length === 2 && secondRows[1]!.label.startsWith("Hole"), JSON.stringify(secondRows));
+const secondRows = (await call("model_history", { object: pieces[0] })).nodes as { label: string; broken: string | false; current: boolean }[];
+check("its hole, now off the piece, stays in its tree, broken, and its row says why", secondRows.length === 2 && secondRows[1]!.label.startsWith("Hole") && String(secondRows[1]!.broken).includes("missed") && secondRows[0]!.current, JSON.stringify(secondRows));
+check("and the edit says so", ((edited.notes as string[] | undefined) ?? []).some((line) => line.includes("step 1 did not build on the new cut")), JSON.stringify(edited.notes));
 const editedRows = ((await call("model_history", { object })).nodes as { label: string; current: boolean }[]);
 check("the part's history has the new row, current, beside the old one", editedRows.map((row) => row.label).join(" | ") === "box | Split to print, 3 parts | Split to print, 2 parts" && editedRows[2]!.current, JSON.stringify(editedRows));
 await call("model_probe", { object, op, node: "node_0" });
@@ -139,8 +140,21 @@ const back = await call("model_edit", { object, node: String(edited.node), op })
 const backPieces = back.pieces as string[];
 check("an edit back to three cuts gives three parts again, piece 2 still the same object", back.ok === true && back.parts === 3 && backPieces[0] === pieces[0] && backPieces.length === 2 && backPieces[1] !== pieces[1], JSON.stringify(back));
 check("a new third piece joins the plate", (await plate()).length === 3);
+const keptRows = (await call("model_history", { object: pieces[0] })).nodes as { label: string; broken: string | false }[];
+check("the kept hole is tried again on the rebuilt piece, and builds", keptRows.length === 2 && keptRows[1]!.label.startsWith("Hole") && keptRows[1]!.broken === false, JSON.stringify(keptRows));
+
+// --- Lay out places only the new pieces: an object already on the plate, where a whole-plate Arrange would start, stays.
+const other = String((await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 })).object);
+await call("object_place", { object: other, centreX: 15, centreY: 15 });
+const otherBefore = (await plate()).find((row) => row.object === other)!.bboxMm;
 const committedAgain = await call("model_commit", { object });
-check("commit puts the rebuilt pieces on the plate", committedAgain.ok === true && (committedAgain.pieces as string[]).length === 2, JSON.stringify(committedAgain));
+check("commit puts the rebuilt pieces on the plate", committedAgain.ok === true && (committedAgain.pieces as string[]).length === 2 && committedAgain.arranged === true, JSON.stringify(committedAgain));
+const laidOut = await plate();
+const otherAfter = laidOut.find((row) => row.object === other)!.bboxMm;
+check("model_commit does not move an unrelated object", JSON.stringify(otherAfter) === JSON.stringify(otherBefore), `${JSON.stringify(otherBefore)} -> ${JSON.stringify(otherAfter)}`);
+const clear = (a: { min: number[]; max: number[] }, b: { min: number[]; max: number[] }) => a.max[0]! <= b.min[0]! + 1e-6 || b.max[0]! <= a.min[0]! + 1e-6 || a.max[1]! <= b.min[1]! + 1e-6 || b.max[1]! <= a.min[1]! + 1e-6;
+check("and the new pieces clear it", (committedAgain.pieces as string[]).every((id) => clear(laidOut.find((row) => row.object === id)!.bboxMm, otherAfter)), JSON.stringify(laidOut.map((row) => [row.object, row.bboxMm])));
+await call("object_remove", { object: other });
 
 // --- Saved and opened again: the row and its pieces' plate objects come back.
 const saved = await call("project_save", { name: "bar.lime" });

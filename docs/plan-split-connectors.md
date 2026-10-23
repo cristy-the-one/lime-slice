@@ -214,7 +214,7 @@ For reassembly, Model already keeps the pieces where they were cut. **Explode** 
 
 Each cut is a row. The row has At X, At Y, or At Z, the number in model space, and Tilt A and Tilt B. On a local workplane the axes are U, V, and W, as Split's are (`docs/local-workplane.md`). **Face** aims the plane at the picked flat face plus an offset, and then the cut is stored as origin and normal, so a replay does not depend on face numbers. A curved face is refused with Split's sentence: "Pick a flat face. This one is curved."
 
-Every number accepts an expression. The text is stored on `exprs` and stripped before the engine call.
+Every number accepts an expression. The text is stored on `exprs` and stripped before the engine call. (Milestone 4's card evaluates an expression into its number; keeping the text on the op waits until a parameter change can rebuild a split to print, which `refreshOp` does not yet do for this kind.)
 
 ### By the mouse
 
@@ -358,7 +358,7 @@ A shaped joint that touches the bed only on its teeth, with Joint down on, gets 
 
 **Resin, exported.** The export keeps every piece as cut, in model space. PreForm tilts and supports it. The export note says: "Keep supports off the cut faces. They carry the fit and the part number." The pins are one more part in the export.
 
-**Lay out on the bed** runs `arrangedObjects` with `ARRANGE_GAP_MM` on the plate's printer, as Arrange does, once the pieces have plate meshes: on the MCP that is the `model_commit` that first puts them on the plate (milestone 3). Off leaves the pieces sharing one spot, and the readout uses Split's sentence about Arrange. Dowel pins go on the plate as one more object, standing upright.
+**Lay out on the bed** places only the new pieces, with `ARRANGE_GAP_MM` on the plate's printer, around the objects already on the plate, which stay where they are (`arrangedObjects` with `keep`); the part's own first piece counts where its new mesh lands. It runs once the pieces have plate meshes: in the app that is the Apply that makes them, as a split's piece; on the MCP it is the `model_commit` that first puts them on the plate (milestone 3). An Update lays out only a part number that is new. Off leaves the pieces sharing one spot, and the readout uses Split's sentence about Arrange. Dowel pins go on the plate as one more object, standing upright.
 
 Part numbers are engraved, not a separate object. The string is the index, "1", "2", "3". Height and Depth are the label fields. The strokes are `textStrokes`'s, 0.15 of the height wide as `compose.ts` draws text; the client builds them and the kernel places them, since only the kernel sees the cut faces. A label keeps the wall floor (`2 × f`) from the face's edge and from any hole in it. A side face is used only when no cut face of that piece has room. A new partition stores `labels: {on: true, face, height, depth}` in full; an op stored before 3b has no `labels` and cuts no number on a replay. The default face is the cut face (section 2), so the number is hidden once the parts are assembled, and both mating faces of a cut carry their numbers side by side. A drag moves it. A later rename of the plate object does not change the engraved digit, because the digit is geometry. The note under the checkbox says that. **Part numbers** off stores no text and cuts no digits.
 
@@ -432,7 +432,7 @@ For a dowel, Depth is the pin's whole length and each piece's hole takes half of
 
 The card is a left-aligned form in the Model dock. The fields scroll. Apply is the primary button and stays pinned, with Cancel. The status title is short. The steps sit in How.
 
-Rows, top to bottom: **Print on** (the target printer, the plate's printer first), the fit note, the cut list, the selected cut's plane, its profile, its connectors, then the piece list with orientation and numbers. **Fit the bed** (or **Fit the printer** for an export target) and **Clear cuts** sit on the cut list. **Connectors** is a checkbox on the selected cut. With it off, the connector fields are hidden, not merely disabled, so a plain cut shows a plain card.
+Rows, top to bottom: **Print on** (the target printer, the plate's printer first), the fit note, the cut list, the selected cut's plane, its profile, its connectors, then the piece list with orientation and numbers. Each cut's row carries its own At X, At Y, or At Z (or Offset, for a face), so every plane on the view has the field it changes; the selected cut's plane has X, Y, Z, and Face, and Tilt A and Tilt B. **Add cut**, **Fit the bed** (or **Fit the printer** for an export target), and **Clear cuts** sit on the cut list. **Connectors** is a checkbox on the selected cut. With it off, the connector fields are hidden, not merely disabled, so a plain cut shows a plain card.
 
 For an export target, the foot reads **Apply** and then **Export…**, which opens the save dialog with STL per piece, one 3MF, or one STEP assembly, and the export note about supports. **Explode** sits beside the piece list in Model, with its gap.
 
@@ -584,16 +584,21 @@ The first draft was FDM-only and oriented every piece joint-down. Review changed
 8. **Floors come from the process** (section 2). FDM floors scale with the nozzle and layer; resin gets its own floors, clearance row, and coupon, labelled Starting fit.
 9. **Export and reassembly** (D12, milestone 3b). STL, 3MF, or a STEP assembly for PreForm, the support note, part numbers on the mating faces, and Explode in Model. Milestone 3b delivers the resin use case right after the straight cut and the history row.
 
-## 19. Open from milestone 3, for milestone 4
+## 19. Changes in milestone 4 (2026-10-23)
 
-Milestone 3 reaches the op through the MCP and the saved file only. Two things it does less well than this plan asks, both to settle when the panel's Apply and Edit land in milestone 4:
+Milestone 4 adds the card and closes what milestone 3 left open. It changed seven things:
 
-1. **Lay out moves the whole plate.** `model_commit` runs the plate's Arrange, so other objects the user placed move too. Lay out should place only the new pieces, around what is already on the plate.
-2. **D9's kept steps.** When an edit rebuilds a piece and the first of that piece's later steps no longer builds, those steps are not kept as a row that says why; the piece becomes the new cut's piece. D9 keeps them, so the user's later work on a piece is never lost.
+1. **Lay out places only the new pieces** (section 10). `arrangedObjects` takes `keep`, the objects that stay; the others are placed around them in turn, where an added object would land. The app lays out at Apply, around the part's first piece where its new mesh lands; `model_commit` on the MCP does the same instead of the whole-plate Arrange, which moved objects the user had placed.
+2. **D9's kept steps.** An edit's `keepBroken: true` (`docs/step-modeler.md`) keeps a rebuilt piece's first later step broken, with the rest under it, instead of keeping nothing; the piece shows its new root and the row says why. The next rebuild replays that kept branch too (`keptSteps`), so a step that missed the piece once is tried again, not lost. A Rust tree test, the MCP test, and Playwright cover it.
+3. **Each cut's number is on its row** (section 12). Hover, drag, or focus lights only that plane and its own field, so every plane needs one: the rows carry At X, At Y, or At Z, and the selected cut's plane keeps X, Y, Z, Face, and the tilts. Every plane has an arrow; the selected one also has the tilt rings.
+4. **Expressions evaluate; their text waits** (section 5). The card's fields take an expression as every Model field does, but the op does not store `exprs` yet: a parameter change cannot rebuild a split to print until `refreshOp` has a case for it.
+5. **An edit through a join is refused.** A split to print in a tool's tree, reached through another part's History, says "Edit this split to print from the part it cut."; its own part edits it.
+6. **Model Undo leaves the pieces on the plate**, as it leaves a split's piece (the owner's rule that jumping back before a Split keeps its piece); the visit's one Prepare step is what takes an Apply or an Update back whole. The MCP's `model_undo` still takes them off, as milestone 3 built it.
+7. **The planes stop at the section.** Each cut's square is twice the part's furthest corner from it, in its plane, rather than Split's 1.45 times the part's largest side, so a long bar's cuts stay readable and the lit outline is that cut's own.
 
 ## 20. Milestone 3b as built, and what the card wires after milestone 4
 
-3b ran beside milestone 4, so it is the engine, the library, the export, the MCP and the Explode view. The card's controls are a small follow-up once milestone 4's card is on `main`.
+3b ran beside milestone 4, so it is the engine, the library, the export, the MCP and the Explode view. The card (`src/split-print.ts`, `src/ui/split-print.ts`) is now on `main`; its 3b controls are a small follow-up. The op both write is `storedPartition` in `src/split-print.ts`, so a card Apply already stores `labels` in full and cuts part numbers, and `exportsPieces`, `exportedNote` and `exportedCommit` sit beside it for the card to use.
 
 Built:
 
@@ -607,7 +612,7 @@ Built:
 The card follow-up wires:
 
 1. **Print on**, a menu of `targetPrinters(library)` by name, the plate's printer selected. Choosing one writes `target: printerTarget(row)` into the op the card applies; for an export-only row the fit button reads **Fit the printer** and the planner call (`fitPrinter`, `fillPartition`) already reads the target.
-2. **Part numbers**, a checkbox, on by default. On writes `labels: {on: true, face: "cut", height, depth}` with `partitionDefaults(...).numberHeightMm` and `numberDepthMm` for the target's process; off writes `{on: false}`. The note under it says the digit is geometry and a rename does not change it. Show the apply reply's `notes` ("Part 2 has no room for a number.") in the card.
-3. **Apply for an export target** in the app. Send `pieceKeys` as today, but hold each piece's tree in `modelTrees` without a plate object (do not `placePiece`), and have `commitModel` leave a part whose step is past such a cut off the plate with `exportedCommit`'s sentence (`mcp/partition.ts`). Then `members()` in `src/app/model-explode.ts` must also take those off-plate pieces, from their trees' meshes, since today it finds pieces by plate object.
+2. **Part numbers**, a checkbox, on by default (the stored op already says on). On writes `labels: {on: true, face: "cut", height, depth}` with `partitionDefaults(...).numberHeightMm` and `numberDepthMm` for the target's process; off writes `{on: false}`. The note under it says the digit is geometry and a rename does not change it. Show the apply reply's `notes` ("Part 2 has no room for a number.") in the card.
+3. **Apply for an export target** in the app. Send `pieceKeys` as today, but hold each piece's tree in `modelTrees` without a plate object (do not `placePiece`), and have `commitModel` leave a part whose step is past such a cut off the plate with `exportedCommit`'s sentence (`src/split-print.ts`). Lay out (section 19, item 1) skips such pieces, since they never reach the plate. Then `members()` in `src/app/model-explode.ts` must also take those off-plate pieces, from their trees' meshes, since today it finds pieces by plate object.
 4. **Export…**, the card's second button for an export target: a save dialog with STL per piece, one 3MF, or one STEP, built from `pieceNames`, `encode3mf(meshes, names)`, `encodeStl`, and `exportRequest(key, node, "step", pieces)`, with `SUPPORT_NOTE` beside it. The pins file joins `pieceNames` as `<source>-pins` in milestone 5.
-5. **Playwright** for those controls, with milestone 4's card spec.
+5. **Playwright** for those controls, beside `e2e/model-split-print.spec.ts`.
