@@ -3,7 +3,8 @@
  * its big binary records compressed. The app (browser and Tauri) and the MCP server (Node) both save and open through
  * these two functions, so they read and write the same bytes.
  *
- * A binary record is a plate object's `mesh`, its `brep` (the solid), and a `modelTree.rootStep` that carries its bytes.
+ * A binary record is a plate object's `mesh`, its `brep` (the solid), and a `modelTree.rootStep` that carries its bytes,
+ * and a held piece's `mesh` and `brep`.
  * In `src/project.ts` such a record holds `bytesBase64`. On disk it keeps `name`, `byteLength`, and `hash` (of the
  * original bytes, as ever) and holds the bytes as
  *
@@ -39,13 +40,16 @@ async function through(bytes: Uint8Array, transform: CompressionStream | Decompr
 export const gzip = (bytes: Uint8Array) => through(bytes, new CompressionStream("gzip"));
 export const gunzip = (bytes: Uint8Array) => through(bytes, new DecompressionStream("gzip"));
 
+/** The lists of a wire document whose rows hold binary records. */
+const HOLDERS = ["objects", "modelTools", "heldPieces"] as const;
+
 /** The records of a wire document that hold bytes, in file order. */
 function binaryRecords(wire: Row): Row[] {
   const out: Row[] = [];
   const take = (value: unknown) => {
     if (isRow(value)) out.push(value);
   };
-  const holders = [...(Array.isArray(wire.objects) ? wire.objects : []), ...(Array.isArray(wire.modelTools) ? wire.modelTools : [])];
+  const holders = HOLDERS.flatMap((key) => (Array.isArray(wire[key]) ? (wire[key] as unknown[]) : []));
   for (const holder of holders) {
     if (!isRow(holder)) continue;
     take(holder.mesh);
@@ -99,7 +103,7 @@ export function prepareProject(project: LimeProject): PreparedProject {
     if (isRow(next.modelTree) && isRow(next.modelTree.rootStep)) next.modelTree = { ...next.modelTree, rootStep: replaced(next.modelTree.rootStep) };
     return next;
   };
-  for (const key of ["objects", "modelTools"]) {
+  for (const key of HOLDERS) {
     const rows = wire[key];
     if (Array.isArray(rows)) wire[key] = rows.map(swapHolder);
   }

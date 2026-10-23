@@ -5,6 +5,7 @@ import { emptyOverrides, projectOverrides } from "../overrides.ts";
 import {
   assemblePlate,
   meshSeat,
+  meshTokenOf,
   setMeshSeat,
   plateFileIsVersion2,
   settingsEmpty,
@@ -12,7 +13,7 @@ import {
 } from "../plate.ts";
 import { dropEmptyReinforce } from "../reinforcement.ts";
 import { base64ToBytes } from "../base64.ts";
-import { meshRecord, type LimeProject, type ProjectPlacement, type ProjectProfile, type ToolTree } from "../project.ts";
+import { meshRecord, type HeldPiece, type LimeProject, type ProjectPlacement, type ProjectProfile, type ToolTree } from "../project.ts";
 import { decodeProject, encodeProject } from "../project-codec.ts";
 import { geometryHash, projectSummary, thumbnailFromPng, type ProjectThumbnail } from "../project-thumb.ts";
 import { capturePlatePng } from "./thumb-capture.ts";
@@ -23,7 +24,7 @@ import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
-import { adoptSavedTrees, captureOpenSolid, historyToSave, noteParametersBuilt } from "./model.ts";
+import { adoptHeldPieces, adoptSavedTrees, captureOpenSolid, historyToSave, noteParametersBuilt, type HeldToSave } from "./model.ts";
 import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
 import { copyWorkplane } from "../workplane.ts";
 import { cloneStudy } from "../sim/study.ts";
@@ -63,11 +64,12 @@ export async function saveCurrentProject() {
     level: loadSettingsLevel(),
     supportEdits: state.supportEdits.map((entry) => structuredClone(entry)),
   };
-  const { objects, tools } = fileObjects(history);
+  const { objects, tools, pieces } = fileObjects(history);
   if (plateFileIsVersion2(objects)) {
     project.version = 2;
     project.objects = objects;
     if (tools.length > 0) project.modelTools = tools;
+    if (pieces.length > 0) project.heldPieces = pieces;
   }
   const overrides = projectOverrides(state.overrides);
   if (overrides) project.overrides = structuredClone(overrides);
@@ -185,7 +187,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     state.sequentialGantry = project.sequentialGantryMm ?? 0;
     state.selectedVolumeId = state.overrides.volumes[0]?.id ?? null;
     if (project.objects && project.objects.length > 0) {
-      const loaded = await loadPlateObjects(project.objects, project.modelTools ?? []);
+      const loaded = await loadPlateObjects(project.objects, project.modelTools ?? [], project.heldPieces ?? []);
       if (typeof loaded === "string") {
         pushToast(loaded, "error", { label: "Retry", run: openProjectPicker });
         return false;
@@ -194,6 +196,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
       state.plate = loaded.plate;
       applySelectedToState(loaded.plate);
       adoptSavedTrees(loaded.trees, project.modelTools ?? []);
+      adoptHeldPieces(loaded.pieces);
       unread.push(...loaded.unread);
       // An Add that started while these meshes were loading was aimed at the plate this replaced.
       session.meshEpoch += 1;
@@ -217,7 +220,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   }
 }
 
-function fileObjects({ trees, tools }: Awaited<ReturnType<typeof historyToSave>>): { objects: PlateFileObject[]; tools: ToolTree[] } {
+function fileObjects({ trees, tools, pieces }: Awaited<ReturnType<typeof historyToSave>>): { objects: PlateFileObject[]; tools: ToolTree[]; pieces: HeldPiece[] } {
   // Bytes held twice (a root STEP that is the part's own solid or mesh) are encoded and hashed once.
   const records = new Map<ArrayBuffer, ReturnType<typeof meshRecord>>();
   const record = (name: string, bytes: ArrayBuffer) => {
@@ -262,10 +265,21 @@ function fileObjects({ trees, tools }: Awaited<ReturnType<typeof historyToSave>>
     if (saved) row.modelTree = fileTree(saved);
     return row;
   });
-  return { objects, tools: tools.map(({ id, name, tree }) => ({ id, name, modelTree: fileTree(tree) })) };
+  const held = pieces.map(({ object, node, index, pins, mesh }): HeldPiece => {
+    const seat = meshSeat(mesh.bytes);
+    return {
+      object,
+      node,
+      ...(pins ? { pins } : { index }),
+      mesh: record(mesh.name, mesh.bytes),
+      ...(mesh.step ? { brep: record(solidFileName(mesh.name, mesh.step), mesh.step) } : {}),
+      ...(seat !== undefined ? { meshSeatMm: seat } : {}),
+    };
+  });
+  return { objects, tools: tools.map(({ id, name, tree }) => ({ id, name, modelTree: fileTree(tree) })), pieces: held };
 }
 
-async function loadPlateObjects(objects: PlateFileObject[], tools: readonly ToolTree[]) {
+async function loadPlateObjects(objects: PlateFileObject[], tools: readonly ToolTree[], held: readonly HeldPiece[]) {
   const rows = [];
   const trees = new Map<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>();
   const unread: string[] = [];
@@ -333,7 +347,18 @@ async function loadPlateObjects(objects: PlateFileObject[], tools: readonly Tool
       changed = true;
     }
   }
-  return { plate: assemblePlate(rows), trees, unread };
+  // A held piece whose mesh does not read is left out, and cut again when its step is shown.
+  const pieces: HeldToSave[] = [];
+  for (const piece of held) {
+    // A buffer of its own: a mesh is known by its buffer, and two pieces can have the same bytes.
+    const bytes = decode(piece.mesh)?.slice(0);
+    const sourcePos = bytes ? stlPositions(bytes) : null;
+    if (!bytes || !sourcePos) continue;
+    const solid = piece.brep ? decode(piece.brep) : null;
+    if (piece.meshSeatMm !== undefined) setMeshSeat(bytes, piece.meshSeatMm);
+    pieces.push({ object: piece.object, node: piece.node, ...(piece.pins ? { pins: piece.pins } : { index: piece.index }), mesh: { name: piece.mesh.name, bytes, sourcePos, token: meshTokenOf(bytes), ...(solid ? { step: solid } : {}) } });
+  }
+  return { plate: assemblePlate(rows), trees, unread, pieces };
 }
 
 function hashOf(bytes: ArrayBuffer): string {

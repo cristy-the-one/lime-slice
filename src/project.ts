@@ -16,6 +16,7 @@
  * under it, with every record as `bytesBase64`. A version 3 file reads as before.
  * `modelTree` is another: the object's Model history. A damaged one is left out and the part opens.
  * `modelTools` keeps the trees of tools that left the plate while a saved join names them.
+ * `heldPieces` keeps the pieces a split to print for an export target holds off the plate (`HeldPiece`).
  * `modelPose` and `meshSeatMm` place the object in Model's shared space; without them it sits where its file put it.
  * `workplane` is that object's local U, V, W frame, in its own frame. Without it the frame is the global one.
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
@@ -43,6 +44,8 @@ import { readPaint } from "./support-paint.ts";
 import type { SiteSpec } from "./support-edits.ts";
 import { readSummary, readThumbnail, summaryForWire, thumbnailForWire, type ProjectSummary, type ProjectThumbnail } from "./project-thumb.ts";
 import { PARAM_NAME } from "./modeling/expr.ts";
+import { exportsPieces } from "./split-print.ts";
+import type { NodeId } from "./model-tree.ts";
 
 export const PROJECT_VERSION = 4;
 
@@ -102,6 +105,8 @@ export interface LimeProject {
    * tool by `id`. Omitted when there are none.
    */
   modelTools?: ToolTree[];
+  /** Omitted when no split to print for an export target holds a piece. */
+  heldPieces?: HeldPiece[];
   /**
    * What the MCP server builds from, kept as it wrote it: its named parameters, its stored parts, and each object's
    * model_build recipe. The app writes it back on save. History reads a recipe to show "Built by a recipe".
@@ -132,6 +137,25 @@ export interface ToolTree {
   id: string;
   name: string;
   modelTree: NonNullable<PlateFileObject["modelTree"]>;
+}
+
+/**
+ * --- Split to print, D12. A piece of a cut for an export target, which Model holds off the plate: the part's plate object
+ * (`object`), the cut's step in its tree (`node`), and the part number (`index`, from 2), or `pins: true` for the cut's pins
+ * (milestone 5). It keeps its mesh as a plate object does (`mesh`, `meshSeatMm`) and its solid (`brep`), so a reopened
+ * project has the piece as it was cut. The cut's `pieces` and `pins` still say null for it, as an app before this wrote
+ * them: that app ignores `heldPieces` and cuts the pieces again on export, and a file it saved reads here with its pieces
+ * to cut again (`piecesToCut`).
+ */
+export interface HeldPiece {
+  object: string;
+  node: NodeId;
+  /** The part number; absent on the pins' row. */
+  index?: number;
+  pins?: true;
+  mesh: ProjectMesh;
+  brep?: ProjectMesh;
+  meshSeatMm?: number;
 }
 
 export type ProjectResult = { ok: true; project: LimeProject } | { ok: false; message: string };
@@ -178,6 +202,7 @@ export function projectWire(project: LimeProject): Record<string, unknown> {
     objects: shared.slice(0, objects.length),
   };
   if (plate && project.modelTools?.length) wire.modelTools = shared.slice(objects.length);
+  if (plate && project.heldPieces?.length) wire.heldPieces = project.heldPieces;
   // --- A8. The MCP record rides along, including each object's recipe. ---
   if (project.mcpModel) wire.mcpModel = project.mcpModel;
   const parameters = parametersForWire(project.parameters);
@@ -397,6 +422,8 @@ function readPlate(doc: Record<string, unknown>): ProjectResult {
   };
   if (project.version === 2) project.objects = objects;
   if (modelTools.length > 0) project.modelTools = modelTools;
+  const held = project.version === 2 ? readHeldPieces(doc.heldPieces, objects) : [];
+  if (held.length > 0) project.heldPieces = held;
   if (unreadHistory.length > 0) project.unreadHistory = unreadHistory;
   if (doc.mcpModel && typeof doc.mcpModel === "object" && !Array.isArray(doc.mcpModel)) project.mcpModel = doc.mcpModel as Record<string, unknown>;
   const parameters = readParameters(doc.parameters);
@@ -518,6 +545,52 @@ function readPlateObjects(value: unknown, tools: unknown): { objects: PlateFileO
     else if (tree === null) unreadHistory.push(name);
   });
   return { objects: out, modelTools, unreadHistory };
+}
+
+/**
+ * The held pieces of a file, each for a cut for an export target in its object's tree that names no piece there. A row
+ * that is damaged, or names no such cut, is left out: the piece is cut again (`piecesToCut`).
+ */
+function readHeldPieces(value: unknown, objects: readonly PlateFileObject[]): HeldPiece[] {
+  if (!Array.isArray(value)) return [];
+  const out: HeldPiece[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    const pins = row.pins === true;
+    if (typeof row.object !== "string" || !Number.isInteger(row.node) || pins === Number.isInteger(row.index)) continue;
+    const node = row.node as number;
+    const index = pins ? undefined : (row.index as number);
+    const cut = objects.find((obj) => obj.id === row.object)?.modelTree?.nodes.find((step) => step.id === node);
+    if (!cut || !exportsPieces(cut.op?.kind === "partition" ? cut.op : null)) continue;
+    if (index === undefined ? cut.pins !== null : index < 2 || cut.pieces?.[index - 2] !== null) continue;
+    const mesh = readMesh(row.mesh);
+    const brep = row.brep === undefined ? undefined : readMesh(row.brep);
+    const id = `${row.object}#${node}#${index ?? "pins"}`;
+    if (typeof mesh === "string" || typeof brep === "string" || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ object: row.object, node, ...(index === undefined ? { pins: true as const } : { index }), mesh, ...(brep ? { brep } : {}), ...(finite(row.meshSeatMm) ? { meshSeatMm: row.meshSeatMm as number } : {}) });
+  }
+  return out;
+}
+
+/**
+ * The pieces of each cut for an export target that a project holds no saved piece for, as a file 3.8.0 wrote: each
+ * plate object's cut, its step, the part numbers to cut again, and `pins` when its pins are to be made again too.
+ */
+export function piecesToCut(project: LimeProject): { object: string; node: NodeId; indexes: number[]; pins?: true }[] {
+  const out: { object: string; node: NodeId; indexes: number[]; pins?: true }[] = [];
+  for (const obj of project.objects ?? []) {
+    for (const step of obj.modelTree?.nodes ?? []) {
+      if (!exportsPieces(step.op?.kind === "partition" ? step.op : null) || !step.pieces) continue;
+      const kept = (index?: number) => !!project.heldPieces?.some((held) => held.object === obj.id && held.node === step.id && (index === undefined ? held.pins === true : held.index === index));
+      const indexes = step.pieces.flatMap((piece, at) => (piece === null && !kept(at + 2) ? [at + 2] : []));
+      const pins = step.pins === null && !kept();
+      if (indexes.length > 0 || pins) out.push({ object: obj.id, node: step.id, indexes, ...(pins ? { pins: true as const } : {}) });
+    }
+  }
+  return out;
 }
 
 /** A root STEP: whole, or its name, hash, and length alone when the file holds those bytes elsewhere. */
