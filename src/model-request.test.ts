@@ -39,6 +39,11 @@ eq("a whole tree can send one step's saved solid, which that step and its childr
 eq("without one, a whole tree sends no seed", "seed" in wholeTreeRequest(grown, root, 1, 0.1, { seed: null }), false);
 eq("a quiet open says so, and only then", [wholeTreeRequest(grown, root, 1, 0.1, { quiet: true }).quiet, "quiet" in wholeTreeRequest(grown, root, 1, 0.1)], [true, false]);
 eq("an export names its format", [exportRequest("k", 3, "brep"), exportRequest("k", 3, "step").format], [{ call: "export", key: "k", node: 3, format: "brep" }, "step"]);
+eq(
+  "an export of a split to print's pieces sends their names with them, and without pieces sends none",
+  [exportRequest("k", 3, "step", [{ key: "k-2", node: 0 }], ["cover-1", "cover-2"]), "names" in exportRequest("k", 3, "step")],
+  [{ call: "export", key: "k", node: 3, format: "step", pieces: [{ key: "k-2", node: 0 }], names: ["cover-1", "cover-2"] }, false],
+);
 eq("the engine's binary solid is told from STEP by its first bytes", [isBrep(saved), isBrep(saved.buffer), isBrep(new TextEncoder().encode("ISO-10303-21;")), isBrep(new TextEncoder().encode("LIMEBREP ")), isBrep(undefined)], [true, true, false, false, false]);
 eq("a project names a solid by its format", [solidFileName("bracket.step", saved), solidFileName("bracket.stl", step), solidFileName(".brep", saved)], ["bracket.brep", "bracket.step", "solid.brep"]);
 eq("an apply names the split piece's key only when there is one", [applyRequest("k", 0, 1, hole, 0.1), applyRequest("k", 0, 2, hole, 0.1, "piece#1").otherKey], [{ call: "apply", key: "k", parent: 0, node: 1, op: hole, chordMm: 0.1 }, "piece#1"]);

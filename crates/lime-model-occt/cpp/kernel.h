@@ -121,6 +121,18 @@ bool measure_distance(
 
 TopoDS_Shape read_step(const char* path, std::string& error);
 bool write_step(const TopoDS_Shape& shape, const char* path, std::string& error);
+/// `solids` as one STEP file of free shapes in this order, each a product named by `names` (the XCAF document writer).
+/// The lists have the same length; the schema, units and p-curve mode are `write_step`'s.
+bool write_step_named(
+    const std::vector<TopoDS_Shape>& solids,
+    const std::vector<std::string>& names,
+    const char* path,
+    std::string& error);
+/// The free shapes of a STEP file with their product names, in the file's order (the XCAF document reader).
+bool read_step_named(
+    const char* path,
+    std::vector<std::pair<std::string, TopoDS_Shape>>& out,
+    std::string& error);
 /// The shape in Open CASCADE's own binary format (BinTools), without triangulation: every number as the
 /// kernel holds it, and sub-shapes in the order it numbers them, so a read gives back the same faces and edges.
 std::string write_brep(const TopoDS_Shape& shape);

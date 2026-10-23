@@ -874,10 +874,12 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         const encoded = solid ? Buffer.from(solid.positions.buffer, solid.positions.byteOffset, solid.positions.byteLength).toString("base64") : "";
         // A `brep` export starts as the real engine's binary solid does; the mark still carries the mesh.
         const head = (req as { format?: string }).format === "brep" ? "LIMEBREP 1 fake 0 *\n" : "ISO-10303-21;\n";
-        const step = `${head}/* ${SOLID_MARK}${encoded} */\nENDSEC;\n`;
-        const bytes = Buffer.from(step, "utf8");
-        // --- Split to print: a STEP of a partition's pieces holds one solid for this tree and one for each piece named.
+        // --- Split to print: a STEP of a partition's pieces holds one solid for this tree and one for each piece named,
+        // each a product of the name sent for it.
         const pieces = (req as { pieces?: unknown[] }).pieces;
+        const products = Array.isArray(pieces) ? ((req as { names?: string[] }).names ?? []).map((name, at) => `#${at + 1}=PRODUCT('${name}','${name}','',());\n`).join("") : "";
+        const step = `${head}/* ${SOLID_MARK}${encoded} */\n${products}ENDSEC;\n`;
+        const bytes = Buffer.from(step, "utf8");
         return JSON.stringify({ bytesBase64: bytes.toString("base64"), byteLength: bytes.length, ...(Array.isArray(pieces) ? { solids: 1 + pieces.length } : {}) });
       }
       if (req.call === "close") return JSON.stringify({ ok: true });

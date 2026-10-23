@@ -218,6 +218,9 @@ check("each STL holds its piece", files.every((file) => readFileSync(file.path).
 check("with the support note", stls.note === SUPPORT_NOTE);
 const step = await call("model_export_step", { object: tall, name: "tall", pieces: true });
 check("model_export_step of the pieces writes one STEP of three solids", step.ok === true && step.parts === 3 && step.solids === 3 && String(step.path).endsWith("tall.step"), JSON.stringify(step));
+const stepText = Buffer.from(readFileSync(String(step.path))).toString("latin1");
+const productAt = (name: string) => stepText.indexOf(`PRODUCT('${name}'`);
+check("the STEP's solids are named <source>-<n> in assembly order", names.every((name) => productAt(name) >= 0) && productAt("tall-1") < productAt("tall-2") && productAt("tall-2") < productAt("tall-3"), stepText.slice(0, 300));
 check("with the support note", step.note === SUPPORT_NOTE);
 const noCut = await call("model_export_step", { object, name: "bar-pieces", pieces: true });
 check("pieces: true on a part with a split to print on its way exports those pieces", noCut.ok === true && noCut.parts === 3, JSON.stringify(noCut));
