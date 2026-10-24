@@ -42,7 +42,7 @@ use crate::sliced::{
 use crate::solve::node_graph_factor_len;
 use crate::solve::{FaerLdlt, LinearSolver};
 use crate::solve_cases_with;
-use crate::twolevel::{Prolongation, TwoLevelPcg};
+use crate::multigrid::PMultigridPcg;
 use crate::study::{Card, Request, Step};
 use crate::trust::TrustLevel;
 use crate::units::{cross, dot, norm, sub};
@@ -223,25 +223,38 @@ pub struct SlicedStudy {
     /// size is fitted to, and whether the second cell size runs.
     #[serde(default)]
     pub memory_mb: Option<f64>,
-    /// How the second cell size is solved. Absent, directly where its factor
-    /// fits and iteratively where only the iterative solve does.
+    /// How the first cell size is solved. Absent, iteratively from
+    /// [`ITERATIVE_FROM_NODES`] nodes, directly below.
     #[serde(default)]
-    pub check_solver: CheckSolver,
+    pub solver: SolverChoice,
+    /// How the second cell size is solved. Absent, as the first, where the
+    /// memory allows.
+    #[serde(default)]
+    pub check_solver: SolverChoice,
     /// Smooth the iterative solve on a GPU, in a build that has one and on a
     /// machine with an adapter. Off, it smooths on the CPU.
     #[serde(default = "yes")]
     pub use_gpu: bool,
+    /// The grid, in nodes, from which the GPU smooths. Absent,
+    /// [`crate::multigrid::GPU_FROM_NODES`].
+    #[serde(default)]
+    pub gpu_from_nodes: Option<usize>,
 }
 
-/// How the second cell size is solved.
+/// How a cell size is solved: a direct factor, or conjugate gradients
+/// preconditioned by p-multigrid.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum CheckSolver {
+pub enum SolverChoice {
     #[default]
     Auto,
     Direct,
     Iterative,
 }
+
+/// The grid, in nodes, from which `auto` solves iteratively. Below it a
+/// direct factor is exact and takes a second or two.
+pub const ITERATIVE_FROM_NODES: usize = 50_000;
 
 /// The memory a study may use when it names none, MB.
 pub const DEFAULT_MEMORY_MB: f64 = 4096.0;
@@ -902,22 +915,29 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
         Some(h) => h,
         None => fitted_h_xy(field, node_budget)?,
     };
-    if study.check_resolution && study.use_gpu && study.check_solver != CheckSolver::Direct {
-        crate::twolevel::warm_gpu();
+    let first_mesh = mesh_at(field, h)?;
+    // Open the GPU while the first grid assembles, if a solve may want it:
+    // the finer grid has about 2.2 times the first's nodes.
+    let may_iterate = study.solver != SolverChoice::Direct
+        || (study.check_resolution && study.check_solver != SolverChoice::Direct);
+    let first_nodes = first_mesh.mesh.nodes.len();
+    let largest = if study.check_resolution { first_nodes * 2 } else { first_nodes };
+    if study.use_gpu && may_iterate && largest >= gpu_from_nodes(study) {
+        crate::multigrid::warm_gpu();
     }
-    let mut direct = FaerLdlt::default();
-    let first = solve_at(
+    let (first, said) = solve_grid(
         field,
         study,
         &cases,
-        mesh_at(field, h)?,
-        to_part,
-        to_slice,
-        &mut direct,
+        first_mesh,
+        (to_part, to_slice),
+        study.solver,
+        &|| true,
     )?;
     let governing = first.governing(study)?;
     let mut resolutions = vec![first.resolution(governing, study)?];
     let mut notes = first.cases[0].solution.notes.clone();
+    notes.extend(said);
     let mut finer = None;
     let mut moved = None;
     let mut compare = |second: &Solved, resolutions: &mut Vec<Resolution>| -> Result<(), SimError> {
@@ -942,103 +962,71 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
             .unwrap_or(DEFAULT_MEMORY_MB);
         let fine = h / std::f64::consts::SQRT_2;
         // Why the finer size wasn't solved, when it wasn't.
-        let why = match second_size(field, fine, &first)? {
-            Second::Refused(reason) => Some(format!(
+        let why = match mesh_at(field, fine) {
+            Err(err) => Some(format!(
                 "A second cell size of {} mm was refused ({})",
                 format_mm(fine),
-                reason.trim_end_matches('.')
+                err.message.trim_end_matches('.')
             )),
-            Second::Meshed {
-                mesh,
-                direct_mb,
-                iterative_mb,
-            } => {
-                let direct_fits = direct_mb <= check_mb;
-                let iterative_fits = iterative_mb <= check_mb;
-                // The ways to try, in order. With a GPU the iterative solve
-                // is the quicker and smaller one (the jet's 1.41 mm check:
-                // 22 s and 4.1 GB against 23–26 s and 6.6 GB), so it goes
-                // first and the direct one stands behind it.
-                let attempts: Vec<CheckSolver> = match study.check_solver {
-                    CheckSolver::Direct => vec![CheckSolver::Direct],
-                    CheckSolver::Iterative => vec![CheckSolver::Iterative],
-                    CheckSolver::Auto => {
-                        let gpu = study.use_gpu
-                            && mesh.mesh.nodes.len() >= GPU_FIRST_NODES
-                            && crate::twolevel::gpu_available();
-                        let mut order = Vec::new();
-                        if gpu && iterative_fits {
-                            order.push(CheckSolver::Iterative);
-                        }
-                        if direct_fits {
-                            order.push(CheckSolver::Direct);
-                        } else if !gpu && iterative_fits {
-                            order.push(CheckSolver::Iterative);
-                        }
-                        order
-                    }
+            Ok(mesh) => {
+                let iterative = match study.check_solver {
+                    SolverChoice::Direct => false,
+                    SolverChoice::Iterative => true,
+                    SolverChoice::Auto => mesh.mesh.nodes.len() >= ITERATIVE_FROM_NODES,
                 };
-                let mut why = (attempts.is_empty()).then(|| {
+                let iterative_mb = iterative_peak_mb(mesh.mesh.elements.len());
+                // Sized only when a direct solve is in question: it takes a
+                // symbolic analysis of the grid.
+                let direct_mb = || direct_peak_mb(&mesh.mesh).unwrap_or(f64::INFINITY);
+                let too_big = |mb: f64| {
                     format!(
                         "A second cell size of {} mm needs about {} MB, past the {} MB this solve may use",
                         format_mm(fine),
-                        direct_mb.min(iterative_mb).round(),
+                        mb.round(),
                         check_mb.round()
                     )
-                });
-                let mut mesh = Some(mesh);
-                for (i, attempt) in attempts.iter().enumerate() {
-                    let last = i + 1 == attempts.len();
-                    let grid = if last {
-                        mesh.take().expect("each attempt has the mesh")
-                    } else {
-                        mesh.clone().expect("each attempt has the mesh")
-                    };
-                    if *attempt == CheckSolver::Direct {
-                        // A direct solve needs no coarse grid: free its factor first.
-                        drop(std::mem::take(&mut direct));
-                        // The finer grid fitted and failed: that is an answer to give.
-                        let second = solve_at(
+                };
+                let fits = match study.check_solver {
+                    SolverChoice::Auto if iterative => (iterative_mb <= check_mb)
+                        .then_some(())
+                        .ok_or_else(|| too_big(iterative_mb)),
+                    SolverChoice::Auto => {
+                        let mb = direct_mb();
+                        (mb <= check_mb).then_some(()).ok_or_else(|| too_big(mb))
+                    }
+                    _ => Ok(()),
+                };
+                match fits {
+                    Err(why) => Some(why),
+                    Ok(()) => {
+                        let direct_ok = || direct_mb() <= check_mb;
+                        match solve_grid(
                             field,
                             study,
                             &cases,
-                            grid,
-                            to_part,
-                            to_slice,
-                            &mut FaerLdlt::default(),
-                        )?;
-                        compare(&second, &mut resolutions)?;
-                        let mut solutions = second.cases.into_iter().map(|c| c.solution);
-                        finer = solutions.next().map(|s| (s, second.mesh));
-                        why = None;
-                        break;
-                    }
-                    let links = Prolongation::new(&first.mesh, &grid);
-                    let mut pcg =
-                        TwoLevelPcg::new(std::mem::take(&mut direct), links).with_gpu(study.use_gpu);
-                    match solve_at(field, study, &cases, grid, to_part, to_slice, &mut pcg) {
-                        Ok(second) => {
-                            compare(&second, &mut resolutions)?;
-                            notes.extend(pcg.notes());
-                            let mut solutions = second.cases.into_iter().map(|c| c.solution);
-                            finer = solutions.next().map(|s| (s, second.mesh));
-                            why = None;
-                            break;
-                        }
-                        Err(err) => {
-                            let failed = format!(
+                            mesh.clone(),
+                            (to_part, to_slice),
+                            study.check_solver,
+                            &direct_ok,
+                        ) {
+                            Ok((second, said)) => {
+                                compare(&second, &mut resolutions)?;
+                                notes.extend(said);
+                                let mut solutions = second.cases.into_iter().map(|c| c.solution);
+                                finer = solutions.next().map(|s| (s, second.mesh));
+                                None
+                            }
+                            // The finer grid fitted and failed directly: that is
+                            // an answer to give.
+                            Err(err) if !iterative => return Err(err),
+                            Err(err) => Some(format!(
                                 "An iterative solve of a second cell size of {} mm failed ({})",
                                 format_mm(fine),
                                 err.message.trim_end_matches('.')
-                            );
-                            if !last {
-                                notes.push(format!("{failed}, so it was solved directly."));
-                            }
-                            why = Some(failed);
+                            )),
                         }
                     }
                 }
-                why
             }
         };
         match why {
@@ -1046,21 +1034,20 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
             // Check at a coarser size instead. Its move overstates the first
             // size's error, so the trust it gives errs low.
             Some(why) => {
-                drop(std::mem::take(&mut direct));
                 let coarser = h * std::f64::consts::SQRT_2;
                 let solved = mesh_at(field, coarser).and_then(|mesh| {
-                    solve_at(
+                    solve_grid(
                         field,
                         study,
                         &cases,
                         mesh,
-                        to_part,
-                        to_slice,
-                        &mut FaerLdlt::default(),
+                        (to_part, to_slice),
+                        SolverChoice::Auto,
+                        &|| true,
                     )
                 });
                 match solved {
-                    Ok(second) => {
+                    Ok((second, _)) => {
                         compare(&second, &mut resolutions)?;
                         notes.push(format!(
                             "{why}, so the sliced result was checked at a coarser {} mm instead.",
@@ -1141,8 +1128,6 @@ struct Solved {
     names: Vec<String>,
     cases: Vec<CaseResult>,
     factorisations: usize,
-    /// How many values its factor held.
-    factor_len: usize,
 }
 
 /// What decides trust: a target, or the lowest safety factor when the study
@@ -1154,43 +1139,89 @@ enum Governing {
     Nothing,
 }
 
-/// The finer grid, in nodes, from which a GPU's iterative solve goes before a
-/// direct one. Below it the direct solve is exact and takes a second or two,
-/// so a part that small gains nothing from the GPU.
-const GPU_FIRST_NODES: usize = 50_000;
-
-/// The second, finer cell size, meshed, and what each way of solving it
-/// would cost.
-enum Second {
-    Meshed {
-        mesh: SlicedMesh,
-        /// Peak of a direct solve, MB.
-        direct_mb: f64,
-        /// Peak of an iterative solve beside the first size's factor, MB.
-        iterative_mb: f64,
-    },
-    /// Its grid doesn't mesh: the sentence why.
-    Refused(String),
+/// Peak memory of a direct solve of a grid, MB: its node graph's symbolic
+/// factor, times the values a node's 3 × 3 block holds against one, as
+/// `study_peak_mb` reads a factor.
+fn direct_peak_mb(mesh: &Mesh) -> Result<f64, SimError> {
+    let per_node = node_graph_factor_len(mesh)?;
+    Ok(study_peak_mb(per_node * DOF_FILL_PER_NODE_FILL))
 }
 
-/// Mesh the finer grid and size its factor without factoring it: the node
-/// graph's symbolic factor at both sizes, scaled by the first size's real
-/// one. On the jet study this said 6,715 MB where the study peaked at
-/// 6,604; the `nodes^1.2` fit it replaces said 10,877.
-fn second_size(field: &SliceField, fine: f64, first: &Solved) -> Result<Second, SimError> {
-    let sliced = match mesh_at(field, fine) {
-        Ok(sliced) => sliced,
-        Err(err) => return Ok(Second::Refused(err.message)),
+/// A three-dof-a-node factor holds about nine values for each of its node
+/// graph's: a 3 × 3 block for each.
+const DOF_FILL_PER_NODE_FILL: usize = 9;
+
+/// The grid, in nodes, from which a study's iterative solves smooth on a GPU.
+fn gpu_from_nodes(study: &SlicedStudy) -> usize {
+    study
+        .gpu_from_nodes
+        .unwrap_or(crate::multigrid::GPU_FROM_NODES)
+}
+
+/// Solve one grid: by p-multigrid when `choice` says so or `auto` finds it
+/// large, directly otherwise. An `auto` iterative solve that fails is solved
+/// directly when `direct_ok` says the memory allows. Also returns what to say
+/// about how it was solved.
+fn solve_grid(
+    field: &SliceField,
+    study: &SlicedStudy,
+    cases: &[LoadCase],
+    sliced: SlicedMesh,
+    frames: (Affine, Affine),
+    choice: SolverChoice,
+    direct_ok: &dyn Fn() -> bool,
+) -> Result<(Solved, Vec<String>), SimError> {
+    let (to_part, to_slice) = frames;
+    let size = format_mm(sliced.h_xy);
+    let iterative = match choice {
+        SolverChoice::Direct => false,
+        SolverChoice::Iterative => true,
+        SolverChoice::Auto => sliced.mesh.nodes.len() >= ITERATIVE_FROM_NODES,
     };
-    let first_graph = node_graph_factor_len(&first.mesh.mesh)?;
-    let fine_graph = node_graph_factor_len(&sliced.mesh)?;
-    let per_graph = first.factor_len as f64 / first_graph.max(1) as f64;
-    let factor_len = (per_graph * fine_graph as f64) as usize;
-    Ok(Second::Meshed {
-        direct_mb: study_peak_mb(factor_len),
-        iterative_mb: iterative_peak_mb(first.factor_len, sliced.mesh.elements.len()),
-        mesh: sliced,
-    })
+    if !iterative {
+        let solved = solve_at(
+            field,
+            study,
+            cases,
+            sliced,
+            to_part,
+            to_slice,
+            &mut FaerLdlt::default(),
+        )?;
+        return Ok((solved, Vec::new()));
+    }
+    let fallback = (choice == SolverChoice::Auto).then(|| sliced.clone());
+    let tried = PMultigridPcg::new(&sliced.mesh).and_then(|mg| {
+        let mut mg = mg.with_gpu(study.use_gpu.then(|| gpu_from_nodes(study)));
+        solve_at(field, study, cases, sliced, to_part, to_slice, &mut mg).map(|s| (s, mg.notes()))
+    });
+    match (tried, fallback) {
+        (Ok((solved, said)), _) => Ok((
+            solved,
+            said.into_iter()
+                .map(|n| format!("The {size} mm cell size was {n}."))
+                .collect(),
+        )),
+        (Err(err), Some(sliced)) if direct_ok() => {
+            let solved = solve_at(
+                field,
+                study,
+                cases,
+                sliced,
+                to_part,
+                to_slice,
+                &mut FaerLdlt::default(),
+            )?;
+            Ok((
+                solved,
+                vec![format!(
+                    "The iterative solve of the {size} mm cell size failed ({}), so it was solved directly.",
+                    err.message.trim_end_matches('.')
+                )],
+            ))
+        }
+        (Err(err), _) => Err(err),
+    }
 }
 
 /// The grid of one cell size, meshed.
@@ -1198,15 +1229,15 @@ fn mesh_at(field: &SliceField, h: f64) -> Result<SlicedMesh, SimError> {
     SlicedGrid::rasterize(field, h)?.mesh(PHI_MIN)
 }
 
-fn solve_at(
-    field: &SliceField,
+/// The solver's request for one grid, with the study's holds placed on it,
+/// and each case's loads.
+fn request_at(
     study: &SlicedStudy,
     cases: &[LoadCase],
-    sliced: SlicedMesh,
+    sliced: &SlicedMesh,
     to_part: Affine,
     to_slice: Affine,
-    solver: &mut dyn LinearSolver,
-) -> Result<Solved, SimError> {
+) -> Result<(Request, Vec<Vec<Load>>), SimError> {
     let h = sliced.h_xy;
     let mesh = &sliced.mesh;
     let faces = boundary_faces(mesh);
@@ -1281,6 +1312,23 @@ fn solve_at(
         cancel: None,
         on_progress: None,
     };
+    Ok((req, case_loads))
+}
+
+fn solve_at(
+    field: &SliceField,
+    study: &SlicedStudy,
+    cases: &[LoadCase],
+    sliced: SlicedMesh,
+    to_part: Affine,
+    to_slice: Affine,
+    solver: &mut dyn LinearSolver,
+) -> Result<Solved, SimError> {
+    let h = sliced.h_xy;
+    let (req, case_loads) = request_at(study, cases, &sliced, to_part, to_slice)?;
+    let mesh = &sliced.mesh;
+    let faces = boundary_faces(mesh);
+    let card = &study.card;
     let solved = solve_cases_with(&req, &case_loads, solver)?;
     let allow = card.material().allowables();
     let axis = [0.0, 0.0, 1.0];
@@ -1358,7 +1406,6 @@ fn solve_at(
         names: cases.iter().map(|c| c.name.clone()).collect(),
         cases: results,
         factorisations: solved.factorisations,
-        factor_len: solved.factor_len,
     })
 }
 

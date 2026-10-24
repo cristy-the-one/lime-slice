@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use faer::Mat;
+use rayon::prelude::*;
 
 use crate::element::{element, gradients, ElementKind, ElementOut, GaussContext};
 use crate::error::SimError;
@@ -229,6 +230,20 @@ pub struct Assembly {
     pub printed_volume: f64,
 }
 
+/// Elements a thread assembles at a time.
+const ASSEMBLY_CHUNK: usize = 256;
+
+/// What a chunk of elements adds besides its matrix values.
+#[derive(Default)]
+struct Piece {
+    /// `(column, value)` to add to the residual.
+    residual: Vec<(usize, f64)>,
+    /// Body force at a node, load level applied.
+    body: Vec<(usize, [f64; 3])>,
+    solid_volume: f64,
+    printed_volume: f64,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn assemble(
     mesh: &Mesh,
@@ -283,88 +298,143 @@ pub fn assemble(
     let elem = element(mesh.kind)
         .ok_or_else(|| SimError::new(format!("{} is not in this version.", mesh.kind.name())))?;
 
-    for (ei, cell) in mesh.elements.iter().enumerate() {
-        let made_of = cells.get(ei).copied().unwrap_or(CellMaterial::smeared(1.0));
-        let fraction = made_of.volume_fraction;
-        let coords: Vec<[f64; 3]> = cell.nodes.iter().map(|n| mesh.nodes[*n]).collect();
-        let nd = cell.nodes.len() * 3;
-        let mut displacement = vec![0.0; nd];
-        for (a, node) in cell.nodes.iter().enumerate() {
-            for k in 0..3 {
-                displacement[a * 3 + k] = u[*node][k];
-            }
-        }
-        let mat_ctx = made_of.context(build_axis);
-        let mut state = MatState::default();
-        let mut ctx = GaussContext {
-            coords: &coords,
-            displacement: &displacement,
-            material,
-            mat_ctx: &mat_ctx,
-            state: &mut state,
-            density_g_per_mm3: density / 1000.0 * fraction,
-        };
-        let mut out = ElementOut::zeros(nd);
-        for gp in elem.quadrature() {
-            elem.contribute(gp, &mut ctx, &mut out);
-            let shape = elem.shape(gp.xi);
-            if let Some((_, det)) = gradients(&shape.dn_dxi, &coords) {
-                let dv = gp.weight * det;
-                solid_volume += dv;
-                printed_volume += dv * fraction;
-            }
-        }
-        if let Some(g) = gravity_mm_s2 {
-            let weight = specific_weight_n_per_mm3(density, g) * fraction;
-            let body = body_force(mesh.kind, &coords, [0.0, 0.0, -weight]);
-            for (a, node) in cell.nodes.iter().enumerate() {
-                for k in 0..3 {
-                    fext[*node][k] += body[a][k] * load_level;
+    // Each element adds the upper triangle of its free dofs to the matrix:
+    // f(f + 1) / 2 values for f free dofs. Counted first, the whole list is
+    // allocated once and every chunk of elements fills its own part of it
+    // on its own thread.
+    let free_dofs = |nodes: &[usize]| {
+        nodes
+            .iter()
+            .map(|n| (0..3).filter(|&l| dof.column(*n, l).is_some()).count())
+            .sum::<usize>()
+    };
+    let chunks: Vec<usize> = mesh
+        .elements
+        .par_chunks(ASSEMBLY_CHUNK)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|cell| {
+                    let f = free_dofs(&cell.nodes);
+                    f * (f + 1) / 2
+                })
+                .sum()
+        })
+        .collect();
+    system.k = vec![(0, 0, 0.0); chunks.iter().sum()];
+    let mut parts: Vec<&mut [(usize, usize, f64)]> = Vec::with_capacity(chunks.len());
+    let mut rest = system.k.as_mut_slice();
+    for len in &chunks {
+        let (part, tail) = rest.split_at_mut(*len);
+        parts.push(part);
+        rest = tail;
+    }
+    let pieces: Vec<Piece> = mesh
+        .elements
+        .par_chunks(ASSEMBLY_CHUNK)
+        .zip(parts.into_par_iter())
+        .enumerate()
+        .map(|(c, (chunk, out))| {
+            let mut piece = Piece::default();
+            let mut at = 0;
+            for (offset, cell) in chunk.iter().enumerate() {
+                let ei = c * ASSEMBLY_CHUNK + offset;
+                let made_of = cells.get(ei).copied().unwrap_or(CellMaterial::smeared(1.0));
+                let fraction = made_of.volume_fraction;
+                let coords: Vec<[f64; 3]> = cell.nodes.iter().map(|n| mesh.nodes[*n]).collect();
+                let nd = cell.nodes.len() * 3;
+                let mut displacement = vec![0.0; nd];
+                for (a, node) in cell.nodes.iter().enumerate() {
+                    for k in 0..3 {
+                        displacement[a * 3 + k] = u[*node][k];
+                    }
                 }
-            }
-        }
-        symmetrize(&mut out.ke);
-        let qs: Vec<[[f64; 3]; 3]> = cell.nodes.iter().map(|n| dof.bases[*n].q).collect();
-        let (ke, fe) = rotate_element(&out.ke, &out.fe, &qs);
-        let mut du_p = vec![0.0; nd];
-        let mut held = vec![false; nd];
-        for (a, node) in cell.nodes.iter().enumerate() {
-            let u_l = to_local(&dof.bases[*node].q, u[*node]);
-            for local in 0..3 {
-                if let Some(value) = prescribed.get(&(*node, local)) {
-                    du_p[a * 3 + local] = value - u_l[local];
-                    held[a * 3 + local] = true;
-                }
-            }
-        }
-        for i in 0..nd {
-            if held[i] {
-                continue;
-            }
-            let (na, la) = (i / 3, i % 3);
-            let Some(ci) = dof.column(cell.nodes[na], la) else {
-                continue;
-            };
-            system.residual[ci] -= fe[i];
-            for j in 0..nd {
-                if held[j] {
-                    system.residual[ci] -= ke[(i, j)] * du_p[j];
-                }
-            }
-            for j in i..nd {
-                if held[j] {
-                    continue;
-                }
-                let (nb, lb) = (j / 3, j % 3);
-                let Some(cj) = dof.column(cell.nodes[nb], lb) else {
-                    continue;
+                let mat_ctx = made_of.context(build_axis);
+                let mut state = MatState::default();
+                let mut ctx = GaussContext {
+                    coords: &coords,
+                    displacement: &displacement,
+                    material,
+                    mat_ctx: &mat_ctx,
+                    state: &mut state,
+                    density_g_per_mm3: density / 1000.0 * fraction,
                 };
-                let v = ke[(i, j)];
-                if ci <= cj {
-                    system.k.push((ci, cj, v));
-                } else {
-                    system.k.push((cj, ci, v));
+                let mut el = ElementOut::zeros(nd);
+                for gp in elem.quadrature() {
+                    elem.contribute(gp, &mut ctx, &mut el);
+                    let shape = elem.shape(gp.xi);
+                    if let Some((_, det)) = gradients(&shape.dn_dxi, &coords) {
+                        let dv = gp.weight * det;
+                        piece.solid_volume += dv;
+                        piece.printed_volume += dv * fraction;
+                    }
                 }
+                if let Some(g) = gravity_mm_s2 {
+                    let weight = specific_weight_n_per_mm3(density, g) * fraction;
+                    let body = body_force(mesh.kind, &coords, [0.0, 0.0, -weight]);
+                    for (a, node) in cell.nodes.iter().enumerate() {
+                        let f = body[a];
+                        piece
+                            .body
+                            .push((*node, [f[0] * load_level, f[1] * load_level, f[2] * load_level]));
+                    }
+                }
+                symmetrize(&mut el.ke);
+                let qs: Vec<[[f64; 3]; 3]> = cell.nodes.iter().map(|n| dof.bases[*n].q).collect();
+                let (ke, fe) = rotate_element(&el.ke, &el.fe, &qs);
+                let mut du_p = vec![0.0; nd];
+                let mut held = vec![false; nd];
+                for (a, node) in cell.nodes.iter().enumerate() {
+                    let u_l = to_local(&dof.bases[*node].q, u[*node]);
+                    for local in 0..3 {
+                        if let Some(value) = prescribed.get(&(*node, local)) {
+                            du_p[a * 3 + local] = value - u_l[local];
+                            held[a * 3 + local] = true;
+                        }
+                    }
+                }
+                for i in 0..nd {
+                    if held[i] {
+                        continue;
+                    }
+                    let (na, la) = (i / 3, i % 3);
+                    let Some(ci) = dof.column(cell.nodes[na], la) else {
+                        continue;
+                    };
+                    let mut r = -fe[i];
+                    for j in 0..nd {
+                        if held[j] {
+                            r -= ke[(i, j)] * du_p[j];
+                        }
+                    }
+                    piece.residual.push((ci, r));
+                    for j in i..nd {
+                        if held[j] {
+                            continue;
+                        }
+                        let (nb, lb) = (j / 3, j % 3);
+                        let Some(cj) = dof.column(cell.nodes[nb], lb) else {
+                            continue;
+                        };
+                        let v = ke[(i, j)];
+                        out[at] = if ci <= cj { (ci, cj, v) } else { (cj, ci, v) };
+                        at += 1;
+                    }
+                }
+            }
+            debug_assert_eq!(at, out.len());
+            piece
+        })
+        .collect();
+    for piece in pieces {
+        solid_volume += piece.solid_volume;
+        printed_volume += piece.printed_volume;
+        for (col, r) in piece.residual {
+            system.residual[col] += r;
+        }
+        for (node, f) in piece.body {
+            for k in 0..3 {
+                fext[node][k] += f[k];
             }
         }
     }

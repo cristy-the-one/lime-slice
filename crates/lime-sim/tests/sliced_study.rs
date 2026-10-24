@@ -4,7 +4,7 @@
 use lime_sim::material::{BeadSection, Governs};
 use lime_sim::slice_field::{Header, LayerRow, Segment, SliceField, FORMAT, ROLES};
 use lime_sim::sliced_study::{
-    cell_stresses, run, CheckSolver, Constraint, ConstraintKind, Region, SlicedHold, SlicedLoad,
+    cell_stresses, run, SolverChoice, Constraint, ConstraintKind, Region, SlicedHold, SlicedLoad,
     SlicedStudy,
 };
 use lime_sim::study::Card;
@@ -163,8 +163,10 @@ fn a_twisted_shaft_carries_t_r_over_j_at_its_surface() {
             }],
             check_resolution: true,
             memory_mb: None,
+            solver: Default::default(),
             check_solver: Default::default(),
             use_gpu: true,
+            gpu_from_nodes: None,
         },
     )
     .unwrap();
@@ -259,8 +261,10 @@ fn a_bar_weak_across_layers_says_so() {
             ],
             check_resolution: false,
             memory_mb: None,
+            solver: Default::default(),
             check_solver: Default::default(),
             use_gpu: true,
+            gpu_from_nodes: None,
         },
     )
     .unwrap();
@@ -337,8 +341,10 @@ fn a_finer_size_past_the_memory_is_checked_coarser() {
             check_resolution: true,
             // Less than any study needs, so the finer size can't fit.
             memory_mb: Some(1.0),
+            solver: Default::default(),
             check_solver: Default::default(),
             use_gpu: true,
+            gpu_from_nodes: None,
         },
     )
     .unwrap();
@@ -376,11 +382,13 @@ fn the_iterative_check_matches_the_direct_one() {
         }],
         check_resolution: true,
         memory_mb: None,
+        solver: Default::default(),
         check_solver,
         use_gpu: true,
+        gpu_from_nodes: None,
     };
-    let direct = run(&shaft, &study(CheckSolver::Direct)).unwrap();
-    let iterative = run(&shaft, &study(CheckSolver::Iterative)).unwrap();
+    let direct = run(&shaft, &study(SolverChoice::Direct)).unwrap();
+    let iterative = run(&shaft, &study(SolverChoice::Iterative)).unwrap();
     let fine = |r: &lime_sim::sliced_study::SlicedReport| r.resolutions[1].governing_value.unwrap();
     let (a, b) = (fine(&direct), fine(&iterative));
     assert!((a - b).abs() / a.abs() < 1e-6, "direct {a}, iterative {b}");
@@ -392,11 +400,53 @@ fn the_iterative_check_matches_the_direct_one() {
     assert!(!direct.notes.iter().any(|n| n.contains("solved iteratively")));
 }
 
+/// The first cell size solved by p-multigrid gives the direct solve's
+/// deflection and safety factor.
+#[test]
+fn the_iterative_first_size_matches_the_direct_one() {
+    let shaft = field(20, [0.0; 3], rings(8.0));
+    let study = |solver| SlicedStudy {
+        h_xy: Some(1.0),
+        card: isotropic_card(),
+        holds: vec![SlicedHold::Bed],
+        load_cases: Vec::new(),
+        loads: vec![SlicedLoad::Force {
+            region: top(4.0),
+            force: [1.0, 0.0, 0.0],
+        }],
+        constraints: vec![Constraint {
+            kind: ConstraintKind::MaxDeflectionMm,
+            value: 1.0,
+            ..Default::default()
+        }],
+        check_resolution: false,
+        memory_mb: None,
+        solver,
+        check_solver: SolverChoice::Auto,
+        use_gpu: false,
+        gpu_from_nodes: None,
+    };
+    let direct = run(&shaft, &study(SolverChoice::Direct)).unwrap();
+    let iterative = run(&shaft, &study(SolverChoice::Iterative)).unwrap();
+    let (a, b) = (direct.max_displacement_mm, iterative.max_displacement_mm);
+    assert!((a - b).abs() / a < 1e-6, "direct {a}, iterative {b}");
+    let (a, b) = (
+        direct.min_safety_factor.unwrap(),
+        iterative.min_safety_factor.unwrap(),
+    );
+    assert!((a - b).abs() / a < 1e-5, "direct {a}, iterative {b}");
+    assert!(
+        iterative.notes.iter().any(|n| n.contains("1 mm cell size was solved iteratively")),
+        "{:?}",
+        iterative.notes
+    );
+}
+
 /// Smoothing on a GPU gives the CPU's answer. Skipped, with a line saying
 /// so, in a build without the `gpu` feature or on a machine with no adapter.
 #[test]
 fn the_gpu_smoothing_matches_the_cpu() {
-    if !lime_sim::twolevel::gpu_available() {
+    if !lime_sim::multigrid::gpu_available() {
         println!("skipped: no GPU in this build or on this machine");
         return;
     }
@@ -417,8 +467,11 @@ fn the_gpu_smoothing_matches_the_cpu() {
         }],
         check_resolution: true,
         memory_mb: None,
-        check_solver: CheckSolver::Iterative,
+        solver: Default::default(),
+        check_solver: SolverChoice::Iterative,
         use_gpu,
+        // This shaft is far below the default; smooth it on the GPU anyway.
+        gpu_from_nodes: Some(0),
     };
     let cpu = run(&shaft, &study(false)).unwrap();
     let gpu = run(&shaft, &study(true)).unwrap();
@@ -468,8 +521,10 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
             }],
             check_resolution: false,
             memory_mb: None,
+            solver: Default::default(),
             check_solver: Default::default(),
             use_gpu: true,
+            gpu_from_nodes: None,
         },
     )
     .unwrap();
@@ -497,8 +552,10 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
             constraints: Vec::new(),
             check_resolution: false,
             memory_mb: None,
+            solver: Default::default(),
             check_solver: Default::default(),
             use_gpu: true,
+            gpu_from_nodes: None,
         },
     )
     .unwrap_err();

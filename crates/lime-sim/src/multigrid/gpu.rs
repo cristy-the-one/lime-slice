@@ -1,8 +1,8 @@
-//! The two-grid cycle's smoothing on a GPU, through wgpu.
+//! The multigrid cycle's smoothing on a GPU, through wgpu.
 //!
 //! The smoothing is nearly all of an iteration's fine-grid products: two
-//! Chebyshev passes of `SMOOTHING_DEGREE` products each, against one product
-//! for the conjugate gradients themselves. It runs here in f32, since WGSL
+//! Chebyshev passes of `degree` products each, against one product for the
+//! conjugate gradients themselves. It runs here in f32, since WGSL
 //! has no f64. The conjugate gradients and the coarse correction stay on the
 //! CPU in f64, and the CG is the flexible kind, so a preconditioner that
 //! rounds in f32 slows it slightly but can't stop it short of its tolerance.
@@ -15,7 +15,7 @@ use std::sync::{mpsc, OnceLock};
 
 use wgpu::util::DeviceExt;
 
-use super::{Csr, SMOOTHING_DEGREE};
+use crate::iterative::Csr;
 use crate::error::SimError;
 
 const WORKGROUP: u32 = 256;
@@ -121,6 +121,7 @@ pub(super) struct GpuSmoother {
     readback: wgpu::Buffer,
     /// One bind group per Chebyshev step: they differ only in the step.
     binds: Vec<wgpu::BindGroup>,
+    degree: usize,
     pipes: Pipes,
     /// The adapter's name, for the note.
     pub name: String,
@@ -139,10 +140,10 @@ struct Pipes {
 impl GpuSmoother {
     /// The matrix on this process's GPU, or `None` when there is no adapter
     /// or it can't hold the matrix.
-    pub(super) fn new(a: &Csr, inv_diag: &[f64], lambda: (f64, f64)) -> Option<Self> {
+    pub(super) fn new(a: &Csr, inv_diag: &[f64], lambda: (f64, f64), degree: usize) -> Option<Self> {
         let n = a.nrows;
         let nnz = a.vals.len();
-        if n == 0 || n + 1 + nnz > u32::MAX as usize {
+        if n == 0 || n + 1 + nnz > u32::MAX as usize || !(1..=32).contains(&degree) {
             return None;
         }
         let gpu = context()?;
@@ -187,7 +188,7 @@ impl GpuSmoother {
             mapped_at_creation: false,
         });
 
-        // The Chebyshev recurrence's coefficients, as `TwoLevelPcg::smooth`
+        // The Chebyshev recurrence's coefficients, as `iterative::chebyshev`
         // computes them.
         let (lo, hi) = lambda;
         let theta = 0.5 * (hi + lo);
@@ -195,7 +196,7 @@ impl GpuSmoother {
         let sigma = theta / delta;
         let mut rho = 1.0 / sigma;
         let mut coef = [[0.0f32; 4]; 32];
-        for c in coef.iter_mut().take(SMOOTHING_DEGREE) {
+        for c in coef.iter_mut().take(degree) {
             let rho_next = 1.0 / (2.0 * sigma - rho);
             *c = [(rho_next * rho) as f32, (2.0 * rho_next / delta) as f32, 0.0, 0.0];
             rho = rho_next;
@@ -236,7 +237,7 @@ impl GpuSmoother {
                 entry(8, None),
             ],
         });
-        let binds = (0..SMOOTHING_DEGREE.max(1))
+        let binds = (0..degree)
             .map(|step| {
                 let mut params: Vec<u8> = Vec::with_capacity(16 + 32 * 16);
                 params.extend_from_slice(&(n as u32).to_le_bytes());
@@ -309,6 +310,7 @@ impl GpuSmoother {
             e,
             readback,
             binds,
+            degree,
             pipes,
             name: gpu.name.clone(),
         })
@@ -350,11 +352,11 @@ impl GpuSmoother {
     }
 
     /// The Chebyshev steps after `d` is set: `x += d`, then `s = A x` and the
-    /// next `d`, `SMOOTHING_DEGREE` times.
+    /// next `d`, `degree` times.
     fn smooth(&self, pass: &mut wgpu::ComputePass) {
-        for step in 0..SMOOTHING_DEGREE {
+        for step in 0..self.degree {
             self.run(pass, &self.pipes.step_x, step);
-            if step + 1 == SMOOTHING_DEGREE {
+            if step + 1 == self.degree {
                 break;
             }
             self.run(pass, &self.pipes.product, step);

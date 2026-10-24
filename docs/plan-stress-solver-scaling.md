@@ -1,7 +1,9 @@
 # Stress solver scaling: faster solves, no "past the budget" dead ends
 
-Status: tiers 0 and 1 merged (PRs #433, #434). Tier 2 step 1 (GPU smoothing, on in the engine and the app from
-3.9.2) on `claude/sim-tier2`. Next work: tier 2 step 2, a GPU multigrid in place of the coarse factor.
+Status: tiers 0 and 1 merged (PRs #433, #434). Tier 2 step 1 (GPU smoothing, on from 3.9.2) in PR #435. Tier 2
+step 2 (p-multigrid for both cell sizes, parallel assembly, assemble once) on `claude/sim-multigrid`, stacked on
+#435. The two-level solve of tier 1 is replaced by step 2; its section stays as the history of why. Next work
+is under "After step 2".
 Read this first if you are continuing the work. The status list in each tier is the source of truth.
 
 ## Why
@@ -215,27 +217,69 @@ most of it, then the first cell size's direct solve (6.7 s) and the assemblies (
 `ordered-float` is pinned at 5.4.0 in the lock file because 5.5 needs Rust 1.90. Measured on one Windows laptop
 only; a Mac (Metal) and a Linux machine (Vulkan) are the next places to run `study_bench --features gpu`.
 
-### Step 2: a GPU multigrid in place of the coarse factor. Status: not started.
+### Step 2: p-multigrid for both cell sizes. Status: done.
 
-What step 1 measured says where the time is now: the coarse direct solves (0.14 s each, 5.2 s a check) and the
-first size's direct factor. Both go away if the coarse levels are a GPU multigrid instead of an LDLᵀ:
+The plan was a geometric multigrid on the GPU in place of the coarse factor. Measured first on the CPU, a ladder
+of re-rasterised coarser grids (h·2, h·4, … each the study sliced again at that cell) converged to the right
+answer but took 102–137 iterations on the jet's 1.41 mm grid: a coarse staircase is too poor a copy of a fine
+one. What replaced it (`crates/lime-sim/src/multigrid.rs`):
 
-- **Geometric multigrid** on the structured grid (coarsen 2× in the plane, merge slab pairs), Galerkin coarse
-  operators (PᵀAP), Chebyshev smoothing at every level, a small direct solve only at the bottom. The six
-  rigid-body modes must be in the coarse spaces; the 2× structured coarsening interpolates them exactly.
-- With it, the first cell size can be solved iteratively too, and the check no longer needs the first factor.
-- **Matrix-free operator.** Every sliced cell is h × h × whole layers, split into the same six tets
-  (`HEX_TETS`). Only each cell's material differs, so a kernel per cell can apply its TET10 action from the
-  cell's D matrix on the fly: under 100 MB at 271k nodes, against ~0.5 GB for the assembled f32 CSR step 1 uploads.
-- Optional later: a CUDA backend (cuDSS direct, or AmgX) for NVIDIA users who want native f64. Not the default:
-  heavy, one vendor.
-- Accept when: Kirsch, Lamé, the cantilever and the sliced tests match the direct solver; the jet's 1.41 mm check
-  is several times faster than step 1's 22 s on the same GPU; no GPU gives the same numbers through the CPU.
+- **p-multigrid, TET10 to TET4 on the same grid.** The coarse space is the linear tets on the TET10 corners, an
+  eighth of the nodes. It nests exactly (a mid-edge node is the mean of its edge's corners), holds carry over
+  node by node, and the coarse operator is the fine one restricted, `PᵀAP` (`galerkin`): two weights a fine
+  row, so it is cheap (0.2–0.6 s) and sparse (1.6M values at 217k nodes), and it factors in 0.2–0.5 s.
+  `PMultigridPcg`: flexible CG, one cycle of Chebyshev smoothing, a correction through that factor, smoothing.
+- **24 iterations** on the jet's 1.41 mm grid where tier 1 took 38, and nothing depends on the first cell size,
+  so the first size is solved this way too: no large factor anywhere.
+- **Smoothing degree 3 on the CPU** (12 took 20 iterations and 4.2 s, 6: 22 and 2.8 s, 3: 24 and 2.0 s, 2: 30
+  and 2.1 s); 8 on a GPU.
+- **`SolverChoice`** (`auto`, `direct`, `iterative`) for each size: `SlicedStudy::solver` (first) and
+  `checkSolver` (second). `auto` is iterative from 50,000 nodes (`ITERATIVE_FROM_NODES`), direct below. An `auto`
+  iterative solve that fails is solved directly when the memory allows. The finer size's iterative memory is
+  `iterative_peak_mb` (80 bytes a tet value, calibrated on two grids, errs high); the direct estimate runs only
+  when a direct solve is in question.
+- **Assemble once.** A linear solve's residual is `r − K du` from the system it solved; recovery no longer
+  assembles the grid again (that was 1.4 s and 2.9 s on the jet's two sizes).
+- **Parallel assembly and recovery.** Elements are assembled in chunks on every core, each chunk writing its
+  own part of one value list sized by a first count, so the peak doesn't double; stress recovery samples each
+  element on its own thread. `MaterialModel` and `Element` are `Sync`. Assembly went from 1.0 + 2.2 s to a
+  fraction of that.
+- **The GPU from 400,000 nodes** (`GPU_FROM_NODES`, `SlicedStudy::gpuFromNodes` to change it). With smoothing
+  this cheap the GPU lost below that: 4.0 s against 2.4 s at 99k nodes (opening it costs about a second), and
+  won by 6% at 486k (13.1 s against 13.9 s). It is opened only when a study can reach that size.
+- Removed: `TwoLevelPcg`, the non-nested `Prolongation`, the first-factor calibration of the direct estimate
+  (a node graph's factor times nine now). `twolevel.rs` became `iterative.rs` (CSR, Chebyshev, flexible PCG).
+
+Measured on the jet (same machine and benchmark; release; `--features gpu`):
+
+| Jet study | 3.9.1 (direct, tier 0) | 3.9.2 (step 1) | Step 2 |
+|---|---|---|---|
+| `hXy=2`, check on (the MCP default) | 23.1 s, 6.6 GB | 22.0 s, 4.1 GB | **7.8 s, 4.2 GB** |
+| fitted cell, check on | 31.2 s, 8.7 GB | 27.1 s, 5.1 GB | **10.4 s, 5.3 GB** |
+| check off | 6.5 s | 6.6 s | **2.4 s, 1.8 GB** |
+| `hXy=1` (486k nodes), check off | — | — | 13.2 s, 9.3 GB (on the GPU) |
+| all direct, check on | — | — | 16.8 s, 6.7 GB |
+
+Every row gives the same values as the direct solve (0.3915 and 0.47515 mm). Through the MCP `Session` with the
+release engine, the jet's default study ran in 8.1 s (21.1 s in 3.9.2) with the same margins.
+
+Tests: `sliced_study::the_iterative_first_size_matches_the_direct_one`,
+`the_iterative_check_matches_the_direct_one` (now p-multigrid), `the_gpu_smoothing_matches_the_cpu`
+(`gpuFromNodes: 0`), and the rest of `lime-sim` and `lime-sim-bridge` (100 with and without `gpu`).
+
+### After step 2
+
+- The GPU pays only on large grids because assembly, the CSR build, the Galerkin product, the corners' factor
+  and recovery stay on the CPU. A matrix-free TET10 operator on the GPU (every sliced cell is the same six tets;
+  only its material differs) would remove the assembly and the CSR together, and is the next GPU step.
+- At 1M nodes the check hits `SLICED_NODE_CAP` (the jet's 0.71 mm grid, 1.02M nodes, fell back to the coarser
+  check); with an iterative peak of ~19 GB there, the cap is about right for a 32–64 GB machine.
+- Measure on a Mac (Metal) and Linux (Vulkan); everything here is one Windows laptop.
 
 ## Where things are
 
-- Solver and its trait: `crates/lime-sim/src/solve.rs` (`LinearSolver`, `FaerLdlt`); the iterative solve and
-  the coarse-to-fine map: `crates/lime-sim/src/twolevel.rs`; its GPU smoothing: `twolevel/gpu.rs`.
+- Solver and its trait: `crates/lime-sim/src/solve.rs` (`LinearSolver`, `FaerLdlt`); the iterative solve:
+  `multigrid.rs` (`PMultigridPcg`), its parts: `iterative.rs`, its GPU smoothing: `multigrid/gpu.rs`.
 - Driver: `crates/lime-sim/src/lib.rs` (`solve_cases`, `NODE_CAP` check), assembly in `assemble.rs`.
 - Sliced study, budget and second size: `crates/lime-sim/src/sliced_study.rs` (`run`, `DEFAULT_MEMORY_MB`,
   `sliced_trust`), grid and memory fit: `crates/lime-sim/src/sliced.rs` (`fitted_h_xy`, `study_memory_mb`,

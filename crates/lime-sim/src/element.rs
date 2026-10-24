@@ -102,7 +102,8 @@ impl ElementOut {
     }
 }
 
-pub trait Element {
+/// `Sync`, so an assembly can use one from every thread.
+pub trait Element: Sync {
     fn kind(&self) -> ElementKind;
     fn nodes(&self) -> usize;
     fn dofs_per_node(&self) -> usize;
