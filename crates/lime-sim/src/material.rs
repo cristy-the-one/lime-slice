@@ -64,7 +64,8 @@ pub struct Allowables {
     pub shear_across_layers_mpa: f64,
 }
 
-pub trait MaterialModel {
+/// `Sync`, so an assembly can read one from every thread.
+pub trait MaterialModel: Sync {
     fn stress_tangent(
         &self,
         strain: &[f64; 6],
