@@ -1,8 +1,7 @@
 # Stress solver scaling: faster solves, no "past the budget" dead ends
 
-Status: tier 0 merged (PR #433). Tier 1 done (`claude/sim-tier1`, PR #434). Tier 2 step 1 (GPU smoothing behind
-the `gpu` feature) done on `claude/sim-tier2`, stacked on tier 1. Open decision: turn `gpu` on in the shipped
-engine and app (see tier 2). Next work: tier 2 step 2, a GPU multigrid in place of the coarse factor.
+Status: tiers 0 and 1 merged (PRs #433, #434). Tier 2 step 1 (GPU smoothing, on in the engine and the app from
+3.9.2) on `claude/sim-tier2`. Next work: tier 2 step 2, a GPU multigrid in place of the coarse factor.
 Read this first if you are continuing the work. The status list in each tier is the source of truth.
 
 ## Why
@@ -176,7 +175,9 @@ Tier 1 follow-ups:
 
 ### Step 1: the smoothing on the GPU. Status: done.
 
-`crates/lime-sim/src/twolevel/gpu.rs`, behind `lime-sim`'s `gpu` feature (wgpu 27, off by default):
+`crates/lime-sim/src/twolevel/gpu.rs`, behind `lime-sim`'s `gpu` feature (wgpu 27). `lime-mcp-engine` and
+`src-tauri` turn it on through `lime-sim-bridge/gpu`, so the app and the MCP server use it from 3.9.2;
+`lime-sim` alone builds without it, which keeps its own tests quick.
 
 - The two-grid cycle's Chebyshev smoothing, about 25 of an iteration's 27 fine products, runs on the GPU in f32:
   one WGSL module (product, start, step and correction kernels), the fine matrix as CSR (row starts and columns
@@ -188,12 +189,14 @@ Tier 1 follow-ups:
   so the open overlaps the first cell size's direct solve. DX12 on Windows (1.0 s to open against Vulkan's
   2.8 s there), the primary backend elsewhere. The matrix is uploaded 64 MB at a time, so the host never holds a
   whole f32 copy plus wgpu's staging.
-- `SlicedStudy::useGpu` (default true). In `auto`, with a GPU the iterative solve goes first when it fits, and a
-  failed iterative solve falls back to the direct one when that fits, then to the coarser check. Without a GPU
-  the order is tier 1's.
+- `SlicedStudy::useGpu` (default true). In `auto`, with a GPU and a finer grid of at least 50,000 nodes
+  (`GPU_FIRST_NODES`), the iterative solve goes first when it fits, and a failed iterative solve falls back to
+  the direct one when that fits, then to the coarser check. A smaller grid, or no GPU, keeps tier 1's order: the
+  direct solve is exact and takes a second or two there.
 - Tests: `sliced_study::the_gpu_smoothing_matches_the_cpu` (within 1e-6; says it was skipped without the feature
-  or an adapter). CI lints and runs it with the feature (`Stress solver with the gpu feature`); runners have no
-  adapter, so there it checks the build and the CPU path.
+  or an adapter). The workspace's clippy now lints the GPU code (the engine turns it on), and CI runs the sliced
+  study tests with the feature (`Stress solver with the gpu feature`); runners have no adapter, so there they
+  check the build and the CPU path.
 
 Measured on the jet (RTX 5080 Laptop GPU, 16 GB; same machine and benchmark as before; `--features gpu`):
 
@@ -209,10 +212,8 @@ driver maps about 2 GB of shared pages into the working set when it opens (priva
 Inside the PCG: smoothing went from about 8 s to 1.6 s for the 38 cycles; the CPU coarse solves (5.2 s) are now
 most of it, then the first cell size's direct solve (6.7 s) and the assemblies (~5 s).
 
-**Decision for the owner: ship it?** `gpu` is off in `lime-mcp-engine` and `src-tauri`, so the app and the MCP
-server don't use it yet. Turning it on (`lime-sim-bridge/gpu` from both) adds wgpu's tree to the shipped
-binaries and builds, and was only measured on one Windows laptop. `ordered-float` is pinned at 5.4.0 in the lock
-file because 5.5 needs Rust 1.90.
+`ordered-float` is pinned at 5.4.0 in the lock file because 5.5 needs Rust 1.90. Measured on one Windows laptop
+only; a Mac (Metal) and a Linux machine (Vulkan) are the next places to run `study_bench --features gpu`.
 
 ### Step 2: a GPU multigrid in place of the coarse factor. Status: not started.
 

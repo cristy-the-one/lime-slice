@@ -16,8 +16,9 @@ serde_json = "1"
 wgpu = { version = "27", optional = true, default-features = false, features = ["wgsl", "dx12", "vulkan", "metal"] }
 
 [features]
-# The iterative check's smoothing on a GPU through wgpu. Off by default: it
-# brings wgpu's tree, and a machine without an adapter solves on the CPU.
+# The iterative check's smoothing on a GPU through wgpu. The engine and the
+# app turn it on through lime-sim-bridge; a machine without an adapter solves
+# on the CPU. Off here so the solver's own tests stay quick to build.
 gpu = ["dep:wgpu", "dep:pollster"]
 
 [dev-dependencies]

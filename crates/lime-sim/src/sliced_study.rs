@@ -963,7 +963,9 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
                     CheckSolver::Direct => vec![CheckSolver::Direct],
                     CheckSolver::Iterative => vec![CheckSolver::Iterative],
                     CheckSolver::Auto => {
-                        let gpu = study.use_gpu && crate::twolevel::gpu_available();
+                        let gpu = study.use_gpu
+                            && mesh.mesh.nodes.len() >= GPU_FIRST_NODES
+                            && crate::twolevel::gpu_available();
                         let mut order = Vec::new();
                         if gpu && iterative_fits {
                             order.push(CheckSolver::Iterative);
@@ -1151,6 +1153,11 @@ enum Governing {
     SafetyFactor,
     Nothing,
 }
+
+/// The finer grid, in nodes, from which a GPU's iterative solve goes before a
+/// direct one. Below it the direct solve is exact and takes a second or two,
+/// so a part that small gains nothing from the GPU.
+const GPU_FIRST_NODES: usize = 50_000;
 
 /// The second, finer cell size, meshed, and what each way of solving it
 /// would cost.

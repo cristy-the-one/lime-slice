@@ -110,13 +110,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      # The stress solver's GPU smoothing is behind a feature the workspace
-      # doesn't turn on. Lint and test it here; with no adapter on the runner,
-      # the GPU test says it was skipped and the CPU path runs.
+      # The engine and the app turn on the stress solver's GPU smoothing, so the
+      # workspace's clippy lints it. Its tests run here with it; with no adapter
+      # on the runner, the GPU test says it was skipped and the CPU path runs.
       - name: Stress solver with the gpu feature
-        run: |
-          cargo clippy -p lime-sim --all-targets --features gpu --locked -- -D warnings
-          cargo test -p lime-sim --features gpu --locked --test sliced_study
+        run: cargo test -p lime-sim --features gpu --locked --test sliced_study
 
       - name: Build the Tauri crate
         run: cargo build -p lime-slice-desktop --locked
