@@ -52,6 +52,8 @@ const edgeList = {
 };
 
 const label = { type: "string", maxLength: 80, description: "Step name." };
+/** A study region, spelled as the paint regions are. A sphere or a box does not renumber after a Model edit. */
+const simRegion = { type: "object", description: "{faces}, {sphere}, or {box}." };
 const primitiveKind = { enum: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." };
 const booleanKind = { enum: ["fuse", "cut", "common"], description: "cut, fuse, common." };
 
@@ -1837,8 +1839,9 @@ export const TOOLS: ToolSpec[] = [
             type: "object",
             additionalProperties: false,
             properties: {
-              kind: { enum: ["bed", "faces", "plane"], description: "bed, faces, or plane." },
+              kind: { enum: ["bed", "faces", "plane", "region"], description: "Hold kind." },
               faces: { type: "array", maxItems: 8, items: { type: "integer", minimum: 0 }, description: "Face indexes." },
+              region: simRegion,
               normal: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Plane normal." },
               origin: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Plane point." },
             },
@@ -1854,6 +1857,7 @@ export const TOOLS: ToolSpec[] = [
             properties: {
               kind: { enum: ["force", "pressure"], description: "force (N) or pressure (MPa)." },
               faces: { type: "array", maxItems: 8, items: { type: "integer", minimum: 0 }, description: "Face indexes." },
+              region: simRegion,
               magnitude: { type: "number", description: "N or MPa." },
               direction: { type: "array", minItems: 3, maxItems: 3, items: { type: "number" }, description: "Direction." },
             },
@@ -1869,13 +1873,19 @@ export const TOOLS: ToolSpec[] = [
         constraints: {
           type: "array",
           maxItems: 8,
-          description: "Targets. A sliced run returns margins.",
+          description: "Targets; a sliced run returns margins.",
           items: {
             type: "object",
             additionalProperties: false,
             properties: {
-              kind: { type: "string", description: "minSafetyFactor, maxDeflectionMm, maxMassG, or minMassG." },
+              kind: {
+                enum: ["minSafetyFactor", "maxDeflectionMm", "deflectionBandMm", "minStiffnessNPerMm", "stiffnessBandNPerMm", "relativeDeflectionMm", "maxMassG", "minMassG"],
+                description: "See guide sim.",
+              },
               value: { type: "number", exclusiveMinimum: 0, description: "The limit." },
+              band: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" }, description: "lo, hi." },
+              region: simRegion,
+              other: { type: "object", description: "Second region." },
             },
           },
         },

@@ -124,6 +124,18 @@ sliced.representation = "sliced";
 sliced.constraints = [{ kind: "minSafetyFactor", value: 2 }];
 eq("a sliced study reads back", readStudy(JSON.parse(JSON.stringify(sliced))), sliced);
 eq("a bad representation is left out", readStudy({ ...sliced, representation: "foam" }), null);
+const placed = emptyStudy();
+placed.holds = [{ kind: "faces", faces: [], place: { box: { min: [-31, -6, -1], max: [-28, 6, 7] } } }];
+placed.loads = [{ kind: "force", faces: [], magnitude: 5, direction: [0, 0, -1], place: { sphere: { centre: [29, 0, 3], radiusMm: 4 } } }];
+placed.constraints = [
+  { kind: "maxDeflectionMm", value: 2, region: { sphere: { centre: [29, 0, 3], radiusMm: 4 } } },
+  { kind: "deflectionBandMm", value: 0, band: [0.5, 2], region: { faces: [3] } },
+  { kind: "relativeDeflectionMm", value: 1, region: { box: { min: [0, 0, 0], max: [1, 1, 1] } }, other: { faces: [4] } },
+];
+placed.facesKey = "abc123";
+eq("places, region targets and the faces key read back", readStudy(JSON.parse(JSON.stringify(placed))), placed);
+eq("a place with no radius is left out", readStudy({ ...placed, loads: [{ ...placed.loads[0], place: { sphere: { centre: [0, 0, 0] } } }] }), null);
+eq("a place reads as held", holdRefusal(placed), null);
 eq(
   "a rough row is not met",
   constraintVerdict({ provisional: true, trust: "rough", maxDisplacementMm: 0.01, minSafetyFactor: 4, massG: 1 }, { maxDeflectionMm: 1 }),

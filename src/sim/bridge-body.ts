@@ -9,6 +9,7 @@ import {
   boxOf,
   defaultScale,
   paintField,
+  placeRegion,
   type CannedResult,
   type ObjectStudy,
   type SlicedMargin,
@@ -89,6 +90,11 @@ export function buildStudyBody(input: StudyBodyInput): string | { reason: string
       continue;
     }
     if (hold.kind === "plane") return { reason: PLANE_HOLD };
+    // A place the MCP set up. The panel's triangles are in the model frame, so it goes as it is.
+    if (hold.place) {
+      holds.push({ kind: "region", region: placeRegion(hold.place, [0, 0, 0], 1) });
+      continue;
+    }
     const triangles = input.triangles(hold.faces);
     if (triangles.length === 0) return { reason: NO_SURFACE };
     holds.push({ kind: "region", region: { kind: "faces", triangles } });
@@ -96,10 +102,14 @@ export function buildStudyBody(input: StudyBodyInput): string | { reason: string
   if (holds.length === 0) return { reason: "Nothing is held." };
   const loads: Record<string, unknown>[] = [];
   for (const load of input.study.loads) {
-    if (load.faces.length === 0) return { reason: LOAD_FACES_NEXT };
-    const triangles = input.triangles(load.faces);
-    if (triangles.length === 0) return { reason: NO_SURFACE };
-    const region = { kind: "faces", triangles };
+    let region: Record<string, unknown>;
+    if (load.place) region = placeRegion(load.place, [0, 0, 0], 1);
+    else {
+      if (load.faces.length === 0) return { reason: LOAD_FACES_NEXT };
+      const triangles = input.triangles(load.faces);
+      if (triangles.length === 0) return { reason: NO_SURFACE };
+      region = { kind: "faces", triangles };
+    }
     if (load.kind === "pressure") {
       loads.push({ kind: "pressure", region, mpa: load.magnitude * scale });
       continue;

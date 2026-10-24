@@ -10,13 +10,24 @@ export type Vec3 = [number, number, number];
 export type TrustWord = "rough" | "usable" | "converged";
 export type StressField = "vonMises" | "displacement" | "safety";
 
+/**
+ * A place on the part in the model frame, spelled as the paint regions are. A point does not renumber, so a study
+ * given as places still reads the same spot after a Model edit.
+ */
+export type StudyPlace = { sphere: { centre: Vec3; radiusMm: number } } | { box: { min: Vec3; max: Vec3 } };
+
+/** Where a target reads: face indexes, or a place. */
+export type StudyRegion = { faces: number[] } | StudyPlace;
+
 export interface StudyHold {
   kind: "bed" | "faces" | "plane";
-  /** Face indexes. Empty when the hold is the bed or a plane. */
+  /** Face indexes. Empty when the hold is the bed, a plane, or a place. */
   faces: number[];
   /** A typed plane, in the part frame. */
   normal?: Vec3;
   origin?: Vec3;
+  /** Held here instead of on faces. Only on a `faces` hold. */
+  place?: StudyPlace;
 }
 
 export interface StudyBeam {
@@ -30,18 +41,26 @@ export type SimPatternName = "lines" | "grid" | "gyroid" | "lightning";
 /** `sliced` is the printed part. `smear` is the generated-beam solve. Absent means choose again at run time. */
 export type SimRepresentation = "sliced" | "smear";
 
-/** A target the sliced solve turns into a margin. A band is not stored here. */
+/** A target the sliced solve turns into a margin. A band kind has `band` and a value of 0. */
 export interface StudyConstraint {
   kind: string;
   value: number;
+  band?: [number, number];
+  /** Where it reads. Absent reads the whole part. */
+  region?: StudyRegion;
+  /** The second region of a relative deflection. */
+  other?: StudyRegion;
 }
 
 export interface StudyLoad {
   kind: "force" | "pressure";
+  /** Empty when the load is on a place. */
   faces: number[];
   /** Newtons, or MPa when `kind` is pressure. */
   magnitude: number;
   direction: Vec3;
+  /** Loaded here instead of on faces. */
+  place?: StudyPlace;
 }
 
 /** What the plate stores. Absent on an object that has no study. */
@@ -64,6 +83,8 @@ export interface ObjectStudy {
   representation?: SimRepresentation;
   /** Targets for a sliced solve. Absent on a smear and on an older study. */
   constraints?: StudyConstraint[];
+  /** The shape the face indexes were picked on. The MCP sets it; absent is not checked. */
+  facesKey?: string;
 }
 
 export interface ConstraintLimits {
@@ -151,12 +172,14 @@ export function cloneStudy(study: ObjectStudy): ObjectStudy {
       faces: [...hold.faces],
       ...(hold.normal ? { normal: [...hold.normal] as Vec3 } : {}),
       ...(hold.origin ? { origin: [...hold.origin] as Vec3 } : {}),
+      ...(hold.place ? { place: clonePlace(hold.place) } : {}),
     })),
     loads: study.loads.map((load) => ({
       kind: load.kind,
       faces: [...load.faces],
       magnitude: load.magnitude,
       direction: [...load.direction] as Vec3,
+      ...(load.place ? { place: clonePlace(load.place) } : {}),
     })),
     cardId: study.cardId,
     printer: study.printer,
@@ -166,8 +189,77 @@ export function cloneStudy(study: ObjectStudy): ObjectStudy {
     ...(study.beam ? { beam: { ...study.beam } } : {}),
     ...(study.pattern ? { pattern: study.pattern } : {}),
     ...(study.representation ? { representation: study.representation } : {}),
-    ...(study.constraints ? { constraints: study.constraints.map((row) => ({ ...row })) } : {}),
+    ...(study.constraints ? { constraints: study.constraints.map(cloneConstraint) } : {}),
+    ...(study.facesKey ? { facesKey: study.facesKey } : {}),
   };
+}
+
+function clonePlace(place: StudyPlace): StudyPlace {
+  if ("sphere" in place) return { sphere: { centre: [...place.sphere.centre] as Vec3, radiusMm: place.sphere.radiusMm } };
+  return { box: { min: [...place.box.min] as Vec3, max: [...place.box.max] as Vec3 } };
+}
+
+function cloneRegion(region: StudyRegion): StudyRegion {
+  return "faces" in region ? { faces: [...region.faces] } : clonePlace(region);
+}
+
+function cloneConstraint(row: StudyConstraint): StudyConstraint {
+  return {
+    kind: row.kind,
+    value: row.value,
+    ...(row.band ? { band: [row.band[0], row.band[1]] as [number, number] } : {}),
+    ...(row.region ? { region: cloneRegion(row.region) } : {}),
+    ...(row.other ? { other: cloneRegion(row.other) } : {}),
+  };
+}
+
+/** A sphere `{centre, radiusMm}` or a box `{min, max}`, or null. */
+export function readPlace(value: unknown): StudyPlace | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (row.sphere !== undefined && row.box === undefined) {
+    const sphere = row.sphere;
+    if (!sphere || typeof sphere !== "object" || Array.isArray(sphere)) return null;
+    const centre = vec3((sphere as Record<string, unknown>).centre);
+    const radiusMm = (sphere as Record<string, unknown>).radiusMm;
+    if (!centre || !finite(radiusMm) || !(radiusMm > 0)) return null;
+    return { sphere: { centre, radiusMm } };
+  }
+  if (row.box !== undefined && row.sphere === undefined) {
+    const box = row.box;
+    if (!box || typeof box !== "object" || Array.isArray(box)) return null;
+    const min = vec3((box as Record<string, unknown>).min);
+    const max = vec3((box as Record<string, unknown>).max);
+    if (!min || !max || !(min[0] <= max[0] && min[1] <= max[1] && min[2] <= max[2])) return null;
+    return { box: { min, max } };
+  }
+  return null;
+}
+
+/** Face indexes `{faces}`, or a place, or null. */
+export function readRegion(value: unknown): StudyRegion | null {
+  if (value && typeof value === "object" && !Array.isArray(value) && "faces" in value) {
+    const faces = facesOf((value as Record<string, unknown>).faces);
+    return faces && faces.length > 0 && Object.keys(value).length === 1 ? { faces } : null;
+  }
+  return readPlace(value);
+}
+
+/** Whether the study names a face index, which a Model edit renumbers. */
+export function namesFaces(study: ObjectStudy): boolean {
+  if (study.holds.some((hold) => hold.faces.length > 0)) return true;
+  if (study.loads.some((load) => load.faces.length > 0)) return true;
+  return (study.constraints ?? []).some((row) => (row.region !== undefined && "faces" in row.region) || (row.other !== undefined && "faces" in row.other));
+}
+
+/**
+ * A place as the solver's region, in the frame of the sliced mesh: scaled about `centre`, as `scaledCanonical`
+ * scales the vertices.
+ */
+export function placeRegion(place: StudyPlace, centre: Vec3, scale: number): Record<string, unknown> {
+  const at = (p: Vec3): Vec3 => [(p[0] - centre[0]) * scale + centre[0], (p[1] - centre[1]) * scale + centre[1], (p[2] - centre[2]) * scale + centre[2]];
+  if ("sphere" in place) return { kind: "near", point: at(place.sphere.centre), radius: place.sphere.radiusMm * scale };
+  return { kind: "box", min: at(place.box.min), max: at(place.box.max) };
 }
 
 function finite(value: unknown): value is number {
@@ -208,6 +300,12 @@ export function readStudy(value: unknown): ObjectStudy | null {
       holds.push({ kind: "plane", faces, normal, origin });
       continue;
     }
+    if (hold.place !== undefined) {
+      const place = readPlace(hold.place);
+      if (!place || hold.kind !== "faces") return null;
+      holds.push({ kind: "faces", faces, place });
+      continue;
+    }
     holds.push({ kind: hold.kind, faces });
   }
   const loads: StudyLoad[] = [];
@@ -218,6 +316,12 @@ export function readStudy(value: unknown): ObjectStudy | null {
     const faces = facesOf(load.faces);
     const direction = vec3(load.direction);
     if (!faces || !direction || !finite(load.magnitude)) return null;
+    if (load.place !== undefined) {
+      const place = readPlace(load.place);
+      if (!place) return null;
+      loads.push({ kind: load.kind, faces, magnitude: load.magnitude, direction, place });
+      continue;
+    }
     loads.push({ kind: load.kind, faces, magnitude: load.magnitude, direction });
   }
   const patterns = new Set(["lines", "grid", "gyroid", "lightning"]);
@@ -246,8 +350,20 @@ export function readStudy(value: unknown): ObjectStudy | null {
     for (const item of row.constraints) {
       if (!item || typeof item !== "object" || Array.isArray(item)) return null;
       const target = item as Record<string, unknown>;
-      if (typeof target.kind !== "string" || target.kind.trim() === "" || !finite(target.value) || target.value <= 0) return null;
-      constraints.push({ kind: target.kind, value: target.value });
+      if (typeof target.kind !== "string" || target.kind.trim() === "" || !finite(target.value)) return null;
+      const band = target.band;
+      if (band !== undefined && !(Array.isArray(band) && band.length === 2 && band.every(finite))) return null;
+      if (band === undefined && target.value <= 0) return null;
+      const region = target.region === undefined ? undefined : readRegion(target.region);
+      const other = target.other === undefined ? undefined : readRegion(target.other);
+      if (region === null || other === null) return null;
+      constraints.push({
+        kind: target.kind,
+        value: target.value,
+        ...(Array.isArray(band) ? { band: [band[0] as number, band[1] as number] as [number, number] } : {}),
+        ...(region ? { region } : {}),
+        ...(other ? { other } : {}),
+      });
     }
   }
   return {
@@ -262,12 +378,13 @@ export function readStudy(value: unknown): ObjectStudy | null {
     ...(pattern ? { pattern } : {}),
     ...(representation ? { representation } : {}),
     ...(constraints ? { constraints } : {}),
+    ...(typeof row.facesKey === "string" && row.facesKey ? { facesKey: row.facesKey } : {}),
   };
 }
 
 /** Nothing is fixed: the rigid-body refusal. */
 export function holdRefusal(study: ObjectStudy): string | null {
-  const held = study.holds.some((hold) => hold.kind === "bed" || hold.kind === "plane" || hold.faces.length > 0);
+  const held = study.holds.some((hold) => hold.kind === "bed" || hold.kind === "plane" || hold.faces.length > 0 || hold.place !== undefined);
   return held ? null : NOT_HELD;
 }
 
@@ -281,7 +398,7 @@ export function setupGap(study: ObjectStudy): { step: "hold" | "load"; text: str
 /** What the load still needs: a face, a size, and a direction. Null when it has all three. */
 export function loadGap(study: ObjectStudy): string | null {
   const load = study.loads[0];
-  if (!load || load.faces.length === 0) return LOAD_FACES_NEXT;
+  if (!load || (load.faces.length === 0 && !load.place)) return LOAD_FACES_NEXT;
   if (!(Math.abs(load.magnitude) > 0)) return "Give the load a size above zero.";
   if (!(Math.hypot(...load.direction) > 1e-12)) return "Give the load a direction.";
   return null;
