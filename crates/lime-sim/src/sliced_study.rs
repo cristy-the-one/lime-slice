@@ -35,7 +35,8 @@ use crate::material::{BeadMaxStress, Governs, MaxStress, Stress};
 use crate::material::{FailureCriterion, MaterialModel};
 use crate::mesh::{boundary_faces, BoundaryFace, Mesh};
 use crate::slice_field::{SliceField, ROLES};
-use crate::sliced::{fitted_h_xy, nodes_for_memory, study_memory_mb, SlicedGrid, SlicedMesh, PHI_MIN};
+use crate::sliced::{fitted_h_xy, nodes_for_memory, study_peak_mb, SlicedGrid, SlicedMesh, PHI_MIN};
+use crate::solve::node_graph_factor_len;
 use crate::solve_cases;
 use crate::study::{Card, Request, Step};
 use crate::trust::TrustLevel;
@@ -364,7 +365,8 @@ pub struct SlicedReport {
     pub case_solutions: Vec<Solution>,
     #[serde(skip)]
     pub mesh: Option<SlicedMesh>,
-    /// The second cell size's solve, when it ran.
+    /// The second, finer cell size's solve, when it ran. A check at a
+    /// coarser size is not kept.
     #[serde(skip)]
     pub finer: Option<(Solution, SlicedMesh)>,
     /// Slice frame to the frame the study was given in, row-major.
@@ -870,10 +872,8 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
     let to_slice = to_part
         .inverse()
         .ok_or_else(|| SimError::new("The slice field's frame can't be inverted."))?;
-    let memory_mb = study
-        .memory_mb
-        .filter(|m| m.is_finite() && *m > 0.0)
-        .unwrap_or(DEFAULT_MEMORY_MB);
+    let given_mb = study.memory_mb.filter(|m| m.is_finite() && *m > 0.0);
+    let memory_mb = given_mb.unwrap_or(DEFAULT_MEMORY_MB);
     let node_budget = nodes_for_memory(memory_mb);
     let h = match study.h_xy {
         Some(h) => h,
@@ -885,32 +885,71 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
     let mut notes = first.cases[0].solution.notes.clone();
     let mut finer = None;
     let mut moved = None;
-    let fine = h / std::f64::consts::SQRT_2;
-    // The node count goes with the cell count, about h⁻³ while slabs follow
-    // the layers; √2 finer is about 2.8 times the nodes.
-    let estimate = (first.mesh.mesh.nodes.len() as f64 * 2.83) as usize;
     let one_size_why = if !study.check_resolution {
         "The sliced result was solved at one cell size only.".to_string()
-    } else if estimate > node_budget {
-        format!(
-            "A second cell size of {} mm needs about {} MB, past the {} MB budget, so the sliced result was not checked there.",
-            format_mm(fine),
-            study_memory_mb(estimate).round(),
-            memory_mb.round()
-        )
     } else {
-        let second = solve_at(field, study, &cases, fine, to_part, to_slice)?;
-        let resolution = second.resolution(governing, study)?;
-        if let (Some(a), Some(b)) = (resolutions[0].governing_value, resolution.governing_value) {
-            moved = Some((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
-        } else {
-            // Nothing governs: no target and no stress.
-            moved = Some(0.0);
+        // A study that names its memory keeps it for both sizes. One that
+        // doesn't fitted its first size to the default, and may spend what
+        // the machine has free on the check.
+        let check_mb = given_mb
+            .or_else(crate::memory::spare_mb)
+            .unwrap_or(DEFAULT_MEMORY_MB);
+        let fine = h / std::f64::consts::SQRT_2;
+        let (second_h, why) = match second_size_cost(field, fine, &first)? {
+            Cost::Fits { peak_mb } if peak_mb <= check_mb => (fine, None),
+            Cost::Fits { peak_mb } => (
+                h * std::f64::consts::SQRT_2,
+                Some(format!(
+                    "A second cell size of {} mm needs about {} MB, past the {} MB this solve may use",
+                    format_mm(fine),
+                    peak_mb.round(),
+                    check_mb.round()
+                )),
+            ),
+            Cost::Refused(reason) => (
+                h * std::f64::consts::SQRT_2,
+                Some(format!(
+                    "A second cell size of {} mm was refused ({})",
+                    format_mm(fine),
+                    reason.trim_end_matches('.')
+                )),
+            ),
+        };
+        match solve_at(field, study, &cases, second_h, to_part, to_slice) {
+            Ok(second) => {
+                let resolution = second.resolution(governing, study)?;
+                if let (Some(a), Some(b)) =
+                    (resolutions[0].governing_value, resolution.governing_value)
+                {
+                    moved = Some((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
+                } else {
+                    // Nothing governs: no target and no stress.
+                    moved = Some(0.0);
+                }
+                resolutions.push(resolution);
+                match why {
+                    // The move from a coarser size overstates the first
+                    // size's error, so the trust it gives errs low.
+                    Some(why) => notes.push(format!(
+                        "{why}, so the sliced result was checked at a coarser {} mm instead.",
+                        format_mm(second_h)
+                    )),
+                    None => {
+                        let mut solutions = second.cases.into_iter().map(|c| c.solution);
+                        finer = solutions.next().map(|s| (s, second.mesh));
+                    }
+                }
+                String::new()
+            }
+            // The finer grid fitted and failed: that is an answer to give.
+            Err(err) if why.is_none() => return Err(err),
+            Err(err) => format!(
+                "{why}, and a coarser {} mm could not be solved ({}), so the sliced result was not checked.",
+                format_mm(second_h),
+                err.message.trim_end_matches('.'),
+                why = why.unwrap_or_default(),
+            ),
         }
-        resolutions.push(resolution);
-        let mut solutions = second.cases.into_iter().map(|c| c.solution);
-        finer = solutions.next().map(|s| (s, second.mesh));
-        String::new()
     };
     let provisional =
         study.card.provisional || study.card.beads.as_ref().is_some_and(|b| b.provisional);
@@ -976,6 +1015,8 @@ struct Solved {
     names: Vec<String>,
     cases: Vec<CaseResult>,
     factorisations: usize,
+    /// How many values its factor held.
+    factor_len: usize,
 }
 
 /// What decides trust: a target, or the lowest safety factor when the study
@@ -985,6 +1026,33 @@ enum Governing {
     Target(usize),
     SafetyFactor,
     Nothing,
+}
+
+/// What the second, finer cell size would cost.
+enum Cost {
+    /// Its grid meshes, and its solve should peak near this, MB.
+    Fits { peak_mb: f64 },
+    /// Its grid doesn't mesh: the sentence why.
+    Refused(String),
+}
+
+/// Mesh the finer grid and size its factor without factoring it: the node
+/// graph's symbolic factor at both sizes, scaled by the first size's real
+/// one. On the jet study this said 6,715 MB where the study peaked at
+/// 6,604; the `nodes^1.2` fit it replaces said 10,877.
+fn second_size_cost(field: &SliceField, fine: f64, first: &Solved) -> Result<Cost, SimError> {
+    let grid = SlicedGrid::rasterize(field, fine)?;
+    let mesh = match grid.mesh(PHI_MIN) {
+        Ok(sliced) => sliced.mesh,
+        Err(err) => return Ok(Cost::Refused(err.message)),
+    };
+    let first_graph = node_graph_factor_len(&first.mesh.mesh)?;
+    let fine_graph = node_graph_factor_len(&mesh)?;
+    let per_graph = first.factor_len as f64 / first_graph.max(1) as f64;
+    let factor_len = (per_graph * fine_graph as f64) as usize;
+    Ok(Cost::Fits {
+        peak_mb: study_peak_mb(factor_len),
+    })
 }
 
 fn solve_at(
@@ -1147,6 +1215,7 @@ fn solve_at(
         names: cases.iter().map(|c| c.name.clone()).collect(),
         cases: results,
         factorisations: solved.factorisations,
+        factor_len: solved.factor_len,
     })
 }
 

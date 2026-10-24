@@ -22,7 +22,7 @@ use crate::error::SimError;
 use crate::material::MaterialContext;
 use crate::mesh::{tet10_nodes, Cell, Mesh, HEX_TETS};
 use crate::slice_field::{SliceField, ROLES};
-use crate::units::{midpoint, NODE_CAP};
+use crate::units::{midpoint, NODE_CAP, SLICED_NODE_CAP};
 
 /// A cell with less than this fraction of polymer is void.
 pub const PHI_MIN: f64 = 0.02;
@@ -145,6 +145,15 @@ pub fn study_memory_mb(nodes: usize) -> f64 {
 }
 
 const MEMORY_EXPONENT: f64 = 1.20;
+
+/// Peak memory of a sliced study, MB, from the values its factor holds:
+/// twice the factor, for the assembly and the factor's scratch alive beside
+/// it, and 300 MB for the rest. Measured on the jet study (release, Windows):
+/// 1.42e8 values peaked at 2,544 MB (this says 2,465), 4.14e8 at 6,397 MB
+/// (this says 6,616).
+pub fn study_peak_mb(factor_len: usize) -> f64 {
+    2.0 * 8.0 * factor_len as f64 / (1024.0 * 1024.0) + 300.0
+}
 
 /// The most nodes a solve may have within `memory_mb`, and never past the cap.
 pub fn nodes_for_memory(memory_mb: f64) -> usize {
@@ -405,7 +414,7 @@ impl SlicedGrid {
                 && near(0, 0, -1))
         };
         let estimate = (solid.len() as f64 * NODES_PER_CELL) as usize;
-        if estimate > NODE_CAP {
+        if estimate > SLICED_NODE_CAP {
             return Err(self.cap_refusal(estimate));
         }
         let mut nodes: Vec<[f64; 3]> = Vec::new();
@@ -453,7 +462,7 @@ impl SlicedGrid {
                 boundary.push(on_surface(key));
             }
         }
-        if nodes.len() > NODE_CAP {
+        if nodes.len() > SLICED_NODE_CAP {
             return Err(self.cap_refusal(nodes.len()));
         }
         Ok(SlicedMesh {
@@ -474,7 +483,7 @@ impl SlicedGrid {
 
     fn cap_refusal(&self, nodes: usize) -> SimError {
         // Nodes scale with the cell count, about h⁻³ while slabs follow h.
-        let fits = self.h_xy * (nodes as f64 / NODE_CAP as f64).cbrt() * 1.05;
+        let fits = self.h_xy * (nodes as f64 / SLICED_NODE_CAP as f64).cbrt() * 1.05;
         SimError::new(format!(
             "This slice needs about {nodes} nodes at a {:.2} mm cell. Try a cell of {:.2} mm.",
             self.h_xy, fits

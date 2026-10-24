@@ -10,6 +10,11 @@ pub const GRAVITY_MM_S2: f64 = 9810.0;
 /// The most nodes a solve will allocate. Past this the study is refused.
 pub const NODE_CAP: usize = 200_000;
 
+/// The most nodes a sliced grid will allocate. A sliced study sizes its
+/// grids by memory (`sliced_study::run`), so this only stops a runaway: the
+/// jet study's 217k-node grid peaked at 6.4 GB.
+pub const SLICED_NODE_CAP: usize = 1_000_000;
+
 /// Card density times a volume in mm³, in grams.
 pub fn mass_g(volume_mm3: f64, density_g_cm3: f64) -> f64 {
     density_g_cm3 * volume_mm3 / 1000.0

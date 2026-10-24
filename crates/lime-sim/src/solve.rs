@@ -10,10 +10,11 @@ use faer::sparse::linalg::cholesky::{
     SymbolicCholeskyRaw, SymmetricOrdering,
 };
 use faer::sparse::linalg::SupernodalThreshold;
-use faer::sparse::{SparseColMat, Triplet};
+use faer::sparse::{SparseColMat, SymbolicSparseColMat, Triplet};
 use faer::{Conj, Mat, Par, Side};
 
 use crate::error::{not_held, SimError};
+use crate::mesh::Mesh;
 
 pub struct Csc {
     pub nrows: usize,
@@ -85,6 +86,12 @@ struct Factored {
 }
 
 impl FaerLdlt {
+    /// How many values the last factor holds: its memory, at eight bytes
+    /// each. Zero when nothing was factored.
+    pub fn factor_len(&self) -> usize {
+        self.factored.as_ref().map_or(0, |f| f.values.len())
+    }
+
     /// `|D_min| / |D_max|` of the last factor. Zero when nothing was factored.
     pub fn pivot_ratio(&self) -> f64 {
         self.pivot_ratio
@@ -122,7 +129,7 @@ impl FaerLdlt {
         )
         .map_err(|_| SimError::new("The stiffness matrix could not be ordered."))?;
         let mut values = vec![0.0; symbolic.len_val()];
-        let par = Par::Seq;
+        let par = parallel();
         let scratch = symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default());
         let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
         if symbolic
@@ -174,7 +181,7 @@ impl LinearSolver for FaerLdlt {
         if b.len() != f.n {
             return Err(SimError::new("The load vector does not match the matrix."));
         }
-        let par = Par::Seq;
+        let par = parallel();
         let mut rhs = Mat::<f64>::from_fn(f.n, 1, |i, _| b[i]);
         let scratch = f.symbolic.solve_in_place_scratch::<f64>(1, par);
         let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
@@ -189,6 +196,63 @@ impl LinearSolver for FaerLdlt {
         }
         Ok(())
     }
+}
+
+/// How many values a supernodal factor of the mesh's node graph would hold:
+/// AMD and the symbolic analysis only, on one row per node instead of three
+/// per node, so it costs a small part of a real factor. Its ratio to a real
+/// factor of the same kind of grid is close to constant, so a caller that
+/// has factored one grid can size a finer one before building it.
+pub fn node_graph_factor_len(mesh: &Mesh) -> Result<usize, SimError> {
+    let n = mesh.nodes.len();
+    if n == 0 {
+        return Ok(0);
+    }
+    let mut pairs: Vec<(u32, u32)> = Vec::new();
+    for cell in &mesh.elements {
+        for &a in &cell.nodes {
+            for &b in &cell.nodes {
+                if a <= b {
+                    // (column, row) of the upper triangle.
+                    pairs.push((b as u32, a as u32));
+                }
+            }
+        }
+    }
+    pairs.sort_unstable();
+    pairs.dedup();
+    let mut col_ptr = vec![0usize; n + 1];
+    for &(col, _) in &pairs {
+        col_ptr[col as usize + 1] += 1;
+    }
+    for c in 0..n {
+        col_ptr[c + 1] += col_ptr[c];
+    }
+    let row_idx: Vec<usize> = pairs.iter().map(|&(_, row)| row as usize).collect();
+    drop(pairs);
+    let graph = SymbolicSparseColMat::new_checked(n, n, col_ptr, None, row_idx);
+    let symbolic = factorize_symbolic_cholesky(
+        graph.as_ref(),
+        Side::Upper,
+        SymmetricOrdering::Amd,
+        CholeskySymbolicParams {
+            supernodal_flop_ratio_threshold: SupernodalThreshold::FORCE_SUPERNODAL,
+            ..Default::default()
+        },
+    )
+    .map_err(|_| SimError::new("The mesh's node graph could not be ordered."))?;
+    Ok(symbolic.len_val())
+}
+
+/// The most threads one factor uses. faer splits the dense blocks of the
+/// largest supernodes, which stops paying past a handful of threads: the
+/// jet study's numeric factor took 4.1 s on one thread, 1.9 s on six or
+/// eight, and 2.4 s on all 24 of a Core Ultra 9 275HX.
+const MAX_THREADS: usize = 8;
+
+fn parallel() -> Par {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    Par::rayon(cores.min(MAX_THREADS))
 }
 
 /// `|D_min| / |D_max|` of a supernodal factor: each supernode's block
@@ -340,6 +404,51 @@ mod tests {
             assert!(worst < 1e-10, "case {case}: {worst}");
         }
         assert_eq!(solver.factors, 1);
+    }
+
+    /// A dof-level factor of a mesh's pattern: every node pair a dense 3 × 3
+    /// block, diagonally dominant so it factors.
+    fn dof_factor_len(mesh: &Mesh) -> usize {
+        let mut pairs = std::collections::BTreeSet::new();
+        for cell in &mesh.elements {
+            for &a in &cell.nodes {
+                for &b in &cell.nodes {
+                    if a <= b {
+                        pairs.insert((a, b));
+                    }
+                }
+            }
+        }
+        let mut t = Vec::new();
+        for (a, b) in pairs {
+            for i in 0..3 {
+                for j in 0..3 {
+                    let (r, c) = (3 * a + i, 3 * b + j);
+                    if r < c {
+                        t.push((r, c, -0.01));
+                    } else if r == c {
+                        t.push((r, c, 1000.0));
+                    }
+                }
+            }
+        }
+        let mut solver = FaerLdlt::default();
+        solver.factor(&t, 3 * mesh.nodes.len()).unwrap();
+        solver.factor_len()
+    }
+
+    /// The node graph sizes a finer grid's factor: its ratio to the real,
+    /// three-dofs-a-node factor holds within 15% from one cell size to the
+    /// next, which is what lets a study size its second grid from its first.
+    #[test]
+    fn the_node_graph_sizes_a_finer_factor() {
+        use crate::{beam, ElementKind};
+        let coarse = beam(40.0, 8.0, 8.0, 2.0, ElementKind::Tet10).unwrap();
+        let fine = beam(40.0, 8.0, 8.0, 2.0 / std::f64::consts::SQRT_2, ElementKind::Tet10).unwrap();
+        let ratio = |mesh: &Mesh| dof_factor_len(mesh) as f64 / node_graph_factor_len(mesh).unwrap() as f64;
+        let (a, b) = (ratio(&coarse), ratio(&fine));
+        assert!(node_graph_factor_len(&fine).unwrap() > node_graph_factor_len(&coarse).unwrap());
+        assert!((a - b).abs() / a.max(b) < 0.15, "{a} and {b}");
     }
 
     #[test]

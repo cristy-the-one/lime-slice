@@ -312,6 +312,42 @@ fn trust_follows_the_two_cell_sizes() {
 }
 
 /// Regions and hot spots are in the part frame, wherever the slice put it.
+/// A second cell size that doesn't fit the memory is checked at a coarser
+/// size instead, and the note says which and why.
+#[test]
+fn a_finer_size_past_the_memory_is_checked_coarser() {
+    let shaft = field(20, [0.0; 3], rings(8.0));
+    let report = run(
+        &shaft,
+        &SlicedStudy {
+            h_xy: Some(1.0),
+            card: isotropic_card(),
+            holds: vec![SlicedHold::Bed],
+            load_cases: Vec::new(),
+            loads: vec![SlicedLoad::Force {
+                region: top(4.0),
+                force: [1.0, 0.0, 0.0],
+            }],
+            constraints: Vec::new(),
+            check_resolution: true,
+            // Less than any study needs, so the finer size can't fit.
+            memory_mb: Some(1.0),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.resolutions.len(), 2);
+    let coarse = report.resolutions[1].h_xy_mm;
+    assert!((coarse - std::f64::consts::SQRT_2).abs() < 1e-9, "{coarse}");
+    assert!(report.finer.is_none());
+    let note = report
+        .notes
+        .iter()
+        .find(|n| n.contains("checked at a coarser 1.41 mm"))
+        .unwrap_or_else(|| panic!("{:?}", report.notes));
+    assert!(note.starts_with("A second cell size of 0.71 mm needs about"), "{note}");
+    assert!(note.contains("past the 1 MB this solve may use"), "{note}");
+}
+
 #[test]
 fn regions_and_hot_spots_are_in_the_part_frame() {
     // The slice frame is the part moved 50 mm along X.
