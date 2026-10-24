@@ -56,7 +56,7 @@ import { resolved } from "../src/strategy.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
-import { beltLayerNormal, cloneStudy, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type Vec3 as SimVec } from "../src/sim/study.ts";
+import { beltLayerNormal, cloneStudy, namesFaces, placeRegion, readRegion, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type StudyRegion, type Vec3 as SimVec } from "../src/sim/study.ts";
 import { LABEL } from "../src/sim/label.ts";
 import { readBeadSection, withBeads } from "../src/sim/cards.ts";
 import {
@@ -276,7 +276,14 @@ interface WorkJob {
 }
 
 /** `layer_image` coloured by stress before any sliced study. */
-const STRESS_LAYER_NEEDS = "Run sim_run on a sliced study of this object, then colour by stress or safety.";
+/** The targets `lime-sim` reads. A band kind takes `band`; the stiffness kinds need a region. */
+const TARGET_KINDS = ["minSafetyFactor", "maxDeflectionMm", "deflectionBandMm", "minStiffnessNPerMm", "stiffnessBandNPerMm", "relativeDeflectionMm", "maxMassG", "minMassG"];
+const BAND_KINDS = new Set(["deflectionBandMm", "stiffnessBandNPerMm"]);
+const STIFFNESS_KINDS = new Set(["minStiffnessNPerMm", "stiffnessBandNPerMm"]);
+const REGION_SHAPE = "A region is {faces:[...]}, {sphere:{centre, radiusMm}}, or {box:{min, max}}, in the model frame.";
+export const STALE_FACES = "The part changed since this study was set up. Pick the faces again, or give the regions as a sphere or a box.";
+const PLACE_ON_SMEAR = "A sphere or box region is read on a sliced study. Hold and load faces on a smear.";
+const STRESS_LAYER_NEEDS ="Run sim_run on a sliced study of this object, then colour by stress or safety.";
 const BEADS_REFUSAL = "A card's beads need every modulus and strength above 0, and a bridgeFactor above 0 and at most 1.";
 
 export interface PlateObject {
@@ -785,8 +792,11 @@ function xyGap(a: Bounds, b: Bounds): number {
   return Math.max(dx, dy);
 }
 
-/** The bridge reply, without the surface. Margins keep their hot spots. */
-function slicedRunReply(text: string): Record<string, unknown> {
+/**
+ * The bridge reply, without the surface. Margins keep their hot spots, and each carries the region it read as the
+ * caller gave it: the solver returns one margin per target, in order.
+ */
+function slicedRunReply(text: string, targets: readonly StudyConstraint[] = []): Record<string, unknown> {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(text) as Record<string, unknown>;
@@ -805,7 +815,7 @@ function slicedRunReply(text: string): Record<string, unknown> {
     representation: "sliced",
     trust: { level },
     notes: Array.isArray(report.notes) ? report.notes.filter((note): note is string => typeof note === "string") : [],
-    margins: Array.isArray(report.margins) ? report.margins : [],
+    margins: Array.isArray(report.margins) ? report.margins.map((row, index) => withRegion(row, targets[index])) : [],
     maxDisplacementMm: typeof report.maxDisplacementMm === "number" ? report.maxDisplacementMm : 0,
     minSafetyFactor: typeof report.minSafetyFactor === "number" ? report.minSafetyFactor : null,
     massG: typeof report.massG === "number" ? report.massG : 0,
@@ -813,6 +823,11 @@ function slicedRunReply(text: string): Record<string, unknown> {
     stale: false,
     ...sliceEstimateOf(parsed.slice),
   };
+}
+
+function withRegion(row: unknown, target: StudyConstraint | undefined): unknown {
+  if (!target?.region || !row || typeof row !== "object" || Array.isArray(row)) return row;
+  return { ...(row as Record<string, unknown>), region: target.region, ...(target.other ? { other: target.other } : {}) };
 }
 
 /** The slicer's estimate of the slice a sliced study solved: free, since it was sliced anyway. */
@@ -6940,7 +6955,13 @@ export class Session {
         holds.push({ kind: "plane", faces: [], normal, origin });
         continue;
       }
-      return { reason: "A fixture is a bed, faces, or a plane." };
+      if (row.kind === "region") {
+        const region = readRegion(row.region);
+        if (!region) return { reason: REGION_SHAPE };
+        holds.push("faces" in region ? { kind: "faces", faces: region.faces } : { kind: "faces", faces: [], place: region });
+        continue;
+      }
+      return { reason: "A fixture is a bed, faces, a plane, or a region." };
     }
     return holds;
   }
@@ -6953,9 +6974,17 @@ export class Session {
       if (!item || typeof item !== "object" || Array.isArray(item)) return { reason: "A load is an object." };
       const row = item as Record<string, unknown>;
       if (row.kind !== "force" && row.kind !== "pressure") return { reason: "A load is a force or a pressure." };
-      if (!Array.isArray(row.faces) || !row.faces.every((face) => Number.isInteger(face) && (face as number) >= 0)) return { reason: "Face indexes are whole numbers." };
       if (typeof row.magnitude !== "number" || !Number.isFinite(row.magnitude)) return { reason: "The load magnitude has to be a number." };
       const direction = vec3Of(row.direction) ?? [0, 0, -1];
+      if (row.region !== undefined) {
+        if (row.faces !== undefined) return { reason: "A load is on faces or on a region, not both." };
+        const region = readRegion(row.region);
+        if (!region) return { reason: REGION_SHAPE };
+        if ("faces" in region) loads.push({ kind: row.kind, faces: region.faces, magnitude: row.magnitude, direction });
+        else loads.push({ kind: row.kind, faces: [], magnitude: row.magnitude, direction, place: region });
+        continue;
+      }
+      if (!Array.isArray(row.faces) || !row.faces.every((face) => Number.isInteger(face) && (face as number) >= 0)) return { reason: "Face indexes are whole numbers." };
       loads.push({ kind: row.kind, faces: [...row.faces] as number[], magnitude: row.magnitude, direction });
     }
     return loads;
@@ -7069,6 +7098,7 @@ export class Session {
       ...(representation ? { representation } : {}),
       ...(constraints ? { constraints } : {}),
     };
+    if (namesFaces(study)) study.facesKey = this.shapeKey(obj);
     obj.sim = study;
     return { ok: true, object: obj.id, study, sentence: setupSentence(study, card.polymer, card.provisional), label: LABEL };
   }
@@ -7089,6 +7119,9 @@ export class Session {
   private solveCopy(obj: PlateObject, patch: SweepPatch | undefined, op: "run" | "field", field?: Record<string, unknown>): Record<string, unknown> {
     const saved = obj.sim;
     if (!saved) return { ok: false, reason: "Set up a study first." };
+    const stale = this.staleFaces(obj, saved);
+    if (stale) return { ok: false, reason: stale };
+    if (saved.holds.some((hold) => hold.place) || saved.loads.some((load) => load.place)) return { ok: false, reason: PLACE_ON_SMEAR };
     const study = cloneStudy(saved);
     if (study.printer) study.buildAxis = this.printerBuildAxis();
     if (patch?.loadScale) study.loads = scaleLoads(study.loads, patch.loadScale);
@@ -7146,20 +7179,52 @@ export class Session {
     });
   }
 
+  /** The solver's kinds and its refusal sentences (`lime-sim` sliced_study.rs), so a refusal reads the same either way. */
   private readSimConstraints(value: unknown): StudyConstraint[] | { reason: string } | undefined {
     if (value === undefined) return undefined;
     if (!Array.isArray(value)) return { reason: "Constraints are a list of targets." };
     if (value.length > 8) return { reason: "A study takes up to 8 targets." };
-    const kinds = new Set(["minSafetyFactor", "maxDeflectionMm", "maxMassG", "minMassG"]);
     const out: StudyConstraint[] = [];
     for (const item of value) {
       if (!item || typeof item !== "object" || Array.isArray(item)) return { reason: "A target is an object." };
       const row = item as Record<string, unknown>;
-      if (typeof row.kind !== "string" || !kinds.has(row.kind)) return { reason: "A target is minSafetyFactor, maxDeflectionMm, maxMassG, or minMassG." };
-      if (typeof row.value !== "number" || !(row.value > 0)) return { reason: "A target has to be a positive number." };
-      out.push({ kind: row.kind, value: row.value });
+      if (typeof row.kind !== "string" || !TARGET_KINDS.includes(row.kind)) return { reason: `A target is ${TARGET_KINDS.join(", ")}.` };
+      const band = BAND_KINDS.has(row.kind);
+      let pair: [number, number] | undefined;
+      if (band) {
+        const lo = Array.isArray(row.band) ? row.band[0] : undefined;
+        const hi = Array.isArray(row.band) ? row.band[1] : undefined;
+        if (!Array.isArray(row.band) || row.band.length !== 2 || typeof lo !== "number" || typeof hi !== "number" || !Number.isFinite(lo) || !Number.isFinite(hi) || !(lo >= 0) || !(hi > lo)) {
+          return { reason: "A band needs two numbers, the lower first." };
+        }
+        pair = [lo, hi];
+      } else if (typeof row.value !== "number" || !(row.value > 0) || !Number.isFinite(row.value)) return { reason: "A target has to be a positive number." };
+      const region = row.region === undefined ? undefined : readRegion(row.region);
+      const other = row.other === undefined ? undefined : readRegion(row.other);
+      if (region === null || other === null) return { reason: REGION_SHAPE };
+      if (STIFFNESS_KINDS.has(row.kind) && !region) return { reason: "A stiffness target needs the region it reads." };
+      if (row.kind === "relativeDeflectionMm" && (!region || !other)) return { reason: "A relative deflection needs two regions, region and other." };
+      out.push({
+        kind: row.kind,
+        value: band ? 0 : (row.value as number),
+        ...(pair ? { band: pair } : {}),
+        ...(region ? { region } : {}),
+        ...(other ? { other } : {}),
+      });
     }
     return out;
+  }
+
+  /** The solid the face indexes are picked on, as a key. A Model edit changes it. */
+  private shapeKey(obj: PlateObject): string {
+    const positions = obj.solid && obj.solid.positions.length >= 9 ? obj.solid.positions : obj.source;
+    return fnv1aHex(new Uint8Array(positions.buffer, positions.byteOffset, positions.byteLength));
+  }
+
+  /** A study that names faces, run on a solid edited since it was set up. Never solve on renumbered faces. */
+  private staleFaces(obj: PlateObject, study: ObjectStudy): string | null {
+    if (!study.facesKey || !namesFaces(study)) return null;
+    return study.facesKey === this.shapeKey(obj) ? null : STALE_FACES;
   }
 
   /**
@@ -7204,7 +7269,7 @@ export class Session {
     obj: PlateObject,
     study: ObjectStudy,
     faces: number[],
-    role: "hold" | "load",
+    role: "hold" | "load" | "target",
     corners: Float32Array,
     triangleIds: ArrayLike<number> | null,
   ): Record<string, unknown> | { reason: string } {
@@ -7248,7 +7313,7 @@ export class Session {
       triangles.push(reverse ? [a, c, b] : [a, b, c]);
     }
     if (triangles.length === 0) {
-      return { reason: role === "hold" ? "A hold's region touches no surface of the sliced part." : "A load's region touches no surface of the sliced part." };
+      return { reason: `A ${role}'s region touches no surface of the sliced part.` };
     }
     return { kind: "faces", triangles };
   }
@@ -7258,11 +7323,13 @@ export class Session {
    * scales the loads, without touching the plate.
    */
   private async solveSliced(obj: PlateObject, saved: ObjectStudy, checkResolution = true, patch?: SweepPatch): Promise<Record<string, unknown>> {
+    const stale = this.staleFaces(obj, saved);
+    if (stale) return { ok: false, reason: stale };
     const study = cloneStudy(saved);
     if (patch?.loadScale !== undefined && patch.loadScale !== 1) study.loads = scaleLoads(study.loads, patch.loadScale);
     if (study.printer) study.buildAxis = this.printerBuildAxis();
     if (study.holds.some((hold) => hold.kind === "plane")) return { ok: false, reason: "A plane hold is not on a sliced study. Hold the bed or faces." };
-    if (!study.holds.some((hold) => hold.kind === "bed" || hold.faces.length > 0)) return { ok: false, reason: "Nothing is held." };
+    if (!study.holds.some((hold) => hold.kind === "bed" || hold.faces.length > 0 || hold.place)) return { ok: false, reason: "Nothing is held." };
     const card = cardsOf(this.library).find((row) => row.id === study.cardId);
     if (!card) return { ok: false, reason: "That card is not in the library." };
     const { body } = this.sliceBody(obj, "object");
@@ -7287,20 +7354,27 @@ export class Session {
     if (obj.objectSettings.walls !== undefined && !Array.isArray(body.objects)) body.walls = obj.objectSettings.walls;
     if (obj.objectSettings.infill !== undefined && !Array.isArray(body.objects)) body.infill = obj.objectSettings.infill;
     if (patch) this.patchSliceBody(body, obj, patch);
+    // A place is in the model frame; the sliced mesh is scaled about its source's centre.
+    const box = boundsOf(mesh.unscaled);
+    const centre: SimVec = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
+    const regionOf = (region: StudyRegion, role: "hold" | "load" | "target") =>
+      "faces" in region ? this.slicedRegion(obj, study, region.faces, role, mesh.positions, mesh.triangles) : placeRegion(region, centre, obj.scale);
     const holds: Record<string, unknown>[] = [];
     for (const hold of study.holds) {
       if (hold.kind === "bed") {
         holds.push({ kind: "bed" });
         continue;
       }
-      const region = this.slicedRegion(obj, study, hold.faces, "hold", mesh.positions, mesh.triangles);
-      if ("reason" in region) return { ok: false, reason: region.reason };
+      const region = regionOf(hold.place ?? { faces: hold.faces }, "hold");
+      if ("reason" in region) return { ok: false, reason: region.reason as string };
       holds.push({ kind: "region", region });
     }
     const loads: Record<string, unknown>[] = [];
     for (const load of study.loads) {
-      const region = this.slicedRegion(obj, study, load.faces, "load", mesh.positions, mesh.triangles);
-      if ("reason" in region) return { ok: false, reason: region.reason };
+      const region = load.place
+        ? placeRegion(load.place, centre, obj.scale)
+        : this.slicedRegion(obj, study, load.faces, "load", mesh.positions, mesh.triangles);
+      if ("reason" in region) return { ok: false, reason: region.reason as string };
       if (load.kind === "pressure") {
         loads.push({ kind: "pressure", region, mpa: load.magnitude });
         continue;
@@ -7314,6 +7388,18 @@ export class Session {
       });
     }
     if (loads.length === 0) return { ok: false, reason: "This study has no load." };
+    const targets: Record<string, unknown>[] = [];
+    for (const row of study.constraints ?? []) {
+      const target: Record<string, unknown> = { kind: row.kind, value: row.value, ...(row.band ? { band: row.band } : {}) };
+      for (const key of ["region", "other"] as const) {
+        const given = row[key];
+        if (!given) continue;
+        const region = regionOf(given, "target");
+        if ("reason" in region) return { ok: false, reason: region.reason as string };
+        target[key] = region;
+      }
+      targets.push(target);
+    }
     const sent: Record<string, unknown> = { ...withBeads(card) };
     for (const [key, value] of Object.entries(sent)) if (value === null || value === undefined) delete sent[key];
     const payload = JSON.stringify({
@@ -7323,7 +7409,7 @@ export class Session {
         card: sent,
         holds,
         loads,
-        ...(study.constraints && study.constraints.length > 0 ? { constraints: study.constraints } : {}),
+        ...(targets.length > 0 ? { constraints: targets } : {}),
         checkResolution,
       },
     });
@@ -7334,7 +7420,7 @@ export class Session {
       return { ok: false, reason: err instanceof Error && err.message ? err.message : "The stress solve did not finish." };
     }
     this.stressCells = parseStressCells(text, obj.id) ?? this.stressCells;
-    return slicedRunReply(text);
+    return slicedRunReply(text, study.constraints ?? []);
   }
 
   /**
