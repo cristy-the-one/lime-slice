@@ -2747,6 +2747,7 @@ name = "lime-sim"
 version = "3.9.1"
 dependencies = [
  "faer",
+ "rayon",
  "serde",
  "serde_json",
 ]

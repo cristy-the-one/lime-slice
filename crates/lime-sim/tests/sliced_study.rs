@@ -4,7 +4,8 @@
 use lime_sim::material::{BeadSection, Governs};
 use lime_sim::slice_field::{Header, LayerRow, Segment, SliceField, FORMAT, ROLES};
 use lime_sim::sliced_study::{
-    cell_stresses, run, Constraint, ConstraintKind, Region, SlicedHold, SlicedLoad, SlicedStudy,
+    cell_stresses, run, CheckSolver, Constraint, ConstraintKind, Region, SlicedHold, SlicedLoad,
+    SlicedStudy,
 };
 use lime_sim::study::Card;
 use lime_sim::trust::TrustLevel;
@@ -162,6 +163,7 @@ fn a_twisted_shaft_carries_t_r_over_j_at_its_surface() {
             }],
             check_resolution: true,
             memory_mb: None,
+            check_solver: Default::default(),
         },
     )
     .unwrap();
@@ -256,6 +258,7 @@ fn a_bar_weak_across_layers_says_so() {
             ],
             check_resolution: false,
             memory_mb: None,
+            check_solver: Default::default(),
         },
     )
     .unwrap();
@@ -332,6 +335,7 @@ fn a_finer_size_past_the_memory_is_checked_coarser() {
             check_resolution: true,
             // Less than any study needs, so the finer size can't fit.
             memory_mb: Some(1.0),
+            check_solver: Default::default(),
         },
     )
     .unwrap();
@@ -346,6 +350,42 @@ fn a_finer_size_past_the_memory_is_checked_coarser() {
         .unwrap_or_else(|| panic!("{:?}", report.notes));
     assert!(note.starts_with("A second cell size of 0.71 mm needs about"), "{note}");
     assert!(note.contains("past the 1 MB this solve may use"), "{note}");
+}
+
+/// The finer cell size solved iteratively, preconditioned by the first
+/// size's factor, gives the direct solve's answer.
+#[test]
+fn the_iterative_check_matches_the_direct_one() {
+    let shaft = field(20, [0.0; 3], rings(8.0));
+    let study = |check_solver| SlicedStudy {
+        h_xy: Some(1.0),
+        card: isotropic_card(),
+        holds: vec![SlicedHold::Bed],
+        load_cases: Vec::new(),
+        loads: vec![SlicedLoad::Force {
+            region: top(4.0),
+            force: [1.0, 0.0, 0.0],
+        }],
+        constraints: vec![Constraint {
+            kind: ConstraintKind::MaxDeflectionMm,
+            value: 1.0,
+            ..Default::default()
+        }],
+        check_resolution: true,
+        memory_mb: None,
+        check_solver,
+    };
+    let direct = run(&shaft, &study(CheckSolver::Direct)).unwrap();
+    let iterative = run(&shaft, &study(CheckSolver::Iterative)).unwrap();
+    let fine = |r: &lime_sim::sliced_study::SlicedReport| r.resolutions[1].governing_value.unwrap();
+    let (a, b) = (fine(&direct), fine(&iterative));
+    assert!((a - b).abs() / a.abs() < 1e-6, "direct {a}, iterative {b}");
+    assert!(
+        iterative.notes.iter().any(|n| n.contains("solved iteratively")),
+        "{:?}",
+        iterative.notes
+    );
+    assert!(!direct.notes.iter().any(|n| n.contains("solved iteratively")));
 }
 
 #[test]
@@ -387,6 +427,7 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
             }],
             check_resolution: false,
             memory_mb: None,
+            check_solver: Default::default(),
         },
     )
     .unwrap();
@@ -414,6 +455,7 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
             constraints: Vec::new(),
             check_resolution: false,
             memory_mb: None,
+            check_solver: Default::default(),
         },
     )
     .unwrap_err();

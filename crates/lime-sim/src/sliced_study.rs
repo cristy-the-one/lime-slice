@@ -35,9 +35,14 @@ use crate::material::{BeadMaxStress, Governs, MaxStress, Stress};
 use crate::material::{FailureCriterion, MaterialModel};
 use crate::mesh::{boundary_faces, BoundaryFace, Mesh};
 use crate::slice_field::{SliceField, ROLES};
-use crate::sliced::{fitted_h_xy, nodes_for_memory, study_peak_mb, SlicedGrid, SlicedMesh, PHI_MIN};
+use crate::sliced::{
+    fitted_h_xy, iterative_peak_mb, nodes_for_memory, study_peak_mb, SlicedGrid, SlicedMesh,
+    PHI_MIN,
+};
 use crate::solve::node_graph_factor_len;
-use crate::solve_cases;
+use crate::solve::{FaerLdlt, LinearSolver};
+use crate::solve_cases_with;
+use crate::twolevel::{Prolongation, TwoLevelPcg};
 use crate::study::{Card, Request, Step};
 use crate::trust::TrustLevel;
 use crate::units::{cross, dot, norm, sub};
@@ -218,6 +223,20 @@ pub struct SlicedStudy {
     /// size is fitted to, and whether the second cell size runs.
     #[serde(default)]
     pub memory_mb: Option<f64>,
+    /// How the second cell size is solved. Absent, directly where its factor
+    /// fits and iteratively where only the iterative solve does.
+    #[serde(default)]
+    pub check_solver: CheckSolver,
+}
+
+/// How the second cell size is solved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CheckSolver {
+    #[default]
+    Auto,
+    Direct,
+    Iterative,
 }
 
 /// The memory a study may use when it names none, MB.
@@ -879,12 +898,32 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
         Some(h) => h,
         None => fitted_h_xy(field, node_budget)?,
     };
-    let first = solve_at(field, study, &cases, h, to_part, to_slice)?;
+    let mut direct = FaerLdlt::default();
+    let first = solve_at(
+        field,
+        study,
+        &cases,
+        mesh_at(field, h)?,
+        to_part,
+        to_slice,
+        &mut direct,
+    )?;
     let governing = first.governing(study)?;
     let mut resolutions = vec![first.resolution(governing, study)?];
     let mut notes = first.cases[0].solution.notes.clone();
     let mut finer = None;
     let mut moved = None;
+    let mut compare = |second: &Solved, resolutions: &mut Vec<Resolution>| -> Result<(), SimError> {
+        let resolution = second.resolution(governing, study)?;
+        if let (Some(a), Some(b)) = (resolutions[0].governing_value, resolution.governing_value) {
+            moved = Some((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
+        } else {
+            // Nothing governs: no target and no stress.
+            moved = Some(0.0);
+        }
+        resolutions.push(resolution);
+        Ok(())
+    };
     let one_size_why = if !study.check_resolution {
         "The sliced result was solved at one cell size only.".to_string()
     } else {
@@ -895,60 +934,101 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
             .or_else(crate::memory::spare_mb)
             .unwrap_or(DEFAULT_MEMORY_MB);
         let fine = h / std::f64::consts::SQRT_2;
-        let (second_h, why) = match second_size_cost(field, fine, &first)? {
-            Cost::Fits { peak_mb } if peak_mb <= check_mb => (fine, None),
-            Cost::Fits { peak_mb } => (
-                h * std::f64::consts::SQRT_2,
-                Some(format!(
-                    "A second cell size of {} mm needs about {} MB, past the {} MB this solve may use",
-                    format_mm(fine),
-                    peak_mb.round(),
-                    check_mb.round()
-                )),
-            ),
-            Cost::Refused(reason) => (
-                h * std::f64::consts::SQRT_2,
-                Some(format!(
-                    "A second cell size of {} mm was refused ({})",
-                    format_mm(fine),
-                    reason.trim_end_matches('.')
-                )),
-            ),
-        };
-        match solve_at(field, study, &cases, second_h, to_part, to_slice) {
-            Ok(second) => {
-                let resolution = second.resolution(governing, study)?;
-                if let (Some(a), Some(b)) =
-                    (resolutions[0].governing_value, resolution.governing_value)
-                {
-                    moved = Some((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
+        // Why the finer size wasn't solved, when it wasn't.
+        let why = match second_size(field, fine, &first)? {
+            Second::Refused(reason) => Some(format!(
+                "A second cell size of {} mm was refused ({})",
+                format_mm(fine),
+                reason.trim_end_matches('.')
+            )),
+            Second::Meshed {
+                mesh,
+                direct_mb,
+                iterative_mb,
+            } => {
+                let iterative = match study.check_solver {
+                    CheckSolver::Direct => false,
+                    CheckSolver::Iterative => true,
+                    CheckSolver::Auto => direct_mb > check_mb,
+                };
+                if !iterative {
+                    // A direct solve needs no coarse grid: free its factor first.
+                    drop(std::mem::take(&mut direct));
+                    // The finer grid fitted and failed: that is an answer to give.
+                    let second = solve_at(
+                        field,
+                        study,
+                        &cases,
+                        mesh,
+                        to_part,
+                        to_slice,
+                        &mut FaerLdlt::default(),
+                    )?;
+                    compare(&second, &mut resolutions)?;
+                    let mut solutions = second.cases.into_iter().map(|c| c.solution);
+                    finer = solutions.next().map(|s| (s, second.mesh));
+                    None
+                } else if study.check_solver == CheckSolver::Auto && iterative_mb > check_mb {
+                    Some(format!(
+                        "A second cell size of {} mm needs about {} MB, past the {} MB this solve may use",
+                        format_mm(fine),
+                        direct_mb.min(iterative_mb).round(),
+                        check_mb.round()
+                    ))
                 } else {
-                    // Nothing governs: no target and no stress.
-                    moved = Some(0.0);
-                }
-                resolutions.push(resolution);
-                match why {
-                    // The move from a coarser size overstates the first
-                    // size's error, so the trust it gives errs low.
-                    Some(why) => notes.push(format!(
-                        "{why}, so the sliced result was checked at a coarser {} mm instead.",
-                        format_mm(second_h)
-                    )),
-                    None => {
-                        let mut solutions = second.cases.into_iter().map(|c| c.solution);
-                        finer = solutions.next().map(|s| (s, second.mesh));
+                    let links = Prolongation::new(&first.mesh, &mesh);
+                    let mut pcg = TwoLevelPcg::new(std::mem::take(&mut direct), links);
+                    match solve_at(field, study, &cases, mesh, to_part, to_slice, &mut pcg) {
+                        Ok(second) => {
+                            compare(&second, &mut resolutions)?;
+                            notes.extend(pcg.notes());
+                            let mut solutions = second.cases.into_iter().map(|c| c.solution);
+                            finer = solutions.next().map(|s| (s, second.mesh));
+                            None
+                        }
+                        Err(err) => Some(format!(
+                            "An iterative solve of a second cell size of {} mm failed ({})",
+                            format_mm(fine),
+                            err.message.trim_end_matches('.')
+                        )),
                     }
                 }
-                String::new()
             }
-            // The finer grid fitted and failed: that is an answer to give.
-            Err(err) if why.is_none() => return Err(err),
-            Err(err) => format!(
-                "{why}, and a coarser {} mm could not be solved ({}), so the sliced result was not checked.",
-                format_mm(second_h),
-                err.message.trim_end_matches('.'),
-                why = why.unwrap_or_default(),
-            ),
+        };
+        match why {
+            None => String::new(),
+            // Check at a coarser size instead. Its move overstates the first
+            // size's error, so the trust it gives errs low.
+            Some(why) => {
+                drop(std::mem::take(&mut direct));
+                let coarser = h * std::f64::consts::SQRT_2;
+                let solved = mesh_at(field, coarser).and_then(|mesh| {
+                    solve_at(
+                        field,
+                        study,
+                        &cases,
+                        mesh,
+                        to_part,
+                        to_slice,
+                        &mut FaerLdlt::default(),
+                    )
+                });
+                match solved {
+                    Ok(second) => {
+                        compare(&second, &mut resolutions)?;
+                        notes.push(format!(
+                            "{why}, so the sliced result was checked at a coarser {} mm instead.",
+                            format_mm(coarser)
+                        ));
+                        String::new()
+                    }
+                    Err(err) => format!(
+                        "{why}, and a coarser {} mm could not be solved ({}), so the sliced result was not checked.",
+                        format_mm(coarser),
+                        err.message.trim_end_matches('.'),
+                    ),
+                }
+            }
         }
     };
     let provisional =
@@ -1028,10 +1108,16 @@ enum Governing {
     Nothing,
 }
 
-/// What the second, finer cell size would cost.
-enum Cost {
-    /// Its grid meshes, and its solve should peak near this, MB.
-    Fits { peak_mb: f64 },
+/// The second, finer cell size, meshed, and what each way of solving it
+/// would cost.
+enum Second {
+    Meshed {
+        mesh: SlicedMesh,
+        /// Peak of a direct solve, MB.
+        direct_mb: f64,
+        /// Peak of an iterative solve beside the first size's factor, MB.
+        iterative_mb: f64,
+    },
     /// Its grid doesn't mesh: the sentence why.
     Refused(String),
 }
@@ -1040,31 +1126,37 @@ enum Cost {
 /// graph's symbolic factor at both sizes, scaled by the first size's real
 /// one. On the jet study this said 6,715 MB where the study peaked at
 /// 6,604; the `nodes^1.2` fit it replaces said 10,877.
-fn second_size_cost(field: &SliceField, fine: f64, first: &Solved) -> Result<Cost, SimError> {
-    let grid = SlicedGrid::rasterize(field, fine)?;
-    let mesh = match grid.mesh(PHI_MIN) {
-        Ok(sliced) => sliced.mesh,
-        Err(err) => return Ok(Cost::Refused(err.message)),
+fn second_size(field: &SliceField, fine: f64, first: &Solved) -> Result<Second, SimError> {
+    let sliced = match mesh_at(field, fine) {
+        Ok(sliced) => sliced,
+        Err(err) => return Ok(Second::Refused(err.message)),
     };
     let first_graph = node_graph_factor_len(&first.mesh.mesh)?;
-    let fine_graph = node_graph_factor_len(&mesh)?;
+    let fine_graph = node_graph_factor_len(&sliced.mesh)?;
     let per_graph = first.factor_len as f64 / first_graph.max(1) as f64;
     let factor_len = (per_graph * fine_graph as f64) as usize;
-    Ok(Cost::Fits {
-        peak_mb: study_peak_mb(factor_len),
+    Ok(Second::Meshed {
+        direct_mb: study_peak_mb(factor_len),
+        iterative_mb: iterative_peak_mb(first.factor_len, sliced.mesh.elements.len()),
+        mesh: sliced,
     })
+}
+
+/// The grid of one cell size, meshed.
+fn mesh_at(field: &SliceField, h: f64) -> Result<SlicedMesh, SimError> {
+    SlicedGrid::rasterize(field, h)?.mesh(PHI_MIN)
 }
 
 fn solve_at(
     field: &SliceField,
     study: &SlicedStudy,
     cases: &[LoadCase],
-    h: f64,
+    sliced: SlicedMesh,
     to_part: Affine,
     to_slice: Affine,
+    solver: &mut dyn LinearSolver,
 ) -> Result<Solved, SimError> {
-    let grid = SlicedGrid::rasterize(field, h)?;
-    let sliced = grid.mesh(PHI_MIN)?;
+    let h = sliced.h_xy;
     let mesh = &sliced.mesh;
     let faces = boundary_faces(mesh);
     let surface = Surface {
@@ -1080,7 +1172,7 @@ fn solve_at(
                     .iter()
                     .map(|f| surface.centroid(f)[2])
                     .fold(f64::INFINITY, f64::min);
-                let slab = grid.slabs.first().map_or(h, |s| s[1] - s[0]);
+                let slab = sliced.slabs.first().map_or(h, |s| s[1] - s[0]);
                 faces
                     .iter()
                     .filter(|f| {
@@ -1138,7 +1230,7 @@ fn solve_at(
         cancel: None,
         on_progress: None,
     };
-    let solved = solve_cases(&req, &case_loads)?;
+    let solved = solve_cases_with(&req, &case_loads, solver)?;
     let allow = card.material().allowables();
     let axis = [0.0, 0.0, 1.0];
     let safety = |stress: [f64; 6], element: usize| {

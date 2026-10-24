@@ -155,6 +155,15 @@ pub fn study_peak_mb(factor_len: usize) -> f64 {
     2.0 * 8.0 * factor_len as f64 / (1024.0 * 1024.0) + 300.0
 }
 
+/// Peak memory of an iterative solve of a grid of `elements` TET10s, MB,
+/// beside a coarser grid's factor of `coarse_factor_len` values that it
+/// keeps: the factor, the assembler's triplets (465 a tet, 24 bytes each)
+/// with the matrix built from them, and 300 MB for the rest.
+pub fn iterative_peak_mb(coarse_factor_len: usize, elements: usize) -> f64 {
+    let mb = 1024.0 * 1024.0;
+    8.0 * coarse_factor_len as f64 / mb + elements as f64 * 465.0 * 48.0 / mb + 300.0
+}
+
 /// The most nodes a solve may have within `memory_mb`, and never past the cap.
 pub fn nodes_for_memory(memory_mb: f64) -> usize {
     let nodes = 73_558.0 * (memory_mb.max(1.0) / 2176.0).powf(1.0 / MEMORY_EXPONENT);

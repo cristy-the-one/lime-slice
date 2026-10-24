@@ -13,6 +13,7 @@ use faer::sparse::linalg::SupernodalThreshold;
 use faer::sparse::{SparseColMat, SymbolicSparseColMat, Triplet};
 use faer::{Conj, Mat, Par, Side};
 
+use crate::assemble::DofMap;
 use crate::error::{not_held, SimError};
 use crate::mesh::Mesh;
 
@@ -45,8 +46,23 @@ impl NotInThisVersion {
 }
 
 pub trait LinearSolver {
+    /// Before each `factor`, the dof map its columns come from.
+    fn attach_dofs(&mut self, _dof: &DofMap) {}
     fn factor(&mut self, triplets: &[(usize, usize, f64)], n: usize) -> Result<(), SimError>;
     fn solve(&self, b: &[f64], x: &mut [f64]) -> Result<(), SimError>;
+    /// How many times `factor` ran.
+    fn factor_count(&self) -> usize;
+    /// `|D_min| / |D_max|` of the last factor, which says whether the part
+    /// is held. `None` for a solver that has no pivots to read.
+    fn pivots(&self) -> Option<f64>;
+    /// How many values the factor holds: its memory, at eight bytes each.
+    fn factor_len(&self) -> usize {
+        0
+    }
+    /// What a caller should say about the last solve, if anything.
+    fn notes(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub trait EigenSolver {
@@ -77,6 +93,9 @@ pub struct FaerLdlt {
     pivot_ratio: f64,
     /// How many times `factor` ran, so a test can count factorisations.
     pub factors: usize,
+    /// The dof map of the last factor, so the factor can serve as another
+    /// solve's coarse grid.
+    dofs: Option<DofMap>,
 }
 
 struct Factored {
@@ -86,10 +105,9 @@ struct Factored {
 }
 
 impl FaerLdlt {
-    /// How many values the last factor holds: its memory, at eight bytes
-    /// each. Zero when nothing was factored.
-    pub fn factor_len(&self) -> usize {
-        self.factored.as_ref().map_or(0, |f| f.values.len())
+    /// The dof map the last factor's columns came from.
+    pub fn dofs(&self) -> Option<&DofMap> {
+        self.dofs.as_ref()
     }
 
     /// `|D_min| / |D_max|` of the last factor. Zero when nothing was factored.
@@ -164,8 +182,24 @@ impl FaerLdlt {
 }
 
 impl LinearSolver for FaerLdlt {
+    fn attach_dofs(&mut self, dof: &DofMap) {
+        self.dofs = Some(dof.clone());
+    }
+
     fn factor(&mut self, triplets: &[(usize, usize, f64)], n: usize) -> Result<(), SimError> {
         self.factor_with(triplets, n, SupernodalThreshold::AUTO)
+    }
+
+    fn factor_count(&self) -> usize {
+        self.factors
+    }
+
+    fn pivots(&self) -> Option<f64> {
+        Some(self.pivot_ratio)
+    }
+
+    fn factor_len(&self) -> usize {
+        self.factored.as_ref().map_or(0, |f| f.values.len())
     }
 
     fn solve(&self, b: &[f64], x: &mut [f64]) -> Result<(), SimError> {

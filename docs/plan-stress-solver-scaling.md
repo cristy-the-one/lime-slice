@@ -1,7 +1,7 @@
 # Stress solver scaling: faster solves, no "past the budget" dead ends
 
-Status: tier 0 done on `claude/sim-tier0` (items 1–4; follow-ups listed under it). Tiers 1 and 2 not
-started; tier 1 is the next piece of work.
+Status: tier 0 done (`claude/sim-tier0`, PR #433). Tier 1 done on `claude/sim-tier1`, stacked on tier 0.
+Tier 2 not started; it is the next piece of work, and the tier 1 follow-ups below are smaller ones.
 Read this first if you are continuing the work. The status list in each tier is the source of truth.
 
 ## Why
@@ -112,23 +112,64 @@ Not in tier 0, worth doing after:
 
 ## Tier 1: iterative solve on the CPU (removes "cannot be done")
 
-The plan for this already exists as a line in `docs/plan-stress-simulation.md` §5.3 ("Large models: CG or GMRES
-behind `LinearSolver`, plus a `Preconditioner`"). This tier carries it out for the sliced grid.
+Carries out `docs/plan-stress-simulation.md` §5.3's "CG or GMRES behind `LinearSolver`, plus a `Preconditioner`"
+for the sliced grid's second cell size. Status: done.
 
-- `PcgSolver: LinearSolver`, chosen when the symbolic estimate does not fit, or by `Study::solver`. Direct LDLᵀ
-  stays the default where it fits: it is exact and fast there.
-- **Preconditioner: reuse the factor we already have.** The first size is factored anyway. The second size's
-  solve is a two-level method: smooth on the fine grid (Jacobi or Chebyshev), correct with the first size's
-  LDLᵀ. Memory is the fine grid's vectors plus a factor that already exists, so the resolution check always runs.
-  - h and h/√2 do not nest. Either interpolate across non-nested grids (trilinear on the coarse tets; works,
-    converges a little slower), or make the check refine by 2 in the layer plane only, which nests because
-    cells stay whole layers tall.
-- Elasticity needs the six rigid-body modes in any coarse space; the coarse direct factor carries them.
-- Stopping rule: relative residual 1e-8, checked against the same `RELATIVE_RESIDUAL_MAX` the direct path uses
-  for "not held".
-- Accept when: Kirsch, Lamé and the cantilever baselines match the direct solver within their existing
-  tolerances; the jet's 1.41 mm check runs on this machine and reports a move; peak memory at the fine size is
-  under the first size's peak plus the fine vectors.
+What it is (`crates/lime-sim/src/twolevel.rs`):
+
+- `TwoLevelPcg: LinearSolver`: conjugate gradients on the fine grid's assembled matrix (both triangles, CSR, rows
+  in parallel), to a relative residual of 1e-8 (the driver refuses past 1e-6), at most 300 iterations.
+- **Preconditioner: the first size's own factor.** One symmetric two-grid cycle: Chebyshev smoothing of `D⁻¹A`
+  (degree 12 over [λmax/30, λmax], λmax from 15 power steps), a correction through the first grid's LDLᵀ, the
+  same smoothing again. The factor already exists, so the extra memory is the fine matrix and vectors.
+- **Non-nested grids.** `Prolongation` places each fine node in the coarse TET10 that holds it (searching the
+  node's coarse cell, then out to two cells) and takes the TET10 shape functions there; outside every coarse
+  tet it clamps to the nearest one. A sliced grid holds whole nodes, so the dof map shares a node's weights
+  across its three dofs, and held nodes drop out.
+- **The seam.** `LinearSolver` gained `attach_dofs` (the driver passes the dof map before each factor),
+  `factor_count`, `pivots` (`None` for a solver with no pivots to judge "not held" by), `factor_len` and
+  `notes`. `solve_cases_with` takes any solver; `solve_cases` is it with a fresh `FaerLdlt`. `FaerLdlt` keeps
+  its dof map so it can serve as a coarse grid.
+- **Choice.** `SlicedStudy::check_solver`: `auto` (default) solves the finer size directly where its estimate
+  fits, iteratively where only `iterative_peak_mb` fits (the first factor, plus the fine triplets at 48 bytes
+  a value), and at the coarser h·√2 where neither does. `direct` and `iterative` force one, for tests and the
+  benchmark. An iterative solve that fails falls back to the coarser check with a note. The direct path frees
+  the first factor before it factors the finer grid.
+
+Tuning, on the jet study's 217k-node grid: Chebyshev degree 2 took 359 iterations (80 s), 4 took 144, 8 took
+46, 12 took 38, 16 took 35. Degree 1 did not converge. A ratio of 30 beat 10 (47) and 100 (51). An iteration
+is about 27 fine products at ~8 ms each plus one coarse solve of 0.14 s.
+
+### Measured (same machine and benchmark as tier 0)
+
+| Jet study | Tier 0 | Tier 1 |
+|---|---|---|
+| `hXy=2`, check on (direct fits) | 23.1 s, 6.6 GB | 23.4 s, 6.6 GB (unchanged path) |
+| `hXy=2`, `checkSolver=iterative` | — | 26.0 s, 3.8 GB; 38 iterations; 0.4751 mm against the direct 0.4752 |
+| `hXy=2`, `memoryMb=5000` | coarser 2.83 mm check | 25.7 s, 3.8 GB; 1.41 mm solved iteratively (auto) |
+| `hXy=2`, `memoryMb=3000` | coarser check | coarser check; note says the 1.41 mm size needs about 3,935 MB |
+| fitted cell, check on | 31.2 s, 8.7 GB | 29.8 s, 8.7 GB (direct) |
+| fitted cell, `checkSolver=iterative` | — | 33.7 s, 4.8 GB; 39 iterations; 0.5014 mm, as direct |
+
+The iterative estimate said 3,935 MB for a solve that peaked at 3,822. Iterative costs about the same time as
+direct here at 55–58% of the memory; direct stays the default where it fits because it needs no convergence.
+
+Time in the iterative path (jet, 1.41 mm): first size 6.7 s, estimate 0.8 s, prolongation 0.1 s, fine assembly
+2.3 s, matrix and λmax 0.9 s, PCG 13.7 s (coarse solves 5.4 s of it), recovery 2.9 s.
+
+Tests: `twolevel::tests::the_matrix_is_both_triangles_with_repeats_summed`,
+`sliced_study::the_iterative_check_matches_the_direct_one` (the twisted shaft's finer size, direct and iterative,
+within 1e-6).
+
+Tier 1 follow-ups:
+
+- The coarse solve is 40% of the PCG time: a single-RHS triangular solve on a 1.1 GB factor, bound by memory.
+  An f32 copy of the factor would halve it.
+- A Galerkin coarse operator (PᵀAP) instead of the first grid's own matrix would likely cut iterations below 38,
+  but costs a sparse triple product and a denser factor; measure before choosing.
+- "Assemble once" from tier 0 matters more now: recovery re-assembles the fine grid (2.9 s).
+- With the iterative path the first size could be fitted to a larger budget too; not done, so default solves
+  keep their speed.
 
 ## Tier 2: GPU backend (removes "takes very long")
 
@@ -151,7 +192,8 @@ behind `LinearSolver`, plus a `Preconditioner`"). This tier carries it out for t
 
 ## Where things are
 
-- Solver and its trait: `crates/lime-sim/src/solve.rs` (`LinearSolver`, `FaerLdlt`).
+- Solver and its trait: `crates/lime-sim/src/solve.rs` (`LinearSolver`, `FaerLdlt`); the iterative solve and
+  the coarse-to-fine map: `crates/lime-sim/src/twolevel.rs`.
 - Driver: `crates/lime-sim/src/lib.rs` (`solve_cases`, `NODE_CAP` check), assembly in `assemble.rs`.
 - Sliced study, budget and second size: `crates/lime-sim/src/sliced_study.rs` (`run`, `DEFAULT_MEMORY_MB`,
   `sliced_trust`), grid and memory fit: `crates/lime-sim/src/sliced.rs` (`fitted_h_xy`, `study_memory_mb`,
