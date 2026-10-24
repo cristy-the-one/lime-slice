@@ -43,6 +43,7 @@ src/bed-offset.test.ts
 src/plate.test.ts
 src/plate-mesh-pin.test.ts
 src/file-drop.test.ts
+src/project-file-name.test.ts
 src/mesh-refs.test.ts
 src/estimate.test.ts
 src/format.test.ts

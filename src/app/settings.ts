@@ -760,6 +760,7 @@ function objectListHtml(): string {
   const list = rows.map(({ obj, part }) => {
     const notes = limit(part.bounds);
     const marks = objectMarks(obj);
+    const splitNote: string | null = fx.exportSplitNote?.(obj.id) ?? null;
     const selected = obj.id === state.plate.selectedId;
     return `
       <div class="obj obj-row" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}">
@@ -767,8 +768,7 @@ function objectListHtml(): string {
           <b>${escapeHtml(obj.name)}</b>
           <span>${boundsSize(part.bounds)} mm</span>
           ${marks ? `<span class="obj-marks">${escapeHtml(marks)}</span>` : ""}
-          ${notes.length ? `<em class="obj-note">${escapeHtml(notes.join("; "))}</em>` : ""}
-        </button>
+          ${notes.length ? `<em class="obj-note">${escapeHtml(notes.join("; "))}</em>` : ""}        </button>
         <div class="obj-actions">
           <!-- --- A7 model check --- -->
           ${obj.sim ? `<button class="btn obj-stress" type="button" data-plate-stress="${escapeHtml(obj.id)}">${escapeHtml(LABEL)}</button>` : ""}
@@ -776,6 +776,7 @@ function objectListHtml(): string {
           <button class="btn obj-frame" type="button" data-plate-frame="${escapeHtml(obj.id)}" aria-label="Frame ${escapeHtml(obj.name)}">Frame</button>
           ${many ? `<button class="btn obj-remove" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}
         </div>
+        ${splitNote ? `<p class="obj-split">${escapeHtml(splitNote)}</p>` : ""}
       </div>`;
   }).join("");
   const overlap = pairs.map((pair) => pair.line).join("; ");
