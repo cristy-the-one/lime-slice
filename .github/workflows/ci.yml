@@ -24,10 +24,23 @@ jobs:
           echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
 
+      # The packages download in about 30 s, but a crawling mirror has taken
+      # 29 minutes and a silent one over an hour. The downloaded packages are
+      # cached, so a slow mirror costs one run, and apt gives up on a silent
+      # one. The step fails at 40 minutes rather than holding the job for hours.
+      - name: Restore the downloaded GTK packages
+        uses: actions/cache@v6
+        with:
+          path: ~/apt-archives
+          key: apt-gtk-${{ runner.os }}-noble-v1
+
       - name: Install GTK and WebKitGTK
+        timeout-minutes: 40
         run: |
+          { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          mkdir -p ~/apt-archives/partial
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" \
             build-essential \
             pkg-config \
             libssl-dev \
@@ -39,6 +52,8 @@ jobs:
             libsoup-3.0-dev \
             cmake \
             ninja-build
+          sudo rm -rf ~/apt-archives/partial ~/apt-archives/lock
+          sudo chown -R "$USER" ~/apt-archives
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -180,8 +195,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The runner image already has these, so apt runs only when one is
+      # missing. A stuck mirror held this step for over an hour on 2026-10-23.
       - name: Install the C++ toolchain Clipper2 links against
+        timeout-minutes: 10
         run: |
+          command -v gcc g++ make pkg-config > /dev/null && exit 0
+          { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config
 
@@ -320,9 +340,13 @@ jobs:
       - name: Point at the OCCT install
         run: echo "OCCT_LIBS=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
 
-      # CMake and Ninja build OCCT when the cache misses.
+      # CMake and Ninja build OCCT when the cache misses. The runner image
+      # already has the toolchain, so apt runs only when one is missing.
       - name: Install the C++ toolchain Clipper2 links against
+        timeout-minutes: 10
         run: |
+          command -v gcc g++ make pkg-config cmake ninja > /dev/null && exit 0
+          { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake ninja-build
 
