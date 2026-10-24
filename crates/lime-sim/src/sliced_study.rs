@@ -393,6 +393,9 @@ pub struct SlicedReport {
     pub max_displacement_mm: f64,
     pub mass_g: f64,
     pub resolutions: Vec<Resolution>,
+    /// What `resolutions` compare: a target's kind (`maxDeflectionMm`, …),
+    /// `maxDisplacementMm` when the study has no target, or `None`.
+    pub governed_by: Option<String>,
     /// The first load case's solve at the first cell size.
     #[serde(skip)]
     pub solution: Option<Solution>,
@@ -935,6 +938,13 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
         &|| true,
     )?;
     let governing = first.governing(study)?;
+    let governed_by = match governing {
+        Governing::Target(i) => serde_json::to_value(study.constraints[i].kind)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string)),
+        Governing::Deflection => Some("maxDisplacementMm".to_string()),
+        Governing::Nothing => None,
+    };
     let mut resolutions = vec![first.resolution(governing, study)?];
     let mut notes = first.cases[0].solution.notes.clone();
     notes.extend(said);
@@ -1071,7 +1081,7 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
     let margins = study
         .constraints
         .iter()
-        .map(|c| first.margin(c, level))
+        .map(|c| first.margin(c))
         .collect::<Result<Vec<_>, _>>()?;
     let worst_sf = |pick: fn(&CaseResult) -> Option<f64>| {
         first
@@ -1097,6 +1107,7 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
         max_displacement_mm,
         mass_g,
         resolutions,
+        governed_by,
         solution: Some(case_solutions[0].clone()),
         case_solutions: std::mem::take(&mut case_solutions),
         mesh: Some(first.mesh),
@@ -1130,12 +1141,14 @@ struct Solved {
     factorisations: usize,
 }
 
-/// What decides trust: a target, or the lowest safety factor when the study
-/// has none.
+/// What decides trust: the target nearest its limit, or the largest
+/// deflection when the study has none. Not the lowest safety factor: that is
+/// one stress peak, which at a hold's edge or a staircase corner keeps
+/// climbing as the cells shrink and never settles.
 #[derive(Clone, Copy)]
 enum Governing {
     Target(usize),
-    SafetyFactor,
+    Deflection,
     Nothing,
 }
 
@@ -1667,11 +1680,7 @@ impl Solved {
 
     fn governing(&self, study: &SlicedStudy) -> Result<Governing, SimError> {
         if study.constraints.is_empty() {
-            return Ok(if self.cases[0].min_sf.is_some() {
-                Governing::SafetyFactor
-            } else {
-                Governing::Nothing
-            });
+            return Ok(Governing::Deflection);
         }
         let mut best: Option<(usize, f64)> = None;
         for (i, c) in study.constraints.iter().enumerate() {
@@ -1692,7 +1701,7 @@ impl Solved {
     ) -> Result<Option<f64>, SimError> {
         Ok(match governing {
             Governing::Target(i) => self.read(&study.constraints[i])?.map(|r| r.value),
-            Governing::SafetyFactor => self.cases[0].min_sf.map(|s| s.0),
+            Governing::Deflection => Some(self.cases.iter().map(|c| c.max_disp.0).fold(0.0, f64::max)),
             Governing::Nothing => None,
         })
     }
@@ -1733,7 +1742,7 @@ impl Solved {
         }
     }
 
-    fn margin(&self, c: &Constraint, level: TrustLevel) -> Result<Margin, SimError> {
+    fn margin(&self, c: &Constraint) -> Result<Margin, SimError> {
         let reading = self.read(c)?;
         let value = reading.as_ref().map_or(f64::INFINITY, |r| r.value);
         let margin = reading
@@ -1746,7 +1755,9 @@ impl Solved {
             load_case: self.names[self.case_of(c)].clone(),
             value,
             margin,
-            met: margin >= 0.0 && level != TrustLevel::Rough,
+            // The value against its limit. How far to trust the value is
+            // the report's trust level, not a reason to call it unmet.
+            met: margin >= 0.0,
             note: band_note(c, value),
             hot_spot: reading.and_then(|r| r.hot_spot),
         })

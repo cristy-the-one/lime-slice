@@ -4,7 +4,7 @@
  * click does not wait on a factorisation.
  */
 import type { MaterialCard } from "./cards.ts";
-import { HOLD_NEXT, LABEL, LOAD_FACES_NEXT, NOT_HELD, PROVISIONAL_SENTENCE } from "./label.ts";
+import { HOLD_NEXT, LABEL, LOAD_FACES_NEXT, NOT_HELD } from "./label.ts";
 
 export type Vec3 = [number, number, number];
 export type TrustWord = "rough" | "usable" | "converged";
@@ -144,11 +144,21 @@ export interface CannedResult {
   painted?: boolean;
   /** How far the governing value moved between two cell sizes, as a share. Null when one size ran. */
   moved?: number | null;
+  /** The two cell sizes the result was solved at, and what they compared. */
+  check?: StressCheck | null;
   notes?: string[];
   margins?: SlicedMargin[];
   maxDisplacementMm?: number;
   minSafetyFactor?: number | null;
   massG?: number;
+}
+
+/** A result solved at two cell sizes: the sizes, the compared value at each, and what that value is. */
+export interface StressCheck {
+  sizes: [number, number];
+  values: [number, number];
+  /** The solver's name for the compared value: a target's kind, or `maxDisplacementMm` with no target. */
+  governedBy: string | null;
 }
 
 const BED_MM = 0.05;
@@ -404,16 +414,11 @@ export function loadGap(study: ObjectStudy): string | null {
   return null;
 }
 
-/**
- * A rough row is not met. A provisional card uses its own sentence, ahead of
- * any other reason.
- */
+/** A row is met when its values are inside the limits. */
 export function constraintVerdict(
-  row: { provisional: boolean; trust: TrustWord; maxDisplacementMm: number; minSafetyFactor: number | null; massG: number },
+  row: { maxDisplacementMm: number; minSafetyFactor: number | null; massG: number },
   limits: ConstraintLimits,
 ): { met: boolean; reason: string } {
-  if (row.provisional) return { met: false, reason: PROVISIONAL_SENTENCE };
-  if (row.trust === "rough") return { met: false, reason: "This result is rough." };
   if (limits.maxDeflectionMm !== undefined && row.maxDisplacementMm > limits.maxDeflectionMm) {
     return { met: false, reason: `Deflection is ${row.maxDisplacementMm.toFixed(3)} mm.` };
   }
@@ -434,9 +439,9 @@ export const MOVE_SHOWN_MAX = 0.15;
 
 /**
  * Why a result is not drawn, or null when it is. A peak far under the card's
- * strength is noise, and auto-scaled it draws as a shape that isn't there; a
- * result that moves past the rough threshold between two cell sizes would
- * colour the part with numbers it doesn't hold.
+ * strength is noise, and auto-scaled it draws as a shape that isn't there.
+ * A result that moved between two cell sizes is drawn; `checkSentence` says
+ * by how much.
  */
 export function notShown(
   result: Pick<CannedResult, "nodes" | "moved">,
@@ -454,16 +459,54 @@ export function notShown(
     }
     return `Nothing loads this part enough to show: the peak is ${shown}, under 0.1% of its strength. Raise the load, or hold and load faces farther apart.`;
   }
-  if (result.moved != null && result.moved > MOVE_SHOWN_MAX) {
-    return `The two cell sizes disagree by ${Math.round(result.moved * 100)}%, so colours would mislead. Set a smaller cell size under Advanced, and run again.`;
-  }
   return null;
 }
 
-/** Provisional cards stay rough. The sentence is the one the solver returns. */
+/** Provisional cards stay rough. */
 export function shownTrust(card: Pick<MaterialCard, "provisional">): { level: TrustWord; sentence: string } {
-  if (card.provisional) return { level: "rough", sentence: PROVISIONAL_SENTENCE };
-  return { level: "usable", sentence: "" };
+  return { level: card.provisional ? "rough" : "usable", sentence: "" };
+}
+
+/** What each compared value is called, and its unit. */
+const CHECKED: Record<string, { name: string; unit: string }> = {
+  maxDisplacementMm: { name: "Max deflection", unit: " mm" },
+  maxDeflectionMm: { name: "Deflection", unit: " mm" },
+  deflectionBandMm: { name: "Deflection", unit: " mm" },
+  relativeDeflectionMm: { name: "Relative deflection", unit: " mm" },
+  minSafetyFactor: { name: "Safety factor", unit: "" },
+  minStiffnessNPerMm: { name: "Stiffness", unit: " N/mm" },
+  stiffnessBandNPerMm: { name: "Stiffness", unit: " N/mm" },
+  maxMassG: { name: "Mass", unit: " g" },
+  minMassG: { name: "Mass", unit: " g" },
+};
+
+/** A cell size: two decimals at most, no trailing zeros. */
+export function cellText(mm: number): string {
+  return String(Number(mm.toFixed(2)));
+}
+
+/** The check option, with the cell it will solve at: the cell over √2. */
+export function checkLabel(edgeMm: number): string {
+  return edgeMm > 0 ? `Check at a finer cell (${cellText(edgeMm / Math.SQRT2)} mm)` : "Check at a finer cell";
+}
+
+/**
+ * The two sizes a result was solved at, what they gave, and how far apart:
+ * "Max deflection 0.528 mm at 0.73 mm cells, 0.475 mm at 0.52 mm (11% apart)."
+ * A check that could not go finer says so; one past the rough threshold says
+ * the colours may change.
+ */
+export function checkSentence(check: StressCheck | null | undefined): string {
+  if (!check) return "";
+  const [first, second] = check.sizes;
+  const [a, b] = check.values;
+  const what = CHECKED[check.governedBy ?? ""] ?? { name: "Result", unit: "" };
+  const value = (v: number) => `${Number(v.toPrecision(3))}${what.unit}`;
+  const apart = Math.abs(a - b) / Math.max(Math.abs(a), Math.abs(b), 1e-30);
+  let line = `${what.name} ${value(a)} at ${cellText(first)} mm cells, ${value(b)} at ${cellText(second)} mm (${Math.round(apart * 100)}% apart).`;
+  if (second > first) line += ` ${cellText(first / Math.SQRT2)} mm was too large to check.`;
+  if (apart > MOVE_SHOWN_MAX) line += " Colours may change with smaller cells.";
+  return line;
 }
 
 export function boxOf(positions: ArrayLike<number>): StudyBox | null {

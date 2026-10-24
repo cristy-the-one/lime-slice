@@ -13,6 +13,7 @@ import {
   type CannedResult,
   type ObjectStudy,
   type SlicedMargin,
+  type StressCheck,
   type StressField,
   type StudyLoad,
   type Vec3,
@@ -211,6 +212,23 @@ export function resolutionMove(value: unknown): number | null {
   return Math.abs(second - first) / Math.max(Math.abs(first), Math.abs(second), 1e-30);
 }
 
+/** The two cell sizes and what each gave, from a report's resolutions. Null when one size ran. */
+export function checkOf(resolutions: unknown, governedBy: unknown): StressCheck | null {
+  if (!Array.isArray(resolutions) || resolutions.length < 2) return null;
+  const read = (row: unknown) => {
+    const r = row && typeof row === "object" ? (row as Record<string, unknown>) : {};
+    return finite(r.hXyMm) && finite(r.governingValue) ? { h: r.hXyMm, value: r.governingValue } : null;
+  };
+  const first = read(resolutions[0]);
+  const second = read(resolutions[resolutions.length - 1]);
+  if (!first || !second) return null;
+  return {
+    sizes: [first.h, second.h],
+    values: [first.value, second.value],
+    governedBy: typeof governedBy === "string" ? governedBy : null,
+  };
+}
+
 /**
  * A result from the study's frame (the mesh the slicer was sent) into the
  * frame the solid is drawn in. `toSolid` is affine, so a displacement maps as
@@ -284,6 +302,7 @@ export function surfaceResult(text: string, field: StressField, scale?: number):
     representation: "sliced",
     painted: surface.painted === true,
     moved: resolutionMove(report.resolutions),
+    check: checkOf(report.resolutions, report.governedBy),
     notes,
     margins: marginsOf(report.margins),
     maxDisplacementMm: finite(report.maxDisplacementMm) ? report.maxDisplacementMm : peakDisp,

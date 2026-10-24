@@ -35,6 +35,8 @@ import { customGcodeNotice } from "../layer-actions.ts";
 import { setProjectTitle } from "./project-title.ts";
 import { projectFileName } from "../project-file-name.ts";
 import { session, state } from "./state.ts";
+import { closeStress } from "../ui/stress.ts";
+import { clearStressCells } from "../sim/stress-cells.ts";
 
 /** A picture opened with the file. Kept when a later save cannot draw and the geometry is unchanged. */
 let keptThumb: ProjectThumbnail | undefined;
@@ -156,6 +158,9 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     return false;
   }
   session.projectRestoring = true;
+  // The last study's colours, deformed copy and Preview cells belong to the old plate.
+  closeStress();
+  clearStressCells();
   // --- A8. Kept before the meshes load, and still there if that load is replaced by a later open. ---
   session.mcpModel = project.mcpModel;
   session.parameters = project.parameters ? { ...project.parameters } : {};

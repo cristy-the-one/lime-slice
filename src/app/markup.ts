@@ -122,7 +122,7 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
                 <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
                 <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
-                <button id="modelMenuStress" type="button" role="menuitem" data-tip="Hold, load, and an in-house estimate. The solid is not edited.">Stress…</button>
+                <button id="modelMenuStress" type="button" role="menuitem" data-tip="Hold, load, and solve for stress. The solid is not edited.">Stress…</button>
                 <!-- --- Split to print (D10): a card of its own, not a rail tool. The rail's Split stays one plane. --- -->
                 <button id="modelMenuSplitPrint" type="button" role="menuitem" data-tip="Cut a part too large for the printer into pieces that fit, each an object on the plate.">Split to print…</button>
               </div>
@@ -489,8 +489,6 @@ export function mountMarkup(root: HTMLElement) {
             </div>
             <div class="model-params-main" id="modelStressMain" hidden>
               <div class="model-stress-scroll">
-              <p class="stress-label" id="stressLabel"></p>
-              <p class="stress-note" id="stressProvisional" hidden></p>
               <fieldset class="stress-group stress-step" id="stressHoldStep" data-step="hold">
                 <legend><span class="stress-mark" data-step-mark>1</span>Hold</legend>
                 <div class="modes" role="group" aria-label="Hold">
@@ -553,7 +551,7 @@ export function mountMarkup(root: HTMLElement) {
                 <summary>Advanced</summary>
                 <label>Cell size mm <input id="stressEdge" type="number" min="0.2" step="0.1" value="5" aria-label="Cell size" /></label>
                 <label class="stress-check"><input id="stressGravity" type="checkbox" /> Gravity</label>
-                <label class="stress-check" data-stress-local><input id="stressCheckResolution" type="checkbox" checked /> Check at a second cell size</label>
+                <label class="stress-check" data-stress-local><input id="stressCheckResolution" type="checkbox" checked /> <span id="stressCheckLabel">Check at a finer cell</span></label>
                 <label class="stress-check"><input id="stressPrinter" type="checkbox" checked /> This printer</label>
                 <div class="stress-axis" role="group" aria-labelledby="stressBuildLabel">
                   <span class="stress-axis-label" id="stressBuildLabel">Print direction (X, Y, Z)</span>
@@ -575,13 +573,14 @@ export function mountMarkup(root: HTMLElement) {
                   <button class="btn" id="stressTrueScale" type="button">True scale</button>
                 </div>
                 <p class="stress-note" id="stressProbeHint">Click the coloured part to read a value there.</p>
+                <p class="stress-note" id="stressCheck" hidden></p>
                 <p class="stress-note stress-nothing" id="stressNothing" role="status" hidden></p>
                 <div id="stressMargins"></div>
                 <p id="stressNote" class="stress-note"></p>
               </fieldset>
               <details class="stress-more" id="stressVariants" data-stress-local>
                 <summary>Variants</summary>
-                <p class="stress-note">Print time stays off. A rough row is not met.</p>
+                <p class="stress-note">Print time stays off.</p>
                 <div class="stress-grid">
                   <label>Load scale <input id="stressVariantScale" type="number" min="0.01" step="0.1" value="1" aria-label="Load scale" /></label>
                   <label>Walls <input id="stressVariantWalls" type="number" min="1" max="12" step="1" aria-label="Variant walls" /></label>
@@ -632,9 +631,8 @@ export function mountMarkup(root: HTMLElement) {
               <span class="stress-ramp-end" id="stressLegendLow"></span>
             </div>
             <div>
-              <p id="stressLegendLabel"></p>
               <p id="stressLegendText"></p>
-              <p id="stressLegendTrust"></p>
+              <p id="stressLegendSpot" hidden>○ Worst point of each target</p>
             </div>
           </div>
           <div id="stressProbe" class="stress-probe" hidden></div>

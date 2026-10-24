@@ -18,6 +18,8 @@ import { setSettingsLevel } from "../ui/settings-panel.ts";
 import { session, state, STEP_TOLERANCE_DEFAULT } from "./state.ts";
 import { fx } from "./fx.ts";
 import { dropShownPreview, setStage, stopPlay } from "./viewer.ts";
+import { closeStress } from "../ui/stress.ts";
+import { clearStressCells } from "../sim/stress-cells.ts";
 
 export async function newProject() {
   const choice = await askIfDirty();
@@ -67,6 +69,9 @@ function askUnsaved(): Promise<SaveChoice | null> {
 /** Empty plate, launch settings and printer, no slice, no file name. */
 export function blankProject() {
   session.docEpoch += 1;
+  // The last study's colours, deformed copy and Preview cells belong to the old plate.
+  closeStress();
+  clearStressCells();
   // --- A8. File > New drops the previous project's MCP record. ---
   session.mcpModel = undefined;
   session.parameters = {};

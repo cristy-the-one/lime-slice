@@ -17,7 +17,6 @@ import { shellCount } from "../mesh-shells";
 import { separateBy, stepSolidHint } from "../step-solids";
 import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
-import { LABEL } from "../sim/label.ts";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
 import { noteAdvance, noteFan, noteFirmware, noteFirmwareArcs, noteFlow, noteGcode, noteHeatLimits, noteRetract, noteTemps, setSupportMode } from "./machine-actions";
@@ -771,7 +770,7 @@ function objectListHtml(): string {
           ${notes.length ? `<em class="obj-note">${escapeHtml(notes.join("; "))}</em>` : ""}        </button>
         <div class="obj-actions">
           <!-- --- A7 model check --- -->
-          ${obj.sim ? `<button class="btn obj-stress" type="button" data-plate-stress="${escapeHtml(obj.id)}">${escapeHtml(LABEL)}</button>` : ""}
+          ${obj.sim ? `<button class="btn obj-stress" type="button" data-plate-stress="${escapeHtml(obj.id)}">Stress</button>` : ""}
           <button class="btn obj-check" type="button" data-plate-check="${escapeHtml(obj.id)}" aria-label="Check ${escapeHtml(obj.name)}">Check</button>
           <button class="btn obj-frame" type="button" data-plate-frame="${escapeHtml(obj.id)}" aria-label="Frame ${escapeHtml(obj.name)}">Frame</button>
           ${many ? `<button class="btn obj-remove" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}

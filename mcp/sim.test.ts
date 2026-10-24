@@ -1,7 +1,7 @@
 /**
  * S4. The generated beam is solved by the lime-sim binary. No Open CASCADE.
  */
-import { LABEL, PROVISIONAL_SENTENCE } from "../src/sim/label.ts";
+import { LABEL } from "../src/sim/label.ts";
 import { beltLayerNormal } from "../src/sim/study.ts";
 
 import { fakeEngine } from "./engine.ts";
@@ -104,7 +104,7 @@ const swept = await session.call("sim_sweep", {
   commit: false,
 });
 const sweptRows = swept.variants as { met?: boolean; reason?: string; slicerSeconds?: number }[] | undefined;
-check("a rough constraint is not met", swept.ok === true && swept.committed === false && sweptRows?.[0]?.met === false && sweptRows[0]?.reason === PROVISIONAL_SENTENCE, JSON.stringify(sweptRows?.[0] ?? swept.reason));
+check("a row inside its limits is met, rough or not", swept.ok === true && swept.committed === false && sweptRows?.[0]?.met === true && sweptRows[0]?.reason === "", JSON.stringify(sweptRows?.[0] ?? swept.reason));
 check("a sweep does not slice by default", sweptRows?.[0]?.slicerSeconds === undefined);
 const afterHistory = JSON.stringify(await session.call("model_history", { object: String(setup.object) }));
 check("commit false leaves the history cursor", beforeHistory === afterHistory);
