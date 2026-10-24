@@ -1166,6 +1166,7 @@ function paintLegend() {
   const line = byId("#stressLegendText");
   const safety = result.field === "safety";
   if (line) line.textContent = `${fieldLabel(result.field)}, ${safety ? "lowest" : "peak"} ${formatProbe(result.peak, result.field)}`;
+  show("#stressLegendSpot", (result.margins?.length ?? 0) > 0);
   const values = result.nodes.map((node) => scalarOf(node, result!.field));
   const low = values.reduce((min, value) => Math.min(min, value), Infinity);
   const high = values.reduce((max, value) => Math.max(max, value), -Infinity);

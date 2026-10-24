@@ -7450,8 +7450,6 @@ export class Session {
   private async slicedSweep(obj: PlateObject, patches: SweepPatch[], limits: ConstraintLimits, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (patches.some((patch) => patch.parameters)) return { ok: false, reason: RESLICE_PARAMETERS };
     const saved = obj.sim!;
-    const card = cardsOf(this.library).find((row) => row.id === saved.cardId);
-    const provisional = card?.provisional !== false;
     // One cell size per variant unless asked: a sweep compares variants, and a second size doubles each solve.
     const checkResolution = input.checkResolution === true;
     type SweepRow = Record<string, unknown> & { ok?: boolean; met: boolean; reason: string };
@@ -7462,11 +7460,7 @@ export class Session {
         rows.push({ ok: false, met: false, reason: typeof solved.reason === "string" ? solved.reason : "The stress solve did not finish." });
         continue;
       }
-      const trust = solved.trust as { level?: unknown } | undefined;
-      const level = trust?.level === "usable" || trust?.level === "converged" ? trust.level : "rough";
       const verdict = constraintVerdict({
-        provisional,
-        trust: level,
         maxDisplacementMm: typeof solved.maxDisplacementMm === "number" ? solved.maxDisplacementMm : 0,
         minSafetyFactor: typeof solved.minSafetyFactor === "number" ? solved.minSafetyFactor : null,
         massG: typeof solved.massG === "number" ? solved.massG : 0,
@@ -7588,17 +7582,11 @@ export class Session {
     if (sliced && input.reslice !== true) return { ok: false, reason: SLICED_SWEEP };
     if (!sliced && input.reslice === true) return { ok: false, reason: RESLICE_BEAM };
     if (sliced) return this.slicedSweep(obj, patches, limits as ConstraintLimits, input);
-    const card = cardsOf(this.library).find((row) => row.id === obj.sim?.cardId);
-    const provisional = card?.provisional !== false;
     type SweepRow = Record<string, unknown> & { ok?: boolean; met: boolean; reason: string; slicerSeconds?: number };
     const rows: SweepRow[] = patches.map((patch): SweepRow => {
       const solved = this.solveCopy(obj, patch, "run");
       if (solved.ok !== true) return { ok: false, met: false, reason: typeof solved.reason === "string" ? solved.reason : OPEN_MESH };
-      const trust = solved.trust as { level?: unknown } | undefined;
-      const level = trust?.level === "usable" || trust?.level === "converged" ? trust.level : "rough";
       const verdict = constraintVerdict({
-        provisional,
-        trust: level,
         maxDisplacementMm: typeof solved.maxDisplacementMm === "number" ? solved.maxDisplacementMm : 0,
         minSafetyFactor: typeof solved.minSafetyFactor === "number" ? solved.minSafetyFactor : null,
         massG: typeof solved.massG === "number" ? solved.massG : 0,

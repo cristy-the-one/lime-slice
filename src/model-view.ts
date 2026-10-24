@@ -2262,6 +2262,26 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   modelDock?.addEventListener("focusin", onDockFocus);
   modelDock?.addEventListener("focusout", onDockFocus);
 
+  /** `at`, moved as the drawn surface's nearest corner moves when the deformed shape is on. */
+  function displacedAt(draw: StressDraw, at: Vec3): Vec3 {
+    if (draw.scale === 0 || draw.displacement.length !== draw.positions.length) return at;
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < draw.positions.length; i += 3) {
+      const d = (draw.positions[i]! - at[0]) ** 2 + (draw.positions[i + 1]! - at[1]) ** 2 + (draw.positions[i + 2]! - at[2]) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    if (best < 0) return at;
+    return [
+      at[0] + draw.displacement[best]! * draw.scale,
+      at[1] + draw.displacement[best + 1]! * draw.scale,
+      at[2] + draw.displacement[best + 2]! * draw.scale,
+    ];
+  }
+
   function clearStressMarkers() {
     for (const marker of stressMarkers) stressGroup.remove(marker);
     stressMarkers = [];
@@ -2366,11 +2386,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         }
         span = Math.hypot(hi[0]! - lo[0]!, hi[1]! - lo[1]!, hi[2]! - lo[2]!);
       }
-      stressMarkerGeo = new THREE.SphereGeometry(Math.max(0.35, span * 0.03), 12, 8);
-      stressMarkerMat = new THREE.MeshBasicMaterial({ color: 0x1c1917 });
+      // A small white wire cage drawn over the part: it shows where the worst point is without hiding the
+      // colour there, and it rides on the deformed shape when that is on.
+      stressMarkerGeo = new THREE.SphereGeometry(Math.max(0.3, span * 0.012), 12, 8);
+      stressMarkerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, depthTest: false, transparent: true, opacity: 0.95 });
       for (const at of spots) {
         const marker = new THREE.Mesh(stressMarkerGeo, stressMarkerMat);
-        marker.position.set(at[0], at[1], at[2]);
+        const moved = displacedAt(draw, at);
+        marker.position.set(moved[0], moved[1], moved[2]);
+        marker.renderOrder = 10;
         marker.name = "stress-hotspot";
         marker.raycast = () => undefined;
         stressGroup.add(marker);

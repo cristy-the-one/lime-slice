@@ -64,6 +64,7 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await expect(page.locator("#stressLegend")).not.toContainText("In-house estimate");
   await expect(page.locator("#stressCheck"), "one cell size, no check line").toBeHidden();
   await expect(page.locator("#model")).toHaveAttribute("data-stress-hotspot", /1\.000,2\.000,3\.000/);
+  await expect(page.locator("#stressLegendSpot"), "the marker is explained").toBeVisible();
   await expect(page.locator("#stressMargins")).toContainText("Safety factor ≥ 1.0");
   await expect(page.locator("#stressMargins")).toContainText("2.50");
   await expect(page.locator("#stressMargins")).toContainText("(margin 1.50)");

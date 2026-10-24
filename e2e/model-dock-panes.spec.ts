@@ -100,6 +100,8 @@ test("no section covers another while they fold and open, and each header stays 
 test("the line between two sections drags, takes arrow keys, is remembered, and resets on a double-click", async ({ page }) => {
   await openModel(page);
   await openBoth(page);
+  // Advanced open, so Stress has more below its fold than the drag gives it: a section grows no taller than its content.
+  await page.locator("#stressAdvanced > summary").click();
   const line = page.locator("#modelDock > .pane-line:has(+ #modelStress)");
   await expect(line).toHaveAttribute("role", "separator");
   await expect(line).toHaveAttribute("aria-label", "Resize Parameters and Stress");

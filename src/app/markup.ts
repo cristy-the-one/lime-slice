@@ -632,6 +632,7 @@ export function mountMarkup(root: HTMLElement) {
             </div>
             <div>
               <p id="stressLegendText"></p>
+              <p id="stressLegendSpot" hidden>○ Worst point of each target</p>
             </div>
           </div>
           <div id="stressProbe" class="stress-probe" hidden></div>
