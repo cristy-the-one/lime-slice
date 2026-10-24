@@ -24,14 +24,23 @@ jobs:
           echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
 
-      # apt gives up on a silent mirror, and the step fails in 20 minutes
-      # rather than holding the job for hours.
+      # The packages download in about 30 s, but a crawling mirror has taken
+      # 29 minutes and a silent one over an hour. The downloaded packages are
+      # cached, so a slow mirror costs one run, and apt gives up on a silent
+      # one. The step fails at 40 minutes rather than holding the job for hours.
+      - name: Restore the downloaded GTK packages
+        uses: actions/cache@v6
+        with:
+          path: ~/apt-archives
+          key: apt-gtk-${{ runner.os }}-noble-v1
+
       - name: Install GTK and WebKitGTK
-        timeout-minutes: 20
+        timeout-minutes: 40
         run: |
           { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          mkdir -p ~/apt-archives/partial
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" \
             build-essential \
             pkg-config \
             libssl-dev \
@@ -43,6 +52,8 @@ jobs:
             libsoup-3.0-dev \
             cmake \
             ninja-build
+          sudo rm -rf ~/apt-archives/partial ~/apt-archives/lock
+          sudo chown -R "$USER" ~/apt-archives
 
       - uses: dtolnay/rust-toolchain@stable
         with:
