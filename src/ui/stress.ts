@@ -10,12 +10,14 @@ import { buildStudyBody, inSolidFrame, surfaceResult, type FaceTriangles, type S
 import { rememberStressCells } from "../sim/stress-cells.ts";
 import type { MaterialCard } from "../sim/cards.ts";
 import { solveStudy } from "../sim/desktop-solve.ts";
-import { AS_SLICED, LABEL, PROVISIONAL_SENTENCE, UNDO_SENTENCE } from "../sim/label.ts";
+import { UNDO_SENTENCE } from "../sim/label.ts";
 import { governsSentence, marginSentence } from "../sim/margin-text.ts";
 import {
   arrowLength,
   arrowSeat,
   boxDiagonal,
+  checkLabel,
+  checkSentence,
   cloneStudy,
   constraintVerdict,
   defaultScale,
@@ -90,8 +92,26 @@ let previous: CannedResult | null = null;
 let previousFrom: string | null = null;
 let field: StressField = "vonMises";
 let scaleOverride: number | undefined;
-/** The deformed shape is opt-in. Off, the colours sit on the part as it is. */
-let deformed = false;
+/** The deformed shape is opt-in. Off, the colours sit on the part as it is. Kept between runs and sessions. */
+let deformed = readDeformed();
+
+const DEFORMED_KEY = "lime.stress.deformed";
+
+function readDeformed(): boolean {
+  try {
+    return localStorage.getItem(DEFORMED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function keepDeformed(on: boolean) {
+  try {
+    localStorage.setItem(DEFORMED_KEY, on ? "1" : "0");
+  } catch {
+    // Storage blocked: the choice lasts this session.
+  }
+}
 let steps = 0;
 let redos = 0;
 let boundId: string | null = null;
@@ -238,8 +258,10 @@ export function mountStress(next: StressHooks) {
   byId("#stressSaveCard")?.addEventListener("click", saveCard);
   byId("#stressDeform")?.addEventListener("change", () => {
     deformed = byId<HTMLInputElement>("#stressDeform")?.checked === true;
+    keepDeformed(deformed);
     repaintField();
   });
+  byId("#stressEdge")?.addEventListener("input", paintCheckLabel);
   byId("#stressTrueScale")?.addEventListener("click", () => {
     scaleOverride = 1;
     setNum("#stressScale", 1);
@@ -277,8 +299,6 @@ export function mountStress(next: StressHooks) {
   }
   const note = byId("#stressNote");
   if (note) note.textContent = UNDO_SENTENCE;
-  const label = byId("#stressLabel");
-  if (label) label.textContent = LABEL;
   if (new URLSearchParams(location.search).has("stressFixture")) {
     (window as unknown as { __limeStressFixture?: (next: CannedResult) => void }).__limeStressFixture = (next) => {
       result = next;
@@ -388,8 +408,7 @@ function loadDraft() {
   cardTouched = false;
   field = "vonMises";
   scaleOverride = undefined;
-  deformed = false;
-  setCheck("#stressDeform", false);
+  setCheck("#stressDeform", deformed);
   message = "";
   variants = [];
   paintVariantList();
@@ -451,7 +470,6 @@ function onChange(ev: Event) {
   if (target.closest("[data-stress-local]")) return;
   if (CARD_FIELDS.has(target.id)) {
     cardTouched = true;
-    paintProvisional();
     return;
   }
   readForm();
@@ -600,11 +618,8 @@ function verdictRow(
   label: string,
   numbers: { maxDisplacementMm: number; minSafetyFactor: number | null; massG: number; trust: CannedResult["trust"] },
 ): SweepRow {
-  const card = currentCard();
   const verdict = constraintVerdict(
     {
-      provisional: card?.provisional !== false,
-      trust: numbers.trust,
       maxDisplacementMm: numbers.maxDisplacementMm,
       minSafetyFactor: numbers.minSafetyFactor,
       massG: numbers.massG,
@@ -900,8 +915,7 @@ function saveCard() {
   const next = currentCard();
   if (!next) return;
   hooks?.saveCard(next);
-  paintProvisional();
-  say(next.provisional ? PROVISIONAL_SENTENCE : "Card saved.");
+  say("Card saved.");
 }
 
 function paint() {
@@ -923,8 +937,14 @@ function paint() {
   paintCards();
   paintCard();
   paintSetup();
-  paintProvisional();
+  paintCheckLabel();
   paintLegend();
+}
+
+/** The check option names the cell it will solve at. */
+function paintCheckLabel() {
+  const label = byId("#stressCheckLabel");
+  if (label) label.textContent = checkLabel(num("#stressEdge", draft.edgeMm));
 }
 
 function paintCards() {
@@ -936,7 +956,7 @@ function paintCards() {
     ...cards.map((card) => {
       const option = document.createElement("option");
       option.value = card.id;
-      option.textContent = card.provisional ? `${card.polymer} (provisional)` : card.polymer;
+      option.textContent = card.polymer;
       return option;
     }),
   );
@@ -946,26 +966,13 @@ function paintCards() {
 
 function paintCard() {
   const card = (hooks?.cards() ?? []).find((row) => row.id === draft.cardId) ?? hooks?.cards()[0];
-  if (!card || cardTouched) {
-    paintProvisional();
-    return;
-  }
+  if (!card || cardTouched) return;
   setNum("#stressEIn", card.EInPlaneMPa);
   setNum("#stressEZ", card.EAcrossLayersMPa);
   setNum("#stressNu", card.nu);
   setNum("#stressSIn", card.strengthInPlaneMPa);
   setNum("#stressSZ", card.strengthAcrossLayersMPa);
   setNum("#stressDensity", card.densityGCm3);
-  paintProvisional();
-}
-
-function paintProvisional() {
-  const node = byId("#stressProvisional");
-  const card = currentCard();
-  if (!node) return;
-  const on = !!card?.provisional;
-  node.hidden = !on;
-  node.textContent = on ? PROVISIONAL_SENTENCE : "";
 }
 
 /** The hold and load choices, the picked faces, each step's mark, and Run with what it still needs. */
@@ -1089,6 +1096,10 @@ function paintResult() {
   const nothing = byId("#stressNothing");
   if (nothing && nothing.textContent !== (why ?? "")) nothing.textContent = why ?? "";
   show("#stressNothing", !!why);
+  const check = byId("#stressCheck");
+  const line = result && !why ? checkSentence(result.check) : "";
+  if (check && check.textContent !== line) check.textContent = line;
+  show("#stressCheck", line.length > 0);
   for (const id of ["#stressField", "#stressDeform", "#stressProbeHint", "#stressMargins"]) {
     const el = byId(id);
     const row = el?.closest("label") ?? el;
@@ -1152,9 +1163,6 @@ function paintLegend() {
     return;
   }
   legend.hidden = false;
-  const sliced = result.representation === "sliced";
-  const title = byId("#stressLegendLabel");
-  if (title) title.textContent = sliced ? AS_SLICED : LABEL;
   const line = byId("#stressLegendText");
   const safety = result.field === "safety";
   if (line) line.textContent = `${fieldLabel(result.field)}, ${safety ? "lowest" : "peak"} ${formatProbe(result.peak, result.field)}`;
@@ -1166,11 +1174,6 @@ function paintLegend() {
   if (top) top.textContent = formatProbe(safety ? low : high, result.field);
   const bottom = byId("#stressLegendLow");
   if (bottom) bottom.textContent = formatProbe(safety ? Math.min(high, 1e6) : low, result.field);
-  const trust = byId("#stressLegendTrust");
-  if (trust) {
-    const notes = sliced ? (result.notes ?? []) : [result.trustSentence];
-    trust.textContent = [result.trust, ...notes].filter((part) => part && part.length > 0).join(" · ");
-  }
   paintMargins();
 }
 

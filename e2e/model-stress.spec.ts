@@ -25,8 +25,9 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuStress").click();
   await expect(page.locator("#modelStressMain")).toBeVisible();
-  await expect(page.locator("#modelStress")).toContainText("In-house estimate");
-  await expect(page.locator("#stressProvisional")).toHaveText("Provisional card, not a measurement.");
+  await expect(page.locator("#modelStress")).not.toContainText("In-house estimate");
+  await expect(page.locator("#modelStress")).not.toContainText("Provisional");
+  await expect(page.locator("#stressCheckLabel"), "the check names its cell").toHaveText(/^Check at a finer cell \(\d/);
   await page.locator("#stressVariants > summary").click();
   const patternFits = await page.locator("#stressVariantPattern").evaluate((select) => {
     const style = getComputedStyle(select);
@@ -59,9 +60,9 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await expect(page.locator("#stressStatus")).toHaveText("");
   await expect(page.locator("#model")).toHaveAttribute("data-stress", /shown [1-9]/);
   await expect(page.locator("#model")).toHaveAttribute("data-stress-solid", "hidden");
-  await expect(page.locator("#stressLegend")).toContainText("In-house estimate · as sliced");
-  await expect(page.locator("#stressLegend")).toContainText("usable");
-  await expect(page.locator("#stressLegend")).toContainText("Solved at one cell size.");
+  await expect(page.locator("#stressLegend")).toBeVisible();
+  await expect(page.locator("#stressLegend")).not.toContainText("In-house estimate");
+  await expect(page.locator("#stressCheck"), "one cell size, no check line").toBeHidden();
   await expect(page.locator("#model")).toHaveAttribute("data-stress-hotspot", /1\.000,2\.000,3\.000/);
   await expect(page.locator("#stressMargins")).toContainText("Safety factor ≥ 1.0");
   await expect(page.locator("#stressMargins")).toContainText("2.50");
@@ -82,8 +83,7 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await expect(page.locator("#stressSweepBody tr")).toHaveCount(2);
   await expect(page.locator("#stressSweepBody tr").nth(0)).toContainText("0.200");
   await expect(page.locator("#stressSweepBody tr").nth(0)).toContainText("1.25");
-  await expect(page.locator("#stressSweepBody tr").nth(0)).toContainText("not met");
-  await expect(page.locator("#stressSweepBody tr").nth(0)).toContainText("Provisional card, not a measurement.");
+  await expect(page.locator("#stressSweepBody tr").nth(0)).not.toContainText("Provisional");
   await expect(page.locator("#stressSweepBody tr").nth(1)).toContainText("7 walls");
   await expect(page.locator("#stressSweepBody tr").nth(1)).toContainText("0.100");
   await expect(page.locator("#stressSweepBody tr").nth(1)).toContainText("2.50");
@@ -122,9 +122,8 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
     if (!show) throw new Error("the stress fixture is not on this page");
     show(next);
   }, made);
-  await expect(page.locator("#stressLegend")).toContainText("In-house estimate");
-  await expect(page.locator("#stressLegend")).toContainText("rough");
-  await expect(page.locator("#stressLegend")).toContainText("Provisional card, not a measurement.");
+  await expect(page.locator("#stressLegend")).toBeVisible();
+  await expect(page.locator("#stressLegend")).not.toContainText("Provisional");
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-view.png" });
 
   const canvas = page.locator("#model");
@@ -153,7 +152,7 @@ test("stress menu, canned estimate, probe, section, and plate undo", async ({ pa
   await page.locator("#stressBed").click();
   await page.locator("#tabPrepare").click();
   await expect(page.locator("[data-plate-stress]")).toHaveCount(1);
-  await expect(page.locator("[data-plate-stress]")).toHaveText("In-house estimate");
+  await expect(page.locator("[data-plate-stress]")).toHaveText("Stress");
 });
 
 test("a saved desktop solve is drawn as sliced", async ({ page }) => {
@@ -163,10 +162,36 @@ test("a saved desktop solve is drawn as sliced", async ({ page }) => {
   await loadTopFace(page);
   await page.locator("#stressBed").click();
   await page.locator("#stressRun").click();
-  await expect(page.locator("#stressLegend")).toContainText("In-house estimate · as sliced");
-  await expect(page.locator("#stressLegend")).toContainText("rough");
+  await expect(page.locator("#stressLegend")).toBeVisible();
   await expect(page.locator("#model")).toHaveAttribute("data-stress", /shown [1-9]/);
   await expect(page.locator("#model")).toHaveAttribute("data-stress-solid", "hidden");
   await expect(page.locator("#model")).toHaveAttribute("data-stress-hotspot", /\d/);
   await page.screenshot({ path: "/opt/cursor/artifacts/stress-solved.png" });
+
+  // The deformed shape, once chosen, is kept: closing Stress and solving again shows it without asking.
+  await page.locator("#stressDeform").check();
+  await page.locator("#stressCancel").click();
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuStress").click();
+  await page.locator("#stressRun").click();
+  await expect(page.locator("#stressDeform")).toBeChecked();
+  await expect(page.locator("#stressScaleRow")).toBeVisible();
+
+  // Saved, then File > New, then the same project opened again: its part comes back with the same id, and the
+  // last study's coloured, deformed copy must not come back beside it.
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const saved = readFileSync((await download.path())!);
+  await page.locator("#tabPrepare").click();
+  await page.locator("#fileMenu > summary").click();
+  await page.locator('[data-file-action="new"]').click();
+  const unsaved = page.locator('[data-unsaved="discard"]');
+  if (await unsaved.isVisible()) await unsaved.click();
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.locator("#projectFile").setInputFiles({ name: "box.lime", mimeType: "application/json", buffer: saved });
+  await expect(page.locator("#objectList .obj")).toHaveCount(1);
+  await page.locator("#tabPrepare").click();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelReadout")).toContainText("Volume");
+  await expect(page.locator("#model")).not.toHaveAttribute("data-stress", /./);
+  await expect(page.locator("#stressLegend")).toBeHidden();
 });

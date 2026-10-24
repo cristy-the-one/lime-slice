@@ -272,7 +272,7 @@ export function syncStressColour() {
   const scale = state.colorMode === "safety"
     ? "Safety factor: red at 1 or under, green at 3 or over."
     : `Stress in the beads, 0 to ${cells.peakMpa.toFixed(cells.peakMpa < 10 ? 2 : 1)} MPa.`;
-  note.textContent = `In-house estimate · as sliced · ${cells.trust}. ${scale}`;
+  note.textContent = scale;
 }
 
 export function objectShownOffsets(): [number, number][] {

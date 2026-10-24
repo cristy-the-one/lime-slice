@@ -211,8 +211,7 @@ test("the Preview colours each bead by the sliced stress under it", async ({ pag
   await page.locator("#tabPreview").click();
   await page.locator("#toolRail").getByRole("button", { name: "2D", exact: true }).click();
   await colourBy(page, "stress");
-  await expect(page.locator("#colorStressNote")).toContainText("In-house estimate · as sliced · usable.");
-  await expect(page.locator("#colorStressNote")).toContainText("Stress in the beads, 0 to 9.00 MPa.");
+  await expect(page.locator("#colorStressNote")).toHaveText("Stress in the beads, 0 to 9.00 MPa.");
   await page.keyboard.press("Escape");
   await page.waitForTimeout(300);
   await page.screenshot({ path: test.info().outputPath("preview-stress.png") });

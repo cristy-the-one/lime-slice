@@ -7,7 +7,7 @@ import { defaultProfile } from "../profiles.ts";
 import { DEFAULT_PRESET } from "../presets.ts";
 import { meshRecord, parseProject, serializeProject, type LimeProject } from "../project.ts";
 import { provisionalCards } from "./cards.ts";
-import { LABEL, NOT_HELD, PROVISIONAL_SENTENCE } from "./label.ts";
+import { LABEL, NOT_HELD } from "./label.ts";
 import { loadArrow } from "./arrow.ts";
 import {
   arrowLength,
@@ -20,6 +20,8 @@ import {
   formatProbe,
   constraintVerdict,
   holdRefusal,
+  checkLabel,
+  checkSentence,
   notShown,
   onBed,
   probeNearest,
@@ -68,7 +70,7 @@ eq("the bed is a hold", holdRefusal(bare), null);
   eq("the arrow sits at the loaded faces' centre", arrowSeat(setup, (index) => centres[index] ?? null), [5, 0, 5]);
 }
 
-eq("a provisional card is rough", shownTrust(petg), { level: "rough", sentence: PROVISIONAL_SENTENCE });
+eq("a provisional card is rough", shownTrust(petg), { level: "rough", sentence: "" });
 eq("a measured card is not capped", shownTrust({ provisional: false }), { level: "usable", sentence: "" });
 
 const beam = cannedBeam(bare, box, petg, "vonMises");
@@ -77,7 +79,6 @@ if ("error" in beam) {
 } else {
   eq("the label is the shared one", beam.label, LABEL);
   eq("trust stays rough", beam.trust, "rough");
-  eq("the sentence is on the result", beam.trustSentence, PROVISIONAL_SENTENCE);
   const tip = beam.nodes[beam.nodes.length - 1]!;
   const root = beam.nodes[0]!;
   check("the tip moves and the root does not", tip.displacement > root.displacement && root.displacement === 0, `${root.displacement} ${tip.displacement}`);
@@ -137,14 +138,14 @@ eq("places, region targets and the faces key read back", readStudy(JSON.parse(JS
 eq("a place with no radius is left out", readStudy({ ...placed, loads: [{ ...placed.loads[0], place: { sphere: { centre: [0, 0, 0] } } }] }), null);
 eq("a place reads as held", holdRefusal(placed), null);
 eq(
-  "a rough row is not met",
-  constraintVerdict({ provisional: true, trust: "rough", maxDisplacementMm: 0.01, minSafetyFactor: 4, massG: 1 }, { maxDeflectionMm: 1 }),
-  { met: false, reason: PROVISIONAL_SENTENCE },
+  "a row inside its limits is met",
+  constraintVerdict({ maxDisplacementMm: 0.2, minSafetyFactor: 3, massG: 12 }, { maxDeflectionMm: 1, minSafetyFactor: 2 }),
+  { met: true, reason: "" },
 );
 eq(
-  "a converged row can pass",
-  constraintVerdict({ provisional: false, trust: "converged", maxDisplacementMm: 0.2, minSafetyFactor: 3, massG: 12 }, { maxDeflectionMm: 1, minSafetyFactor: 2 }),
-  { met: true, reason: "" },
+  "a row past a limit is not met",
+  constraintVerdict({ maxDisplacementMm: 1.5, minSafetyFactor: 3, massG: 12 }, { maxDeflectionMm: 1 }),
+  { met: false, reason: "Deflection is 1.500 mm." },
 );
 
 const plate = oneObjectPlate({
@@ -220,13 +221,28 @@ eq("the canned beam is only defined, not run from the panel", callers, [join("sr
     notShown({ nodes: [node(0.002)], moved: null }, study, petg),
     "Nothing loads this part enough to show: the peak is 0.00200 MPa, under 0.1% of its strength. Raise the load, or hold and load faces farther apart.",
   );
-  eq(
-    "two cell sizes that disagree past the rough line are not drawn",
-    notShown({ nodes: [node(12)], moved: 0.34 }, study, petg),
-    "The two cell sizes disagree by 34%, so colours would mislead. Set a smaller cell size under Advanced, and run again.",
-  );
+  eq("two cell sizes that disagree are drawn", notShown({ nodes: [node(12)], moved: 0.34 }, study, petg), null);
   eq("a loaded part that holds still between sizes is drawn", notShown({ nodes: [node(12)], moved: 0.04 }, study, petg), null);
 }
+
+eq("the check names its finer cell", checkLabel(0.73), "Check at a finer cell (0.52 mm)");
+eq("with no cell size it names none", checkLabel(0), "Check at a finer cell");
+eq(
+  "a finer check gives both sizes and the gap",
+  checkSentence({ sizes: [2, 2 / Math.SQRT2], values: [0.3915, 0.47515], governedBy: "maxDisplacementMm" }),
+  "Max deflection 0.392 mm at 2 mm cells, 0.475 mm at 1.41 mm (18% apart). Colours may change with smaller cells.",
+);
+eq(
+  "a coarser check says the finer one was too large",
+  checkSentence({ sizes: [0.73, 1.03], values: [0.53, 0.5], governedBy: "maxDisplacementMm" }),
+  "Max deflection 0.53 mm at 0.73 mm cells, 0.5 mm at 1.03 mm (6% apart). 0.52 mm was too large to check.",
+);
+eq(
+  "a target's value is named for the target",
+  checkSentence({ sizes: [2, 1.41], values: [7.5, 7.4], governedBy: "minSafetyFactor" }),
+  "Safety factor 7.5 at 2 mm cells, 7.4 at 1.41 mm (1% apart).",
+);
+eq("one size says nothing", checkSentence(null), "");
 
 if (failed) {
   console.error(`${failed} failed`);
