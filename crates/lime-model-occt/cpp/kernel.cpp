@@ -421,6 +421,35 @@ void integrate(const TopoDS_Shape& shape, GProp_GProps& props) {
     BRepGProp::VolumeProperties(shape, props);
 }
 
+/// Each face integrated about `about` in parallel, added in the order given.
+double faces_volume(const std::vector<TopoDS_Face>& faces, const gp_Pnt& about) {
+    std::vector<double> parts(faces.size(), 0.0);
+    OSD_Parallel::For(0, static_cast<int>(faces.size()), [&faces, &parts, &about](int i) {
+        const TopoDS_Face& face = faces[static_cast<size_t>(i)];
+        const TopAbs_Orientation orientation = face.Orientation();
+        if (orientation != TopAbs_FORWARD && orientation != TopAbs_REVERSED) {
+            return;
+        }
+        BRepGProp_Face surface;
+        BRepGProp_Vinert inertia;
+        inertia.SetLocation(about);
+        surface.Load(face);
+        if (face.NbChildren() == 0) {
+            inertia.Perform(surface);
+        } else {
+            BRepGProp_Domain domain;
+            domain.Init(face);
+            inertia.Perform(surface, domain);
+        }
+        parts[static_cast<size_t>(i)] = inertia.Mass();
+    });
+    double total = 0.0;
+    for (const double part : parts) {
+        total = total + part;
+    }
+    return total;
+}
+
 /// `BRepGProp::VolumeProperties(shape, props).Mass()`, the same number to the last bit, with the faces integrated in
 /// parallel. Open CASCADE integrates each face about one point, the mean of the shape's vertices, and adds the faces'
 /// volumes in the order it explores them; this integrates each face alone, into its own slot, about the same point, and
@@ -449,32 +478,7 @@ double integrated_volume(const TopoDS_Shape& shape) {
         return props.Mass();
     }
     middle /= vertices;
-    const gp_Pnt about(middle);
-    std::vector<double> parts(faces.size(), 0.0);
-    OSD_Parallel::For(0, static_cast<int>(faces.size()), [&faces, &parts, &about](int i) {
-        const TopoDS_Face& face = faces[static_cast<size_t>(i)];
-        const TopAbs_Orientation orientation = face.Orientation();
-        if (orientation != TopAbs_FORWARD && orientation != TopAbs_REVERSED) {
-            return;
-        }
-        BRepGProp_Face surface;
-        BRepGProp_Vinert inertia;
-        inertia.SetLocation(about);
-        surface.Load(face);
-        if (face.NbChildren() == 0) {
-            inertia.Perform(surface);
-        } else {
-            BRepGProp_Domain domain;
-            domain.Init(face);
-            inertia.Perform(surface, domain);
-        }
-        parts[static_cast<size_t>(i)] = inertia.Mass();
-    });
-    double total = 0.0;
-    for (const double part : parts) {
-        total = total + part;
-    }
-    return total;
+    return faces_volume(faces, gp_Pnt(middle));
 }
 
 double volume_of(const TopoDS_Shape& shape) {
@@ -493,6 +497,27 @@ double volume_of(const TopoDS_Shape& shape) {
         }
     }
     return integrated_volume(shape);
+}
+
+/// The volume of `shape` integrated about `about`. Two shapes measured about the same point give the same share for
+/// every face they have in common, so the difference of their volumes is what changed and nothing of where the vertices
+/// moved: a hole's volume, to the last few bits, out of a piece of a thousand curved faces.
+double volume_about(const TopoDS_Shape& shape, const gp_Pnt& about) {
+    if (shape.IsNull()) {
+        return 0;
+    }
+    g_stats.volumes += 1;
+    const Timed timed(g_stats.volume_us);
+    std::vector<TopoDS_Face> faces;
+    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+        const TopoDS_Face& face = TopoDS::Face(explorer.Current());
+        TopLoc_Location location;
+        if (BRep_Tool::Surface(face, location).IsNull()) {
+            return volume_of(shape);
+        }
+        faces.push_back(face);
+    }
+    return faces_volume(faces, about);
 }
 
 bool has_solid(const TopoDS_Shape& shape) {
@@ -2730,8 +2755,12 @@ int piece_at(const std::vector<PartitionPiece>& pieces, const gp_Pnt& point) {
     return -1;
 }
 
-/// Whether a cut took exactly the tool's volume: the tool lies inside the piece, so the hole breaks through nothing.
-bool took(double before, double after, double tool) {
+/// Whether `more` and `less` differ by exactly the tool's volume: the tool lies inside the piece, so the hole breaks
+/// through nothing. Both are measured about the connector's centre, so the faces the tool left alone cancel; measured
+/// each about its own vertices, a piece of many curved faces drifts by more than the tolerance.
+bool took(const TopoDS_Shape& more, const TopoDS_Shape& less, double tool, const gp_Pnt& about) {
+    const double before = volume_about(more, about);
+    const double after = volume_about(less, about);
     return std::abs((before - after) - tool) <= 1e-6 * std::max(1.0, tool) + 1e-9 * std::abs(before);
 }
 
@@ -2854,12 +2883,12 @@ void build_joints(
             if (fused.IsNull() || cut.IsNull()) {
                 continue;
             }
-            const double fused_volume = volume_of(fused);
-            const double cut_volume = volume_of(cut);
-            if (!took(fused_volume, carrier.volume, pi * joint.radius * joint.radius * joint.depth) ||
-                !took(mate.volume, cut_volume, socket_volume)) {
+            if (!took(fused, carrier.shape, pi * joint.radius * joint.radius * joint.depth, centre) ||
+                !took(mate.shape, cut, socket_volume, centre)) {
                 continue;
             }
+            const double fused_volume = volume_of(fused);
+            const double cut_volume = volume_of(cut);
             carrier.shape = fused;
             carrier.volume = fused_volume;
             mate.shape = cut;
@@ -2876,11 +2905,11 @@ void build_joints(
             if (cut_low.IsNull() || cut_high.IsNull()) {
                 continue;
             }
-            const double low_volume = volume_of(cut_low);
-            const double high_volume = volume_of(cut_high);
-            if (!took(low.volume, low_volume, half) || !took(high.volume, high_volume, half)) {
+            if (!took(low.shape, cut_low, half, centre) || !took(high.shape, cut_high, half, centre)) {
                 continue;
             }
+            const double low_volume = volume_of(cut_low);
+            const double high_volume = volume_of(cut_high);
             low.shape = cut_low;
             low.volume = low_volume;
             high.shape = cut_high;
