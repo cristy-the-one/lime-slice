@@ -29,6 +29,7 @@ pub mod sliced_study;
 pub mod solve;
 pub mod study;
 pub mod trust;
+pub mod twolevel;
 pub mod units;
 
 pub use assemble::{Hold, Load, NodeHold};
@@ -111,6 +112,16 @@ pub struct CaseSolutions {
 /// linear study's stiffness doesn't depend on its loads, so it is factored
 /// once and each case is one more back-substitution.
 pub fn solve_cases(req: &Request, cases: &[Vec<Load>]) -> Result<CaseSolutions, SimError> {
+    solve_cases_with(req, cases, &mut FaerLdlt::default())
+}
+
+/// [`solve_cases`] with a solver the caller holds: an iterative one, or a
+/// direct one whose factor the caller keeps for a later solve.
+pub fn solve_cases_with(
+    req: &Request,
+    cases: &[Vec<Load>],
+    solver: &mut dyn LinearSolver,
+) -> Result<CaseSolutions, SimError> {
     validate_request_fields(req)?;
     if req.temperature_c.is_some() || req.fibre_axis.is_some() {
         return Err(temperature_refused());
@@ -164,22 +175,13 @@ pub fn solve_cases(req: &Request, cases: &[Vec<Load>]) -> Result<CaseSolutions, 
         Some(c) => c,
         None => &req.material,
     };
-    let mut solver = FaerLdlt::default();
     let mut solutions = Vec::with_capacity(cases.len());
     for loads in cases {
-        solutions.push(solve_case(
-            req,
-            loads,
-            material,
-            beads,
-            axis,
-            &cells,
-            &mut solver,
-        )?);
+        solutions.push(solve_case(req, loads, material, beads, axis, &cells, solver)?);
     }
     Ok(CaseSolutions {
         solutions,
-        factorisations: solver.factors,
+        factorisations: solver.factor_count(),
         factor_len: solver.factor_len(),
     })
 }
@@ -193,7 +195,7 @@ fn solve_case(
     beads: Option<&BeadSection>,
     axis: [f64; 3],
     cells: &[CellMaterial],
-    solver: &mut FaerLdlt,
+    solver: &mut dyn LinearSolver,
 ) -> Result<Solution, SimError> {
     let mut u = vec![[0.0; 3]; req.mesh.nodes.len()];
     let mut load_level = 0.0;
@@ -226,8 +228,9 @@ fn solve_case(
                 );
                 break;
             }
-            if !(req.linear && solver.factors > 0) {
+            if !(req.linear && solver.factor_count() > 0) {
                 stage(req, "factor");
+                solver.attach_dofs(&assembly.system.dof);
                 solver.factor(&assembly.system.k, assembly.system.dof.n_free)?;
             }
             if cancelled(req.cancel.as_ref()) {
@@ -303,7 +306,7 @@ fn solve_case(
     // before recovery, so a mechanism never comes back as a rough result.
     let rigid_failed = residual > RELATIVE_RESIDUAL_MAX
         || peak > DISPLACEMENT_OVER_DIAGONAL * diagonal
-        || (free > 0 && solver.pivot_ratio() < PIVOT_RATIO_MIN);
+        || (free > 0 && solver.pivots().is_some_and(|p| p < PIVOT_RATIO_MIN));
     if rigid_failed {
         return Err(not_held());
     }
