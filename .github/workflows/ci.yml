@@ -231,6 +231,7 @@ jobs:
           node --experimental-strip-types mcp/layer-stress.test.ts
           node --experimental-strip-types mcp/sim.test.ts
           node --experimental-strip-types mcp/sim-sliced.test.ts
+          node --experimental-strip-types mcp/sim-paint.test.ts
           node --experimental-strip-types mcp/pattern-slice.test.ts
           node --experimental-strip-types mcp/sim-reslice.test.ts
           node --experimental-strip-types mcp/sim-loop.test.ts

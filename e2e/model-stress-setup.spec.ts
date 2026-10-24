@@ -29,7 +29,7 @@ test("Stress is set up in steps: hold faces, load faces, then Run, and folding k
   const model = page.locator("#model");
 
   await expect(run).toHaveAttribute("aria-disabled", "true");
-  await expect(status).toHaveText("Hold the part: the bed, or pick faces.");
+  await expect(status).toHaveText("Hold the part: pick the faces that are fixed, or the bed.");
   expect(await onScreen(page, "#stressStatus"), "the next step is said beside Run").toBe(true);
   await expect(page.locator("#stressHoldStep [data-step-mark]")).toHaveText("1");
   await expect(page.locator("#stressEIn"), "the card's numbers wait under Edit numbers").toBeHidden();
@@ -132,11 +132,11 @@ test("a run with no hold says so beside Run, and Escape ends a pick mode before 
   const status = page.locator("#stressStatus");
   // aria-disabled, not disabled: the press still lands and the reason is read out.
   await page.locator("#stressRun").click({ force: true });
-  await expect(status).toHaveText("Hold the part: the bed, or pick faces.");
+  await expect(status).toHaveText("Hold the part: pick the faces that are fixed, or the bed.");
   expect(await page.evaluate(() => (window as unknown as { __limeSimBodies?: string[] }).__limeSimBodies?.length ?? 0)).toBe(0);
 
   await page.locator("#stressBed").click();
-  await expect(page.locator("#stressBedHint")).toHaveText("The faces that sit on the bed are held.");
+  await expect(page.locator("#stressBedHint")).toHaveText("The faces that sit on the bed are held. A load that presses the part into the bed bends nothing; to see it bend, hold an end face with Faces.");
   await expect(status).toHaveText("Pick the faces the load pushes on.");
   await expect(page.locator("#model")).not.toHaveAttribute("data-stress-hold", /./);
 

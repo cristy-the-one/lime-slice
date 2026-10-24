@@ -4,9 +4,9 @@ import { mockModelTree, type Body, type MockSolid } from "./model-tree-mock";
 
 type V = [number, number, number];
 
-/** A 10 mm box. Faces 0 to 5: bottom, top, front (-Y), back (+Y), left (-X), right (+X). */
-export function boxSolid(volumeMm3: number): MockSolid {
-  const c = (x: number, y: number, z: number): V => [x * 10, y * 10, z * 10];
+/** A 10 mm box, or `size` long. Faces 0 to 5: bottom, top, front (-Y), back (+Y), left (-X), right (+X). */
+export function boxSolid(volumeMm3: number, size: V = [10, 10, 10]): MockSolid {
+  const c = (x: number, y: number, z: number): V => [x * size[0], y * size[1], z * size[2]];
   const quads: V[][] = [
     [c(0, 0, 0), c(0, 1, 0), c(1, 1, 0), c(1, 0, 0)],
     [c(0, 0, 1), c(1, 0, 1), c(1, 1, 1), c(0, 1, 1)],
@@ -64,7 +64,7 @@ export function mockReply(): string {
 }
 
 /** The box on the plate, open in Model, with the desktop solve answered by `reply`. */
-export async function openStressModel(page: Page, reply = mockReply(), viewport = { width: 1440, height: 900 }) {
+export async function openStressModel(page: Page, reply = mockReply(), viewport = { width: 1440, height: 900 }, size?: V) {
   await page.addInitScript((text: string) => {
     const bag = window as unknown as { __limeSimStudy?: (body: string) => string; __limeSimBodies?: string[] };
     bag.__limeSimBodies = [];
@@ -75,11 +75,11 @@ export async function openStressModel(page: Page, reply = mockReply(), viewport 
   }, reply);
   await page.setViewportSize(viewport);
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
-  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: boxSolid(4000).positions } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: boxSolid(4000, size).positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await mockModelTree(page, {
-    open: (request) => boxSolid(volumeOf(request)),
-    apply: (request) => boxSolid(volumeOf(request)),
+    open: (request) => (size ? boxSolid(size[0] * size[1] * size[2], size) : boxSolid(volumeOf(request))),
+    apply: (request) => (size ? boxSolid(size[0] * size[1] * size[2], size) : boxSolid(volumeOf(request))),
     probe: () => ({ ok: true }),
   });
   await page.goto("/?stressFixture=1");
@@ -87,7 +87,7 @@ export async function openStressModel(page: Page, reply = mockReply(), viewport 
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });
   await expect(page.locator("#objectList .obj").first()).toBeVisible();
   await page.locator("#tabModel").click();
-  await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
+  if (!size) await expect(page.locator("#modelReadout")).toContainText("Volume 4000 mm³");
 }
 
 /**

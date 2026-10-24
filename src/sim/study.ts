@@ -119,6 +119,10 @@ export interface CannedResult {
   diagonal: number;
   /** Set when the bridge solved the part as sliced. */
   representation?: "sliced";
+  /** The colours sit on the part's own triangles, not on the solved cells. */
+  painted?: boolean;
+  /** How far the governing value moved between two cell sizes, as a share. Null when one size ran. */
+  moved?: number | null;
   notes?: string[];
   margins?: SlicedMargin[];
   maxDisplacementMm?: number;
@@ -305,6 +309,40 @@ export function constraintVerdict(
   return { met: true, reason: "" };
 }
 
+/** A peak under this share of the card's weaker strength is too small to colour. */
+export const QUIET_SHARE = 0.001;
+
+/** Past this move between two cell sizes the result is rough: `RESOLUTION_MOVE_ROUGH` in lime-sim. */
+export const MOVE_SHOWN_MAX = 0.15;
+
+/**
+ * Why a result is not drawn, or null when it is. A peak far under the card's
+ * strength is noise, and auto-scaled it draws as a shape that isn't there; a
+ * result that moves past the rough threshold between two cell sizes would
+ * colour the part with numbers it doesn't hold.
+ */
+export function notShown(
+  result: Pick<CannedResult, "nodes" | "moved">,
+  study: ObjectStudy,
+  card: Pick<MaterialCard, "strengthInPlaneMPa" | "strengthAcrossLayersMPa">,
+): string | null {
+  const peak = result.nodes.reduce((max, node) => Math.max(max, node.vonMises), 0);
+  const strength = Math.min(card.strengthInPlaneMPa, card.strengthAcrossLayersMPa);
+  if (strength > 0 && peak < QUIET_SHARE * strength) {
+    const shown = formatProbe(peak, "vonMises");
+    const load = study.loads[0];
+    const down = load ? -load.direction[2] / (Math.hypot(...load.direction) || 1) : 0;
+    if (study.holds.some((hold) => hold.kind === "bed") && down > 0.7) {
+      return `Nothing bends this part: the bed holds it, and the load presses it into the bed (peak ${shown}). Hold one end with Faces, and load the other end.`;
+    }
+    return `Nothing loads this part enough to show: the peak is ${shown}, under 0.1% of its strength. Raise the load, or hold and load faces farther apart.`;
+  }
+  if (result.moved != null && result.moved > MOVE_SHOWN_MAX) {
+    return `The two cell sizes disagree by ${Math.round(result.moved * 100)}%, so colours would mislead. Set a smaller cell size under Advanced, and run again.`;
+  }
+  return null;
+}
+
 /** Provisional cards stay rough. The sentence is the one the solver returns. */
 export function shownTrust(card: Pick<MaterialCard, "provisional">): { level: TrustWord; sentence: string } {
   if (card.provisional) return { level: "rough", sentence: PROVISIONAL_SENTENCE };
@@ -324,6 +362,20 @@ export function boxOf(positions: ArrayLike<number>): StudyBox | null {
   }
   if (!min.every(Number.isFinite) || !max.every(Number.isFinite)) return null;
   return { min, max };
+}
+
+/**
+ * The map that takes `from` onto `to`, axis by axis. The mesh a study slices and
+ * the solid on screen are one tessellation, at most scaled about its centre or
+ * seated lower on the bed, so their boxes carry one onto the other.
+ */
+export function boxMap(from: StudyBox, to: StudyBox): (at: Vec3) => Vec3 {
+  const axis = (k: 0 | 1 | 2, value: number) => {
+    const span = from.max[k] - from.min[k];
+    const ratio = span > 1e-9 ? (to.max[k] - to.min[k]) / span : 1;
+    return to.min[k] + (value - from.min[k]) * ratio;
+  };
+  return (at) => [axis(0, at[0]), axis(1, at[1]), axis(2, at[2])];
 }
 
 export function boxDiagonal(box: StudyBox): number {

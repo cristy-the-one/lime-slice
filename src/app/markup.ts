@@ -494,10 +494,10 @@ export function mountMarkup(root: HTMLElement) {
               <fieldset class="stress-group stress-step" id="stressHoldStep" data-step="hold">
                 <legend><span class="stress-mark" data-step-mark>1</span>Hold</legend>
                 <div class="modes" role="group" aria-label="Hold">
-                  <button class="btn mode" id="stressBed" type="button" aria-pressed="false">Bed</button>
                   <button class="btn mode" id="stressHoldFaces" type="button" aria-pressed="false">Faces</button>
+                  <button class="btn mode" id="stressBed" type="button" aria-pressed="false">Bed</button>
                 </div>
-                <p class="stress-note" id="stressBedHint" hidden>The faces that sit on the bed are held.</p>
+                <p class="stress-note" id="stressBedHint" hidden>The faces that sit on the bed are held. A load that presses the part into the bed bends nothing; to see it bend, hold an end face with Faces.</p>
                 <div class="stress-pick-row" id="stressHoldPickRow" hidden>
                   <button class="btn stress-pick" id="stressHoldPick" type="button" aria-pressed="false">Pick faces</button>
                   <ul class="stress-chips" id="stressHoldChips" aria-label="Held faces"></ul>
@@ -569,11 +569,13 @@ export function mountMarkup(root: HTMLElement) {
                   <option value="displacement">Displacement</option>
                   <option value="safety">Safety factor</option>
                 </select></label>
-                <div class="stress-row">
-                  <label>Scale <input id="stressScale" type="number" min="0" step="0.1" aria-label="Displacement scale" /></label>
+                <label class="stress-check"><input id="stressDeform" type="checkbox" /> <span id="stressDeformLabel">Deformed shape</span></label>
+                <div class="stress-row" id="stressScaleRow" hidden>
+                  <label>Scale × <input id="stressScale" type="number" min="0" step="0.1" aria-label="Displacement scale" /></label>
                   <button class="btn" id="stressTrueScale" type="button">True scale</button>
                 </div>
-                <p class="stress-note">Click the coloured part to read a value there.</p>
+                <p class="stress-note" id="stressProbeHint">Click the coloured part to read a value there.</p>
+                <p class="stress-note stress-nothing" id="stressNothing" role="status" hidden></p>
                 <div id="stressMargins"></div>
                 <p id="stressNote" class="stress-note"></p>
               </fieldset>
@@ -624,7 +626,11 @@ export function mountMarkup(root: HTMLElement) {
         <div class="stage-body" id="modelBody" role="tabpanel" aria-labelledby="tabModel" hidden>
           <canvas id="model" aria-label="Solid faces and edges"></canvas>
           <div id="stressLegend" class="stress-legend" hidden>
-            <span class="stress-ramp" aria-hidden="true"></span>
+            <div class="stress-ramp-col">
+              <span class="stress-ramp-end" id="stressLegendHigh"></span>
+              <span class="stress-ramp" aria-hidden="true"></span>
+              <span class="stress-ramp-end" id="stressLegendLow"></span>
+            </div>
             <div>
               <p id="stressLegendLabel"></p>
               <p id="stressLegendText"></p>

@@ -161,10 +161,11 @@ import { appParamMessage, evaluateTable, stepOutOfDate, usedByCount } from "../m
 import { refreshOp } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
 import { faceTriangles } from "../sim/bridge-body.ts";
+import { paintCorners } from "../sim/paint-mesh.ts";
 import { chooseStudyMesh } from "../sim/study-mesh.ts";
 import { endStressPick, mountStress, stressOpen, stressPickFace, stressPicking, stressUndoState, syncStress, takeStressRedo, takeStressUndo } from "../ui/stress.ts";
 import { stressSliceRequest } from "./stress-slice.ts";
-import { beltLayerNormal } from "../sim/study.ts";
+import { beltLayerNormal, boxMap } from "../sim/study.ts";
 import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
@@ -689,6 +690,12 @@ export function bindModelView() {
       const mesh = stressMesh();
       if (!mesh || "reason" in mesh || !mesh.triangles) return [];
       return faceTriangles(mesh.positions, mesh.triangles, faces);
+    },
+    paintSurface(edgeMm) {
+      const mesh = stressMesh();
+      const solid = viewed();
+      if (!mesh || "reason" in mesh || !solid || solid.positions.length < 9) return null;
+      return { corners: paintCorners(mesh.positions, edgeMm), toSolid: boxMap(boundsOf(mesh.positions), boundsOf(solid.positions)) };
     },
   });
   noteParametersBuilt();
