@@ -1,7 +1,7 @@
 # Stress solver scaling: faster solves, no "past the budget" dead ends
 
-Status: tier 0 done (`claude/sim-tier0`, PR #433). Tier 1 done on `claude/sim-tier1`, stacked on tier 0.
-Tier 2 not started; it is the next piece of work, and the tier 1 follow-ups below are smaller ones.
+Status: tiers 0 and 1 merged (PRs #433, #434). Tier 2 step 1 (GPU smoothing, on in the engine and the app from
+3.9.2) on `claude/sim-tier2`. Next work: tier 2 step 2, a GPU multigrid in place of the coarse factor.
 Read this first if you are continuing the work. The status list in each tier is the source of truth.
 
 ## Why
@@ -173,27 +173,69 @@ Tier 1 follow-ups:
 
 ## Tier 2: GPU backend (removes "takes very long")
 
-- **wgpu compute** (Vulkan, DX12, Metal): one code path for NVIDIA, AMD, Intel and Apple, at home in Tauri.
-  WGSL has no f64, so the GPU runs the preconditioned CG in f32 inside an f64 iterative refinement on the CPU:
-  residual in f64, solve the correction in f32, repeat. That reaches f64-quality answers.
-- **Matrix-free operator on the structured grid.** Every sliced cell is h × h × whole layers, split into the same
-  six tets (`HEX_TETS`). Geometry repeats; only each cell's material (fraction, fibre axis, alignment, role)
-  differs. A kernel per cell builds its TET10 element action from the cell's D matrix on the fly. At 271k nodes
-  this is under 100 MB against ~10.9 GB for the direct factor; an assembled f32 CSR would be ~0.5 GB and is the
-  simpler first step.
+### Step 1: the smoothing on the GPU. Status: done.
+
+`crates/lime-sim/src/twolevel/gpu.rs`, behind `lime-sim`'s `gpu` feature (wgpu 27). `lime-mcp-engine` and
+`src-tauri` turn it on through `lime-sim-bridge/gpu`, so the app and the MCP server use it from 3.9.2;
+`lime-sim` alone builds without it, which keeps its own tests quick.
+
+- The two-grid cycle's Chebyshev smoothing, about 25 of an iteration's 27 fine products, runs on the GPU in f32:
+  one WGSL module (product, start, step and correction kernels), the fine matrix as CSR (row starts and columns
+  in one u32 buffer, values in an f32 one), every bind group built once, two submissions and two read-backs a
+  cycle. The conjugate gradients and the coarse correction stay on the CPU in f64.
+- The CG is now the flexible kind (β from the change in z), so an f32 preconditioner can't stop it short of
+  1e-8. It gives the same 38 iterations and the same 0.47515 mm as the CPU on the jet.
+- One GPU context per process (`OnceLock`), opened on a background thread when a study starts that may use it,
+  so the open overlaps the first cell size's direct solve. DX12 on Windows (1.0 s to open against Vulkan's
+  2.8 s there), the primary backend elsewhere. The matrix is uploaded 64 MB at a time, so the host never holds a
+  whole f32 copy plus wgpu's staging.
+- `SlicedStudy::useGpu` (default true). In `auto`, with a GPU and a finer grid of at least 50,000 nodes
+  (`GPU_FIRST_NODES`), the iterative solve goes first when it fits, and a failed iterative solve falls back to
+  the direct one when that fits, then to the coarser check. A smaller grid, or no GPU, keeps tier 1's order: the
+  direct solve is exact and takes a second or two there.
+- Tests: `sliced_study::the_gpu_smoothing_matches_the_cpu` (within 1e-6; says it was skipped without the feature
+  or an adapter). The workspace's clippy now lints the GPU code (the engine turns it on), and CI runs the sliced
+  study tests with the feature (`Stress solver with the gpu feature`); runners have no adapter, so there they
+  check the build and the CPU path.
+
+Measured on the jet (RTX 5080 Laptop GPU, 16 GB; same machine and benchmark as before; `--features gpu`):
+
+| Jet study | No GPU | GPU (`auto`) |
+|---|---|---|
+| `hXy=2`, check on | 24.2 s, 6.6 GB (direct) | 22.0 s, 4.1 GB (iterative, smoothed on the GPU) |
+| fitted cell, check on | 31.1 s, 8.7 GB (direct) | 27.1 s, 5.1 GB |
+| `hXy=2`, `checkSolver=iterative` | 26.3 s, 3.8 GB | 21.7 s, 4.1 GB |
+| check off | 6.6 s | 6.6 s |
+
+Peaks are working set; `study_bench` now also prints peak private commit (`peakPrivateMb`), because a GPU
+driver maps about 2 GB of shared pages into the working set when it opens (private commit grows ~160 MB).
+Inside the PCG: smoothing went from about 8 s to 1.6 s for the 38 cycles; the CPU coarse solves (5.2 s) are now
+most of it, then the first cell size's direct solve (6.7 s) and the assemblies (~5 s).
+
+`ordered-float` is pinned at 5.4.0 in the lock file because 5.5 needs Rust 1.90. Measured on one Windows laptop
+only; a Mac (Metal) and a Linux machine (Vulkan) are the next places to run `study_bench --features gpu`.
+
+### Step 2: a GPU multigrid in place of the coarse factor. Status: not started.
+
+What step 1 measured says where the time is now: the coarse direct solves (0.14 s each, 5.2 s a check) and the
+first size's direct factor. Both go away if the coarse levels are a GPU multigrid instead of an LDLᵀ:
+
 - **Geometric multigrid** on the structured grid (coarsen 2× in the plane, merge slab pairs), Galerkin coarse
-  operators, Chebyshev smoothing. Thin wings, cells down to φ = 0.02 and layer anisotropy make plain Jacobi CG
-  take thousands of iterations; multigrid is what makes the GPU pay.
-- Fallback: no adapter, or the adapter's memory is too small, runs tier 1 on the CPU with the same operator.
+  operators (PᵀAP), Chebyshev smoothing at every level, a small direct solve only at the bottom. The six
+  rigid-body modes must be in the coarse spaces; the 2× structured coarsening interpolates them exactly.
+- With it, the first cell size can be solved iteratively too, and the check no longer needs the first factor.
+- **Matrix-free operator.** Every sliced cell is h × h × whole layers, split into the same six tets
+  (`HEX_TETS`). Only each cell's material differs, so a kernel per cell can apply its TET10 action from the
+  cell's D matrix on the fly: under 100 MB at 271k nodes, against ~0.5 GB for the assembled f32 CSR step 1 uploads.
 - Optional later: a CUDA backend (cuDSS direct, or AmgX) for NVIDIA users who want native f64. Not the default:
   heavy, one vendor.
-- Accept when: the same baselines as tier 1; the jet at 1.41 mm solves faster than tier 1 on a mid-range GPU;
-  a machine without a GPU gives the same numbers through the CPU path.
+- Accept when: Kirsch, Lamé, the cantilever and the sliced tests match the direct solver; the jet's 1.41 mm check
+  is several times faster than step 1's 22 s on the same GPU; no GPU gives the same numbers through the CPU.
 
 ## Where things are
 
 - Solver and its trait: `crates/lime-sim/src/solve.rs` (`LinearSolver`, `FaerLdlt`); the iterative solve and
-  the coarse-to-fine map: `crates/lime-sim/src/twolevel.rs`.
+  the coarse-to-fine map: `crates/lime-sim/src/twolevel.rs`; its GPU smoothing: `twolevel/gpu.rs`.
 - Driver: `crates/lime-sim/src/lib.rs` (`solve_cases`, `NODE_CAP` check), assembly in `assemble.rs`.
 - Sliced study, budget and second size: `crates/lime-sim/src/sliced_study.rs` (`run`, `DEFAULT_MEMORY_MB`,
   `sliced_trust`), grid and memory fit: `crates/lime-sim/src/sliced.rs` (`fitted_h_xy`, `study_memory_mb`,

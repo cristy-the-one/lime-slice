@@ -227,6 +227,10 @@ pub struct SlicedStudy {
     /// fits and iteratively where only the iterative solve does.
     #[serde(default)]
     pub check_solver: CheckSolver,
+    /// Smooth the iterative solve on a GPU, in a build that has one and on a
+    /// machine with an adapter. Off, it smooths on the CPU.
+    #[serde(default = "yes")]
+    pub use_gpu: bool,
 }
 
 /// How the second cell size is solved.
@@ -898,6 +902,9 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
         Some(h) => h,
         None => fitted_h_xy(field, node_budget)?,
     };
+    if study.check_resolution && study.use_gpu && study.check_solver != CheckSolver::Direct {
+        crate::twolevel::warm_gpu();
+    }
     let mut direct = FaerLdlt::default();
     let first = solve_at(
         field,
@@ -946,53 +953,92 @@ pub fn run(field: &SliceField, study: &SlicedStudy) -> Result<SlicedReport, SimE
                 direct_mb,
                 iterative_mb,
             } => {
-                let iterative = match study.check_solver {
-                    CheckSolver::Direct => false,
-                    CheckSolver::Iterative => true,
-                    CheckSolver::Auto => direct_mb > check_mb,
+                let direct_fits = direct_mb <= check_mb;
+                let iterative_fits = iterative_mb <= check_mb;
+                // The ways to try, in order. With a GPU the iterative solve
+                // is the quicker and smaller one (the jet's 1.41 mm check:
+                // 22 s and 4.1 GB against 23–26 s and 6.6 GB), so it goes
+                // first and the direct one stands behind it.
+                let attempts: Vec<CheckSolver> = match study.check_solver {
+                    CheckSolver::Direct => vec![CheckSolver::Direct],
+                    CheckSolver::Iterative => vec![CheckSolver::Iterative],
+                    CheckSolver::Auto => {
+                        let gpu = study.use_gpu
+                            && mesh.mesh.nodes.len() >= GPU_FIRST_NODES
+                            && crate::twolevel::gpu_available();
+                        let mut order = Vec::new();
+                        if gpu && iterative_fits {
+                            order.push(CheckSolver::Iterative);
+                        }
+                        if direct_fits {
+                            order.push(CheckSolver::Direct);
+                        } else if !gpu && iterative_fits {
+                            order.push(CheckSolver::Iterative);
+                        }
+                        order
+                    }
                 };
-                if !iterative {
-                    // A direct solve needs no coarse grid: free its factor first.
-                    drop(std::mem::take(&mut direct));
-                    // The finer grid fitted and failed: that is an answer to give.
-                    let second = solve_at(
-                        field,
-                        study,
-                        &cases,
-                        mesh,
-                        to_part,
-                        to_slice,
-                        &mut FaerLdlt::default(),
-                    )?;
-                    compare(&second, &mut resolutions)?;
-                    let mut solutions = second.cases.into_iter().map(|c| c.solution);
-                    finer = solutions.next().map(|s| (s, second.mesh));
-                    None
-                } else if study.check_solver == CheckSolver::Auto && iterative_mb > check_mb {
-                    Some(format!(
+                let mut why = (attempts.is_empty()).then(|| {
+                    format!(
                         "A second cell size of {} mm needs about {} MB, past the {} MB this solve may use",
                         format_mm(fine),
                         direct_mb.min(iterative_mb).round(),
                         check_mb.round()
-                    ))
-                } else {
-                    let links = Prolongation::new(&first.mesh, &mesh);
-                    let mut pcg = TwoLevelPcg::new(std::mem::take(&mut direct), links);
-                    match solve_at(field, study, &cases, mesh, to_part, to_slice, &mut pcg) {
+                    )
+                });
+                let mut mesh = Some(mesh);
+                for (i, attempt) in attempts.iter().enumerate() {
+                    let last = i + 1 == attempts.len();
+                    let grid = if last {
+                        mesh.take().expect("each attempt has the mesh")
+                    } else {
+                        mesh.clone().expect("each attempt has the mesh")
+                    };
+                    if *attempt == CheckSolver::Direct {
+                        // A direct solve needs no coarse grid: free its factor first.
+                        drop(std::mem::take(&mut direct));
+                        // The finer grid fitted and failed: that is an answer to give.
+                        let second = solve_at(
+                            field,
+                            study,
+                            &cases,
+                            grid,
+                            to_part,
+                            to_slice,
+                            &mut FaerLdlt::default(),
+                        )?;
+                        compare(&second, &mut resolutions)?;
+                        let mut solutions = second.cases.into_iter().map(|c| c.solution);
+                        finer = solutions.next().map(|s| (s, second.mesh));
+                        why = None;
+                        break;
+                    }
+                    let links = Prolongation::new(&first.mesh, &grid);
+                    let mut pcg =
+                        TwoLevelPcg::new(std::mem::take(&mut direct), links).with_gpu(study.use_gpu);
+                    match solve_at(field, study, &cases, grid, to_part, to_slice, &mut pcg) {
                         Ok(second) => {
                             compare(&second, &mut resolutions)?;
                             notes.extend(pcg.notes());
                             let mut solutions = second.cases.into_iter().map(|c| c.solution);
                             finer = solutions.next().map(|s| (s, second.mesh));
-                            None
+                            why = None;
+                            break;
                         }
-                        Err(err) => Some(format!(
-                            "An iterative solve of a second cell size of {} mm failed ({})",
-                            format_mm(fine),
-                            err.message.trim_end_matches('.')
-                        )),
+                        Err(err) => {
+                            let failed = format!(
+                                "An iterative solve of a second cell size of {} mm failed ({})",
+                                format_mm(fine),
+                                err.message.trim_end_matches('.')
+                            );
+                            if !last {
+                                notes.push(format!("{failed}, so it was solved directly."));
+                            }
+                            why = Some(failed);
+                        }
                     }
                 }
+                why
             }
         };
         match why {
@@ -1107,6 +1153,11 @@ enum Governing {
     SafetyFactor,
     Nothing,
 }
+
+/// The finer grid, in nodes, from which a GPU's iterative solve goes before a
+/// direct one. Below it the direct solve is exact and takes a second or two,
+/// so a part that small gains nothing from the GPU.
+const GPU_FIRST_NODES: usize = 50_000;
 
 /// The second, finer cell size, meshed, and what each way of solving it
 /// would cost.

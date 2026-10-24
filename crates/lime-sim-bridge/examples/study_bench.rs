@@ -44,6 +44,7 @@ fn main() {
                 "studyS": round(total_s - slice_s),
                 "totalS": round(total_s),
                 "peakMb": peak_mb().map(round),
+                "peakPrivateMb": peak_private_mb().map(round),
                 "trust": report["trust"],
                 "resolutions": report["resolutions"],
                 "margins": report["margins"].as_array().map(|m| m.iter().map(|m| json!([m["kind"], m["value"]])).collect::<Vec<_>>()),
@@ -55,6 +56,7 @@ fn main() {
             "reason": reason,
             "totalS": round(total_s),
             "peakMb": peak_mb().map(round),
+            "peakPrivateMb": peak_private_mb().map(round),
         }),
     };
     println!("{out}");
@@ -64,8 +66,19 @@ fn round(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-#[cfg(windows)]
+/// Peak working set, MB: what the process touched, shared driver pages too.
 fn peak_mb() -> Option<f64> {
+    counters().map(|c| c.0)
+}
+
+/// Peak private commit, MB: the memory the process owns. A GPU driver maps
+/// shared pages into the working set that this leaves out.
+fn peak_private_mb() -> Option<f64> {
+    counters().and_then(|c| c.1)
+}
+
+#[cfg(windows)]
+fn counters() -> Option<(f64, Option<f64>)> {
     #[repr(C)]
     #[derive(Default)]
     struct Counters {
@@ -91,13 +104,14 @@ fn peak_mb() -> Option<f64> {
     };
     // SAFETY: the pseudo handle needs no closing, and `c` is the size it says.
     let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
-    (ok != 0).then(|| c.peak_working_set_size as f64 / (1024.0 * 1024.0))
+    let mb = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+    (ok != 0).then(|| (mb(c.peak_working_set_size), Some(mb(c.peak_pagefile_usage))))
 }
 
 #[cfg(not(windows))]
-fn peak_mb() -> Option<f64> {
+fn counters() -> Option<(f64, Option<f64>)> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|l| l.starts_with("VmHWM:"))?;
     let kb: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kb / 1024.0)
+    Some((kb / 1024.0, None))
 }

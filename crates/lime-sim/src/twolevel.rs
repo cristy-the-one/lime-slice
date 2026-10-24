@@ -25,6 +25,9 @@ use crate::error::SimError;
 use crate::sliced::SlicedMesh;
 use crate::solve::{FaerLdlt, LinearSolver};
 
+#[cfg(feature = "gpu")]
+mod gpu;
+
 /// Each fine node as a weighted sum of coarse nodes: TET10 shape functions
 /// at the fine node's place in a coarse tet.
 pub struct Prolongation {
@@ -337,6 +340,22 @@ const CHEBYSHEV_RATIO: f64 = 30.0;
 /// smoothing stops paying.
 const SMOOTHING_DEGREE: usize = 12;
 
+/// Start opening the GPU, in a build that has one, so it is ready when an
+/// iterative solve asks for it.
+pub fn warm_gpu() {
+    #[cfg(feature = "gpu")]
+    gpu::warm_up();
+}
+
+/// Whether this build has a GPU and the machine an adapter it can use.
+/// Waits for [`warm_gpu`]'s opening if it is still going.
+pub fn gpu_available() -> bool {
+    #[cfg(feature = "gpu")]
+    return gpu::available();
+    #[cfg(not(feature = "gpu"))]
+    false
+}
+
 /// Conjugate gradients on the fine grid, preconditioned by one two-grid
 /// cycle through a coarse grid's direct factor.
 pub struct TwoLevelPcg {
@@ -350,6 +369,10 @@ pub struct TwoLevelPcg {
     factors: usize,
     iterations: Cell<usize>,
     residual: Cell<f64>,
+    /// Whether to smooth on a GPU when one is there.
+    use_gpu: bool,
+    #[cfg(feature = "gpu")]
+    gpu: Option<gpu::GpuSmoother>,
 }
 
 impl TwoLevelPcg {
@@ -365,7 +388,26 @@ impl TwoLevelPcg {
             factors: 0,
             iterations: Cell::new(0),
             residual: Cell::new(f64::NAN),
+            use_gpu: false,
+            #[cfg(feature = "gpu")]
+            gpu: None,
         }
+    }
+
+    /// Smooth on a GPU when this build has wgpu and the machine an adapter
+    /// that holds the fine matrix; otherwise on the CPU.
+    pub fn with_gpu(mut self, use_gpu: bool) -> Self {
+        self.use_gpu = use_gpu;
+        self
+    }
+
+    /// The GPU the smoothing ran on, if it did.
+    pub fn gpu_name(&self) -> Option<&str> {
+        #[cfg(feature = "gpu")]
+        if let Some(gpu) = &self.gpu {
+            return Some(&gpu.name);
+        }
+        None
     }
 
     /// Iterations of the last solve.
@@ -411,6 +453,10 @@ impl TwoLevelPcg {
 
     /// `z = M⁻¹ r`: smooth, correct through the coarse factor, smooth.
     fn precondition(&self, r: &[f64], z: &mut [f64]) -> Result<(), SimError> {
+        #[cfg(feature = "gpu")]
+        if let Some(gpu) = &self.gpu {
+            return gpu.cycle(r, z, |residual| self.coarse_correction(residual));
+        }
         let (a, p) = (self.a.as_ref().unwrap(), self.p.as_ref().unwrap());
         let n = r.len();
         let mut scratch = vec![0.0; n];
@@ -428,6 +474,20 @@ impl TwoLevelPcg {
         z.par_iter_mut().zip(scratch.par_iter()).for_each(|(z, e)| *z += e);
         self.smooth(a, r, z, &mut scratch, false);
         Ok(())
+    }
+
+    /// `P K_c⁻¹ Pᵀ t`: a fine residual's correction through the coarse grid.
+    #[cfg(feature = "gpu")]
+    fn coarse_correction(&self, t: &[f64]) -> Result<Vec<f64>, SimError> {
+        let p = self.p.as_ref().unwrap();
+        let nc = self.coarse_n();
+        let mut rc = vec![0.0; nc];
+        p.apply_transpose(t, &mut rc);
+        let mut ec = vec![0.0; nc];
+        self.coarse.solve(&rc, &mut ec)?;
+        let mut e = vec![0.0; t.len()];
+        p.apply(&ec, &mut e);
+        Ok(e)
     }
 
     fn coarse_n(&self) -> usize {
@@ -479,6 +539,13 @@ impl LinearSolver for TwoLevelPcg {
         // Smooth the top of the spectrum; leave the bottom to the coarse grid.
         let hi = 1.1 * Self::largest_eigenvalue(&a, &self.inv_diag);
         self.lambda = (hi / CHEBYSHEV_RATIO, hi);
+        #[cfg(feature = "gpu")]
+        {
+            self.gpu = None;
+            if self.use_gpu {
+                self.gpu = gpu::GpuSmoother::new(&a, &self.inv_diag, self.lambda);
+            }
+        }
         self.a = Some(a);
         Ok(())
     }
@@ -500,6 +567,7 @@ impl LinearSolver for TwoLevelPcg {
         let mut z = vec![0.0; n];
         self.precondition(&r, &mut z)?;
         let mut p = z.clone();
+        let mut z_last = z.clone();
         let mut ap = vec![0.0; n];
         let mut rz = dot(&r, &z);
         for it in 1..=MAX_ITERATIONS {
@@ -518,9 +586,13 @@ impl LinearSolver for TwoLevelPcg {
                 return Ok(());
             }
             self.precondition(&r, &mut z)?;
+            // Flexible: β from the change in z, so a preconditioner that
+            // rounds differently each time (the GPU's f32) keeps converging.
             let rz_next = dot(&r, &z);
-            let beta = rz_next / rz;
+            let r_dz = r.par_iter().zip(&z).zip(&z_last).map(|((r, z), l)| r * (z - l)).sum::<f64>();
+            let beta = r_dz / rz;
             rz = rz_next;
+            z_last.copy_from_slice(&z);
             p.par_iter_mut().zip(z.par_iter()).for_each(|(p, z)| *p = z + beta * *p);
         }
         Err(SimError::new(format!(
@@ -537,8 +609,12 @@ impl LinearSolver for TwoLevelPcg {
     }
 
     fn notes(&self) -> Vec<String> {
+        let on = self
+            .gpu_name()
+            .map(|name| format!(", smoothed on the GPU ({name})"))
+            .unwrap_or_default();
         vec![format!(
-            "The finer cell size was solved iteratively, preconditioned by the first: {} iterations.",
+            "The finer cell size was solved iteratively, preconditioned by the first{on}: {} iterations.",
             self.iterations.get()
         )]
     }
