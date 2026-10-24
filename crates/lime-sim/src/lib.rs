@@ -19,6 +19,7 @@ pub mod error;
 pub mod estimate;
 pub mod fields;
 pub mod material;
+pub mod memory;
 pub mod mesh;
 pub mod recipe;
 pub mod skin;
@@ -54,7 +55,7 @@ use sliced::CellMaterial;
 use solve::{FaerLdlt, LinearSolver};
 use study::{modal_sentence, validate_request_fields};
 use trust::{level_of, TrustInput, TrustLevel};
-use units::{mass_g, norm, normalize, NODE_CAP};
+use units::{mass_g, norm, normalize, NODE_CAP, SLICED_NODE_CAP};
 
 /// A displacement this large, in millimetres, is a rigid mode that Cholesky
 /// did not report as an exact zero pivot.
@@ -102,6 +103,8 @@ pub fn solve_request(req: &Request) -> Result<Solution, SimError> {
 pub struct CaseSolutions {
     pub solutions: Vec<Solution>,
     pub factorisations: usize,
+    /// How many values the last factor holds, so a caller can size another.
+    pub factor_len: usize,
 }
 
 /// Solve `req` once per load case in `cases`; `req.loads` is not read. A
@@ -121,7 +124,13 @@ pub fn solve_cases(req: &Request, cases: &[Vec<Load>]) -> Result<CaseSolutions, 
             req.mesh.kind.name()
         )));
     }
-    if req.mesh.nodes.len() > NODE_CAP {
+    // A sliced grid is sized by its memory budget, so its cap is only a backstop.
+    let cap = if req.representation == "sliced" {
+        SLICED_NODE_CAP
+    } else {
+        NODE_CAP
+    };
+    if req.mesh.nodes.len() > cap {
         return Err(node_cap(req.mesh.nodes.len()));
     }
     let axis = normalize(req.build_axis).ok_or_else(zero_axis)?;
@@ -171,6 +180,7 @@ pub fn solve_cases(req: &Request, cases: &[Vec<Load>]) -> Result<CaseSolutions, 
     Ok(CaseSolutions {
         solutions,
         factorisations: solver.factors,
+        factor_len: solver.factor_len(),
     })
 }
 
