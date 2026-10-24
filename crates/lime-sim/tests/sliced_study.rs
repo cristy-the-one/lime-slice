@@ -164,6 +164,7 @@ fn a_twisted_shaft_carries_t_r_over_j_at_its_surface() {
             check_resolution: true,
             memory_mb: None,
             check_solver: Default::default(),
+            use_gpu: true,
         },
     )
     .unwrap();
@@ -259,6 +260,7 @@ fn a_bar_weak_across_layers_says_so() {
             check_resolution: false,
             memory_mb: None,
             check_solver: Default::default(),
+            use_gpu: true,
         },
     )
     .unwrap();
@@ -336,6 +338,7 @@ fn a_finer_size_past_the_memory_is_checked_coarser() {
             // Less than any study needs, so the finer size can't fit.
             memory_mb: Some(1.0),
             check_solver: Default::default(),
+            use_gpu: true,
         },
     )
     .unwrap();
@@ -374,6 +377,7 @@ fn the_iterative_check_matches_the_direct_one() {
         check_resolution: true,
         memory_mb: None,
         check_solver,
+        use_gpu: true,
     };
     let direct = run(&shaft, &study(CheckSolver::Direct)).unwrap();
     let iterative = run(&shaft, &study(CheckSolver::Iterative)).unwrap();
@@ -386,6 +390,43 @@ fn the_iterative_check_matches_the_direct_one() {
         iterative.notes
     );
     assert!(!direct.notes.iter().any(|n| n.contains("solved iteratively")));
+}
+
+/// Smoothing on a GPU gives the CPU's answer. Skipped, with a line saying
+/// so, in a build without the `gpu` feature or on a machine with no adapter.
+#[test]
+fn the_gpu_smoothing_matches_the_cpu() {
+    if !lime_sim::twolevel::gpu_available() {
+        println!("skipped: no GPU in this build or on this machine");
+        return;
+    }
+    let shaft = field(20, [0.0; 3], rings(8.0));
+    let study = |use_gpu| SlicedStudy {
+        h_xy: Some(1.0),
+        card: isotropic_card(),
+        holds: vec![SlicedHold::Bed],
+        load_cases: Vec::new(),
+        loads: vec![SlicedLoad::Force {
+            region: top(4.0),
+            force: [1.0, 0.0, 0.0],
+        }],
+        constraints: vec![Constraint {
+            kind: ConstraintKind::MaxDeflectionMm,
+            value: 1.0,
+            ..Default::default()
+        }],
+        check_resolution: true,
+        memory_mb: None,
+        check_solver: CheckSolver::Iterative,
+        use_gpu,
+    };
+    let cpu = run(&shaft, &study(false)).unwrap();
+    let gpu = run(&shaft, &study(true)).unwrap();
+    let fine = |r: &lime_sim::sliced_study::SlicedReport| r.resolutions[1].governing_value.unwrap();
+    let (a, b) = (fine(&cpu), fine(&gpu));
+    assert!((a - b).abs() / a.abs() < 1e-6, "cpu {a}, gpu {b}");
+    assert!(gpu.notes.iter().any(|n| n.contains("smoothed on the GPU")), "{:?}", gpu.notes);
+    assert!(!cpu.notes.iter().any(|n| n.contains("GPU")), "{:?}", cpu.notes);
 }
 
 #[test]
@@ -428,6 +469,7 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
             check_resolution: false,
             memory_mb: None,
             check_solver: Default::default(),
+            use_gpu: true,
         },
     )
     .unwrap();
@@ -456,6 +498,7 @@ fn regions_and_hot_spots_are_in_the_part_frame() {
             check_resolution: false,
             memory_mb: None,
             check_solver: Default::default(),
+            use_gpu: true,
         },
     )
     .unwrap_err();
