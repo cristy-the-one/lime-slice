@@ -670,7 +670,7 @@ const partitionOp = {
           origin: vec3,
           normal: vec3,
           u: { ...vec3, description: "Along the cut. Default: the section's longer side." },
-          profile: { type: "object", description: "{kind:\"straight\"}, the default and the only one built yet." },
+          profile: { type: "object", description: "{kind:\"straight\"} (default), {kind:\"lap\", depth, height, side} or {kind:\"tongue\", width, depth, side}; sizes in mm, each optional. No connectors on a lap or tongue." },
           connectors: {
             type: "object",
             additionalProperties: false,

@@ -10,7 +10,7 @@ use std::f64::consts::PI;
 use serde_json::{json, Value};
 
 const PROFILE_LATER: &str =
-    "Only straight cuts are built yet. Leave the profile out, or make it straight.";
+    "Only straight cuts, laps and tongues are built yet. Leave the profile out, or make it straight, a lap or a tongue.";
 const KEYS_LATER: &str = "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.";
 
 fn call(request: Value) -> Value {
@@ -348,7 +348,7 @@ fn refusals_leave_the_solid_as_it_was() {
         assert_eq!(probe, json!({ "ok": false, "error": sentence }));
     };
     let mut lap = partition(&[30.0]);
-    lap["cuts"][0]["profile"] = json!({ "kind": "lap", "depth": 8.0 });
+    lap["cuts"][0]["profile"] = json!({ "kind": "zigzag", "pitch": 10.0, "depth": 3.0 });
     refused(lap, PROFILE_LATER);
     let mut sketch = partition(&[30.0]);
     sketch["cuts"][0]["profile"] = json!({ "kind": "sketch", "sketch": { "v": 1 } });

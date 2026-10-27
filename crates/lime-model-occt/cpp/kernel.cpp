@@ -2347,7 +2347,8 @@ bool build_partition(
     const TopoDS_Shape& current,
     const std::vector<std::array<double, 6>>& planes,
     std::vector<PartitionPiece>& pieces,
-    std::string& error) {
+    std::string& error,
+    const std::vector<PartitionProfile>& profiles) {
     pieces.clear();
     if (planes.empty()) {
         error = "A partition needs at least one plane";
@@ -2388,6 +2389,42 @@ bool build_partition(
         if (const char* reject = split_reject(origin, normal, xmin, ymin, zmin, xmax, ymax, zmax)) {
             error = reject;
             return false;
+        }
+        const size_t at = origins.size();
+        const PartitionProfile* shaped = at < profiles.size() && profiles[at].kind == 1 ? &profiles[at] : nullptr;
+        if (shaped != nullptr) {
+            // A lap: the polyline (V, W) = (-far, 0), (step, 0), (step, a), (far, a), swept along U as a shell, which the
+            // splitter takes as it takes a plane. The side of each piece is read from the plane between the two flats.
+            gp_Vec across(shaped->u[0], shaped->u[1], shaped->u[2]);
+            across -= gp_Vec(normal).Multiplied(across.Dot(gp_Vec(normal)));
+            if (!(across.Magnitude() > 1e-9)) {
+                error = "A lap needs the cut's U";
+                return false;
+            }
+            const gp_Dir u(across);
+            const gp_Dir v(gp_Vec(normal).Crossed(gp_Vec(u)));
+            const gp_Vec w(normal);
+            const gp_Pnt start = origin.Translated(gp_Vec(u).Multiplied(-span));
+            auto at_vw = [&](double along, double up) { return start.Translated(gp_Vec(v).Multiplied(along) + w.Multiplied(up)); };
+            BRepBuilderAPI_MakePolygon line;
+            line.Add(at_vw(-span, 0));
+            line.Add(at_vw(shaped->b, 0));
+            line.Add(at_vw(shaped->b, shaped->a));
+            line.Add(at_vw(span, shaped->a));
+            if (!line.IsDone()) {
+                error = "Open CASCADE did not build the lap";
+                return false;
+            }
+            BRepPrimAPI_MakePrism sweep(line.Wire(), gp_Vec(u).Multiplied(2 * span));
+            sweep.Build();
+            if (!sweep.IsDone()) {
+                error = "Open CASCADE did not build the lap";
+                return false;
+            }
+            tools.Append(sweep.Shape());
+            origins.push_back(origin.Translated(w.Multiplied(shaped->a / 2)));
+            normals.push_back(normal);
+            continue;
         }
         const gp_Vec toward(origin, center);
         const gp_Pnt face_center = center.Translated(gp_Vec(normal).Multiplied(-toward.Dot(gp_Vec(normal))));
@@ -3113,6 +3150,72 @@ void build_joints(
     } else if (count > 1) {
         pins = all;
     }
+}
+
+bool build_tongues(
+    std::vector<PartitionPiece>& pieces,
+    const std::vector<std::array<double, 6>>& planes,
+    const std::vector<PartitionProfile>& profiles,
+    std::string& error) {
+    constexpr double kOverlap = 0.001;
+    for (size_t index = 0; index < profiles.size() && index < planes.size(); ++index) {
+        const PartitionProfile& tongue = profiles[index];
+        if (tongue.kind != 2) {
+            continue;
+        }
+        const std::string name = "The tongue of cut " + std::to_string(index + 1);
+        const std::array<double, 6>& plane = planes[index];
+        const gp_Pnt origin(plane[0], plane[1], plane[2]);
+        const gp_Dir normal(plane[3], plane[4], plane[5]);
+        gp_Vec across(tongue.u[0], tongue.u[1], tongue.u[2]);
+        across -= gp_Vec(normal).Multiplied(across.Dot(gp_Vec(normal)));
+        if (!(across.Magnitude() > 1e-9) || !positive(tongue.a) || !positive(tongue.b) || !(tongue.g - tongue.f > kTinyMm)) {
+            error = name + " needs a width, a depth, a length and the cut's U";
+            return false;
+        }
+        const gp_Dir u(across);
+        const gp_Dir v(gp_Vec(normal).Crossed(gp_Vec(u)));
+        const gp_Vec w(normal);
+        const gp_Pnt middle =
+            origin.Translated(gp_Vec(u).Multiplied((tongue.f + tongue.g) / 2) + gp_Vec(v).Multiplied(tongue.h));
+        const int below = piece_at(pieces, middle.Translated(w.Multiplied(-0.05)));
+        const int above = piece_at(pieces, middle.Translated(w.Multiplied(0.05)));
+        if (below < 0 || above < 0 || below == above) {
+            error = name + " is outside the section, so it was not built";
+            return false;
+        }
+        const bool positive_side = tongue.e >= 0.0;
+        const int carries = positive_side ? above : below;
+        const int takes = positive_side ? below : above;
+        // The tongue stands from the carrying piece's face across the plane; the groove is that grown on every side.
+        auto prism = [&](double grow, double reach) -> TopoDS_Shape {
+            // Along W from `kOverlap` inside the carrying piece to `reach` past the plane, toward the mate.
+            const double w0 = positive_side ? -reach : -kOverlap;
+            const double w1 = positive_side ? kOverlap : reach;
+            const gp_Pnt corner = origin.Translated(
+                gp_Vec(u).Multiplied(tongue.f - grow) + gp_Vec(v).Multiplied(tongue.h - tongue.a / 2 - grow) + w.Multiplied(w0));
+            BRepPrimAPI_MakeBox box(gp_Ax2(corner, normal, u), tongue.g - tongue.f + 2 * grow, tongue.a + 2 * grow, w1 - w0);
+            box.Build();
+            return box.IsDone() ? box.Shape() : TopoDS_Shape();
+        };
+        const TopoDS_Shape peg = prism(0.0, tongue.b);
+        const TopoDS_Shape groove = prism(tongue.c, tongue.b + tongue.d);
+        if (peg.IsNull() || groove.IsNull()) {
+            error = name + " did not build";
+            return false;
+        }
+        const TopoDS_Shape fused = joint_boolean(pieces[carries].shape, peg, true);
+        const TopoDS_Shape cut = joint_boolean(pieces[takes].shape, groove, false);
+        if (fused.IsNull() || cut.IsNull()) {
+            error = name + " did not fit the pieces. Make it narrower or shallower.";
+            return false;
+        }
+        pieces[carries].shape = fused;
+        pieces[carries].volume = volume_of(fused);
+        pieces[takes].shape = cut;
+        pieces[takes].volume = volume_of(cut);
+    }
+    return true;
 }
 
 bool build_fit_coupon(const FitCoupon& coupon, FitCouponResult& made, std::string& error) {

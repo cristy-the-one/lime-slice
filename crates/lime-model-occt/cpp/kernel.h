@@ -252,10 +252,29 @@ bool every_edge_shared_by_two(const TopoDS_Shape& shape);
 /// Cuts `current` along every plane at once, each plane given as x, y, z, nx, ny, nz. The pieces come back in the
 /// order of the planes' signs, negative first, the first plane's sign most significant. Each is one valid, closed
 /// solid; if any is not, or there are more than `kMaxPartitionPieces`, nothing is returned.
+/// --- Split to print, cut profiles (plan sections 6 and 7). One cut's shape, `kind` 0 straight, 1 lap, 2 tongue; `u` is the
+/// cut's U, so V = W × U with W the plane's normal. A lap: `a` is how far the step carries the second flat along W
+/// (signed, the side that carries it), `b` where the step sits along V from the plane's origin. A tongue: `a` its width
+/// along V, `b` how far it stands along W, `c` the clearance each side, `d` the end gap, `e` the side that carries it (+1
+/// or -1), `f` and `g` its ends along U and `h` its middle along V, all from the origin.
+struct PartitionProfile {
+    int kind = 0;
+    double a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0;
+    double u[3] = {0, 0, 0};
+};
+constexpr int kProfileStride = 12;
 bool build_partition(
     const TopoDS_Shape& current,
     const std::vector<std::array<double, 6>>& planes,
     std::vector<PartitionPiece>& pieces,
+    std::string& error,
+    const std::vector<PartitionProfile>& profiles = {});
+/// The tongue and groove of every cut whose profile is a tongue, on the pieces the plain split made: the tongue fused
+/// onto the piece that carries it, the groove, the tongue grown by the clearance and the end gap, cut from its mate.
+bool build_tongues(
+    std::vector<PartitionPiece>& pieces,
+    const std::vector<std::array<double, 6>>& planes,
+    const std::vector<PartitionProfile>& profiles,
     std::string& error);
 /// --- Split to print, part numbers. One stroke of a number in the label's own U, V: its centre, its length along
 /// `angle_deg` from U, as `textStrokes` in src/modeling/text.ts draws it, centred on the label.

@@ -470,6 +470,56 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   check("model_undo takes the pieces off the plate", left.length === 1 && left[0]!.object === bar, JSON.stringify(left));
 }
 
+// --- Split to print, milestone 8: a lap and a tongue on the real kernel, with Joint down on the shaped cut. The 500 mm bar
+// is centred on X and Y with its base on Z = 0, so a cut at x = 0 has U along Y, V along Z, and a 20 mm section.
+{
+  const volumeOf = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);
+  const cutOp = (profile: Record<string, unknown>, orient: unknown = "keep") => ({ kind: "partition", cuts: [{ origin: [0, 0, 10], normal: [1, 0, 0], profile }], orient, labels: { on: false } });
+  const whole = 500 * 20 * 20;
+  // A lap 8 mm deep with its step half way up the section (height 10 of 20 mm): the positive piece carries it.
+  const lapBar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 20, dz: 20 })).object);
+  const lapOp = cutOp({ kind: "lap", depth: 8, height: 10 }, ["keep", "joint"]);
+  const probed = await call("model_probe", { object: lapBar, op: lapOp });
+  const volumes = ((probed.pieces ?? []) as { volumeMm3: number }[]).map((piece) => piece.volumeMm3);
+  const step = 8 * 20 * 10;
+  check("a lap's probe: the pieces are half the bar, one carrying the step, and they sum to the bar", probed.ok === true && volumes.length === 2 && near(volumes[0]!, whole / 2 + step, 1e-3) && near(volumes[1]!, whole / 2 - step, 1e-3) && near(volumes[0]! + volumes[1]!, whole, 1e-3), JSON.stringify(probed).slice(0, 300));
+  const applied = await call("model_apply", { object: lapBar, op: lapOp });
+  const stored = (applied.stored as { cuts: { profile: Record<string, unknown> }[] }).cuts[0]!.profile;
+  check("apply stores the lap with its step resolved on the section: 10 mm up from the low side, at 0 from the cut's origin", applied.ok === true && stored.kind === "lap" && stored.height === 10 && stored.at === 0 && stored.depth === 8, JSON.stringify(stored));
+  check("and says which flat is down", JSON.stringify(applied.notes) === JSON.stringify(["Part 2 is joint down on cut 1, its larger cut face, 200 mm²."]), JSON.stringify(applied.notes));
+  const lapPieces = (applied.pieces ?? []) as string[];
+  const first = await volumeOf(lapBar);
+  const second = await volumeOf(lapPieces[0]!);
+  check("the part and its piece are the two halves by volume", near(first, whole / 2 + step, 1e-3) && near(second, whole / 2 - step, 1e-3), JSON.stringify({ first, second }));
+  await call("model_commit", { object: lapBar });
+  const listed = (await call("plate_list", { limit: 100 })).objects as { object: string; bboxMm: { min: number[]; max: number[] } }[];
+  const lapSaved = JSON.parse(readFileSync(String((await call("project_save", { name: "lap.lime" })).path), "utf8")) as { objects: { placement: { orient: number[] } }[] };
+  const m = lapSaved.objects[listed.findIndex((row) => row.object === lapPieces[0])]!.placement.orient;
+  const faces = ((await call("faces_find", { object: lapPieces[0]!, kind: "plane", normal: [-1, 0, 0], withinDeg: 1, limit: 20 })).faces ?? []) as { normal: number[]; centre: number[]; areaMm2: number }[];
+  const flat = faces.find((face) => Math.abs(face.centre[0]!) < 1e-6)!;
+  const down = [0, 1, 2].map((r) => m[3 * r]! * flat.normal[0]! + m[3 * r + 1]! * flat.normal[1]! + m[3 * r + 2]! * flat.normal[2]!);
+  check("Joint down on the lap: the flat on the cut plane has its normal along −Z to 1e-9", !!flat && near(flat.areaMm2, 200, 1e-6) && Math.abs(down[0]!) < 1e-9 && Math.abs(down[1]!) < 1e-9 && Math.abs(down[2]! + 1) < 1e-9, JSON.stringify({ down, flat, m }));
+  const piece = listed.find((row) => row.object === lapPieces[0])!;
+  check("and the piece stands on the bed", Math.abs(piece.bboxMm.min[2]!) < 1e-4, JSON.stringify(piece.bboxMm));
+  console.log(`occt: lap pieces ${volumes.map((v) => v.toFixed(3)).join(", ")} mm³`);
+
+  // A tongue 6 mm wide and 3 mm deep: its groove is grown by the PLA clearance (0.15) and the 0.4 mm end gap.
+  const tongueBar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 30, dz: 20 })).object);
+  const tongueOp = cutOp({ kind: "tongue", width: 6, depth: 3 });
+  const tongueProbe = await call("model_probe", { object: tongueBar, op: tongueOp });
+  const tv = ((tongueProbe.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  const base = 500 * 30 * 20;
+  // The section is 30 × 20; margin 3.95, so the tongue is 30 − 7.9 = 22.1 mm long.
+  const peg = 6 * 3 * 22.1;
+  const groove = (6 + 0.3) * (3 + 0.4) * (22.1 + 0.3);
+  check("a tongue's probe: one piece grows by the tongue, the other loses the grown groove", tongueProbe.ok === true && tv.length === 2 && near(tv[1]!, base / 2 + peg, 6e-3) && near(tv[0]!, base / 2 - groove, 6e-3), JSON.stringify({ tv, expected: [base / 2 - groove, base / 2 + peg], reason: tongueProbe.reason }));
+  const refused = await call("model_probe", { object: tongueBar, op: { ...tongueOp, cuts: [{ ...(tongueOp.cuts[0] as Record<string, unknown>), connectors: { on: true, types: [{ type: "dowel" }] } }] } });
+  check("connectors on a shaped cut are refused with the sentence", refused.ok === false && refused.reason === "Connectors on a lap or a tongue are not built yet. Turn them off, or cut straight.", JSON.stringify(refused));
+  const thin = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "tongue", width: 40, depth: 3 }) });
+  check("a tongue wider than the section is refused with a sentence", thin.ok === false && String(thin.reason).includes("too small for a tongue"), JSON.stringify(thin));
+  console.log(`occt: tongue pieces ${tv.map((v) => v.toFixed(3)).join(", ")} mm³`);
+}
+
 // The convex filter on a box (12 convex edges) and on a stepped part with one concave edge.
 {
   const made = await call("solid_new", { primitive: "box", dx: 40, dy: 30, dz: 20 });

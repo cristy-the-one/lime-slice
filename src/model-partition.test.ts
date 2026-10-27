@@ -8,7 +8,7 @@ import { applyRequest, crossEditRequest } from "./model-request.ts";
 import { toSolidOp, type Affine } from "./model-space.ts";
 import { dropped, jumped, makesParts, newTree, opLabel, partsOf, reachableTrees, withChild, type ModelOp, type ModelTree, type PartitionModelOp } from "./model-tree.ts";
 import { slicePlateFields, type PlateObject } from "./plate.ts";
-import { KEYS_LATER, notBuiltYet, NUMBER_STROKE_FRACTION, partitionNumbers, PROFILE_LATER } from "./modeling/partition.ts";
+import { KEYS_LATER, notBuiltYet, NUMBER_STROKE_FRACTION, partitionNumbers, PROFILE_LATER, SHAPED_JOINTS_LATER } from "./modeling/partition.ts";
 import { textStrokes, type StrokeBox } from "./modeling/text.ts";
 
 let failed = 0;
@@ -129,7 +129,10 @@ check("the cut's origin goes into the solid's frame", near(own.cuts[0]!.origin, 
 check("its normal and U turn with it", near(own.cuts[0]!.normal, [0, -1, 0]) && near(own.cuts[0]!.u, [1, 0, 0]), JSON.stringify(own.cuts[0]));
 
 // What the kernel does not build yet is refused with the kernel's own sentence.
-eq("a lap is later", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "lap" } }] }), PROFILE_LATER);
+eq("a lap is built", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "lap" } }] }), null);
+eq("a tongue is built", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "tongue" } }] }), null);
+eq("a zig-zag is later", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "zigzag" } }] }), PROFILE_LATER);
+eq("connectors on a lap are later", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "lap" }, connectors: { on: true } }] }), SHAPED_JOINTS_LATER);
 eq("dowels are built since milestone 5", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true } }] }), null);
 eq("a key is later", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true, types: [{ type: "key" }] } }] }), KEYS_LATER);
 eq("a dovetail is later", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true, types: [{ type: "dovetail" }] } }] }), KEYS_LATER);

@@ -64,7 +64,7 @@ check("plan is for a partition", notPartition.ok === false && notPartition.reaso
 // --- Refusals: the kernel does not build these yet. The solid is unchanged and nothing is cut.
 const op = plan.op as Record<string, unknown>;
 const refusals: [string, Record<string, unknown>, string][] = [
-  ["a lap profile", { ...op, cuts: [{ ...cuts[0]!, profile: { kind: "lap" } }] }, PROFILE_LATER],
+  ["a zig-zag profile", { ...op, cuts: [{ ...cuts[0]!, profile: { kind: "zigzag" } }] }, PROFILE_LATER],
   ["a key", { ...op, cuts: [{ ...cuts[0]!, connectors: { on: true, types: [{ type: "key" }] } }] }, KEYS_LATER],
   ["a dovetail", { ...op, cuts: [{ ...cuts[0]!, connectors: { on: true, types: [{ type: "dovetail" }] } }] }, KEYS_LATER],
   ["no cuts", { kind: "partition", cuts: [] }, "A partition needs at least one cut. model_probe with plan: true proposes them."],

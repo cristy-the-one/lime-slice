@@ -78,7 +78,7 @@ export type Profile =
   | { kind: "straight" }
   | { kind: "lap"; depth?: number; height?: number; side?: Side }
   | { kind: "zigzag"; pitch?: number; depth?: number; angle?: number }
-  | { kind: "tongue"; width?: number; depth?: number }
+  | { kind: "tongue"; width?: number; depth?: number; side?: Side }
   | { kind: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide }
   | { kind: "sketch"; sketch: { v: number } };
 
@@ -87,7 +87,7 @@ export type ResolvedProfile =
   | { kind: "straight" }
   | { kind: "lap"; depth: number; height: number | null; side: Side }
   | { kind: "zigzag"; pitch: number; depth: number; angle: number }
-  | { kind: "tongue"; width: number; depth: number }
+  | { kind: "tongue"; width: number; depth: number; side: Side }
   | { kind: "dovetail"; width: number; angle: number; depth: number; slide: Slide }
   | { kind: "sketch"; sketch: { v: number } };
 
@@ -420,7 +420,7 @@ export function fillProfile(profile: Profile | undefined, d: PartitionDefaults, 
     case "zigzag":
       return { kind: "zigzag", pitch: p.pitch ?? d.zigzagPitchMm, depth: p.depth ?? d.zigzagDepthMm, angle: p.angle ?? d.zigzagAngleDeg };
     case "tongue":
-      return { kind: "tongue", width: p.width ?? d.tongueWidthMm, depth: p.depth ?? d.tongueDepthMm };
+      return { kind: "tongue", width: p.width ?? d.tongueWidthMm, depth: p.depth ?? d.tongueDepthMm, side: p.side ?? "positive" };
     case "dovetail":
       return {
         kind: "dovetail",
@@ -713,7 +713,9 @@ function resinHeightNotes(span: Vec3, counts: number[], usable: number[], axes: 
 // What the kernel builds yet (milestone 5). The same sentences as `partition_refusal` in tree.rs.
 // ---------------------------------------------------------------------------
 
-export const PROFILE_LATER = "Only straight cuts are built yet. Leave the profile out, or make it straight.";
+export const PROFILE_LATER = "Only straight cuts, laps and tongues are built yet. Leave the profile out, or make it straight, a lap or a tongue.";
+/** Connectors on a lap or a tongue wait: they would sit on the flats of the joint, not on one plane. */
+export const SHAPED_JOINTS_LATER = "Connectors on a lap or a tongue are not built yet. Turn them off, or cut straight.";
 /** Keys and dovetails come with the zig-zag and dovetail profiles (milestone 9), which share their prism builder. */
 export const KEYS_LATER = "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.";
 
@@ -722,7 +724,8 @@ export const KEYS_LATER = "Key and dovetail connectors are not built yet. They c
  * whose connectors are on. Dowels, plugs and hardware holes are built since milestone 5.
  */
 export function notBuiltYet(op: Pick<PartitionOp, "cuts">): string | null {
-  if (op.cuts.some((cut) => cut.profile && cut.profile.kind !== "straight")) return PROFILE_LATER;
+  if (op.cuts.some((cut) => cut.profile && !["straight", "lap", "tongue"].includes(cut.profile.kind))) return PROFILE_LATER;
+  if (op.cuts.some((cut) => cut.profile && cut.profile.kind !== "straight" && cut.connectors?.on === true)) return SHAPED_JOINTS_LATER;
   if (op.cuts.some((cut) => cut.connectors?.on === true && (cut.connectors.types ?? []).some((spec) => spec.type === "key" || spec.type === "dovetail"))) return KEYS_LATER;
   return null;
 }
