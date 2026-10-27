@@ -624,6 +624,10 @@ export function syncSplitField(force = false) {
   input.value = state.atMm.toFixed(1);
 }
 
+/** The move readout without its snap note, and what the drag is snapped to, for the readout. */
+let moveHud = "";
+let snapNote = "";
+
 export function paintGizmoReadout() {
   const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
   const rotate = tool === "rotate";
@@ -1421,8 +1425,16 @@ export function mountViews() {
   prepare.onMove((axis, deltaMm, totalMm) => {
     if (!state.sourcePos) return;
     noteEdit();
-    state.poseHud = `${axis.toUpperCase()} ${totalMm >= 0 ? "+" : ""}${totalMm.toFixed(1)} mm`;
+    moveHud = `${axis.toUpperCase()} ${totalMm >= 0 ? "+" : ""}${totalMm.toFixed(1)} mm`;
+    state.poseHud = snapNote ? `${moveHud} · ${snapNote}` : moveHud;
     nudgePlacement(axis, deltaMm);
+  });
+  prepare.onSnap((label) => {
+    snapNote = label ?? "";
+    if (state.poseHud) {
+      state.poseHud = snapNote ? `${moveHud} · ${snapNote}` : moveHud;
+      paintGizmoReadout();
+    }
   });
   prepare.onMoveEnd(() => {
     flushEdit();

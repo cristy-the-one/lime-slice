@@ -22,6 +22,7 @@ export const GUIDES: Guide[] = [
       "4. slice_start. It slices the selected object, or the whole plate when more than one object is on it.",
       "5. slice_wait {job} until status is done. Call it again while status is running.",
       "6. gcode_summary, then gcode_export {name} to write a file in the workspace.",
+      "To line parts up, object_place {object, align:{to:<object id or bed>, how}}. how is flush-left, flush-right, flush-front, flush-back, left-of, right-of, front-of, behind, centre-x, centre-y, centre or on-top. Front is low Y. The bed takes flush and centre only.",
       "Nothing is sent to a printer.",
     ].join("\n"),
   },

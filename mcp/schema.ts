@@ -2,6 +2,7 @@
 
 import { GROUP_NAMES, groupOf, TOOLS_ENABLE_HELP } from "./groups.ts";
 import { MAX_PLAN_STEPS, PLAN_HELP } from "./plan.ts";
+import { ALIGN_RELATIONS } from "../src/place-snap.ts";
 
 const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from plate_list. Default: the selected object." };
 const jobHandle = { type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start, or from a long call that answered with a job." };
@@ -946,7 +947,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "object_place",
-    description: "Place a part: centre, scale 10 to 400, centre on the bed, lay flat, or turn. Not a Model edit.",
+    description: "Place a part: centre, scale 10 to 400, centre on the bed, lay flat, turn, or align to another part. Not a Model edit.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -963,6 +964,12 @@ export const TOOLS: ToolSpec[] = [
         rotZ: { type: "number", description: "Absolute turn about Z, degrees." },
         faceDown: { type: "integer", minimum: 0, description: "Face index to lay on the bed." },
         z: { type: "number", description: "Lift, mm." },
+        align: {
+          type: "object",
+          additionalProperties: false,
+          required: ["to", "how"],
+          properties: { to: { type: "string", description: "Object id, or bed." }, how: { enum: [...ALIGN_RELATIONS] } },
+        },
         turn: {
           type: "object",
           additionalProperties: false,
@@ -1992,6 +1999,8 @@ const FIELD_TEXT: Record<string, string> = {
   scalePercent: "10 to 400.",
   centreOnBed: "Centre on bed.",
   layFlat: "Lay flattest face.",
+  how: "A relation: flush-left, centre, on-top.",
+  align: "Flush, touch, centre or stack on a part or the bed. Applied last. Front is low Y.",
   axis: "x, y, or z.",
   degrees: "Degrees.",
   turn: "Axis and degrees.",

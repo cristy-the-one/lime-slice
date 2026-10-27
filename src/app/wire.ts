@@ -1,6 +1,9 @@
 import { type ColorMode } from "../colors";
 import { layFlatMatrix, matMul, rotX, rotY, rotZ } from "../mesh-place";
-import { arrangePlate, duplicatePlateObject, framePlateObject, removePlateObject, selectPlateObject } from "./plate-actions";
+import { alignSelectedTo, arrangePlate, duplicatePlateObject, framePlateObject, removePlateObject, selectPlateObject } from "./plate-actions";
+import { fx } from "./fx";
+import { alignHowHtml, alignPick } from "./align-ui";
+import { isAlignRelation } from "../place-snap";
 import { requestModelCheck } from "./model";
 import { revealStress } from "../ui/stress.ts";
 import { separateShells } from "./shell-actions";
@@ -89,6 +92,13 @@ export function wireApp() {
     }
     onSettings(ev);
   });
+  const alignRow = (el: EventTarget | null) => el instanceof Element && el.closest("#placeAlign") !== null;
+  document.querySelector("#left")!.addEventListener("focusin", (ev) => {
+    if (alignRow(ev.target) && alignPick.to !== "bed") fx.prepare.markAlignTarget(alignPick.to);
+  });
+  document.querySelector("#left")!.addEventListener("focusout", (ev) => {
+    if (alignRow(ev.target) && !alignRow((ev as FocusEvent).relatedTarget)) fx.prepare.markAlignTarget(null);
+  });
   document.querySelector("#left")!.addEventListener("change", (ev) => {
     const target = ev.target as HTMLElement;
     if (isBeltField(target)) {
@@ -101,6 +111,19 @@ export function wireApp() {
     }
     if (target.id === "nozzlec" || target.id === "bedc") {
       snapTempField(target.id, true);
+      return;
+    }
+    if (target.id === "alignTo" || target.id === "alignHow") {
+      const value = (target as HTMLSelectElement).value;
+      if (target.id === "alignTo") {
+        alignPick.to = value;
+        const how = document.querySelector<HTMLSelectElement>("#alignHow");
+        if (how) how.innerHTML = alignHowHtml();
+        if (how && isAlignRelation(how.value)) alignPick.how = how.value;
+        fx.prepare.markAlignTarget(value === "bed" ? null : value);
+      } else if (isAlignRelation(value)) {
+        alignPick.how = value;
+      }
       return;
     }
     if (target.id === "placeX" || target.id === "placeY") {
@@ -220,6 +243,11 @@ export function wireApp() {
     }
     if (t.id === "plateDuplicate") {
       duplicatePlateObject();
+      return;
+    }
+    if (t.id === "alignGo") {
+      alignSelectedTo(alignPick.to, alignPick.how);
+      fx.prepare.markAlignTarget(null);
       return;
     }
     if (t.id === "plateArrange" || t.closest("[data-plate-arrange]")) {

@@ -16,6 +16,8 @@ import type { OverrideDocument } from "./overrides";
 import type { PlateBound } from "./plate";
 import { contextMaterial } from "./context-look";
 import { affineRows, type ContextPart } from "./model-context";
+import { shifted, snapMove, type Footprint, type Screen, type SnapAxis, type SnapHit, type SnapTarget } from "./place-snap";
+import { neighbourTargets, ownFootprint } from "./place-snap-scene";
 import { createReinforceVolumeScene, type ShownReinforceVolume } from "./reinforce-scene";
 import type { ReinforceDisk } from "./reinforcement";
 import type { SeamDisk } from "./seam-paint";
@@ -75,6 +77,10 @@ export interface PrepareView {
   onRotateEnd(cb: (() => void) | null): void;
   onMove(cb: ((axis: Axis, deltaMm: number, totalMm: number) => void) | null): void;
   onMoveEnd(cb: (() => void) | null): void;
+  /** What a move drag is snapped to, for the readout, or null when it is not snapped. Alt holds the snap off. */
+  onSnap(cb: ((label: string | null) => void) | null): void;
+  /** Tints the plate object Align to... has picked, or clears it with null. A snap in a drag tints its own target meanwhile. */
+  markAlignTarget(id: string | null): void;
   /** Uniform part scale, in percentage points. Returns how many of `deltaPercent` landed after the 10–400 clamp. */
   onScale(cb: ((deltaPercent: number) => number) | null): void;
   onScaleEnd(cb: (() => void) | null): void;
@@ -133,6 +139,8 @@ export interface PrepareView {
 
 const ROTATE_SNAP_DEG = 15;
 const MOVE_SNAP_MM = 1;
+/** A snapped move is sent for any change this size or more, so it lands exactly instead of stopping 0.02 mm short. */
+const SNAP_SEND_MM = 1e-9;
 
 export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -245,6 +253,21 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const contextMat = contextMaterial(colors.context);
   const contextGroup = new THREE.Group();
   scene.add(contextGroup);
+  const targetMat = contextMaterial(colors.amber);
+  /** The plate object a snap or an Align to... has picked: its grey is swapped for the amber of the snap guides. */
+  let markedTarget: string | null = null;
+  canvas.dataset.snapTarget = "";
+  let alignTarget: string | null = null;
+  function markTarget(id: string | null) {
+    if (id === markedTarget) return;
+    markedTarget = id;
+    paintTarget();
+  }
+  function paintTarget() {
+    for (const node of contextGroup.children as THREE.Mesh[]) node.material = node.userData.plateId === markedTarget ? targetMat : contextMat;
+    canvas.dataset.snapTarget = markedTarget ?? "";
+    requestRender();
+  }
   /** One geometry per source array, so a pose change or a new neighbour never re-uploads a mesh that did not change. */
   const contextGeometry = new Map<Float32Array, THREE.BufferGeometry>();
   const axisHex = (axis: Axis) => hexToThree(axis === "x" ? colors.axisX : axis === "y" ? colors.axisY : colors.axisZ);
@@ -353,6 +376,14 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   let rotateEndCb: (() => void) | null = null;
   let moveCb: ((axis: Axis, deltaMm: number, totalMm: number) => void) | null = null;
   let moveEndCb: (() => void) | null = null;
+  let snapCb: ((label: string | null) => void) | null = null;
+  let meshPart: PlacedPart | null = null;
+  /** What a move drag snaps on, built when the drag starts: where the part stands, its neighbours, and how big a millimetre is on screen. */
+  let snapRun: { moving: Footprint; targets: SnapTarget[]; screen: Screen } | null = null;
+  let snapLabel: string | null = null;
+  const snapGroup = new THREE.Group();
+  const snapLineMat = new LineMaterial({ color: hexToThree(colors.amber), linewidth: 2.5, transparent: true, depthTest: false, worldUnits: false, toneMapped: false });
+  scene.add(snapGroup);
   let scaleCb: ((deltaPercent: number) => number) | null = null;
   let scaleEndCb: (() => void) | null = null;
   const modifiers = createModifierScene(frame);
@@ -1266,6 +1297,70 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return dragHit.sub(origin).dot(dir);
   }
 
+  /** Pixels one millimetre of each print axis draws at the part's middle, as the vector it draws. */
+  function screenScale(bounds: Bounds): Screen {
+    camera.updateMatrixWorld();
+    const rect = canvas.getBoundingClientRect();
+    const at = (x: number, y: number, z: number): [number, number] => {
+      const p = frame.toScene(x, y, z).project(camera);
+      return [((p.x + 1) / 2) * rect.width, ((1 - p.y) / 2) * rect.height];
+    };
+    const cx = (bounds.min[0] + bounds.max[0]) / 2;
+    const cy = (bounds.min[1] + bounds.max[1]) / 2;
+    const cz = (bounds.min[2] + bounds.max[2]) / 2;
+    const o = at(cx, cy, cz);
+    const along = (p: [number, number]): [number, number] => [p[0] - o[0], p[1] - o[1]];
+    return { x: along(at(cx + 1, cy, cz)), y: along(at(cx, cy + 1, cz)), z: along(at(cx, cy, cz + 1)) };
+  }
+
+  function beginSnap() {
+    snapRun = null;
+    if (!meshPart || !meshBounds) return;
+    snapRun = { moving: ownFootprint(meshPart), targets: neighbourTargets(plateOthers), screen: screenScale(meshBounds) };
+  }
+
+  /** The snap for a drag that has moved the part by `offset` from where it started. Null when there is nothing to snap to. */
+  function snapAt(axes: SnapAxis[], offset: [number, number, number]): SnapHit | null {
+    if (!snapRun) return null;
+    const hit = snapMove({ moving: shifted(snapRun.moving, offset), targets: snapRun.targets, bed: belt ? null : { x: bedX, y: bedY }, axes, screen: snapRun.screen });
+    showSnap(hit);
+    return hit;
+  }
+
+  function clearSnapGuides() {
+    for (const child of [...snapGroup.children]) {
+      snapGroup.remove(child);
+      (child as LineSegments2).geometry?.dispose();
+    }
+  }
+
+  /** Guide lines and a marker for what the drag is snapped to, drawn in the amber the bed's tilt cue uses. */
+  function showSnap(hit: SnapHit | null) {
+    markTarget(hit?.targetId ?? alignTarget);
+    const label = hit?.label ?? null;
+    if (label === snapLabel) return;
+    snapLabel = label;
+    clearSnapGuides();
+    if (hit && snapRun) {
+      const lift = 0.15;
+      const points: THREE.Vector3[] = [];
+      for (const g of hit.guides) points.push(frame.toScene(g.a[0], g.a[1], g.a[2] + lift), frame.toScene(g.b[0], g.b[1], g.b[2] + lift));
+      const reach = 7 / Math.max(Math.hypot(...snapRun.screen.x), Math.hypot(...snapRun.screen.y), 1e-6);
+      for (const p of hit.points) {
+        points.push(frame.toScene(p[0] - reach, p[1], p[2] + lift), frame.toScene(p[0] + reach, p[1], p[2] + lift));
+        points.push(frame.toScene(p[0], p[1] - reach, p[2] + lift), frame.toScene(p[0], p[1] + reach, p[2] + lift));
+      }
+      const lines = new LineSegments2(new LineSegmentsGeometry().setPositions(points.flatMap((p) => [p.x, p.y, p.z])), snapLineMat);
+      lines.renderOrder = 7;
+      lines.frustumCulled = false;
+      lines.raycast = () => undefined;
+      snapGroup.add(lines);
+    }
+    canvas.dataset.snap = label ?? "";
+    snapCb?.(label);
+    requestRender();
+  }
+
   function sameHit(a: HandleHit | null, b: HandleHit | null) {
     return a?.kind === b?.kind && a?.axis === b?.axis;
   }
@@ -1369,6 +1464,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         lastCoord = axisCoord(handle.axis) ?? 0;
         totalMm = 0;
         appliedMm = 0;
+        beginSnap();
       }
       paintHandles(handle, null);
       ev.preventDefault();
@@ -1380,6 +1476,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       const xy = hitPart() ? printOnBed() : null;
       if (xy) {
         drag = { kind: "xy", lastX: xy[0], lastY: xy[1], totalX: 0, totalY: 0, appliedX: 0, appliedY: 0 };
+        beginSnap();
         controls.enabled = false;
         canvas.setPointerCapture(ev.pointerId);
         canvas.style.cursor = "grabbing";
@@ -1500,15 +1597,18 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       drag.totalY += xy[1] - drag.lastY;
       drag.lastX = xy[0];
       drag.lastY = xy[1];
-      const targetX = snapStep(drag.totalX, ev.shiftKey, MOVE_SNAP_MM);
-      const targetY = snapStep(drag.totalY, ev.shiftKey, MOVE_SNAP_MM);
+      const hit = ev.shiftKey || ev.altKey ? null : snapAt(["x", "y"], [drag.totalX, drag.totalY, 0]);
+      if (!hit) showSnap(null);
+      const targetX = hit ? drag.totalX + hit.delta[0] : snapStep(drag.totalX, ev.shiftKey, MOVE_SNAP_MM);
+      const targetY = hit ? drag.totalY + hit.delta[1] : snapStep(drag.totalY, ev.shiftKey, MOVE_SNAP_MM);
       const sendX = targetX - drag.appliedX;
       const sendY = targetY - drag.appliedY;
-      if (Math.abs(sendX) >= 0.02) {
+      const floor = hit ? SNAP_SEND_MM : 0.02;
+      if (Math.abs(sendX) >= floor) {
         drag.appliedX = targetX;
         moveCb?.("x", sendX, targetX);
       }
-      if (Math.abs(sendY) >= 0.02) {
+      if (Math.abs(sendY) >= floor) {
         drag.appliedY = targetY;
         moveCb?.("y", sendY, targetY);
       }
@@ -1544,9 +1644,12 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       const step = coord - lastCoord;
       lastCoord = coord;
       totalMm += step;
-      const target = snapStep(totalMm, ev.shiftKey, MOVE_SNAP_MM);
+      const axisOffset: [number, number, number] = [axis === "x" ? totalMm : 0, axis === "y" ? totalMm : 0, axis === "z" ? totalMm : 0];
+      const hit = ev.shiftKey || ev.altKey ? null : snapAt([axis], axisOffset);
+      if (!hit) showSnap(null);
+      const target = hit ? totalMm + hit.delta[axis === "x" ? 0 : axis === "y" ? 1 : 2] : snapStep(totalMm, ev.shiftKey, MOVE_SNAP_MM);
       const send = target - appliedMm;
-      if (Math.abs(send) < 0.02) return;
+      if (Math.abs(send) < (hit ? SNAP_SEND_MM : 0.02)) return;
       appliedMm = target;
       moveCb?.(axis, send, target);
       const rebased = axisCoord(axis);
@@ -1590,6 +1693,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     const edited = modDrag;
     const editedReinforce = reinforceVolDrag;
     drag = null;
+    snapRun = null;
+    showSnap(null);
     modDrag = null;
     reinforceVolDrag = null;
     hover = null;
@@ -1706,6 +1811,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       camera.aspect = rect.width / rect.height;
       camera.updateProjectionMatrix();
       edgeLineMat.resolution.set(canvas.width, canvas.height);
+      snapLineMat.resolution.set(canvas.width, canvas.height);
     },
     setBed(x, y, z) {
       bedX = Math.max(10, x);
@@ -1770,6 +1876,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         setPrintAffine(mesh.matrix, poseAffine(part.pose));
         mesh.matrixWorldNeedsUpdate = true;
       }
+      meshPart = canonical ? part : null;
       if (belt) layoutBed();
       else clearGhosts();
       drawPaint();
@@ -1789,6 +1896,11 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onRotateEnd(cb) { rotateEndCb = cb; },
     onMove(cb) { moveCb = cb; },
     onMoveEnd(cb) { moveEndCb = cb; },
+    onSnap(cb) { snapCb = cb; },
+    markAlignTarget(id) {
+      alignTarget = id;
+      markTarget(id);
+    },
     onScale(cb) { scaleCb = cb; },
     onScaleEnd(cb) { scaleEndCb = cb; },
     setViewPreset(preset) { applyViewPreset(preset); },
@@ -1888,6 +2000,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       beltOutLabel.paint(colors.amber);
       copyMat.color.setHex(hexToThree(colors.mesh));
       contextMat.color.setHex(hexToThree(colors.context));
+      targetMat.color.setHex(hexToThree(colors.amber));
+      snapLineMat.color.setHex(hexToThree(colors.amber));
       for (const [axis, { ringMat, moveMats }] of handles) {
         ringMat.color.setHex(axisHex(axis));
         for (const mat of moveMats) mat.color.setHex(axisHex(axis));
@@ -1962,6 +2076,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       node.renderOrder = 1;
       node.userData.plateId = part.id;
       node.raycast = () => undefined;
+      node.material = part.id === markedTarget ? targetMat : contextMat;
       contextGroup.add(node);
       box.setFromObject(node);
       const [x0, y0, z0] = frame.fromScene(box.min);
