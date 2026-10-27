@@ -4048,7 +4048,7 @@ export class Session {
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
     const filter = this.onFaceIndex(obj, input);
     if (typeof filter === "string") return { ok: false, reason: filter };
-    const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter);
+    const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter, obj.solid);
     if ("reason" in matched) return { ok: false, reason: matched.reason };
     const listed = page(matched, input.cursor, input.limit);
     return { ok: true, total: matched.length, frame: "part", edges: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
@@ -4085,7 +4085,7 @@ export class Session {
       if (!obj.solid) return { reason: "Describe the solid before picking edges." };
       const filter = this.onFaceIndex(obj, select as Record<string, unknown>);
       if (typeof filter === "string") return { reason: filter };
-      const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter);
+      const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter, obj.solid);
       if ("reason" in matched) return matched;
       if (matched.length === 0) return { reason: "No edge matches that filter." };
       return matched.map((edge) => edge.index);

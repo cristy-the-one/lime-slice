@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { mirrorPlate, type BridgeMessage, type MirrorObject } from "../src/bridge.ts";
 import { expand, primitiveFrom, withBoxAnchor, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { fakeEngine } from "./engine.ts";
+import { edgesMatching } from "./selectors.ts";
+import type { EdgeRow, FaceRow } from "./solid-geometry.ts";
 import { validateTool } from "./schema.ts";
 import { Session } from "./session.ts";
 import { GLOBAL_WORKPLANE, workplaneOnFace } from "../src/workplane.ts";
@@ -115,6 +117,59 @@ check("a root op may carry a label", validateTool("model_apply", { op: { kind: "
   const bare = await own.call("model_apply_batch", { object: made.object, ops: [{ kind: "use", part: "peg", with: { h: 3 } }] });
   const bareLabels = ((await own.call("model_history", { object: made.object })).nodes as { label?: string }[]).map((node) => node.label);
   check("a use with no label leaves a part's unlabelled ops to their own names", bare.ok === true && bareLabels.includes("bar") && bareLabels.some((label) => label?.startsWith("Fuse cylinder")), JSON.stringify(bareLabels));
+}
+
+// Item 11. The convex filter reads the two faces at an edge, so a part with a concave edge still classifies.
+{
+  type V3 = [number, number, number];
+  const prism = (profile: [number, number][], depth: number, caps: [number, number, number, number][]) => {
+    const faces: FaceRow[] = [];
+    const edges: EdgeRow[] = [];
+    const n = profile.length;
+    const area = profile.reduce((sum, [x, z], i) => sum + (x * profile[(i + 1) % n]![1] - profile[(i + 1) % n]![0] * z), 0) / 2;
+    const ccw = area > 0;
+    profile.forEach(([x0, z0], i) => {
+      const [x1, z1] = profile[(i + 1) % n]!;
+      const len = Math.hypot(x1 - x0, z1 - z0);
+      const out: V3 = ccw ? [(z1 - z0) / len, 0, -(x1 - x0) / len] : [-(z1 - z0) / len, 0, (x1 - x0) / len];
+      faces.push({ index: i, areaMm2: len * depth, normal: out, centre: [(x0 + x1) / 2, depth / 2, (z0 + z1) / 2], bbox: { min: [Math.min(x0, x1), 0, Math.min(z0, z1)], max: [Math.max(x0, x1), depth, Math.max(z0, z1)] }, kind: "plane" });
+    });
+    const xs = profile.map((p) => p[0]);
+    const zs = profile.map((p) => p[1]);
+    const box = { min: [Math.min(...xs), 0, Math.min(...zs)] as V3, max: [Math.max(...xs), depth, Math.max(...zs)] as V3 };
+    faces.push({ index: n, areaMm2: Math.abs(area), normal: [0, -1, 0], centre: [(box.min[0] + box.max[0]) / 2, 0, (box.min[2] + box.max[2]) / 2], bbox: box, kind: "plane" });
+    faces.push({ index: n + 1, areaMm2: Math.abs(area), normal: [0, 1, 0], centre: [(box.min[0] + box.max[0]) / 2, depth, (box.min[2] + box.max[2]) / 2], bbox: box, kind: "plane" });
+    const row = (index: number, start: V3, end: V3): EdgeRow => ({ index, lengthMm: Math.hypot(end[0] - start[0], end[1] - start[1], end[2] - start[2]), start, end, mid: [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2, (start[2] + end[2]) / 2] });
+    profile.forEach(([x, z], i) => {
+      const [x1, z1] = profile[(i + 1) % n]!;
+      edges.push(row(3 * i, [x, 0, z], [x, depth, z]), row(3 * i + 1, [x, 0, z], [x1, 0, z1]), row(3 * i + 2, [x, depth, z], [x1, depth, z1]));
+    });
+    // The faces' triangles: two per side, and two per cap rectangle (x0, z0, x1, z1), the way the engine tessellates.
+    const positions: number[] = [];
+    const triangles: number[] = [];
+    const tri = (face: number, a: V3, b: V3, c: V3) => { positions.push(...a, ...b, ...c); triangles.push(face); };
+    profile.forEach(([x0, z0], i) => {
+      const [x1, z1] = profile[(i + 1) % n]!;
+      tri(i, [x0, 0, z0], [x1, 0, z1], [x1, depth, z1]);
+      tri(i, [x0, 0, z0], [x1, depth, z1], [x0, depth, z0]);
+    });
+    for (const [x0, z0, x1, z1] of caps) {
+      for (const [face, y] of [[n, 0], [n + 1, depth]] as const) {
+        tri(face, [x0, y, z0], [x1, y, z0], [x1, y, z1]);
+        tri(face, [x0, y, z0], [x1, y, z1], [x0, y, z1]);
+      }
+    }
+    return { faces, edges, mesh: { positions, triangles } };
+  };
+  const count = (part: { faces: FaceRow[]; edges: EdgeRow[]; mesh: { positions: number[]; triangles: number[] } }, convex: boolean) => (edgesMatching(part.edges, part.faces, { convex }, part.mesh) as EdgeRow[]).length;
+  const block = prism([[0, 0], [40, 0], [40, 20], [0, 20]], 30, [[0, 0, 40, 20]]);
+  check("a box has 12 convex edges and no concave one", count(block, true) === 12 && count(block, false) === 0, `${count(block, true)} ${count(block, false)}`);
+  const ell = prism([[0, 0], [30, 0], [30, 10], [10, 10], [10, 30], [0, 30]], 20, [[0, 0, 30, 10], [0, 10, 10, 30]]);
+  check("an L-shape has 17 convex edges and 1 concave one", count(ell, true) === 17 && count(ell, false) === 1, `${count(ell, true)} ${count(ell, false)}`);
+  const turned = prism([[0, 30], [10, 30], [10, 10], [30, 10], [30, 0], [0, 0]], 20, [[0, 0, 30, 10], [0, 10, 10, 30]]);
+  check("an L-shape drawn the other way round classifies the same", count(turned, true) === 17 && count(turned, false) === 1, `${count(turned, true)} ${count(turned, false)}`);
+  const concave = (edgesMatching(ell.edges, ell.faces, { convex: false }, ell.mesh) as EdgeRow[])[0]!;
+  check("the concave edge is the inside corner of the L", near(concave.mid[0], 10) && near(concave.mid[2], 10), JSON.stringify(concave.mid));
 }
 
 // Item 16. A plate object can be named when it is made and renamed by object_select; the name is what the list, a
