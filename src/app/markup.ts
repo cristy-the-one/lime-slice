@@ -739,7 +739,7 @@ export function mountMarkup(root: HTMLElement) {
         </div>
       </aside>
     </div>
-    <footer class="status"><span class="model-paused" id="modelPaused" hidden data-tip="Slicing waits until you leave Model, then slices once">Slicing paused while modeling</span><div id="modelReadout" class="model-readout"></div><button class="model-fit-warn" id="modelFitWarn" type="button" hidden data-tip="Past the build volume. Inspect has the sizes.">Too large</button><span class="status-text" id="statusText" aria-live="polite"></span><span class="status-hint" id="statusHint" hidden>Settings are in the drawer (Ctrl+B)</span><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
+    <footer class="status"><span class="model-paused" id="modelPaused" hidden data-tip="Slicing waits until you leave Model, then slices once">Slicing paused while modeling</span><div id="modelReadout" class="model-readout"></div><button class="model-fit-warn" id="modelFitWarn" type="button" hidden data-tip="Past the build volume. Inspect has the sizes.">Too large</button><span class="status-text" id="statusText" aria-live="polite"></span><span class="status-hint" id="statusHint" hidden>Settings are in the drawer (Ctrl+B)</span><span class="status-hint" id="grabHint" hidden></span><div id="sliceMeter" class="slice-meter" hidden></div><div id="engineLink" class="engine-link" data-state="pending">Engine …</div></footer>
   </div>
   <div id="calibrate" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="calibrateTitle">
     <div class="sheet-card cal-card">
