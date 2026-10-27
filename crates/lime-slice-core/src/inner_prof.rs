@@ -55,6 +55,11 @@ static VOID_ISLAND: Slot = Slot::new();
 static VOID_NARROW: Slot = Slot::new();
 static VOID_SKIN: Slot = Slot::new();
 static CHAIN: Slot = Slot::new();
+static LOAD: Slot = Slot::new();
+static TOUR_LAYOUT: Slot = Slot::new();
+static TOUR_SERIAL: Slot = Slot::new();
+static PREVIEW: Slot = Slot::new();
+static REPLY: Slot = Slot::new();
 
 pub fn set_enabled(on: bool) {
     ON.store(on, Ordering::Relaxed);
@@ -86,6 +91,11 @@ pub fn reset() {
         &VOID_NARROW,
         &VOID_SKIN,
         &CHAIN,
+        &LOAD,
+        &TOUR_LAYOUT,
+        &TOUR_SERIAL,
+        &PREVIEW,
+        &REPLY,
     ] {
         slot.reset();
     }
@@ -122,6 +132,11 @@ pub fn report() -> String {
         line("  void islands", &VOID_ISLAND),
         line("  void narrow", &VOID_NARROW),
         line("  void skin", &VOID_SKIN),
+        line("load", &LOAD),
+        line("tour layout", &TOUR_LAYOUT),
+        line("tour serial", &TOUR_SERIAL),
+        line("preview", &PREVIEW),
+        line("reply json", &REPLY),
     ]
     .join("  ")
 }
@@ -202,5 +217,20 @@ impl Sample {
     }
     pub fn chain(self, segs: u64) {
         self.finish(&CHAIN, segs);
+    }
+    pub fn load(self, triangles: u64) {
+        self.finish(&LOAD, triangles);
+    }
+    pub fn tour_layout(self, layers: u64) {
+        self.finish(&TOUR_LAYOUT, layers);
+    }
+    pub fn tour_serial(self, layers: u64) {
+        self.finish(&TOUR_SERIAL, layers);
+    }
+    pub fn preview(self, layers: u64) {
+        self.finish(&PREVIEW, layers);
+    }
+    pub fn reply(self, bytes: u64) {
+        self.finish(&REPLY, bytes);
     }
 }

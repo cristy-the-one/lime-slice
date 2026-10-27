@@ -1620,6 +1620,7 @@ fn slice_request_inner(
     } else {
         Vec::new()
     };
+    let load_sample = crate::inner_prof::Sample::start();
     let loaded: Vec<(Mesh, SliceSettings)> = if listed {
         requests
             .iter()
@@ -1631,6 +1632,7 @@ fn slice_request_inner(
     } else {
         vec![load_object(req, &overrides, job)?]
     };
+    load_sample.load(loaded.iter().map(|(m, _)| m.triangle_count() as u64).sum());
     watch.tick();
     let ids = req.objects.iter().flatten().map(|o| o.id.as_str());
     let sources: Vec<Source<'_>> = if listed {
@@ -2912,6 +2914,7 @@ fn slice_plate(
     }
 
     let blends: Vec<&BlendMode> = objects.iter().map(|o| &o.blend).collect();
+    let preview_sample = crate::inner_prof::Sample::start();
     let (layers, preview_token, preview_patch) = if !settings.include_preview {
         (Vec::new(), None, None)
     } else {
@@ -2926,6 +2929,7 @@ fn slice_plate(
             belt_tilt.as_ref(),
         )
     };
+    preview_sample.preview(layers.len() as u64);
     let repaired_layers = plans.iter().map(|plan| plan.cut.repaired_layers).sum();
     let bridged_mm: f64 = plans.iter().map(|plan| plan.cut.bridged_mm).sum();
     let dropped_chains = plans.iter().map(|plan| plan.cut.dropped_chains).sum();
@@ -5061,12 +5065,15 @@ fn tour_part(
         let first = (0..bands.len())
             .find(|&i| same_paths(i).is_none())
             .unwrap_or(bands.len());
+        let layout_sample = crate::inner_prof::Sample::start();
         let mut laid: Vec<Option<PartLayout>> = part
             .layers
             .par_iter()
             .enumerate()
             .map(|(i, l)| (i >= first).then(|| PartLayout::new(l.paths.clone(), &contours[i])))
             .collect();
+        layout_sample.tour_layout((bands.len() - first) as u64);
+        let serial_sample = crate::inner_prof::Sample::start();
         let mut end = bands.first().filter(|b| b.index == 0).and_then(|b| {
             let mut skirt = skirt_paths(&contours[0], None, b.z, blend, settings);
             order_supports(&mut skirt, None, None, scarf_params(settings, 0).as_ref())
@@ -5099,6 +5106,7 @@ fn tour_part(
             layers.push(layer);
             watch.tick();
         }
+        serial_sample.tour_serial(layers.len() as u64);
         layers
     } else {
         let toured: Vec<(Arc<TourLayer>, bool)> = part
