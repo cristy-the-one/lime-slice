@@ -9,13 +9,18 @@ import {
   SHAPED_PARALLEL_SENTENCE,
   STARTING_FIT_LABEL,
   clampPieces,
+  clearanceCell,
+  clearanceKey,
   clearanceRow,
+  clearanceSentence,
   connectorDepth,
   defaultU,
   depthAllowance,
   fillConnector,
   fillPartition,
   fitPrinter,
+  holeCompensationNote,
+  measuredRow,
   partitionDefaults,
   placeConnectors,
   profileRefusals,
@@ -95,16 +100,37 @@ check("under four layer heights the connector is left out", connectorDepth(base,
 
 // --- Clearance table.
 
-check("PLA row", show(clearanceRow("fdm", "PLA")) === show({ snug: 0.15, loose: 0.25, press: 0.05, startingFit: true }));
-check("PETG row", show(clearanceRow("fdm", "PETG")) === show({ snug: 0.2, loose: 0.3, press: 0.1, startingFit: true }));
-check("ABS row", show(clearanceRow("fdm", "abs")) === show({ snug: 0.2, loose: 0.3, press: 0.1, startingFit: true }));
-check("resin row", show(clearanceRow("resin", "Tough 2000")) === show({ snug: 0.1, loose: 0.2, press: 0.05, startingFit: true }));
+const cells = (snug: number, loose: number, press: number) => ({ snug, loose, press, source: { snug: "starting", loose: "starting", press: "starting" }, startingFit: true });
+check("PLA row", show(clearanceRow("fdm", "PLA")) === show(cells(0.15, 0.25, 0.05)));
+check("PETG row", show(clearanceRow("fdm", "PETG")) === show(cells(0.2, 0.3, 0.1)));
+check("ABS row", show(clearanceRow("fdm", "abs")) === show(cells(0.2, 0.3, 0.1)));
+check("ASA reads as ABS", clearanceRow("fdm", "ASA") === CLEARANCE_TABLE.abs);
+check("TPU row", show(clearanceRow("fdm", "TPU")) === show(cells(0.25, 0.35, 0.15)));
+check("resin row", show(clearanceRow("resin", "Tough 2000")) === show(cells(0.1, 0.2, 0.05)));
+check("resin ignores the material, FDM filaments do not", clearanceRow("resin", "") === CLEARANCE_TABLE.resin && clearanceKey("resin", "PETG") === "resin" && clearanceKey("fdm", "PETG") === "petg");
 check("material names ignore case and padding", clearanceRow("fdm", " Pla ") === CLEARANCE_TABLE.pla);
-check("TPU has no row", clearanceRow("fdm", "TPU") === null);
-const tpu = partitionDefaults({ process: "fdm", material: "TPU" });
-check("no row gives the plan's sentence", tpu.clearance === null && tpu.clearanceNote === "No fit for this material. Type a clearance, or leave connectors off.");
+check("a material with no row has none", clearanceRow("fdm", "Nylon") === null && clearanceKey("fdm", "") === null);
+const nylon = partitionDefaults({ process: "fdm", material: "Nylon" });
+check("no row gives the plan's sentence", nylon.clearance === null && nylon.clearanceNote === "No fit for this material. Type a clearance, or leave connectors off.");
 check("a row gives no note", base.clearanceNote === null);
-check("every row is a starting fit", Object.values(CLEARANCE_TABLE).every((r) => r.startingFit) && STARTING_FIT_LABEL === "Starting fit");
+check("every row is a starting fit, every cell a starting value", Object.values(CLEARANCE_TABLE).every((r) => r.startingFit && Object.values(r.source).every((one) => one === "starting")) && STARTING_FIT_LABEL === "Starting fit");
+check("a cell is its number and its source", show(clearanceCell(CLEARANCE_TABLE.petg, "loose")) === show({ mm: 0.3, source: "starting" }));
+
+// --- Milestone 11 enters a measured step into one cell; the others stay starting values.
+const measured = measuredRow(CLEARANCE_TABLE.petg, "snug", 0.12);
+check("a measured cell holds the typed gap and says measured", measured.snug === 0.12 && show(clearanceCell(measured, "snug")) === show({ mm: 0.12, source: "measured" }));
+check("the other cells stay starting values and the row still is one", measured.loose === 0.3 && measured.press === 0.1 && measured.source.loose === "starting" && measured.startingFit);
+check("a row with every cell measured is no starting fit", !measuredRow(measuredRow(measured, "loose", 0.22), "press", 0.06).startingFit);
+check("measuring a row leaves the table alone", CLEARANCE_TABLE.petg.snug === 0.2 && CLEARANCE_TABLE.petg.source.snug === "starting");
+const measuredDefaults = fillConnector({ type: "dowel", clearance: "snug" }, { ...base, clearance: measured });
+check("a connector reads the measured cell", measuredDefaults.type === "dowel" && measuredDefaults.clearance === 0.12);
+
+// --- The card's Clearance sentence names its source.
+check("a starting fit says so, each side and across", clearanceSentence(0.15, "starting") === "Starting fit. 0.15 mm each side (0.3 mm on the diameter).");
+check("a measured fit says measured", clearanceSentence(0.12, "measured") === "Measured. 0.12 mm each side (0.24 mm on the diameter).");
+check("a typed gap says typed", clearanceSentence(0.2, "typed") === "Typed. 0.2 mm each side (0.4 mm on the diameter).");
+check("no gap is the plan's sentence", clearanceSentence(null, "starting") === NO_FIT_SENTENCE);
+check("the XY compensation warning stays", holeCompensationNote(0) === null && holeCompensationNote(0.1) === "XY hole compensation is 0.1 mm. It changes the hole again when slicing. Clearance here is the solid.");
 
 // --- Filling absent fields.
 
@@ -336,7 +362,7 @@ check("a centroid outside the section leaves a row with no room", l.placed.lengt
 const withHole = place(1, rect(100, 20, [[[44, 8], [56, 8], [56, 12], [44, 12]]]), spec());
 check("Fit skips a centre that falls in a section hole", show(uvs(withHole).map((p) => p[0])) === show([26, 74]), show(uvs(withHole)));
 
-const noRow = placeConnectors({ cut: 1, section: rect(100, 20), spec: fillConnector({ type: "dowel" }, tpu), wallFloorMm: 1 });
+const noRow = placeConnectors({ cut: 1, section: rect(100, 20), spec: fillConnector({ type: "dowel" }, nylon), wallFloorMm: 1 });
 check("a material with no row places nothing and gives the plan's sentence", noRow.placed.length === 0 && show(noRow.notes) === show([NO_FIT_SENTENCE]));
 const typedMm = place(1, rect(100, 20), spec({ clearance: 0.3 }));
 check("a typed clearance replaces the table", typedMm.placed.length === 3);

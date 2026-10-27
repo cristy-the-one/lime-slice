@@ -1254,11 +1254,27 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "solid_new",
-    description: "Add a primitive solid (box, cylinder, sphere, ellipsoid, cone, torus, wedge, polygon, tube), centred on X and Y on Z = 0. Needs Open CASCADE.",
+    description: "Add a primitive solid (box, cylinder, sphere, ellipsoid, cone, torus, wedge, polygon, tube), centred on X and Y on Z = 0. Or, with coupon, a fit coupon. Needs Open CASCADE.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      properties: { ...solidFields, name: objectName },
+      properties: {
+        ...solidFields,
+        name: objectName,
+        coupon: {
+          type: "object",
+          additionalProperties: false,
+          description: "Instead of a primitive: a dowel fit coupon and pin (formlabs-form-4: STEP files).",
+          properties: {
+            printer: { type: "string", description: "Default the plate's." },
+            material: { type: "string", description: "Default the filament's." },
+            radius: { type: "number", exclusiveMinimum: 0, maximum: 50, description: "Pin, mm." },
+            depth: { type: "number", exclusiveMinimum: 0, maximum: 200, description: "Pin length, mm." },
+            hole: { enum: ["round", "teardrop"], description: "Default by process." },
+            startMm: { type: "number", minimum: 0, maximum: 2, description: "Centre, each side, mm. Default Snug." },
+          },
+        },
+      },
     },
   },
   {
