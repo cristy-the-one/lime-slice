@@ -23,6 +23,7 @@ import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNo
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
 import { clampPieces, type FillContext, type Target } from "../src/modeling/partition.ts";
 import { couponFileName, fitCoupon, fitCouponRequest, readCouponReply } from "../src/modeling/fit-coupon.ts";
+import { choiceAt, jointDown } from "../src/modeling/joint-down.ts";
 import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateUp, readPartition, storedPartition } from "./partition.ts";
 import { pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
@@ -5721,8 +5722,8 @@ export class Session {
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     obj.probes.clear();
-    this.followPieces(obj);
-    const notes = numberNotes(reply);
+    const followed = this.followPieces(obj);
+    const notes = [...numberNotes(reply), ...followed.orient.notes];
     const note = exported
       ? exportedNote(this.targetName(op))
       : op.arrange === false
@@ -5803,9 +5804,9 @@ export class Session {
    * --- D9. A split to print's pieces are on the plate while that step is on the way to its part's current step, as a
    * join's tool is off it: model_undo or a goto above the cut takes them off, and a redo brings them back.
    */
-  private followPieces(obj: PlateObject): { back: string[]; left: string[] } {
+  private followPieces(obj: PlateObject): { back: string[]; left: string[]; orient: { turned: string[]; notes: string[] } } {
     const tree = obj.tree;
-    if (!tree) return { back: [], left: [] };
+    if (!tree) return { back: [], left: [], orient: { turned: [], notes: [] } };
     const path = new Set(pathTo(tree, tree.current));
     const wanted = new Map<string, boolean>();
     for (const node of tree.nodes.values()) {
@@ -5830,7 +5831,76 @@ export class Session {
         left.push(piece.id);
       }
     }
-    return { back, left };
+    return { back, left, orient: this.settleOrients(obj) };
+  }
+
+  /** Each object Joint down turned, by id, and the orientation it had before: Keep, and a step above the cut, put it back. */
+  private keptOrients = new Map<string, Mat3>();
+  private jointed = new Set<string>();
+
+  /**
+   * --- Milestone 7 (plan D4, section 10). The plate orientation of a split to print's pieces from the cut on the way to
+   * the part's step: a piece set to joint is turned so its larger cut face lies on the bed (`jointDown`, its long way
+   * along X, or along the belt on a belt printer); every other piece, and the pins, keep the part's own orientation, which
+   * is what a step above the cut gives back too. An export target's pieces keep as cut. Idempotent: the apply, an edit,
+   * model_undo, a goto and a redo all end here. The ids it turned, and a sentence for each piece it jointed.
+   */
+  private settleOrients(obj: PlateObject): { turned: string[]; notes: string[] } {
+    const out = { turned: [] as string[], notes: [] as string[] };
+    const tree = obj.tree;
+    if (!tree) return out;
+    const path = new Set(pathTo(tree, tree.current));
+    const live = [...path].reverse().find((id) => tree.nodes.get(id)?.op?.kind === "partition" && !exportsPieces(tree.nodes.get(id)?.op));
+    const same = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]!) < 1e-12);
+    const belt = this.printer().kind === "belt";
+    const base = this.keptOrients.get(obj.id) ?? obj.orient;
+    const parentTurned = this.keptOrients.has(obj.id);
+    const turn = (row: PlateObject, orient: Mat3) => {
+      if (same(row.orient, orient)) return;
+      row.orient = [...orient] as Mat3;
+      out.turned.push(row.id);
+    };
+    const settle = (row: PlateObject, op: PartitionModelOp | null, index: number | null, positions: Float32Array | null): void => {
+      const choice = op && index !== null ? choiceAt(op.orient, index) : "keep";
+      if (choice === "joint" && positions) {
+        const joint = jointDown(positions, op!.cuts.map((cut) => ({ origin: cut.origin, normal: cut.normal })), belt);
+        if (joint) {
+          if (row === obj && !this.keptOrients.has(obj.id)) this.keptOrients.set(obj.id, [...obj.orient] as Mat3);
+          this.jointed.add(row.id);
+          turn(row, joint.orient);
+          out.notes.push(`Part ${index! + 1} is joint down on cut ${joint.face.cut + 1}, its ${joint.other ? "larger" : "only"} cut face, ${Math.round(joint.face.area * 100) / 100} mm².`);
+          return;
+        }
+        out.notes.push(`Part ${index! + 1} has no cut face, so it keeps its orientation.`);
+      }
+      // Keep: the part's own orientation, for an object Joint down turned or a piece copied from a part that is turned.
+      if (row === obj) {
+        if (this.jointed.has(row.id)) {
+          this.jointed.delete(row.id);
+          this.keptOrients.delete(row.id);
+          turn(row, base);
+        }
+        return;
+      }
+      if (this.jointed.has(row.id) || (parentTurned && same(row.orient, obj.orient))) {
+        this.jointed.delete(row.id);
+        turn(row, base);
+      }
+    };
+    const livePart = live !== undefined && tree.current === live ? tree.nodes.get(live)?.op : null;
+    settle(obj, livePart?.kind === "partition" ? livePart : null, 0, obj.solid ? Float32Array.from(obj.solid.positions) : null);
+    for (const node of tree.nodes.values()) {
+      if (node.op?.kind !== "partition") continue;
+      const on = node.id === live;
+      (node.pieces ?? []).forEach((key, at) => {
+        const piece = key ? this.objectOfKey(key) : undefined;
+        if (!piece) return;
+        settle(piece, on ? node.op as PartitionModelOp : null, at + 1, on ? Float32Array.from(piece.solid?.positions ?? piece.source) : null);
+      });
+      const pins = node.pins ? this.objectOfKey(node.pins) : undefined;
+      if (pins) settle(pins, null, null, null);
+    }
+    return out;
   }
 
   /**
@@ -6106,7 +6176,8 @@ export class Session {
     const keep = new Set(this.objects.filter((row) => !fresh.has(row.id)).map((row) => row.id));
     const clearance = sequentialClearance(this.sliceRules(this.objects.length), this.order());
     const gap = clearance === null ? ARRANGE_GAP_MM : clearance + 0.01;
-    const arranged = arrangedObjects(this.objects.map((obj) => this.asBed(obj)), printer.bedX, printer.bedY, gap, keep);
+    // A belt printer's length is unbounded (decision 11): the pieces stack along it, so none goes off the bed.
+    const arranged = arrangedObjects(this.objects.map((obj) => this.asBed(obj)), printer.bedX, printer.kind === "belt" ? 1e6 : printer.bedY, gap, keep);
     for (const row of arranged) {
       const live = fresh.has(row.id) ? this.find(row.id) : undefined;
       if (!live) continue;
@@ -6312,8 +6383,9 @@ export class Session {
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     obj.probes.clear();
-    this.followPieces(obj);
-    const notes = rebuilt ? [...(baked.notes ?? []), ...numberNotes(reply), ...rebuilt.notes] : [];
+    const followed = this.followPieces(obj);
+    if (followed.orient.turned.length > 0 && (baked.op as PartitionModelOp).arrange !== false) this.layOutPieces(followed.orient.turned.filter((id) => this.objects.some((row) => row.id === id && row.platedNode !== null)));
+    const notes = rebuilt ? [...(baked.notes ?? []), ...numberNotes(reply), ...rebuilt.notes, ...followed.orient.notes] : [];
     const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(pins ? { pins: pins.id } : {}), ...joined(reply, obj.modelPose), ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) } : {};
     return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null, ...parts };
   }

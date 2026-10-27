@@ -168,7 +168,7 @@ async function grip(page: Page, id: string) {
 /** The probes that cut the bar, newest last, as the requests' first cut's X. */
 const probedAt = (tree: TreeMock) => tree.of("probe").map((request) => (request.op as { cuts: Cut[] }).cuts.map((cut) => cut.origin[0]));
 
-async function save(page: Page): Promise<{ objects: { id: string; name: string; placement: { offset: { x: number; y: number } }; modelTree?: unknown }[] }> {
+async function save(page: Page): Promise<{ objects: { id: string; name: string; placement: { offset: { x: number; y: number }; orient: number[] }; modelTree?: unknown }[] }> {
   await page.locator("#tabPrepare").click();
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const { readFile } = await import("node:fs/promises");
@@ -335,6 +335,83 @@ test("Apply makes the row and the pieces, the pencil reopens the card filled, an
   await page.locator("#tabPrepare").click();
   await page.keyboard.press("Control+z");
   await expect(page.locator("#objectList .obj"), "one undo brings every piece back").toHaveCount(3);
+});
+
+// --- Milestone 7: Joint down per piece.
+const orientMenu = (page: Page, part: number) => page.locator(`#modelPartPieces select[data-piece-orient="${part - 1}"]`);
+const IDENTITY = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+/** The third row of a placement's orientation: the plate's up in the part's own frame. */
+const upOf = (orient: number[]) => orient.slice(6, 9);
+
+test("Joint down on part 2 is a menu on its row, stores orient, and turns that piece so its cut face lies on the bed", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await expect(page.locator("#modelPartPieces li")).toHaveCount(3);
+  await expect(orientMenu(page, 1)).toHaveValue("keep");
+  await expect(orientMenu(page, 2)).toHaveValue("keep");
+  await expect(page.locator("#modelPartOrientNote"), "the note for an export target stays hidden").toBeHidden();
+  await orientMenu(page, 2).selectOption("joint");
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
+  expect((tree.of("apply").at(-1)!.op as { orient: unknown }).orient, "the op stores a choice for each part").toEqual(["keep", "joint"]);
+  await expect(readout(page)).toContainText("Part 2 is joint down on cut 1, its larger cut face, 400 mm².");
+  const doc = await save(page);
+  const [whole, part2, part3] = doc.objects;
+  expect(whole!.placement.orient, "the part itself keeps").toEqual(IDENTITY);
+  expect(part3!.placement.orient, "part 3 keeps").toEqual(IDENTITY);
+  const up = upOf(part2!.placement.orient);
+  expect(Math.abs(up[0]!), "the cut's face looks along X, so the plate's up is X in the piece's frame").toBeCloseTo(1, 9);
+  expect(Math.abs(up[1]!) + Math.abs(up[2]!)).toBeCloseTo(0, 9);
+});
+
+test("an Update that sets part 2 to Joint down turns it, and one Prepare undo puts it back", async ({ page }) => {
+  await openBar(page);
+  await openCard(page);
+  await apply(page).click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
+  await page.locator("#tabPrepare").click();
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: "test-results/split-bed/before-keep.png" });
+  const before = await save(page);
+  expect(before.objects[1]!.placement.orient).toEqual(IDENTITY);
+  await page.locator("#objectList .obj").first().click();
+  await page.locator("#tabModel").click();
+  await expect(labels(page)).toHaveText(["bar.step", "Split to print, 3 parts"]);
+  await page.getByRole("treeitem", { name: /^Split to print, 3 parts/ }).locator(".mh-edit").click();
+  await expect(apply(page)).toHaveText("Update");
+  await expect(apply(page)).toBeDisabled();
+  await expect(orientMenu(page, 2)).toHaveValue("keep");
+  await orientMenu(page, 2).selectOption("joint");
+  await expect(apply(page), "choosing Joint down is a change: Update is offered").toBeEnabled();
+  await apply(page).click();
+  await expect(labels(page)).toHaveText(["bar.step", "Split to print, 3 parts", "Split to print, 3 parts"]);
+  await expect(readout(page)).toContainText("Part 2 is joint down on cut 1");
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: "test-results/split-bed/after-joint-down.png" });
+  const turned = await save(page);
+  expect(Math.abs(upOf(turned.objects[1]!.placement.orient)[0]!), "part 2 is turned").toBeCloseTo(1, 9);
+  expect(turned.objects[1]!.id, "the same object").toBe(before.objects[1]!.id);
+  await page.keyboard.press("Control+z");
+  await page.waitForTimeout(300);
+  const back = await save(page);
+  expect(back.objects, "the undo took the Update back whole: the pieces and their orientation").toHaveLength(3);
+  expect(back.objects[1]!.placement.orient, "part 2 is as it was").toEqual(IDENTITY);
+});
+
+test("Joint down is not offered for the Form 4: the pieces stay as cut for PreForm", async ({ page }) => {
+  await openBar(page);
+  await openCard(page);
+  await orientMenu(page, 2).selectOption("joint");
+  await target(page).selectOption("formlabs-form-4");
+  await expect(page.locator("#modelPartPieces li")).toHaveCount(3);
+  await expect(page.locator("#modelPartPieces select"), "no menu on any row").toHaveCount(0);
+  await expect(page.locator("#modelPartOrientNote")).toBeVisible();
+  await expect(page.locator("#modelPartOrientNote")).toHaveText("Pieces for the Formlabs Form 4 stay as they were cut. PreForm orients them, so Joint down is not offered.");
+  await apply(page).click();
+  await expect(page.locator("#modelPartDone")).toBeVisible();
 });
 
 test("lay out places only the new pieces, around an object that stays where it was", async ({ page }) => {
