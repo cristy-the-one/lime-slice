@@ -475,17 +475,32 @@ function turnUV(p: UV, deg: number): UV {
 }
 
 /**
- * Where U, V = 0 is for `from`: the face's centre of area (default), its min corner, or the middle of its bottom or
- * top edge. A wall that rises out of a roof below has its centre moved up; its top edge has not moved.
+ * Where U, V = 0 is for `from`: the face's centre of area (`centre`, which is also what an omitted `from` means in an
+ * op saved before `box`), its bounding-box centre (`box`), its min corner, or the middle of its bottom or top edge. A
+ * wall that rises out of a roof below has its centre moved up; its top edge has not moved.
  */
 export function anchorOf(from: unknown, extent: FaceExtent | null): [number, number] | { reason: string } {
   if (from === undefined || from === "centre") return [0, 0];
   if (!extent) return { reason: `from: ${String(from)} needs face or faceIndex.` };
   const mid = (extent.u[0] + extent.u[1]) / 2;
+  if (from === "box") return [mid, (extent.v[0] + extent.v[1]) / 2];
   if (from === "corner") return [extent.u[0], extent.v[0]];
   if (from === "bottom") return [mid, extent.v[0]];
   if (from === "top") return [mid, extent.v[1]];
-  return { reason: "from is centre, corner, bottom, or top." };
+  return { reason: "from is box, centre, corner, bottom, or top." };
+}
+
+/**
+ * A pocket or boss typed on a face with no `from` is placed from the face's bounding-box centre, which does not move
+ * as features are added to the face. The choice is written into the op: an omitted `from` in a saved op keeps its old
+ * meaning (the centre of area), so only a fresh call passes through here and a saved op rebuilds as it always did.
+ */
+export function withBoxAnchor<T>(value: T, depth = 0): T {
+  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 4) return value;
+  const op = value as Record<string, unknown>;
+  if ((op.kind === "pattern" || op.kind === "mirror") && op.op && typeof op.op === "object") return { ...op, op: withBoxAnchor(op.op, depth + 1) } as T;
+  if ((op.kind !== "pocket" && op.kind !== "boss") || op.from !== undefined) return value;
+  return op.face !== undefined || op.faceIndex !== undefined ? ({ ...op, from: "box" } as T) : value;
 }
 
 /** A U, V box on the face: the region typed (from where `from` puts U, V = 0), else the face's extent. */

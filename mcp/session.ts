@@ -120,7 +120,7 @@ import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSchemaFor, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
-import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
+import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, isPlainNumber, withExprs } from "../src/modeling/params.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
@@ -1215,6 +1215,9 @@ export class Session {
     this.pendingExprs = [];
     if (!EXPRESSION_TOOLS.has(name) || !args || typeof args !== "object") return { args };
     const input = { ...(args as Record<string, unknown>) };
+    // Ops typed in this call get the box anchor written in; a recipe rerun keeps what its ops were saved with.
+    if (input.op !== undefined) input.op = withBoxAnchor(input.op);
+    if (Array.isArray(input.ops)) input.ops = input.ops.map((op) => withBoxAnchor(op));
     if (name === "model_apply" || name === "model_edit") this.pendingExprs = [typedExprs(input.op)];
     // A part placed with {kind: "use"} becomes several ops, so a batch that uses one keeps no expressions.
     if (name === "model_apply_batch" && Array.isArray(input.ops) && !input.ops.some((op) => (op as { kind?: unknown } | null)?.kind === "use")) this.pendingExprs = input.ops.map(typedExprs);
