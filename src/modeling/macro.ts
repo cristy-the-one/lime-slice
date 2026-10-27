@@ -2,7 +2,7 @@
 // with a loop name the ops' expressions may use; `use` places a part that model_define stored, with its parameters.
 // Both become plain ops, so the schema, the probe, and the history see only those.
 
-import { ExprError, resolveNumbers } from "./expr.ts";
+import { ExprError, resolveNumbers, resolveTexts, substituteNames, type NameScope } from "./expr.ts";
 
 /** A part model_define stored: its default parameters (numbers or expressions) and its ops, unexpanded. */
 export interface PartDef {
@@ -41,9 +41,31 @@ function fill(text: string, params: Record<string, number>): string {
  * bad loop, an unknown part, or an expression that does not evaluate.
  */
 export function expandOps(ops: unknown[], params: Record<string, number>, parts: ReadonlyMap<string, PartDef>, words: ReadonlySet<string>, path = "ops", depth = 0): unknown[] {
+  return expandBoth(ops, params, null, parts, words, path, depth).map((row) => row.op);
+}
+
+/** One expanded op, and its twin with each typed expression kept as text in project names (`resolveTexts`). */
+export interface ExpandedOp {
+  op: unknown;
+  text: unknown;
+}
+
+/**
+ * --- Gaps A2. `expandOps`, with each op's text twin: a part's parameters, its `with` values, and loop values written
+ * out in the names of `scope`, so a step a `use` placed links to the project's parameters as a typed step does.
+ */
+export function expandOpsWithTexts(ops: unknown[], params: Record<string, number>, scope: NameScope, parts: ReadonlyMap<string, PartDef>, words: ReadonlySet<string>): ExpandedOp[] {
+  return expandBoth(ops, params, scope, parts, words, "ops", 0);
+}
+
+function textOf(value: unknown, scope: NameScope): string {
+  return typeof value === "number" ? String(value) : substituteNames(String(value).trim(), scope);
+}
+
+function expandBoth(ops: unknown[], params: Record<string, number>, scope: NameScope | null, parts: ReadonlyMap<string, PartDef>, words: ReadonlySet<string>, path: string, depth: number): ExpandedOp[] {
   if (depth > 6) throw new ExprError(`${path}: each and use nest at most 6 deep.`);
-  const out: unknown[] = [];
-  const push = (items: unknown[]) => {
+  const out: ExpandedOp[] = [];
+  const push = (items: ExpandedOp[]) => {
     out.push(...items);
     if (out.length > MAX_EXPANDED) throw new ExprError(`${path} expands to more than ${MAX_EXPANDED} ops. Split it into several calls.`);
   };
@@ -57,7 +79,8 @@ export function expandOps(ops: unknown[], params: Record<string, number>, parts:
       const values = loopValues(record, params, at);
       for (const value of values) {
         const inner = { ...params, [name]: value };
-        push(expandOps((record.ops as unknown[]).map((child) => labelled(child, (label) => fill(label, inner))), inner, parts, words, `${at}.ops`, depth + 1));
+        const innerScope = scope ? { ...scope, [name]: String(value) } : null;
+        push(expandBoth((record.ops as unknown[]).map((child) => labelled(child, (label) => fill(label, inner))), inner, innerScope, parts, words, `${at}.ops`, depth + 1));
       }
       return;
     }
@@ -68,18 +91,24 @@ export function expandOps(ops: unknown[], params: Record<string, number>, parts:
       const extra = Object.keys(record).find((key) => key !== "kind" && key !== "part" && key !== "with" && key !== "label");
       if (extra) throw new ExprError(`${at}.${extra} is not a field of use. Use part, with, and label.`);
       const inner: Record<string, number> = { ...params };
-      for (const [key, value] of Object.entries(part.params)) inner[key] = numberOf(value, inner, `${at} (${name}.${key})`);
+      const innerScope: Record<string, string> | null = scope ? { ...scope } : null;
+      for (const [key, value] of Object.entries(part.params)) {
+        inner[key] = numberOf(value, inner, `${at} (${name}.${key})`);
+        if (innerScope) innerScope[key] = textOf(value, innerScope);
+      }
       const given = record.with && typeof record.with === "object" ? (record.with as Record<string, unknown>) : {};
       for (const [key, value] of Object.entries(given)) {
         if (!NAME.test(key)) throw new ExprError(`${at}.with.${key} is not a parameter name.`);
         inner[key] = numberOf(value, { ...params, ...inner }, `${at}.with.${key}`);
+        if (innerScope) innerScope[key] = textOf(value, innerScope);
       }
       const prefix = typeof record.label === "string" && record.label.trim() ? fill(record.label.trim(), inner) : "";
       const ops = part.ops.map((child) => placed(child, prefix, inner));
-      push(expandOps(ops, inner, parts, words, `${at}(${name})`, depth + 1));
+      push(expandBoth(ops, inner, innerScope, parts, words, `${at}(${name})`, depth + 1));
       return;
     }
-    push([resolveNumbers(op, params, at, words)]);
+    const resolved = resolveNumbers(op, params, at, words);
+    push([{ op: resolved, text: scope ? resolveTexts(op, scope, words) : resolved }]);
   });
   return out;
 }

@@ -295,6 +295,11 @@ export function mountMarkup(root: HTMLElement) {
                 <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelPlaceRx" type="number" step="1" value="0" aria-label="Turn in model space about x, degrees"></label>
                 <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelPlaceRy" type="number" step="1" value="0" aria-label="Turn in model space about y, degrees"></label>
                 <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelPlaceRz" type="number" step="1" value="0" aria-label="Turn in model space about z, degrees"></label>
+                <div class="model-align" id="modelAlign" data-for="place">
+                  <label><span class="scrub-label">Align to…</span><select id="modelAlignTo" aria-label="Align to"></select></label>
+                  <label><span class="scrub-label">How</span><select id="modelAlignHow" aria-label="Align how"></select></label>
+                  <button class="btn" id="modelAlignGo" type="button" data-tip="Move the open part to line up with the pick, as one Place step.">Align</button>
+                </div>
                 <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelWpX" type="number" step="0.1" value="0" aria-label="Workplane origin, model x"></label>
                 <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelWpY" type="number" step="0.1" value="0" aria-label="Workplane origin, model y"></label>
                 <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelWpZ" type="number" step="0.1" value="0" aria-label="Workplane origin, model z"></label>

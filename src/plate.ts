@@ -192,6 +192,8 @@ export interface PlateSnap {
 
 export interface PlateBound {
   id: string;
+  /** What the object is called, for a label that names it. */
+  name?: string;
   min: [number, number, number];
   max: [number, number, number];
   selected: boolean;
@@ -1010,6 +1012,7 @@ export function boundEntries(plate: PlateState, bedX: number, bedY: number): Pla
   }
   return placed.map(({ obj, bounds }) => ({
     id: obj.id,
+    name: obj.name,
     min: bounds.min,
     max: bounds.max,
     selected: obj.id === plate.selectedId,

@@ -32,3 +32,68 @@
 
 /* The 2D pane keeps a band under the canvas for the scale bar, so a fitted layer and its callouts never reach it. */
 #pane2d.has-measure { padding-bottom: 28px; }
+
+/* Point-to-point Measure in Prepare: two dots, the line between them, the snap marker and the readout card. */
+.pm-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  overflow: hidden;
+  pointer-events: none;
+}
+.pm-layer[hidden], .pm-layer [hidden] { display: none !important; }
+.pm-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.pm-line { stroke: var(--accent); stroke-width: 1.5px; stroke-dasharray: 5 4; }
+.pm-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.pm-dot > span {
+  position: absolute;
+  left: 12px;
+  top: -9px;
+  font: 600 var(--fs-1) / 1 var(--font-mono);
+  color: var(--on-stage);
+  paint-order: stroke;
+  text-shadow: 0 0 3px var(--stage), 0 0 3px var(--stage);
+}
+.pm-hover {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 1px var(--panel);
+}
+.pm-hover > span {
+  position: absolute;
+  left: 18px;
+  top: -4px;
+  padding: 1px var(--space-1);
+  border-radius: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: var(--fs-2);
+  white-space: nowrap;
+}
+.pm-dist { font-weight: 600; font-variant-numeric: tabular-nums; }
+.pm-readout {
+  position: absolute;
+  left: var(--space-3);
+  bottom: var(--space-3);
+  max-width: min(46ch, calc(100% - 2 * var(--space-3)));
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--fs-2);
+  line-height: 1.4;
+}

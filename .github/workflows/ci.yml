@@ -136,6 +136,7 @@ jobs:
           export LIME_OCCT_BRIDGE="$PWD/target/debug/liblime_model_occt.so"
           export LD_LIBRARY_PATH="${OCCT_ROOT}/lib:${LD_LIBRARY_PATH:-}"
           node --experimental-strip-types mcp/occt.test.ts
+          node --experimental-strip-types mcp/vars-drive.test.ts
           node --experimental-strip-types mcp/step-solids.test.ts
           node --experimental-strip-types mcp/kernel-gaps.test.ts
           node --experimental-strip-types mcp/assemblies-m1.test.ts

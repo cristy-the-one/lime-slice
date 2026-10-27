@@ -895,8 +895,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "project_create",
-    description: "Start an empty plate.",
-    inputSchema: empty,
+    description: "Start an empty plate. Refused while there are parameters or parts, unless discard is true.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { discard: { type: "boolean", description: "Drop the parameters and parts." } } },
   },
   {
     name: "project_save",
@@ -1493,6 +1493,7 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         set: { type: "object", description: "Name to number or expression; later names may use earlier ones." },
         clear: { type: "boolean", description: "Forget every name first." },
+        rebuild: { type: "boolean", description: "Then rebuild each part that uses them, as the app's Rebuild does, and check it." },
       },
     },
   },
@@ -2097,7 +2098,7 @@ function annotate(node: Record<string, unknown>): void {
 for (const tool of TOOLS) annotate(tool.inputSchema);
 
 /** Model tools whose op, ops, and base take text such as "wallH / 2" where a number goes. */
-export const EXPRESSION_TOOLS: ReadonlySet<string> = new Set(["model_probe", "model_apply", "model_apply_batch", "model_edit", "model_build", "model_define", "render_view"]);
+export const EXPRESSION_TOOLS: ReadonlySet<string> = new Set(["model_probe", "model_apply", "model_apply_batch", "model_edit", "model_build", "model_define", "render_view", "workplane_set"]);
 
 /**
  * A schema as a client sees it: a number may also be text (an expression the server reads before checking), and a
@@ -2145,7 +2146,7 @@ export function advertisedTools(): ToolSpec[] {
     const props = (tool.inputSchema.properties ?? {}) as Record<string, unknown>;
     const next = Object.fromEntries(Object.entries(props).map(([name, value]) => [
       name,
-      tool.name === "model_apply" && name === "op" ? LEAN_OP : name === "op" || name === "ops" || name === "base" ? textNumbers(value) : value,
+      tool.name === "model_apply" && name === "op" ? LEAN_OP : name === "op" || name === "ops" || name === "base" || (tool.name === "workplane_set" && (name === "origin" || name === "turn")) ? textNumbers(value) : value,
     ]));
     return { ...tool, inputSchema: { ...tool.inputSchema, properties: next } };
   });
