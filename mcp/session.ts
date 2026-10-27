@@ -2920,7 +2920,7 @@ export class Session {
   }
 
   /**
-   * machine_set's `fits`: coupon results (plan section 27). `{material, process?, snug?, loose?, press?, wallMm?}` writes
+   * machine_set's `fits`: coupon results (plan section 28). `{material, process?, snug?, loose?, press?, wallMm?}` writes
    * measured cells for that row into the library, `{material, reset: true}` puts its starting values back.
    */
   private enterFits(library: MachineLibrary, value: unknown): { library: MachineLibrary; said: string } | { reason: string } {
