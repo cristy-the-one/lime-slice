@@ -314,6 +314,32 @@ void build_joints(
     TopoDS_Shape& pins);
 /// A dowel pin standing on `base` along `axis`: `radius`, `length` long, with `kPinChamfer` at each end.
 TopoDS_Shape make_pin(const gp_Pnt& base, const gp_Dir& axis, double radius, double length);
+/// --- Split to print, the fit coupon (plan section 2, milestone 6). A plate from the origin to `size` with blind holes
+/// bored into its front face (y = 0) along +Y, the hole's roof toward +Z when `teardrop`, and labels cut into that face;
+/// and the pins that go in the holes, standing along +Z on z = 0. Every hole is a `Geom_CylindricalSurface` of its radius.
+struct CouponHole {
+    double x = 0, z = 0, radius = 0, depth = 0;
+    bool teardrop = false;
+};
+struct CouponPin {
+    double x = 0, y = 0, radius = 0, length = 0;
+};
+struct FitCoupon {
+    double size[3] = {0, 0, 0};
+    std::vector<CouponHole> holes;
+    /// Strokes of the labels in the front face's X and Z, as `NumberStroke` has them: `u` is X and `v` is Z.
+    std::vector<NumberStroke> strokes;
+    double stroke_width = 0, engrave_depth = 0;
+    std::vector<CouponPin> pins;
+};
+struct FitCouponResult {
+    TopoDS_Shape plate;
+    TopoDS_Shape pins;
+    double plate_volume = 0, pins_volume = 0;
+    /// The volume the labels took from the plate.
+    double engraved = 0;
+};
+bool build_fit_coupon(const FitCoupon& coupon, FitCouponResult& made, std::string& error);
 /// A uniform scale about the centre. The result's volume is the original's times `factor` cubed.
 TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string& error);
 

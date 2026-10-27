@@ -8,7 +8,7 @@ import type { DragHandle } from "../model-drag";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { Params } from "../modeling/expr.ts";
 import { formatMm, type FacePlane, type SplitBase, type SplitPlan } from "../model-plane";
-import { fillConnector, holeCompensationNote, mm, NO_FIT_SENTENCE, STARTING_FIT_LABEL, type Box, type PartitionDefaults, type PartitionOp, type Target } from "../modeling/partition.ts";
+import { clearanceSentence, fillConnector, holeCompensationNote, mm, type Box, type ConnectorSpec, type PartitionDefaults, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
@@ -45,6 +45,11 @@ export interface SplitPrintHost {
   defaults(target: Target | null): PartitionDefaults | null;
   /** The slice setting XY hole compensation, in millimetres; its note shows while it is not 0. */
   holeCompensation(): number;
+  /**
+   * Print a fit coupon… for `spec`'s dowel (plan section 2): the plate and its pins added to the plate, or, for an export
+   * target, saved as STEP files. The answer is the sentence the card shows: what was made, or why not.
+   */
+  printCoupon(target: Target | null, spec: ConnectorSpec): Promise<string>;
   /** The card closed without Apply: an edit goes back to the step shown before it. */
   cancelled(): void;
   parameters(): Params;
@@ -173,6 +178,8 @@ export function mountSplitPrint(next: SplitPrintHost) {
           <label><span class="scrub-label" data-scrub>Clearance</span><input id="modelPartJointClearance" type="number" step="0.01" min="0" aria-label="Clearance, each side, millimetres"></label>
         </div>
         <p class="model-note" id="modelPartJointFitNote"></p>
+        <div class="sp-coupon"><button class="btn" id="modelPartCoupon" type="button">Print a fit coupon…</button></div>
+        <p class="model-note" id="modelPartCouponNote" role="status" hidden></p>
         <label class="sp-print" data-joint-for="round"><span class="scrub-label">Hole shape</span><select id="modelPartJointHole" aria-label="Hole shape">
           <option value="round">Round</option><option value="teardrop">Teardrop</option>
         </select></label>
@@ -586,10 +593,11 @@ function paintJoints() {
   const fitNote = $<HTMLElement>("#modelPartJointFitNote");
   if (fitNote) {
     const each = filled.clearance;
-    const sizes = each == null ? NO_FIT_SENTENCE : `${mm(each)} mm each side (${mm(2 * each)} mm on the diameter).`;
-    const starting = each != null && named !== "typed" && d.clearance?.startingFit ? `${STARTING_FIT_LABEL}. ` : "";
+    const source = named === "typed" ? "typed" : (d.clearance?.source[named] ?? "starting");
     const compensation = holeCompensationNote(host?.holeCompensation() ?? 0);
-    fitNote.textContent = `${starting}${sizes}${compensation ? ` ${compensation}` : ""}`;
+    fitNote.textContent = `${clearanceSentence(each, source)}${compensation ? ` ${compensation}` : ""}`;
+    const coupon = $<HTMLButtonElement>("#modelPartCoupon");
+    if (coupon) coupon.dataset.tip = exportTarget(card.target) ? "Save a fit coupon for this printer as STEP files" : "Add a fit coupon and its pins to the plate";
   }
   const cutNumber = card.selected + 1;
   const mine = (placement?.notes ?? []).filter((note) => note.startsWith(`Cut ${cutNumber}:`));
@@ -611,6 +619,24 @@ function paintJoints() {
       use.dataset.count = String(fit.placed);
       use.dataset.tip = `Set Count to the ${fit.placed} that fit`;
     }
+  }
+}
+
+/** Print a fit coupon…: the host adds it to the plate, or for an export target saves it; the card shows the sentence it answers. */
+async function printCoupon(spec: ConnectorSpec) {
+  const button = $<HTMLButtonElement>("#modelPartCoupon");
+  const note = $<HTMLElement>("#modelPartCouponNote");
+  if (!host || !button || button.disabled) return;
+  button.disabled = true;
+  let said = "";
+  try {
+    said = await host.printCoupon(card.target, spec);
+  } finally {
+    button.disabled = false;
+  }
+  if (note) {
+    note.textContent = said;
+    note.hidden = said === "";
   }
 }
 
@@ -843,6 +869,10 @@ function onClick(ev: Event) {
     card = cardFromFit(fit, center, frame, card.layout, { target: card.target, numbers: card.numbers });
     renderCuts();
     changed(0);
+    return;
+  }
+  if (target.closest("#modelPartCoupon") && card.cuts[card.selected]) {
+    void printCoupon(card.cuts[card.selected]!.joints.spec);
     return;
   }
   const use = target.closest<HTMLElement>("#modelPartJointUse");

@@ -152,26 +152,74 @@ export const MAX_PIECES_HARD_STOP = 24;
 export const MIN_MAX_PIECES = 2;
 export const PITCH_DIAMETERS = 4;
 
+/** Where a clearance cell's number came from: a starting value, or a fit someone printed and measured. */
+export type FitSource = "starting" | "measured";
+
+/** The materials the table has a row for: PLA, PETG, ABS (ASA reads as it), TPU, and standard resin on the Form 4. */
+export type ClearanceKey = "pla" | "petg" | "abs" | "tpu" | "resin";
+
 export interface ClearanceRow {
   snug: number;
   loose: number;
   press: number;
-  /** True until the calibration coupon has been printed. The UI says "Starting fit". */
+  /** Each cell's source. Milestone 11 sets a cell to `measured` from the step of a printed coupon that fitted. */
+  source: Record<Clearance, FitSource>;
+  /** True while any cell is still a starting value. */
   startingFit: boolean;
 }
 
-export const CLEARANCE_TABLE: Readonly<Record<"pla" | "petg" | "abs" | "resin", ClearanceRow>> = {
-  pla: { snug: 0.15, loose: 0.25, press: 0.05, startingFit: true },
-  petg: { snug: 0.2, loose: 0.3, press: 0.1, startingFit: true },
-  abs: { snug: 0.2, loose: 0.3, press: 0.1, startingFit: true },
-  resin: { snug: 0.1, loose: 0.2, press: 0.05, startingFit: true },
+const startingRow = (snug: number, loose: number, press: number): ClearanceRow => ({
+  snug,
+  loose,
+  press,
+  source: { snug: "starting", loose: "starting", press: "starting" },
+  startingFit: true,
+});
+
+export const CLEARANCE_TABLE: Readonly<Record<ClearanceKey, ClearanceRow>> = {
+  pla: startingRow(0.15, 0.25, 0.05),
+  petg: startingRow(0.2, 0.3, 0.1),
+  abs: startingRow(0.2, 0.3, 0.1),
+  // TPU grips and gives: a wider starting row than the rigid filaments, until a coupon says otherwise.
+  tpu: startingRow(0.25, 0.35, 0.15),
+  resin: startingRow(0.1, 0.2, 0.05),
 };
 
+/** The table's key for a process and a material name, or null for a material with no row. Resin ignores the material. */
+export function clearanceKey(process: Process, material: string): ClearanceKey | null {
+  if (process === "resin") return "resin";
+  const name = material.trim().toLowerCase();
+  if (name === "asa") return "abs";
+  return name === "pla" || name === "petg" || name === "abs" || name === "tpu" ? name : null;
+}
+
 export function clearanceRow(process: Process, material: string): ClearanceRow | null {
-  if (process === "resin") return CLEARANCE_TABLE.resin;
-  const key = material.trim().toLowerCase();
-  if (key === "pla" || key === "petg" || key === "abs") return CLEARANCE_TABLE[key];
-  return null;
+  const key = clearanceKey(process, material);
+  return key ? CLEARANCE_TABLE[key] : null;
+}
+
+/** One cell of a row: the gap on each side and where it came from. */
+export function clearanceCell(row: ClearanceRow, fit: Clearance): { mm: number; source: FitSource } {
+  return { mm: row[fit], source: row.source[fit] };
+}
+
+/**
+ * The row after a coupon is measured (milestone 11): `fit`'s cell becomes `mm`, a gap on each side, and its source
+ * `measured`. The other cells stay as they were, and `startingFit` follows. The coupon's labels are these gaps, so the
+ * step that fitted is the number to enter.
+ */
+export function measuredRow(row: ClearanceRow, fit: Clearance, mm: number): ClearanceRow {
+  const source: Record<Clearance, FitSource> = { ...row.source, [fit]: "measured" };
+  return { ...row, [fit]: mm, source, startingFit: Object.values(source).some((one) => one === "starting") };
+}
+
+/** The Clearance sentence of the card and the MCP: the source first, then the gap on each side and across the hole. */
+export type ClearanceSource = FitSource | "typed";
+
+export function clearanceSentence(eachMm: number | null, source: ClearanceSource): string {
+  if (eachMm === null) return NO_FIT_SENTENCE;
+  const label = source === "starting" ? `${STARTING_FIT_LABEL}. ` : source === "measured" ? "Measured. " : "Typed. ";
+  return `${label}${mm(eachMm)} mm each side (${mm(2 * eachMm)} mm on the diameter).`;
 }
 
 export interface DefaultsInput {

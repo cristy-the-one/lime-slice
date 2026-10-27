@@ -110,6 +110,11 @@ async function openBar(page: Page, compact = false, part: MockSolid = BAR): Prom
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   const tree = await mockModelTree(page, {
     open: () => part,
+    fitCoupon(request) {
+      const spec = request.spec as { name: string; holes: unknown[]; pins: unknown[] };
+      const file = (text: string) => ({ stepB64: Buffer.from(`ISO-10303-21;\n/* ${text} */\nEND-ISO-10303-21;\n`).toString("base64"), volumeMm3: 1000, solids: 1 });
+      return { plate: file(spec.name), pins: spec.pins.length > 0 ? file(`${spec.name}-pins`) : null, engravedMm3: 4.2 };
+    },
     apply: built,
     probe(request, on) {
       const op = request.op as { kind: string; cuts?: Cut[] };
@@ -705,12 +710,109 @@ test("Connectors on shows the fields with the planner's defaults and the ghost's
   await expect(page.locator("#modelPartJointClearance")).toHaveValue("0.15");
   await page.locator("#modelPartJointClearance").fill("0.2");
   await page.locator("#modelPartJointClearance").dispatchEvent("change");
-  await expect(page.locator("#modelPartJointFitNote")).toHaveText("0.2 mm each side (0.4 mm on the diameter).");
+  await expect(page.locator("#modelPartJointFitNote")).toHaveText("Typed. 0.2 mm each side (0.4 mm on the diameter).");
 
   await jointsOn(page).uncheck();
   await expect(jointFields(page), "off hides every connector field").toBeHidden();
   await expect(page.locator("#model"), "and the ghost's holes").toHaveAttribute("data-connectors", "0");
   await expect(page.locator("#modelPartPieces li"), "the plain cut's check: three pieces and no pins").toHaveCount(3);
+});
+
+// --- Milestone 6: the fit table and the fit coupon.
+const fitNote = (page: Page) => page.locator("#modelPartJointFitNote");
+
+test("Clearance names its source for each fit, and the XY hole compensation warning stays", async ({ page }) => {
+  await openBar(page);
+  await openCard(page);
+  await jointsOn(page).check();
+  await expect(fitNote(page), "PLA's Snug is a starting value").toHaveText("Starting fit. 0.15 mm each side (0.3 mm on the diameter).");
+  await page.locator("#modelPartJointFit").selectOption("loose");
+  await expect(fitNote(page)).toHaveText("Starting fit. 0.25 mm each side (0.5 mm on the diameter).");
+  await page.locator("#modelPartJointFit").selectOption("press");
+  await expect(fitNote(page)).toHaveText("Starting fit. 0.05 mm each side (0.1 mm on the diameter).");
+  await page.locator("#modelPartJointFit").selectOption("typed");
+  await page.locator("#modelPartJointClearance").fill("0.12");
+  await page.locator("#modelPartJointClearance").dispatchEvent("change");
+  await page.locator("#modelPartJointClearance").blur();
+  await expect(fitNote(page), "a typed gap is its own source").toHaveText("Typed. 0.12 mm each side (0.24 mm on the diameter).");
+  await page.locator("#modelPartJointFit").selectOption("snug");
+  await expect(fitNote(page)).toHaveText("Starting fit. 0.15 mm each side (0.3 mm on the diameter).");
+  await page.keyboard.press("Escape");
+
+  // A slice setting changes the hole again: the card says so, and the solid's clearance stays.
+  await page.locator("#tabPrepare").click();
+  await page.locator("#levelPick").selectOption("advanced");
+  await page.locator("#xyhole").fill("0.1");
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume");
+  await openCard(page);
+  await jointsOn(page).check();
+  await expect(fitNote(page)).toHaveText("Starting fit. 0.15 mm each side (0.3 mm on the diameter). XY hole compensation is 0.1 mm. It changes the hole again when slicing. Clearance here is the solid.");
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await page.waitForTimeout(400);
+  await shot(page, "fit-table-card");
+});
+
+test("Print a fit coupon… asks the engine for the layout of the card's dowel and adds the plate and its pin as objects", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await jointsOn(page).check();
+  const button = page.locator("#modelPartCoupon");
+  await expect(button).toHaveText("Print a fit coupon…");
+  await expect(button).toHaveAttribute("data-tip", "Add a fit coupon and its pins to the plate");
+  await button.click();
+  await expect(page.locator("#modelPartCouponNote")).toContainText("Added fit-coupon-pla.step and fit-coupon-pla-pins.step to the plate. Fit coupon for PLA: 7 holes from 0.05 to 0.35 mm each side, for a 3 mm radius pin, and one pin to try in each.");
+  await expect(page.locator("#modelPanelTitle"), "the card stays open on the part it was cutting").toHaveText("Split to print");
+  await expect(page.locator("#modelPartCuts .sp-cut")).toHaveCount(2);
+  const asked = tree.of("fitCoupon");
+  expect(asked, "one engine call").toHaveLength(1);
+  const spec = asked[0]!.spec as { holes: { radiusMm: number; teardrop: boolean; depthMm: number }[]; pins: { radiusMm: number; lengthMm: number }[]; sizeMm: number[]; strokes: unknown[][] };
+  expect(spec.holes.map((hole) => hole.radiusMm), "the card's 3 mm dowel plus PLA's Snug 0.15 less 0.10 to plus 0.20").toEqual([3.05, 3.1, 3.15, 3.2, 3.25, 3.3, 3.35]);
+  expect(spec.holes.every((hole) => hole.teardrop && hole.depthMm === 2.4), "teardrops, as deep as the card's dowel holes").toBe(true);
+  expect(spec.pins).toEqual([expect.objectContaining({ radiusMm: 3, lengthMm: 4 })]);
+  expect(spec.strokes.length, "the labels are strokes").toBeGreaterThan(20);
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
+  await expect(page.locator("#objectList .obj").nth(1)).toContainText("fit-coupon-pla.step");
+  await expect(page.locator("#objectList .obj").nth(2)).toContainText("fit-coupon-pla-pins.step");
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: "test-results/split-print/coupon-on-plate.png" });
+});
+
+test("a clearance the card types is where the coupon is centred, and a refusal is the card's sentence", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await jointsOn(page).check();
+  await page.locator("#modelPartJointFit").selectOption("typed");
+  await page.locator("#modelPartJointClearance").fill("0.3");
+  await page.locator("#modelPartJointClearance").dispatchEvent("change");
+  await page.locator("#modelPartCoupon").click();
+  await expect(page.locator("#modelPartCouponNote")).toContainText("7 holes from 0.2 to 0.5 mm each side");
+  expect((tree.of("fitCoupon")[0]!.spec as { holes: { radiusMm: number }[] }).holes.map((hole) => hole.radiusMm)).toEqual([3.2, 3.25, 3.3, 3.35, 3.4, 3.45, 3.5]);
+  await page.locator("#modelPartJointRadius").fill("1");
+  await page.locator("#modelPartJointRadius").dispatchEvent("change");
+  await page.locator("#modelPartCoupon").click();
+  await expect(page.locator("#modelPartCouponNote")).toHaveText("The pin radius is 1 mm, under the 1.6 mm floor.");
+  expect(tree.of("fitCoupon"), "a refusal asks nothing of the engine").toHaveLength(1);
+});
+
+test("for the Form 4 Print a fit coupon… saves STEP files and adds nothing to the plate", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await target(page).selectOption("formlabs-form-4");
+  await jointsOn(page).check();
+  await expect(fitNote(page)).toHaveText("Starting fit. 0.1 mm each side (0.2 mm on the diameter).");
+  await expect(page.locator("#modelPartCoupon")).toHaveAttribute("data-tip", "Save a fit coupon for this printer as STEP files");
+  const names: string[] = [];
+  page.on("download", (download) => names.push(download.suggestedFilename()));
+  await page.locator("#modelPartCoupon").click();
+  await expect.poll(() => names).toEqual(["fit-coupon-resin.step", "fit-coupon-resin-pins.step"]);
+  await expect(page.locator("#modelPartCouponNote")).toContainText("Saved fit-coupon-resin.step and fit-coupon-resin-pins.step. Fit coupon for resin: 7 holes from 0 to 0.3 mm each side");
+  const spec = tree.of("fitCoupon")[0]!.spec as { holes: { radiusMm: number; teardrop: boolean }[] };
+  expect(spec.holes.map((hole) => hole.radiusMm), "resin: no gap at the first step").toEqual([3, 3.05, 3.1, 3.15, 3.2, 3.25, 3.3]);
+  expect(spec.holes.some((hole) => hole.teardrop), "a resin hole stays round").toBe(false);
+  await page.locator("#tabPrepare").click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(1);
 });
 
 test("a typed count that does not fit says 2 of 4 and Use 2 writes the count", async ({ page }) => {

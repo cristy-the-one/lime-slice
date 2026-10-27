@@ -375,6 +375,44 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   check("a key is refused with its sentence", keyed.ok === false && keyed.reason === "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.", JSON.stringify(keyed));
 }
 
+// --- Split to print, milestone 6: the fit coupon through solid_new, against real Open CASCADE. The plate and its pin are
+// two objects; each hole's radius is the pin's plus its labelled gap, read back from the solid's cylinder faces, and the
+// volumes are checked by hand. For the Form 4 they are STEP files in the workspace.
+{
+  const made = await call("solid_new", { name: "Fit PETG", coupon: { material: "PETG" } });
+  const objects = (made.objects ?? []) as string[];
+  const holes = (made.holes ?? []) as { label: string; clearanceMm: number; radiusMm: number; teardrop: boolean }[];
+  check("a coupon adds the plate and one pin as two objects", made.ok === true && objects.length === 2 && holes.length === 7, JSON.stringify(made).slice(0, 400));
+  check("the labels are PETG's Snug 0.20 less 0.10 to plus 0.20", JSON.stringify(holes.map((hole) => hole.label)) === JSON.stringify(["0.10", "0.15", "0.20", "0.25", "0.30", "0.35", "0.40"]), JSON.stringify(holes.map((hole) => hole.label)));
+  const plate = await call("model_describe", { object: objects[0]!, limit: 1 });
+  const round = await call("faces_find", { object: objects[0]!, kind: "cylinder", limit: 100 });
+  const radii = ((round.faces ?? []) as { radiusMm?: number }[]).map((face) => face.radiusMm!).sort((a, b) => a - b);
+  // STEP carries the radius as a decimal; read back it is the layout's to 1e-9 mm.
+  check("each hole is one cylinder of the pin's radius plus its gap, to 1e-9 mm", radii.length === 7 && radii.every((radius, at) => Math.abs(radius - (3 + holes[at]!.clearanceMm)) < 1e-9), JSON.stringify(radii));
+  const size = (made.sizeMm ?? []) as number[];
+  const bored = holes.reduce((sum, hole) => sum + (0.75 * Math.PI + 1) * hole.radiusMm * hole.radiusMm * 2.4, 0);
+  const expectedPlate = size[0]! * size[1]! * size[2]! - bored - Number(made.engravedMm3);
+  check("the plate's volume is the box less seven teardrop holes less the labels", near(plate.volumeMm3, expectedPlate, 1e-3) && Number(made.engravedMm3) > 0, JSON.stringify({ volume: plate.volumeMm3, expectedPlate, engraved: made.engravedMm3 }));
+  const pin = await call("model_describe", { object: objects[1]!, limit: 1 });
+  const pinVolume = Math.PI * 9 * 4 - 2 * Math.PI * 0.25 * (3 - 0.5 / 3);
+  const pinRadii = (((await call("faces_find", { object: objects[1]!, kind: "cylinder", limit: 100 })).faces ?? []) as { radiusMm?: number }[]).map((face) => face.radiusMm);
+  check("the pin is a chamfered 3 mm radius, 4 mm long", near(pin.volumeMm3, pinVolume, 1e-3) && pinRadii.length === 1 && Math.abs(pinRadii[0]! - 3) < 1e-9, JSON.stringify({ volume: pin.volumeMm3, pinVolume, pinRadii }));
+  const onPlate = ((await call("plate_list", { limit: 100 })).objects as { object: string; name: string }[]).filter((row) => objects.includes(row.object));
+  check("both are on the plate under the given name", onPlate.length === 2 && onPlate[0]!.name === "Fit PETG", JSON.stringify(onPlate));
+
+  const resin = await call("solid_new", { coupon: { printer: "formlabs-form-4" } });
+  const files = (resin.files ?? []) as string[];
+  const stepText = files.map((file) => readFileSync(file).toString("latin1"));
+  check("for the Form 4 the plate and the pin are STEP files, off the plate", resin.ok === true && files.length === 2 && files.every((file) => file.endsWith(".step")) && resin.objects === undefined && stepText[0]!.includes("PRODUCT('Fit coupon resin'") && stepText[1]!.includes("PRODUCT('Fit coupon resin-pins'"), JSON.stringify(resin).slice(0, 400));
+  check("with the support note and round holes", String(resin.note).includes("supports") && (resin.holes as { teardrop: boolean }[]).every((hole) => !hole.teardrop) && (resin.holes as { label: string }[])[0]!.label === "0.00", JSON.stringify(resin.holes));
+  const back = await call("mesh_import", { path: files[0]! });
+  const backVolume = Number((await call("model_describe", { object: String(back.object), limit: 1 })).volumeMm3);
+  const resinBored = (resin.holes as { radiusMm: number }[]).reduce((sum, hole) => sum + Math.PI * hole.radiusMm * hole.radiusMm * 2.4, 0);
+  const resinSize = resin.sizeMm as number[];
+  check("and the plate reads back with its volume", near(backVolume, resinSize[0]! * resinSize[1]! * resinSize[2]! - resinBored - Number(resin.engravedMm3), 1e-3), JSON.stringify({ backVolume, resinSize, resinBored }));
+  console.log(`occt: fit coupon PETG plate ${Number(plate.volumeMm3).toFixed(3)} mm³ (${size.join(" x ")}), pin ${Number(pin.volumeMm3).toFixed(3)} mm³; resin plate ${backVolume.toFixed(3)} mm³`);
+}
+
 // The convex filter on a box (12 convex edges) and on a stepped part with one concave edge.
 {
   const made = await call("solid_new", { primitive: "box", dx: 40, dy: 30, dz: 20 });
