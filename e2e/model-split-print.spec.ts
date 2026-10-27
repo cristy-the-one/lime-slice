@@ -446,8 +446,12 @@ test("a cut's Profile menu offers Straight, Lap and Tongue; a lap shows Depth, H
   await page.locator("#modelPartProfileDepth").dispatchEvent("change");
   await expect(page.locator("#modelPartProfileNote")).toBeHidden();
   await jointsOn(page).check();
-  await expect(page.locator("#modelPartProfileNote")).toHaveText("Connectors on a shaped cut are not built yet. Turn them off, or cut straight.");
+  await expect(page.locator("#modelPartProfileNote"), "a lap has flats for connectors since milestone 11").toBeHidden();
+  await expect(apply(page)).toBeEnabled();
+  await profileKind(page).selectOption("tongue");
+  await expect(page.locator("#modelPartProfileNote")).toHaveText("Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.");
   await expect(apply(page), "the cut says why it cannot be built").toBeDisabled();
+  await profileKind(page).selectOption("lap");
   await jointsOn(page).uncheck();
   if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
   await page.waitForTimeout(400);
@@ -864,6 +868,56 @@ test("Export… offers STL per piece, one 3MF and one STEP, and writes the expec
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   expect(seen.length, "Cancel writes nothing").toBe(5);
+});
+
+test("on the desktop, STL per piece asks for one folder and writes every piece there", async ({ page }) => {
+  await openBar(page, false, COLUMN);
+  await openCard(page);
+  await applyForForm4(page);
+  const dialog = page.locator("#splitExport");
+  const downloads: string[] = [];
+  page.on("download", (download) => downloads.push(download.suggestedFilename()));
+  // The desktop shell answers `invoke`; the app looks for it each time it saves, so it is put in place for this export only.
+  const desktop = async (answer: string | null) => {
+    await page.evaluate((folder) => {
+      const calls: { cmd: string; args: { files: { name: string; bytesB64: string }[] } }[] = [];
+      (window as unknown as { __folderCalls: typeof calls }).__folderCalls = calls;
+      (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+        invoke: async (cmd: string, args: { files: { name: string; bytesB64: string }[] }) => {
+          calls.push({ cmd, args });
+          return folder;
+        },
+        transformCallback: () => 0,
+      };
+    }, answer);
+  };
+  const calls = () => page.evaluate(() => (window as unknown as { __folderCalls: { cmd: string; args: { files: { name: string; bytesB64: string }[] } }[] }).__folderCalls);
+  const exportStl = async () => {
+    await page.locator("#modelPartExport").click();
+    await expect(dialog).toBeVisible();
+    await dialog.locator('[data-format="stl"]').click();
+    await expect(dialog).toBeHidden();
+  };
+  await desktop("C:\\parts\\bar");
+  await exportStl();
+  await expect(readout(page)).toContainText("Saved bar-1.stl, bar-2.stl, bar-3.stl in C:\\parts\\bar.");
+  const made = await calls();
+  expect(made.map((call) => call.cmd), "one call for all three pieces, not one save dialog each").toEqual(["save_files_to_folder"]);
+  expect(made[0]!.args.files.map((file) => file.name)).toEqual(["bar-1.stl", "bar-2.stl", "bar-3.stl"]);
+  for (const file of made[0]!.args.files) {
+    const header = Buffer.from(file.bytesB64, "base64");
+    expect(header.length, "a binary STL: 80 bytes of header, a count, then 50 bytes a triangle").toBe(84 + 50 * header.readUInt32LE(80));
+  }
+  expect(downloads, "the desktop writes files, the page downloads none").toEqual([]);
+  await view(page, "folder-export");
+  await desktop(null);
+  await exportStl();
+  await expect(readout(page), "a cancelled folder pick says nothing was saved").toContainText("No folder was picked, so nothing was saved.");
+  // The web build has no desktop shell: it downloads each piece, as it did.
+  await page.evaluate(() => delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+  await exportStl();
+  await expect.poll(() => downloads).toEqual(["bar-1.stl", "bar-2.stl", "bar-3.stl"]);
+  await expect(readout(page)).toContainText("Saved bar-1.stl, bar-2.stl, bar-3.stl. Keep supports off");
 });
 
 test("the partition row's menu offers Export… for an export target", async ({ page }) => {

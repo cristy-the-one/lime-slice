@@ -130,7 +130,8 @@ bool write_step_named(
     const std::vector<std::string>& names,
     const char* path,
     std::string& error);
-/// The free shapes of a STEP file with their product names, in the file's order (the XCAF document reader).
+/// The free shapes of a STEP file with their product names, in the file's order (the XCAF document reader). Each name
+/// starts with A when the shape is an assembly of components, or S when it is a simple shape.
 bool read_step_named(
     const char* path,
     std::vector<std::pair<std::string, TopoDS_Shape>>& out,
@@ -328,8 +329,13 @@ struct JointSpec {
     int side = 1;
     double height = 0, angle = 0;
     int slide = 0;
+    /// A connector on a flat of a shaped cut: `flat` is set, and (`a`, `b`) are millimetres in that flat's own frame. The
+    /// flat's plane runs through (`flat_u`, `flat_w`) of the cut's U and W from its origin, square to W turned toward U
+    /// by `flat_tilt` degrees, with V along the cut's V and its U along the flat.
+    bool flat = false;
+    double flat_u = 0, flat_w = 0, flat_tilt = 0;
 };
-constexpr int kJointStride = 14;
+constexpr int kJointStride = 18;
 constexpr int kJointDowel = 0;
 constexpr int kJointPlug = 1;
 constexpr int kJointHardware = 2;

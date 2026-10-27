@@ -1067,6 +1067,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     kick();
   }
 
+  /** How far a tag keeps from the view's edge. */
+  const TAG_EDGE_PX = 4;
   const tags: { el: HTMLDivElement; at: THREE.Vector3 }[] = [];
 
   function setTags(next: readonly { text: string; at: [number, number, number] }[]) {
@@ -1084,7 +1086,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     kick();
   }
 
-  /** Each tag over its point, where the camera now sees it; hidden behind the camera. */
+  /** Each tag over its point, where the camera now sees it, kept inside the view (a point near its edge slides in); hidden behind the camera. */
   function placeTags() {
     if (tags.length === 0) return;
     const box = canvas.getBoundingClientRect();
@@ -1092,8 +1094,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     for (const tag of tags) {
       const at = tag.at.clone().project(camera);
       tag.el.hidden = at.z > 1;
-      tag.el.style.left = `${Math.round(box.left - parent.left + ((at.x + 1) / 2) * box.width)}px`;
-      tag.el.style.top = `${Math.round(box.top - parent.top + ((1 - at.y) / 2) * box.height)}px`;
+      const x = box.left - parent.left + ((at.x + 1) / 2) * box.width;
+      const y = box.top - parent.top + ((1 - at.y) / 2) * box.height;
+      const [halfW, halfH] = [tag.el.offsetWidth / 2 + TAG_EDGE_PX, tag.el.offsetHeight / 2 + TAG_EDGE_PX];
+      const inside = (value: number, low: number, size: number, half: number) => (size > 2 * half ? Math.min(Math.max(value, low + half), low + size - half) : low + size / 2);
+      tag.el.style.left = `${Math.round(inside(x, box.left - parent.left, box.width, halfW))}px`;
+      tag.el.style.top = `${Math.round(inside(y, box.top - parent.top, box.height, halfH))}px`;
     }
   }
 

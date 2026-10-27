@@ -347,14 +347,14 @@ fn a_dovetail_without_a_neck_is_refused_in_a_sentence() {
 }
 
 #[test]
-fn connectors_on_a_shaped_cut_are_refused_until_they_are_built() {
-    let mut with = op(lap("positive"));
+fn connectors_on_a_tongue_are_refused_until_they_are_built() {
+    let mut with = op(tongue("positive"));
     with["cuts"][0]["connectors"] =
         json!({ "on": true, "types": [{ "type": "dowel" }], "placed": [] });
     let Some(refused) = cut(&with) else { return };
     assert_eq!(
         refused.expect_err("shaped"),
-        "Connectors on a shaped cut are not built yet. Turn them off, or cut straight."
+        "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight."
     );
 }
 

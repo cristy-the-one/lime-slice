@@ -779,6 +779,10 @@ int lime_tree_partition(
                 spec.height = at[11];
                 spec.angle = at[12];
                 spec.slide = static_cast<int>(at[13]);
+                spec.flat = at[14] != 0.0;
+                spec.flat_u = at[15];
+                spec.flat_w = at[16];
+                spec.flat_tilt = at[17];
                 specs.push_back(spec);
             }
             const gp_Vec lift(up[0], up[1], up[2]);
