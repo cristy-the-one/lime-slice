@@ -1315,7 +1315,7 @@ export class Session {
       : null;
     this.bridgeSeq += 1;
     const payload = {
-      tool: name,
+      tool: name === "object_select" && typeof input.name === "string" ? "plate_sync" : name,
       session: this.bridgeSession,
       seq: this.bridgeSeq,
       plate: shown.map((row) => ({
@@ -1364,7 +1364,7 @@ export class Session {
       case "plate_list": return this.plateList(input);
       case "plate_undo": return this.plateUndo();
       case "plate_redo": return this.plateRedo();
-      case "object_select": return this.objectSelect(String(input.object));
+      case "object_select": return this.objectSelect(String(input.object), input.name);
       case "object_place": return this.objectPlace(input);
       case "object_remove": return this.objectRemove(String(input.object));
       case "object_duplicate": return this.objectDuplicate(input);
@@ -2315,9 +2315,19 @@ export class Session {
     return { ok: true, objects: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}), ...offer };
   }
 
-  private objectSelect(id: string): Record<string, unknown> {
+  /** A name typed for a plate object, trimmed to the limit; undefined when none was given. */
+  private givenName(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim() ? value.trim().slice(0, NAME_LIMIT) : undefined;
+  }
+
+  private objectSelect(id: string, name?: unknown): Record<string, unknown> {
     const obj = this.find(id);
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+    const renamed = this.givenName(name);
+    if (renamed && renamed !== obj.name) {
+      this.remember("Rename");
+      obj.name = renamed;
+    }
     this.selected = obj.id;
     return { ok: true, object: obj.id, name: shownName(obj.name) };
   }
@@ -3946,7 +3956,7 @@ export class Session {
     if (error) return { ok: false, reason: plainModelError(error, "create") };
     const obj: PlateObject = {
       id,
-      name: kind,
+      name: this.givenName(input.name) ?? kind,
       fileName: `${kind}.step`,
       bytes: new Uint8Array(),
       source: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),

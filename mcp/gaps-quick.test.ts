@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { mirrorPlate, type BridgeMessage, type MirrorObject } from "../src/bridge.ts";
 import { expand, primitiveFrom, withBoxAnchor, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { fakeEngine } from "./engine.ts";
 import { validateTool } from "./schema.ts";
@@ -114,6 +115,45 @@ check("a root op may carry a label", validateTool("model_apply", { op: { kind: "
   const bare = await own.call("model_apply_batch", { object: made.object, ops: [{ kind: "use", part: "peg", with: { h: 3 } }] });
   const bareLabels = ((await own.call("model_history", { object: made.object })).nodes as { label?: string }[]).map((node) => node.label);
   check("a use with no label leaves a part's unlabelled ops to their own names", bare.ok === true && bareLabels.includes("bar") && bareLabels.some((label) => label?.startsWith("Fuse cylinder")), JSON.stringify(bareLabels));
+}
+
+// Item 16. A plate object can be named when it is made and renamed by object_select; the name is what the list, a
+// saved project, and the desktop's mirror carry, and plate_undo takes a rename back.
+{
+  check("solid_new and object_select take a name", validateTool("solid_new", { primitive: "box", dx: 5, name: "led body" }) === null && validateTool("object_select", { object: "obj_1", name: "led body" }) === null);
+  check("an empty name is refused", validateTool("object_select", { object: "obj_1", name: "" }) !== null);
+  const own = new Session(fakeEngine());
+  const listed = async () => ((await own.call("plate_list", {})).objects as { object?: string; name?: string }[]).map((row) => row.name);
+  const named = await own.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10, name: "  led body  " });
+  check("solid_new with a name stands the object under it", named.ok === true && (await own.call("model_commit", { object: named.object })).ok === true && (await listed()).includes("led body"), JSON.stringify(await listed()));
+  const plain = await own.call("solid_new", { primitive: "cylinder", radius: 3, height: 8 });
+  await own.call("model_commit", { object: plain.object });
+  check("a solid with no name is still called by its primitive", (await listed()).includes("cylinder"), JSON.stringify(await listed()));
+  const renamed = await own.call("object_select", { object: plain.object, name: "hook" });
+  const mirrored = structuredClone(own.bridgeSnapshot()) as { tool?: string; plate?: { object: string; name: string; meshHash?: string }[] } | null;
+  check("object_select with a name renames the object and says so", renamed.ok === true && renamed.name === "hook" && (await listed()).includes("hook") && !(await listed()).includes("cylinder"), JSON.stringify({ renamed, now: await listed() }));
+  check("the desktop's mirror carries the new name as a full plate", mirrored?.tool === "plate_sync" && mirrored.plate?.find((row) => row.object === plain.object)?.name === "hook", JSON.stringify(mirrored?.plate));
+  // The desktop window applies that message to a plate that still holds the old name.
+  const identity = [1, 0, 0, 0, 1, 0, 0, 0, 1] as MirrorObject["orient"];
+  const before: MirrorObject[] = (mirrored?.plate ?? []).map((row: { object: string; name: string; meshHash?: string }) => ({
+    id: row.object,
+    name: row.object === plain.object ? "cylinder" : row.name,
+    scalePercent: 100,
+    centered: true,
+    offset: { x: 0, y: 0, z: 0 },
+    orient: identity,
+    meshHash: row.meshHash ?? "",
+    extra: null,
+  }));
+  const applied = mirrorPlate(before, mirrored as unknown as BridgeMessage, { session: "", seq: 0 });
+  check("the desktop's plate shows the new name when it applies that message", applied.applied && applied.plate.find((row) => row.id === plain.object)?.name === "hook" && applied.plate.find((row) => row.id === named.object)?.name === "led body", JSON.stringify(applied.plate.map((row) => row.name)));
+  await own.call("project_save", { name: "named.lime", ifExists: "refuse" });
+  const saved = JSON.parse(readFileSync(join(workspace, "named.lime"), "utf8")) as { objects?: { id?: string; name?: string }[] };
+  check("a saved project keeps the name", saved.objects?.find((row) => row.id === plain.object)?.name === "hook" && saved.objects?.find((row) => row.id === named.object)?.name === "led body", JSON.stringify(saved.objects?.map((row) => row.name)));
+  const reselected = await own.call("object_select", { object: plain.object });
+  check("object_select with no name leaves the name alone", reselected.ok === true && reselected.name === "hook");
+  const undone = await own.call("plate_undo", {});
+  check("plate_undo takes the rename back", undone.ok === true && undone.label === "Rename" && (await listed()).includes("cylinder"), JSON.stringify({ undone, now: await listed() }));
 }
 
 if (failed > 0) {

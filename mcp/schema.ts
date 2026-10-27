@@ -52,6 +52,7 @@ const edgeList = {
 };
 
 const label = { type: "string", maxLength: 80, description: "Step name." };
+const objectName = { type: "string", minLength: 1, maxLength: 120, description: "Name in the app's object list." };
 /** A study region, spelled as the paint regions are. A sphere or a box does not renumber after a Model edit. */
 const simRegion = { type: "object", description: "{faces}, {sphere}, or {box}." };
 const primitiveKind = { enum: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." };
@@ -941,8 +942,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "object_select",
-    description: "Select one object. Later edits and the next one-object slice use it.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["object"], properties: { object: handle } },
+    description: "Select one object. Later edits and the next one-object slice use it. name renames it.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["object"], properties: { object: handle, name: objectName } },
   },
   {
     name: "object_place",
@@ -1249,7 +1250,7 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      properties: solidFields,
+      properties: { ...solidFields, name: objectName },
     },
   },
   {
