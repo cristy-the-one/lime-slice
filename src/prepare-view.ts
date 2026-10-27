@@ -1366,7 +1366,11 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     return { x: along(at(cx + 1, cy, cz)), y: along(at(cx, cy + 1, cz)), z: along(at(cx, cy, cz + 1)) };
   }
 
+  let snapBegun = false;
+
+  /** Builds what a drag snaps on. A drag that nobody began, a modifier-drag of the part for one, begins on its first move. */
   function beginSnap() {
+    snapBegun = true;
     snapRun = null;
     if (!meshPart || !meshBounds) return;
     snapRun = { moving: ownFootprint(meshPart), targets: neighbourTargets(plateOthers), screen: screenScale(meshBounds) };
@@ -1374,6 +1378,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
 
   /** The snap for a drag that has moved the part by `offset` from where it started. Null when there is nothing to snap to. */
   function snapAt(axes: SnapAxis[], offset: [number, number, number]): SnapHit | null {
+    if (!snapBegun) beginSnap();
     if (!snapRun) return null;
     const hit = snapMove({ moving: shifted(snapRun.moving, offset), targets: snapRun.targets, bed: belt ? null : { x: bedX, y: bedY }, axes, screen: snapRun.screen });
     showSnap(hit);
@@ -1747,6 +1752,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     const editedReinforce = reinforceVolDrag;
     drag = null;
     snapRun = null;
+    snapBegun = false;
     showSnap(null);
     modDrag = null;
     reinforceVolDrag = null;
