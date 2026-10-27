@@ -5,7 +5,9 @@ import { MAX_PLAN_STEPS, PLAN_HELP } from "./plan.ts";
 import { ALIGN_RELATIONS } from "../src/place-snap.ts";
 
 const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from plate_list. Default: the selected object." };
-const jobHandle = { type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start, or from a long call that answered with a job." };
+/** A model_place number: mm or degrees, or an expression over model_params names. The handler reads and checks it. */
+const placeNumber = { description: "Number or expression." };
+const jobHandle ={ type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start, or from a long call that answered with a job." };
 const step = { type: "string", minLength: 1, maxLength: 80, description: "History step: node_N from model_history, or a step or batch label." };
 const cursor = { type: "string", minLength: 1, description: "Page start." };
 const vec3 = { type: "array", description: "3 numbers.", minItems: 3, maxItems: 3, items: { type: "number" } };
@@ -882,7 +884,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "guide",
-    description: "Worked call sequences. No topic lists them. kind gives one Model op kind's full fields and examples.",
+    description: "Worked call sequences. No topic lists them. kind gives one Model op kind's full fields and examples, or assembly or place.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -956,7 +958,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "object_place",
-    description: "Place a part: centre, scale 10 to 400, centre on the bed, lay flat, turn, or align to another part. Not a Model edit.",
+    description: "Place a part: centre, scale 10 to 400, centre on the bed, lay flat, turn, or align to another part. Not a Model edit: the assembled pose is model_place.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1115,7 +1117,7 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      properties: { gapMm: { type: "number", minimum: 0, maximum: 100, description: "Gap, mm." }, dryRun: { type: "boolean", description: "Report the move only." } },
+      properties: { gapMm: { type: "number", minimum: 0, maximum: 100, description: "Gap, mm." }, dryRun: { type: "boolean", description: "Report the move only." }, assembly: { type: "string", minLength: 1, maxLength: 80, description: "Lay out only this assembly's parts." } },
     },
   },
   {
@@ -1359,19 +1361,21 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_place",
-    description: "Set the assembled pose: model space, mm and degrees. The print layout does not move. frame part types later Model numbers in the part's own frame, so they do not follow the pose.",
+    description: "Set the assembled pose: model space, mm and degrees; numbers may be expressions. The print layout does not move. With to, an offset in that part's frame, and both join one assembly. guide {kind:\"assembly\"}.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         object: handle,
-        x: { type: "number" },
-        y: { type: "number" },
-        z: { type: "number" },
-        turnX: { type: "number" },
-        turnY: { type: "number" },
-        turnZ: { type: "number" },
-        frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default model: they follow the pose." },
+        x: placeNumber,
+        y: placeNumber,
+        z: placeNumber,
+        turnX: placeNumber,
+        turnY: placeNumber,
+        turnZ: placeNumber,
+        to: { type: "string", minLength: 1, maxLength: 64, description: "Sit on this part: the numbers are its frame." },
+        assembly: { type: "string", minLength: 1, maxLength: 80, description: "Assembly name." },
+        frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default part for a member, else model." },
       },
     },
   },

@@ -37,7 +37,7 @@ import { thinWalls } from "../src/modeling/thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "../src/modeling/anchors.ts";
 import { expandOps, expandOpsWithTexts, type PartDef } from "../src/modeling/macro.ts";
 import { exprLeaves, linkedExprs, withLeaf } from "../src/modeling/links.ts";
-import { applyPose, IDENTITY_POSE, inversePose, isIdentity, posedBounds, seatLift, thenPose, toSolidOp, turnDir, typedPoseOf, type Affine, type ObjectFrame } from "../src/model-space.ts";
+import { applyPose, IDENTITY_POSE, inversePose, isIdentity, posedBounds, relativePose, seatLift, thenPose, toSolidOp, turnDir, typedPoseOf, type Affine, type ObjectFrame } from "../src/model-space.ts";
 import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
@@ -114,7 +114,7 @@ import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.t
 import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { offsetInPlace, pieceFileName, separateBy, solidNames, stepSolidHint } from "../src/step-solids.ts";
 import { reviewGcode } from "./review.ts";
-import { GUIDES, guideByUri } from "./guides.ts";
+import { GUIDES, guideByUri, KIND_GUIDES } from "./guides.ts";
 import { GROUP_NAMES, groupOf, groupsOptedIn, TOOL_GROUPS } from "./groups.ts";
 import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
 import { standRegion } from "./plane-region.ts";
@@ -128,7 +128,7 @@ import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosav
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
-import { resolveForParameters, readAssemblies, type Assembly } from "../src/assembly.ts";
+import { assemblyOf, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
 import { followRepeatSources, repeatLabel } from "../src/model-repeat.ts";
 import { planRebuild } from "../src/param-rebuild.ts";
@@ -143,6 +143,15 @@ const SLICE_WAIT_MAX_S = 120;
 const STALE_SLICE = "The printer, filament, settings, or placement changed after this slice. Slice again.";
 const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a mesh.";
 const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the current handles.";
+
+const PLACE_KEYS = ["x", "y", "z", "turnX", "turnY", "turnZ"] as const;
+
+/** What model_place says about the frame later Model numbers are read in. */
+function frameNote(frame: ObjectFrame): string {
+  return frame === "part"
+    ? "Numbers in later model_probe, model_apply and model_edit calls are still read in the part's own frame."
+    : "Numbers in later model_probe, model_apply and model_edit calls are read in model space, so they move with the pose; frame:\"part\" keeps them in the part's own frame.";
+}
 /** --- D25. Expression text, so an MCP step keeps the expressions it was typed with, as an app step keeps a field's. */
 function exprText(value: unknown): string | null {
   return typeof value === "string" && value.trim() && !isPlainNumber(value) ? value.trim() : null;
@@ -1539,6 +1548,7 @@ export class Session {
       reason = err instanceof Error ? err.message : "The engine did not answer.";
     }
     const running = this.workJobs.find((row) => !row.done);
+    const assemblies = this.liveAssemblies();
     return {
       ok: true,
       serverVersion: appVersion(),
@@ -1551,6 +1561,7 @@ export class Session {
       ...(running ? { job: { job: running.handle, tool: running.tool, ...(running.object ? { object: running.object } : {}), ...(running.ctx.stage ? { stage: running.ctx.stage } : {}) } } : {}),
       printer: this.printer().name,
       filament: this.filament().name,
+      ...(assemblies.length ? { assemblies: assemblies.map((row) => ({ assembly: row.name, members: row.members.map((member) => member.object) })) } : {}),
       printerSend: false,
       model: {
         ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "split", "partition", "scale", "join", "root"],
@@ -1568,7 +1579,11 @@ export class Session {
 
   /** The worked guides as a tool, for clients that do not read resources. */
   private guide(input: Record<string, unknown>): Record<string, unknown> {
-    if (typeof input.kind === "string") return this.opGuide(input.kind.trim());
+    if (typeof input.kind === "string") {
+      const kind = input.kind.trim();
+      const text = Object.hasOwn(KIND_GUIDES, kind) ? KIND_GUIDES[kind] : undefined;
+      return text ? { ok: true, kind, text } : this.opGuide(kind);
+    }
     const topic = typeof input.topic === "string" ? input.topic.trim().toLowerCase() : "";
     if (!topic) return { ok: true, topics: GUIDES.map((row) => ({ topic: row.uri.replace("lime://guide/", ""), name: row.name, tools: row.tools })) };
     const found = guideByUri(`lime://guide/${topic}`);
@@ -2418,8 +2433,10 @@ export class Session {
   }
 
   private plateList(input: Record<string, unknown>): Record<string, unknown> {
+    const assemblies = this.liveAssemblies();
     const rows = this.objects.map((obj) => {
       const placed = this.placed(obj);
+      const assembly = assemblyOf(assemblies, obj.id)?.name;
       const centre = [
         (placed.bounds.min[0] + placed.bounds.max[0]) / 2,
         (placed.bounds.min[1] + placed.bounds.max[1]) / 2,
@@ -2433,6 +2450,7 @@ export class Session {
         centreMm: centre,
         ...(assembled ? { assembledMm: assembled } : {}),
         ...(obj.frame === "part" ? { frame: "part" as const } : {}),
+        ...(assembly ? { assembly } : {}),
         scalePercent: obj.scale * 100,
         notes: this.plateNotes(obj, placed.bounds),
       };
@@ -2793,7 +2811,16 @@ export class Session {
     const printer = this.printer();
     const clearance = sequentialClearance(this.sliceRules(this.objects.length), this.order());
     const gap = typeof input.gapMm === "number" ? input.gapMm : clearance === null ? ARRANGE_GAP_MM : clearance + 0.01;
-    const arranged = arrangedObjects(this.objects.map((obj) => this.asBed(obj)), printer.bedX, printer.bedY, gap);
+    let keep: Set<string> | undefined;
+    if (input.assembly !== undefined) {
+      const assemblies = this.liveAssemblies();
+      const wanted = String(input.assembly).trim();
+      const found = assemblies.find((row) => row.name === wanted || row.id === wanted);
+      if (!found) return { ok: false, reason: assemblies.length ? `There is no assembly named ${wanted}. Assemblies: ${assemblies.map((row) => row.name).join(", ")}.` : "There is no assembly on the plate." };
+      const members = new Set(found.members.map((row) => row.object));
+      keep = new Set(this.objects.filter((obj) => !members.has(obj.id)).map((obj) => obj.id));
+    }
+    const arranged = arrangedObjects(this.objects.map((obj) => this.asBed(obj)), printer.bedX, printer.bedY, gap, keep);
     const moved = arranged.map((row) => {
       const live = this.find(row.id);
       const pose = live ? { ...live, centered: row.centered, offset: row.offset, scale: live.scale, source: live.source, orient: live.orient } : null;
@@ -2814,7 +2841,7 @@ export class Session {
         live.offset = { ...row.offset };
       }
     }
-    return { ok: true, moved: moved.map(({ object, centre }) => ({ object, centre })), fits: outside.length === 0, ...(outside.length ? { outside } : {}), ...(input.dryRun === true ? { dryRun: true } : { stale: true }), label: "Arrange" };
+    return { ok: true, moved: moved.filter((row) => !keep?.has(row.object)).map(({ object, centre }) => ({ object, centre })), fits: outside.length === 0, ...(outside.length ? { outside } : {}), ...(input.dryRun === true ? { dryRun: true } : { stale: true }), label: "Arrange" };
   }
 
   private plateCollisions(): { a: string; b: string }[] {
@@ -4218,6 +4245,7 @@ export class Session {
       volumeMm3: solid.volumeMm3,
       solid: solid.editable,
       fingerprint: solid.fingerprint,
+      frame: obj.frame ?? "model",
       faces: faces.rows,
       edges: edges.rows,
       ...(faces.nextCursor ? { facesNextCursor: faces.nextCursor, nextCursor: faces.nextCursor } : {}),
@@ -4337,37 +4365,176 @@ export class Session {
     return { ok: true, reslice: true, label: "Point up" };
   }
 
+  /**
+   * --- Assemblies M4. Without `to`, the pose in model space, as before; for a member with a parent, its offset from
+   * that parent. With `to`, an offset from that part's own frame, which makes this part a member: of `to`'s assembly,
+   * or of a new one with `to` as its root. A number may be an expression; a member keeps its text and follows it.
+   */
   private modelPlace(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
-    const x = typeof input.x === "number" ? input.x : obj.modelPose.t[0];
-    const y = typeof input.y === "number" ? input.y : obj.modelPose.t[1];
-    const z = typeof input.z === "number" ? input.z : obj.modelPose.t[2];
-    const current = orientEuler(obj.modelPose.m);
-    const turnX = typeof input.turnX === "number" ? input.turnX : current.rx;
-    const turnY = typeof input.turnY === "number" ? input.turnY : current.ry;
-    const turnZ = typeof input.turnZ === "number" ? input.turnZ : current.rz;
     if (input.frame !== undefined && input.frame !== "part" && input.frame !== "model") return { ok: false, reason: 'frame is "part" or "model".' };
-    const frame: ObjectFrame = input.frame === "part" || input.frame === "model" ? input.frame : obj.frame ?? "model";
-    obj.modelPose = { m: eulerOrient(turnX, turnY, turnZ), t: [x, y, z] };
+    const assemblies = this.liveAssemblies();
+    const mine = assemblyOf(assemblies, obj.id);
+    const member = mine?.members.find((row) => row.object === obj.id);
+    const named = this.givenName(input.assembly);
+    let to: PlateObject | null = null;
+    if (input.to !== undefined) {
+      to = this.find(String(input.to));
+      if (!to) return { ok: false, reason: `to: ${UNKNOWN_OBJECT}` };
+      if (to.id === obj.id) return { ok: false, reason: "A part cannot sit on itself." };
+      if (!this.find(obj.id)) return { ok: false, reason: "Only a part on the plate can join an assembly." };
+    }
+    const parentId = to ? to.id : member?.parent ?? null;
+    if (parentId === null) {
+      if (named && !mine) return { ok: false, reason: "Give to: the part this one sits on, to start an assembly." };
+      return this.placeFree(obj, input, mine, named);
+    }
+    let assembly = mine;
+    if (to) {
+      const theirs = assemblyOf(assemblies, to.id);
+      if (mine && theirs && mine.id !== theirs.id) return { ok: false, reason: `This part is in ${mine.name} and ${shownName(to.name)} is in ${theirs.name}. A part sits in one assembly.` };
+      if (mine && !theirs) return { ok: false, reason: `${shownName(to.name)} is not in this part's assembly, ${mine.name}.` };
+      assembly = mine ?? theirs ?? { id: this.newAssemblyId(), name: named ?? `${shownName(to.name)} assembly`, members: [{ object: to.id, parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }] };
+    }
+    const parent = this.find(parentId);
+    if (!assembly || !parent) return { ok: false, reason: UNKNOWN_OBJECT };
+    const same = member && member.parent === parentId ? member : null;
+    const typed = PLACE_KEYS.some((key) => input[key] !== undefined);
+    const start = same ?? (typed ? { offset: [0, 0, 0] as [number, number, number], turn: [0, 0, 0] as [number, number, number], exprs: undefined } : { ...memberFields(relativePose(parent.modelPose, obj.modelPose)), exprs: undefined });
+    const offset = this.placeNumbers(input, ["x", "y", "z"], start.offset, start.exprs?.offset);
+    if ("reason" in offset) return { ok: false, reason: offset.reason };
+    const turn = this.placeNumbers(input, ["turnX", "turnY", "turnZ"], start.turn, start.exprs?.turn);
+    if ("reason" in turn) return { ok: false, reason: turn.reason };
+    const exprs: MemberExprs = { ...(offset.texts ? { offset: offset.texts } : {}), ...(turn.texts ? { turn: turn.texts } : {}) };
+    const next: Member = { object: obj.id, parent: parentId, offset: offset.values, turn: turn.values, ...(exprs.offset || exprs.turn ? { exprs } : {}) };
+    const written = withMember(assembly, next);
+    if ("reason" in written) return { ok: false, reason: written.reason };
+    const result = { ...written, ...(named ? { name: named } : {}) };
+    const moved = this.writeSolved(result, obj.id);
+    this.assemblies = mine || assemblyOf(assemblies, parentId) ? assemblies.map((row) => (row.id === result.id ? result : row)) : [...assemblies, result];
+    const frame: ObjectFrame = input.frame === "part" || input.frame === "model" ? input.frame : member ? obj.frame ?? "model" : "part";
     if (frame === "part") obj.frame = "part";
     else delete obj.frame;
-    const turn = orientEuler(obj.modelPose.m);
+    const at = orientEuler(obj.modelPose.m);
     const box = this.assembledBox(obj);
-    const where = frame === "part"
-      ? "Numbers in later model_probe, model_apply and model_edit calls are still read in the part's own frame."
-      : "Numbers in later model_probe, model_apply and model_edit calls are read in model space, so they move with the pose; frame:\"part\" keeps them in the part's own frame.";
     return {
       ok: true,
       pose: "assembled",
-      x,
-      y,
-      z,
+      assembly: result.name,
+      parent: parentId,
+      offset: next.offset,
+      turn: next.turn,
+      ...(next.exprs ? { exprs: next.exprs } : {}),
+      x: obj.modelPose.t[0],
+      y: obj.modelPose.t[1],
+      z: obj.modelPose.t[2],
+      turnX: at.rx,
+      turnY: at.ry,
+      turnZ: at.rz,
+      frame,
+      ...(box ? { assembledMm: box } : {}),
+      ...moved,
+      note: `Assembled pose set: ${shownName(obj.name)} sits on ${shownName(parent.name)} in ${result.name}. The print layout is unchanged. ${frameNote(frame)}`,
+    };
+  }
+
+  /** A part's own pose in model space: a part outside every assembly, or a root, whose members then follow it (D9). */
+  private placeFree(obj: PlateObject, input: Record<string, unknown>, mine: Assembly | undefined, named: string | undefined): Record<string, unknown> {
+    const current = orientEuler(obj.modelPose.m);
+    const where = this.placeNumbers(input, ["x", "y", "z"], [...obj.modelPose.t] as [number, number, number]);
+    if ("reason" in where) return { ok: false, reason: where.reason };
+    const turned = this.placeNumbers(input, ["turnX", "turnY", "turnZ"], [current.rx, current.ry, current.rz]);
+    if ("reason" in turned) return { ok: false, reason: turned.reason };
+    const frame: ObjectFrame = input.frame === "part" || input.frame === "model" ? input.frame : obj.frame ?? "model";
+    obj.modelPose = { m: eulerOrient(turned.values[0], turned.values[1], turned.values[2]), t: where.values };
+    if (frame === "part") obj.frame = "part";
+    else delete obj.frame;
+    let moved = {};
+    if (mine) {
+      const renamed = named ? { ...mine, name: named } : mine;
+      this.assemblies = this.assemblies.map((row) => (row.id === mine.id ? renamed : row));
+      moved = this.writeSolved(renamed, obj.id);
+    }
+    const turn = orientEuler(obj.modelPose.m);
+    const box = this.assembledBox(obj);
+    const once = where.texts || turned.texts ? " An expression here is read once; an offset from another part (to) follows the parameters." : "";
+    return {
+      ok: true,
+      pose: "assembled",
+      ...(mine ? { assembly: named ?? mine.name, root: true } : {}),
+      x: obj.modelPose.t[0],
+      y: obj.modelPose.t[1],
+      z: obj.modelPose.t[2],
       turnX: turn.rx,
       turnY: turn.ry,
       turnZ: turn.rz,
       frame,
       ...(box ? { assembledMm: box } : {}),
-      note: `Assembled pose set. The print layout is unchanged. ${where}`,
+      ...moved,
+      note: `Assembled pose set.${mine ? " The assembly moves with its root." : ""} The print layout is unchanged.${once} ${frameNote(frame)}`,
     };
+  }
+
+  /**
+   * Three of model_place's numbers, each a number or an expression over the project's parameters. An absent one keeps
+   * `values` and its text in `texts`; a number drops the text. `texts` is undefined when no number has one.
+   */
+  private placeNumbers(input: Record<string, unknown>, keys: [string, string, string], values: [number, number, number], texts?: MemberExprs["offset"]): { values: [number, number, number]; texts?: [string | null, string | null, string | null] } | { reason: string } {
+    const out: [number, number, number] = [...values];
+    const kept: [string | null, string | null, string | null] = texts ? [...texts] : [null, null, null];
+    for (let axis = 0; axis < 3; axis += 1) {
+      const raw = input[keys[axis]!];
+      if (raw === undefined) continue;
+      if (typeof raw === "number") {
+        if (!Number.isFinite(raw)) return { reason: `${keys[axis]} is a number or an expression.` };
+        out[axis] = raw;
+        kept[axis] = null;
+        continue;
+      }
+      if (typeof raw !== "string" || !raw.trim()) return { reason: `${keys[axis]} is a number or an expression.` };
+      try {
+        out[axis] = evaluate(raw, this.params);
+      } catch (err) {
+        return { reason: `${keys[axis]}: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      kept[axis] = isPlainNumber(raw) ? null : raw.trim();
+    }
+    return { values: out, ...(kept.some((text) => text !== null) ? { texts: kept } : {}) };
+  }
+
+  /** Each member of `assembly` at its solved pose. Returns the members other than `except` that moved, with their boxes. */
+  private writeSolved(assembly: Assembly, except: string): { moved?: Record<string, unknown>[] } {
+    const solved = solveAssembly(assembly, (id) => this.find(id)?.modelPose, this.params);
+    const moved: Record<string, unknown>[] = [];
+    for (const row of assembly.members) {
+      const obj = this.find(row.object);
+      const pose = solved.poses.get(row.object);
+      if (!obj || !pose || row.parent === null) continue;
+      const changed = !samePose(pose, obj.modelPose);
+      obj.modelPose = pose;
+      if (!changed || row.object === except) continue;
+      const box = this.assembledBox(obj);
+      moved.push({ object: row.object, name: shownName(obj.name), ...(box ? { assembledMm: box } : {}) });
+    }
+    return moved.length ? { moved } : {};
+  }
+
+  /** The session's assemblies against the objects on the plate: a removed member is dropped and its children re-seated (D10). */
+  private liveAssemblies(): Assembly[] {
+    this.assemblies = readAssemblies(this.assemblies, this.objects);
+    return this.assemblies;
+  }
+
+  private newAssemblyId(): string {
+    for (let n = 1; ; n += 1) if (!this.assemblies.some((row) => row.id === `asm_${n}`)) return `asm_${n}`;
+  }
+
+  /** --- Assemblies M4. A refusal of a part away from model space's origin says which frame its numbers were read in. */
+  private frameWhere(obj: PlateObject): string {
+    if (isIdentity(obj.modelPose)) return "";
+    const at = obj.modelPose.t.map((v) => Math.round(v * 100) / 100).join(", ");
+    return obj.frame === "part"
+      ? ` Numbers are read in the part frame. The part sits at (${at}) in the assembly.`
+      : ` Numbers are read in model space, where the part sits at (${at}); model_place {frame:"part"} reads them in the part's own frame.`;
   }
 
   /** The part's box in model space, where Model draws it: its solid (or else its plate mesh) under `modelPose`, to 0.01 mm. */
@@ -4782,7 +4949,7 @@ export class Session {
         // In the solid's frame both boxes; the gap is a lower bound on how far the tool must move.
         const gap = Math.round(boxGap(obj.solid.bounds, primitiveBox(baked.op)) * 100) / 100;
         const far = baked.op.op === "fuse" && gap > 0 ? `${missed} It is at least ${gap} mm clear of the part's bounding box.` : missed;
-        return answer({ ok: false, reason: far, missed: true, ...(gap > 0 ? { gapMm: gap } : {}) });
+        return answer({ ok: false, reason: `${far}${this.frameWhere(obj)}`, missed: true, frame: obj.frame ?? "model", ...(gap > 0 ? { gapMm: gap } : {}) });
       }
     }
     const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
