@@ -15,7 +15,8 @@ import { humanEngineError } from "../src/engine-wording.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../src/foreign-3mf.ts";
 import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
-import { align, centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
+import { hullOf, layFlatMatrix, restPose } from "../src/bed-rest.ts";
+import { align, centeringShift, encode3mf, ID_MATRIX, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
 import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, turnedAxis, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
@@ -2342,7 +2343,7 @@ export class Session {
       reslice = true;
     }
     if (input.layFlat === true) {
-      obj.orient = layFlatMatrix(obj.source);
+      obj.orient = layFlatMatrix(obj.source, obj.orient, obj.scale);
       reslice = true;
     }
     const turn = input.turn as { axis?: string; degrees?: number } | undefined;
@@ -2368,6 +2369,20 @@ export class Session {
       const face = obj.solid?.faces[input.faceDown];
       if (!face?.normal) return { ok: false, reason: "That face is not a flat face on this solid." };
       obj.orient = align(face.normal, [0, 0, -1]);
+      reslice = true;
+    }
+    let rest: Record<string, unknown> = {};
+    if (input.settle === true) {
+      const hull = hullOf(obj.source);
+      if (hull) {
+        const found = restPose(hull, obj.orient, obj.scale);
+        obj.orient = found.orient;
+        rest = { settled: found.snapped, contactMm2: Math.round(found.areaMm2 * 10) / 10 };
+      } else {
+        rest = { settled: false, contactMm2: 0 };
+      }
+      const turned = orientEuler(obj.orient);
+      rest.rotationDeg = { x: Math.round(turned.rx * 100) / 100, y: Math.round(turned.ry * 100) / 100, z: Math.round(turned.rz * 100) / 100 };
       reslice = true;
     }
     if (typeof input.z === "number") {
@@ -2401,6 +2416,7 @@ export class Session {
       ],
       scalePercent: obj.scale * 100,
       orient: [...obj.orient],
+      ...rest,
       reslice,
       label: "Place",
     };

@@ -62,6 +62,8 @@ export interface StripHooks {
 }
 
 export interface PrepareView {
+  /** Where the part touches the bed: triangles in print millimetres, nine numbers each, or null. Drawn see-through over the part. */
+  setContact(tris: Float32Array | null): void;
   /** The same `canonical` array keeps the built geometry; only the pose matrix and bounds update. */
   setMesh(part: PlacedPart | null, frameCamera?: boolean): void;
   setBed(x: number, y: number, z: number): void;
@@ -194,6 +196,20 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   tilt.visible = false;
   tilt.raycast = () => undefined;
   scene.add(tilt);
+  const contactMat = new THREE.MeshBasicMaterial({
+    color: hexToThree(colors.teal),
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.6,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const contact = new THREE.Mesh(new THREE.BufferGeometry(), contactMat);
+  contact.visible = false;
+  contact.renderOrder = 5;
+  contact.frustumCulled = false;
+  contact.raycast = () => undefined;
+  scene.add(contact);
   const beltArrow = new THREE.Line(
     new THREE.BufferGeometry(),
     new THREE.LineBasicMaterial({ color: hexToThree(colors.amber) }),
@@ -768,6 +784,43 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     gizmo.position.copy(park);
     gizmo.updateMatrixWorld(true);
     publishScaleGrips();
+    publishRingGrips();
+  }
+
+  /** For each rotate ring, a point on it and the point 10° further round, in canvas pixels, and how squarely the ring faces the camera. */
+  function publishRingGrips() {
+    if (gizmoTool !== "rotate" || !gizmo.visible) {
+      delete canvas.dataset.ringGrips;
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const radius = gizmo.scale.x;
+    const centre = gizmo.position;
+    const view = camera.position.clone().sub(centre).normalize();
+    const hub = centre.clone().project(camera);
+    const bits: string[] = [];
+    for (const axis of ["x", "y", "z"] as const) {
+      const normal = sceneAxis(axis);
+      const u = new THREE.Vector3().crossVectors(normal, Math.abs(normal.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize();
+      const w = new THREE.Vector3().crossVectors(normal, u);
+      const at = (deg: number) => {
+        const a = (deg * Math.PI) / 180;
+        return centre.clone().addScaledVector(u, Math.cos(a) * radius).addScaledVector(w, Math.sin(a) * radius).project(camera);
+      };
+      let from = 0;
+      let reach = -1;
+      for (let deg = 0; deg < 360; deg += 10) {
+        const p = at(deg);
+        const d = Math.hypot((p.x - hub.x) * rect.width, (p.y - hub.y) * rect.height);
+        if (d > reach) {
+          reach = d;
+          from = deg;
+        }
+      }
+      const px = (p: THREE.Vector3) => `${Math.round((p.x * 0.5 + 0.5) * rect.width)},${Math.round((-p.y * 0.5 + 0.5) * rect.height)}`;
+      bits.push(`${axis}:${px(at(from))}:${px(at(from + 10))}:${Math.abs(normal.dot(view)).toFixed(2)}`);
+    }
+    canvas.dataset.ringGrips = bits.join(" ");
   }
 
   /** Screen position of each scale knob, so a drag can grab the parked widget instead of the part. */
@@ -1780,6 +1833,24 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       rebuildCut();
       if (frameCamera) framePart();
     },
+    setContact(tris) {
+      const count = tris ? Math.floor(tris.length / 9) : 0;
+      canvas.dataset.contact = String(count);
+      contact.visible = count > 0;
+      if (count > 0 && tris) {
+        const scene3 = new Float32Array(count * 9);
+        for (let i = 0; i < count * 3; i++) {
+          const p = frame.toScene(tris[i * 3]!, tris[i * 3 + 1]!, tris[i * 3 + 2]!);
+          scene3[i * 3] = p.x;
+          scene3[i * 3 + 1] = p.y;
+          scene3[i * 3 + 2] = p.z;
+        }
+        contact.geometry.dispose();
+        contact.geometry = new THREE.BufferGeometry();
+        contact.geometry.setAttribute("position", new THREE.BufferAttribute(scene3, 3));
+      }
+      requestRender();
+    },
     setSplit(next) {
       split = next;
       rebuildCut();
@@ -1883,6 +1954,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       (bedEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.teal));
       volumeMat.color.setHex(hexToThree(colors.teal));
       tiltMat.color.setHex(hexToThree(colors.amber));
+      contactMat.color.setHex(hexToThree(colors.teal));
       (tiltEdge.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
       (beltArrow.material as THREE.LineBasicMaterial).color.setHex(hexToThree(colors.amber));
       beltOutLabel.paint(colors.amber);
