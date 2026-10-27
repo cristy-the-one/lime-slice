@@ -25,6 +25,8 @@ import {
 let history: EditHistory = emptyHistory();
 let timer = 0;
 let applying = false;
+/** A grab is open: moves keep its gesture going, however long the pointer rests. */
+let held = false;
 /** Steps that existed when Model opened. Null outside Model. */
 let preVisit: WeakSet<EditSnap> | null = null;
 let visitEdited = false;
@@ -176,6 +178,7 @@ export function noteEdit() {
   if (applying || session.projectRestoring) return;
   history = beginGesture(history, capture());
   window.clearTimeout(timer);
+  if (held) return;
   timer = window.setTimeout(() => {
     history = commitGesture(history, capture());
     fx.releaseModelTrees?.();
@@ -191,9 +194,26 @@ export function beginEdit() {
 
 export function flushEdit() {
   window.clearTimeout(timer);
+  held = false;
   history = commitGesture(history, capture());
   // A step that lands can push the oldest one out or clear the redo steps, and their trees with them.
   fx.releaseModelTrees?.();
+}
+
+/** Start a gesture that every `noteEdit` extends until `flushEdit` or `cancelEdit`: one grab, however slowly it is dragged. */
+export function holdEdit() {
+  if (applying || session.projectRestoring) return;
+  beginEdit();
+  held = true;
+}
+
+/** Drop the open gesture and put back the state it began with. */
+export function cancelEdit() {
+  window.clearTimeout(timer);
+  held = false;
+  const start = history.pending;
+  history = { ...history, pending: null };
+  if (start) applySnap(start);
 }
 
 /** What Model must keep for the steps here. */

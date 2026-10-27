@@ -190,6 +190,8 @@ export const MOUSE_HINTS: { gesture: string; label: string }[] = [
   // --- P1 ---
   { gesture: "Drag a face", label: "Push or pull. Alt adds or cuts on that face only." },
   { gesture: "Click empty", label: "Clear the Model selection" },
+  { gesture: "Ctrl + drag", label: "Prepare: move the object on the bed. Ctrl+click on another object selects it first." },
+  { gesture: "Ctrl + right-drag", label: "Prepare: turn the object about Z. X, Y or Z while dragging picks the axis; Esc cancels." },
   { gesture: "Shift + drag", label: "Snap a move to 1 mm, a rotation to 15°" },
   { gesture: "Scroll a handle", label: "Nudge 0.1 mm, or 1° on a ring" },
   { gesture: "Alt/Shift + wheel", label: "Resize the paint brush" },

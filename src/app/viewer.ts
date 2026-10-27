@@ -15,7 +15,7 @@ import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch, stale, previewFeatureRows } from "./settings";
 import { cycleLayerAction, layerMarkerText } from "../layer-actions";
-import { beginModelVisit, flushEdit, modelVisitChanged, noteEdit } from "./history";
+import { beginModelVisit, cancelEdit, flushEdit, holdEdit, modelVisitChanged, noteEdit } from "./history";
 import { currentRules } from "./rules";
 import { beginModifierEdit, endModifierEdit, nudgeModifier, selectModifier } from "./override-actions";
 import { bandFractions } from "../overrides";
@@ -81,6 +81,27 @@ export function paintSlider() {
   prepare?.setModifiers(state.overrides, state.selectedVolumeId, state.modifierTool);
   syncLayerTip();
   paintStatus();
+}
+
+const GRAB_HINT_KEY = "lime-slice-grab-hint";
+
+/** The first time Ctrl is held over an object, the status line says what a drag does. It stays quiet after that. */
+function paintGrabHint(over: boolean) {
+  const el = document.querySelector<HTMLElement>("#grabHint");
+  if (!el) return;
+  if (!over) {
+    el.hidden = true;
+    return;
+  }
+  try {
+    if (localStorage.getItem(GRAB_HINT_KEY)) return;
+    localStorage.setItem(GRAB_HINT_KEY, "1");
+  } catch {
+    if (el.dataset.shown) return;
+  }
+  el.dataset.shown = "1";
+  el.textContent = "Drag to move · Right-drag to turn · X, Y, Z pick the turn axis · Esc cancels";
+  el.hidden = false;
 }
 
 /** The status line names where the stage is: the layer in Preview and G-code, the part and its size in Prepare. */
@@ -1449,6 +1470,17 @@ export function mountViews() {
     paintGizmoReadout();
     renderChrome();
     fx.scheduleAuto();
+  });
+  prepare.onGrab({
+    select: (id) => fx.selectPlateObject?.(id),
+    start: () => holdEdit(),
+    cancel: () => {
+      cancelEdit();
+      state.poseHud = "";
+      paintGizmoReadout();
+      renderChrome();
+    },
+    hint: (over) => paintGrabHint(over),
   });
   prepare.onScale((deltaPercent) => {
     if (!state.sourcePos) return 0;
