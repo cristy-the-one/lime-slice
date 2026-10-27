@@ -701,6 +701,8 @@ int lime_tree_partition(
     const double* up,
     const double* profiles,
     int profile_count,
+    const double* chains,
+    int chain_count,
     LimeShape** out,
     char** placed,
     LimeShape** pins,
@@ -734,6 +736,15 @@ int lime_tree_partition(
             one.u[0] = at[11];
             one.u[1] = at[12];
             one.u[2] = at[13];
+            if (one.kind == kProfileSketch) {
+                const int begin = static_cast<int>(at[1]);
+                const int length = kChainStride * static_cast<int>(at[2]);
+                if (begin < 0 || length <= 0 || begin + length > chain_count) {
+                    set_error(error, "A sketch profile's chain is missing");
+                    return -1;
+                }
+                one.chain.assign(chains + begin, chains + begin + length);
+            }
             shapes.push_back(one);
         }
         if (!build_partition(from->held.shape, planes, pieces, message, shapes) ||
@@ -768,6 +779,10 @@ int lime_tree_partition(
                 spec.height = at[11];
                 spec.angle = at[12];
                 spec.slide = static_cast<int>(at[13]);
+                spec.flat = at[14] != 0.0;
+                spec.flat_u = at[15];
+                spec.flat_w = at[16];
+                spec.flat_tilt = at[17];
                 specs.push_back(spec);
             }
             const gp_Vec lift(up[0], up[1], up[2]);

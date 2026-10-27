@@ -593,11 +593,17 @@ pub enum PrintProcess {
     Resin,
 }
 
-const PARTITION_PROFILE_LATER: &str =
-    "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.";
-const PARTITION_SHAPED_JOINTS: &str = "Connectors on a shaped cut are not built yet. Turn them off, or cut straight.";
+const PARTITION_PROFILE_KIND: &str =
+    "A cut's profile is straight, lap, tongue, zigzag, dovetail or sketch.";
+const PARTITION_SHAPED_JOINTS: &str =
+    "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.";
 /// The numbers a cut's profile gives the kernel (`kProfileStride` in kernel.h): its kind, eight sizes, and the cut's U.
 const PROFILE_STRIDE: usize = 14;
+/// The numbers of one segment of a sketched cut's chain (`kChainStride` in kernel.h): 0 for a line or 1 for an arc, the
+/// arc's through point, and the end, each (U, W).
+const CHAIN_STRIDE: usize = 5;
+/// The most segments a sketched cut's chain may have.
+const CHAIN_MAX: usize = 200;
 
 
 /// The planner's Max pieces (`clampPieces` in `src/modeling/partition.ts`): 12 when absent, from 2 to 24.
@@ -609,8 +615,8 @@ fn partition_max(max_pieces: Option<f64>) -> usize {
     wanted.clamp(2.0, 24.0) as usize
 }
 
-/// Why this milestone does not build a partition, before anything is cut: a sketch profile, or connectors on a shaped cut. Each is a sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced
-/// (D12).
+/// Why a partition is not built, before anything is cut: a profile of no known kind, or connectors on a tongue or a
+/// dovetail cut (a lap, a zig-zag and a sketch have flats to put them on). Each is a sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced (D12).
 fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
     let kind = |profile: &Value| {
         profile
@@ -623,14 +629,14 @@ fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
         .iter()
         .all(|cut| matches!(
                 kind(&cut.profile).as_str(),
-                "straight" | "lap" | "tongue" | "zigzag" | "dovetail"
+                "straight" | "lap" | "tongue" | "zigzag" | "dovetail" | "sketch"
             ))
     {
-        return Some(PARTITION_PROFILE_LATER);
+        return Some(PARTITION_PROFILE_KIND);
     }
     if cuts
         .iter()
-        .any(|cut| kind(&cut.profile) != "straight" && connectors_on(cut))
+        .any(|cut| matches!(kind(&cut.profile).as_str(), "tongue" | "dovetail") && connectors_on(cut))
     {
         return Some(PARTITION_SHAPED_JOINTS);
     }
@@ -640,9 +646,12 @@ fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
 /// Each cut's profile as the kernel reads it. A lap: depth, carried to the side that has it (side, positive by
 /// default), and at, where the step sits along V from the cut's origin. A tongue: width, depth, clearance, endGap,
 /// side, its ends along U (u0, u1) and its middle along V (v). The planner fills every one from the section at Apply,
-/// so a replay builds the same joint.
-fn profile_numbers(cuts: &[PartitionCut]) -> Result<Vec<[f64; PROFILE_STRIDE]>, String> {
-    cuts.iter()
+/// so a replay builds the same joint. A sketch: its chain's `start` and segments, `{kind: line | arc, to, through}`, each
+/// point [u, w] in millimetres from the cut's origin, appended to the chain numbers its profile points into.
+fn profile_numbers(cuts: &[PartitionCut]) -> Result<(Vec<[f64; PROFILE_STRIDE]>, Vec<f64>), String> {
+    let mut chains = Vec::new();
+    let profiles = cuts
+        .iter()
         .enumerate()
         .map(|(at, cut)| {
             let mut out = [0.0; PROFILE_STRIDE];
@@ -697,6 +706,17 @@ fn profile_numbers(cuts: &[PartitionCut]) -> Result<Vec<[f64; PROFILE_STRIDE]>, 
                     out[3] = number("angle")?;
                     out[4] = number("u0")?;
                 }
+                "sketch" => {
+                    let segments = sketch_chain(&cut.profile, at)?;
+                    let [su, sw] = chain_point(cut.profile.get("start"))
+                        .ok_or_else(|| format!("Cut {}'s sketch needs start, [u, w].", at + 1))?;
+                    out[0] = 5.0;
+                    out[1] = chains.len() as f64;
+                    out[2] = (segments.len() / CHAIN_STRIDE) as f64;
+                    out[3] = su;
+                    out[4] = sw;
+                    chains.extend(segments);
+                }
                 _ => {}
             }
             let [ux, uy, uz] = cut.u.unwrap_or([0.0; 3]);
@@ -705,7 +725,46 @@ fn profile_numbers(cuts: &[PartitionCut]) -> Result<Vec<[f64; PROFILE_STRIDE]>, 
             out[13] = uz;
             Ok(out)
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((profiles, chains))
+}
+
+/// A point of a sketched cut's chain: [u, w], two finite numbers.
+fn chain_point(value: Option<&Value>) -> Option<[f64; 2]> {
+    let list = value?.as_array()?;
+    match list.as_slice() {
+        [u, w] => {
+            let (u, w) = (u.as_f64()?, w.as_f64()?);
+            (u.is_finite() && w.is_finite()).then_some([u, w])
+        }
+        _ => None,
+    }
+}
+
+/// A sketched cut's chain as the kernel reads it, `CHAIN_STRIDE` numbers a segment. Lines and arcs only.
+fn sketch_chain(profile: &Value, at: usize) -> Result<Vec<f64>, String> {
+    let cut = at + 1;
+    let Some(rows) = profile.get("chain").and_then(Value::as_array) else {
+        return Err(format!("Cut {cut}'s sketch needs chain, a list of lines and arcs."));
+    };
+    if rows.is_empty() || rows.len() > CHAIN_MAX {
+        return Err(format!("Cut {cut}'s sketch has {} segments; it takes 1 to {CHAIN_MAX}.", rows.len()));
+    }
+    let mut out = Vec::with_capacity(rows.len() * CHAIN_STRIDE);
+    for row in rows {
+        let to = chain_point(row.get("to"))
+            .ok_or_else(|| format!("Each segment of cut {cut}'s sketch needs to, [u, w]."))?;
+        match row.get("kind").and_then(Value::as_str).unwrap_or("line") {
+            "line" => out.extend([0.0, 0.0, 0.0, to[0], to[1]]),
+            "arc" => {
+                let through = chain_point(row.get("through"))
+                    .ok_or_else(|| format!("An arc of cut {cut}'s sketch needs through, [u, w]."))?;
+                out.extend([1.0, through[0], through[1], to[0], to[1]]);
+            }
+            _ => return Err(format!("Cut {cut}'s sketch is lines and arcs.")),
+        }
+    }
+    Ok(out)
 }
 
 fn connectors_on(cut: &PartitionCut) -> bool {
@@ -717,7 +776,7 @@ fn connectors_on(cut: &PartitionCut) -> bool {
 // the ones that build (D6). ---
 
 /// The numbers `lime_tree_partition` reads for one connector (`kJointStride` in kernel.h).
-const JOINT_STRIDE: usize = 14;
+const JOINT_STRIDE: usize = 18;
 
 /// One placed connector of a stored op: the cut it is on, counting from 0, its id `c{cut}-{index}`, its type, and the
 /// numbers the kernel builds it from.
@@ -817,6 +876,9 @@ fn stored_joints(cuts: &[PartitionCut]) -> Result<Vec<Joint>, String> {
             } else {
                 1.0
             };
+            // A connector on a flat of a shaped cut: the flat's point (u, w) of the cut and its tilt in degrees.
+            let flat = row.get("flat").filter(|flat| flat.is_object());
+            let flat_number = |field: &str| flat.and_then(|flat| flat.get(field)).and_then(Value::as_f64).unwrap_or(0.0);
             joints.push(Joint {
                 cut: at,
                 id,
@@ -841,6 +903,10 @@ fn stored_joints(cuts: &[PartitionCut]) -> Result<Vec<Joint>, String> {
                     } else {
                         0.0
                     },
+                    f64::from(u8::from(flat.is_some())),
+                    flat_number("u"),
+                    flat_number("w"),
+                    flat_number("tilt"),
                 ],
             });
         }
@@ -1054,6 +1120,7 @@ pub fn partition_primitive(
         joints: Vec::new(),
         up: [0.0, 0.0, 1.0],
         profiles: vec![[0.0; PROFILE_STRIDE]; planes.len()],
+        chains: Vec::new(),
     };
     Ok(whole
         .partition(planes, None, &plain)?
@@ -1267,8 +1334,10 @@ pub fn step_named_solids(step: &[u8]) -> Result<Vec<(String, crate::PartitionPie
 const STEP_SOLIDS_MAX: usize = 256;
 
 /// The solids of a STEP file in the file's order, each with the product name of the free shape it came from when that
-/// shape is this one solid, and an empty name when the shape holds several or has no name. Read through the XCAF
-/// document reader, so a split to print's STEP export reads back as its named pieces.
+/// shape is this one solid, and an empty name when the shape is an assembly that holds several or has no name. A named
+/// simple shape that holds several solids is one piece, the compound under its name, as a split to print's pins are
+/// written (`<source>-pins`). Read through the XCAF document reader, so a split to print's STEP export reads back as
+/// its named pieces.
 fn named_solids_of(step: &[u8]) -> Result<Vec<(String, Shape)>, String> {
     let path = temp_step("read-named");
     std::fs::write(&path, step).map_err(|err| err.to_string())?;
@@ -1276,8 +1345,16 @@ fn named_solids_of(step: &[u8]) -> Result<Vec<(String, Shape)>, String> {
     let _ = std::fs::remove_file(&path);
     let more = format!("This STEP file has more than {STEP_SOLIDS_MAX} solids");
     let mut out = Vec::new();
-    for (name, shape) in read? {
+    for (flagged, shape) in read? {
+        let (assembly, name) = flagged.split_at(flagged.chars().next().map_or(0, char::len_utf8));
         let solids = shape.solids_up_to(STEP_SOLIDS_MAX, &more)?;
+        if assembly == "S" && solids.len() > 1 && !name.trim().is_empty() {
+            if out.len() == STEP_SOLIDS_MAX {
+                return Err(more);
+            }
+            out.push((name.trim().to_string(), shape));
+            continue;
+        }
         let name = if solids.len() == 1 { name.trim().to_string() } else { String::new() };
         for solid in solids {
             if out.len() == STEP_SOLIDS_MAX {
@@ -4472,6 +4549,8 @@ struct JointCut {
     up: [f64; 3],
     /// Each cut's profile as `PROFILE_STRIDE` numbers (`kProfileStride` in kernel.h).
     profiles: Vec<[f64; PROFILE_STRIDE]>,
+    /// The segments of every sketched cut's chain, `CHAIN_STRIDE` numbers each, which a sketch's profile points into.
+    chains: Vec<f64>,
 }
 
 /// --- Split to print. What the kernel cut: the pieces in partition order, where each number went, the pins, and what
@@ -4866,11 +4945,13 @@ fn build(
                 .collect();
             let labels = numbers.as_ref().map(|numbers| Labels { numbers });
             let joints = stored_joints(cuts).map_err(BuildFail::plain)?;
+            let (profiles, chains) = profile_numbers(cuts).map_err(BuildFail::plain)?;
             let cut = JointCut {
                 us: cuts.iter().map(|cut| cut.u.unwrap_or([0.0; 3])).collect(),
                 joints,
                 up: up.unwrap_or([0.0, 0.0, 1.0]),
-                profiles: profile_numbers(cuts).map_err(BuildFail::plain)?,
+                profiles,
+                chains,
             };
             let partitioned = from
                 .partition(&planes, labels.as_ref(), &cut)
@@ -5302,6 +5383,8 @@ extern "C" {
         up: *const f64,
         profiles: *const f64,
         profile_count: c_int,
+        chains: *const f64,
+        chain_count: c_int,
         out: *mut *mut RawShape,
         placed: *mut *mut c_char,
         pins: *mut *mut RawShape,
@@ -5887,6 +5970,7 @@ impl Shape {
         }
         let profiles: Vec<f64> = cut.profiles.iter().flatten().copied().collect();
         let profile_count = c_int::try_from(cut.profiles.len()).map_err(|_| "Too many cuts".to_string())?;
+        let chain_count = c_int::try_from(cut.chains.len()).map_err(|_| "This sketch profile is too long".to_string())?;
         let joints: Vec<f64> = cut
             .joints
             .iter()
@@ -5928,6 +6012,8 @@ impl Shape {
                 cut.up.as_ptr(),
                 profiles.as_ptr(),
                 profile_count,
+                cut.chains.as_ptr(),
+                chain_count,
                 out.as_mut_ptr(),
                 &mut placed,
                 &mut pins,

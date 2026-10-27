@@ -1,6 +1,6 @@
 # Plan: split a solid into printable parts
 
-Status: plan, for review. Written 2026-10-22 against `main` at v3.7.0 (`5d1e7e9`). Revised 2026-10-23 after review (section 18 lists what changed and why). Milestones 1 to 9 are built; sections 19 to 21 and 23 to 26 record what they changed.
+Status: plan, for review. Written 2026-10-22 against `main` at v3.7.0 (`5d1e7e9`). Revised 2026-10-23 after review (section 18 lists what changed and why). Milestones 1 to 10 are built; sections 19 to 21 and 23 to 27 record what they changed.
 
 A long or tall solid can be cut into parts that fit a printer, printed separately, and put back together. Connectors and shaped joints are available on every cut. Each one is off until the user turns it on. A plain planar cut, with no peg and no step, is a complete use of the feature.
 
@@ -545,7 +545,7 @@ Each milestone leaves the app usable, leaves Split as it is, and leaves the gold
 8. **Lap and tongue.** Profile parameters, drag handles, volume and face tests.
 9. **Zig-zag and dovetail.** Including the discrete dovetail key, which shares the prism builder.
 10. **Sketch profile.** Sketch card, solver dimensions, sweep, edit reopens the chain.
-11. **Measured fits.** After the coupons are printed, update the table and the resin floors and retire Starting fit on the printed cells.
+11. **Measured fits.** After the coupons are printed, update the table and the resin floors and retire Starting fit on the printed cells. Built in section 28 without the prints: a reviewed table and the flow that enters results.
 
 ## 16. Open decisions
 
@@ -724,3 +724,100 @@ Milestone 9 builds the zig-zag and the dovetail profiles and the key and dovetai
 4. **The key and dovetail connectors** are placed by the planner as before and built on the real pieces by `build_joints`: a key `width` along U and `height` along V, a dovetail `width` at its wide end and `angle`, sliding `u` or `v` for as long as it is wide; both `depth` from the cut and a groove grown by `clearance` and `endGap`. The positive piece carries them. Their `endGap` is a field now. A key or dovetail whose volume does not come off exactly (a tool that reaches past the piece) is left out and named, as a dowel is.
 5. **The card.** Profile adds Zig-zag (Pitch, Depth, Angle) and Dovetail (Width, Depth, Angle, Slide); Connectors adds Key (Width, Height) and Dovetail (Width, Angle, Slide) types. Connectors on a shaped cut (a lap, tongue, zig-zag or dovetail profile) are still refused: "Connectors on a shaped cut are not built yet. Turn them off, or cut straight." Joint down takes the largest flat face on a cut plane of a zig-zag or a dovetail as it does of a lap and a tongue.
 6. **Tests.** `tests/partition_profile.rs`: a zig-zag square and leaning (volumes by hand to 1e-6 mm³, three tooth tops of 5 × 20 mm² at x = 63, the tip 3.268 mm), a dovetail sliding along U and along V (the neck and wide end by hand, 1e-5 mm³, the end face 8 × 30 mm² at x = 57), the no-neck refusal; `tests/partition_joints.rs`: a key and a dovetail connector (volumes by hand to 1e-6 mm³), a key that breaks through; `src/split-print.test.ts` for the stored sizes and refusals; `mcp/occt.test.ts` on the real kernel for the zig-zag, the dovetail and the keys; `e2e/model-split-print.spec.ts` for both cards.
+
+## 27. Changes in milestone 10 (2026-10-27)
+
+Milestone 10 builds the sketch profile and lifts the last profile refusal: every kind in section 6 is built. A profile of no known kind is refused with "A cut's profile is straight, lap, tongue, zigzag, dovetail or sketch." It changed eight things:
+
+1. **The sketch plane is the cut's U and W, as the zig-zag's.** Section 6 put the sketch's U on the cut's V and swept along U. The zig-zag (section 26) draws in (U, W) and sweeps along V, and this milestone does the same, so both swept profiles share one frame: the sketch's X is the cut's U, its Y the cut's normal W, and the chain is swept along V. The chain is stored in millimetres from the cut's origin, so moving or tilting the cut carries the chain with it. A sketched cut always stores its `u`: the card fixes it when the sketch first opens, and an MCP client may give it.
+2. **The stored profile.** `{kind: "sketch", start: [u, w], chain: [{kind: "line", to}, {kind: "arc", through, to}], sketch}`. `start` and `chain` are what the kernel cuts along, in the shape of a loop's segments in the MCP (`loops`). `sketch` is the sketch the sketcher edits, with its constraints and its driving dimensions, which may be expressions as in any Model sketch. `withoutSketch` drops it from every engine call and `keepSketch` puts it back on the echo, as for an extrude. An op from the MCP has no `sketch`; the pencil then draws one from the chain (`sketchFromChain`), with no dimensions.
+3. **The kernel.** `build_partition` builds the chain as a wire of edges and `GC_MakeArcOfCircle` arcs in (U, W), carries its two ends along U to the part's box, and sweeps it along V with `BRepPrimAPI_MakePrism`, as the zig-zag. The splitter takes the shell. A piece's side is not read against a plane: a piece that wraps a tall tooth can have its centre of mass inside the tooth. It is read from the piece's vertices off the chain, inside or outside the region on the chain's −W side. The chain's segments reach the kernel as one more array of numbers (`kChainStride`, five a segment) beside the profiles. The kernel refuses a chain that crosses itself ("The profile crosses itself.") and one that misses the part ("The sketch profile does not cross the part. Draw it from one side of the section to the other.").
+4. **The planner checks the chain before Apply** (`src/modeling/sketch-profile.ts`), on the section the solid has at the cut and on the part cut across the profile plane through the middle of the section (`profileSlice`):
+   - "The sketch has to cross the section: start it past one side of the part and end it past the other." The chain's two ends must lie past the section's two sides along U.
+   - "The profile crosses itself." Section 6's sentence.
+   - "The sketch leaves a wall 0.5 mm thick, under the 0.8 mm wall floor. Move the chain away from the edge, or widen the feature." Two places on the chain closer than the wall floor, inside the part, leave that wall when the chain between them goes more than twice the floor away, as the flanks of a narrow tooth do; a corner or a smooth arc does not. The same holds for a run of the chain closer than the floor to the part's outline, more than twice the floor from where it crosses the outline.
+   The card and the MCP say the same sentence, after "Cut N: ".
+5. **The card and the sketcher.** Profile adds Sketch. Choosing it opens the sketch editor on the cut's plane at once, with the line tool, and the card steps aside (`data-profile-sketch` on the dock). The reference is the part cut across the profile plane and the cut's own trace, drawn faint; they snap as solid edges do. The sketch card has the Draw, Edit and Constrain tools; in place of Make it names the profile ("Sketch profile", How has its steps), shows what the chain still needs, and its foot is Look around, Cancel and Use profile. Use profile, Finish, or Esc out of the sketch hands the sketch to the card; Cancel hands nothing back. `featureStrip()` keeps its four features: the profile is its own strip, and Extrude, Revolve, Loft, Sweep and Holes do nothing while it is drawn. The card's Profile row then reads "Sketch · 3 lines" with **Edit sketch**. The pencil on a sketched row opens the card and then the chain in the sketcher, as section 6 says. The history row is "Split to print, sketch, 2 parts".
+6. **Joint down on a sketched cut** uses the plane of the chain's longest straight segment, swept along V (`jointPlanes`); equal lengths go to the first. A chain with no straight segment has no flat, and a piece set to joint keeps, with "Part 2 has no flat joint face: cut 1 is a sketch with no straight segment, so the part keeps its orientation."
+7. **What waits.** Connectors on a sketched cut stay refused, as on every shaped cut. A parameter change still does not rebuild a split to print (section 19, item 4): a dimension typed as an expression is evaluated when the sketch is used, and the op stores the chain it gave. The ghost draws the plane, not the chain. The planner's slice is the part cut through the middle of the section along V, so a part whose outline changes along V is checked on that one slice; the kernel's cut is exact.
+8. **Tests.** `crates/lime-model-occt/tests/partition_profile.rs`: a step and a half circle on the 120 × 30 × 20 mm bar, the volumes by hand (π r² / 2 for the arc) and summing to the parent to 1e-6 mm³; the cut faces on the chain (the flats at x = 60 and x = 66, 200 mm² each, the riser at y = 10, 120 mm², and the arc a cylinder of radius 5 to 1e-9 on the line x = 66, y = 15, on both pieces); a piece that wraps a tooth 50 mm tall on its own side; the refusals. `src/modeling/sketch-profile.test.ts` (reading, the three refusals, the flat, the chain to and from a sketch), `src/split-print.test.ts` (the stored chain and sketch, the engine's op without the sketch, the pencil's card, the row), `src/modeling/joint-down.test.ts` (the flat and the sentence), `mcp/partition.test.ts` (the refusals call no kernel), `mcp/occt.test.ts` (probe, apply, Joint down and edit of a sketch on the real kernel), and `e2e/model-split-print.spec.ts` (Sketch opens the sketcher on the cut, a drawn chain and Apply make the row, the pencil reopens the chain, a short chain is refused in both cards, and Explode).
+
+## 28. Changes in milestone 11: measured fits, built without waiting for prints (2026-10-27)
+
+The owner cannot print and measure the coupons yet, so milestone 11 is built with reasonable assumptions: the starting values are reviewed against published guidance, and the flow that takes a measured coupon is built and tested, ready for when prints happen. It changed four things:
+
+1. **The starting values were reviewed.** Every cell is a gap each side, for a 0.4 mm nozzle (resin: the Form 4). Where guidance gives a range, the number is the middle of it. The cells stay `starting`; only a real measurement becomes `measured`.
+2. **Coupon results are entered, and kept in the machine library.** `MachineLibrary.measuredFits` holds the cells a coupon fixed and, for resin, the thinnest wall that held. The card's **Enter coupon results…** and the MCP's `machine_set {fits}` write it through `measuredRow`.
+3. **A reset puts the starting values back**, per row.
+4. **"Starting fit." is retired cell by cell**, as section 23 said: a measured cell reads "Measured. 0.15 mm each side (0.3 mm on the diameter).", and a row with every cell measured is no longer a starting fit.
+
+### The table, before and after
+
+| Row | Snug before → after | Loose before → after | Press before → after | Basis |
+|---|---|---|---|---|
+| PLA | 0.15 → 0.15 | 0.25 → 0.25 | 0.05 → 0.05 | Confirmed. Snug sits between the Bambu peg-and-hole 0.10–0.15 and the sliding 0.15–0.25 (Sovol), Loose is the middle of 0.2–0.3, Press is the Bambu A1 Mini tight value. |
+| PETG | 0.20 → 0.20 | 0.30 → 0.30 | 0.10 → 0.10 | Confirmed for a 0.4 mm nozzle: Sovol's PETG sliding range is 0.2–0.3 (Snug is its lower middle, Loose its top), Press is PLA's 0.05 plus the 0.05 PETG needs, and the middle of Sovol's press range 0.05–0.15. |
+| ABS and ASA | 0.20 → 0.25 | 0.30 → 0.35 | 0.10 → 0.15 | Sovol's ASA sliding range 0.25–0.35 sits 0.05 above PETG's, and ABS shrinks more than PETG. |
+| TPU | 0.25 → 0.20 | 0.35 → 0.30 | 0.15 → 0.05 | No published clearances. It shrinks little, so Snug and Loose follow PETG, and it gives, so a press needs little. The weakest row. |
+| Standard resin (Form 4) | 0.10 → 0.10 | 0.20 → 0.25 | 0.05 → 0.05 | Formlabs prints a 0.4 mm drawn gap as 0.34 mm, so about 0.03 each side is lost; a "normal" fit of 0.254 mm appears in a Georgia Tech handout. Loose is the middle of the two. |
+
+The coupon's steps follow, since they are the table's Snug less 0.10 to plus 0.20 mm: ABS and ASA 0.15–0.45, TPU 0.10–0.40.
+
+### The sources
+
+| Source | What it gives | Used for |
+|---|---|---|
+| Sovol, "FDM 3D Printing Tolerances & Clearances: How to Design Parts That Fit" (sovol3d.com/blogs/news) | 0.4 mm nozzle, each side: press 0.05–0.15, sliding 0.2–0.3, snap 0.3+; sliding by material PLA 0.15–0.25, PETG 0.2–0.3, ASA 0.25–0.35 | PLA, PETG, ABS and ASA, all three fits |
+| Digital Fabrication Lab, UAL Creative Computing Institute, "Design the clearance and tolerance" (wiki.cci.arts.ac.uk) | Bambu H2D Pro, each side: press 0–0.05, peg and hole 0.1–0.15, general removable 0.15–0.2, free 0.2+. Ultimaker S7: press and peg 0.2, general 0.3. It states that tolerance is added to both sides | PLA Snug, Loose and Press; the spread between printers |
+| "Press-Fit Tolerance Reference (PLA, Bambu A1 Mini)" (val.town stl-creator notes) | Tight fit 0.05 radial, semi-permanent 0.00, PETG about 0.05 more than PLA | PLA Press, the PETG offset |
+| Zbotic, "3D Printing Tolerances: Designing Gaps for Press Fits, Threads, and Snap Fits" (zbotic.in) | Diametral: snug 0.1–0.2, sliding 0.3–0.5, snap assembly 0.2–0.3; shrinkage PLA 0.2–0.4 %, PETG 0.3–0.5 %, ABS 0.5–0.8 %, TPU very low | The ABS step up and the TPU shrinkage argument |
+| Formlabs, Form 4 design guide (formlabs.com/white-papers/form-4-design-guide) | 0.4 mm minimum gap between parts that print together, printed as 0.34 mm on a Form 4; ±0.15 % on 1–30 mm features, floor ±0.02 mm; Standard resin has the elongation for interference fits | Resin Snug and Loose, the 0.03 mm each side |
+| Georgia Tech, "Instructions for Resin SLA 3D Printing" (sites.gatech.edu) | 0 press, 0.127 tight, 0.254 normal, 0.508 loose, no printer named, side or diameter not stated | Resin, cross-check only |
+
+What the sources do not give, and so is still a guess: any clearance for TPU, and any Form 4 clearance for Standard resin in particular (Formlabs publishes no press or sliding values). Neither Prusa nor Bambu publishes a per-material press-fit table; the Bambu numbers above are a university lab's on a Bambu printer. The IR3 V2 is a belt printer with its own XY behaviour, so the owner's first coupon on it is the real answer and replaces the PETG row.
+
+### Stored ops keep their clearance
+
+A stored partition op holds its connectors filled: `clearance` is a number in millimetres, not the word Snug (`storedPartition`). `fillPartition` returns a number as it is. So neither a changed table nor a measured entry reaches an op already applied or saved, and a replay cuts the same holes. Only a cut made after the change, Apply or an Update that fills the card again, uses the new defaults. `src/modeling/measured-fits.test.ts` fills an op stored with ABS's old 0.20 and checks it keeps it, and that a measurement entered after Apply leaves the stored 0.25 alone.
+
+### Where the results are kept
+
+In the machine library, `MachineLibrary.measuredFits`, an optional key like `materialCards`: absent until a result is entered, the library's version stays 3, and it is read defensively (a damaged file keeps only finite numbers of known rows). The library already holds the per-filament data (temperatures, flow, pressure advance, fan), lasts across projects and sessions, and is the one store the app and the MCP session both use, each with its own copy. It is keyed by the clearance table's row (material and process) and not by the filament record: the table's rows are materials, a fit measured on PETG is the same for the owner's other PETG spools, and the coupon is printed at their usual 0.4 mm setup. A `.lime` project does not carry it, so a shared project does not change another person's fits. The MCP session holds the library in memory and does not write it back to the app's browser store, so what is entered through `machine_set` lasts for that session; `machine_get {measuredFits}` reads it back, and the app's panel is where results are kept for good.
+
+`partitionDefaults`, `fillPartition` and `fitCoupon` take it as `fits`, so there is no global state: the app's and the MCP's `partitionContext` pass the library's. The coupon centres on the measured Snug once one is entered.
+
+### The card
+
+Under the Clearance note, beside **Print a fit coupon…**, **Enter coupon results…** opens a panel:
+
+- **Material** lists PLA, PETG, ABS / ASA, TPU and Standard resin (Form 4). It opens on the plate's filament, or resin for an export target.
+- **Snug, Loose, Press** each list the labels engraved on a coupon centred on the row's starting Snug (PETG: 0.10 to 0.40 mm), "Not entered" and "Other…". Other is a number field for a coupon that was printed with `startMm` moved. A cell already measured shows its number.
+- **Thinnest wall** shows for resin: the wall that survived, in millimetres.
+- **Save results** writes a measured cell for each fit entered, and the card's Clearance sentence reads "Measured." at once. **Reset to starting values** drops the row. A fit left at "Not entered" is not touched.
+
+### The resin floors
+
+`RESIN_FEATURE_MM` (0.5) sets the resin feature floor the planner derives its wall, radius and tongue floors from. The fit coupon does not measure it, since its holes and pin are 3 mm (section 23). So the entry takes the thinnest wall that held as a separate field, and it becomes `resinFeatureMm`, which replaces 0.5 for every resin default. `RESIN_LAYER_MM` and the resin bed margin stay: a layer height is the printer's setting, and a margin is a property of the bed, neither a measurement of a coupon. A thin-wall row on the coupon is still the way to measure the floor from a print.
+
+### The MCP
+
+`machine_set {fits: {material, process?, snug?, loose?, press?, wallMm?}}` enters results, `{material, reset: true}` resets, and `dryRun` reports without writing. `process: "resin"` is the Form 4's Standard resin and takes `wallMm`. `machine_get` returns `measuredFits` once there are any. No new tool. The `fits` property is one line in `machine_set`'s schema, and `lime://guide/ops` gains one line beside the coupon's; the token budgets in `mcp/schema.test.ts` pass unchanged.
+
+### Tests
+
+`src/modeling/measured-fits.test.ts`: the new rows, the measured row over the table through `measuredRow`, the sentences, a stored op keeping its clearance, the library round trip (no key when there are none, and a damaged file), the reset, and the coupon centring on the measured Snug. `src/modeling/partition.test.ts` and `fit-coupon.test.ts` have the new numbers. `mcp/measured-fits.test.ts`: `machine_set {fits}` against the stand-in engine, a cut after it storing the measured clearance, the cut before it keeping 0.15, the refusals, the reset, and the schema and the guide. `e2e/model-split-fits.spec.ts` (mocked engine, `--repeat-each=3`): PETG Snug entered and read back as "Measured.", Other, the refusal, a cut made after entering results storing it, the reset, and the resin entry with its wall.
+
+### When prints happen
+
+Print the coupon (the card or `solid_new {coupon}`), find the hole the pin pushes into by hand and stays in, and enter its label in the panel, or `machine_set {fits}`. The row is then `measured` for that cell. The numbers in the table above are replaced in code only when a measured number should become the shipped default for everyone, as section 23 said; that is a later change with the printer, material and result in its commit message.
+
+## 29. Follow-ups after milestone 10 (2026-10-27)
+
+Four of the six items milestone 10 left are built; two are not. 
+
+1. **Connectors on a lap, a zig-zag and a sketch** (built). A hole starts on a plane, and a shaped cut has several, so each connector now sits on a flat. A lap has two (the plane below the step, and the plane `depth` along W past it); a zig-zag a low flat and a tip per tooth; a sketch each straight segment of its chain whose normal is within 45 degrees of the cut's W (`shapedFlats` in `src/modeling/partition.ts`). The planner cuts each flat's plane through the solid, clips it to the flat's face (`clipSection`), and places on that section as a straight cut does. Each placed row stores `flat: {u, w, tilt}`, the plane's point and tilt in the cut's own U and W, with `uvMm` in the flat's own U and V and `fraction: null`; the cut's own numbers move with a pose, so the row does too. The kernel (`JointSpec.flat`, `build_joints`) builds the frame from that and drills along its normal. A typed count is per flat. A fixed point is a point of the cut seen along W and goes to the flat under it; one that is under none is left out with the usual sentence. **Tongue and dovetail cuts keep the refusal**, now worded "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.": their face is the plane with the key's footprint taken out, so they need that footprint as a hole in the section, which is its own piece of work.
+2. **Drag handles** (not built). The ghost draws the plane only; dragging a connector or a profile size needs the ghost to draw the profile and its flats, a picking layer for them, and the card's `at` fixed points written back on drop. That is a change to `src/model-view.ts`'s ghost and to the card's drag state, too large to land beside the kernel work; the typed fields stand, and the stored `flat` is what the drag will write against.
+3. **The pins' name on reopen** (built). `read_step_named` now tells an assembly of components (`A`) from a simple shape (`S`). A named simple shape holding several solids is one piece under its name, so `<source>-pins` comes back as one piece; an assembly keeps the old rule. `crates/lime-model-occt/tests/partition_export.rs` round-trips a dowelled cut through STEP; with the old reader the pins' name came back empty.
+4. **Folder picker** (built). The desktop command `save_files_to_folder` picks a folder once and writes every STL there, after checking every name and decoding every file. The web build downloads each piece as before.
+5. **Smaller project files** (not built). A held piece stores its B-rep and its mesh, both gzipped (`src/project-codec.ts`). Dropping the mesh and meshing on open is the cheap win, but it changes how a project opens held pieces (`src/project.ts`, `src/app/project-io.ts`) and was not measured here, so it is left to a change that can show the sizes and the open cost together.
+6. **The Pins tag** (built). A part tag slides inside the view's edge instead of being centred on a point outside it.

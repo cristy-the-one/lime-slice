@@ -9,9 +9,10 @@ import { boundsOf, type Mat3 } from "./mesh-place.ts";
 import { clampTilt, formatMm, splitBase, tiltedNormal, tiltOf, type FacePlane, type SplitBase } from "./model-plane.ts";
 import { applyPose, fromSolidOp, toSolidOp, turnDir, type Affine } from "./model-space.ts";
 import type { ModelOp, PartitionModelOp, Vec3 } from "./model-tree.ts";
-import { connectorNames, defaultsFor, fillPartition, fitPrinter, mm, NO_FIT_SENTENCE, notBuiltYet, placeCut, profileRefusals, type Profile, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
+import { clipSection, connectorNames, defaultsFor, fillPartition, fitPrinter, mm, NO_FIT_SENTENCE, notBuiltYet, placeCut, profileRefusals, shapedFlats, type Flat, type PlacedConnector, type Profile, type UV, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
 import { sectionLoops } from "./section-cap.ts";
 import { storedOrient, type OrientChoice } from "./modeling/joint-down.ts";
+import { chainRefusal, readChain, type Chain, type ProfileSlice } from "./modeling/sketch-profile.ts";
 
 /** The status title: within `TITLE_LIMIT` (`src/sketch/hints.ts`), as every card's is. */
 export const SPLIT_PRINT_TITLE = "Split to print";
@@ -44,6 +45,8 @@ export interface CardCut {
   joints: CardJoints;
   /** This cut's profile: straight, or a lap or a tongue with the sizes typed; an absent size is the planner's default (plan section 6). */
   profile: Profile;
+  /** A sketched cut's U in model space, fixed when its sketch first opens, since the chain is drawn in U and W. */
+  u?: Vec3;
 }
 
 /** One cut's connectors as the card edits them (D4: the first panel edits one type a cut). */
@@ -281,7 +284,8 @@ export function cardOp(card: Card, center: Vec3, frame: CardFrame | null, sizes:
     cuts: planes.map((plane, at) => {
       const joints = card.cuts[at]!.joints;
       const profile = card.cuts[at]!.profile;
-      return { origin: plane!.origin, normal: plane!.normal, ...(profile.kind !== "straight" ? { profile } : {}), ...(joints.on ? { connectors: { on: true, types: [{ ...joints.spec }] } } : {}) };
+      const u = profile.kind === "sketch" ? squareTo(card.cuts[at]!.u, plane!.normal) : null;
+      return { origin: plane!.origin, normal: plane!.normal, ...(u ? { u } : {}), ...(profile.kind !== "straight" ? { profile } : {}), ...(joints.on ? { connectors: { on: true, types: [{ ...joints.spec }] } } : {}) };
     }),
     ...(card.target ? { target: card.target } : {}),
     arrange: card.layout,
@@ -291,13 +295,27 @@ export function cardOp(card: Card, center: Vec3, frame: CardFrame | null, sizes:
   };
 }
 
+/** `u` made square to `normal`, unit length; null when there is none or it lies along the normal. */
+export function squareTo(u: Vec3 | undefined, normal: Vec3): Vec3 | null {
+  if (!u) return null;
+  const n = Math.hypot(...normal) || 1;
+  const w: Vec3 = [normal[0] / n, normal[1] / n, normal[2] / n];
+  const along = dot(u, w);
+  const p: Vec3 = [u[0] - along * w[0], u[1] - along * w[1], u[2] - along * w[2]];
+  const length = Math.hypot(...p);
+  return length > 1e-9 ? [p[0] / length, p[1] / length, p[2] / length] : null;
+}
+
 /**
  * A stored op, back in the card: each cut in model space at `pose`, Lay out from `arrange`, the target and the numbers.
  * The stored target of the plate's printer (`plate`) is the card's null, which follows the plate.
  */
 export function cardFromOp(op: PartitionModelOp, pose: Affine, center: Vec3, frame: CardFrame | null = null, plate: string | null = null): Card {
   const shown = fromSolidOp(op, pose) as PartitionModelOp;
-  const cuts = shown.cuts.map((cut) => ({ ...cutFromPlane(cut.origin, cut.normal, center, frame), joints: jointsOf(cut.connectors), profile: profileOf(cut.profile) }));
+  const cuts = shown.cuts.map((cut) => {
+    const profile = profileOf(cut.profile);
+    return { ...cutFromPlane(cut.origin, cut.normal, center, frame), joints: jointsOf(cut.connectors), profile, ...(profile.kind === "sketch" && cut.u ? { u: [...cut.u] as Vec3 } : {}) };
+  });
   const target = shown.target && shown.target.printer !== plate ? { ...shown.target } : null;
   return { cuts, selected: cuts.length > 0 ? 0 : -1, layout: shown.arrange !== false, target, numbers: shown.labels?.on === true, orient: shown.orient === undefined || shown.orient === "keep" ? [] : shown.orient.map((one) => (one === "joint" ? "joint" : "keep")), edited: true };
 }
@@ -309,14 +327,26 @@ function profileOf(stored: Profile | undefined): Profile {
   if (stored.kind === "tongue") return { kind: "tongue", ...(stored.width !== undefined ? { width: stored.width } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.side ? { side: stored.side } : {}) };
   if (stored.kind === "zigzag") return { kind: "zigzag", ...(stored.pitch !== undefined ? { pitch: stored.pitch } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.angle !== undefined ? { angle: stored.angle } : {}), ...(stored.side ? { side: stored.side } : {}) };
   if (stored.kind === "dovetail") return { kind: "dovetail", ...(stored.width !== undefined ? { width: stored.width } : {}), ...(stored.angle !== undefined ? { angle: stored.angle } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.slide ? { slide: stored.slide } : {}), ...(stored.side ? { side: stored.side } : {}) };
+  if (stored.kind === "sketch") return { kind: "sketch", ...(stored.start ? { start: [...stored.start] } : {}), ...(stored.chain ? { chain: structuredClone(stored.chain) } : {}), ...(stored.sketch ? { sketch: structuredClone(stored.sketch) } : {}) } as Profile;
   return { kind: "straight" };
 }
 
-/** The cut's profile menu: a new kind starts from the planner's defaults; Straight drops what was typed. */
-export function withProfileKind(card: Card, index: number, kind: "straight" | "lap" | "zigzag" | "tongue" | "dovetail"): Card {
+export type ProfileKind = "straight" | "lap" | "zigzag" | "tongue" | "dovetail" | "sketch";
+
+/** The cut's profile menu: a new kind starts from the planner's defaults; Straight drops what was typed, and a sketch's U. */
+export function withProfileKind(card: Card, index: number, kind: ProfileKind): Card {
   const cut = card.cuts[index];
   if (!cut || cut.profile.kind === kind) return card;
-  return withCutChanged(card, index, { profile: { kind } as Profile });
+  const { u: _u, ...rest } = cut;
+  const next = withCutChanged({ ...card, cuts: card.cuts.map((row, at) => (at === index ? rest : row)) }, index, { profile: { kind } as Profile });
+  return next;
+}
+
+/** A sketched cut's drawing: the chain the kernel cuts along and the sketch the pencil reopens, at the cut's U. */
+export function withProfileSketch(card: Card, index: number, chain: Chain, sketch: { v: number }, u: Vec3): Card {
+  const cut = card.cuts[index];
+  if (!cut) return card;
+  return withCutChanged(card, index, { profile: { kind: "sketch", start: [...chain.start], chain: structuredClone(chain.chain), sketch }, u: [...u] });
 }
 
 /** One typed profile size merged in; `undefined` puts that size back to its default. */
@@ -477,7 +507,20 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
   const shapedFloor = defaultsFor(filled.target, ctx);
   for (const [at, cut] of own.cuts.entries()) {
     const resolved = filled.cuts[at]!.profile;
-    if (resolved.kind === "straight" || resolved.kind === "sketch") continue;
+    if (resolved.kind === "sketch") {
+      // --- Milestone 10. The chain as drawn, checked on the section: it crosses it, does not cross itself, and leaves
+      // no wall under the floor. The sketch stays on the op for the pencil; the engine never sees it.
+      const chain = readChain(resolved);
+      if ("reason" in chain) return { reason: `Cut ${at + 1}: ${chain.reason}` };
+      const section = solid ? sectionLoops(solid.positions, cut.origin, cut.normal, cut.u!) : null;
+      if (!section) return { reason: `Cut ${at + 1}: the plane misses the part, so there is no section for its sketch.` };
+      const box = outlineBox(section);
+      const refusal = chainRefusal(chain, { u0: box.u0, u1: box.u1 }, solid ? profileSlice(solid.positions, cut as { origin: Vec3; normal: Vec3; u: Vec3 }, box) : null, shapedFloor.wallFloorMm);
+      if (refusal) return { reason: `Cut ${at + 1}: ${refusal}` };
+      cut.profile = { kind: "sketch", start: chain.start, chain: chain.chain, ...(resolved.sketch ? { sketch: resolved.sketch } : {}) };
+      continue;
+    }
+    if (resolved.kind === "straight") continue;
     const section = solid ? sectionLoops(solid.positions, cut.origin, cut.normal, cut.u!) : null;
     if (!section) return { reason: `Cut ${at + 1}: the plane misses the part, so there is no section for its ${resolved.kind}.` };
     const box = outlineBox(section);
@@ -522,6 +565,10 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
       placement.notes.push(`Cut ${at + 1}: the plane misses the part, so no ${connectorNames(resolved.types[0]?.type ?? "dowel").one} is placed.`);
       return { ...cut, connectors: { ...cut.connectors, placed: [] } };
     }
+    const flats = cut.profile && cut.profile.kind !== "straight" ? shapedFlats(cut.profile as unknown as Parameters<typeof shapedFlats>[0], outlineBox(section)) : null;
+    if (flats && solid) {
+      return { ...cut, connectors: { ...cut.connectors, placed: placeOnFlats(at, cut, flats, outlineBox(section), resolved.types, solid.positions, floor, pose, placement) } };
+    }
     const placed = placeCut(at + 1, section, resolved.types, floor);
     placement.notes.push(...placed.notes);
     placement.dropped.push(...placed.dropped.map((row) => ({ id: row.id, sentence: row.sentence })));
@@ -537,6 +584,101 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
     return { ...cut, connectors: { ...cut.connectors, placed: placed.placed.map((row) => ({ ...row })) } };
   });
   return { op: { ...own, cuts, up: solid?.up ?? [0, 0, 1] }, ...placement };
+}
+
+/**
+ * --- Milestone 11. A shaped cut's connectors, placed on its flats. Each flat's plane is cut through the solid
+ * (`sectionLoops`), clipped to the flat's own face, and placed as a straight cut's section is; its `uvMm` are in the flat's
+ * own U and V, and the row stores where the flat runs (`flat`) so the kernel starts the hole on that plane. A fixed point
+ * is a point of the cut seen along W: it goes to the flat that lies under it. A cut with no flat that holds one is a plain cut.
+ */
+function placeOnFlats(
+  at: number,
+  cut: { origin: Vec3; normal: Vec3; u?: Vec3 },
+  flats: readonly Flat[],
+  box: { u0: number; u1: number; v0: number; v1: number },
+  resolved: readonly ResolvedConnector[],
+  positions: ArrayLike<number>,
+  floor: number,
+  pose: Affine,
+  placement: Placement,
+): PlacedConnector[] {
+  const w = cut.normal;
+  const u = squareTo(cut.u, w) ?? cut.u!;
+  const v: Vec3 = [w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0]];
+  const rows: PlacedConnector[] = [];
+  const claimed = new Set<string>();
+  let used = 0;
+  for (const flat of flats) {
+    const turn = (flat.tilt * Math.PI) / 180;
+    const [c, s] = [Math.cos(turn), Math.sin(turn)];
+    const origin: Vec3 = [0, 1, 2].map((i) => cut.origin[i]! + u[i]! * flat.u + w[i]! * flat.w) as Vec3;
+    const normal: Vec3 = [0, 1, 2].map((i) => w[i]! * c + u[i]! * s) as Vec3;
+    const along: Vec3 = [0, 1, 2].map((i) => u[i]! * c - w[i]! * s) as Vec3;
+    const loops = sectionLoops(positions, origin, normal, along);
+    const clipped = loops ? clipSection(loops, flat) : null;
+    if (!clipped) continue;
+    // A fixed point, in the cut's U and V, lies under this flat when its U falls inside the flat's span along W.
+    const types = resolved.map((spec) => {
+      if (spec.place !== "fixed") return spec;
+      const mine: UV[] = [];
+      spec.at.forEach((point, index) => {
+        const key = `${spec.type}:${index}`;
+        const reach = [flat.u + flat.u0 * c, flat.u + flat.u1 * c].sort((a, b) => a - b);
+        const inside = point[0] >= Math.max(reach[0]!, box.u0) && point[0] <= Math.min(reach[1]!, box.u1) && point[1] >= Math.max(flat.v0, box.v0) && point[1] <= Math.min(flat.v1, box.v1);
+        if (claimed.has(key) || !inside) return;
+        claimed.add(key);
+        mine.push([(point[0] - flat.u) / c, point[1]]);
+      });
+      return { ...spec, at: mine };
+    });
+    const placed = placeCut(at + 1, clipped, types, floor, used);
+    used += placed.placed.length + placed.dropped.length;
+    placement.notes.push(...placed.notes.filter((note) => !note.endsWith("It is a plain cut.")));
+    placement.dropped.push(...placed.dropped.map((row) => ({ id: row.id, sentence: row.sentence })));
+    placement.fits.push(...placed.fits);
+    for (const row of placed.placed) {
+      const spec = resolved.find((one) => one.type === row.type)!;
+      const point: Vec3 = [0, 1, 2].map((i) => origin[i]! + along[i]! * row.uvMm[0] + v[i]! * row.uvMm[1]) as Vec3;
+      placement.marks.push({ id: row.id, at: applyPose(pose, point), normal: turnDir(pose, normal), ...holeOf(spec) });
+      rows.push({ ...row, fraction: null, flat: { u: flat.u, w: flat.w, tilt: flat.tilt } });
+    }
+  }
+  const lost = resolved.flatMap((spec) => (spec.place === "fixed" ? spec.at.map((_, index) => ({ spec, index })) : [])).filter(({ spec, index }) => !claimed.has(`${spec.type}:${index}`));
+  for (const { spec, index } of lost) {
+    const id = `c${at + 1}-${used + 1}`;
+    used += 1;
+    const sentence = `Cut ${at + 1}: ${connectorNames(spec.type).one} ${index + 1} lies outside the section. It was left out.`;
+    placement.dropped.push({ id, sentence });
+    placement.notes.push(sentence);
+  }
+  if (rows.length === 0) placement.notes.push(`Cut ${at + 1}: no ${connectorNames(resolved[0]?.type ?? "dowel").one} fits. It is a plain cut.`);
+  return rows;
+}
+
+/**
+ * --- Milestone 10. The part cut across a sketched cut's profile plane, through the middle of its section along V: its
+ * outline in the cut's U and W from its origin, which the chain is drawn against. Null when that plane misses the mesh.
+ */
+export function profileSlice(positions: ArrayLike<number>, cut: { origin: Vec3; normal: Vec3; u: Vec3 }, box: { v0: number; v1: number }): ProfileSlice | null {
+  const n = Math.hypot(...cut.normal) || 1;
+  const w: Vec3 = [cut.normal[0] / n, cut.normal[1] / n, cut.normal[2] / n];
+  const u = squareTo(cut.u, w);
+  if (!u) return null;
+  const v: Vec3 = [w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0]];
+  const middle = (box.v0 + box.v1) / 2;
+  const origin: Vec3 = [cut.origin[0] + v[0] * middle, cut.origin[1] + v[1] * middle, cut.origin[2] + v[2] * middle];
+  // Cut square to V with U along U, the slice's second axis is V × U, which is −W.
+  const loops = sectionLoops(positions, origin, v, u);
+  if (!loops) return null;
+  const flip = (ring: readonly [number, number][]): [number, number][] => ring.map(([a, b]) => [a, -b + 0]);
+  return { outer: flip(loops.outer), holes: loops.holes.map(flip) };
+}
+
+/** The section's span in the cut's U and V, from its origin: what a sketched cut's chain must cross. Null when the plane misses. */
+export function sectionSpan(positions: ArrayLike<number>, cut: { origin: Vec3; normal: Vec3; u: Vec3 }): { u0: number; u1: number; v0: number; v1: number } | null {
+  const section = sectionLoops(positions, cut.origin, cut.normal, cut.u);
+  return section ? outlineBox(section) : null;
 }
 
 /** The box a section's outline spans in the cut's own U and V, from its origin: where a lap's step and a tongue sit. */

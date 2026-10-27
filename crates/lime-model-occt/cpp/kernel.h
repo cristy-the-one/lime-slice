@@ -130,7 +130,8 @@ bool write_step_named(
     const std::vector<std::string>& names,
     const char* path,
     std::string& error);
-/// The free shapes of a STEP file with their product names, in the file's order (the XCAF document reader).
+/// The free shapes of a STEP file with their product names, in the file's order (the XCAF document reader). Each name
+/// starts with A when the shape is an assembly of components, or S when it is a simple shape.
 bool read_step_named(
     const char* path,
     std::vector<std::pair<std::string, TopoDS_Shape>>& out,
@@ -259,14 +260,19 @@ bool every_edge_shared_by_two(const TopoDS_Shape& shape);
 /// it (+1 or -1), `f` and `g` its ends along U and `h` its middle along V, all from the origin. A dovetail: the same, `a` the
 /// wide end's width, with `angle` its flanks' lean from W in degrees and `slide` 0 for U or 1 for V: its ends `f` and `g` and
 /// its middle `h` are along the slide and across it. A zig-zag: `a` its depth along W (signed), `b` the pitch, `c` the flank's
-/// lean in degrees, `d` where a period starts along U.
+/// lean in degrees, `d` where a period starts along U. A sketch, `kind` 5: an open chain in (U, W) from the plane's origin,
+/// starting at (`c`, `d`), each segment `kChainStride` numbers of `chain`: 0 for a line or 1 for an arc, the arc's through
+/// point (U, W), and the segment's end (U, W). `a` is where its segments start in the call's chain numbers, `b` how many.
 struct PartitionProfile {
     int kind = 0;
     double a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, angle = 0;
     int slide = 0;
     double u[3] = {0, 0, 0};
+    std::vector<double> chain;
 };
 constexpr int kProfileStride = 14;
+constexpr int kChainStride = 5;
+constexpr int kProfileSketch = 5;
 bool build_partition(
     const TopoDS_Shape& current,
     const std::vector<std::array<double, 6>>& planes,
@@ -323,8 +329,13 @@ struct JointSpec {
     int side = 1;
     double height = 0, angle = 0;
     int slide = 0;
+    /// A connector on a flat of a shaped cut: `flat` is set, and (`a`, `b`) are millimetres in that flat's own frame. The
+    /// flat's plane runs through (`flat_u`, `flat_w`) of the cut's U and W from its origin, square to W turned toward U
+    /// by `flat_tilt` degrees, with V along the cut's V and its U along the flat.
+    bool flat = false;
+    double flat_u = 0, flat_w = 0, flat_tilt = 0;
 };
-constexpr int kJointStride = 14;
+constexpr int kJointStride = 18;
 constexpr int kJointDowel = 0;
 constexpr int kJointPlug = 1;
 constexpr int kJointHardware = 2;

@@ -10,6 +10,7 @@ import { ID_MATRIX } from "./mesh-place.ts";
 import { IDENTITY_POSE, type Affine } from "./model-space.ts";
 import { keptSteps, newTree, opLabel, withChild, type ModelOp, type ModelTree, type PartitionModelOp, type Vec3 } from "./model-tree.ts";
 import { forked } from "./model-edit.ts";
+import { keepSketch, withoutSketch } from "./model-request.ts";
 import {
   bedFrame,
   cardFromFit,
@@ -39,6 +40,7 @@ import {
   withJointField,
   withJointsOn,
   withJointType,
+  withProfileSketch,
   plainJoints,
   plateUp,
   withSelected,
@@ -287,6 +289,65 @@ eq("and a dovetail connector, sliding along U", "op" in dovetailJoint ? (dovetai
 eq("Straight drops the profile from the op", cardOp(withProfileKind(tongueCard, 0, "straight"), wideCenter, null, SIZES)!.cuts[0]!.profile, undefined);
 eq("a profile on an untouched cut is nothing to send", cardOp(plain, wideCenter, null, SIZES)!.cuts[0]!.profile, undefined);
 check("a typed profile size is a change, so an edit offers Update", !sameCard(lapCard, withProfileField(lapCard, 0, { depth: 9 })));
+
+// --- Milestone 10: a sketched cut. The chain is drawn on the cut's U and W; the op stores it with the sketch, which the
+// pencil reopens and the engine never sees.
+const stepAndArc = { start: [-40, 0] as [number, number], chain: [{ kind: "line" as const, to: [-5, 0] as [number, number] }, { kind: "line" as const, to: [-5, 6] as [number, number] }, { kind: "arc" as const, through: [0, 11] as [number, number], to: [5, 6] as [number, number] }, { kind: "line" as const, to: [40, 6] as [number, number] }] };
+const drawing = { v: 1, plane: { origin: [250, 30, 10], turn: [0, 0, 0] }, points: [], entities: [], dims: [{ id: 1, kind: "distance", value: 6, text: "step" }] };
+const sketchCard = withProfileSketch(withProfileKind(plain, 0, "sketch"), 0, stepAndArc, drawing, [0, 1, 0]);
+eq("a sketch card sends the chain, the sketch and its U", cardOp(sketchCard, wideCenter, null, SIZES)!.cuts[0], { origin: [250, 30, 10], normal: [1, 0, 0], u: [0, 1, 0], profile: { kind: "sketch", start: [-40, 0], chain: stepAndArc.chain, sketch: drawing } });
+const sketchStored = storedPartition(cardOp(sketchCard, wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+const sketchOp = "op" in sketchStored ? sketchStored.op : null;
+eq("stored, the cut keeps its chain and its sketch", sketchOp?.cuts[0]!.profile, { kind: "sketch", start: [-40, 0], chain: stepAndArc.chain, sketch: drawing });
+const engineOp = withoutSketch(sketchOp!) as PartitionModelOp;
+eq("the engine sees the chain, not the sketch", engineOp.cuts[0]!.profile, { kind: "sketch", start: [-40, 0], chain: stepAndArc.chain });
+eq("and the echo gets the sketch back", (keepSketch(engineOp, sketchOp!) as PartitionModelOp).cuts[0]!.profile, sketchOp!.cuts[0]!.profile);
+const sketchReopened = cardFromOp(sketchOp!, IDENTITY_POSE, wideCenter, null, "lime-220").cuts[0]!;
+eq("the pencil reads the chain, its sketch and its U back", [sketchReopened.profile, sketchReopened.u], [{ kind: "sketch", start: [-40, 0], chain: stepAndArc.chain, sketch: drawing }, [0, 1, 0]]);
+check("an untouched reopened sketch offers no Update", sameCard(cardFromOp(sketchOp!, IDENTITY_POSE, wideCenter, null, "lime-220"), cardFromOp(sketchOp!, IDENTITY_POSE, wideCenter, null, "lime-220")));
+eq("the row names the sketch", opLabel(sketchOp!, 2), "Split to print, sketch, 2 parts");
+const emptySketch = storedPartition(cardOp(withProfileKind(plain, 0, "sketch"), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("a sketch not drawn yet is refused until it is", "reason" in emptySketch ? emptySketch.reason : null, "Cut 1: The sketch profile has no chain yet. Draw it across the cut, or give start and chain.");
+const shortSketch = storedPartition(cardOp(withProfileSketch(sketchCard, 0, { start: [-40, 0], chain: [{ kind: "line", to: [10, 0] }] }, drawing, [0, 1, 0]), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("a chain that stops inside the 60 mm section is refused", "reason" in shortSketch ? shortSketch.reason : null, "Cut 1: The sketch has to cross the section: start it past one side of the part and end it past the other.");
+const thinSketch = storedPartition(cardOp(withProfileSketch(sketchCard, 0, { start: [-40, 0], chain: [{ kind: "line", to: [-29.5, 0] }, { kind: "line", to: [-29.5, 10] }, { kind: "line", to: [40, 10] }] }, drawing, [0, 1, 0]), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("one that runs 0.5 mm inside the part's side is refused with the wall it leaves", "reason" in thinSketch ? thinSketch.reason : null, "Cut 1: The sketch leaves a wall 0.5 mm thick, under the 0.8 mm wall floor. Move the chain away from the edge, or widen the feature.");
+eq("Straight drops the sketch and its U", cardOp(withProfileKind(sketchCard, 0, "straight"), wideCenter, null, SIZES)!.cuts[0], { origin: [250, 30, 10], normal: [1, 0, 0] });
+
+// --- Milestone 11: connectors on the flats of a shaped cut. Each flat is placed on its own section; the row keeps the flat's
+// plane (`flat`) and its position in that plane.
+const flatRows = (card: Card) => {
+  const stored = storedPartition(cardOp(card, wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+  return "op" in stored ? stored : null;
+};
+const lapJoints = flatRows(withJointsOn(lapCard, 0, true));
+const lapRows = lapJoints?.op.cuts[0]!.connectors!.placed ?? [];
+eq("a lap puts three dowels on each flat: the first below the step at w = 0, the second past it at the lap's depth", lapRows.map((row) => [row.id, row.flat, row.uvMm.map((n) => Math.round(n * 1e6) / 1e6 + 0)]), [
+  ["c1-1", { u: 0, w: 0, tilt: 0 }, [-24, -5]], ["c1-2", { u: 0, w: 0, tilt: 0 }, [0, -5]], ["c1-3", { u: 0, w: 0, tilt: 0 }, [24, -5]],
+  ["c1-4", { u: 0, w: 8, tilt: 0 }, [-24, 5]], ["c1-5", { u: 0, w: 8, tilt: 0 }, [0, 5]], ["c1-6", { u: 0, w: 8, tilt: 0 }, [24, 5]],
+]);
+eq("a flat's rows have no fraction: the kernel places them by millimetres in the flat", lapRows.map((row) => row.fraction), [null, null, null, null, null, null]);
+eq("the ghost marks sit on their own flats: x = 250 and x = 258, the first at z = 5, the second at z = 15", lapJoints?.marks.map((mark) => [mark.at[0], mark.at[2]]).filter((_, at) => at % 3 === 1), [[250, 5], [258, 15]]);
+eq("a lap with dowels says nothing", lapJoints?.notes, []);
+const zigJoints = flatRows(withJointsOn(withProfileField(zigCard, 0, { pitch: 30 }), 0, true));
+const zigRows = zigJoints?.op.cuts[0]!.connectors!.placed ?? [];
+check("a zig-zag takes dowels on its low flats and its tooth tips, each flat's plane stored", zigRows.length > 0 && zigRows.some((row) => row.flat!.w === 0) && zigRows.some((row) => row.flat!.w === 3), JSON.stringify(zigRows));
+check("a row's position is inside its own flat's span", zigRows.every((row) => Math.abs(row.uvMm[0]) <= 30 && row.flat!.tilt === 0));
+const tiltedCard = withProfileSketch(withProfileKind(withJointsOn(plain, 0, true), 0, "sketch"), 0, { start: [-40, 0], chain: [{ kind: "line", to: [40, 16] }] }, drawing, [0, 1, 0]);
+const tiltedJoints = flatRows(tiltedCard);
+const tiltedRows = tiltedJoints?.op.cuts[0]!.connectors!.placed ?? [];
+const tiltDeg = (Math.atan2(-16, 80) * 180) / Math.PI;
+check("a tilted segment of a sketch holds dowels square to itself: its tilt is atan2(-16, 80)", tiltedRows.length > 0 && tiltedRows.every((row) => Math.abs(row.flat!.tilt - tiltDeg) < 1e-9 && row.flat!.u === -40 && row.flat!.w === 0), JSON.stringify(tiltedRows));
+const tiltedNormal: Vec3 = [80 / Math.hypot(80, 16), -16 / Math.hypot(80, 16), 0];
+check("and each mark's hole runs along that tilted normal", !!tiltedJoints && tiltedJoints.marks.length > 0 && tiltedJoints.marks.every((mark) => near(mark.normal, tiltedNormal, 1e-9)), JSON.stringify(tiltedJoints?.marks.map((mark) => mark.normal)));
+const steepCard = withProfileSketch(withProfileKind(withJointsOn(plain, 0, true), 0, "sketch"), 0, { start: [-40, 0], chain: [{ kind: "line", to: [-5, 0] }, { kind: "line", to: [-5, 20] }, { kind: "line", to: [40, 20] }] }, drawing, [0, 1, 0]);
+const steepRows = flatRows(steepCard)?.op.cuts[0]!.connectors!.placed ?? [];
+check("a wall of a sketched chain is not a flat: only the two horizontal segments hold dowels", steepRows.length > 0 && steepRows.every((row) => row.flat!.tilt === 0 && (row.flat!.w === 0 || row.flat!.w === 20)), JSON.stringify(steepRows));
+const fixedCard = withJointField(withJointsOn(lapCard, 0, true), 0, { place: "fixed", at: [[0, 5], [0, -5], [0, 400]] });
+const fixedStored = flatRows(fixedCard);
+eq("a fixed point is a point of the cut seen along W: it goes to the flat under it, one far outside is left out in a sentence", [fixedStored?.op.cuts[0]!.connectors!.placed!.map((row) => [row.flat!.w, row.uvMm]), fixedStored?.notes], [[[0, [0, -5]], [8, [0, 5]]], ["Cut 1: dowel 3 lies outside the section. It was left out."]]);
+const tongueJoints = storedPartition(cardOp(withJointsOn(tongueCard, 0, true), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("a tongue with connectors is still refused, in the planner's sentence", "reason" in tongueJoints ? tongueJoints.reason : null, "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.");
 
 if (failed) {
   console.error(`${failed} failed`);

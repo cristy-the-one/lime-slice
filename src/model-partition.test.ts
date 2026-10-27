@@ -8,7 +8,7 @@ import { applyRequest, crossEditRequest } from "./model-request.ts";
 import { toSolidOp, type Affine } from "./model-space.ts";
 import { dropped, jumped, makesParts, newTree, opLabel, partsOf, reachableTrees, withChild, type ModelOp, type ModelTree, type PartitionModelOp } from "./model-tree.ts";
 import { slicePlateFields, type PlateObject } from "./plate.ts";
-import { notBuiltYet, NUMBER_STROKE_FRACTION, partitionNumbers, PROFILE_LATER, SHAPED_JOINTS_LATER } from "./modeling/partition.ts";
+import { notBuiltYet, NUMBER_STROKE_FRACTION, partitionNumbers, PROFILE_KIND, SHAPED_JOINTS_LATER } from "./modeling/partition.ts";
 import { textStrokes, type StrokeBox } from "./modeling/text.ts";
 
 let failed = 0;
@@ -132,9 +132,14 @@ check("its normal and U turn with it", near(own.cuts[0]!.normal, [0, -1, 0]) && 
 eq("a lap is built", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "lap" } }] }), null);
 eq("a tongue is built", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "tongue" } }] }), null);
 eq("a zig-zag and a dovetail are built", [notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "zigzag" } }] }), notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "dovetail" } }] })], [null, null]);
-eq("a sketch is later", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "sketch", sketch: { v: 1 } } }] }), PROFILE_LATER);
+eq("a sketch is built", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "sketch", start: [-20, 0], chain: [{ kind: "line", to: [20, 0] }] } }] }), null);
+eq("a profile of no known kind is refused", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "wave" } as unknown as { kind: "straight" } }] }), PROFILE_KIND);
+eq("connectors on a sketch are built since milestone 11", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "sketch" }, connectors: { on: true } }] }), null);
+eq("connectors on a zig-zag are built since milestone 11", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "zigzag" }, connectors: { on: true } }] }), null);
+eq("connectors on a dovetail are later", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "dovetail" }, connectors: { on: true } }] }), SHAPED_JOINTS_LATER);
 eq("a key and a dovetail connector are built", [notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true, types: [{ type: "key" }] } }] }), notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true, types: [{ type: "dovetail" }] } }] })], [null, null]);
-eq("connectors on a lap are later", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "lap" }, connectors: { on: true } }] }), SHAPED_JOINTS_LATER);
+eq("connectors on a lap are built since milestone 11", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "lap" }, connectors: { on: true } }] }), null);
+eq("connectors on a tongue are later", notBuiltYet({ cuts: [{ ...cut(1), profile: { kind: "tongue" }, connectors: { on: true } }] }), SHAPED_JOINTS_LATER);
 eq("dowels are built since milestone 5", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: true } }] }), null);
 eq("a key with connectors off is a plain cut", notBuiltYet({ cuts: [{ ...cut(1), connectors: { on: false, types: [{ type: "key" }] } }] }), null);
 eq("a straight plain cut is built", notBuiltYet({ cuts: [cut(1), { origin: [0, 0, 0], normal: [0, 0, 1] }] }), null);

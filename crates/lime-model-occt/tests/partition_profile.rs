@@ -347,20 +347,152 @@ fn a_dovetail_without_a_neck_is_refused_in_a_sentence() {
 }
 
 #[test]
-fn a_sketch_and_connectors_on_a_shaped_cut_are_refused_until_they_are_built() {
-    let Some(zig) = cut(&op(json!({ "kind": "sketch", "sketch": { "v": 1 } }))) else {
-        return;
-    };
-    assert_eq!(
-        zig.expect_err("later"),
-        "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them."
-    );
-    let mut with = op(lap("positive"));
+fn connectors_on_a_tongue_are_refused_until_they_are_built() {
+    let mut with = op(tongue("positive"));
     with["cuts"][0]["connectors"] =
         json!({ "on": true, "types": [{ "type": "dowel" }], "placed": [] });
     let Some(refused) = cut(&with) else { return };
     assert_eq!(
         refused.expect_err("shaped"),
-        "Connectors on a shaped cut are not built yet. Turn them off, or cut straight."
+        "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight."
     );
+}
+
+// --- Milestone 10: a sketched profile. The chain is in the cut's (U, W) from its origin, so on the bar U is Y − 15 and W
+// is X − 60; it is swept along V, which is Z.
+
+fn sketch(start: [f64; 2], chain: Value) -> Value {
+    json!({ "kind": "sketch", "start": start, "chain": chain })
+}
+
+/// A step up 6 mm at U = −5, then a half circle of radius 5 standing on the upper flat, then the flat to past the side.
+fn step_and_arc() -> Value {
+    sketch(
+        [-20.0, 0.0],
+        json!([
+            { "kind": "line", "to": [-5.0, 0.0] },
+            { "kind": "line", "to": [-5.0, 6.0] },
+            { "kind": "arc", "through": [0.0, 11.0], "to": [5.0, 6.0] },
+            { "kind": "line", "to": [20.0, 6.0] },
+        ]),
+    )
+}
+
+#[test]
+fn a_sketched_step_and_arc_cut_pieces_that_sum_to_the_parent() {
+    let Some(made) = cut(&op(step_and_arc())) else {
+        return;
+    };
+    let made = made.expect("the sketch builds");
+    let pieces = made["pieces"].as_array().expect("pieces");
+    assert_eq!(pieces.len(), 2);
+    for piece in pieces {
+        whole(piece);
+    }
+    // By hand, in (U, W) times the 20 mm along V: below the chain is 10 × 60 up to the step, 20 × 66 after it, and the
+    // half circle over the upper flat.
+    let below = 20.0 * (10.0 * 60.0 + 20.0 * 66.0 + std::f64::consts::PI * 25.0 / 2.0);
+    within(volume(&pieces[0]), below, 1e-6);
+    within(volume(&pieces[1]), WHOLE - below, 1e-6);
+    within(volume(&pieces[0]) + volume(&pieces[1]), WHOLE, 1e-6);
+}
+
+#[test]
+fn the_cut_faces_follow_the_chain() {
+    let Some(made) = cut(&op(step_and_arc())) else {
+        return;
+    };
+    let made = made.expect("the sketch builds");
+    let pieces = made["pieces"].as_array().expect("pieces");
+    // The first flat, W = 0 up to the step: x = 60 for y from 0 to 10.
+    let flats = planes(&pieces[0], [1.0, 0.0, 0.0]);
+    let first = flats
+        .iter()
+        .find(|(at, _)| (at[0] - 60.0).abs() < 1e-6)
+        .expect("flat at 60");
+    within(first.1, 10.0 * 20.0, 1e-6);
+    within(first.0[1], 5.0, 1e-6);
+    // The last flat, W = 6 after the arc: x = 66 for y from 20 to 30.
+    let last = flats
+        .iter()
+        .find(|(at, _)| (at[0] - 66.0).abs() < 1e-6)
+        .expect("flat at 66");
+    within(last.1, 10.0 * 20.0, 1e-6);
+    within(last.0[1], 25.0, 1e-6);
+    // The step's riser at U = −5, y = 10, from x = 60 to 66, faces back along −Y on the first piece and +Y on the second.
+    let riser = planes(&pieces[0], [0.0, -1.0, 0.0]);
+    let step = riser
+        .iter()
+        .find(|(at, _)| (at[1] - 10.0).abs() < 1e-6)
+        .expect("riser at y = 10");
+    within(step.1, 6.0 * 20.0, 1e-6);
+    within(step.0[0], 63.0, 1e-6);
+    assert!(planes(&pieces[1], [0.0, 1.0, 0.0])
+        .iter()
+        .any(|(at, area)| (at[1] - 10.0).abs() < 1e-6 && (area - 120.0).abs() < 1e-6));
+    // The arc is a cylinder of radius 5 standing along V (Z) on the line x = 66, y = 15, on both pieces.
+    for piece in pieces {
+        let arcs: Vec<_> = piece["surfaces"]
+            .as_array()
+            .expect("surfaces")
+            .iter()
+            .filter(|face| face["kind"] == "cylinder")
+            .collect();
+        assert_eq!(arcs.len(), 1, "{arcs:?}");
+        within(arcs[0]["radius"].as_f64().expect("radius"), 5.0, 1e-9);
+        let at = arcs[0]["at"].as_array().expect("at");
+        let axis = arcs[0]["axis"].as_array().expect("axis");
+        within(at[0].as_f64().unwrap(), 66.0, 1e-9);
+        within(at[1].as_f64().unwrap(), 15.0, 1e-9);
+        within(axis[2].as_f64().unwrap().abs(), 1.0, 1e-9);
+    }
+}
+
+#[test]
+fn a_piece_that_wraps_a_tall_tooth_is_still_on_its_own_side() {
+    // A tooth 6 mm wide and 50 mm tall: the second piece wraps it, and its centre of mass lies inside the tooth.
+    let tooth = sketch(
+        [-20.0, 0.0],
+        json!([
+            { "kind": "line", "to": [-3.0, 0.0] },
+            { "kind": "line", "to": [-3.0, 50.0] },
+            { "kind": "line", "to": [3.0, 50.0] },
+            { "kind": "line", "to": [3.0, 0.0] },
+            { "kind": "line", "to": [20.0, 0.0] },
+        ]),
+    );
+    let Some(made) = cut(&op(tooth)) else { return };
+    let made = made.expect("the tooth builds");
+    let pieces = made["pieces"].as_array().expect("pieces");
+    assert_eq!(pieces.len(), 2);
+    within(volume(&pieces[0]), WHOLE / 2.0 + 6.0 * 50.0 * 20.0, 1e-6);
+    within(volume(&pieces[1]), WHOLE / 2.0 - 6.0 * 50.0 * 20.0, 1e-6);
+}
+
+#[test]
+fn a_sketch_that_crosses_itself_or_misses_the_part_is_refused() {
+    let crossed = sketch(
+        [-20.0, 0.0],
+        json!([
+            { "kind": "line", "to": [5.0, 0.0] },
+            { "kind": "line", "to": [5.0, 8.0] },
+            { "kind": "line", "to": [-5.0, 8.0] },
+            { "kind": "line", "to": [-5.0, -8.0] },
+            { "kind": "line", "to": [20.0, -8.0] },
+        ]),
+    );
+    let Some(refused) = cut(&op(crossed)) else {
+        return;
+    };
+    assert_eq!(refused.expect_err("crosses"), "The profile crosses itself.");
+    // 100 mm along W is past the bar's end: nothing is cut.
+    let away = sketch([-20.0, 100.0], json!([{ "kind": "line", "to": [20.0, 100.0] }]));
+    let Some(missed) = cut(&op(away)) else { return };
+    assert_eq!(
+        missed.expect_err("misses"),
+        "The sketch profile does not cross the part. Draw it from one side of the section to the other."
+    );
+    let spline = sketch([-20.0, 0.0], json!([{ "kind": "spline", "to": [20.0, 0.0] }]));
+    let Some(splined) = cut(&op(spline)) else { return };
+    assert_eq!(splined.expect_err("spline"), "Cut 1's sketch is lines and arcs.");
 }

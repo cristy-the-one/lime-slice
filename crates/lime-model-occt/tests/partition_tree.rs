@@ -9,8 +9,7 @@ use std::f64::consts::PI;
 
 use serde_json::{json, Value};
 
-const PROFILE_LATER: &str =
-    "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.";
+const PROFILE_KIND: &str = "A cut's profile is straight, lap, tongue, zigzag, dovetail or sketch.";
 
 fn call(request: Value) -> Value {
     let text = lime_model_occt::tree(&request.to_string());
@@ -348,7 +347,10 @@ fn refusals_leave_the_solid_as_it_was() {
     };
     let mut sketch = partition(&[30.0]);
     sketch["cuts"][0]["profile"] = json!({ "kind": "sketch", "sketch": { "v": 1 } });
-    refused(sketch, PROFILE_LATER);
+    refused(sketch, "Cut 1's sketch needs chain, a list of lines and arcs.");
+    let mut unknown = partition(&[30.0]);
+    unknown["cuts"][0]["profile"] = json!({ "kind": "wave" });
+    refused(unknown, PROFILE_KIND);
     let mut three = partition(&[10.0, 20.0, 30.0]);
     three["maxPieces"] = json!(3.0);
     refused(three, "This cut makes 4 pieces. Max pieces is 3.");

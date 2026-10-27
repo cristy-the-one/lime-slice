@@ -272,12 +272,20 @@ export function withoutSketch(op: ModelOp): ModelOp {
     });
     if (changed) next = { ...op, steps };
   } else if (op.kind === "partition") {
+    // --- Milestone 10. A sketched cut's sketch is the pencil's, as an extrude's is: the engine cuts along the chain.
+    const drawn = op.cuts.some((cut) => cut.profile?.kind === "sketch" && cut.profile.sketch);
+    const cuts = drawn ? op.cuts.map((cut) => (cut.profile?.kind === "sketch" && cut.profile.sketch ? { ...cut, profile: withoutDrawing(cut.profile) } : cut)) : op.cuts;
     // --- Split to print, part numbers: the engine-only strokes go the other way, added for every call and never echoed.
     const numbers = partitionNumbers(op);
-    if (numbers) next = { ...op, numbers } as ModelOp;
+    if (numbers || drawn) next = { ...op, cuts, ...(numbers ? { numbers } : {}) } as ModelOp;
   }
   if (!next.exprs) return next;
   const { exprs: _exprs, ...rest } = next;
+  return rest;
+}
+
+function withoutDrawing<T extends { sketch?: unknown }>(profile: T): Omit<T, "sketch"> {
+  const { sketch: _sketch, ...rest } = profile;
   return rest;
 }
 
@@ -298,6 +306,13 @@ export function keepSketch(stored: ModelOp, source: ModelOp): ModelOp {
       return child;
     });
     if (changed) next = { ...stored, steps };
+  } else if (stored.kind === "partition" && source.kind === "partition" && source.cuts.some((cut) => cut.profile?.kind === "sketch" && cut.profile.sketch)) {
+    // --- Milestone 10. The echo's sketched cuts have their chain, not the sketch the pencil reopens.
+    const cuts = stored.cuts.map((cut, at) => {
+      const drawn = source.cuts[at]?.profile;
+      return cut.profile?.kind === "sketch" && !cut.profile.sketch && drawn?.kind === "sketch" && drawn.sketch ? { ...cut, profile: { ...cut.profile, sketch: drawn.sketch } } : cut;
+    });
+    next = { ...stored, cuts };
   }
   if (source.exprs && !next.exprs) return { ...next, exprs: source.exprs };
   return next;

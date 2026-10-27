@@ -103,10 +103,10 @@ check("under four layer heights the connector is left out", connectorDepth(base,
 const cells = (snug: number, loose: number, press: number) => ({ snug, loose, press, source: { snug: "starting", loose: "starting", press: "starting" }, startingFit: true });
 check("PLA row", show(clearanceRow("fdm", "PLA")) === show(cells(0.15, 0.25, 0.05)));
 check("PETG row", show(clearanceRow("fdm", "PETG")) === show(cells(0.2, 0.3, 0.1)));
-check("ABS row", show(clearanceRow("fdm", "abs")) === show(cells(0.2, 0.3, 0.1)));
+check("ABS row", show(clearanceRow("fdm", "abs")) === show(cells(0.25, 0.35, 0.15)));
 check("ASA reads as ABS", clearanceRow("fdm", "ASA") === CLEARANCE_TABLE.abs);
-check("TPU row", show(clearanceRow("fdm", "TPU")) === show(cells(0.25, 0.35, 0.15)));
-check("resin row", show(clearanceRow("resin", "Tough 2000")) === show(cells(0.1, 0.2, 0.05)));
+check("TPU row", show(clearanceRow("fdm", "TPU")) === show(cells(0.2, 0.3, 0.05)));
+check("resin row", show(clearanceRow("resin", "Tough 2000")) === show(cells(0.1, 0.25, 0.05)));
 check("resin ignores the material, FDM filaments do not", clearanceRow("resin", "") === CLEARANCE_TABLE.resin && clearanceKey("resin", "PETG") === "resin" && clearanceKey("fdm", "PETG") === "petg");
 check("material names ignore case and padding", clearanceRow("fdm", " Pla ") === CLEARANCE_TABLE.pla);
 check("a material with no row has none", clearanceRow("fdm", "Nylon") === null && clearanceKey("fdm", "") === null);
@@ -273,7 +273,9 @@ check("a narrow dovetail", show(profileRefusals({ kind: "dovetail", width: 3 }, 
 check("a dovetail whose neck pinches", show(profileRefusals({ kind: "dovetail", angle: 60 }, base)) === show(["This dovetail's neck is 0 mm, under 0.8 mm. Lower the angle or widen the dovetail."]));
 check("a dovetail cannot slide along W", show(profileRefusals({ kind: "dovetail", slide: "w" }, base)) === show(["A dovetail cannot slide along W. Slide along U or V."]));
 check("the slide sentence is the exported constant", DOVETAIL_SLIDE_W_SENTENCE === "A dovetail cannot slide along W. Slide along U or V.");
-check("a straight cut and a sketch have no sizes to refuse", show(profileRefusals({ kind: "straight" }, base)) === show(nothing) && show(profileRefusals({ kind: "sketch", sketch: { v: 1 } }, base)) === show(nothing));
+check("a straight cut and a drawn sketch have no sizes to refuse", show(profileRefusals({ kind: "straight" }, base)) === show(nothing) && show(profileRefusals({ kind: "sketch", start: [-20, 0], chain: [{ kind: "line", to: [20, 0] }] }, base)) === show(nothing));
+check("a sketch with no chain says to draw it", show(profileRefusals({ kind: "sketch", sketch: { v: 1 } }, base)) === show(["The sketch profile has no chain yet. Draw it across the cut, or give start and chain."]));
+check("a sketch that crosses itself is refused with the plan's sentence", show(profileRefusals({ kind: "sketch", start: [0, 0], chain: [{ kind: "line", to: [10, 0] }, { kind: "line", to: [5, 5] }, { kind: "line", to: [5, -5] }] }, base)) === show(["The profile crosses itself."]));
 check("resin floors apply to the tongue width", show(profileRefusals({ kind: "tongue", width: 2.9 }, resin)) === show(["Tongue width is 2.9 mm, under the 3 mm floor."]));
 
 // --- Connector placement.

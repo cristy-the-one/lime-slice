@@ -127,6 +127,20 @@ test("Explode spreads a split to print's pieces by the gap, numbers them, and sa
   expect(wider["bar-2"]![0]! - before["bar-2"]![0]!).toBe(25);
   expect(wider["bar-3"]![0]! - before["bar-3"]![0]!).toBe(50);
 
+  // A gap that throws a piece past the view's edge keeps its tag inside the view.
+  await page.locator("#modelExplodeGap").fill("2000");
+  await expect(canvas(page)).toHaveAttribute("data-explode", "2000");
+  const view = (await canvas(page).boundingBox())!;
+  for (const tag of await page.locator(".model-part-tag").all()) {
+    if (await tag.isHidden()) continue;
+    const at = (await tag.boundingBox())!;
+    expect(at.x, "the tag is inside the view on the left").toBeGreaterThanOrEqual(view.x);
+    expect(at.y, "and the top").toBeGreaterThanOrEqual(view.y);
+    expect(at.x + at.width, "and the right").toBeLessThanOrEqual(view.x + view.width);
+    expect(at.y + at.height, "and the bottom").toBeLessThanOrEqual(view.y + view.height);
+  }
+  await page.locator("#modelExplodeGap").fill("25");
+
   // Off, the pieces are back where they were cut, and the tags go.
   await page.locator("#modelExplode").uncheck();
   await expect(canvas(page)).not.toHaveAttribute("data-explode", /.*/);

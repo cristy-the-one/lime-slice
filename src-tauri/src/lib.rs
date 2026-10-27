@@ -212,6 +212,53 @@ async fn save_text_file(
     Ok(true)
 }
 
+/// One file of a folder export: its name, as the card shows it, and its bytes in base64.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderFile {
+    name: String,
+    bytes_b64: String,
+}
+
+/// A file name a folder export may write: one plain name, no folder, no drive, no `..`.
+fn folder_file_name(name: &str) -> Result<&str, String> {
+    let plain = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', ':', '\0'])
+        && name.trim() == name;
+    if plain {
+        Ok(name)
+    } else {
+        Err(format!("{name:?} is not a file name"))
+    }
+}
+
+/// Writes every file into `folder`, checking every name and decoding every file before the first is written, so a bad
+/// one leaves the folder as it was. The answer is the names written.
+fn write_folder_files(folder: &std::path::Path, files: &[FolderFile]) -> Result<Vec<String>, String> {
+    let mut prepared = Vec::with_capacity(files.len());
+    for file in files {
+        prepared.push((folder_file_name(&file.name)?, base64_decode(&file.bytes_b64)?));
+    }
+    for (name, bytes) in &prepared {
+        std::fs::write(folder.join(name), bytes).map_err(|e| format!("{name}: {e}"))?;
+    }
+    Ok(prepared.iter().map(|(name, _)| (*name).to_string()).collect())
+}
+
+/// A split to print's STL per piece on the desktop: one folder picked once, every piece written there. The answer is the
+/// folder, or nothing when the picker was cancelled.
+#[tauri::command]
+async fn save_files_to_folder(app: AppHandle, files: Vec<FolderFile>) -> Result<Option<String>, String> {
+    let Some(picked) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let folder = picked.into_path().map_err(|e| e.to_string())?;
+    write_folder_files(&folder, &files)?;
+    Ok(Some(folder.display().to_string()))
+}
+
 #[tauri::command]
 async fn pareto_model(payload: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -361,6 +408,7 @@ pub fn run() {
             strategies,
             gcode_text,
             save_text_file,
+            save_files_to_folder,
             pareto_model,
             preview_mesh,
             model_tree,
@@ -390,6 +438,26 @@ mod tests {
         let mut keys: Vec<String> = value.as_object().map(|map| map.keys().cloned().collect()).unwrap_or_default();
         keys.sort();
         keys
+    }
+
+    #[test]
+    fn a_folder_export_writes_every_piece_or_none() {
+        use base64::Engine;
+        let b64 = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
+        let dir = std::env::temp_dir().join(format!("lime-folder-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, text: &str| FolderFile { name: name.to_string(), bytes_b64: b64(text) };
+        let written = write_folder_files(&dir, &[file("bar-1.stl", "one"), file("bar-2.stl", "two")]).unwrap();
+        assert_eq!(written, ["bar-1.stl", "bar-2.stl"]);
+        assert_eq!(std::fs::read_to_string(dir.join("bar-2.stl")).unwrap(), "two");
+        for bad in ["../x.stl", "a/b.stl", "a\\b.stl", "C:x.stl", "..", ""] {
+            let err = write_folder_files(&dir, &[file("bar-3.stl", "three"), file(bad, "x")]).unwrap_err();
+            assert!(err.contains("is not a file name"), "{bad}: {err}");
+        }
+        assert!(!dir.join("bar-3.stl").exists(), "a bad name leaves the folder as it was");
+        let err = write_folder_files(&dir, &[FolderFile { name: "bar-4.stl".into(), bytes_b64: "!!".into() }]).unwrap_err();
+        assert!(!err.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

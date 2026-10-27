@@ -512,7 +512,23 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const groove = (6 + 0.3) * (3 + 0.4) * (22.1 + 0.3);
   check("a tongue's probe: one piece grows by the tongue, the other loses the grown groove", tongueProbe.ok === true && tv.length === 2 && near(tv[1]!, base / 2 + peg, 6e-3) && near(tv[0]!, base / 2 - groove, 6e-3), JSON.stringify({ tv, expected: [base / 2 - groove, base / 2 + peg], reason: tongueProbe.reason }));
   const refused = await call("model_probe", { object: tongueBar, op: { ...tongueOp, cuts: [{ ...(tongueOp.cuts[0] as Record<string, unknown>), connectors: { on: true, types: [{ type: "dowel" }] } }] } });
-  check("connectors on a shaped cut are refused with the sentence", refused.ok === false && refused.reason === "Connectors on a shaped cut are not built yet. Turn them off, or cut straight.", JSON.stringify(refused));
+  check("connectors on a tongue are refused with the sentence", refused.ok === false && refused.reason === "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.", JSON.stringify(refused));
+  // --- Milestone 11: dowels on the flats of a lap. The 20 mm section has room for one dowel on each flat: z = 5 on the plane
+  // below the step, z = 15 on the plane 8 mm past it. Each hole is a teardrop (its axis is along X) taken from both pieces.
+  const lapDowelOp = { ...lapOp, cuts: [{ ...(lapOp.cuts[0] as Record<string, unknown>), connectors: { on: true, types: [{ type: "dowel" }] } }] };
+  const lapJointBar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 20, dz: 20 })).object);
+  const lapDowels = await call("model_probe", { object: lapJointBar, op: lapDowelOp });
+  const lapPlaced = ((lapDowels.connectors as { placed?: { id: string; at: number[]; teardrop: boolean }[] } | undefined)?.placed ?? []);
+  check("dowels on a lap: one on each flat, at x = 0 and x = 8, z = 5 and z = 15", lapDowels.ok === true && lapPlaced.length === 2 && lapPlaced[0]!.id === "c1-1" && near(lapPlaced[0]!.at[0]!, 0, 1e-6) && near(lapPlaced[0]!.at[2]!, 5, 1e-6) && lapPlaced[1]!.id === "c1-2" && near(lapPlaced[1]!.at[0]!, 8, 1e-6) && near(lapPlaced[1]!.at[2]!, 15, 1e-6), JSON.stringify(lapDowels).slice(0, 400));
+  const lapSide = (0.75 * Math.PI + 1) * 3.15 * 3.15 * 2.4;
+  const lapHoled = ((lapDowels.pieces ?? []) as { volumeMm3: number }[]).map((piece) => piece.volumeMm3);
+  check("and each takes a teardrop hole at both flats from both pieces", lapHoled.length === 2 && near(lapHoled[0]! + lapHoled[1]!, whole - 4 * lapSide, 0.05), JSON.stringify({ lapHoled, expected: whole - 4 * lapSide }));
+  const zigDowels = await call("model_probe", { object: tongueBar, op: { ...cutOp({ kind: "zigzag", pitch: 30, depth: 3, angle: 0 }), cuts: [{ origin: [0, 0, 10], normal: [1, 0, 0], profile: { kind: "zigzag", pitch: 30, depth: 3, angle: 0 }, connectors: { on: true, types: [{ type: "dowel" }] } }] } });
+  const zigPlaced = ((zigDowels.connectors as { placed?: { id: string; at: number[] }[] } | undefined)?.placed ?? []);
+  check("dowels on a zig-zag: they sit on both the low flat (x = 0) and the tooth tips (x = 3)", zigDowels.ok === true && zigPlaced.some((row) => near(row.at[0]!, 0, 1e-6)) && zigPlaced.some((row) => near(row.at[0]!, 3, 1e-6)), JSON.stringify(zigDowels).slice(0, 400));
+  const tiltedDowels = await call("model_probe", { object: tongueBar, op: { kind: "partition", orient: "keep", labels: { on: false }, cuts: [{ origin: [0, 0, 10], normal: [1, 0, 0], profile: { kind: "sketch", start: [-40, 0], chain: [{ kind: "line", to: [40, 16] }] }, connectors: { on: true, types: [{ type: "dowel" }] } }] } });
+  const tiltedPlaced = ((tiltedDowels.connectors as { placed?: { id: string; at: number[] }[] } | undefined)?.placed ?? []);
+  check("dowels on a tilted segment of a sketch: each centre is on the line w = 0.2 (u + 40), square to it", tiltedDowels.ok === true && tiltedPlaced.length > 0 && tiltedPlaced.every((row) => near(row.at[0]!, 0.2 * (row.at[1]! + 40), 1e-6)), JSON.stringify(tiltedDowels).slice(0, 400));
   const thin = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "tongue", width: 40, depth: 3 }) });
   check("a tongue wider than the section is refused with a sentence", thin.ok === false && String(thin.reason).includes("too small for a tongue"), JSON.stringify(thin));
   console.log(`occt: tongue pieces ${tv.map((v) => v.toFixed(3)).join(", ")} mm³`);
@@ -530,8 +546,28 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const dove = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "dovetail", width: 8, angle: 20, depth: 3 }) });
   const dv = ((dove.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
   check("a dovetail profile's probe: the neck and wide end by hand, and its groove grown by the clearance", dove.ok === true && near(dv[1]!, base / 2 + peg2, 6e-3) && near(dv[0]!, base / 2 - groove2, 6e-3), JSON.stringify({ dv, expected: [base / 2 - groove2, base / 2 + peg2], reason: dove.reason }));
-  const sketchRefused = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "sketch", sketch: { v: 1 } }) });
-  check("a sketch is still refused with the sentence", sketchRefused.ok === false && sketchRefused.reason === "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.", JSON.stringify(sketchRefused));
+  // --- Milestone 10: a sketched profile, applied and edited. U is Y and W is X on this cut, so the section spans U −15 to 15.
+  const stepArc = { kind: "sketch", start: [-20, 0], chain: [{ kind: "line", to: [-5, 0] }, { kind: "line", to: [-5, 6] }, { kind: "arc", through: [0, 11], to: [5, 6] }, { kind: "line", to: [20, 6] }] };
+  const sketchBar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 30, dz: 20 })).object);
+  const sketchOp = cutOp(stepArc, ["keep", "joint"]);
+  const sketchProbe = await call("model_probe", { object: sketchBar, op: sketchOp });
+  const sv = ((sketchProbe.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  // Below the chain: half the bar, the 20 × 6 mm step over U −5 to 15, and the half circle of radius 5, all 20 mm tall.
+  const below = base / 2 + 20 * 6 * 20 + (Math.PI * 25 * 20) / 2;
+  check("a sketch's probe: the step and the arc go to the first piece, and the volumes sum to the bar", sketchProbe.ok === true && sv.length === 2 && near(sv[0]!, below, 6e-3) && near(sv[1]!, base - below, 6e-3) && near(sv[0]! + sv[1]!, base, 6e-3), JSON.stringify({ sv, below, reason: sketchProbe.reason }));
+  const sketchApplied = await call("model_apply", { object: sketchBar, op: sketchOp });
+  const sketchStored = (sketchApplied.stored as { cuts: { profile: Record<string, unknown> }[] }).cuts[0]!.profile;
+  check("apply stores the chain as sent", sketchApplied.ok === true && sketchStored.kind === "sketch" && JSON.stringify(sketchStored.start) === JSON.stringify(stepArc.start) && JSON.stringify(sketchStored.chain) === JSON.stringify(stepArc.chain), JSON.stringify(sketchStored));
+  check("Joint down lays the plane of the longest straight segment on the bed", JSON.stringify(sketchApplied.notes) === JSON.stringify(["Part 2 is joint down on cut 1, its only cut face, 200 mm²."]), JSON.stringify(sketchApplied.notes));
+  const sketchRows = (await call("model_history", { object: sketchBar })).nodes as { id: string; label: string }[];
+  check("the row names the sketch", sketchRows[1]?.label === "Split to print, sketch, 2 parts", JSON.stringify(sketchRows));
+  const level = { kind: "sketch", start: [-20, 3], chain: [{ kind: "line", to: [20, 3] }] };
+  await call("model_probe", { object: sketchBar, node: "node_0", op: cutOp(level) });
+  const sketchEdited = await call("model_edit", { object: sketchBar, node: sketchRows[1]!.id, op: cutOp(level) });
+  const firstAfter = Number((await call("model_describe", { object: sketchBar, limit: 1 })).volumeMm3);
+  check("an edit cuts along the new chain: 3 mm along the normal", sketchEdited.ok === true && near(firstAfter, base / 2 + 30 * 3 * 20, 6e-3), JSON.stringify({ firstAfter, reason: sketchEdited.reason }));
+  const crossed = await call("model_probe", { object: sketchBar, node: "node_0", op: cutOp({ kind: "sketch", start: [-20, 0], chain: [{ kind: "line", to: [5, 0] }, { kind: "line", to: [5, 8] }, { kind: "line", to: [-5, 8] }, { kind: "line", to: [-5, -8] }, { kind: "line", to: [20, -8] }] }) });
+  check("a chain that crosses itself is refused with the plan's sentence", crossed.ok === false && crossed.reason === "Cut 1: The profile crosses itself.", JSON.stringify(crossed));
   const keyOp = (type: string) => ({ kind: "partition", cuts: [{ origin: [0, 0, 10], normal: [1, 0, 0], connectors: { on: true, types: [{ type }] } }], labels: { on: false } });
   const keyed = await call("model_probe", { object: tongueBar, op: keyOp("key") });
   const placedKeys = ((keyed.connectors as { placed?: unknown[] } | undefined)?.placed ?? []).length;

@@ -109,6 +109,7 @@ fn split_to_print_for_export() {
     a_cut_face_with_no_room_takes_a_side_face();
     a_piece_with_no_room_skips_its_number();
     the_pieces_round_trip_as_one_step_file();
+    the_pins_reopen_with_their_name();
 }
 
 /// A 400 mm tall part for the Form 4, cut across its height in three, as the planner proposes it (section 5).
@@ -365,6 +366,55 @@ fn the_pieces_round_trip_as_one_step_file() {
         json!({ "error": "A split to print's pieces export as STEP" })
     );
     for key in ["tall", "tall-2", "tall-3", "bar"] {
+        ok(json!({ "call": "close", "key": key }));
+    }
+}
+
+/// The pins of a dowelled cut export as one more named solid, `bar-pins`, a compound of the two pins. Opened as pieces,
+/// the file gives back that one piece under its name with both pins in it, not two unnamed ones; the cut's own pieces
+/// keep their names, and a file of several unnamed solids in one free shape still opens as one piece each.
+fn the_pins_reopen_with_their_name() {
+    ok(json!({ "call": "open", "key": "pinned", "box": [120.0, 30.0, 20.0] }));
+    let dowel = json!({ "type": "dowel", "radius": 3.0, "depth": 8.0, "clearance": 0.15, "endGap": 0.4, "hole": "round",
+        "count": "fit", "margin": 5.0, "place": "fit", "at": [] });
+    let placed = json!([
+        { "id": "c1-1", "type": "dowel", "uvMm": [0.0, 0.0], "fraction": [0.25, 0.5], "fixed": false },
+        { "id": "c1-2", "type": "dowel", "uvMm": [0.0, 0.0], "fraction": [0.75, 0.5], "fixed": false },
+    ]);
+    let mut op = resin(vec![json!({
+        "origin": [60.0, 15.0, 10.0], "normal": [1.0, 0.0, 0.0], "u": [0.0, 1.0, 0.0],
+        "profile": { "kind": "straight" },
+        "connectors": { "on": true, "types": [dowel], "placed": placed },
+    })]);
+    op["up"] = json!([0.0, 0.0, 1.0]);
+    op["labels"] = json!({ "on": false });
+    let applied = ok(
+        json!({ "call": "apply", "key": "pinned", "parent": 0, "node": 1, "op": op,
+            "pieceKeys": ["pinned-2"], "pinsKey": "pinned-pins" }),
+    );
+    assert_eq!(applied["parts"], 2, "{applied}");
+    assert_eq!(applied["pins"]["key"], "pinned-pins", "the dowels made pins");
+    let exported = ok(json!({
+        "call": "export", "key": "pinned", "node": 1, "format": "step",
+        "pieces": [{ "key": "pinned-2", "node": 0 }, { "key": "pinned-pins", "node": 0 }],
+        "names": ["pinned-1", "pinned-2", "pinned-pins"],
+    }));
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(exported["bytesBase64"].as_str().expect("bytesBase64"))
+        .expect("base64");
+    let named = lime_model_occt::step_named_solids(&bytes).expect("the file reads as an XCAF document");
+    assert_eq!(
+        named.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+        ["pinned-1", "pinned-2", "pinned-pins"]
+    );
+    let pins = &named[2].1;
+    assert_eq!(pins.solids, 2, "{pins:?}");
+    within(
+        pins.volume_mm3,
+        2.0 * (std::f64::consts::PI * 9.0 * 8.0 - 2.0 * std::f64::consts::PI * 0.25 * (3.0 - 0.5 / 3.0)),
+        1e-3,
+    );
+    for key in ["pinned", "pinned-2", "pinned-pins"] {
         ok(json!({ "call": "close", "key": key }));
     }
 }

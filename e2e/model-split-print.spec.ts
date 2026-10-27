@@ -446,8 +446,12 @@ test("a cut's Profile menu offers Straight, Lap and Tongue; a lap shows Depth, H
   await page.locator("#modelPartProfileDepth").dispatchEvent("change");
   await expect(page.locator("#modelPartProfileNote")).toBeHidden();
   await jointsOn(page).check();
-  await expect(page.locator("#modelPartProfileNote")).toHaveText("Connectors on a shaped cut are not built yet. Turn them off, or cut straight.");
+  await expect(page.locator("#modelPartProfileNote"), "a lap has flats for connectors since milestone 11").toBeHidden();
+  await expect(apply(page)).toBeEnabled();
+  await profileKind(page).selectOption("tongue");
+  await expect(page.locator("#modelPartProfileNote")).toHaveText("Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.");
   await expect(apply(page), "the cut says why it cannot be built").toBeDisabled();
+  await profileKind(page).selectOption("lap");
   await jointsOn(page).uncheck();
   if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
   await page.waitForTimeout(400);
@@ -549,6 +553,121 @@ test("Key and Dovetail connectors show their own fields and are placed on the se
   await apply(page).click();
   await expect(page.locator("#objectList .obj")).toHaveCount(3);
   await expect(labels(page)).toHaveText(["bar.step", "Split to print, 3 parts, dovetails"]);
+});
+
+// --- Milestone 10: a cut along a sketched profile.
+type Drawn = { kind: string; start?: [number, number]; chain?: { kind: string; to: [number, number] }[]; sketch?: unknown };
+const sketchCanvas = (page: Page) => page.locator("#model");
+
+/** The screen point of (u, w) on the open sketch's plane, from where its origin and 10 mm along X and Y land. */
+async function onSketch(page: Page, u: number, w: number): Promise<{ x: number; y: number }> {
+  const text = (await sketchCanvas(page).getAttribute("data-sketch-frame")) ?? "";
+  const [o, x, y] = text.split(" ").map((pair) => pair.split(",").map(Number) as [number, number]);
+  return { x: o![0] + ((x![0] - o![0]) * u) / 10 + ((y![0] - o![0]) * w) / 10, y: o![1] + ((x![1] - o![1]) * u) / 10 + ((y![1] - o![1]) * w) / 10 };
+}
+
+/** The sketch has turned onto the cut's plane: the camera has stopped, and the frame on screen is the settled one. */
+async function settleSketch(page: Page) {
+  await expect(sketchCanvas(page)).toHaveAttribute("data-sketch", "editing");
+  await expect(sketchCanvas(page)).toHaveAttribute("data-sketch-profile", "1");
+  await page.waitForTimeout(500);
+  const box = (await sketchCanvas(page).boundingBox())!;
+  await page.mouse.move(box.x + box.width * 0.8, box.y + 40);
+  await expect(sketchCanvas(page)).toHaveAttribute("data-sketch-frame", /\d/);
+}
+
+test("choosing Sketch opens the sketcher on the cut; a chain drawn across it and Apply make the row; the pencil reopens the chain", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await profileKind(page).selectOption("sketch");
+  await settleSketch(page);
+  await expect(page.locator("#modelPanel"), "the card steps aside while the profile is drawn").toBeHidden();
+  await expect(page.locator("#sketchCards .sketch-profile .sketch-feature-name")).toHaveText("Sketch profile");
+  await expect(page.locator("#sketchCards [data-sketch-make]"), "a profile sketch makes no feature of its own").toHaveCount(0);
+  await expect(page.locator("#sketchProfileNote")).toHaveText("The sketch profile has no chain yet. Draw it across the cut, or give start and chain.");
+  await expect(sketchCanvas(page)).toHaveAttribute("data-sketch-current-tool", "line");
+  // A step across the 20 mm section, U from −10 to 10: in at W = 0, up 20 mm along the cut's normal, out at W = 20.
+  for (const [u, w] of [[-20, 0], [0, 0], [0, 20], [20, 20]] as const) {
+    const point = await onSketch(page, u, w);
+    await page.mouse.click(point.x, point.y);
+  }
+  await expect(sketchCanvas(page)).toHaveAttribute("data-sketch-entities", "3");
+  await expect(page.locator("#sketchProfileNote"), "the chain crosses the section, so nothing stands in its way").toBeHidden();
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: "test-results/split-print/sketch-profile.png" });
+  await page.locator("[data-sketch-profile-use]").click();
+
+  await expect(page.locator("#modelPanel"), "Use profile brings the card back").toBeVisible();
+  await expect(sketchCanvas(page)).toHaveAttribute("data-sketch", "off");
+  await expect(page.locator("#modelPartProfileSketchText")).toHaveText("Sketch · 3 lines");
+  await expect(profileKind(page)).toHaveValue("sketch");
+  await expect.poll(() => (lastProfile(tree) as Drawn).kind).toBe("sketch");
+  const sent = lastProfile(tree) as Drawn;
+  expect(sent.sketch, "the engine sees the chain, not the sketch").toBeUndefined();
+  expect(sent.chain!.map((segment) => segment.kind)).toEqual(["line", "line", "line"]);
+  expect(sent.start![0], "the chain starts past the section's low side").toBeLessThanOrEqual(-10);
+  expect(sent.chain!.at(-1)!.to[0], "and ends past its high side").toBeGreaterThanOrEqual(10);
+  const cut = (tree.of("probe").at(-1)!.op as { cuts: { u?: V }[] }).cuts[0]!;
+  expect(cut.u, "the cut's U is fixed with its sketch").toEqual([0, 1, 0]);
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(labels(page)).toHaveText(["bar.step", "Split to print, sketch, 3 parts"]);
+  const applied = tree.of("apply").at(-1)!.op as { cuts: { profile?: Drawn }[] };
+  expect(applied.cuts[0]!.profile!.sketch, "the apply sends the chain alone too").toBeUndefined();
+
+  // The pencil reopens the chain in the sketcher first, then the card.
+  await page.getByRole("treeitem", { name: /^Split to print, sketch, 3 parts/ }).locator(".mh-edit").click();
+  await settleSketch(page);
+  await expect(sketchCanvas(page), "the chain is back, its three lines").toHaveAttribute("data-sketch-entities", "3");
+  await expect(page.locator("#modelPanel")).toBeHidden();
+  await page.locator("[data-sketch-profile-cancel]").click();
+  await expect(page.locator("#modelPanel")).toBeVisible();
+  await expect(profileKind(page)).toHaveValue("sketch");
+  await expect(page.locator("#modelPartProfileSketchText")).toHaveText("Sketch · 3 lines");
+  await expect(apply(page), "an untouched edit offers no Update").toBeDisabled();
+});
+
+test("a chain that stops inside the section is refused in the sketch card and on the card", async ({ page }) => {
+  await openBar(page);
+  await openCard(page);
+  await profileKind(page).selectOption("sketch");
+  await settleSketch(page);
+  for (const [u, w] of [[-20, 0], [0, 0], [0, 20]] as const) {
+    const point = await onSketch(page, u, w);
+    await page.mouse.click(point.x, point.y);
+  }
+  await expect(sketchCanvas(page)).toHaveAttribute("data-sketch-entities", "2");
+  await expect(page.locator("#sketchProfileNote")).toHaveText("The sketch has to cross the section: start it past one side of the part and end it past the other.");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#modelPanel"), "Esc out of the sketch uses the chain as it stands").toBeVisible();
+  await expect(page.locator("#modelPartStatus")).toHaveText("Cut 1: The sketch has to cross the section: start it past one side of the part and end it past the other.");
+  await expect(apply(page)).toBeDisabled();
+});
+
+test("Apply along a sketch, then Explode spreads its pieces", async ({ page }) => {
+  // The 60 mm wide bar, so the tooth sits well clear of the section's sides and of the cut's trace, which snap.
+  await openBar(page, false, WIDE);
+  await openCard(page);
+  await profileKind(page).selectOption("sketch");
+  await settleSketch(page);
+  for (const [u, w] of [[-40, 30], [-8, 30], [-8, 45], [8, 45], [8, 30], [40, 30]] as const) {
+    const point = await onSketch(page, u, w);
+    await page.mouse.click(point.x, point.y);
+  }
+  await expect(sketchCanvas(page)).toHaveAttribute("data-sketch-entities", "5");
+  await page.locator("[data-sketch-profile-use]").click();
+  await expect(page.locator("#modelPartProfileSketchText")).toHaveText("Sketch · 5 lines");
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(labels(page)).toHaveText(["bar.step", "Split to print, sketch, 3 parts"]);
+  await page.locator("#modelLookOpen").click();
+  await page.locator("#modelExplode").check();
+  await expect(page.locator("#model")).toHaveAttribute("data-explode-parts", /2:/);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: "test-results/split-print/sketch-explode.png" });
 });
 
 test("lay out places only the new pieces, around an object that stays where it was", async ({ page }) => {
@@ -749,6 +868,56 @@ test("Export… offers STL per piece, one 3MF and one STEP, and writes the expec
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   expect(seen.length, "Cancel writes nothing").toBe(5);
+});
+
+test("on the desktop, STL per piece asks for one folder and writes every piece there", async ({ page }) => {
+  await openBar(page, false, COLUMN);
+  await openCard(page);
+  await applyForForm4(page);
+  const dialog = page.locator("#splitExport");
+  const downloads: string[] = [];
+  page.on("download", (download) => downloads.push(download.suggestedFilename()));
+  // The desktop shell answers `invoke`; the app looks for it each time it saves, so it is put in place for this export only.
+  const desktop = async (answer: string | null) => {
+    await page.evaluate((folder) => {
+      const calls: { cmd: string; args: { files: { name: string; bytesB64: string }[] } }[] = [];
+      (window as unknown as { __folderCalls: typeof calls }).__folderCalls = calls;
+      (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+        invoke: async (cmd: string, args: { files: { name: string; bytesB64: string }[] }) => {
+          calls.push({ cmd, args });
+          return folder;
+        },
+        transformCallback: () => 0,
+      };
+    }, answer);
+  };
+  const calls = () => page.evaluate(() => (window as unknown as { __folderCalls: { cmd: string; args: { files: { name: string; bytesB64: string }[] } }[] }).__folderCalls);
+  const exportStl = async () => {
+    await page.locator("#modelPartExport").click();
+    await expect(dialog).toBeVisible();
+    await dialog.locator('[data-format="stl"]').click();
+    await expect(dialog).toBeHidden();
+  };
+  await desktop("C:\\parts\\bar");
+  await exportStl();
+  await expect(readout(page)).toContainText("Saved bar-1.stl, bar-2.stl, bar-3.stl in C:\\parts\\bar.");
+  const made = await calls();
+  expect(made.map((call) => call.cmd), "one call for all three pieces, not one save dialog each").toEqual(["save_files_to_folder"]);
+  expect(made[0]!.args.files.map((file) => file.name)).toEqual(["bar-1.stl", "bar-2.stl", "bar-3.stl"]);
+  for (const file of made[0]!.args.files) {
+    const header = Buffer.from(file.bytesB64, "base64");
+    expect(header.length, "a binary STL: 80 bytes of header, a count, then 50 bytes a triangle").toBe(84 + 50 * header.readUInt32LE(80));
+  }
+  expect(downloads, "the desktop writes files, the page downloads none").toEqual([]);
+  await view(page, "folder-export");
+  await desktop(null);
+  await exportStl();
+  await expect(readout(page), "a cancelled folder pick says nothing was saved").toContainText("No folder was picked, so nothing was saved.");
+  // The web build has no desktop shell: it downloads each piece, as it did.
+  await page.evaluate(() => delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+  await exportStl();
+  await expect.poll(() => downloads).toEqual(["bar-1.stl", "bar-2.stl", "bar-3.stl"]);
+  await expect(readout(page)).toContainText("Saved bar-1.stl, bar-2.stl, bar-3.stl. Keep supports off");
 });
 
 test("the partition row's menu offers Export… for an export target", async ({ page }) => {

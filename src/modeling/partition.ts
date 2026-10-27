@@ -3,6 +3,7 @@
  * Pure TypeScript: it proposes cuts, checks sizes, and places connectors. The kernel builds the solids.
  */
 import { textStrokes } from "./text.ts";
+import { chainPoints, crossesItself, CROSSES_ITSELF, readChain, type ChainSegment } from "./sketch-profile.ts";
 
 export type Vec3 = [number, number, number];
 export type UV = [number, number];
@@ -80,7 +81,18 @@ export type Profile =
   | { kind: "zigzag"; pitch?: number; depth?: number; angle?: number; side?: Side }
   | { kind: "tongue"; width?: number; depth?: number; side?: Side }
   | { kind: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide; side?: Side }
-  | { kind: "sketch"; sketch: { v: number } };
+  | SketchProfile;
+
+/**
+ * --- Milestone 10. A sketched profile: the open chain in the cut's U and W from its origin, which the kernel sweeps along
+ * V (`src/modeling/sketch-profile.ts`), and the sketch it was drawn as, kept for the pencil and dropped before the engine.
+ */
+export interface SketchProfile {
+  kind: "sketch";
+  start?: UV;
+  chain?: ChainSegment[];
+  sketch?: { v: number };
+}
 
 /** `height: null` is half the section along V, known once the section is. */
 export type ResolvedProfile =
@@ -89,7 +101,7 @@ export type ResolvedProfile =
   | { kind: "zigzag"; pitch: number; depth: number; angle: number; side: Side }
   | { kind: "tongue"; width: number; depth: number; side: Side }
   | { kind: "dovetail"; width: number; angle: number; depth: number; slide: Slide; side: Side }
-  | { kind: "sketch"; sketch: { v: number } };
+  | SketchProfile;
 
 export interface Cut {
   origin: Vec3;
@@ -176,14 +188,125 @@ const startingRow = (snug: number, loose: number, press: number): ClearanceRow =
   startingFit: true,
 });
 
+/** Each number is the middle of the published ranges for a 0.4 mm nozzle (resin: the Form 4); the sources are in plan section 28. */
 export const CLEARANCE_TABLE: Readonly<Record<ClearanceKey, ClearanceRow>> = {
   pla: startingRow(0.15, 0.25, 0.05),
   petg: startingRow(0.2, 0.3, 0.1),
-  abs: startingRow(0.2, 0.3, 0.1),
-  // TPU grips and gives: a wider starting row than the rigid filaments, until a coupon says otherwise.
-  tpu: startingRow(0.25, 0.35, 0.15),
-  resin: startingRow(0.1, 0.2, 0.05),
+  // ABS and ASA shrink more than PETG, and the published ASA sliding range sits 0.05 mm above PETG's.
+  abs: startingRow(0.25, 0.35, 0.15),
+  // TPU gives, so a press needs little; it shrinks little, so Snug and Loose follow PETG. No clearances are published for it.
+  tpu: startingRow(0.2, 0.3, 0.05),
+  // Standard resin on the Form 4 prints a gap about 0.03 mm a side smaller than drawn, which lifts Loose to 0.25.
+  resin: startingRow(0.1, 0.25, 0.05),
 };
+
+/**
+ * What a person measured on printed coupons, kept beside the machine library (`MachineLibrary.measuredFits`): per row,
+ * the cells a coupon fixed, each a gap on each side. `resinFeatureMm` is the thinnest wall that survived on the resin
+ * printer. A stored op keeps the clearance it was filled with, so this only reaches a cut made after it is saved.
+ */
+export interface MeasuredFits {
+  cells?: Partial<Record<ClearanceKey, Partial<Record<Clearance, number>>>>;
+  resinFeatureMm?: number;
+}
+
+/** The fit cells, in the order the card lists them. */
+export const FIT_NAMES: readonly Clearance[] = ["snug", "loose", "press"];
+
+/** The table's row with `fits`' measured cells laid over it through `measuredRow`. */
+function withMeasured(key: ClearanceKey, fits: MeasuredFits | undefined): ClearanceRow {
+  let row = CLEARANCE_TABLE[key];
+  const cells = fits?.cells?.[key];
+  if (!cells) return row;
+  for (const fit of FIT_NAMES) {
+    const value = cells[fit];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) row = measuredRow(row, fit, value);
+  }
+  return row;
+}
+
+/** `fits` with one cell measured, rounded to the thousandth so a typed 0.1 stays 0.1. */
+export function recordMeasured(fits: MeasuredFits | undefined, key: ClearanceKey, fit: Clearance, mm: number): MeasuredFits {
+  const value = Math.round(mm * 1000) / 1000;
+  return { ...fits, cells: { ...fits?.cells, [key]: { ...fits?.cells?.[key], [fit]: value } } };
+}
+
+/** The rows the entry lists, with the words the card shows and the process each is printed in. */
+export const FIT_ROWS: readonly { key: ClearanceKey; name: string; process: Process }[] = [
+  { key: "pla", name: "PLA", process: "fdm" },
+  { key: "petg", name: "PETG", process: "fdm" },
+  { key: "abs", name: "ABS / ASA", process: "fdm" },
+  { key: "tpu", name: "TPU", process: "fdm" },
+  { key: "resin", name: "Standard resin (Form 4)", process: "resin" },
+];
+
+/** What one entry of coupon results carries: the gap each side of the step that fitted, per fit, and for resin the wall. */
+export interface FitResults {
+  snug?: number;
+  loose?: number;
+  press?: number;
+  wallMm?: number;
+}
+
+/** A sentence when a result is not a number it can store, else null. */
+export function fitResultsRefusal(results: FitResults): string | null {
+  for (const fit of FIT_NAMES) {
+    const n = results[fit];
+    if (n !== undefined && !(typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 2)) return `${fit} is a gap each side from 0 to 2 mm: the label of the step that fitted.`;
+  }
+  if (results.wallMm !== undefined && !(typeof results.wallMm === "number" && Number.isFinite(results.wallMm) && results.wallMm > 0 && results.wallMm <= 5)) return "wallMm is the thinnest wall that survived, above 0 and up to 5 mm.";
+  if (FIT_NAMES.every((fit) => results[fit] === undefined) && results.wallMm === undefined) return "Give at least one of snug, loose, press (or wallMm for resin).";
+  return null;
+}
+
+/** `fits` with `results` entered for a row through `measuredRow`. The wall only counts for resin. */
+export function enterMeasured(fits: MeasuredFits | undefined, key: ClearanceKey, results: FitResults): MeasuredFits | undefined {
+  let next = fits;
+  for (const fit of FIT_NAMES) {
+    const n = results[fit];
+    if (n !== undefined) next = recordMeasured(next, key, fit, n);
+  }
+  if (key === "resin" && results.wallMm !== undefined) next = recordResinFeature(next, results.wallMm);
+  return next;
+}
+
+/** `fits` with a row's cells put back to the starting values. Resin also drops its measured wall. */
+export function resetMeasured(fits: MeasuredFits | undefined, key: ClearanceKey): MeasuredFits | undefined {
+  const cells = { ...fits?.cells };
+  delete cells[key];
+  const next: MeasuredFits = { ...fits, cells };
+  if (key === "resin") delete next.resinFeatureMm;
+  if (Object.keys(cells).length === 0) delete next.cells;
+  return Object.keys(next).length === 0 ? undefined : next;
+}
+
+/** `fits` with the resin's thinnest surviving wall set in millimetres, or put back when `mm` is null. */
+export function recordResinFeature(fits: MeasuredFits | undefined, mm: number | null): MeasuredFits | undefined {
+  const next: MeasuredFits = { ...fits };
+  if (mm === null) delete next.resinFeatureMm;
+  else next.resinFeatureMm = Math.round(mm * 1000) / 1000;
+  return Object.keys(next).length === 0 ? undefined : next;
+}
+
+/** A stored `MeasuredFits`, read defensively: finite cells of known rows only. Undefined when nothing is left. */
+export function readMeasuredFits(value: unknown): MeasuredFits | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const out: MeasuredFits = {};
+  const cells: NonNullable<MeasuredFits["cells"]> = {};
+  const rows = raw.cells && typeof raw.cells === "object" && !Array.isArray(raw.cells) ? (raw.cells as Record<string, unknown>) : {};
+  for (const key of Object.keys(CLEARANCE_TABLE) as ClearanceKey[]) {
+    const row = rows[key];
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    for (const fit of FIT_NAMES) {
+      const n = (row as Record<string, unknown>)[fit];
+      if (typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 2) cells[key] = { ...cells[key], [fit]: n };
+    }
+  }
+  if (Object.keys(cells).length > 0) out.cells = cells;
+  if (typeof raw.resinFeatureMm === "number" && Number.isFinite(raw.resinFeatureMm) && raw.resinFeatureMm > 0 && raw.resinFeatureMm <= 5) out.resinFeatureMm = raw.resinFeatureMm;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /** The table's key for a process and a material name, or null for a material with no row. Resin ignores the material. */
 export function clearanceKey(process: Process, material: string): ClearanceKey | null {
@@ -193,9 +316,9 @@ export function clearanceKey(process: Process, material: string): ClearanceKey |
   return name === "pla" || name === "petg" || name === "abs" || name === "tpu" ? name : null;
 }
 
-export function clearanceRow(process: Process, material: string): ClearanceRow | null {
+export function clearanceRow(process: Process, material: string, fits?: MeasuredFits): ClearanceRow | null {
   const key = clearanceKey(process, material);
-  return key ? CLEARANCE_TABLE[key] : null;
+  return key ? withMeasured(key, fits) : null;
 }
 
 /** One cell of a row: the gap on each side and where it came from. */
@@ -229,6 +352,8 @@ export interface DefaultsInput {
   material: string;
   adhesion?: string;
   brimWidthMm?: number;
+  /** What was measured on printed coupons, laid over the table. */
+  fits?: MeasuredFits;
 }
 
 export interface PartitionDefaults {
@@ -275,11 +400,11 @@ export interface PartitionDefaults {
 
 export function partitionDefaults(input: DefaultsInput): PartitionDefaults {
   const resin = input.process === "resin";
-  const f = resin ? RESIN_FEATURE_MM : (input.featureMm ?? 0.4);
+  const f = resin ? (input.fits?.resinFeatureMm ?? RESIN_FEATURE_MM) : (input.featureMm ?? 0.4);
   const l = resin ? RESIN_LAYER_MM : (input.layerMm ?? 0.2);
   const radiusMm = Math.max(3, 4 * f);
   const brim = input.adhesion === "brim" ? (input.brimWidthMm ?? FDM_BED_MARGIN_MM) : FDM_BED_MARGIN_MM;
-  const clearance = clearanceRow(input.process, input.material);
+  const clearance = clearanceRow(input.process, input.material, input.fits);
   const zigzagPitchMm = Math.max(10, 8 * f);
   const tongueDepthMm = Math.max(3, 6 * l);
   return {
@@ -442,6 +567,8 @@ export interface FillContext {
   material: string;
   adhesion?: string;
   brimWidthMm?: number;
+  /** Measured fits from the machine library, laid over the clearance table. */
+  fits?: MeasuredFits;
   /** The part's box in the solid's frame. Gives U and a lap's half height when they are absent. */
   box?: Box;
 }
@@ -716,16 +843,18 @@ function resinHeightNotes(span: Vec3, counts: number[], usable: number[], axes: 
 // What the kernel builds yet (milestone 5). The same sentences as `partition_refusal` in tree.rs.
 // ---------------------------------------------------------------------------
 
-export const PROFILE_LATER = "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.";
-/** Connectors on a shaped cut wait: they would sit on the flats of the joint, not on one plane. */
-export const SHAPED_JOINTS_LATER = "Connectors on a shaped cut are not built yet. Turn them off, or cut straight.";
+/** A profile of no kind the kernel builds: the same sentence as `PARTITION_PROFILE_KIND` in tree.rs. */
+export const PROFILE_KIND = "A cut's profile is straight, lap, tongue, zigzag, dovetail or sketch.";
+/** Connectors on a tongue or a dovetail cut wait: a lap, a zig-zag and a sketch have flats to hold them (`shapedFlats`). */
+export const SHAPED_JOINTS_LATER = "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.";
 
 /**
- * Why the kernel does not cut this op yet, before anything is built: a sketch profile, or connectors on a shaped cut.
+ * Why the kernel does not cut this op, before anything is built: a profile of no known kind, or connectors on a tongue or a
+ * dovetail cut. A lap, a zig-zag and a sketch have flats to put them on (`shapedFlats`).
  */
 export function notBuiltYet(op: Pick<PartitionOp, "cuts">): string | null {
-  if (op.cuts.some((cut) => cut.profile && !["straight", "lap", "tongue", "zigzag", "dovetail"].includes(cut.profile.kind))) return PROFILE_LATER;
-  if (op.cuts.some((cut) => cut.profile && cut.profile.kind !== "straight" && cut.connectors?.on === true)) return SHAPED_JOINTS_LATER;
+  if (op.cuts.some((cut) => cut.profile && !["straight", "lap", "tongue", "zigzag", "dovetail", "sketch"].includes(cut.profile.kind))) return PROFILE_KIND;
+  if (op.cuts.some((cut) => cut.profile && (cut.profile.kind === "tongue" || cut.profile.kind === "dovetail") && cut.connectors?.on === true)) return SHAPED_JOINTS_LATER;
   return null;
 }
 
@@ -752,12 +881,12 @@ export function connectorNames(type: ConnectorType): { one: string; many: string
  * Every connector of a resolved cut placed on `section` (plan section 9), one type after another, the ids numbered on
  * the cut as one list: `c{cut}-1`, `c{cut}-2`, … The fit of each typed count, for **Use N**.
  */
-export function placeCut(cut: number, section: Section, types: readonly ResolvedConnector[], wallFloorMm: number): PlacementResult & { fits: ConnectorFit[] } {
+export function placeCut(cut: number, section: Section, types: readonly ResolvedConnector[], wallFloorMm: number, first = 0): PlacementResult & { fits: ConnectorFit[] } {
   const placed: PlacedConnector[] = [];
   const dropped: DroppedConnector[] = [];
   const notes: string[] = [];
   const fits: ConnectorFit[] = [];
-  let offset = 0;
+  let offset = first;
   for (const spec of types) {
     const one = placeConnectors({ cut, section, spec, wallFloorMm });
     const renumber = (index: number) => `c${cut}-${index + offset}`;
@@ -840,8 +969,14 @@ export function profileRefusals(profile: Profile, d: PartitionDefaults, vSpanMm?
   const floors = d.floors;
   switch (p.kind) {
     case "straight":
-    case "sketch":
       break;
+    case "sketch": {
+      // The chain on its own; its span across the section and its walls are checked where the section is known.
+      const chain = readChain(p);
+      if ("reason" in chain) found.push(chain.reason);
+      else if (crossesItself(chainPoints(chain))) found.push(CROSSES_ITSELF);
+      break;
+    }
     case "lap": {
       if (vSpanMm !== undefined && vSpanMm < 2 * floors.lapShoulderMm - 1e-9) return [LAP_TOO_THIN_SENTENCE];
       found.push(underFloor("Lap depth", p.depth, floors.lapDepthMm));
@@ -966,6 +1101,127 @@ function distToOutline(p: UV, section: Section): number {
 }
 
 // ---------------------------------------------------------------------------
+// Flats of a shaped cut (milestone 11): where a connector's hole can start on a lap, a zig-zag or a sketched cut.
+// ---------------------------------------------------------------------------
+
+/**
+ * A flat face of a shaped cut as the op stores it, in the cut's own frame: its plane runs through (`u`, `w`) of the cut's U
+ * and W from its origin, square to W turned toward U by `tilt` degrees, with its own U along the flat and V the cut's V.
+ */
+export interface FlatPlane {
+  u: number;
+  w: number;
+  tilt: number;
+}
+
+/** A flat and the part of its plane that is the cut face: the flat's own U from `u0` to `u1`, the cut's V from `v0` to `v1`. */
+export interface Flat extends FlatPlane {
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
+}
+
+/** A sketched chain's segment is a flat when its normal is within 45° of the cut's W: a steeper one is a wall, not a face. */
+const FLAT_TILT_LIMIT = Math.SQRT1_2;
+const FAR_MM = 1e6;
+
+interface ShapedProfile {
+  kind: string;
+  depth?: number;
+  side?: Side;
+  at?: number;
+  pitch?: number;
+  angle?: number;
+  u0?: number;
+  start?: UV;
+  chain?: ChainSegment[];
+}
+
+/**
+ * The flat faces of a shaped cut's profile, sized as Apply stored it, `box` the section's span in U and V. A lap has two
+ * (the first flat on the plane, to one side of the step, and the second, `depth` along W, past it); a zig-zag a flat on the
+ * plane and one on each tooth's tip, as many as the section holds; a sketch each straight segment of its chain whose normal
+ * is within 45° of W. A straight cut, a tongue and a dovetail give none: a straight cut is the plane itself.
+ */
+export function shapedFlats(profile: ShapedProfile, box: { u0: number; u1: number; v0: number; v1: number }): Flat[] {
+  if (profile.kind === "lap" && profile.depth !== undefined && profile.at !== undefined) {
+    const carried = profile.side === "negative" ? -profile.depth : profile.depth;
+    return [
+      { u: 0, w: 0, tilt: 0, u0: -FAR_MM, u1: FAR_MM, v0: -FAR_MM, v1: profile.at },
+      { u: 0, w: carried, tilt: 0, u0: -FAR_MM, u1: FAR_MM, v0: profile.at, v1: FAR_MM },
+    ];
+  }
+  if (profile.kind === "zigzag" && profile.depth !== undefined && profile.pitch !== undefined && profile.pitch > 0) {
+    const pitch = profile.pitch;
+    const carried = profile.side === "negative" ? -profile.depth : profile.depth;
+    const lean = (profile.depth * Math.tan(((profile.angle ?? 0) * Math.PI) / 180)) / 2;
+    const base = profile.u0 ?? 0;
+    const first = Math.floor((box.u0 - base) / pitch) - 1;
+    const last = Math.ceil((box.u1 - base) / pitch) + 1;
+    const out: Flat[] = [];
+    for (let k = first; k <= last; k += 1) {
+      const x = base + k * pitch;
+      const bands: [number, number, number][] = [
+        [x, x + pitch / 2, 0],
+        [x + pitch / 2 + lean, x + pitch - lean, carried],
+      ];
+      for (const [a, b, w] of bands) {
+        if (b <= box.u0 || a >= box.u1 || !(b > a)) continue;
+        out.push({ u: 0, w, tilt: 0, u0: a, u1: b, v0: -FAR_MM, v1: FAR_MM });
+      }
+    }
+    return out;
+  }
+  if (profile.kind === "sketch" && profile.start && profile.chain) {
+    const out: Flat[] = [];
+    let at = profile.start;
+    for (const segment of profile.chain) {
+      const from = at;
+      at = segment.to;
+      if (segment.kind !== "line") continue;
+      const [a, b] = segment.to[0] >= from[0] ? [from, segment.to] : [segment.to, from];
+      const du = b[0] - a[0];
+      const dw = b[1] - a[1];
+      const length = Math.hypot(du, dw);
+      if (!(length > 1e-6) || du / length < FLAT_TILT_LIMIT - 1e-9) continue;
+      out.push({ u: a[0], w: a[1], tilt: (Math.atan2(-dw, du) * 180) / Math.PI, u0: 0, u1: length, v0: -FAR_MM, v1: FAR_MM });
+    }
+    return out;
+  }
+  return [];
+}
+
+/** `section` cut to the rectangle `[u0, u1] × [v0, v1]`: each ring clipped on its four sides, the rings left with no area dropped. Null when nothing is left. */
+export function clipSection(section: Section, rect: { u0: number; u1: number; v0: number; v1: number }): Section | null {
+  const clip = (ring: Ring): Ring => {
+    let out = ring;
+    const inside: ((p: UV) => number)[] = [(p) => p[0] - rect.u0, (p) => rect.u1 - p[0], (p) => p[1] - rect.v0, (p) => rect.v1 - p[1]];
+    for (const side of inside) {
+      const next: Ring = [];
+      for (let i = 0; i < out.length; i += 1) {
+        const a = out[i]!;
+        const b = out[(i + 1) % out.length]!;
+        const da = side(a);
+        const db = side(b);
+        if (da >= 0) next.push(a);
+        if (da >= 0 !== db >= 0) {
+          const t = da / (da - db);
+          next.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
+      }
+      out = next;
+      if (out.length < 3) return [];
+    }
+    return out;
+  };
+  const outer = clip(section.outer);
+  if (outer.length < 3 || Math.abs(ringArea(outer).area) < 1e-6) return null;
+  const holes = (section.holes ?? []).map(clip).filter((ring) => ring.length >= 3 && Math.abs(ringArea(ring).area) > 1e-9);
+  return { outer, holes };
+}
+
+// ---------------------------------------------------------------------------
 // Connector placement (plan section 9).
 // ---------------------------------------------------------------------------
 
@@ -985,9 +1241,11 @@ export interface PlacedConnector {
   type: ConnectorType;
   /** Millimetres in the cut frame. */
   uvMm: UV;
-  /** Fractions of the section's box in U and V. Null for a fixed connector (D5). */
+  /** Fractions of the section's box in U and V. Null for a fixed connector (D5), and for one on a flat of a shaped cut. */
   fraction: UV | null;
   fixed: boolean;
+  /** On a flat of a shaped cut (`shapedFlats`): where its plane runs; `uvMm` is then in that plane's own U and V. */
+  flat?: FlatPlane;
 }
 
 export type DropReason = "outside" | "breaks" | "wall" | "margin";

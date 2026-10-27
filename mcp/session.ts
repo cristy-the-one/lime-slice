@@ -21,9 +21,9 @@ import { decodeSolid } from "../src/model-reply.ts";
 import { alignDelta, bedBox, isAlignRelation } from "../src/place-snap.ts";
 import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, turnedAxis, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
-import { clampPieces, type FillContext, type Target } from "../src/modeling/partition.ts";
+import { FIT_ROWS, clampPieces, clearanceKey, enterMeasured, fitResultsRefusal, resetMeasured, type FillContext, type FitResults, type Target } from "../src/modeling/partition.ts";
 import { couponFileName, fitCoupon, fitCouponRequest, readCouponReply } from "../src/modeling/fit-coupon.ts";
-import { choiceAt, jointDown, jointPlanes } from "../src/modeling/joint-down.ts";
+import { choiceAt, jointDown, jointPlanes, noJointSentence } from "../src/modeling/joint-down.ts";
 import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateUp, readPartition, storedPartition } from "./partition.ts";
 import { pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
@@ -97,7 +97,7 @@ import type { LayerAction } from "../src/layer-actions.ts";
 import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, workplaneIn, workplaneOwn, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
 import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
 import { plateFileIsVersion2 } from "../src/plate.ts";
-import { advanceFor, builtinLibrary, adoptProfile, cardsOf, enginePrinter, exportOnlyRefusal, fileFromSelection, heatFor, printerTarget, targetPrinter, parseMachineFile, saveMaterialCard, serializeMachineFile, setAdvance, setFlow, setGcode, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
+import { advanceFor, builtinLibrary, adoptProfile, cardsOf, enginePrinter, exportOnlyRefusal, fileFromSelection, heatFor, printerTarget, targetPrinter, parseMachineFile, saveMaterialCard, serializeMachineFile, setAdvance, setFlow, setGcode, setMeasuredFits, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
 import { parseSettingsProfile, profileFileName, serializeSettingsProfile } from "../src/ui/settings-profiles.ts";
 
 import { openInApp, systemOpener, type AppOpener } from "./app-open.ts";
@@ -2868,6 +2868,7 @@ export class Session {
         flow: filament.flow,
         pressureAdvance: filament.pressureAdvance,
       },
+      ...(this.library.measuredFits ? { measuredFits: this.library.measuredFits } : {}),
     };
   }
 
@@ -2893,6 +2894,13 @@ export class Session {
       const linear = typeof filamentPatch.linearAdvance === "number" ? filamentPatch.linearAdvance : filament.linearAdvance[String(library.nozzleMm)] ?? 0;
       library = setAdvance(library, filamentPatch.pressureAdvance, linear);
     }
+    let fitsSaid: string | undefined;
+    if (input.fits !== undefined) {
+      const entered = this.enterFits(library, input.fits);
+      if ("reason" in entered) return { ok: false, reason: entered.reason };
+      library = entered.library;
+      fitsSaid = entered.said;
+    }
     const start = typeof printerPatch.startGcode === "string" ? printerPatch.startGcode : printer.startGcode;
     const end = typeof printerPatch.endGcode === "string" ? printerPatch.endGcode : printer.endGcode;
     if (start !== printer.startGcode || end !== printer.endGcode) library = setGcode(library, start, end);
@@ -2911,12 +2919,39 @@ export class Session {
     };
     const review = reviewGcode(`${start}\n${end}`, { custom: [start, end] });
     if (input.dryRun === true) {
-      return { ok: true, dryRun: true, review: review.review.map((line) => line.text), custom: review.custom.map((line) => line.text) };
+      return { ok: true, dryRun: true, ...(fitsSaid ? { fits: fitsSaid } : {}), review: review.review.map((line) => line.text), custom: review.custom.map((line) => line.text) };
     }
     this.remember("Machine");
     this.library = library;
     const after = this.machineGet();
-    return { ok: true, stale: true, from: before, to: after, review: review.review.map((line) => line.text), custom: review.custom.map((line) => line.text), label: "Machine" };
+    return { ok: true, stale: true, ...(fitsSaid ? { fits: fitsSaid } : {}), from: before, to: after, review: review.review.map((line) => line.text), custom: review.custom.map((line) => line.text), label: "Machine" };
+  }
+
+  /**
+   * machine_set's `fits`: coupon results (plan section 28). `{material, process?, snug?, loose?, press?, wallMm?}` writes
+   * measured cells for that row into the library, `{material, reset: true}` puts its starting values back.
+   */
+  private enterFits(library: MachineLibrary, value: unknown): { library: MachineLibrary; said: string } | { reason: string } {
+    const raw = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+    if (!raw) return { reason: "fits is {material, process?, snug?, loose?, press?, wallMm?}, or {material, reset: true}." };
+    if (raw.process !== undefined && raw.process !== "fdm" && raw.process !== "resin") return { reason: "fits.process is fdm or resin." };
+    const process = raw.process === "resin" ? "resin" : "fdm";
+    const material = typeof raw.material === "string" ? raw.material : this.filament().material;
+    const key = clearanceKey(process, material);
+    if (!key) return { reason: `No fit row for ${material || "that material"}. The rows are PLA, PETG, ABS or ASA, TPU, and process resin for the Form 4's standard resin.` };
+    const name = FIT_ROWS.find((row) => row.key === key)?.name ?? key;
+    if (raw.reset === true) return { library: setMeasuredFits(library, resetMeasured(library.measuredFits, key)), said: `${name} is back to its starting values.` };
+    const results: FitResults = {};
+    for (const field of ["snug", "loose", "press", "wallMm"] as const) {
+      if (raw[field] === undefined) continue;
+      if (typeof raw[field] !== "number") return { reason: `fits.${field} is a number of millimetres.` };
+      results[field] = raw[field] as number;
+    }
+    if (results.wallMm !== undefined && key !== "resin") return { reason: "fits.wallMm is for the resin row." };
+    const refusal = fitResultsRefusal(results);
+    if (refusal) return { reason: `fits: ${refusal}` };
+    const said = [...(["snug", "loose", "press"] as const).filter((fit) => results[fit] !== undefined).map((fit) => `${fit} ${results[fit]} mm`), ...(results.wallMm !== undefined ? [`wall ${results.wallMm} mm`] : [])];
+    return { library: setMeasuredFits(library, enterMeasured(library.measuredFits, key, results)), said: `${name} measured: ${said.join(", ")} each side. New cuts use it; applied cuts keep theirs.` };
   }
 
   private machineSave(name: string): Record<string, unknown> {
@@ -5970,6 +6005,7 @@ export class Session {
       material: this.filament().material,
       adhesion: this.settings.adhesion,
       brimWidthMm: this.settings.brimWidthMm,
+      ...(this.library.measuredFits ? { fits: this.library.measuredFits } : {}),
       ...(box ? { box: { min: [...box.min], max: [...box.max] } } : {}),
     };
   }
@@ -6014,6 +6050,7 @@ export class Session {
       material: typeof raw.material === "string" ? raw.material : ctx.material,
       featureMm: ctx.featureMm,
       layerMm: ctx.layerMm,
+      fits: ctx.fits,
       ...(typeof raw.radius === "number" ? { radiusMm: raw.radius } : {}),
       ...(typeof raw.depth === "number" ? { depthMm: raw.depth } : {}),
       ...(raw.hole ? { hole: raw.hole as "round" | "teardrop" } : {}),
@@ -6303,7 +6340,7 @@ export class Session {
           out.notes.push(`Part ${index! + 1} is joint down on cut ${joint.face.cut + 1}, its ${joint.other ? "larger" : "only"} cut face, ${Math.round(joint.face.area * 100) / 100} mm².`);
           return;
         }
-        out.notes.push(`Part ${index! + 1} has no cut face, so it keeps its orientation.`);
+        out.notes.push(noJointSentence(index! + 1, op!.cuts));
       }
       // Keep: the part's own orientation, for an object Joint down turned or a piece copied from a part that is turned.
       if (row === obj) {
@@ -6762,7 +6799,16 @@ export class Session {
     const first = typed ? this.bake(obj, structuredClone(typed)) : null;
     const exprs = typed && first && !("reason" in first) ? this.plainLinks(obj, typed, typedText, first.op) : undefined;
     if (parent === null || parent === undefined) return this.editRoot(obj, tree, node, raw, exprs);
-    const baked = this.bake(obj, raw);
+    // A split to print is planned on the solid it cuts, the parent's: a profile and connectors read its section there.
+    let planned: ReturnType<Session["bake"]> = { reason: "The edit needs an op." };
+    if ((raw as { kind?: unknown } | null)?.kind === "partition" && parent !== tree.current) {
+      const read = await this.atStep(obj, tree, parent, async () => {
+        planned = this.bake(obj, raw);
+        return { ok: true };
+      });
+      if (read.ok !== true) return read;
+    } else planned = this.bake(obj, raw);
+    const baked = planned;
     if ("reason" in baked) return { ok: false, reason: baked.reason };
     const probed = [parent, node, tree.current].some((id) => obj.probes.has(probeKey(String(id), baked.op)));
     if (!probed) return { ok: false, reason: "Probe this edit first. It was not applied." };
