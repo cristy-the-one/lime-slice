@@ -3,10 +3,14 @@
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
 import { Axis3d, Box, Boxes, ChevronRight, CircleDot, Cone, Copy, Cylinder, Disc, Download, Egg, Eye, FlipHorizontal2, Focus, Globe, Grid2x2, Grid3x3, Hash, Hexagon, Layers, ListChecks, Move3d, MoveVertical, Plus, Radius, Redo2, Rows3, Ruler, Scaling, SquareArrowUp, SquareSplitHorizontal, SquareSquare, SquaresUnite, Torus, Triangle, TriangleRight, Type, Undo2, createElement, type IconNode } from "lucide";
-import type { HandleDrag, ModelGhost, ModelSolid } from "../model-view";
+import type { HandleDrag, ModelGhost, ModelGrabHooks, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type DragHandle, type ModelTool, type Vec3 } from "../model-drag";
 import type { Affine, PlaceFields } from "../model-space";
+import { isAlignRelation, type AlignRelation } from "../place-snap";
+import { alignHowHtml, modelAlignPick, modelAlignToHtml } from "../app/align-ui";
+import { paintGrabHint } from "../app/grab-hint";
+import { endsText, type PickedPoint } from "../measure-points";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { pushToast } from "./toasts";
 import type { EditPanel } from "../model-edit";
@@ -68,6 +72,21 @@ interface ModelChromeHooks {
   placeFields(): PlaceFields | null;
   /** A Place field changed: the object moves, or turns, in model space. */
   placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase): void;
+  /** --- Ctrl-drag in the viewport. `grabStart` opens Place and begins the one step the whole grab makes. --- */
+  grabReady(): boolean;
+  grabStart(): boolean;
+  grabMove(pose: Affine): void;
+  grabEnd(): void;
+  /** Esc: the pose goes back and no step lands. */
+  grabCancel(): void;
+  /** Ctrl-click on a grey object: it becomes the open one. */
+  openObject(id: string): void;
+  /** The other objects Align to... can line the open one up with. */
+  alignChoices(): JoinChoice[];
+  /** Line the open object up with another, as one Place step. False when nothing moved. */
+  alignTo(id: string, relation: AlignRelation): boolean;
+  /** What object `id` is called; the open one when none. */
+  objectName(id?: string): string;
   /** The open object's workplane in model space. The global frame when it has none. */
   workplane(): Workplane;
   /** The workplane changed, in model space. One drag, or a typed number once it rests, is one step. */
@@ -376,6 +395,10 @@ export function mountModelChrome(next: ModelChromeHooks) {
   document.addEventListener("click", (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;
     if (!target?.closest("[data-model-ui], #modelBar")) return;
+    if (target.closest("#modelAlignGo")) {
+      alignNow();
+      return;
+    }
     // --- A3 composite features ---
     if (target?.closest("#modelFeatureMore")) {
       toggleFeatureMenu();
@@ -481,6 +504,10 @@ export function mountModelChrome(next: ModelChromeHooks) {
   document.querySelector("#modelPanel")?.addEventListener("change", (ev) => {
     // An open card hears its own fields.
     if (card) return;
+    if (ev.target instanceof HTMLSelectElement && ev.target.closest("#modelAlign")) {
+      alignPicked(ev.target);
+      return;
+    }
     // --- A5. The step list and the step number are the same step. ---
     if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelEdgeStep") {
       const id = Number(ev.target.value);
@@ -519,6 +546,10 @@ export function mountModelChrome(next: ModelChromeHooks) {
   });
   document.querySelector("#modelPanel")?.addEventListener("input", (ev) => {
     if (card) return;
+    if (ev.target instanceof Element && ev.target.closest("#modelAlign")) return;
+    const typed = ev.target instanceof HTMLElement ? ev.target.id : "";
+    if (typed === "modelAx" || typed === "modelAy" || typed === "modelAz") measureEnds.A = null;
+    if (typed === "modelBx" || typed === "modelBy" || typed === "modelBz") measureEnds.B = null;
     // A box or the screw list changes on `change`, all at once.
     if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed")) return;
     if (tool === "place") {
@@ -550,6 +581,21 @@ export function mountModelChrome(next: ModelChromeHooks) {
   bindScrub();
   bindExpressions();
   fx.model?.onHandleDrag(onHandleDrag);
+  const grab: ModelGrabHooks = {
+    ready: () => (!tool || tool === "place") && !card && !edit && !!hooks?.grabReady(),
+    select: (id) => hooks?.openObject(id),
+    start: () => !!hooks?.grabStart(),
+    move: (pose) => hooks?.grabMove(pose),
+    end: () => hooks?.grabEnd(),
+    cancel: () => hooks?.grabCancel(),
+    hint: (over) => paintGrabHint(over),
+  };
+  fx.model?.onGrab(grab);
+  const alignRow = document.querySelector<HTMLElement>("#modelAlign");
+  alignRow?.addEventListener("focusin", () => fx.model?.markAlignTarget(modelAlignPick.to || null));
+  alignRow?.addEventListener("focusout", (ev) => {
+    if (!(ev.relatedTarget instanceof Node && alignRow.contains(ev.relatedTarget))) fx.model?.markAlignTarget(null);
+  });
   fx.model?.onObjectPick((id: string) => {
     if (!pickJoinTool(id)) hooks?.notATool(id);
   });
@@ -976,6 +1022,7 @@ function closeTool() {
   preview = null;
   fx.model?.setPreview(null);
   fx.model?.setRemovedFaces(false);
+  fx.model?.markAlignTarget(null);
   refreshNote();
   fx.model?.setObjectPicking(false);
   fx.model?.setGhost(null);
@@ -1577,7 +1624,18 @@ function holeLead(): string {
 }
 
 /** Two points that are still on top of each other start on opposite corners of the solid. */
+/** What each Measure point was last put on, by a drag. A typed number clears its end: the number is no longer a pick. */
+const measureEnds: { A: PickedPoint | null; B: PickedPoint | null } = { A: null, B: null };
+
+/** A pick as a labelled point. Names are said only when another object is on screen to tell it from. */
+function endOf(snap: NonNullable<HandleDrag["snap"]>): PickedPoint {
+  const crowded = (hooks?.alignChoices().length ?? 0) > 0;
+  return { at: [0, 0, 0], kind: snap.kind, ...(crowded ? { object: hooks?.objectName(snap.object) || undefined } : {}) };
+}
+
 function applyMeasureDefaults() {
+  measureEnds.A = null;
+  measureEnds.B = null;
   const box = hooks?.solidBox();
   if (!box) return;
   const same = ["x", "y", "z"].every((axis) => num(`#modelA${axis}`) === num(`#modelB${axis}`));
@@ -1740,7 +1798,7 @@ function refreshNote() {
   } else if (tool === "scale") {
     text = "About the centre. Placement scale becomes 100%.";
   } else if (tool === "measure") {
-    text = measureNote(point("A"), point("B"));
+    text = `${measureNote(point("A"), point("B"))} ${endsText(measureEnds.A, measureEnds.B)}`.trim();
   } else if (tool === "place") {
     text = "From where it started, turning about its centre. The plate does not move.";
   } else if (tool === "workplane") {
@@ -1908,6 +1966,9 @@ function onHandleDrag(drag: HandleDrag) {
     workplaneChanged(drag.handle.fields, values, drag.phase === "end" ? "end" : "drag");
     return;
   }
+  if (tool === "measure" && (drag.handle.id === "measure-a" || drag.handle.id === "measure-b")) {
+    measureEnds[drag.handle.id === "measure-a" ? "A" : "B"] = drag.snap ? endOf(drag.snap) : null;
+  }
   // --- A4. Dragging the plane point leaves the picked face; dragging the path point edits the last one. ---
   if (tool === "mirror" && drag.handle.fields.includes("modelMirX")) unlockMirrorFace();
   if (tool === "pattern" && drag.handle.fields.includes("modelPatPx") && pathPointCount() > 0) {
@@ -1944,12 +2005,58 @@ function placeChanged(id: string, phase: PlacePhase) {
   refreshGhost();
 }
 
+let alignPainted = "";
+
+/**
+ * The Align to... row lists the other objects and the ways to line up. It is painted again only when that changes, so a
+ * drag that moves the part leaves a select under the hand alone.
+ */
+function paintAlignRow() {
+  const to = document.querySelector<HTMLSelectElement>("#modelAlignTo");
+  const how = document.querySelector<HTMLSelectElement>("#modelAlignHow");
+  const go = document.querySelector<HTMLButtonElement>("#modelAlignGo");
+  if (!to || !how || !go) return;
+  const others = hooks?.alignChoices() ?? [];
+  const targets = modelAlignToHtml(others);
+  const ways = alignHowHtml(modelAlignPick);
+  const key = `${targets}|${ways}`;
+  if (key !== alignPainted) {
+    alignPainted = key;
+    to.innerHTML = targets;
+    how.innerHTML = ways;
+  }
+  const none = others.length === 0;
+  to.disabled = none;
+  how.disabled = none;
+  go.disabled = none;
+  document.querySelector("#modelAlign")?.setAttribute("data-empty", none ? "1" : "0");
+}
+
+function alignPicked(select: HTMLSelectElement) {
+  if (select.id === "modelAlignTo") {
+    modelAlignPick.to = select.value;
+    fx.model?.markAlignTarget(select.value || null);
+  } else if (isAlignRelation(select.value)) {
+    modelAlignPick.how = select.value;
+  }
+}
+
+function alignNow() {
+  const to = modelAlignPick.to;
+  const how: AlignRelation = modelAlignPick.how;
+  if (!to) return;
+  const moved = hooks?.alignTo(to, how) ?? false;
+  fx.model?.markAlignTarget(null);
+  if (!moved) pushToast("Already lined up that way.", "info");
+}
+
 /**
  * The Place fields follow the open object's pose: on opening the tool, and after another object opens. The field
  * being typed in keeps its text, unless `all`: an undo or redo moves every field, the focused one too.
  */
 export function syncPlaceFields(all = false) {
   if (tool !== "place") return;
+  paintAlignRow();
   const fields = hooks?.placeFields();
   if (!fields) return;
   const active = document.activeElement;

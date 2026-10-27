@@ -6,6 +6,8 @@ export interface ContextPart {
   id: string;
   /** What the object is called, for a label that names it. */
   name?: string;
+  /** The open solid's own copy, drawn grey while a tool's step stands in its place. Nothing snaps to it. */
+  self?: boolean;
   positions: Float32Array;
   matrix: Affine;
 }
@@ -27,7 +29,7 @@ export function contextParts(objects: readonly PlateObject[], openId: string | n
   if (openId !== null && !objects.some((obj) => obj.id === openId)) return [];
   return objects
     .filter((obj) => obj.id !== openId && obj.sourcePos.length >= 9)
-    .map((obj) => ({ id: obj.id, positions: obj.sourcePos, matrix: meshToModel(obj) }));
+    .map((obj) => ({ id: obj.id, name: obj.name, positions: obj.sourcePos, matrix: meshToModel(obj) }));
 }
 
 /** The rows of `matrix` as a 3x4 affine, the layout `poseAffine` returns. */

@@ -178,3 +178,5 @@ src/measure-snap.test.ts
 src/bed-rest.test.ts
 mcp/settle.test.ts
 src/viewport-grab.test.ts
+src/model-grab.test.ts
+src/measure-points.test.ts

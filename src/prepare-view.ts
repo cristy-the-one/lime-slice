@@ -29,6 +29,7 @@ import { frameFactor, frameGizmoPx, frameLookShift, framePanPx } from "./frame-f
 import { unionBox } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
+import { mountPointMeasure, type PointMeasure } from "./prepare-measure";
 import { onMeasureChange } from "./measure-pref";
 import { grabAxisForKey, grabDegrees, grabIntent, nearerHit, type GrabAxis, type GrabIntent } from "./viewport-grab";
 
@@ -98,6 +99,12 @@ export interface PrepareView {
   markAlignTarget(id: string | null): void;
   /** Ctrl-drag on the part moves it and Ctrl-right-drag turns it, through the same callbacks as the gizmo. Null turns it off. */
   onGrab(hooks: GrabHooks | null): void;
+  /**
+   * Point-to-point Measure: while on, two clicks on any object give the distance and the change on each axis between
+   * them, snapped to features. The gizmo and the grab rest meanwhile; a plain drag still orbits.
+   */
+  setPointMeasure(on: boolean): void;
+  pointMeasureOn(): boolean;
   /** Uniform part scale, in percentage points. Returns how many of `deltaPercent` landed after the 10–400 clamp. */
   onScale(cb: ((deltaPercent: number) => number) | null): void;
   onScaleEnd(cb: (() => void) | null): void;
@@ -278,6 +285,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const handlePicks: THREE.Object3D[] = [];
   const handleNodes: { kind: HandleHit["kind"]; nodes: THREE.Object3D[] }[] = [];
   let gizmoTool: "all" | "move" | "rotate" | "scale" = "all";
+  let pointMeasure: PointMeasure | null = null;
   let plateEntries: PlateBound[] = [];
   let plateGroup: THREE.Group | null = null;
   let plateOthers: ContextPart[] = [];
@@ -551,6 +559,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     publishModifierMarker();
     publishReinforceVolMarker();
     drawMeasure();
+    pointMeasure?.paint();
     if (canvas.clientWidth > 2 && canvas.clientHeight > 2) renderViewHelper(renderer, viewHelper);
     if (viewHelper.animating) requestRender();
   }
@@ -576,6 +585,26 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       ...perspectiveMeasure(camera, controls.target, w, h, (p, out) => out.set(p[0], p[2], -p[1])),
     });
   }
+
+  pointMeasure = mountPointMeasure({
+    canvas,
+    camera,
+    raycaster,
+    aim: ndc,
+    targets() {
+      const out: { mesh: THREE.Mesh; id: string; name: string }[] = [];
+      const selected = plateEntries.find((entry) => entry.selected);
+      if (mesh) out.push({ mesh, id: selected?.id ?? "", name: selected?.name ?? "This object" });
+      for (const node of contextGroup.children as THREE.Mesh[]) {
+        const id = String(node.userData.plateId);
+        out.push({ mesh: node, id, name: plateOthers.find((part) => part.id === id)?.name ?? id });
+      }
+      return out;
+    },
+    toPrint: (world) => frame.fromScene(world),
+    toScene: (p) => frame.toScene(p[0], p[1], p[2]),
+    redraw: requestRender,
+  });
 
   function layoutBed() {
     const depth = meshBounds ? Math.max(1, meshBounds.max[1] - meshBounds.min[1]) : 30;
@@ -808,7 +837,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   frameBed();
 
   function placeGizmo() {
-    gizmo.visible = !!meshBounds;
+    gizmo.visible = !!meshBounds && !pointMeasure?.isOn();
     fitGizmoScreen();
   }
 
@@ -1562,7 +1591,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     const intent = grabIntent(ev);
     if (ev.button !== 0 && !(ev.button === 2 && intent === "rotate")) return;
     if (ev.button === 2) {
-      if (!brush) beginGrab(ev, "rotate");
+      if (!brush && !pointMeasure?.isOn()) beginGrab(ev, "rotate");
       return;
     }
     if (hitViewHelper(ev)) {
@@ -1571,6 +1600,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       requestRender();
       return;
     }
+    // Point-to-point Measure takes the clicks; a drag still orbits.
+    if (pointMeasure?.isOn()) return;
     const handle = hitHandle(ev);
     const rVol = !handle ? hitReinforceVol(ev) : null;
     if (rVol && "kind" in rVol) {
@@ -1771,6 +1802,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       return;
     }
     if (!drag) {
+      if (pointMeasure?.isOn()) return;
       const handle = hitHandle(ev);
       const overPart = !handle && gizmoTool === "move" && hitPart();
       const overReinforce = !handle && !overPart && hitReinforceVol(ev);
@@ -2042,6 +2074,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     },
     setMesh(part, frameCamera = false) {
       requestRender();
+      pointMeasure?.clear();
       const canonical = part && part.canonical.length >= 9 ? part.canonical : null;
       if (canonical !== meshSource) {
         meshSource = canonical;
@@ -2120,6 +2153,12 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       markTarget(id);
     },
     onGrab(hooks) { grabHooks = hooks; },
+    setPointMeasure(on) {
+      pointMeasure?.setOn(on);
+      placeGizmo();
+      requestRender();
+    },
+    pointMeasureOn: () => pointMeasure?.isOn() ?? false,
     onScale(cb) { scaleCb = cb; },
     onScaleEnd(cb) { scaleEndCb = cb; },
     setViewPreset(preset) { applyViewPreset(preset); },
@@ -2183,6 +2222,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       syncModifiers();
     },
     setPlate(entries, others) {
+      pointMeasure?.clear();
       plateEntries = entries;
       plateOthers = others;
       syncContext();
