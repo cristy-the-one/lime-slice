@@ -7,6 +7,7 @@ import {
   boxUnder,
   inversePose,
   isIdentity,
+  movedPose,
   newSolidPose,
   placeFields,
   poseFromPlace,
@@ -19,6 +20,7 @@ import {
   type Affine,
   type PlaceFields,
 } from "../model-space";
+import { alignDelta, type AlignRelation } from "../place-snap";
 import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, FEATURE_ROOT_EDIT, forked, matchEdges, matchFaces, olderSplitNote, replayChain, stepIds, toolEditHead, toolEditRefusal, toolPose, type EditLevel, type EditPanel, type ForkStep, type ToolLink } from "../model-edit";
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../model-primitive";
 import { markProjectDirty } from "../project-dirty";
@@ -520,6 +522,20 @@ export function bindModelView() {
       return open ? placeFields(objectPose(), pivotOf(open.solid)) : null;
     },
     placeMoved,
+    grabReady,
+    grabStart,
+    grabMove,
+    grabEnd,
+    grabCancel,
+    openObject: (id) => fx.selectPlateObject?.(id),
+    alignChoices() {
+      const at = open;
+      return at ? livePlate().filter((obj) => obj.id !== at.objectId && obj.sourcePos.length >= 9).map((obj) => ({ id: obj.id, name: obj.name })) : [];
+    },
+    alignTo: alignOpenTo,
+    objectName(id) {
+      return livePlate().find((obj) => obj.id === (id ?? open?.objectId))?.name ?? "";
+    },
     workplane: workplaneOfOpen,
     workplaneMoved,
     faceWorkplane,
@@ -4491,7 +4507,7 @@ export function refreshModelContext() {
     // A tool's step on screen: the part its join cut is grey behind it, as it was on screen, and the tool's own plate
     // object, if Keep left it there, would only stand in its way.
     const tool = lens.joins.at(-1)?.op.tool.object;
-    fx.model?.setContext([...parts.filter((part) => part.id !== tool), { id: open.objectId, positions: open.solid.positions, matrix: objectPose() }]);
+    fx.model?.setContext([...parts.filter((part) => part.id !== tool), { id: open.objectId, self: true, positions: open.solid.positions, matrix: objectPose() }]);
     showExplode(false);
     fx.model?.setTags([]);
   } else {
@@ -4688,6 +4704,68 @@ function placeStep(way: "undo" | "redo") {
   markModelEdit();
   syncPlaceFields(true);
   syncUndo();
+}
+
+/** Whether a Ctrl-drag on the open solid may start: a solid is open and settled, no step is edited, and none stands in for it. */
+function grabReady(): boolean {
+  return !!open && !busy && !jumping && !editing && !lens;
+}
+
+/** The pointer has left the slop of a Ctrl-press: Place opens, and the whole grab is one step of it. */
+function grabStart(): boolean {
+  if (!grabReady()) return false;
+  openPlaceTool();
+  if (openModelTool() !== "place") return false;
+  endPlace();
+  placeBefore = objectPose();
+  beginEdit();
+  return true;
+}
+
+function grabMove(pose: Affine) {
+  const at = open;
+  if (!at || !placeBefore) return;
+  putPose(at.objectId, pose);
+  syncPlaceFields(true);
+  syncUndo();
+}
+
+function grabEnd() {
+  endPlace();
+  syncPlaceFields(true);
+}
+
+/** Esc: the pose goes back and the history gesture closes with nothing in it, so no step lands. */
+function grabCancel() {
+  const at = open;
+  const before = placeBefore;
+  window.clearTimeout(placeTimer);
+  placeBefore = null;
+  if (!at || !before) return;
+  putPose(at.objectId, before);
+  flushEdit();
+  syncPlaceFields(true);
+  syncUndo();
+}
+
+/** Align to...: the open object lines up with another by `relation`, in model space, as one Place step. */
+function alignOpenTo(targetId: string, relation: AlignRelation): boolean {
+  const at = open;
+  if (!at || busy || jumping || editing || lens) return false;
+  const moving = openBox();
+  const target = contextParts(livePlate(), at.objectId).find((part) => part.id === targetId);
+  if (!moving || !target) return false;
+  const delta = alignDelta(moving, boxUnder(boxOf(target.positions), target.matrix), relation);
+  if (!delta || delta.every((d) => d === 0)) return false;
+  openPlaceTool();
+  if (openModelTool() !== "place") return false;
+  endPlace();
+  placeBefore = objectPose();
+  beginEdit();
+  putPose(at.objectId, movedPose(objectPose(), [delta[0], delta[1], delta[2]]));
+  endPlace();
+  syncPlaceFields(true);
+  return true;
 }
 
 /** Place steps belong to the object they moved, in one Model visit. */

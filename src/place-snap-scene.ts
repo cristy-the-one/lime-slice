@@ -3,6 +3,7 @@
  * vertex, so it is held until the object or its pose changes and a pointer move only reads it.
  */
 import type { ContextPart } from "./model-context.ts";
+import type { Affine } from "./model-space.ts";
 import type { PlacedPart } from "./mesh-place.ts";
 import { footprintOf, shifted, type Footprint, type SnapTarget } from "./place-snap.ts";
 
@@ -35,4 +36,20 @@ export function ownFootprint(part: PlacedPart): Footprint {
     own.set(part.canonical, held);
   }
   return { ...shifted(held.rel, min), box: part.bounds };
+}
+
+const solids = new WeakMap<Float32Array, { key: string; rel: Footprint }>();
+
+/**
+ * The open solid's footprint in model space, where `pose` puts it. The outline is held for the pose's turn, since a
+ * move changes nothing else, so a drag that only moves a part reads it once.
+ */
+export function solidFootprint(positions: Float32Array, pose: Affine): Footprint {
+  const key = pose.m.join();
+  let held = solids.get(positions);
+  if (!held || held.key !== key) {
+    held = { key, rel: footprintOf(positions, { m: pose.m, t: [0, 0, 0] }) };
+    solids.set(positions, held);
+  }
+  return shifted(held.rel, pose.t);
 }
