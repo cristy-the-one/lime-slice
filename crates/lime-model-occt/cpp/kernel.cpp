@@ -2149,7 +2149,9 @@ bool read_step_named(
         if (free.Value(index).FindAttribute(TDataStd_Name::GetID(), name)) {
             text = TCollection_AsciiString(name->Get()).ToCString();
         }
-        out.emplace_back(text, XCAFDoc_ShapeTool::GetShape(free.Value(index)));
+        // The first character says what the free shape is: A for an assembly of components, S for a simple shape (one solid,
+        // or a compound of them such as a split to print's pins).
+        out.emplace_back((shapes->IsAssembly(free.Value(index)) ? "A" : "S") + text, XCAFDoc_ShapeTool::GetShape(free.Value(index)));
     }
     return true;
 #endif

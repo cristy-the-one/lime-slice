@@ -130,7 +130,8 @@ bool write_step_named(
     const std::vector<std::string>& names,
     const char* path,
     std::string& error);
-/// The free shapes of a STEP file with their product names, in the file's order (the XCAF document reader).
+/// The free shapes of a STEP file with their product names, in the file's order (the XCAF document reader). Each name
+/// starts with A when the shape is an assembly of components, or S when it is a simple shape.
 bool read_step_named(
     const char* path,
     std::vector<std::pair<std::string, TopoDS_Shape>>& out,
