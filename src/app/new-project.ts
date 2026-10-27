@@ -75,6 +75,7 @@ export function blankProject() {
   // --- A8. File > New drops the previous project's MCP record. ---
   session.mcpModel = undefined;
   session.parameters = {};
+  session.assemblies = [];
   noteParametersBuilt();
   const stayInModel = state.stage === "model";
   cancelSlice();

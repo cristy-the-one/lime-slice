@@ -15,6 +15,7 @@ import type { SeamDisk } from "../seam-paint";
 import type { PaintDisk, PaintTally } from "../support-paint";
 import { loadAutoSlice } from "../auto-slice-pref";
 import type { LayerAction } from "../layer-actions";
+import type { Assembly } from "../assembly";
 
 export type { CoverageGap, EditOutcome, SupportSkeleton };
 
@@ -395,6 +396,8 @@ export const session = {
    * Empty when the project has none. File > New and a mesh that replaces the plate clear it.
    */
   parameters: {} as Record<string, string | number>,
+  /** Plate objects held at poses relative to each other (`src/assembly.ts`), as the project file keeps them. Cleared with `parameters`. */
+  assemblies: [] as Assembly[],
   playTimer: 0,
   drag2d: false,
   geomReady: null as { id: number; geom: PreviewGeometry } | null,

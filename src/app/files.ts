@@ -47,6 +47,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     // --- A8. A mesh that replaces the plate is not the project whose recipe was showing. ---
     session.mcpModel = undefined;
     session.parameters = {};
+    session.assemblies = [];
     noteParametersBuilt();
   }
   state.mesh = { name, bytes };
