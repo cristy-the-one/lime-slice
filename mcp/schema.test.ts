@@ -45,7 +45,7 @@ check("a fillet can select edges", validateTool("model_probe", { object: "obj_1"
 check("every op kind has a one-line summary", OP_KINDS.length === Object.keys(OP_SUMMARY).length && OP_KINDS.every((kind) => typeof OP_SUMMARY[kind] === "string"));
 check(
   "a chamfer without size names the field and a chamfer's fields",
-  validateTool("model_apply", { op: { kind: "chamfer", edges: [0] } }) === "input.op.size is required. A chamfer op takes edges (required, list or object), size (required, number), label (text). guide {kind:\"chamfer\"} has its full schema.",
+  validateTool("model_apply", { op: { kind: "chamfer", edges: [0] } }) === "input.op.size is required. A chamfer op takes edges (required, list or object), size (required, number), size2 (number), angleDeg (number), flip (true or false), label (text). guide {kind:\"chamfer\"} has its full schema.",
 );
 check("a refused field outside an op is unchanged", validateTool("model_apply", { op: { kind: "scale", factor: 2 }, probe: 1 }) === "input.probe must be true or false.");
 check("settings and selectors are tools", ["settings_schema", "settings_set", "faces_find", "edges_find"].every((name) => names.has(name)));

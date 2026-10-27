@@ -23,6 +23,7 @@ import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNo
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
 import { clampPieces, type FillContext, type Target } from "../src/modeling/partition.ts";
 import { couponFileName, fitCoupon, fitCouponRequest, readCouponReply } from "../src/modeling/fit-coupon.ts";
+import { choiceAt, jointDown } from "../src/modeling/joint-down.ts";
 import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateUp, readPartition, storedPartition } from "./partition.ts";
 import { pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
@@ -579,6 +580,26 @@ function stlFileName(name: string): string {
 function stepFileName(name: string): string {
   const stem = name.replace(/\.(step|stp|stl|3mf|brep)$/i, "");
   return `${stem || "solid"}.step`;
+}
+
+/**
+ * Gaps 13. For a chamfer by two sizes, the face each edge's `size` runs along, as the engine chose it (each edge's upper
+ * face, or its lower with flip), with that face's outward normal turned into the part's pose. Null for any other probe.
+ */
+function chamferSides(raw: unknown, pose: Affine): { text: string; rows: { edge: number; face: number; normal: number[] }[] } | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const rows = raw.flatMap((row) => {
+    const { edge, face, normal } = (row ?? {}) as { edge?: unknown; face?: unknown; normal?: unknown };
+    if (typeof edge !== "number" || typeof face !== "number" || !Array.isArray(normal) || normal.length !== 3) return [];
+    const turned = turnDir(pose, normal as [number, number, number]).map((value) => Math.round(value * 1000) / 1000 + 0);
+    return [{ edge, face, normal: turned }];
+  });
+  if (rows.length === 0) return null;
+  const faces = [...new Set(rows.map((row) => row.face))];
+  const text = rows.length === 1
+    ? `size runs along face ${rows[0]!.face} (normal ${rows[0]!.normal.join(", ")}); flip: true puts it on the other face.`
+    : `size runs along face${faces.length === 1 ? "" : "s"} ${faces.join(", ")}, one for each edge; flip: true puts it on the other faces.`;
+  return { text, rows };
 }
 
 /** A value as text with its keys sorted, so two ops that ask the same thing have the same key. */
@@ -4215,8 +4236,14 @@ export class Session {
       if ("reason" in picked) return picked;
       const size = spec.size;
       if (typeof size !== "number") return { reason: "This edit needs a size in millimetres." };
-      const op: ModelOp = { kind, edges: picked, size };
-      return { op: toSolidOp(op, obj.modelPose), typed: { kind, edges: picked, size } };
+      if (kind === "fillet") return { op: toSolidOp({ kind, edges: picked, size }, obj.modelPose), typed: { kind, edges: picked, size } };
+      // Gaps 13. A second distance or an angle, and which face takes `size`. Absent fields keep equal sides.
+      const second = typeof spec.size2 === "number" ? { size2: spec.size2 } : {};
+      const angle = typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {};
+      if ("size2" in second && "angleDeg" in angle) return { reason: "Give a chamfer size2 or angleDeg, not both." };
+      const flip = spec.flip === true && ("size2" in second || "angleDeg" in angle) ? { flip: true as const } : {};
+      const op: ModelOp = { kind, edges: picked, size, ...second, ...angle, ...flip };
+      return { op: toSolidOp(op, obj.modelPose), typed: { kind, edges: picked, size, ...second, ...angle, ...flip } };
     }
     if (kind === "hole") {
       if (typeof spec.screw === "string") {
@@ -4425,7 +4452,7 @@ export class Session {
       const local = primitiveFrom(spec, "box");
       if ("reason" in local) return local;
       const solid = planePrimitive(local, this.typedPlane(obj));
-      const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid }, obj.modelPose);
+      const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid, merge: true }, obj.modelPose);
       // A tool placed by centre already says where its middle goes: turnEcho has no note for it. cleanOp drops the mark.
       return { op, typed: { kind: "boolean", op: booleanOp, ...solid, ...(spec.centre !== undefined ? { centre: spec.centre } : {}) } };
     }
@@ -4616,6 +4643,8 @@ export class Session {
       return answer({ ok: false, reason: splitReason(where), ...(where ? { where } : {}) });
     }
     obj.probes.set(probeKey(String(at), baked.op), true);
+    const sides = chamferSides(reply.firstFaces, obj.modelPose);
+    if (sides) return answer({ ok: true, reason: `${note.text} ${sides.text}`, firstFaces: sides.rows });
     return answer({ ok: true, reason: note.text });
   }
 
@@ -4743,7 +4772,11 @@ export class Session {
       const failedStep = Number.isInteger(reply.failedStep) ? { failedStep: reply.failedStep as number } : {};
       return { ok: false, reason: plainModelError(reply.error, baked.op.kind), ...failedStep };
     }
-    obj.tree = withChild(obj.tree, tree.current, { id: node, op: baked.op, label: opLabel(baked.op), fingerprint: null });
+    // A blend is stored as the engine echoes it: each picked edge as a reference with its signature, so a replay after
+    // an edit above, or a variable that moves the part, finds the same edge rather than whatever has its old index.
+    const echo = reply.op && typeof reply.op === "object" ? reply.op as ModelOp : null;
+    const stored = (baked.op.kind === "fillet" || baked.op.kind === "chamfer") && echo?.kind === baked.op.kind ? { ...echo, ...(baked.op.exprs ? { exprs: baked.op.exprs } : {}) } : baked.op;
+    obj.tree = withChild(obj.tree, tree.current, { id: node, op: stored, label: opLabel(stored), fingerprint: null });
     const prior = obj.solid;
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
@@ -4839,7 +4872,7 @@ export class Session {
     const local = primitiveFrom(raw, "box");
     if ("reason" in local) return local;
     const op = raw.op === "fuse" || raw.op === "common" ? raw.op : "cut";
-    return { op, spec: planePrimitive(local, this.typedPlane(obj)) };
+    return { op, spec: planePrimitive(local, this.typedPlane(obj)), merge: true };
   }
 
   /**
@@ -4986,7 +5019,7 @@ export class Session {
             return { probed: missed, done: missed, typed: {}, op: null };
           }
           const typed = { kind: "boolean", op: piece.op, ...spec } as Record<string, unknown>;
-          const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...spec }, obj.modelPose), typed };
+          const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...spec, ...(piece.merge ? { merge: true as const } : {}) }, obj.modelPose), typed };
           const probed = await this.probeBaked(obj, at, at.current, baked, false, true);
           const done = probed.ok === true ? await this.applyBaked(obj, at, baked, {}) : probed;
           return { probed, done, typed, op: baked.op };
@@ -5689,8 +5722,8 @@ export class Session {
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     obj.probes.clear();
-    this.followPieces(obj);
-    const notes = numberNotes(reply);
+    const followed = this.followPieces(obj);
+    const notes = [...numberNotes(reply), ...followed.orient.notes];
     const note = exported
       ? exportedNote(this.targetName(op))
       : op.arrange === false
@@ -5771,9 +5804,9 @@ export class Session {
    * --- D9. A split to print's pieces are on the plate while that step is on the way to its part's current step, as a
    * join's tool is off it: model_undo or a goto above the cut takes them off, and a redo brings them back.
    */
-  private followPieces(obj: PlateObject): { back: string[]; left: string[] } {
+  private followPieces(obj: PlateObject): { back: string[]; left: string[]; orient: { turned: string[]; notes: string[] } } {
     const tree = obj.tree;
-    if (!tree) return { back: [], left: [] };
+    if (!tree) return { back: [], left: [], orient: { turned: [], notes: [] } };
     const path = new Set(pathTo(tree, tree.current));
     const wanted = new Map<string, boolean>();
     for (const node of tree.nodes.values()) {
@@ -5798,7 +5831,76 @@ export class Session {
         left.push(piece.id);
       }
     }
-    return { back, left };
+    return { back, left, orient: this.settleOrients(obj) };
+  }
+
+  /** Each object Joint down turned, by id, and the orientation it had before: Keep, and a step above the cut, put it back. */
+  private keptOrients = new Map<string, Mat3>();
+  private jointed = new Set<string>();
+
+  /**
+   * --- Milestone 7 (plan D4, section 10). The plate orientation of a split to print's pieces from the cut on the way to
+   * the part's step: a piece set to joint is turned so its larger cut face lies on the bed (`jointDown`, its long way
+   * along X, or along the belt on a belt printer); every other piece, and the pins, keep the part's own orientation, which
+   * is what a step above the cut gives back too. An export target's pieces keep as cut. Idempotent: the apply, an edit,
+   * model_undo, a goto and a redo all end here. The ids it turned, and a sentence for each piece it jointed.
+   */
+  private settleOrients(obj: PlateObject): { turned: string[]; notes: string[] } {
+    const out = { turned: [] as string[], notes: [] as string[] };
+    const tree = obj.tree;
+    if (!tree) return out;
+    const path = new Set(pathTo(tree, tree.current));
+    const live = [...path].reverse().find((id) => tree.nodes.get(id)?.op?.kind === "partition" && !exportsPieces(tree.nodes.get(id)?.op));
+    const same = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]!) < 1e-12);
+    const belt = this.printer().kind === "belt";
+    const base = this.keptOrients.get(obj.id) ?? obj.orient;
+    const parentTurned = this.keptOrients.has(obj.id);
+    const turn = (row: PlateObject, orient: Mat3) => {
+      if (same(row.orient, orient)) return;
+      row.orient = [...orient] as Mat3;
+      out.turned.push(row.id);
+    };
+    const settle = (row: PlateObject, op: PartitionModelOp | null, index: number | null, positions: Float32Array | null): void => {
+      const choice = op && index !== null ? choiceAt(op.orient, index) : "keep";
+      if (choice === "joint" && positions) {
+        const joint = jointDown(positions, op!.cuts.map((cut) => ({ origin: cut.origin, normal: cut.normal })), belt);
+        if (joint) {
+          if (row === obj && !this.keptOrients.has(obj.id)) this.keptOrients.set(obj.id, [...obj.orient] as Mat3);
+          this.jointed.add(row.id);
+          turn(row, joint.orient);
+          out.notes.push(`Part ${index! + 1} is joint down on cut ${joint.face.cut + 1}, its ${joint.other ? "larger" : "only"} cut face, ${Math.round(joint.face.area * 100) / 100} mm².`);
+          return;
+        }
+        out.notes.push(`Part ${index! + 1} has no cut face, so it keeps its orientation.`);
+      }
+      // Keep: the part's own orientation, for an object Joint down turned or a piece copied from a part that is turned.
+      if (row === obj) {
+        if (this.jointed.has(row.id)) {
+          this.jointed.delete(row.id);
+          this.keptOrients.delete(row.id);
+          turn(row, base);
+        }
+        return;
+      }
+      if (this.jointed.has(row.id) || (parentTurned && same(row.orient, obj.orient))) {
+        this.jointed.delete(row.id);
+        turn(row, base);
+      }
+    };
+    const livePart = live !== undefined && tree.current === live ? tree.nodes.get(live)?.op : null;
+    settle(obj, livePart?.kind === "partition" ? livePart : null, 0, obj.solid ? Float32Array.from(obj.solid.positions) : null);
+    for (const node of tree.nodes.values()) {
+      if (node.op?.kind !== "partition") continue;
+      const on = node.id === live;
+      (node.pieces ?? []).forEach((key, at) => {
+        const piece = key ? this.objectOfKey(key) : undefined;
+        if (!piece) return;
+        settle(piece, on ? node.op as PartitionModelOp : null, at + 1, on ? Float32Array.from(piece.solid?.positions ?? piece.source) : null);
+      });
+      const pins = node.pins ? this.objectOfKey(node.pins) : undefined;
+      if (pins) settle(pins, null, null, null);
+    }
+    return out;
   }
 
   /**
@@ -6074,7 +6176,8 @@ export class Session {
     const keep = new Set(this.objects.filter((row) => !fresh.has(row.id)).map((row) => row.id));
     const clearance = sequentialClearance(this.sliceRules(this.objects.length), this.order());
     const gap = clearance === null ? ARRANGE_GAP_MM : clearance + 0.01;
-    const arranged = arrangedObjects(this.objects.map((obj) => this.asBed(obj)), printer.bedX, printer.bedY, gap, keep);
+    // A belt printer's length is unbounded (decision 11): the pieces stack along it, so none goes off the bed.
+    const arranged = arrangedObjects(this.objects.map((obj) => this.asBed(obj)), printer.bedX, printer.kind === "belt" ? 1e6 : printer.bedY, gap, keep);
     for (const row of arranged) {
       const live = fresh.has(row.id) ? this.find(row.id) : undefined;
       if (!live) continue;
@@ -6280,8 +6383,9 @@ export class Session {
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
     obj.probes.clear();
-    this.followPieces(obj);
-    const notes = rebuilt ? [...(baked.notes ?? []), ...numberNotes(reply), ...rebuilt.notes] : [];
+    const followed = this.followPieces(obj);
+    if (followed.orient.turned.length > 0 && (baked.op as PartitionModelOp).arrange !== false) this.layOutPieces(followed.orient.turned.filter((id) => this.objects.some((row) => row.id === id && row.platedNode !== null)));
+    const notes = rebuilt ? [...(baked.notes ?? []), ...numberNotes(reply), ...rebuilt.notes, ...followed.orient.notes] : [];
     const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(pins ? { pins: pins.id } : {}), ...joined(reply, obj.modelPose), ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) } : {};
     return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null, ...parts };
   }

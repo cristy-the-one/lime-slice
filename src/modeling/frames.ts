@@ -6,7 +6,8 @@
 import { orientEuler } from "../mesh-place.ts";
 import { facePlane } from "../model-plane.ts";
 import { CURVED_FACE, localPoint, workplaneOnFace, type Workplane } from "../workplane.ts";
-import { readVec3, type ExpandContext, type FaceExtent, type StandRegion } from "./compose.ts";
+import { readVec3, type ExpandContext, type FaceExtent, type Rays, type StandRegion } from "./compose.ts";
+import { meshRays } from "./thin.ts";
 
 /** A flat face the way the session stores one: array index is the face index. */
 export interface FrameFace {
@@ -94,8 +95,10 @@ export function expandContextFromSolid(solid: FramedSolid | null, plane: Workpla
       faceBy: () => ({ reason: "This solid could not be read." }),
     };
   }
+  let rays: Rays | null = null;
   return {
     plane,
+    rays: () => (rays ??= meshRays(solid.positions)),
     face: (index: number, coplanar = false) => {
       const face = solid.faces[index];
       if (!face) return { reason: "That face is not on this solid." };

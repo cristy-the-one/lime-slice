@@ -13,7 +13,7 @@ import { paintGrabHint } from "../app/grab-hint";
 import { endsText, type PickedPoint } from "../measure-points";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { pushToast } from "./toasts";
-import type { EditPanel } from "../model-edit";
+import type { ChamferChoice, EditPanel } from "../model-edit";
 import { clampTilt, splitNote, type PlaneMode, type SplitPlan, type SplitState } from "../model-plane";
 import { CURVED_FACE, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, localPoint, planePoint, planePrimitive, workplaneNote, workplaneOnBed, type Workplane, type WorkplaneSource } from "../workplane";
 import { lastFace, selectedEdges, selectedFaces } from "../model-blend";
@@ -453,7 +453,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // --- end A4 ---
-    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextOp [data-op]");
+    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextOp [data-op], #modelChamferForm [data-chamfer-form]");
     if (featureMode) {
       paintModeGroup(featureMode);
       syncFields();
@@ -525,6 +525,12 @@ export function mountModelChrome(next: ModelChromeHooks) {
       hooks?.paramsChanged();
       return;
     }
+    if (ev.target instanceof HTMLElement && ev.target.id === "modelChamferFlip") {
+      paintChamferSide();
+      refreshGhost();
+      hooks?.paramsChanged();
+      return;
+    }
     // --- A4. Align to the path changes the group at once. ---
     if (ev.target instanceof HTMLElement && (ev.target.id === "modelPatAlign")) {
       refreshNote();
@@ -551,7 +557,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (typed === "modelAx" || typed === "modelAy" || typed === "modelAz") measureEnds.A = null;
     if (typed === "modelBx" || typed === "modelBy" || typed === "modelBz") measureEnds.B = null;
     // A box or the screw list changes on `change`, all at once.
-    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed")) return;
+    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip")) return;
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
       return;
@@ -940,6 +946,7 @@ function fillEdit() {
   } else if (panel.tool === "fillet" || panel.tool === "chamfer") {
     setEdgeSource("picked", { quiet: true });
   }
+  if (panel.tool === "chamfer") paintChamfer(panel.chamfer ?? { form: "equal", flip: false });
   // --- A2 shell ---
   if (panel.shellClosed !== undefined) setShellClosed(panel.shellClosed);
   if (panel.join) {
@@ -1200,6 +1207,7 @@ function syncFields() {
     const shapeOk = !node.dataset.shape || node.dataset.shape.split(" ").includes(panelChoices().shape);
     const cellOk = !node.dataset.cell || node.dataset.cell.split(" ").includes(panelChoices().cell);
     // --- end A3 ---
+    const chamferOk = !node.dataset.chamfer || node.dataset.chamfer.split(" ").includes(chamferChoice().form);
     // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
     const whenOk = !node.dataset.when || (node.dataset.when === edgeSource && (tool === "fillet" || tool === "chamfer"));
     // --- A4. A pattern mode shows only its own fields. Count stays for every mode. ---
@@ -1207,7 +1215,7 @@ function syncFields() {
     // --- F4. One hole per point hides the origin and shows the points line. A single hole does the opposite. ---
     const pointsHoles = document.querySelector<HTMLElement>("#modelPanel")?.dataset.holes === "points";
     const holeOk = !node.dataset.hole || (node.dataset.hole === "points" ? pointsHoles : !pointsHoles);
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && whenOk && modeOk && holeOk));
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk));
   });
   // --- A3 composite features ---
   if (isFeatureTool(tool)) {
@@ -1553,6 +1561,30 @@ function applyHoleDefaults() {
 const HOLE_CHOICES: ReadonlySet<string> = new Set(["modelThrough", "modelCounterbore", "modelScrew"]);
 
 /** The hole's Through all and Counterbore boxes, as ticked. */
+/** A chamfer's sides: equal, two sizes, or a size and an angle, and whether Size runs along the lower face. */
+export function chamferChoice(): ChamferChoice {
+  const on = document.querySelector<HTMLButtonElement>('#modelChamferForm [aria-pressed="true"]')?.dataset.chamferForm;
+  const form = on === "two" || on === "angle" ? on : "equal";
+  return { form, flip: document.querySelector<HTMLInputElement>("#modelChamferFlip")?.checked ?? false };
+}
+
+function paintChamfer(choice: ChamferChoice) {
+  document.querySelectorAll<HTMLButtonElement>("#modelChamferForm [data-chamfer-form]").forEach((button) => {
+    const on = button.dataset.chamferForm === choice.form;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  });
+  const box = document.querySelector<HTMLInputElement>("#modelChamferFlip");
+  if (box) box.checked = choice.flip;
+  paintChamferSide();
+  syncFields();
+}
+
+function paintChamferSide() {
+  const note = document.querySelector("#modelChamferSide");
+  if (note) note.textContent = chamferChoice().flip ? "Size runs along each edge's lower face." : "Size runs along each edge's upper face.";
+}
+
 export function holeBoxes(): { through: boolean; counterbore: boolean } {
   return {
     through: document.querySelector<HTMLInputElement>("#modelThrough")?.checked ?? false,
@@ -1943,6 +1975,7 @@ function dragContext(): DragContext {
     // --- end A3 ---
     // --- A4. Linear until the panel says polar or path. ---
     ...(tool === "pattern" ? { repeat: { mode: repeatModeNow() } } : {}),
+    ...(tool === "chamfer" ? { chamfer: chamferChoice().form } : {}),
   };
 }
 
