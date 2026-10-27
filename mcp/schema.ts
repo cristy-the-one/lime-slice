@@ -936,7 +936,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "plate_list",
-    description: "Objects on the plate: name, size, centre, and off-bed notes.",
+    description: "Objects on the plate: name, size, centre, and off-bed notes. bboxMm is the print layout; assembledMm is the part in model space (model_place).",
     inputSchema: page,
   },
   {
@@ -1358,7 +1358,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_place",
-    description: "Model pose in millimetres and degrees. The bed moves at model_commit.",
+    description: "Set the assembled pose: model space, mm and degrees. The print layout does not move. frame part types later Model numbers in the part's own frame, so they do not follow the pose.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1370,6 +1370,7 @@ export const TOOLS: ToolSpec[] = [
         turnX: { type: "number" },
         turnY: { type: "number" },
         turnZ: { type: "number" },
+        frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default model: they follow the pose." },
       },
     },
   },

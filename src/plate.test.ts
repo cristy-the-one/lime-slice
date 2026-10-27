@@ -1,4 +1,5 @@
 import { encode3mf, ID_MATRIX, offBed, rotZ } from "./mesh-place.ts";
+import type { Affine } from "./model-space.ts";
 import { nextSplitAt } from "./split-at.ts";
 import { workplaneIn } from "./workplane.ts";
 import {
@@ -398,6 +399,29 @@ check("a plain mesh keeps the seat it was read with", meshSeat(plainStl) === -3)
 const raisedObj = object(20, "part", false);
 setMeshSeat(raisedObj.bytes, 712);
 check("an object's mesh goes up by its seat before its pose", JSON.stringify(meshToModel(raisedObj).t) === JSON.stringify([0, 0, 712]));
+
+// Assemblies M1: the assembled pose and the typed-number frame are model-space data. Re-centring, Lay out and Arrange
+// write only the bed fields, and a snapshot, a copy and a split's piece carry both.
+{
+  const pose: Affine = { m: [0, -1, 0, 1, 0, 0, 0, 0, 1], t: [200, -30, 12] };
+  const hook: PlateObject = { ...object(20, "hook", true), modelPose: pose, frame: "part" };
+  const body: PlateObject = { ...object(60, "body", true), modelPose: { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [5, 0, 0] } };
+  const before = JSON.stringify([hook.modelPose, hook.frame]);
+  const laid = arrangedObjects([hook, body], bed, bed);
+  check("Lay out moves the bed fields", laid.every((obj) => obj.centered === false));
+  check("Lay out leaves modelPose and frame alone", JSON.stringify([laid[0]!.modelPose, laid[0]!.frame]) === before && JSON.stringify(laid[1]!.modelPose) === JSON.stringify(body.modelPose));
+  const kept = arrangedObjects([hook, body], bed, bed, undefined, new Set(["body"]));
+  check("Arrange around a kept part leaves modelPose and frame alone", JSON.stringify([kept[0]!.modelPose, kept[0]!.frame]) === before);
+  const centred = placeObject(hook, bed, bed).bounds;
+  check("a centred read puts the part mid-bed", near((centred.min[0] + centred.max[0]) / 2, bed / 2));
+  check("and does not change the object", JSON.stringify([hook.modelPose, hook.frame]) === before);
+  const revivedBoth = revivePlate(snapPlate({ objects: laid, selectedId: "hook" }));
+  check("a snapshot and its revival keep both", JSON.stringify([revivedBoth?.objects[0]?.modelPose, revivedBoth?.objects[0]?.frame]) === before);
+  const twin = addedCopy({ objects: [hook], selectedId: "hook" });
+  check("a copy keeps the frame", twin?.objects.find((obj) => obj.id !== "hook")?.frame === "part");
+  const plainSnap = revivePlate(snapPlate({ objects: [body], selectedId: "body" }));
+  check("an object in the model frame carries no key", plainSnap != null && !("frame" in plainSnap.objects[0]!));
+}
 
 if (failed) {
   console.error(`${failed} failed`);

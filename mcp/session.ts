@@ -37,7 +37,7 @@ import { thinWalls } from "../src/modeling/thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "../src/modeling/anchors.ts";
 import { expandOps, expandOpsWithTexts, type PartDef } from "../src/modeling/macro.ts";
 import { exprLeaves, linkedExprs, withLeaf } from "../src/modeling/links.ts";
-import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
+import { applyPose, IDENTITY_POSE, inversePose, isIdentity, posedBounds, seatLift, thenPose, toSolidOp, turnDir, typedPoseOf, type Affine, type ObjectFrame } from "../src/model-space.ts";
 import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
@@ -307,6 +307,8 @@ export interface PlateObject {
   stepTolerance: number;
   note?: string;
   modelPose: Affine;
+  /** Which frame Model numbers are typed in: the part's own, or model space (absent). `model_place {frame}` sets it. */
+  frame?: ObjectFrame;
   workplane: Workplane;
   /** --- Gaps A3. A workplane typed with expressions: its numbers and text, so ops typed on it link to them and a parameter set moves it. */
   workplaneTyped?: TypedWorkplane;
@@ -531,6 +533,7 @@ interface SnapObject {
   stepTolerance: number;
   note?: string;
   modelPose: Affine;
+  frame?: ObjectFrame;
   workplane: Workplane;
   supportEdits: EditEntry[];
   supportPaint: PaintDisk[];
@@ -1654,6 +1657,7 @@ export class Session {
       seatMm: obj.seatMm,
       stepTolerance: obj.stepTolerance,
       ...(obj.note ? { note: obj.note } : {}),
+      ...(obj.frame ? { frame: obj.frame } : {}),
       modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] },
       workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] },
       supportEdits: obj.supportEdits.map((entry) => structuredClone(entry)),
@@ -1831,6 +1835,7 @@ export class Session {
           objectSettings: obj.settings ?? {},
           modelTree: obj.modelTree,
           modelPose: obj.modelPose,
+          frame: obj.frame,
           workplane: obj.workplane,
           brep: obj.brep ? base64ToBytes(obj.brep.bytesBase64) ?? undefined : undefined,
           meshSeatMm: obj.meshSeatMm,
@@ -1849,6 +1854,7 @@ export class Session {
           objectSettings: {} as PlateObjectSettings,
           modelTree: undefined,
           modelPose: undefined,
+          frame: undefined,
           workplane: undefined,
           brep: undefined as Uint8Array | undefined,
           meshSeatMm: undefined as number | undefined,
@@ -1879,6 +1885,7 @@ export class Session {
       }, row.id);
       if (row.sim) obj.sim = cloneStudy(row.sim);
       if (row.modelPose) obj.modelPose = { m: [...row.modelPose.m] as Affine["m"], t: [...row.modelPose.t] as Affine["t"] };
+      if (row.frame === "part") obj.frame = "part";
       if (row.workplane) obj.workplane = { source: row.workplane.source, origin: [...row.workplane.origin] as Workplane["origin"], turn: [...row.workplane.turn] as Workplane["turn"] };
       if (row.brep) obj.brep = row.brep;
       objects.push({ object: obj.id, name: shownName(obj.name) });
@@ -1971,6 +1978,7 @@ export class Session {
       ...(tree ? { modelTree: tree } : {}),
       ...(obj.brep ? { brep: meshRecord(solidFileName(obj.fileName, obj.brep), obj.brep), meshSeatMm: obj.seatMm } : {}),
       ...(obj.modelPose.t.some((value) => value !== 0) || obj.modelPose.m.some((value, index) => value !== [1, 0, 0, 0, 1, 0, 0, 0, 1][index]) ? { modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] } } : {}),
+      ...(obj.frame === "part" ? { frame: "part" as const } : {}),
       ...(obj.workplane.source === "global" ? {} : { workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] } }),
       ...(obj.sim ? { sim: cloneStudy(obj.sim) } : {}),
     };
@@ -2063,7 +2071,7 @@ export class Session {
     const profile = enginePrinter(this.printer(), this.filament(), this.library.nozzleMm);
     const mesh = first ? meshRecord(first.fileName, first.bytes) : meshRecord("empty.stl", new Uint8Array());
     const objects = this.objects.map((obj) => this.fileObject(obj));
-    const listed = objects.length > 1 || objects.some((row) => row.modelTree || row.settings || row.supportPaint || row.seamPaint || row.reinforcement || row.workplane || row.modelPose);
+    const listed = objects.length > 1 || objects.some((row) => row.modelTree || row.settings || row.supportPaint || row.seamPaint || row.reinforcement || row.workplane || row.modelPose || row.frame);
     return {
       version: listed ? 2 : 1,
       mesh,
@@ -2409,11 +2417,14 @@ export class Session {
         (placed.bounds.min[1] + placed.bounds.max[1]) / 2,
         (placed.bounds.min[2] + placed.bounds.max[2]) / 2,
       ];
+      const assembled = this.assembledBox(obj);
       return {
         object: obj.id,
         name: shownName(obj.name),
         bboxMm: { min: placed.bounds.min, max: placed.bounds.max },
         centreMm: centre,
+        ...(assembled ? { assembledMm: assembled } : {}),
+        ...(obj.frame === "part" ? { frame: "part" as const } : {}),
         scalePercent: obj.scale * 100,
         notes: this.plateNotes(obj, placed.bounds),
       };
@@ -3721,7 +3732,7 @@ export class Session {
     }
     if (input.section !== undefined) {
       const spec = input.section as { normal?: unknown; point?: unknown };
-      const back = inversePose(obj.modelPose);
+      const back = inversePose(typedPoseOf(obj));
       const bounds = obj.solid!.bounds;
       const centre = [0, 1, 2].map((i) => (bounds.min[i]! + bounds.max[i]!) / 2) as [number, number, number];
       const normal = readVec3(spec.normal, [0, -1, 0]);
@@ -4248,7 +4259,7 @@ export class Session {
     this.pendingTexts = [];
     delete obj.workplaneTyped;
     if (origin && turn && origin.every((value) => typeof value === "number") && turn.every((value) => typeof value === "number")) {
-      obj.workplane = workplaneOwn({ source, origin, turn }, obj.modelPose);
+      obj.workplane = workplaneOwn({ source, origin, turn }, typedPoseOf(obj));
       const text = { origin: typed?.origin, turn: typed?.turn };
       if (exprLeaves({ origin, turn }, text, this.followsParameters).length > 0) obj.workplaneTyped = { source, origin: [...origin], turn: [...turn], text };
       return answer();
@@ -4261,8 +4272,8 @@ export class Session {
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (source === "bed") {
       // Under the middle of the part as it stands, W up in model space.
-      const box = obj.solid ? (isIdentity(obj.modelPose) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, obj.modelPose).positions)) : { min: [0, 0, 0], max: [0, 0, 0] };
-      obj.workplane = workplaneOwn(workplaneOnBed(box), obj.modelPose);
+      const box = obj.solid ? (isIdentity(typedPoseOf(obj)) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, typedPoseOf(obj)).positions)) : { min: [0, 0, 0], max: [0, 0, 0] };
+      obj.workplane = workplaneOwn(workplaneOnBed(box), typedPoseOf(obj));
       return answer();
     }
     const faceIndex = Number(input.faceIndex);
@@ -4291,9 +4302,39 @@ export class Session {
     const turnX = typeof input.turnX === "number" ? input.turnX : current.rx;
     const turnY = typeof input.turnY === "number" ? input.turnY : current.ry;
     const turnZ = typeof input.turnZ === "number" ? input.turnZ : current.rz;
+    if (input.frame !== undefined && input.frame !== "part" && input.frame !== "model") return { ok: false, reason: 'frame is "part" or "model".' };
+    const frame: ObjectFrame = input.frame === "part" || input.frame === "model" ? input.frame : obj.frame ?? "model";
     obj.modelPose = { m: eulerOrient(turnX, turnY, turnZ), t: [x, y, z] };
+    if (frame === "part") obj.frame = "part";
+    else delete obj.frame;
     const turn = orientEuler(obj.modelPose.m);
-    return { ok: true, x, y, z, turnX: turn.rx, turnY: turn.ry, turnZ: turn.rz };
+    const box = this.assembledBox(obj);
+    const where = frame === "part"
+      ? "Numbers in later model_probe, model_apply and model_edit calls are still read in the part's own frame."
+      : "Numbers in later model_probe, model_apply and model_edit calls are read in model space, so they move with the pose; frame:\"part\" keeps them in the part's own frame.";
+    return {
+      ok: true,
+      pose: "assembled",
+      x,
+      y,
+      z,
+      turnX: turn.rx,
+      turnY: turn.ry,
+      turnZ: turn.rz,
+      frame,
+      ...(box ? { assembledMm: box } : {}),
+      note: `Assembled pose set. The print layout is unchanged. ${where}`,
+    };
+  }
+
+  /** The part's box in model space, where Model draws it: its solid (or else its plate mesh) under `modelPose`, to 0.01 mm. */
+  private assembledBox(obj: PlateObject): { min: number[]; max: number[] } | null {
+    const box = obj.solid && obj.solid.positions.length >= 9
+      ? posedBounds(obj.solid.positions, obj.modelPose)
+      : posedBounds(obj.source, thenPose(seatLift(obj.seatMm), obj.modelPose));
+    if (!box) return null;
+    const mm = (value: number) => Math.round(value * 100) / 100 + 0;
+    return { min: box.min.map(mm), max: box.max.map(mm) };
   }
 
   private bake(obj: PlateObject, raw: unknown): { op: ModelOp; typed: Record<string, unknown>; notes?: string[] } | { reason: string } {
@@ -4304,13 +4345,13 @@ export class Session {
     if (kind === "scale") {
       const factor = spec.factor;
       if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 0.1 || factor > 20) return { reason: "Scale is a factor from 0.1 to 20." };
-      return { op: toSolidOp({ kind: "scale", factor }, obj.modelPose), typed: { kind: "scale", factor } };
+      return { op: toSolidOp({ kind: "scale", factor }, typedPoseOf(obj)), typed: { kind: "scale", factor } };
     }
     // --- Split to print. Defaults are filled from the plate's printer and settings now, as at Apply (D11).
     if (kind === "partition") {
       const typed = readPartition(spec, (id) => this.partitionTarget(id));
       if ("reason" in typed) return typed;
-      const stored = storedPartition(typed, this.partitionContext(obj), obj.modelPose, obj.solid ? { positions: obj.solid.positions, up: plateUp(obj.orient) } : undefined);
+      const stored = storedPartition(typed, this.partitionContext(obj), typedPoseOf(obj), obj.solid ? { positions: obj.solid.positions, up: plateUp(obj.orient) } : undefined);
       if ("reason" in stored) return stored;
       return { op: stored.op, typed: cleanOp(spec), notes: stored.notes };
     }
@@ -4318,21 +4359,21 @@ export class Session {
       const origin = (Array.isArray(spec.origin) ? spec.origin : [0, 0, 0]) as [number, number, number];
       const normal = (Array.isArray(spec.normal) ? spec.normal : [0, 0, 1]) as [number, number, number];
       const op: ModelOp = { kind: "split", origin, normal };
-      return { op: toSolidOp(op, obj.modelPose), typed: { kind: "split", origin, normal } };
+      return { op: toSolidOp(op, typedPoseOf(obj)), typed: { kind: "split", origin, normal } };
     }
     if (kind === "fillet" || kind === "chamfer") {
       const picked = this.resolveEdges(obj, spec);
       if ("reason" in picked) return picked;
       const size = spec.size;
       if (typeof size !== "number") return { reason: "This edit needs a size in millimetres." };
-      if (kind === "fillet") return { op: toSolidOp({ kind, edges: picked, size }, obj.modelPose), typed: { kind, edges: picked, size } };
+      if (kind === "fillet") return { op: toSolidOp({ kind, edges: picked, size }, typedPoseOf(obj)), typed: { kind, edges: picked, size } };
       // Gaps 13. A second distance or an angle, and which face takes `size`. Absent fields keep equal sides.
       const second = typeof spec.size2 === "number" ? { size2: spec.size2 } : {};
       const angle = typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {};
       if ("size2" in second && "angleDeg" in angle) return { reason: "Give a chamfer size2 or angleDeg, not both." };
       const flip = spec.flip === true && ("size2" in second || "angleDeg" in angle) ? { flip: true as const } : {};
       const op: ModelOp = { kind, edges: picked, size, ...second, ...angle, ...flip };
-      return { op: toSolidOp(op, obj.modelPose), typed: { kind, edges: picked, size, ...second, ...angle, ...flip } };
+      return { op: toSolidOp(op, typedPoseOf(obj)), typed: { kind, edges: picked, size, ...second, ...angle, ...flip } };
     }
     if (kind === "hole") {
       if (typeof spec.screw === "string") {
@@ -4370,7 +4411,7 @@ export class Session {
         ? { counterboreDiameterMm: spec.counterboreDiameterMm, counterboreDepth: spec.counterboreDepth }
         : {};
       const op: ModelOp = { kind: "hole", origin, axis, radius, depth, ...(through ? { through: true as const } : {}), ...counterbore };
-      return { op: toSolidOp(op, obj.modelPose), typed: { kind: "hole", diameterMm: radius * 2, ...(through ? { through: true } : { depth }), ...typedBore } };
+      return { op: toSolidOp(op, typedPoseOf(obj)), typed: { kind: "hole", diameterMm: radius * 2, ...(through ? { through: true } : { depth }), ...typedBore } };
     }
     if (kind === "join") {
       const tool = this.find(String(spec.toolObject ?? ""));
@@ -4429,7 +4470,7 @@ export class Session {
             ...(fields.draftDeg !== undefined ? { draftDeg: fields.draftDeg } : {}),
             ...(fields.upTo !== undefined ? { upTo: fields.upTo } : {}),
           };
-          return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+          return { op: toSolidOp(made, typedPoseOf(obj)), typed: { ...made } };
         }
         const axisOrigin = readProfile([spec.axisOrigin, [0, 0], [0, 0]])?.[0];
         const axisDir = readProfile([spec.axisDir, [0, 0], [0, 0]])?.[0];
@@ -4438,7 +4479,7 @@ export class Session {
           ...(spec.axisDir !== undefined && axisDir ? { dir: axisDir } : {}),
           ...(typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {}),
         }, {}, loops.loops);
-        return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+        return { op: toSolidOp(made, typedPoseOf(obj)), typed: { ...made } };
       }
       const profile = readProfile(spec.profile);
       if (!profile) return { reason: "A profile needs at least three [u, v] points." };
@@ -4450,7 +4491,7 @@ export class Session {
         const extent = readExtent(depth);
         if ("reason" in extent) return extent;
         const made = extrudeOp(booleanOp, plane, profile, depth, spec.symmetric === true, shape, extent);
-        return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+        return { op: toSolidOp(made, typedPoseOf(obj)), typed: { ...made } };
       }
       const axisOrigin = readProfile([spec.axisOrigin, [0, 0], [0, 0]])?.[0];
       const axisDir = readProfile([spec.axisDir, [0, 0], [0, 0]])?.[0];
@@ -4459,7 +4500,7 @@ export class Session {
         ...(spec.axisDir !== undefined && axisDir ? { dir: axisDir } : {}),
         ...(typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {}),
       }, shape);
-      return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+      return { op: toSolidOp(made, typedPoseOf(obj)), typed: { ...made } };
     }
     if (kind === "loft" || kind === "sweep") {
       const booleanOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
@@ -4480,7 +4521,7 @@ export class Session {
       }
       const made = loftOp(booleanOp, sections, spec.ruled === true);
       const typed = kind === "sweep" ? { ...cleanOp(spec), op: booleanOp, sections: sections.length } : { ...made };
-      return { op: toSolidOp(made, obj.modelPose), typed };
+      return { op: toSolidOp(made, typedPoseOf(obj)), typed };
     }
     if (kind === "shell") {
       const thickness = spec.thickness;
@@ -4498,7 +4539,7 @@ export class Session {
         faces.push(found);
       }
       const made = shellOp(thickness, [...new Set(faces)]);
-      return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+      return { op: toSolidOp(made, typedPoseOf(obj)), typed: { ...made } };
     }
     // --- K4: faceExtrude and moveFaces. A face is an index, a stored {index}, or a {normal, nearPoint} selector. ---
     if (kind === "faceExtrude") {
@@ -4520,7 +4561,7 @@ export class Session {
         ...(typeof spec.draftDeg === "number" && spec.draftDeg !== 0 ? { draftDeg: spec.draftDeg } : {}),
         ...(upTo !== undefined ? { upTo } : {}),
       });
-      return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+      return { op: toSolidOp(made, typedPoseOf(obj)), typed: { ...made } };
     }
     if (kind === "moveFaces") {
       if (!Array.isArray(spec.faces) || spec.faces.length === 0) return { reason: "Pick a face to move." };
@@ -4534,14 +4575,14 @@ export class Session {
         rows.push({ face, distance: row.distance });
       }
       const made = moveFacesOp(rows);
-      return { op: toSolidOp(made, obj.modelPose), typed: { ...made } };
+      return { op: toSolidOp(made, typedPoseOf(obj)), typed: { ...made } };
     }
     if (kind === "boolean") {
       const booleanOp = spec.op === "fuse" || spec.op === "common" ? spec.op : "cut";
       const local = primitiveFrom(spec, "box");
       if ("reason" in local) return local;
       const solid = planePrimitive(local, this.typedPlane(obj));
-      const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid, merge: true }, obj.modelPose);
+      const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid, merge: true }, typedPoseOf(obj));
       // A tool placed by centre already says where its middle goes: turnEcho has no note for it. cleanOp drops the mark.
       return { op, typed: { kind: "boolean", op: booleanOp, ...solid, ...(spec.centre !== undefined ? { centre: spec.centre } : {}) } };
     }
@@ -4724,15 +4765,15 @@ export class Session {
     }
     if (!note || note.bad) return answer({ ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}), ...failedStep });
     if (view?.phase === "done" && addsPiece(baked.op as { kind: string; op?: string }, view.measure)) {
-      const where = pieceReport(reply, (p) => applyPose(obj.modelPose, p));
+      const where = pieceReport(reply, (p) => applyPose(typedPoseOf(obj), p));
       return answer({ ok: false, reason: separateReason(where), ...(where ? { where } : {}) });
     }
     if (composite && view?.phase === "done" && cutsOffPiece(baked.op as { kind: string; op?: string }, view.measure)) {
-      const where = pieceReport(reply, (p) => applyPose(obj.modelPose, p));
+      const where = pieceReport(reply, (p) => applyPose(typedPoseOf(obj), p));
       return answer({ ok: false, reason: splitReason(where), ...(where ? { where } : {}) });
     }
     obj.probes.set(probeKey(String(at), baked.op), true);
-    const sides = chamferSides(reply.firstFaces, obj.modelPose);
+    const sides = chamferSides(reply.firstFaces, typedPoseOf(obj));
     if (sides) return answer({ ok: true, reason: `${note.text} ${sides.text}`, firstFaces: sides.rows });
     return answer({ ok: true, reason: note.text });
   }
@@ -4748,7 +4789,7 @@ export class Session {
     const parts: string[] = [];
     let where: Record<string, unknown> | undefined;
     const solid = obj.solid;
-    const pose = (p: readonly number[]) => applyPose(obj.modelPose, p as [number, number, number]).map((v) => Math.round(v * 100) / 100);
+    const pose = (p: readonly number[]) => applyPose(typedPoseOf(obj), p as [number, number, number]).map((v) => Math.round(v * 100) / 100);
     if (solid && solid.positions.length >= 9) {
       const thin = thinWalls(solid.positions, 2 * t);
       const worst = [...thin.regions].sort((a, b) => a.thinnestMm - b.thinnestMm)[0];
@@ -4960,7 +5001,7 @@ export class Session {
     if (box) {
       const was = touchingEdges(prior.positions, box);
       const now = touchingEdges(after.positions, box);
-      if (now.count > was.count) return { reason: touchingReason(now.at ? applyPose(obj.modelPose, now.at).map((v) => Math.round(v * 100) / 100) as [number, number, number] : null), touching: true };
+      if (now.count > was.count) return { reason: touchingReason(now.at ? applyPose(typedPoseOf(obj), now.at).map((v) => Math.round(v * 100) / 100) as [number, number, number] : null), touching: true };
     }
     return null;
   }
@@ -4978,7 +5019,7 @@ export class Session {
   private expandContext(obj: PlateObject): ExpandContext {
     // --- D24. A moved part is read in model space, as the app reads it, since every op goes through toSolidOp once.
     // The posed mesh and its face frames are kept per solid and pose (posedContext), so a batch reads them once.
-    if (obj.solid && !isIdentity(obj.modelPose)) return { ...posedContext(obj.solid, obj.modelPose), plane: this.typedPlane(obj) };
+    if (obj.solid && !isIdentity(typedPoseOf(obj))) return { ...posedContext(obj.solid, typedPoseOf(obj)), plane: this.typedPlane(obj) };
     // --- A3 composite features: one context builder for the session and the panel. ---
     return expandContextFromSolid(
       obj.solid ? { positions: obj.solid.positions, triangles: obj.solid.triangles, faces: obj.solid.faces as FrameFace[] } : null,
@@ -5202,7 +5243,7 @@ export class Session {
             return { probed: missed, done: missed, typed: {}, op: null };
           }
           const typed = { kind: "boolean", op: piece.op, ...spec } as Record<string, unknown>;
-          const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...spec, ...(piece.merge ? { merge: true as const } : {}) }, obj.modelPose), typed };
+          const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...spec, ...(piece.merge ? { merge: true as const } : {}) }, typedPoseOf(obj)), typed };
           const probed = await this.probeBaked(obj, at, at.current, baked, false, true);
           const done = probed.ok === true ? await this.applyBaked(obj, at, baked, {}) : probed;
           return { probed, done, typed, op: baked.op };
@@ -5505,7 +5546,7 @@ export class Session {
   private labelBox(obj: PlateObject, label: string, solidFrame = false): Box | null {
     const tree = obj.tree;
     if (!tree) return null;
-    const toTyped = solidFrame ? (p: [number, number, number]) => p : (p: [number, number, number]) => this.typedPoint(obj, applyPose(obj.modelPose, p));
+    const toTyped = solidFrame ? (p: [number, number, number]) => p : (p: [number, number, number]) => this.typedPoint(obj, applyPose(typedPoseOf(obj), p));
     if (label.trim().toLowerCase() === "part") return obj.solid ? movedBox(obj.solid.bounds as Box, toTyped) : null;
     const wanted = label.trim().toLowerCase();
     const path: number[] = [];
@@ -5536,8 +5577,8 @@ export class Session {
    */
   private typedPlane(obj: PlateObject): Workplane {
     // Global is model space itself, on any pose.
-    if (isIdentity(obj.modelPose) || isGlobalFrame(obj.workplane)) return obj.workplane;
-    return workplaneIn(obj.workplane, obj.modelPose);
+    if (isIdentity(typedPoseOf(obj)) || isGlobalFrame(obj.workplane)) return obj.workplane;
+    return workplaneIn(obj.workplane, typedPoseOf(obj));
   }
 
   /** A part-frame point in the object's workplane, the frame its ops are typed in. */
@@ -5891,7 +5932,7 @@ export class Session {
   /** What the planner fills defaults from: the plate's printer as the target, the nozzle, the layer, the filament, the brim. */
   private partitionContext(obj: PlateObject | null): FillContext {
     const printer = this.printer();
-    const box = obj?.solid ? (isIdentity(obj.modelPose) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, obj.modelPose).positions)) : null;
+    const box = obj?.solid ? (isIdentity(typedPoseOf(obj)) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, typedPoseOf(obj)).positions)) : null;
     return {
       plateTarget: { printer: printer.id, process: "fdm", volumeMm: [printer.bedX, printer.bedY, printer.bedZ] },
       featureMm: this.library.nozzleMm,
@@ -5913,9 +5954,9 @@ export class Session {
     if ("reason" in typed) return { ok: false, reason: typed.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
     const printer = this.printer();
-    const frame = bedFrame(obj.solid.positions, obj.orient, obj.scale, obj.modelPose);
+    const frame = bedFrame(obj.solid.positions, obj.orient, obj.scale, typedPoseOf(obj));
     const targetName = typed.target ? targetPrinter(this.library, typed.target.printer)?.name : undefined;
-    return planPartition(typed, this.partitionContext(obj), frame, { name: printer.name, belt: printer.kind === "belt", ...(targetName ? { targetName } : {}) }, { positions: obj.solid.positions, up: plateUp(obj.orient), pose: obj.modelPose });
+    return planPartition(typed, this.partitionContext(obj), frame, { name: printer.name, belt: printer.kind === "belt", ...(targetName ? { targetName } : {}) }, { positions: obj.solid.positions, up: plateUp(obj.orient), pose: typedPoseOf(obj) });
   }
 
   /**
@@ -6028,13 +6069,13 @@ export class Session {
     const mm = (value: number) => Math.round(value * 100) / 100;
     const pieces = parts.map((part, index) => {
       const corners = Array.isArray(part.min) && Array.isArray(part.max) ? [part.min as number[], part.max as number[]] : null;
-      const placed = corners ? boundsOf([0, 1, 2, 3, 4, 5, 6, 7].flatMap((k) => applyPose(obj.modelPose, [corners[k & 1]![0]!, corners[(k >> 1) & 1]![1]!, corners[(k >> 2) & 1]![2]!]))) : null;
+      const placed = corners ? boundsOf([0, 1, 2, 3, 4, 5, 6, 7].flatMap((k) => applyPose(typedPoseOf(obj), [corners[k & 1]![0]!, corners[(k >> 1) & 1]![1]!, corners[(k >> 2) & 1]![2]!]))) : null;
       return { part: index + 1, volumeMm3: mm(Number(part.volumeMm3)), ...(placed ? { min: placed.min.map(mm), max: placed.max.map(mm) } : {}) };
     });
     obj.probes.set(probeKey(String(at), op), true);
     // The planner's sentences first (a count that does not fit, a wall too thin), then the kernel's.
     const notes = [...new Set([...planned, ...numberNotes(reply)])];
-    return { ok: true, reason: `This cut makes ${parts.length} pieces.`, parts: parts.length, pieces, ...pinsOf(reply), ...joined(reply, obj.modelPose), ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) };
+    return { ok: true, reason: `This cut makes ${parts.length} pieces.`, parts: parts.length, pieces, ...pinsOf(reply), ...joined(reply, typedPoseOf(obj)), ...numbered(reply, typedPoseOf(obj)), ...(notes.length ? { notes } : {}) };
   }
 
   /** --- Milestone 5. The key the pins' tree opens under, when a cut of `op` has a dowel placed. */
@@ -6096,8 +6137,8 @@ export class Session {
       pieces: objects,
       ...(pins ? { pins: pins.id } : {}),
       note,
-      ...joined(reply, obj.modelPose),
-      ...numbered(reply, obj.modelPose),
+      ...joined(reply, typedPoseOf(obj)),
+      ...numbered(reply, typedPoseOf(obj)),
       ...(notes.length ? { notes } : {}),
       stored: cleanOp(stored as unknown as Record<string, unknown>),
       typed,
@@ -6141,6 +6182,7 @@ export class Session {
       seatMm: obj.seatMm,
       stepTolerance: obj.stepTolerance,
       modelPose: { m: [...obj.modelPose.m] as Affine["m"], t: [...obj.modelPose.t] as Affine["t"] },
+      ...(obj.frame ? { frame: obj.frame } : {}),
       workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] },
       tree: newTree(key, { kind: "piece", tree: obj.tree.key, node, index }, `Part ${index}`, solid.fingerprint),
       solid,
@@ -6771,7 +6813,7 @@ export class Session {
     const followed = this.followPieces(obj);
     if (followed.orient.turned.length > 0 && (baked.op as PartitionModelOp).arrange !== false) this.layOutPieces(followed.orient.turned.filter((id) => this.objects.some((row) => row.id === id && row.platedNode !== null)));
     const notes = rebuilt ? [...(baked.notes ?? []), ...numberNotes(reply), ...rebuilt.notes, ...followed.orient.notes] : [];
-    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(pins ? { pins: pins.id } : {}), ...joined(reply, obj.modelPose), ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) } : {};
+    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(pins ? { pins: pins.id } : {}), ...joined(reply, typedPoseOf(obj)), ...numbered(reply, typedPoseOf(obj)), ...(notes.length ? { notes } : {}) } : {};
     return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null, ...parts, ...this.takeNotLinked() };
   }
 

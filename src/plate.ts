@@ -15,7 +15,7 @@
  */
 import type { SavedTree } from "./model-tree-file.ts";
 import { cloneStudy, type ObjectStudy } from "./sim/study.ts";
-import { IDENTITY_POSE, boxUnder, duplicatePose, inversePose, isIdentity, seatLift, thenPose, type Affine } from "./model-space.ts";
+import { IDENTITY_POSE, boxUnder, duplicatePose, inversePose, isIdentity, seatLift, thenPose, type Affine, type ObjectFrame } from "./model-space.ts";
 import { copyWorkplane, isGlobalFrame, type Workplane } from "./workplane.ts";
 import { offsetInPlace } from "./step-solids.ts";
 import type { EditEntry } from "./support-edit-list.ts";
@@ -110,6 +110,8 @@ export interface PlateFileObject {
   modelTree?: SavedTree<{ name: string; bytesBase64?: string; byteLength: number; hash: string }>;
   /** Optional pose from the object's CAD frame into Model's shared space. Omitted for identity, which is how an older file reads. */
   modelPose?: Affine;
+  /** Optional: `"part"` when Model numbers are typed in the part's own frame. Omitted for `"model"`, which is how an older file reads. */
+  frame?: ObjectFrame;
   /** Optional local U, V, W frame, in the object's own frame. Omitted for the global frame, which is how an older file reads. */
   workplane?: Workplane;
   /** Optional: how far the mesh was lowered onto Z = 0 when it was read. Omitted while unknown. */
@@ -147,6 +149,8 @@ export interface PlateObject {
   modelTree?: string;
   /** From the object's CAD frame into Model's shared space. Absent is identity: where its file put it. The plate never reads it. */
   modelPose?: Affine;
+  /** Which frame Model numbers are typed in. Absent is model space. The plate never reads it. */
+  frame?: ObjectFrame;
   /** Local U, V, W frame, in the object's own frame, so it moves with `modelPose`. Absent is the global frame. The plate never reads it. */
   workplane?: Workplane;
   /** Stress study. Absent until Stress writes one. The slice never reads it. */
@@ -176,6 +180,7 @@ export interface PlateSnapObject {
   brep?: ArrayBuffer;
   modelTree?: string;
   modelPose?: Affine;
+  frame?: ObjectFrame;
   workplane?: Workplane;
   sim?: ObjectStudy;
 }
@@ -385,6 +390,7 @@ export function plateFileIsVersion2(objects: {
   brep?: unknown;
   modelTree?: unknown;
   modelPose?: Affine;
+  frame?: ObjectFrame;
   workplane?: Workplane;
   sim?: unknown;
 }[]): boolean {
@@ -399,6 +405,7 @@ export function plateFileIsVersion2(objects: {
     one?.brep != null ||
     one?.modelTree != null ||
     !isIdentity(one?.modelPose) ||
+    one?.frame != null ||
     one?.workplane != null ||
     one?.sim != null
   );
@@ -580,6 +587,7 @@ export function addedCopy(plate: PlateState): PlateState | null {
     settings: { ...source.settings },
     brep: source.brep ? source.brep.slice(0) : undefined,
     modelPose: duplicatePose(modelPoseOf(source), boxUnder(boundsOf(source.sourcePos), meshToModel(source))),
+    ...(source.frame ? { frame: source.frame } : {}),
     // Kept in the part's own frame, the workplane moves over with the copy's pose.
     ...(source.workplane ? { workplane: copyWorkplane(source.workplane) } : {}),
     ...(source.sim ? { sim: cloneStudy(source.sim) } : {}),
@@ -683,6 +691,7 @@ export function addedSplit(plate: PlateState, mesh: IncomingMesh): PlateState | 
     settings: {},
     // Cut from the parent's solid in the parent's own frame, the piece sits in model space where it was cut.
     ...(parent.modelPose ? { modelPose: parent.modelPose } : {}),
+    ...(parent.frame ? { frame: parent.frame } : {}),
     ...(parent.workplane ? { workplane: copyWorkplane(parent.workplane) } : {}),
   };
   hold(draft);
@@ -796,6 +805,7 @@ export function snapPlate(plate: PlateState): PlateSnap {
       brep: obj.brep,
       modelTree: obj.modelTree,
       ...(obj.modelPose ? { modelPose: obj.modelPose } : {}),
+      ...(obj.frame ? { frame: obj.frame } : {}),
       ...(obj.workplane ? { workplane: copyWorkplane(obj.workplane) } : {}),
       ...(obj.sim ? { sim: cloneStudy(obj.sim) } : {}),
     })),
@@ -827,6 +837,7 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       brep: row.brep,
       modelTree: row.modelTree,
       ...(row.modelPose ? { modelPose: row.modelPose } : {}),
+      ...(row.frame ? { frame: row.frame } : {}),
       ...(row.workplane ? { workplane: copyWorkplane(row.workplane) } : {}),
       ...(row.sim ? { sim: cloneStudy(row.sim) } : {}),
     });
@@ -856,6 +867,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       settings: { ...(row.settings ?? {}) },
       brep: row.brepBytes,
       ...(row.modelPose && !isIdentity(row.modelPose) ? { modelPose: row.modelPose } : {}),
+      ...(row.frame === "part" ? { frame: row.frame } : {}),
       ...(row.workplane && !isGlobalFrame(row.workplane) ? { workplane: copyWorkplane(row.workplane) } : {}),
       ...(row.sim ? { sim: cloneStudy(row.sim) } : {}),
     };
@@ -1263,6 +1275,7 @@ export function replaceWithSolids(plate: PlateState, id: string, pieces: readonl
       reinforcement: [],
       settings: { ...parent.settings },
       ...(parent.modelPose ? { modelPose: parent.modelPose } : {}),
+      ...(parent.frame ? { frame: parent.frame } : {}),
     };
     setMeshSeat(piece.bytes, piece.seatMm);
     hold(draft);

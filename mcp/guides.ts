@@ -85,7 +85,7 @@ GUIDES.push(
     name: "Model ops",
     tools: ["solid_new", "faces_find", "model_apply", "model_history", "model_commit"],
     text: [
-      "Every Model edit, by kind. Numbers are mm and degrees, in model space (the part frame until model_place moves the part) unless workplane_set set a frame.",
+      "Every Model edit, by kind. Numbers are mm and degrees, in model space (the part frame until model_place moves the part; model_place {frame:\"part\"} keeps them in the part frame after a move) unless workplane_set set a frame.",
       "solid_new {primitive:\"box\", dx:60, dy:40, dz:35} stands the solid centred on X and Y on Z = 0 and returns its bounds.",
       "solid_new {coupon:{}} adds the dowel fit coupon: a plate with seven holes at clearance steps around the material's Snug cell, each labelled with its gap each side, and one pin, as two objects. coupon:{printer:\"formlabs-form-4\"} writes them as STEP files instead. Print it, find the hole the pin fits, and that label is the clearance. radius, depth and hole follow the dowel you will use; startMm centres it elsewhere.",
       "boolean: {kind:\"boolean\", op:\"cut\"|\"fuse\"|\"common\", primitive, ...sizes, origin | centre, turn}.",
