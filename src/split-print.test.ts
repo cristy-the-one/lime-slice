@@ -10,6 +10,7 @@ import { ID_MATRIX } from "./mesh-place.ts";
 import { IDENTITY_POSE, type Affine } from "./model-space.ts";
 import { keptSteps, newTree, opLabel, withChild, type ModelOp, type ModelTree, type PartitionModelOp, type Vec3 } from "./model-tree.ts";
 import { forked } from "./model-edit.ts";
+import { keepSketch, withoutSketch } from "./model-request.ts";
 import {
   bedFrame,
   cardFromFit,
@@ -39,6 +40,7 @@ import {
   withJointField,
   withJointsOn,
   withJointType,
+  withProfileSketch,
   plainJoints,
   plateUp,
   withSelected,
@@ -287,6 +289,30 @@ eq("and a dovetail connector, sliding along U", "op" in dovetailJoint ? (dovetai
 eq("Straight drops the profile from the op", cardOp(withProfileKind(tongueCard, 0, "straight"), wideCenter, null, SIZES)!.cuts[0]!.profile, undefined);
 eq("a profile on an untouched cut is nothing to send", cardOp(plain, wideCenter, null, SIZES)!.cuts[0]!.profile, undefined);
 check("a typed profile size is a change, so an edit offers Update", !sameCard(lapCard, withProfileField(lapCard, 0, { depth: 9 })));
+
+// --- Milestone 10: a sketched cut. The chain is drawn on the cut's U and W; the op stores it with the sketch, which the
+// pencil reopens and the engine never sees.
+const stepAndArc = { start: [-40, 0] as [number, number], chain: [{ kind: "line" as const, to: [-5, 0] as [number, number] }, { kind: "line" as const, to: [-5, 6] as [number, number] }, { kind: "arc" as const, through: [0, 11] as [number, number], to: [5, 6] as [number, number] }, { kind: "line" as const, to: [40, 6] as [number, number] }] };
+const drawing = { v: 1, plane: { origin: [250, 30, 10], turn: [0, 0, 0] }, points: [], entities: [], dims: [{ id: 1, kind: "distance", value: 6, text: "step" }] };
+const sketchCard = withProfileSketch(withProfileKind(plain, 0, "sketch"), 0, stepAndArc, drawing, [0, 1, 0]);
+eq("a sketch card sends the chain, the sketch and its U", cardOp(sketchCard, wideCenter, null, SIZES)!.cuts[0], { origin: [250, 30, 10], normal: [1, 0, 0], u: [0, 1, 0], profile: { kind: "sketch", start: [-40, 0], chain: stepAndArc.chain, sketch: drawing } });
+const sketchStored = storedPartition(cardOp(sketchCard, wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+const sketchOp = "op" in sketchStored ? sketchStored.op : null;
+eq("stored, the cut keeps its chain and its sketch", sketchOp?.cuts[0]!.profile, { kind: "sketch", start: [-40, 0], chain: stepAndArc.chain, sketch: drawing });
+const engineOp = withoutSketch(sketchOp!) as PartitionModelOp;
+eq("the engine sees the chain, not the sketch", engineOp.cuts[0]!.profile, { kind: "sketch", start: [-40, 0], chain: stepAndArc.chain });
+eq("and the echo gets the sketch back", (keepSketch(engineOp, sketchOp!) as PartitionModelOp).cuts[0]!.profile, sketchOp!.cuts[0]!.profile);
+const sketchReopened = cardFromOp(sketchOp!, IDENTITY_POSE, wideCenter, null, "lime-220").cuts[0]!;
+eq("the pencil reads the chain, its sketch and its U back", [sketchReopened.profile, sketchReopened.u], [{ kind: "sketch", start: [-40, 0], chain: stepAndArc.chain, sketch: drawing }, [0, 1, 0]]);
+check("an untouched reopened sketch offers no Update", sameCard(cardFromOp(sketchOp!, IDENTITY_POSE, wideCenter, null, "lime-220"), cardFromOp(sketchOp!, IDENTITY_POSE, wideCenter, null, "lime-220")));
+eq("the row names the sketch", opLabel(sketchOp!, 2), "Split to print, sketch, 2 parts");
+const emptySketch = storedPartition(cardOp(withProfileKind(plain, 0, "sketch"), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("a sketch not drawn yet is refused until it is", "reason" in emptySketch ? emptySketch.reason : null, "Cut 1: The sketch profile has no chain yet. Draw it across the cut, or give start and chain.");
+const shortSketch = storedPartition(cardOp(withProfileSketch(sketchCard, 0, { start: [-40, 0], chain: [{ kind: "line", to: [10, 0] }] }, drawing, [0, 1, 0]), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("a chain that stops inside the 60 mm section is refused", "reason" in shortSketch ? shortSketch.reason : null, "Cut 1: The sketch has to cross the section: start it past one side of the part and end it past the other.");
+const thinSketch = storedPartition(cardOp(withProfileSketch(sketchCard, 0, { start: [-40, 0], chain: [{ kind: "line", to: [-29.5, 0] }, { kind: "line", to: [-29.5, 10] }, { kind: "line", to: [40, 10] }] }, drawing, [0, 1, 0]), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("one that runs 0.5 mm inside the part's side is refused with the wall it leaves", "reason" in thinSketch ? thinSketch.reason : null, "Cut 1: The sketch leaves a wall 0.5 mm thick, under the 0.8 mm wall floor. Move the chain away from the edge, or widen the feature.");
+eq("Straight drops the sketch and its U", cardOp(withProfileKind(sketchCard, 0, "straight"), wideCenter, null, SIZES)!.cuts[0], { origin: [250, 30, 10], normal: [1, 0, 0] });
 
 if (failed) {
   console.error(`${failed} failed`);

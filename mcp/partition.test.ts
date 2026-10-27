@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { fakeEngine } from "./engine.ts";
 import { Session } from "./session.ts";
 import { readFileSync } from "node:fs";
-import { fitPrinter, PROFILE_LATER } from "../src/modeling/partition.ts";
+import { fitPrinter, PROFILE_KIND } from "../src/modeling/partition.ts";
+import { CHAIN_NEEDED, CROSSES_ITSELF } from "../src/modeling/sketch-profile.ts";
 import { SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { exportOnlyRefusal, FORMLABS_FORM_4 } from "../src/ui/machine-library.ts";
 import { exportedCommit, exportedNote } from "./partition.ts";
@@ -64,7 +65,10 @@ check("plan is for a partition", notPartition.ok === false && notPartition.reaso
 // --- Refusals: the kernel does not build these yet. The solid is unchanged and nothing is cut.
 const op = plan.op as Record<string, unknown>;
 const refusals: [string, Record<string, unknown>, string][] = [
-  ["a sketch profile", { ...op, cuts: [{ ...cuts[0]!, profile: { kind: "sketch", sketch: { v: 1 } } }] }, PROFILE_LATER],
+  ["a profile of no known kind", { ...op, cuts: [{ ...cuts[0]!, profile: { kind: "wave" } }] }, PROFILE_KIND],
+  ["a sketch profile with no chain", { ...op, cuts: [{ ...cuts[0]!, profile: { kind: "sketch", sketch: { v: 1 } } }] }, `Cut 1: ${CHAIN_NEEDED}`],
+  ["a sketch that crosses itself", { ...op, cuts: [{ ...cuts[0]!, profile: { kind: "sketch", start: [-20, 0], chain: [{ kind: "line", to: [5, 0] }, { kind: "line", to: [5, 8] }, { kind: "line", to: [-5, 8] }, { kind: "line", to: [-5, -8] }, { kind: "line", to: [20, -8] }] } }] }, `Cut 1: ${CROSSES_ITSELF}`],
+  ["a sketch that does not cross the section", { ...op, cuts: [{ ...cuts[0]!, profile: { kind: "sketch", start: [-20, 0], chain: [{ kind: "line", to: [0, 0] }] } }] }, "Cut 1: The sketch has to cross the section: start it past one side of the part and end it past the other."],
   ["no cuts", { kind: "partition", cuts: [] }, "A partition needs at least one cut. model_probe with plan: true proposes them."],
 ];
 for (const [what, typed, sentence] of refusals) {

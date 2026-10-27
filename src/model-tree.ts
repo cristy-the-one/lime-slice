@@ -827,7 +827,9 @@ export function opLabel(op: ModelOp, parts?: number): string {
     case "partition": {
       // --- 3b. An export target names its printer (plan section 11).
       const printer = op.target?.process === "resin" ? (EXPORT_PRINTERS.find((row) => row.id === op.target!.printer)?.name ?? op.target.printer) : null;
-      const head = printer ? `Split to print for ${printer}` : "Split to print";
+      // --- Milestone 10. A sketched cut names itself: "Split to print, sketch, 2 parts".
+      const sketched = op.cuts.some((cut) => cut.profile?.kind === "sketch");
+      const head = `${printer ? `Split to print for ${printer}` : "Split to print"}${sketched ? ", sketch" : ""}`;
       const joined = parts != null ? jointWord(op) : null;
       return parts != null ? `${head}, ${parts} parts${joined ? `, ${joined}` : ""}` : head;
     }
