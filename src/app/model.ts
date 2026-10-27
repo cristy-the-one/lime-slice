@@ -1305,6 +1305,29 @@ async function readyTool(serial: number, id: string) {
   refreshJoinChoices();
 }
 
+/**
+ * --- Assemblies M7. The common volume of two plate parts at their assembled poses, by the kernel: a dry run of a join
+ * `common` on `a`'s step with `b` as its tool. Nothing is applied. A mesh part, or a refusal, is a sentence.
+ */
+export async function commonVolume(aId: string, bId: string): Promise<number | string> {
+  const a = livePlate().find((obj) => obj.id === aId);
+  const b = livePlate().find((obj) => obj.id === bId);
+  if (!a || !b) return "That part is no longer on the plate.";
+  const at = await toolTreeOf(a);
+  if (typeof at === "string") return at;
+  const tool = await toolTreeOf(b);
+  if (typeof tool === "string") return tool;
+  const op = joinOp("common", { object: b.id, key: tool.key, node: tool.node, name: b.name }, modelPoseOf(a), modelPoseOf(b), true);
+  const body = await treeCall(at.key, at.node, probeRequest(at.key, at.node, op, state.stepTolerance));
+  if (body.ok !== true) {
+    const said = typeof body.error === "string" ? body.error : "";
+    // An empty common is the kernel saying the two share nothing.
+    return !said || /overlap|empty|no (solid|shape)/i.test(said) ? 0 : said;
+  }
+  const shape = body.preview && typeof body.preview === "object" ? decodeSolid(body.preview as Body) : null;
+  return shape && typeof shape !== "string" ? Math.abs(shape.volumeMm3) : 0;
+}
+
 /** The step of its tree that `obj` holds on the plate, as a join's tool, opening that tree first if Model never did. */
 function toolTreeOf(obj: PlateObject): Promise<{ key: string; node: NodeId } | string> {
   const token = meshTokenOf(obj.bytes);
