@@ -20,6 +20,17 @@ function labelled(op: unknown, swap: (label: string) => string): unknown {
   return typeof record.label === "string" ? { ...record, label: swap(record.label).slice(0, 80) } : op;
 }
 
+/**
+ * A part's op as a `use` with a label places it: its own label follows the use's, and an op with none takes the use's
+ * label alone, so a step the part made can be found by the name the part was placed under.
+ */
+function placed(op: unknown, prefix: string, params: Record<string, number>): unknown {
+  if (!op || typeof op !== "object" || Array.isArray(op)) return op;
+  const record = op as Record<string, unknown>;
+  if (typeof record.label === "string") return { ...record, label: (prefix ? `${prefix} ${fill(record.label, params)}` : fill(record.label, params)).slice(0, 80) };
+  return prefix && record.kind !== "each" ? { ...record, label: prefix.slice(0, 80) } : op;
+}
+
 /** `{i}` in a label becomes the loop value, so each copy is named apart. */
 function fill(text: string, params: Record<string, number>): string {
   return text.replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (whole, name: string) => (name in params ? String(Math.round(params[name]! * 1e6) / 1e6) : whole));
@@ -64,7 +75,7 @@ export function expandOps(ops: unknown[], params: Record<string, number>, parts:
         inner[key] = numberOf(value, { ...params, ...inner }, `${at}.with.${key}`);
       }
       const prefix = typeof record.label === "string" && record.label.trim() ? fill(record.label.trim(), inner) : "";
-      const ops = part.ops.map((child) => labelled(child, (label) => (prefix ? `${prefix} ${fill(label, inner)}` : fill(label, inner))));
+      const ops = part.ops.map((child) => placed(child, prefix, inner));
       push(expandOps(ops, inner, parts, words, `${at}(${name})`, depth + 1));
       return;
     }

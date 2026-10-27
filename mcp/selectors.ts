@@ -29,10 +29,6 @@ function sub(a: Vec3, b: Vec3): Vec3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
-function add(a: Vec3, b: Vec3): Vec3 {
-  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-}
-
 function scale(a: Vec3, k: number): Vec3 {
   return [a[0] * k, a[1] * k, a[2] * k];
 }
@@ -83,26 +79,87 @@ function boxDistance(point: Vec3, face: FaceRow): number {
   return Math.sqrt(sum);
 }
 
-/** A point just outside a convex corner is outside every face plane. */
-function insidePlanes(point: Vec3, faces: readonly FaceRow[]): boolean {
-  for (const face of faces) {
-    if (!face.normal || face.kind !== "plane") continue;
-    if (dot(sub(point, face.centre), face.normal) > 0.02) return false;
-  }
-  return true;
+function cross(a: Vec3, b: Vec3): Vec3 {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
-function convexEdge(edge: EdgeRow, faces: readonly FaceRow[]): boolean | null {
+type FaceMesh = { positions: ArrayLike<number>; triangles: ArrayLike<number> };
+
+const trianglesOf = new WeakMap<object, Map<number, number[]>>();
+
+/** The triangle indexes of each face, built once per mesh. */
+function trianglesByFace(mesh: FaceMesh): Map<number, number[]> {
+  const held = trianglesOf.get(mesh.triangles as object);
+  if (held) return held;
+  const byFace = new Map<number, number[]>();
+  const count = Math.min(mesh.triangles.length, Math.floor(mesh.positions.length / 9));
+  for (let tri = 0; tri < count; tri += 1) {
+    const face = mesh.triangles[tri]!;
+    const list = byFace.get(face);
+    if (list) list.push(tri);
+    else byFace.set(face, [tri]);
+  }
+  trianglesOf.set(mesh.triangles as object, byFace);
+  return byFace;
+}
+
+/**
+ * A point of `face` just inside it, beside the edge's middle: the centre of the face's triangle nearest to that
+ * middle, since the face's own centre of area can lie on the far side of a reflex edge. The face's centre when no mesh
+ * is given.
+ */
+function insidePoint(face: FaceRow, mid: Vec3, mesh?: FaceMesh): Vec3 {
+  const list = mesh ? trianglesByFace(mesh).get(face.index) : undefined;
+  if (!mesh || !list) return face.centre;
+  let best: Vec3 = face.centre;
+  let gap = Infinity;
+  for (const tri of list) {
+    const at = tri * 9;
+    const p = mesh.positions;
+    const a: Vec3 = [p[at]!, p[at + 1]!, p[at + 2]!];
+    const b: Vec3 = [p[at + 3]!, p[at + 4]!, p[at + 5]!];
+    const c: Vec3 = [p[at + 6]!, p[at + 7]!, p[at + 8]!];
+    const d = pointTriangleDistance(mid, a, b, c);
+    if (d < gap - 1e-9) {
+      gap = d;
+      best = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3];
+    }
+  }
+  return best;
+}
+
+/**
+ * Whether the edge is convex (true), concave (false), or neither (null: smooth, a seam between coplanar faces, one
+ * face, or a curved face). It reads the two flat faces that meet at the edge: walking from the edge into the second
+ * face, a convex edge falls behind the first face's plane and a concave one rises in front of it. Only those two
+ * faces are read, so the rest of the part does not matter.
+ */
+function convexEdge(edge: EdgeRow, faces: readonly FaceRow[], mesh?: FaceMesh): boolean | null {
   const touching = faces.filter((face) => face.kind === "plane" && face.normal && edgeOnFace(edge, face));
   if (touching.length < 2) return null;
-  const left = touching[0]!.normal!;
-  const right = touching[1]!.normal!;
-  const outward = unit(add(left, right));
-  if (!outward) return null;
-  const step = 0.05;
-  const outside = add(edge.mid, scale(outward, step));
-  const inside = sub(edge.mid, scale(outward, step));
-  return !insidePlanes(outside, faces) && insidePlanes(inside, faces);
+  const along = unit(sub(edge.end, edge.start)) ?? (edge.dir ? unit(edge.dir) : null);
+  if (!along) return null;
+  let verdict: boolean | null = null;
+  for (let i = 0; i < touching.length; i += 1) {
+    for (let j = 0; j < touching.length; j += 1) {
+      if (i === j) continue;
+      const n1 = unit(touching[i]!.normal!);
+      const n2 = unit(touching[j]!.normal!);
+      if (!n1 || !n2) continue;
+      const fold = cross(n1, n2);
+      if (Math.hypot(fold[0], fold[1], fold[2]) < 1e-3) continue;
+      const inward = sub(insidePoint(touching[j]!, edge.mid, mesh), edge.mid);
+      const flat = sub(sub(inward, scale(along, dot(inward, along))), scale(n2, dot(inward, n2)));
+      const into = unit(flat);
+      if (!into) continue;
+      const rise = dot(n1, into);
+      if (Math.abs(rise) < 1e-6) continue;
+      const convex = rise < 0;
+      if (verdict === null) verdict = convex;
+      else if (verdict !== convex) return null;
+    }
+  }
+  return verdict;
 }
 
 /** The nearest distance from `point` to each face's triangles, in mm. */
@@ -161,6 +218,7 @@ export function edgesMatching(
   edges: readonly EdgeRow[],
   faces: readonly FaceRow[],
   input: Record<string, unknown>,
+  mesh?: FaceMesh,
 ): EdgeRow[] | { reason: string } {
   const aimed = input.direction !== undefined;
   const raw = aimed ? readVec(input.direction) : null;
@@ -187,7 +245,7 @@ export function edgesMatching(
     }
     if (typeof input.lengthMinMm === "number" && edge.lengthMm < input.lengthMinMm) return false;
     if (on && !edgeOnFace(edge, on)) return false;
-    if (typeof input.convex === "boolean" && convexEdge(edge, faces) !== input.convex) return false;
+    if (typeof input.convex === "boolean" && convexEdge(edge, faces, mesh) !== input.convex) return false;
     return true;
   });
 }
