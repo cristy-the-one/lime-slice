@@ -53,6 +53,7 @@ const edgeList = {
 };
 
 const label = { type: "string", maxLength: 80, description: "Step name." };
+const objectName = { type: "string", minLength: 1, maxLength: 120, description: "Name in the app's object list." };
 /** A study region, spelled as the paint regions are. A sphere or a box does not renumber after a Model edit. */
 const simRegion = { type: "object", description: "{faces}, {sphere}, or {box}." };
 const primitiveKind = { enum: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"], description: "Primitive." };
@@ -113,7 +114,7 @@ const pocketOp = (kind: "pocket" | "boss") => ({
     faceIndex,
     face: faceSelector,
     shape: { enum: ["rect", "circle", "arch"], description: "rect, circle, arch." },
-    from: { enum: ["centre", "corner", "bottom", "top"], description: "Where U, V = 0." },
+    from: { enum: ["box", "centre", "corner", "bottom", "top"], description: "Where U, V = 0." },
     at: { ...uv, description: "Centre on the face." },
     width: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "U size." },
     height: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "V size." },
@@ -306,7 +307,7 @@ const op = {
       type: "object",
       additionalProperties: false,
       required: ["kind", "primitive"],
-      properties: { kind: { const: "root" }, primitive: primitiveKind, dx: primitiveFields.dx, dy: primitiveFields.dy, dz: primitiveFields.dz, radius: primitiveFields.radius, height: primitiveFields.height },
+      properties: { kind: { const: "root" }, primitive: primitiveKind, dx: primitiveFields.dx, dy: primitiveFields.dy, dz: primitiveFields.dz, radius: primitiveFields.radius, height: primitiveFields.height, label },
     },
     {
       type: "object",
@@ -369,7 +370,7 @@ function checkOp(value: unknown, path: string, plain: boolean, depth = 0): strin
 const profilePlace = {
   faceIndex,
   face: faceSelector,
-  from: { enum: ["centre", "corner", "bottom", "top"], description: "Where U, V = 0." },
+  from: { enum: ["box", "centre", "corner", "bottom", "top"], description: "Where U, V = 0." },
   origin: { ...vec3, description: "Plane origin, in place of a face." },
   turn: { ...vec3, description: "Plane turn, degrees X, Y, Z." },
 };
@@ -578,7 +579,7 @@ const surfaceCommon = {
   margin: { type: "number", minimum: 0, maximum: 100, description: "Kept from the face's edges." },
   angleDeg: { type: "number", minimum: -360, maximum: 360, description: "Turns the layout in the face." },
   region: regionField,
-  from: { enum: ["centre", "corner", "bottom", "top"], description: "Where region's U, V = 0 is." },
+  from: { enum: ["box", "centre", "corner", "bottom", "top"], description: "Where region's U, V = 0 is." },
   label,
 };
 /** Primitives repeated over a face, kept to its outline: tiles, studs, ribs, grooves. */
@@ -942,8 +943,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "object_select",
-    description: "Select one object. Later edits and the next one-object slice use it.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["object"], properties: { object: handle } },
+    description: "Select one object. Later edits and the next one-object slice use it. name renames it.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["object"], properties: { object: handle, name: objectName } },
   },
   {
     name: "object_place",
@@ -959,6 +960,7 @@ export const TOOLS: ToolSpec[] = [
         scalePercent: { type: "number", minimum: 10, maximum: 400 },
         centreOnBed: { type: "boolean" },
         layFlat: { type: "boolean" },
+        settle: { type: "boolean" },
         rotX: { type: "number", description: "Absolute turn about X, degrees." },
         rotY: { type: "number", description: "Absolute turn about Y, degrees." },
         rotZ: { type: "number", description: "Absolute turn about Z, degrees." },
@@ -1256,7 +1258,7 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      properties: solidFields,
+      properties: { ...solidFields, name: objectName },
     },
   },
   {
@@ -2001,6 +2003,7 @@ const FIELD_TEXT: Record<string, string> = {
   layFlat: "Lay flattest face.",
   how: "A relation: flush-left, centre, on-top.",
   align: "Flush, touch, centre or stack on a part or the bed. Applied last. Front is low Y.",
+  settle: "After any turn, rest on the bed at the best contact within 12 degrees; reports rotationDeg and contactMm2.",
   axis: "x, y, or z.",
   degrees: "Degrees.",
   turn: "Axis and degrees.",

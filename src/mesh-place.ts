@@ -188,7 +188,7 @@ export function align(from: [number, number, number], to: [number, number, numbe
   return rotAbout(axis, Math.acos(Math.max(-1, Math.min(1, dot))));
 }
 
-function rotAbout(axis: [number, number, number], angle: number): Mat3 {
+export function rotAbout(axis: [number, number, number], angle: number): Mat3 {
   const len = Math.hypot(axis[0], axis[1], axis[2]) || 1;
   const x = axis[0] / len, y = axis[1] / len, z = axis[2] / len;
   const c = Math.cos(angle), s = Math.sin(angle), t = 1 - c;
@@ -197,29 +197,6 @@ function rotAbout(axis: [number, number, number], angle: number): Mat3 {
     t * x * y + s * z, t * y * y + c, t * y * z - s * x,
     t * x * z - s * y, t * y * z + s * x, t * z * z + c,
   ];
-}
-
-export function layFlatMatrix(pos: Float32Array): Mat3 {
-  const areas = new Map<string, { n: [number, number, number]; area: number }>();
-  for (let i = 0; i < pos.length; i += 9) {
-    const ax = pos[i], ay = pos[i + 1], az = pos[i + 2];
-    const bx = pos[i + 3], by = pos[i + 4], bz = pos[i + 5];
-    const cx = pos[i + 6], cy = pos[i + 7], cz = pos[i + 8];
-    let nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
-    let ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
-    let nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-    const area = Math.hypot(nx, ny, nz);
-    if (area < 1e-8) continue;
-    nx /= area; ny /= area; nz /= area;
-    const key = `${nx.toFixed(2)},${ny.toFixed(2)},${nz.toFixed(2)}`;
-    const hit = areas.get(key);
-    if (hit) hit.area += area;
-    else areas.set(key, { n: [nx, ny, nz], area });
-  }
-  let best: { n: [number, number, number]; area: number } | null = null;
-  for (const entry of areas.values()) if (!best || entry.area > best.area) best = entry;
-  if (!best) return [...ID];
-  return align(best.n, [0, 0, -1]);
 }
 
 /** Millimetres applied after the part is dropped onto Z = 0. Ignored while centered. */

@@ -1,5 +1,6 @@
 import { ArrowDownToLine, Copy, Crosshair, LayoutGrid, Plus, RotateCw, createElement, type IconNode } from "lucide";
 import { fx } from "./fx";
+import { settleOn } from "../bed-rest-pref";
 import { state, session, STEP_TOLERANCE_DEFAULT, type CardId, type SliceResponse } from "./state";
 import { currentApiTarget, authHeaders, engineDownMessage } from "../ui/api-base";
 import { layerWeight, resolved, type ResolvedCard } from "../strategy";
@@ -809,6 +810,7 @@ function objectPlaceHtml(): string {
       <label class="setting" data-label="rotation z" data-keywords="turn angle degrees gizmo"><span class="scrub-label" data-scrub="rz">Rz °</span><input id="placeRz" type="number" step="0.1" value="${formatDeg(euler.rz)}" aria-label="Rotation Z" /></label>
     </div>
     ${alignHtml(state.plate.objects.filter((obj) => obj.id !== state.plate.selectedId).map((obj) => ({ id: obj.id, name: obj.name })))}
+    <label class="row setting" data-label="settle on the bed" data-keywords="rest flat contact rotate snap collide" data-tip="While you turn the part with the rotate rings, snap it to the flat face that touches the bed most, near the angle you hold."><span class="row-label">Settle on the bed</span><input id="settleOn" type="checkbox" class="switch" role="switch" ${settleOn() ? "checked" : ""}/></label>
     ${separateShellsHtml()}
     ${isStepName(state.mesh?.name ?? "") ? `<label class="row setting" data-label="step chord mm" data-keywords="tessellation tolerance"><span class="row-label" data-tip="Largest gap between a curved STEP surface and its triangles, in mm">STEP chord</span><input id="stepTol" type="number" min="0.01" max="2" step="0.01" value="${state.stepTolerance}" /></label>` : ""}
   `;

@@ -138,6 +138,7 @@ mcp/app-open.test.ts
 mcp/engine-load.test.ts
 mcp/back-cover.test.ts
 mcp/rebuild-3-1.test.ts
+mcp/gaps-quick.test.ts
 mcp/long-call.test.ts
 src/model-edge-step.test.ts
 src/model-sketch.test.ts
@@ -174,3 +175,5 @@ src/modeling/partition-export.test.ts
 src/place-snap.test.ts
 mcp/align.test.ts
 src/measure-snap.test.ts
+src/bed-rest.test.ts
+mcp/settle.test.ts

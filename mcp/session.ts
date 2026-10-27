@@ -15,7 +15,8 @@ import { humanEngineError } from "../src/engine-wording.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../src/foreign-3mf.ts";
 import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
-import { align, centeringShift, encode3mf, ID_MATRIX, layFlatMatrix, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
+import { hullOf, layFlatMatrix, restPose } from "../src/bed-rest.ts";
+import { align, centeringShift, encode3mf, ID_MATRIX, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
 import { alignDelta, bedBox, isAlignRelation } from "../src/place-snap.ts";
 import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, turnedAxis, type ProbedTool } from "../src/model-feasibility.ts";
@@ -121,7 +122,7 @@ import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSchemaFor, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
-import { addsPiece, anchorOf, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
+import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, isPlainNumber, withExprs } from "../src/modeling/params.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
@@ -1216,6 +1217,9 @@ export class Session {
     this.pendingExprs = [];
     if (!EXPRESSION_TOOLS.has(name) || !args || typeof args !== "object") return { args };
     const input = { ...(args as Record<string, unknown>) };
+    // Ops typed in this call get the box anchor written in; a recipe rerun keeps what its ops were saved with.
+    if (input.op !== undefined) input.op = withBoxAnchor(input.op);
+    if (Array.isArray(input.ops)) input.ops = input.ops.map((op) => withBoxAnchor(op));
     if (name === "model_apply" || name === "model_edit") this.pendingExprs = [typedExprs(input.op)];
     // A part placed with {kind: "use"} becomes several ops, so a batch that uses one keeps no expressions.
     if (name === "model_apply_batch" && Array.isArray(input.ops) && !input.ops.some((op) => (op as { kind?: unknown } | null)?.kind === "use")) this.pendingExprs = input.ops.map(typedExprs);
@@ -1313,7 +1317,7 @@ export class Session {
       : null;
     this.bridgeSeq += 1;
     const payload = {
-      tool: name,
+      tool: name === "object_select" && typeof input.name === "string" ? "plate_sync" : name,
       session: this.bridgeSession,
       seq: this.bridgeSeq,
       plate: shown.map((row) => ({
@@ -1362,7 +1366,7 @@ export class Session {
       case "plate_list": return this.plateList(input);
       case "plate_undo": return this.plateUndo();
       case "plate_redo": return this.plateRedo();
-      case "object_select": return this.objectSelect(String(input.object));
+      case "object_select": return this.objectSelect(String(input.object), input.name);
       case "object_place": return this.objectPlace(input);
       case "object_remove": return this.objectRemove(String(input.object));
       case "object_duplicate": return this.objectDuplicate(input);
@@ -2313,9 +2317,19 @@ export class Session {
     return { ok: true, objects: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}), ...offer };
   }
 
-  private objectSelect(id: string): Record<string, unknown> {
+  /** A name typed for a plate object, trimmed to the limit; undefined when none was given. */
+  private givenName(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim() ? value.trim().slice(0, NAME_LIMIT) : undefined;
+  }
+
+  private objectSelect(id: string, name?: unknown): Record<string, unknown> {
     const obj = this.find(id);
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+    const renamed = this.givenName(name);
+    if (renamed && renamed !== obj.name) {
+      this.remember("Rename");
+      obj.name = renamed;
+    }
     this.selected = obj.id;
     return { ok: true, object: obj.id, name: shownName(obj.name) };
   }
@@ -2330,7 +2344,7 @@ export class Session {
       reslice = true;
     }
     if (input.layFlat === true) {
-      obj.orient = layFlatMatrix(obj.source);
+      obj.orient = layFlatMatrix(obj.source, obj.orient, obj.scale);
       reslice = true;
     }
     const turn = input.turn as { axis?: string; degrees?: number } | undefined;
@@ -2356,6 +2370,20 @@ export class Session {
       const face = obj.solid?.faces[input.faceDown];
       if (!face?.normal) return { ok: false, reason: "That face is not a flat face on this solid." };
       obj.orient = align(face.normal, [0, 0, -1]);
+      reslice = true;
+    }
+    let rest: Record<string, unknown> = {};
+    if (input.settle === true) {
+      const hull = hullOf(obj.source);
+      if (hull) {
+        const found = restPose(hull, obj.orient, obj.scale);
+        obj.orient = found.orient;
+        rest = { settled: found.snapped, contactMm2: Math.round(found.areaMm2 * 10) / 10 };
+      } else {
+        rest = { settled: false, contactMm2: 0 };
+      }
+      const turned = orientEuler(obj.orient);
+      rest.rotationDeg = { x: Math.round(turned.rx * 100) / 100, y: Math.round(turned.ry * 100) / 100, z: Math.round(turned.rz * 100) / 100 };
       reslice = true;
     }
     if (typeof input.z === "number") {
@@ -2405,6 +2433,7 @@ export class Session {
       ],
       scalePercent: obj.scale * 100,
       orient: [...obj.orient],
+      ...rest,
       reslice,
       label: "Place",
     };
@@ -3960,7 +3989,7 @@ export class Session {
     if (error) return { ok: false, reason: plainModelError(error, "create") };
     const obj: PlateObject = {
       id,
-      name: kind,
+      name: this.givenName(input.name) ?? kind,
       fileName: `${kind}.step`,
       bytes: new Uint8Array(),
       source: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
@@ -4052,7 +4081,7 @@ export class Session {
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
     const filter = this.onFaceIndex(obj, input);
     if (typeof filter === "string") return { ok: false, reason: filter };
-    const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter);
+    const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter, obj.solid);
     if ("reason" in matched) return { ok: false, reason: matched.reason };
     const listed = page(matched, input.cursor, input.limit);
     return { ok: true, total: matched.length, frame: "part", edges: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
@@ -4089,7 +4118,7 @@ export class Session {
       if (!obj.solid) return { reason: "Describe the solid before picking edges." };
       const filter = this.onFaceIndex(obj, select as Record<string, unknown>);
       if (typeof filter === "string") return { reason: filter };
-      const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter);
+      const matched = edgesMatching(obj.solid.edges, obj.solid.faces, filter, obj.solid);
       if ("reason" in matched) return matched;
       if (matched.length === 0) return { reason: "No edge matches that filter." };
       return matched.map((edge) => edge.index);
