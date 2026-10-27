@@ -103,10 +103,10 @@ check("under four layer heights the connector is left out", connectorDepth(base,
 const cells = (snug: number, loose: number, press: number) => ({ snug, loose, press, source: { snug: "starting", loose: "starting", press: "starting" }, startingFit: true });
 check("PLA row", show(clearanceRow("fdm", "PLA")) === show(cells(0.15, 0.25, 0.05)));
 check("PETG row", show(clearanceRow("fdm", "PETG")) === show(cells(0.2, 0.3, 0.1)));
-check("ABS row", show(clearanceRow("fdm", "abs")) === show(cells(0.2, 0.3, 0.1)));
+check("ABS row", show(clearanceRow("fdm", "abs")) === show(cells(0.25, 0.35, 0.15)));
 check("ASA reads as ABS", clearanceRow("fdm", "ASA") === CLEARANCE_TABLE.abs);
-check("TPU row", show(clearanceRow("fdm", "TPU")) === show(cells(0.25, 0.35, 0.15)));
-check("resin row", show(clearanceRow("resin", "Tough 2000")) === show(cells(0.1, 0.2, 0.05)));
+check("TPU row", show(clearanceRow("fdm", "TPU")) === show(cells(0.2, 0.3, 0.05)));
+check("resin row", show(clearanceRow("resin", "Tough 2000")) === show(cells(0.1, 0.25, 0.05)));
 check("resin ignores the material, FDM filaments do not", clearanceRow("resin", "") === CLEARANCE_TABLE.resin && clearanceKey("resin", "PETG") === "resin" && clearanceKey("fdm", "PETG") === "petg");
 check("material names ignore case and padding", clearanceRow("fdm", " Pla ") === CLEARANCE_TABLE.pla);
 check("a material with no row has none", clearanceRow("fdm", "Nylon") === null && clearanceKey("fdm", "") === null);

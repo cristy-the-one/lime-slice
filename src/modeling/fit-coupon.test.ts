@@ -87,8 +87,8 @@ check("the file names follow the coupon", couponFileName(petg) === "fit-coupon-p
 
 // --- Other starting values and refusals.
 check("PLA starts at 0.15, so 0.05 to 0.35", show(made({ process: "fdm", material: "PLA" }).holes.map((h) => h.clearanceMm)) === show([0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35]));
-check("TPU has a row, so it has a coupon", made({ process: "fdm", material: "TPU" }).holes[0]!.clearanceMm === 0.15);
-check("ASA takes the ABS row", made({ process: "fdm", material: "ASA" }).holes[2]!.clearanceMm === 0.2);
+check("TPU has a row, so it has a coupon", made({ process: "fdm", material: "TPU" }).holes[0]!.clearanceMm === 0.1);
+check("ASA takes the ABS row", made({ process: "fdm", material: "ASA" }).holes[2]!.clearanceMm === 0.25);
 const nylon = fitCoupon({ process: "fdm", material: "Nylon" });
 check("a material with no row refuses and says to give a start", "reason" in nylon && nylon.reason === COUPON_NO_START);
 const typedStart = made({ process: "fdm", material: "Nylon", startMm: 0.3 });

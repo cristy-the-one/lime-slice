@@ -1085,6 +1085,7 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         printer: { type: "object", description: "bedX, bedY, bedZ, startGcode, endGcode, retractLength." },
         filament: { type: "object", description: "nozzleTemp, bedTemp, flow, pressureAdvance." },
+        fits: { type: "object", description: "Fit coupon results: {material, snug, loose, press, wallMm?} each side in mm, or {material, reset: true}. process: resin for the Form 4." },
         dryRun: { type: "boolean", description: "Report the change only." },
       },
     },

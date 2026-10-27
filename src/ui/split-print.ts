@@ -8,8 +8,9 @@ import type { DragHandle } from "../model-drag";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { Params } from "../modeling/expr.ts";
 import { formatMm, type FacePlane, type SplitBase, type SplitPlan } from "../model-plane";
-import { clearanceSentence, fillConnector, holeCompensationNote, mm, type Box, type ConnectorSpec, type PartitionDefaults, type PartitionOp, type Target } from "../modeling/partition.ts";
+import { CLEARANCE_TABLE, FIT_NAMES, FIT_ROWS, clearanceKey, clearanceSentence, fillConnector, fitResultsRefusal, holeCompensationNote, mm, type Box, type Clearance, type ClearanceKey, type ConnectorSpec, type FitResults, type MeasuredFits, type PartitionDefaults, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
+import { couponGaps, couponLabel } from "../modeling/fit-coupon.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
 import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointsOn, withJointType, withSelected, type Card, type CardCut, type CardFrame, type CardJointType, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print";
@@ -50,6 +51,14 @@ export interface SplitPrintHost {
    * target, saved as STEP files. The answer is the sentence the card shows: what was made, or why not.
    */
   printCoupon(target: Target | null, spec: ConnectorSpec): Promise<string>;
+  /** The filament material on the plate, for the row Enter coupon results… opens on. */
+  material(): string;
+  /** What coupons measured, kept in the machine library; undefined while nothing was entered. */
+  fits(): MeasuredFits | undefined;
+  /** Enter coupon results for a row: each fit's step becomes a measured cell, per material and process. */
+  enterFits(key: ClearanceKey, results: FitResults): void;
+  /** Put a row's starting values back. */
+  resetFits(key: ClearanceKey): void;
   /** The card closed without Apply: an edit goes back to the step shown before it. */
   cancelled(): void;
   parameters(): Params;
@@ -178,8 +187,9 @@ export function mountSplitPrint(next: SplitPrintHost) {
           <label><span class="scrub-label" data-scrub>Clearance</span><input id="modelPartJointClearance" type="number" step="0.01" min="0" aria-label="Clearance, each side, millimetres"></label>
         </div>
         <p class="model-note" id="modelPartJointFitNote"></p>
-        <div class="sp-coupon"><button class="btn" id="modelPartCoupon" type="button">Print a fit coupon…</button></div>
+        <div class="sp-coupon"><button class="btn" id="modelPartCoupon" type="button">Print a fit coupon…</button> <button class="btn" id="modelPartResultsOpen" type="button" aria-expanded="false" aria-controls="modelPartResults" data-tip="Type in which step of a printed coupon fitted, so the fit table uses what you measured">Enter coupon results…</button></div>
         <p class="model-note" id="modelPartCouponNote" role="status" hidden></p>
+        ${resultsMarkup()}
         <label class="sp-print" data-joint-for="round"><span class="scrub-label">Hole shape</span><select id="modelPartJointHole" aria-label="Hole shape">
           <option value="round">Round</option><option value="teardrop">Teardrop</option>
         </select></label>
@@ -219,6 +229,129 @@ export function mountSplitPrint(next: SplitPrintHost) {
     changed(0);
   });
   hud.onEdit((values) => setFromHud(dragging?.index ?? card.selected, values));
+}
+
+const FIT_WORDS: Record<Clearance, string> = { snug: "Snug", loose: "Loose", press: "Press" };
+
+/** Enter coupon results…: pick the row, then for each fit the label of the step that fitted (plan section 25). */
+function resultsMarkup(): string {
+  const rows = FIT_ROWS.map((row) => `<option value="${row.key}">${row.name}</option>`).join("");
+  const fits = FIT_NAMES.map(
+    (fit) =>
+      `<label class="sp-print"><span class="scrub-label">${FIT_WORDS[fit]}</span><select id="modelPartResult-${fit}" data-result="${fit}" aria-label="${FIT_WORDS[fit]}: the coupon step that fitted"></select></label>` +
+      `<label class="sp-print" id="modelPartResultOther-${fit}" hidden><span class="scrub-label">Label</span><input id="modelPartResultValue-${fit}" data-result-value="${fit}" type="number" step="0.01" min="0" max="2" aria-label="${FIT_WORDS[fit]}, the label each side, millimetres"></label>`,
+  ).join("");
+  return `<div class="sp-results" id="modelPartResults" hidden>
+          <label class="sp-print"><span class="scrub-label">Material</span><select id="modelPartResultsRow" aria-label="Material and process of the coupon">${rows}</select></label>
+          <p class="model-note">For each fit, pick the label under the hole the pin pushed into by hand and stayed in.</p>
+          ${fits}
+          <label class="sp-print" id="modelPartResultWallRow" hidden><span class="scrub-label">Thinnest wall</span><input id="modelPartResultWall" type="number" step="0.05" min="0" max="5" placeholder="Not entered" aria-label="Thinnest wall that survived, millimetres"></label>
+          <div class="sp-coupon"><button class="btn" id="modelPartResultsSave" type="button">Save results</button> <button class="btn" id="modelPartResultsReset" type="button" data-tip="Put this material's starting values back">Reset to starting values</button> <button class="btn" id="modelPartResultsClose" type="button">Close</button></div>
+          <p class="model-note" id="modelPartResultsNote" role="status" hidden></p>
+        </div>`;
+}
+
+const OTHER = "other";
+
+function resultsKey(): ClearanceKey {
+  const select = $<HTMLSelectElement>("#modelPartResultsRow");
+  return (select?.value as ClearanceKey) || "petg";
+}
+
+/** The step lists for the picked row: the labels of a coupon centred on its starting Snug, what is saved, and Other. */
+function paintResults() {
+  const key = resultsKey();
+  const row = CLEARANCE_TABLE[key];
+  const saved = host?.fits()?.cells?.[key];
+  const labels = couponGaps(row.snug).map((gap) => couponLabel(gap));
+  for (const fit of FIT_NAMES) {
+    const select = $<HTMLSelectElement>(`#modelPartResult-${fit}`);
+    const value = $<HTMLInputElement>(`#modelPartResultValue-${fit}`);
+    if (!select || !value) continue;
+    select.replaceChildren(
+      new Option("Not entered", ""),
+      ...labels.map((label) => new Option(`${label} mm`, label)),
+      new Option("Other…", OTHER),
+    );
+    const had = saved?.[fit];
+    const label = had === undefined ? "" : couponLabel(had);
+    select.value = had === undefined ? "" : labels.includes(label) ? label : OTHER;
+    value.value = had !== undefined && select.value === OTHER ? String(had) : "";
+    const other = $<HTMLElement>(`#modelPartResultOther-${fit}`);
+    if (other) other.hidden = select.value !== OTHER;
+  }
+  const wallRow = $<HTMLElement>("#modelPartResultWallRow");
+  if (wallRow) wallRow.hidden = key !== "resin";
+  const wall = $<HTMLInputElement>("#modelPartResultWall");
+  if (wall) wall.value = key === "resin" && host?.fits()?.resinFeatureMm !== undefined ? String(host.fits()!.resinFeatureMm) : "";
+}
+
+function openResults() {
+  const panel = $<HTMLElement>("#modelPartResults");
+  const open = $<HTMLButtonElement>("#modelPartResultsOpen");
+  if (!panel || !host) return;
+  const select = $<HTMLSelectElement>("#modelPartResultsRow");
+  if (select && panel.hidden) {
+    const fallback = exportTarget(card.target) ? "resin" : clearanceKey("fdm", host.material()) ?? "petg";
+    select.value = fallback;
+  }
+  panel.hidden = false;
+  open?.setAttribute("aria-expanded", "true");
+  paintResults();
+  paintResultsNote("");
+}
+
+function closeResults() {
+  const panel = $<HTMLElement>("#modelPartResults");
+  if (panel) panel.hidden = true;
+  $<HTMLButtonElement>("#modelPartResultsOpen")?.setAttribute("aria-expanded", "false");
+}
+
+function paintResultsNote(text: string) {
+  const note = $<HTMLElement>("#modelPartResultsNote");
+  if (!note) return;
+  note.textContent = text;
+  note.hidden = text === "";
+}
+
+function resultsRead(): FitResults {
+  const results: FitResults = {};
+  for (const fit of FIT_NAMES) {
+    const select = $<HTMLSelectElement>(`#modelPartResult-${fit}`);
+    if (!select || select.value === "") continue;
+    const raw = select.value === OTHER ? $<HTMLInputElement>(`#modelPartResultValue-${fit}`)?.value ?? "" : select.value;
+    if (raw.trim() === "") continue;
+    results[fit] = Number(raw);
+  }
+  const wall = $<HTMLInputElement>("#modelPartResultWall");
+  if (resultsKey() === "resin" && wall && wall.value.trim() !== "") results.wallMm = Number(wall.value);
+  return results;
+}
+
+function saveResults() {
+  if (!host) return;
+  const results = resultsRead();
+  const refusal = fitResultsRefusal(results);
+  if (refusal) {
+    paintResultsNote(refusal);
+    return;
+  }
+  const key = resultsKey();
+  host.enterFits(key, results);
+  const name = FIT_ROWS.find((row) => row.key === key)?.name ?? key;
+  const said = FIT_NAMES.filter((fit) => results[fit] !== undefined).map((fit) => `${FIT_WORDS[fit]} ${mm(results[fit]!)} mm`);
+  if (results.wallMm !== undefined) said.push(`wall ${mm(results.wallMm)} mm`);
+  paintResultsNote(`Saved for ${name}: ${said.join(", ")} each side. New cuts use it; cuts already applied keep their clearance.`);
+  paintJoints();
+}
+
+function resetResults() {
+  if (!host) return;
+  const key = resultsKey();
+  host.resetFits(key);
+  paintResults();
+  paintResultsNote(`Back to the starting values for ${FIT_ROWS.find((row) => row.key === key)?.name ?? key}.`);
+  paintJoints();
 }
 
 function howMarkup(): string {
@@ -892,6 +1025,23 @@ function onClick(ev: Event) {
     changed(0);
     return;
   }
+  if (target.closest("#modelPartResultsOpen")) {
+    if ($<HTMLElement>("#modelPartResults")?.hidden === false) closeResults();
+    else openResults();
+    return;
+  }
+  if (target.closest("#modelPartResultsSave")) {
+    saveResults();
+    return;
+  }
+  if (target.closest("#modelPartResultsReset")) {
+    resetResults();
+    return;
+  }
+  if (target.closest("#modelPartResultsClose")) {
+    closeResults();
+    return;
+  }
   if (target.closest("#modelPartCoupon") && card.cuts[card.selected]) {
     void printCoupon(card.cuts[card.selected]!.joints.spec);
     return;
@@ -987,6 +1137,7 @@ function readField(ev: Event): boolean {
 }
 
 function onInput(ev: Event) {
+  if (ev.target instanceof Element && ev.target.closest("#modelPartResults")) return;
   if (!readField(ev)) return;
   changed(ev.target instanceof HTMLInputElement && ev.target.type === "checkbox" ? 0 : 300);
 }
@@ -1028,6 +1179,15 @@ function setJointMenu(select: HTMLSelectElement): boolean {
 }
 
 function onChange(ev: Event) {
+  if (ev.target instanceof Element && ev.target.closest("#modelPartResults")) {
+    if (ev.target.id === "modelPartResultsRow") paintResults();
+    const fit = ev.target instanceof HTMLSelectElement ? ev.target.dataset.result : undefined;
+    if (fit && ev.target instanceof HTMLSelectElement) {
+      const other = $<HTMLElement>(`#modelPartResultOther-${fit}`);
+      if (other) other.hidden = ev.target.value !== OTHER;
+    }
+    return;
+  }
   if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartTarget") {
     setTarget(ev.target.value);
     return;

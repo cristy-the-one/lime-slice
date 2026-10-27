@@ -16,6 +16,7 @@ import { ADVANCE, firmwareTakesArcs, type Firmware, type Rules } from "../settin
 import { coerceHostKind, type MoonrakerConfigImport, type PrinterHostKind } from "./prusa-link.ts";
 import { fanDefaults, fanOf, readFan, withFan, type FanSettings } from "../fan.ts";
 import { provisionalCards, readBeadSection, type MaterialCard } from "../sim/cards.ts";
+import { readMeasuredFits, type MeasuredFits } from "../modeling/partition.ts";
 
 export const MACHINE_FILE_VERSION = 3;
 
@@ -95,6 +96,11 @@ export interface MachineLibrary {
    * The version stays 3. A reader that rebuilds each printer drops the array.
    */
   materialCards?: MaterialCard[];
+  /**
+   * What Split to print's fit coupons measured, per material and process (plan section 25). Absent until a result is
+   * entered. The version stays 3, and a reader that rebuilds each printer keeps it like the cards.
+   */
+  measuredFits?: MeasuredFits;
 }
 
 export interface MachineFile {
@@ -282,6 +288,7 @@ export function ensureBuiltins(library: MachineLibrary): MachineLibrary {
   const nozzleMm = Number.isFinite(library.nozzleMm) && library.nozzleMm > 0 ? library.nozzleMm : 0.4;
   const next: MachineLibrary = { version: MACHINE_FILE_VERSION, printers, filaments, printerId, filamentId, nozzleMm };
   if (library.materialCards !== undefined) next.materialCards = library.materialCards;
+  if (library.measuredFits !== undefined) next.measuredFits = library.measuredFits;
   return next;
 }
 
@@ -357,6 +364,8 @@ export function parseLibrary(text: string | null): MachineLibrary {
       nozzleMm,
     };
     if (materialCards !== undefined) library.materialCards = materialCards;
+    const measuredFits = readMeasuredFits(doc.measuredFits);
+    if (measuredFits !== undefined) library.measuredFits = measuredFits;
     return library;
   } catch {
     return emptyLibrary();
@@ -375,6 +384,12 @@ export function saveMaterialCard(library: MachineLibrary, card: MaterialCard): M
   if (at >= 0) cards[at] = card;
   else cards.push(card);
   return { ...library, materialCards: cards };
+}
+
+/** The library with `fits` as its measured fits, or without the key when there are none. */
+export function setMeasuredFits(library: MachineLibrary, fits: MeasuredFits | undefined): MachineLibrary {
+  const { measuredFits: _drop, ...rest } = library;
+  return fits === undefined ? rest : { ...rest, measuredFits: fits };
 }
 
 /** `undefined` when the key is absent, so an old library round-trips without gaining one. */
