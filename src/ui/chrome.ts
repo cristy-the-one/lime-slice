@@ -5,6 +5,7 @@ import {
   ChevronUp,
   Columns2,
   createElement,
+  DraftingCompass,
   Download,
   Grid3x3,
   Minus,
@@ -27,6 +28,7 @@ import {
 import { mountRailFlyouts } from "./rail-fly";
 import { endReveals, paintDrawerHint, toggleDock } from "./splitters";
 import { mountTooltips } from "./tooltip";
+import { fx } from "../app/fx";
 import "./chrome.css";
 
 export type GizmoTool = "all" | "move" | "rotate" | "scale";
@@ -131,6 +133,9 @@ function mountToolRail(hooks: ChromeHooks) {
   const measure = toolButton("rulers", Ruler, "Measure", "Sizes: the part's length, width and height, a scale bar, and numbers along the bed. The scale bar is measured at the view centre.");
   measure.id = "measureField";
   measure.setAttribute("aria-pressed", "false");
+  const points = toolButton("measure-points", DraftingCompass, "Measure between points", "Click two points on any object for the distance between them. It snaps to corners, edge middles and face middles; Alt turns that off. Esc clears.");
+  points.id = "measurePoints";
+  points.setAttribute("aria-pressed", "false");
   const section = toolButton("section", SquareSplitHorizontal, "Section", "Clip the preview on a free plane. Does not change the slice.");
   section.setAttribute("aria-pressed", "false");
 
@@ -148,6 +153,8 @@ function mountToolRail(hooks: ChromeHooks) {
   bed.append(flyButton("flyBed", Grid3x3, "Bed opacity"));
   const shared = railSet("prepare preview gcode", "Measure and section");
   shared.append(measure, section);
+  const between = railSet("prepare", "Measure between points");
+  between.append(points);
   const paints = railSet("prepare", "Paint");
   paints.append(sep(), caption("Paint"), paint);
   const edits = railSet("preview gcode", "Edit");
@@ -171,7 +178,7 @@ function mountToolRail(hooks: ChromeHooks) {
   foot.append(leftToggle);
 
   const model = document.querySelector<HTMLElement>("#railModel");
-  rail.append(place, look, bed, shared, paints, edits, ...(model ? [model] : []), gizmoNudge(), foot);
+  rail.append(place, look, bed, shared, between, paints, edits, ...(model ? [model] : []), gizmoNudge(), foot);
   host?.prepend(rail);
   mountRovingFocus(rail);
   mountRailFolds(rail);
@@ -187,7 +194,11 @@ function mountToolRail(hooks: ChromeHooks) {
     // Model's tools are the Model code's (its Scale is not the gizmo's).
     if (button.closest("#railModel, #railModelFoot")) return;
     const id = button.dataset.tool;
-    if (id === "move" || id === "rotate" || id === "scale") selectManipulator(id, buttons, hooks);
+    if (id === "move" || id === "rotate" || id === "scale") {
+      setPointMeasure(false);
+      selectManipulator(id, buttons, hooks);
+    }
+    if (id === "measure-points") setPointMeasure(button.getAttribute("aria-pressed") !== "true");
     if (id === "layflat") document.querySelector<HTMLButtonElement>("#layflat")?.click();
     if (id === "section") toggleSection();
     if (id === "dock") toggleDock("left");
@@ -253,7 +264,14 @@ function flyButton(panel: string, icon: IconNode, label: string) {
 let flyouts: { close(): void } | null = null;
 
 /** Show the stage's tool set, and name the toolbar and the stage landmark after it. */
+/** Point-to-point Measure on or off, in the rail and in the Prepare view. It rests outside Prepare. */
+function setPointMeasure(on: boolean) {
+  document.querySelector("#measurePoints")?.setAttribute("aria-pressed", on ? "true" : "false");
+  fx.prepare?.setPointMeasure(on);
+}
+
 export function paintRailStage(stage: Stage) {
+  if (stage !== "prepare") setPointMeasure(false);
   document.documentElement.dataset.stage = stage;
   paintDockNames(stage);
   const rail = document.querySelector<HTMLElement>("#toolRail");

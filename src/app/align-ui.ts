@@ -8,8 +8,16 @@ const GROUPS: { label: string; relations: readonly AlignRelation[] }[] = [
   { label: "Stack", relations: ["on-top"] },
 ];
 
+export interface AlignPick {
+  to: string;
+  how: AlignRelation;
+}
+
 /** What the row holds. It outlives a re-render of the panel. */
-export const alignPick: { to: string; how: AlignRelation } = { to: "bed", how: "centre" };
+export const alignPick: AlignPick = { to: "bed", how: "centre" };
+
+/** What Model's row holds. Model space has no fixed bed to align to, so its target is always an object; "" is none yet. */
+export const modelAlignPick: AlignPick = { to: "", how: "centre" };
 
 const esc = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -24,13 +32,25 @@ export function settleAlignPick(others: readonly AlignTarget[]): void {
   if (alignPick.to === "bed" && !relationFitsBed(alignPick.how)) alignPick.how = "centre";
 }
 
-export function alignHowHtml(): string {
-  const bed = alignPick.to === "bed";
+/** Model's pick stays on an object that is still there, else the first one, else none. */
+export function settleModelPick(others: readonly AlignTarget[]): void {
+  if (!others.some((o) => o.id === modelAlignPick.to)) modelAlignPick.to = others[0]?.id ?? "";
+}
+
+/** The relations as option groups. With `pick` on the bed, only those a bed has a side for. */
+export function alignHowHtml(pick: AlignPick = alignPick): string {
+  const bed = pick.to === "bed";
   return GROUPS.map((group) => {
     const shown = group.relations.filter((r) => ALIGN_RELATIONS.includes(r) && (!bed || relationFitsBed(r)));
     if (shown.length === 0) return "";
-    return `<optgroup label="${group.label}">${shown.map((r) => `<option value="${r}"${r === alignPick.how ? " selected" : ""}>${ALIGN_LABELS[r]}</option>`).join("")}</optgroup>`;
+    return `<optgroup label="${group.label}">${shown.map((r) => `<option value="${r}"${r === pick.how ? " selected" : ""}>${ALIGN_LABELS[r]}</option>`).join("")}</optgroup>`;
   }).join("");
+}
+
+/** The options of Model's Align to... select: the other objects. */
+export function modelAlignToHtml(others: readonly AlignTarget[]): string {
+  settleModelPick(others);
+  return others.map((t) => `<option value="${esc(t.id)}" title="${esc(t.name)}"${t.id === modelAlignPick.to ? " selected" : ""}>${esc(t.name)}</option>`).join("");
 }
 
 export function alignHtml(others: readonly AlignTarget[]): string {

@@ -3,24 +3,26 @@
  * and middle. Built once per mesh from its sharp edges, held, and searched by distance, so a pointer move costs a binary
  * search and not a pass over the mesh. Pure: no WebGL.
  *
- * Circle centres are not offered. They need the B-rep's circular edges, which the viewer does not hold; a tessellated
- * hole is only a ring of corners here.
+ * Circle centres come from the B-rep's edges, which Model holds for the open STEP solid: a closed ring of an edge that
+ * fits a circle offers its middle, so a hole or a boss is measured from its axis. A plate mesh has no edges, and a
+ * tessellated hole there is only a ring of corners.
  */
 import { faceNormal, sharpEdges, vertexIds, tableSize } from "./mesh-edges.ts";
 
 export type Vec3 = readonly [number, number, number];
 /** In the order a nearer point of a later kind never wins. */
-export type MeasureKind = "vertex" | "midpoint" | "face" | "box-corner" | "box-centre";
+export type MeasureKind = "vertex" | "circle" | "midpoint" | "face" | "box-corner" | "box-centre";
 
 export const MEASURE_KIND_LABEL: Record<MeasureKind, string> = {
   vertex: "Vertex",
+  circle: "Circle centre",
   midpoint: "Midpoint",
   face: "Face centre",
   "box-corner": "Box corner",
   "box-centre": "Box centre",
 };
 
-const ORDER: readonly MeasureKind[] = ["vertex", "midpoint", "face", "box-corner", "box-centre"];
+const ORDER: readonly MeasureKind[] = ["vertex", "circle", "midpoint", "face", "box-corner", "box-centre"];
 
 /** An edge bends the outline by this much or more at a vertex of two edges, and the vertex is then a corner. */
 const CORNER_DEG = 20;
@@ -30,17 +32,108 @@ const SHARP_DEG = 30;
 const MIN_EDGE_MM = 0.2;
 const MAX_REGION = 200_000;
 
+/** A circle found in an edge: its middle, radius and the unit normal of its plane. */
+export interface Circle {
+  centre: Vec3;
+  radius: number;
+  normal: Vec3;
+}
+
 export interface FeatureSet {
   /** x, y, z per point, ordered by x. */
   xyz: Float32Array;
   kinds: Uint8Array;
+  /** Rings that offer their middle when the pointer is on the ring. */
+  circles: Circle[];
+}
+
+/** A ring fits a circle when every point is this close to it, as a share of the radius, or this many millimetres. */
+const CIRCLE_FIT = 0.01;
+const CIRCLE_FIT_MM = 0.02;
+const MIN_CIRCLE_POINTS = 6;
+const MIN_CIRCLE_MM = 0.25;
+/** An open edge counts as a circle when it sweeps at least this far round: a STEP file often splits a ring in two. */
+const MIN_SWEEP_DEG = 170;
+
+const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross3 = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+/**
+ * The circle a polyline of x, y, z triples lies on, or null: three points spread along it fix the circle, every point
+ * has to be on it, and it has to run round at least `MIN_SWEEP_DEG`. Exact for the B-rep's own circle edges, whose
+ * points the kernel samples from the true curve.
+ */
+export function fitCircle(points: ArrayLike<number>): Circle | null {
+  const count = Math.floor(points.length / 3);
+  if (count < MIN_CIRCLE_POINTS) return null;
+  const at = (i: number): Vec3 => [points[i * 3]!, points[i * 3 + 1]!, points[i * 3 + 2]!];
+  const a = at(0);
+  const b = at(Math.floor(count / 3));
+  const c = at(Math.floor((2 * count) / 3));
+  const u: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const v: Vec3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+  const w = cross3(u, v);
+  const w2 = dot3(w, w);
+  if (!(w2 > 1e-12)) return null;
+  // The centre sits in the plane of the three points, as far from `a` along u and v as the bisectors say.
+  const uu = dot3(u, u);
+  const vv = dot3(v, v);
+  const uv = dot3(u, v);
+  const det = uu * vv - uv * uv;
+  if (!(Math.abs(det) > 1e-12)) return null;
+  const s = (0.5 * uu * vv - 0.5 * vv * uv) / det;
+  const t = (0.5 * vv * uu - 0.5 * uu * uv) / det;
+  const centre: Vec3 = [a[0] + s * u[0] + t * v[0], a[1] + s * u[1] + t * v[1], a[2] + s * u[2] + t * v[2]];
+  const radius = Math.hypot(a[0] - centre[0], a[1] - centre[1], a[2] - centre[2]);
+  if (!(radius >= MIN_CIRCLE_MM)) return null;
+  const wl = Math.sqrt(w2);
+  const normal: Vec3 = [w[0] / wl, w[1] / wl, w[2] / wl];
+  const tol = Math.max(radius * CIRCLE_FIT, CIRCLE_FIT_MM);
+  const first = at(0);
+  const e1: Vec3 = [first[0] - centre[0], first[1] - centre[1], first[2] - centre[2]];
+  const e1l = Math.hypot(...e1);
+  const x: Vec3 = [e1[0] / e1l, e1[1] / e1l, e1[2] / e1l];
+  const y = cross3(normal, x);
+  let sweep = 0;
+  let last = 0;
+  for (let i = 0; i < count; i++) {
+    const p = at(i);
+    const d: Vec3 = [p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]];
+    if (Math.abs(Math.hypot(...d) - radius) > tol || Math.abs(dot3(d, normal)) > tol) return null;
+    const angle = Math.atan2(dot3(d, y), dot3(d, x));
+    let step = angle - last;
+    if (step > Math.PI) step -= 2 * Math.PI;
+    if (step < -Math.PI) step += 2 * Math.PI;
+    sweep += step;
+    last = angle;
+  }
+  if (Math.abs(sweep) < (MIN_SWEEP_DEG * Math.PI) / 180) return null;
+  return { centre, radius, normal };
+}
+
+/** The distinct circles among a solid's edges. Rings of one circle, split in two or doubled by a seam, count once. */
+export function circlesOf(edges: readonly ArrayLike<number>[]): Circle[] {
+  const out: Circle[] = [];
+  for (const points of edges) {
+    const found = fitCircle(points);
+    if (!found) continue;
+    const same = out.some(
+      (known) =>
+        Math.abs(known.radius - found.radius) < CIRCLE_FIT_MM &&
+        Math.hypot(known.centre[0] - found.centre[0], known.centre[1] - found.centre[1], known.centre[2] - found.centre[2]) < CIRCLE_FIT_MM &&
+        Math.abs(dot3(known.normal, found.normal)) > 0.9999,
+    );
+    if (!same) out.push(found);
+  }
+  return out;
 }
 
 function key(x: number, y: number, z: number): string {
   return `${Math.round(x * 1e4)},${Math.round(y * 1e4)},${Math.round(z * 1e4)}`;
 }
 
-export function featuresOf(positions: Float32Array): FeatureSet {
+/** `curves` are the B-rep edges' polylines, when the solid has them: each ring that fits a circle offers its middle. */
+export function featuresOf(positions: Float32Array, curves: readonly ArrayLike<number>[] = []): FeatureSet {
   const segs = sharpEdges(positions, SHARP_DEG);
   const count = Math.floor(segs.length / 6);
   const ids = new Map<string, number>();
@@ -127,7 +220,7 @@ export function featuresOf(positions: Float32Array): FeatureSet {
     xyz[to * 3 + 2] = pts[from * 3 + 2]!;
     sortedKinds[to] = kinds[from]!;
   });
-  return { xyz, kinds: sortedKinds };
+  return { xyz, kinds: sortedKinds, circles: circlesOf(curves) };
 }
 
 export interface FeatureHit {
@@ -153,6 +246,9 @@ export function nearestFeature(set: FeatureSet, p: Vec3, radius: number, face?: 
   }
   const r2 = radius * radius;
   let best: { tier: number; d2: number; at: Vec3 } | null = null;
+  const keep = (tier: number, d2: number, at: Vec3) => {
+    if (!best || tier < best.tier || (tier === best.tier && d2 < best.d2)) best = { tier, d2, at };
+  };
   const consider = (tier: number, d2: number, at: Vec3) => {
     if (d2 > r2) return;
     if (onScreen) {
@@ -160,7 +256,7 @@ export function nearestFeature(set: FeatureSet, p: Vec3, radius: number, face?: 
       if (px > onScreen.px) return;
       d2 = px * px;
     }
-    if (!best || tier < best.tier || (tier === best.tier && d2 < best.d2)) best = { tier, d2, at };
+    keep(tier, d2, at);
   };
   for (let i = lo; i < kinds.length; i++) {
     const x = xyz[i * 3]!;
@@ -169,6 +265,25 @@ export function nearestFeature(set: FeatureSet, p: Vec3, radius: number, face?: 
     const dz = xyz[i * 3 + 2]! - p[2];
     const dx = x - p[0];
     consider(kinds[i]!, dx * dx + dy * dy + dz * dz, [x, xyz[i * 3 + 1]!, xyz[i * 3 + 2]!]);
+  }
+  for (const circle of set.circles) {
+    const rel: Vec3 = [p[0] - circle.centre[0], p[1] - circle.centre[1], p[2] - circle.centre[2]];
+    const lift = dot3(rel, circle.normal);
+    const flat: Vec3 = [rel[0] - lift * circle.normal[0], rel[1] - lift * circle.normal[1], rel[2] - lift * circle.normal[2]];
+    const run = Math.hypot(flat[0], flat[1], flat[2]);
+    if (!(run > 1e-9)) continue;
+    const k = circle.radius / run;
+    const rim: Vec3 = [circle.centre[0] + flat[0] * k, circle.centre[1] + flat[1] * k, circle.centre[2] + flat[2] * k];
+    // The pointer is on the ring when the ring's nearest point is within reach; what it offers is the ring's middle.
+    const gap = (rim[0] - p[0]) ** 2 + (rim[1] - p[1]) ** 2 + (rim[2] - p[2]) ** 2;
+    if (gap > r2) continue;
+    if (onScreen) {
+      const px = onScreen.from(rim);
+      if (px > onScreen.px) continue;
+      keep(ORDER.indexOf("circle"), px * px, circle.centre);
+    } else {
+      keep(ORDER.indexOf("circle"), gap, circle.centre);
+    }
   }
   if (face) consider(ORDER.indexOf("face"), (face[0] - p[0]) ** 2 + (face[1] - p[1]) ** 2 + (face[2] - p[2]) ** 2, face);
   const found = best as { tier: number; at: Vec3 } | null;

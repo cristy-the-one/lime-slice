@@ -228,3 +228,49 @@ test("Parameters folds on Escape, Add focuses the new row, and the Features menu
   await expect(page.locator("#modelParamsMain")).toBeHidden();
   await expect(page.locator("#modelParamsToggle")).toBeFocused();
 });
+
+// --- Gaps A. A step the MCP stored with links by place (`@origin.0`, a profile point) beside a panel field's (modelDx):
+// the Parameters panel counts each parameter, and Rebuild sends the step with the new numbers to the engine.
+test("a project the MCP built: each parameter is used by its step, and Rebuild sends the new numbers", async ({ page }) => {
+  const tree = await openModel(page);
+  await page.locator("#modelToolBoolean").click();
+  if ((await page.locator("#modelCut").getAttribute("aria-pressed")) !== "true") await page.locator("#modelCut").click();
+  await page.locator("#modelDx").fill("6");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(2);
+  await page.locator("#tabPrepare").click();
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const { readFile } = await import("node:fs/promises");
+  const doc = JSON.parse((await readFile((await download.path())!)).toString("utf8")) as { parameters?: Record<string, unknown>; objects: { modelTree: { nodes: { op?: { kind: string; origin: number[]; size: number[]; exprs?: Record<string, string> } | null }[] } }[] };
+  const cut = doc.objects[0]!.modelTree.nodes.find((node) => node.op?.kind === "boolean")!.op!;
+  doc.parameters = { w: cut.size[0]!, px: cut.origin[0]!, unused: 1 };
+  cut.exprs = { modelDx: "w", "@origin.0": "px" };
+  await page.reload();
+  await page.locator("#projectFile").setInputFiles({ name: "mcp.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(doc)) });
+  await expect(page.locator("#objectList .obj").first()).toBeVisible();
+  await page.locator("#tabModel").click();
+  await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(2);
+  await page.locator("#modelFeatureMore").click();
+  await page.locator("#modelMenuParameters").click();
+  const rows = page.locator("#modelParams [data-param-row]");
+  await expect(rows).toHaveCount(3);
+  const used = (index: number) => rows.nth(index).locator("[data-param-used]");
+  await expect(used(0), "w is used by the cut").toHaveText("1");
+  await expect(used(1), "px, linked by its place, is used by the cut").toHaveText("1");
+  await expect(used(2)).toHaveText("0");
+  await expect(page.locator("#modelParamsRebuild"), "nothing is out of date as opened").toBeHidden();
+
+  const edits = tree.of("edit").length;
+  await rows.nth(1).locator("[data-param-value]").selectText();
+  await page.keyboard.type(String(cut.origin[0]! + 3));
+  await rows.nth(1).locator("[data-param-value]").blur();
+  await expect(page.locator("#modelParamsRebuild")).toHaveText("Rebuild 1 step");
+  await page.locator("#modelParamsRebuild").click();
+  await expect(page.locator("#modelParamsRebuild")).toBeHidden();
+  const sent = tree.of("edit").slice(edits).at(-1)?.op as { origin?: number[]; size?: number[]; exprs?: Record<string, string> } | undefined;
+  expect(sent?.origin?.[0], "the engine is asked for the cut at the new place").toBeCloseTo(cut.origin[0]! + 3, 6);
+  expect(sent?.size?.[0], "its size stays").toBeCloseTo(cut.size[0]!, 6);
+  await expect(used(1), "the rebuilt step keeps its link").toHaveText("1");
+  await expect(used(0)).toHaveText("1");
+});

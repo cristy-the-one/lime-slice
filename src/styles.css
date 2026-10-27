@@ -1294,6 +1294,11 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
 .align-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-2); }
 .align-grid select { width: 100%; min-width: 0; text-overflow: ellipsis; }
 .align-grid > .btn { grid-column: 1 / -1; }
+/* The same row in Model's Place card, inside the card's two-column field grid. */
+.model-fields .model-align { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 8px; }
+.model-fields .model-align[hidden] { display: none !important; }
+.model-fields .model-align select { text-overflow: ellipsis; }
+.model-fields .model-align > .btn { grid-column: 1 / -1; }
 /* The live size of the aspect a handle changes. Colour is the axis; the text is the same sentence as the tooltip. */
 .model-aspect-label {
   position: absolute;

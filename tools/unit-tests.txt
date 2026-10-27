@@ -167,6 +167,8 @@ src/model-look.test.ts
 src/section-cap.test.ts
 src/modeling/params.test.ts
 mcp/params.test.ts
+src/modeling/links.test.ts
+mcp/vars-links.test.ts
 src/param-rebuild.test.ts
 src/ui/diameter-expr.test.ts
 src/ui/dock-panes.test.ts
@@ -180,4 +182,6 @@ src/measure-snap.test.ts
 src/bed-rest.test.ts
 mcp/settle.test.ts
 src/viewport-grab.test.ts
+src/model-grab.test.ts
+src/measure-points.test.ts
 src/orbit-glide.test.ts

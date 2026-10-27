@@ -117,11 +117,48 @@ export function evaluate(text: string, params: Params): number {
  * Fields that hold text on purpose. Every other string in an op is read as a number, unless it is one of the enum
  * words the caller passes (every enum value in the op schema), so a new text field does not need listing here.
  */
-const TEXT_FIELDS = new Set([
+export const TEXT_FIELDS: ReadonlySet<string> = new Set([
   "kind", "op", "primitive", "label", "keep", "screw", "toolObject", "shape", "pattern", "plane", "onError", "filter", "object", "name", "from", "fromNode", "along", "fit", "anchor", "point", "part", "var", "text", "align", "caps", "capStart", "capEnd",
   // --- Split to print: the target printer's id and process, the orientation, and a connector's type.
   "printer", "process", "orient", "type",
 ]);
+
+/**
+ * Names in scope and the text each stands for. A project parameter stands for itself; a call's own name, a part's
+ * parameter, or a loop value stands for the text it was given, so an expression can be written in project names alone.
+ */
+export type NameScope = Readonly<Record<string, string>>;
+
+/** `text` with every name in `scope` replaced by the text it stands for, bracketed. Function names stay. */
+export function substituteNames(text: string, scope: NameScope): string {
+  const whole = text.trim();
+  if (Object.hasOwn(scope, whole)) return scope[whole]!;
+  return text.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (word, at: number) => {
+    const before = text[at - 1];
+    if (before !== undefined && /[0-9.]/.test(before)) return word;
+    if (/^\s*\(/.test(text.slice(at + word.length))) return word;
+    if (!Object.hasOwn(scope, word) || scope[word] === word) return word;
+    return `(${scope[word]})`;
+  });
+}
+
+/**
+ * `value` as `resolveNumbers` reads it, with each numeric string kept as text in `scope`'s names instead of its number:
+ * the twin a caller walks beside the resolved op to find which numbers were typed as expressions.
+ */
+export function resolveTexts(value: unknown, scope: NameScope, words: ReadonlySet<string> = new Set()): unknown {
+  if (typeof value === "string" && words.has(value) && !Object.hasOwn(scope, value)) return value;
+  if (typeof value === "string") return substituteNames(value.trim(), scope);
+  if (Array.isArray(value)) return value.map((item) => resolveTexts(item, scope, words));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = TEXT_FIELDS.has(key) && typeof child === "string" ? child : resolveTexts(child, scope, words);
+    }
+    return out;
+  }
+  return value;
+}
 
 /**
  * `value` with every numeric string replaced by its number: op fields, vector entries, nested ops. Text fields such
