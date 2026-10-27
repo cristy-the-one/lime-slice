@@ -232,8 +232,8 @@ const placedTwo = storedPartition(cardOp(useTwo, wideCenter, null, SIZES)!, wide
 eq("Use 2 writes the count, and then both fit with nothing to say", "op" in placedTwo ? [placedTwo.op.cuts[0]!.connectors!.placed!.length, placedTwo.fits, placedTwo.notes] : placedTwo, [2, [], []]);
 const reopenedJoints = cardFromOp((placedTwo as { op: PartitionModelOp }).op, IDENTITY_POSE, wideCenter, null, "lime-220");
 eq("the pencil reads the connectors back on", reopenedJoints.cuts[0]!.joints.on, true);
-const tpu = storedPartition(cardOp(jointed, wideCenter, null, SIZES)!, { ...wideCtx, material: "TPU" }, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
-check("TPU has no fit: nothing is placed, and the sentence says why", "op" in tpu && tpu.op.cuts[0]!.connectors!.placed!.length === 0 && tpu.notes.includes("No fit for this material. Type a clearance, or leave connectors off."), JSON.stringify(tpu));
+const nylon = storedPartition(cardOp(jointed, wideCenter, null, SIZES)!, { ...wideCtx, material: "Nylon" }, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+check("A material with no row has no fit: nothing is placed, and the sentence says why", "op" in nylon && nylon.op.cuts[0]!.connectors!.placed!.length === 0 && nylon.notes.includes("No fit for this material. Type a clearance, or leave connectors off."), JSON.stringify(nylon));
 eq("the plate's up in the solid's frame is the third row of its orientation", [plateUp([...ID_MATRIX]), plateUp([1, 0, 0, 0, 0, -1, 0, 1, 0])], [[0, 0, 1], [0, 1, 0]]);
 
 // --- History rows name what the cut has: "Split to print, 3 parts, dowels", "…, plugs", "…, holes".

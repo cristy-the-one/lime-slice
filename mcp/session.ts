@@ -22,6 +22,7 @@ import { alignDelta, bedBox, isAlignRelation } from "../src/place-snap.ts";
 import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, turnedAxis, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
 import { clampPieces, type FillContext, type Target } from "../src/modeling/partition.ts";
+import { couponFileName, fitCoupon, fitCouponRequest, readCouponReply } from "../src/modeling/fit-coupon.ts";
 import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateUp, readPartition, storedPartition } from "./partition.ts";
 import { pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
@@ -3822,7 +3823,7 @@ export class Session {
   }
 
   private model(name: string, input: Record<string, unknown>): Record<string, unknown> | Promise<Record<string, unknown>> {
-    if (name === "solid_new") return this.solidNew(input);
+    if (name === "solid_new") return input.coupon !== undefined ? this.fitCouponNew(input) : this.solidNew(input);
     if (name === "model_build") return this.build(input);
     if (name === "model_params") return input.rebuild === true ? this.paramsRebuild(input) : this.paramsTool(input);
     if (name === "model_define") return this.defineTool(input);
@@ -5855,9 +5856,9 @@ export class Session {
   // --- Split to print (docs/plan-split-connectors.md, D8, D9, sections 10 and 13). Keep this block together. ---
 
   /** What the planner fills defaults from: the plate's printer as the target, the nozzle, the layer, the filament, the brim. */
-  private partitionContext(obj: PlateObject): FillContext {
+  private partitionContext(obj: PlateObject | null): FillContext {
     const printer = this.printer();
-    const box = obj.solid ? (isIdentity(obj.modelPose) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, obj.modelPose).positions)) : null;
+    const box = obj?.solid ? (isIdentity(obj.modelPose) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, obj.modelPose).positions)) : null;
     return {
       plateTarget: { printer: printer.id, process: "fdm", volumeMm: [printer.bedX, printer.bedY, printer.bedZ] },
       featureMm: this.library.nozzleMm,
@@ -5882,6 +5883,74 @@ export class Session {
     const frame = bedFrame(obj.solid.positions, obj.orient, obj.scale, obj.modelPose);
     const targetName = typed.target ? targetPrinter(this.library, typed.target.printer)?.name : undefined;
     return planPartition(typed, this.partitionContext(obj), frame, { name: printer.name, belt: printer.kind === "belt", ...(targetName ? { targetName } : {}) }, { positions: obj.solid.positions, up: plateUp(obj.orient), pose: obj.modelPose });
+  }
+
+  /**
+   * solid_new with a coupon (plan section 2, milestone 6): the fit coupon for a dowel, built from the planner's layout. On
+   * the plate's printer the plate and its pin are two new objects (STEP solids, with their labels cut in); for an
+   * export-only printer, the Form 4, they are written to the workspace as STEP files and never reach the plate.
+   */
+  private async fitCouponNew(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const raw = input.coupon && typeof input.coupon === "object" && !Array.isArray(input.coupon) ? (input.coupon as Record<string, unknown>) : null;
+    if (!raw) return { ok: false, reason: "coupon is {printer, material, radius, depth, hole, startMm}; every field is optional." };
+    if (Object.keys(input).some((key) => key !== "coupon" && key !== "name")) return { ok: false, reason: "solid_new takes a coupon or a primitive, not both. Only name goes with a coupon." };
+    const sizes = (["radius", "depth", "startMm"] as const).filter((key) => raw[key] !== undefined && (typeof raw[key] !== "number" || !Number.isFinite(raw[key])));
+    if (sizes.length > 0) return { ok: false, reason: `coupon.${sizes[0]} is a number of millimetres.` };
+    if (raw.hole !== undefined && raw.hole !== "round" && raw.hole !== "teardrop") return { ok: false, reason: "coupon.hole is round or teardrop." };
+    let target: Target | null = null;
+    if (typeof raw.printer === "string") {
+      target = this.partitionTarget(raw.printer);
+      if (!target) return { ok: false, reason: `No printer in the library is ${raw.printer}. machine_list shows the ids; formlabs-form-4 is the resin printer.` };
+    }
+    const ctx = this.partitionContext(null);
+    const aimed = target ?? ctx.plateTarget;
+    const name = this.givenName(input.name);
+    const coupon = fitCoupon({
+      process: aimed.process,
+      material: typeof raw.material === "string" ? raw.material : ctx.material,
+      featureMm: ctx.featureMm,
+      layerMm: ctx.layerMm,
+      ...(typeof raw.radius === "number" ? { radiusMm: raw.radius } : {}),
+      ...(typeof raw.depth === "number" ? { depthMm: raw.depth } : {}),
+      ...(raw.hole ? { hole: raw.hole as "round" | "teardrop" } : {}),
+      ...(typeof raw.startMm === "number" ? { startMm: raw.startMm } : {}),
+      ...(name ? { name } : {}),
+    });
+    if ("reason" in coupon) return { ok: false, reason: coupon.reason };
+    let reply: ReturnType<typeof readCouponReply>;
+    try {
+      reply = readCouponReply(JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify(fitCouponRequest(coupon))))) as Record<string, unknown>);
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    if (typeof reply === "string") return { ok: false, reason: plainModelError(reply, "create") };
+    const parts = [{ name: coupon.name, file: couponFileName(coupon), part: reply.plate }, ...(reply.pins ? [{ name: `${coupon.name} pins`, file: couponFileName(coupon, true), part: reply.pins }] : [])];
+    const summary = {
+      sentence: coupon.sentence,
+      process: coupon.process,
+      sizeMm: coupon.sizeMm,
+      holes: coupon.holes.map((hole) => ({ label: hole.label, clearanceMm: hole.clearanceMm, radiusMm: hole.radiusMm, teardrop: hole.teardrop })),
+      pins: coupon.pins.length,
+      engravedMm3: reply.engravedMm3,
+    };
+    if (aimed.process !== "fdm") {
+      const paths: string[] = [];
+      for (const one of parts) {
+        const path = resolveWrite(one.file, ".step");
+        writeFileSync(path, base64ToBytes(one.part.stepB64) ?? new Uint8Array());
+        paths.push(path);
+      }
+      return { ok: true, files: paths, ...summary, note: SUPPORT_NOTE };
+    }
+    const made: PlateObject[] = [];
+    for (const one of parts) {
+      const bytes = base64ToBytes(one.part.stepB64);
+      if (!bytes) return { ok: false, reason: "The engine did not write the coupon." };
+      const preview = await this.preview(one.file, bytes, STEP);
+      made.push(this.addObject({ name: one.name, fileName: one.file, bytes, source: preview.source, triangles: preview.triangles, orient: [...ID_MATRIX], scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, seatMm: preview.seatMm, stepTolerance: STEP }));
+    }
+    this.selected = made[0]!.id;
+    return { ok: true, objects: made.map((obj) => obj.id), names: made.map((obj) => shownName(obj.name)), ...summary };
   }
 
   /** --- D11. A target typed by its printer alone: the library's printer, or an export-only one such as the Form 4. */

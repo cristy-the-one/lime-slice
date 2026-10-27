@@ -303,6 +303,26 @@ check("with the sentence that names the matched axis", teloPlan.reason === "Cut 
 const teloLime = await call("model_probe", { object: teloBar, op: { kind: "partition" }, plan: true });
 check("the same bar for the plate's printer is cut as before", teloLime.pieces === 4 && !String(teloLime.reason).startsWith("Cut for"), JSON.stringify(teloLime));
 
+// --- Milestone 6: solid_new with a coupon refuses what the planner refuses, before the engine is asked.
+const asked = engine.calls.length;
+const noRow = await call("solid_new", { coupon: { material: "Nylon" } });
+check("a material with no row, and no startMm, is refused with the sentence", noRow.ok === false && noRow.reason === "No starting fit for this material. Give startMm, the clearance each side to centre the coupon on.", JSON.stringify(noRow));
+const both = await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10, coupon: {} });
+check("a coupon and a primitive together are refused", both.ok === false && String(both.reason).includes("not both"), JSON.stringify(both));
+const unknownPrinter = await call("solid_new", { coupon: { printer: "nope-3000" } });
+check("an unknown printer is refused and the ids are named", unknownPrinter.ok === false && String(unknownPrinter.reason).includes("formlabs-form-4"), JSON.stringify(unknownPrinter));
+let badHole = "";
+try {
+  await call("solid_new", { coupon: { hole: "square" } });
+} catch (err) {
+  badHole = err instanceof Error ? err.message : String(err);
+}
+check("a hole shape outside round and teardrop is refused by the schema", badHole === "coupon.hole must be one of round, teardrop.", JSON.stringify(badHole));
+const thin = await call("solid_new", { coupon: { radius: 1 } });
+check("a pin under the radius floor is refused with the floor", thin.ok === false && String(thin.reason).includes("floor"), JSON.stringify(thin));
+check("none of them reached the engine", engine.calls.length === asked, engine.calls.slice(asked).join(","));
+check("the ops guide tells the coupon call", ((await session.resource("lime://guide/ops")) as string | object).toString().length > 0 && JSON.stringify(await session.resource("lime://guide/ops")).includes("solid_new {coupon:{}}"));
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

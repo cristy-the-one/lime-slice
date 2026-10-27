@@ -2973,6 +2973,111 @@ void build_joints(
     }
 }
 
+bool build_fit_coupon(const FitCoupon& coupon, FitCouponResult& made, std::string& error) {
+    made = FitCouponResult();
+    if (!positive(coupon.size[0]) || !positive(coupon.size[1]) || !positive(coupon.size[2])) {
+        error = "The coupon's plate needs a positive size on each side";
+        return false;
+    }
+    if (coupon.holes.empty()) {
+        error = "The coupon needs at least one hole";
+        return false;
+    }
+    constexpr double kLead = 0.5;
+    BRepPrimAPI_MakeBox box(gp_Pnt(0, 0, 0), coupon.size[0], coupon.size[1], coupon.size[2]);
+    box.Build();
+    TopoDS_Shape plate = box.IsDone() ? whole_solid(box.Shape()) : TopoDS_Shape();
+    if (plate.IsNull()) {
+        error = "Open CASCADE did not build the coupon's plate";
+        return false;
+    }
+    const gp_Dir bore(0, 1, 0);
+    const gp_Dir roof(0, 0, 1);
+    for (size_t index = 0; index < coupon.holes.size(); ++index) {
+        const CouponHole& hole = coupon.holes[index];
+        const std::string name = "hole " + std::to_string(index + 1);
+        if (!positive(hole.radius) || !positive(hole.depth)) {
+            error = "The coupon's " + name + " needs a radius and a depth above 0";
+            return false;
+        }
+        const double reach = hole.teardrop ? hole.radius * std::sqrt(2.0) : hole.radius;
+        if (hole.x - hole.radius < 0 || hole.x + hole.radius > coupon.size[0] || hole.z - hole.radius < 0 ||
+            hole.z + reach > coupon.size[2] || hole.depth >= coupon.size[1]) {
+            error = "The coupon's " + name + " reaches outside the plate";
+            return false;
+        }
+        const TopoDS_Shape tool = hole_tool(
+            gp_Pnt(hole.x, -kLead, hole.z), bore, hole.radius, hole.depth + kLead, hole.teardrop ? &roof : nullptr);
+        const TopoDS_Shape bored = tool.IsNull() ? TopoDS_Shape() : joint_boolean(plate, tool, false);
+        if (bored.IsNull()) {
+            error = "Open CASCADE did not bore the coupon's " + name;
+            return false;
+        }
+        plate = bored;
+    }
+    const double bored_volume = volume_of(plate);
+    if (!coupon.strokes.empty() && positive(coupon.stroke_width) && positive(coupon.engrave_depth)) {
+        TopTools_ListOfShape tools;
+        for (const NumberStroke& stroke : coupon.strokes) {
+            BRepBuilderAPI_MakePolygon outline;
+            for (const gp_XY& corner : stroke_corners(stroke, coupon.stroke_width, false)) {
+                outline.Add(gp_Pnt(corner.X(), -kLead, corner.Y()));
+            }
+            outline.Close();
+            BRepBuilderAPI_MakeFace base(outline.Wire(), Standard_True);
+            if (!outline.IsDone() || !base.IsDone()) {
+                error = "Open CASCADE did not draw the coupon's labels";
+                return false;
+            }
+            BRepPrimAPI_MakePrism prism(base.Face(), gp_Vec(0, coupon.engrave_depth + kLead, 0));
+            if (!prism.IsDone()) {
+                error = "Open CASCADE did not draw the coupon's labels";
+                return false;
+            }
+            tools.Append(prism.Shape());
+        }
+        TopTools_ListOfShape arguments;
+        arguments.Append(plate);
+        BRepAlgoAPI_Cut cut;
+        cut.SetArguments(arguments);
+        cut.SetTools(tools);
+        cut.SetNonDestructive(Standard_True);
+        cut.SetToFillHistory(Standard_False);
+        g_stats.builds += 1;
+        Handle(Message_ProgressIndicator) watch;
+        cut.Build(deadline_range(watch));
+        const TopoDS_Shape engraved = cut.IsDone() && !cut.HasErrors() ? whole_solid(cut.Shape()) : TopoDS_Shape();
+        if (engraved.IsNull()) {
+            error = "Open CASCADE did not engrave the coupon's labels";
+            return false;
+        }
+        plate = engraved;
+    }
+    made.plate = plate;
+    made.plate_volume = volume_of(plate);
+    made.engraved = bored_volume - made.plate_volume;
+    BRep_Builder builder;
+    TopoDS_Compound all;
+    builder.MakeCompound(all);
+    int count = 0;
+    TopoDS_Shape single;
+    for (const CouponPin& pin : coupon.pins) {
+        const TopoDS_Shape one = make_pin(gp_Pnt(pin.x, pin.y, 0), gp_Dir(0, 0, 1), pin.radius, pin.length);
+        if (one.IsNull()) {
+            error = "Open CASCADE did not build the coupon's pin";
+            return false;
+        }
+        builder.Add(all, one);
+        single = one;
+        count += 1;
+    }
+    if (count > 0) {
+        made.pins = count == 1 ? single : TopoDS_Shape(all);
+        made.pins_volume = volume_of(made.pins);
+    }
+    return true;
+}
+
 TopoDS_Shape build_scale(const TopoDS_Shape& current, double factor, std::string& error) {
     if (!(factor > 0.0)) {
         error = "Scale needs a positive factor";

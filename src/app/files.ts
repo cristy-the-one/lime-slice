@@ -505,9 +505,12 @@ export function plateHasMesh(): boolean {
   return state.mesh != null && state.sourcePos != null && state.plate.objects.length > 0;
 }
 
-/** Read `bytes` the way Open does, then add that part. One undo step once the mesh is in hand. */
-export function addMeshBytes(name: string, bytes: ArrayBuffer): Promise<void> {
-  const run = meshAdds.then(() => addMeshNow(name, bytes));
+/**
+ * Read `bytes` the way Open does, then add that part. One undo step once the mesh is in hand. `quiet` leaves the selection
+ * where it was, so a tool open on the selected part (a card with cuts not yet applied) stays open.
+ */
+export function addMeshBytes(name: string, bytes: ArrayBuffer, quiet = false): Promise<void> {
+  const run = meshAdds.then(() => addMeshNow(name, bytes, quiet));
   meshAdds = run.then(() => undefined, () => undefined);
   return run;
 }
@@ -534,7 +537,7 @@ async function meshRead(name: string, bytes: ArrayBuffer, stepTolerance: number)
   return needsEngine(name) ? previewRemote(name, bytes, stepTolerance) : stlRead(bytes);
 }
 
-async function addMeshNow(name: string, bytes: ArrayBuffer) {
+async function addMeshNow(name: string, bytes: ArrayBuffer, quiet: boolean) {
   if (!plateHasMesh()) return;
   if (isLimeProject(name)) {
     pushToast("Open a project from the File menu.", "info");
@@ -556,18 +559,19 @@ async function addMeshNow(name: string, bytes: ArrayBuffer) {
   flushEdit();
   noteEdit();
   syncPlateFromState();
+  const kept = state.plate.selectedId;
   const next = addedMesh(state.plate, { name, fileName: name, bytes, sourcePos, stepTolerance }, state.profile.bedX, state.profile.bedY);
   if (!next) {
     flushEdit();
     return;
   }
   state.error = "";
-  state.plate = next;
+  state.plate = quiet && kept ? { ...next, selectedId: kept } : next;
   applySelectedToState(state.plate);
-  offerAssemblySplit(name, bytes, sourcePos, state.plate.selectedId);
+  offerAssemblySplit(name, bytes, sourcePos, quiet ? null : state.plate.selectedId);
   place();
   flushEdit();
-  fx.followSelection?.();
+  if (!quiet) fx.followSelection?.();
   await offerForeignRecipe(name, bytes);
 }
 

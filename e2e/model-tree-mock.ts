@@ -50,6 +50,8 @@ interface Handlers {
   exportMs?: number;
   /** The answer to a `stepSolids` call. Absent answers one unnamed solid. */
   stepSolids?(request: Body): Body;
+  /** The answer to a `fitCoupon` call: `{plate, pins, engravedMm3}`, each a STEP file in `stepB64`. Absent refuses. */
+  fitCoupon?(request: Body): Body;
 }
 
 interface MockNode {
@@ -323,6 +325,12 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     // The import's count of a STEP file's solids is no step of a tree: one solid, unless the spec says otherwise.
     if (request.call === "stepSolids") {
       await route.fulfill({ json: handlers.stepSolids?.(request) ?? { solids: [{ name: "", volumeMm3: 0 }] } });
+      return;
+    }
+    // Split to print's fit coupon is stateless too: the plate and the pin as STEP files.
+    if (request.call === "fitCoupon") {
+      calls.push(request);
+      await route.fulfill({ json: handlers.fitCoupon?.(request) ?? { error: "The mock builds no coupon." } });
       return;
     }
     calls.push(request);
