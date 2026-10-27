@@ -594,12 +594,11 @@ pub enum PrintProcess {
 }
 
 const PARTITION_PROFILE_LATER: &str =
-    "Only straight cuts, laps and tongues are built yet. Leave the profile out, or make it straight, a lap or a tongue.";
-const PARTITION_SHAPED_JOINTS: &str = "Connectors on a lap or a tongue are not built yet. Turn them off, or cut straight.";
+    "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.";
+const PARTITION_SHAPED_JOINTS: &str = "Connectors on a shaped cut are not built yet. Turn them off, or cut straight.";
 /// The numbers a cut's profile gives the kernel (`kProfileStride` in kernel.h): its kind, eight sizes, and the cut's U.
-const PROFILE_STRIDE: usize = 12;
+const PROFILE_STRIDE: usize = 14;
 
-const PARTITION_KEYS_LATER: &str = "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.";
 
 /// The planner's Max pieces (`clampPieces` in `src/modeling/partition.ts`): 12 when absent, from 2 to 24.
 fn partition_max(max_pieces: Option<f64>) -> usize {
@@ -610,8 +609,7 @@ fn partition_max(max_pieces: Option<f64>) -> usize {
     wanted.clamp(2.0, 24.0) as usize
 }
 
-/// Why this milestone does not build a partition, before anything is cut: a shaped profile, or a key or a dovetail
-/// connector. Each is a sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced
+/// Why this milestone does not build a partition, before anything is cut: a sketch profile, or connectors on a shaped cut. Each is a sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced
 /// (D12).
 fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
     let kind = |profile: &Value| {
@@ -623,7 +621,10 @@ fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
     };
     if !cuts
         .iter()
-        .all(|cut| matches!(kind(&cut.profile).as_str(), "straight" | "lap" | "tongue"))
+        .all(|cut| matches!(
+                kind(&cut.profile).as_str(),
+                "straight" | "lap" | "tongue" | "zigzag" | "dovetail"
+            ))
     {
         return Some(PARTITION_PROFILE_LATER);
     }
@@ -632,24 +633,6 @@ fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
         .any(|cut| kind(&cut.profile) != "straight" && connectors_on(cut))
     {
         return Some(PARTITION_SHAPED_JOINTS);
-    }
-    let later = |cut: &PartitionCut| {
-        connectors_on(cut)
-            && cut
-                .connectors
-                .get("types")
-                .and_then(Value::as_array)
-                .is_some_and(|types| {
-                    types.iter().any(|spec| {
-                        matches!(
-                            spec.get("type").and_then(Value::as_str),
-                            Some("key" | "dovetail")
-                        )
-                    })
-                })
-    };
-    if cuts.iter().any(later) {
-        return Some(PARTITION_KEYS_LATER);
     }
     None
 }
@@ -690,12 +673,36 @@ fn profile_numbers(cuts: &[PartitionCut]) -> Result<Vec<[f64; PROFILE_STRIDE]>, 
                     out[7] = number("u1")?;
                     out[8] = number("v")?;
                 }
+                "dovetail" => {
+                    out[0] = 4.0;
+                    out[1] = number("width")?;
+                    out[2] = number("depth")?;
+                    out[3] = number("clearance")?;
+                    out[4] = number("endGap")?;
+                    out[5] = side;
+                    out[6] = number("u0")?;
+                    out[7] = number("u1")?;
+                    out[8] = number("v")?;
+                    out[9] = number("angle")?;
+                    out[10] = if cut.profile.get("slide").and_then(Value::as_str) == Some("v") {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                }
+                "zigzag" => {
+                    out[0] = 3.0;
+                    out[1] = side * number("depth")?;
+                    out[2] = number("pitch")?;
+                    out[3] = number("angle")?;
+                    out[4] = number("u0")?;
+                }
                 _ => {}
             }
             let [ux, uy, uz] = cut.u.unwrap_or([0.0; 3]);
-            out[9] = ux;
-            out[10] = uy;
-            out[11] = uz;
+            out[11] = ux;
+            out[12] = uy;
+            out[13] = uz;
             Ok(out)
         })
         .collect()
@@ -710,7 +717,7 @@ fn connectors_on(cut: &PartitionCut) -> bool {
 // the ones that build (D6). ---
 
 /// The numbers `lime_tree_partition` reads for one connector (`kJointStride` in kernel.h).
-const JOINT_STRIDE: usize = 11;
+const JOINT_STRIDE: usize = 14;
 
 /// One placed connector of a stored op: the cut it is on, counting from 0, its id `c{cut}-{index}`, its type, and the
 /// numbers the kernel builds it from.
@@ -728,6 +735,8 @@ fn joint_kind(kind: &str) -> Option<(&'static str, &'static str, f64)> {
         "dowel" => Some(("dowel", "dowels", 0.0)),
         "plug" => Some(("plug", "plugs", 1.0)),
         "hardware" => Some(("hardware hole", "hardware holes", 2.0)),
+        "key" => Some(("key", "keys", 3.0)),
+        "dovetail" => Some(("dovetail", "dovetails", 4.0)),
         _ => None,
     }
 }
@@ -756,7 +765,7 @@ fn stored_joints(cuts: &[PartitionCut]) -> Result<Vec<Joint>, String> {
         for (order, row) in placed.iter().enumerate() {
             let kind = row.get("type").and_then(Value::as_str).unwrap_or("dowel");
             let Some((name, _, code)) = joint_kind(kind) else {
-                return Err(PARTITION_KEYS_LATER.into());
+                return Err(format!("Cut {}: a placed connector is a {kind}, which is not a connector type.", at + 1));
             };
             let Some(spec) = types
                 .iter()
@@ -789,10 +798,11 @@ fn stored_joints(cuts: &[PartitionCut]) -> Result<Vec<Joint>, String> {
                     return Err(format!("Connector {id} needs a fraction or uvMm."));
                 }
             };
-            let radius = if kind == "hardware" {
-                number(spec, "diameter").map(|diameter| diameter / 2.0)
-            } else {
-                number(spec, "radius")
+            // A key and a dovetail send their width as the radius slot, and a key its height as well.
+            let radius = match kind {
+                "hardware" => number(spec, "diameter").map(|diameter| diameter / 2.0),
+                "key" | "dovetail" => number(spec, "width"),
+                _ => number(spec, "radius"),
             };
             let (Some(radius), Some(depth)) = (radius, number(spec, "depth")) else {
                 return Err(format!("Connector {id} needs its size and its depth."));
@@ -824,6 +834,13 @@ fn stored_joints(cuts: &[PartitionCut]) -> Result<Vec<Joint>, String> {
                     end_gap,
                     f64::from(u8::from(teardrop)),
                     side,
+                    number(spec, "height").unwrap_or(0.0),
+                    number(spec, "angle").unwrap_or(0.0),
+                    if spec.get("slide").and_then(Value::as_str) == Some("v") {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 ],
             });
         }

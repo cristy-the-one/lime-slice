@@ -371,8 +371,6 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const resinRound = ((resinApplied.connectors as { placed?: { teardrop: boolean }[] } | undefined)?.placed ?? []).every((row) => row.teardrop === false);
   check("a resin hole stays round", resinRound, JSON.stringify(resinApplied.connectors));
   console.log(`occt: the bar for the Form 4, STEP products ${products.join(", ")}`);
-  const keyed = await call("model_probe", { object: resin, op: { ...resinOp, cuts: (resinOp.cuts as Record<string, unknown>[]).map((cut) => ({ ...cut, connectors: { on: true, types: [{ type: "key" }] } })) } });
-  check("a key is refused with its sentence", keyed.ok === false && keyed.reason === "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.", JSON.stringify(keyed));
 }
 
 // --- Split to print, milestone 6: the fit coupon through solid_new, against real Open CASCADE. The plate and its pin are
@@ -514,10 +512,35 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const groove = (6 + 0.3) * (3 + 0.4) * (22.1 + 0.3);
   check("a tongue's probe: one piece grows by the tongue, the other loses the grown groove", tongueProbe.ok === true && tv.length === 2 && near(tv[1]!, base / 2 + peg, 6e-3) && near(tv[0]!, base / 2 - groove, 6e-3), JSON.stringify({ tv, expected: [base / 2 - groove, base / 2 + peg], reason: tongueProbe.reason }));
   const refused = await call("model_probe", { object: tongueBar, op: { ...tongueOp, cuts: [{ ...(tongueOp.cuts[0] as Record<string, unknown>), connectors: { on: true, types: [{ type: "dowel" }] } }] } });
-  check("connectors on a shaped cut are refused with the sentence", refused.ok === false && refused.reason === "Connectors on a lap or a tongue are not built yet. Turn them off, or cut straight.", JSON.stringify(refused));
+  check("connectors on a shaped cut are refused with the sentence", refused.ok === false && refused.reason === "Connectors on a shaped cut are not built yet. Turn them off, or cut straight.", JSON.stringify(refused));
   const thin = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "tongue", width: 40, depth: 3 }) });
   check("a tongue wider than the section is refused with a sentence", thin.ok === false && String(thin.reason).includes("too small for a tongue"), JSON.stringify(thin));
   console.log(`occt: tongue pieces ${tv.map((v) => v.toFixed(3)).join(", ")} mm³`);
+
+  // --- Milestone 9: a zig-zag, a dovetail profile, and the key and dovetail connectors, on the same 500 × 30 × 20 mm bar.
+  const zig = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "zigzag", pitch: 10, depth: 3, angle: 0 }) });
+  const zv = ((zig.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  const teeth = 3 * 5 * 3 * 20;
+  check("a zig-zag's probe: three teeth of 5 × 3 × 20 mm go to one piece, and the volumes sum to the bar", zig.ok === true && zv.length === 2 && near(zv[0]!, base / 2 + teeth, 6e-3) && near(zv[1]!, base / 2 - teeth, 6e-3), JSON.stringify({ zv, reason: zig.reason }));
+  const lean = Math.tan((20 * Math.PI) / 180);
+  const root = 4 - 3 * lean;
+  const grow = 0.15 / Math.cos((20 * Math.PI) / 180);
+  const peg2 = 30 * ((2 * root + 8) / 2) * 3;
+  const groove2 = 30 * (2 * (root + grow) * 3.4 + lean * 3.4 * 3.4);
+  const dove = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "dovetail", width: 8, angle: 20, depth: 3 }) });
+  const dv = ((dove.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  check("a dovetail profile's probe: the neck and wide end by hand, and its groove grown by the clearance", dove.ok === true && near(dv[1]!, base / 2 + peg2, 6e-3) && near(dv[0]!, base / 2 - groove2, 6e-3), JSON.stringify({ dv, expected: [base / 2 - groove2, base / 2 + peg2], reason: dove.reason }));
+  const sketchRefused = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "sketch", sketch: { v: 1 } }) });
+  check("a sketch is still refused with the sentence", sketchRefused.ok === false && sketchRefused.reason === "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.", JSON.stringify(sketchRefused));
+  const keyOp = (type: string) => ({ kind: "partition", cuts: [{ origin: [0, 0, 10], normal: [1, 0, 0], connectors: { on: true, types: [{ type }] } }], labels: { on: false } });
+  const keyed = await call("model_probe", { object: tongueBar, op: keyOp("key") });
+  const placedKeys = ((keyed.connectors as { placed?: unknown[] } | undefined)?.placed ?? []).length;
+  const kv = ((keyed.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  check("a key connector: each placed key adds 6 × 6 × 3 mm to one piece and takes its grown groove from the other", keyed.ok === true && placedKeys >= 1 && near(kv[1]!, base / 2 + placedKeys * 108, 6e-3) && near(kv[0]!, base / 2 - placedKeys * 6.3 * 6.3 * 3.4, 6e-3), JSON.stringify({ kv, placedKeys, reason: keyed.reason }));
+  const doveJoint = await call("model_probe", { object: tongueBar, op: keyOp("dovetail") });
+  const placedDove = ((doveJoint.connectors as { placed?: unknown[] } | undefined)?.placed ?? []).length;
+  check("a dovetail connector is placed too, the same sentence for one left out", doveJoint.ok === true && placedDove >= 1, JSON.stringify({ placedDove, reason: doveJoint.reason }));
+  console.log(`occt: zig-zag ${zv.map((v) => v.toFixed(3)).join(", ")}, dovetail ${dv.map((v) => v.toFixed(3)).join(", ")}, ${placedKeys} keys ${kv.map((v) => v.toFixed(3)).join(", ")} mm³`);
 }
 
 // The convex filter on a box (12 convex edges) and on a stepped part with one concave edge.

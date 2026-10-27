@@ -174,10 +174,12 @@ export function jointPlanes(cuts: readonly { origin: Vec3; normal: Vec3; profile
   return cuts.flatMap((cut, at): JointPlane[] => {
     const own: JointPlane = { origin: cut.origin, normal: cut.normal, cut: at };
     const depth = cut.profile?.depth;
-    if ((cut.profile?.kind !== "lap" && cut.profile?.kind !== "tongue") || typeof depth !== "number") return [own];
+    const kind = cut.profile?.kind;
+    if (!["lap", "zigzag", "tongue", "dovetail"].includes(kind ?? "") || typeof depth !== "number") return [own];
     const n = unit(cut.normal);
     // A lap carries its second flat to the side it names; a tongue stands from the piece that carries it toward the mate.
-    const toward = cut.profile.kind === "lap" ? (cut.profile.side === "negative" ? -1 : 1) : cut.profile.side === "negative" ? 1 : -1;
+    const carried = kind === "lap" || kind === "zigzag";
+    const toward = carried ? (cut.profile?.side === "negative" ? -1 : 1) : cut.profile?.side === "negative" ? 1 : -1;
     const shift = toward * depth;
     return [own, { origin: [cut.origin[0] + n[0] * shift, cut.origin[1] + n[1] * shift, cut.origin[2] + n[2] * shift], normal: cut.normal, cut: at }];
   });

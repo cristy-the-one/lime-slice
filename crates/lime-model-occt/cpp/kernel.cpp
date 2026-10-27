@@ -2426,6 +2426,58 @@ bool build_partition(
             normals.push_back(normal);
             continue;
         }
+        if (at < profiles.size() && profiles[at].kind == 3) {
+            // A zig-zag: a square wave in (U, W), swept along V as a shell. Each period starts with the low flat, then the
+            // tooth, whose flanks lean inward by half of depth × tan(angle) each, so its tip is that much the narrower.
+            const PartitionProfile& wave = profiles[at];
+            gp_Vec across(wave.u[0], wave.u[1], wave.u[2]);
+            across -= gp_Vec(normal).Multiplied(across.Dot(gp_Vec(normal)));
+            if (!(across.Magnitude() > 1e-9) || !positive(wave.b) || !positive(wave.a)) {
+                error = "A zig-zag needs a pitch, a depth and the cut's U";
+                return false;
+            }
+            const gp_Dir u(across);
+            const gp_Dir v(gp_Vec(normal).Crossed(gp_Vec(u)));
+            const gp_Vec w(normal);
+            const double pitch = wave.b;
+            const double depth = wave.a;
+            const double lean = std::abs(depth) * std::tan(wave.c * std::acos(-1.0) / 180.0) / 2;
+            if (!(pitch / 2 - 2 * lean > 1e-6)) {
+                error = "This zig-zag's tooth has no tip. Widen the pitch or lower the angle";
+                return false;
+            }
+            const gp_Pnt start = origin.Translated(gp_Vec(v).Multiplied(-span));
+            auto at_uw = [&](double along, double up) { return start.Translated(gp_Vec(u).Multiplied(along) + w.Multiplied(up)); };
+            BRepBuilderAPI_MakePolygon line;
+            const double first = wave.d - pitch;
+            const int periods = static_cast<int>(std::ceil((2 * span + 2 * pitch) / pitch));
+            if (periods > 4000) {
+                error = "This zig-zag has too many teeth for the part. Widen the pitch";
+                return false;
+            }
+            line.Add(at_uw(first, 0));
+            for (int period = 0; period < periods; ++period) {
+                const double x = first + period * pitch;
+                line.Add(at_uw(x + pitch / 2, 0));
+                line.Add(at_uw(x + pitch / 2 + lean, depth));
+                line.Add(at_uw(x + pitch - lean, depth));
+                line.Add(at_uw(x + pitch, 0));
+            }
+            if (!line.IsDone()) {
+                error = "Open CASCADE did not build the zig-zag";
+                return false;
+            }
+            BRepPrimAPI_MakePrism sweep(line.Wire(), gp_Vec(v).Multiplied(2 * span));
+            sweep.Build();
+            if (!sweep.IsDone()) {
+                error = "Open CASCADE did not build the zig-zag";
+                return false;
+            }
+            tools.Append(sweep.Shape());
+            origins.push_back(origin.Translated(w.Multiplied(depth / 2)));
+            normals.push_back(normal);
+            continue;
+        }
         const gp_Vec toward(origin, center);
         const gp_Pnt face_center = center.Translated(gp_Vec(normal).Multiplied(-toward.Dot(gp_Vec(normal))));
         BRepBuilderAPI_MakeFace face(gp_Pln(face_center, normal), -span, span, -span, span);
@@ -2887,6 +2939,43 @@ TopoDS_Shape hole_tool(const gp_Pnt& from, const gp_Dir& axis, double radius, do
     return joined;
 }
 
+/// A key: a prism whose cross-section, square to `slide`, is a trapezoid standing from `centre` toward `toward`, `root_half`
+/// wide each side at the plane and widening by `slope` for each millimetre it goes, from `overlap` inside the piece that
+/// carries it to `reach` past the plane; `slide_half` long each way along `slide`. A tongue (slope 0), a key, and a dovetail
+/// (slope tan of its angle) are this one builder; the groove is the same grown.
+TopoDS_Shape key_prism(
+    const gp_Pnt& centre,
+    const gp_Dir& toward,
+    const gp_Dir& slide,
+    double slide_half,
+    double root_half,
+    double slope,
+    double reach,
+    double overlap) {
+    const gp_Dir cross(gp_Vec(toward).Crossed(gp_Vec(slide)));
+    auto at = [&](double along, double across, double depth) {
+        return centre.Translated(gp_Vec(slide).Multiplied(along) + gp_Vec(cross).Multiplied(across) + gp_Vec(toward).Multiplied(depth));
+    };
+    const double near_half = std::max(1e-6, root_half - slope * overlap);
+    const double far_half = std::max(1e-6, root_half + slope * reach);
+    BRepBuilderAPI_MakePolygon outline;
+    outline.Add(at(-slide_half, -near_half, -overlap));
+    outline.Add(at(-slide_half, near_half, -overlap));
+    outline.Add(at(-slide_half, far_half, reach));
+    outline.Add(at(-slide_half, -far_half, reach));
+    outline.Close();
+    if (!outline.IsDone()) {
+        return {};
+    }
+    BRepBuilderAPI_MakeFace face(outline.Wire(), Standard_True);
+    if (!face.IsDone()) {
+        return {};
+    }
+    BRepPrimAPI_MakePrism prism(face.Face(), gp_Vec(slide).Multiplied(2 * slide_half));
+    prism.Build();
+    return prism.IsDone() ? prism.Shape() : TopoDS_Shape();
+}
+
 /// The box of cut `plane`'s section in its own U, V from its origin: every face of the pieces on that plane that faces
 /// along its normal, the negative side's caps. False when no piece has one.
 bool section_box(
@@ -3044,6 +3133,46 @@ void build_joints(
         const double hole = joint.radius + joint.clearance;
         PartitionPiece& low = pieces[static_cast<size_t>(below)];
         PartitionPiece& high = pieces[static_cast<size_t>(above)];
+        if (joint.type == kJointKey || joint.type == kJointDovetail) {
+            // A key or a dovetail (plan section 8): a prism fused to the piece that carries it, its groove cut from the mate.
+            const bool dovetail = joint.type == kJointDovetail;
+            const gp_Dir slide = dovetail && joint.slide == 1 ? frame.v : frame.u;
+            const double lean = std::tan(joint.angle * std::acos(-1.0) / 180.0);
+            const double wide = joint.radius / 2;
+            const double slope = dovetail ? lean : 0.0;
+            const double root = dovetail ? wide - joint.depth * lean : joint.height / 2;
+            if (!(root > 1e-6)) {
+                continue;
+            }
+            // The groove grows by the clearance square to a flank, so by clearance / cos(angle) across the key.
+            const double grow = dovetail ? joint.clearance / std::cos(std::atan(lean)) : joint.clearance;
+            PartitionPiece& carrier = joint.side >= 0 ? high : low;
+            PartitionPiece& mate = joint.side >= 0 ? low : high;
+            const gp_Dir toward = joint.side >= 0 ? frame.w.Reversed() : frame.w;
+            constexpr double kOverlap = 0.001;
+            const TopoDS_Shape peg = key_prism(centre, toward, slide, wide, root, slope, joint.depth, kOverlap);
+            const TopoDS_Shape groove = key_prism(centre, toward, slide, wide + joint.clearance, root + grow, slope, joint.depth + joint.end_gap, kOverlap);
+            // What each takes is the prism past the plane: the part of it inside the carrier is not counted.
+            const TopoDS_Shape peg_out = key_prism(centre, toward, slide, wide, root, slope, joint.depth, 0.0);
+            const TopoDS_Shape groove_out = key_prism(centre, toward, slide, wide + joint.clearance, root + grow, slope, joint.depth + joint.end_gap, 0.0);
+            if (peg.IsNull() || groove.IsNull() || peg_out.IsNull() || groove_out.IsNull()) {
+                continue;
+            }
+            const TopoDS_Shape fused = joint_boolean(carrier.shape, peg, true);
+            const TopoDS_Shape cut = joint_boolean(mate.shape, groove, false);
+            if (fused.IsNull() || cut.IsNull() || !took(fused, carrier.shape, volume_of(peg_out), centre) ||
+                !took(mate.shape, cut, volume_of(groove_out), centre)) {
+                continue;
+            }
+            const double fused_volume = volume_of(fused);
+            const double cut_volume = volume_of(cut);
+            carrier.shape = fused;
+            carrier.volume = fused_volume;
+            mate.shape = cut;
+            mate.volume = cut_volume;
+            result.status = kJointPlaced;
+            continue;
+        }
         if (joint.type == kJointPlug) {
             PartitionPiece& carrier = joint.side >= 0 ? high : low;
             PartitionPiece& mate = joint.side >= 0 ? low : high;
@@ -3159,47 +3288,50 @@ bool build_tongues(
     std::string& error) {
     constexpr double kOverlap = 0.001;
     for (size_t index = 0; index < profiles.size() && index < planes.size(); ++index) {
-        const PartitionProfile& tongue = profiles[index];
-        if (tongue.kind != 2) {
+        const PartitionProfile& key = profiles[index];
+        if (key.kind != 2 && key.kind != 4) {
             continue;
         }
-        const std::string name = "The tongue of cut " + std::to_string(index + 1);
+        const bool dovetail = key.kind == 4;
+        const std::string name = std::string(dovetail ? "The dovetail" : "The tongue") + " of cut " + std::to_string(index + 1);
         const std::array<double, 6>& plane = planes[index];
         const gp_Pnt origin(plane[0], plane[1], plane[2]);
         const gp_Dir normal(plane[3], plane[4], plane[5]);
-        gp_Vec across(tongue.u[0], tongue.u[1], tongue.u[2]);
+        gp_Vec across(key.u[0], key.u[1], key.u[2]);
         across -= gp_Vec(normal).Multiplied(across.Dot(gp_Vec(normal)));
-        if (!(across.Magnitude() > 1e-9) || !positive(tongue.a) || !positive(tongue.b) || !(tongue.g - tongue.f > kTinyMm)) {
+        if (!(across.Magnitude() > 1e-9) || !positive(key.a) || !positive(key.b) || !(key.g - key.f > kTinyMm)) {
             error = name + " needs a width, a depth, a length and the cut's U";
             return false;
         }
         const gp_Dir u(across);
         const gp_Dir v(gp_Vec(normal).Crossed(gp_Vec(u)));
+        // A tongue runs along U; a dovetail slides along U or V, and its cross-section lies across the other.
+        const bool along_v = dovetail && key.slide == 1;
+        const gp_Dir slide = along_v ? v : u;
+        const gp_Dir square = along_v ? u : v;
+        const double lean = dovetail ? std::tan(key.angle * std::acos(-1.0) / 180.0) : 0.0;
+        const double wide = key.a / 2;
+        const double root = wide - key.b * lean;
+        if (!(root > 1e-6)) {
+            error = name + " has no neck at this depth and angle. Lower the angle or widen it.";
+            return false;
+        }
+        const gp_Pnt middle = origin.Translated(gp_Vec(slide).Multiplied((key.f + key.g) / 2) + gp_Vec(square).Multiplied(key.h));
         const gp_Vec w(normal);
-        const gp_Pnt middle =
-            origin.Translated(gp_Vec(u).Multiplied((tongue.f + tongue.g) / 2) + gp_Vec(v).Multiplied(tongue.h));
         const int below = piece_at(pieces, middle.Translated(w.Multiplied(-0.05)));
         const int above = piece_at(pieces, middle.Translated(w.Multiplied(0.05)));
         if (below < 0 || above < 0 || below == above) {
             error = name + " is outside the section, so it was not built";
             return false;
         }
-        const bool positive_side = tongue.e >= 0.0;
+        const bool positive_side = key.e >= 0.0;
         const int carries = positive_side ? above : below;
         const int takes = positive_side ? below : above;
-        // The tongue stands from the carrying piece's face across the plane; the groove is that grown on every side.
-        auto prism = [&](double grow, double reach) -> TopoDS_Shape {
-            // Along W from `kOverlap` inside the carrying piece to `reach` past the plane, toward the mate.
-            const double w0 = positive_side ? -reach : -kOverlap;
-            const double w1 = positive_side ? kOverlap : reach;
-            const gp_Pnt corner = origin.Translated(
-                gp_Vec(u).Multiplied(tongue.f - grow) + gp_Vec(v).Multiplied(tongue.h - tongue.a / 2 - grow) + w.Multiplied(w0));
-            BRepPrimAPI_MakeBox box(gp_Ax2(corner, normal, u), tongue.g - tongue.f + 2 * grow, tongue.a + 2 * grow, w1 - w0);
-            box.Build();
-            return box.IsDone() ? box.Shape() : TopoDS_Shape();
-        };
-        const TopoDS_Shape peg = prism(0.0, tongue.b);
-        const TopoDS_Shape groove = prism(tongue.c, tongue.b + tongue.d);
+        const gp_Dir toward = positive_side ? gp_Dir(w.Reversed()) : gp_Dir(w);
+        const double half = (key.g - key.f) / 2;
+        const double grow = dovetail ? key.c / std::cos(std::atan(lean)) : key.c;
+        const TopoDS_Shape peg = key_prism(middle, toward, slide, half, root, lean, key.b, kOverlap);
+        const TopoDS_Shape groove = key_prism(middle, toward, slide, half + key.c, root + grow, lean, key.b + key.d, kOverlap);
         if (peg.IsNull() || groove.IsNull()) {
             error = name + " did not build";
             return false;
