@@ -2343,6 +2343,119 @@ bool every_edge_shared_by_two(const TopoDS_Shape& shape) {
     return !uses.empty() && std::all_of(uses.begin(), uses.end(), [](int count) { return count == 2; });
 }
 
+namespace {
+
+/// A sketched cut (plan section 6), in its own (U, W) from the plane's origin: the chain as a polyline with its ends carried
+/// along U past the part, and the region on the chain's −W side, which the pieces with the plane's negative sign fill.
+struct ChainSide {
+    bool on = false;
+    gp_Pnt origin;
+    gp_Dir u;
+    gp_Dir w;
+    std::vector<gp_XY> trace;
+    std::vector<gp_XY> region;
+};
+
+/// The arc from `a` through `m` to `b` as `steps` + 1 points, `a` first. Empty when the three points lie on one line.
+std::vector<gp_XY> arc_points(const gp_XY& a, const gp_XY& m, const gp_XY& b, int steps) {
+    const double d = 2 * (a.X() * (m.Y() - b.Y()) + m.X() * (b.Y() - a.Y()) + b.X() * (a.Y() - m.Y()));
+    if (std::abs(d) < 1e-12) {
+        return {};
+    }
+    const double a2 = a.SquareModulus();
+    const double m2 = m.SquareModulus();
+    const double b2 = b.SquareModulus();
+    const gp_XY centre((a2 * (m.Y() - b.Y()) + m2 * (b.Y() - a.Y()) + b2 * (a.Y() - m.Y())) / d,
+                       (a2 * (b.X() - m.X()) + m2 * (a.X() - b.X()) + b2 * (m.X() - a.X())) / d);
+    const double two_pi = 2 * std::acos(-1.0);
+    auto angle = [&](const gp_XY& p) { return std::atan2(p.Y() - centre.Y(), p.X() - centre.X()); };
+    auto ccw = [&](double from, double to) {
+        double sweep = std::fmod(to - from, two_pi);
+        return sweep < 0 ? sweep + two_pi : sweep;
+    };
+    const double start = angle(a);
+    // Counter-clockwise from `a`, the arc passes `m` before `b`, or it runs the other way.
+    double sweep = ccw(start, angle(b));
+    if (ccw(start, angle(m)) > sweep) {
+        sweep -= two_pi;
+    }
+    const double radius = (a - centre).Modulus();
+    std::vector<gp_XY> out;
+    for (int step = 0; step <= steps; ++step) {
+        const double t = start + sweep * step / steps;
+        out.emplace_back(centre.X() + radius * std::cos(t), centre.Y() + radius * std::sin(t));
+    }
+    out.front() = a;
+    out.back() = b;
+    return out;
+}
+
+double cross_xy(const gp_XY& a, const gp_XY& b) { return a.X() * b.Y() - a.Y() * b.X(); }
+
+/// Whether segments `a`–`b` and `c`–`d` cross or touch.
+bool segments_meet(const gp_XY& a, const gp_XY& b, const gp_XY& c, const gp_XY& d) {
+    constexpr double kEps = 1e-9;
+    const double d1 = cross_xy(b - a, c - a);
+    const double d2 = cross_xy(b - a, d - a);
+    const double d3 = cross_xy(d - c, a - c);
+    const double d4 = cross_xy(d - c, b - c);
+    if (((d1 > kEps && d2 < -kEps) || (d1 < -kEps && d2 > kEps)) && ((d3 > kEps && d4 < -kEps) || (d3 < -kEps && d4 > kEps))) {
+        return true;
+    }
+    auto on = [&](const gp_XY& p, const gp_XY& q, const gp_XY& r, double side) {
+        return std::abs(side) <= kEps && r.X() >= std::min(p.X(), q.X()) - kEps && r.X() <= std::max(p.X(), q.X()) + kEps &&
+               r.Y() >= std::min(p.Y(), q.Y()) - kEps && r.Y() <= std::max(p.Y(), q.Y()) + kEps;
+    };
+    return on(a, b, c, d1) || on(a, b, d, d2) || on(c, d, a, d3) || on(c, d, b, d4);
+}
+
+bool inside_xy(const gp_XY& p, const std::vector<gp_XY>& ring) {
+    bool inside = false;
+    for (size_t i = 0, j = ring.size() - 1; i < ring.size(); j = i++) {
+        const gp_XY& a = ring[i];
+        const gp_XY& b = ring[j];
+        if ((a.Y() > p.Y()) != (b.Y() > p.Y()) && p.X() < (b.X() - a.X()) * (p.Y() - a.Y()) / (b.Y() - a.Y()) + a.X()) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+double distance_to_trace(const gp_XY& p, const std::vector<gp_XY>& trace) {
+    double best = std::numeric_limits<double>::max();
+    for (size_t i = 1; i < trace.size(); ++i) {
+        const gp_XY along = trace[i] - trace[i - 1];
+        const double length2 = along.SquareModulus();
+        const double t = length2 > 0 ? std::clamp((p - trace[i - 1]).Dot(along) / length2, 0.0, 1.0) : 0.0;
+        best = std::min(best, (p - (trace[i - 1] + along * t)).Modulus());
+    }
+    return best;
+}
+
+/// The sign of the side of a sketched cut `piece` is on: 0 on the chain's −W side, else 1. Read from the piece's vertices
+/// that are off the chain, since a piece that wraps a tooth can have its centre of mass on the other side.
+int chain_sign(const ChainSide& side, const TopoDS_Shape& piece, const gp_Pnt& centre) {
+    auto uw = [&](const gp_Pnt& p) {
+        const gp_Vec d(side.origin, p);
+        return gp_XY(d.Dot(gp_Vec(side.u)), d.Dot(gp_Vec(side.w)));
+    };
+    int below = 0;
+    int above = 0;
+    for (TopExp_Explorer vertex(piece, TopAbs_VERTEX); vertex.More(); vertex.Next()) {
+        const gp_XY at = uw(BRep_Tool::Pnt(TopoDS::Vertex(vertex.Current())));
+        if (distance_to_trace(at, side.trace) < 1e-3) {
+            continue;
+        }
+        (inside_xy(at, side.region) ? below : above) += 1;
+    }
+    if (below + above == 0) {
+        return inside_xy(uw(centre), side.region) ? 0 : 1;
+    }
+    return below >= above ? 0 : 1;
+}
+
+}  // namespace
+
 bool build_partition(
     const TopoDS_Shape& current,
     const std::vector<std::array<double, 6>>& planes,
@@ -2377,6 +2490,7 @@ bool build_partition(
                         1.0;
     std::vector<gp_Pnt> origins;
     std::vector<gp_Dir> normals;
+    std::vector<ChainSide> sides(planes.size());
     TopTools_ListOfShape tools;
     for (const std::array<double, 6>& plane : planes) {
         const double length = std::sqrt(plane[3] * plane[3] + plane[4] * plane[4] + plane[5] * plane[5]);
@@ -2423,6 +2537,116 @@ bool build_partition(
             }
             tools.Append(sweep.Shape());
             origins.push_back(origin.Translated(w.Multiplied(shaped->a / 2)));
+            normals.push_back(normal);
+            continue;
+        }
+        if (at < profiles.size() && profiles[at].kind == kProfileSketch) {
+            // A sketch: the open chain of lines and arcs drawn in (U, W), its ends carried along U to the part's box, swept
+            // along V as a shell. Each piece's side is read against the chain itself, not a plane.
+            const PartitionProfile& drawn = profiles[at];
+            gp_Vec across(drawn.u[0], drawn.u[1], drawn.u[2]);
+            across -= gp_Vec(normal).Multiplied(across.Dot(gp_Vec(normal)));
+            const size_t segments = drawn.chain.size() / kChainStride;
+            if (!(across.Magnitude() > 1e-9) || segments == 0 || drawn.chain.size() % kChainStride != 0) {
+                error = "A sketch profile needs a chain of lines and arcs and the cut's U";
+                return false;
+            }
+            const gp_Dir u(across);
+            const gp_Dir v(gp_Vec(normal).Crossed(gp_Vec(u)));
+            const gp_Vec w(normal);
+            const gp_Pnt start = origin.Translated(gp_Vec(v).Multiplied(-span));
+            auto at_uw = [&](const gp_XY& p) { return start.Translated(gp_Vec(u).Multiplied(p.X()) + w.Multiplied(p.Y())); };
+            std::vector<gp_XY> corners{gp_XY(drawn.c, drawn.d)};
+            for (size_t index = 0; index < segments; ++index) {
+                corners.emplace_back(drawn.chain[kChainStride * index + 3], drawn.chain[kChainStride * index + 4]);
+            }
+            const gp_XY first = corners.front();
+            const gp_XY last = corners.back();
+            // The ends go on along U, away from the chain, to the box: a chain drawn past the section's sides cuts it all.
+            const double outward = last.X() >= first.X() ? 1.0 : -1.0;
+            const gp_XY lead(-outward * span, first.Y());
+            const gp_XY tail(outward * span, last.Y());
+            const bool leads = (first.X() - lead.X()) * outward > kTinyMm;
+            const bool tails = (tail.X() - last.X()) * outward > kTinyMm;
+            BRepBuilderAPI_MakeWire wire;
+            std::vector<gp_XY> trace;
+            auto line = [&](const gp_XY& from, const gp_XY& to) {
+                if ((to - from).Modulus() <= kTinyMm) {
+                    return true;
+                }
+                BRepBuilderAPI_MakeEdge edge(at_uw(from), at_uw(to));
+                if (!edge.IsDone()) {
+                    return false;
+                }
+                wire.Add(edge.Edge());
+                trace.push_back(to);
+                return wire.IsDone();
+            };
+            bool built = true;
+            if (leads) {
+                trace.push_back(lead);
+                built = line(lead, first);
+            } else {
+                trace.push_back(first);
+            }
+            for (size_t index = 0; built && index < segments; ++index) {
+                const double* row = drawn.chain.data() + kChainStride * index;
+                const gp_XY from = corners[index];
+                const gp_XY to = corners[index + 1];
+                if (row[0] == 0.0) {
+                    built = line(from, to);
+                    continue;
+                }
+                const gp_XY through(row[1], row[2]);
+                const std::vector<gp_XY> sampled = arc_points(from, through, to, 48);
+                if (sampled.empty()) {
+                    built = line(from, to);
+                    continue;
+                }
+                Handle(Geom_TrimmedCurve) arc = GC_MakeArcOfCircle(at_uw(from), at_uw(through), at_uw(to));
+                BRepBuilderAPI_MakeEdge edge(arc);
+                if (arc.IsNull() || !edge.IsDone()) {
+                    built = false;
+                    break;
+                }
+                wire.Add(edge.Edge());
+                built = wire.IsDone();
+                trace.insert(trace.end(), sampled.begin() + 1, sampled.end());
+            }
+            if (built && tails) {
+                built = line(last, tail);
+            }
+            if (!built) {
+                error = "Open CASCADE did not build the sketch profile";
+                return false;
+            }
+            // Segments that meet anywhere but at their shared corner cross: the profile would not part the solid in two.
+            for (size_t i = 1; i < trace.size(); ++i) {
+                for (size_t j = i + 2; j < trace.size(); ++j) {
+                    if (segments_meet(trace[i - 1], trace[i], trace[j - 1], trace[j])) {
+                        error = "The profile crosses itself.";
+                        return false;
+                    }
+                }
+            }
+            BRepPrimAPI_MakePrism sweep(wire.Wire(), gp_Vec(v).Multiplied(2 * span));
+            sweep.Build();
+            if (!sweep.IsDone()) {
+                error = "Open CASCADE did not build the sketch profile";
+                return false;
+            }
+            tools.Append(sweep.Shape());
+            ChainSide& side = sides[at];
+            side.on = true;
+            side.origin = origin;
+            side.u = u;
+            side.w = gp_Dir(w);
+            side.trace = trace;
+            side.region = trace;
+            const double floor = -4 * span;
+            side.region.emplace_back(trace.back().X(), floor);
+            side.region.emplace_back(trace.front().X(), floor);
+            origins.push_back(origin);
             normals.push_back(normal);
             continue;
         }
@@ -2524,6 +2748,10 @@ bool build_partition(
         integrate(explorer.Current(), props);
         Part part{explorer.Current(), {}, gp_Vec(origins[0], props.CentreOfMass()).Dot(gp_Vec(normals[0]))};
         for (size_t index = 0; index < planes.size(); ++index) {
+            if (sides[index].on) {
+                part.signs.push_back(chain_sign(sides[index], explorer.Current(), props.CentreOfMass()));
+                continue;
+            }
             part.signs.push_back(gp_Vec(origins[index], props.CentreOfMass()).Dot(gp_Vec(normals[index])) < 0.0 ? 0 : 1);
         }
         parts.push_back(part);
@@ -2558,7 +2786,9 @@ bool build_partition(
     }
     if (pieces.size() < 2) {
         pieces.clear();
-        error = "The planes did not split this solid";
+        const bool sketched = std::any_of(sides.begin(), sides.end(), [](const ChainSide& side) { return side.on; });
+        error = sketched ? "The sketch profile does not cross the part. Draw it from one side of the section to the other."
+                         : "The planes did not split this solid";
         return false;
     }
     if (pieces.size() > kMaxPartitionPieces) {

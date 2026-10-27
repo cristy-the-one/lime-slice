@@ -2,7 +2,7 @@
  * --- Split to print, milestone 7: the rotation that puts a piece's joint face on the bed, for an axis cut, a tilted cut,
  * and a piece between two cuts; and the choices an op stores.
  */
-import { choiceAt, jointDown, jointFaces, jointPlanes, storedOrient, type Mat3 } from "./joint-down.ts";
+import { choiceAt, jointDown, jointFaces, jointPlanes, noJointSentence, storedOrient, type Mat3 } from "./joint-down.ts";
 import type { Vec3 } from "./partition.ts";
 
 let failed = 0;
@@ -145,6 +145,16 @@ check("and one on the first flat finds that one: the face on the bed is the one 
 check("keep is every piece's when the op says keep", choiceAt("keep", 0) === "keep" && choiceAt(undefined, 3) === "keep");
 check("a list is each piece's, and a piece past it keeps", choiceAt(["keep", "joint"], 1) === "joint" && choiceAt(["keep", "joint"], 0) === "keep" && choiceAt(["keep", "joint"], 2) === "keep");
 check("no joint piece stores keep, any joint piece stores the list", storedOrient(["keep", "keep"]) === "keep" && show(storedOrient(["keep", "joint", "keep"])) === show(["keep", "joint", "keep"]));
+
+// --- Milestone 10: a sketched cut's flat is its chain's longest straight segment, swept along V. A cut across X at 60 with U
+// along Y: the step's riser (U = −5, W from 0 to 40) is the longest, so its plane is y = 15 − 5 = 10, square to Y.
+const sketched = { origin: [60, 15, 10] as Vec3, normal: [1, 0, 0] as Vec3, u: [0, 1, 0] as Vec3, profile: { kind: "sketch", start: [-20, 0] as [number, number], chain: [{ kind: "line", to: [-5, 0] }, { kind: "line", to: [-5, 40] }, { kind: "line", to: [20, 40] }] } };
+const riser = jointPlanes([sketched]);
+check("a sketched cut gives one plane, its longest straight segment's", riser.length === 1 && riser[0]!.cut === 0 && near(Math.abs(riser[0]!.normal[1]), 1) && near(riser[0]!.normal[0], 0) && near(riser[0]!.origin[1], 10), show(riser));
+const flatless = { ...sketched, profile: { kind: "sketch", start: [-20, 0] as [number, number], chain: [{ kind: "arc", through: [0, 20], to: [20, 0] }] } };
+check("a chain of arcs alone has no flat", jointPlanes([flatless]).length === 0);
+check("and the piece says so when it is set to joint", noJointSentence(2, [flatless]) === "Part 2 has no flat joint face: cut 1 is a sketch with no straight segment, so the part keeps its orientation.", noJointSentence(2, [flatless]));
+check("any other piece with no cut face keeps the old sentence", noJointSentence(2, [sketched]) === "Part 2 has no cut face, so it keeps its orientation.");
 
 if (failed > 0) {
   console.error(`${failed} failed`);

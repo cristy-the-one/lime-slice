@@ -230,6 +230,30 @@ export function openSketchLoft(preset: LoftPreset | SweepPreset) {
   openLoftImpl(preset);
 }
 
+/**
+ * --- Split to print, milestone 10. A cut's profile drawn in the sketcher, on the cut's U and W. `refs` are reference
+ * polylines in model space (the part cut across the profile plane, and the cut's trace), which snap as solid edges do.
+ * `check` is the sentence under the card while the chain is drawn, "" when it is a profile. `done` takes the sketch when
+ * the user uses it, Finishes it or presses Esc out of it, and null when the user cancels or the sketch is closed under it.
+ */
+export interface ProfileSketchRequest {
+  sketch: SketchData;
+  refs: { points: ArrayLike<number> }[];
+  check(sketch: SketchData): string;
+  done(sketch: SketchData | null): void;
+}
+let openProfileImpl: (request: ProfileSketchRequest) => void = () => {};
+export function openProfileSketch(request: ProfileSketchRequest) {
+  openProfileImpl(request);
+}
+
+/** The steps the profile sketch's How shows. */
+export const PROFILE_SKETCH_STEPS: readonly string[] = [
+  "Draw one open chain of lines and arcs across the part, from past one side of the section to past the other. The faint outline is the part cut across the profile.",
+  "Dimension it with Constrain. A size can be an expression that names a parameter.",
+  "Use profile sends the chain to the cut; Apply on the Split to print card cuts along it.",
+];
+
 /** Leave the sketch without applying. A history jump uses this so the editor does not stay up. */
 export function closeSketchSession() {
   closeFeatureImpl();
@@ -413,6 +437,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   /** The outlines a History Edit's feature was applied to: Extrude or Revolve again in the edit picks those regions. */
   let editOutlines: ProfileLoop[] = [];
   let applying = false;
+  /** --- Milestone 10. A split to print's profile is being drawn: the card waits for the sketch it hands back. */
+  let profile: ProfileSketchRequest | null = null;
+  const profileNotes = new WeakMap<SketchData, string>();
   // The Hole panel holds the sketch while its own Apply runs. Two owners, so each has its own flag.
   let holding = false;
   /** The cards a History Edit opened: its sketch, and a loft's other sections. They go when the edit ends. */
@@ -753,6 +780,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       publish("open");
       return;
     }
+    if (target.dataset.sketchProfileUse != null) {
+      endProfile(activeSketch(editor));
+      return;
+    }
+    if (target.dataset.sketchProfileCancel != null) {
+      endProfile(null);
+      return;
+    }
     if (target.dataset.sketchFinish != null) {
       endExtrude();
       endRevolve();
@@ -1060,10 +1095,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   function ensureRefs(frame: SketchFrame) {
     const on = activeSketch(editor)?.on;
     const face = on?.kind === "face" ? on.face.index : null;
-    const key = `${editor.active}:${face ?? "x"}:${frame.origin.map((value) => value.toFixed(2)).join()}`;
+    const key = `${editor.active}:${face ?? "x"}:${frame.origin.map((value) => value.toFixed(2)).join()}${profile ? ":profile" : ""}`;
     if (key === refsKey) return;
     refsKey = key;
-    editor = withRefs(editor, projectReferences(frame, host.edges(), host.outline(face)));
+    // A profile is drawn against the part cut across its plane, not the solid's edges.
+    editor = withRefs(editor, profile ? projectReferences(frame, profile.refs, null) : projectReferences(frame, host.edges(), host.outline(face)));
   }
 
   function draw() {
@@ -1199,6 +1235,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.sketchLook = editor.lookAround ? "1" : "0";
     host.canvas.dataset.sketchKinds = sketch?.entities.map((entity) => entity.kind).join(",") ?? "";
     host.canvas.dataset.sketchConstruction = String(sketch?.entities.filter((entity) => entity.construction).length ?? 0);
+    // Where the plane's origin and 10 mm along its X and Y fall on screen, for a script that draws by the plane's numbers.
+    const drawn = editor.phase === "editing" ? drawingFrame() : null;
+    const marks = drawn ? ([[0, 0], [10, 0], [0, 10]] as [number, number][]).map((at) => host.view.projectPoint(toWorld(drawn, at))) : [];
+    if (marks.length === 3 && marks.every((mark) => mark)) host.canvas.dataset.sketchFrame = marks.map((mark) => `${mark!.x.toFixed(1)},${mark!.y.toFixed(1)}`).join(" ");
+    else delete host.canvas.dataset.sketchFrame;
+    host.canvas.dataset.sketchProfile = profile ? "1" : "";
     const status = sketch && editor.phase === "editing" ? placedStatus(sketch) : null;
     host.canvas.dataset.sketchDims = String(sketch && editor.phase === "editing" ? dimensionLabels(sketch).length : 0);
     const exprs = sketch && editor.phase === "editing" ? (sketch.dims ?? []).map((dim) => dim.expr).filter((expr): expr is string => !!expr).join("\n") : "";
@@ -1279,6 +1321,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     parts.push(pinned.map((item) => `${item.id}=${item.name}`).join("/"));
     if (editor.phase === "editing") {
       parts.push(activeSketch(editor)?.on?.kind ?? "");
+      if (profile) parts.push(`profile:${profileNote()}`);
       if (gesture || revolve || loft || sweep) {
         const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
         const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
@@ -1298,7 +1341,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       releaseCardDock = null;
     }
     const pinned = editor.pinned.filter((item) => item.id !== editor.active && item.name !== "Sketch");
-    if (!(gesture || revolve || loft || sweep)) howFeature = null;
+    if (!(gesture || revolve || loft || sweep || profile)) howFeature = null;
     const key = cardsState(pinned);
     if (key === cardsKey) {
       takeCardFocus();
@@ -1522,9 +1565,31 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return [
       sketchSection("Draw", "draw", drawTools()),
       sketchSection("Edit", "edit", editTools()),
-      feature ? featureStrip() : sketchSection("Make", "make", makeTools()),
+      profile ? profileStrip() : feature ? featureStrip() : sketchSection("Make", "make", makeTools()),
       sketchFooter(),
     ];
+  }
+
+  /** In place of Make while a split's profile is drawn: its name, what the chain still needs, and How. */
+  function profileStrip(): HTMLElement {
+    const strip = document.createElement("section");
+    strip.className = "sketch-section sketch-feature sketch-profile";
+    strip.dataset.sketchSection = "profile";
+    const head = document.createElement("div");
+    head.className = "sketch-feature-row";
+    const name = document.createElement("p");
+    name.className = "sketch-feature-name";
+    name.textContent = "Sketch profile";
+    head.append(name, howControl("profile"));
+    const note = document.createElement("p");
+    note.className = "sketch-profile-note model-note";
+    note.id = "sketchProfileNote";
+    note.setAttribute("role", "status");
+    const sentence = profileNote();
+    note.textContent = sentence;
+    note.hidden = sentence === "";
+    strip.append(head, note);
+    return strip;
   }
 
   function sketchSection(title: string, kind: string, children: Node[]): HTMLElement {
@@ -1653,7 +1718,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   /** Numbered steps beside the feature strip. Open the first three times, then a ? button. */
-  function howControl(kind: "extrude" | "revolve" | "loft" | "sweep"): HTMLElement {
+  function howControl(kind: "extrude" | "revolve" | "loft" | "sweep" | "profile"): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "sketch-how";
     const button = document.createElement("button");
@@ -1667,7 +1732,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     pop.setAttribute("role", "dialog");
     pop.setAttribute("aria-label", "How");
     const list = document.createElement("ol");
-    for (const step of hintSteps(kind)) {
+    for (const step of kind === "profile" ? PROFILE_SKETCH_STEPS : hintSteps(kind)) {
       const item = document.createElement("li");
       item.textContent = step;
       list.append(item);
@@ -1754,6 +1819,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     foot.dataset.sketchSection = "foot";
     const look = textButton(editor.lookAround ? "Lock view" : "Look around", { sketchLook: editor.lookAround ? "1" : "0" });
     look.dataset.tip = tipWithShortcut(editor.lookAround ? "Lock the view for drawing" : "Look around the sketch", keyOf("sketch-look"));
+    if (profile) {
+      const use = textButton("Use profile", { sketchProfileUse: "" });
+      use.classList.add("primary");
+      use.dataset.tip = "Cut along this chain";
+      foot.append(look, textButton("Cancel", { sketchProfileCancel: "" }), use);
+      return foot;
+    }
     const finish = textButton("Finish sketch", { sketchFinish: "" });
     if (!(gesture || revolve || loft || sweep)) finish.classList.add("primary");
     foot.append(look, finish);
@@ -2152,6 +2224,21 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     refsKey = "";
     publish("open");
   };
+  openProfileImpl = (request) => {
+    dropProfile();
+    gesture = null;
+    revolve = null;
+    loft = null;
+    sweep = null;
+    editor = endEditSession(editor);
+    if (editor.phase === "editing") editor = finishSketch(editor);
+    profile = request;
+    editor = enterSketchData(editor, request.sketch);
+    if (request.sketch.entities.length === 0) editor = withTool(editor, "line");
+    aimKey = "";
+    refsKey = "";
+    publish("open");
+  };
   // Model closes the sketch: a history jump, holes from it applied, or Model left. What Model says then stays.
   closeFeatureImpl = () => {
     keepReadout = true;
@@ -2162,7 +2249,38 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       saidLast = false;
     }
   };
+  /** The profile sketch closes under the card (Model left, a history jump): it is dropped, and the card hears null. */
+  function dropProfile() {
+    const request = profile;
+    if (!request) return;
+    profile = null;
+    if (editor.phase === "editing" && editor.active != null) editor = discardSketch(editor, editor.active);
+    request.done(null);
+  }
+
+  /** The profile is used (`sketch`) or cancelled (null): the sketch leaves without a card, and the split's card takes over. */
+  function endProfile(sketch: SketchData | null) {
+    const request = profile;
+    if (!request) return;
+    profile = null;
+    leaveEditing(editor.active != null ? discardSketch(editor, editor.active) : finishSketch(editor));
+    request.done(sketch);
+  }
+
+  /** The sentence under the profile sketch's card: why the chain is not a profile yet, or "" when it is. */
+  function profileNote(): string {
+    const sketch = activeSketch(editor);
+    if (!profile || !sketch) return "";
+    let note = profileNotes.get(sketch);
+    if (note === undefined) {
+      note = profile.check(sketch);
+      profileNotes.set(sketch, note);
+    }
+    return note;
+  }
+
   function closeQuietly() {
+    dropProfile();
     if (host.sketchHolesArmed()) host.endSketchHoles();
     if (editor.phase !== "editing" && editor.phase !== "choosing") {
       gesture = null;
@@ -2192,7 +2310,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   const bar = document.querySelector<HTMLElement>("#modelBar");
   if (bar) {
     new MutationObserver(() => {
-      if (!bar.dataset.tool || !sketchBusy(editor) || host.sketchHolesArmed() || (applying || holding)) return;
+      // A profile sketch belongs to the split's card, which closes it when another tool takes the dock.
+      if (!bar.dataset.tool || !sketchBusy(editor) || host.sketchHolesArmed() || (applying || holding) || profile) return;
       if (editor.phase === "choosing") {
         editor = finishSketch(editor);
         publish("open");
@@ -2206,6 +2325,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     holding = on && sketchBusy(editor);
   };
   forgetImpl = () => {
+    dropProfile();
     if (editor.phase === "off" && editor.pinned.length === 0 && !editSession) return;
     if (host.sketchHolesArmed()) host.endSketchHoles();
     gesture = null;
@@ -2260,6 +2380,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return true;
     }
     if (id === "sketch-escape") return onSketchEscape(ev);
+    // A profile sketch makes no feature of its own: the split's card cuts along it.
+    if (profile && (id === "sketch-loft" || id === "sketch-sweep" || id === "sketch-holes" || id === "sketch-extrude" || id === "sketch-revolve")) return true;
     if (id === "sketch-loft" || id === "sketch-sweep" || id === "sketch-holes" || id === "sketch-extrude" || id === "sketch-revolve") return startSketchFeature(id);
     if (id === "sketch-mode") return cycleSketchMode();
     if (id === "sketch-smooth") return toggleSketchSmooth();
@@ -2456,6 +2578,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function leaveEditing(after: SketchEditor) {
+    // Finish, or Esc out of the profile sketch, uses the chain as it stands.
+    if (profile && editor.phase === "editing" && after.phase !== "editing") {
+      endProfile(activeSketch(editor));
+      return;
+    }
     let next = after;
     const left = editor.phase === "editing" && next.phase !== "editing";
     const session = editSession;

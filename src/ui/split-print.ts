@@ -8,13 +8,16 @@ import type { DragHandle } from "../model-drag";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { Params } from "../modeling/expr.ts";
 import { formatMm, type FacePlane, type SplitBase, type SplitPlan } from "../model-plane";
-import { CLEARANCE_TABLE, FIT_NAMES, FIT_ROWS, SHAPED_JOINTS_LATER, clearanceKey, clearanceSentence, fillConnector, fitResultsRefusal, holeCompensationNote, mm, profileRefusals, type Box, type Clearance, type ClearanceKey, type ConnectorSpec, type FitResults, type MeasuredFits, type PartitionDefaults, type PartitionOp, type Target } from "../modeling/partition.ts";
+import { CLEARANCE_TABLE, FIT_NAMES, FIT_ROWS, SHAPED_JOINTS_LATER, clearanceKey, clearanceSentence, fillConnector, fitResultsRefusal, holeCompensationNote, mm, profileRefusals, type Box, type Clearance, type ClearanceKey, type ConnectorSpec, type FitResults, type MeasuredFits, type PartitionDefaults, type PartitionOp, type Target, defaultU, type SketchProfile } from "../modeling/partition.ts";
 import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
 import { couponGaps, couponLabel } from "../modeling/fit-coupon.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
-import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, withProfileField, withProfileKind, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointsOn, withJointType, withSelected, type Card, type CardCut, type CardFrame, type CardJointType, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print";
+import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, withProfileField, withProfileKind, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointsOn, withJointType, withProfileSketch, withSelected, squareTo, type Card, type CardCut, type CardFrame, type CardJointType, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement, type ProfileKind } from "../split-print";
 import { closeModelCard, fieldNumber, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
+import { chainFromSketch, chainSummary, readChain, sketchFromChain, type Chain } from "../modeling/sketch-profile.ts";
+import { emptySketch, type SketchData } from "../sketch/model.ts";
+import { planeOf } from "../sketch/frame.ts";
 import { pushToast } from "./toasts";
 
 const CARD_ID = "split-print";
@@ -42,6 +45,8 @@ export interface SplitPrintHost {
   check(op: PartitionOp | null, wait: number): void;
   /** The planner's connectors for `op` on the open solid's sections: its sentences, the counts that do not fit, the ghost. */
   connectors(op: PartitionOp): Placement | null;
+  /** Why the planner would not store `op` on the open solid, as the card says it ("" when it would). */
+  refusal(op: PartitionOp): string;
   /** The defaults and floors `target`'s process gives (null: the plate's printer), for the connector fields. */
   defaults(target: Target | null): PartitionDefaults | null;
   /** The slice setting XY hole compensation, in millimetres; its note shows while it is not 0. */
@@ -59,6 +64,14 @@ export interface SplitPrintHost {
   enterFits(key: ClearanceKey, results: FitResults): void;
   /** Put a row's starting values back. */
   resetFits(key: ClearanceKey): void;
+  /**
+   * --- Milestone 10. Open the sketcher on cut `plane`'s profile plane (X along `u`, Y along the normal) to draw `sketch`,
+   * with the part cut across that plane as reference. `check` says why a chain cannot be cut yet, as the card would ("" when
+   * it can); `done` takes the sketch, or null when it was cancelled or closed under the card.
+   */
+  profileSketch(plane: { origin: Vec3; normal: Vec3 }, u: Vec3, sketch: SketchData, check: (chain: Chain) => string, done: (sketch: SketchData | null) => void): void;
+  /** Close the profile sketch, if it is open, as the card closes. */
+  endProfileSketch(): void;
   /** The card closed without Apply: an edit goes back to the step shown before it. */
   cancelled(): void;
   parameters(): Params;
@@ -109,6 +122,8 @@ let moving = false;
 /** A drag under way: the cut it moves, and the card before it, which Esc in the heads-up field puts back. */
 let dragging: { index: number; before: Card } | null = null;
 let hud: HudMount | null = null;
+/** The cut whose profile is being drawn in the sketcher, or null: the card steps aside until it is used or cancelled. */
+let sketching: number | null = null;
 const HOW_KEY = "lime-slice-how-split-print";
 /** How far past a cut's origin, along its arrow on screen, the heads-up field sits: beyond the arrow's head. */
 const HUD_REACH_PX = 110;
@@ -168,8 +183,9 @@ export function mountSplitPrint(next: SplitPrintHost) {
     </section>
     <section class="sp-profile" id="modelPartProfile" aria-label="Profile">
       <label class="sp-print"><span class="scrub-label">Profile</span><select id="modelPartProfileKind" aria-label="Cut profile">
-        <option value="straight">Straight</option><option value="lap">Lap</option><option value="zigzag">Zig-zag</option><option value="tongue">Tongue</option><option value="dovetail">Dovetail</option>
+        <option value="straight">Straight</option><option value="lap">Lap</option><option value="zigzag">Zig-zag</option><option value="tongue">Tongue</option><option value="dovetail">Dovetail</option><option value="sketch">Sketch</option>
       </select></label>
+      <div class="sp-sketch" id="modelPartProfileSketchRow" hidden><span id="modelPartProfileSketchText"></span><button class="btn" id="modelPartProfileSketch" type="button" data-tip="Draw the cut's profile in the sketcher">Edit sketch</button></div>
       <div class="model-fields" id="modelPartProfileFields" hidden>
         <label data-profile-for="zigzag"><span class="scrub-label" data-scrub>Pitch</span><input id="modelPartProfilePitch" type="number" step="0.5" min="0" aria-label="Zig-zag pitch, along U, millimetres"></label>
         <label data-profile-for="tongue dovetail"><span class="scrub-label" data-scrub>Width</span><input id="modelPartProfileWidth" type="number" step="0.5" min="0" aria-label="Tongue width, along V, millimetres"></label>
@@ -258,7 +274,7 @@ export function mountSplitPrint(next: SplitPrintHost) {
 
 const FIT_WORDS: Record<Clearance, string> = { snug: "Snug", loose: "Loose", press: "Press" };
 
-/** Enter coupon results…: pick the row, then for each fit the label of the step that fitted (plan section 27). */
+/** Enter coupon results…: pick the row, then for each fit the label of the step that fitted (plan section 28). */
 function resultsMarkup(): string {
   const rows = FIT_ROWS.map((row) => `<option value="${row.key}">${row.name}</option>`).join("");
   const fits = FIT_NAMES.map(
@@ -409,6 +425,13 @@ export function openSplitPrintEdit(op: PartitionModelOp, pose: Affine, head: str
   const filled = cardFromOp(op, pose, middle(solid), host.frame(), host.plate());
   edit = { opened: structuredClone(filled), head };
   begin(solid, filled, []);
+  // A sketched cut's pencil reopens its chain in the sketcher first, then this card (plan section 6).
+  const drawn = card.cuts.findIndex((cut) => cut.profile.kind === "sketch");
+  if (drawn >= 0) {
+    card = withSelected(card, drawn);
+    changed(null);
+    openSketch(drawn);
+  }
 }
 
 function begin(solid: Box, filled: Card, fitNotes: string[]) {
@@ -500,6 +523,8 @@ export function closeSplitPrint() {
 }
 
 function closed() {
+  if (sketching !== null) host?.endProfileSketch();
+  setSketching(null);
   moving = false;
   dragging = null;
   hud?.close();
@@ -716,21 +741,27 @@ function paintProfile() {
   const cut = card.cuts[card.selected];
   if (section) section.hidden = !cut;
   if (!cut) return;
-  const kind = ["lap", "zigzag", "tongue", "dovetail"].includes(cut.profile.kind) ? (cut.profile.kind as "lap" | "zigzag" | "tongue" | "dovetail") : "straight";
+  const kind = ["lap", "zigzag", "tongue", "dovetail", "sketch"].includes(cut.profile.kind) ? (cut.profile.kind as "lap" | "zigzag" | "tongue" | "dovetail" | "sketch") : "straight";
   const put = (id: string, value: string) => {
     const input = $<HTMLInputElement | HTMLSelectElement>(id);
     if (input && document.activeElement !== input && !(input as HTMLInputElement).dataset?.expr) input.value = value;
   };
   put("#modelPartProfileKind", kind);
   const fields = $<HTMLElement>("#modelPartProfileFields");
-  if (fields) fields.hidden = kind === "straight";
+  if (fields) fields.hidden = kind === "straight" || kind === "sketch";
   const side = $<HTMLElement>("#modelPartProfileSideRow");
-  if (side) side.hidden = kind === "straight";
+  if (side) side.hidden = kind === "straight" || kind === "sketch";
   const slideRow = $<HTMLElement>("#modelPartProfileSlideRow");
   if (slideRow) slideRow.hidden = kind !== "dovetail";
+  const sketchRow = $<HTMLElement>("#modelPartProfileSketchRow");
+  if (sketchRow) sketchRow.hidden = kind !== "sketch";
   const note = $<HTMLElement>("#modelPartProfileNote");
   if (kind === "straight") {
     if (note) note.hidden = true;
+    return;
+  }
+  if (kind === "sketch") {
+    paintSketchRow(cut.profile as SketchProfile, cut.joints.on, note);
     return;
   }
   root()?.querySelectorAll<HTMLElement>("#modelPartProfileFields [data-profile-for]").forEach((row) => {
@@ -757,6 +788,73 @@ function paintProfile() {
     note.textContent = [...sentences, ...joints].join(" ");
     note.hidden = sentences.length + joints.length === 0;
   }
+}
+
+/** A sketched cut's row: what its chain is, and why it cannot be cut yet when the sketch is not one open chain. */
+function paintSketchRow(profile: SketchProfile, jointsOn: boolean, note: HTMLElement | null) {
+  const chain = readChain(profile);
+  const drawn = "reason" in chain ? null : chain;
+  const text = $<HTMLElement>("#modelPartProfileSketchText");
+  if (text) text.textContent = drawn ? `Sketch · ${chainSummary(drawn)}` : "Sketch · not drawn yet";
+  const button = $<HTMLButtonElement>("#modelPartProfileSketch");
+  if (button) button.textContent = drawn ? "Edit sketch" : "Draw sketch";
+  const sketch = profile.sketch as SketchData | undefined;
+  const sentences = [...(drawn ? [] : [sketch && sketch.entities.length > 0 ? ((chainFromSketch(sketch) as { reason?: string }).reason ?? "") : (chain as { reason: string }).reason]), ...(jointsOn ? [SHAPED_JOINTS_LATER] : [])].filter((line) => line !== "");
+  if (note) {
+    note.textContent = sentences.join(" ");
+    note.hidden = sentences.length === 0;
+  }
+}
+
+/** The card steps aside while cut `index`'s profile is drawn, and comes back when it is used or cancelled. */
+function setSketching(index: number | null) {
+  sketching = index;
+  const dock = document.querySelector<HTMLElement>("#modelDock");
+  if (dock) dock.toggleAttribute("data-profile-sketch", index !== null);
+}
+
+/**
+ * Open cut `index`'s profile in the sketcher, on its plane with X along its U and Y along its normal: the sketch it was drawn
+ * as, a sketch of the chain a client typed, or an empty one. The cut's U is fixed then, since the chain is drawn on it.
+ */
+function openSketch(index: number) {
+  const cut = card.cuts[index];
+  const plane = cardPlanes(card, center, frame)[index];
+  if (!host || !box || !cut || !plane) return;
+  const length = Math.hypot(...plane.normal) || 1;
+  const w: Vec3 = [plane.normal[0] / length, plane.normal[1] / length, plane.normal[2] / length];
+  const u = squareTo(cut.u, w) ?? squareTo(defaultU(w, box), w) ?? squareTo([1, 0, 0], w) ?? [0, 1, 0];
+  const across: Vec3 = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+  const onPlane = planeOf({ origin: [...plane.origin], u, v: w, w: across });
+  const profile = (cut.profile.kind === "sketch" ? cut.profile : { kind: "sketch" }) as SketchProfile;
+  const typed = readChain(profile);
+  const stored = profile.sketch as SketchData | undefined;
+  const sketch: SketchData = stored ? { ...structuredClone(stored), plane: onPlane } : !("reason" in typed) ? sketchFromChain(typed, onPlane) : emptySketch(onPlane);
+  if (card.selected !== index) card = withSelected(card, index);
+  dragging = null;
+  hud?.close();
+  setSketching(index);
+  paintFoot();
+  refreshModelCard();
+  host.profileSketch(
+    plane,
+    u,
+    sketch,
+    (chain) => {
+      const typedOp = cardOp(withProfileSketch(card, index, chain, sketch, u), center, frame, host?.numberSizes(card.target) ?? { height: 4, depth: 0.4 });
+      return typedOp ? host?.refusal(typedOp) ?? "" : "";
+    },
+    (drawn) => {
+      setSketching(null);
+      if (!splitPrintOpen()) return;
+      if (drawn) {
+        const chain = chainFromSketch(drawn);
+        card = "reason" in chain ? withCutChanged(card, index, { profile: { kind: "sketch", sketch: drawn }, u }) : withProfileSketch(card, index, chain, drawn, u);
+      }
+      changed(0);
+      host?.readout(card.cuts[index]?.profile.kind === "sketch" && (card.cuts[index]!.profile as SketchProfile).chain ? "The cut follows the sketch. Apply cuts the part." : "Draw the profile: an open chain of lines and arcs across the part.");
+    },
+  );
 }
 
 /** The selected cut's Connectors: the switch, and with it on every field filled from the planner's defaults. */
@@ -929,7 +1027,7 @@ function paintFoot() {
   const button = document.querySelector<HTMLButtonElement>("#modelApply");
   if (!button || !splitPrintOpen()) return;
   const ready = card.cuts.length > 0 && !!op() && check?.phase === "done" && check.ok;
-  button.disabled = waiting || !ready || splitPrintUntouched() || !!done;
+  button.disabled = waiting || !ready || splitPrintUntouched() || !!done || sketching !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -956,7 +1054,7 @@ function axisColor(dir: Vec3): DragHandle["color"] {
  * selected cut's two tilt rings on the dock. Ctrl snaps the number to whole millimetres and a tilt to 15°.
  */
 function handles(): DragHandle[] {
-  if (!host || done) return [];
+  if (!host || done || sketching !== null) return [];
   const out: DragHandle[] = [];
   card.cuts.forEach((cut, index) => {
     const base = cutBase(cut, center, frame);
@@ -1122,6 +1220,10 @@ function onClick(ev: Event) {
   }
   if (target.closest("#modelPartResultsClose")) {
     closeResults();
+    return;
+  }
+  if (target.closest("#modelPartProfileSketch") && card.cuts[card.selected]) {
+    openSketch(card.selected);
     return;
   }
   if (target.closest("#modelPartCoupon") && card.cuts[card.selected]) {
@@ -1309,8 +1411,10 @@ function onChange(ev: Event) {
     return;
   }
   if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartProfileKind") {
-    card = withProfileKind(card, card.selected, ev.target.value as "straight" | "lap" | "zigzag" | "tongue" | "dovetail");
+    card = withProfileKind(card, card.selected, ev.target.value as ProfileKind);
     changed(0);
+    // Choosing Sketch opens the sketcher on the cut at once (milestone 10).
+    if (ev.target.value === "sketch") openSketch(card.selected);
     return;
   }
   if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartProfileSlide") {

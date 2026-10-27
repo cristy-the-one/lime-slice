@@ -147,7 +147,8 @@ import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, ne
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
 import { mountEdgeDrag } from "./edge-drag";
-import { closeSketchSession, forgetSketches, holdSketchForApply, mountSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchTakesPick, sketchUndo } from "./sketch";
+import { closeSketchSession, forgetSketches, holdSketchForApply, mountSketch, openProfileSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchTakesPick, sketchUndo } from "./sketch";
+import { chainFromSketch } from "../modeling/sketch-profile.ts";
 import { holeMarks, holeSizeRefusal, holesInModel, isSketchHoleGroup, pointsFromSource, sketchHoleSource, type HoleSizes, type HoleTarget } from "../sketch/holes.ts";
 import { sketchJson, type SketchData } from "../sketch/model.ts";
 import { featureOutlines, opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
@@ -172,11 +173,11 @@ import { beltLayerNormal, boxMap } from "../sim/study.ts";
 import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, setMeasuredFits, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
-import { bedFrame, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
+import { bedFrame, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
 import { clampPieces, defaultsFor, enterMeasured, fillConnector, mm as mmText, resetMeasured, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { couponFileName, couponInputFor, fitCoupon, fitCouponRequest, readCouponReply } from "../modeling/fit-coupon.ts";
-import { choiceAt, jointDown, jointPlanes } from "../modeling/joint-down.ts";
+import { choiceAt, jointDown, jointPlanes, noJointSentence } from "../modeling/joint-down.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
@@ -632,6 +633,22 @@ export function bindModelView() {
       const stored = splitStored(typed);
       return stored && !("reason" in stored) ? { notes: stored.notes, fits: stored.fits, marks: stored.marks, dropped: stored.dropped } : null;
     },
+    refusal(typed) {
+      const stored = splitStored(typed);
+      return stored && "reason" in stored ? stored.reason : "";
+    },
+    profileSketch(plane, u, sketch, check, done) {
+      openProfileSketch({
+        sketch,
+        refs: profileRefs(plane, u),
+        check(drawn) {
+          const chain = chainFromSketch(drawn);
+          return ("reason" in chain ? chain.reason : check(chain)).replace(/^Cut \d+: /, "");
+        },
+        done,
+      });
+    },
+    endProfileSketch: () => closeSketchSession(),
     defaults(target) {
       const solid = viewed();
       if (!solid) return null;
@@ -5863,6 +5880,25 @@ export function exportSplitNote(objectId: string): string | null {
   return split ? `Split for the ${targetName(split.op)} in Model, ${split.parts} parts. The plate prints it whole.` : null;
 }
 
+/**
+ * --- Milestone 10. What a sketched cut's profile is drawn against, in model space: the part cut across the profile plane
+ * through the middle of the section, each loop closed, and the cut's own trace across the section.
+ */
+function profileRefs(plane: { origin: Vec3; normal: Vec3 }, u: Vec3): { points: number[] }[] {
+  const solid = viewed();
+  if (!solid) return [];
+  const own = (toSolidOp({ kind: "partition", cuts: [{ origin: plane.origin, normal: plane.normal, u }] }, openPose()) as PartitionModelOp).cuts[0]!;
+  const cut = { origin: own.origin, normal: own.normal, u: own.u! };
+  const span = sectionSpan(solid.positions, cut);
+  if (!span) return [];
+  const length = Math.hypot(...plane.normal) || 1;
+  const w: Vec3 = [plane.normal[0] / length, plane.normal[1] / length, plane.normal[2] / length];
+  const at = (p: readonly number[]) => [0, 1, 2].map((k) => plane.origin[k]! + u[k]! * p[0]! + w[k]! * p[1]!);
+  const slice = profileSlice(solid.positions, cut, span);
+  const loops = slice ? [slice.outer, ...(slice.holes ?? [])].map((ring) => ({ points: [...ring, ring[0]!].flatMap(at) })) : [];
+  return [...loops, { points: [...at([span.u0, 0]), ...at([span.u1, 0])] }];
+}
+
 /** The op the tree stores for the card's cuts, in the solid's own frame, or why it cannot be cut. */
 function splitStored(typed: PartitionOp): ({ op: PartitionModelOp } & Placement) | { reason: string } | null {
   const solid = viewed();
@@ -6223,7 +6259,7 @@ function orientPieces(partId: string, first: Float32Array, keys: readonly (strin
     let orient: Mat3 = own;
     if (wanted === "joint") {
       const joint = jointDown(row.positions, planes, belt);
-      if (!joint) out.notes.push(`Part ${row.index! + 1} has no cut face, so it keeps its orientation.`);
+      if (!joint) out.notes.push(noJointSentence(row.index! + 1, op.cuts));
       else {
         orient = joint.orient;
         keptOrients.set(obj.id, own);

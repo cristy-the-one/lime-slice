@@ -3,6 +3,7 @@
  * Pure TypeScript: it proposes cuts, checks sizes, and places connectors. The kernel builds the solids.
  */
 import { textStrokes } from "./text.ts";
+import { chainPoints, crossesItself, CROSSES_ITSELF, readChain, type ChainSegment } from "./sketch-profile.ts";
 
 export type Vec3 = [number, number, number];
 export type UV = [number, number];
@@ -80,7 +81,18 @@ export type Profile =
   | { kind: "zigzag"; pitch?: number; depth?: number; angle?: number; side?: Side }
   | { kind: "tongue"; width?: number; depth?: number; side?: Side }
   | { kind: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide; side?: Side }
-  | { kind: "sketch"; sketch: { v: number } };
+  | SketchProfile;
+
+/**
+ * --- Milestone 10. A sketched profile: the open chain in the cut's U and W from its origin, which the kernel sweeps along
+ * V (`src/modeling/sketch-profile.ts`), and the sketch it was drawn as, kept for the pencil and dropped before the engine.
+ */
+export interface SketchProfile {
+  kind: "sketch";
+  start?: UV;
+  chain?: ChainSegment[];
+  sketch?: { v: number };
+}
 
 /** `height: null` is half the section along V, known once the section is. */
 export type ResolvedProfile =
@@ -89,7 +101,7 @@ export type ResolvedProfile =
   | { kind: "zigzag"; pitch: number; depth: number; angle: number; side: Side }
   | { kind: "tongue"; width: number; depth: number; side: Side }
   | { kind: "dovetail"; width: number; angle: number; depth: number; slide: Slide; side: Side }
-  | { kind: "sketch"; sketch: { v: number } };
+  | SketchProfile;
 
 export interface Cut {
   origin: Vec3;
@@ -176,7 +188,7 @@ const startingRow = (snug: number, loose: number, press: number): ClearanceRow =
   startingFit: true,
 });
 
-/** Each number is the middle of the published ranges for a 0.4 mm nozzle (resin: the Form 4); the sources are in plan section 27. */
+/** Each number is the middle of the published ranges for a 0.4 mm nozzle (resin: the Form 4); the sources are in plan section 28. */
 export const CLEARANCE_TABLE: Readonly<Record<ClearanceKey, ClearanceRow>> = {
   pla: startingRow(0.15, 0.25, 0.05),
   petg: startingRow(0.2, 0.3, 0.1),
@@ -831,15 +843,16 @@ function resinHeightNotes(span: Vec3, counts: number[], usable: number[], axes: 
 // What the kernel builds yet (milestone 5). The same sentences as `partition_refusal` in tree.rs.
 // ---------------------------------------------------------------------------
 
-export const PROFILE_LATER = "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.";
+/** A profile of no kind the kernel builds: the same sentence as `PARTITION_PROFILE_KIND` in tree.rs. */
+export const PROFILE_KIND = "A cut's profile is straight, lap, tongue, zigzag, dovetail or sketch.";
 /** Connectors on a shaped cut wait: they would sit on the flats of the joint, not on one plane. */
 export const SHAPED_JOINTS_LATER = "Connectors on a shaped cut are not built yet. Turn them off, or cut straight.";
 
 /**
- * Why the kernel does not cut this op yet, before anything is built: a sketch profile, or connectors on a shaped cut.
+ * Why the kernel does not cut this op, before anything is built: a profile of no known kind, or connectors on a shaped cut.
  */
 export function notBuiltYet(op: Pick<PartitionOp, "cuts">): string | null {
-  if (op.cuts.some((cut) => cut.profile && !["straight", "lap", "tongue", "zigzag", "dovetail"].includes(cut.profile.kind))) return PROFILE_LATER;
+  if (op.cuts.some((cut) => cut.profile && !["straight", "lap", "tongue", "zigzag", "dovetail", "sketch"].includes(cut.profile.kind))) return PROFILE_KIND;
   if (op.cuts.some((cut) => cut.profile && cut.profile.kind !== "straight" && cut.connectors?.on === true)) return SHAPED_JOINTS_LATER;
   return null;
 }
@@ -955,8 +968,14 @@ export function profileRefusals(profile: Profile, d: PartitionDefaults, vSpanMm?
   const floors = d.floors;
   switch (p.kind) {
     case "straight":
-    case "sketch":
       break;
+    case "sketch": {
+      // The chain on its own; its span across the section and its walls are checked where the section is known.
+      const chain = readChain(p);
+      if ("reason" in chain) found.push(chain.reason);
+      else if (crossesItself(chainPoints(chain))) found.push(CROSSES_ITSELF);
+      break;
+    }
     case "lap": {
       if (vSpanMm !== undefined && vSpanMm < 2 * floors.lapShoulderMm - 1e-9) return [LAP_TOO_THIN_SENTENCE];
       found.push(underFloor("Lap depth", p.depth, floors.lapDepthMm));
