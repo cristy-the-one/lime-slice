@@ -79,6 +79,7 @@ export const FEATURE_CHOICE_DEFAULTS: FeatureChoices = {
 export const FEATURE_FIELD_DEFAULTS: Record<string, number> = {
   modelFeatW: 10,
   modelFeatH: 10,
+  modelFeatR: 0,
   modelFeatDia: 10,
   modelFeatDepth: 2,
   modelFeatU: 0,
@@ -159,6 +160,8 @@ export function readFeatureSpec(tool: FeatureTool, read: (id: string) => number,
     else {
       spec.width = read("modelFeatW");
       spec.height = read("modelFeatH");
+      const corner = read("modelFeatR");
+      if (choices.shape === "rect" && corner > 0) spec.cornerRadius = corner;
     }
     if (tool === "pocket") {
       const vertical = Math.round(read("modelFeatBarsV"));
@@ -235,7 +238,8 @@ export function featureLabel(spec: Record<string, unknown>): string {
     const bars = spec.bars as { vertical?: unknown; horizontal?: unknown } | undefined;
     const count = Math.round(numOf(bars?.vertical, 0)) + Math.round(numOf(bars?.horizontal, 0));
     const arch = shape === "arch" ? " arch" : "";
-    return count > 0 ? `${name}${arch} ${size}, ${count} bar${count === 1 ? "" : "s"}` : `${name}${arch} ${size}`;
+    const corner = shape === "rect" && numOf(spec.cornerRadius, 0) > 0 ? ` r ${mm(spec.cornerRadius)}` : "";
+    return count > 0 ? `${name}${arch} ${size}${corner}, ${count} bar${count === 1 ? "" : "s"}` : `${name}${arch} ${size}${corner}`;
   }
   if (kind === "texture") {
     const pattern = spec.pattern === "grid" || spec.pattern === "brick" || spec.pattern === "shingle" ? spec.pattern : "lines";
@@ -262,7 +266,7 @@ export function groupFromPieces(label: string, source: Record<string, unknown>, 
     kind: "group",
     label,
     source,
-    steps: pieces.map((piece) => ({ kind: "boolean", op: piece.op, ...piece.spec })),
+    steps: pieces.map((piece) => ({ kind: "boolean", op: piece.op, ...piece.spec, ...(piece.merge ? { merge: true as const } : {}) })),
   };
 }
 
@@ -302,6 +306,7 @@ export function featurePanel(source: Record<string, unknown>): { tool: FeatureTo
   if (tool === "pocket" || tool === "boss") {
     put("modelFeatW", source.width, 10);
     put("modelFeatH", source.height, 10);
+    put("modelFeatR", source.cornerRadius, 0);
     put("modelFeatDia", source.diameter, 10);
     put("modelFeatDepth", source.depth, 2);
     put("modelFeatU", at.u, 0);

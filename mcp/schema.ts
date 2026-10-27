@@ -118,6 +118,7 @@ const pocketOp = (kind: "pocket" | "boss") => ({
     at: { ...uv, description: "Centre on the face." },
     width: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "U size." },
     height: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "V size." },
+    cornerRadius: { type: "number", minimum: 0, maximum: 500, description: "Rect corners, mm. 0 is sharp." },
     diameter: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Circle." },
     depth: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: kind === "pocket" ? "Into the face." : "Out of the face." },
     ...(kind === "pocket"
@@ -276,7 +277,10 @@ const op = {
       properties: {
         kind: { const: "chamfer" },
         edges: edgeList,
-        size: { type: "number", exclusiveMinimum: 0, maximum: 100 },
+        size: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Along both faces; with size2 or angleDeg, along the upper face." },
+        size2: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Along the other face." },
+        angleDeg: { type: "number", exclusiveMinimum: 0, exclusiveMaximum: 90, description: "From the upper face." },
+        flip: { type: "boolean", description: "size along the lower face." },
         label,
       },
     },
@@ -724,7 +728,7 @@ const partitionOp = {
 export const OP_SUMMARY: Record<string, string> = {
   hole: "hole {diameterMm | screw, through | depth, at:{u, v}}: on the workplane, or origin and axis.",
   fillet: "fillet {edges, size}: round edges.",
-  chamfer: "chamfer {edges, size}: bevel edges.",
+  chamfer: "chamfer {edges, size, size2 | angleDeg, flip}: bevel edges; size runs along each edge's upper face.",
   split: "split {origin, normal, keep}: cut in two.",
   partition: "partition {cuts:[{origin, normal, connectors}]}: split to print; model_probe plan:true proposes the cuts.",
   scale: "scale {factor}.",
@@ -738,7 +742,7 @@ export const OP_SUMMARY: Record<string, string> = {
   boolean: "boolean {op:cut|fuse|common, primitive, dx, dy, dz | radius, height, origin | centre, turn}.",
   root: "root {primitive, sizes}: a new base solid.",
   join: "join {toolObject, op}: another object's solid as the tool.",
-  pocket: "pocket {face | faceIndex, shape, at, width, height | diameter, depth}: a recess.",
+  pocket: "pocket {face | faceIndex, shape, at, width, height, cornerRadius | diameter, depth}: a recess.",
   boss: "boss: as pocket, raised.",
   texture: "texture {face, pattern, pitch}: grooves over a face.",
   pattern: "pattern {op, linear | polar | path}: copies of an op.",

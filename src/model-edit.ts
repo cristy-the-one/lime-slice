@@ -278,6 +278,12 @@ export function toolEditHead(tool: ModelTree, id: NodeId, name: string): string 
 }
 
 /** What an edited step's tool panel opens with, in model space: the inverse of what its Apply would send. */
+/** Gaps 13. Equal sides, two sizes, or a size and an angle; with `flip`, Size runs along the lower face. */
+export interface ChamferChoice {
+  form: "equal" | "two" | "angle";
+  flip: boolean;
+}
+
 export interface EditPanel {
   tool: ModelTool;
   /** Input id → value. */
@@ -307,6 +313,8 @@ export interface EditPanel {
   faces?: readonly (number | FaceRef)[];
   /** A shell kept closed, so the open faces are ignored. */
   shellClosed?: boolean;
+  /** A chamfer's sides, as the panel's Equal, Two sizes, and Angle, and its Flip box. */
+  chamfer?: ChamferChoice;
   /** A join: its tool stays as applied; its op and Keep can change. */
   join?: { name: string; keepTool: boolean };
   // --- A3 composite features: the choices a feature group's panel reopens with, including the face. ---
@@ -357,9 +365,15 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "chamfer": {
       // --- A5. A blend of one step's edges opens on that step. Picked edges stay picked. ---
       const step = storedEdgeStep(op.edges);
+      const sides = op.kind === "chamfer"
+        ? {
+            fields: { modelBlend: op.size, ...(op.size2 !== undefined ? { modelChamfer2: op.size2 } : {}), ...(op.angleDeg !== undefined ? { modelChamferAngle: op.angleDeg } : {}) },
+            chamfer: { form: op.size2 !== undefined ? "two" as const : op.angleDeg !== undefined ? "angle" as const : "equal" as const, flip: op.flip === true },
+          }
+        : { fields: { modelBlend: op.size } };
       return {
         tool: op.kind,
-        fields: { modelBlend: op.size },
+        ...sides,
         edges: op.edges.filter((edge): edge is number | EdgeRef => !isEdgeStep(edge)),
         ...(step ? { step } : {}),
       };

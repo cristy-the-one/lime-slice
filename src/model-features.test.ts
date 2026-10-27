@@ -118,6 +118,27 @@ eq("text reopens on its face", round.feature.face, 2);
 const group = expanded.group ?? groupFromPieces("Pocket", spec, []);
 check("the group keeps the spec that was typed", (group.source as { kind?: string }).kind === "pocket" && group.steps.length === 3);
 
+// --- Gaps 8. A rect's corner radius goes into the one cut, every step merges what it leaves on one surface, and the
+// panel writes and reads the radius back.
+const roundRead = (id: string) => ({ modelFeatW: 19, modelFeatH: 12, modelFeatR: 2.5, modelFeatDepth: 2 })[id] ?? 0;
+const rounded = readFeatureSpec("pocket", roundRead, choices, 1);
+eq("the panel writes the corner radius", rounded.cornerRadius, 2.5);
+eq("a sharp rect writes none", "cornerRadius" in spec, false);
+eq("a circle writes none", "cornerRadius" in readFeatureSpec("pocket", roundRead, { ...choices, shape: "circle" }, 1), false);
+const roundPieces = expand(rounded, featureExpandContext(solid, GLOBAL_WORKPLANE), () => ({ reason: "unused" }));
+check("a pocket leaving a 0.5 mm wall inside the box is not refused", !("reason" in roundPieces));
+if (!("reason" in roundPieces)) {
+  eq("the cut is a box with that corner radius", [roundPieces[0]!.spec.primitive, roundPieces[0]!.spec.cornerRadius, roundPieces[0]!.merge], ["box", 2.5, true]);
+  const steps = groupFromPieces("Pocket", rounded, roundPieces).steps;
+  eq("its step merges", steps.map((step) => (step as { merge?: boolean }).merge), [true]);
+}
+eq("every bar merges too", !("reason" in appPieces) && appPieces.every((piece) => piece.merge === true), true);
+eq("the history row names the radius", featureLabel(rounded), "Pocket 19 × 12 r 2.5");
+eq("an edit reopens the radius", featurePanel(rounded).fields.modelFeatR, 2.5);
+eq("an older pocket reopens sharp", featurePanel(spec).fields.modelFeatR, 0);
+const tooRound = expand({ ...rounded, cornerRadius: 7 }, featureExpandContext(solid, GLOBAL_WORKPLANE), () => ({ reason: "unused" }));
+eq("a radius over half the shorter side is refused", "reason" in tooRound ? tooRound.reason : null, "A corner radius is at most half the shorter side, 6 mm.");
+
 // --- D28. An MCP texture's one pitch and its region come back in an app edit.
 eq("a scalar pitch fills both pitch fields", [featurePanel({ kind: "texture", pitch: 3, depth: 0.5 }).fields.modelTexPitchU, featurePanel({ kind: "texture", pitch: 3, depth: 0.5 }).fields.modelTexPitchV], [3, 3]);
 eq("an edit keeps a texture's region", keptFeatureFields({ kind: "texture", region: { u: [-5, 5], v: [0, 8] } }, "texture"), { region: { u: [-5, 5], v: [0, 8] } });
