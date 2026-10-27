@@ -6456,29 +6456,42 @@ export class Session {
         return { ok: false, reason: `A new solid is the ${noun} itself. Cut and intersect need a part that is already there.` };
       }
       const root = { kind: "feature" as const, op };
-      const reply = await this.treeCall(openRequest(tree.key, root, CHORD), "root");
-      if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, "create") };
-      const next = rememberSolid(reply);
-      const nodes = new Map(tree.nodes);
-      const row = nodes.get(0);
-      if (row) nodes.set(0, { ...row, label: rootLabel(root, row.label), ...(next ? { fingerprint: next.fingerprint } : {}) });
-      obj.tree = { ...tree, root, nodes };
-      if (next) obj.solid = next;
-      obj.probes.clear();
+      const reopened = await this.reopenRoot(obj, tree, node, root);
+      if (reopened) return reopened;
       return { ok: true, node: nodeHandle(node), stored: op, typed: baked.typed };
     }
     if (baked.op.kind !== "root" || tree.root.kind !== "primitive") return { ok: false, reason: "The new solid's first step takes a root edit." };
     if (!obj.probes.has(probeKey(String(node), baked.op))) return { ok: false, reason: "Probe this edit first. It was not applied." };
     const { kind: _kind, exprs: _exprs, ...solid } = baked.op;
-    const root = { kind: "primitive" as const, solid };
-    const reply = await this.treeCall(openRequest(tree.key, root, CHORD), "root");
-    if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, "create") };
     // --- D25. The new sizes keep the expressions this call typed; typed numbers drop the old ones.
-    obj.tree = { ...tree, root: exprs ? { ...root, exprs } : root };
-    const next = rememberSolid(reply);
-    if (next) obj.solid = next;
-    obj.probes.clear();
+    const root = { kind: "primitive" as const, solid, ...(exprs ? { exprs } : {}) };
+    const reopened = await this.reopenRoot(obj, tree, node, root);
+    if (reopened) return reopened;
     return { ok: true, node: nodeHandle(node), stored: baked.op, typed: baked.typed };
+  }
+
+  /**
+   * A new root under the steps already there: the engine opens the whole tree again on it, showing the root, so every
+   * later step builds on the new root when it is shown. Opening the root alone left the engine without those steps, and
+   * a goto to one answered "unknown". Each step's solid changes with the root, so no old fingerprint or plated solid is
+   * kept. A refusal is returned; null when it opened.
+   */
+  private async reopenRoot(obj: PlateObject, tree: ModelTree, node: number, root: Exclude<ModelTree["root"], { kind: "piece" | "step" }>): Promise<Record<string, unknown> | null> {
+    const nodes = new Map([...tree.nodes].map(([id, row]) => [id, { ...row, fingerprint: null as Fingerprint | null }]));
+    const row = nodes.get(node);
+    if (row && root.kind === "feature") nodes.set(node, { ...row, label: rootLabel(root, row.label) });
+    const next = jumped({ ...tree, root, nodes }, node);
+    const budget = Math.max(this.modelTimeoutMs(), modelSteps(next) * 2000);
+    const reply = await this.treeCall(wholeTreeRequest(next, root, node, obj.stepTolerance || CHORD), "root", budget);
+    if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, "create") };
+    const solid = rememberSolid(reply);
+    const rooted = nodes.get(node);
+    if (rooted && solid) nodes.set(node, { ...rooted, fingerprint: solid.fingerprint });
+    obj.tree = next;
+    if (solid) obj.solid = solid;
+    obj.platedNode = null;
+    obj.probes.clear();
+    return null;
   }
 
   private rename(obj: PlateObject, node: number | null, label: string): Record<string, unknown> {

@@ -149,6 +149,20 @@ check("and says it was for this call only", JSON.stringify(once.oneOff) === '["w
 const followed = await call("model_build", { object: once.object });
 check("a rerun uses the project's w", followed.ok === true && sameBox(followed.bounds, { min: [-40, -5, 0], max: [40, 5, 4] }), JSON.stringify(followed));
 
+// model_edit of a new solid's root keeps the steps under it: a goto to one builds it on the new root (#448's report).
+{
+  const box = await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10 });
+  const cut = await call("model_apply", { object: box.object, probe: true, op: { kind: "boolean", op: "cut", primitive: "box", dx: 4, dy: 4, dz: 4, origin: [-2, -2, 6] } });
+  const op = { kind: "root", primitive: "box", dx: 30, dy: 20, dz: 10 };
+  await call("model_probe", { object: box.object, node: "node_0", op });
+  const edited = await call("model_edit", { object: box.object, node: "node_0", op });
+  check("the root edits", cut.ok === true && edited.ok === true, JSON.stringify([cut, edited]).slice(0, 400));
+  const went = await call("model_goto", { object: box.object, node: cut.node });
+  const at = await call("model_describe", { object: box.object });
+  check("a goto to the step under an edited root works", went.ok === true, JSON.stringify(went));
+  check("and builds that step on the new root", near(at.volumeMm3, 30 * 20 * 10 - 64, 0.5), String(at.volumeMm3));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
