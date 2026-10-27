@@ -184,7 +184,7 @@ async function cover(): Promise<string> {
 // rebuilt from its first step, it comes to the same volume.
 {
   const saved = join(workspace, "model-4.0.0-fillets.lime");
-  copyFileSync(fileURLToPath(new URL("../samples/model-4.0.0-fillets.lime", import.meta.url)), saved);
+  copyFileSync(fileURLToPath(new URL("./fixtures/model-4.0.0-fillets.lime", import.meta.url)), saved);
   const opened = await call("project_open", { path: saved });
   check("the 4.0.0 project opens", opened.ok === true, JSON.stringify(opened));
   const object = String((await call("plate_list", {})).objects?.[0]?.object ?? "");
