@@ -226,16 +226,134 @@ fn a_tongue_outside_the_section_is_refused_in_a_sentence() {
     );
 }
 
+fn zigzag(angle: f64) -> Value {
+    json!({ "kind": "zigzag", "pitch": 10.0, "depth": 3.0, "angle": angle, "side": "positive", "u0": -15.0 })
+}
+
 #[test]
-fn a_zig_zag_and_connectors_on_a_shaped_cut_are_refused_until_they_are_built() {
-    let Some(zig) = cut(&op(
-        json!({ "kind": "zigzag", "pitch": 10.0, "depth": 3.0, "angle": 0.0 }),
-    )) else {
+fn a_zig_zag_carries_square_teeth_to_the_positive_side() {
+    let Some(made) = cut(&op(zigzag(0.0))) else {
+        return;
+    };
+    let made = made.expect("the zig-zag builds");
+    let pieces = made["pieces"].as_array().expect("pieces");
+    assert_eq!(pieces.len(), 2);
+    for piece in pieces {
+        whole(piece);
+    }
+    // 30 mm of section is three 10 mm periods; each carries a tooth 5 mm wide and 3 mm tall across the 20 mm of V.
+    let teeth = 3.0 * 5.0 * 3.0 * 20.0;
+    within(volume(&pieces[0]), WHOLE / 2.0 + teeth, 1e-6);
+    within(volume(&pieces[1]), WHOLE / 2.0 - teeth, 1e-6);
+    // Each tooth's top is a flat at x = 63, 5 x 20 mm, three of them; the floor between them stays at x = 60.
+    let tops: Vec<_> = planes(&pieces[0], [1.0, 0.0, 0.0])
+        .into_iter()
+        .filter(|(at, _)| (at[0] - 63.0).abs() < 1e-6)
+        .collect();
+    assert_eq!(tops.len(), 3, "{tops:?}");
+    for (_, area) in &tops {
+        within(*area, 5.0 * 20.0, 1e-6);
+    }
+}
+
+#[test]
+fn a_leaning_zig_zag_has_a_narrower_tip_and_the_volume_of_its_trapezoids() {
+    let Some(made) = cut(&op(zigzag(30.0))) else {
+        return;
+    };
+    let made = made.expect("the zig-zag builds");
+    let pieces = made["pieces"].as_array().expect("pieces");
+    for piece in pieces {
+        whole(piece);
+    }
+    // Each flank leans in by half of depth x tan(30), so a tooth 5 mm at its base is narrower by depth x tan(30) at its tip.
+    let tip = 5.0 - 3.0 * (30.0_f64).to_radians().tan();
+    let tooth = (5.0 + tip) / 2.0 * 3.0 * 20.0;
+    within(volume(&pieces[0]), WHOLE / 2.0 + 3.0 * tooth, 1e-6);
+    within(volume(&pieces[1]), WHOLE / 2.0 - 3.0 * tooth, 1e-6);
+    let tops: Vec<_> = planes(&pieces[0], [1.0, 0.0, 0.0])
+        .into_iter()
+        .filter(|(at, _)| (at[0] - 63.0).abs() < 1e-6)
+        .collect();
+    assert_eq!(tops.len(), 3, "{tops:?}");
+    within(tops[0].1, tip * 20.0, 1e-6);
+}
+
+fn dovetail(slide: &str) -> Value {
+    json!({ "kind": "dovetail", "width": 8.0, "angle": 20.0, "depth": 3.0, "slide": slide, "side": "positive",
+        "clearance": 0.15, "endGap": 0.4, "u0": -15.0, "u1": 15.0, "v": 0.0 })
+}
+
+/// The dovetail's section: the neck at the plane, 8 mm at its end, and the groove grown by the clearance square to a flank.
+fn dovetail_areas() -> (f64, f64) {
+    let lean = (20.0_f64).to_radians().tan();
+    let root = 4.0 - 3.0 * lean;
+    let peg = (2.0 * root + 8.0) / 2.0 * 3.0;
+    let grow = 0.15 / (20.0_f64).to_radians().cos();
+    let groove = 2.0 * (root + grow) * 3.4 + lean * 3.4 * 3.4;
+    (peg, groove)
+}
+
+#[test]
+fn a_dovetail_profile_runs_the_whole_section_and_its_groove_is_grown_by_the_clearance() {
+    let Some(made) = cut(&op(dovetail("u"))) else {
+        return;
+    };
+    let made = made.expect("the dovetail builds");
+    let pieces = made["pieces"].as_array().expect("pieces");
+    assert_eq!(pieces.len(), 2);
+    for piece in pieces {
+        whole(piece);
+    }
+    let (peg, groove) = dovetail_areas();
+    // It slides along U, the 30 mm of the section.
+    within(volume(&pieces[1]), WHOLE / 2.0 + 30.0 * peg, 1e-5);
+    within(volume(&pieces[0]), WHOLE / 2.0 - 30.0 * groove, 1e-5);
+    // The tongue's end, 8 mm across and 30 mm long, is a plane at x = 57.
+    let end = planes(&pieces[1], [-1.0, 0.0, 0.0]);
+    assert!(
+        end.iter()
+            .any(|(at, area)| (at[0] - 57.0).abs() < 1e-6 && (area - 8.0 * 30.0).abs() < 1e-6),
+        "{end:?}"
+    );
+}
+
+#[test]
+fn a_dovetail_sliding_along_v_lies_across_u() {
+    // Slid along V, the 20 mm of the section; the 30 mm of U is across it, with the cross-section centred on U.
+    let mut v = dovetail("v");
+    v["u0"] = json!(-10.0);
+    v["u1"] = json!(10.0);
+    let Some(made) = cut(&op(v)) else { return };
+    let made = made.expect("the dovetail builds");
+    let pieces = made["pieces"].as_array().expect("pieces");
+    for piece in pieces {
+        whole(piece);
+    }
+    let (peg, groove) = dovetail_areas();
+    within(volume(&pieces[1]), WHOLE / 2.0 + 20.0 * peg, 1e-5);
+    within(volume(&pieces[0]), WHOLE / 2.0 - 20.0 * groove, 1e-5);
+}
+
+#[test]
+fn a_dovetail_without_a_neck_is_refused_in_a_sentence() {
+    let mut wide = dovetail("u");
+    wide["angle"] = json!(60.0);
+    let Some(made) = cut(&op(wide)) else { return };
+    assert_eq!(
+        made.expect_err("no neck"),
+        "The dovetail of cut 1 has no neck at this depth and angle. Lower the angle or widen it."
+    );
+}
+
+#[test]
+fn a_sketch_and_connectors_on_a_shaped_cut_are_refused_until_they_are_built() {
+    let Some(zig) = cut(&op(json!({ "kind": "sketch", "sketch": { "v": 1 } }))) else {
         return;
     };
     assert_eq!(
         zig.expect_err("later"),
-        "Only straight cuts, laps and tongues are built yet. Leave the profile out, or make it straight, a lap or a tongue."
+        "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them."
     );
     let mut with = op(lap("positive"));
     with["cuts"][0]["connectors"] =
@@ -243,6 +361,6 @@ fn a_zig_zag_and_connectors_on_a_shaped_cut_are_refused_until_they_are_built() {
     let Some(refused) = cut(&with) else { return };
     assert_eq!(
         refused.expect_err("shaped"),
-        "Connectors on a lap or a tongue are not built yet. Turn them off, or cut straight."
+        "Connectors on a shaped cut are not built yet. Turn them off, or cut straight."
     );
 }

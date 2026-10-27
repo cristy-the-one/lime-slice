@@ -52,8 +52,8 @@ export interface CardJoints {
   spec: ConnectorSpec;
 }
 
-/** The connector types the card offers; key and dovetail wait for milestone 9. */
-export type CardJointType = "dowel" | "plug" | "hardware";
+/** The connector types the card offers. */
+export type CardJointType = "dowel" | "plug" | "hardware" | "key" | "dovetail";
 
 export interface Card {
   cuts: CardCut[];
@@ -307,11 +307,13 @@ function profileOf(stored: Profile | undefined): Profile {
   if (!stored || stored.kind === "straight") return { kind: "straight" };
   if (stored.kind === "lap") return { kind: "lap", ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.height !== undefined ? { height: stored.height } : {}), ...(stored.side ? { side: stored.side } : {}) };
   if (stored.kind === "tongue") return { kind: "tongue", ...(stored.width !== undefined ? { width: stored.width } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.side ? { side: stored.side } : {}) };
+  if (stored.kind === "zigzag") return { kind: "zigzag", ...(stored.pitch !== undefined ? { pitch: stored.pitch } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.angle !== undefined ? { angle: stored.angle } : {}), ...(stored.side ? { side: stored.side } : {}) };
+  if (stored.kind === "dovetail") return { kind: "dovetail", ...(stored.width !== undefined ? { width: stored.width } : {}), ...(stored.angle !== undefined ? { angle: stored.angle } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.slide ? { slide: stored.slide } : {}), ...(stored.side ? { side: stored.side } : {}) };
   return { kind: "straight" };
 }
 
 /** The cut's profile menu: a new kind starts from the planner's defaults; Straight drops what was typed. */
-export function withProfileKind(card: Card, index: number, kind: "straight" | "lap" | "tongue"): Card {
+export function withProfileKind(card: Card, index: number, kind: "straight" | "lap" | "zigzag" | "tongue" | "dovetail"): Card {
   const cut = card.cuts[index];
   if (!cut || cut.profile.kind === kind) return card;
   return withCutChanged(card, index, { profile: { kind } as Profile });
@@ -475,7 +477,7 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
   const shapedFloor = defaultsFor(filled.target, ctx);
   for (const [at, cut] of own.cuts.entries()) {
     const resolved = filled.cuts[at]!.profile;
-    if (resolved.kind !== "lap" && resolved.kind !== "tongue") continue;
+    if (resolved.kind === "straight" || resolved.kind === "sketch") continue;
     const section = solid ? sectionLoops(solid.positions, cut.origin, cut.normal, cut.u!) : null;
     if (!section) return { reason: `Cut ${at + 1}: the plane misses the part, so there is no section for its ${resolved.kind}.` };
     const box = outlineBox(section);
@@ -486,9 +488,22 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
       cut.profile = { kind: "lap", depth: resolved.depth, height, side: resolved.side, at: box.v0 + height } as unknown as typeof cut.profile;
       continue;
     }
+    if (resolved.kind === "zigzag") {
+      cut.profile = { kind: "zigzag", pitch: resolved.pitch, depth: resolved.depth, angle: resolved.angle, side: resolved.side, u0: box.u0 } as unknown as typeof cut.profile;
+      continue;
+    }
     const typedFit = filled.cuts[at]!.connectors.types[0];
     const clearance = typedFit && typedFit.clearance !== null ? typedFit.clearance : shapedFloor.clearance?.snug;
     if (clearance === undefined || clearance === null) return { reason: `Cut ${at + 1}: ${NO_FIT_SENTENCE}` };
+    if (resolved.kind === "dovetail") {
+      // The dovetail runs the whole section along its slide; across it, it sits in the middle with its walls.
+      const along = resolved.slide === "v" ? [box.v0, box.v1] : [box.u0, box.u1];
+      const over = resolved.slide === "v" ? [box.u0, box.u1] : [box.v0, box.v1];
+      const room = (over[1]! - over[0]!) - resolved.width - 2 * (clearance + shapedFloor.wallFloorMm);
+      if (room < 0) return { reason: `Cut ${at + 1}: the section is too small for a dovetail ${mm(resolved.width)} mm wide with ${mm(shapedFloor.wallFloorMm)} mm walls. Make it narrower, or cut straight.` };
+      cut.profile = { kind: "dovetail", width: resolved.width, angle: resolved.angle, depth: resolved.depth, slide: resolved.slide, side: resolved.side, clearance, endGap: shapedFloor.endGapMm, u0: along[0]!, u1: along[1]!, v: (over[0]! + over[1]!) / 2 } as unknown as typeof cut.profile;
+      continue;
+    }
     const margin = Math.max(shapedFloor.marginMm, resolved.width / 2 + clearance + shapedFloor.wallFloorMm);
     const [u0, u1] = [box.u0 + margin, box.u1 - margin];
     const middle = (box.v0 + box.v1) / 2;

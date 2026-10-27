@@ -88,8 +88,8 @@ const CONNECTOR_SIZES: Record<string, readonly string[]> = {
   dowel: ["radius", "depth", "endGap", "margin"],
   plug: ["radius", "depth", "endGap", "margin"],
   hardware: ["diameter", "depth", "endGap", "margin"],
-  key: ["width", "height", "depth", "margin"],
-  dovetail: ["width", "angle", "depth", "margin"],
+  key: ["width", "height", "depth", "endGap", "margin"],
+  dovetail: ["width", "angle", "depth", "endGap", "margin"],
 };
 
 /** Why a cut's connectors cannot be read, or null: `on`, and `types` of known kinds with positive sizes. */
