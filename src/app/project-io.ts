@@ -80,6 +80,7 @@ export async function saveCurrentProject() {
   // --- A8. The record opened with the project, so a later save still carries its recipes. ---
   if (session.mcpModel) project.mcpModel = session.mcpModel;
   if (Object.keys(session.parameters).length > 0) project.parameters = { ...session.parameters };
+  if (project.version === 2 && session.assemblies.length > 0) project.assemblies = structuredClone(session.assemblies);
   if (project.version === 2 && state.printOrder === "sequential") {
     project.printOrder = "sequential";
     if (state.sequentialClearance > 0) project.sequentialClearanceMm = state.sequentialClearance;
@@ -164,6 +165,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   // --- A8. Kept before the meshes load, and still there if that load is replaced by a later open. ---
   session.mcpModel = project.mcpModel;
   session.parameters = project.parameters ? { ...project.parameters } : {};
+  session.assemblies = project.assemblies ? structuredClone(project.assemblies) : [];
   const unread = [...(project.unreadHistory ?? [])];
   const doc = session.docEpoch;
   try {

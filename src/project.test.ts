@@ -331,6 +331,39 @@ eq("a part-frame object writes its frame, a model-frame one writes none", [partF
 const partFrameOpened = parseProject(JSON.stringify(partFrameWire));
 eq("the frame round-trips", partFrameOpened.ok ? partFrameOpened.project.objects?.[0]?.frame : null, "part");
 eq("a file with no frame reads as the model frame", spaceOpened.ok ? spaceOpened.project.objects?.[0]?.frame ?? null : 0, null);
+
+// Assemblies: an optional top-level key beside `objects`, written as it was read.
+const hookPose = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1] as [number, number, number, number, number, number, number, number, number], t: [115, 0, 30] as [number, number, number] };
+const assembled: LimeProject = {
+  ...project,
+  version: 2,
+  parameters: { rimL: 120 },
+  objects: [
+    { id: "body", name: "body.stl", mesh: project.mesh, placement: project.placement, supportEdits: [] },
+    { id: "hook", name: "hook.stl", mesh: project.mesh, placement: project.placement, supportEdits: [], modelPose: hookPose },
+  ],
+  assemblies: [{ id: "a1", name: "LED cover", members: [
+    { object: "body", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] },
+    { object: "hook", parent: "body", offset: [115, 0, 30], turn: [0, 0, 0], exprs: { offset: ["rimL - 5", null, null] } },
+  ] }],
+};
+const assembledText = serializeProject(assembled);
+const assembledWire = JSON.parse(assembledText) as { version: number; assemblies?: unknown };
+eq("a plate with an assembly writes it at version 4", [assembledWire.version, assembledWire.assemblies], [4, assembled.assemblies]);
+const assembledOpened = parseProject(assembledText);
+eq("the assembly round-trips", assembledOpened.ok ? assembledOpened.project.assemblies : null, assembled.assemblies);
+eq("and is written again identically", assembledOpened.ok ? serializeProject(assembledOpened.project) : null, assembledText);
+eq("a file without assemblies reads none and writes none", [plainOpened.ok ? plainOpened.project.assemblies ?? null : 0, "assemblies" in JSON.parse(multiText)], [null, false]);
+const appSave = JSON.parse(assembledText) as { objects: unknown[]; assemblies?: unknown };
+appSave.objects = appSave.objects.slice(0, 1);
+const removedOpened = parseProject(JSON.stringify(appSave));
+eq("an assembly left with one object is gone", removedOpened.ok ? removedOpened.project.assemblies ?? null : 0, null);
+const rootless = JSON.parse(assembledText) as { assemblies: { members: { parent: string | null }[] }[] };
+rootless.assemblies[0]!.members[0]!.parent = "hook";
+eq("an assembly with no root is left out and the file opens", (() => {
+  const opened = parseProject(JSON.stringify(rootless));
+  return opened.ok ? [opened.project.assemblies ?? null, opened.project.objects?.length] : opened;
+})(), [null, 2]);
 for (const [name, m] of [
   ["a short matrix", [1, 0, 0]],
   ["a collapsed matrix", [0, 0, 0, 0, 0, 0, 0, 0, 0]],
