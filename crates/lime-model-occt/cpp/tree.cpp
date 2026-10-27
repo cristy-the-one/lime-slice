@@ -665,6 +665,76 @@ int lime_tree_partition(
     }
 }
 
+/// --- Split to print, the fit coupon. `size` is the plate's x, y, z; `holes` are x, z, radius, depth, teardrop for each;
+/// `strokes` are the labels' u, v, length, angle in the front face's X and Z; `engrave` is the stroke width and the depth;
+/// `pins` are x, y, radius, length. `plate` and `pins_out` get the solids (the pins null with none), `engraved` the volume
+/// the labels took.
+int lime_tree_fit_coupon(
+    const double* size,
+    const double* holes,
+    int hole_count,
+    const double* strokes,
+    int stroke_count,
+    const double* engrave,
+    const double* pins,
+    int pin_count,
+    LimeShape** plate,
+    LimeShape** pins_out,
+    double* engraved,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        FitCoupon coupon;
+        std::copy(size, size + 3, coupon.size);
+        for (int index = 0; index < hole_count; ++index) {
+            const double* at = holes + 5 * index;
+            coupon.holes.push_back({at[0], at[1], at[2], at[3], at[4] != 0.0});
+        }
+        for (int index = 0; index < stroke_count; ++index) {
+            const double* at = strokes + 4 * index;
+            coupon.strokes.push_back({at[0], at[1], at[2], at[3]});
+        }
+        coupon.stroke_width = engrave[0];
+        coupon.engrave_depth = engrave[1];
+        for (int index = 0; index < pin_count; ++index) {
+            const double* at = pins + 4 * index;
+            coupon.pins.push_back({at[0], at[1], at[2], at[3]});
+        }
+        std::string message;
+        FitCouponResult made;
+        if (!build_fit_coupon(coupon, made, message)) {
+            set_error(error, message);
+            return -1;
+        }
+        std::unique_ptr<LimeShape> plate_held =
+            adopt(made.plate, made.plate_volume, "The coupon did not build", error, nullptr);
+        if (plate_held == nullptr) {
+            return -1;
+        }
+        std::unique_ptr<LimeShape> pins_held;
+        if (!made.pins.IsNull()) {
+            pins_held = adopt(made.pins, made.pins_volume, "The coupon's pins did not build", error, nullptr);
+            if (pins_held == nullptr) {
+                return -1;
+            }
+        }
+        *plate = plate_held.release();
+        if (pins_out != nullptr) {
+            *pins_out = pins_held.release();
+        }
+        if (engraved != nullptr) {
+            *engraved = made.engraved;
+        }
+        return 0;
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return -1;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return -1;
+    }
+}
+
 /// --- Split to print, for tests. Each face's surface as JSON: a cylinder's radius, a point on its axis and the axis, read
 /// from its `Geom_CylindricalSurface`; a plane's outward normal, centre of area and area; anything else as its kind.
 char* lime_tree_surfaces(const LimeShape* shape) {

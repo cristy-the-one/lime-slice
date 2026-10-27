@@ -17,7 +17,7 @@ export async function stepSolidFiles(bytes: ArrayBuffer): Promise<(StepSolidRow 
   return out;
 }
 
-async function treeCall(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function treeCall(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   try {
     if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
       const { invoke } = await import("@tauri-apps/api/core");

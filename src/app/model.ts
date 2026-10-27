@@ -139,7 +139,7 @@ import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTa
 import { addedSolid, addedSplit, arrangedObjects, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withPieceMesh, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
-import { livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
+import { addMeshBytes, livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
 import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, newestEdits, noteEdit, patchEditBrep, redoUserEdit, undoUserEdit } from "./history";
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
@@ -169,9 +169,10 @@ import { beltLayerNormal, boxMap } from "../sim/study.ts";
 import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
-import { bedFrame, exportedCommit, exportsPieces, fitOnBed, plateUp, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
+import { bedFrame, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
-import { clampPieces, defaultsFor, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
+import { clampPieces, defaultsFor, fillConnector, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
+import { couponFileName, couponInputFor, fitCoupon, fitCouponRequest, readCouponReply } from "../modeling/fit-coupon.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
@@ -620,6 +621,7 @@ export function bindModelView() {
       return defaultsFor(target ?? ctx.plateTarget, ctx);
     },
     holeCompensation: () => state.xyHoleCompensationMm,
+    printCoupon: printFitCoupon,
     cancelled: cancelEdit,
     parameters: () => currentParams(),
     view: () => fx.model ?? null,
@@ -5732,6 +5734,39 @@ function labelSizes(target: Target | null): LabelSizes {
   const ctx = partitionContext(solid);
   const defaults = defaultsFor(target ?? ctx.plateTarget, ctx);
   return { height: defaults.numberHeightMm, depth: defaults.numberDepthMm };
+}
+
+/**
+ * Print a fit coupon… (plan section 2): the fit coupon for the dowel on the card, built by the engine from the planner's
+ * layout. The plate's printer gets the plate and its pin as two plate objects, STEP files Model can open; an export target
+ * gets both saved as STEP files. The answer is the card's sentence.
+ */
+async function printFitCoupon(target: Target | null, spec: ConnectorSpec): Promise<string> {
+  const solid = viewed();
+  if (!solid) return "Open a part first.";
+  const ctx = partitionContext(solid);
+  const aimed = target ?? ctx.plateTarget;
+  const coupon = fitCoupon(couponInputFor(fillConnector(spec, defaultsFor(aimed, ctx)), { process: aimed.process, material: ctx.material, featureMm: ctx.featureMm, layerMm: ctx.layerMm }));
+  if ("reason" in coupon) return coupon.reason;
+  readout("Building the fit coupon…");
+  const reply = readCouponReply(await post(fitCouponRequest(coupon)));
+  if (typeof reply === "string") {
+    readout(reply);
+    return reply;
+  }
+  const files = [{ name: couponFileName(coupon), b64: reply.plate.stepB64 }, ...(reply.pins ? [{ name: couponFileName(coupon, true), b64: reply.pins.stepB64 }] : [])];
+  const bytes = files.map((file) => base64ToBytes(file.b64));
+  if (bytes.some((one) => !one)) return "The engine did not write the coupon.";
+  if (exportTarget(target)) {
+    for (const [index, file] of files.entries()) await saveStepFile(bytes[index]!.slice().buffer as ArrayBuffer, file.name);
+    const said = `Saved ${files.map((file) => file.name).join(" and ")}. ${coupon.sentence}`;
+    readout(said);
+    return said;
+  }
+  for (const [index, file] of files.entries()) await addMeshBytes(file.name, bytes[index]!.slice().buffer as ArrayBuffer, true);
+  const said = `Added ${files.map((file) => file.name).join(" and ")} to the plate. ${coupon.sentence}`;
+  readout(said);
+  return said;
 }
 
 /** Fit the bed, or the printer `target` is: the planner's cuts for the open part as the plate prints it, in model space. */

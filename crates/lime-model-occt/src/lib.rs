@@ -67,6 +67,21 @@ pub fn partition_joints(solid: &str, op: &str) -> Result<String, String> {
     }
 }
 
+/// Builds a split to print's fit coupon from the planner's layout (as JSON) and reports the plate and the pins: volume,
+/// checks, bounds, each face's surface, and the volume the labels took. A test path; the app asks for the same with the
+/// `fitCoupon` tree call, which also returns each as a STEP file.
+pub fn fit_coupon(spec: &str) -> Result<String, String> {
+    #[cfg(lime_occt)]
+    {
+        tree::fit_coupon(spec)
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = spec;
+        Err("OCCT_ROOT is not set, so Open CASCADE is not linked".into())
+    }
+}
+
 /// The solids a STEP file holds, each checked as a partition's piece: what a split to print's STEP export reads back as.
 pub fn step_solids(step: &[u8]) -> Result<Vec<PartitionPiece>, String> {
     #[cfg(lime_occt)]
