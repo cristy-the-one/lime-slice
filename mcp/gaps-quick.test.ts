@@ -89,6 +89,33 @@ check("a root op may carry a label", validateTool("model_apply", { op: { kind: "
   check("the root step keeps its label", rooted.ok === true && rooted.label === "base block" && labels.includes("base block"), JSON.stringify({ rooted, labels }));
 }
 
+// Item 15. Steps a part makes carry the name it was placed under, so labels and colours find them.
+{
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 40, dy: 40, dz: 10 });
+  const defined = await own.call("model_define", {
+    name: "peg",
+    params: { h: 6 },
+    ops: [
+      { kind: "boolean", op: "fuse", primitive: "cylinder", radius: 2, height: "h", origin: [0, 0, 10] },
+      { kind: "boolean", op: "fuse", primitive: "box", dx: 8, dy: 2, dz: 3, origin: [-4, -1, 8], label: "bar" },
+    ],
+  });
+  check("a part with an unlabelled op and a labelled one is stored", defined.ok === true, JSON.stringify(defined));
+  const placed = await own.call("model_apply_batch", { object: made.object, ops: [{ kind: "use", part: "peg", label: "hook", with: { h: 8 } }] });
+  check("the part is placed", placed.ok === true, JSON.stringify(placed));
+  const history = await own.call("model_history", { object: made.object });
+  const labels = ((history.nodes ?? []) as { label?: string }[]).map((node) => node.label);
+  check("an unlabelled part op takes the use's label and a labelled one follows it", labels.includes("hook") && labels.includes("hook bar"), JSON.stringify(labels));
+  const anchored = await own.call("model_anchors", { object: made.object, label: "hook" });
+  check("model_anchors finds the placed part by the use's label", anchored.ok === true, JSON.stringify(anchored));
+  const seen = await own.call("render_view", { object: made.object, colours: { hook: "#f08a1c" }, inline: false });
+  check("render_view colours finds the placed part by the use's label", seen.ok === true, JSON.stringify(seen).slice(0, 300));
+  const bare = await own.call("model_apply_batch", { object: made.object, ops: [{ kind: "use", part: "peg", with: { h: 3 } }] });
+  const bareLabels = ((await own.call("model_history", { object: made.object })).nodes as { label?: string }[]).map((node) => node.label);
+  check("a use with no label leaves a part's unlabelled ops to their own names", bare.ok === true && bareLabels.includes("bar") && bareLabels.some((label) => label?.startsWith("Fuse cylinder")), JSON.stringify(bareLabels));
+}
+
 if (failed > 0) {
   console.error(`gaps-quick: ${failed} failed`);
   process.exit(1);
