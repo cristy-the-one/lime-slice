@@ -100,6 +100,8 @@ async function settled(page: Page) {
 
 /** The top view, pulled back until both boxes are on screen, with the camera at rest. */
 async function topView(page: Page) {
+  // Ctrl-drag grabs only while Place is open; idle, a Ctrl press is the face push's (it rounds the distance).
+  if ((await page.locator("#modelToolPlace").getAttribute("aria-pressed")) !== "true") await page.locator("#modelToolPlace").click();
   const box = (await page.locator("#model").boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.keyboard.press("t");
@@ -147,7 +149,7 @@ test("Ctrl-click on a grey object opens that object in Model; a plain click does
   expect(ids).toHaveLength(1);
 });
 
-test("Ctrl-drag moves the open object in model space, and one Undo takes the whole move back", async ({ page }) => {
+test("Ctrl-drag, with Place open, moves the object in model space, and one Undo takes the whole move back", async ({ page }) => {
   await openSmall(page);
   await topView(page);
   const solid = await rect(page, "data-solid-screen");

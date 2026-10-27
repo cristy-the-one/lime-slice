@@ -582,7 +582,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
   bindExpressions();
   fx.model?.onHandleDrag(onHandleDrag);
   const grab: ModelGrabHooks = {
-    ready: () => (!tool || tool === "place") && !card && !edit && !!hooks?.grabReady(),
+    ready: () => tool === "place" && !card && !edit && !!hooks?.grabReady(),
     select: (id) => hooks?.openObject(id),
     start: () => !!hooks?.grabStart(),
     move: (pose) => hooks?.grabMove(pose),
