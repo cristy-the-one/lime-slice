@@ -167,6 +167,8 @@ src/model-look.test.ts
 src/section-cap.test.ts
 src/modeling/params.test.ts
 mcp/params.test.ts
+src/modeling/links.test.ts
+mcp/vars-links.test.ts
 src/param-rebuild.test.ts
 src/ui/diameter-expr.test.ts
 src/ui/dock-panes.test.ts
