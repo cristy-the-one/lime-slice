@@ -17,6 +17,7 @@
  * `modelTree` is another: the object's Model history. A damaged one is left out and the part opens.
  * `modelTools` keeps the trees of tools that left the plate while a saved join names them.
  * `heldPieces` keeps the pieces a split to print for an export target holds off the plate (`HeldPiece`).
+ * `assemblies` holds plate objects at poses relative to each other (`src/assembly.ts`); an older app ignores it.
  * `modelPose` and `meshSeatMm` place the object in Model's shared space; without them it sits where its file put it.
  * `workplane` is that object's local U, V, W frame, in its own frame. Without it the frame is the global one.
  * A later version adds a function to `migrations` at index `n` that rewrites version `n`
@@ -46,6 +47,7 @@ import { readSummary, readThumbnail, summaryForWire, thumbnailForWire, type Proj
 import { PARAM_NAME } from "./modeling/expr.ts";
 import { exportsPieces } from "./split-print.ts";
 import type { NodeId } from "./model-tree.ts";
+import { readAssemblies, type Assembly } from "./assembly.ts";
 
 export const PROJECT_VERSION = 4;
 
@@ -107,6 +109,11 @@ export interface LimeProject {
   modelTools?: ToolTree[];
   /** Omitted when no split to print for an export target holds a piece. */
   heldPieces?: HeldPiece[];
+  /**
+   * Plate objects held at poses relative to each other (`src/assembly.ts`). Each member's solved pose is also its
+   * object's `modelPose`, so an app that ignores this key draws the same assembly. Omitted when there are none.
+   */
+  assemblies?: Assembly[];
   /**
    * What the MCP server builds from, kept as it wrote it: its named parameters, its stored parts, and each object's
    * model_build recipe. The app writes it back on save. History reads a recipe to show "Built by a recipe".
@@ -203,6 +210,8 @@ export function projectWire(project: LimeProject): Record<string, unknown> {
   };
   if (plate && project.modelTools?.length) wire.modelTools = shared.slice(objects.length);
   if (plate && project.heldPieces?.length) wire.heldPieces = project.heldPieces;
+  const assemblies = plate ? readAssemblies(project.assemblies, plate) : [];
+  if (assemblies.length > 0) wire.assemblies = assemblies;
   // --- A8. The MCP record rides along, including each object's recipe. ---
   if (project.mcpModel) wire.mcpModel = project.mcpModel;
   const parameters = parametersForWire(project.parameters);
@@ -424,6 +433,8 @@ function readPlate(doc: Record<string, unknown>): ProjectResult {
   if (modelTools.length > 0) project.modelTools = modelTools;
   const held = project.version === 2 ? readHeldPieces(doc.heldPieces, objects) : [];
   if (held.length > 0) project.heldPieces = held;
+  const assemblies = project.version === 2 ? readAssemblies(doc.assemblies, objects) : [];
+  if (assemblies.length > 0) project.assemblies = assemblies;
   if (unreadHistory.length > 0) project.unreadHistory = unreadHistory;
   if (doc.mcpModel && typeof doc.mcpModel === "object" && !Array.isArray(doc.mcpModel)) project.mcpModel = doc.mcpModel as Record<string, unknown>;
   const parameters = readParameters(doc.parameters);

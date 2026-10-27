@@ -161,6 +161,7 @@ import { mountModelInspect, paintModelInspect, setInspectVolume } from "../ui/mo
 import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, usedByCount } from "../modeling/params.ts";
+import { readAssemblies, resolveForParameters } from "../assembly";
 import { outOfDateSteps, planRebuild } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
 import { faceTriangles } from "../sim/bridge-body.ts";
@@ -648,7 +649,9 @@ export function bindModelView() {
   mountParameters({
     table: () => session.parameters,
     setTable(table) {
+      const before = currentParams();
       session.parameters = table;
+      followAssemblyPoses(before);
       markProjectDirty();
       // --- D17. An open tool's expression fields and its dry-run follow the table.
       followParameters();
@@ -4659,6 +4662,25 @@ function placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase) 
   if (phase === "end") endPlace();
   else if (phase === "typed") placeTimer = window.setTimeout(endPlace, PLACE_SETTLE_MS);
   syncUndo();
+}
+
+/** --- Assemblies M3. Each assembly that reads a changed parameter is solved again, and its members move in model space. */
+function followAssemblyPoses(before: Params) {
+  if (session.assemblies.length === 0) return;
+  const live = readAssemblies(session.assemblies, state.plate.objects);
+  const followed = resolveForParameters(live, (id) => {
+    const obj = state.plate.objects.find((item) => item.id === id);
+    return obj ? modelPoseOf(obj) : undefined;
+  }, before, currentParams());
+  session.assemblies = followed.assemblies;
+  if (followed.moved.length === 0) return;
+  for (const { object, pose } of followed.moved) state.plate = withModelPose(state.plate, object, pose);
+  if (open && followed.moved.some((row) => row.object === open!.objectId)) {
+    fx.model?.setPose(objectPose());
+    lookPoseChanged();
+    refreshModelGhost();
+  }
+  refreshModelContext();
 }
 
 function putPose(objectId: string, pose: Affine) {

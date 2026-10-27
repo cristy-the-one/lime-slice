@@ -32,6 +32,7 @@ src/ui/compact/support-edit.test.ts
 src/mesh-place.test.ts
 src/playback.test.ts
 src/project.test.ts
+src/assembly.test.ts
 src/project-blank.test.ts
 src/project-codec.test.ts
 src/project-held.test.ts

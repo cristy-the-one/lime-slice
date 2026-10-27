@@ -128,6 +128,7 @@ import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosav
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
+import { resolveForParameters, readAssemblies, type Assembly } from "../src/assembly.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
 import { followRepeatSources, repeatLabel } from "../src/model-repeat.ts";
 import { planRebuild } from "../src/param-rebuild.ts";
@@ -931,6 +932,8 @@ export class Session {
    * `params` is this table evaluated, which is what ops and `model_params` return.
    */
   private paramText: Record<string, string | number> = {};
+  /** Plate objects held at poses relative to each other, as the project file keeps them (`src/assembly.ts`). */
+  private assemblies: Assembly[] = [];
   /** Parts model_define stored, which an op list places with {kind: "use"}. */
   parts = new Map<string, PartDef>();
   /**
@@ -1796,6 +1799,7 @@ export class Session {
     this.profileTouched = false;
     // --- D23. A new project starts with no parameters and no defined parts, as project_open adopts only the file's.
     this.adoptParameters({});
+    this.assemblies = [];
     this.adoptMcpModel(undefined);
     return { ok: true, project: "project", label: "New plate" };
   }
@@ -1912,6 +1916,7 @@ export class Session {
       if (note) historyNotes.push(note);
     }
     this.adoptParameters(parsed.project);
+    this.assemblies = readAssemblies(parsed.project.assemblies, this.objects);
     this.adoptMcpModel(parsed.project.mcpModel);
     const skipped = this.notSliced();
     return {
@@ -2216,6 +2221,9 @@ export class Session {
     const parameters = readParameters(this.paramText);
     if (parameters) doc.parameters = parameters;
     else delete doc.parameters;
+    const assemblies = readAssemblies(this.assemblies, this.objects);
+    if (assemblies.length > 0) doc.assemblies = assemblies;
+    else delete doc.assemblies;
     const tools = this.toolsOffPlate.flatMap((tool) => {
       const modelTree = this.savedModelTree(tool);
       return modelTree ? [{ id: tool.id, name: tool.name, modelTree }] : [];
@@ -5693,11 +5701,33 @@ export class Session {
     const bad = table.rows.filter((row) => row.error);
     const refused = bad.find((row) => Object.hasOwn(set, row.name));
     if (refused) return { ok: false, reason: `${refused.name}: ${refused.error}` };
+    const before = this.params;
     this.paramText = next;
     this.params = { ...table.values };
+    const moved = this.followAssemblies(before);
     this.followWorkplanes();
     const errors = bad.length > 0 ? { errors: Object.fromEntries(bad.map((row) => [row.name, row.error])) } : {};
-    return { ok: true, params: { ...this.params }, ...errors };
+    return { ok: true, params: { ...this.params }, ...errors, ...moved };
+  }
+
+  /**
+   * --- Assemblies M3. Each assembly that reads a changed parameter is solved again: its members' model poses move, and
+   * the reply names them with their new box in model space. The print layout does not move.
+   */
+  private followAssemblies(before: Record<string, number>): { moved?: Record<string, unknown>[]; assemblyErrors?: Record<string, unknown>[] } {
+    if (this.assemblies.length === 0) return {};
+    const live = readAssemblies(this.assemblies, this.objects);
+    const followed = resolveForParameters(live, (id) => this.find(id)?.modelPose, before, this.params);
+    this.assemblies = followed.assemblies;
+    const moved = followed.moved.flatMap(({ object, pose }) => {
+      const obj = this.find(object);
+      if (!obj) return [];
+      obj.modelPose = pose;
+      const box = this.assembledBox(obj);
+      return [{ object, name: shownName(obj.name), ...(box ? { assembledMm: box } : {}) }];
+    });
+    const errors = followed.errors.map((row) => ({ object: row.object, reason: row.error }));
+    return { ...(moved.length ? { moved } : {}), ...(errors.length ? { assemblyErrors: errors } : {}) };
   }
 
   /** --- Gaps A3. A workplane typed with expressions moves with them: ops typed on it after a set use the new plane. */
