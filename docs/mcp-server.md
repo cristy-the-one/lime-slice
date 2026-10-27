@@ -403,7 +403,11 @@ Shared result rules:
 
 `mesh_import` accepts `.stl`, `.3mf`, `.step`, and `.stp`, which is the Open dialog's list (`src/app/markup.ts`). A `.lime` is `project_open`, not an import. A foreign 3MF adds the mesh and returns the sentence from `foreign3mfMessage`; it does not import that slicer's settings.
 
-`object_place` does not take Euler angles. Bed orientation stays a matrix plus the named operations, matching `docs/plate-placement.md`.
+`mesh_import {path, pieces: true}` opens a STEP of several solids as one object per solid, the window's Open as N pieces. Without `pieces` the file is one object.
+
+`object_place` takes `rotX`, `rotY`, and `rotZ` as absolute angles in degrees, and `turn {axis, degrees}` as a relative one. With `settle: true` after a turn, the part rests on the flat face with the most bed contact when one lies within 12°, as the window's Settle on the bed does, and the reply adds `rotationDeg` and `contactMm2`. `align {to, how}` lines the part up with another object, or with `"bed"`, by the same rules as the Place panel's Align to…, from `src/place-snap.ts` (`alignDelta`). `how` is `flush-left`, `flush-right`, `flush-front`, `flush-back` (the same edge on both), `left-of`, `right-of`, `front-of`, `behind` (touching), `centre-x`, `centre-y`, `centre`, or `on-top` (the base on the other's top). Front is low Y. The bed takes only the flush and centre relations. The move is exact in millimetres, and a part aligned to itself, to an unknown object, or to the bed with a touching relation is refused with a sentence. `align` runs after the other options in the same call, and the call is one undo step (`plate_undo`). `object_select {object, name}` renames the object, and `solid_new` takes `name` for the new solid. A pocket or boss takes `from: "box"` as its default anchor.
+
+The bed orientation is otherwise a matrix plus the named operations, matching `docs/plate-placement.md`.
 
 ### Model editing
 
