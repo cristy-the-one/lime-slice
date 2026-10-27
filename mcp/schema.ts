@@ -670,7 +670,7 @@ const partitionOp = {
           origin: vec3,
           normal: vec3,
           u: { ...vec3, description: "Along the cut. Default: the section's longer side." },
-          profile: { type: "object", description: "{kind:\"straight\"}, the default and the only one built yet." },
+          profile: { type: "object", description: "{kind}: straight (default), lap {depth, height, side}, tongue {width, depth, side}, zigzag {pitch, depth, angle, side}, dovetail {width, angle, depth, slide, side}; mm, optional. No connectors on a shaped cut." },
           connectors: {
             type: "object",
             additionalProperties: false,
@@ -689,6 +689,10 @@ const partitionOp = {
                     type: { enum: ["dowel", "plug", "hardware", "key", "dovetail"], description: "dowel: a hole in both pieces and a pin object. plug: a peg fused to one piece, a socket in the other. hardware: holes for a bought pin or magnet. key, dovetail: not built yet." },
                     radius: { type: "number", minimum: 0, description: "Pin or plug, mm. Default max(3, 4 × nozzle)." },
                     diameter: { type: "number", minimum: 0, description: "Hardware hole: the bought part's, mm." },
+                    width: { type: "number", minimum: 0, description: "Key or dovetail, mm." },
+                    height: { type: "number", minimum: 0, description: "Key, along V, mm." },
+                    angle: { type: "number", minimum: 0, maximum: 60, description: "Dovetail flank, degrees." },
+                    slide: { enum: ["u", "v"], description: "Dovetail slide, along U or V." },
                     depth: { type: "number", minimum: 0, description: "Along the cut: a pin's whole length, a plug's height, mm. Default 4." },
                     count: { description: "fit (default): as many as the section holds; or a number.", oneOf: [{ const: "fit" }, { type: "integer", minimum: 0 }] },
                     margin: { type: "number", minimum: 0, description: "Inset from the section outline, mm." },
@@ -932,7 +936,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "plate_list",
-    description: "Objects on the plate: name, size, centre, and off-bed notes.",
+    description: "Objects on the plate: name, size, centre, and off-bed notes. bboxMm is the print layout; assembledMm is the part in model space (model_place).",
     inputSchema: page,
   },
   {
@@ -1355,7 +1359,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_place",
-    description: "Model pose in millimetres and degrees. The bed moves at model_commit.",
+    description: "Set the assembled pose: model space, mm and degrees. The print layout does not move. frame part types later Model numbers in the part's own frame, so they do not follow the pose.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1367,6 +1371,7 @@ export const TOOLS: ToolSpec[] = [
         turnX: { type: "number" },
         turnY: { type: "number" },
         turnZ: { type: "number" },
+        frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default model: they follow the pose." },
       },
     },
   },

@@ -22,6 +22,8 @@ export interface JointFace {
 export interface JointPlane {
   origin: Vec3;
   normal: Vec3;
+  /** The cut it belongs to, when it is one flat of a shaped cut's joint; absent is its own index. */
+  cut?: number;
 }
 
 /** Float32 mesh coordinates of a 500 mm part are good to a few 1e-5 mm; a face is on its plane to this. */
@@ -51,15 +53,16 @@ export function jointFaces(positions: ArrayLike<number>, planes: readonly JointP
     const area = length(twice) / 2;
     if (area < 1e-12) continue;
     const facing = unit(twice);
-    planes.forEach((plane, cut) => {
-      const n = units[cut]!;
+    planes.forEach((plane, index) => {
+      const cut = plane.cut ?? index;
+      const n = units[index]!;
       const side = dot(facing, n);
       if (Math.abs(side) < 1 - 1e-6) return;
       for (const p of [a, b, c]) {
         if (Math.abs(dot([p[0] - plane.origin[0], p[1] - plane.origin[1], p[2] - plane.origin[2]], n)) > ON_PLANE_MM) return;
       }
       const sign = side > 0 ? 1 : -1;
-      const key = `${cut}:${sign}`;
+      const key = `${index}:${sign}`;
       const row = found.get(key) ?? { cut, outward: [n[0] * sign, n[1] * sign, n[2] * sign] as Vec3, area: 0 };
       row.area += area;
       found.set(key, row);
@@ -159,4 +162,25 @@ export function storedOrient(choices: readonly OrientChoice[]): "keep" | OrientC
 /** A matrix as the plate keeps it, with its rows read back: the rotation that puts `outward` along −Z, for the sentence. */
 export function facesDown(orient: Mat3, outward: Vec3): number {
   return orient[6] * outward[0] + orient[7] * outward[1] + orient[8] * outward[2];
+}
+
+/**
+ * The planes a piece's joint faces can lie on, from the op's cuts in the piece's frame: a straight cut's one plane; a
+ * lap's two flats (the cut's plane and the plane its step carries the second flat to); a tongue's plane and the plane of
+ * the tongue's end. Each says which cut it belongs to, so Joint down on a profiled cut takes the largest flat face on a
+ * cut plane (plan section 24).
+ */
+export function jointPlanes(cuts: readonly { origin: Vec3; normal: Vec3; profile?: { kind: string; depth?: number; side?: string } }[]): JointPlane[] {
+  return cuts.flatMap((cut, at): JointPlane[] => {
+    const own: JointPlane = { origin: cut.origin, normal: cut.normal, cut: at };
+    const depth = cut.profile?.depth;
+    const kind = cut.profile?.kind;
+    if (!["lap", "zigzag", "tongue", "dovetail"].includes(kind ?? "") || typeof depth !== "number") return [own];
+    const n = unit(cut.normal);
+    // A lap carries its second flat to the side it names; a tongue stands from the piece that carries it toward the mate.
+    const carried = kind === "lap" || kind === "zigzag";
+    const toward = carried ? (cut.profile?.side === "negative" ? -1 : 1) : cut.profile?.side === "negative" ? 1 : -1;
+    const shift = toward * depth;
+    return [own, { origin: [cut.origin[0] + n[0] * shift, cut.origin[1] + n[1] * shift, cut.origin[2] + n[2] * shift], normal: cut.normal, cut: at }];
+  });
 }

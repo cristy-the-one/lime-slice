@@ -699,6 +699,8 @@ int lime_tree_partition(
     const double* joints,
     int joint_count,
     const double* up,
+    const double* profiles,
+    int profile_count,
     LimeShape** out,
     char** placed,
     LimeShape** pins,
@@ -714,7 +716,29 @@ int lime_tree_partition(
         }
         std::string message;
         std::vector<PartitionPiece> pieces;
-        if (!build_partition(from->held.shape, planes, pieces, message)) {
+        std::vector<PartitionProfile> shapes;
+        for (int index = 0; index < profile_count; ++index) {
+            const double* at = profiles + kProfileStride * index;
+            PartitionProfile one;
+            one.kind = static_cast<int>(at[0]);
+            one.a = at[1];
+            one.b = at[2];
+            one.c = at[3];
+            one.d = at[4];
+            one.e = at[5];
+            one.f = at[6];
+            one.g = at[7];
+            one.h = at[8];
+            one.angle = at[9];
+            one.slide = static_cast<int>(at[10]);
+            one.u[0] = at[11];
+            one.u[1] = at[12];
+            one.u[2] = at[13];
+            shapes.push_back(one);
+        }
+        if (!build_partition(from->held.shape, planes, pieces, message, shapes) ||
+            !build_tongues(pieces, planes, shapes, message)) {
+            pieces.clear();
             set_error(error, message);
             return -1;
         }
@@ -741,6 +765,9 @@ int lime_tree_partition(
                 spec.end_gap = at[8];
                 spec.teardrop = at[9] != 0.0;
                 spec.side = at[10] < 0.0 ? -1 : 1;
+                spec.height = at[11];
+                spec.angle = at[12];
+                spec.slide = static_cast<int>(at[13]);
                 specs.push_back(spec);
             }
             const gp_Vec lift(up[0], up[1], up[2]);

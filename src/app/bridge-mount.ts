@@ -141,6 +141,7 @@ function toPlateObject(row: MirrorObject<PlateObject>): PlateObject {
   delete next.brep;
   delete next.modelTree;
   delete next.modelPose;
+  delete next.frame;
   delete next.workplane;
   return next;
 }

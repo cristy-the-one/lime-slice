@@ -357,3 +357,71 @@ fn every_connector_dropped_makes_a_plain_cut() {
     );
     assert_eq!(made["op"]["cuts"][0]["connectors"]["placed"], json!([]));
 }
+
+/// A key: a rectangular prism fused onto the positive piece, its groove (the key grown by the clearance each side and the end
+/// gap at the bottom) cut from the negative one.
+#[test]
+fn a_key_is_fused_onto_one_piece_and_its_groove_cut_from_the_other() {
+    let key = json!({ "type": "key", "width": 8.0, "height": 5.0, "depth": 3.0, "clearance": 0.15, "endGap": 0.4,
+        "count": "fit", "margin": 5.0, "place": "fit", "at": [] });
+    let Some(made) = cut(&op(key, placed("key", &[[0.5, 0.5]]), [0.0, 0.0, 1.0])) else {
+        return;
+    };
+    let pieces = made["pieces"].as_array().expect("pieces");
+    assert_eq!(pieces.len(), 2);
+    for piece in pieces {
+        whole(piece);
+    }
+    within(volume(&pieces[1]), PART / 2.0 + 8.0 * 5.0 * 3.0, 1e-6);
+    within(
+        volume(&pieces[0]),
+        PART / 2.0 - (8.0 + 0.3) * (5.0 + 0.3) * (3.0 + 0.4),
+        1e-6,
+    );
+    assert_eq!(made["connectors"]["placed"][0]["id"], json!("c1-1"));
+    assert_eq!(made["connectors"]["dropped"], json!([]));
+    assert!(made["pins"].is_null(), "a key makes no pin");
+}
+
+/// A dovetail: the same, a trapezoid whose end is the wide one, `angle` from the normal, sliding along U.
+#[test]
+fn a_dovetail_key_has_a_neck_and_a_groove_grown_square_to_its_flanks() {
+    let dovetail = json!({ "type": "dovetail", "width": 8.0, "angle": 20.0, "depth": 3.0, "slide": "u",
+        "clearance": 0.15, "endGap": 0.4, "count": "fit", "margin": 5.0, "place": "fit", "at": [] });
+    let Some(made) = cut(&op(
+        dovetail,
+        placed("dovetail", &[[0.5, 0.5]]),
+        [0.0, 0.0, 1.0],
+    )) else {
+        return;
+    };
+    let pieces = made["pieces"].as_array().expect("pieces");
+    for piece in pieces {
+        whole(piece);
+    }
+    let lean = (20.0_f64).to_radians().tan();
+    let root = 4.0 - 3.0 * lean;
+    let peg = 8.0 * (2.0 * root + 8.0) / 2.0 * 3.0;
+    let grow = 0.15 / (20.0_f64).to_radians().cos();
+    let groove = (8.0 + 0.3) * (2.0 * (root + grow) * 3.4 + lean * 3.4 * 3.4);
+    within(volume(&pieces[1]), PART / 2.0 + peg, 1e-6);
+    within(volume(&pieces[0]), PART / 2.0 - groove, 1e-6);
+    assert_eq!(made["connectors"]["dropped"], json!([]));
+}
+
+#[test]
+fn a_key_that_would_break_through_is_left_out_and_named() {
+    let key = json!({ "type": "key", "width": 8.0, "height": 5.0, "depth": 3.0, "clearance": 0.15, "endGap": 0.4,
+        "count": "fit", "margin": 5.0, "place": "fit", "at": [] });
+    let Some(made) = cut(&op(
+        key,
+        placed("key", &[[0.5, 0.5], [0.02, 0.5]]),
+        [0.0, 0.0, 1.0],
+    )) else {
+        return;
+    };
+    assert_eq!(made["connectors"]["dropped"][0]["id"], json!("c1-2"));
+    assert_eq!(made["connectors"]["dropped"][0]["reason"], json!("breaks"));
+    let pieces = made["pieces"].as_array().expect("pieces");
+    within(volume(&pieces[1]), PART / 2.0 + 8.0 * 5.0 * 3.0, 1e-6);
+}

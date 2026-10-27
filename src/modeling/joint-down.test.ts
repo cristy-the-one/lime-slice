@@ -2,7 +2,7 @@
  * --- Split to print, milestone 7: the rotation that puts a piece's joint face on the bed, for an axis cut, a tilted cut,
  * and a piece between two cuts; and the choices an op stores.
  */
-import { choiceAt, jointDown, jointFaces, storedOrient, type Mat3 } from "./joint-down.ts";
+import { choiceAt, jointDown, jointFaces, jointPlanes, storedOrient, type Mat3 } from "./joint-down.ts";
 import type { Vec3 } from "./partition.ts";
 
 let failed = 0;
@@ -127,6 +127,19 @@ check("equal faces go to the earlier cut", (() => {
   return jointDown(mid, planes1)!.face.cut === 0;
 })());
 check("a piece with no cut face has no joint", jointDown(prism([[0, 0], [10, 0], [10, 10], [0, 10]], 10), [{ origin: [500, 0, 0], normal: [1, 0, 0] }]) === null);
+
+// --- A profiled cut has more than one flat: Joint down takes the largest flat face on a cut plane.
+const lapCut = { origin: [100, 10, 10] as Vec3, normal: [1, 0, 0] as Vec3, profile: { kind: "lap", depth: 8, side: "positive" } };
+const lapPlanes = jointPlanes([lapCut]);
+check("a lap has two flats, the cut's plane and the plane its step carries the second to, both its own cut", lapPlanes.length === 2 && lapPlanes.every((plane) => plane.cut === 0) && near(lapPlanes[1]!.origin[0], 108), show(lapPlanes));
+check("a negative lap carries it the other way", near(jointPlanes([{ ...lapCut, profile: { kind: "lap", depth: 8, side: "negative" } }])[1]!.origin[0], 92));
+check("a tongue's end is a plane too: toward the mate from the piece that carries it", near(jointPlanes([{ ...lapCut, profile: { kind: "tongue", depth: 3, side: "positive" } }])[1]!.origin[0], 97) && near(jointPlanes([{ ...lapCut, profile: { kind: "tongue", depth: 3, side: "negative" } }])[1]!.origin[0], 103));
+check("a straight cut is one plane", jointPlanes([{ origin: [1, 2, 3], normal: [1, 0, 0] }]).length === 1 && jointPlanes([{ origin: [1, 2, 3], normal: [1, 0, 0], profile: { kind: "straight" } }]).length === 1);
+const onSecond = prism([[108, 0], [200, 0], [200, 20], [108, 20]], 20);
+const second = jointFaces(onSecond, lapPlanes);
+check("a piece whose face is on the second flat finds it, as cut 1", second.length === 1 && second[0]!.cut === 0 && show(second[0]!.outward) === show([-1, 0, 0]) && near(second[0]!.area, 400, 1e-6), show(second));
+const bigFlat = jointDown(prism([[100, 0], [200, 0], [200, 20], [100, 20]], 20), lapPlanes)!;
+check("and one on the first flat finds that one: the face on the bed is the one on a plane", bigFlat.face.cut === 0 && near(turn(bigFlat.orient, [-1, 0, 0])[2], -1));
 
 // --- The choices.
 check("keep is every piece's when the op says keep", choiceAt("keep", 0) === "keep" && choiceAt(undefined, 3) === "keep");

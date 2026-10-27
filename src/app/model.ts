@@ -176,7 +176,7 @@ import { bedFrame, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateU
 import { SUPPORT_NOTE, exportStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
 import { clampPieces, defaultsFor, enterMeasured, fillConnector, mm as mmText, resetMeasured, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { couponFileName, couponInputFor, fitCoupon, fitCouponRequest, readCouponReply } from "../modeling/fit-coupon.ts";
-import { choiceAt, jointDown } from "../modeling/joint-down.ts";
+import { choiceAt, jointDown, jointPlanes } from "../modeling/joint-down.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
@@ -6203,7 +6203,7 @@ function orientPieces(partId: string, first: Float32Array, keys: readonly (strin
   const part = state.plate.objects.find((obj) => obj.id === partId);
   if (!part) return out;
   const base = keptOrients.get(part.id) ?? part.orient;
-  const planes = op.cuts.map((cut) => ({ origin: cut.origin, normal: cut.normal }));
+  const planes = jointPlanes(op.cuts);
   const belt = onBelt();
   const rows: { id: string; positions: Float32Array; index: number | null }[] = [{ id: part.id, positions: first, index: 0 }];
   keys.forEach((key, at) => {

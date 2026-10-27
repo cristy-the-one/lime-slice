@@ -183,6 +183,18 @@ Each one lands as its own PR, is usable, and has tests.
 
 M1 is the quick one that closes the owner's confusion, and it should land first on its own. M2 to M4 are the owner's scenario for the MCP. M5 to M7 are the app. M8 and M9 follow.
 
+### As built: M1
+
+M1 landed with the part frame (section 4, change 3) in it, since the owner's item 18 needs it: saying which pose `model_place` set does not stop a later edit from refusing.
+
+- **`model_place` says what it did.** The reply carries `pose: "assembled"`, `frame`, `assembledMm` (the part's box in model space, to 0.01 mm) and the sentence "Assembled pose set. The print layout is unchanged." The false schema text "The bed moves at model_commit" is gone.
+- **`plate_list` reports both.** `bboxMm` is still the print layout. Each row gains `assembledMm`, the part's box under `modelPose` (from the solid when it has one, else from the plate mesh by its seat), and `frame` when it is `"part"`. The key is `assembledMm`, not `assembled`, to match `bboxMm`. `assembly` waits for M2.
+- **Survival is tested, and nothing needed fixing.** `src/plate.test.ts` pins that `arrangedObjects` (with and without `keep`) and a centred read leave `modelPose` and `frame` alone. `mcp/assemblies-m1.test.ts` pins it through `model_place`, `object_place` (centre on the bed), `plate_arrange` and `model_commit`, on the real engine.
+- **The frame.** `PlateObject.frame` is `"model" | "part"`, absent for `"model"` (D2: nothing changes for any existing object). `model_place {frame}` sets it. With `"part"`, every typed number in the MCP (`bake`, the workplane, the `render_view` section, the checks and the pieces they report, the partition planner) goes through `typedPoseOf` (`src/model-space.ts`), which is the identity for a part-frame object, so a stored op is the op that was typed. A join still stores the true relative pose of its two objects. On `main`, a box with a hook fused on and then `model_place x: 200` refuses the same hook in `model_probe` ("This would add a separate body ... at least 149 mm clear of the part's bounding box"), and `model_edit` then answers "Probe this edit first". With `frame: "part"` the probe, the edit and a further apply all work; with the default frame they refuse exactly as before.
+- **The file.** `frame` is saved as `"part"` on the object row and omitted for `"model"`. An older app ignores it and drops it on its next save, as it does `heldPieces`. The app reads and writes it, and copies it on duplicate and on a split's pieces, so a project the MCP saved keeps it through the app.
+- **Not in M1.** The app still types Model numbers in model space whatever `frame` says (the viewport, its picks and the panel share `openPose()`). The Place tool's frame control and the app side of the frame are M5. A refusal does not yet name the frame (M4). `faces_find`, `edges_find` and `surface_at` answer in the part frame, as before.
+- **Tests.** `src/plate.test.ts`, `src/project.test.ts`, `src/model-space.test.ts`, `mcp/assemblies-m1.test.ts` (added to the CI step that runs against real Open CASCADE), and the unchanged token budgets in `mcp/schema.test.ts`.
+
 ## 9. Open decisions
 
 | # | Question | Recommendation |

@@ -414,6 +414,143 @@ test("Joint down is not offered for the Form 4: the pieces stay as cut for PreFo
   await expect(page.locator("#modelPartDone")).toBeVisible();
 });
 
+// --- Milestone 8: lap and tongue profiles on a cut.
+const profileKind = (page: Page) => page.locator("#modelPartProfileKind");
+type Shaped = { kind: string; depth?: number; height?: number; width?: number; side?: string; at?: number; clearance?: number; endGap?: number; u0?: number; u1?: number; v?: number };
+const lastProfile = (tree: TreeMock) => ((tree.of("probe").at(-1)?.op as { cuts: { profile?: Shaped }[] } | undefined)?.cuts[0]?.profile) ?? { kind: "straight" };
+
+test("a cut's Profile menu offers Straight, Lap and Tongue; a lap shows Depth, Height and Side with the planner's defaults and sends the step resolved on the section", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await expect(profileKind(page)).toHaveValue("straight");
+  await expect(page.locator("#modelPartProfileFields"), "a plain cut shows no profile fields").toBeHidden();
+  await profileKind(page).selectOption("lap");
+  await expect(page.locator("#modelPartProfileFields")).toBeVisible();
+  await expect(page.locator("#modelPartProfileDepth")).toHaveAttribute("placeholder", "8");
+  await expect(page.locator("#modelPartProfileHeight")).toHaveAttribute("placeholder", "Half");
+  await expect(page.locator("#modelPartProfileWidth"), "a tongue's width waits for its kind").toBeHidden();
+  await expect.poll(() => lastProfile(tree).kind).toBe("lap");
+  expect(lastProfile(tree)).toEqual(expect.objectContaining({ kind: "lap", depth: 8, height: 10, side: "positive" }));
+  expect(typeof lastProfile(tree).at, "the step is a position on the section, from the cut's origin").toBe("number");
+  await page.locator("#modelPartProfileDepth").fill("10");
+  await page.locator("#modelPartProfileDepth").dispatchEvent("change");
+  await page.locator("#modelPartProfileHeight").fill("6");
+  await page.locator("#modelPartProfileHeight").dispatchEvent("change");
+  await page.locator("#modelPartProfileSide").selectOption("negative");
+  await expect.poll(() => lastProfile(tree)).toEqual(expect.objectContaining({ kind: "lap", depth: 10, height: 6, side: "negative" }));
+  await page.locator("#modelPartProfileDepth").fill("2");
+  await page.locator("#modelPartProfileDepth").dispatchEvent("change");
+  await expect(page.locator("#modelPartProfileNote"), "a depth under the floor says so").toContainText("Lap depth is 2 mm, under the 2.4 mm floor.");
+  await expect(apply(page)).toBeDisabled();
+  await page.locator("#modelPartProfileDepth").fill("");
+  await page.locator("#modelPartProfileDepth").dispatchEvent("change");
+  await expect(page.locator("#modelPartProfileNote")).toBeHidden();
+  await jointsOn(page).check();
+  await expect(page.locator("#modelPartProfileNote")).toHaveText("Connectors on a shaped cut are not built yet. Turn them off, or cut straight.");
+  await expect(apply(page), "the cut says why it cannot be built").toBeDisabled();
+  await jointsOn(page).uncheck();
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await page.waitForTimeout(400);
+  await shot(page, "profile-lap");
+  await profileKind(page).selectOption("straight");
+  await expect(page.locator("#modelPartProfileFields")).toBeHidden();
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
+  expect((tree.of("apply").at(-1)!.op as { cuts: { profile: Shaped }[] }).cuts[0]!.profile.kind, "back to straight is a plain cut").toBe("straight");
+});
+
+test("a tongue sends its width, depth, clearance, end gap and its place on the section, and Apply stores the lap", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await profileKind(page).selectOption("tongue");
+  await expect(page.locator("#modelPartProfileWidth")).toBeVisible();
+  await expect(page.locator("#modelPartProfileWidth")).toHaveAttribute("placeholder", "6");
+  await expect(page.locator("#modelPartProfileHeight"), "a lap's height waits for its kind").toBeHidden();
+  await expect.poll(() => lastProfile(tree)).toEqual(expect.objectContaining({ kind: "tongue", width: 6, depth: 3, side: "positive", clearance: 0.15, endGap: 0.4, v: 0 }));
+  const tongue = lastProfile(tree);
+  expect(tongue.u1! - tongue.u0!, "20 mm of section less the 3.95 mm margin each end").toBeCloseTo(12.1, 6);
+  await profileKind(page).selectOption("lap");
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
+  const applied = tree.of("apply").at(-1)!.op as { cuts: { profile: Shaped }[] };
+  expect(applied.cuts[0]!.profile).toEqual(expect.objectContaining({ kind: "lap", depth: 8, height: 10, side: "positive" }));
+  await page.getByRole("treeitem", { name: /^Split to print, 3 parts/ }).locator(".mh-edit").click();
+  await expect(profileKind(page), "the pencil reopens the card with the lap").toHaveValue("lap");
+  await expect(page.locator("#modelPartProfileDepth")).toHaveValue("8");
+  await expect(page.locator("#modelPartProfileHeight")).toHaveValue("10");
+});
+
+// --- Milestone 9: zig-zag and dovetail profiles, and key and dovetail connectors.
+test("a zig-zag shows Pitch, Depth and Angle, and a dovetail Width, Depth, Angle and Slide, each sending its sizes resolved on the section", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await profileKind(page).selectOption("zigzag");
+  await expect(page.locator("#modelPartProfilePitch")).toBeVisible();
+  await expect(page.locator("#modelPartProfileAngle")).toBeVisible();
+  await expect(page.locator("#modelPartProfileWidth"), "a tongue's width waits for its kind").toBeHidden();
+  await expect(page.locator("#modelPartProfileSlideRow"), "and so does a dovetail's slide").toBeHidden();
+  await expect(page.locator("#modelPartProfilePitch")).toHaveAttribute("placeholder", "10");
+  await expect(page.locator("#modelPartProfileDepth")).toHaveAttribute("placeholder", "3");
+  await expect.poll(() => lastProfile(tree)).toEqual(expect.objectContaining({ kind: "zigzag", pitch: 10, depth: 3, angle: 0, side: "positive", u0: -10 }));
+  await page.locator("#modelPartProfileAngle").fill("20");
+  await page.locator("#modelPartProfileAngle").dispatchEvent("change");
+  await expect.poll(() => lastProfile(tree)).toEqual(expect.objectContaining({ kind: "zigzag", angle: 20 }));
+  await profileKind(page).selectOption("dovetail");
+  await expect(page.locator("#modelPartProfileSlideRow")).toBeVisible();
+  await expect(page.locator("#modelPartProfileWidth")).toHaveAttribute("placeholder", "8");
+  await expect(page.locator("#modelPartProfileAngle")).toHaveAttribute("placeholder", "20");
+  await expect(page.locator("#modelPartProfilePitch"), "a zig-zag's pitch waits for its kind").toBeHidden();
+  await expect.poll(() => lastProfile(tree)).toEqual(expect.objectContaining({ kind: "dovetail", width: 8, angle: 20, depth: 3, slide: "u", side: "positive", clearance: 0.15, endGap: 0.4, u0: -10, u1: 10, v: 0 }));
+  await page.locator("#modelPartProfileSlide").selectOption("v");
+  await expect.poll(() => lastProfile(tree)).toEqual(expect.objectContaining({ kind: "dovetail", slide: "v" }));
+  await page.locator("#modelPartProfileAngle").fill("60");
+  await page.locator("#modelPartProfileAngle").dispatchEvent("change");
+  await expect(page.locator("#modelPartProfileNote")).toContainText("This dovetail's neck is 0 mm, under 0.8 mm. Lower the angle or widen the dovetail.");
+  await expect(apply(page)).toBeDisabled();
+  await page.locator("#modelPartProfileAngle").fill("");
+  await page.locator("#modelPartProfileAngle").dispatchEvent("change");
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await page.waitForTimeout(400);
+  await shot(page, "profile-dovetail");
+});
+
+test("Key and Dovetail connectors show their own fields and are placed on the section", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await jointsOn(page).check();
+  await page.locator("#modelPartJointType").selectOption("key");
+  await expect(page.locator("#modelPartJointWidth")).toBeVisible();
+  await expect(page.locator("#modelPartJointHeight")).toBeVisible();
+  await expect(page.locator("#modelPartJointWidth")).toHaveValue("6");
+  await expect(page.locator("#modelPartJointHeight")).toHaveValue("6");
+  await expect(page.locator("#modelPartJointDepth")).toHaveValue("3");
+  await expect(page.locator("#modelPartJointGap")).toHaveValue("0.4");
+  await expect(page.locator("#modelPartJointRadius"), "a dowel's radius is not a key's").toBeHidden();
+  await expect(page.locator("#modelPartJointAngle")).toBeHidden();
+  const typesOf = () => ((tree.of("probe").at(-1)?.op as { cuts: { connectors?: { types?: { type: string; width?: number; height?: number; slide?: string; angle?: number }[]; placed?: unknown[] } }[] } | undefined)?.cuts[0]?.connectors) ?? {};
+  await expect.poll(() => typesOf().types?.[0]?.type).toBe("key");
+  expect(typesOf().types?.[0]).toEqual(expect.objectContaining({ width: 6, height: 6, depth: 3, clearance: 0.15, endGap: 0.4 }));
+  expect((typesOf().placed ?? []).length, "the planner placed keys on the 20 mm section").toBeGreaterThan(0);
+  await page.locator("#modelPartJointHeight").fill("4");
+  await page.locator("#modelPartJointHeight").dispatchEvent("change");
+  await expect.poll(() => typesOf().types?.[0]?.height).toBe(4);
+  await page.locator("#modelPartJointType").selectOption("dovetail");
+  await expect(page.locator("#modelPartJointAngle")).toBeVisible();
+  await expect(page.locator("#modelPartJointAngle")).toHaveValue("20");
+  await expect(page.locator("#modelPartJointSlide")).toBeVisible();
+  await expect(page.locator("#modelPartJointWidth")).toHaveValue("8");
+  await expect(page.locator("#modelPartJointHeight"), "a key's height waits for its kind").toBeHidden();
+  await expect.poll(() => typesOf().types?.[0]).toEqual(expect.objectContaining({ type: "dovetail", width: 8, angle: 20, slide: "u" }));
+  await page.locator("#modelPartJointSlide").selectOption("v");
+  await expect.poll(() => typesOf().types?.[0]?.slide).toBe("v");
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
+  await expect(labels(page)).toHaveText(["bar.step", "Split to print, 3 parts, dovetails"]);
+});
+
 test("lay out places only the new pieces, around an object that stays where it was", async ({ page }) => {
   await openBar(page);
   // A second object on the plate, where a whole-plate Arrange would start from.
