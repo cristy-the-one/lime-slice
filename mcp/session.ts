@@ -128,6 +128,7 @@ import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosav
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
+import { interference } from "../src/interference.ts";
 import { assemblyOf, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
 import { followRepeatSources, repeatLabel } from "../src/model-repeat.ts";
@@ -3850,6 +3851,54 @@ export class Session {
     }));
   }
 
+  /**
+   * --- Assemblies M6. Every pair of parts in `obj`'s assembly, at their assembled poses: the mesh pass's answer, clear,
+   * touch or crossing, and nested for a part wholly inside another. Pairs that are clear are counted, not listed.
+   */
+  private interferenceCheck(obj: PlateObject): Record<string, unknown> {
+    const assembly = assemblyOf(this.liveAssemblies(), obj.id);
+    if (!assembly) return { ok: false, reason: "This part is in no assembly. model_place {to} puts it in one." };
+    const members = assembly.members.flatMap((row) => {
+      const part = this.find(row.object);
+      if (!part) return [];
+      const solid = !!part.solid && part.solid.positions.length >= 9;
+      const positions = solid ? part.solid!.positions : part.source;
+      return positions.length >= 9 ? [{ part, positions: positions instanceof Float32Array ? positions : new Float32Array(positions), pose: solid ? part.modelPose : thenPose(seatLift(part.seatMm), part.modelPose) }] : [];
+    });
+    const pairs: Record<string, unknown>[] = [];
+    let clear = 0;
+    for (let i = 0; i < members.length; i += 1) {
+      for (let j = i + 1; j < members.length; j += 1) {
+        const a = members[i]!;
+        const b = members[j]!;
+        const result = interference(a, b);
+        if (result.verdict === "clear") {
+          clear += 1;
+          continue;
+        }
+        pairs.push({
+          a: a.part.id,
+          b: b.part.id,
+          names: [shownName(a.part.name), shownName(b.part.name)],
+          verdict: result.verdict,
+          ...(result.nested ? { nested: true } : {}),
+          ...(result.at ? { atMm: result.at.map((v) => Math.round(v * 100) / 100) } : {}),
+        });
+      }
+    }
+    const crossing = pairs.filter((row) => row.verdict === "crossing" || row.nested).length;
+    return {
+      ok: true,
+      assembly: assembly.name,
+      pass: "mesh",
+      pairs,
+      clearPairs: clear,
+      note: crossing > 0
+        ? `${crossing} pair${crossing === 1 ? "" : "s"} share volume by the mesh. Nothing is blocked: a press fit is meant to cross.`
+        : "No pair shares volume by the mesh. A touch is faces or edges resting on each other.",
+    };
+  }
+
   /** The tool shape of a boolean op, for a preview: it is drawn, never applied. */
   private async ghostMesh(obj: PlateObject, raw: unknown): Promise<Ghost | { reason: string }> {
     const tree = await this.opened(obj);
@@ -3872,6 +3921,7 @@ export class Session {
   }
 
   private async modelCheck(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (input.interference === true) return this.interferenceCheck(obj);
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid || obj.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };

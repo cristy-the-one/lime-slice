@@ -1,6 +1,6 @@
 import { ArrowDownToLine, Copy, Crosshair, LayoutGrid, Plus, RotateCw, createElement, type IconNode } from "lucide";
 import { fx } from "./fx";
-import { assemblyView, liveAssemblies } from "./assemblies.ts";
+import { assemblyClashes, assemblyView, liveAssemblies } from "./assemblies.ts";
 import { assemblyOf } from "../assembly.ts";
 import { settleOn } from "../bed-rest-pref";
 import { state, session, STEP_TOLERANCE_DEFAULT, type CardId, type SliceResponse } from "./state";
@@ -805,9 +805,12 @@ function objectListHtml(): string {
       </div>${members.map(row).join("")}`;
   }).join("");
   const overlap = pairs.map((pair) => pair.line).join("; ");
+  // --- Assemblies M6 (D5). In the assembly view the bed's row gives way to the parts that cross in an assembly.
+  const clashes = assemblyView.on ? assemblyClashes().map((row) => row.line).join("; ") : "";
   return `
     <div class="object-list" id="objectList"><div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${boundsSize(state.placed.bounds)} mm</span></div>`}</div></div>
-    ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)} <button class="btn" type="button" data-plate-arrange>Arrange</button></div>` : ""}`;
+    ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)} <button class="btn" type="button" data-plate-arrange>Arrange</button></div>` : ""}
+    ${clashes ? `<div class="meta warn-text" id="assemblyInterference" data-tip="Mesh check at the assembled poses. It never blocks a slice: a press fit is meant to cross.">${escapeHtml(clashes)}</div>` : ""}`;
 }
 
 function objectPlaceHtml(): string {

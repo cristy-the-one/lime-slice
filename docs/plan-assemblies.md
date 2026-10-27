@@ -239,6 +239,26 @@ M2 is data only, so M3, which is the first use of that data, landed in the same 
 
   `mcp/assembly.test.ts` covers `render_view {view}`.
 
+### As built: M6
+
+- **`src/interference.ts`.** `interference(a, b)` takes two triangle soups, each in its own frame with a pose into model space, and answers `clear`, `touch` (with `nested` when one part lies wholly inside the other) or `crossing` (with a point on the first crossing).
+  - **Boxes.** Posed boxes more than `CONTACT_MM` (1e-3 mm) apart are clear.
+  - **Triangles.** A box tree over each mesh's own triangles is built once per array and reused for every pose. The part with fewer triangles is brought into the other's frame, and only its triangles in the two boxes' common part are tested.
+  - **What counts as crossing.** Two triangles cross only when each straddles the other's plane by more than `CONTACT_MM` and their cut lines overlap by more than it. A face on a face, an edge on a face and a part flush against a side are therefore touches. That covers a hook sitting on a rim.
+  - **Nesting.** It needs the smaller part's box inside the other's box, and most of four sampled corners inside the other's surface by ray parity. One corner alone does not decide, because a corner on the surface is ambiguous.
+- **The app (D5).** In the assembly view the pass runs by itself for every pair inside one assembly, and the answer is kept until a mesh or a pose of the pair changes. Crossing and nested parts are tinted amber (`data-clashing` on the canvas). The object list shows "<a> crosses <b>" (or "one sits inside the other") where the print layout shows its overlap row. Nothing blocks a slice. The answer comes from the plate's meshes, so for a solid it is as fine as the plate's mesh.
+- **The MCP.** `model_check {object, interference: true}` returns, for that object's assembly, `pass: "mesh"`, every pair that is not clear (`a`, `b`, `names`, `verdict`, `nested`, `atMm`), the count of clear pairs, and a note that nothing is blocked. It takes the solid's mesh when the part has one, else the plate mesh. A part in no assembly is told to use `model_place {to}`.
+- **Tests.** `src/interference.test.ts` (in `tools/unit-tests.txt`) covers:
+  - clear, including a 0.1 mm gap;
+  - touch: on top, flush either side, an edge resting on a face, a corner;
+  - crossing: sunk, tilted, a peg through, half out, and both orders;
+  - nested, either way round, and resting on the inside floor;
+  - the same pairs moved and turned together;
+  - triangle pairs;
+  - two 20 000-triangle spheres whose boxes overlap but which do not meet: about 55 ms here, under a 1 s budget. Pushed together, they cross.
+
+  `e2e/assembly.spec.ts` checks the tint and the row for two parts assembled on one spot, and no tint for the ledge resting on the cube. `mcp/assembly.test.ts` checks a resting hook (a touch), a pin sunk 3 mm (crossing, with `atMm`), and a part in no assembly.
+
 ## 9. Open decisions
 
 | # | Question | Recommendation |
