@@ -375,6 +375,19 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   check("a key is refused with its sentence", keyed.ok === false && keyed.reason === "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.", JSON.stringify(keyed));
 }
 
+// The convex filter on a box (12 convex edges) and on a stepped part with one concave edge.
+{
+  const made = await call("solid_new", { primitive: "box", dx: 40, dy: 30, dz: 20 });
+  const stepped = String(made.object);
+  const count = async (convex?: boolean) => ((await call("edges_find", { object: stepped, ...(convex === undefined ? {} : { convex }), limit: 100 })).edges as unknown[] | undefined)?.length;
+  check("a box has 12 edges, all convex", (await count()) === 12 && (await count(true)) === 12 && (await count(false)) === 0, JSON.stringify([await count(), await count(true), await count(false)]));
+  const cut = { kind: "boolean", op: "cut", primitive: "box", origin: [0, -20, 5], dx: 30, dy: 40, dz: 20 };
+  const probed = await call("model_probe", { object: stepped, op: cut });
+  const applied = await call("model_apply", { object: stepped, op: cut });
+  check("a step is cut from the box", probed.ok === true && applied.ok === true, JSON.stringify({ probed, applied }).slice(0, 300));
+  check("a stepped part has one concave edge and the rest convex", (await count()) === 18 && (await count(true)) === 17 && (await count(false)) === 1, JSON.stringify([await count(), await count(true), await count(false)]));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
