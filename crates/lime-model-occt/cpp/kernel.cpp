@@ -3335,7 +3335,18 @@ void build_joints(
         if (joint.cut < 0 || static_cast<size_t>(joint.cut) >= frames.size() || !(joint.radius > 0) || !(joint.depth > 0)) {
             continue;
         }
-        Frame& frame = frames[static_cast<size_t>(joint.cut)];
+        Frame own;
+        if (joint.flat) {
+            // A flat of a shaped cut: its plane through (flat_u, flat_w) of the cut's U and W, its normal W turned toward U
+            // by the tilt, its U along the flat, and V the cut's own.
+            const Frame& cut = frames[static_cast<size_t>(joint.cut)];
+            const double tilt = joint.flat_tilt * std::acos(-1.0) / 180.0;
+            own.origin = cut.origin.Translated(gp_Vec(cut.u).Multiplied(joint.flat_u) + gp_Vec(cut.w).Multiplied(joint.flat_w));
+            own.w = gp_Dir(gp_Vec(cut.w).Multiplied(std::cos(tilt)) + gp_Vec(cut.u).Multiplied(std::sin(tilt)));
+            own.u = gp_Dir(gp_Vec(cut.u).Multiplied(std::cos(tilt)) - gp_Vec(cut.w).Multiplied(std::sin(tilt)));
+            own.v = gp_Dir(gp_Vec(own.w).Crossed(gp_Vec(own.u)));
+        }
+        Frame& frame = joint.flat ? own : frames[static_cast<size_t>(joint.cut)];
         if (joint.fraction && !frame.boxed) {
             if (!section_box(pieces, frame.origin, frame.w, frame.u, frame.u0, frame.v0, frame.u1, frame.v1)) {
                 continue;

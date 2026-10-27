@@ -730,15 +730,16 @@ function resinHeightNotes(span: Vec3, counts: number[], usable: number[], axes: 
 
 /** A profile of no kind the kernel builds: the same sentence as `PARTITION_PROFILE_KIND` in tree.rs. */
 export const PROFILE_KIND = "A cut's profile is straight, lap, tongue, zigzag, dovetail or sketch.";
-/** Connectors on a shaped cut wait: they would sit on the flats of the joint, not on one plane. */
-export const SHAPED_JOINTS_LATER = "Connectors on a shaped cut are not built yet. Turn them off, or cut straight.";
+/** Connectors on a tongue or a dovetail cut wait: a lap, a zig-zag and a sketch have flats to hold them (`shapedFlats`). */
+export const SHAPED_JOINTS_LATER = "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.";
 
 /**
- * Why the kernel does not cut this op, before anything is built: a profile of no known kind, or connectors on a shaped cut.
+ * Why the kernel does not cut this op, before anything is built: a profile of no known kind, or connectors on a tongue or a
+ * dovetail cut. A lap, a zig-zag and a sketch have flats to put them on (`shapedFlats`).
  */
 export function notBuiltYet(op: Pick<PartitionOp, "cuts">): string | null {
   if (op.cuts.some((cut) => cut.profile && !["straight", "lap", "tongue", "zigzag", "dovetail", "sketch"].includes(cut.profile.kind))) return PROFILE_KIND;
-  if (op.cuts.some((cut) => cut.profile && cut.profile.kind !== "straight" && cut.connectors?.on === true)) return SHAPED_JOINTS_LATER;
+  if (op.cuts.some((cut) => cut.profile && (cut.profile.kind === "tongue" || cut.profile.kind === "dovetail") && cut.connectors?.on === true)) return SHAPED_JOINTS_LATER;
   return null;
 }
 
@@ -765,12 +766,12 @@ export function connectorNames(type: ConnectorType): { one: string; many: string
  * Every connector of a resolved cut placed on `section` (plan section 9), one type after another, the ids numbered on
  * the cut as one list: `c{cut}-1`, `c{cut}-2`, … The fit of each typed count, for **Use N**.
  */
-export function placeCut(cut: number, section: Section, types: readonly ResolvedConnector[], wallFloorMm: number): PlacementResult & { fits: ConnectorFit[] } {
+export function placeCut(cut: number, section: Section, types: readonly ResolvedConnector[], wallFloorMm: number, first = 0): PlacementResult & { fits: ConnectorFit[] } {
   const placed: PlacedConnector[] = [];
   const dropped: DroppedConnector[] = [];
   const notes: string[] = [];
   const fits: ConnectorFit[] = [];
-  let offset = 0;
+  let offset = first;
   for (const spec of types) {
     const one = placeConnectors({ cut, section, spec, wallFloorMm });
     const renumber = (index: number) => `c${cut}-${index + offset}`;
@@ -985,6 +986,127 @@ function distToOutline(p: UV, section: Section): number {
 }
 
 // ---------------------------------------------------------------------------
+// Flats of a shaped cut (milestone 11): where a connector's hole can start on a lap, a zig-zag or a sketched cut.
+// ---------------------------------------------------------------------------
+
+/**
+ * A flat face of a shaped cut as the op stores it, in the cut's own frame: its plane runs through (`u`, `w`) of the cut's U
+ * and W from its origin, square to W turned toward U by `tilt` degrees, with its own U along the flat and V the cut's V.
+ */
+export interface FlatPlane {
+  u: number;
+  w: number;
+  tilt: number;
+}
+
+/** A flat and the part of its plane that is the cut face: the flat's own U from `u0` to `u1`, the cut's V from `v0` to `v1`. */
+export interface Flat extends FlatPlane {
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
+}
+
+/** A sketched chain's segment is a flat when its normal is within 45° of the cut's W: a steeper one is a wall, not a face. */
+const FLAT_TILT_LIMIT = Math.SQRT1_2;
+const FAR_MM = 1e6;
+
+interface ShapedProfile {
+  kind: string;
+  depth?: number;
+  side?: Side;
+  at?: number;
+  pitch?: number;
+  angle?: number;
+  u0?: number;
+  start?: UV;
+  chain?: ChainSegment[];
+}
+
+/**
+ * The flat faces of a shaped cut's profile, sized as Apply stored it, `box` the section's span in U and V. A lap has two
+ * (the first flat on the plane, to one side of the step, and the second, `depth` along W, past it); a zig-zag a flat on the
+ * plane and one on each tooth's tip, as many as the section holds; a sketch each straight segment of its chain whose normal
+ * is within 45° of W. A straight cut, a tongue and a dovetail give none: a straight cut is the plane itself.
+ */
+export function shapedFlats(profile: ShapedProfile, box: { u0: number; u1: number; v0: number; v1: number }): Flat[] {
+  if (profile.kind === "lap" && profile.depth !== undefined && profile.at !== undefined) {
+    const carried = profile.side === "negative" ? -profile.depth : profile.depth;
+    return [
+      { u: 0, w: 0, tilt: 0, u0: -FAR_MM, u1: FAR_MM, v0: -FAR_MM, v1: profile.at },
+      { u: 0, w: carried, tilt: 0, u0: -FAR_MM, u1: FAR_MM, v0: profile.at, v1: FAR_MM },
+    ];
+  }
+  if (profile.kind === "zigzag" && profile.depth !== undefined && profile.pitch !== undefined && profile.pitch > 0) {
+    const pitch = profile.pitch;
+    const carried = profile.side === "negative" ? -profile.depth : profile.depth;
+    const lean = (profile.depth * Math.tan(((profile.angle ?? 0) * Math.PI) / 180)) / 2;
+    const base = profile.u0 ?? 0;
+    const first = Math.floor((box.u0 - base) / pitch) - 1;
+    const last = Math.ceil((box.u1 - base) / pitch) + 1;
+    const out: Flat[] = [];
+    for (let k = first; k <= last; k += 1) {
+      const x = base + k * pitch;
+      const bands: [number, number, number][] = [
+        [x, x + pitch / 2, 0],
+        [x + pitch / 2 + lean, x + pitch - lean, carried],
+      ];
+      for (const [a, b, w] of bands) {
+        if (b <= box.u0 || a >= box.u1 || !(b > a)) continue;
+        out.push({ u: 0, w, tilt: 0, u0: a, u1: b, v0: -FAR_MM, v1: FAR_MM });
+      }
+    }
+    return out;
+  }
+  if (profile.kind === "sketch" && profile.start && profile.chain) {
+    const out: Flat[] = [];
+    let at = profile.start;
+    for (const segment of profile.chain) {
+      const from = at;
+      at = segment.to;
+      if (segment.kind !== "line") continue;
+      const [a, b] = segment.to[0] >= from[0] ? [from, segment.to] : [segment.to, from];
+      const du = b[0] - a[0];
+      const dw = b[1] - a[1];
+      const length = Math.hypot(du, dw);
+      if (!(length > 1e-6) || du / length < FLAT_TILT_LIMIT - 1e-9) continue;
+      out.push({ u: a[0], w: a[1], tilt: (Math.atan2(-dw, du) * 180) / Math.PI, u0: 0, u1: length, v0: -FAR_MM, v1: FAR_MM });
+    }
+    return out;
+  }
+  return [];
+}
+
+/** `section` cut to the rectangle `[u0, u1] × [v0, v1]`: each ring clipped on its four sides, the rings left with no area dropped. Null when nothing is left. */
+export function clipSection(section: Section, rect: { u0: number; u1: number; v0: number; v1: number }): Section | null {
+  const clip = (ring: Ring): Ring => {
+    let out = ring;
+    const inside: ((p: UV) => number)[] = [(p) => p[0] - rect.u0, (p) => rect.u1 - p[0], (p) => p[1] - rect.v0, (p) => rect.v1 - p[1]];
+    for (const side of inside) {
+      const next: Ring = [];
+      for (let i = 0; i < out.length; i += 1) {
+        const a = out[i]!;
+        const b = out[(i + 1) % out.length]!;
+        const da = side(a);
+        const db = side(b);
+        if (da >= 0) next.push(a);
+        if (da >= 0 !== db >= 0) {
+          const t = da / (da - db);
+          next.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
+      }
+      out = next;
+      if (out.length < 3) return [];
+    }
+    return out;
+  };
+  const outer = clip(section.outer);
+  if (outer.length < 3 || Math.abs(ringArea(outer).area) < 1e-6) return null;
+  const holes = (section.holes ?? []).map(clip).filter((ring) => ring.length >= 3 && Math.abs(ringArea(ring).area) > 1e-9);
+  return { outer, holes };
+}
+
+// ---------------------------------------------------------------------------
 // Connector placement (plan section 9).
 // ---------------------------------------------------------------------------
 
@@ -1004,9 +1126,11 @@ export interface PlacedConnector {
   type: ConnectorType;
   /** Millimetres in the cut frame. */
   uvMm: UV;
-  /** Fractions of the section's box in U and V. Null for a fixed connector (D5). */
+  /** Fractions of the section's box in U and V. Null for a fixed connector (D5), and for one on a flat of a shaped cut. */
   fraction: UV | null;
   fixed: boolean;
+  /** On a flat of a shaped cut (`shapedFlats`): where its plane runs; `uvMm` is then in that plane's own U and V. */
+  flat?: FlatPlane;
 }
 
 export type DropReason = "outside" | "breaks" | "wall" | "margin";

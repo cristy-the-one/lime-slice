@@ -446,8 +446,12 @@ test("a cut's Profile menu offers Straight, Lap and Tongue; a lap shows Depth, H
   await page.locator("#modelPartProfileDepth").dispatchEvent("change");
   await expect(page.locator("#modelPartProfileNote")).toBeHidden();
   await jointsOn(page).check();
-  await expect(page.locator("#modelPartProfileNote")).toHaveText("Connectors on a shaped cut are not built yet. Turn them off, or cut straight.");
+  await expect(page.locator("#modelPartProfileNote"), "a lap has flats for connectors since milestone 11").toBeHidden();
+  await expect(apply(page)).toBeEnabled();
+  await profileKind(page).selectOption("tongue");
+  await expect(page.locator("#modelPartProfileNote")).toHaveText("Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.");
   await expect(apply(page), "the cut says why it cannot be built").toBeDisabled();
+  await profileKind(page).selectOption("lap");
   await jointsOn(page).uncheck();
   if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
   await page.waitForTimeout(400);

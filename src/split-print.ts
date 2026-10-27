@@ -9,7 +9,7 @@ import { boundsOf, type Mat3 } from "./mesh-place.ts";
 import { clampTilt, formatMm, splitBase, tiltedNormal, tiltOf, type FacePlane, type SplitBase } from "./model-plane.ts";
 import { applyPose, fromSolidOp, toSolidOp, turnDir, type Affine } from "./model-space.ts";
 import type { ModelOp, PartitionModelOp, Vec3 } from "./model-tree.ts";
-import { connectorNames, defaultsFor, fillPartition, fitPrinter, mm, NO_FIT_SENTENCE, notBuiltYet, placeCut, profileRefusals, type Profile, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
+import { clipSection, connectorNames, defaultsFor, fillPartition, fitPrinter, mm, NO_FIT_SENTENCE, notBuiltYet, placeCut, profileRefusals, shapedFlats, type Flat, type PlacedConnector, type Profile, type UV, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
 import { sectionLoops } from "./section-cap.ts";
 import { storedOrient, type OrientChoice } from "./modeling/joint-down.ts";
 import { chainRefusal, readChain, type Chain, type ProfileSlice } from "./modeling/sketch-profile.ts";
@@ -565,6 +565,10 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
       placement.notes.push(`Cut ${at + 1}: the plane misses the part, so no ${connectorNames(resolved.types[0]?.type ?? "dowel").one} is placed.`);
       return { ...cut, connectors: { ...cut.connectors, placed: [] } };
     }
+    const flats = cut.profile && cut.profile.kind !== "straight" ? shapedFlats(cut.profile as unknown as Parameters<typeof shapedFlats>[0], outlineBox(section)) : null;
+    if (flats && solid) {
+      return { ...cut, connectors: { ...cut.connectors, placed: placeOnFlats(at, cut, flats, outlineBox(section), resolved.types, solid.positions, floor, pose, placement) } };
+    }
     const placed = placeCut(at + 1, section, resolved.types, floor);
     placement.notes.push(...placed.notes);
     placement.dropped.push(...placed.dropped.map((row) => ({ id: row.id, sentence: row.sentence })));
@@ -580,6 +584,76 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
     return { ...cut, connectors: { ...cut.connectors, placed: placed.placed.map((row) => ({ ...row })) } };
   });
   return { op: { ...own, cuts, up: solid?.up ?? [0, 0, 1] }, ...placement };
+}
+
+/**
+ * --- Milestone 11. A shaped cut's connectors, placed on its flats. Each flat's plane is cut through the solid
+ * (`sectionLoops`), clipped to the flat's own face, and placed as a straight cut's section is; its `uvMm` are in the flat's
+ * own U and V, and the row stores where the flat runs (`flat`) so the kernel starts the hole on that plane. A fixed point
+ * is a point of the cut seen along W: it goes to the flat that lies under it. A cut with no flat that holds one is a plain cut.
+ */
+function placeOnFlats(
+  at: number,
+  cut: { origin: Vec3; normal: Vec3; u?: Vec3 },
+  flats: readonly Flat[],
+  box: { u0: number; u1: number; v0: number; v1: number },
+  resolved: readonly ResolvedConnector[],
+  positions: ArrayLike<number>,
+  floor: number,
+  pose: Affine,
+  placement: Placement,
+): PlacedConnector[] {
+  const w = cut.normal;
+  const u = squareTo(cut.u, w) ?? cut.u!;
+  const v: Vec3 = [w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0]];
+  const rows: PlacedConnector[] = [];
+  const claimed = new Set<string>();
+  let used = 0;
+  for (const flat of flats) {
+    const turn = (flat.tilt * Math.PI) / 180;
+    const [c, s] = [Math.cos(turn), Math.sin(turn)];
+    const origin: Vec3 = [0, 1, 2].map((i) => cut.origin[i]! + u[i]! * flat.u + w[i]! * flat.w) as Vec3;
+    const normal: Vec3 = [0, 1, 2].map((i) => w[i]! * c + u[i]! * s) as Vec3;
+    const along: Vec3 = [0, 1, 2].map((i) => u[i]! * c - w[i]! * s) as Vec3;
+    const loops = sectionLoops(positions, origin, normal, along);
+    const clipped = loops ? clipSection(loops, flat) : null;
+    if (!clipped) continue;
+    // A fixed point, in the cut's U and V, lies under this flat when its U falls inside the flat's span along W.
+    const types = resolved.map((spec) => {
+      if (spec.place !== "fixed") return spec;
+      const mine: UV[] = [];
+      spec.at.forEach((point, index) => {
+        const key = `${spec.type}:${index}`;
+        const reach = [flat.u + flat.u0 * c, flat.u + flat.u1 * c].sort((a, b) => a - b);
+        const inside = point[0] >= Math.max(reach[0]!, box.u0) && point[0] <= Math.min(reach[1]!, box.u1) && point[1] >= Math.max(flat.v0, box.v0) && point[1] <= Math.min(flat.v1, box.v1);
+        if (claimed.has(key) || !inside) return;
+        claimed.add(key);
+        mine.push([(point[0] - flat.u) / c, point[1]]);
+      });
+      return { ...spec, at: mine };
+    });
+    const placed = placeCut(at + 1, clipped, types, floor, used);
+    used += placed.placed.length + placed.dropped.length;
+    placement.notes.push(...placed.notes.filter((note) => !note.endsWith("It is a plain cut.")));
+    placement.dropped.push(...placed.dropped.map((row) => ({ id: row.id, sentence: row.sentence })));
+    placement.fits.push(...placed.fits);
+    for (const row of placed.placed) {
+      const spec = resolved.find((one) => one.type === row.type)!;
+      const point: Vec3 = [0, 1, 2].map((i) => origin[i]! + along[i]! * row.uvMm[0] + v[i]! * row.uvMm[1]) as Vec3;
+      placement.marks.push({ id: row.id, at: applyPose(pose, point), normal: turnDir(pose, normal), ...holeOf(spec) });
+      rows.push({ ...row, fraction: null, flat: { u: flat.u, w: flat.w, tilt: flat.tilt } });
+    }
+  }
+  const lost = resolved.flatMap((spec) => (spec.place === "fixed" ? spec.at.map((_, index) => ({ spec, index })) : [])).filter(({ spec, index }) => !claimed.has(`${spec.type}:${index}`));
+  for (const { spec, index } of lost) {
+    const id = `c${at + 1}-${used + 1}`;
+    used += 1;
+    const sentence = `Cut ${at + 1}: ${connectorNames(spec.type).one} ${index + 1} lies outside the section. It was left out.`;
+    placement.dropped.push({ id, sentence });
+    placement.notes.push(sentence);
+  }
+  if (rows.length === 0) placement.notes.push(`Cut ${at + 1}: no ${connectorNames(resolved[0]?.type ?? "dowel").one} fits. It is a plain cut.`);
+  return rows;
 }
 
 /**

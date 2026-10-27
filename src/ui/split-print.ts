@@ -628,7 +628,7 @@ function paintProfile() {
     return;
   }
   if (kind === "sketch") {
-    paintSketchRow(cut.profile as SketchProfile, cut.joints.on, note);
+    paintSketchRow(cut.profile as SketchProfile, note);
     return;
   }
   root()?.querySelectorAll<HTMLElement>("#modelPartProfileFields [data-profile-for]").forEach((row) => {
@@ -650,7 +650,7 @@ function paintProfile() {
   shown("#modelPartProfileWidth", typed.width, kind === "dovetail" ? d?.dovetailWidthMm : d?.tongueWidthMm);
   put("#modelPartProfileSide", typed.side === "negative" ? "negative" : "positive");
   const sentences = d ? profileRefusals(cut.profile, d) : [];
-  const joints = cut.joints.on ? [SHAPED_JOINTS_LATER] : [];
+  const joints = cut.joints.on && (kind === "tongue" || kind === "dovetail") ? [SHAPED_JOINTS_LATER] : [];
   if (note) {
     note.textContent = [...sentences, ...joints].join(" ");
     note.hidden = sentences.length + joints.length === 0;
@@ -658,7 +658,7 @@ function paintProfile() {
 }
 
 /** A sketched cut's row: what its chain is, and why it cannot be cut yet when the sketch is not one open chain. */
-function paintSketchRow(profile: SketchProfile, jointsOn: boolean, note: HTMLElement | null) {
+function paintSketchRow(profile: SketchProfile, note: HTMLElement | null) {
   const chain = readChain(profile);
   const drawn = "reason" in chain ? null : chain;
   const text = $<HTMLElement>("#modelPartProfileSketchText");
@@ -666,7 +666,7 @@ function paintSketchRow(profile: SketchProfile, jointsOn: boolean, note: HTMLEle
   const button = $<HTMLButtonElement>("#modelPartProfileSketch");
   if (button) button.textContent = drawn ? "Edit sketch" : "Draw sketch";
   const sketch = profile.sketch as SketchData | undefined;
-  const sentences = [...(drawn ? [] : [sketch && sketch.entities.length > 0 ? ((chainFromSketch(sketch) as { reason?: string }).reason ?? "") : (chain as { reason: string }).reason]), ...(jointsOn ? [SHAPED_JOINTS_LATER] : [])].filter((line) => line !== "");
+  const sentences = [...(drawn ? [] : [sketch && sketch.entities.length > 0 ? ((chainFromSketch(sketch) as { reason?: string }).reason ?? "") : (chain as { reason: string }).reason])].filter((line) => line !== "");
   if (note) {
     note.textContent = sentences.join(" ");
     note.hidden = sentences.length === 0;
