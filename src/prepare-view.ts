@@ -28,6 +28,7 @@ import { unionBox } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { onMeasureChange } from "./measure-pref";
+import { grabAxisForKey, grabDegrees, grabIntent, nearerHit, type GrabAxis, type GrabIntent } from "./viewport-grab";
 
 type Axis = "x" | "y" | "z";
 type ScaleAxis = Axis | "u";
@@ -55,6 +56,18 @@ export interface BrushHooks {
   cancel(): void;
 }
 
+/**
+ * A Ctrl-drag on a plate object, as the app records it. `select` names a grey object the press landed on, so it becomes
+ * the selection before the grab starts. `start` opens one undo step; `cancel` is Esc, and the app puts the pose back.
+ * `hint` says whether Ctrl is held over an object that a press would grab.
+ */
+export interface GrabHooks {
+  select(id: string): void;
+  start(): void;
+  cancel(): void;
+  hint(over: boolean): void;
+}
+
 /** The reinforce brush's Along edge strips, as the app records them. */
 export interface StripHooks {
   ready(ready: boolean): void;
@@ -75,6 +88,8 @@ export interface PrepareView {
   onRotateEnd(cb: (() => void) | null): void;
   onMove(cb: ((axis: Axis, deltaMm: number, totalMm: number) => void) | null): void;
   onMoveEnd(cb: (() => void) | null): void;
+  /** Ctrl-drag on the part moves it and Ctrl-right-drag turns it, through the same callbacks as the gizmo. Null turns it off. */
+  onGrab(hooks: GrabHooks | null): void;
   /** Uniform part scale, in percentage points. Returns how many of `deltaPercent` landed after the 10–400 clamp. */
   onScale(cb: ((deltaPercent: number) => number) | null): void;
   onScaleEnd(cb: (() => void) | null): void;
@@ -1287,8 +1302,116 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     requestRender();
   }
 
+  let grabHooks: GrabHooks | null = null;
+  let grabPointer: number | null = null;
+  let rotateGrab: { axis: GrabAxis; lastX: number; total: number; applied: number } | null = null;
+  let grabHint = false;
+  let lastPointer: { clientX: number; clientY: number } | null = null;
+  const contextHits: THREE.Intersection[] = [];
+
+  /** What a press here would grab: the selected part, a grey object's id, or nothing. The ray is already set. */
+  function grabTarget(): "selected" | string | null {
+    const own = mesh ? raycaster.intersectObject(mesh, false)[0]?.distance ?? null : null;
+    let other: { id: string; distance: number } | null = null;
+    for (const node of contextGroup.children) {
+      contextHits.length = 0;
+      THREE.Mesh.prototype.raycast.call(node, raycaster, contextHits);
+      for (const hit of contextHits) {
+        if (!other || hit.distance < other.distance) other = { id: String(node.userData.plateId), distance: hit.distance };
+      }
+    }
+    const nearer = nearerHit(own, other?.distance ?? null);
+    return nearer === "selected" ? "selected" : nearer === "other" ? other!.id : null;
+  }
+
+  function beginGrab(ev: PointerEvent, intent: GrabIntent): boolean {
+    if (!grabHooks || !meshBounds) return false;
+    ndc(ev);
+    const target = grabTarget();
+    if (target === null) return false;
+    if (target !== "selected") {
+      grabHooks.select(target);
+      if (!meshBounds) return false;
+      ndc(ev);
+    }
+    if (intent === "move") {
+      const xy = printOnBed();
+      if (!xy) return false;
+      drag = { kind: "xy", lastX: xy[0], lastY: xy[1], totalX: 0, totalY: 0, appliedX: 0, appliedY: 0 };
+    } else {
+      rotateGrab = { axis: "z", lastX: ev.clientX, total: 0, applied: 0 };
+    }
+    grabPointer = ev.pointerId;
+    controls.enabled = false;
+    canvas.setPointerCapture(ev.pointerId);
+    canvas.style.cursor = "grabbing";
+    setGrabHint(false);
+    grabHooks.start();
+    ev.preventDefault();
+    ev.stopPropagation();
+    return true;
+  }
+
+  function cancelGrab() {
+    if (grabPointer === null) return;
+    const id = grabPointer;
+    grabPointer = null;
+    drag = null;
+    rotateGrab = null;
+    controls.enabled = true;
+    canvas.style.cursor = "";
+    if (canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
+    paintHandles(null, null);
+    grabHooks?.cancel();
+  }
+
+  function setGrabHint(over: boolean) {
+    if (grabHint === over) return;
+    grabHint = over;
+    grabHooks?.hint(over);
+  }
+
+  /** Ctrl held with the pointer over an object, with no drag going: say so, and show the grab cursor. */
+  function grabOver(ev: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean; altKey: boolean }): boolean {
+    const held = (ev.ctrlKey || ev.metaKey) && !ev.altKey;
+    if (!held || !grabHooks || !meshBounds) return false;
+    ndc(ev);
+    return grabTarget() !== null;
+  }
+
+  canvas.addEventListener("pointermove", (ev) => {
+    lastPointer = { clientX: ev.clientX, clientY: ev.clientY };
+  });
+  canvas.addEventListener("pointerleave", () => {
+    lastPointer = null;
+    setGrabHint(false);
+  });
+  window.addEventListener("keydown", (ev) => {
+    if (grabPointer !== null) {
+      const axis = rotateGrab ? grabAxisForKey(ev.key) : null;
+      if (ev.key !== "Escape" && !axis) return;
+      if (ev.key === "Escape") cancelGrab();
+      else if (rotateGrab && axis) rotateGrab = { axis, lastX: rotateGrab.lastX, total: 0, applied: 0 };
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      return;
+    }
+    if (ev.key === "Control" || ev.key === "Meta") {
+      if (lastPointer && !drag && !brush && stroke === null) setGrabHint(grabOver({ ...lastPointer, ctrlKey: true, metaKey: false, altKey: ev.altKey }));
+    }
+  }, true);
+  window.addEventListener("keyup", (ev) => {
+    if (ev.key === "Control" || ev.key === "Meta") setGrabHint(false);
+  });
+
   canvas.addEventListener("pointerdown", (ev) => {
-    if (ev.button !== 0) return;
+    const intent = grabIntent(ev);
+    if (ev.button !== 0 && !(ev.button === 2 && intent === "rotate")) return;
+    if (ev.button === 2) {
+      if (!brush) beginGrab(ev, "rotate");
+      return;
+    }
     if (hitViewHelper(ev)) {
       ev.preventDefault();
       ev.stopPropagation();
@@ -1313,6 +1436,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       ev.stopPropagation();
       return;
     }
+    if (!handle && !brush && intent === "move" && beginGrab(ev, intent)) return;
     if (rVol && "volumeIndex" in rVol && !brush) {
       selectReinforceVolCb?.(rVol.volumeIndex);
       ev.preventDefault();
@@ -1454,6 +1578,18 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       }
       return;
     }
+    if (rotateGrab) {
+      if (ev.pointerId !== grabPointer) return;
+      canvas.style.cursor = "grabbing";
+      rotateGrab.total += grabDegrees(ev.clientX - rotateGrab.lastX);
+      rotateGrab.lastX = ev.clientX;
+      const target = snapStep(rotateGrab.total, ev.shiftKey, ROTATE_SNAP_DEG);
+      const send = target - rotateGrab.applied;
+      if (Math.abs(send) < 0.04) return;
+      rotateGrab.applied = target;
+      rotateCb?.(rotateGrab.axis, send, target);
+      return;
+    }
     if (stroke !== null) {
       if (ev.pointerId !== stroke) return;
       ndc(ev);
@@ -1484,7 +1620,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       const overPart = !handle && gizmoTool === "move" && hitPart();
       const overReinforce = !handle && !overPart && hitReinforceVol(ev);
       const overMod = !handle && !overPart && !overReinforce && hitModifier(ev);
-      canvas.style.cursor = handle || overPart || overReinforce || overMod || hitCut(ev) ? "grab" : "";
+      const overGrab = !handle && grabOver(ev);
+      setGrabHint(overGrab);
+      canvas.style.cursor = handle || overPart || overReinforce || overMod || overGrab || hitCut(ev) ? "grab" : "";
       if (!sameHit(handle, hover)) {
         hover = handle;
         paintHandles(null, handle);
@@ -1589,6 +1727,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     const kind = drag?.kind;
     const edited = modDrag;
     const editedReinforce = reinforceVolDrag;
+    const turned = rotateGrab;
+    rotateGrab = null;
+    grabPointer = null;
     drag = null;
     modDrag = null;
     reinforceVolDrag = null;
@@ -1598,7 +1739,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     paintHandles(null, null);
     if (edited) editModEndCb?.();
     if (editedReinforce) editReinforceVolEndCb?.();
-    if (kind === "ring") rotateEndCb?.();
+    if (kind === "ring" || turned) rotateEndCb?.();
     if (kind === "move" || kind === "xy") moveEndCb?.();
     if (kind === "scale") scaleEndCb?.();
   };
@@ -1789,6 +1930,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     onRotateEnd(cb) { rotateEndCb = cb; },
     onMove(cb) { moveCb = cb; },
     onMoveEnd(cb) { moveEndCb = cb; },
+    onGrab(hooks) { grabHooks = hooks; },
     onScale(cb) { scaleCb = cb; },
     onScaleEnd(cb) { scaleEndCb = cb; },
     setViewPreset(preset) { applyViewPreset(preset); },
