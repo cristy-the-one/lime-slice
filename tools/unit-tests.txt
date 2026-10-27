@@ -186,3 +186,5 @@ src/viewport-grab.test.ts
 src/model-grab.test.ts
 src/measure-points.test.ts
 src/orbit-glide.test.ts
+src/modeling/measured-fits.test.ts
+mcp/measured-fits.test.ts

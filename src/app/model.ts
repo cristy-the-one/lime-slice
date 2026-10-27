@@ -170,12 +170,12 @@ import { chooseStudyMesh } from "../sim/study-mesh.ts";
 import { endStressPick, mountStress, stressOpen, stressPickFace, stressPicking, stressUndoState, syncStress, takeStressRedo, takeStressUndo } from "../ui/stress.ts";
 import { stressSliceRequest } from "./stress-slice.ts";
 import { beltLayerNormal, boxMap } from "../sim/study.ts";
-import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
+import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, setMeasuredFits, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
 import { bedFrame, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
-import { clampPieces, defaultsFor, fillConnector, mm as mmText, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
+import { clampPieces, defaultsFor, enterMeasured, fillConnector, mm as mmText, resetMeasured, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { couponFileName, couponInputFor, fitCoupon, fitCouponRequest, readCouponReply } from "../modeling/fit-coupon.ts";
 import { choiceAt, jointDown, jointPlanes, noJointSentence } from "../modeling/joint-down.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
@@ -657,6 +657,14 @@ export function bindModelView() {
     },
     holeCompensation: () => state.xyHoleCompensationMm,
     printCoupon: printFitCoupon,
+    material: () => selection(loadMachineLibrary())?.filament.material ?? "",
+    fits: () => loadMachineLibrary().measuredFits,
+    enterFits(key, results) {
+      storeMachineLibrary(setMeasuredFits(loadMachineLibrary(), enterMeasured(loadMachineLibrary().measuredFits, key, results)));
+    },
+    resetFits(key) {
+      storeMachineLibrary(setMeasuredFits(loadMachineLibrary(), resetMeasured(loadMachineLibrary().measuredFits, key)));
+    },
     cancelled: cancelEdit,
     parameters: () => currentParams(),
     view: () => fx.model ?? null,
@@ -5739,6 +5747,7 @@ function partitionContext(solid: ParsedSolid): FillContext {
     material: picked?.filament.material ?? "",
     adhesion: state.adhesion,
     brimWidthMm: state.brimWidthMm,
+    fits: loadMachineLibrary().measuredFits,
     box: { min: [...box.min], max: [...box.max] },
   };
 }
@@ -5777,7 +5786,7 @@ async function printFitCoupon(target: Target | null, spec: ConnectorSpec): Promi
   if (!solid) return "Open a part first.";
   const ctx = partitionContext(solid);
   const aimed = target ?? ctx.plateTarget;
-  const coupon = fitCoupon(couponInputFor(fillConnector(spec, defaultsFor(aimed, ctx)), { process: aimed.process, material: ctx.material, featureMm: ctx.featureMm, layerMm: ctx.layerMm }));
+  const coupon = fitCoupon(couponInputFor(fillConnector(spec, defaultsFor(aimed, ctx)), { process: aimed.process, material: ctx.material, featureMm: ctx.featureMm, layerMm: ctx.layerMm, fits: ctx.fits }));
   if ("reason" in coupon) return coupon.reason;
   readout("Building the fit coupon…");
   const reply = readCouponReply(await post(fitCouponRequest(coupon)));
