@@ -165,7 +165,7 @@ export function resolveForParameters(assemblies: readonly Assembly[], poseOf: Po
   return { assemblies: next, moved, errors };
 }
 
-function samePose(a: Affine, b: Affine): boolean {
+export function samePose(a: Affine, b: Affine): boolean {
   const close = (x: number, y: number) => Math.abs(x - y) <= 1e-9 * Math.max(1, Math.abs(x), Math.abs(y));
   return a.m.every((value, i) => close(value, b.m[i]!)) && a.t.every((value, i) => close(value, b.t[i]!));
 }

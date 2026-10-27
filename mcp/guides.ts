@@ -249,6 +249,31 @@ GUIDES.push({
   ].join("\n"),
 });
 
+/** --- Assemblies M4. guide {kind} for the two words that are not op kinds: how parts sit on each other, and model_place. */
+export const KIND_GUIDES: Record<string, string> = {
+  assembly: [
+    "An assembly holds plate objects at offsets from each other, so a parameter change moves them together.",
+    "1. model_params {set:{rimL:120, bodyH:10}}.",
+    "2. model_place {object:<hook>, to:<body>, x:\"rimL - 5\", y:0, z:\"bodyH\", assembly:\"LED cover\"}. The numbers are in the body's own frame. The body becomes the root.",
+    "3. model_place {object:<clip>, to:<hook>, z:8}: a part can sit on any member. A part sits in one assembly.",
+    "4. model_params {set:{rimL:150}}: the reply's moved lists the hook and the clip with their new assembledMm.",
+    "5. plate_list: each member's row has assembly; session_info lists the assemblies.",
+    "Moving the root (model_place on it, without to) moves every member. model_place on a member without to changes its offset from its parent.",
+    "With to, a number left out is 0. model_place {object, to} with no numbers keeps the part where it stands and records that offset.",
+    "A member's Model numbers are read in its own part frame (frame part), so a step typed from its drawing stays put when the assembly moves.",
+    "plate_arrange {assembly} lays out only that assembly's members, around the other objects. The print layout never follows the assembly.",
+    "object_remove on a member seats its children on its parent where they stand.",
+  ].join("\n"),
+  place: [
+    "Two poses: model_place sets where a part sits in the assembly (model space); object_place sets where it prints on the bed.",
+    "model_place {object, x, y, z, turnX, turnY, turnZ}: mm and degrees, turned X, then Y, then Z. A missing number keeps its value.",
+    "Each number may be an expression over model_params names. A member's offset keeps the text and follows it; any other pose reads it once.",
+    "to: the numbers are an offset in that part's own frame, and this part joins its assembly (guide {kind:\"assembly\"}).",
+    "frame: part reads later Model numbers in the part's own frame; model (the default outside an assembly) reads them in model space, so they move with the pose. A refusal of a moved part names the frame.",
+    "The reply has pose \"assembled\", frame, and assembledMm, the part's box in model space. plate_list gives assembledMm for every part and bboxMm for the print layout.",
+  ].join("\n"),
+};
+
 export function guideByUri(uri: string): Guide | undefined {
   return GUIDES.find((guide) => guide.uri === uri);
 }
