@@ -135,6 +135,18 @@ check("on the bed", piecesAt.every((box) => box.min[0] >= -0.05 && box.min[1] >=
 check("the first piece takes the first clear spot, the bed's corner", near(piecesAt[1]!.min[0], 0) && near(piecesAt[1]!.min[1], 0), JSON.stringify(piecesAt[1]));
 check("an empty keep is the whole-plate arrange", JSON.stringify(arrangedObjects([keptObj, ...pieces], bed, bed, undefined, new Set())) === JSON.stringify(arrangedObjects([keptObj, ...pieces], bed, bed)));
 
+// --- Milestone 7 on a belt printer: the length is unbounded, so six 70 mm pieces on a 100 mm wide belt stack along Y
+// instead of spilling over the bed's far edge, in the order they were given, none overlapping.
+{
+  const belt = [object(70, "b1", false, { x: 0, y: 0, z: 0 }), object(70, "b2", false, { x: 0, y: 0, z: 0 }), object(70, "b3", false, { x: 0, y: 0, z: 0 }), object(70, "b4", false, { x: 0, y: 0, z: 0 })];
+  const laid = arrangedObjects(belt, 100, 1e6, undefined, new Set([belt[0]!.id])).map((obj) => placeObject(obj, 100, 1e6).bounds);
+  check("belt: every piece stays within the belt's width", laid.every((box) => box.min[0] >= -0.05 && box.max[0] <= 100.05), JSON.stringify(laid));
+  check("belt: they stack along the belt, each one gap past the last", laid.slice(1).every((box, at) => box.min[1] >= laid[at]!.max[1] + 2 - 1e-6), JSON.stringify(laid.map((box) => [box.min[1], box.max[1]])));
+  check("belt: none overlaps another", laid.every((a, i) => laid.every((b, j) => i >= j || !boxesOverlapXY(a, b))));
+  const bounded = arrangedObjects(belt, 100, 100, undefined, new Set([belt[0]!.id])).map((obj) => placeObject(obj, 100, 100).bounds);
+  check("a bounded bed of the same width has no room along the belt for them and runs them off its side, which a belt must not", bounded.some((box) => box.max[0] > 100.05 || box.max[1] > 100.05), JSON.stringify(bounded));
+}
+
 const wide = arrangeBoxes([
   { id: "a", minX: 0, minY: 0, maxX: 100, maxY: 20 },
   { id: "b", minX: 0, minY: 0, maxX: 100, maxY: 20 },

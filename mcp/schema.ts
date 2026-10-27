@@ -703,7 +703,7 @@ const partitionOp = {
       },
     },
     target: { type: "object", description: "{printer:\"formlabs-form-4\"} (resin, exported) or a machine_list id, or {printer, process, volumeMm}. Default the plate's printer." },
-    orient: { description: "keep: each piece keeps the part's plate orientation.", oneOf: [{ enum: ["keep"] }, { type: "array", items: { enum: ["keep", "joint"] } }] },
+    orient: { description: "keep, or one of keep and joint per part, part 1 first: joint puts the larger cut face on the bed. Not for export targets.", oneOf: [{ enum: ["keep"] }, { type: "array", items: { enum: ["keep", "joint"] } }] },
     arrange: { type: "boolean", description: "model_commit lays the pieces out. Default true; false for an export target." },
     labels: { type: "object", description: "Part numbers on the cut faces: {on, height, depth}. Default on." },
     bedMarginMm: { type: "number", minimum: 0, maximum: 100, description: "Kept from the build volume's edge." },
