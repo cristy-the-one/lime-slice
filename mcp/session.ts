@@ -18,6 +18,7 @@ import { plainModelError } from "../src/app/model-error.ts";
 import { hullOf, layFlatMatrix, restPose } from "../src/bed-rest.ts";
 import { align, centeringShift, encode3mf, ID_MATRIX, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
 import { decodeSolid } from "../src/model-reply.ts";
+import { alignDelta, bedBox, isAlignRelation } from "../src/place-snap.ts";
 import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNote, turnedAxis, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
 import { clampPieces, type FillContext, type Target } from "../src/modeling/partition.ts";
@@ -2405,6 +2406,22 @@ export class Session {
       const dx = typeof input.centreX === "number" ? input.centreX - cx : 0;
       const dy = typeof input.centreY === "number" ? input.centreY - cy : 0;
       obj.offset = { x: obj.offset.x + dx, y: obj.offset.y + dy, z: obj.offset.z };
+    }
+    const alignSpec = input.align as { to?: unknown; how?: unknown } | undefined;
+    if (alignSpec) {
+      if (!isAlignRelation(alignSpec.how)) return { ok: false, reason: "align.how is not a relation." };
+      const toBed = alignSpec.to === "bed";
+      const other = toBed ? undefined : this.find(String(alignSpec.to));
+      if (!toBed && (!other || other.id === obj.id)) return { ok: false, reason: UNKNOWN_OBJECT };
+      const printer = this.printer();
+      const box = other ? this.placed(other).bounds : bedBox(printer.bedX, printer.bedY, printer.bedZ);
+      const delta = alignDelta(this.placed(obj).bounds, box, alignSpec.how, toBed);
+      if (!delta) return { ok: false, reason: "The bed has no side to touch or stack on. Use flush or centre." };
+      if (obj.centered) {
+        obj.offset = centeringShift(obj.source, obj.orient, obj.scale, printer.bedX, printer.bedY);
+        obj.centered = false;
+      }
+      obj.offset = { x: obj.offset.x + delta[0], y: obj.offset.y + delta[1], z: obj.offset.z + delta[2] };
     }
     const placed = this.placed(obj);
     return {

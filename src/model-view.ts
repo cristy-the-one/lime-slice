@@ -10,9 +10,12 @@ import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { onMeasureChange } from "./measure-pref";
+import { faceCentre, featuresOf, MEASURE_KIND_LABEL, nearestFeature, type FeatureSet, type MeasureKind, type Vec3 as FeatureVec } from "./measure-snap";
 import { EDGE_KNOB_ID, edgeSides } from "./interact/edge-drag";
 import { blendGhost, type BlendSide } from "./interact/ghosts";
 
+/** A Measure point snaps to a feature this close to the pointer on screen. */
+const MEASURE_SNAP_PX = 10;
 /** P2. The edge drag's ghost is rebuilt when its size changes by this much. */
 const BLEND_GHOST_STEP_MM = 0.05;
 
@@ -540,6 +543,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   tip.className = "model-drag-tip";
   tip.hidden = true;
   canvas.parentElement?.append(tip);
+  const snapMark = document.createElement("div");
+  snapMark.className = "model-snap-mark";
+  snapMark.hidden = true;
+  const snapMarkText = document.createElement("span");
+  snapMark.append(snapMarkText);
+  canvas.parentElement?.append(snapMark);
+  const features = new WeakMap<Float32Array, { set: FeatureSet; faces: Map<number, FeatureVec | null> }>();
+  /** What a Measure point is snapped to, for the marker and the readout; null when it is free on the surface. */
+  let snappedTo: { kind: MeasureKind; at: THREE.Vector3 } | null = null;
   const aspectLabel = document.createElement("div");
   aspectLabel.className = "model-aspect-label";
   aspectLabel.hidden = true;
@@ -2193,6 +2205,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     controls.enabled = true;
     if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
     tip.hidden = true;
+    snappedTo = null;
+    showSnapMark();
     handleCb({ handle: done.handle, values: done.values, phase: "end" });
     paintHandles();
   };
@@ -4087,11 +4101,63 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return lineParam([origin.x, origin.y, origin.z], [dir.x, dir.y, dir.z], [ray.origin.x, ray.origin.y, ray.origin.z], [ray.direction.x, ray.direction.y, ray.direction.z]);
   }
 
-  function surfacePoint(x: number, y: number, snap: boolean): Vec3 | null {
+  /** The feature near the hit that a Measure point lands on exactly: a corner, an edge's middle, a flat face's middle, the box. */
+  function featureNear(hit: THREE.Intersection): THREE.Vector3 | null {
+    if (!mesh) return null;
+    const positions = mesh.geometry.getAttribute("position").array as Float32Array;
+    let held = features.get(positions);
+    if (!held) {
+      held = { set: featuresOf(positions), faces: new Map() };
+      features.set(positions, held);
+    }
+    const perPx = (2 * camera.position.distanceTo(hit.point) * Math.tan((camera.fov * Math.PI) / 360)) / Math.max(1, canvas.clientHeight);
+    const local = mesh.worldToLocal(hit.point.clone());
+    let face: FeatureVec | null = null;
+    if (hit.faceIndex != null) {
+      if (!held.faces.has(hit.faceIndex)) faceCentre(positions, hit.faceIndex, held.faces);
+      face = held.faces.get(hit.faceIndex) ?? null;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const pointer = hit.point.clone().project(camera);
+    const probe = new THREE.Vector3();
+    const fromPointer = (at: FeatureVec) => {
+      probe.set(at[0], at[1], at[2]).applyMatrix4(mesh!.matrixWorld).project(camera);
+      return Math.hypot(((probe.x - pointer.x) / 2) * rect.width, ((probe.y - pointer.y) / 2) * rect.height);
+    };
+    // Space is searched four pixels' worth wide, so a face seen at a slant still finds what is near the pointer on screen.
+    const found = nearestFeature(held.set, [local.x, local.y, local.z], MEASURE_SNAP_PX * perPx * 4, face, { px: MEASURE_SNAP_PX, from: fromPointer });
+    if (!found) return null;
+    const world = mesh.localToWorld(new THREE.Vector3(found.at[0], found.at[1], found.at[2]));
+    snappedTo = { kind: found.kind, at: world };
+    return world;
+  }
+
+  function showSnapMark() {
+    const parent = canvas.parentElement?.getBoundingClientRect();
+    if (!snappedTo || !parent) {
+      snapMark.hidden = true;
+      delete canvas.dataset.measureSnap;
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const p = snappedTo.at.clone().project(camera);
+    snapMark.style.left = `${rect.left - parent.left + ((p.x + 1) / 2) * rect.width}px`;
+    snapMark.style.top = `${rect.top - parent.top + ((1 - p.y) / 2) * rect.height}px`;
+    snapMarkText.textContent = MEASURE_KIND_LABEL[snappedTo.kind];
+    snapMark.hidden = false;
+    canvas.dataset.measureSnap = `${snappedTo.kind}:${snappedTo.at.x.toFixed(3)},${snappedTo.at.y.toFixed(3)},${snappedTo.at.z.toFixed(3)}`;
+  }
+
+  function surfacePoint(x: number, y: number, snap: boolean, feature = false): Vec3 | null {
+    snappedTo = null;
     if (!mesh) return null;
     rayAt(x, y);
     const hit = solidHit(raycaster.intersectObject(mesh, false));
     if (!hit) return null;
+    if (feature && !snap) {
+      const world = featureNear(hit);
+      if (world) return [world.x, world.y, world.z];
+    }
     // A point the user puts down is a model-space number, like every other tool field.
     const point = hit.point.clone();
     if (snap && hit.faceIndex != null) {
@@ -4146,9 +4212,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         next = [wrapDegrees(dragValue(handle, handle.values[0] ?? 0, current.turned, snap, fine))];
       }
     } else {
-      let point = surfacePoint(x, y, snap);
+      let point = surfacePoint(x, y, snap, handle.id.startsWith("measure") && !ev.altKey);
+      showSnapMark();
       if (point && handle.frame) point = localPoint(handle.frame, point);
-      const places = fine ? 100 : 10;
+      const places = snappedTo ? 1000 : fine ? 100 : 10;
       if (point) next = point.map((value) => Math.round(value * places) / places);
     }
     if (next && next.some((value, i) => value !== current.values[i])) {

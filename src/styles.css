@@ -1265,6 +1265,35 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   pointer-events: none;
 }
 .model-drag-tip[hidden] { display: none; }
+/* A Measure point snapped to a feature: a ring on the spot and what it is. */
+.model-snap-mark {
+  position: absolute;
+  z-index: 3;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 1px var(--panel);
+  pointer-events: none;
+}
+.model-snap-mark > span {
+  position: absolute;
+  left: 18px;
+  top: -4px;
+  padding: 1px var(--space-1);
+  border-radius: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: var(--fs-2);
+  white-space: nowrap;
+}
+.model-snap-mark[hidden] { display: none; }
+/* Align to...: the two selects share the row, a long name ends in an ellipsis, and the button takes the row below. */
+.align-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-2); }
+.align-grid select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+.align-grid > .btn { grid-column: 1 / -1; }
 /* The live size of the aspect a handle changes. Colour is the axis; the text is the same sentence as the tooltip. */
 .model-aspect-label {
   position: absolute;

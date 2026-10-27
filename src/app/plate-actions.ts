@@ -9,6 +9,9 @@ import { state } from "./state.ts";
 import { currentRules } from "./rules.ts";
 import { sequentialClearance } from "../settings-rules.ts";
 import type { Bounds } from "../mesh-place.ts";
+import { alignDelta, bedBox, type AlignRelation } from "../place-snap.ts";
+import { nudgePlacement } from "./files.ts";
+import { renderChrome } from "./settings.ts";
 
 /** An exact copy of the selected object: same mesh, pose, paint, and overrides. In model space it sits beside the original. */
 export function duplicatePlateObject() {
@@ -98,4 +101,28 @@ export function arrangePlate() {
   if (!moved) return;
   const union = plateUnionBounds(state.plate.objects, state.profile.bedX, state.profile.bedY);
   if (union) frameBounds(union);
+}
+
+/**
+ * Line the selected object up with the bed (`"bed"`) or another object, one undo step. The bed has no far side, so it takes only
+ * the relations that do not touch from outside. False when nothing moved.
+ */
+export function alignSelectedTo(targetId: string, relation: AlignRelation): boolean {
+  const moving = state.placed?.bounds;
+  if (!moving || !state.plate.selectedId) return false;
+  const { bedX, bedY, bedZ } = state.profile;
+  const target = targetId === "bed" ? bedBox(bedX, bedY, bedZ) : state.plate.objects.find((obj) => obj.id === targetId && obj.id !== state.plate.selectedId);
+  const box = target && "min" in target ? target : target ? placeObject(target, bedX, bedY).bounds : null;
+  if (!box) return false;
+  const delta = alignDelta(moving, box, relation, targetId === "bed");
+  if (!delta || delta.every((d) => d === 0)) return false;
+  commitModel();
+  noteEdit();
+  nudgePlacement("x", delta[0]);
+  nudgePlacement("y", delta[1]);
+  nudgePlacement("z", delta[2]);
+  flushEdit();
+  fx.scheduleAuto();
+  renderChrome();
+  return true;
 }

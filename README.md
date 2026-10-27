@@ -1,6 +1,6 @@
 # Lime Slice
 
-Lime Slice 3.9.3 is a filament slicer and a solid modeler in one window. Open an STL, 3MF, or STEP file, or start a solid from a sketch, then slice it to G-code. A Rust planner builds the toolpaths. Model edits go through Open CASCADE when its bridge is installed. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
+Lime Slice 4.0.0 is a filament slicer and a solid modeler in one window. Open an STL, 3MF, or STEP file, or start a solid from a sketch, then slice it to G-code. A Rust planner builds the toolpaths. Model edits go through Open CASCADE when its bridge is installed. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
 
 The shell is the landscape layout: a tool rail on the left, a dock on each side, and a status line. Prepare and Preview use the left dock for settings and the right dock for results. Model uses the left dock for the open tool, the sketch, History, and Parameters, and the right dock for Inspect.
 
@@ -84,9 +84,21 @@ View, on the rail, opens section, colour by step, the bed, and the size readout.
 
 ![Turning section on and sliding the plane.](docs/screenshots/clip-section.gif)
 
+### Split to print
+
+A part too large for the printer is cut into pieces that fit. Open it in Model, then **Features → Split to print…**. It is a card of its own, not a rail tool, and it works on the open solid. The card proposes cuts for the part and gives a sentence saying why.
+
+- **Cuts.** Type where a cut goes, drag its plane (Ctrl snaps the number to whole millimetres and a tilt to 15°), or aim it at a face with the Face button, which cuts parallel to a picked flat face. X, Y, and Z cut square to that axis, and Tilt A and Tilt B turn the plane. **Add cut** puts one in the middle of the largest piece. **Fit the bed** proposes the cuts again so every piece fits (it reads **Fit the printer** when the target is a printer Lime Slice does not slice for), and **Clear cuts** starts over.
+- **Print on.** The plate's printer comes first. The pieces then become plate objects, laid out on the bed around the objects already there, each with its number cut into a cut face (the Part numbers box turns that off, and **Lay out on the bed** turns the layout off). The library's other printers follow, with the **Formlabs Form 4** last. The Form 4 is export-only: the planner fits each piece upright in its 200 × 125 × 210 mm volume, and turns the part to fit when that gives fewer pieces (the Telo cover is 4 pieces rather than 7). The pieces stay in Model, and Prepare says "Split for the Formlabs Form 4 in Model, N parts. The plate prints it whole."
+- **Export…** writes the pieces: one STEP named for the source, one 3MF with every piece named, or one STL per piece. A dowelled cut adds `<source>-pins`. The button is on the card, and in the menu of the history row.
+- **Connectors.** Tick Connectors on a cut, and choose **Dowel** (a hole in both pieces and a separate pin), **Plug** (a peg fused to one piece and a socket in the other), or **Hardware hole** (holes for a bought pin or magnet). Radius or Diameter, Depth, Count, Margin, and End gap are typed or left on Fit. **Clearance** is Snug, Loose, Press, or Typed. On a filament (FDM) printer, a hole whose axis lies within 45° of horizontal gets a teardrop top, so it does not sag. When fewer connectors fit than were asked for, the card says "N of M fit" and **Use N** takes the number that does. The pins stand upright as their own small object, with the layers along their length.
+- **Explode.** The Explode box in View options spreads the pieces apart along the cuts, with their numbers, at the Gap you set (10 mm to start). It is a view and saves nothing.
+- **Saving and undo.** The pieces and the pins are saved in the project, and a file saved by 3.8.0 gets its pieces back when it opens. A split is one undo step. Its history row is "Split to print, N parts", and the pencil on the row reopens the card with **Update** in place of Apply.
+- **Not yet.** A rectangular key, a dovetail, and shaped cuts (lap, zig-zag, tongue and groove). The plan is in [docs/plan-split-connectors.md](docs/plan-split-connectors.md).
+
 ### STEP in and STEP out
 
-An unedited STEP is tessellated on load. With the bridge, Open CASCADE reads it. Without the bridge, the pure-Rust [truck](https://github.com/ricosjp/truck) kernel reads planes, cylinders, cones, spheres, tori, and NURBS, and converts file units to millimetres. Assemblies and multi-body parts become one mesh; each instance keeps its placement. The chord tolerance defaults to 0.05 mm (0.01–2 mm) via the Prepare field or `slice --step-tolerance`. Faceted brep and AP242 tessellated solids are rejected with an error.
+An unedited STEP is tessellated on load. With the bridge, Open CASCADE reads it. Without the bridge, the pure-Rust [truck](https://github.com/ricosjp/truck) kernel reads planes, cylinders, cones, spheres, tori, and NURBS, and converts file units to millimetres. Each instance of an assembly keeps its placement. A STEP that holds several solids asks first, with "This STEP file holds N solids.": **Open as N pieces** makes one plate object per solid, named from the file and placed as assembled, and each opens in Model as a solid of its own. **Open as one object** keeps the old behaviour, one mesh. On a STEP object already on the plate, **Separate into plate objects** splits it by its solids. The chord tolerance defaults to 0.05 mm (0.01–2 mm) via the Prepare field or `slice --step-tolerance`. Faceted brep and AP242 tessellated solids are rejected with an error.
 
 Model mode opens that STEP as the root of the history tree. The STEP button at the foot of the rail writes the solid on screen as AP214, a manifold solid B-rep. The same write is the MCP tool `model_export_step`.
 
@@ -111,6 +123,16 @@ Trust comes from the second solve: the target nearest its limit, or with no targ
 **Prepare** puts the model on the plate. Move, turn, and scale it, then choose a strategy: speed, efficiency, toughness, or a blend by weight, by layer, or by region. Each strategy is a real set of walls, infill, speed, acceleration, seam, and retraction.
 
 ![Prepare. The overhang is on the Lime 220, with the strategy list in the settings dock.](docs/screenshots/prepare.png)
+
+**Placing objects.** The Place panel in the left dock holds X, Y, and Scale, then Rx, Ry, and Rz. Typed values are exact. The tool rail's Move, Rotate, and Scale put a gizmo on the part.
+
+- **Lay flat** drops the flattest face onto the bed. It chooses among the faces of the part's convex hull, with coplanar faces merged, and takes the one that would touch the bed most.
+- **Settle on the bed** is a switch in the Place panel. While you turn the part with the rotate rings, it snaps to the flat face that touches the bed most, if one lies within 12° of the angle you hold; otherwise the angle stays. The contact is drawn as a patch on the bed, and the readout says "Contact N mm²". Typed Rx, Ry, and Rz stay exact.
+- **Ctrl-drag** moves the part on the bed, and **Ctrl-right-drag** turns it. While turning, X, Y, or Z locks the turn to that axis. Shift snaps a move to 1 mm and a turn to 15°, and Esc cancels the drag. **Ctrl-click** selects the object under the pointer. On a Mac it is Cmd throughout.
+- **Snap.** Dragging a part with the Move tool, by its body or by an arrow, snaps it within 9 px on screen to what is near. In order: the box edges and middles of the other parts and of the bed (flush, touching, or centred, each axis on its own, and on top of another part when you drag Z), then their corners and side midpoints, then a flat side laid against a flat side. An amber guide line marks it, the readout names it ("Flush with Box 2 · X", "Centred on the bed · Y"), and the part it met takes an amber tint. **Alt** held for the drag turns the snap off. Shift keeps its whole-millimetre snap and skips the feature snap. The outline of a part is its convex hull seen from above, so a notch is not a corner.
+- **Align to…** is a row in the Place panel: pick the bed or another object, pick how (Left, Right, Front, or Back edge flush; Left of it, Right of it, In front, or Behind, touching; Centre X, Centre Y, or Centre X and Y; On top), and Align. The part moves there exactly, in one undo step. The bed takes only the flush and centre choices. Front is low Y.
+
+**Measure.** In Prepare, the Measure button on the rail (Shift+M) shows the part's size callouts, a scale bar, and numbers along the bed. In Model, Measure under Inspect puts two points, A and B, on the solid, and reads the distance and ΔX, ΔY, ΔZ. A point you drag snaps within 10 px to a corner (Vertex), an edge's Midpoint, the middle of a flat face (Face centre), or the box's corners and middle, and a marker names what it took. Alt turns that off, and Ctrl snaps to the nearest corner of the triangle under the pointer. Circle centres are not offered yet. Only the open solid is measured, not the other plate objects.
 
 **Preview** draws the finished toolpaths in 3D, coloured by feature. The stage can be 2D, split, or 3D. The layer slider walks the print in every pane. The results dock gives the time and the filament. A G-code tab shows the file.
 
@@ -246,6 +268,8 @@ The server drives the same plate, settings, paint, and Model operations the wind
 A typical slice is `machine_list`, `machine_select`, `mesh_import`, `slice_start`, `slice_wait`, `gcode_summary`. A hole is `faces_find`, `workplane_set`, `model_probe`, `model_apply`, `model_commit`, then `slice_start`. The guides `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate` hold the same sequences. `guide {topic: "ops"}` lists every Model op with an example. `model_apply` names each op kind in one line to keep the tool list small, and `guide {kind: "fillet"}` returns that kind's full schema.
 
 A stress study is `sim_setup`, `sim_run`, then `sim_sweep {reslice: true}` to compare variants: each row has the slicer's time and grams next to the margins. `layer_image {colourBy: "stress"}` draws a layer's toolpaths coloured by the solved stress. `guide {topic: "sim"}` gives the order of calls and what to change for each failure mode.
+
+Placement has the window's options. `object_place {object, layFlat: true}` drops the flattest face, and `{object, rotX: 5, settle: true}` turns the part and snaps it to the nearest flat face within 12°; the reply gives `rotationDeg` and `contactMm2`. `{object, align: {to: <object id or "bed">, how}}` lines the part up as Align to… does, exactly: `how` is `flush-left`, `flush-right`, `flush-front`, `flush-back`, `left-of`, `right-of`, `front-of`, `behind`, `centre-x`, `centre-y`, `centre`, or `on-top`. `mesh_import {path, pieces: true}` opens a STEP of several solids as one object per solid. `solid_new {name}` names a new solid, and `object_select {object, name}` renames an object. Pocket and boss anchor `from: "box"` unless told otherwise.
 
 `model_build` makes a solid, runs a batch of edits, and commits it in one call. Each edit is checked before it is applied. A step that Open CASCADE reports as done but that loses the part, or leaves pieces that meet only along an edge, is taken back and refused. A commit refuses a mesh that does not close, and `model_check` lists open and touching edges with where they are.
 
@@ -407,7 +431,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (3.9.3). Publishing that draft is a separate step. Draft releases through v3.9.1 are already on the repository.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (4.0.0). Publishing that draft is a separate step. Draft releases through v3.9.3 are already on the repository.
 
 ## Headless slice and bench
 

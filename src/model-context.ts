@@ -4,6 +4,8 @@ import type { Affine } from "./model-space.ts";
 /** A plate object drawn as grey context. `matrix` takes its source vertices into the frame of the view that draws it. */
 export interface ContextPart {
   id: string;
+  /** What the object is called, for a label that names it. */
+  name?: string;
   positions: Float32Array;
   matrix: Affine;
 }
@@ -13,7 +15,7 @@ export function bedParts(objects: readonly PlateObject[], selectedId: string | n
   if (objects.length < 2) return [];
   return objects
     .filter((obj) => obj.id !== selectedId && obj.sourcePos.length >= 9)
-    .map((obj) => ({ id: obj.id, positions: obj.sourcePos, matrix: sourceToBed(obj, bedX, bedY) }));
+    .map((obj) => ({ id: obj.id, name: obj.name, positions: obj.sourcePos, matrix: sourceToBed(obj, bedX, bedY) }));
 }
 
 /**
