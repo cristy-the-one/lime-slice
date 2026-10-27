@@ -175,6 +175,7 @@ src/ui/dock-panes.test.ts
 src/modeling/partition.test.ts
 src/modeling/partition-export.test.ts
 src/modeling/joint-down.test.ts
+src/modeling/sketch-profile.test.ts
 src/modeling/fit-coupon.test.ts
 src/place-snap.test.ts
 mcp/align.test.ts

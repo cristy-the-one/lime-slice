@@ -23,7 +23,7 @@ import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNo
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
 import { clampPieces, type FillContext, type Target } from "../src/modeling/partition.ts";
 import { couponFileName, fitCoupon, fitCouponRequest, readCouponReply } from "../src/modeling/fit-coupon.ts";
-import { choiceAt, jointDown, jointPlanes } from "../src/modeling/joint-down.ts";
+import { choiceAt, jointDown, jointPlanes, noJointSentence } from "../src/modeling/joint-down.ts";
 import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateUp, readPartition, storedPartition } from "./partition.ts";
 import { pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
@@ -6273,7 +6273,7 @@ export class Session {
           out.notes.push(`Part ${index! + 1} is joint down on cut ${joint.face.cut + 1}, its ${joint.other ? "larger" : "only"} cut face, ${Math.round(joint.face.area * 100) / 100} mm².`);
           return;
         }
-        out.notes.push(`Part ${index! + 1} has no cut face, so it keeps its orientation.`);
+        out.notes.push(noJointSentence(index! + 1, op!.cuts));
       }
       // Keep: the part's own orientation, for an object Joint down turned or a piece copied from a part that is turned.
       if (row === obj) {
@@ -6732,7 +6732,16 @@ export class Session {
     const first = typed ? this.bake(obj, structuredClone(typed)) : null;
     const exprs = typed && first && !("reason" in first) ? this.plainLinks(obj, typed, typedText, first.op) : undefined;
     if (parent === null || parent === undefined) return this.editRoot(obj, tree, node, raw, exprs);
-    const baked = this.bake(obj, raw);
+    // A split to print is planned on the solid it cuts, the parent's: a profile and connectors read its section there.
+    let planned: ReturnType<Session["bake"]> = { reason: "The edit needs an op." };
+    if ((raw as { kind?: unknown } | null)?.kind === "partition" && parent !== tree.current) {
+      const read = await this.atStep(obj, tree, parent, async () => {
+        planned = this.bake(obj, raw);
+        return { ok: true };
+      });
+      if (read.ok !== true) return read;
+    } else planned = this.bake(obj, raw);
+    const baked = planned;
     if ("reason" in baked) return { ok: false, reason: baked.reason };
     const probed = [parent, node, tree.current].some((id) => obj.probes.has(probeKey(String(id), baked.op)));
     if (!probed) return { ok: false, reason: "Probe this edit first. It was not applied." };

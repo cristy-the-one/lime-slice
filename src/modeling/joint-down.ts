@@ -3,7 +3,8 @@
  * orientation the cuts were planned in unless it is set to joint: then its larger cut face, its joint, lies on the bed.
  * Pure TypeScript on a piece's mesh and the op's cuts; the plate applies the matrix it gives.
  */
-import type { Vec3 } from "./partition.ts";
+import type { UV, Vec3 } from "./partition.ts";
+import { longestLine, readChain } from "./sketch-profile.ts";
 
 /** A row-major 3×3 matrix, as the plate keeps an object's orientation. */
 export type Mat3 = [number, number, number, number, number, number, number, number, number];
@@ -168,11 +169,16 @@ export function facesDown(orient: Mat3, outward: Vec3): number {
  * The planes a piece's joint faces can lie on, from the op's cuts in the piece's frame: a straight cut's one plane; a
  * lap's two flats (the cut's plane and the plane its step carries the second flat to); a tongue's plane and the plane of
  * the tongue's end. Each says which cut it belongs to, so Joint down on a profiled cut takes the largest flat face on a
- * cut plane (plan section 24).
+ * cut plane (plan section 24). A sketched cut's one plane is that of its chain's longest straight segment, swept along V;
+ * a chain with no straight segment has none (section 27).
  */
-export function jointPlanes(cuts: readonly { origin: Vec3; normal: Vec3; profile?: { kind: string; depth?: number; side?: string } }[]): JointPlane[] {
+export function jointPlanes(cuts: readonly JointCut[]): JointPlane[] {
   return cuts.flatMap((cut, at): JointPlane[] => {
     const own: JointPlane = { origin: cut.origin, normal: cut.normal, cut: at };
+    if (cut.profile?.kind === "sketch") {
+      const flat = sketchFlat(cut);
+      return flat ? [{ ...flat, cut: at }] : [];
+    }
     const depth = cut.profile?.depth;
     const kind = cut.profile?.kind;
     if (!["lap", "zigzag", "tongue", "dovetail"].includes(kind ?? "") || typeof depth !== "number") return [own];
@@ -183,4 +189,38 @@ export function jointPlanes(cuts: readonly { origin: Vec3; normal: Vec3; profile
     const shift = toward * depth;
     return [own, { origin: [cut.origin[0] + n[0] * shift, cut.origin[1] + n[1] * shift, cut.origin[2] + n[2] * shift], normal: cut.normal, cut: at }];
   });
+}
+
+/** A cut as Joint down reads it: its plane, its U, and its profile with the sizes or the chain the planner stored. */
+export interface JointCut {
+  origin: Vec3;
+  normal: Vec3;
+  u?: Vec3;
+  profile?: { kind: string; depth?: number; side?: string; start?: UV; chain?: unknown };
+}
+
+/** The plane of a sketched cut's longest straight segment, in the cut's frame; null when the chain has none. */
+function sketchFlat(cut: JointCut): { origin: Vec3; normal: Vec3 } | null {
+  const chain = cut.profile ? readChain(cut.profile) : null;
+  const line = chain && !("reason" in chain) ? longestLine(chain) : null;
+  if (!line || !cut.u) return null;
+  const w = unit(cut.normal);
+  const along = dot(cut.u, w);
+  const u = unit([cut.u[0] - along * w[0], cut.u[1] - along * w[1], cut.u[2] - along * w[2]]);
+  const du = line.to[0] - line.from[0];
+  const dw = line.to[1] - line.from[1];
+  // Square to the segment within the (U, W) plane: the segment's direction turned a quarter.
+  const normal = unit([-dw * u[0] + du * w[0], -dw * u[1] + du * w[1], -dw * u[2] + du * w[2]]);
+  const at = (k: number) => cut.origin[k]! + u[k]! * line.from[0] + w[k]! * line.from[1];
+  return { origin: [at(0), at(1), at(2)], normal };
+}
+
+/**
+ * Why piece `part` (counted from 1) keeps its orientation when it is set to joint and no cut face was found: a sketched
+ * cut whose chain has no straight segment has no flat to lay down; otherwise the piece touches no cut.
+ */
+export function noJointSentence(part: number, cuts: readonly JointCut[]): string {
+  const flatless = cuts.findIndex((cut) => cut.profile?.kind === "sketch" && !sketchFlat(cut));
+  if (flatless >= 0) return `Part ${part} has no flat joint face: cut ${flatless + 1} is a sketch with no straight segment, so the part keeps its orientation.`;
+  return `Part ${part} has no cut face, so it keeps its orientation.`;
 }
