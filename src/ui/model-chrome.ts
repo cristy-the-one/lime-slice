@@ -29,7 +29,7 @@ import { fx } from "../app/fx";
 import { state } from "../app/state";
 import { closeModelCheck, modelCheckNote, mountModelCheck, openModelCheck, queueModelCheck, refreshModelCheck as rerunModelCheck } from "./model-check-panel.ts";
 import { evaluate, type Params } from "../modeling/expr.ts";
-import { appParamMessage, isPlainNumber } from "../modeling/params.ts";
+import { appParamMessage, isPlainNumber, PATH_KEY } from "../modeling/params.ts";
 import { revealParameters } from "./parameters.ts";
 import { revealStress } from "./stress.ts";
 import { COMMANDS, shortcutOf, shortcutShadowed, tipWithShortcut } from "./commands.ts";
@@ -2270,6 +2270,7 @@ export function panelExprs(): Record<string, string> | undefined {
 export function restoreFieldExprs(exprs: Record<string, string> | undefined) {
   if (!exprs) return;
   for (const [id, stored] of Object.entries(exprs)) {
+    if (id.startsWith(PATH_KEY)) continue;
     const input = document.querySelector<HTMLInputElement>(`#${id}`);
     if (!input || !stored.trim()) continue;
     const text = shownExpr(id, stored);

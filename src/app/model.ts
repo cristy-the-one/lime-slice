@@ -32,7 +32,7 @@ import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes, printFrame } from "../model-check.ts";
 import { emptyFeature, expandFeature, featureSource, forgetFeatureContext, isFeatureTool, keptFeatureFields, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
-import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSource, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
+import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
@@ -157,8 +157,8 @@ import { apiBase, apiToken, isStepName, plateObjectSizes, refreshObjectList } fr
 import { mountModelInspect, paintModelInspect, setInspectVolume } from "../ui/model-inspect";
 import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
-import { appParamMessage, evaluateTable, stepOutOfDate, usedByCount } from "../modeling/params.ts";
-import { refreshOp } from "../param-rebuild.ts";
+import { appParamMessage, evaluateTable, usedByCount } from "../modeling/params.ts";
+import { outOfDateSteps, planRebuild } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
 import { faceTriangles } from "../sim/bridge-body.ts";
 import { paintCorners } from "../sim/paint-mesh.ts";
@@ -3458,27 +3458,10 @@ function usedByName(name: string): number {
   return usedByCount(name, ops, rootExprs);
 }
 
-/** History steps on a shown branch whose stored numbers no longer match `after`. */
-function branchHits(tree: ModelTree, after: Params): NodeId[] {
-  const path = pathTo(tree, tree.current);
-  const rootOnPath = path.some((id) => tree.nodes.get(id)?.op?.kind === "root");
-  const hits: NodeId[] = [];
-  if (!rootOnPath && tree.root.kind === "primitive" && tree.root.exprs) {
-    const rootOp: ModelOp = { kind: "root", ...tree.root.solid, exprs: tree.root.exprs };
-    if (stepOutOfDate(rootOp, after)) hits.push(ROOT);
-  }
-  for (const id of path) {
-    const op = tree.nodes.get(id)?.op;
-    if (!op || (id === ROOT && hits.includes(ROOT))) continue;
-    if (stepOutOfDate(op, after)) hits.push(id);
-  }
-  return hits;
-}
-
 /** History steps on the shown branch whose stored numbers no longer match the parameter table. */
 function affectedNodeIds(): NodeId[] {
   const tree = treeOf(open);
-  return tree ? branchHits(tree, currentParams()) : [];
+  return tree ? outOfDateSteps(tree, currentParams()) : [];
 }
 
 /**
@@ -3497,38 +3480,6 @@ async function builtOn(tree: ModelTree, parent: NodeId): Promise<ParsedSolid | s
   if (body.seeded) readSolids.add(decoded);
   keepSolid(tree.key, parent, chord, decoded);
   return decoded;
-}
-
-/** `refreshStored`, after the solid a feature step re-expands on is in hand. */
-async function refreshStoredStep(op: ModelOp, after: Params, tree: ModelTree, parent: NodeId): Promise<{ op: ModelOp; error?: string }> {
-  if (op.kind === "group" && featureSource(op)) {
-    const solid = await builtOn(tree, parent);
-    if (typeof solid === "string") return { op, error: solid };
-    return refreshStored(op, after, tree, parent, solid);
-  }
-  return refreshStored(op, after, tree, parent);
-}
-
-function refreshStored(op: ModelOp, after: Params, tree: ModelTree, parent: NodeId, known?: ParsedSolid): { op: ModelOp; error?: string } {
-  const pose = openPose();
-  const cached = known ?? recentSolid(tree.key, parent, state.stepTolerance);
-  const solid = cached ?? (open?.key === tree.key && open.solid.id === parent ? open.solid : null);
-  let repeated: { id: number; op: ModelOp }[] | undefined;
-  if (op.kind === "group") {
-    const source = repeatSource(op);
-    const of = source && Array.isArray(source.of) ? source.of : null;
-    if (of) {
-      repeated = [];
-      for (const id of of) {
-        if (typeof id !== "number") continue;
-        const step = tree.nodes.get(id)?.op;
-        if (step) repeated.push({ id, op: step });
-      }
-    }
-  }
-  const next = refreshOp(op, after, { pose, solid, repeated });
-  if (next.error || !next.toSolid) return next;
-  return { op: toSolidOp(next.op, pose) };
 }
 
 /** Replay the shown branch from the earliest step a parameter change reaches, as one edit. */
@@ -3553,48 +3504,22 @@ async function rebuildNow() {
     readout(VIEW_ONLY);
     return;
   }
-  const hits = affectedNodeIds();
-  if (hits.length === 0) {
+  const from = tree.current;
+  const plan = await planRebuild(tree, { ...currentParams() }, {
+    pose: openPose(),
+    builtOn: (parent) => builtOn(tree, parent),
+    current: () => at === open && state.stage === "model" && treeOf(at)?.current === from,
+  });
+  if (plan === "stale") return;
+  if (plan === null) {
     noteParametersBuilt();
     return;
   }
-  const earliest = hits[0]!;
-  const node = tree.nodes.get(earliest);
-  if (!node) {
-    readout("This step is no longer in the history.");
+  if ("error" in plan) {
+    readout(appParamMessage(plan.error));
     return;
   }
-  const after = { ...currentParams() };
-  const from = tree.current;
-  const parent = node.parent ?? ROOT;
-  const replay = replayChain(tree, earliest, from);
-  const startOp = node.op ?? (tree.root.kind === "primitive" ? { kind: "root" as const, ...tree.root.solid, ...(tree.root.exprs ? { exprs: tree.root.exprs } : {}) } : null);
-  if (!startOp) {
-    readout("This step cannot be rebuilt.");
-    return;
-  }
-  const supplied: ModelOp[] = [];
-  const first = await refreshStoredStep(startOp, after, tree, parent);
-  if (at !== open || state.stage !== "model" || treeOf(at)?.current !== from) return;
-  if (first.error) {
-    readout(appParamMessage(first.error));
-    return;
-  }
-  supplied.push(first.op);
-  for (const id of replay) {
-    const step = tree.nodes.get(id)?.op;
-    if (!step) {
-      readout("This step is no longer in the history.");
-      return;
-    }
-    const next = await refreshStoredStep(step, after, tree, tree.nodes.get(id)?.parent ?? ROOT);
-    if (at !== open || state.stage !== "model" || treeOf(at)?.current !== from) return;
-    if (next.error) {
-      readout(appParamMessage(next.error));
-      return;
-    }
-    supplied.push(next.op);
-  }
+  const { node: earliest, parent, replay, supplied } = plan;
   const run: Editing = {
     key: at.key,
     target: at.key,

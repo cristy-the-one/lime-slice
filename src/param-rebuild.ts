@@ -2,12 +2,13 @@
  * --- A6. Bring a stored op up to a new parameter table: its numbers, then a sketch whose
  * driving dimensions name a parameter, then a feature or pattern whose source changed.
  */
-import { IDENTITY_POSE, type Affine } from "./model-space.ts";
+import { IDENTITY_POSE, toSolidOp, type Affine } from "./model-space.ts";
+import { replayChain } from "./model-edit.ts";
 import { expandFeature, featureSource, type FeatureSolid } from "./model-features.ts";
 import { expandRepeat, repeatSource } from "./model-repeat.ts";
-import { isSketchExtrudeGroup, isSketchRevolveGroup, type ModelOp } from "./model-tree.ts";
+import { ROOT, isSketchExtrudeGroup, isSketchRevolveGroup, pathTo, type ModelOp, type ModelTree, type NodeId } from "./model-tree.ts";
 import { evaluate, type Params } from "./modeling/expr.ts";
-import { patchOpNumbers, type ParamTable } from "./modeling/params.ts";
+import { patchOpNumbers, stepOutOfDate, type ParamTable } from "./modeling/params.ts";
 import { commitDriving } from "./sketch/constrain.ts";
 import { buildSketchExtrude, chooseRegions, featureOutlines, presetOf, regionsOfOutlines, sketchForFeature } from "./sketch/extrude.ts";
 import { holesInModel, pointsFromSource, sketchHoleSource, type HoleSizes } from "./sketch/holes.ts";
@@ -190,6 +191,100 @@ export function refreshOp(op: ModelOp, after: Params, ctx: RefreshContext = {}):
   const expanded = reexpand(drawn.op, op, ctx);
   if (expanded.error) return expanded;
   return { op: expanded.op, toSolid: drawn.toSolid === true || expanded.toSolid === true };
+}
+
+/** History steps on the shown branch whose stored numbers no longer match `after`, the new solid's root first. */
+export function outOfDateSteps(tree: ModelTree, after: Params): NodeId[] {
+  const path = pathTo(tree, tree.current);
+  const rootOnPath = path.some((id) => tree.nodes.get(id)?.op?.kind === "root");
+  const hits: NodeId[] = [];
+  if (!rootOnPath && tree.root.kind === "primitive" && tree.root.exprs) {
+    const rootOp: ModelOp = { kind: "root", ...tree.root.solid, exprs: tree.root.exprs };
+    if (stepOutOfDate(rootOp, after)) hits.push(ROOT);
+  }
+  for (const id of path) {
+    const op = tree.nodes.get(id)?.op;
+    if (!op || (id === ROOT && hits.includes(ROOT))) continue;
+    if (stepOutOfDate(op, after)) hits.push(id);
+  }
+  return hits;
+}
+
+/** What a parameter rebuild replays: the earliest out-of-date step, edited as `supplied[0]`, then the shown branch under it. */
+export interface BranchRebuild {
+  node: NodeId;
+  parent: NodeId;
+  /** The step shown when the plan was made. */
+  from: NodeId;
+  replay: NodeId[];
+  supplied: ModelOp[];
+}
+
+export interface RebuildContext {
+  /** The solid's pose in model space. */
+  pose: Affine;
+  /** The solid step `parent` built, which a feature step re-expands on, or why it could not be had. */
+  builtOn(parent: NodeId): Promise<FeatureSolid | string>;
+  /** False once the history moved on while the plan waited for a solid: the plan is dropped. */
+  current?(): boolean;
+}
+
+/** `refreshOp` on a stored step, with what its feature or pattern re-expands on, in the solid's own frame. */
+async function refreshStep(op: ModelOp, after: Params, tree: ModelTree, parent: NodeId, ctx: RebuildContext): Promise<{ op: ModelOp; error?: string }> {
+  let solid: FeatureSolid | null = null;
+  if (op.kind === "group" && featureSource(op)) {
+    const found = await ctx.builtOn(parent);
+    if (typeof found === "string") return { op, error: found };
+    solid = found;
+  }
+  let repeated: { id: number; op: ModelOp }[] | undefined;
+  if (op.kind === "group") {
+    const source = repeatSource(op);
+    const of = source && Array.isArray(source.of) ? source.of : null;
+    if (of) {
+      repeated = [];
+      for (const id of of) {
+        if (typeof id !== "number") continue;
+        const step = tree.nodes.get(id)?.op;
+        if (step) repeated.push({ id, op: step });
+      }
+    }
+  }
+  const next = refreshOp(op, after, { pose: ctx.pose, solid, repeated });
+  if (next.error || !next.toSolid) return next;
+  return { op: toSolidOp(next.op, ctx.pose) };
+}
+
+/**
+ * --- Gaps A5. The Parameters panel's Rebuild, as data: the shown branch replayed from the earliest step `after` reaches,
+ * each step brought up to it. Null when nothing is out of date, "stale" when the history moved on while it waited, and
+ * an error sentence when a step cannot follow. The app's Rebuild and the MCP's model_params rebuild both run it.
+ */
+export async function planRebuild(tree: ModelTree, after: Params, ctx: RebuildContext): Promise<BranchRebuild | { error: string } | "stale" | null> {
+  const hits = outOfDateSteps(tree, after);
+  if (hits.length === 0) return null;
+  const earliest = hits[0]!;
+  const node = tree.nodes.get(earliest);
+  if (!node) return { error: "This step is no longer in the history." };
+  const from = tree.current;
+  const parent = node.parent ?? ROOT;
+  const replay = replayChain(tree, earliest, from);
+  const startOp = node.op ?? (tree.root.kind === "primitive" ? { kind: "root" as const, ...tree.root.solid, ...(tree.root.exprs ? { exprs: tree.root.exprs } : {}) } : null);
+  if (!startOp) return { error: "This step cannot be rebuilt." };
+  const supplied: ModelOp[] = [];
+  const first = await refreshStep(startOp, after, tree, parent, ctx);
+  if (ctx.current && !ctx.current()) return "stale";
+  if (first.error) return { error: first.error };
+  supplied.push(first.op);
+  for (const id of replay) {
+    const step = tree.nodes.get(id)?.op;
+    if (!step) return { error: "This step is no longer in the history." };
+    const next = await refreshStep(step, after, tree, tree.nodes.get(id)?.parent ?? ROOT, ctx);
+    if (ctx.current && !ctx.current()) return "stale";
+    if (next.error) return { error: next.error };
+    supplied.push(next.op);
+  }
+  return { node: earliest, parent, from, replay, supplied };
 }
 
 export type { ParamTable };
