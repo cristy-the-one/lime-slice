@@ -284,3 +284,20 @@ test("the first Ctrl over an object says what a drag does, and only the first ti
   await expect(hint).toBeHidden();
   await page.keyboard.up("Control");
 });
+
+test("Ctrl-drag and Ctrl-right-drag off every object still move the camera and touch no object", async ({ page }) => {
+  const ledge = await twoObjects(page);
+  await ledgeGrey(page, ledge);
+  const cam = () => page.locator("#prepare").getAttribute("data-cam");
+  const box = (await page.locator("#prepare").boundingBox())!;
+  const empty = { x: box.x + 90, y: box.y + box.height - 90 };
+  for (const button of ["left", "right"] as const) {
+    const before = await cam();
+    await dragWith(page, empty, { dx: 80, dy: -30 }, button);
+    await expect.poll(cam).not.toBe(before);
+    expect(await selectedId(page)).toBe("part");
+    expect(await xy(page)).toEqual({ x: 90, y: 100 });
+    expect(await size(page)).toMatch(/20\.0 × 20\.0 × 20\.0 mm/);
+  }
+  await expect(page.locator("#gizmoReadout")).toBeHidden();
+});
