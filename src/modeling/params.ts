@@ -198,6 +198,25 @@ const SOURCE_PATH: Record<string, Path> = {
   modelBoreD: ["counterboreDepth"],
 };
 
+/**
+ * A key that names the number by its place on the stored op, `@profile.2.0` or `@origin.1`: a field the panel has no
+ * input for, such as a profile point or a copy's position, which the MCP links to an expression.
+ */
+export const PATH_KEY = "@";
+
+export function pathKey(path: Path): string {
+  return `${PATH_KEY}${path.join(".")}`;
+}
+
+function keyPath(key: string): Path | null {
+  if (!key.startsWith(PATH_KEY) || key.length === 1) return null;
+  return key.slice(1).split(".").map((part) => (/^\d+$/.test(part) ? Number(part) : part));
+}
+
+function fieldPath(key: string): Path | undefined {
+  return FIELD_PATH[key] ?? keyPath(key) ?? undefined;
+}
+
 function readPath(value: unknown, path: Path): number | null {
   let at: unknown = value;
   for (const key of path) {
@@ -259,7 +278,7 @@ export function patchOpNumbers(op: ModelOp, after: Params): { op: ModelOp; error
     } else if (key === "modelBlend" && (target.kind === "fillet" || target.kind === "chamfer")) {
       patched = { ...patched, size: newValue };
     } else {
-      const direct = FIELD_PATH[key];
+      const direct = fieldPath(key);
       if (direct && target.kind !== "group" && key !== "distance" && key !== "modelPull") {
         patched = patchRecord(patched, direct, newValue);
       }
@@ -273,7 +292,7 @@ export function patchOpNumbers(op: ModelOp, after: Params): { op: ModelOp; error
     if (key === "scale" && target.kind === "loft" && target.drawing?.sweep && typeof target.drawing.sweep.scale === "number") {
       patched = { ...patched, drawing: { ...target.drawing, sweep: { ...target.drawing.sweep, scale: newValue } } };
     }
-    if (spread && target.kind === "group") {
+    if (spread && target.kind === "group" && !key.startsWith(PATH_KEY)) {
       const steps = ((patched.steps as ModelOp[] | undefined) ?? target.steps).map((step) => {
         if (step.exprs && Object.hasOwn(step.exprs, key)) return step;
         const child = apply(step, key, text, false);
@@ -328,7 +347,7 @@ function fieldOutOfDate(op: ModelOp, key: string, text: string, after: Params): 
     const stored = sourcePath ? readPath(op.source, sourcePath) : null;
     if (stored != null && numbersDiffer(stored, value)) return true;
   }
-  const direct = FIELD_PATH[key];
+  const direct = fieldPath(key);
   if (direct && op.kind !== "group" && !pull) {
     const stored = readPath(op, direct);
     if (stored != null && numbersDiffer(stored, value)) return true;

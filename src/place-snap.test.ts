@@ -2,6 +2,7 @@ import {
   alignDelta, bedBox, footprintOf, isAlignRelation, relationFitsBed, screenPx, shifted, snapMove,
   type Footprint, type Screen, type SnapTarget,
 } from "./place-snap.ts";
+import { solidFootprint } from "./place-snap-scene.ts";
 
 let failed = 0;
 
@@ -244,6 +245,17 @@ near("centre on the bed", 20 + alignDelta(a, bedAsBox, "centre", true)![0], 110)
 near("centre on the bed, Y", 35 + alignDelta(a, bedAsBox, "centre", true)![1], 100);
 check("relations are named", isAlignRelation("centre") && !isAlignRelation("middle") && relationFitsBed("flush-left") && !relationFitsBed("on-top"));
 near("screen length of a diagonal", screenPx(top(2), [3, 4, 0]), 10);
+
+const slab = Float32Array.from(box(0, 0, 0, 40, 10, 5));
+const quarter = { m: [0, -1, 0, 1, 0, 0, 0, 0, 1] as [number, number, number, number, number, number, number, number, number], t: [100, 50, 3] as [number, number, number] };
+const turnedSlab = solidFootprint(slab, quarter);
+near("a solid turned a quarter lies along Y: min x", turnedSlab.box.min[0], 90);
+near("a solid turned a quarter lies along Y: max x", turnedSlab.box.max[0], 100);
+near("a solid turned a quarter lies along Y: max y", turnedSlab.box.max[1], 90);
+near("a solid is lifted by the pose", turnedSlab.box.min[2], 3);
+const slid = solidFootprint(slab, { m: quarter.m, t: [110, 50, 3] });
+near("a move reuses the held outline and shifts it", slid.box.min[0], 100);
+check("the held outline is the turn's, not the last move's", turnedSlab.box.min[0] === 90);
 
 if (failed) {
   console.error(`${failed} failed`);
