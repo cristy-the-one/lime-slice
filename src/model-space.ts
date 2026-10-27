@@ -20,6 +20,14 @@ export interface Affine {
 
 export const IDENTITY_POSE: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
 
+/** The frame an object's typed Model numbers are read and written in: its own CAD frame (`"part"`), or model space (`"model"`, the default). */
+export type ObjectFrame = "model" | "part";
+
+/** The pose a typed number goes through into the solid's frame: none in the part's own frame, else the object's model pose. */
+export function typedPoseOf(obj: { modelPose?: Affine; frame?: ObjectFrame }): Affine {
+  return obj.frame === "part" ? IDENTITY_POSE : obj.modelPose ?? IDENTITY_POSE;
+}
+
 /** A copy beside its source along model X, its own width plus this gap away, so the two never sit on each other. */
 export const DUPLICATE_GAP_MM = 10;
 

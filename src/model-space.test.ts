@@ -16,6 +16,7 @@ import {
   thenPose,
   toSolidOp,
   turnDir,
+  typedPoseOf,
   type Affine,
 } from "./model-space.ts";
 import { opLabel, type ModelOp, type Vec3 } from "./model-tree.ts";
@@ -170,6 +171,18 @@ eq("rigid: a turn and a move are; a scale, a mirror and a shear are not", [
   isRigid({ m: [1, 0.5, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }),
   isRigid({ m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, Number.NaN, 0] }),
 ], [true, false, false, false, false]);
+
+// Assemblies M1: a part-frame object types its numbers through no pose, so a stored op is the op that was typed.
+{
+  const moved: Affine = { m: [0, -1, 0, 1, 0, 0, 0, 0, 1], t: [200, 30, 0] };
+  const typed: ModelOp = { kind: "boolean", op: "fuse", primitive: "box", origin: [10, 5, 5], size: [6, 6, 8], radius: 0, height: 0, turn: [0, 0, 0] };
+  eq("an object in the default frame types through its pose", typedPoseOf({ modelPose: moved }), moved);
+  eq("a model-frame object is the same", typedPoseOf({ modelPose: moved, frame: "model" }), moved);
+  eq("a part-frame object types through none", typedPoseOf({ modelPose: moved, frame: "part" }), IDENTITY_POSE);
+  eq("so the stored op is the typed op", toSolidOp(typed, typedPoseOf({ modelPose: moved, frame: "part" })), typed);
+  check("while the default frame moves it", JSON.stringify(toSolidOp(typed, typedPoseOf({ modelPose: moved }))) !== JSON.stringify(typed));
+  eq("an object with no pose is the identity in either frame", [typedPoseOf({}), typedPoseOf({ frame: "part" })], [IDENTITY_POSE, IDENTITY_POSE]);
+}
 
 if (failed) {
   console.error(`${failed} failed`);

@@ -634,6 +634,7 @@ function readPlateObject(value: unknown): PlateFileObject | string {
     if (!pose) return "This project's model space position is damaged.";
     object.modelPose = pose;
   }
+  if (row.frame === "part") object.frame = "part";
   if (row.workplane !== undefined) {
     const plane = readWorkplane(row.workplane);
     if (!plane) return "This project's workplane is damaged.";
