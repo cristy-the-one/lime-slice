@@ -1,5 +1,5 @@
 import { base64ToBytes } from "../base64";
-import { saveBytes } from "./save-bytes";
+import { saveBytes, saveBytesToFolder } from "./save-bytes";
 import { boundsOf, encode3mf, encodeStl, settleBy, type Bounds, type Mat3 } from "../mesh-place";
 import {
   IDENTITY_POSE,
@@ -4226,13 +4226,13 @@ async function exportPieceFiles(row?: RowKey) {
   readout("Writing the pieces…");
   const mine = ticket;
   let saved: string[] = [];
+  let folder: string | null = "";
   let problem = "";
   try {
     if (format === "stl") {
-      for (const [index, name] of files.stl.entries()) {
-        await saveBytes(encodeStl(meshes[index]!, name), name, "stl", "model/stl");
-        saved.push(name);
-      }
+      // One folder for every piece on the desktop, one download each in the web build.
+      folder = await saveBytesToFolder(files.stl.map((name, index) => ({ name, bytes: encodeStl(meshes[index]!, name) })), "model/stl");
+      saved = folder === null ? [] : files.stl;
     } else if (format === "3mf") {
       await saveBytes(encode3mf(meshes, names), files["3mf"][0]!, "3mf", "model/3mf");
       saved = files["3mf"];
@@ -4251,7 +4251,7 @@ async function exportPieceFiles(row?: RowKey) {
     syncUndo();
   }
   if (mine !== ticket || state.stage !== "model") return;
-  readout(problem || `Saved ${saved.join(", ")}. ${SUPPORT_NOTE}`);
+  readout(problem || (folder === null ? "No folder was picked, so nothing was saved." : `Saved ${saved.join(", ")}${folder ? ` in ${folder}` : ""}. ${SUPPORT_NOTE}`));
 }
 
 /**
