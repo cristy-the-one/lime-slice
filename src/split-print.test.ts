@@ -34,6 +34,8 @@ import {
   withCutMode,
   withCutsCleared,
   withJointCount,
+  withProfileField,
+  withProfileKind,
   withJointField,
   withJointsOn,
   withJointType,
@@ -60,7 +62,7 @@ const bar = new Float32Array([0, 0, 0, 500, 0, 0, 500, 20, 0, 0, 20, 20, 500, 20
 const box = { min: [0, 0, 0] as Vec3, max: [500, 20, 20] as Vec3 };
 const center: Vec3 = [250, 10, 10];
 const SIZES = { height: 4, depth: 0.4 };
-const cut = (patch: Partial<CardCut> = {}): CardCut => ({ mode: "x", value: 100, tiltA: 0, tiltB: 0, face: null, flip: false, joints: plainJoints(), ...patch });
+const cut = (patch: Partial<CardCut> = {}): CardCut => ({ mode: "x", value: 100, tiltA: 0, tiltB: 0, face: null, flip: false, joints: plainJoints(), profile: { kind: "straight" }, ...patch });
 
 // --- The command (D10): a menu item, no key, and no rail tool.
 const command = COMMANDS.find((row) => row.id === "model-split-print");
@@ -240,6 +242,30 @@ eq("the plate's up in the solid's frame is the third row of its orientation", [p
 const rowOf = (type: "dowel" | "plug" | "hardware") => opLabel({ kind: "partition", cuts: [{ origin: [0, 0, 0], normal: [1, 0, 0], connectors: { on: true, types: [{ type }], placed: [{ id: "c1-1", type, uvMm: [0, 0], fraction: [0.5, 0.5], fixed: false }] } }] }, 3);
 eq("a row names its connectors", [rowOf("dowel"), rowOf("plug"), rowOf("hardware")], ["Split to print, 3 parts, dowels", "Split to print, 3 parts, plugs", "Split to print, 3 parts, holes"]);
 eq("a cut whose every connector was dropped is a plain row", opLabel({ kind: "partition", cuts: [{ origin: [0, 0, 0], normal: [1, 0, 0], connectors: { on: true, types: [{ type: "dowel" }], placed: [] } }] }, 3), "Split to print, 3 parts");
+
+// --- Milestone 8: a cut's profile. The card holds the typed sizes; the stored op has them resolved on the section.
+const lapCard = withProfileKind(plain, 0, "lap");
+eq("a new lap has no typed size, so every one is the planner's", lapCard.cuts[0]!.profile, { kind: "lap" });
+const lapStored = storedPartition(cardOp(lapCard, wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+const lapProfile = "op" in lapStored ? (lapStored.op.cuts[0]!.profile as unknown as Record<string, unknown>) : null;
+eq("stored, it has the depth, the step half way up the 20 mm section, the side, and where it sits from the cut's origin", lapProfile, { kind: "lap", depth: 8, height: 10, side: "positive", at: 0 });
+const typedLap = withProfileField(withProfileField(lapCard, 0, { depth: 12 }), 0, { height: 6 });
+const typedStored = storedPartition(cardOp(typedLap, wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("a typed height is from the section's low side: 6 mm up is −4 from the middle", "op" in typedStored ? typedStored.op.cuts[0]!.profile : null, { kind: "lap", depth: 12, height: 6, side: "positive", at: -4 });
+eq("the pencil reads the lap back with its sizes", cardFromOp((typedStored as { op: PartitionModelOp }).op, IDENTITY_POSE, wideCenter, null, "lime-220").cuts[0]!.profile, { kind: "lap", depth: 12, height: 6, side: "positive" });
+const thinLap = storedPartition(cardOp(withProfileField(lapCard, 0, { depth: 2 }), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("a lap under the depth floor is refused with the planner's sentence", "reason" in thinLap ? thinLap.reason : null, "Cut 1: Lap depth is 2 mm, under the 2.4 mm floor.");
+const tongueCard = withProfileKind(plain, 0, "tongue");
+const tongueStored = storedPartition(cardOp(tongueCard, wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+const tongueProfile = "op" in tongueStored ? (tongueStored.op.cuts[0]!.profile as unknown as Record<string, number | string>) : null;
+eq("a tongue is 6 × 3 mm, PLA's clearance and the end gap, 3.95 mm from each end of the 60 mm section, in its middle", tongueProfile, { kind: "tongue", width: 6, depth: 3, side: "positive", clearance: 0.15, endGap: 0.4, u0: -26.05, u1: 26.05, v: 0 });
+const wideTongue = storedPartition(cardOp(withProfileField(tongueCard, 0, { width: 40 }), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("a tongue wider than the section less its walls is refused", "reason" in wideTongue ? wideTongue.reason : null, "Cut 1: the section is too small for a tongue 40 mm wide with 0.8 mm walls. Make it narrower, or cut straight.");
+const noFit = storedPartition(cardOp(tongueCard, wideCenter, null, SIZES)!, { ...wideCtx, material: "Nylon" }, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("a material with no row gives a tongue no clearance", "reason" in noFit ? noFit.reason : null, "Cut 1: No fit for this material. Type a clearance, or leave connectors off.");
+eq("Straight drops the profile from the op", cardOp(withProfileKind(tongueCard, 0, "straight"), wideCenter, null, SIZES)!.cuts[0]!.profile, undefined);
+eq("a profile on an untouched cut is nothing to send", cardOp(plain, wideCenter, null, SIZES)!.cuts[0]!.profile, undefined);
+check("a typed profile size is a change, so an edit offers Update", !sameCard(lapCard, withProfileField(lapCard, 0, { depth: 9 })));
 
 if (failed) {
   console.error(`${failed} failed`);

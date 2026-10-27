@@ -23,7 +23,7 @@ import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeKey, probeNo
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
 import { clampPieces, type FillContext, type Target } from "../src/modeling/partition.ts";
 import { couponFileName, fitCoupon, fitCouponRequest, readCouponReply } from "../src/modeling/fit-coupon.ts";
-import { choiceAt, jointDown } from "../src/modeling/joint-down.ts";
+import { choiceAt, jointDown, jointPlanes } from "../src/modeling/joint-down.ts";
 import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateUp, readPartition, storedPartition } from "./partition.ts";
 import { pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
@@ -5831,7 +5831,7 @@ export class Session {
     const settle = (row: PlateObject, op: PartitionModelOp | null, index: number | null, positions: Float32Array | null): void => {
       const choice = op && index !== null ? choiceAt(op.orient, index) : "keep";
       if (choice === "joint" && positions) {
-        const joint = jointDown(positions, op!.cuts.map((cut) => ({ origin: cut.origin, normal: cut.normal })), belt);
+        const joint = jointDown(positions, jointPlanes(op!.cuts), belt);
         if (joint) {
           if (row === obj && !this.keptOrients.has(obj.id)) this.keptOrients.set(obj.id, [...obj.orient] as Mat3);
           this.jointed.add(row.id);

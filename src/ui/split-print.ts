@@ -8,11 +8,11 @@ import type { DragHandle } from "../model-drag";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { Params } from "../modeling/expr.ts";
 import { formatMm, type FacePlane, type SplitBase, type SplitPlan } from "../model-plane";
-import { clearanceSentence, fillConnector, holeCompensationNote, mm, type Box, type ConnectorSpec, type PartitionDefaults, type PartitionOp, type Target } from "../modeling/partition.ts";
+import { clearanceSentence, fillConnector, holeCompensationNote, mm, profileRefusals, SHAPED_JOINTS_LATER, type Box, type ConnectorSpec, type PartitionDefaults, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
-import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointsOn, withJointType, withSelected, type Card, type CardCut, type CardFrame, type CardJointType, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print";
+import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, withProfileField, withProfileKind, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointsOn, withJointType, withSelected, type Card, type CardCut, type CardFrame, type CardJointType, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print";
 import { closeModelCard, fieldNumber, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { pushToast } from "./toasts";
 
@@ -156,6 +156,20 @@ export function mountSplitPrint(next: SplitPrintHost) {
         <label data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelPartTiltA" type="number" step="1" min="-85" max="85" value="0" aria-label="Tilt A, degrees"></label>
         <label data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelPartTiltB" type="number" step="1" min="-85" max="85" value="0" aria-label="Tilt B, degrees"></label>
       </div>
+    </section>
+    <section class="sp-profile" id="modelPartProfile" aria-label="Profile">
+      <label class="sp-print"><span class="scrub-label">Profile</span><select id="modelPartProfileKind" aria-label="Cut profile">
+        <option value="straight">Straight</option><option value="lap">Lap</option><option value="tongue">Tongue</option>
+      </select></label>
+      <div class="model-fields" id="modelPartProfileFields" hidden>
+        <label data-profile-for="tongue"><span class="scrub-label" data-scrub>Width</span><input id="modelPartProfileWidth" type="number" step="0.5" min="0" aria-label="Tongue width, along V, millimetres"></label>
+        <label data-profile-for="lap tongue"><span class="scrub-label" data-scrub>Depth</span><input id="modelPartProfileDepth" type="number" step="0.5" min="0" aria-label="Depth, along W, millimetres"></label>
+        <label data-profile-for="lap"><span class="scrub-label" data-scrub>Height</span><input id="modelPartProfileHeight" type="number" step="0.5" min="0" placeholder="Half" aria-label="Lap height, from the section's low side, millimetres"></label>
+      </div>
+      <label class="sp-print" id="modelPartProfileSideRow" hidden><span class="scrub-label">Side</span><select id="modelPartProfileSide" aria-label="Which piece carries the overlap">
+        <option value="positive">Positive</option><option value="negative">Negative</option>
+      </select></label>
+      <p class="model-note" id="modelPartProfileNote" role="status" hidden></p>
     </section>
     <section class="sp-joints" id="modelPartJoints" aria-label="Connectors">
       <label class="model-keep" data-tip="Dowels, plugs or holes on this cut. Off is a plain cut."><input id="modelPartJointsOn" type="checkbox"> Connectors</label>
@@ -316,6 +330,7 @@ export function setSplitPrintCheck(next: SplitPrintCheck) {
   paintFoot();
   // The kernel's verdict on the connectors: its sentences, and the ghost keeps only the ones it built.
   if (card.cuts.some((cut) => cut.joints.on) && splitPrintOpen()) {
+    paintProfile();
     paintJoints();
     refreshModelCard();
   }
@@ -445,6 +460,7 @@ function changed(wait: number | null) {
   placement = typed && card.cuts.some((cut) => cut.joints.on) ? host?.connectors(typed) ?? null : null;
   paintRows();
   paintPlane();
+  paintProfile();
   paintJoints();
   paintFit();
   refreshModelCard();
@@ -547,6 +563,50 @@ function paintPlane() {
   for (const [id, value] of [["#modelPartTiltA", cut.tiltA], ["#modelPartTiltB", cut.tiltB]] as const) {
     const input = $<HTMLInputElement>(id);
     if (input && document.activeElement !== input) input.value = formatMm(value);
+  }
+}
+
+/** The selected cut's Profile: the menu, and for a lap or a tongue its sizes with the planner's defaults showing. */
+function paintProfile() {
+  const section = $<HTMLElement>("#modelPartProfile");
+  const cut = card.cuts[card.selected];
+  if (section) section.hidden = !cut;
+  if (!cut) return;
+  const kind = cut.profile.kind === "lap" || cut.profile.kind === "tongue" ? cut.profile.kind : "straight";
+  const put = (id: string, value: string) => {
+    const input = $<HTMLInputElement | HTMLSelectElement>(id);
+    if (input && document.activeElement !== input && !(input as HTMLInputElement).dataset?.expr) input.value = value;
+  };
+  put("#modelPartProfileKind", kind);
+  const fields = $<HTMLElement>("#modelPartProfileFields");
+  if (fields) fields.hidden = kind === "straight";
+  const side = $<HTMLElement>("#modelPartProfileSideRow");
+  if (side) side.hidden = kind === "straight";
+  const note = $<HTMLElement>("#modelPartProfileNote");
+  if (kind === "straight") {
+    if (note) note.hidden = true;
+    return;
+  }
+  root()?.querySelectorAll<HTMLElement>("#modelPartProfileFields [data-profile-for]").forEach((row) => {
+    row.hidden = !(row.dataset.profileFor ?? "").split(" ").includes(kind);
+  });
+  const d = host?.defaults(card.target) ?? null;
+  const typed = cut.profile as { depth?: number; height?: number; width?: number; side?: string };
+  const shown = (id: string, value: number | undefined, fallback: number | undefined) => {
+    const input = $<HTMLInputElement>(id);
+    if (!input) return;
+    if (document.activeElement !== input) input.value = value === undefined ? "" : mm(value);
+    if (fallback !== undefined && id !== "#modelPartProfileHeight") input.placeholder = mm(fallback);
+  };
+  shown("#modelPartProfileDepth", typed.depth, kind === "lap" ? d?.lapDepthMm : d?.tongueDepthMm);
+  shown("#modelPartProfileHeight", typed.height, undefined);
+  shown("#modelPartProfileWidth", typed.width, d?.tongueWidthMm);
+  put("#modelPartProfileSide", typed.side === "negative" ? "negative" : "positive");
+  const sentences = d ? profileRefusals(cut.profile, d) : [];
+  const joints = cut.joints.on ? [SHAPED_JOINTS_LATER] : [];
+  if (note) {
+    note.textContent = [...sentences, ...joints].join(" ");
+    note.hidden = sentences.length + joints.length === 0;
   }
 }
 
@@ -961,6 +1021,17 @@ function readField(ev: Event): boolean {
     else return false;
     return true;
   }
+  const profileField = PROFILE_FIELDS[input.id];
+  if (profileField) {
+    if (input.value.trim() === "") {
+      card = withProfileField(card, card.selected, { [profileField]: undefined });
+      return true;
+    }
+    const typed = fieldNumber(input.id);
+    if (!Number.isFinite(typed) || typed < 0) return false;
+    card = withProfileField(card, card.selected, { [profileField]: typed });
+    return true;
+  }
   const jointField = JOINT_FIELDS[input.id];
   if (jointField) {
     if (input.value.trim() === "") {
@@ -992,6 +1063,12 @@ function onInput(ev: Event) {
 }
 
 /** The connector fields that are a number, and the spec field each writes. */
+const PROFILE_FIELDS: Record<string, string> = {
+  modelPartProfileDepth: "depth",
+  modelPartProfileHeight: "height",
+  modelPartProfileWidth: "width",
+};
+
 const JOINT_FIELDS: Record<string, string> = {
   modelPartJointRadius: "radius",
   modelPartJointDiameter: "diameter",
@@ -1038,6 +1115,16 @@ function onChange(ev: Event) {
     while (orient.length <= at) orient.push("keep");
     orient[at] = ev.target.value === "joint" ? "joint" : "keep";
     card = { ...card, orient };
+    changed(0);
+    return;
+  }
+  if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartProfileKind") {
+    card = withProfileKind(card, card.selected, ev.target.value as "straight" | "lap" | "tongue");
+    changed(0);
+    return;
+  }
+  if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartProfileSide") {
+    card = withProfileField(card, card.selected, { side: ev.target.value });
     changed(0);
     return;
   }

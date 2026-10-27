@@ -541,7 +541,11 @@ pub enum PrintProcess {
 }
 
 const PARTITION_PROFILE_LATER: &str =
-    "Only straight cuts are built yet. Leave the profile out, or make it straight.";
+    "Only straight cuts, laps and tongues are built yet. Leave the profile out, or make it straight, a lap or a tongue.";
+const PARTITION_SHAPED_JOINTS: &str = "Connectors on a lap or a tongue are not built yet. Turn them off, or cut straight.";
+/// The numbers a cut's profile gives the kernel (`kProfileStride` in kernel.h): its kind, eight sizes, and the cut's U.
+const PROFILE_STRIDE: usize = 12;
+
 const PARTITION_KEYS_LATER: &str = "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.";
 
 /// The planner's Max pieces (`clampPieces` in `src/modeling/partition.ts`): 12 when absent, from 2 to 24.
@@ -557,11 +561,24 @@ fn partition_max(max_pieces: Option<f64>) -> usize {
 /// connector. Each is a sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced
 /// (D12).
 fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
-    let straight = |profile: &Value| {
-        profile.is_null() || profile.get("kind").and_then(Value::as_str) == Some("straight")
+    let kind = |profile: &Value| {
+        profile
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("straight")
+            .to_string()
     };
-    if !cuts.iter().all(|cut| straight(&cut.profile)) {
+    if !cuts
+        .iter()
+        .all(|cut| matches!(kind(&cut.profile).as_str(), "straight" | "lap" | "tongue"))
+    {
         return Some(PARTITION_PROFILE_LATER);
+    }
+    if cuts
+        .iter()
+        .any(|cut| kind(&cut.profile) != "straight" && connectors_on(cut))
+    {
+        return Some(PARTITION_SHAPED_JOINTS);
     }
     let later = |cut: &PartitionCut| {
         connectors_on(cut)
@@ -582,6 +599,53 @@ fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
         return Some(PARTITION_KEYS_LATER);
     }
     None
+}
+
+/// Each cut's profile as the kernel reads it. A lap: depth, carried to the side that has it (side, positive by
+/// default), and at, where the step sits along V from the cut's origin. A tongue: width, depth, clearance, endGap,
+/// side, its ends along U (u0, u1) and its middle along V (v). The planner fills every one from the section at Apply,
+/// so a replay builds the same joint.
+fn profile_numbers(cuts: &[PartitionCut]) -> Result<Vec<[f64; PROFILE_STRIDE]>, String> {
+    cuts.iter()
+        .enumerate()
+        .map(|(at, cut)| {
+            let mut out = [0.0; PROFILE_STRIDE];
+            let number = |field: &str| {
+                cut.profile.get(field).and_then(Value::as_f64).ok_or_else(|| {
+                    format!("Cut {}'s profile needs {field}, a number. Apply it from the planner.", at + 1)
+                })
+            };
+            let side = if cut.profile.get("side").and_then(Value::as_str) == Some("negative") {
+                -1.0
+            } else {
+                1.0
+            };
+            match cut.profile.get("kind").and_then(Value::as_str).unwrap_or("straight") {
+                "lap" => {
+                    out[0] = 1.0;
+                    out[1] = side * number("depth")?;
+                    out[2] = number("at")?;
+                }
+                "tongue" => {
+                    out[0] = 2.0;
+                    out[1] = number("width")?;
+                    out[2] = number("depth")?;
+                    out[3] = number("clearance")?;
+                    out[4] = number("endGap")?;
+                    out[5] = side;
+                    out[6] = number("u0")?;
+                    out[7] = number("u1")?;
+                    out[8] = number("v")?;
+                }
+                _ => {}
+            }
+            let [ux, uy, uz] = cut.u.unwrap_or([0.0; 3]);
+            out[9] = ux;
+            out[10] = uy;
+            out[11] = uz;
+            Ok(out)
+        })
+        .collect()
 }
 
 fn connectors_on(cut: &PartitionCut) -> bool {
@@ -919,6 +983,7 @@ pub fn partition_primitive(
         us: vec![[0.0; 3]; planes.len()],
         joints: Vec::new(),
         up: [0.0, 0.0, 1.0],
+        profiles: vec![[0.0; PROFILE_STRIDE]; planes.len()],
     };
     Ok(whole
         .partition(planes, None, &plain)?
@@ -4248,6 +4313,8 @@ struct JointCut {
     us: Vec<[f64; 3]>,
     joints: Vec<Joint>,
     up: [f64; 3],
+    /// Each cut's profile as `PROFILE_STRIDE` numbers (`kProfileStride` in kernel.h).
+    profiles: Vec<[f64; PROFILE_STRIDE]>,
 }
 
 /// --- Split to print. What the kernel cut: the pieces in partition order, where each number went, the pins, and what
@@ -4640,6 +4707,7 @@ fn build(
                 us: cuts.iter().map(|cut| cut.u.unwrap_or([0.0; 3])).collect(),
                 joints,
                 up: up.unwrap_or([0.0, 0.0, 1.0]),
+                profiles: profile_numbers(cuts).map_err(BuildFail::plain)?,
             };
             let partitioned = from
                 .partition(&planes, labels.as_ref(), &cut)
@@ -5003,6 +5071,8 @@ extern "C" {
         joints: *const f64,
         joint_count: c_int,
         up: *const f64,
+        profiles: *const f64,
+        profile_count: c_int,
         out: *mut *mut RawShape,
         placed: *mut *mut c_char,
         pins: *mut *mut RawShape,
@@ -5585,6 +5655,8 @@ impl Shape {
         if us.len() != flat.len() / 2 {
             return Err("Each cut needs its U".into());
         }
+        let profiles: Vec<f64> = cut.profiles.iter().flatten().copied().collect();
+        let profile_count = c_int::try_from(cut.profiles.len()).map_err(|_| "Too many cuts".to_string())?;
         let joints: Vec<f64> = cut
             .joints
             .iter()
@@ -5624,6 +5696,8 @@ impl Shape {
                 joints.as_ptr(),
                 joint_count,
                 cut.up.as_ptr(),
+                profiles.as_ptr(),
+                profile_count,
                 out.as_mut_ptr(),
                 &mut placed,
                 &mut pins,
