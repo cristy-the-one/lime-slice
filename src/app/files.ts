@@ -1,4 +1,5 @@
 import { fx } from "./fx";
+import { warmHull } from "./bed-rest";
 import { state, session, STEP_TOLERANCE_DEFAULT } from "./state";
 import { centeringShift, eulerOrient, formatDeg, ID_MATRIX, orientEuler, readStl, settleBy, placeMesh, encodeStl, scaledCanonical, encode3mf, type PlacedPart, type Placement } from "../mesh-place";
 import { meshKeyHex } from "../slice-action";
@@ -180,6 +181,7 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
     return;
   }
   fx.realignSplit(sync);
+  warmHull(state.sourcePos);
   fx.prepare.setMesh(state.placed, sync === "load");
   fx.syncCut();
   fx.drawPaint?.();

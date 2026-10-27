@@ -621,6 +621,7 @@ export function mountMarkup(root: HTMLElement) {
         <div class="stage-body" id="prepareBody" role="tabpanel" aria-labelledby="tabPrepare" hidden>
           <canvas id="prepare" aria-label="Model on the build plate"></canvas>
           <div class="gizmo-readout" id="gizmoReadout" hidden></div>
+          <div class="gizmo-readout gizmo-contact" id="contactReadout" hidden></div>
         </div>
         <div class="stage-body" id="modelBody" role="tabpanel" aria-labelledby="tabModel" hidden>
           <canvas id="model" aria-label="Solid faces and edges"></canvas>

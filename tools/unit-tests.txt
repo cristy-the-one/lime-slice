@@ -172,4 +172,6 @@ src/ui/diameter-expr.test.ts
 src/ui/dock-panes.test.ts
 src/modeling/partition.test.ts
 src/modeling/partition-export.test.ts
+src/bed-rest.test.ts
+mcp/settle.test.ts
 src/viewport-grab.test.ts

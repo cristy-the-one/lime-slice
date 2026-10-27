@@ -32,6 +32,7 @@ import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, 
 import { type AxisBounds, type SplitSync, splitOutside, nextSplitAt, roundSplit, clampSplit } from "../split-at";
 import { plateUnionBounds } from "../plate";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
+import { contactReadout, endTurn, heldOrient, turnTo } from "./bed-rest";
 import { type Box, unionBox } from "../measure";
 import { mountMeasureOverlay, type MeasureOverlay } from "../measure-overlay";
 import { measureOn, onMeasureChange } from "../measure-pref";
@@ -655,6 +656,11 @@ export function paintGizmoReadout() {
   const hud = state.stage === "prepare" && state.placed ? state.poseHud : "";
   el.hidden = !hud;
   el.textContent = hud;
+  const contact = document.querySelector<HTMLElement>("#contactReadout");
+  if (!contact) return;
+  const text = hud ? contactReadout() : "";
+  contact.hidden = !text;
+  contact.textContent = text;
 }
 
 /** The fine nudge row belongs to Move, Rotate, and Scale; with none of them on, the rail stays icons only. */
@@ -702,8 +708,8 @@ export function stepGizmo(axis: "x" | "y" | "z", sign: number) {
   noteEdit();
   if (nudge.kind === "rotate") {
     const spin = axis === "x" ? rotX : axis === "y" ? rotY : rotZ;
-    state.orient = matMul(spin(nudge.amount), state.orient);
-    applyPlace(false);
+    turnTo(matMul(spin(nudge.amount), heldOrient()));
+    endTurn();
   } else if (nudge.kind === "scale") {
     applyScaleDelta(nudge.amount);
     state.poseHud = "";
@@ -1429,12 +1435,13 @@ export function mountViews() {
   prepare.onRotate((axis, deltaDeg, totalDeg) => {
     noteEdit();
     const spin = axis === "x" ? rotX : axis === "y" ? rotY : rotZ;
-    state.orient = matMul(spin(deltaDeg), state.orient);
+    turnTo(matMul(spin(deltaDeg), heldOrient()));
     state.poseHud = `${axis.toUpperCase()} ${totalDeg >= 0 ? "+" : ""}${totalDeg.toFixed(0)}°`;
-    applyPlace(false);
+    paintGizmoReadout();
   });
   prepare.onRotateEnd(() => {
     flushEdit();
+    endTurn();
     state.poseHud = "";
     paintGizmoReadout();
     renderChrome();
