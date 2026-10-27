@@ -1550,6 +1550,8 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
   pointer-events: none;
 }
 
+.gizmo-contact { bottom: 44px; }
+
 .theme-field { display: flex; align-items: center; gap: var(--space-2); font-size: var(--fs-3); color: var(--muted); }
 .theme-field select { width: auto; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); height: var(--control-h); padding: 0 var(--space-2); }
 

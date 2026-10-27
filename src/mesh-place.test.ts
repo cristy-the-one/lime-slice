@@ -1,5 +1,5 @@
 import { fnv1aHex } from "./slice-action.ts";
-import { boundsOf, encodeStl, eulerOrient, layFlatMatrix, matMul, orientEuler, parseStl, placeMesh, poseAffine, readStl, settle, settleBy, rotX, rotY, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift } from "./mesh-place.ts";
+import { boundsOf, encodeStl, eulerOrient, matMul, orientEuler, parseStl, placeMesh, poseAffine, readStl, settle, settleBy, rotX, rotY, rotZ, scaledCanonical, transformPositions, type Mat3, type MeshShift } from "./mesh-place.ts";
 
 let failed = 0;
 
@@ -32,6 +32,9 @@ function lumpyMesh(rings = 18, segments = 28): Float32Array {
 
 const source = lumpyMesh();
 
+/** What the drop to the flattest face returned for this blob before the hull-based drop. The pose pipeline is under test here. */
+const LAID_FLAT: Mat3 = [0.9995862130662444, 0.026906562635916214, -0.010170522848164951, 0.026906562635916214, -0.7496036095410401, 0.6613399016014107, 0.010170522848164951, -0.6613399016014107, -0.7500173964747961];
+
 interface Case {
   name: string;
   orient: Mat3;
@@ -44,7 +47,7 @@ const cases: Case[] = [
   { name: "rotated, centered", orient: matMul(rotZ(37), rotX(90)), scale: 1.5, centered: true },
   { name: "gizmo turn, moved off center", orient: matMul(rotY(-23.5), rotX(12.25)), scale: 2.5, centered: false, shift: { x: 41.5, y: 97, z: 3 } },
   { name: "gizmo turn, moved again", orient: matMul(rotY(-23.5), rotX(12.25)), scale: 2.5, centered: false, shift: { x: -7.25, y: 13, z: 0 } },
-  { name: "lay flat, centered", orient: layFlatMatrix(source), scale: 1, centered: true },
+  { name: "lay flat, centered", orient: LAID_FLAT, scale: 1, centered: true },
   { name: "rotated, centered again", orient: matMul(rotZ(37), rotX(90)), scale: 1.5, centered: true },
 ];
 
