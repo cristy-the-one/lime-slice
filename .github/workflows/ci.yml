@@ -10,8 +10,41 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # A change to docs/ or Markdown alone builds and tests nothing. Every other job
+  # needs this one and is skipped then; a skipped required check counts as passed.
+  changes:
+    name: what changed
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          code=false
+          while IFS= read -r file; do
+            case "$file" in
+              docs/*|*.md|"") ;;
+              *) code=true ;;
+            esac
+          done < <(git diff --name-only "$BASE...$HEAD")
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "Code changed: $code"
+
   rust:
     name: test, clippy, and Tauri
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     env:
       LIME_REQUIRE_OCCT: "1"
@@ -121,6 +154,8 @@ jobs:
 
   ui:
     name: typecheck and frontend build
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -146,6 +181,8 @@ jobs:
   # itself because `vite preview` serves dist/.
   smoke:
     name: Playwright smoke (shard ${{ matrix.shard }}/4)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -199,6 +236,8 @@ jobs:
 
   mcp:
     name: MCP server
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -281,6 +320,8 @@ jobs:
 
   mcp-windows:
     name: MCP server (Windows)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -312,6 +353,8 @@ jobs:
 
   mcp-macos:
     name: MCP server (macOS)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -339,6 +382,8 @@ jobs:
 
   bench:
     name: release bench smoke
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -480,6 +525,8 @@ jobs:
 
   occt-windows:
     name: OCCT dynamic link (Windows)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 360
     env:
@@ -550,6 +597,8 @@ jobs:
 
   occt-macos:
     name: OCCT dynamic link (macOS)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     timeout-minutes: 360
     env:
