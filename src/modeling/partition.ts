@@ -188,14 +188,125 @@ const startingRow = (snug: number, loose: number, press: number): ClearanceRow =
   startingFit: true,
 });
 
+/** Each number is the middle of the published ranges for a 0.4 mm nozzle (resin: the Form 4); the sources are in plan section 28. */
 export const CLEARANCE_TABLE: Readonly<Record<ClearanceKey, ClearanceRow>> = {
   pla: startingRow(0.15, 0.25, 0.05),
   petg: startingRow(0.2, 0.3, 0.1),
-  abs: startingRow(0.2, 0.3, 0.1),
-  // TPU grips and gives: a wider starting row than the rigid filaments, until a coupon says otherwise.
-  tpu: startingRow(0.25, 0.35, 0.15),
-  resin: startingRow(0.1, 0.2, 0.05),
+  // ABS and ASA shrink more than PETG, and the published ASA sliding range sits 0.05 mm above PETG's.
+  abs: startingRow(0.25, 0.35, 0.15),
+  // TPU gives, so a press needs little; it shrinks little, so Snug and Loose follow PETG. No clearances are published for it.
+  tpu: startingRow(0.2, 0.3, 0.05),
+  // Standard resin on the Form 4 prints a gap about 0.03 mm a side smaller than drawn, which lifts Loose to 0.25.
+  resin: startingRow(0.1, 0.25, 0.05),
 };
+
+/**
+ * What a person measured on printed coupons, kept beside the machine library (`MachineLibrary.measuredFits`): per row,
+ * the cells a coupon fixed, each a gap on each side. `resinFeatureMm` is the thinnest wall that survived on the resin
+ * printer. A stored op keeps the clearance it was filled with, so this only reaches a cut made after it is saved.
+ */
+export interface MeasuredFits {
+  cells?: Partial<Record<ClearanceKey, Partial<Record<Clearance, number>>>>;
+  resinFeatureMm?: number;
+}
+
+/** The fit cells, in the order the card lists them. */
+export const FIT_NAMES: readonly Clearance[] = ["snug", "loose", "press"];
+
+/** The table's row with `fits`' measured cells laid over it through `measuredRow`. */
+function withMeasured(key: ClearanceKey, fits: MeasuredFits | undefined): ClearanceRow {
+  let row = CLEARANCE_TABLE[key];
+  const cells = fits?.cells?.[key];
+  if (!cells) return row;
+  for (const fit of FIT_NAMES) {
+    const value = cells[fit];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) row = measuredRow(row, fit, value);
+  }
+  return row;
+}
+
+/** `fits` with one cell measured, rounded to the thousandth so a typed 0.1 stays 0.1. */
+export function recordMeasured(fits: MeasuredFits | undefined, key: ClearanceKey, fit: Clearance, mm: number): MeasuredFits {
+  const value = Math.round(mm * 1000) / 1000;
+  return { ...fits, cells: { ...fits?.cells, [key]: { ...fits?.cells?.[key], [fit]: value } } };
+}
+
+/** The rows the entry lists, with the words the card shows and the process each is printed in. */
+export const FIT_ROWS: readonly { key: ClearanceKey; name: string; process: Process }[] = [
+  { key: "pla", name: "PLA", process: "fdm" },
+  { key: "petg", name: "PETG", process: "fdm" },
+  { key: "abs", name: "ABS / ASA", process: "fdm" },
+  { key: "tpu", name: "TPU", process: "fdm" },
+  { key: "resin", name: "Standard resin (Form 4)", process: "resin" },
+];
+
+/** What one entry of coupon results carries: the gap each side of the step that fitted, per fit, and for resin the wall. */
+export interface FitResults {
+  snug?: number;
+  loose?: number;
+  press?: number;
+  wallMm?: number;
+}
+
+/** A sentence when a result is not a number it can store, else null. */
+export function fitResultsRefusal(results: FitResults): string | null {
+  for (const fit of FIT_NAMES) {
+    const n = results[fit];
+    if (n !== undefined && !(typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 2)) return `${fit} is a gap each side from 0 to 2 mm: the label of the step that fitted.`;
+  }
+  if (results.wallMm !== undefined && !(typeof results.wallMm === "number" && Number.isFinite(results.wallMm) && results.wallMm > 0 && results.wallMm <= 5)) return "wallMm is the thinnest wall that survived, above 0 and up to 5 mm.";
+  if (FIT_NAMES.every((fit) => results[fit] === undefined) && results.wallMm === undefined) return "Give at least one of snug, loose, press (or wallMm for resin).";
+  return null;
+}
+
+/** `fits` with `results` entered for a row through `measuredRow`. The wall only counts for resin. */
+export function enterMeasured(fits: MeasuredFits | undefined, key: ClearanceKey, results: FitResults): MeasuredFits | undefined {
+  let next = fits;
+  for (const fit of FIT_NAMES) {
+    const n = results[fit];
+    if (n !== undefined) next = recordMeasured(next, key, fit, n);
+  }
+  if (key === "resin" && results.wallMm !== undefined) next = recordResinFeature(next, results.wallMm);
+  return next;
+}
+
+/** `fits` with a row's cells put back to the starting values. Resin also drops its measured wall. */
+export function resetMeasured(fits: MeasuredFits | undefined, key: ClearanceKey): MeasuredFits | undefined {
+  const cells = { ...fits?.cells };
+  delete cells[key];
+  const next: MeasuredFits = { ...fits, cells };
+  if (key === "resin") delete next.resinFeatureMm;
+  if (Object.keys(cells).length === 0) delete next.cells;
+  return Object.keys(next).length === 0 ? undefined : next;
+}
+
+/** `fits` with the resin's thinnest surviving wall set in millimetres, or put back when `mm` is null. */
+export function recordResinFeature(fits: MeasuredFits | undefined, mm: number | null): MeasuredFits | undefined {
+  const next: MeasuredFits = { ...fits };
+  if (mm === null) delete next.resinFeatureMm;
+  else next.resinFeatureMm = Math.round(mm * 1000) / 1000;
+  return Object.keys(next).length === 0 ? undefined : next;
+}
+
+/** A stored `MeasuredFits`, read defensively: finite cells of known rows only. Undefined when nothing is left. */
+export function readMeasuredFits(value: unknown): MeasuredFits | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const out: MeasuredFits = {};
+  const cells: NonNullable<MeasuredFits["cells"]> = {};
+  const rows = raw.cells && typeof raw.cells === "object" && !Array.isArray(raw.cells) ? (raw.cells as Record<string, unknown>) : {};
+  for (const key of Object.keys(CLEARANCE_TABLE) as ClearanceKey[]) {
+    const row = rows[key];
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    for (const fit of FIT_NAMES) {
+      const n = (row as Record<string, unknown>)[fit];
+      if (typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 2) cells[key] = { ...cells[key], [fit]: n };
+    }
+  }
+  if (Object.keys(cells).length > 0) out.cells = cells;
+  if (typeof raw.resinFeatureMm === "number" && Number.isFinite(raw.resinFeatureMm) && raw.resinFeatureMm > 0 && raw.resinFeatureMm <= 5) out.resinFeatureMm = raw.resinFeatureMm;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /** The table's key for a process and a material name, or null for a material with no row. Resin ignores the material. */
 export function clearanceKey(process: Process, material: string): ClearanceKey | null {
@@ -205,9 +316,9 @@ export function clearanceKey(process: Process, material: string): ClearanceKey |
   return name === "pla" || name === "petg" || name === "abs" || name === "tpu" ? name : null;
 }
 
-export function clearanceRow(process: Process, material: string): ClearanceRow | null {
+export function clearanceRow(process: Process, material: string, fits?: MeasuredFits): ClearanceRow | null {
   const key = clearanceKey(process, material);
-  return key ? CLEARANCE_TABLE[key] : null;
+  return key ? withMeasured(key, fits) : null;
 }
 
 /** One cell of a row: the gap on each side and where it came from. */
@@ -241,6 +352,8 @@ export interface DefaultsInput {
   material: string;
   adhesion?: string;
   brimWidthMm?: number;
+  /** What was measured on printed coupons, laid over the table. */
+  fits?: MeasuredFits;
 }
 
 export interface PartitionDefaults {
@@ -287,11 +400,11 @@ export interface PartitionDefaults {
 
 export function partitionDefaults(input: DefaultsInput): PartitionDefaults {
   const resin = input.process === "resin";
-  const f = resin ? RESIN_FEATURE_MM : (input.featureMm ?? 0.4);
+  const f = resin ? (input.fits?.resinFeatureMm ?? RESIN_FEATURE_MM) : (input.featureMm ?? 0.4);
   const l = resin ? RESIN_LAYER_MM : (input.layerMm ?? 0.2);
   const radiusMm = Math.max(3, 4 * f);
   const brim = input.adhesion === "brim" ? (input.brimWidthMm ?? FDM_BED_MARGIN_MM) : FDM_BED_MARGIN_MM;
-  const clearance = clearanceRow(input.process, input.material);
+  const clearance = clearanceRow(input.process, input.material, input.fits);
   const zigzagPitchMm = Math.max(10, 8 * f);
   const tongueDepthMm = Math.max(3, 6 * l);
   return {
@@ -454,6 +567,8 @@ export interface FillContext {
   material: string;
   adhesion?: string;
   brimWidthMm?: number;
+  /** Measured fits from the machine library, laid over the clearance table. */
+  fits?: MeasuredFits;
   /** The part's box in the solid's frame. Gives U and a lap's half height when they are absent. */
   box?: Box;
 }

@@ -6,7 +6,7 @@
  * Pure TypeScript: this lays the coupon out in millimetres. The kernel builds it (`lime_tree_fit_coupon`), and the
  * numbers it reads are the ones the card shows for the same dowel (`partitionDefaults`).
  */
-import { clearanceRow, mm, partitionDefaults, type HoleShape, type PartitionDefaults, type Process, type ResolvedConnector } from "./partition.ts";
+import { clearanceRow, mm, partitionDefaults, type HoleShape, type MeasuredFits, type PartitionDefaults, type Process, type ResolvedConnector } from "./partition.ts";
 import { textStrokes } from "./text.ts";
 
 /** The steps, each added to the table's starting clearance (each side, millimetres): from 0.10 under to 0.20 over. */
@@ -36,6 +36,8 @@ export interface FitCouponInput {
   startMm?: number;
   /** A name for the plate; the pins are `<name>-pins`. */
   name?: string;
+  /** Measured fits from the machine library, which the table's Snug and the resin floors then follow. */
+  fits?: MeasuredFits;
 }
 
 export interface CouponHole {
@@ -118,6 +120,11 @@ function materialName(process: Process, material: string): string {
   return process === "resin" ? "resin" : material.trim() || "this filament";
 }
 
+/** The gaps each side a coupon centred on `startMm` carries, a step that would leave a negative gap left out. */
+export function couponGaps(startMm: number): number[] {
+  return COUPON_STEPS_MM.map((step) => round3(startMm + step)).filter((gap) => gap >= 0);
+}
+
 /** The refusal when no starting clearance can be had: a material with no row, and no `startMm` typed. */
 export const COUPON_NO_START = "No starting fit for this material. Give startMm, the clearance each side to centre the coupon on.";
 
@@ -126,8 +133,8 @@ export const COUPON_NO_START = "No starting fit for this material. Give startMm,
  * given. A step that would leave the hole smaller than the pin (a negative gap) is left out.
  */
 export function fitCoupon(input: FitCouponInput): FitCoupon | { reason: string } {
-  const d: PartitionDefaults = partitionDefaults({ process: input.process, material: input.material, featureMm: input.featureMm, layerMm: input.layerMm });
-  const start = input.startMm ?? clearanceRow(input.process, input.material)?.snug;
+  const d: PartitionDefaults = partitionDefaults({ process: input.process, material: input.material, featureMm: input.featureMm, layerMm: input.layerMm, fits: input.fits });
+  const start = input.startMm ?? clearanceRow(input.process, input.material, input.fits)?.snug;
   if (start === undefined || !Number.isFinite(start)) return { reason: COUPON_NO_START };
   if (start < 0) return { reason: "startMm is a clearance each side, from 0 up." };
   const radius = input.radiusMm ?? d.radiusMm;
@@ -136,7 +143,7 @@ export function fitCoupon(input: FitCouponInput): FitCoupon | { reason: string }
   if (!(radius >= d.floors.radiusMm - 1e-9)) return { reason: `The pin radius is ${mm(radius)} mm, under the ${mm(d.floors.radiusMm)} mm floor.` };
   if (!(length > 0) || !(endGap >= 0)) return { reason: "The pin needs a length above 0 and an end gap from 0 up." };
   const teardrop = (input.hole ?? (input.process === "fdm" ? "teardrop" : "round")) === "teardrop";
-  const gaps = COUPON_STEPS_MM.map((step) => round3(start + step)).filter((gap) => gap >= 0);
+  const gaps = couponGaps(start);
   if (gaps.length < 2) return { reason: "startMm leaves fewer than two holes. Raise it." };
   const wall = d.wallFloorMm;
   const height = d.numberHeightMm;
@@ -253,7 +260,7 @@ export function readCouponReply(body: Record<string, unknown>): CouponReply | st
  * shape and clearance; a hardware hole its diameter's half; a key or a dovetail has no pin, so the defaults stand.
  * `base` is the printer and filament the coupon is for.
  */
-export function couponInputFor(connector: ResolvedConnector, base: Pick<FitCouponInput, "process" | "material" | "featureMm" | "layerMm">): FitCouponInput {
+export function couponInputFor(connector: ResolvedConnector, base: Pick<FitCouponInput, "process" | "material" | "featureMm" | "layerMm" | "fits">): FitCouponInput {
   const start = connector.clearance === null ? {} : { startMm: connector.clearance };
   switch (connector.type) {
     case "dowel":
