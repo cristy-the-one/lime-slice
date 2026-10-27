@@ -177,7 +177,8 @@ export function resolveNumbers(value: unknown, params: Params, path = "op", word
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = TEXT_FIELDS.has(key) && typeof child === "string" ? child : resolveNumbers(child, params, `${path}.${key}`, words);
+      // A text field may be a list of words too: `orient` is one choice for each piece of a split to print.
+      out[key] = TEXT_FIELDS.has(key) && (typeof child === "string" || (Array.isArray(child) && child.length > 0 && child.every((one) => typeof one === "string"))) ? child : resolveNumbers(child, params, `${path}.${key}`, words);
     }
     return out;
   }

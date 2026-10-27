@@ -191,6 +191,7 @@ export function mountSplitPrint(next: SplitPrintHost) {
     </section>
     <h4 class="sp-pieces-head" id="modelPartPiecesHead">Pieces</h4>
     <ol class="sp-pieces" id="modelPartPieces" aria-labelledby="modelPartPiecesHead" aria-live="polite"></ol>
+    <p class="model-note" id="modelPartOrientNote" hidden>Pieces for the Formlabs Form 4 stay as they were cut. PreForm orients them, so Joint down is not offered.</p>
     <label class="model-keep" data-tip="The new pieces go around the objects already on the plate. Those stay where they are."><input id="modelPartLayout" type="checkbox" checked> Lay out on the bed</label>
     <label class="model-keep" data-tip="Each piece gets its number cut into a cut face."><input id="modelPartNumbers" type="checkbox" checked> Part numbers</label>
     <p class="model-note" id="modelPartNumbersNote">The number is cut into the part, so renaming the object does not change it.</p>
@@ -655,6 +656,18 @@ function paintFit() {
   $<HTMLInputElement>("#modelPartLayout")?.closest("label")?.toggleAttribute("hidden", exportTarget(card.target));
 }
 
+/** Part `at`'s orientation on the plate: as cut, or its larger cut face down on the bed (plan D4, section 10). */
+function orientMenu(at: number): HTMLSelectElement {
+  const select = document.createElement("select");
+  select.className = "sp-orient";
+  select.dataset.pieceOrient = String(at);
+  select.setAttribute("aria-label", `Part ${at + 1} on the plate`);
+  select.dataset.tip = "Keep prints the part as it was cut. Joint down turns it so its larger cut face lies on the bed.";
+  for (const [value, name] of [["keep", "Keep"], ["joint", "Joint down"]] as const) select.append(Object.assign(document.createElement("option"), { value, textContent: name }));
+  select.value = card.orient[at] === "joint" ? "joint" : "keep";
+  return select;
+}
+
 function paintPieces() {
   const list = $<HTMLOListElement>("#modelPartPieces");
   if (!list) return;
@@ -664,8 +677,16 @@ function paintPieces() {
   else if (!check || check.phase === "checking") lines = ["Checking the cut…"];
   else if (check.ok) lines = [...pieceLines(check.parts), ...(check.pins && check.pins.count > 0 ? [`Pins · ${check.pins.count} · ${mm(check.pins.volumeMm3)} mm³ · ${check.pins.count === 1 ? "one more object" : "one more object, standing upright"}`] : [])];
   else bad = check.error;
-  list.replaceChildren(...lines.map((line) => Object.assign(document.createElement("li"), { textContent: line })));
-  list.dataset.pieces = check && check.phase === "done" && check.ok ? String(check.parts.length) : "";
+  const parts = check && check.phase === "done" && check.ok ? check.parts.length : 0;
+  const orientable = !exportTarget(card.target);
+  list.replaceChildren(...lines.map((line, at) => {
+    const item = Object.assign(document.createElement("li"), { textContent: line });
+    if (orientable && at < parts) item.append(orientMenu(at));
+    return item;
+  }));
+  list.dataset.pieces = String(parts || "");
+  const orientNote = $<HTMLElement>("#modelPartOrientNote");
+  if (orientNote) orientNote.hidden = orientable || parts === 0;
   const face = card.cuts[card.selected];
   if (card.cuts.length === 0) status(NO_CUTS, false);
   else if (face?.mode === "face" && !face.face) status(PICK_FACE, false);
@@ -1009,6 +1030,15 @@ function setJointMenu(select: HTMLSelectElement): boolean {
 function onChange(ev: Event) {
   if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartTarget") {
     setTarget(ev.target.value);
+    return;
+  }
+  if (ev.target instanceof HTMLSelectElement && ev.target.dataset.pieceOrient !== undefined) {
+    const at = Number(ev.target.dataset.pieceOrient);
+    const orient = [...card.orient];
+    while (orient.length <= at) orient.push("keep");
+    orient[at] = ev.target.value === "joint" ? "joint" : "keep";
+    card = { ...card, orient };
+    changed(0);
     return;
   }
   if (ev.target instanceof HTMLSelectElement && setJointMenu(ev.target)) {

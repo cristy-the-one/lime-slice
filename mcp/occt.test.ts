@@ -413,6 +413,63 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   console.log(`occt: fit coupon PETG plate ${Number(plate.volumeMm3).toFixed(3)} mm³ (${size.join(" x ")}), pin ${Number(pin.volumeMm3).toFixed(3)} mm³; resin plate ${backVolume.toFixed(3)} mm³`);
 }
 
+// --- Split to print, milestone 7: Joint down on the real kernel. The 500 mm bar for the Lime 220 with parts 2 and 3 set to
+// joint: after commit each turned piece's cut face is its lowest plane with its normal along −Z, to 1e-9, the pieces do not
+// overlap, an edit that sets part 3 back to keep turns it back, and model_undo takes the part's own orientation back too.
+{
+  const bar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 20, dz: 20 })).object);
+  const plan = await call("model_probe", { object: bar, op: { kind: "partition" }, plan: true });
+  const op = { ...(plan.op as Record<string, unknown>), orient: ["keep", "joint", "joint"], labels: { on: false } };
+  await call("model_probe", { object: bar, op });
+  const applied = await call("model_apply", { object: bar, op });
+  const pieces = (applied.pieces ?? []) as string[];
+  check("apply reports the joint it chose for each turned piece", applied.ok === true && pieces.length === 2 && JSON.stringify(applied.notes) === JSON.stringify(["Part 2 is joint down on cut 1, its larger cut face, 400 mm².", "Part 3 is joint down on cut 2, its only cut face, 400 mm²."]), JSON.stringify(applied));
+  check("and stores orient per piece", JSON.stringify((applied.stored as { orient?: unknown }).orient) === JSON.stringify(["keep", "joint", "joint"]), JSON.stringify(applied.stored));
+  const committed = await call("model_commit", { object: bar });
+  const listed = (await call("plate_list", { limit: 100 })).objects as { object: string; bboxMm: { min: number[]; max: number[] } }[];
+  const mine = listed.filter((row) => [bar, ...pieces].includes(row.object));
+  const saved = await call("project_save", { name: "joint-down.lime" });
+  const doc = JSON.parse(readFileSync(String(saved.path), "utf8")) as { objects: { placement: { orient: number[] } }[] };
+  const orientOf = (object: string) => doc.objects[listed.findIndex((row) => row.object === object)]!.placement.orient;
+  const turn = (m: number[], v: number[]) => [0, 1, 2].map((r) => m[3 * r]! * v[0]! + m[3 * r + 1]! * v[1]! + m[3 * r + 2]! * v[2]!);
+  check("the part itself keeps its orientation", JSON.stringify(orientOf(bar)) === JSON.stringify([1, 0, 0, 0, 1, 0, 0, 0, 1]), JSON.stringify(orientOf(bar)));
+  const cutX = (plan.cuts as { origin: number[] }[]).map((cut) => cut.origin[0]!);
+  for (const [at, piece] of pieces.entries()) {
+    const m = orientOf(piece);
+    const faces = ((await call("faces_find", { object: piece, kind: "plane", normal: [1, 0, 0], withinDeg: 1, limit: 20 })).faces ?? []) as { normal: number[]; centre: number[]; areaMm2: number }[];
+    const mirrored = ((await call("faces_find", { object: piece, kind: "plane", normal: [-1, 0, 0], withinDeg: 1, limit: 20 })).faces ?? []) as { normal: number[]; centre: number[]; areaMm2: number }[];
+    // The cut face is the one at the cut's X; the piece's other end is the face at its far end.
+    const x = cutX[at]!;
+    const cut = [...faces, ...mirrored].find((face) => Math.abs(face.centre[0]! - x) < 1e-3)!;
+    const far = [...faces, ...mirrored].find((face) => Math.abs(face.centre[0]! - x) > 100)!;
+    const down = turn(m, cut.normal);
+    check(`part ${at + 2}: the cut face's normal is −Z to 1e-9`, Math.abs(down[0]!) < 1e-9 && Math.abs(down[1]!) < 1e-9 && Math.abs(down[2]! + 1) < 1e-9, JSON.stringify({ down, m }));
+    const gap = turn(m, far.centre)[2]! - turn(m, cut.centre)[2]!;
+    const length = Math.abs(far.centre[0]! - cut.centre[0]!);
+    check(`part ${at + 2}: the cut face is the lowest plane, the far end ${length.toFixed(2)} mm above it`, Math.abs(gap - length) < 1e-6 && Math.abs(length - 500 / 3) < 1e-3, String(gap));
+    const row = mine.find((one) => one.object === piece)!;
+    check(`part ${at + 2}: it stands on the bed, z from 0 to 166.67`, Math.abs(row.bboxMm.min[2]!) < 1e-4 && Math.abs(row.bboxMm.max[2]! - length) < 1e-3 && Math.abs(row.bboxMm.max[0]! - row.bboxMm.min[0]! - 20) < 1e-3 && Math.abs(row.bboxMm.max[1]! - row.bboxMm.min[1]! - 20) < 1e-3, JSON.stringify(row.bboxMm));
+  }
+  const apart = mine.every((a, i) => mine.every((b, j) => i >= j || a.bboxMm.max[0]! <= b.bboxMm.min[0]! + 1e-6 || b.bboxMm.max[0]! <= a.bboxMm.min[0]! + 1e-6 || a.bboxMm.max[1]! <= b.bboxMm.min[1]! + 1e-6 || b.bboxMm.max[1]! <= a.bboxMm.min[1]! + 1e-6));
+  check("no two pieces overlap on the bed", committed.ok === true && mine.length === 3 && apart, JSON.stringify(mine.map((row) => row.bboxMm)));
+  console.log(`occt: joint down, bboxes ${mine.map((row) => `${row.bboxMm.max.map((v, i) => (v - row.bboxMm.min[i]!).toFixed(2)).join("x")}`).join(", ")}`);
+
+  // An edit that sets part 3 back to keep turns it back; part 2 stays turned.
+  const keepThree = { ...op, orient: ["keep", "joint", "keep"] };
+  const editNode = ((await call("model_history", { object: bar })).nodes as { id: string; label: string }[]).find((row) => row.label.startsWith("Split to print"))!.id;
+  await call("model_probe", { object: bar, node: "node_0", op: keepThree });
+  const edited = await call("model_edit", { object: bar, node: editNode, op: keepThree });
+  const afterEdit = JSON.parse(readFileSync(String((await call("project_save", { name: "joint-down-2.lime" })).path), "utf8")) as { objects: { placement: { orient: number[] } }[] };
+  const orients = (await call("plate_list", { limit: 100 })).objects as { object: string }[];
+  const at3 = afterEdit.objects[orients.findIndex((row) => row.object === pieces[1])]!.placement.orient;
+  const at2 = afterEdit.objects[orients.findIndex((row) => row.object === pieces[0])]!.placement.orient;
+  check("an edit to keep turns part 3 back and leaves part 2 turned", edited.ok === true && JSON.stringify(at3) === JSON.stringify([1, 0, 0, 0, 1, 0, 0, 0, 1]) && Math.abs(at2[6]!) > 0.999, JSON.stringify({ at2, at3, edited }));
+  // Undo takes the cut, and with it the orientation, away.
+  await call("model_undo", { object: bar });
+  const left = ((await call("plate_list", { limit: 100 })).objects as { object: string }[]).filter((row) => [bar, ...pieces].includes(row.object));
+  check("model_undo takes the pieces off the plate", left.length === 1 && left[0]!.object === bar, JSON.stringify(left));
+}
+
 // The convex filter on a box (12 convex edges) and on a stepped part with one concave edge.
 {
   const made = await call("solid_new", { primitive: "box", dx: 40, dy: 30, dz: 20 });

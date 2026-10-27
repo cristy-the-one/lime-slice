@@ -376,13 +376,27 @@ fn rebuilt_from_saved_ops(cut: &Value, fillet: &Value, branch: &Value, fillet_op
         "the edge was found by its midpoint and length"
     );
 
-    let mut lost = fillet_op.clone();
-    lost["edges"][0]["mid"] = json!([50.0, 50.0, 50.0]);
-    let broken = call(
+    // Moved far off, it is still the one edge of its kind nearest where it was.
+    let mut far = fillet_op.clone();
+    far["edges"][0]["mid"] = json!([50.0, 50.0, 50.0]);
+    let found = ok(
         json!({ "call": "open", "key": "saved", "box": [10.0, 10.0, 10.0],
-        "nodes": saved(&lost, &fillet["fingerprint"]), "current": 2 }),
+        "nodes": saved(&far, &fillet["fingerprint"]), "current": 2 }),
     );
-    assert_eq!(broken["broken"], 2, "{broken}");
+    assert_eq!(found["fingerprint"], fillet["fingerprint"], "the edge was found by its signature");
+
+    // With no edge of its kind, or stored before signatures, an edge not where it was is lost.
+    let mut lost = far.clone();
+    lost["edges"][0]["sig"]["dir"] = json!([0.6, 0.8, 0.0]);
+    let mut unsigned = far.clone();
+    unsigned["edges"][0].as_object_mut().expect("a stored edge").remove("sig");
+    for gone in [lost, unsigned] {
+        let broken = call(
+            json!({ "call": "open", "key": "saved", "box": [10.0, 10.0, 10.0],
+            "nodes": saved(&gone, &fillet["fingerprint"]), "current": 2 }),
+        );
+        assert_eq!(broken["broken"], 2, "{broken}");
+    }
 
     let wrong = json!({ "volumeMm3": 123.0, "faces": 6, "edges": 12 });
     let mismatch = call(

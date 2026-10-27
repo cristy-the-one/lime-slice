@@ -361,7 +361,7 @@ export function expandRepeat(spec: Record<string, unknown>, steps: readonly { id
     for (const piece of pieces) {
       const moved = movedSpec(piece.spec, motion);
       if ("reason" in moved) return emptyRepeat(moved.reason);
-      out.push({ op: piece.op, spec: moved });
+      out.push({ ...piece, spec: moved });
       if (out.length > MAX_PIECES) return emptyRepeat(`This makes more than ${MAX_PIECES} steps. Split it into smaller edits.`);
     }
   }

@@ -50,6 +50,8 @@ export interface PrimitiveSpec {
   /** A polygon prism's width across corners, or across flats with `flats`. */
   across?: number;
   flats?: boolean;
+  /** A box's four edges along its own Z rounded to this radius, as a rounded pocket or boss cuts them. */
+  cornerRadius?: number;
 }
 
 /** Every number the panel offers a primitive, whichever kind reads it. */

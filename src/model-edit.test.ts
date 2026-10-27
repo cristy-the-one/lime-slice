@@ -297,6 +297,35 @@ eq("not a tool's opened file", toolEditRefusal(stepTool, links, 0), "The opened 
 eq("nor through a join under a broken step", toolEditRefusal(rodTree, [{ tree: withNode(boxTree, 1, { broken: "gone" }), id: 2, op: takeRod(1) }], 1), "A step above this one cannot be rebuilt. Edit or delete that step first.");
 eq("the header names the tool", [toolEditHead(rodTree, 1, "Rod 1"), toolEditHead(rodTree, 0, "Rod 1")], ["Editing Rod 1, step 1: Scale 150 %", "Editing Rod 1's primitive: Cylinder ⌀4 h 40"]);
 
+// --- Gaps 8, 12, 13, 14. A rounded box, a merged boolean, a chamfer by two sizes, and an edge with its signature are
+// saved and read back as they were; a step saved before any of them reads back without them.
+{
+  const fp = (volumeMm3: number) => ({ volumeMm3, faces: 6, edges: 12 });
+  const IDENTITY: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+  const sig = { curve: 0, dir: [0, 0, 1] as Vec3, kinds: [0, 0] as [number, number], normals: [[-1, 0, 0], [0, -1, 0]] as [Vec3, Vec3] };
+  const ref = { index: 3, mid: [-10, -10, 5] as Vec3, lengthMm: 10, sig };
+  const box = { primitive: "box" as const, origin: [0, 0, 0] as Vec3, size: [20, 20, 10] as Vec3, radius: 0, height: 0, turn: [0, 0, 0] as Vec3 };
+  const ops: ModelOp[] = [
+    { kind: "boolean", op: "cut", ...box, origin: [5, 5, 6], size: [10, 10, 5], cornerRadius: 2, merge: true },
+    { kind: "chamfer", edges: [ref], size: 2.7, size2: 5, flip: true },
+    { kind: "chamfer", edges: [{ index: 4, mid: [0, -10, 10], lengthMm: 20 }], size: 2, angleDeg: 30 },
+    { kind: "fillet", edges: [ref], size: 1 },
+  ];
+  let tree = newTree("g", { kind: "primitive", solid: box }, "Box", fp(4000));
+  ops.forEach((op, i) => (tree = withChild(tree, i, { id: i + 1, op, label: opLabel(op), fingerprint: fp(100 + i) })));
+  const read = readSavedTree(JSON.parse(JSON.stringify({ ...savedTree(tree, 4, () => undefined), rootPrimitive: box })));
+  eq("rounded, merged, two-size and signed steps read back as saved", read?.nodes.map((node) => node.op), [null, ...ops]);
+  eq("their labels", ops.map(opLabel), ["Cut box 10×10×5", "Chamfer 1 edge 2.7 × 5, flipped", "Chamfer 1 edge 2 at 30°", "Fillet 1 edge r 1"]);
+  const bad = JSON.parse(JSON.stringify({ ...savedTree(tree, 4, () => undefined), rootPrimitive: box }));
+  bad.nodes[2].op.edges[0].sig.normals = [[1, 0, 0]];
+  eq("a damaged signature is a damaged tree", readSavedTree(bad), null);
+  const panel = editPanel(ops[1]!, IDENTITY, [10, 10, 5]);
+  eq("a two-size chamfer reopens with its sides", [panel.fields.modelBlend, panel.fields.modelChamfer2, panel.chamfer], [2.7, 5, { form: "two", flip: true }]);
+  const angled = editPanel(ops[2]!, IDENTITY, [10, 10, 5]);
+  eq("an angled chamfer reopens with its angle", [angled.fields.modelChamferAngle, angled.chamfer], [30, { form: "angle", flip: false }]);
+  eq("an equal chamfer reopens equal", editPanel({ kind: "chamfer", edges: [3], size: 1 }, IDENTITY, [0, 0, 0]).chamfer, { form: "equal", flip: false });
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

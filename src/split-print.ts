@@ -11,6 +11,7 @@ import { applyPose, fromSolidOp, toSolidOp, turnDir, type Affine } from "./model
 import type { ModelOp, PartitionModelOp, Vec3 } from "./model-tree.ts";
 import { connectorNames, defaultsFor, fillPartition, fitPrinter, notBuiltYet, placeCut, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
 import { sectionLoops } from "./section-cap.ts";
+import { storedOrient, type OrientChoice } from "./modeling/joint-down.ts";
 
 /** The status title: within `TITLE_LIMIT` (`src/sketch/hints.ts`), as every card's is. */
 export const SPLIT_PRINT_TITLE = "Split to print";
@@ -62,6 +63,8 @@ export interface Card {
   target: Target | null;
   /** Part numbers: each piece gets its number cut into a face. */
   numbers: boolean;
+  /** Each piece's orientation on the plate, by part number from 0: keep, or Joint down. A piece past the list keeps. */
+  orient: OrientChoice[];
   /** The cuts were typed, dragged, added or cleared, so a new target keeps them. A proposal nobody touched is not. */
   edited: boolean;
 }
@@ -76,7 +79,7 @@ export interface CardFrame {
 }
 
 export function emptyCard(): Card {
-  return { cuts: [], selected: -1, layout: true, target: null, numbers: true, edited: false };
+  return { cuts: [], selected: -1, layout: true, target: null, numbers: true, orient: [], edited: false };
 }
 
 const AXES = ["x", "y", "z"] as const;
@@ -279,6 +282,8 @@ export function cardOp(card: Card, center: Vec3, frame: CardFrame | null, sizes:
     }),
     ...(card.target ? { target: card.target } : {}),
     arrange: card.layout,
+    // An export target's pieces keep their orientation as cut: PreForm orients them (D4).
+    ...(!exportTarget(card.target) && card.orient.some((one) => one === "joint") ? { orient: storedOrient(card.orient) } : {}),
     labels: card.numbers ? { on: true, face: "cut", height: sizes.height, depth: sizes.depth } : { on: false },
   };
 }
@@ -291,7 +296,7 @@ export function cardFromOp(op: PartitionModelOp, pose: Affine, center: Vec3, fra
   const shown = fromSolidOp(op, pose) as PartitionModelOp;
   const cuts = shown.cuts.map((cut) => ({ ...cutFromPlane(cut.origin, cut.normal, center, frame), joints: jointsOf(cut.connectors) }));
   const target = shown.target && shown.target.printer !== plate ? { ...shown.target } : null;
-  return { cuts, selected: cuts.length > 0 ? 0 : -1, layout: shown.arrange !== false, target, numbers: shown.labels?.on === true, edited: true };
+  return { cuts, selected: cuts.length > 0 ? 0 : -1, layout: shown.arrange !== false, target, numbers: shown.labels?.on === true, orient: shown.orient === undefined || shown.orient === "keep" ? [] : shown.orient.map((one) => (one === "joint" ? "joint" : "keep")), edited: true };
 }
 
 /** A stored cut's connectors back in the card: its first type as stored, every size typed. */
@@ -304,7 +309,7 @@ function jointsOf(connectors: PartitionModelOp["cuts"][number]["connectors"]): C
 
 /** Whether two cards describe the same cuts, layout, target and numbers, so an untouched edit offers no Update. */
 export function sameCard(a: Card, b: Card): boolean {
-  const key = (card: Card) => JSON.stringify({ cuts: card.cuts, layout: card.layout, target: card.target, numbers: card.numbers });
+  const key = (card: Card) => JSON.stringify({ cuts: card.cuts, layout: card.layout, target: card.target, numbers: card.numbers, orient: storedOrient(card.orient) });
   return key(a) === key(b);
 }
 

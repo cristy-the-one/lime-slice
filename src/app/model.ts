@@ -87,6 +87,7 @@ import {
   fieldNumber,
   fieldPrimitive,
   holeBoxes,
+  chamferChoice,
   openSketchHolePanel,
   sketchHoleCount,
   sketchHolesArmed,
@@ -171,8 +172,9 @@ import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintChec
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
 import { bedFrame, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
-import { clampPieces, defaultsFor, fillConnector, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
+import { clampPieces, defaultsFor, fillConnector, mm as mmText, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { couponFileName, couponInputFor, fitCoupon, fitCouponRequest, readCouponReply } from "../modeling/fit-coupon.ts";
+import { choiceAt, jointDown } from "../modeling/joint-down.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
@@ -1569,6 +1571,15 @@ function holeSizesNow(): HoleSizes {
   };
 }
 
+/** Gaps 13. A chamfer's second size or angle, and its flip, as the panel says them. Nothing for equal sides or a fillet. */
+function chamferSides(tool: "fillet" | "chamfer"): { size2?: number; angleDeg?: number; flip?: true } {
+  if (tool !== "chamfer") return {};
+  const { form, flip } = chamferChoice();
+  if (form === "equal") return {};
+  const second = form === "two" ? { size2: num("#modelChamfer2") } : { angleDeg: num("#modelChamferAngle") };
+  return { ...second, ...(flip ? { flip: true as const } : {}) };
+}
+
 /** The open tool's edit as its fields say it, in model space. */
 function fieldOp(tool: string | null | undefined): ModelOp | null {
   // --- A3 composite features: the group is expanded in model space, then toolOp stores it in the solid's frame. ---
@@ -1585,10 +1596,10 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       if (edgeMode() === "step") {
         const id = edgeStepId();
         if (id == null || !edgeStepKnown()) return null;
-        return { kind: tool, edges: [stepEdges(id, edgeFilterChoice())], size: num("#modelBlend") };
+        return { kind: tool, edges: [stepEdges(id, edgeFilterChoice())], size: num("#modelBlend"), ...chamferSides(tool) };
       }
       const edges = selectedEdges(picks);
-      return edges.length === 0 ? null : { kind: tool, edges, size: num("#modelBlend") };
+      return edges.length === 0 ? null : { kind: tool, edges, size: num("#modelBlend"), ...chamferSides(tool) };
     }
     case "hole": {
       // --- F4. One group, one hole per point snapped when the panel opened. ---
@@ -1611,7 +1622,7 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
     case "shell":
       return shellOp(num("#modelShell"), shellClosed() ? [] : selectedFaces(picks));
     case "boolean":
-      return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...planePrimitive(fieldPrimitive(), toolFrame()) };
+      return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...planePrimitive(fieldPrimitive(), toolFrame()), merge: true };
     case "split": {
       const split = splitState();
       return "plan" in split ? { kind: "split", origin: split.plan.origin, normal: split.plan.normal } : null;
@@ -5932,14 +5943,14 @@ async function applySplitPrint(typed: PartitionOp) {
   const storedOp = isOp(body.op) ? body.op : op;
   // --- D12. An export target's pieces are held in Model with their trees and never go on the plate.
   const held = exportsPieces(op);
-  const placed = putPieces(at, node, parsed, pieces.map((piece) => (piece ? { ...piece, was: null } : null)), op.arrange !== false && !held, held, pins ? { ...pins, was: null } : null);
+  const placed = putPieces(at, node, parsed, pieces.map((piece) => (piece ? { ...piece, was: null } : null)), op.arrange !== false && !held, held, pins ? { ...pins, was: null } : null, storedOp as PartitionModelOp);
   modelTrees.set(at.key, withChild(modelTrees.get(at.key) ?? latest, parent, { id: node, op: storedOp, label: opLabel(storedOp, placed.keys.length + 1), fingerprint: parsed.fingerprint, pieces: placed.keys, ...(placed.pins ? { pins: placed.pins } : {}) }));
   keepSolid(at.key, node, chord, parsed);
   open = { ...at, solid: parsed };
   const sentences = kernelNotes(body);
   splitPrintApplied();
   const where = held ? heldSentence(targetName(storedOp as PartitionModelOp)) : laidSentence(op, placed.fresh.length);
-  present(parsed, `${opLabel(storedOp, placed.keys.length + 1)}. ${about(parsed)} ${where}${sentences.map((note) => ` ${note}`).join("")}${leavingNotes(false)}`);
+  present(parsed, `${opLabel(storedOp, placed.keys.length + 1)}. ${about(parsed)} ${where}${sentences.map((note) => ` ${note}`).join("")}${placed.notes.map((note) => ` ${note}`).join("")}${placed.notes.map((note) => ` ${note}`).join("")}${leavingNotes(false)}`);
   if (held) showSplitPrintDone(heldResult(storedOp as PartitionModelOp, placed.keys.length + 1, sentences));
 }
 
@@ -6034,10 +6045,10 @@ function laidSentence(op: PartitionModelOp, fresh: number): string {
  * keys each piece's tree has, in order, and the new objects' ids. With `held`, an export target's (D12), no piece goes on
  * the plate: each is the root of a tree of its own, held in Model, and the plate does not change.
  */
-function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key: string; solid: ParsedSolid; was: string | null; tree?: ModelTree; shown?: ParsedSolid } | null)[], layout: boolean, held = false, pins: { key: string; solid: ParsedSolid; was: string | null } | null = null): { keys: (string | null)[]; fresh: string[]; pins: string | null } {
+function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key: string; solid: ParsedSolid; was: string | null; tree?: ModelTree; shown?: ParsedSolid } | null)[], layout: boolean, held = false, pins: { key: string; solid: ParsedSolid; was: string | null } | null = null, op?: PartitionModelOp): { keys: (string | null)[]; fresh: string[]; pins: string | null; notes: string[] } {
   const keys: (string | null)[] = [];
   const fresh: string[] = [];
-  if (!state.mesh) return { keys: pieces.map(() => null), fresh, pins: null };
+  if (!state.mesh) return { keys: pieces.map(() => null), fresh, pins: null, notes: [] };
   if (!held) {
     noteEdit();
     syncPlateFromState();
@@ -6070,13 +6081,76 @@ function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key:
     if (!owner && !held) fresh.push(state.plate.objects.find((obj) => obj.modelTree === piece.key)!.id);
   });
   const pinned = pins ? putPinsObject(at, node, pins, stem, held, fresh) : null;
-  if (held) return { keys, fresh, pins: pinned };
-  if (layout && fresh.length > 0) layOutPieces(at.objectId, first, fresh);
+  if (held) return { keys, fresh, pins: pinned, notes: [] };
+  // --- Milestone 7. Joint down turns its pieces before the lay out, so the layout is of the turned footprints.
+  const turned = op ? orientPieces(at.objectId, first.positions, keys, pinned, op) : { turned: [] as string[], notes: [] as string[] };
+  const moving = [...new Set([...fresh, ...turned.turned])];
+  if (layout && moving.length > 0) layOutPieces(at.objectId, first, moving);
   applySelectedToState(state.plate);
   place();
   flushEdit();
   markModelEdit();
-  return { keys, fresh, pins: pinned };
+  return { keys, fresh, pins: pinned, notes: turned.notes };
+}
+
+/** A belt printer's length is unbounded (decision 11): a lay out stacks the pieces along it, so none goes off the bed. */
+const BELT_LENGTH_MM = 1e6;
+
+/** Whether the plate's printer is a belt printer. */
+function onBelt(): boolean {
+  return selection(loadMachineLibrary())?.printer.kind === "belt";
+}
+
+/** Each plate object Joint down turned, by id, and the orientation it had before: Keep puts it back. */
+const keptOrients = new Map<string, Mat3>();
+
+/**
+ * --- Milestone 7 (plan D4, section 10). The orientation each piece of a split to print has on the plate: Keep is the part's
+ * own, from before any Joint down; Joint down turns the piece so its larger cut face lies on the bed (`jointDown`), its long
+ * way along X, or along the belt on a belt printer. The pins object always stands in the part's own orientation, so it stays
+ * upright. Part 1 is the part itself. The ids of what turned, and a sentence for each piece that joints down.
+ */
+function orientPieces(partId: string, first: Float32Array, keys: readonly (string | null)[], pins: string | null, op: PartitionModelOp): { turned: string[]; notes: string[] } {
+  const out = { turned: [] as string[], notes: [] as string[] };
+  if (exportsPieces(op)) return out;
+  const part = state.plate.objects.find((obj) => obj.id === partId);
+  if (!part) return out;
+  const base = keptOrients.get(part.id) ?? part.orient;
+  const planes = op.cuts.map((cut) => ({ origin: cut.origin, normal: cut.normal }));
+  const belt = onBelt();
+  const rows: { id: string; positions: Float32Array; index: number | null }[] = [{ id: part.id, positions: first, index: 0 }];
+  keys.forEach((key, at) => {
+    const obj = key ? state.plate.objects.find((row) => row.modelTree === key) : undefined;
+    if (obj) rows.push({ id: obj.id, positions: obj.sourcePos, index: at + 1 });
+  });
+  const pinsObj = pins ? state.plate.objects.find((row) => row.modelTree === pins) : undefined;
+  if (pinsObj) rows.push({ id: pinsObj.id, positions: pinsObj.sourcePos, index: null });
+  const next = new Map<string, Mat3>();
+  const turnedPart = keptOrients.has(part.id);
+  for (const row of rows) {
+    const obj = state.plate.objects.find((one) => one.id === row.id)!;
+    // What Keep means for this object: the orientation from before Joint down, else its own, which a piece copied from a
+    // part that is joint down gets from the part's own.
+    const own = keptOrients.get(obj.id) ?? (obj.id !== part.id && turnedPart && sameMat(obj.orient, part.orient) ? base : obj.orient);
+    const wanted = row.index === null ? "keep" : choiceAt(op.orient, row.index);
+    let orient: Mat3 = own;
+    if (wanted === "joint") {
+      const joint = jointDown(row.positions, planes, belt);
+      if (!joint) out.notes.push(`Part ${row.index! + 1} has no cut face, so it keeps its orientation.`);
+      else {
+        orient = joint.orient;
+        keptOrients.set(obj.id, own);
+        out.notes.push(`Part ${row.index! + 1} is joint down on cut ${joint.face.cut + 1}, its ${joint.other ? "larger" : "only"} cut face, ${mmText(joint.face.area)} mm².`);
+      }
+    }
+    if (orient === own) keptOrients.delete(obj.id);
+    if (!sameMat(orient, obj.orient)) {
+      next.set(obj.id, orient);
+      out.turned.push(obj.id);
+    }
+  }
+  if (next.size > 0) state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (next.has(obj.id) ? { ...obj, orient: [...next.get(obj.id)!] as Mat3 } : obj)) };
+  return out;
 }
 
 /**
@@ -6108,7 +6182,7 @@ function layOutPieces(partId: string, first: ParsedSolid, fresh: readonly string
   const objects = state.plate.objects.map((obj) => (obj.id === partId ? { ...obj, sourcePos: first.positions } : obj));
   const moving = new Set(fresh);
   const keep = new Set(objects.filter((obj) => !moving.has(obj.id)).map((obj) => obj.id));
-  const laid = new Map(arrangedObjects(objects, state.profile.bedX, state.profile.bedY, undefined, keep).map((obj) => [obj.id, obj]));
+  const laid = new Map(arrangedObjects(objects, state.profile.bedX, onBelt() ? BELT_LENGTH_MM : state.profile.bedY, undefined, keep).map((obj) => [obj.id, obj]));
   state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (moving.has(obj.id) ? { ...obj, centered: laid.get(obj.id)!.centered, offset: { ...laid.get(obj.id)!.offset } } : obj)) };
 }
 
@@ -6237,7 +6311,7 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
     return;
   }
   const broken = brokenStep(body.broken);
-  const placed = putPieces(at, ids[0]!, parsed, rebuilt, op.arrange !== false && !held, held, pins ? { ...pins, was: held ? null : oldPins } : null);
+  const placed = putPieces(at, ids[0]!, parsed, rebuilt, op.arrange !== false && !held, held, pins ? { ...pins, was: held ? null : oldPins } : null, op);
   // A part number the new cut no longer makes takes its object off the plate, and every one does when the cut is now for
   // an export target; so do the pins when the new cut has none, or is for an export target.
   const leaving = [...(held ? old : old.slice(pieces.length)), ...(oldPins && (held || !pins) ? [oldPins] : [])];
@@ -6265,7 +6339,7 @@ async function updateSplitPrint(run: Editing, typed: PartitionOp) {
   const after = replay.length === 0 ? "" : replay.length === 1 ? " and rebuilt the step after it" : ` and rebuilt ${replay.length} steps after it`;
   const failure = broken ? ` Step ${pathTo(next, broken.id).length - 1}, “${label(broken.id)}”, could not be rebuilt: ${sentence(broken.error)}` : "";
   const left = gone.length === 0 ? "" : gone.length === 1 ? " One piece left the plate." : ` ${gone.length} pieces left the plate.`;
-  present(parsed, [`Updated “${label(ids[0]!)}”${after}. ${about(parsed)}${failure} ${held ? heldSentence(targetName(op)) : laidSentence(op, placed.fresh.length)}${left}`.replace(/\s+/g, " ").trim(), ...sentences, ...notes].join(" "));
+  present(parsed, [`Updated “${label(ids[0]!)}”${after}. ${about(parsed)}${failure} ${held ? heldSentence(targetName(op)) : laidSentence(op, placed.fresh.length)}${left}`.replace(/\s+/g, " ").trim(), ...sentences, ...placed.notes, ...notes].join(" "));
   if (held) showSplitPrintDone(heldResult(next.nodes.get(ids[0]!)!.op as PartitionModelOp, placed.keys.length + 1, sentences));
 }
 
