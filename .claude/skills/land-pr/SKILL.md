@@ -34,7 +34,8 @@ The owner reviews PRs at milestones, not every small step. Open one when a piece
 2. Bind it (`ccd_pr bind_pr`) and turn the monitor on (`set_monitor`, `auto_fix: true`). From then on, CI failures and conflicts arrive as ci-monitor events. Don't poll CI yourself.
 3. **Auto-merge: the smoke shards first.** Main's ruleset requires only "test, clippy, and Tauri", "release bench smoke", and "typecheck and frontend build". GitHub's auto-merge waits for those three and nothing else. #407 merged with two red smoke shards, and main stayed broken until the next PR fixed it.
    - For a PR that touches UI, e2e, or anything a spec exercises, arm auto-merge (`set_auto_merge`, merge method **merge**) only after `gh pr checks <n>` shows all four smoke shards passing.
-   - A docs-only or CI-only PR can be armed at once.
+   - A CI-only PR can be armed at once.
+   - A docs-only PR (only `docs/` and `*.md` files) runs no CI: the `what changed` job skips every other job, and a skipped required check counts as passed. Merge it once the owner approves; there is nothing to wait for.
 4. A PR whose checks are all green before you arm it is "clean", and GitHub refuses to arm auto-merge on it. The owner's standing rule is merge-on-green, so merge it yourself: `gh pr merge <n> --merge`, after one more `gh pr checks <n>`.
 
 ## When a check fails
