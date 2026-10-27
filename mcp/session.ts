@@ -129,7 +129,7 @@ import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport,
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../src/interference.ts";
-import { assemblyOf, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
+import { assemblyOf, attached, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
 import { followRepeatSources, repeatLabel } from "../src/model-repeat.ts";
 import { planRebuild } from "../src/param-rebuild.ts";
@@ -2421,7 +2421,9 @@ export class Session {
     }));
     this.objects.splice(at, 1, ...made);
     this.selected = made[0]!.id;
-    return { ok: true, objects: made.map((piece) => piece.id), names: made.map((piece) => piece.name), solids: made.length, label: "Separate solids" };
+    // --- Assemblies M8. The solids of one STEP file are one assembly, the first its root, each where the file put it.
+    const assembly = this.groupPieces(made[0]!, made.slice(1).map((piece) => piece.id), obj.fileName.replace(/\.(step|stp)$/i, ""));
+    return { ok: true, objects: made.map((piece) => piece.id), names: made.map((piece) => piece.name), solids: made.length, ...(assembly ? { assembly } : {}), label: "Separate solids" };
   }
 
   private placed(obj: PlateObject) {
@@ -6496,6 +6498,7 @@ export class Session {
     obj.probes.clear();
     const followed = this.followPieces(obj);
     const notes = [...numberNotes(reply), ...followed.orient.notes];
+    const assembly = exported ? null : this.groupPieces(obj, [...objects, ...(pins ? [pins.id] : [])]);
     const note = exported
       ? exportedNote(this.targetName(op))
       : op.arrange === false
@@ -6507,6 +6510,7 @@ export class Session {
       parts: keys.length + 1,
       pieces: objects,
       ...(pins ? { pins: pins.id } : {}),
+      ...(assembly ? { assembly } : {}),
       note,
       ...joined(reply, typedPoseOf(obj)),
       ...numbered(reply, typedPoseOf(obj)),
@@ -6566,6 +6570,29 @@ export class Session {
       platedNode: null,
     });
     return id;
+  }
+
+  /**
+   * --- Assemblies M8 (D7). A split to print's pieces and pins on the plate make one assembly with the part as its root,
+   * each where it was cut. A cut edited later keeps that assembly and seats any new piece in it. Its name, or null when
+   * nothing joined (an export target's pieces are off the plate).
+   */
+  private groupPieces(root: PlateObject, ids: readonly string[], name?: string): string | null {
+    let next = this.liveAssemblies();
+    const poseOf = (id: string) => this.find(id)?.modelPose;
+    const stem = name ?? shownName(root.name).replace(/\.(stl|step|stp|3mf)$/i, "");
+    let joined = false;
+    for (const id of ids) {
+      const piece = this.find(id);
+      if (!piece || id === root.id) continue;
+      const made = attached(next, id, root.id, poseOf, stem);
+      if ("reason" in made) continue;
+      next = made;
+      joined = true;
+      piece.frame = "part";
+    }
+    this.assemblies = next;
+    return joined ? assemblyOf(next, root.id)?.name ?? null : null;
   }
 
   /** The object, on the plate or off it, whose tree is `key`; a reopened project's piece has none open yet, and goes by its id. */
@@ -7184,7 +7211,8 @@ export class Session {
     const followed = this.followPieces(obj);
     if (followed.orient.turned.length > 0 && (baked.op as PartitionModelOp).arrange !== false) this.layOutPieces(followed.orient.turned.filter((id) => this.objects.some((row) => row.id === id && row.platedNode !== null)));
     const notes = rebuilt ? [...(baked.notes ?? []), ...numberNotes(reply), ...rebuilt.notes, ...followed.orient.notes] : [];
-    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(pins ? { pins: pins.id } : {}), ...joined(reply, typedPoseOf(obj)), ...numbered(reply, typedPoseOf(obj)), ...(notes.length ? { notes } : {}) } : {};
+    const regrouped = rebuilt && !exportsPieces(baked.op) ? this.groupPieces(obj, [...rebuilt.objects, ...(pins ? [pins.id] : [])]) : null;
+    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(pins ? { pins: pins.id } : {}), ...(regrouped ? { assembly: regrouped } : {}), ...joined(reply, typedPoseOf(obj)), ...numbered(reply, typedPoseOf(obj)), ...(notes.length ? { notes } : {}) } : {};
     return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null, ...parts, ...this.takeNotLinked() };
   }
 

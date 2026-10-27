@@ -163,7 +163,7 @@ import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, usedByCount } from "../modeling/params.ts";
 import { readAssemblies, resolveForParameters } from "../assembly";
-import { followAssemblyMove, syncAssemblyView } from "./assemblies.ts";
+import { followAssemblyMove, groupAsBuilt, syncAssemblyView } from "./assemblies.ts";
 import { outOfDateSteps, planRebuild } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
 import { faceTriangles } from "../sim/bridge-body.ts";
@@ -6258,6 +6258,14 @@ function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key:
   const turned = op ? orientPieces(at.objectId, first.positions, keys, pinned, op) : { turned: [] as string[], notes: [] as string[] };
   const moving = [...new Set([...fresh, ...turned.turned])];
   if (layout && moving.length > 0) layOutPieces(at.objectId, first, moving);
+  // --- Assemblies M8 (D7). The pieces and the pins sit where they were cut: with the card's Group the parts, one
+  // assembly with the part as its root. A cut edited later seats its new pieces in the same one.
+  if (op && document.querySelector<HTMLInputElement>("#modelPartGroup")?.checked !== false) {
+    const made = new Set([...keys, pinned].filter((key): key is string => !!key));
+    const ids = state.plate.objects.filter((obj) => obj.modelTree && made.has(obj.modelTree)).map((obj) => obj.id);
+    const part = state.plate.objects.find((obj) => obj.id === at.objectId);
+    groupAsBuilt(at.objectId, ids, stlName(part?.name ?? stem).replace(/\.stl$/i, ""));
+  }
   applySelectedToState(state.plate);
   place();
   flushEdit();

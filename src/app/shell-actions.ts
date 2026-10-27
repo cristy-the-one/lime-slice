@@ -9,6 +9,7 @@ import { flushEdit, noteEdit } from "./history.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { state, session } from "./state.ts";
 import { stepSolidFiles } from "./step-solids.ts";
+import { groupAsBuilt } from "./assemblies.ts";
 
 /** Split `id`, or the selection. False when that object is one solid. A STEP file of several solids splits by them. */
 export function separateShells(id?: string | null): boolean {
@@ -88,12 +89,16 @@ async function readAndSeparate(obj: PlateObject) {
     flushEdit();
     return;
   }
-  land(next, now);
+  // --- Assemblies M8. The solids of one STEP file are one assembly, the first its root, each where the file put it.
+  const others = new Set(state.plate.objects.filter((item) => item.id !== now.id).map((item) => item.id));
+  const made = next.objects.filter((item) => !others.has(item.id)).map((item) => item.id);
+  land(next, now, () => groupAsBuilt(made[0]!, made, now.fileName.replace(/\.(step|stp)$/i, "")));
 }
 
-function land(next: typeof state.plate, from: PlateObject) {
+function land(next: typeof state.plate, from: PlateObject, group?: () => void) {
   const painted = from.supportPaint.length + from.seamPaint.length + (from.reinforcement?.length ?? 0) + from.supportEdits.length > 0;
   state.plate = next;
+  group?.();
   applySelectedToState(state.plate);
   place();
   flushEdit();

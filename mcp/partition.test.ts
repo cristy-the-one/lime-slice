@@ -109,6 +109,10 @@ const committed = await call("model_commit", { object });
 check("commit puts every piece on the plate and lays them out", committed.ok === true && JSON.stringify(committed.pieces) === JSON.stringify(pieces) && committed.arranged === true, JSON.stringify(committed));
 const onPlate = await plate();
 check("probe, apply, commit gives three plate objects", onPlate.length === 3 && onPlate.every((row) => row.bboxMm.max[0] > row.bboxMm.min[0]), JSON.stringify(onPlate.map((row) => row.object)));
+// --- Assemblies M8 (D7). The pieces form one assembly with the part as its root, each where it was cut.
+check("apply names the assembly the pieces form", applied.assembly === "box", JSON.stringify(applied.assembly));
+check("every piece is in it, on plate_list", onPlate.every((row) => (row as { assembly?: string }).assembly === "box"), JSON.stringify(onPlate.map((row) => (row as { assembly?: string }).assembly)));
+check("the pieces stay where they were cut in model space", pieces.every((id) => JSON.stringify(session.objects.find((row) => row.id === id)?.modelPose) === JSON.stringify(parent.modelPose)));
 const apart = onPlate.every((a, i) => onPlate.every((b, j) => i >= j || a.bboxMm.max[0] <= b.bboxMm.min[0] + 1e-6 || b.bboxMm.max[0] <= a.bboxMm.min[0] + 1e-6 || a.bboxMm.max[1] <= b.bboxMm.min[1] + 1e-6 || b.bboxMm.max[1] <= a.bboxMm.min[1] + 1e-6));
 check("laid out, no two overlap", apart, JSON.stringify(onPlate.map((row) => row.bboxMm)));
 
