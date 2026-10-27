@@ -24,6 +24,19 @@ export interface EdgeRef {
   index: number;
   mid: Vec3;
   lengthMm: number;
+  /** What the edge is, apart from where, so a rebuild that moved the part still finds it. Absent on an older step. */
+  sig?: EdgeSig;
+}
+
+/**
+ * An edge's curve (0 line, 1 circle, 2 other) and direction, and the faces either side: each one's surface (0 plane,
+ * 1 cylinder, 2 cone, 3 sphere, 4 torus, 5 other, 9 none) and outward normal at the edge's middle. The engine writes it.
+ */
+export interface EdgeSig {
+  curve: number;
+  dir: Vec3;
+  kinds: [number, number];
+  normals: [Vec3, Vec3];
 }
 
 /** Which of a step's edges a pick takes. Each is sharp: an edge already smooth, or a seam, cannot be blended. */
@@ -70,10 +83,16 @@ export type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
 /** One edit, in the solid's own frame. A fresh fillet or chamfer names edges by index. */
 type ModelOpBase =
-  | ({ kind: "boolean"; op: BooleanKind } & PrimitiveSpec)
+  /** `merge` joins the faces and edges the boolean leaves on one surface; absent on a step saved before it. */
+  | ({ kind: "boolean"; op: BooleanKind; merge?: true } & PrimitiveSpec)
   | HoleOp
   | { kind: "split"; origin: Vec3; normal: Vec3 }
-  | { kind: "fillet" | "chamfer"; edges: EdgePick[]; size: number }
+  | { kind: "fillet"; edges: EdgePick[]; size: number }
+  /**
+   * Equal distances, or with `size2` two: `size` along each edge's upper face and `size2` along the other. With
+   * `angleDeg`, `size` along that face at that angle from it. `flip` swaps which face takes `size`.
+   */
+  | { kind: "chamfer"; edges: EdgePick[]; size: number; size2?: number; angleDeg?: number; flip?: true }
   | { kind: "scale"; factor: number }
   /** Another object's solid at `tool`, placed by `relative`: its pose in this solid's own frame, worked out once at Apply. */
   | { kind: "join"; op: BooleanKind; tool: JoinTool; relative: Affine; keepTool: boolean }
@@ -756,7 +775,9 @@ export function opLabel(op: ModelOp, parts?: number): string {
       const picked = op.edges.filter((edge) => !isEdgeStep(edge)).length;
       const steps = op.edges.filter(isEdgeStep).map((edge) => `${edge.filter && edge.filter !== "all" ? `${edge.filter} ` : ""}edges of node ${edge.fromNode}`);
       const count = [...(picked > 0 || steps.length === 0 ? [picked === 1 ? "1 edge" : `${picked} edges`] : []), ...steps].join(" + ");
-      return `${op.kind === "fillet" ? "Fillet" : "Chamfer"} ${count} ${op.kind === "fillet" ? "r " : ""}${n(op.size)}`;
+      if (op.kind === "fillet") return `Fillet ${count} r ${n(op.size)}`;
+      const second = op.size2 !== undefined ? ` × ${n(op.size2)}` : op.angleDeg !== undefined ? ` at ${n(op.angleDeg)}°` : "";
+      return `Chamfer ${count} ${n(op.size)}${second}${second && op.flip ? ", flipped" : ""}`;
     }
     case "scale":
       return `Scale ${n(op.factor * 100)} %`;

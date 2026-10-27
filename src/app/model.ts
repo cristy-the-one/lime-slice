@@ -87,6 +87,7 @@ import {
   fieldNumber,
   fieldPrimitive,
   holeBoxes,
+  chamferChoice,
   openSketchHolePanel,
   sketchHoleCount,
   sketchHolesArmed,
@@ -1567,6 +1568,15 @@ function holeSizesNow(): HoleSizes {
   };
 }
 
+/** Gaps 13. A chamfer's second size or angle, and its flip, as the panel says them. Nothing for equal sides or a fillet. */
+function chamferSides(tool: "fillet" | "chamfer"): { size2?: number; angleDeg?: number; flip?: true } {
+  if (tool !== "chamfer") return {};
+  const { form, flip } = chamferChoice();
+  if (form === "equal") return {};
+  const second = form === "two" ? { size2: num("#modelChamfer2") } : { angleDeg: num("#modelChamferAngle") };
+  return { ...second, ...(flip ? { flip: true as const } : {}) };
+}
+
 /** The open tool's edit as its fields say it, in model space. */
 function fieldOp(tool: string | null | undefined): ModelOp | null {
   // --- A3 composite features: the group is expanded in model space, then toolOp stores it in the solid's frame. ---
@@ -1583,10 +1593,10 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
       if (edgeMode() === "step") {
         const id = edgeStepId();
         if (id == null || !edgeStepKnown()) return null;
-        return { kind: tool, edges: [stepEdges(id, edgeFilterChoice())], size: num("#modelBlend") };
+        return { kind: tool, edges: [stepEdges(id, edgeFilterChoice())], size: num("#modelBlend"), ...chamferSides(tool) };
       }
       const edges = selectedEdges(picks);
-      return edges.length === 0 ? null : { kind: tool, edges, size: num("#modelBlend") };
+      return edges.length === 0 ? null : { kind: tool, edges, size: num("#modelBlend"), ...chamferSides(tool) };
     }
     case "hole": {
       // --- F4. One group, one hole per point snapped when the panel opened. ---
@@ -1609,7 +1619,7 @@ function fieldOp(tool: string | null | undefined): ModelOp | null {
     case "shell":
       return shellOp(num("#modelShell"), shellClosed() ? [] : selectedFaces(picks));
     case "boolean":
-      return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...planePrimitive(fieldPrimitive(), toolFrame()) };
+      return joinOpen() ? panelJoin() : { kind: "boolean", op: boolOp(), ...planePrimitive(fieldPrimitive(), toolFrame()), merge: true };
     case "split": {
       const split = splitState();
       return "plan" in split ? { kind: "split", origin: split.plan.origin, normal: split.plan.normal } : null;

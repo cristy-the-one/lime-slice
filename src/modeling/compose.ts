@@ -16,6 +16,8 @@ export type BooleanKind = "cut" | "fuse" | "common";
 export interface Piece {
   op: BooleanKind;
   spec: PrimitiveSpec;
+  /** The boolean merges the faces it leaves on one surface: a pad flush with a rim leaves one top face. */
+  merge?: true;
 }
 
 /** The kinds that expand. A plain `boolean` is a piece of one. */
@@ -334,10 +336,17 @@ export interface ExpandContext {
   face(index: number, coplanar?: boolean): { plane: Workplane; extent: FaceExtent } | { reason: string };
   /** The flat face a selector names: {normal, withinDeg, nearPoint}. Read when the op expands, so faces earlier steps made count. */
   faceBy(selector: Record<string, unknown>): number | { reason: string };
+  /** Rays through the part's surface, for a pocket's wall check. Absent when the context has no mesh. */
+  rays?(): Rays;
 }
 
-function boxIn(plane: Workplane, origin: Vec3, size: Vec3): PrimitiveSpec {
-  return planePrimitive({ primitive: "box", origin, size, radius: 0, height: 0, turn: [0, 0, 0] }, plane);
+/** The first surface a ray meets, how far along, and whether the ray leaves the part there (it started inside). */
+export interface Rays {
+  first(from: Vec3, dir: Vec3, far: number): { distance: number; leaving: boolean } | null;
+}
+
+function boxIn(plane: Workplane, origin: Vec3, size: Vec3, cornerRadius = 0): PrimitiveSpec {
+  return planePrimitive({ primitive: "box", origin, size, radius: 0, height: 0, turn: [0, 0, 0], ...(cornerRadius > 0 ? { cornerRadius } : {}) }, plane);
 }
 
 function cylinderIn(plane: Workplane, base: Vec3, radius: number, height: number): PrimitiveSpec {
@@ -375,10 +384,16 @@ function pocketPieces(spec: Record<string, unknown>, ctx: ExpandContext, raised:
   const tall = raised ? depth + BOSS_SINK : depth + CUT_PAST;
   const op: BooleanKind = raised ? "fuse" : "cut";
   const pieces: Piece[] = [];
+  const cornerRadius = numOr(spec.cornerRadius, 0);
+  if (spec.cornerRadius !== undefined && (!(cornerRadius >= 0) || shape !== "rect")) {
+    return { reason: shape === "rect" ? "A corner radius is 0 or more." : "Only a rect pocket or boss takes a corner radius." };
+  }
+  let outline: Outline;
   if (shape === "circle") {
     const diameter = numOr(spec.diameter, 0);
     if (!(diameter > 0)) return { reason: "A circle needs a diameter." };
-    pieces.push({ op, spec: cylinderIn(plane, [u, v, low], diameter / 2, tall) });
+    pieces.push({ op, spec: cylinderIn(plane, [u, v, low], diameter / 2, tall), merge: true });
+    outline = { kind: "circle", u, v, r: diameter / 2 };
   } else {
     const width = numOr(spec.width, 0);
     const height = numOr(spec.height, 0);
@@ -387,11 +402,19 @@ function pocketPieces(spec: Record<string, unknown>, ctx: ExpandContext, raised:
       const r = width / 2;
       if (height < r) return { reason: "An arch must be at least half its width tall." };
       const straight = height - r;
-      if (straight > 0) pieces.push({ op, spec: boxIn(plane, [u - r, v - height / 2, low], [width, straight, tall]) });
-      pieces.push({ op, spec: cylinderIn(plane, [u, v - height / 2 + straight, low], r, tall) });
+      if (straight > 0) pieces.push({ op, spec: boxIn(plane, [u - r, v - height / 2, low], [width, straight, tall]), merge: true });
+      pieces.push({ op, spec: cylinderIn(plane, [u, v - height / 2 + straight, low], r, tall), merge: true });
+      outline = { kind: "arch", u, v, w: width, h: height };
     } else {
-      pieces.push({ op, spec: boxIn(plane, [u - width / 2, v - height / 2, low], [width, height, tall]) });
+      const most = Math.min(width, height) / 2;
+      if (cornerRadius > most + 1e-9) return { reason: `A corner radius is at most half the shorter side, ${roundTo(most)} mm.` };
+      pieces.push({ op, spec: boxIn(plane, [u - width / 2, v - height / 2, low], [width, height, tall], Math.min(cornerRadius, most)), merge: true });
+      outline = { kind: "rect", u, v, w: width, h: height, r: Math.min(cornerRadius, most) };
     }
+  }
+  if (!raised && frame.extent && ctx.rays) {
+    const broken = pocketWall(outline, depth, plane, frame.extent, ctx.rays());
+    if (broken) return { reason: broken };
   }
   const bars = spec.bars as Record<string, unknown> | undefined;
   if (bars && !raised) {
@@ -402,14 +425,154 @@ function pocketPieces(spec: Record<string, unknown>, ctx: ExpandContext, raised:
     const height = shape === "circle" ? numOr(spec.diameter, 0) : numOr(spec.height, 0);
     for (let i = 1; i <= across; i += 1) {
       const bu = u - width / 2 + (width * i) / (across + 1);
-      pieces.push({ op: "fuse", spec: boxIn(plane, [bu - barWidth / 2, v - height / 2, -depth], [barWidth, height, depth]) });
+      pieces.push({ op: "fuse", spec: boxIn(plane, [bu - barWidth / 2, v - height / 2, -depth], [barWidth, height, depth]), merge: true });
     }
     for (let i = 1; i <= along; i += 1) {
       const bv = v - height / 2 + (height * i) / (along + 1);
-      pieces.push({ op: "fuse", spec: boxIn(plane, [u - width / 2, bv - barWidth / 2, -depth], [width, barWidth, depth]) });
+      pieces.push({ op: "fuse", spec: boxIn(plane, [u - width / 2, bv - barWidth / 2, -depth], [width, barWidth, depth]), merge: true });
     }
   }
   return pieces;
+}
+
+const roundTo = (n: number, places = 2) => Math.round(n * 10 ** places) / 10 ** places;
+
+/** A pocket's outline on its face, in U, V: a rect with corners of radius `r`, a circle, or an arch. */
+type Outline =
+  | { kind: "rect"; u: number; v: number; w: number; h: number; r: number }
+  | { kind: "circle"; u: number; v: number; r: number }
+  | { kind: "arch"; u: number; v: number; w: number; h: number };
+
+/** Points about a millimetre apart around an outline, each with its outward normal in U, V; `corner` marks a rect's corners. */
+function outlinePoints(outline: Outline): { at: [number, number]; out: [number, number]; corner: boolean }[] {
+  const points: { at: [number, number]; out: [number, number]; corner: boolean }[] = [];
+  const line = (a: [number, number], b: [number, number], out: [number, number]) => {
+    const steps = Math.min(120, Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]))));
+    for (let i = 1; i < steps; i += 1) points.push({ at: [a[0] + ((b[0] - a[0]) * i) / steps, a[1] + ((b[1] - a[1]) * i) / steps], out, corner: false });
+  };
+  const arc = (cu: number, cv: number, r: number, fromDeg: number, sweepDeg: number, corner: boolean) => {
+    const steps = Math.max(2, Math.ceil(Math.abs(sweepDeg) / 10));
+    for (let i = 0; i <= steps; i += 1) {
+      const a = ((fromDeg + (sweepDeg * i) / steps) * Math.PI) / 180;
+      points.push({ at: [cu + r * Math.cos(a), cv + r * Math.sin(a)], out: [Math.cos(a), Math.sin(a)], corner });
+    }
+  };
+  if (outline.kind === "circle") {
+    arc(outline.u, outline.v, outline.r, 0, 360, false);
+    return points;
+  }
+  const { u, v, w, h } = outline;
+  const [u0, u1, v0] = [u - w / 2, u + w / 2, v - h / 2];
+  if (outline.kind === "arch") {
+    const r = w / 2;
+    const top = v0 + h - r;
+    line([u0, v0], [u1, v0], [0, -1]);
+    line([u1, v0], [u1, top], [1, 0]);
+    arc(u, top, r, 0, 180, false);
+    line([u0, top], [u0, v0], [-1, 0]);
+    const s = Math.SQRT1_2;
+    points.push({ at: [u0, v0], out: [-s, -s], corner: true }, { at: [u1, v0], out: [s, -s], corner: true });
+    return points;
+  }
+  const v1 = v + h / 2;
+  const r = outline.r;
+  line([u0 + r, v0], [u1 - r, v0], [0, -1]);
+  line([u1, v0 + r], [u1, v1 - r], [1, 0]);
+  line([u1 - r, v1], [u0 + r, v1], [0, 1]);
+  line([u0, v1 - r], [u0, v0 + r], [-1, 0]);
+  const centres: [number, number, number][] = [[u1 - r, v0 + r, -90], [u1 - r, v1 - r, 0], [u0 + r, v1 - r, 90], [u0 + r, v0 + r, 180]];
+  for (const [cu, cv, from] of centres) {
+    if (r > 0) arc(cu, cv, r, from, 90, true);
+    else {
+      const a = ((from + 45) * Math.PI) / 180;
+      points.push({ at: [cu, cv], out: [Math.cos(a), Math.sin(a)], corner: true });
+    }
+  }
+  return points;
+}
+
+/** A wall thinner than this is a sliver: the pocket has broken through. */
+const SLIVER_MM = 0.05;
+/** The wall check's side rays, either side of straight out. */
+const FAN_RAD = (3 * Math.PI) / 180;
+
+/**
+ * Whether a pocket wholly inside its face's extent breaks through the part's side: from points around its outline at
+ * several depths, a ray straight out says how thick the wall left is, or that the point is already outside the part
+ * with nothing beyond it. The sentence names where it breaks, the thinnest wall it leaves elsewhere, and, for a rect,
+ * the corner radius that keeps it inside. Null when the wall holds, or when the pocket runs past the face on purpose.
+ */
+function pocketWall(outline: Outline, depth: number, plane: Workplane, extent: FaceExtent, rays: Rays): string | null {
+  const [lowU, highU, lowV, highV] = outline.kind === "circle"
+    ? [outline.u - outline.r, outline.u + outline.r, outline.v - outline.r, outline.v + outline.r]
+    : [outline.u - outline.w / 2, outline.u + outline.w / 2, outline.v - outline.h / 2, outline.v + outline.h / 2];
+  const inset = SLIVER_MM;
+  if (lowU < extent.u[0] + inset || highU > extent.u[1] - inset || lowV < extent.v[0] + inset || highV > extent.v[1] - inset) return null;
+  const pose = framePose(plane);
+  const turn = (d: Vec3): Vec3 => {
+    const m = pose.m;
+    const x = m[0] * d[0] + m[1] * d[1] + m[2] * d[2];
+    const y = m[3] * d[0] + m[4] * d[1] + m[5] * d[2];
+    const z = m[6] * d[0] + m[7] * d[1] + m[8] * d[2];
+    const len = Math.hypot(x, y, z) || 1;
+    return [x / len, y / len, z / len];
+  };
+  const levels = [0.05, 0.3, 0.55, 0.8, 0.97].map((f) => -depth * f);
+  const probe = (shape: Outline) => {
+    let breaks: { at: Vec3; corner: boolean } | null = null;
+    let thinnest = Infinity;
+    const sides: number[] = [];
+    for (const point of outlinePoints(shape)) {
+      // Three rays a few degrees apart, so one that runs exactly along an edge of the mesh and slips between its
+      // triangles does not read as open air.
+      const dirs = [0, FAN_RAD, -FAN_RAD].map((a) => {
+        const [c, d] = [Math.cos(a), Math.sin(a)];
+        return turn([point.out[0] * c - point.out[1] * d, point.out[0] * d + point.out[1] * c, 0]);
+      });
+      for (const w of levels) {
+        const at = planePoint(plane, [point.at[0], point.at[1], w]);
+        const hits = dirs.map((dir) => rays.first(at, dir, Infinity));
+        // Inside, a ray leaves the part through the wall. Outside with nothing beyond, every ray meets nothing;
+        // outside in a void or a notch of the part, they meet the part again, which is the pocket joining it.
+        const leaving = hits.flatMap((hit) => (hit?.leaving ? [hit.distance] : []));
+        const wall = leaving.length > 0 ? Math.min(...leaving) : null;
+        if (wall !== null && wall >= SLIVER_MM) {
+          thinnest = Math.min(thinnest, wall);
+          if (!point.corner) sides.push(wall);
+          continue;
+        }
+        if (wall !== null || hits.every((hit) => !hit)) {
+          if (!breaks || (point.corner && !breaks.corner)) breaks = { at, corner: point.corner };
+        }
+      }
+    }
+    return { breaks, thinnest, sides };
+  };
+  const found = probe(outline);
+  if (!found.breaks) return null;
+  const where = found.breaks.at.map((value) => roundTo(value)).join(", ");
+  const wall = Number.isFinite(found.thinnest) ? ` The thinnest wall it leaves elsewhere is ${roundTo(found.thinnest)} mm.` : "";
+  let fix = " Make it smaller or move it in.";
+  if (outline.kind === "rect") {
+    // The wall most of its sides leave: a corner radius that leaves that much at the corners too is the one to give.
+    const sides = [...found.sides].sort((a, b) => a - b);
+    const typical = sides.length > 0 ? sides[Math.floor(sides.length / 2)]! : 0;
+    const most = Math.min(outline.w, outline.h) / 2;
+    let inside: number | null = null;
+    for (let r = Math.ceil((outline.r + 0.25) * 4) / 4; r <= most + 1e-9; r += 0.25) {
+      const tried = probe({ ...outline, r });
+      if (tried.breaks) continue;
+      inside ??= r;
+      if (typical > 0 && tried.thinnest >= typical - 0.1) {
+        fix = ` A cornerRadius of ${roundTo(r)} mm keeps the wall ${roundTo(typical)} mm thick all round${inside < r ? `; ${roundTo(inside)} mm only just keeps it inside` : ""}.`;
+        inside = null;
+        break;
+      }
+    }
+    if (inside !== null) fix = ` A cornerRadius of ${roundTo(inside)} mm keeps it inside.`;
+  }
+  const what = found.breaks.corner ? (outline.kind === "rect" && outline.r > 0 ? "a rounded corner" : "a sharp corner") : "its side";
+  return `This pocket breaks through the wall of the part near (${where}): ${what} reaches the outside.${wall}${fix}`;
 }
 
 /**
@@ -801,7 +964,7 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
       for (const piece of pieces) {
         const moved = isStill(motion) ? piece.spec : movedSpec(piece.spec, motion);
         if ("reason" in moved) return moved;
-        out.push({ op: piece.op, spec: moved });
+        out.push({ ...piece, spec: moved });
         if (out.length > MAX_PIECES) return { reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller edits.` };
       }
     }

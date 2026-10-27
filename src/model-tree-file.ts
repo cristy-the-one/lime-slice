@@ -10,7 +10,7 @@ import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
-import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type EdgePick, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
 
 type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
@@ -295,7 +295,8 @@ function readOpBody(value: unknown): SavedOp | undefined {
     case "boolean": {
       if (value.op !== "fuse" && value.op !== "cut" && value.op !== "common") return undefined;
       const tool = readPrimitive(value);
-      return tool ? { kind: "boolean", op: value.op, ...tool } : undefined;
+      if (value.merge !== undefined && typeof value.merge !== "boolean") return undefined;
+      return tool ? { kind: "boolean", op: value.op, ...tool, ...(value.merge === true ? { merge: true } : {}) } : undefined;
     }
     case "hole": {
       const axis = value.axis === undefined ? [0, 0, 0] as Vec3 : vec(value.axis);
@@ -338,9 +339,22 @@ function readOpBody(value: unknown): SavedOp | undefined {
         }
         const mid = isRecord(raw) ? vec(raw.mid) : null;
         if (!isRecord(raw) || !isId(raw.index) || !mid || !finite(raw.lengthMm)) return undefined;
-        edges.push({ index: raw.index, mid, lengthMm: raw.lengthMm });
+        const sig = readEdgeSig(raw.sig);
+        if (sig === null) return undefined;
+        edges.push({ index: raw.index, mid, lengthMm: raw.lengthMm, ...(sig ? { sig } : {}) });
       }
-      return { kind: value.kind, edges, size: value.size };
+      if (value.kind === "fillet") return { kind: "fillet", edges, size: value.size };
+      // A chamfer by two sizes: the second distance or the angle, and which face takes the first. Absent when equal.
+      const { size2, angleDeg, flip } = value;
+      if ((size2 !== undefined && !finite(size2)) || (angleDeg !== undefined && !finite(angleDeg)) || (flip !== undefined && typeof flip !== "boolean")) return undefined;
+      return {
+        kind: "chamfer",
+        edges,
+        size: value.size,
+        ...(size2 !== undefined ? { size2 } : {}),
+        ...(angleDeg !== undefined ? { angleDeg } : {}),
+        ...(flip === true ? { flip: true } : {}),
+      };
     }
     case "scale":
       return finite(value.factor) ? { kind: "scale", factor: value.factor } : undefined;
@@ -561,7 +575,7 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
   const height = value.height === undefined ? 0 : value.height;
   if (!origin || !size || !turn || !finite(radius) || !finite(height)) return undefined;
   const spec: PrimitiveSpec = { primitive: value.primitive, origin, size, radius, height, turn };
-  for (const key of ["topRadius", "tubeRadius", "innerRadius", "topX", "sides", "across"] as const) {
+  for (const key of ["topRadius", "tubeRadius", "innerRadius", "topX", "sides", "across", "cornerRadius"] as const) {
     const raw = value[key];
     if (raw === undefined) continue;
     if (!finite(raw)) return undefined;
@@ -572,6 +586,16 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
     spec.flats = value.flats;
   }
   return spec;
+}
+
+/** An edge's stored signature: undefined when there is none (an edge stored before them), null when it is malformed. */
+function readEdgeSig(value: unknown): EdgeSig | undefined | null {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || !isId(value.curve) || !Array.isArray(value.kinds) || value.kinds.length !== 2 || !value.kinds.every(isId)) return null;
+  const dir = vec(value.dir);
+  const normals = Array.isArray(value.normals) && value.normals.length === 2 ? value.normals.map(vec) : null;
+  if (!dir || !normals || normals.some((normal) => !normal)) return null;
+  return { curve: value.curve as number, dir, kinds: [value.kinds[0] as number, value.kinds[1] as number], normals: [normals[0]!, normals[1]!] };
 }
 
 function readFingerprint(value: unknown): Fingerprint | undefined {
