@@ -9,7 +9,7 @@ import { boundsOf, type Mat3 } from "./mesh-place.ts";
 import { clampTilt, formatMm, splitBase, tiltedNormal, tiltOf, type FacePlane, type SplitBase } from "./model-plane.ts";
 import { applyPose, fromSolidOp, toSolidOp, turnDir, type Affine } from "./model-space.ts";
 import type { ModelOp, PartitionModelOp, Vec3 } from "./model-tree.ts";
-import { connectorNames, defaultsFor, fillPartition, fitPrinter, notBuiltYet, placeCut, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
+import { connectorNames, defaultsFor, fillPartition, fitPrinter, mm, NO_FIT_SENTENCE, notBuiltYet, placeCut, profileRefusals, type Profile, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
 import { sectionLoops } from "./section-cap.ts";
 import { storedOrient, type OrientChoice } from "./modeling/joint-down.ts";
 
@@ -42,6 +42,8 @@ export interface CardCut {
   flip: boolean;
   /** Connectors on this cut: off is a plain cut. `spec` holds what was typed; an absent size is the planner's default. */
   joints: CardJoints;
+  /** This cut's profile: straight, or a lap or a tongue with the sizes typed; an absent size is the planner's default (plan section 6). */
+  profile: Profile;
 }
 
 /** One cut's connectors as the card edits them (D4: the first panel edits one type a cut). */
@@ -50,8 +52,8 @@ export interface CardJoints {
   spec: ConnectorSpec;
 }
 
-/** The connector types the card offers; key and dovetail wait for milestone 9. */
-export type CardJointType = "dowel" | "plug" | "hardware";
+/** The connector types the card offers. */
+export type CardJointType = "dowel" | "plug" | "hardware" | "key" | "dovetail";
 
 export interface Card {
   cuts: CardCut[];
@@ -132,7 +134,7 @@ export function cutFromPlane(origin: Vec3, normal: Vec3, center: Vec3, frame: Ca
   const flip = dot(axes[axis], n) < 0;
   if (flip) n = [-n[0], -n[1], -n[2]];
   const [tiltA, tiltB] = tiltOf(axes[axis], n).map(tidy) as [number, number];
-  const row: CardCut = { mode: AXES[axis]!, value: 0, tiltA, tiltB, face: null, flip, joints: plainJoints() };
+  const row: CardCut = { mode: AXES[axis]!, value: 0, tiltA, tiltB, face: null, flip, joints: plainJoints(), profile: { kind: "straight" } };
   const base = cutBase(row, center, frame)!;
   return { ...row, value: tidy(dot(sub(origin, base.base), n) / dot(base.dir, n)) };
 }
@@ -186,7 +188,7 @@ export function withCutAdded(card: Card, box: Box, center: Vec3, frame: CardFram
   return { ...card, cuts: [...card.cuts, cut], selected: card.cuts.length, edited: true };
 }
 
-const BLANK: CardCut = { mode: "x", value: 0, tiltA: 0, tiltB: 0, face: null, flip: false, joints: plainJoints() };
+const BLANK: CardCut = { mode: "x", value: 0, tiltA: 0, tiltB: 0, face: null, flip: false, joints: plainJoints(), profile: { kind: "straight" } };
 
 /** Connectors off, a dowel waiting for the switch (section 2's first type). */
 export function plainJoints(): CardJoints {
@@ -250,7 +252,7 @@ export function withCutChanged(card: Card, index: number, patch: Partial<CardCut
  */
 export function withCutMode(card: Card, index: number, mode: CutMode, box: Box, center: Vec3, frame: CardFrame | null = null, face: FacePlane | null = null): Card {
   if (!card.cuts[index]) return card;
-  const row: CardCut = { ...BLANK, mode, face: mode === "face" ? face : null, joints: card.cuts[index]!.joints };
+  const row: CardCut = { ...BLANK, mode, face: mode === "face" ? face : null, joints: card.cuts[index]!.joints, profile: card.cuts[index]!.profile };
   const base = cutBase(row, center, frame);
   if (!base) return withCutChanged(card, index, row);
   const span = spanOf(box, base);
@@ -278,7 +280,8 @@ export function cardOp(card: Card, center: Vec3, frame: CardFrame | null, sizes:
   return {
     cuts: planes.map((plane, at) => {
       const joints = card.cuts[at]!.joints;
-      return { origin: plane!.origin, normal: plane!.normal, ...(joints.on ? { connectors: { on: true, types: [{ ...joints.spec }] } } : {}) };
+      const profile = card.cuts[at]!.profile;
+      return { origin: plane!.origin, normal: plane!.normal, ...(profile.kind !== "straight" ? { profile } : {}), ...(joints.on ? { connectors: { on: true, types: [{ ...joints.spec }] } } : {}) };
     }),
     ...(card.target ? { target: card.target } : {}),
     arrange: card.layout,
@@ -294,9 +297,35 @@ export function cardOp(card: Card, center: Vec3, frame: CardFrame | null, sizes:
  */
 export function cardFromOp(op: PartitionModelOp, pose: Affine, center: Vec3, frame: CardFrame | null = null, plate: string | null = null): Card {
   const shown = fromSolidOp(op, pose) as PartitionModelOp;
-  const cuts = shown.cuts.map((cut) => ({ ...cutFromPlane(cut.origin, cut.normal, center, frame), joints: jointsOf(cut.connectors) }));
+  const cuts = shown.cuts.map((cut) => ({ ...cutFromPlane(cut.origin, cut.normal, center, frame), joints: jointsOf(cut.connectors), profile: profileOf(cut.profile) }));
   const target = shown.target && shown.target.printer !== plate ? { ...shown.target } : null;
   return { cuts, selected: cuts.length > 0 ? 0 : -1, layout: shown.arrange !== false, target, numbers: shown.labels?.on === true, orient: shown.orient === undefined || shown.orient === "keep" ? [] : shown.orient.map((one) => (one === "joint" ? "joint" : "keep")), edited: true };
+}
+
+/** A stored cut's profile back in the card: the kind and the sizes the planner stored; the planner's own fields are dropped. */
+function profileOf(stored: Profile | undefined): Profile {
+  if (!stored || stored.kind === "straight") return { kind: "straight" };
+  if (stored.kind === "lap") return { kind: "lap", ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.height !== undefined ? { height: stored.height } : {}), ...(stored.side ? { side: stored.side } : {}) };
+  if (stored.kind === "tongue") return { kind: "tongue", ...(stored.width !== undefined ? { width: stored.width } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.side ? { side: stored.side } : {}) };
+  if (stored.kind === "zigzag") return { kind: "zigzag", ...(stored.pitch !== undefined ? { pitch: stored.pitch } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.angle !== undefined ? { angle: stored.angle } : {}), ...(stored.side ? { side: stored.side } : {}) };
+  if (stored.kind === "dovetail") return { kind: "dovetail", ...(stored.width !== undefined ? { width: stored.width } : {}), ...(stored.angle !== undefined ? { angle: stored.angle } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.slide ? { slide: stored.slide } : {}), ...(stored.side ? { side: stored.side } : {}) };
+  return { kind: "straight" };
+}
+
+/** The cut's profile menu: a new kind starts from the planner's defaults; Straight drops what was typed. */
+export function withProfileKind(card: Card, index: number, kind: "straight" | "lap" | "zigzag" | "tongue" | "dovetail"): Card {
+  const cut = card.cuts[index];
+  if (!cut || cut.profile.kind === kind) return card;
+  return withCutChanged(card, index, { profile: { kind } as Profile });
+}
+
+/** One typed profile size merged in; `undefined` puts that size back to its default. */
+export function withProfileField(card: Card, index: number, patch: Partial<Record<string, unknown>>): Card {
+  const cut = card.cuts[index];
+  if (!cut || cut.profile.kind === "straight") return card;
+  const next = { ...cut.profile, ...patch } as Record<string, unknown>;
+  for (const key of Object.keys(patch)) if (patch[key] === undefined) delete next[key];
+  return withCutChanged(card, index, { profile: next as unknown as Profile });
 }
 
 /** A stored cut's connectors back in the card: its first type as stored, every size typed. */
@@ -431,7 +460,7 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
       origin: [...cut.origin],
       normal: [...cut.normal],
       u: [...cut.u],
-      profile: { kind: "straight" },
+      profile: cut.profile as Profile,
       connectors: cut.connectors.on ? { on: true, types: cut.connectors.types.map((spec) => structuredClone(spec)) } : { on: false },
     })),
     target: filled.target,
@@ -443,6 +472,46 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
   };
   const own = toSolidOp(typed, pose) as PartitionModelOp;
   const placement: Placement = { notes: [], fits: [], marks: [], dropped: [] };
+  // --- Milestone 8. A lap or a tongue is sized on the section the solid has at its cut: the planner's numbers are
+  // millimetres from the cut's origin along its own U and V, so a replay builds the same joint.
+  const shapedFloor = defaultsFor(filled.target, ctx);
+  for (const [at, cut] of own.cuts.entries()) {
+    const resolved = filled.cuts[at]!.profile;
+    if (resolved.kind === "straight" || resolved.kind === "sketch") continue;
+    const section = solid ? sectionLoops(solid.positions, cut.origin, cut.normal, cut.u!) : null;
+    if (!section) return { reason: `Cut ${at + 1}: the plane misses the part, so there is no section for its ${resolved.kind}.` };
+    const box = outlineBox(section);
+    const refusals = profileRefusals(resolved as unknown as Profile, shapedFloor, box.v1 - box.v0);
+    if (refusals.length > 0) return { reason: `Cut ${at + 1}: ${refusals[0]}` };
+    if (resolved.kind === "lap") {
+      const height = resolved.height ?? (box.v1 - box.v0) / 2;
+      cut.profile = { kind: "lap", depth: resolved.depth, height, side: resolved.side, at: box.v0 + height } as unknown as typeof cut.profile;
+      continue;
+    }
+    if (resolved.kind === "zigzag") {
+      cut.profile = { kind: "zigzag", pitch: resolved.pitch, depth: resolved.depth, angle: resolved.angle, side: resolved.side, u0: box.u0 } as unknown as typeof cut.profile;
+      continue;
+    }
+    const typedFit = filled.cuts[at]!.connectors.types[0];
+    const clearance = typedFit && typedFit.clearance !== null ? typedFit.clearance : shapedFloor.clearance?.snug;
+    if (clearance === undefined || clearance === null) return { reason: `Cut ${at + 1}: ${NO_FIT_SENTENCE}` };
+    if (resolved.kind === "dovetail") {
+      // The dovetail runs the whole section along its slide; across it, it sits in the middle with its walls.
+      const along = resolved.slide === "v" ? [box.v0, box.v1] : [box.u0, box.u1];
+      const over = resolved.slide === "v" ? [box.u0, box.u1] : [box.v0, box.v1];
+      const room = (over[1]! - over[0]!) - resolved.width - 2 * (clearance + shapedFloor.wallFloorMm);
+      if (room < 0) return { reason: `Cut ${at + 1}: the section is too small for a dovetail ${mm(resolved.width)} mm wide with ${mm(shapedFloor.wallFloorMm)} mm walls. Make it narrower, or cut straight.` };
+      cut.profile = { kind: "dovetail", width: resolved.width, angle: resolved.angle, depth: resolved.depth, slide: resolved.slide, side: resolved.side, clearance, endGap: shapedFloor.endGapMm, u0: along[0]!, u1: along[1]!, v: (over[0]! + over[1]!) / 2 } as unknown as typeof cut.profile;
+      continue;
+    }
+    const margin = Math.max(shapedFloor.marginMm, resolved.width / 2 + clearance + shapedFloor.wallFloorMm);
+    const [u0, u1] = [box.u0 + margin, box.u1 - margin];
+    const middle = (box.v0 + box.v1) / 2;
+    if (u1 - u0 < resolved.width || middle - resolved.width / 2 - clearance - shapedFloor.wallFloorMm < box.v0 || middle + resolved.width / 2 + clearance + shapedFloor.wallFloorMm > box.v1) {
+      return { reason: `Cut ${at + 1}: the section is too small for a tongue ${mm(resolved.width)} mm wide with ${mm(shapedFloor.wallFloorMm)} mm walls. Make it narrower, or cut straight.` };
+    }
+    cut.profile = { kind: "tongue", width: resolved.width, depth: resolved.depth, side: resolved.side, clearance, endGap: shapedFloor.endGapMm, u0, u1, v: middle } as unknown as typeof cut.profile;
+  }
   if (!jointed) return { op: own, ...placement };
   const floor = defaultsFor(filled.target, ctx).wallFloorMm;
   const cuts = own.cuts.map((cut, at) => {
@@ -470,7 +539,14 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
   return { op: { ...own, cuts, up: solid?.up ?? [0, 0, 1] }, ...placement };
 }
 
-export const NEEDS_CUTS = "A partition needs at least one cut. model_probe with plan: true proposes them.";
+/** The box a section's outline spans in the cut's own U and V, from its origin: where a lap's step and a tongue sit. */
+function outlineBox(section: { outer: readonly (readonly [number, number])[] }): { u0: number; u1: number; v0: number; v1: number } {
+  const us = section.outer.map((p) => p[0]);
+  const vs = section.outer.map((p) => p[1]);
+  return { u0: Math.min(...us), u1: Math.max(...us), v0: Math.min(...vs), v1: Math.max(...vs) };
+}
+
+export const NEEDS_CUTS ="A partition needs at least one cut. model_probe with plan: true proposes them.";
 
 /**
  * --- 3b, D12. A split to print for a printer this app does not slice for (a resin target): its pieces stay in Model,

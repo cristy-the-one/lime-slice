@@ -594,8 +594,11 @@ pub enum PrintProcess {
 }
 
 const PARTITION_PROFILE_LATER: &str =
-    "Only straight cuts are built yet. Leave the profile out, or make it straight.";
-const PARTITION_KEYS_LATER: &str = "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.";
+    "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.";
+const PARTITION_SHAPED_JOINTS: &str = "Connectors on a shaped cut are not built yet. Turn them off, or cut straight.";
+/// The numbers a cut's profile gives the kernel (`kProfileStride` in kernel.h): its kind, eight sizes, and the cut's U.
+const PROFILE_STRIDE: usize = 14;
+
 
 /// The planner's Max pieces (`clampPieces` in `src/modeling/partition.ts`): 12 when absent, from 2 to 24.
 fn partition_max(max_pieces: Option<f64>) -> usize {
@@ -606,35 +609,103 @@ fn partition_max(max_pieces: Option<f64>) -> usize {
     wanted.clamp(2.0, 24.0) as usize
 }
 
-/// Why this milestone does not build a partition, before anything is cut: a shaped profile, or a key or a dovetail
-/// connector. Each is a sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced
+/// Why this milestone does not build a partition, before anything is cut: a sketch profile, or connectors on a shaped cut. Each is a sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced
 /// (D12).
 fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
-    let straight = |profile: &Value| {
-        profile.is_null() || profile.get("kind").and_then(Value::as_str) == Some("straight")
+    let kind = |profile: &Value| {
+        profile
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("straight")
+            .to_string()
     };
-    if !cuts.iter().all(|cut| straight(&cut.profile)) {
+    if !cuts
+        .iter()
+        .all(|cut| matches!(
+                kind(&cut.profile).as_str(),
+                "straight" | "lap" | "tongue" | "zigzag" | "dovetail"
+            ))
+    {
         return Some(PARTITION_PROFILE_LATER);
     }
-    let later = |cut: &PartitionCut| {
-        connectors_on(cut)
-            && cut
-                .connectors
-                .get("types")
-                .and_then(Value::as_array)
-                .is_some_and(|types| {
-                    types.iter().any(|spec| {
-                        matches!(
-                            spec.get("type").and_then(Value::as_str),
-                            Some("key" | "dovetail")
-                        )
-                    })
-                })
-    };
-    if cuts.iter().any(later) {
-        return Some(PARTITION_KEYS_LATER);
+    if cuts
+        .iter()
+        .any(|cut| kind(&cut.profile) != "straight" && connectors_on(cut))
+    {
+        return Some(PARTITION_SHAPED_JOINTS);
     }
     None
+}
+
+/// Each cut's profile as the kernel reads it. A lap: depth, carried to the side that has it (side, positive by
+/// default), and at, where the step sits along V from the cut's origin. A tongue: width, depth, clearance, endGap,
+/// side, its ends along U (u0, u1) and its middle along V (v). The planner fills every one from the section at Apply,
+/// so a replay builds the same joint.
+fn profile_numbers(cuts: &[PartitionCut]) -> Result<Vec<[f64; PROFILE_STRIDE]>, String> {
+    cuts.iter()
+        .enumerate()
+        .map(|(at, cut)| {
+            let mut out = [0.0; PROFILE_STRIDE];
+            let number = |field: &str| {
+                cut.profile.get(field).and_then(Value::as_f64).ok_or_else(|| {
+                    format!("Cut {}'s profile needs {field}, a number. Apply it from the planner.", at + 1)
+                })
+            };
+            let side = if cut.profile.get("side").and_then(Value::as_str) == Some("negative") {
+                -1.0
+            } else {
+                1.0
+            };
+            match cut.profile.get("kind").and_then(Value::as_str).unwrap_or("straight") {
+                "lap" => {
+                    out[0] = 1.0;
+                    out[1] = side * number("depth")?;
+                    out[2] = number("at")?;
+                }
+                "tongue" => {
+                    out[0] = 2.0;
+                    out[1] = number("width")?;
+                    out[2] = number("depth")?;
+                    out[3] = number("clearance")?;
+                    out[4] = number("endGap")?;
+                    out[5] = side;
+                    out[6] = number("u0")?;
+                    out[7] = number("u1")?;
+                    out[8] = number("v")?;
+                }
+                "dovetail" => {
+                    out[0] = 4.0;
+                    out[1] = number("width")?;
+                    out[2] = number("depth")?;
+                    out[3] = number("clearance")?;
+                    out[4] = number("endGap")?;
+                    out[5] = side;
+                    out[6] = number("u0")?;
+                    out[7] = number("u1")?;
+                    out[8] = number("v")?;
+                    out[9] = number("angle")?;
+                    out[10] = if cut.profile.get("slide").and_then(Value::as_str) == Some("v") {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                }
+                "zigzag" => {
+                    out[0] = 3.0;
+                    out[1] = side * number("depth")?;
+                    out[2] = number("pitch")?;
+                    out[3] = number("angle")?;
+                    out[4] = number("u0")?;
+                }
+                _ => {}
+            }
+            let [ux, uy, uz] = cut.u.unwrap_or([0.0; 3]);
+            out[11] = ux;
+            out[12] = uy;
+            out[13] = uz;
+            Ok(out)
+        })
+        .collect()
 }
 
 fn connectors_on(cut: &PartitionCut) -> bool {
@@ -646,7 +717,7 @@ fn connectors_on(cut: &PartitionCut) -> bool {
 // the ones that build (D6). ---
 
 /// The numbers `lime_tree_partition` reads for one connector (`kJointStride` in kernel.h).
-const JOINT_STRIDE: usize = 11;
+const JOINT_STRIDE: usize = 14;
 
 /// One placed connector of a stored op: the cut it is on, counting from 0, its id `c{cut}-{index}`, its type, and the
 /// numbers the kernel builds it from.
@@ -664,6 +735,8 @@ fn joint_kind(kind: &str) -> Option<(&'static str, &'static str, f64)> {
         "dowel" => Some(("dowel", "dowels", 0.0)),
         "plug" => Some(("plug", "plugs", 1.0)),
         "hardware" => Some(("hardware hole", "hardware holes", 2.0)),
+        "key" => Some(("key", "keys", 3.0)),
+        "dovetail" => Some(("dovetail", "dovetails", 4.0)),
         _ => None,
     }
 }
@@ -692,7 +765,7 @@ fn stored_joints(cuts: &[PartitionCut]) -> Result<Vec<Joint>, String> {
         for (order, row) in placed.iter().enumerate() {
             let kind = row.get("type").and_then(Value::as_str).unwrap_or("dowel");
             let Some((name, _, code)) = joint_kind(kind) else {
-                return Err(PARTITION_KEYS_LATER.into());
+                return Err(format!("Cut {}: a placed connector is a {kind}, which is not a connector type.", at + 1));
             };
             let Some(spec) = types
                 .iter()
@@ -725,10 +798,11 @@ fn stored_joints(cuts: &[PartitionCut]) -> Result<Vec<Joint>, String> {
                     return Err(format!("Connector {id} needs a fraction or uvMm."));
                 }
             };
-            let radius = if kind == "hardware" {
-                number(spec, "diameter").map(|diameter| diameter / 2.0)
-            } else {
-                number(spec, "radius")
+            // A key and a dovetail send their width as the radius slot, and a key its height as well.
+            let radius = match kind {
+                "hardware" => number(spec, "diameter").map(|diameter| diameter / 2.0),
+                "key" | "dovetail" => number(spec, "width"),
+                _ => number(spec, "radius"),
             };
             let (Some(radius), Some(depth)) = (radius, number(spec, "depth")) else {
                 return Err(format!("Connector {id} needs its size and its depth."));
@@ -760,6 +834,13 @@ fn stored_joints(cuts: &[PartitionCut]) -> Result<Vec<Joint>, String> {
                     end_gap,
                     f64::from(u8::from(teardrop)),
                     side,
+                    number(spec, "height").unwrap_or(0.0),
+                    number(spec, "angle").unwrap_or(0.0),
+                    if spec.get("slide").and_then(Value::as_str) == Some("v") {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 ],
             });
         }
@@ -972,6 +1053,7 @@ pub fn partition_primitive(
         us: vec![[0.0; 3]; planes.len()],
         joints: Vec::new(),
         up: [0.0, 0.0, 1.0],
+        profiles: vec![[0.0; PROFILE_STRIDE]; planes.len()],
     };
     Ok(whole
         .partition(planes, None, &plain)?
@@ -4388,6 +4470,8 @@ struct JointCut {
     us: Vec<[f64; 3]>,
     joints: Vec<Joint>,
     up: [f64; 3],
+    /// Each cut's profile as `PROFILE_STRIDE` numbers (`kProfileStride` in kernel.h).
+    profiles: Vec<[f64; PROFILE_STRIDE]>,
 }
 
 /// --- Split to print. What the kernel cut: the pieces in partition order, where each number went, the pins, and what
@@ -4786,6 +4870,7 @@ fn build(
                 us: cuts.iter().map(|cut| cut.u.unwrap_or([0.0; 3])).collect(),
                 joints,
                 up: up.unwrap_or([0.0, 0.0, 1.0]),
+                profiles: profile_numbers(cuts).map_err(BuildFail::plain)?,
             };
             let partitioned = from
                 .partition(&planes, labels.as_ref(), &cut)
@@ -5215,6 +5300,8 @@ extern "C" {
         joints: *const f64,
         joint_count: c_int,
         up: *const f64,
+        profiles: *const f64,
+        profile_count: c_int,
         out: *mut *mut RawShape,
         placed: *mut *mut c_char,
         pins: *mut *mut RawShape,
@@ -5798,6 +5885,8 @@ impl Shape {
         if us.len() != flat.len() / 2 {
             return Err("Each cut needs its U".into());
         }
+        let profiles: Vec<f64> = cut.profiles.iter().flatten().copied().collect();
+        let profile_count = c_int::try_from(cut.profiles.len()).map_err(|_| "Too many cuts".to_string())?;
         let joints: Vec<f64> = cut
             .joints
             .iter()
@@ -5837,6 +5926,8 @@ impl Shape {
                 joints.as_ptr(),
                 joint_count,
                 cut.up.as_ptr(),
+                profiles.as_ptr(),
+                profile_count,
                 out.as_mut_ptr(),
                 &mut placed,
                 &mut pins,

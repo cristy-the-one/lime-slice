@@ -371,8 +371,6 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const resinRound = ((resinApplied.connectors as { placed?: { teardrop: boolean }[] } | undefined)?.placed ?? []).every((row) => row.teardrop === false);
   check("a resin hole stays round", resinRound, JSON.stringify(resinApplied.connectors));
   console.log(`occt: the bar for the Form 4, STEP products ${products.join(", ")}`);
-  const keyed = await call("model_probe", { object: resin, op: { ...resinOp, cuts: (resinOp.cuts as Record<string, unknown>[]).map((cut) => ({ ...cut, connectors: { on: true, types: [{ type: "key" }] } })) } });
-  check("a key is refused with its sentence", keyed.ok === false && keyed.reason === "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.", JSON.stringify(keyed));
 }
 
 // --- Split to print, milestone 6: the fit coupon through solid_new, against real Open CASCADE. The plate and its pin are
@@ -468,6 +466,81 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   await call("model_undo", { object: bar });
   const left = ((await call("plate_list", { limit: 100 })).objects as { object: string }[]).filter((row) => [bar, ...pieces].includes(row.object));
   check("model_undo takes the pieces off the plate", left.length === 1 && left[0]!.object === bar, JSON.stringify(left));
+}
+
+// --- Split to print, milestone 8: a lap and a tongue on the real kernel, with Joint down on the shaped cut. The 500 mm bar
+// is centred on X and Y with its base on Z = 0, so a cut at x = 0 has U along Y, V along Z, and a 20 mm section.
+{
+  const volumeOf = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);
+  const cutOp = (profile: Record<string, unknown>, orient: unknown = "keep") => ({ kind: "partition", cuts: [{ origin: [0, 0, 10], normal: [1, 0, 0], profile }], orient, labels: { on: false } });
+  const whole = 500 * 20 * 20;
+  // A lap 8 mm deep with its step half way up the section (height 10 of 20 mm): the positive piece carries it.
+  const lapBar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 20, dz: 20 })).object);
+  const lapOp = cutOp({ kind: "lap", depth: 8, height: 10 }, ["keep", "joint"]);
+  const probed = await call("model_probe", { object: lapBar, op: lapOp });
+  const volumes = ((probed.pieces ?? []) as { volumeMm3: number }[]).map((piece) => piece.volumeMm3);
+  const step = 8 * 20 * 10;
+  check("a lap's probe: the pieces are half the bar, one carrying the step, and they sum to the bar", probed.ok === true && volumes.length === 2 && near(volumes[0]!, whole / 2 + step, 1e-3) && near(volumes[1]!, whole / 2 - step, 1e-3) && near(volumes[0]! + volumes[1]!, whole, 1e-3), JSON.stringify(probed).slice(0, 300));
+  const applied = await call("model_apply", { object: lapBar, op: lapOp });
+  const stored = (applied.stored as { cuts: { profile: Record<string, unknown> }[] }).cuts[0]!.profile;
+  check("apply stores the lap with its step resolved on the section: 10 mm up from the low side, at 0 from the cut's origin", applied.ok === true && stored.kind === "lap" && stored.height === 10 && stored.at === 0 && stored.depth === 8, JSON.stringify(stored));
+  check("and says which flat is down", JSON.stringify(applied.notes) === JSON.stringify(["Part 2 is joint down on cut 1, its larger cut face, 200 mm²."]), JSON.stringify(applied.notes));
+  const lapPieces = (applied.pieces ?? []) as string[];
+  const first = await volumeOf(lapBar);
+  const second = await volumeOf(lapPieces[0]!);
+  check("the part and its piece are the two halves by volume", near(first, whole / 2 + step, 1e-3) && near(second, whole / 2 - step, 1e-3), JSON.stringify({ first, second }));
+  await call("model_commit", { object: lapBar });
+  const listed = (await call("plate_list", { limit: 100 })).objects as { object: string; bboxMm: { min: number[]; max: number[] } }[];
+  const lapSaved = JSON.parse(readFileSync(String((await call("project_save", { name: "lap.lime" })).path), "utf8")) as { objects: { placement: { orient: number[] } }[] };
+  const m = lapSaved.objects[listed.findIndex((row) => row.object === lapPieces[0])]!.placement.orient;
+  const faces = ((await call("faces_find", { object: lapPieces[0]!, kind: "plane", normal: [-1, 0, 0], withinDeg: 1, limit: 20 })).faces ?? []) as { normal: number[]; centre: number[]; areaMm2: number }[];
+  const flat = faces.find((face) => Math.abs(face.centre[0]!) < 1e-6)!;
+  const down = [0, 1, 2].map((r) => m[3 * r]! * flat.normal[0]! + m[3 * r + 1]! * flat.normal[1]! + m[3 * r + 2]! * flat.normal[2]!);
+  check("Joint down on the lap: the flat on the cut plane has its normal along −Z to 1e-9", !!flat && near(flat.areaMm2, 200, 1e-6) && Math.abs(down[0]!) < 1e-9 && Math.abs(down[1]!) < 1e-9 && Math.abs(down[2]! + 1) < 1e-9, JSON.stringify({ down, flat, m }));
+  const piece = listed.find((row) => row.object === lapPieces[0])!;
+  check("and the piece stands on the bed", Math.abs(piece.bboxMm.min[2]!) < 1e-4, JSON.stringify(piece.bboxMm));
+  console.log(`occt: lap pieces ${volumes.map((v) => v.toFixed(3)).join(", ")} mm³`);
+
+  // A tongue 6 mm wide and 3 mm deep: its groove is grown by the PLA clearance (0.15) and the 0.4 mm end gap.
+  const tongueBar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 30, dz: 20 })).object);
+  const tongueOp = cutOp({ kind: "tongue", width: 6, depth: 3 });
+  const tongueProbe = await call("model_probe", { object: tongueBar, op: tongueOp });
+  const tv = ((tongueProbe.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  const base = 500 * 30 * 20;
+  // The section is 30 × 20; margin 3.95, so the tongue is 30 − 7.9 = 22.1 mm long.
+  const peg = 6 * 3 * 22.1;
+  const groove = (6 + 0.3) * (3 + 0.4) * (22.1 + 0.3);
+  check("a tongue's probe: one piece grows by the tongue, the other loses the grown groove", tongueProbe.ok === true && tv.length === 2 && near(tv[1]!, base / 2 + peg, 6e-3) && near(tv[0]!, base / 2 - groove, 6e-3), JSON.stringify({ tv, expected: [base / 2 - groove, base / 2 + peg], reason: tongueProbe.reason }));
+  const refused = await call("model_probe", { object: tongueBar, op: { ...tongueOp, cuts: [{ ...(tongueOp.cuts[0] as Record<string, unknown>), connectors: { on: true, types: [{ type: "dowel" }] } }] } });
+  check("connectors on a shaped cut are refused with the sentence", refused.ok === false && refused.reason === "Connectors on a shaped cut are not built yet. Turn them off, or cut straight.", JSON.stringify(refused));
+  const thin = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "tongue", width: 40, depth: 3 }) });
+  check("a tongue wider than the section is refused with a sentence", thin.ok === false && String(thin.reason).includes("too small for a tongue"), JSON.stringify(thin));
+  console.log(`occt: tongue pieces ${tv.map((v) => v.toFixed(3)).join(", ")} mm³`);
+
+  // --- Milestone 9: a zig-zag, a dovetail profile, and the key and dovetail connectors, on the same 500 × 30 × 20 mm bar.
+  const zig = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "zigzag", pitch: 10, depth: 3, angle: 0 }) });
+  const zv = ((zig.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  const teeth = 3 * 5 * 3 * 20;
+  check("a zig-zag's probe: three teeth of 5 × 3 × 20 mm go to one piece, and the volumes sum to the bar", zig.ok === true && zv.length === 2 && near(zv[0]!, base / 2 + teeth, 6e-3) && near(zv[1]!, base / 2 - teeth, 6e-3), JSON.stringify({ zv, reason: zig.reason }));
+  const lean = Math.tan((20 * Math.PI) / 180);
+  const root = 4 - 3 * lean;
+  const grow = 0.15 / Math.cos((20 * Math.PI) / 180);
+  const peg2 = 30 * ((2 * root + 8) / 2) * 3;
+  const groove2 = 30 * (2 * (root + grow) * 3.4 + lean * 3.4 * 3.4);
+  const dove = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "dovetail", width: 8, angle: 20, depth: 3 }) });
+  const dv = ((dove.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  check("a dovetail profile's probe: the neck and wide end by hand, and its groove grown by the clearance", dove.ok === true && near(dv[1]!, base / 2 + peg2, 6e-3) && near(dv[0]!, base / 2 - groove2, 6e-3), JSON.stringify({ dv, expected: [base / 2 - groove2, base / 2 + peg2], reason: dove.reason }));
+  const sketchRefused = await call("model_probe", { object: tongueBar, op: cutOp({ kind: "sketch", sketch: { v: 1 } }) });
+  check("a sketch is still refused with the sentence", sketchRefused.ok === false && sketchRefused.reason === "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.", JSON.stringify(sketchRefused));
+  const keyOp = (type: string) => ({ kind: "partition", cuts: [{ origin: [0, 0, 10], normal: [1, 0, 0], connectors: { on: true, types: [{ type }] } }], labels: { on: false } });
+  const keyed = await call("model_probe", { object: tongueBar, op: keyOp("key") });
+  const placedKeys = ((keyed.connectors as { placed?: unknown[] } | undefined)?.placed ?? []).length;
+  const kv = ((keyed.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  check("a key connector: each placed key adds 6 × 6 × 3 mm to one piece and takes its grown groove from the other", keyed.ok === true && placedKeys >= 1 && near(kv[1]!, base / 2 + placedKeys * 108, 6e-3) && near(kv[0]!, base / 2 - placedKeys * 6.3 * 6.3 * 3.4, 6e-3), JSON.stringify({ kv, placedKeys, reason: keyed.reason }));
+  const doveJoint = await call("model_probe", { object: tongueBar, op: keyOp("dovetail") });
+  const placedDove = ((doveJoint.connectors as { placed?: unknown[] } | undefined)?.placed ?? []).length;
+  check("a dovetail connector is placed too, the same sentence for one left out", doveJoint.ok === true && placedDove >= 1, JSON.stringify({ placedDove, reason: doveJoint.reason }));
+  console.log(`occt: zig-zag ${zv.map((v) => v.toFixed(3)).join(", ")}, dovetail ${dv.map((v) => v.toFixed(3)).join(", ")}, ${placedKeys} keys ${kv.map((v) => v.toFixed(3)).join(", ")} mm³`);
 }
 
 // The convex filter on a box (12 convex edges) and on a stepped part with one concave edge.

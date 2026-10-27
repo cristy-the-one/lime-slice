@@ -8,11 +8,11 @@ import type { DragHandle } from "../model-drag";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { Params } from "../modeling/expr.ts";
 import { formatMm, type FacePlane, type SplitBase, type SplitPlan } from "../model-plane";
-import { clearanceSentence, fillConnector, holeCompensationNote, mm, type Box, type ConnectorSpec, type PartitionDefaults, type PartitionOp, type Target } from "../modeling/partition.ts";
+import { clearanceSentence, fillConnector, holeCompensationNote, mm, profileRefusals, SHAPED_JOINTS_LATER, type Box, type ConnectorSpec, type PartitionDefaults, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
-import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointsOn, withJointType, withSelected, type Card, type CardCut, type CardFrame, type CardJointType, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print";
+import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, withProfileField, withProfileKind, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointsOn, withJointType, withSelected, type Card, type CardCut, type CardFrame, type CardJointType, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print";
 import { closeModelCard, fieldNumber, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { pushToast } from "./toasts";
 
@@ -157,14 +157,36 @@ export function mountSplitPrint(next: SplitPrintHost) {
         <label data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelPartTiltB" type="number" step="1" min="-85" max="85" value="0" aria-label="Tilt B, degrees"></label>
       </div>
     </section>
+    <section class="sp-profile" id="modelPartProfile" aria-label="Profile">
+      <label class="sp-print"><span class="scrub-label">Profile</span><select id="modelPartProfileKind" aria-label="Cut profile">
+        <option value="straight">Straight</option><option value="lap">Lap</option><option value="zigzag">Zig-zag</option><option value="tongue">Tongue</option><option value="dovetail">Dovetail</option>
+      </select></label>
+      <div class="model-fields" id="modelPartProfileFields" hidden>
+        <label data-profile-for="zigzag"><span class="scrub-label" data-scrub>Pitch</span><input id="modelPartProfilePitch" type="number" step="0.5" min="0" aria-label="Zig-zag pitch, along U, millimetres"></label>
+        <label data-profile-for="tongue dovetail"><span class="scrub-label" data-scrub>Width</span><input id="modelPartProfileWidth" type="number" step="0.5" min="0" aria-label="Tongue width, along V, millimetres"></label>
+        <label data-profile-for="lap zigzag tongue dovetail"><span class="scrub-label" data-scrub>Depth</span><input id="modelPartProfileDepth" type="number" step="0.5" min="0" aria-label="Depth, along W, millimetres"></label>
+        <label data-profile-for="zigzag dovetail"><span class="scrub-label" data-scrub>Angle</span><input id="modelPartProfileAngle" type="number" step="1" min="0" max="60" aria-label="Flank angle from the normal, degrees"></label>
+        <label data-profile-for="lap"><span class="scrub-label" data-scrub>Height</span><input id="modelPartProfileHeight" type="number" step="0.5" min="0" placeholder="Half" aria-label="Lap height, from the section's low side, millimetres"></label>
+      </div>
+      <label class="sp-print" id="modelPartProfileSlideRow" hidden><span class="scrub-label">Slide</span><select id="modelPartProfileSlide" aria-label="Which way the dovetail slides">
+        <option value="u">Along U</option><option value="v">Along V</option>
+      </select></label>
+      <label class="sp-print" id="modelPartProfileSideRow" hidden><span class="scrub-label">Side</span><select id="modelPartProfileSide" aria-label="Which piece carries the overlap">
+        <option value="positive">Positive</option><option value="negative">Negative</option>
+      </select></label>
+      <p class="model-note" id="modelPartProfileNote" role="status" hidden></p>
+    </section>
     <section class="sp-joints" id="modelPartJoints" aria-label="Connectors">
       <label class="model-keep" data-tip="Dowels, plugs or holes on this cut. Off is a plain cut."><input id="modelPartJointsOn" type="checkbox"> Connectors</label>
       <div class="sp-joint-fields" id="modelPartJointFields" hidden>
         <label class="sp-print"><span class="scrub-label">Type</span><select id="modelPartJointType" aria-label="Connector type">
-          <option value="dowel">Dowel</option><option value="plug">Plug</option><option value="hardware">Hardware hole</option>
+          <option value="dowel">Dowel</option><option value="plug">Plug</option><option value="hardware">Hardware hole</option><option value="key">Key</option><option value="dovetail">Dovetail</option>
         </select></label>
         <div class="model-fields">
           <label data-joint-for="round"><span class="scrub-label" data-scrub>Radius</span><input id="modelPartJointRadius" type="number" step="0.1" min="0" aria-label="Radius, millimetres"></label>
+          <label data-joint-for="key dovetail"><span class="scrub-label" data-scrub>Width</span><input id="modelPartJointWidth" type="number" step="0.5" min="0" aria-label="Width, millimetres"></label>
+          <label data-joint-for="key"><span class="scrub-label" data-scrub>Height</span><input id="modelPartJointHeight" type="number" step="0.5" min="0" aria-label="Height, along V, millimetres"></label>
+          <label data-joint-for="dovetail"><span class="scrub-label" data-scrub>Angle</span><input id="modelPartJointAngle" type="number" step="1" min="0" max="60" aria-label="Flank angle, degrees"></label>
           <label data-joint-for="hardware"><span class="scrub-label" data-scrub>Diameter</span><input id="modelPartJointDiameter" type="number" step="0.1" min="0" aria-label="Diameter, millimetres"></label>
           <label><span class="scrub-label" data-scrub>Depth</span><input id="modelPartJointDepth" type="number" step="0.5" min="0" aria-label="Depth, along the cut, millimetres"></label>
           <label><span class="scrub-label">Count</span><input id="modelPartJointCount" type="text" inputmode="numeric" placeholder="Fit" aria-label="Count, Fit or a number"></label>
@@ -182,6 +204,9 @@ export function mountSplitPrint(next: SplitPrintHost) {
         <p class="model-note" id="modelPartCouponNote" role="status" hidden></p>
         <label class="sp-print" data-joint-for="round"><span class="scrub-label">Hole shape</span><select id="modelPartJointHole" aria-label="Hole shape">
           <option value="round">Round</option><option value="teardrop">Teardrop</option>
+        </select></label>
+        <label class="sp-print" data-joint-for="dovetail"><span class="scrub-label">Slide</span><select id="modelPartJointSlide" aria-label="Which way the dovetail slides">
+          <option value="u">Along U</option><option value="v">Along V</option>
         </select></label>
         <label class="sp-print" data-joint-for="plug"><span class="scrub-label">Plug side</span><select id="modelPartJointSide" aria-label="Plug side">
           <option value="positive">Positive</option><option value="negative">Negative</option>
@@ -316,6 +341,7 @@ export function setSplitPrintCheck(next: SplitPrintCheck) {
   paintFoot();
   // The kernel's verdict on the connectors: its sentences, and the ghost keeps only the ones it built.
   if (card.cuts.some((cut) => cut.joints.on) && splitPrintOpen()) {
+    paintProfile();
     paintJoints();
     refreshModelCard();
   }
@@ -445,6 +471,7 @@ function changed(wait: number | null) {
   placement = typed && card.cuts.some((cut) => cut.joints.on) ? host?.connectors(typed) ?? null : null;
   paintRows();
   paintPlane();
+  paintProfile();
   paintJoints();
   paintFit();
   refreshModelCard();
@@ -550,6 +577,55 @@ function paintPlane() {
   }
 }
 
+/** The selected cut's Profile: the menu, and for a lap or a tongue its sizes with the planner's defaults showing. */
+function paintProfile() {
+  const section = $<HTMLElement>("#modelPartProfile");
+  const cut = card.cuts[card.selected];
+  if (section) section.hidden = !cut;
+  if (!cut) return;
+  const kind = ["lap", "zigzag", "tongue", "dovetail"].includes(cut.profile.kind) ? (cut.profile.kind as "lap" | "zigzag" | "tongue" | "dovetail") : "straight";
+  const put = (id: string, value: string) => {
+    const input = $<HTMLInputElement | HTMLSelectElement>(id);
+    if (input && document.activeElement !== input && !(input as HTMLInputElement).dataset?.expr) input.value = value;
+  };
+  put("#modelPartProfileKind", kind);
+  const fields = $<HTMLElement>("#modelPartProfileFields");
+  if (fields) fields.hidden = kind === "straight";
+  const side = $<HTMLElement>("#modelPartProfileSideRow");
+  if (side) side.hidden = kind === "straight";
+  const slideRow = $<HTMLElement>("#modelPartProfileSlideRow");
+  if (slideRow) slideRow.hidden = kind !== "dovetail";
+  const note = $<HTMLElement>("#modelPartProfileNote");
+  if (kind === "straight") {
+    if (note) note.hidden = true;
+    return;
+  }
+  root()?.querySelectorAll<HTMLElement>("#modelPartProfileFields [data-profile-for]").forEach((row) => {
+    row.hidden = !(row.dataset.profileFor ?? "").split(" ").includes(kind);
+  });
+  const d = host?.defaults(card.target) ?? null;
+  const typed = cut.profile as { depth?: number; height?: number; width?: number; pitch?: number; angle?: number; slide?: string; side?: string };
+  const shown = (id: string, value: number | undefined, fallback: number | undefined) => {
+    const input = $<HTMLInputElement>(id);
+    if (!input) return;
+    if (document.activeElement !== input) input.value = value === undefined ? "" : mm(value);
+    if (fallback !== undefined && id !== "#modelPartProfileHeight") input.placeholder = mm(fallback);
+  };
+  shown("#modelPartProfileDepth", typed.depth, kind === "lap" ? d?.lapDepthMm : kind === "zigzag" ? d?.zigzagDepthMm : kind === "dovetail" ? d?.dovetailDepthMm : d?.tongueDepthMm);
+  shown("#modelPartProfilePitch", typed.pitch, d?.zigzagPitchMm);
+  shown("#modelPartProfileAngle", typed.angle, kind === "dovetail" ? d?.dovetailAngleDeg : d?.zigzagAngleDeg);
+  put("#modelPartProfileSlide", typed.slide === "v" ? "v" : "u");
+  shown("#modelPartProfileHeight", typed.height, undefined);
+  shown("#modelPartProfileWidth", typed.width, kind === "dovetail" ? d?.dovetailWidthMm : d?.tongueWidthMm);
+  put("#modelPartProfileSide", typed.side === "negative" ? "negative" : "positive");
+  const sentences = d ? profileRefusals(cut.profile, d) : [];
+  const joints = cut.joints.on ? [SHAPED_JOINTS_LATER] : [];
+  if (note) {
+    note.textContent = [...sentences, ...joints].join(" ");
+    note.hidden = sentences.length + joints.length === 0;
+  }
+}
+
 /** The selected cut's Connectors: the switch, and with it on every field filled from the planner's defaults. */
 function paintJoints() {
   const section = $<HTMLElement>("#modelPartJoints");
@@ -568,8 +644,8 @@ function paintJoints() {
   const filled = fillConnector(spec, d);
   const round = filled.type === "dowel" || filled.type === "plug";
   root()?.querySelectorAll<HTMLElement>("#modelPartJointFields [data-joint-for]").forEach((row) => {
-    const kind = row.dataset.jointFor;
-    row.hidden = kind === "round" ? !round : kind !== filled.type;
+    const kinds = (row.dataset.jointFor ?? "").split(" ");
+    row.hidden = kinds.includes("round") ? !round : !kinds.includes(filled.type);
   });
   const put = (id: string, value: string) => {
     const input = $<HTMLInputElement | HTMLSelectElement>(id);
@@ -581,6 +657,12 @@ function paintJoints() {
     put("#modelPartJointHole", filled.hole);
   }
   if (filled.type === "hardware") put("#modelPartJointDiameter", mm(filled.diameter));
+  if (filled.type === "key" || filled.type === "dovetail") put("#modelPartJointWidth", mm(filled.width));
+  if (filled.type === "key") put("#modelPartJointHeight", mm(filled.height));
+  if (filled.type === "dovetail") {
+    put("#modelPartJointAngle", mm(filled.angle));
+    put("#modelPartJointSlide", filled.slide);
+  }
   if (filled.type === "plug") put("#modelPartJointSide", filled.side);
   if ("depth" in filled) put("#modelPartJointDepth", mm(filled.depth));
   if ("endGap" in filled) put("#modelPartJointGap", mm(filled.endGap));
@@ -961,6 +1043,17 @@ function readField(ev: Event): boolean {
     else return false;
     return true;
   }
+  const profileField = PROFILE_FIELDS[input.id];
+  if (profileField) {
+    if (input.value.trim() === "") {
+      card = withProfileField(card, card.selected, { [profileField]: undefined });
+      return true;
+    }
+    const typed = fieldNumber(input.id);
+    if (!Number.isFinite(typed) || typed < 0) return false;
+    card = withProfileField(card, card.selected, { [profileField]: typed });
+    return true;
+  }
   const jointField = JOINT_FIELDS[input.id];
   if (jointField) {
     if (input.value.trim() === "") {
@@ -992,9 +1085,20 @@ function onInput(ev: Event) {
 }
 
 /** The connector fields that are a number, and the spec field each writes. */
+const PROFILE_FIELDS: Record<string, string> = {
+  modelPartProfileDepth: "depth",
+  modelPartProfileHeight: "height",
+  modelPartProfileWidth: "width",
+  modelPartProfilePitch: "pitch",
+  modelPartProfileAngle: "angle",
+};
+
 const JOINT_FIELDS: Record<string, string> = {
   modelPartJointRadius: "radius",
   modelPartJointDiameter: "diameter",
+  modelPartJointWidth: "width",
+  modelPartJointHeight: "height",
+  modelPartJointAngle: "angle",
   modelPartJointDepth: "depth",
   modelPartJointMargin: "margin",
   modelPartJointGap: "endGap",
@@ -1016,6 +1120,9 @@ function setJointMenu(select: HTMLSelectElement): boolean {
       card = withJointField(card, at, { clearance: select.value === "typed" ? typed : select.value });
       return true;
     }
+    case "modelPartJointSlide":
+      card = withJointField(card, at, { slide: select.value });
+      return true;
     case "modelPartJointHole":
       card = withJointField(card, at, { hole: select.value });
       return true;
@@ -1038,6 +1145,21 @@ function onChange(ev: Event) {
     while (orient.length <= at) orient.push("keep");
     orient[at] = ev.target.value === "joint" ? "joint" : "keep";
     card = { ...card, orient };
+    changed(0);
+    return;
+  }
+  if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartProfileKind") {
+    card = withProfileKind(card, card.selected, ev.target.value as "straight" | "lap" | "zigzag" | "tongue" | "dovetail");
+    changed(0);
+    return;
+  }
+  if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartProfileSlide") {
+    card = withProfileField(card, card.selected, { slide: ev.target.value });
+    changed(0);
+    return;
+  }
+  if (ev.target instanceof HTMLSelectElement && ev.target.id === "modelPartProfileSide") {
+    card = withProfileField(card, card.selected, { side: ev.target.value });
     changed(0);
     return;
   }

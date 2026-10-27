@@ -47,8 +47,8 @@ export type ConnectorSpec =
   | ({ type: "dowel" } & RoundSpec)
   | ({ type: "plug"; side?: Side } & RoundSpec)
   | ({ type: "hardware"; diameter?: number; depth?: number; clearance?: ClearanceInput | null; endGap?: number } & Spread)
-  | ({ type: "key"; width?: number; height?: number; depth?: number; clearance?: ClearanceInput | null } & Spread)
-  | ({ type: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide; clearance?: ClearanceInput | null } & Spread);
+  | ({ type: "key"; width?: number; height?: number; depth?: number; clearance?: ClearanceInput | null; endGap?: number } & Spread)
+  | ({ type: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide; clearance?: ClearanceInput | null; endGap?: number } & Spread);
 
 export type ConnectorType = ConnectorSpec["type"];
 
@@ -71,24 +71,24 @@ export type ResolvedConnector =
   | ({ type: "dowel" } & ResolvedRound)
   | ({ type: "plug"; side: Side } & ResolvedRound)
   | ({ type: "hardware"; diameter: number; depth: number; clearance: number | null; endGap: number } & ResolvedSpread)
-  | ({ type: "key"; width: number; height: number; depth: number; clearance: number | null } & ResolvedSpread)
-  | ({ type: "dovetail"; width: number; angle: number; depth: number; slide: Slide; clearance: number | null } & ResolvedSpread);
+  | ({ type: "key"; width: number; height: number; depth: number; clearance: number | null; endGap: number } & ResolvedSpread)
+  | ({ type: "dovetail"; width: number; angle: number; depth: number; slide: Slide; clearance: number | null; endGap: number } & ResolvedSpread);
 
 export type Profile =
   | { kind: "straight" }
   | { kind: "lap"; depth?: number; height?: number; side?: Side }
-  | { kind: "zigzag"; pitch?: number; depth?: number; angle?: number }
-  | { kind: "tongue"; width?: number; depth?: number }
-  | { kind: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide }
+  | { kind: "zigzag"; pitch?: number; depth?: number; angle?: number; side?: Side }
+  | { kind: "tongue"; width?: number; depth?: number; side?: Side }
+  | { kind: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide; side?: Side }
   | { kind: "sketch"; sketch: { v: number } };
 
 /** `height: null` is half the section along V, known once the section is. */
 export type ResolvedProfile =
   | { kind: "straight" }
   | { kind: "lap"; depth: number; height: number | null; side: Side }
-  | { kind: "zigzag"; pitch: number; depth: number; angle: number }
-  | { kind: "tongue"; width: number; depth: number }
-  | { kind: "dovetail"; width: number; angle: number; depth: number; slide: Slide }
+  | { kind: "zigzag"; pitch: number; depth: number; angle: number; side: Side }
+  | { kind: "tongue"; width: number; depth: number; side: Side }
+  | { kind: "dovetail"; width: number; angle: number; depth: number; slide: Slide; side: Side }
   | { kind: "sketch"; sketch: { v: number } };
 
 export interface Cut {
@@ -386,6 +386,7 @@ export function fillConnector(spec: ConnectorSpec, d: PartitionDefaults): Resolv
         height,
         depth: spec.depth ?? d.tongueDepthMm,
         clearance,
+        endGap: spec.endGap ?? d.endGapMm,
         ...spread(spec, Math.hypot(width, height) / 2, clearance, d),
       };
     }
@@ -398,6 +399,7 @@ export function fillConnector(spec: ConnectorSpec, d: PartitionDefaults): Resolv
         depth: spec.depth ?? d.dovetailDepthMm,
         slide: spec.slide ?? "u",
         clearance,
+        endGap: spec.endGap ?? d.endGapMm,
         ...spread(spec, width / 2, clearance, d),
       };
     }
@@ -418,9 +420,9 @@ export function fillProfile(profile: Profile | undefined, d: PartitionDefaults, 
         side: p.side ?? "positive",
       };
     case "zigzag":
-      return { kind: "zigzag", pitch: p.pitch ?? d.zigzagPitchMm, depth: p.depth ?? d.zigzagDepthMm, angle: p.angle ?? d.zigzagAngleDeg };
+      return { kind: "zigzag", pitch: p.pitch ?? d.zigzagPitchMm, depth: p.depth ?? d.zigzagDepthMm, angle: p.angle ?? d.zigzagAngleDeg, side: p.side ?? "positive" };
     case "tongue":
-      return { kind: "tongue", width: p.width ?? d.tongueWidthMm, depth: p.depth ?? d.tongueDepthMm };
+      return { kind: "tongue", width: p.width ?? d.tongueWidthMm, depth: p.depth ?? d.tongueDepthMm, side: p.side ?? "positive" };
     case "dovetail":
       return {
         kind: "dovetail",
@@ -428,6 +430,7 @@ export function fillProfile(profile: Profile | undefined, d: PartitionDefaults, 
         angle: p.angle ?? d.dovetailAngleDeg,
         depth: p.depth ?? d.dovetailDepthMm,
         slide: p.slide ?? "u",
+        side: p.side ?? "positive",
       };
   }
 }
@@ -713,17 +716,16 @@ function resinHeightNotes(span: Vec3, counts: number[], usable: number[], axes: 
 // What the kernel builds yet (milestone 5). The same sentences as `partition_refusal` in tree.rs.
 // ---------------------------------------------------------------------------
 
-export const PROFILE_LATER = "Only straight cuts are built yet. Leave the profile out, or make it straight.";
-/** Keys and dovetails come with the zig-zag and dovetail profiles (milestone 9), which share their prism builder. */
-export const KEYS_LATER = "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.";
+export const PROFILE_LATER = "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.";
+/** Connectors on a shaped cut wait: they would sit on the flats of the joint, not on one plane. */
+export const SHAPED_JOINTS_LATER = "Connectors on a shaped cut are not built yet. Turn them off, or cut straight.";
 
 /**
- * Why the kernel does not cut this op yet, before anything is built: a shaped profile, or a key or a dovetail on a cut
- * whose connectors are on. Dowels, plugs and hardware holes are built since milestone 5.
+ * Why the kernel does not cut this op yet, before anything is built: a sketch profile, or connectors on a shaped cut.
  */
 export function notBuiltYet(op: Pick<PartitionOp, "cuts">): string | null {
-  if (op.cuts.some((cut) => cut.profile && cut.profile.kind !== "straight")) return PROFILE_LATER;
-  if (op.cuts.some((cut) => cut.connectors?.on === true && (cut.connectors.types ?? []).some((spec) => spec.type === "key" || spec.type === "dovetail"))) return KEYS_LATER;
+  if (op.cuts.some((cut) => cut.profile && !["straight", "lap", "tongue", "zigzag", "dovetail"].includes(cut.profile.kind))) return PROFILE_LATER;
+  if (op.cuts.some((cut) => cut.profile && cut.profile.kind !== "straight" && cut.connectors?.on === true)) return SHAPED_JOINTS_LATER;
   return null;
 }
 

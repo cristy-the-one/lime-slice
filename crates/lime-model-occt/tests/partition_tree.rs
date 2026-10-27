@@ -10,8 +10,7 @@ use std::f64::consts::PI;
 use serde_json::{json, Value};
 
 const PROFILE_LATER: &str =
-    "Only straight cuts are built yet. Leave the profile out, or make it straight.";
-const KEYS_LATER: &str = "Key and dovetail connectors are not built yet. They come with the zig-zag and dovetail profiles. Use a dowel, a plug, or a hardware hole.";
+    "Only straight, lap, tongue, zig-zag and dovetail profiles are built yet. Leave the profile out, or use one of them.";
 
 fn call(request: Value) -> Value {
     let text = lime_model_occt::tree(&request.to_string());
@@ -347,17 +346,9 @@ fn refusals_leave_the_solid_as_it_was() {
         let probe = call(json!({ "call": "probe", "key": "bar", "node": 0, "op": op }));
         assert_eq!(probe, json!({ "ok": false, "error": sentence }));
     };
-    let mut lap = partition(&[30.0]);
-    lap["cuts"][0]["profile"] = json!({ "kind": "lap", "depth": 8.0 });
-    refused(lap, PROFILE_LATER);
     let mut sketch = partition(&[30.0]);
     sketch["cuts"][0]["profile"] = json!({ "kind": "sketch", "sketch": { "v": 1 } });
     refused(sketch, PROFILE_LATER);
-    for kind in ["key", "dovetail"] {
-        let mut keyed = partition(&[30.0]);
-        keyed["cuts"][0]["connectors"] = json!({ "on": true, "types": [{ "type": kind }] });
-        refused(keyed, KEYS_LATER);
-    }
     let mut three = partition(&[10.0, 20.0, 30.0]);
     three["maxPieces"] = json!(3.0);
     refused(three, "This cut makes 4 pieces. Max pieces is 3.");
