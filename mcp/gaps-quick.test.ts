@@ -71,6 +71,12 @@ async function groupSource(name: string): Promise<Record<string, unknown> | unde
 const source = await groupSource("anchor.lime");
 check("a boss applied through the server is saved with from: box", source?.from === "box", JSON.stringify(source));
 
+// Item 9. The ops guide says where a turned boolean pivots.
+const guided = await new Session(fakeEngine()).call("guide", { topic: "ops" });
+const guideText = String(guided.text ?? "");
+check("the ops guide says a turn pivots about the primitive's own centre and origin is the min corner before it", /turn pivots about the primitive's own centre, not about origin: origin is the min corner/.test(guideText));
+check("the ops guide describes from: box", guideText.includes('from:"box"'));
+
 if (failed > 0) {
   console.error(`gaps-quick: ${failed} failed`);
   process.exit(1);

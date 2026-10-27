@@ -90,6 +90,7 @@ GUIDES.push(
       "  box: dx, dy, dz; origin is its min corner before turning. cylinder, cone, tube, polygon: radius, height along local Z; origin is the base centre before turning.",
       "  centre is the point it turns about (a box's middle, halfway up an axis), so a turned shape is easiest placed by centre.",
       "  A turn moves the base: a cylinder at origin [0, 0, 0], height 10, turn [0, 90, 0] runs from [-5, 0, 5] to [5, 0, 5]. The reply's axis says where a turned one went.",
+      "  turn pivots about the primitive's own centre, not about origin: origin is the min corner (box) or base centre before the turn, and the turn then swings it.",
       "  turn is degrees about X, then Y, then Z. A cylinder lying along Y: turn [90, 0, 0]. A 45 degree roof prism along X: box turn [45, 0, 0].",
       "  Example roof: {kind:\"boolean\", op:\"fuse\", primitive:\"box\", centre:[0, 0, 35], dx:60, dy:33.94, dz:33.94, turn:[45, 0, 0]}.",
       "extrude: {kind:\"extrude\", op:\"fuse\"|\"cut\"|\"common\", profile:[[u, v], ...], depth, symmetric, depth2, draftDeg, upTo} on the workplane, or on face/faceIndex with from:\"corner\" for U, V = 0 at its min corner.",
