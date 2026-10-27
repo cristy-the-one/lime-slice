@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { syncBedGrid } from "./bed-grid";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { orbitGlide } from "./orbit-glide";
 import type { StressCells } from "./sim/stress-cells";
 import { featureColor, OTHER_COLOR, SAFETY_RAMP, SAFETY_RANGE, SPEED_RAMP, SPEED_RANGE_MM_S, STRESS_RAMP, WEIGHT_RAMP, type ColorMode, type Ramp } from "./colors";
 import { buildCutPlane, disposeTree, previewFrame, splitDragAt } from "./cut-plane";
@@ -148,6 +149,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
+  const glide = orbitGlide(controls, camera);
   controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
   controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
   controls.touches.ONE = THREE.TOUCH.ROTATE;
@@ -301,7 +303,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   }
   function frame() {
     frameQueued = false;
-    const moved = controls.update();
+    const moved = glide(performance.now());
     // An orbit draws at device pixel ratio 1 from its first move until the camera settles, then once sharp.
     const low = moved ? held || lowRes : held && lowRes;
     if (low !== lowRes) {

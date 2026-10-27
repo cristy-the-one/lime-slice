@@ -178,3 +178,4 @@ src/measure-snap.test.ts
 src/bed-rest.test.ts
 mcp/settle.test.ts
 src/viewport-grab.test.ts
+src/orbit-glide.test.ts
