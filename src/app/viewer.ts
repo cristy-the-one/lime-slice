@@ -1,3 +1,4 @@
+import { assemblyView, nudgeAssembled } from "./assemblies.ts";
 import { fx } from "./fx";
 import { geomWorker, state, session, type PreviewLayer, type SliceResponse } from "./state";
 import { createPrepareView } from "../prepare-view";
@@ -685,6 +686,14 @@ export function stepGizmo(axis: "x" | "y" | "z", sign: number) {
   const tool = document.querySelector<HTMLElement>("#toolRail")?.dataset.tool;
   const nudge = gizmoNudge(tool, sign);
   if (nudge.amount === 0) return;
+  // --- Assemblies M5. The assembly view moves the part where it sits in the assembly, with what sits on it.
+  if (assemblyView.on) {
+    if (nudge.kind !== "move") return;
+    beginEdit();
+    nudgeAssembled(axis, nudge.amount);
+    flushEdit();
+    return;
+  }
   if (nudge.kind === "scale") {
     const before = Math.round(state.partScale * 100);
     if (clampPartPercent(before + nudge.amount) === before) return;

@@ -218,6 +218,27 @@ M2 is data only, so M3, which is the first use of that data, landed in the same 
 - **Not in M4.** No call takes a part out of an assembly. Removing the object does, as D10 says. The app does not yet show or make assemblies (M5).
 - **Tests.** `mcp/assembly.test.ts` (new, real engine, in the CI step that runs against Open CASCADE) covers the LED cover. Hooks are placed by `rimL - 5` and `bodyH`, a clip sits on a hook, and `rimL` changes. Then it checks a root move, a member's offset, every refusal, a free part's read-once expression, a step typed in the part frame that still probes after `rimL` moved the hook, the frame named in refusals, `plate_arrange {assembly}`, the guide kinds and the saved file. `assemblies-m1`, `assemblies-m3` and the existing MCP tests that call these tools pass unchanged.
 
+### As built: M5
+
+- **The objects list.** Each assembly's members follow a header row (its name, "N parts", Ungroup) where the first of them stands. The root comes first, and the members are indented under a rule with their tools under the name. The other objects keep their place. A free object that is not selected gets an **Attach** tool ("Attach to <selected>"). Attach seats it on the selected object where it stands: in that object's assembly, or in a new one named after it, with the selected object as the root. The attached part gets `frame: "part"` (D2). **Ungroup** removes the assembly, and every part keeps its pose in both views. Both are one Undo step, because the app's edit history now snapshots `session.assemblies` with the plate.
+- **The view chip.** While the plate holds an assembly, a "Print layout | Assembly" chip sits under Prepare's camera chip. This is view state: not saved, and not in the undo stack. **Assembly** draws every object solid at its `modelPose` (`setAssembled` in `src/prepare-view.ts`), with the selected one in the part colour. The whole set is moved as one so it stands centred on the bed. The print layout's mesh, boxes, gizmo, paint and grey context are hidden for that frame only, and a click only orbits, so nothing on the hidden layout can be grabbed. The measure lines dimension the selected part's assembled box. The canvas publishes `data-view` and `data-assembled`, each part's box.
+- **The bed warnings follow the view.** In the assembly view the object list drops the XY overlap row, so a hook lifted above a body is not flagged. Back in the print layout the row is there again, as before.
+- **Moves.** A hand move of a member writes the offset that keeps it where it was put, as plain numbers, so its text no longer drives it. A hand move of the root carries the whole assembly (D9). Both go through `movedTo` in `src/assembly.ts`. Two places make such a move: Model's Place tool (`putPose`, which covers its fields, Ctrl-drag, Align and Place Undo), and the move nudge in the assembly view (`#gizmoNudge`).
+- **A parameter change** in the Parameters panel redraws the assembly view (M3's re-solve).
+- **`render_view {view}`** is `"assembly"` (the object's assembly, or every object when it is in none, at the poses in model space) or `"print"` (every object as it prints). It is one image of several parts, so `op`, `section`, `highlight` and `colours` are refused with it.
+- **Not in M5.** The Place tool's frame control and the app side of the part frame are not built. The app still types Model numbers in model space whatever `frame` says. There are three ways to honour the frame in the app: draw Model in the open part's frame, convert at the panel only, or freeze the frame per visit. Each one changes how the Place tool and Ctrl-drag behave for a moved part. That choice is a design decision for the owner, so it needs its own milestone. The MCP honours `frame` fully (M1, M4).
+- **Tests.** `src/assembly.test.ts` gains `movedTo`, `attached` and `freshAssemblyId`. `e2e/assembly.spec.ts` (new, in `test:smoke`, passes three times with `--repeat-each=3`) covers the whole M5 flow:
+  - two objects on one spot of the bed, flagged in the print layout;
+  - Attach, and the group header;
+  - a saved file with the ledge lifted 20 mm by a `lift` parameter, reopened;
+  - the assembly view, with no overlap row and the ledge 20 mm up;
+  - `lift` 35 in the Parameters panel, and the ledge at 35;
+  - a member nudge that moves only the member, and a root nudge that keeps the member on it;
+  - back to the print layout and its row;
+  - Ungroup, then Undo.
+
+  `mcp/assembly.test.ts` covers `render_view {view}`.
+
 ## 9. Open decisions
 
 | # | Question | Recommendation |

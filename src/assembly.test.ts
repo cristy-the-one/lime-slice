@@ -1,5 +1,8 @@
 import {
   assemblyOf,
+  attached,
+  freshAssemblyId,
+  movedTo,
   changedNames,
   resolveForParameters,
   memberPose,
@@ -130,6 +133,28 @@ const lost = readAssemblies([chain], [objects[0]!, objects[2]!]);
 eq("a member whose object is gone is dropped, its child re-seated", lost.map((assembly) => assembly.members.map((member) => [member.object, member.parent, member.offset])), [[["body", null, [0, 0, 0]], ["clip", "body", [115, 4, 36]]]]);
 eq("an object in two assemblies stays in the first", readAssemblies([chain, { id: "a2", name: "again", members: [{ ...root, object: "clip" }, { ...hook, parent: "clip" }, { object: "lid", parent: "clip", offset: [0, 0, 0], turn: [0, 0, 0] }] }], [...objects, { id: "lid" }]).map((assembly) => assembly.members.map((member) => member.object)), [["body", "hook", "clip"]]);
 eq("blank expression text is dropped", readAssemblies([{ ...chain, members: [root, { ...hook, exprs: { offset: ["", null, null] } }, clip] }], objects)[0]?.members[1]?.exprs, undefined);
+
+// M5: a part moved by hand. The root carries its assembly; a member keeps the place it was put, as plain numbers.
+const handPoses = solveAssembly(driven, posesFrom({ body: IDENTITY_POSE }), { rimL: 120, bodyH: 30 }).poses;
+const handOf: PoseOf = (object) => handPoses.get(object);
+const rootMoved = movedTo(driven, "body", at(10, 0, 0), handOf);
+near("moving the root by hand moves the hook", origin(rootMoved.poses.get("hook")), [125, 0, 30]);
+near("and the clip", origin(rootMoved.poses.get("clip")), [125, 4, 36]);
+check("and leaves the members' numbers", rootMoved.assembly === driven);
+const hookMoved = movedTo(driven, "hook", at(100, 0, 30), handOf);
+eq("a member moved by hand gets the offset that keeps it, without its text", [hookMoved.assembly.members[1]?.offset, hookMoved.assembly.members[1]?.exprs], [[100, 0, 30], undefined]);
+near("and the clip follows it", origin(hookMoved.poses.get("clip")), [100, 4, 36]);
+near("the root stays", origin(hookMoved.poses.get("body")), [0, 0, 0]);
+
+// M5: attach a part where it stands.
+const loose: PoseOf = (object) => ({ body: at(5, 0, 0), lid: at(5, 0, 50), cap: at(5, 0, 60) } as Record<string, Affine>)[object];
+const started = attached([], "lid", "body", loose, "Cover");
+check("attaching to a free part starts an assembly with it as the root", !("reason" in started) && started[0]?.name === "Cover" && started[0]?.id === "asm_1" && started[0]?.members[0]?.object === "body");
+near("the attached part keeps its place as its offset", !("reason" in started) ? started[0]?.members[1]?.offset : undefined, [0, 0, 50]);
+const grown = attached(started as Assembly[], "cap", "lid", loose, "unused");
+check("attaching to a member joins its assembly", !("reason" in grown) && grown.length === 1 && grown[0]?.members.length === 3);
+eq("a part in another assembly is refused", attached([...(grown as Assembly[]), { id: "asm_2", name: "Other", members: [{ object: "x", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }, { object: "y", parent: "x", offset: [0, 0, 0], turn: [0, 0, 0] }] }], "y", "body", loose, "n"), { reason: "This part is already in Other." });
+eq("a fresh id skips the ones taken", freshAssemblyId([{ id: "asm_1", name: "", members: [] }, { id: "asm_3", name: "", members: [] }]), "asm_2");
 
 if (failed) {
   console.error(`${failed} failed`);

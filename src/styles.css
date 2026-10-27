@@ -274,6 +274,11 @@ select option, select optgroup { background: var(--surface-1); color: var(--text
 .stage-chip.modes .btn { border: 0; background: transparent; }
 .view-presets { top: var(--space-2); right: var(--space-2); }
 .view-presets .btn { height: 22px; padding: 0 var(--space-2); }
+/* Print layout or assembly view: under the camera chip, shown only when the plate has an assembly. */
+.view-mode-chip { top: calc(var(--space-2) + 34px); right: var(--space-2); }
+.view-mode-chip[hidden] { display: none; }
+.view-mode-chip .btn { height: 22px; padding: 0 var(--space-2); }
+.view-mode-chip .btn[aria-pressed="true"] { background: var(--stage-chip-on); color: var(--on-stage); font-weight: 600; }
 .section-chip { top: var(--space-2); left: calc(var(--vslider-w) + var(--space-2)); padding: 2px 2px 2px var(--space-2); }
 .chip-field { display: flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
 .chip-field select, .chip-field input[type="number"] {

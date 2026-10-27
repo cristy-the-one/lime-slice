@@ -154,6 +154,13 @@ check("Lay out leaves the assembled poses", near((await rowOf(hookA)).assembledM
 const noSuch = await call("plate_arrange", { assembly: "Nope" });
 check("an unknown assembly is refused with the names", noSuch.ok === false && String(noSuch.reason).includes("LED cover"), JSON.stringify(noSuch));
 
+// --- render_view {view} draws several parts.
+const shotAssembly = await call("render_view", { object: hookA, view: "assembly", camera: "front", inline: false, name: "led-assembly.png" });
+const shotPrint = await call("render_view", { object: hookA, view: "print", camera: "top", inline: false, name: "led-print.png" });
+check("render_view draws the assembly and the print layout", shotAssembly.ok !== false && shotPrint.ok !== false && existsSync(join(workspace, "led-assembly.png")) && existsSync(join(workspace, "led-print.png")), JSON.stringify({ shotAssembly, shotPrint }).slice(0, 300));
+const shotBad = await call("render_view", { object: hookA, view: "assembly", section: { normal: [0, -1, 0] } });
+check("a view with a section is refused", shotBad.ok === false && String(shotBad.reason).includes("one part"), JSON.stringify(shotBad));
+
 // --- The guide.
 const guided = await call("guide", { kind: "assembly" });
 check("guide {kind:\"assembly\"} answers", guided.ok === true && String(guided.text).includes("model_place {object:<hook>, to:<body>"), JSON.stringify(guided).slice(0, 200));
