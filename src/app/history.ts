@@ -27,6 +27,8 @@ let timer = 0;
 let applying = false;
 /** A grab is open: moves keep its gesture going, however long the pointer rests. */
 let held = false;
+/** A `noteEdit` gesture waits out its 280 ms before it lands. */
+let settling = false;
 /** Steps that existed when Model opened. Null outside Model. */
 let preVisit: WeakSet<EditSnap> | null = null;
 let visitEdited = false;
@@ -179,21 +181,29 @@ export function noteEdit() {
   history = beginGesture(history, capture());
   window.clearTimeout(timer);
   if (held) return;
+  settling = true;
   timer = window.setTimeout(() => {
+    settling = false;
     history = commitGesture(history, capture());
     fx.releaseModelTrees?.();
     }, 280);
 }
 
-/** Start a gesture that stays open until `flushEdit`, however long it lasts: one brush drag. */
+/**
+ * Start a gesture that stays open until `flushEdit`, however long it lasts: one brush drag. An edit still settling
+ * lands first as its own step, so a value typed and entered just before a drag or a nudge is not undone with it.
+ */
 export function beginEdit() {
   if (applying || session.projectRestoring) return;
   window.clearTimeout(timer);
+  if (settling) history = commitGesture(history, capture());
+  settling = false;
   history = beginGesture(history, capture());
 }
 
 export function flushEdit() {
   window.clearTimeout(timer);
+  settling = false;
   held = false;
   history = commitGesture(history, capture());
   // A step that lands can push the oldest one out or clear the redo steps, and their trees with them.
@@ -210,6 +220,7 @@ export function holdEdit() {
 /** Drop the open gesture and put back the state it began with. */
 export function cancelEdit() {
   window.clearTimeout(timer);
+  settling = false;
   held = false;
   const start = history.pending;
   history = { ...history, pending: null };
@@ -223,6 +234,7 @@ export function editHistoryRefs() {
 
 export function clearEditHistory() {
   window.clearTimeout(timer);
+  settling = false;
   history = emptyHistory();
 }
 
@@ -265,6 +277,7 @@ export function newestEdits(): { undo: EditSnap | null; redo: EditSnap | null; p
 
 export function undoUserEdit(): boolean {
   window.clearTimeout(timer);
+  settling = false;
   const step = undoSnap(history, capture());
   if (!step) return false;
   history = step.history;
@@ -274,6 +287,7 @@ export function undoUserEdit(): boolean {
 
 export function redoUserEdit(): boolean {
   window.clearTimeout(timer);
+  settling = false;
   const step = redoSnap(history, capture());
   if (!step) return false;
   history = step.history;

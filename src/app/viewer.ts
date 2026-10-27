@@ -15,7 +15,7 @@ import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
 import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch, stale, previewFeatureRows } from "./settings";
 import { cycleLayerAction, layerMarkerText } from "../layer-actions";
-import { beginModelVisit, cancelEdit, flushEdit, holdEdit, modelVisitChanged, noteEdit } from "./history";
+import { beginEdit, beginModelVisit, cancelEdit, flushEdit, holdEdit, modelVisitChanged, noteEdit } from "./history";
 import { paintGrabHint } from "./grab-hint";
 import { currentRules } from "./rules";
 import { beginModifierEdit, endModifierEdit, nudgeModifier, selectModifier } from "./override-actions";
@@ -689,7 +689,7 @@ export function stepGizmo(axis: "x" | "y" | "z", sign: number) {
     const before = Math.round(state.partScale * 100);
     if (clampPartPercent(before + nudge.amount) === before) return;
   }
-  noteEdit();
+  beginEdit();
   if (nudge.kind === "rotate") {
     const spin = axis === "x" ? rotX : axis === "y" ? rotY : rotZ;
     turnTo(matMul(spin(nudge.amount), heldOrient()));
@@ -1417,7 +1417,7 @@ export function mountViews() {
   };
   prepare.onSplit((at) => commitSplit(at));
   prepare.onRotate((axis, deltaDeg, totalDeg) => {
-    noteEdit();
+    beginEdit();
     const spin = axis === "x" ? rotX : axis === "y" ? rotY : rotZ;
     turnTo(matMul(spin(deltaDeg), heldOrient()));
     state.poseHud = `${axis.toUpperCase()} ${totalDeg >= 0 ? "+" : ""}${totalDeg.toFixed(0)}°`;
@@ -1432,7 +1432,7 @@ export function mountViews() {
   });
   prepare.onMove((axis, deltaMm, totalMm) => {
     if (!state.sourcePos) return;
-    noteEdit();
+    beginEdit();
     moveHud = `${axis.toUpperCase()} ${totalMm >= 0 ? "+" : ""}${totalMm.toFixed(1)} mm`;
     state.poseHud = snapNote ? `${moveHud} · ${snapNote}` : moveHud;
     nudgePlacement(axis, deltaMm);
@@ -1464,7 +1464,7 @@ export function mountViews() {
   });
   prepare.onScale((deltaPercent) => {
     if (!state.sourcePos) return 0;
-    noteEdit();
+    beginEdit();
     return applyScaleDelta(deltaPercent);
   });
   prepare.onScaleEnd(() => {

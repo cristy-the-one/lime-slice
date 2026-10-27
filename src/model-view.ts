@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { orbitGlide } from "./orbit-glide";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
@@ -332,6 +333,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
+  const glide = orbitGlide(controls, camera);
   controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
   controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
   controls.touches.ONE = THREE.TOUCH.ROTATE;
@@ -1835,7 +1837,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         }
         moved = true;
       } else {
-        moved = controls.update();
+        moved = glide(now);
         if (sketchLock) holdSketchAxis();
       }
       placeSketchOffset();
