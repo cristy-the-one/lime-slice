@@ -108,6 +108,7 @@
 #include <Poly_TriangulationParameters.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeFix_Solid.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_VersionInfo.hxx>
 #include <TopAbs_ShapeEnum.hxx>
@@ -833,6 +834,61 @@ TopoDS_Shape built(Maker& maker, const char* what, std::string& error) {
     return maker.Shape();
 }
 
+/// A box whose four edges along Z are quarter circles of `corner_radius`: a rounded rectangle pushed up `dz`, one
+/// feature, so a pocket or boss cut with it has round corners from the start. A radius of half the shorter side makes
+/// those ends full half circles.
+TopoDS_Shape rounded_box(const PrimitiveSpec& p, std::string& error) {
+    const double half = std::min(p.dx, p.dy) / 2.0;
+    if (p.corner_radius > half + kTinyMm) {
+        std::ostringstream text;
+        text.imbue(std::locale::classic());
+        text << "A box's corner radius must be at most half its shorter side, " << std::round(half * 100.0) / 100.0
+             << " mm";
+        error = text.str();
+        return {};
+    }
+    const double r = std::min(p.corner_radius, half);
+    const double x0 = p.x;
+    const double y0 = p.y;
+    const double x1 = p.x + p.dx;
+    const double y1 = p.y + p.dy;
+    const double z = p.z;
+    BRepBuilderAPI_MakeWire wire;
+    const auto line = [&](double ax, double ay, double bx, double by) {
+        if (std::hypot(bx - ax, by - ay) > kTinyMm) {
+            wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(ax, ay, z), gp_Pnt(bx, by, z)).Edge());
+        }
+    };
+    const auto arc = [&](double cx, double cy, double from_deg) {
+        const auto at = [&](double deg) {
+            const double a = deg * kPi / 180.0;
+            return gp_Pnt(cx + r * std::cos(a), cy + r * std::sin(a), z);
+        };
+        const Handle(Geom_TrimmedCurve) curve = GC_MakeArcOfCircle(at(from_deg), at(from_deg + 45.0), at(from_deg + 90.0)).Value();
+        wire.Add(BRepBuilderAPI_MakeEdge(curve).Edge());
+    };
+    // Counter-clockwise from above, so the face points up and the prism grows up.
+    line(x0 + r, y0, x1 - r, y0);
+    arc(x1 - r, y0 + r, -90.0);
+    line(x1, y0 + r, x1, y1 - r);
+    arc(x1 - r, y1 - r, 0.0);
+    line(x1 - r, y1, x0 + r, y1);
+    arc(x0 + r, y1 - r, 90.0);
+    line(x0, y1 - r, x0, y0 + r);
+    arc(x0 + r, y0 + r, 180.0);
+    if (!wire.IsDone()) {
+        error = "Open CASCADE did not build the rounded box";
+        return {};
+    }
+    BRepBuilderAPI_MakeFace face(wire.Wire(), Standard_True);
+    if (!face.IsDone()) {
+        error = "Open CASCADE did not build the rounded box";
+        return {};
+    }
+    BRepPrimAPI_MakePrism prism(face.Face(), gp_Vec(0, 0, p.dz));
+    return built(prism, "rounded box", error);
+}
+
 /// The primitive as it stands, before any turn. Every size is checked here, in the words the readout shows.
 TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
     const std::string& which = p.kind;
@@ -841,6 +897,13 @@ TopoDS_Shape make_primitive(const PrimitiveSpec& p, std::string& error) {
         if (!positive(p.dx) || !positive(p.dy) || !positive(p.dz)) {
             error = "A box needs a positive length on each side";
             return {};
+        }
+        if (p.corner_radius < 0.0 || !std::isfinite(p.corner_radius)) {
+            error = "A box's corner radius must be 0 or more";
+            return {};
+        }
+        if (positive(p.corner_radius)) {
+            return rounded_box(p, error);
         }
         BRepPrimAPI_MakeBox box(gp_Pnt(p.x, p.y, p.z), p.dx, p.dy, p.dz);
         return built(box, "box", error);
@@ -1564,6 +1627,85 @@ double largest_blend(const TopoDS_Shape& current, const std::vector<TopoDS_Edge>
         }
     }
     return best;
+}
+
+bool chamfer2_build(
+    const TopoDS_Shape& current,
+    const std::vector<TopoDS_Edge>& edges,
+    const std::vector<TopoDS_Face>& faces,
+    double size,
+    double second,
+    bool by_angle,
+    TopoDS_Shape& built,
+    double& volume,
+    std::string& error) {
+    const char* failed = edges.size() > 1 ? "The chamfer did not fit these edges" : "The chamfer did not fit this edge";
+    if (edges.empty() || edges.size() != faces.size()) {
+        error = failed;
+        return false;
+    }
+    if (!(size > 0.0) || !(second > 0.0)) {
+        error = by_angle ? "A chamfer needs a positive distance and an angle above 0°" : "A chamfer needs two positive distances";
+        return false;
+    }
+    if (by_angle && !(second < 90.0)) {
+        error = "A chamfer's angle must be under 90°";
+        return false;
+    }
+    const std::string refused = blend_refusal(current, edges, true);
+    if (!refused.empty()) {
+        error = refused;
+        return false;
+    }
+    g_stats.builds += 1;
+    try {
+        BRepFilletAPI_MakeChamfer builder(current);
+        for (size_t i = 0; i < edges.size(); ++i) {
+            if (by_angle) {
+                builder.AddDA(size, second * kPi / 180.0, edges[i], faces[i]);
+            } else {
+                builder.Add(size, second, edges[i], faces[i]);
+            }
+        }
+        Handle(Message_ProgressIndicator) watch;
+        builder.Build(deadline_range(watch));
+        if (!builder.IsDone() || builder.Shape().IsNull()) {
+            error = past_deadline() ? deadline_message() : failed;
+            return false;
+        }
+        const TopoDS_Shape solid = as_solid(builder.Shape());
+        const double solid_volume = solid.IsNull() || !has_solid(solid) ? 0.0 : volume_of(solid);
+        if (!(solid_volume > 1e-6)) {
+            error = failed;
+            return false;
+        }
+        built = builder.Shape();
+        volume = solid_volume;
+        return true;
+    } catch (const Standard_Failure&) {
+        error = failed;
+        return false;
+    }
+}
+
+TopoDS_Shape merge_same_domain(const TopoDS_Shape& shape, Handle(BRepTools_History)* history) {
+    if (shape.IsNull()) {
+        return shape;
+    }
+    try {
+        ShapeUpgrade_UnifySameDomain unify(shape, Standard_True, Standard_True, Standard_False);
+        unify.Build();
+        const TopoDS_Shape merged = unify.Shape();
+        if (merged.IsNull()) {
+            return shape;
+        }
+        if (history != nullptr && !history->IsNull() && !unify.History().IsNull()) {
+            (*history)->Merge(unify.History());
+        }
+        return merged;
+    } catch (const Standard_Failure&) {
+        return shape;
+    }
 }
 
 /// `current` and `tool` combined, on a copy, with the result's volume. Empty `error` means the result is good.
