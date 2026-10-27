@@ -19,8 +19,8 @@ class Grid {
   readonly min: V3;
   readonly size: number;
   readonly dims: V3;
-  private readonly pos: Float32Array;
-  constructor(pos: Float32Array) {
+  private readonly pos: ArrayLike<number>;
+  constructor(pos: ArrayLike<number>) {
     this.pos = pos;
     const min: V3 = [Infinity, Infinity, Infinity];
     const max: V3 = [-Infinity, -Infinity, -Infinity];
@@ -64,6 +64,10 @@ class Grid {
   }
   /** The distance to the nearest triangle the ray meets, other than `skip`, up to `far`. */
   hit(o: V3, d: V3, skip: number, far: number): number | null {
+    return this.nearest(o, d, skip, far)?.distance ?? null;
+  }
+  /** The nearest triangle the ray meets, other than `skip`, up to `far`, and how far along the ray it is. */
+  nearest(o: V3, d: V3, skip: number, far: number): { distance: number; tri: number } | null {
     let cell: V3 = [this.cellOf(o[0], 0), this.cellOf(o[1], 1), this.cellOf(o[2], 2)];
     const step = d.map((v) => (v > 0 ? 1 : v < 0 ? -1 : 0)) as V3;
     const next = [0, 1, 2].map((k) => {
@@ -73,6 +77,7 @@ class Grid {
     });
     const delta = d.map((v) => (v === 0 ? Infinity : this.size / Math.abs(v)));
     let best = Infinity;
+    let bestTri = -1;
     let travelled = 0;
     const seen = new Set<number>();
     while (travelled <= Math.min(far, best)) {
@@ -80,7 +85,10 @@ class Grid {
         if (t === skip || seen.has(t)) continue;
         seen.add(t);
         const s = this.cross(o, d, t);
-        if (s !== null && s > 1e-5 && s < best) best = s;
+        if (s !== null && s > 1e-5 && s < best) {
+          best = s;
+          bestTri = t;
+        }
       }
       const k = next[0]! < next[1]! ? (next[0]! < next[2]! ? 0 : 2) : next[1]! < next[2]! ? 1 : 2;
       travelled = next[k]!;
@@ -89,7 +97,15 @@ class Grid {
       cell[k] = cell[k]! + step[k]!;
       if (cell[k]! < 0 || cell[k]! >= this.dims[k]!) break;
     }
-    return best <= far ? best : null;
+    return bestTri >= 0 && best <= far ? { distance: best, tri: bestTri } : null;
+  }
+  /** Triangle t's normal by its winding, which points out of the part. */
+  normal(t: number): V3 {
+    const p = this.pos;
+    const i = t * 9;
+    const e1 = [p[i + 3]! - p[i]!, p[i + 4]! - p[i + 1]!, p[i + 5]! - p[i + 2]!];
+    const e2 = [p[i + 6]! - p[i]!, p[i + 7]! - p[i + 1]!, p[i + 8]! - p[i + 2]!];
+    return [e1[1]! * e2[2]! - e1[2]! * e2[1]!, e1[2]! * e2[0]! - e1[0]! * e2[2]!, e1[0]! * e2[1]! - e1[1]! * e2[0]!];
   }
   /** Möller–Trumbore: the ray's distance to triangle t, or null. */
   private cross(o: V3, d: V3, t: number): number | null {
@@ -109,6 +125,22 @@ class Grid {
     if (v < 0 || u + v > 1) return null;
     return f * (e2[0]! * q[0]! + e2[1]! * q[1]! + e2[2]! * q[2]!);
   }
+}
+
+/**
+ * Rays through a part's triangles (nine numbers each, wound outward): the first surface a ray meets, how far along,
+ * and whether the ray leaves the part there, which says the ray started inside it.
+ */
+export function meshRays(pos: ArrayLike<number>): { first(from: V3, dir: V3, far: number): { distance: number; leaving: boolean } | null } {
+  const grid = new Grid(pos);
+  return {
+    first(from, dir, far) {
+      const hit = grid.nearest(from, dir, -1, far);
+      if (!hit) return null;
+      const n = grid.normal(hit.tri);
+      return { distance: hit.distance, leaving: n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2] > 0 };
+    },
+  };
 }
 
 /**

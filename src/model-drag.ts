@@ -33,7 +33,7 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   boolean: ["modelX", "modelY", "modelZ", ...SIZE_FIELDS, "modelRx", "modelRy", "modelRz"],
   split: ["modelPlane", "modelTiltA", "modelTiltB"],
   fillet: ["modelBlend"],
-  chamfer: ["modelBlend"],
+  chamfer: ["modelBlend", "modelChamfer2", "modelChamferAngle"],
   hole: ["modelX", "modelY", "modelZ", "modelHoleR", "modelHoleD", "modelBoreR", "modelBoreD"],
   // --- A2 shell ---
   shell: ["modelShell"],
@@ -46,8 +46,8 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   // --- P1: the distance a face push or pull writes. The arrow sits on the face, not on the dock. ---
   pushpull: ["modelPull"],
   // --- A3 composite features ---
-  pocket: ["modelFeatW", "modelFeatH", "modelFeatDia", "modelFeatDepth", "modelFeatU", "modelFeatV", "modelFeatBarsV", "modelFeatBarsH", "modelFeatBarW"],
-  boss: ["modelFeatW", "modelFeatH", "modelFeatDia", "modelFeatDepth", "modelFeatU", "modelFeatV"],
+  pocket: ["modelFeatW", "modelFeatH", "modelFeatR", "modelFeatDia", "modelFeatDepth", "modelFeatU", "modelFeatV", "modelFeatBarsV", "modelFeatBarsH", "modelFeatBarW"],
+  boss: ["modelFeatW", "modelFeatH", "modelFeatR", "modelFeatDia", "modelFeatDepth", "modelFeatU", "modelFeatV"],
   texture: ["modelFeatDepth", "modelTexPitchU", "modelTexPitchV", "modelTexGroove"],
   array: ["modelFeatDepth", "modelArrW", "modelArrH", "modelArrDia", "modelArrSides", "modelArrAcross", "modelArrTurn", "modelArrPitchU", "modelArrPitchV", "modelArrAngle", "modelArrMargin"],
   ribs: ["modelFeatDepth", "modelRibWidth", "modelRibPitch", "modelRibCount", "modelRibAngle", "modelRibMargin"],
@@ -150,6 +150,8 @@ export interface DragContext {
   sketchHoleMarks?: { at: Vec3 }[];
   /** --- A4. Which pattern fields are on screen. Absent is linear. Mirror ignores it. --- */
   repeat?: { mode: "linear" | "polar" | "path" };
+  /** A chamfer's sides as the panel shows them: a second size or an angle adds a knob. Absent is equal sides. */
+  chamfer?: "equal" | "two" | "angle";
 }
 
 const X: Vec3 = [1, 0, 0];
@@ -350,9 +352,13 @@ function splitHandles(ctx: DragContext): Spec[] {
 function blendHandles(tool: "fillet" | "chamfer", ctx: DragContext): Spec[] {
   if (!ctx.edge) return [];
   const size = ctx.read("modelBlend");
-  return [
-    axisHandle("blend", "knob", "modelBlend", onFeature(add(ctx.edge.point, scale(ctx.edge.out, size))), ctx.edge.out, "accent", tool === "fillet" ? "Fillet" : "Chamfer", { min: 0.05, step: 0.5 }),
-  ];
+  const knob = axisHandle("blend", "knob", "modelBlend", onFeature(add(ctx.edge.point, scale(ctx.edge.out, size))), ctx.edge.out, "accent", tool === "fillet" ? "Fillet" : "Chamfer", { min: 0.05, step: 0.5 });
+  if (tool !== "chamfer" || !ctx.chamfer || ctx.chamfer === "equal") return [knob];
+  // The other side has no place of its own on the edge until the bevel is built: its knob docks.
+  const other = ctx.chamfer === "two"
+    ? axisHandle("chamfer-2", "knob", "modelChamfer2", KNOB, ctx.edge.out, "accent", "Other side", { min: 0.05, step: 0.5 })
+    : axisHandle("chamfer-angle", "knob", "modelChamferAngle", KNOB, ctx.edge.out, "accent", "Angle", { min: 1, max: 89, step: 5, unit: "°" });
+  return [knob, other];
 }
 
 // --- A2 shell ---
@@ -488,6 +494,7 @@ function featureHandles(tool: "pocket" | "boss" | "texture" | "array" | "ribs" |
     else {
       knobs.push(mm("feat-w", "modelFeatW", "Width", 1000));
       knobs.push(mm("feat-h", "modelFeatH", "Height", 1000));
+      if (shape !== "arch") knobs.push(mm("feat-r", "modelFeatR", "Corner r", 500, 0));
     }
     if (tool === "pocket") {
       knobs.push(count("feat-bars-v", "modelFeatBarsV", "Bars across", 0, 20));
