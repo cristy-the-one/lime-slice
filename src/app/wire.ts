@@ -119,6 +119,7 @@ export function wireApp() {
       const value = (target as HTMLSelectElement).value;
       if (target.id === "alignTo") {
         alignPick.to = value;
+        (target as HTMLSelectElement).title = (target as HTMLSelectElement).selectedOptions[0]?.title || "Bed";
         const how = document.querySelector<HTMLSelectElement>("#alignHow");
         if (how) how.innerHTML = alignHowHtml();
         if (how && isAlignRelation(how.value)) alignPick.how = how.value;

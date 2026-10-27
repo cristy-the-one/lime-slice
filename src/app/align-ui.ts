@@ -37,8 +37,8 @@ export function alignHtml(others: readonly AlignTarget[]): string {
   settleAlignPick(others);
   const targets = [{ id: "bed", name: "Bed" }, ...others];
   return `
-    <div class="grid3" id="placeAlign">
-      <label class="setting" data-label="align to" data-keywords="snap flush centre edge touch stack on top"><span class="scrub-label">Align to…</span><select id="alignTo" aria-label="Align to">${targets.map((t) => `<option value="${esc(t.id)}"${t.id === alignPick.to ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select></label>
+    <div class="align-grid" id="placeAlign">
+      <label class="setting" data-label="align to" data-keywords="snap flush centre edge touch stack on top"><span class="scrub-label">Align to…</span><select id="alignTo" aria-label="Align to" title="${esc(targets.find((t) => t.id === alignPick.to)?.name ?? "Bed")}">${targets.map((t) => `<option value="${esc(t.id)}" title="${esc(t.name)}"${t.id === alignPick.to ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select></label>
       <label class="setting" data-label="align how" data-keywords="snap flush centre edge touch stack on top"><span class="scrub-label">How</span><select id="alignHow" aria-label="Align how">${alignHowHtml()}</select></label>
       <button class="btn" id="alignGo" type="button" data-tip="Move the selected object to line up with the pick. One undo step.">Align</button>
     </div>`;
