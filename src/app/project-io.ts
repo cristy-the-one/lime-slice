@@ -263,6 +263,7 @@ function fileObjects({ trees, tools, pieces }: Awaited<ReturnType<typeof history
     if (reinforce.length > 0) row.reinforcement = reinforce.map((reg) => structuredClone(reg));
     if (obj.brep) row.brep = record(solidFileName(obj.fileName, obj.brep), obj.brep);
     if (obj.modelPose) row.modelPose = { m: [...obj.modelPose.m], t: [...obj.modelPose.t] };
+    if (obj.frame === "part") row.frame = "part";
     if (obj.workplane) row.workplane = copyWorkplane(obj.workplane);
     if (obj.sim) row.sim = cloneStudy(obj.sim);
     const seat = meshSeat(obj.bytes);

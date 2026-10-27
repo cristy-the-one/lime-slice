@@ -325,6 +325,12 @@ eq("one object with a model pose writes a plate and keeps it", [spaceWire.versio
 const spaceOpened = parseProject(JSON.stringify(spaceWire));
 eq("the model pose and seat round-trip", spaceOpened.ok ? [spaceOpened.project.objects?.[0]?.modelPose, spaceOpened.project.objects?.[0]?.meshSeatMm] : null, [spacePose, 712.5]);
 eq("a plate saved before model space opens with no pose: identity", plainOpened.ok ? plainOpened.project.objects?.map((obj) => [obj.modelPose ?? null, obj.meshSeatMm ?? null]) : null, [[null, null], [null, null]]);
+const partFrame: LimeProject = { ...placedInSpace, objects: [{ ...placedInSpace.objects![0]!, frame: "part" }] };
+const partFrameWire = JSON.parse(serializeProject(partFrame)) as { objects: Record<string, unknown>[] };
+eq("a part-frame object writes its frame, a model-frame one writes none", [partFrameWire.objects[0]?.frame, "frame" in spaceWire.objects[0]!], ["part", false]);
+const partFrameOpened = parseProject(JSON.stringify(partFrameWire));
+eq("the frame round-trips", partFrameOpened.ok ? partFrameOpened.project.objects?.[0]?.frame : null, "part");
+eq("a file with no frame reads as the model frame", spaceOpened.ok ? spaceOpened.project.objects?.[0]?.frame ?? null : 0, null);
 for (const [name, m] of [
   ["a short matrix", [1, 0, 0]],
   ["a collapsed matrix", [0, 0, 0, 0, 0, 0, 0, 0, 0]],
