@@ -305,7 +305,7 @@ const op = {
       type: "object",
       additionalProperties: false,
       required: ["kind", "primitive"],
-      properties: { kind: { const: "root" }, primitive: primitiveKind, dx: primitiveFields.dx, dy: primitiveFields.dy, dz: primitiveFields.dz, radius: primitiveFields.radius, height: primitiveFields.height },
+      properties: { kind: { const: "root" }, primitive: primitiveKind, dx: primitiveFields.dx, dy: primitiveFields.dy, dz: primitiveFields.dz, radius: primitiveFields.radius, height: primitiveFields.height, label },
     },
     {
       type: "object",

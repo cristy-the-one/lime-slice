@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 import { expand, primitiveFrom, withBoxAnchor, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { fakeEngine } from "./engine.ts";
+import { validateTool } from "./schema.ts";
 import { Session } from "./session.ts";
 import { GLOBAL_WORKPLANE, workplaneOnFace } from "../src/workplane.ts";
 
@@ -76,6 +77,17 @@ const guided = await new Session(fakeEngine()).call("guide", { topic: "ops" });
 const guideText = String(guided.text ?? "");
 check("the ops guide says a turn pivots about the primitive's own centre and origin is the min corner before it", /turn pivots about the primitive's own centre, not about origin: origin is the min corner/.test(guideText));
 check("the ops guide describes from: box", guideText.includes('from:"box"'));
+
+// Item 10. A root op takes a label like the other ops, and the step shows it.
+check("a root op may carry a label", validateTool("model_apply", { op: { kind: "root", primitive: "box", dx: 30, dy: 30, dz: 30, label: "base block" } }) === null);
+{
+  const own = new Session(fakeEngine());
+  const made = await own.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
+  const rooted = await own.call("model_apply", { object: made.object, probe: true, op: { kind: "root", primitive: "box", dx: 30, dy: 30, dz: 30, label: "base block" } });
+  const history = await own.call("model_history", { object: made.object });
+  const labels = ((history.nodes ?? []) as { label?: string }[]).map((node) => node.label);
+  check("the root step keeps its label", rooted.ok === true && rooted.label === "base block" && labels.includes("base block"), JSON.stringify({ rooted, labels }));
+}
 
 if (failed > 0) {
   console.error(`gaps-quick: ${failed} failed`);
