@@ -34,7 +34,7 @@ function check(name: string, ok: boolean, detail = "") {
 }
 const show = (value: unknown) => JSON.stringify(value);
 
-// --- The starting values after the published-guidance review (plan section 25).
+// --- The starting values after the published-guidance review (plan section 27).
 const numbers = (key: keyof typeof CLEARANCE_TABLE) => [CLEARANCE_TABLE[key].snug, CLEARANCE_TABLE[key].loose, CLEARANCE_TABLE[key].press];
 check("PLA 0.15 / 0.25 / 0.05", show(numbers("pla")) === show([0.15, 0.25, 0.05]));
 check("PETG 0.20 / 0.30 / 0.10, for a 0.4 mm nozzle", show(numbers("petg")) === show([0.2, 0.3, 0.1]));

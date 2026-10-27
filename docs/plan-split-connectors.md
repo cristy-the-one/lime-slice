@@ -545,7 +545,7 @@ Each milestone leaves the app usable, leaves Split as it is, and leaves the gold
 8. **Lap and tongue.** Profile parameters, drag handles, volume and face tests.
 9. **Zig-zag and dovetail.** Including the discrete dovetail key, which shares the prism builder.
 10. **Sketch profile.** Sketch card, solver dimensions, sweep, edit reopens the chain.
-11. **Measured fits.** After the coupons are printed, update the table and the resin floors and retire Starting fit on the printed cells.
+11. **Measured fits.** After the coupons are printed, update the table and the resin floors and retire Starting fit on the printed cells. Built in section 27 without the prints: a reviewed table and the flow that enters results.
 
 ## 16. Open decisions
 
@@ -724,3 +724,72 @@ Milestone 9 builds the zig-zag and the dovetail profiles and the key and dovetai
 4. **The key and dovetail connectors** are placed by the planner as before and built on the real pieces by `build_joints`: a key `width` along U and `height` along V, a dovetail `width` at its wide end and `angle`, sliding `u` or `v` for as long as it is wide; both `depth` from the cut and a groove grown by `clearance` and `endGap`. The positive piece carries them. Their `endGap` is a field now. A key or dovetail whose volume does not come off exactly (a tool that reaches past the piece) is left out and named, as a dowel is.
 5. **The card.** Profile adds Zig-zag (Pitch, Depth, Angle) and Dovetail (Width, Depth, Angle, Slide); Connectors adds Key (Width, Height) and Dovetail (Width, Angle, Slide) types. Connectors on a shaped cut (a lap, tongue, zig-zag or dovetail profile) are still refused: "Connectors on a shaped cut are not built yet. Turn them off, or cut straight." Joint down takes the largest flat face on a cut plane of a zig-zag or a dovetail as it does of a lap and a tongue.
 6. **Tests.** `tests/partition_profile.rs`: a zig-zag square and leaning (volumes by hand to 1e-6 mm³, three tooth tops of 5 × 20 mm² at x = 63, the tip 3.268 mm), a dovetail sliding along U and along V (the neck and wide end by hand, 1e-5 mm³, the end face 8 × 30 mm² at x = 57), the no-neck refusal; `tests/partition_joints.rs`: a key and a dovetail connector (volumes by hand to 1e-6 mm³), a key that breaks through; `src/split-print.test.ts` for the stored sizes and refusals; `mcp/occt.test.ts` on the real kernel for the zig-zag, the dovetail and the keys; `e2e/model-split-print.spec.ts` for both cards.
+
+## 27. Changes in milestone 11: measured fits, built without waiting for prints (2026-10-27)
+
+The owner cannot print and measure the coupons yet, so milestone 11 is built with reasonable assumptions: the starting values are reviewed against published guidance, and the flow that takes a measured coupon is built and tested, ready for when prints happen. It changed four things:
+
+1. **The starting values were reviewed.** Every cell is a gap each side, for a 0.4 mm nozzle (resin: the Form 4). Where guidance gives a range, the number is the middle of it. The cells stay `starting`; only a real measurement becomes `measured`.
+2. **Coupon results are entered, and kept in the machine library.** `MachineLibrary.measuredFits` holds the cells a coupon fixed and, for resin, the thinnest wall that held. The card's **Enter coupon results…** and the MCP's `machine_set {fits}` write it through `measuredRow`.
+3. **A reset puts the starting values back**, per row.
+4. **"Starting fit." is retired cell by cell**, as section 23 said: a measured cell reads "Measured. 0.15 mm each side (0.3 mm on the diameter).", and a row with every cell measured is no longer a starting fit.
+
+### The table, before and after
+
+| Row | Snug before → after | Loose before → after | Press before → after | Basis |
+|---|---|---|---|---|
+| PLA | 0.15 → 0.15 | 0.25 → 0.25 | 0.05 → 0.05 | Confirmed. Snug sits between the Bambu peg-and-hole 0.10–0.15 and the sliding 0.15–0.25 (Sovol), Loose is the middle of 0.2–0.3, Press is the Bambu A1 Mini tight value. |
+| PETG | 0.20 → 0.20 | 0.30 → 0.30 | 0.10 → 0.10 | Confirmed for a 0.4 mm nozzle: Sovol's PETG sliding range is 0.2–0.3 (Snug is its lower middle, Loose its top), Press is PLA's 0.05 plus the 0.05 PETG needs, and the middle of Sovol's press range 0.05–0.15. |
+| ABS and ASA | 0.20 → 0.25 | 0.30 → 0.35 | 0.10 → 0.15 | Sovol's ASA sliding range 0.25–0.35 sits 0.05 above PETG's, and ABS shrinks more than PETG. |
+| TPU | 0.25 → 0.20 | 0.35 → 0.30 | 0.15 → 0.05 | No published clearances. It shrinks little, so Snug and Loose follow PETG, and it gives, so a press needs little. The weakest row. |
+| Standard resin (Form 4) | 0.10 → 0.10 | 0.20 → 0.25 | 0.05 → 0.05 | Formlabs prints a 0.4 mm drawn gap as 0.34 mm, so about 0.03 each side is lost; a "normal" fit of 0.254 mm appears in a Georgia Tech handout. Loose is the middle of the two. |
+
+The coupon's steps follow, since they are the table's Snug less 0.10 to plus 0.20 mm: ABS and ASA 0.15–0.45, TPU 0.10–0.40.
+
+### The sources
+
+| Source | What it gives | Used for |
+|---|---|---|
+| Sovol, "FDM 3D Printing Tolerances & Clearances: How to Design Parts That Fit" (sovol3d.com/blogs/news) | 0.4 mm nozzle, each side: press 0.05–0.15, sliding 0.2–0.3, snap 0.3+; sliding by material PLA 0.15–0.25, PETG 0.2–0.3, ASA 0.25–0.35 | PLA, PETG, ABS and ASA, all three fits |
+| Digital Fabrication Lab, UAL Creative Computing Institute, "Design the clearance and tolerance" (wiki.cci.arts.ac.uk) | Bambu H2D Pro, each side: press 0–0.05, peg and hole 0.1–0.15, general removable 0.15–0.2, free 0.2+. Ultimaker S7: press and peg 0.2, general 0.3. It states that tolerance is added to both sides | PLA Snug, Loose and Press; the spread between printers |
+| "Press-Fit Tolerance Reference (PLA, Bambu A1 Mini)" (val.town stl-creator notes) | Tight fit 0.05 radial, semi-permanent 0.00, PETG about 0.05 more than PLA | PLA Press, the PETG offset |
+| Zbotic, "3D Printing Tolerances: Designing Gaps for Press Fits, Threads, and Snap Fits" (zbotic.in) | Diametral: snug 0.1–0.2, sliding 0.3–0.5, snap assembly 0.2–0.3; shrinkage PLA 0.2–0.4 %, PETG 0.3–0.5 %, ABS 0.5–0.8 %, TPU very low | The ABS step up and the TPU shrinkage argument |
+| Formlabs, Form 4 design guide (formlabs.com/white-papers/form-4-design-guide) | 0.4 mm minimum gap between parts that print together, printed as 0.34 mm on a Form 4; ±0.15 % on 1–30 mm features, floor ±0.02 mm; Standard resin has the elongation for interference fits | Resin Snug and Loose, the 0.03 mm each side |
+| Georgia Tech, "Instructions for Resin SLA 3D Printing" (sites.gatech.edu) | 0 press, 0.127 tight, 0.254 normal, 0.508 loose, no printer named, side or diameter not stated | Resin, cross-check only |
+
+What the sources do not give, and so is still a guess: any clearance for TPU, and any Form 4 clearance for Standard resin in particular (Formlabs publishes no press or sliding values). Neither Prusa nor Bambu publishes a per-material press-fit table; the Bambu numbers above are a university lab's on a Bambu printer. The IR3 V2 is a belt printer with its own XY behaviour, so the owner's first coupon on it is the real answer and replaces the PETG row.
+
+### Stored ops keep their clearance
+
+A stored partition op holds its connectors filled: `clearance` is a number in millimetres, not the word Snug (`storedPartition`). `fillPartition` returns a number as it is. So neither a changed table nor a measured entry reaches an op already applied or saved, and a replay cuts the same holes. Only a cut made after the change, Apply or an Update that fills the card again, uses the new defaults. `src/modeling/measured-fits.test.ts` fills an op stored with ABS's old 0.20 and checks it keeps it, and that a measurement entered after Apply leaves the stored 0.25 alone.
+
+### Where the results are kept
+
+In the machine library, `MachineLibrary.measuredFits`, an optional key like `materialCards`: absent until a result is entered, the library's version stays 3, and it is read defensively (a damaged file keeps only finite numbers of known rows). The library already holds the per-filament data (temperatures, flow, pressure advance, fan), lasts across projects and sessions, and is the one store the app and the MCP session both use, each with its own copy. It is keyed by the clearance table's row (material and process) and not by the filament record: the table's rows are materials, a fit measured on PETG is the same for the owner's other PETG spools, and the coupon is printed at their usual 0.4 mm setup. A `.lime` project does not carry it, so a shared project does not change another person's fits. The MCP session holds the library in memory and does not write it back to the app's browser store, so what is entered through `machine_set` lasts for that session; `machine_get {measuredFits}` reads it back, and the app's panel is where results are kept for good.
+
+`partitionDefaults`, `fillPartition` and `fitCoupon` take it as `fits`, so there is no global state: the app's and the MCP's `partitionContext` pass the library's. The coupon centres on the measured Snug once one is entered.
+
+### The card
+
+Under the Clearance note, beside **Print a fit coupon…**, **Enter coupon results…** opens a panel:
+
+- **Material** lists PLA, PETG, ABS / ASA, TPU and Standard resin (Form 4). It opens on the plate's filament, or resin for an export target.
+- **Snug, Loose, Press** each list the labels engraved on a coupon centred on the row's starting Snug (PETG: 0.10 to 0.40 mm), "Not entered" and "Other…". Other is a number field for a coupon that was printed with `startMm` moved. A cell already measured shows its number.
+- **Thinnest wall** shows for resin: the wall that survived, in millimetres.
+- **Save results** writes a measured cell for each fit entered, and the card's Clearance sentence reads "Measured." at once. **Reset to starting values** drops the row. A fit left at "Not entered" is not touched.
+
+### The resin floors
+
+`RESIN_FEATURE_MM` (0.5) sets the resin feature floor the planner derives its wall, radius and tongue floors from. The fit coupon does not measure it, since its holes and pin are 3 mm (section 23). So the entry takes the thinnest wall that held as a separate field, and it becomes `resinFeatureMm`, which replaces 0.5 for every resin default. `RESIN_LAYER_MM` and the resin bed margin stay: a layer height is the printer's setting, and a margin is a property of the bed, neither a measurement of a coupon. A thin-wall row on the coupon is still the way to measure the floor from a print.
+
+### The MCP
+
+`machine_set {fits: {material, process?, snug?, loose?, press?, wallMm?}}` enters results, `{material, reset: true}` resets, and `dryRun` reports without writing. `process: "resin"` is the Form 4's Standard resin and takes `wallMm`. `machine_get` returns `measuredFits` once there are any. No new tool. The `fits` property is one line in `machine_set`'s schema, and `lime://guide/ops` gains one line beside the coupon's; the token budgets in `mcp/schema.test.ts` pass unchanged.
+
+### Tests
+
+`src/modeling/measured-fits.test.ts`: the new rows, the measured row over the table through `measuredRow`, the sentences, a stored op keeping its clearance, the library round trip (no key when there are none, and a damaged file), the reset, and the coupon centring on the measured Snug. `src/modeling/partition.test.ts` and `fit-coupon.test.ts` have the new numbers. `mcp/measured-fits.test.ts`: `machine_set {fits}` against the stand-in engine, a cut after it storing the measured clearance, the cut before it keeping 0.15, the refusals, the reset, and the schema and the guide. `e2e/model-split-fits.spec.ts` (mocked engine, `--repeat-each=3`): PETG Snug entered and read back as "Measured.", Other, the refusal, a cut made after entering results storing it, the reset, and the resin entry with its wall.
+
+### When prints happen
+
+Print the coupon (the card or `solid_new {coupon}`), find the hole the pin pushes into by hand and stays in, and enter its label in the panel, or `machine_set {fits}`. The row is then `measured` for that cell. The numbers in the table above are replaced in code only when a measured number should become the shipped default for everyone, as section 23 said; that is a later change with the printer, material and result in its commit message.

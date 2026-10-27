@@ -97,7 +97,7 @@ export interface MachineLibrary {
    */
   materialCards?: MaterialCard[];
   /**
-   * What Split to print's fit coupons measured, per material and process (plan section 25). Absent until a result is
+   * What Split to print's fit coupons measured, per material and process (plan section 27). Absent until a result is
    * entered. The version stays 3, and a reader that rebuilds each printer keeps it like the cards.
    */
   measuredFits?: MeasuredFits;

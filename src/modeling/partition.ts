@@ -176,7 +176,7 @@ const startingRow = (snug: number, loose: number, press: number): ClearanceRow =
   startingFit: true,
 });
 
-/** Each number is the middle of the published ranges for a 0.4 mm nozzle (resin: the Form 4); the sources are in plan section 25. */
+/** Each number is the middle of the published ranges for a 0.4 mm nozzle (resin: the Form 4); the sources are in plan section 27. */
 export const CLEARANCE_TABLE: Readonly<Record<ClearanceKey, ClearanceRow>> = {
   pla: startingRow(0.15, 0.25, 0.05),
   petg: startingRow(0.2, 0.3, 0.1),

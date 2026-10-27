@@ -258,7 +258,7 @@ export function mountSplitPrint(next: SplitPrintHost) {
 
 const FIT_WORDS: Record<Clearance, string> = { snug: "Snug", loose: "Loose", press: "Press" };
 
-/** Enter coupon results…: pick the row, then for each fit the label of the step that fitted (plan section 25). */
+/** Enter coupon results…: pick the row, then for each fit the label of the step that fitted (plan section 27). */
 function resultsMarkup(): string {
   const rows = FIT_ROWS.map((row) => `<option value="${row.key}">${row.name}</option>`).join("");
   const fits = FIT_NAMES.map(
