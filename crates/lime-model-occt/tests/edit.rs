@@ -163,12 +163,19 @@ fn edit_steps() {
     near(volume(&old_tip), hole_v - round_off(1.0, 20.0));
 
     // Edit the root's primitive to a box 30 × 30 × 20: a `root` step under the root, which stays. The hole replays in
-    // its top, and the fillet's 20 mm edge is on it no longer: that step is broken, the steps before it built.
+    // its top. A fillet stored before edge signatures, as 4.0.0 stored it, cannot tell which edge was its 20 mm edge on
+    // the wider box: that step is broken, the steps before it built.
     let mut root30 = flat_box(30.0, 20.0);
     root30["kind"] = json!("root");
+    let mut unsigned = rounded["op"].clone();
+    unsigned["edges"][0]
+        .as_object_mut()
+        .expect("a stored edge")
+        .remove("sig")
+        .expect("a fresh pick is stored with its signature");
     let rerooted = ok(
-        json!({ "call": "edit", "key": "e", "parent": 0, "node": 5, "op": root30,
-        "replay": [{ "id": 6, "op": holed["op"] }, { "id": 7, "op": rounded["op"] }, { "id": 8, "op": { "kind": "scale", "factor": 2.0 } }],
+        json!({ "call": "edit", "key": "e", "parent": 0, "node": 5, "op": root30.clone(),
+        "replay": [{ "id": 6, "op": holed["op"] }, { "id": 7, "op": unsigned }, { "id": 8, "op": { "kind": "scale", "factor": 2.0 } }],
         "chordMm": 0.1 }),
     );
     assert_eq!(ids(&rerooted), [5, 6]);
@@ -199,6 +206,17 @@ fn edit_steps() {
         7,
         "the old broken step stays broken"
     );
+
+    // The fillet as it is stored now carries its edge's signature: on the wider box it finds the same upright edge,
+    // moved out with the corner, and nothing breaks.
+    let signed = ok(
+        json!({ "call": "edit", "key": "e", "parent": 0, "node": 30, "op": root30,
+        "replay": [{ "id": 31, "op": holed["op"] }, { "id": 32, "op": rounded["op"] }, { "id": 33, "op": { "kind": "scale", "factor": 2.0 } }],
+        "chordMm": 0.1 }),
+    );
+    assert_eq!(ids(&signed), [30, 31, 32, 33]);
+    assert!(signed.get("broken").is_none(), "{}", signed["broken"]);
+    near(volume(&signed), (wide_hole - round_off(1.0, 20.0)) * 8.0);
 
     // An edited step that does not build keeps nothing.
     let fails = refused(json!({ "call": "edit", "key": "e", "parent": 0, "node": 11,

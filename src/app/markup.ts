@@ -228,6 +228,12 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode on" id="modelEdgesPicked" type="button" data-edge-mode="picked" aria-pressed="true">Picked</button>
                 <button class="btn mode" id="modelEdgesStep" type="button" data-edge-mode="step" aria-pressed="false" data-tip="Every sharp edge a history step made that is still on this solid">A step</button>
               </div>
+              <!-- Gaps 13: equal sides, two sizes, or a size and an angle. -->
+              <div class="modes" id="modelChamferForm" data-for="chamfer" role="group" aria-label="Chamfer sides">
+                <button class="btn mode on" type="button" data-chamfer-form="equal" aria-pressed="true" data-tip="Size along both faces">Equal</button>
+                <button class="btn mode" type="button" data-chamfer-form="two" aria-pressed="false" data-tip="Size along the upper face, Other side along the other">Two sizes</button>
+                <button class="btn mode" type="button" data-chamfer-form="angle" aria-pressed="false" data-tip="Size along the upper face, at an angle from it">Angle</button>
+              </div>
               <div class="modes model-plane-modes" id="modelPlaneModes" data-for="split" role="group" aria-label="Plane">
                 <button class="btn mode" id="modelSplitX" type="button" data-plane="x" aria-pressed="false" data-tip="Cut square to X">X</button>
                 <button class="btn mode" id="modelSplitY" type="button" data-plane="y" aria-pressed="false" data-tip="Cut square to Y">Y</button>
@@ -260,6 +266,9 @@ export function mountMarkup(root: HTMLElement) {
                 <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt A°</span><input id="modelTiltA" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt A, degrees"></label>
                 <label data-for="split" data-snap="15"><span class="scrub-label" data-scrub>Tilt B°</span><input id="modelTiltB" type="number" step="1" min="-${SPLIT_TILT_MAX_DEG}" max="${SPLIT_TILT_MAX_DEG}" value="0" aria-label="Tilt B, degrees"></label>
                 <label data-for="fillet chamfer" data-snap="1"><span class="scrub-label" data-scrub>Size</span><input id="modelBlend" type="number" step="0.1" min="0" value="1" aria-label="Fillet or chamfer size"></label>
+                <!-- Gaps 13: a chamfer's other side, by a distance or by an angle from the face Size runs along. -->
+                <label data-for="chamfer" data-chamfer="two" data-snap="1" data-tip="Along the other face."><span class="scrub-label" data-scrub>Other side</span><input id="modelChamfer2" type="number" step="0.1" min="0" value="2" aria-label="Chamfer distance along the other face"></label>
+                <label data-for="chamfer" data-chamfer="angle" data-snap="15" data-tip="From the face Size runs along."><span class="scrub-label" data-scrub>Angle°</span><input id="modelChamferAngle" type="number" step="1" min="1" max="89" value="45" aria-label="Chamfer angle from the first face, degrees"></label>
                 <!-- P1: the distance, typed. A drag writes the same field. -->
                 <label data-for="pushpull" data-snap="1"><span class="scrub-label" data-scrub>Distance</span><input id="modelPull" type="number" step="0.1" value="0" aria-label="Push or pull distance, mm"></label>
                 <label id="modelPullDiameterRow" hidden><span>Diameter</span><input id="modelPullDiameter" type="number" step="0.1" min="0" aria-label="Cylinder diameter, mm"></label>
@@ -286,6 +295,11 @@ export function mountMarkup(root: HTMLElement) {
                 <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn X</span><input id="modelPlaceRx" type="number" step="1" value="0" aria-label="Turn in model space about x, degrees"></label>
                 <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Y</span><input id="modelPlaceRy" type="number" step="1" value="0" aria-label="Turn in model space about y, degrees"></label>
                 <label data-for="place" data-snap="15"><span class="scrub-label" data-scrub>Turn Z</span><input id="modelPlaceRz" type="number" step="1" value="0" aria-label="Turn in model space about z, degrees"></label>
+                <div class="model-align" id="modelAlign" data-for="place">
+                  <label><span class="scrub-label">Align to…</span><select id="modelAlignTo" aria-label="Align to"></select></label>
+                  <label><span class="scrub-label">How</span><select id="modelAlignHow" aria-label="Align how"></select></label>
+                  <button class="btn" id="modelAlignGo" type="button" data-tip="Move the open part to line up with the pick, as one Place step.">Align</button>
+                </div>
                 <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>X</span><input id="modelWpX" type="number" step="0.1" value="0" aria-label="Workplane origin, model x"></label>
                 <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>Y</span><input id="modelWpY" type="number" step="0.1" value="0" aria-label="Workplane origin, model y"></label>
                 <label data-for="workplane" data-snap="1"><span class="scrub-label" data-scrub>Z</span><input id="modelWpZ" type="number" step="0.1" value="0" aria-label="Workplane origin, model z"></label>
@@ -297,6 +311,7 @@ export function mountMarkup(root: HTMLElement) {
                 <!-- A3 composite features. Each number is one line: the drag checklist reads it that way. -->
                 <label data-for="pocket boss" data-shape="rect arch" data-snap="1" data-tip="U size."><span class="scrub-label" data-scrub>Width</span><input id="modelFeatW" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="U size"></label>
                 <label data-for="pocket boss" data-shape="rect arch" data-snap="1" data-tip="V size."><span class="scrub-label" data-scrub>Height</span><input id="modelFeatH" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="V size"></label>
+                <label data-for="pocket boss" data-shape="rect" data-snap="0.5" data-tip="Rounds the four corners. 0 is sharp."><span class="scrub-label" data-scrub>Corner r</span><input id="modelFeatR" type="number" step="0.1" min="0" max="500" value="0" aria-label="Corner radius"></label>
                 <label data-for="pocket boss" data-shape="circle" data-snap="1" data-tip="Circle."><span class="scrub-label" data-scrub>Diameter</span><input id="modelFeatDia" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="Circle"></label>
                 <label data-for="pocket boss texture array ribs text" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelFeatDepth" type="number" step="0.1" min="0.1" max="1000" value="2" aria-label="Depth"></label>
                 <label data-for="pocket boss text" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>U</span><input id="modelFeatU" type="number" step="0.1" value="0" aria-label="Position along U"></label>
@@ -372,6 +387,8 @@ export function mountMarkup(root: HTMLElement) {
                 <label class="model-keep"><input id="modelThrough" type="checkbox"> Through all</label>
                 <label class="model-keep"><input id="modelCounterbore" type="checkbox"> Counterbore</label>
               </div>
+              <p class="model-note" id="modelChamferSide" data-for="chamfer" data-chamfer="two angle">Size runs along each edge's upper face.</p>
+              <label class="model-keep" data-for="chamfer" data-chamfer="two angle"><input id="modelChamferFlip" type="checkbox"> Flip the sides</label>
               <!-- A2 shell -->
               <p class="model-note" id="modelShellFaces" data-for="shell"></p>
               <label class="model-keep" data-for="shell"><input id="modelShellClosed" type="checkbox"> Keep it closed (hollow inside)</label>

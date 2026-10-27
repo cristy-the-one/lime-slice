@@ -30,7 +30,10 @@
 #include <Standard_VersionInfo.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <Geom2d_Curve.hxx>
+#include <gp_Pnt2d.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopTools_ListIteratorOfListOfShape.hxx>
@@ -62,6 +65,9 @@ struct LimeShape {
     std::vector<FaceInfo> faces;
     std::vector<int> created;
     std::vector<int> from_face;
+    /// Each edge's faces, read the first time an edge's kind is asked.
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    bool edge_faces_ready = false;
 };
 
 /// A Mesh's arrays as bytes in this machine's order, and the shape's description as JSON.
@@ -209,7 +215,8 @@ ProfileSpec profile_of(const double* p, const double* points, int count, const d
 }
 
 /// `p` is x, y, z, dx, dy, dz, radius, height, rx, ry, rz, top radius, tube radius, inner radius, top X,
-/// sides, across, and flats (non-zero for across flats), in the order `Solid::numbers` in src/tree.rs writes them.
+/// sides, across, flats (non-zero for across flats), and a box's corner radius, in the order `Solid::numbers` in
+/// src/tree.rs writes them.
 PrimitiveSpec spec_of(const char* kind, const double* p) {
     PrimitiveSpec spec;
     spec.kind = kind == nullptr ? "" : kind;
@@ -231,6 +238,7 @@ PrimitiveSpec spec_of(const char* kind, const double* p) {
     spec.sides = p[15];
     spec.across = p[16];
     spec.flats = p[17] != 0.0;
+    spec.corner_radius = p[18];
     return spec;
 }
 
@@ -349,18 +357,29 @@ const char* lime_tree_occt_version() { return OCCT_Version_String_Complete(); }
 /// --- 3.1 F9. The step about to be built stops after `budget_ms`; 0 clears the limit.
 void lime_tree_set_deadline(long long budget_ms) { set_deadline(budget_ms); }
 
-LimeShape* lime_tree_boolean(const LimeShape* from, const char* op, const char* primitive, const double* p, char** error) {
+/// With `merge`, faces and edges the boolean left on one surface or curve become one, and the face history runs on
+/// through the merge.
+LimeShape* lime_tree_boolean(
+    const LimeShape* from,
+    const char* op,
+    const char* primitive,
+    const double* p,
+    int merge,
+    char** error) {
     try {
         LIME_CATCH_FAULTS;
         std::string message;
         const std::string which = op == nullptr ? "" : op;
         double volume = 0.0;
         Handle(BRepTools_History) history;
-        const TopoDS_Shape result =
+        TopoDS_Shape result =
             build_boolean(from->held.shape, which, spec_of(primitive, p), volume, message, &history);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;
+        }
+        if (merge != 0) {
+            result = merge_same_domain(result, &history);
         }
         return adopt(result, volume, "The boolean removed the solid", error, from, history).release();
     } catch (const Standard_Failure& failure) {
@@ -477,6 +496,150 @@ LimeShape* lime_tree_blend(
     } catch (...) {
         set_error(error, "Open CASCADE failed");
         return nullptr;
+    }
+}
+
+/// `faces[i]` is the face edge `i`'s first distance runs along. `mode` 1 is two distances, 2 a distance and an angle
+/// in degrees from that face. The Rust side resolves edges and faces before this.
+LimeShape* lime_tree_chamfer2(
+    const LimeShape* from,
+    const int* edges,
+    const int* faces,
+    int count,
+    double size,
+    double second,
+    int mode,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<TopoDS_Edge> found;
+        std::vector<TopoDS_Face> sides;
+        for (int i = 0; i < count; ++i) {
+            if (edges[i] < 0 || edges[i] >= from->held.edges.Extent()) {
+                set_error(error, "That edge is not on this solid");
+                return nullptr;
+            }
+            if (faces[i] < 0 || faces[i] >= from->held.faces.Extent()) {
+                set_error(error, "That edge has no face for the first distance");
+                return nullptr;
+            }
+            found.push_back(TopoDS::Edge(from->held.edges(edges[i] + 1)));
+            sides.push_back(TopoDS::Face(from->held.faces(faces[i] + 1)));
+        }
+        if (found.empty()) {
+            set_error(error, "Pick an edge to chamfer.");
+            return nullptr;
+        }
+        std::string message;
+        TopoDS_Shape built;
+        double volume = 0.0;
+        if (!chamfer2_build(from->held.shape, found, sides, size, second, mode == 2, built, volume, message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(built, volume, blend_failed(true, found.size()), error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// `out` gets 15 numbers: the curve (0 line, 1 circle, 2 other), its direction (a line's) or axis (a circle's), how
+/// many faces the edge bounds, then for each of the first two the face's index, its surface (0 plane, 1 cylinder,
+/// 2 cone, 3 sphere, 4 torus, 5 other), and its outward normal where the edge's middle lies on it. 0 when the edge
+/// is not on the solid or cannot be read.
+int lime_tree_edge_sig(LimeShape* shape, int index, double* out) {
+    try {
+        LIME_CATCH_FAULTS;
+        for (int i = 0; i < 15; ++i) {
+            out[i] = 0.0;
+        }
+        if (index < 0 || index >= shape->held.edges.Extent()) {
+            return 0;
+        }
+        if (!shape->edge_faces_ready) {
+            TopExp::MapShapesAndAncestors(shape->held.shape, TopAbs_EDGE, TopAbs_FACE, shape->edge_faces);
+            shape->edge_faces_ready = true;
+        }
+        const TopoDS_Edge edge = TopoDS::Edge(shape->held.edges(index + 1));
+        if (BRep_Tool::Degenerated(edge)) {
+            return 0;
+        }
+        BRepAdaptor_Curve curve(edge);
+        gp_Pnt mid;
+        gp_Vec tangent;
+        curve.D1((curve.FirstParameter() + curve.LastParameter()) / 2.0, mid, tangent);
+        gp_Dir dir(0, 0, 1);
+        if (curve.GetType() == GeomAbs_Line) {
+            out[0] = 0.0;
+            dir = curve.Line().Direction();
+        } else if (curve.GetType() == GeomAbs_Circle) {
+            out[0] = 1.0;
+            dir = curve.Circle().Axis().Direction();
+        } else {
+            out[0] = 2.0;
+            if (tangent.Magnitude() > 1e-12) {
+                dir = gp_Dir(tangent);
+            }
+        }
+        out[1] = dir.X();
+        out[2] = dir.Y();
+        out[3] = dir.Z();
+        const TopTools_ListOfShape* faces = shape->edge_faces.Seek(edge);
+        if (faces == nullptr) {
+            return 1;
+        }
+        std::vector<TopoDS_Face> unique;
+        for (TopTools_ListIteratorOfListOfShape it(*faces); it.More(); it.Next()) {
+            const TopoDS_Face face = TopoDS::Face(it.Value());
+            if (std::none_of(unique.begin(), unique.end(), [&](const TopoDS_Face& have) { return have.IsSame(face); })) {
+                unique.push_back(face);
+            }
+        }
+        const size_t count = std::min<size_t>(unique.size(), 2);
+        out[4] = static_cast<double>(count);
+        for (size_t k = 0; k < count; ++k) {
+            const TopoDS_Face& face = unique[k];
+            double* slot = out + 5 + 5 * k;
+            slot[0] = static_cast<double>(shape->held.faces.FindIndex(face) - 1);
+            BRepAdaptor_Surface surface(face);
+            switch (surface.GetType()) {
+                case GeomAbs_Plane: slot[1] = 0.0; break;
+                case GeomAbs_Cylinder: slot[1] = 1.0; break;
+                case GeomAbs_Cone: slot[1] = 2.0; break;
+                case GeomAbs_Sphere: slot[1] = 3.0; break;
+                case GeomAbs_Torus: slot[1] = 4.0; break;
+                default: slot[1] = 5.0; break;
+            }
+            double first = 0.0;
+            double last = 0.0;
+            const Handle(Geom2d_Curve) on = BRep_Tool::CurveOnSurface(edge, face, first, last);
+            if (on.IsNull()) {
+                continue;
+            }
+            const gp_Pnt2d uv = on->Value((first + last) / 2.0);
+            gp_Pnt point;
+            gp_Vec du;
+            gp_Vec dv;
+            surface.D1(uv.X(), uv.Y(), point, du, dv);
+            gp_Vec normal = du.Crossed(dv);
+            if (normal.Magnitude() <= 1e-12) {
+                continue;
+            }
+            normal.Normalize();
+            if (face.Orientation() == TopAbs_REVERSED) {
+                normal.Reverse();
+            }
+            slot[2] = normal.X();
+            slot[3] = normal.Y();
+            slot[4] = normal.Z();
+        }
+        return 1;
+    } catch (...) {
+        return 0;
     }
 }
 

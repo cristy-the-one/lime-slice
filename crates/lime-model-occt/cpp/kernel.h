@@ -156,6 +156,8 @@ struct PrimitiveSpec {
     /// A polygon prism: its side count, and its width across corners, or across flats with `flats`.
     double sides = 0, across = 0;
     bool flats = false;
+    /// A box's four edges along Z rounded to this radius. 0 keeps them sharp.
+    double corner_radius = 0;
 };
 
 /// The primitive, built and turned. Null, with `error` in plain words, when a size is out of range.
@@ -209,6 +211,20 @@ bool blend_build(
     double& volume,
     std::string& error);
 double largest_blend(const TopoDS_Shape& current, const std::vector<TopoDS_Edge>& edges, double hi, bool chamfer);
+/// A chamfer whose first distance `size` runs along `faces[i]` for `edges[i]`: the second is `second` mm with `by_angle`
+/// false, else `second` degrees from that face.
+bool chamfer2_build(
+    const TopoDS_Shape& current,
+    const std::vector<TopoDS_Edge>& edges,
+    const std::vector<TopoDS_Face>& faces,
+    double size,
+    double second,
+    bool by_angle,
+    TopoDS_Shape& built,
+    double& volume,
+    std::string& error);
+/// Faces and edges on one surface or curve merged into one. `history`, when set, takes the merge's history after its own.
+TopoDS_Shape merge_same_domain(const TopoDS_Shape& shape, Handle(BRepTools_History)* history);
 /// `kept` is the negative side of the plane, `other` the positive side. Both are solids on success,
 /// and each volume is integrated once, while the pieces are sorted.
 bool build_split(

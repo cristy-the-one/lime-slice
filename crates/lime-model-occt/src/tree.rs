@@ -134,11 +134,14 @@ pub struct Solid {
     pub across: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flats: Option<bool>,
+    /// A box's four edges along its own Z, rounded to this radius in the one solid, as a rounded pocket or boss cuts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner_radius: Option<f64>,
 }
 
 impl Solid {
     /// The numbers `spec_of` in tree.cpp reads, in its order.
-    fn numbers(&self) -> [f64; 18] {
+    fn numbers(&self) -> [f64; 19] {
         let [x, y, z] = self.origin;
         let [dx, dy, dz] = self.size;
         let [rx, ry, rz] = self.turn;
@@ -162,6 +165,7 @@ impl Solid {
             or_zero(self.sides),
             or_zero(self.across),
             if self.flats == Some(true) { 1.0 } else { 0.0 },
+            or_zero(self.corner_radius),
         ]
     }
 }
@@ -173,6 +177,42 @@ pub struct EdgeRef {
     pub index: i32,
     pub mid: [f64; 3],
     pub length_mm: f64,
+    /// What the edge is, apart from where: written for a fresh pick, so a rebuild that moved or resized the part still
+    /// finds the same edge when its midpoint and length no longer agree. An edge stored before it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<EdgeSig>,
+}
+
+/// An edge's curve and direction, and the faces either side of it: each one's surface and outward normal at the
+/// edge's middle, in a fixed order. Edges with the same one on a part are told apart by where they are.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EdgeSig {
+    /// 0 a line, 1 a circle, 2 another curve.
+    pub curve: u8,
+    /// A line's direction or a circle's axis, its first non-zero part positive.
+    pub dir: [f64; 3],
+    /// Each face's surface: 0 plane, 1 cylinder, 2 cone, 3 sphere, 4 torus, 5 other, 9 no face.
+    pub kinds: [u8; 2],
+    pub normals: [[f64; 3]; 2],
+}
+
+/// Directions agree within half a degree.
+const SIG_COS: f64 = 0.999_961_923;
+
+impl EdgeSig {
+    fn matches(&self, other: &EdgeSig) -> bool {
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let same = |a: [f64; 3], b: [f64; 3]| {
+            let zero = |v: [f64; 3]| dot(v, v) < 1e-12;
+            (zero(a) && zero(b)) || dot(a, b) >= SIG_COS
+        };
+        self.curve == other.curve
+            && self.kinds == other.kinds
+            && dot(self.dir, other.dir).abs() >= SIG_COS
+            && same(self.normals[0], other.normals[0])
+            && same(self.normals[1], other.normals[1])
+    }
 }
 
 /// Which of a step's edges a pick takes. Every one is sharp: an edge already smooth, or a seam, cannot be blended.
@@ -323,6 +363,10 @@ pub enum Op {
         op: BooleanOp,
         #[serde(flatten)]
         tool: Solid,
+        /// Faces and edges that now lie on one surface or curve are merged after the boolean, so a pad flush with a rim
+        /// leaves one top face. Absent on a step saved before it, which rebuilds with its faces as they were.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        merge: bool,
     },
     Hole {
         origin: [f64; 3],
@@ -352,9 +396,18 @@ pub enum Op {
         edges: Vec<EdgePick>,
         size: f64,
     },
+    /// Equal distances by default. With `size2`, `size` runs along each edge's upper face (the one whose outward
+    /// normal points more up; on a level tie, more along +X, then +Y) and `size2` along the other. With `angleDeg`,
+    /// `size` runs along that face and the bevel leaves it at that angle. `flip` swaps the faces.
     Chamfer {
         edges: Vec<EdgePick>,
         size: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size2: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        angle_deg: Option<f64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        flip: bool,
     },
     Scale {
         factor: f64,
@@ -3055,6 +3108,9 @@ impl Store {
                 // --- A1 group: the same measures as one op, plus how many steps missed the solid. ---
                 let skipped = matches!(built.op, Op::Group { .. }).then_some(built.skipped);
                 let mut metrics = probe_metrics(from, &built.kept, skipped);
+                if !built.sides.is_empty() {
+                    let _ = write!(metrics, ",\"firstFaces\":{}", Value::Array(built.sides.clone()));
+                }
                 // --- Split to print: every piece's volume and box, in partition order.
                 if matches!(built.op, Op::Partition { .. }) {
                     let parts: Vec<Value> = std::iter::once(&built.kept)
@@ -3768,8 +3824,38 @@ struct Resolved {
 /// kept by `filter`; the op keeps the step pick as sent. Other ops pass through.
 fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolved, String> {
     match op {
-        Op::Fillet { edges, size } => resolve_blend(from, edges, *size, false, steps),
-        Op::Chamfer { edges, size } => resolve_blend(from, edges, *size, true, steps),
+        Op::Fillet { edges, size } => {
+            let (refs, picks) = resolve_blend(from, edges, false, steps)?;
+            Ok(Resolved {
+                op: Op::Fillet {
+                    edges: refs,
+                    size: *size,
+                },
+                picks,
+            })
+        }
+        Op::Chamfer {
+            edges,
+            size,
+            size2,
+            angle_deg,
+            flip,
+        } => {
+            if size2.is_some() && angle_deg.is_some() {
+                return Err("Give a chamfer a second distance or an angle, not both.".into());
+            }
+            let (refs, picks) = resolve_blend(from, edges, true, steps)?;
+            Ok(Resolved {
+                op: Op::Chamfer {
+                    edges: refs,
+                    size: *size,
+                    size2: *size2,
+                    angle_deg: *angle_deg,
+                    flip: *flip,
+                },
+                picks,
+            })
+        }
         Op::Shell {
             thickness,
             open_faces,
@@ -3793,13 +3879,14 @@ fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolved, String>
     }
 }
 
+/// A blend's edges as the op stores them, and their indexes on `from`. A fresh index pick is stored with its
+/// signature, and a stored reference keeps the one it had: an edge stored without one is stored as it was.
 fn resolve_blend(
     from: &mut Shape,
     edges: &[EdgePick],
-    size: f64,
     chamfer: bool,
     steps: &Steps,
-) -> Result<Resolved, String> {
+) -> Result<(Vec<EdgePick>, Vec<c_int>), String> {
     let verb = if chamfer { "chamfer" } else { "fillet" };
     let mut refs: Vec<EdgePick> = Vec::with_capacity(edges.len());
     let mut picks: Vec<c_int> = Vec::new();
@@ -3810,11 +3897,26 @@ fn resolve_blend(
             EdgePick::Index(index) if index < 0 && edges.len() == 1 => {
                 return Err(format!("Pick an edge to {verb}."))
             }
-            EdgePick::Index(index) => from.edge(index),
-            EdgePick::Ref(want) => match from.edge(want.index) {
-                Some(have) if same_edge(&have, &want) => Some(have),
-                _ => from.find_edge(&want)?,
-            },
+            EdgePick::Index(index) => from.edge(index).map(|mut have| {
+                have.sig = from.edge_sig(index).map(|(sig, _)| sig);
+                have
+            }),
+            EdgePick::Ref(want) => {
+                let have = match from.edge(want.index) {
+                    Some(have) if same_edge(&have, &want) => Some(have),
+                    _ => match (from.find_edge(&want)?, want.sig) {
+                        (Some(have), _) => Some(have),
+                        (None, Some(sig)) => from.find_edge_like(&want, &sig)?,
+                        (None, None) => None,
+                    },
+                };
+                have.map(|mut have| {
+                    if want.sig.is_some() {
+                        have.sig = from.edge_sig(have.index).map(|(sig, _)| sig).or(want.sig);
+                    }
+                    have
+                })
+            }
             EdgePick::Step(step) => {
                 let made = steps.get(&step.from_node).ok_or(NOT_ABOVE)?;
                 let every = every.get_or_insert_with(|| from.all_edges());
@@ -3883,12 +3985,33 @@ fn resolve_blend(
     if picks.is_empty() {
         return Err(format!("Pick an edge to {verb}."));
     }
-    let op = if chamfer {
-        Op::Chamfer { edges: refs, size }
-    } else {
-        Op::Fillet { edges: refs, size }
-    };
-    Ok(Resolved { op, picks })
+    Ok((refs, picks))
+}
+
+/// For a chamfer by two distances or a distance and an angle: for each edge, the face its first distance runs along
+/// (the upper of its two faces, or the other with `flip`), and that face's outward normal there.
+fn chamfer_sides(from: &mut Shape, picks: &[c_int], flip: bool) -> Result<Vec<(c_int, [f64; 3])>, String> {
+    let mut sides = Vec::with_capacity(picks.len());
+    for &index in picks {
+        let (sig, faces) = from
+            .edge_sig(index)
+            .ok_or("Open CASCADE could not read that edge's faces")?;
+        if faces[1] < 0 || sig.kinds[1] == 9 {
+            return Err("A chamfer by two sizes needs an edge between two faces.".into());
+        }
+        let [a, b] = sig.normals;
+        let upper = |a: [f64; 3], b: [f64; 3]| {
+            for k in [2, 0, 1] {
+                if (a[k] - b[k]).abs() > 1e-6 {
+                    return a[k] > b[k];
+                }
+            }
+            true
+        };
+        let first_is_a = upper(a, b) != flip;
+        sides.push(if first_is_a { (faces[0], a) } else { (faces[1], b) });
+    }
+    Ok(sides)
 }
 
 fn resolve_shell(from: &mut Shape, faces: &[FacePick], thickness: f64) -> Result<Resolved, String> {
@@ -4120,11 +4243,26 @@ fn same_request(stored: &Op, incoming: &Op) -> bool {
     }
     let (stored_edges, incoming_edges) = match (stored, incoming) {
         (Op::Fillet { edges: a, size: x }, Op::Fillet { edges: b, size: y })
-        | (Op::Chamfer { edges: a, size: x }, Op::Chamfer { edges: b, size: y })
             if x == y && a.len() == b.len() =>
         {
             (a, b)
         }
+        (
+            Op::Chamfer {
+                edges: a,
+                size: x,
+                size2: x2,
+                angle_deg: xa,
+                flip: xf,
+            },
+            Op::Chamfer {
+                edges: b,
+                size: y,
+                size2: y2,
+                angle_deg: ya,
+                flip: yf,
+            },
+        ) if x == y && x2 == y2 && xa == ya && xf == yf && a.len() == b.len() => (a, b),
         (Op::Fillet { .. } | Op::Chamfer { .. }, _) => return false,
         // K3. A stored face matches an index pick by index, and a reference by its centre and area.
         (
@@ -4284,6 +4422,8 @@ struct Built {
     joined: Option<Joined>,
     /// Steps of a group whose tool missed the solid. 0 for any other op.
     skipped: u32,
+    /// A chamfer by two sizes: for each edge, the face its first distance runs along. Empty for any other op.
+    sides: Vec<Value>,
 }
 
 /// --- Split to print. Where each piece's number was cut, in partition order.
@@ -4581,6 +4721,7 @@ fn build_group(
         numbered: None,
         joined: None,
         skipped,
+        sides: Vec::new(),
     })
 }
 
@@ -4633,7 +4774,11 @@ fn build(
                 )
             })
         }
-        Op::Boolean { op: which, tool } => {
+        Op::Boolean {
+            op: which,
+            tool,
+            merge,
+        } => {
             let which = which.name();
             let p = tool.numbers();
             Shape::made(|error| unsafe {
@@ -4642,6 +4787,7 @@ fn build(
                     which.as_ptr(),
                     tool.primitive.name().as_ptr(),
                     p.as_ptr(),
+                    c_int::from(*merge),
                     error,
                 )
             })
@@ -4739,6 +4885,52 @@ fn build(
             made.pop()
                 .ok_or_else(|| "The planes did not split this solid".to_string())
         }
+        Op::Chamfer {
+            size,
+            size2,
+            angle_deg,
+            flip,
+            ..
+        } if size2.is_some() || angle_deg.is_some() => {
+            let (second, mode) = match (size2, angle_deg) {
+                (Some(size2), _) => (*size2, 1),
+                (None, Some(angle)) => (*angle, 2),
+                (None, None) => unreachable!("matched a second size"),
+            };
+            let sides = chamfer_sides(from, &picks, *flip).map_err(BuildFail::plain)?;
+            let faces: Vec<c_int> = sides.iter().map(|(face, _)| *face).collect();
+            let built = Shape::made(|error| unsafe {
+                lime_tree_chamfer2(
+                    from.raw(),
+                    picks.as_ptr(),
+                    faces.as_ptr(),
+                    picks.len() as c_int,
+                    *size,
+                    second,
+                    mode,
+                    error,
+                )
+            });
+            let sides = picks
+                .iter()
+                .zip(&sides)
+                .map(|(edge, (face, normal))| json!({ "edge": edge, "face": face, "normal": normal }))
+                .collect();
+            return match built {
+                Ok(kept) => Ok(Built {
+                    op,
+                    kept,
+                    other: None,
+                    pieces: Vec::new(),
+                    pins: None,
+                    numbered: None,
+                    joined: None,
+                    skipped: 0,
+                    sides,
+                }),
+                Err(message) => Err(BuildFail::plain(message)),
+            };
+        }
         Op::Fillet { size, .. } | Op::Chamfer { size, .. } => {
             let chamfer = matches!(op, Op::Chamfer { .. });
             let indexes = &picks;
@@ -4769,6 +4961,7 @@ fn build(
                     numbered: None,
                     joined: None,
                     skipped: 0,
+                    sides: Vec::new(),
                 }),
                 Err(message) => Err(BuildFail {
                     message,
@@ -4970,6 +5163,7 @@ fn build(
             numbered,
             joined,
             skipped: 0,
+            sides: Vec::new(),
         }),
         Err(message) => Err(BuildFail::plain(message)),
     }
@@ -5028,6 +5222,7 @@ extern "C" {
         op: *const c_char,
         primitive: *const c_char,
         p: *const f64,
+        merge: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     fn lime_tree_join(
@@ -5051,6 +5246,23 @@ extern "C" {
         max_mm: *mut f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    /// A chamfer by two distances (`mode` 1) or a distance and an angle in degrees (`mode` 2). `faces[i]` is the face
+    /// edge `i`'s first distance runs along.
+    #[allow(clippy::too_many_arguments)]
+    fn lime_tree_chamfer2(
+        from: *const RawShape,
+        edges: *const c_int,
+        faces: *const c_int,
+        count: c_int,
+        size: f64,
+        second: f64,
+        mode: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    /// What an edge is, apart from where: `out` gets the curve (0 line, 1 circle, 2 other), its direction or axis, the
+    /// number of faces it bounds (0 to 2), and for each of the first two its index, surface kind (0 plane, 1 cylinder,
+    /// 2 cone, 3 sphere, 4 torus, 5 other), and outward normal at the edge's middle: 15 numbers.
+    fn lime_tree_edge_sig(shape: *mut RawShape, index: c_int, out: *mut f64) -> c_int;
     fn lime_tree_split(
         from: *const RawShape,
         p: *const f64,
@@ -5598,6 +5810,7 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, BuildFail> 
             numbered: None,
             joined: None,
             skipped: 0,
+            sides: Vec::new(),
         }),
         Err(message) => Err(BuildFail::plain(message)),
     }
@@ -6283,6 +6496,7 @@ impl Shape {
             index,
             mid,
             length_mm: length,
+            sig: None,
         })
     }
 
@@ -6419,6 +6633,83 @@ impl Shape {
             }
         }
         Ok(found)
+    }
+
+    /// Edge `index`'s signature, and the indexes of its faces in the signature's order (-1 for none).
+    fn edge_sig(&mut self, index: i32) -> Option<(EdgeSig, [c_int; 2])> {
+        let mut out = [0.0f64; 15];
+        if unsafe { lime_tree_edge_sig(self.0.as_ptr(), index, out.as_mut_ptr()) } == 0 {
+            return None;
+        }
+        if !out.iter().all(|value| value.is_finite()) {
+            return None;
+        }
+        let mut dir = [out[1], out[2], out[3]];
+        if let Some(lead) = dir.iter().find(|value| value.abs() > 1e-9) {
+            if *lead < 0.0 {
+                dir = dir.map(|value| -value);
+            }
+        }
+        let count = out[4] as usize;
+        let side = |k: usize| -> (c_int, u8, [f64; 3]) {
+            if k >= count {
+                return (-1, 9, [0.0; 3]);
+            }
+            let slot = &out[5 + 5 * k..10 + 5 * k];
+            (slot[0] as c_int, slot[1] as u8, [slot[2], slot[3], slot[4]])
+        };
+        let mut sides = [side(0), side(1)];
+        let key = |side: &(c_int, u8, [f64; 3])| {
+            let round = |value: f64| (value * 1e6).round() as i64;
+            (side.1, round(side.2[0]), round(side.2[1]), round(side.2[2]))
+        };
+        if key(&sides[1]) < key(&sides[0]) {
+            sides.swap(0, 1);
+        }
+        let sig = EdgeSig {
+            curve: out[0] as u8,
+            dir,
+            kinds: [sides[0].1, sides[1].1],
+            normals: [sides[0].2, sides[1].2],
+        };
+        Some((sig, [sides[0].0, sides[1].0]))
+    }
+
+    /// The edge with `sig` nearest where `want` was, when the part moved or changed size under it. None when no edge
+    /// has it; an error when two are as near.
+    fn find_edge_like(&mut self, want: &EdgeRef, sig: &EdgeSig) -> Result<Option<EdgeRef>, String> {
+        let count = self.fingerprint().edges;
+        let mut alike: Vec<(f64, EdgeRef)> = Vec::new();
+        for index in 0..count {
+            let Some((have_sig, _)) = self.edge_sig(index) else {
+                continue;
+            };
+            if !have_sig.matches(sig) {
+                continue;
+            }
+            let Some(have) = self.edge(index) else {
+                continue;
+            };
+            let d = (0..3)
+                .map(|i| (have.mid[i] - want.mid[i]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            if d.is_finite() {
+                alike.push((d, have));
+            }
+        }
+        alike.sort_by(|a, b| a.0.total_cmp(&b.0));
+        match alike.as_slice() {
+            [] => Ok(None),
+            [(_, only)] => Ok(Some(*only)),
+            [(near, best), (next, _), ..] => {
+                if next - near <= EDGE_MATCH_MM.max(near * 1e-3) {
+                    Err("Two edges match the one this step rounds".into())
+                } else {
+                    Ok(Some(*best))
+                }
+            }
+        }
     }
 
     /// The solid reply for node `id`: the tessellation's arrays as base64 of their little-endian

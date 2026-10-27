@@ -35,7 +35,8 @@ import { applyRequest, crossEditRequest, editRequest, exportRequest, extrudeOp, 
 import { sweepSections, type SweepSpec } from "../src/modeling/sweep.ts";
 import { thinWalls } from "../src/modeling/thin.ts";
 import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "../src/modeling/anchors.ts";
-import { expandOps, type PartDef } from "../src/modeling/macro.ts";
+import { expandOps, expandOpsWithTexts, type PartDef } from "../src/modeling/macro.ts";
+import { exprLeaves, linkedExprs, withLeaf } from "../src/modeling/links.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, toSolidOp, turnDir, type Affine } from "../src/model-space.ts";
 import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
@@ -126,10 +127,11 @@ import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSch
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
-import { evaluateTable, isPlainNumber, withExprs } from "../src/modeling/params.ts";
+import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
-import { repeatLabel } from "../src/model-repeat.ts";
-import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "../src/modeling/expr.ts";
+import { followRepeatSources, repeatLabel } from "../src/model-repeat.ts";
+import { planRebuild } from "../src/param-rebuild.ts";
+import { ExprError, PARAM_NAME, evaluate, resolveNumbers, resolveTexts, substituteNames } from "../src/modeling/expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
 
 const OVERLAP = "These parts overlap. Move one before slicing.";
@@ -161,8 +163,8 @@ const FEATURE_EXPR_FIELDS: readonly (readonly [string, string])[] = [["width", "
 
 /**
  * The expression fields of one typed op, keyed as the app's panel stores them (`op.exprs`), so the app's Rebuild and
- * its out-of-date mark follow a parameter the MCP named. A placement (origin, centre, turn) is left out: the stored op
- * is in the solid's frame, so its numbers are not the typed ones on a moved part.
+ * its out-of-date mark follow a parameter the MCP named. The session uses it for a feature (pocket, boss, texture, …),
+ * whose group the app re-expands from its source; every other op links what it stored (`linksOf`).
  */
 export function typedExprs(op: unknown): Record<string, string> | undefined {
   if (!op || typeof op !== "object" || Array.isArray(op)) return undefined;
@@ -235,7 +237,7 @@ const NAME_LIMIT = 120;
 const DETACHABLE = new Set([
   "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
   "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
-  "sim_run", "sim_sweep",
+  "sim_run", "sim_sweep", "model_params",
 ]);
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
@@ -306,6 +308,8 @@ export interface PlateObject {
   note?: string;
   modelPose: Affine;
   workplane: Workplane;
+  /** --- Gaps A3. A workplane typed with expressions: its numbers and text, so ops typed on it link to them and a parameter set moves it. */
+  workplaneTyped?: TypedWorkplane;
   tree: ModelTree | null;
   /** The modeler was restarted under this tree: it is rebuilt from its root and ops at its current step on next use. */
   treeStale?: boolean;
@@ -340,6 +344,14 @@ export interface PlateObject {
   recipe?: Recipe;
   /** Stress study. Absent until sim_setup. Not sent to the slicer. */
   sim?: ObjectStudy;
+}
+
+/** A workplane_set origin and turn as numbers, beside the text each was typed as (`resolveTexts`). */
+interface TypedWorkplane {
+  source: "global" | "bed" | "face";
+  origin: [number, number, number];
+  turn: [number, number, number];
+  text: { origin: unknown; turn: unknown };
 }
 
 /** A model_build's base, ops, parameters, and name, as typed. */
@@ -580,6 +592,26 @@ function stlFileName(name: string): string {
 function stepFileName(name: string): string {
   const stem = name.replace(/\.(step|stp|stl|3mf|brep)$/i, "");
   return `${stem || "solid"}.step`;
+}
+
+/**
+ * Gaps 13. For a chamfer by two sizes, the face each edge's `size` runs along, as the engine chose it (each edge's upper
+ * face, or its lower with flip), with that face's outward normal turned into the part's pose. Null for any other probe.
+ */
+function chamferSides(raw: unknown, pose: Affine): { text: string; rows: { edge: number; face: number; normal: number[] }[] } | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const rows = raw.flatMap((row) => {
+    const { edge, face, normal } = (row ?? {}) as { edge?: unknown; face?: unknown; normal?: unknown };
+    if (typeof edge !== "number" || typeof face !== "number" || !Array.isArray(normal) || normal.length !== 3) return [];
+    const turned = turnDir(pose, normal as [number, number, number]).map((value) => Math.round(value * 1000) / 1000 + 0);
+    return [{ edge, face, normal: turned }];
+  });
+  if (rows.length === 0) return null;
+  const faces = [...new Set(rows.map((row) => row.face))];
+  const text = rows.length === 1
+    ? `size runs along face ${rows[0]!.face} (normal ${rows[0]!.normal.join(", ")}); flip: true puts it on the other face.`
+    : `size runs along face${faces.length === 1 ? "" : "s"} ${faces.join(", ")}, one for each edge; flip: true puts it on the other faces.`;
+  return { text, rows };
 }
 
 /** A value as text with its keys sorted, so two ops that ask the same thing have the same key. */
@@ -910,8 +942,18 @@ export class Session {
   private piecesOffPlate: PlateObject[] = [];
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
   private pendingRecipe: Recipe | null = null;
-  /** --- D25. Each typed op's expression fields from the call being run, by op index; set before its numbers resolve. */
-  private pendingExprs: (Record<string, string> | undefined)[] = [];
+  /**
+   * --- D25, gaps A1–A3. The call's ops as typed, each a twin of its resolved op with every expression kept as text in
+   * the project's names (`resolveTexts`), by op index after each and use expand; the base's for model_build. Set before
+   * the numbers resolve, read by whatever applies the ops, so each stored step links to what it was typed with.
+   */
+  private pendingTexts: unknown[] = [];
+  private pendingBaseText: unknown = undefined;
+  /** Expressions of the call being run that no stored number could follow, and the op being linked. */
+  private notLinked: { op?: number; field: string; text: string }[] = [];
+  private linkingOp: number | undefined = undefined;
+  /** --- Gaps A4. Call-level params a model_build gave for names the project already has: this call only. */
+  private pendingOneOff: string[] = [];
 
   /** How app_open reaches the desktop app. Tests replace it. */
   appOpener: AppOpener = systemOpener;
@@ -956,7 +998,7 @@ export class Session {
     const problem = validateTool(name, args ?? {});
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
-    const changes = !annotationsFor(name).readOnlyHint && changesPlate(name);
+    const changes = !annotationsFor(name).readOnlyHint && (changesPlate(name) || (name === "model_params" && input.rebuild === true));
     // The plate as it stood before a call that can run long is on disk before it starts; others rely on the save after.
     const long = LONG_CALLS.has(name) || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
     if (changes && this.inflight === 0 && long) this.flushAutosave();
@@ -1216,41 +1258,92 @@ export class Session {
    * check, from the session's parameters and the call's own `params`.
    */
   private withNumbers(name: string, args: unknown): { args: unknown } | { reason: string } {
-    this.pendingExprs = [];
+    this.pendingTexts = [];
+    this.pendingBaseText = undefined;
+    this.pendingOneOff = [];
+    this.notLinked = [];
+    this.linkingOp = undefined;
     if (!EXPRESSION_TOOLS.has(name) || !args || typeof args !== "object") return { args };
     const input = { ...(args as Record<string, unknown>) };
+    if (name === "workplane_set") return this.workplaneNumbers(input);
     // Ops typed in this call get the box anchor written in; a recipe rerun keeps what its ops were saved with.
     if (input.op !== undefined) input.op = withBoxAnchor(input.op);
     if (Array.isArray(input.ops)) input.ops = input.ops.map((op) => withBoxAnchor(op));
-    if (name === "model_apply" || name === "model_edit") this.pendingExprs = [typedExprs(input.op)];
-    // A part placed with {kind: "use"} becomes several ops, so a batch that uses one keeps no expressions.
-    if (name === "model_apply_batch" && Array.isArray(input.ops) && !input.ops.some((op) => (op as { kind?: unknown } | null)?.kind === "use")) this.pendingExprs = input.ops.map(typedExprs);
     if (name === "model_define") return { args: input };
-    // model_build {object, params} with no ops reruns the recipe that object was built from, with those parameters.
+    const given = input.params && typeof input.params === "object" && !Array.isArray(input.params) ? input.params as Record<string, unknown> : {};
+    // model_build {object, params} with no ops reruns the recipe that object was built from, with those parameters. The
+    // recipe's own names come first; a project parameter of the same name, set since, wins over them.
     if (name === "model_build" && typeof input.object === "string" && input.ops === undefined && input.base === undefined) {
       const recipe = this.find(input.object)?.recipe;
       if (!recipe) return { reason: "That object has no recipe to rerun. Pass base and ops." };
       input.base = structuredClone(recipe.base);
       input.ops = structuredClone(recipe.ops);
-      input.params = { ...recipe.params, ...((input.params as Record<string, unknown> | undefined) ?? {}) };
+      const kept = Object.fromEntries(Object.entries(recipe.params ?? {}).filter(([key]) => !Object.hasOwn(this.paramText, key)));
+      input.params = { ...kept, ...given };
       if (input.name === undefined && recipe.name) input.name = recipe.name;
     }
-    if (name === "model_build") this.pendingRecipe = { base: structuredClone(input.base), ops: structuredClone(input.ops ?? []), params: structuredClone((input.params as Record<string, unknown>) ?? {}), name: typeof input.name === "string" ? input.name : undefined };
+    const callParams = input.params && typeof input.params === "object" && !Array.isArray(input.params) ? input.params as Record<string, unknown> : {};
+    if (name === "model_build") {
+      // --- Gaps A4. A call-level value for a project parameter is for this call only: the recipe keeps the names the
+      // project does not have, which a rerun needs, so a later model_params set is never hidden behind it.
+      const local = Object.fromEntries(Object.entries(callParams).filter(([key]) => !Object.hasOwn(this.paramText, key)));
+      this.pendingOneOff = Object.keys(callParams).filter((key) => Object.hasOwn(this.paramText, key));
+      this.pendingRecipe = { base: structuredClone(input.base), ops: structuredClone(input.ops ?? []), params: structuredClone(local), name: typeof input.name === "string" ? input.name : undefined };
+    }
     let params = this.params;
-    if (input.params && typeof input.params === "object") {
-      const merged = this.mergeParams(input.params as Record<string, unknown>);
+    if (Object.keys(callParams).length > 0) {
+      const merged = this.mergeParams(callParams);
       if ("reason" in merged && typeof merged.reason === "string") return { reason: merged.reason };
       params = merged as Record<string, number>;
     }
+    const scope = this.nameScope(callParams);
     try {
+      if (input.op !== undefined) this.pendingTexts = [resolveTexts(input.op, scope, OP_WORDS)];
+      if (input.base !== undefined) this.pendingBaseText = resolveTexts(input.base, scope, OP_WORDS);
       for (const key of ["op", "base"]) {
         if (input[key] !== undefined) input[key] = resolveNumbers(input[key], params, key, OP_WORDS);
       }
-      if (Array.isArray(input.ops)) input.ops = expandOps(input.ops, params, this.parts, OP_WORDS);
+      if (Array.isArray(input.ops)) {
+        const expanded = expandOpsWithTexts(input.ops, params, scope, this.parts, OP_WORDS);
+        input.ops = expanded.map((row) => row.op);
+        this.pendingTexts = expanded.map((row) => row.text);
+      }
     } catch (err) {
       if (err instanceof ExprError) return { reason: err.message };
       throw err;
     }
+    return { args: input };
+  }
+
+  /**
+   * --- Gaps A2. The names an op of this call may use, each as text in the project's names: a project parameter stands for
+   * itself, and a call-level one for the text it was given, so a step typed `w` under call params {w: 50} is the number 50.
+   */
+  private nameScope(callParams: Record<string, unknown>): Record<string, string> {
+    const scope: Record<string, string> = {};
+    for (const key of Object.keys(this.params)) scope[key] = key;
+    for (const [key, value] of Object.entries(callParams)) scope[key] = typeof value === "number" ? String(value) : substituteNames(String(value).trim(), scope);
+    return scope;
+  }
+
+  /** Expression text that names a project parameter: what a stored number may follow. */
+  private readonly followsParameters = (text: string): boolean => !isPlainNumber(text) && Object.keys(this.params).some((key) => expressionMentions(text, key));
+
+  /** --- Gaps A3. workplane_set's origin and turn may be expressions: resolved here, their text kept for the object. */
+  private workplaneNumbers(input: Record<string, unknown>): { args: unknown } | { reason: string } {
+    const scope = this.nameScope({});
+    const text: Record<string, unknown> = {};
+    try {
+      for (const key of ["origin", "turn"]) {
+        if (!Array.isArray(input[key])) continue;
+        text[key] = resolveTexts(input[key], scope, OP_WORDS);
+        input[key] = resolveNumbers(input[key], this.params, key, OP_WORDS);
+      }
+    } catch (err) {
+      if (err instanceof ExprError) return { reason: err.message };
+      throw err;
+    }
+    this.pendingTexts = [text];
     return { args: input };
   }
 
@@ -1361,7 +1454,7 @@ export class Session {
     switch (name) {
       case "session_info": return this.sessionInfo();
       case "project_open": return this.projectOpen(String(input.path));
-      case "project_create": return this.projectCreate();
+      case "project_create": return this.projectCreate(input);
       case "project_save": return this.projectSave(String(input.name), input.ifExists === "refuse");
       case "app_open": return this.appOpen(typeof input.path === "string" ? input.path : undefined);
       case "mesh_import": return this.meshImport(String(input.path), typeof input.stepToleranceMm === "number" ? input.stepToleranceMm : STEP, input.pieces === true);
@@ -1670,7 +1763,18 @@ export class Session {
     return { ok: true, label: snap.label };
   }
 
-  private async projectCreate(): Promise<Record<string, unknown>> {
+  private async projectCreate(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    // --- Gaps A6. Parameters and parts are not in plate_undo: a new plate that would drop them is refused unless asked.
+    const names = Object.keys(this.paramText);
+    const parts = [...this.parts.keys()];
+    if (input.discard !== true && (names.length > 0 || parts.length > 0)) {
+      const list = (items: string[]) => (items.length > 4 ? `${items.slice(0, 4).join(", ")}, …` : items.join(", "));
+      const held = [
+        ...(names.length ? [`${names.length} parameter${names.length === 1 ? "" : "s"} (${list(names)})`] : []),
+        ...(parts.length ? [`${parts.length} part${parts.length === 1 ? "" : "s"} (${list(parts)})`] : []),
+      ].join(" and ");
+      return { ok: false, reason: `This project has ${held}, which a new plate drops and plate_undo cannot bring back. Save it with project_save first, or call project_create with discard: true.` };
+    }
     this.remember("New plate");
     await this.forgetObjects();
     this.objects.length = 0;
@@ -3742,7 +3846,7 @@ export class Session {
   private model(name: string, input: Record<string, unknown>): Record<string, unknown> | Promise<Record<string, unknown>> {
     if (name === "solid_new") return input.coupon !== undefined ? this.fitCouponNew(input) : this.solidNew(input);
     if (name === "model_build") return this.build(input);
-    if (name === "model_params") return this.paramsTool(input);
+    if (name === "model_params") return input.rebuild === true ? this.paramsRebuild(input) : this.paramsTool(input);
     if (name === "model_define") return this.defineTool(input);
     const requested = typeof input.object === "string" ? input.object : "";
     // --- Split to print (D12). An export target's piece is off the plate and still a part to model.
@@ -4140,8 +4244,13 @@ export class Session {
       const plane = this.typedPlane(obj);
       return { ok: true, source: plane.source, origin: plane.origin, turn: plane.turn };
     };
+    const typed = this.pendingTexts[0] as { origin?: unknown; turn?: unknown } | undefined;
+    this.pendingTexts = [];
+    delete obj.workplaneTyped;
     if (origin && turn && origin.every((value) => typeof value === "number") && turn.every((value) => typeof value === "number")) {
       obj.workplane = workplaneOwn({ source, origin, turn }, obj.modelPose);
+      const text = { origin: typed?.origin, turn: typed?.turn };
+      if (exprLeaves({ origin, turn }, text, this.followsParameters).length > 0) obj.workplaneTyped = { source, origin: [...origin], turn: [...turn], text };
       return answer();
     }
     if (source === "global") {
@@ -4216,8 +4325,14 @@ export class Session {
       if ("reason" in picked) return picked;
       const size = spec.size;
       if (typeof size !== "number") return { reason: "This edit needs a size in millimetres." };
-      const op: ModelOp = { kind, edges: picked, size };
-      return { op: toSolidOp(op, obj.modelPose), typed: { kind, edges: picked, size } };
+      if (kind === "fillet") return { op: toSolidOp({ kind, edges: picked, size }, obj.modelPose), typed: { kind, edges: picked, size } };
+      // Gaps 13. A second distance or an angle, and which face takes `size`. Absent fields keep equal sides.
+      const second = typeof spec.size2 === "number" ? { size2: spec.size2 } : {};
+      const angle = typeof spec.angleDeg === "number" ? { angleDeg: spec.angleDeg } : {};
+      if ("size2" in second && "angleDeg" in angle) return { reason: "Give a chamfer size2 or angleDeg, not both." };
+      const flip = spec.flip === true && ("size2" in second || "angleDeg" in angle) ? { flip: true as const } : {};
+      const op: ModelOp = { kind, edges: picked, size, ...second, ...angle, ...flip };
+      return { op: toSolidOp(op, obj.modelPose), typed: { kind, edges: picked, size, ...second, ...angle, ...flip } };
     }
     if (kind === "hole") {
       if (typeof spec.screw === "string") {
@@ -4426,7 +4541,7 @@ export class Session {
       const local = primitiveFrom(spec, "box");
       if ("reason" in local) return local;
       const solid = planePrimitive(local, this.typedPlane(obj));
-      const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid }, obj.modelPose);
+      const op = toSolidOp({ kind: "boolean", op: booleanOp, ...solid, merge: true }, obj.modelPose);
       // A tool placed by centre already says where its middle goes: turnEcho has no note for it. cleanOp drops the mark.
       return { op, typed: { kind: "boolean", op: booleanOp, ...solid, ...(spec.centre !== undefined ? { centre: spec.centre } : {}) } };
     }
@@ -4617,6 +4732,8 @@ export class Session {
       return answer({ ok: false, reason: splitReason(where), ...(where ? { where } : {}) });
     }
     obj.probes.set(probeKey(String(at), baked.op), true);
+    const sides = chamferSides(reply.firstFaces, obj.modelPose);
+    if (sides) return answer({ ok: true, reason: `${note.text} ${sides.text}`, firstFaces: sides.rows });
     return answer({ ok: true, reason: note.text });
   }
 
@@ -4676,30 +4793,95 @@ export class Session {
     const anchored = this.anchored(obj, input.op as Record<string, unknown>);
     if ("reason" in anchored) return { ok: false, reason: anchored.reason };
     const raw = anchored.op;
-    const exprs = this.pendingExprs;
-    this.pendingExprs = [];
+    const texts = this.pendingTexts;
+    this.pendingTexts = [];
     if (isComposite(raw?.kind)) {
-      const { checkpoints, ...ran } = await this.applyMany(obj, [raw], { label: typeof raw.label === "string" ? raw.label : undefined });
-      this.keepExprs(obj, checkpoints as (number | null)[], exprs);
-      return ran;
+      const { checkpoints: _checkpoints, ...ran } = await this.applyMany(obj, [raw], { label: typeof raw.label === "string" ? raw.label : undefined, texts });
+      return { ...ran, ...this.takeNotLinked() };
     }
     if (input.probe === true) {
       const probed = await this.probe(obj, raw);
       if (probed.ok !== true) return { ...probed, applied: false };
     }
+    const baked = this.bake(obj, structuredClone(raw));
+    const exprs = "reason" in baked ? undefined : this.plainLinks(obj, raw, texts[0], baked.op);
     const done = await this.apply(obj, raw);
-    if (done.ok === true) this.keepExprs(obj, [parseNode(done.node)], exprs);
-    return done;
+    if (done.ok === true) this.keepExprs(obj, parseNode(done.node), exprs);
+    return done.ok === true ? { ...done, ...this.takeNotLinked() } : done;
   }
 
-  /** --- D25. Each applied op's node keeps the expressions it was typed with. A node an op did not make is left. */
-  private keepExprs(obj: PlateObject, nodes: readonly (number | null)[], exprs: readonly (Record<string, string> | undefined)[]): void {
-    nodes.forEach((id, index) => {
-      const texts = exprs[index];
-      const node = id === null ? undefined : obj.tree?.nodes.get(id);
-      if (!texts || !node?.op || !obj.tree || id === null) return;
-      obj.tree = withNode(obj.tree, id, { op: withExprs(node.op, texts) });
-    });
+  /** --- D25. An applied op's node keeps the expressions it was typed with. */
+  private keepExprs(obj: PlateObject, id: number | null, exprs: Record<string, string> | undefined): void {
+    const node = id === null ? undefined : obj.tree?.nodes.get(id);
+    if (!exprs || !node?.op || !obj.tree || id === null) return;
+    obj.tree = withNode(obj.tree, id, { op: withExprs(node.op, exprs) });
+  }
+
+  /**
+   * --- Gaps A1–A3. The `exprs` of each op `make` stores from the typed op `raw`, linked to the expressions its twin
+   * holds and to the workplane's: `make` is the same typed-to-stored path the call takes, run again with each typed
+   * number moved (`linkedExprs`). `stored` is what was stored, by `make`'s index.
+   */
+  private linksOf(obj: PlateObject, raw: Record<string, unknown>, twin: unknown, make: (op: Record<string, unknown>) => readonly ModelOp[] | null, stored: readonly (ModelOp | null)[]): (Record<string, string> | undefined)[] {
+    const own = twin === undefined ? [] : exprLeaves(raw, twin, this.followsParameters);
+    const typed = obj.workplaneTyped;
+    const plane = typed ? exprLeaves({ origin: typed.origin, turn: typed.turn }, typed.text, this.followsParameters) : [];
+    const leaves = [...own, ...plane];
+    if (leaves.length === 0) return stored.map(() => undefined);
+    const saved = obj.workplane;
+    const links = linkedExprs(leaves, (values) => {
+      let op: unknown = raw;
+      own.forEach((leaf, i) => {
+        op = withLeaf(op, leaf.path, values[i]!);
+      });
+      if (typed && plane.length > 0) {
+        let moved: unknown = { origin: typed.origin, turn: typed.turn };
+        plane.forEach((leaf, j) => {
+          moved = withLeaf(moved, leaf.path, values[own.length + j]!);
+        });
+        const { origin, turn } = moved as { origin: [number, number, number]; turn: [number, number, number] };
+        obj.workplane = workplaneOwn({ source: typed.source, origin, turn }, obj.modelPose);
+      }
+      try {
+        return make(structuredClone(op) as Record<string, unknown>);
+      } finally {
+        obj.workplane = saved;
+      }
+    }, stored);
+    for (const leaf of links.unlinked) {
+      if (this.notLinked.length >= 20) break;
+      const field = `${leaves.indexOf(leaf) >= own.length ? "workplane." : ""}${leaf.path.join(".")}`;
+      this.notLinked.push({ ...(this.linkingOp !== undefined ? { op: this.linkingOp } : {}), field, text: leaf.text });
+    }
+    return links.exprs;
+  }
+
+  /** --- Gaps A3. The expressions this call typed that no stored number follows, for its reply. */
+  private takeNotLinked(): Record<string, unknown> {
+    const rows = this.notLinked;
+    this.notLinked = [];
+    this.linkingOp = undefined;
+    if (rows.length === 0) return {};
+    return { notLinked: rows, notLinkedNote: "These expressions set the numbers once but do not follow a parameter change (a count, or a turn off a tilted plane, moves more than a fixed sum). Rerun the recipe after changing them." };
+  }
+
+  /**
+   * `op` with the links of `exprs` its stored numbers match at the current parameters. A piece stored other than as
+   * planned (shortened so it does not only touch) drops the links it no longer matches, so it is never out of date at once.
+   */
+  private inDateExprs(op: ModelOp, exprs: Record<string, string> | undefined): ModelOp {
+    if (!exprs) return op;
+    const kept = Object.fromEntries(Object.entries(exprs).filter(([key, text]) => !stepOutOfDate({ ...op, exprs: { [key]: text } } as ModelOp, this.params)));
+    return Object.keys(kept).length > 0 ? withExprs(op, kept) : op;
+  }
+
+  /** The links of one plain op, as `bake` stores it. Partitions and joins keep none. */
+  private plainLinks(obj: PlateObject, raw: Record<string, unknown>, twin: unknown, stored: ModelOp | null): Record<string, string> | undefined {
+    if (!stored || raw.kind === "partition" || raw.kind === "join") return undefined;
+    return this.linksOf(obj, raw, twin, (op) => {
+      const baked = this.bake(obj, op);
+      return "reason" in baked ? null : [baked.op];
+    }, [stored])[0];
   }
 
   private async apply(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
@@ -4744,7 +4926,11 @@ export class Session {
       const failedStep = Number.isInteger(reply.failedStep) ? { failedStep: reply.failedStep as number } : {};
       return { ok: false, reason: plainModelError(reply.error, baked.op.kind), ...failedStep };
     }
-    obj.tree = withChild(obj.tree, tree.current, { id: node, op: baked.op, label: opLabel(baked.op), fingerprint: null });
+    // A blend is stored as the engine echoes it: each picked edge as a reference with its signature, so a replay after
+    // an edit above, or a variable that moves the part, finds the same edge rather than whatever has its old index.
+    const echo = reply.op && typeof reply.op === "object" ? reply.op as ModelOp : null;
+    const stored = (baked.op.kind === "fillet" || baked.op.kind === "chamfer") && echo?.kind === baked.op.kind ? { ...echo, ...(baked.op.exprs ? { exprs: baked.op.exprs } : {}) } : baked.op;
+    obj.tree = withChild(obj.tree, tree.current, { id: node, op: stored, label: opLabel(stored), fingerprint: null });
     const prior = obj.solid;
     const solid = rememberSolid(reply);
     if (solid) obj.solid = solid;
@@ -4840,7 +5026,7 @@ export class Session {
     const local = primitiveFrom(raw, "box");
     if ("reason" in local) return local;
     const op = raw.op === "fuse" || raw.op === "common" ? raw.op : "cut";
-    return { op, spec: planePrimitive(local, this.typedPlane(obj)) };
+    return { op, spec: planePrimitive(local, this.typedPlane(obj)), merge: true };
   }
 
   /**
@@ -4851,7 +5037,7 @@ export class Session {
    * step. `offset` numbers the ops from there, for a resumed build.
    * --- A9. A composite whose pieces all apply is then one group node, and one checkpoint. ---
    */
-  private async applyMany(obj: PlateObject, raws: Record<string, unknown>[], options: { label?: string; onError?: unknown; keep?: boolean; offset?: number; start?: number }): Promise<Record<string, unknown>> {
+  private async applyMany(obj: PlateObject, raws: Record<string, unknown>[], options: { label?: string; onError?: unknown; keep?: boolean; offset?: number; start?: number; texts?: readonly unknown[] }): Promise<Record<string, unknown>> {
     const opened = await this.opened(obj);
     if ("reason" in opened) return { ok: false, reason: opened.reason };
     const mode = options.onError === "stop" || options.onError === "skip" ? options.onError : "rollback";
@@ -4928,10 +5114,15 @@ export class Session {
         checkpoints.push(null);
         return null;
       };
+      const twin = options.texts?.[index];
+      this.linkingOp = index + offset;
       if (!isComposite(raw.kind)) {
         if ((made += 1) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+        const baked = twin === undefined ? null : this.bake(obj, structuredClone(raw));
+        const exprs = baked && !("reason" in baked) ? this.plainLinks(obj, raw, twin, baked.op) : undefined;
         const probed = await this.probe(obj, raw);
         const done = probed.ok === true ? await this.apply(obj, raw) : probed;
+        if (done.ok === true) this.keepExprs(obj, parseNode(done.node), exprs);
         if (done.ok !== true) {
           const ended = await refuse({ reason: String(done.reason ?? "This edit did not apply."), ...(done.where ? { where: done.where } : {}) });
           if (ended) return ended;
@@ -4955,11 +5146,34 @@ export class Session {
       }
       const pieces = copies === null ? expanded as Piece[] : [];
       const count = expanded.length;
+      // --- Gaps A3. A pattern's or mirror's steps link one by one, read now on the solid they expanded on. A feature
+      // re-expands from its source in the app, so it links its source's fields instead (typedExprs).
+      const feature = isFeatureTool(raw.kind);
+      const make = (op: Record<string, unknown>): ModelOp[] | null => {
+        const ctx = { ...context, plane: this.typedPlane(obj) };
+        const again = featureCopies(op, ctx.plane, (spec) => this.profilePlane(obj, spec));
+        if (again !== null) {
+          if ("reason" in again) return null;
+          const ops: ModelOp[] = [];
+          for (const copy of again) {
+            const baked = this.bake(obj, copy);
+            if ("reason" in baked) return null;
+            ops.push(baked.op);
+          }
+          return ops;
+        }
+        const parts = expand(op, ctx, (piece) => this.pieceOf(obj, piece));
+        if ("reason" in parts) return null;
+        return parts.map((piece) => toSolidOp({ kind: "boolean", op: piece.op, ...piece.spec }, obj.modelPose));
+      };
+      const planned = twin === undefined || feature ? null : make(structuredClone(raw));
+      const links = planned ? this.linksOf(obj, raw, twin, make, planned) : [];
       if ((made += count) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
       let refused: Record<string, unknown> | null = null;
       const touchingBefore = touching;
       // --- A9. The pieces that landed, in the solid's frame, become the group's steps. ---
       const steps: ModelOp[] = [];
+      const stepPieces: number[] = [];
       for (let k = 0; k < count; k += 1) {
         if (meta?.signal?.aborted) return cancelled();
         progress(index, k, count);
@@ -4977,6 +5191,7 @@ export class Session {
           nodes.push(node);
           ownNodes.push(node);
           steps.push(op);
+          stepPieces.push(k);
           continue;
         }
         const piece = pieces[k]!;
@@ -4987,7 +5202,7 @@ export class Session {
             return { probed: missed, done: missed, typed: {}, op: null };
           }
           const typed = { kind: "boolean", op: piece.op, ...spec } as Record<string, unknown>;
-          const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...spec }, obj.modelPose), typed };
+          const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...spec, ...(piece.merge ? { merge: true as const } : {}) }, obj.modelPose), typed };
           const probed = await this.probeBaked(obj, at, at.current, baked, false, true);
           const done = probed.ok === true ? await this.applyBaked(obj, at, baked, {}) : probed;
           return { probed, done, typed, op: baked.op };
@@ -5019,6 +5234,7 @@ export class Session {
         nodes.push(node);
         ownNodes.push(node);
         steps.push(op);
+        stepPieces.push(k);
       }
       // --- D20. A composite whose every step missed changes nothing: refused, as the engine refuses such a group.
       // A step left out because it would only touch along an edge is reported as leftOut instead.
@@ -5033,7 +5249,8 @@ export class Session {
       // --- A9. Replace the piece chain with one group. A composite that applied nothing stays as it was. ---
       if (ownNodes.length > 0) {
         progress(index, count - 1, count, `gathering its ${ownNodes.length} steps into one group`);
-        const stored = await this.storeGroup(obj, before, ownNodes[0]!, steps, label, raw);
+        const linked = steps.map((step, j) => this.inDateExprs(step, links[stepPieces[j]!]));
+        const stored = await this.storeGroup(obj, before, ownNodes[0]!, linked, label, raw);
         if (stored.ok !== true) {
           // The pieces are already gone. refuse still drops them when they remain, and rolls the run back.
           const ended = await refuse(stored.failed);
@@ -5042,6 +5259,7 @@ export class Session {
         }
         nodes.splice(nodes.length - ownNodes.length, ownNodes.length);
         nodes.push(stored.node);
+        if (feature && twin !== undefined) this.keepExprs(obj, stored.node, typedExprs(twin));
       }
       checkpoints.push(obj.tree?.current ?? null);
     }
@@ -5137,12 +5355,10 @@ export class Session {
   private async applyBatch(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
     if (ops.length === 0) return { ok: false, reason: "The batch needs at least one op." };
-    const exprs = this.pendingExprs;
-    this.pendingExprs = [];
-    const { checkpoints, ...ran } = await this.applyMany(obj, ops, { label: typeof input.label === "string" ? input.label : undefined, onError: input.onError });
-    // A batch rolled back made no node to keep them on.
-    if (ran.rolledBack !== true) this.keepExprs(obj, checkpoints as (number | null)[], exprs);
-    return ran;
+    const texts = this.pendingTexts;
+    this.pendingTexts = [];
+    const { checkpoints: _checkpoints, ...ran } = await this.applyMany(obj, ops, { label: typeof input.label === "string" ? input.label : undefined, onError: input.onError, texts });
+    return { ...ran, ...this.takeNotLinked() };
   }
 
   /**
@@ -5153,6 +5369,12 @@ export class Session {
   private async build(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const recipe = this.pendingRecipe;
     this.pendingRecipe = null;
+    const texts = this.pendingTexts;
+    const baseText = this.pendingBaseText;
+    const oneOff = this.pendingOneOff;
+    this.pendingTexts = [];
+    this.pendingBaseText = undefined;
+    this.pendingOneOff = [];
     if (input.base === undefined) return { ok: false, reason: "model_build needs a base, or an object whose recipe to rerun." };
     const base = (input.base ?? {}) as Record<string, unknown>;
     const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
@@ -5160,11 +5382,17 @@ export class Session {
     const keys = ops.map(stableKey);
     const name = typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, NAME_LIMIT) : undefined;
     let obj: PlateObject | null | undefined;
+    /** --- Gaps A4. The base as typed is the recipe's, but its numbers moved with a parameter: a new root step starts the run. */
+    let newBase = false;
     if (input.object !== undefined) {
       obj = this.find(String(input.object));
       if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
       if (!obj.buildLog) return { ok: false, reason: "That object was not made by model_build. Rebuild only works on one that was." };
-      if (obj.buildLog.base !== baseKey) return { ok: false, reason: "The base differs from that object's build. Rebuild keeps the base; start a new model_build for another." };
+      if (obj.buildLog.base !== baseKey) {
+        const typedSame = !!recipe && !!obj.recipe && stableKey(recipe.base) === stableKey(obj.recipe.base);
+        if (!typedSame) return { ok: false, reason: "The base differs from that object's build. Rebuild keeps the base; start a new model_build for another." };
+        newBase = true;
+      }
     } else if (input.resume !== false) {
       obj = [...this.objects].reverse().find((row) => row.buildLog?.refused && row.buildLog.base === baseKey && (!name || row.name === name));
     }
@@ -5172,17 +5400,33 @@ export class Session {
     let from: number | null = null;
     if (obj?.buildLog && obj.tree) {
       const log = obj.buildLog;
-      while (reused < keys.length && reused < log.steps.length && log.steps[reused]!.key === keys[reused] && log.steps[reused]!.node !== null && obj.tree.nodes.has(log.steps[reused]!.node!)) reused += 1;
-      from = reused > 0 ? log.steps[reused - 1]!.node : log.start;
+      // resume: false on an object rebuilds every op; a new base rebuilds them on the new root.
+      if (input.resume !== false && !newBase) {
+        while (reused < keys.length && reused < log.steps.length && log.steps[reused]!.key === keys[reused] && log.steps[reused]!.node !== null && obj.tree.nodes.has(log.steps[reused]!.node!)) reused += 1;
+      }
+      from = reused > 0 ? log.steps[reused - 1]!.node : newBase ? (obj.tree.nodes.get(log.start)?.parent ?? log.start) : log.start;
       const moved = await this.gotoNode(obj, from);
       if (moved.ok !== true) {
         obj = undefined;
         reused = 0;
+        newBase = false;
+      } else if (newBase) {
+        // The earlier root step, or the first op on the object's own root, and all under it go.
+        const head = log.start !== from ? log.start : log.steps.find((step) => step.first !== null && obj!.tree!.nodes.has(step.first))?.first;
+        if (head != null && obj.tree?.nodes.has(head)) this.drop(obj, head);
       } else {
         // The old run past the reused ops is replaced: drop it, so the history holds one path.
         const stale = log.steps.slice(reused).find((step) => step.first !== null && obj!.tree!.nodes.has(step.first));
         if (stale?.first != null) this.drop(obj, stale.first);
       }
+    }
+    if (obj && newBase) {
+      const rooted = await this.applyMany(obj, [{ kind: "root", ...base }], { label: "Base", texts: [baseText] });
+      if (rooted.ok !== true) {
+        const failed = rooted.failed as { reason?: unknown } | undefined;
+        return { ok: false, object: obj.id, reason: String(failed?.reason ?? rooted.reason ?? "The new base did not build.") };
+      }
+      obj.buildLog = { base: baseKey, start: obj.tree!.current, steps: [], refused: false };
     }
     if (!obj) {
       const made = await this.solidNew(base);
@@ -5192,6 +5436,7 @@ export class Session {
       const tree = await this.opened(obj);
       if ("reason" in tree) return { ok: false, object: obj.id, reason: tree.reason };
       obj.buildLog = { base: baseKey, start: tree.current, steps: [], refused: false };
+      this.linkRoot(obj, base, baseText);
       from = null;
     }
     if (name) obj.name = name;
@@ -5201,7 +5446,7 @@ export class Session {
     const rest = ops.slice(reused);
     const beforeRest = obj.tree?.current ?? log.start;
     const ran = rest.length
-      ? await this.applyMany(obj, rest, { label: typeof input.label === "string" ? input.label : obj.name, onError: input.onError, keep: true, offset: reused, ...(reused > 0 ? { start: log.start } : {}) })
+      ? await this.applyMany(obj, rest, { label: typeof input.label === "string" ? input.label : obj.name, onError: input.onError, keep: true, offset: reused, texts: texts.slice(reused), ...(reused > 0 || newBase ? { start: log.start } : {}) })
       : { ok: true, applied: 0, checkpoints: [] };
     // The log: each op's key, the node after it (null when left out), and its first node, for a later resume to drop.
     const points = (ran.checkpoints ?? []) as (number | null)[];
@@ -5214,18 +5459,31 @@ export class Session {
     log.steps = [...firsts, ...fresh];
     log.refused = ran.ok !== true;
     const { checkpoints: _checkpoints, ...body } = ran as Record<string, unknown>;
-    const resumed = from !== null ? { resumed: { reusedOps: reused, ranOps: rest.length, note: reused > 0 ? `Reused the first ${reused} ops from the earlier build; ran ${rest.length}.` : "Rebuilt on the earlier build's object." } } : {};
+    const resumed = from !== null ? { resumed: { reusedOps: reused, ranOps: rest.length, ...(newBase ? { newBase: true } : {}), note: reused > 0 ? `Reused the first ${reused} ops from the earlier build; ran ${rest.length}.` : newBase ? "The base's numbers changed: a new root step, and every op built again on it." : "Rebuilt on the earlier build's object." } } : {};
+    const once = oneOff.length > 0 ? { oneOff, oneOffNote: `${oneOff.join(", ")} ${oneOff.length === 1 ? "was" : "were"} set for this call only. The project's value stays, and a rerun uses it; model_params sets it for good.` } : {};
     if (ran.ok !== true) {
       const note = input.onError === "skip"
         ? "The solid has every op but the refused ones, uncommitted. Fix those ops and call model_build again with the same base: it reuses every op before the first one changed."
         : "The solid is on the plate without the batch. Fix the op and call model_build again with the same base and ops: it reuses every op before the refused one.";
-      return { ...body, ...resumed, applied: reused + Number(body.applied ?? 0), object: obj.id, note };
+      return { ...body, ...resumed, ...once, ...this.takeNotLinked(), applied: reused + Number(body.applied ?? 0), object: obj.id, note };
     }
     if (input.commit !== false) {
       const reason = await this.commitObject(obj);
       if (reason) return { ok: false, object: obj.id, reason };
     }
-    return { ...body, ...resumed, applied: reused + Number(body.applied ?? 0), object: obj.id, committed: input.commit !== false, bounds: obj.solid?.bounds ?? null };
+    return { ...body, ...resumed, ...once, ...this.takeNotLinked(), applied: reused + Number(body.applied ?? 0), object: obj.id, committed: input.commit !== false, bounds: obj.solid?.bounds ?? null };
+  }
+
+  /** --- Gaps A1. A new solid's root keeps the expressions its base was typed with, as the app's New solid does. */
+  private linkRoot(obj: PlateObject, base: Record<string, unknown>, baseText: unknown): void {
+    const tree = obj.tree;
+    if (!tree || tree.root.kind !== "primitive" || baseText === undefined) return;
+    const stored: ModelOp = { kind: "root", ...tree.root.solid };
+    const exprs = this.linksOf(obj, base, baseText, (op) => {
+      const local = primitiveFrom(op);
+      return "reason" in local ? null : [{ kind: "root", ...rootSpec(local) }];
+    }, [stored])[0];
+    if (exprs) obj.tree = { ...tree, root: { ...tree.root, exprs } };
   }
 
   /** The op with every anchor replaced by the point it names on this object, as the solid stands now. */
@@ -5317,9 +5575,11 @@ export class Session {
   private mcpModelRecord(): Record<string, unknown> | null {
     const recipes: Record<string, unknown> = {};
     for (const obj of this.objects) if (obj.recipe) recipes[obj.id] = { recipe: obj.recipe, ...(obj.buildLog ? { buildLog: obj.buildLog } : {}) };
+    const workplanes = Object.fromEntries(this.objects.filter((obj) => obj.workplaneTyped).map((obj) => [obj.id, obj.workplaneTyped]));
     const record = {
       ...(this.parts.size ? { parts: Object.fromEntries(this.parts) } : {}),
       ...(Object.keys(recipes).length ? { recipes } : {}),
+      ...(Object.keys(workplanes).length ? { workplanes } : {}),
     };
     return Object.keys(record).length ? structuredClone(record) : null;
   }
@@ -5343,6 +5603,16 @@ export class Session {
         if (!obj || !row?.recipe || typeof row.recipe !== "object") continue;
         obj.recipe = row.recipe;
         if (row.buildLog && Array.isArray(row.buildLog.steps) && typeof row.buildLog.base === "string") obj.buildLog = row.buildLog;
+      }
+    }
+    const workplanes = value.workplanes;
+    if (workplanes && typeof workplanes === "object") {
+      for (const [id, saved] of Object.entries(workplanes)) {
+        const obj = this.find(id);
+        const row = saved as Partial<TypedWorkplane> | null;
+        const vec = (v: unknown) => Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
+        if (!obj || !row || !vec(row.origin) || !vec(row.turn) || !row.text || (row.source !== "global" && row.source !== "bed" && row.source !== "face")) continue;
+        obj.workplaneTyped = { source: row.source, origin: row.origin as TypedWorkplane["origin"], turn: row.turn as TypedWorkplane["turn"], text: row.text };
       }
     }
   }
@@ -5384,8 +5654,130 @@ export class Session {
     if (refused) return { ok: false, reason: `${refused.name}: ${refused.error}` };
     this.paramText = next;
     this.params = { ...table.values };
+    this.followWorkplanes();
     const errors = bad.length > 0 ? { errors: Object.fromEntries(bad.map((row) => [row.name, row.error])) } : {};
     return { ok: true, params: { ...this.params }, ...errors };
+  }
+
+  /** --- Gaps A3. A workplane typed with expressions moves with them: ops typed on it after a set use the new plane. */
+  private followWorkplanes(): void {
+    for (const obj of this.objects) {
+      const typed = obj.workplaneTyped;
+      if (!typed) continue;
+      try {
+        const origin = resolveNumbers(typed.text.origin ?? typed.origin, this.params) as [number, number, number];
+        const turn = resolveNumbers(typed.text.turn ?? typed.turn, this.params) as [number, number, number];
+        if (![...origin, ...turn].every((n) => typeof n === "number" && Number.isFinite(n))) continue;
+        obj.workplaneTyped = { ...typed, origin, turn };
+        obj.workplane = workplaneOwn({ source: typed.source, origin, turn }, obj.modelPose);
+      } catch {
+        // A name the table lost keeps the plane where it was.
+      }
+    }
+  }
+
+  /**
+   * --- Gaps A5. model_params with rebuild: the set, then every part whose shown steps are out of date is rebuilt as the
+   * app's Parameters panel rebuilds it (`planRebuild`, one edit of the earliest step with the rest replayed), committed,
+   * and checked. A part that cannot follow says why and is left as it was.
+   */
+  private async paramsRebuild(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const set = this.paramsTool(input);
+    if (set.ok !== true) return set;
+    const rebuilt: Record<string, unknown>[] = [];
+    for (const obj of [...this.objects]) {
+      if (!obj.tree) continue;
+      const row = await this.rebuildFromParameters(obj);
+      if (row) rebuilt.push(row);
+    }
+    const failed = rebuilt.filter((row) => row.ok !== true);
+    return {
+      ...set,
+      ok: failed.length === 0,
+      rebuilt,
+      ...(rebuilt.length === 0 ? { note: "No part uses a parameter that changed." } : {}),
+      ...(failed.length ? { reason: `${failed.length} part${failed.length === 1 ? "" : "s"} could not follow; each says why.` } : {}),
+    };
+  }
+
+  private async rebuildFromParameters(obj: PlateObject): Promise<Record<string, unknown> | null> {
+    const opened = await this.opened(obj);
+    if ("reason" in opened) return { object: obj.id, ok: false, reason: opened.reason };
+    const start = opened.current;
+    let moved = false;
+    const plan = await planRebuild(opened, { ...this.params }, {
+      pose: obj.modelPose,
+      builtOn: async (parent) => {
+        const at = await this.gotoNode(obj, parent);
+        moved = true;
+        if (at.ok !== true || !obj.solid) return String(at.reason ?? "The step this feature was built on could not be rebuilt.");
+        return obj.solid;
+      },
+    });
+    if (moved) await this.gotoNode(obj, start);
+    if (plan === null || plan === "stale") return null;
+    if ("error" in plan) return { object: obj.id, ok: false, reason: plan.error };
+    const tree = obj.tree!;
+    const [op, ...rest] = plan.supplied;
+    const followed = followRepeatSources(
+      [{ id: plan.node, op: op! }, ...plan.replay.map((id, i) => ({ id, op: rest[i]! }))],
+      (id) => {
+        const node = tree.nodes.get(id);
+        if (node?.op) return node.op;
+        return node?.parent === null && tree.root.kind === "primitive" ? { kind: "root", ...tree.root.solid } : null;
+      },
+      obj.modelPose,
+    );
+    if ("error" in followed) return { object: obj.id, ok: false, reason: followed.error };
+    const replayOps = followed.ops.slice(1);
+    const twin = builtBranch(tree, plan.parent, op!, replayOps);
+    let steps = 0;
+    let broken: { id: number; error: string } | null = null;
+    if (twin != null) {
+      const shown = await this.gotoNode(obj, twin);
+      if (shown.ok !== true) return { object: obj.id, ok: false, reason: String(shown.reason ?? "That branch could not be shown.") };
+    } else {
+      const ids = this.reserveOn(tree.key, 1 + plan.replay.length);
+      const renamed = stepIds([plan.node, ...plan.replay], ids);
+      const replay = replayOps.map((step, i) => ({ id: ids[i + 1]!, op: renumberedSteps(step, renamed) }));
+      const budget = this.replayBudgetMs(followed.ops.reduce((sum, step) => sum + 1 + (step.kind === "group" ? step.steps.length : 0), 0));
+      let reply: Record<string, unknown>;
+      try {
+        reply = await this.treeCall(editRequest(tree.key, plan.parent, ids[0]!, op!, replay, obj.stepTolerance || CHORD), "edit", budget);
+      } catch (err) {
+        const lost = this.lostReply(err);
+        if (lost) return { object: obj.id, ...lost };
+        throw err;
+      }
+      if (typeof reply.error === "string" && reply.error) return { object: obj.id, ok: false, reason: plainModelError(reply.error) };
+      const built = readBuilt(reply.built);
+      broken = readBroken(reply.broken);
+      const fork: ForkStep[] = ids.map((id, index) => {
+        const source = index === 0 ? op! : replay[index - 1]!.op;
+        const made = built?.get(id);
+        return { id, op: made ? keepSketch(made.op, source) : source, fingerprint: made?.fingerprint ?? null, ...(broken?.id === id ? { broken: broken.error } : {}) };
+      });
+      const tip = [...fork].reverse().find((step) => !step.broken)?.id ?? ids[0]!;
+      obj.tree = forked(obj.tree ?? tree, plan.parent, fork, tip);
+      const solid = rememberSolid(reply);
+      if (solid) obj.solid = solid;
+      obj.probes.clear();
+      steps = (built?.size ?? 1);
+    }
+    const reason = broken ? null : await this.commitObject(obj);
+    const check = await this.modelCheck(obj, {});
+    return {
+      object: obj.id,
+      ok: broken == null && !reason,
+      steps,
+      node: nodeHandle(obj.tree?.current ?? plan.node),
+      ...(broken ? { broken: true, reason: `A step could not be rebuilt: ${broken.error} The part shows the last step that built, uncommitted.` } : {}),
+      ...(reason ? { reason } : {}),
+      committed: broken == null && !reason,
+      bounds: obj.solid?.bounds ?? null,
+      volumeMm3: obj.solid?.volumeMm3 ?? null,
+      check,
+    };
   }
 
   /**
@@ -6236,29 +6628,42 @@ export class Session {
         return { ok: false, reason: `A new solid is the ${noun} itself. Cut and intersect need a part that is already there.` };
       }
       const root = { kind: "feature" as const, op };
-      const reply = await this.treeCall(openRequest(tree.key, root, CHORD), "root");
-      if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, "create") };
-      const next = rememberSolid(reply);
-      const nodes = new Map(tree.nodes);
-      const row = nodes.get(0);
-      if (row) nodes.set(0, { ...row, label: rootLabel(root, row.label), ...(next ? { fingerprint: next.fingerprint } : {}) });
-      obj.tree = { ...tree, root, nodes };
-      if (next) obj.solid = next;
-      obj.probes.clear();
+      const reopened = await this.reopenRoot(obj, tree, node, root);
+      if (reopened) return reopened;
       return { ok: true, node: nodeHandle(node), stored: op, typed: baked.typed };
     }
     if (baked.op.kind !== "root" || tree.root.kind !== "primitive") return { ok: false, reason: "The new solid's first step takes a root edit." };
     if (!obj.probes.has(probeKey(String(node), baked.op))) return { ok: false, reason: "Probe this edit first. It was not applied." };
     const { kind: _kind, exprs: _exprs, ...solid } = baked.op;
-    const root = { kind: "primitive" as const, solid };
-    const reply = await this.treeCall(openRequest(tree.key, root, CHORD), "root");
-    if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, "create") };
     // --- D25. The new sizes keep the expressions this call typed; typed numbers drop the old ones.
-    obj.tree = { ...tree, root: exprs ? { ...root, exprs } : root };
-    const next = rememberSolid(reply);
-    if (next) obj.solid = next;
-    obj.probes.clear();
+    const root = { kind: "primitive" as const, solid, ...(exprs ? { exprs } : {}) };
+    const reopened = await this.reopenRoot(obj, tree, node, root);
+    if (reopened) return reopened;
     return { ok: true, node: nodeHandle(node), stored: baked.op, typed: baked.typed };
+  }
+
+  /**
+   * A new root under the steps already there: the engine opens the whole tree again on it, showing the root, so every
+   * later step builds on the new root when it is shown. Opening the root alone left the engine without those steps, and
+   * a goto to one answered "unknown". Each step's solid changes with the root, so no old fingerprint or plated solid is
+   * kept. A refusal is returned; null when it opened.
+   */
+  private async reopenRoot(obj: PlateObject, tree: ModelTree, node: number, root: Exclude<ModelTree["root"], { kind: "piece" | "step" }>): Promise<Record<string, unknown> | null> {
+    const nodes = new Map([...tree.nodes].map(([id, row]) => [id, { ...row, fingerprint: null as Fingerprint | null }]));
+    const row = nodes.get(node);
+    if (row && root.kind === "feature") nodes.set(node, { ...row, label: rootLabel(root, row.label) });
+    const next = jumped({ ...tree, root, nodes }, node);
+    const budget = Math.max(this.modelTimeoutMs(), modelSteps(next) * 2000);
+    const reply = await this.treeCall(wholeTreeRequest(next, root, node, obj.stepTolerance || CHORD), "root", budget);
+    if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, "create") };
+    const solid = rememberSolid(reply);
+    const rooted = nodes.get(node);
+    if (rooted && solid) nodes.set(node, { ...rooted, fingerprint: solid.fingerprint });
+    obj.tree = next;
+    if (solid) obj.solid = solid;
+    obj.platedNode = null;
+    obj.probes.clear();
+    return null;
   }
 
   private rename(obj: PlateObject, node: number | null, label: string): Record<string, unknown> {
@@ -6273,14 +6678,17 @@ export class Session {
   }
 
   private async edit(obj: PlateObject, node: number | null, raw: unknown): Promise<Record<string, unknown>> {
-    const exprs = this.pendingExprs[0];
-    this.pendingExprs = [];
+    const typedText = this.pendingTexts[0];
+    this.pendingTexts = [];
     const toolReason = await this.openJoinTool(raw);
     if (toolReason) return { ok: false, reason: toolReason };
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
     const parent = tree.nodes.get(node)?.parent;
+    const typed = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+    const first = typed ? this.bake(obj, structuredClone(typed)) : null;
+    const exprs = typed && first && !("reason" in first) ? this.plainLinks(obj, typed, typedText, first.op) : undefined;
     if (parent === null || parent === undefined) return this.editRoot(obj, tree, node, raw, exprs);
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
@@ -6355,7 +6763,7 @@ export class Session {
     if (followed.orient.turned.length > 0 && (baked.op as PartitionModelOp).arrange !== false) this.layOutPieces(followed.orient.turned.filter((id) => this.objects.some((row) => row.id === id && row.platedNode !== null)));
     const notes = rebuilt ? [...(baked.notes ?? []), ...numberNotes(reply), ...rebuilt.notes, ...followed.orient.notes] : [];
     const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(pins ? { pins: pins.id } : {}), ...joined(reply, obj.modelPose), ...numbered(reply, obj.modelPose), ...(notes.length ? { notes } : {}) } : {};
-    return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null, ...parts };
+    return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null, ...parts, ...this.takeNotLinked() };
   }
 
   /** Fresh ids on the tree `key` names. An edit spends them even when the engine keeps only some. */

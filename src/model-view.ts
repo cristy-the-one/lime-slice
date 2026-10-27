@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { orbitGlide } from "./orbit-glide";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
@@ -10,12 +11,22 @@ import type { Box } from "./measure";
 import { perspectiveMeasure } from "./measure-camera";
 import { mountMeasureOverlay } from "./measure-overlay";
 import { onMeasureChange } from "./measure-pref";
-import { faceCentre, featuresOf, MEASURE_KIND_LABEL, nearestFeature, type FeatureSet, type MeasureKind, type Vec3 as FeatureVec } from "./measure-snap";
+import { MEASURE_KIND_LABEL, type MeasureKind } from "./measure-snap";
+import { featureAtHit, warmFeatures } from "./measure-feature";
+import { grabAxisForKey, grabDegrees, grabIntent, nearerHit, type GrabAxis, type GrabIntent } from "./viewport-grab";
+import { rayAtHeight, turnPoseAbout } from "./model-grab";
+import { shifted, snapMove, type Footprint, type Screen, type SnapAxis, type SnapHit, type SnapTarget } from "./place-snap";
+import { neighbourTargets, solidFootprint } from "./place-snap-scene";
+import { snapStep } from "./gizmo-math";
 import { EDGE_KNOB_ID, edgeSides } from "./interact/edge-drag";
 import { blendGhost, type BlendSide } from "./interact/ghosts";
 
-/** A Measure point snaps to a feature this close to the pointer on screen. */
-const MEASURE_SNAP_PX = 10;
+/** A press on the open solid becomes a grab only once the pointer has moved this far, so a Ctrl-click stays a click. */
+const GRAB_SLOP_PX = 4;
+const GRAB_ROTATE_SNAP_DEG = 15;
+const GRAB_MOVE_SNAP_MM = 1;
+/** A snapped move is sent for any change this size or more, so it lands exactly instead of stopping 0.02 mm short. */
+const SNAP_EXACT_MM = 1e-9;
 /** P2. The edge drag's ghost is rebuilt when its size changes by this much. */
 const BLEND_GHOST_STEP_MM = 0.05;
 
@@ -101,6 +112,26 @@ export interface HandleDrag {
   handle: DragHandle;
   values: number[];
   phase: "move" | "end";
+  /** A Measure point: what it landed on. `object` is a grey object's id; a point on the open solid has none. Null off every object. */
+  snap?: { kind: MeasureKind | "surface"; object?: string } | null;
+}
+
+/**
+ * A Ctrl-drag on the open solid, as the app records it. The view works out the pose from the pointer and the snaps; the
+ * app puts it on the object and keeps the undo step. `ready` is false while a tool other than Place is open, a step is
+ * being edited, or the solid is busy: the press then goes on to whatever it did before.
+ */
+export interface ModelGrabHooks {
+  ready(): boolean;
+  /** Ctrl-click on a grey object: it becomes the open one. */
+  select(id: string): void;
+  /** The pointer has moved past the slop: open Place and begin one step. False refuses, and the press does nothing. */
+  start(): boolean;
+  move(pose: Affine): void;
+  end(): void;
+  cancel(): void;
+  /** Ctrl is held over the open solid with nothing going on. */
+  hint(over: boolean): void;
 }
 
 /** P2. A press, move, or release on the edge knob. `x` and `y` are client pixels. */
@@ -166,6 +197,10 @@ export interface ModelView {
   setPreview(shape: ModelSolid | null): void;
   /** The other plate objects, drawn grey behind the open solid. They are never picked, framed, or measured. */
   setContext(parts: ContextPart[]): void;
+  /** Ctrl-drag on the open solid moves it, Ctrl-right-drag turns it, and Ctrl-click on a grey object opens that one. Null turns it off. */
+  onGrab(hooks: ModelGrabHooks | null): void;
+  /** Tints the grey object Align to... has picked, or clears it with null. A snap in a drag tints its own target meanwhile. */
+  markAlignTarget(id: string | null): void;
   /** --- Split to print, Explode (D12). Short labels pinned to points in model space, such as each piece's number. */
   setTags(tags: readonly { text: string; at: [number, number, number] }[]): void;
   /** The active printer's build volume, in millimetres. The bed plane is Z = 0. */
@@ -298,6 +333,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
+  const glide = orbitGlide(controls, camera);
   controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
   controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
   controls.touches.ONE = THREE.TOUCH.ROTATE;
@@ -549,9 +585,29 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   const snapMarkText = document.createElement("span");
   snapMark.append(snapMarkText);
   canvas.parentElement?.append(snapMark);
-  const features = new WeakMap<Float32Array, { set: FeatureSet; faces: Map<number, FeatureVec | null> }>();
   /** What a Measure point is snapped to, for the marker and the readout; null when it is free on the surface. */
-  let snappedTo: { kind: MeasureKind; at: THREE.Vector3 } | null = null;
+  let snappedTo: { kind: MeasureKind; at: THREE.Vector3; object?: string } | null = null;
+  /** What the last Measure ray struck, snapped or not, for the readout's labels. */
+  let struck: { kind: MeasureKind | "surface"; object?: string } | null = null;
+  /** The open solid's pose, as the app last set it. */
+  let poseNow: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+  let contextList: ContextPart[] = [];
+  /** The grey object a snap or Align to... has picked: its grey is swapped for the amber of the snap guides. */
+  let markedTarget: string | null = null;
+  let alignMark: string | null = null;
+  canvas.dataset.snapTarget = "";
+  let grabHooks: ModelGrabHooks | null = null;
+  let grabHint = false;
+  let lastPointer: { clientX: number; clientY: number } | null = null;
+  let warmTimer = 0;
+  /** Whether the Measure tool's points are on screen, so its features are worth building ahead. */
+  let measureOpen = false;
+  /** What a move snaps on, built when the drag starts: where the part stands, its neighbours, and how big a millimetre is on screen. */
+  let snapRun: { moving: Footprint; targets: SnapTarget[]; screen: Screen } | null = null;
+  let snapLabel: string | null = null;
+  const snapGroup = new THREE.Group();
+  const snapLineMat = new LineMaterial({ color: hexToThree(colors.amber), linewidth: 2.5, transparent: true, depthTest: false, worldUnits: false, toneMapped: false });
+  scene.add(snapGroup);
   const aspectLabel = document.createElement("div");
   aspectLabel.className = "model-aspect-label";
   aspectLabel.hidden = true;
@@ -928,7 +984,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   function syncLineResolution() {
     const resolution = lineResolution();
-    for (const material of [...fatLines, ...datumLines]) material.resolution.copy(resolution);
+    for (const material of [...fatLines, ...datumLines, snapLineMat]) material.resolution.copy(resolution);
   }
 
   function applyScale() {
@@ -959,6 +1015,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   const contextMat = contextMaterial(colors.context);
+  const targetMat = contextMaterial(colors.amber);
   /**
    * One geometry per source array, so a pose change or a new neighbour never re-uploads a mesh that did not change. A
    * join's ghost draws its tool from the same geometry, and its outline, built the first time, stays with it.
@@ -989,10 +1046,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       contextGeometry.delete(positions);
     }
     context.clear();
+    contextList = parts;
     const published: string[] = [];
     for (const part of parts) {
       const held = contextHeld(part.positions);
-      const mesh = new THREE.Mesh(held.geometry, contextMat);
+      const mesh = new THREE.Mesh(held.geometry, part.id === markedTarget ? targetMat : contextMat);
       const { m, t } = part.matrix;
       mesh.matrixAutoUpdate = false;
       mesh.matrix.set(m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2], 0, 0, 0, 1);
@@ -1005,6 +1063,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     canvas.dataset.contextCount = String(parts.length);
     if (published.length > 0) canvas.dataset.context = published.join(" ");
     else delete canvas.dataset.context;
+    if (grabHooks && parts.length > 0) warmSnap();
     kick();
   }
 
@@ -1690,6 +1749,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   function setPosedMatrix(next: Affine) {
+    poseNow = next;
     const { m, t } = next;
     posed.matrix.set(m[0], m[1], m[2], t[0], m[3], m[4], m[5], t[1], m[6], m[7], m[8], t[2], 0, 0, 0, 1);
     posed.updateMatrixWorld(true);
@@ -1777,7 +1837,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         }
         moved = true;
       } else {
-        moved = controls.update();
+        moved = glide(now);
         if (sketchLock) holdSketchAxis();
       }
       placeSketchOffset();
@@ -1987,6 +2047,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   canvas.addEventListener("pointerdown", (ev) => {
+    if (ev.button === 2 && !drag && !edgeDrag && !edgePress && !grab && grabIntent(ev) === "rotate" && beginGrab(ev, "rotate")) return;
     if (ev.button !== 0 || drag || edgeDrag || edgePress) {
       // --- S2: right-drag rolls about the plane normal while the sketch view is locked. ---
       if (sketchLock && ev.button === 2 && !drag && !edgeDrag) {
@@ -2014,6 +2075,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       return;
     }
     const part = handleAt(ev.clientX, ev.clientY);
+    // A Ctrl press on the open solid is a grab, ahead of a face push, an edge knob or an orbit. The section and stress arrows keep their presses.
+    const idle = !part || part.handle.id === PULL_HANDLE_ID || part.handle.id === EDGE_KNOB_ID;
+    if (idle && !grab && grabIntent(ev) === "move" && !stressArrowHit(ev.clientX, ev.clientY) && !sectionHit(ev.clientX, ev.clientY) && beginGrab(ev, "move")) return;
     // P2. The knob sits on the edge, in front of a face push. A click still selects that edge; the fillet starts once the pointer moves.
     if (part?.handle.id === EDGE_KNOB_ID) {
       ev.stopImmediatePropagation();
@@ -2207,7 +2271,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     tip.hidden = true;
     snappedTo = null;
     showSnapMark();
-    handleCb({ handle: done.handle, values: done.values, phase: "end" });
+    const measured = done.handle.id.startsWith("measure");
+    const landed = struck;
+    snapRun = null;
+    showSnap(null);
+    handleCb({ handle: done.handle, values: done.values, phase: "end", ...(measured ? { snap: landed } : {}) });
     paintHandles();
   };
   canvas.addEventListener("pointerup", finishDrag, { capture: true });
@@ -2233,6 +2301,12 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const object = objectPicking ? objectAt(ev) : null;
     if (object) {
       objectPickCb(object);
+      return;
+    }
+    // Ctrl-click on a grey object opens it, as picking its row in the plate does.
+    const other = grabHooks && grabIntent(ev) === "move" ? objectAt(ev) : null;
+    if (other) {
+      grabHooks!.select(other);
       return;
     }
     pickCb(pickAt(ev), ev.shiftKey, { x: ev.clientX, y: ev.clientY });
@@ -2493,6 +2567,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return [pos.getX(best), pos.getY(best), pos.getZ(best)];
   }
 
+  let grab: Grab | null = null;
+  /** When a Ctrl-right press last ended: the menu a right release asks for is not wanted after a turn. */
+  let lastRightGrab = 0;
+  mountGrabListeners();
+
   return {
     setSolid(next, at) {
       clearBody();
@@ -2641,6 +2720,17 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       kick();
     },
     setContext,
+    onGrab(hooks) {
+      grabHooks = hooks;
+      if (!hooks) {
+        cancelGrab(false);
+        setGrabHint(false);
+      }
+    },
+    markAlignTarget(id) {
+      alignMark = id;
+      markTarget(id);
+    },
     setTags,
     setBed(x, y, z) {
       bed = { x, y, z };
@@ -2655,6 +2745,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       accent = readAccent();
       paintBedColors();
       contextMat.color.setHex(hexToThree(colors.context));
+      targetMat.color.setHex(hexToThree(colors.amber));
+      snapLineMat.color.setHex(hexToThree(colors.amber));
       renderer.setClearColor(hexToThree(colors.stage), 1);
       paintFaces();
       paintLines();
@@ -2678,6 +2770,11 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     },
     setHandles(next) {
       buildHandles(next);
+      const measuring = next.some((handle) => handle.id.startsWith("measure"));
+      if (measuring !== measureOpen) {
+        measureOpen = measuring;
+        if (measuring) warmSnap();
+      }
       kick();
     },
     onHandleDrag(cb) {
@@ -4102,34 +4199,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   /** The feature near the hit that a Measure point lands on exactly: a corner, an edge's middle, a flat face's middle, the box. */
-  function featureNear(hit: THREE.Intersection): THREE.Vector3 | null {
-    if (!mesh) return null;
-    const positions = mesh.geometry.getAttribute("position").array as Float32Array;
-    let held = features.get(positions);
-    if (!held) {
-      held = { set: featuresOf(positions), faces: new Map() };
-      features.set(positions, held);
-    }
-    const perPx = (2 * camera.position.distanceTo(hit.point) * Math.tan((camera.fov * Math.PI) / 360)) / Math.max(1, canvas.clientHeight);
-    const local = mesh.worldToLocal(hit.point.clone());
-    let face: FeatureVec | null = null;
-    if (hit.faceIndex != null) {
-      if (!held.faces.has(hit.faceIndex)) faceCentre(positions, hit.faceIndex, held.faces);
-      face = held.faces.get(hit.faceIndex) ?? null;
-    }
-    const rect = canvas.getBoundingClientRect();
-    const pointer = hit.point.clone().project(camera);
-    const probe = new THREE.Vector3();
-    const fromPointer = (at: FeatureVec) => {
-      probe.set(at[0], at[1], at[2]).applyMatrix4(mesh!.matrixWorld).project(camera);
-      return Math.hypot(((probe.x - pointer.x) / 2) * rect.width, ((probe.y - pointer.y) / 2) * rect.height);
-    };
-    // Space is searched four pixels' worth wide, so a face seen at a slant still finds what is near the pointer on screen.
-    const found = nearestFeature(held.set, [local.x, local.y, local.z], MEASURE_SNAP_PX * perPx * 4, face, { px: MEASURE_SNAP_PX, from: fromPointer });
+  function featureNear(hit: THREE.Intersection, object?: string): { kind: MeasureKind; at: THREE.Vector3 } | null {
+    const target = hit.object instanceof THREE.Mesh ? hit.object : null;
+    if (!target) return null;
+    // Only the open solid has B-rep edges, so only it offers circle centres.
+    const curves = target === mesh ? solid?.edges.map((edge) => edge.points) : undefined;
+    const found = featureAtHit(hit, target, camera, canvas, curves);
     if (!found) return null;
-    const world = mesh.localToWorld(new THREE.Vector3(found.at[0], found.at[1], found.at[2]));
-    snappedTo = { kind: found.kind, at: world };
-    return world;
+    snappedTo = { kind: found.kind, at: found.at, object };
+    return found;
   }
 
   function showSnapMark() {
@@ -4143,21 +4221,46 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const p = snappedTo.at.clone().project(camera);
     snapMark.style.left = `${rect.left - parent.left + ((p.x + 1) / 2) * rect.width}px`;
     snapMark.style.top = `${rect.top - parent.top + ((1 - p.y) / 2) * rect.height}px`;
-    snapMarkText.textContent = MEASURE_KIND_LABEL[snappedTo.kind];
+    const named = snappedTo.object ? contextList.find((part) => part.id === snappedTo!.object)?.name : undefined;
+    snapMarkText.textContent = named ? `${MEASURE_KIND_LABEL[snappedTo.kind]} · ${named}` : MEASURE_KIND_LABEL[snappedTo.kind];
     snapMark.hidden = false;
     canvas.dataset.measureSnap = `${snappedTo.kind}:${snappedTo.at.x.toFixed(3)},${snappedTo.at.y.toFixed(3)},${snappedTo.at.z.toFixed(3)}`;
   }
 
-  function surfacePoint(x: number, y: number, snap: boolean, feature = false): Vec3 | null {
+  /** The nearest grey object the ray strikes, and where. Nothing snaps to the open solid's own grey copy. */
+  function greyHit(): THREE.Intersection | null {
+    if (context.children.length === 0) return null;
+    context.updateMatrixWorld(true);
+    const self = new Set(contextList.filter((part) => part.self).map((part) => part.id));
+    const hits = raycaster.intersectObjects(context.children, false).filter((item) => !self.has(String(item.object.userData.id)));
+    return hits[0] ?? null;
+  }
+
+  /** `feature` is a Measure point: it may land on a grey object, and snaps to the corners, middles and circles of what it strikes. */
+  function surfacePoint(x: number, y: number, snap: boolean, feature = false, featureSnap = true): Vec3 | null {
     snappedTo = null;
+    struck = null;
     if (!mesh) return null;
     rayAt(x, y);
-    const hit = solidHit(raycaster.intersectObject(mesh, false));
-    if (!hit) return null;
-    if (feature && !snap) {
-      const world = featureNear(hit);
-      if (world) return [world.x, world.y, world.z];
+    let hit = solidHit(raycaster.intersectObject(mesh, false));
+    let object: string | undefined;
+    if (feature) {
+      const other = greyHit();
+      if (other && (!hit || other.distance < hit.distance)) {
+        hit = other;
+        object = String(other.object.userData.id);
+      }
     }
+    if (!hit) return null;
+    struck = { kind: "surface", object };
+    if (feature && featureSnap && !snap) {
+      const found = featureNear(hit, object);
+      if (found) {
+        struck = { kind: found.kind, object };
+        return [found.at.x, found.at.y, found.at.z];
+      }
+    }
+    if (object) return [hit.point.x, hit.point.y, hit.point.z];
     // A point the user puts down is a model-space number, like every other tool field.
     const point = hit.point.clone();
     if (snap && hit.faceIndex != null) {
@@ -4170,6 +4273,325 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       if (best) point.copy(best);
     }
     return [point.x, point.y, point.z];
+  }
+
+  /** Pixels one millimetre of each model axis draws at the part's middle, as the vector it draws. */
+  function screenScale(box: Box): Screen {
+    camera.updateMatrixWorld();
+    const rect = canvas.getBoundingClientRect();
+    const probe = new THREE.Vector3();
+    const at = (x: number, y: number, z: number): [number, number] => {
+      probe.set(x, y, z).project(camera);
+      return [((probe.x + 1) / 2) * rect.width, ((1 - probe.y) / 2) * rect.height];
+    };
+    const cx = (box.min[0] + box.max[0]) / 2;
+    const cy = (box.min[1] + box.max[1]) / 2;
+    const cz = (box.min[2] + box.max[2]) / 2;
+    const o = at(cx, cy, cz);
+    const along = (p: [number, number]): [number, number] => [p[0] - o[0], p[1] - o[1]];
+    return { x: along(at(cx + 1, cy, cz)), y: along(at(cx, cy + 1, cz)), z: along(at(cx, cy, cz + 1)) };
+  }
+
+  /**
+   * The outlines a snap reads, and with `measuring` the features a Measure point reads, are a pass over every vertex of
+   * each object: a few hundred milliseconds for a part of 170 000 triangles. They are built a moment after the objects
+   * change, one object to a task, so the first drag or hover finds them held.
+   */
+  function warmSnap() {
+    window.clearTimeout(warmTimer);
+    warmTimer = window.setTimeout(() => {
+      const jobs: (() => void)[] = [];
+      if (solid && solid.positions.length >= 9) {
+        const own = solid;
+        jobs.push(() => void solidFootprint(own.positions, poseNow));
+        if (measureOpen) jobs.push(() => warmFeatures(own.positions, own.edges.map((edge) => edge.points)));
+      }
+      for (const part of contextList) {
+        if (part.self) continue;
+        jobs.push(() => void neighbourTargets([part]));
+        if (measureOpen) jobs.push(() => warmFeatures(part.positions));
+      }
+      const next = () => {
+        jobs.shift()?.();
+        if (jobs.length > 0) warmTimer = window.setTimeout(next, 0);
+      };
+      next();
+    }, 700);
+  }
+
+  /** Builds what a move snaps on: the open solid where it stands, and every grey object Model shows. */
+  function beginSnap() {
+    snapRun = null;
+    if (!solid || solid.positions.length < 9 || !solidBox) return;
+    snapRun = { moving: solidFootprint(solid.positions, poseNow), targets: neighbourTargets(contextList.filter((part) => !part.self)), screen: screenScale(solidBox) };
+  }
+
+  /** The snap for a drag that has moved the part by `offset` from where it started. Null when there is nothing to snap to. */
+  function snapAt(axes: SnapAxis[], offset: [number, number, number]): SnapHit | null {
+    if (!snapRun) return null;
+    const hit = snapMove({ moving: shifted(snapRun.moving, offset), targets: snapRun.targets, bed: null, axes, screen: snapRun.screen });
+    showSnap(hit);
+    return hit;
+  }
+
+  /** A Place arrow's value, moved to what the part snaps to along its axis. `on` is false while Alt, Ctrl or Shift holds the snap off. */
+  function snapPlaceArrow(handle: DragHandle, next: number[], on: boolean): number[] {
+    const axis = handle.id.slice(-1);
+    if (!(axis === "x" || axis === "y" || axis === "z") || next.length !== 1) return next;
+    const i = axis === "x" ? 0 : axis === "y" ? 1 : 2;
+    const offset: [number, number, number] = [0, 0, 0];
+    offset[i] = next[0]! - (handle.values[0] ?? 0);
+    const hit = on ? snapAt([axis], offset) : null;
+    if (!hit) {
+      showSnap(null);
+      return next;
+    }
+    return [Math.round((next[0]! + hit.delta[i]) * 1e3) / 1e3];
+  }
+
+  function markTarget(id: string | null) {
+    if (id === markedTarget) return;
+    markedTarget = id;
+    for (const node of context.children as THREE.Mesh[]) node.material = node.userData.id === markedTarget ? targetMat : contextMat;
+    canvas.dataset.snapTarget = markedTarget ?? "";
+    kick();
+  }
+
+  function clearSnapGuides() {
+    for (const child of [...snapGroup.children]) {
+      snapGroup.remove(child);
+      (child as LineSegments2).geometry?.dispose();
+    }
+  }
+
+  /** Guide lines and a marker for what the drag is snapped to, drawn in the amber the Prepare snap uses. */
+  function showSnap(hit: SnapHit | null) {
+    markTarget(hit?.targetId ?? alignMark);
+    const label = hit?.label ?? null;
+    if (label === snapLabel) return;
+    snapLabel = label;
+    clearSnapGuides();
+    if (hit && snapRun) {
+      const points: number[] = [];
+      for (const g of hit.guides) points.push(...g.a, ...g.b);
+      const reach = 7 / Math.max(Math.hypot(...snapRun.screen.x), Math.hypot(...snapRun.screen.y), 1e-6);
+      for (const p of hit.points) {
+        points.push(p[0] - reach, p[1], p[2], p[0] + reach, p[1], p[2]);
+        points.push(p[0], p[1] - reach, p[2], p[0], p[1] + reach, p[2]);
+      }
+      const lines = new LineSegments2(new LineSegmentsGeometry().setPositions(points), snapLineMat);
+      lines.renderOrder = 7;
+      lines.frustumCulled = false;
+      lines.raycast = () => undefined;
+      snapGroup.add(lines);
+    }
+    if (label) canvas.dataset.snap = label;
+    else delete canvas.dataset.snap;
+    kick();
+  }
+
+  // --- Ctrl-drag: move or turn the open solid, as Place does. ---
+  type Grab =
+    | { phase: "pending"; pointerId: number; intent: GrabIntent; x: number; y: number; axis: GrabAxis }
+    | {
+        phase: "go";
+        pointerId: number;
+        intent: "move";
+        start: Affine;
+        height: number;
+        from: [number, number, number];
+        offset: [number, number, number];
+      }
+    | {
+        phase: "go";
+        pointerId: number;
+        intent: "rotate";
+        start: Affine;
+        centre: Vec3;
+        axis: GrabAxis;
+        lastX: number;
+        total: number;
+      };
+  /** The open solid, when the ray strikes it in front of every grey object. The ray is already set. */
+  function solidInFront(): THREE.Intersection | null {
+    if (!mesh) return null;
+    const own = solidHit(raycaster.intersectObject(mesh, false));
+    if (!own) return null;
+    const other = greyHit();
+    return nearerHit(own.distance, other?.distance ?? null) === "selected" ? own : null;
+  }
+
+  function beginGrab(ev: PointerEvent, intent: GrabIntent): boolean {
+    if (!grabHooks || !mesh || !solid || sketchCapture || sketchLock || objectPicking || !grabHooks.ready()) return false;
+    rayAt(ev.clientX, ev.clientY);
+    if (!solidInFront()) return false;
+    grab = { phase: "pending", pointerId: ev.pointerId, intent, x: ev.clientX, y: ev.clientY, axis: "z" };
+    if (intent === "rotate") lastRightGrab = performance.now();
+    controls.enabled = false;
+    canvas.setPointerCapture(ev.pointerId);
+    setGrabHint(false);
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    return true;
+  }
+
+  /** The pointer has left the slop: the grab is real, so the app opens Place and begins its step. */
+  function startGrab(pending: Extract<Grab, { phase: "pending" }>): boolean {
+    if (!grabHooks || !solid || !ownBox || !grabHooks.start()) {
+      cancelGrab(false);
+      return false;
+    }
+    canvas.style.cursor = "grabbing";
+    tip.hidden = true;
+    const start = poseNow;
+    if (pending.intent === "move") {
+      rayAt(pending.x, pending.y);
+      const hit = solidInFront();
+      const height = hit?.point.z ?? solidBox?.min[2] ?? 0;
+      const ray = raycaster.ray;
+      const from = rayAtHeight([ray.origin.x, ray.origin.y, ray.origin.z], [ray.direction.x, ray.direction.y, ray.direction.z], height);
+      if (!from) {
+        cancelGrab(true);
+        return false;
+      }
+      beginSnap();
+      grab = { phase: "go", pointerId: pending.pointerId, intent: "move", start, height, from, offset: [0, 0, 0] };
+    } else {
+      const middle = new THREE.Vector3((ownBox.min[0] + ownBox.max[0]) / 2, (ownBox.min[1] + ownBox.max[1]) / 2, (ownBox.min[2] + ownBox.max[2]) / 2);
+      const posedMiddle = middle.applyMatrix4(posed.matrix);
+      grab = { phase: "go", pointerId: pending.pointerId, intent: "rotate", start, centre: [posedMiddle.x, posedMiddle.y, posedMiddle.z], axis: pending.axis, lastX: pending.x, total: 0 };
+    }
+    return true;
+  }
+
+  function endGrab(ev: PointerEvent) {
+    const done = grab;
+    if (!done || ev.pointerId !== done.pointerId) return;
+    grab = null;
+    if (done.intent === "rotate") lastRightGrab = performance.now();
+    controls.enabled = true;
+    canvas.style.cursor = "";
+    tip.hidden = true;
+    if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+    snapRun = null;
+    showSnap(null);
+    if (done.phase === "pending") {
+      // Never moved: a Ctrl-click on the solid is the click it was.
+      if (ev.type !== "pointercancel") pickCb(pickAt(ev), ev.shiftKey, { x: ev.clientX, y: ev.clientY });
+      return;
+    }
+    if (ev.type === "pointercancel") grabHooks?.cancel();
+    else grabHooks?.end();
+  }
+
+  /** Esc, or a press the app refused. `began` is whether the app was told, and has a step to put back. */
+  function cancelGrab(began: boolean) {
+    const done = grab;
+    if (!done) return;
+    grab = null;
+    if (done.intent === "rotate") lastRightGrab = performance.now();
+    controls.enabled = true;
+    canvas.style.cursor = "";
+    tip.hidden = true;
+    if (canvas.hasPointerCapture(done.pointerId)) canvas.releasePointerCapture(done.pointerId);
+    snapRun = null;
+    showSnap(null);
+    if (began) grabHooks?.cancel();
+  }
+
+  function moveGrab(ev: PointerEvent) {
+    const now = grab;
+    if (!now || ev.pointerId !== now.pointerId) return;
+    if (now.phase === "pending") {
+      if (Math.hypot(ev.clientX - now.x, ev.clientY - now.y) <= GRAB_SLOP_PX) return;
+      if (!startGrab(now)) return;
+      moveGrab(ev);
+      return;
+    }
+    if (now.intent === "move") {
+      const ray = rayAt(ev.clientX, ev.clientY);
+      const at = rayAtHeight([ray.origin.x, ray.origin.y, ray.origin.z], [ray.direction.x, ray.direction.y, ray.direction.z], now.height);
+      if (!at) return;
+      const raw: [number, number] = [at[0] - now.from[0], at[1] - now.from[1]];
+      const hit = ev.shiftKey || ev.altKey ? null : snapAt(["x", "y"], [raw[0], raw[1], 0]);
+      if (!hit) showSnap(null);
+      const dx = hit ? raw[0] + hit.delta[0] : snapStep(raw[0], ev.shiftKey, GRAB_MOVE_SNAP_MM);
+      const dy = hit ? raw[1] + hit.delta[1] : snapStep(raw[1], ev.shiftKey, GRAB_MOVE_SNAP_MM);
+      if (Math.abs(dx - now.offset[0]) < (hit ? SNAP_EXACT_MM : 0.02) && Math.abs(dy - now.offset[1]) < (hit ? SNAP_EXACT_MM : 0.02)) return;
+      now.offset = [dx, dy, 0];
+      grabHooks?.move({ m: now.start.m, t: [now.start.t[0] + dx, now.start.t[1] + dy, now.start.t[2]] });
+      placeTip(ev, `X ${signed(dx)}, Y ${signed(dy)} mm${snapLabel ? ` · ${snapLabel}` : ""}`);
+      return;
+    }
+    now.total += grabDegrees(ev.clientX - now.lastX);
+    now.lastX = ev.clientX;
+    const deg = snapStep(now.total, ev.shiftKey, GRAB_ROTATE_SNAP_DEG);
+    grabHooks?.move(turnPoseAbout(now.start, now.centre, now.axis, deg));
+    placeTip(ev, `${now.axis.toUpperCase()} ${signed(deg)}°`);
+  }
+
+  function signed(value: number): string {
+    const rounded = Math.round(value * 10) / 10;
+    return `${rounded >= 0 ? "+" : ""}${rounded.toFixed(1)}`;
+  }
+
+  /** Ctrl held with the pointer over the open solid, with nothing going on: say what a drag does, and show the grab cursor. */
+  function grabOver(ev: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean; altKey: boolean }): boolean {
+    if (!(ev.ctrlKey || ev.metaKey) || ev.altKey || !grabHooks || !mesh || sketchCapture || sketchLock || objectPicking || !grabHooks.ready()) return false;
+    rayAt(ev.clientX, ev.clientY);
+    return solidInFront() !== null;
+  }
+
+  function setGrabHint(over: boolean) {
+    if (grabHint === over) return;
+    grabHint = over;
+    canvas.style.cursor = over ? "grab" : "";
+    grabHooks?.hint(over);
+  }
+
+  /** Called once, before the view is returned: the helpers here are declarations, but a listener is a statement and has to run. */
+  function mountGrabListeners() {
+    canvas.addEventListener("pointermove", (ev) => {
+      lastPointer = { clientX: ev.clientX, clientY: ev.clientY };
+      if (grab) {
+        moveGrab(ev);
+        ev.stopImmediatePropagation();
+        return;
+      }
+      if (!drag && !down) setGrabHint(grabOver(ev));
+    }, { capture: true });
+    canvas.addEventListener("pointerleave", () => {
+      lastPointer = null;
+      setGrabHint(false);
+    });
+    window.addEventListener("keydown", (ev) => {
+      const now = grab;
+      if (now) {
+        const axis = now.intent === "rotate" ? grabAxisForKey(ev.key) : null;
+        if (ev.key !== "Escape" && !axis) return;
+        if (ev.key === "Escape") cancelGrab(now.phase === "go");
+        else if (now.phase === "pending" && axis) {
+          grab = { ...now, axis };
+        } else if (now.phase === "go" && now.intent === "rotate" && axis) {
+          // A new axis turns from where the part now stands.
+          grab = { ...now, axis, start: poseNow, total: 0 };
+        }
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation();
+        return;
+      }
+      if ((ev.key === "Control" || ev.key === "Meta") && lastPointer && !drag && !down) setGrabHint(grabOver({ ...lastPointer, ctrlKey: true, metaKey: false, altKey: ev.altKey }));
+    }, true);
+    window.addEventListener("keyup", (ev) => {
+      if (ev.key === "Control" || ev.key === "Meta") setGrabHint(false);
+    });
+    canvas.addEventListener("pointerup", endGrab, { capture: true });
+    canvas.addEventListener("pointercancel", endGrab, { capture: true });
+    // The menu a right release asks for is not wanted after a Ctrl-right turn.
+    canvas.addEventListener("contextmenu", (ev) => {
+      if (grab || performance.now() - lastRightGrab < 400) ev.preventDefault();
+    });
   }
 
   /** The line or plane a drag measures against is fixed where the handle stood when it was grabbed. */
@@ -4185,6 +4607,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       lastAngle: null,
       turned: 0,
     };
+    struck = null;
+    if (handle.kind === "axis" && handle.id.startsWith("place-")) beginSnap();
     if (handle.kind === "axis") active.startParam = axisParam(active, ev.clientX, ev.clientY);
     if (handle.kind === "ring") active.lastAngle = ringAngle(active, ev.clientX, ev.clientY);
     drag = active;
@@ -4212,15 +4636,16 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         next = [wrapDegrees(dragValue(handle, handle.values[0] ?? 0, current.turned, snap, fine))];
       }
     } else {
-      let point = surfacePoint(x, y, snap, handle.id.startsWith("measure") && !ev.altKey);
+      let point = surfacePoint(x, y, snap, handle.id.startsWith("measure"), !ev.altKey);
       showSnapMark();
       if (point && handle.frame) point = localPoint(handle.frame, point);
       const places = snappedTo ? 1000 : fine ? 100 : 10;
       if (point) next = point.map((value) => Math.round(value * places) / places);
     }
+    if (next && handle.kind === "axis" && handle.id.startsWith("place-")) next = snapPlaceArrow(handle, next, !(ev.altKey || snap || fine));
     if (next && next.some((value, i) => value !== current.values[i])) {
       current.values = next;
-      handleCb({ handle, values: next, phase: "move" });
+      handleCb({ handle, values: next, phase: "move", ...(handle.id.startsWith("measure") ? { snap: struck } : {}) });
       paintAspect();
     }
     showTip(ev, handle, current.values);
@@ -4231,9 +4656,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       tip.hidden = true;
       return;
     }
+    const text = aspectTip(handle, values);
+    placeTip(ev, snapLabel && handle.id.startsWith("place-") ? `${text} · ${snapLabel}` : text);
+  }
+
+  /** The short label that follows the pointer. */
+  function placeTip(ev: { clientX: number; clientY: number }, text: string) {
     const parent = canvas.parentElement?.getBoundingClientRect();
     if (!parent) return;
-    tip.textContent = aspectTip(handle, values);
+    tip.textContent = text;
     tip.hidden = false;
     // The dock sits at the right edge, so the tip flips to the pointer's left rather than run off the canvas.
     const right = ev.clientX - parent.left + 14;
