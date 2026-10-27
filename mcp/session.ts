@@ -146,6 +146,22 @@ const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the
 
 const PLACE_KEYS = ["x", "y", "z", "turnX", "turnY", "turnZ"] as const;
 
+function joinedPositions(parts: ArrayLike<number>[]): Float32Array {
+  const out = new Float32Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+
+function posedPositions(positions: ArrayLike<number>, pose: Affine): Float32Array {
+  const out = new Float32Array(positions.length);
+  for (let i = 0; i + 2 < positions.length; i += 3) out.set(applyPose(pose, [positions[i]!, positions[i + 1]!, positions[i + 2]!]), i);
+  return out;
+}
+
 /** What model_place says about the frame later Model numbers are read in. */
 function frameNote(frame: ObjectFrame): string {
   return frame === "part"
@@ -3714,6 +3730,11 @@ export class Session {
     if (!obj) return { ok: false, reason: "Load a mesh first." };
     const committed = await this.commitObject(obj);
     if (committed) return { ok: false, reason: committed };
+    // --- Assemblies M5. view draws several parts: the object's assembly as assembled, or the whole bed as it prints.
+    if (input.view !== undefined) {
+      if (input.view !== "assembly" && input.view !== "print") return { ok: false, reason: 'view is "assembly" or "print".' };
+      if (input.op !== undefined || input.section !== undefined || input.highlight !== undefined || input.colours !== undefined) return { ok: false, reason: "view draws several parts; op, section, highlight and colours are for one part." };
+    }
     const turntable = typeof input.turntable === "number" ? Math.round(input.turntable) : 0;
     const many = Array.isArray(input.views) || turntable > 1;
     // A turntable: views all round the part, a little from above, the first from the front.
@@ -3747,7 +3768,7 @@ export class Session {
       }
     }
     const solidMesh = !!obj.solid && obj.solid.positions.length >= 9;
-    const mesh = solidMesh ? obj.solid!.positions : this.placed(obj).positions;
+    const mesh = input.view === "assembly" || input.view === "print" ? this.viewMesh(obj, input.view) : solidMesh ? obj.solid!.positions : this.placed(obj).positions;
     const looks = this.renderLooks(obj, input, solidMesh);
     if ("reason" in looks) return { ok: false, reason: looks.reason };
     const stem = typeof input.name === "string" ? input.name.replace(/\.png$/i, "") : obj.name;
@@ -3813,6 +3834,20 @@ export class Session {
       };
     }
     return { options, legend };
+  }
+
+  /**
+   * One triangle soup of several parts. "assembly": the members of `obj`'s assembly (every object, when it is in none) at
+   * their poses in model space. "print": every object where it prints on the bed.
+   */
+  private viewMesh(obj: PlateObject, view: "assembly" | "print"): Float32Array {
+    if (view === "print") return joinedPositions(this.objects.map((row) => this.placed(row).positions));
+    const members = assemblyOf(this.liveAssemblies(), obj.id)?.members.map((row) => row.object);
+    const shown = members ? this.objects.filter((row) => members.includes(row.id)) : this.objects;
+    return joinedPositions(shown.map((row) => {
+      const solid = row.solid && row.solid.positions.length >= 9;
+      return posedPositions(solid ? row.solid!.positions : row.source, solid ? row.modelPose : thenPose(seatLift(row.seatMm), row.modelPose));
+    }));
   }
 
   /** The tool shape of a boolean op, for a preview: it is drawn, never applied. */

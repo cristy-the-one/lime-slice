@@ -76,6 +76,8 @@ export interface EditSnap {
   printOrder?: "all-at-once" | "sequential";
   sequentialClearanceMm?: number;
   sequentialGantryMm?: number;
+  /** Assemblies M5: the plate's assemblies, so Attach, Ungroup, and a move in the assembly view undo with the poses. */
+  assemblies?: unknown[];
   /** Which mesh bytes each object had. Absent on snaps from before Model edits joined this history. */
   meshPins?: MeshPin[];
 }

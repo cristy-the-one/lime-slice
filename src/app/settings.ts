@@ -1,5 +1,7 @@
 import { ArrowDownToLine, Copy, Crosshair, LayoutGrid, Plus, RotateCw, createElement, type IconNode } from "lucide";
 import { fx } from "./fx";
+import { assemblyView, liveAssemblies } from "./assemblies.ts";
+import { assemblyOf } from "../assembly.ts";
 import { settleOn } from "../bed-rest-pref";
 import { state, session, STEP_TOLERANCE_DEFAULT, type CardId, type SliceResponse } from "./state";
 import { currentApiTarget, authHeaders, engineDownMessage } from "../ui/api-base";
@@ -756,21 +758,29 @@ export function refreshObjectList() {
 function objectListHtml(): string {
   if (!state.placed) return "";
   const { rows, limit } = plateRows();
-  const pairs = overlapPairs(rows.map(({ obj, part }) => ({ id: obj.id, name: obj.name, bounds: part.bounds })));
+  // --- Assemblies M5. In the assembly view the bed's XY overlap test does not apply: a lifted hook is not on the bed.
+  const pairs = assemblyView.on ? [] : overlapPairs(rows.map(({ obj, part }) => ({ id: obj.id, name: obj.name, bounds: part.bounds })));
   const many = rows.length > 1;
-  const list = rows.map(({ obj, part }) => {
+  const assemblies = liveAssemblies();
+  const selectedName = rows.find(({ obj }) => obj.id === state.plate.selectedId)?.obj.name ?? "";
+  const row = ({ obj, part }: (typeof rows)[number]) => {
     const notes = limit(part.bounds);
     const marks = objectMarks(obj);
     const splitNote: string | null = fx.exportSplitNote?.(obj.id) ?? null;
     const selected = obj.id === state.plate.selectedId;
+    const group = assemblyOf(assemblies, obj.id);
+    const attach = many && !selected && !group && state.plate.selectedId
+      ? `<button class="btn obj-attach" type="button" data-plate-attach="${escapeHtml(obj.id)}" aria-label="Attach ${escapeHtml(obj.name)} to ${escapeHtml(selectedName)}" data-tip="Attach to ${escapeHtml(selectedName)}: it keeps its place and moves with it in the assembly.">Attach</button>`
+      : "";
     return `
-      <div class="obj obj-row" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}">
+      <div class="obj obj-row${group ? " obj-member" : ""}" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}"${group ? ` data-assembly="${escapeHtml(group.id)}"` : ""}>
         <button class="obj-select" type="button" data-plate-select="${escapeHtml(obj.id)}" aria-pressed="${selected ? "true" : "false"}" data-tip="${escapeHtml(obj.name)} · ${triangleLine(obj.sourcePos.length / 9)}">
           <b>${escapeHtml(obj.name)}</b>
           <span>${boundsSize(part.bounds)} mm</span>
           ${marks ? `<span class="obj-marks">${escapeHtml(marks)}</span>` : ""}
           ${notes.length ? `<em class="obj-note">${escapeHtml(notes.join("; "))}</em>` : ""}        </button>
         <div class="obj-actions">
+          ${attach}
           <!-- --- A7 model check --- -->
           ${obj.sim ? `<button class="btn obj-stress" type="button" data-plate-stress="${escapeHtml(obj.id)}">Stress</button>` : ""}
           <button class="btn obj-check" type="button" data-plate-check="${escapeHtml(obj.id)}" aria-label="Check ${escapeHtml(obj.name)}">Check</button>
@@ -779,6 +789,20 @@ function objectListHtml(): string {
         </div>
         ${splitNote ? `<p class="obj-split">${escapeHtml(splitNote)}</p>` : ""}
       </div>`;
+  };
+  // Each assembly's members follow its header where the first of them stands, root first; other objects keep their place.
+  const shown = new Set<string>();
+  const list = rows.map((item) => {
+    if (shown.has(item.obj.id)) return "";
+    const group = assemblyOf(assemblies, item.obj.id);
+    if (!group) return row(item);
+    const members = group.members.flatMap((member) => rows.filter((other) => other.obj.id === member.object));
+    for (const member of members) shown.add(member.obj.id);
+    return `
+      <div class="obj obj-group" role="listitem" data-assembly-head="${escapeHtml(group.id)}">
+        <div class="obj-group-name"><b>${escapeHtml(group.name)}</b><span>${members.length} parts</span></div>
+        <button class="btn obj-ungroup" type="button" data-assembly-ungroup="${escapeHtml(group.id)}" aria-label="Ungroup ${escapeHtml(group.name)}" data-tip="Ungroup: every part keeps where it is.">Ungroup</button>
+      </div>${members.map(row).join("")}`;
   }).join("");
   const overlap = pairs.map((pair) => pair.line).join("; ");
   return `

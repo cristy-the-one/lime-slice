@@ -1599,6 +1599,7 @@ export const TOOLS: ToolSpec[] = [
         colours: { type: "object", description: "Label to colour, e.g. {\"fish\": \"#b08040\"}." },
         section: { type: "object", additionalProperties: false, description: "Cut away the side normal points to; the inside shows red.", properties: { normal: vec3, point: { ...vec3, description: "Default: the part's centre." } } },
         smooth: { type: "boolean", description: "Smooth shading on curves (default true)." },
+        view: { enum: ["assembly", "print"], description: "Several parts: the object's assembly as assembled, or the bed as it prints." },
         inline: { type: "boolean", description: "Default true." },
         name: { type: "string", minLength: 1 },
         longEdge: { type: "integer", minimum: 32, maximum: 1024 },

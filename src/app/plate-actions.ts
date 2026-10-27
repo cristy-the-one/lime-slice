@@ -6,6 +6,7 @@ import { flushEdit, noteEdit } from "./history.ts";
 import { commitModel, followSelection, frameInModel } from "./model.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { state } from "./state.ts";
+import { attachTo, ungroup } from "./assemblies.ts";
 import { currentRules } from "./rules.ts";
 import { sequentialClearance } from "../settings-rules.ts";
 import type { Bounds } from "../mesh-place.ts";
@@ -39,6 +40,35 @@ export function removePlateObject(id: string) {
   flushEdit();
   followSelection();
   if (state.plate.objects.length === 1) frameSelection();
+}
+
+/**
+ * --- Assemblies M5. Attach: `id` sits on the selected object where it stands, in its assembly or a new one with the
+ * selected object as its root. A member's typed Model numbers are read in its own frame (D2). Null, or why not.
+ */
+export function attachPlateObject(id: string): string | null {
+  const parent = state.plate.selectedId;
+  if (!parent || parent === id) return null;
+  commitModel();
+  noteEdit();
+  syncPlateFromState();
+  const refused = attachTo(id, parent);
+  if (refused) {
+    flushEdit();
+    return refused;
+  }
+  state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (obj.id === id ? { ...obj, frame: "part" as const } : obj)) };
+  place();
+  flushEdit();
+  return null;
+}
+
+/** Ungroup: the assembly goes, and every part keeps where it is in both views. */
+export function ungroupAssembly(id: string) {
+  noteEdit();
+  ungroup(id);
+  place();
+  flushEdit();
 }
 
 export function selectPlateObject(id: string) {

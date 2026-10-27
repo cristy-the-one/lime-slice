@@ -171,6 +171,40 @@ export function samePose(a: Affine, b: Affine): boolean {
 }
 
 /**
+ * `object` was moved by hand to `pose` in model space. The root carries its assembly with it (D9). A member gets the
+ * offset from its parent that keeps it there, as plain numbers, so its text no longer drives it. Returns the assembly
+ * and every member's pose after the move.
+ */
+export function movedTo(assembly: Assembly, object: string, pose: Affine, poseOf: PoseOf): { assembly: Assembly; poses: Map<string, Affine> } {
+  const member = assembly.members.find((row) => row.object === object);
+  const at: PoseOf = (id) => (id === object ? pose : poseOf(id));
+  if (!member || member.parent === null) return { assembly, poses: solveAssembly(assembly, at).poses };
+  const parentPose = poseOf(member.parent) ?? IDENTITY_POSE;
+  const next = { ...assembly, members: assembly.members.map((row) => (row === member ? { object, parent: member.parent, ...memberFields(relativePose(parentPose, pose)) } : row)) };
+  return { assembly: next, poses: solveAssembly(next, poseOf).poses };
+}
+
+/** A new assembly id, one no assembly in `assemblies` has. */
+export function freshAssemblyId(assemblies: readonly Assembly[]): string {
+  for (let n = 1; ; n += 1) if (!assemblies.some((row) => row.id === `asm_${n}`)) return `asm_${n}`;
+}
+
+/**
+ * `child` seated on `parent` where it stands: in `parent`'s assembly, or in a new one named `name` with `parent` as its
+ * root. Refused, with a sentence, as `withMember` refuses, or when `child` is already in another assembly.
+ */
+export function attached(assemblies: readonly Assembly[], child: string, parent: string, poseOf: PoseOf, name: string): Assembly[] | { reason: string } {
+  const theirs = assemblyOf(assemblies, parent);
+  const mine = assemblyOf(assemblies, child);
+  if (mine && mine !== theirs) return { reason: `This part is already in ${mine.name}.` };
+  const base: Assembly = theirs ?? { id: freshAssemblyId(assemblies), name, members: [{ object: parent, parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }] };
+  const parentPose = poseOf(parent) ?? IDENTITY_POSE;
+  const written = withMember(base, { object: child, parent, ...memberFields(relativePose(parentPose, poseOf(child) ?? IDENTITY_POSE)) });
+  if ("reason" in written) return written;
+  return theirs ? assemblies.map((row) => (row === theirs ? written : row)) : [...assemblies, written];
+}
+
+/**
  * `assembly` with `member` added or replaced. Refused, with a sentence, when the part would sit on itself, on a part
  * outside the assembly, or on one of its own children, or when the root would gain a parent or a second root appear.
  */

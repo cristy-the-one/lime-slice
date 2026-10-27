@@ -163,6 +163,7 @@ import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, usedByCount } from "../modeling/params.ts";
 import { readAssemblies, resolveForParameters } from "../assembly";
+import { followAssemblyMove, syncAssemblyView } from "./assemblies.ts";
 import { outOfDateSteps, planRebuild } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
 import { faceTriangles } from "../sim/bridge-body.ts";
@@ -4700,6 +4701,7 @@ function followAssemblyPoses(before: Params) {
   session.assemblies = followed.assemblies;
   if (followed.moved.length === 0) return;
   for (const { object, pose } of followed.moved) state.plate = withModelPose(state.plate, object, pose);
+  syncAssemblyView();
   if (open && followed.moved.some((row) => row.object === open!.objectId)) {
     fx.model?.setPose(objectPose());
     lookPoseChanged();
@@ -4710,6 +4712,8 @@ function followAssemblyPoses(before: Params) {
 
 function putPose(objectId: string, pose: Affine) {
   state.plate = withModelPose(state.plate, objectId, pose);
+  // --- Assemblies M5. The root carries its assembly (D9); a member keeps where it was put, as its new offset.
+  if (followAssemblyMove(objectId, pose)) refreshModelContext();
   fx.model?.setPose(objectPose());
   lookPoseChanged();
   refreshModelGhost();
