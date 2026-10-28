@@ -1,6 +1,7 @@
 import {
   assemblyOf,
   attached,
+  exportParts,
   freshAssemblyId,
   movedTo,
   changedNames,
@@ -155,6 +156,23 @@ const grown = attached(started as Assembly[], "cap", "lid", loose, "unused");
 check("attaching to a member joins its assembly", !("reason" in grown) && grown.length === 1 && grown[0]?.members.length === 3);
 eq("a part in another assembly is refused", attached([...(grown as Assembly[]), { id: "asm_2", name: "Other", members: [{ object: "x", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }, { object: "y", parent: "x", offset: [0, 0, 0], turn: [0, 0, 0] }] }], "y", "body", loose, "n"), { reason: "This part is already in Other." });
 eq("a fresh id skips the ones taken", freshAssemblyId([{ id: "asm_1", name: "", members: [] }, { id: "asm_3", name: "", members: [] }]), "asm_2");
+
+// M9: the solids of a STEP assembly export, root first, each named after its part.
+const listedRootLast: Assembly = { id: "asm_9", name: "Cover", members: [
+  { object: "h1", parent: "b", offset: [0, 0, 0], turn: [0, 0, 0] },
+  { object: "b", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] },
+  { object: "h2", parent: "b", offset: [0, 0, 0], turn: [0, 0, 0] },
+  { object: "h3", parent: "h2", offset: [0, 0, 0], turn: [0, 0, 0] },
+  { object: "x", parent: "b", offset: [0, 0, 0], turn: [0, 0, 0] },
+] };
+const partNames: Record<string, string> = { b: "body", h1: "hook", h2: "Hook", h3: "hook", x: "" };
+eq("an export writes the root first, then the members in order, each named after its part, a repeat numbered", exportParts(listedRootLast, (id) => partNames[id]!), [
+  { object: "b", name: "body" },
+  { object: "h1", name: "hook" },
+  { object: "h2", name: "Hook-2" },
+  { object: "h3", name: "hook-3" },
+  { object: "x", name: "part" },
+]);
 
 if (failed) {
   console.error(`${failed} failed`);

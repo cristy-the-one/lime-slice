@@ -262,6 +262,7 @@ export const KIND_GUIDES: Record<string, string> = {
     "With to, a number left out is 0. model_place {object, to} with no numbers keeps the part where it stands and records that offset.",
     "A member's Model numbers are read in its own part frame (frame part), so a step typed from its drawing stays put when the assembly moves.",
     "plate_arrange {assembly} lays out only that assembly's members, around the other objects. The print layout never follows the assembly.",
+    "model_export_step {object:<any member>, name, assembly:true} writes one STEP of every member at its assembled pose, each a solid named after its part, the root first.",
     "object_remove on a member seats its children on its parent where they stand.",
   ].join("\n"),
   place: [

@@ -3,10 +3,11 @@ import { arrangedObjects, addedCopy, placeObject, plateUnionBounds, withoutObjec
 import { fx } from "./fx.ts";
 import { place } from "./files.ts";
 import { flushEdit, noteEdit } from "./history.ts";
-import { commitModel, followSelection, frameInModel } from "./model.ts";
+import { commitModel, exportAssemblyStep, followSelection, frameInModel } from "./model.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { state } from "./state.ts";
-import { attachTo, ungroup } from "./assemblies.ts";
+import { attachTo, liveAssemblies, ungroup } from "./assemblies.ts";
+import { pushToast } from "../ui/toasts.ts";
 import { currentRules } from "./rules.ts";
 import { sequentialClearance } from "../settings-rules.ts";
 import type { Bounds } from "../mesh-place.ts";
@@ -69,6 +70,39 @@ export function ungroupAssembly(id: string) {
   ungroup(id);
   place();
   flushEdit();
+}
+
+/**
+ * --- Assemblies M9. Lay out one assembly for print: its members are laid out on the bed around the other objects,
+ * which stay where they are, as Arrange lays out a whole plate. Their assembled poses do not change. One undo step.
+ */
+export function layOutAssembly(id: string) {
+  const assembly = liveAssemblies().find((row) => row.id === id);
+  if (!assembly) return;
+  commitModel();
+  noteEdit();
+  syncPlateFromState();
+  const members = new Set(assembly.members.map((row) => row.object));
+  const keep = new Set(state.plate.objects.filter((obj) => !members.has(obj.id)).map((obj) => obj.id));
+  const clearance = sequentialClearance(currentRules(), { printOrder: state.printOrder, clearanceMm: state.sequentialClearance, gantryMm: state.sequentialGantry });
+  state.plate = {
+    ...state.plate,
+    objects: arrangedObjects(state.plate.objects, state.profile.bedX, state.profile.bedY, clearance === null ? undefined : clearance + CLEARANCE_SLACK_MM, keep),
+  };
+  applySelectedToState(state.plate);
+  place();
+  flushEdit();
+  const union = plateUnionBounds(state.plate.objects.filter((obj) => members.has(obj.id)), state.profile.bedX, state.profile.bedY);
+  if (union) frameBounds(union);
+}
+
+/** --- Assemblies M9. Save one STEP file of the assembly at its assembled poses, and say what was saved. */
+export async function exportAssembly(id: string) {
+  const assembly = liveAssemblies().find((row) => row.id === id);
+  if (!assembly) return;
+  commitModel();
+  const done = await exportAssemblyStep(assembly);
+  pushToast(done.message, done.ok ? "info" : "error");
 }
 
 export function selectPlateObject(id: string) {
