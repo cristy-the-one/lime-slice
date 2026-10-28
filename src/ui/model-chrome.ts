@@ -72,6 +72,8 @@ interface ModelChromeHooks {
   placeFields(): PlaceFields | null;
   /** A Place field changed: the object moves, or turns, in model space. */
   placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase): void;
+  /** --- Assemblies M10. Model space into the view while the open part stands in its own frame, else null. */
+  placeAxes(): Affine | null;
   /** --- Ctrl-drag in the viewport. `grabStart` opens Place and begins the one step the whole grab makes. --- */
   grabReady(): boolean;
   grabStart(): boolean;
@@ -1976,6 +1978,7 @@ function dragContext(): DragContext {
     // --- A4. Linear until the panel says polar or path. ---
     ...(tool === "pattern" ? { repeat: { mode: repeatModeNow() } } : {}),
     ...(tool === "chamfer" ? { chamfer: chamferChoice().form } : {}),
+    ...(tool === "place" && hooks?.placeAxes() ? { placeAxes: hooks.placeAxes()! } : {}),
   };
 }
 
