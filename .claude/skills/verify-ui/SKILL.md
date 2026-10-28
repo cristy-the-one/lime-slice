@@ -1,6 +1,6 @@
 ---
 name: verify-ui
-description: Prove a Lime Slice UI, e2e, unit, or MCP change works on this Windows machine before claiming it. Build, run the right Playwright specs in headless Chromium, run the unit chain, rebuild the release engine for MCP tests, and take screenshots in the owner's theme. Use after any change to src/, e2e/, mcp/, or CSS, when reproducing a CI failure locally, when the owner reports a UI bug from a screenshot, or before opening a PR (land-pr). Not for slicer output A/B (that is the golden runs) and not for releases.
+description: Prove a Lime Slice UI, e2e, unit, or MCP change on this machine. Build, run the right Playwright specs in headless Chromium, the unit chain, the release engine for MCP tests, screenshots in the owner's theme. Use after changes to src/, e2e/, mcp/ or CSS, or before a PR. Not for golden A/B or releases.
 ---
 
 # Verify a UI change

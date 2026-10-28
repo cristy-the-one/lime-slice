@@ -1,6 +1,6 @@
 ---
 name: land-pr
-description: Open, watch, and merge a Lime Slice pull request the way the owner wants. Branch from main, use the commit trailers, bind the PR, turn monitoring on, and arm auto-merge only after the smoke shards pass. Use whenever opening a PR to main, when a ci-monitor event reports failing checks or conflicts, when a PR "is green" or "can merge", or when the owner says a PR merged. In this repo it takes precedence over the generic babysit and fix-ci skills, because only it knows main's required checks leave out the smoke shards. Not for cutting a release tag (that is release) and not for running UI tests locally (that is verify-ui).
+description: Open, watch, and merge a Lime Slice PR the owner's way. Branch from main, trailers, bind and monitor, merge only after every check incl. the smoke shards. Use when opening a PR, on a ci-monitor event, or when a PR is green or merged. Not for release tags or local UI tests.
 ---
 
 # Land a PR
