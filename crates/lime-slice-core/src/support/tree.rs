@@ -162,7 +162,7 @@ pub(crate) fn foot_loops(feet: &[Foot], y_max: f64, part: &[Loop], gap: f64) -> 
         .collect()
 }
 
-fn circle(center: [f64; 2], radius: f64) -> Loop {
+pub(crate) fn circle(center: [f64; 2], radius: f64) -> Loop {
     let n = 24;
     (0..n)
         .map(|i| {

@@ -432,6 +432,7 @@ impl Supports {
             solid,
             lean_of(opts),
             opts.floor,
+            bridge_of(opts),
             watch,
             opts.job,
         ) {
@@ -849,11 +850,12 @@ impl Demand {
 
             let gap = &gaps[i];
             let mut iface_area = union_all(gens.iter().map(|(r, _)| r.as_slice()));
-            // Belt grid columns, and the interface on them, close the comb
-            // that sampling one overhang a layer at a time leaves.
+            // Belt interface, and the grid columns under it, close the comb
+            // that sampling one overhang a layer at a time leaves. Left open
+            // under trees, a roof past the angle asked for slivers too thin
+            // to print, and each sliver bore tips of its own.
             let apart = opts
                 .floor
-                .filter(|_| !tree)
                 .map(|floor| floor.fall(bands[i].height) + bands[i].height / angle);
             if let Some(apart) = apart.filter(|_| !iface_area.is_empty()) {
                 iface_area = join_columns(&iface_area, apart);
@@ -1088,16 +1090,33 @@ impl<'a> Walk<'a> {
         // Tips frozen at birth stay put while the part silhouette moves.
         // A patch that slid off every tip needs its own trunk, starting
         // on the very next layer, or the interface prints over air.
-        seed_uncovered_interface(
-            interface,
-            &mut self.nodes,
-            &mut self.next_id,
-            self.tip_r,
-            &mut carriers,
-            &held(i.checked_sub(1)),
-            &self.pitch,
-            &land(1),
-        );
+        if self.floor.is_some() {
+            let lower = i
+                .checked_sub(1)
+                .and_then(|k| demanded.get(k))
+                .map_or(&[][..], Vec::as_slice);
+            seed_unbridged_interface(
+                interface,
+                lower,
+                &mut self.nodes,
+                &mut self.next_id,
+                self.tip_r,
+                &mut carriers,
+                &self.pitch,
+                &land(1),
+            );
+        } else {
+            seed_uncovered_interface(
+                interface,
+                &mut self.nodes,
+                &mut self.next_id,
+                self.tip_r,
+                &mut carriers,
+                &held(i.checked_sub(1)),
+                &self.pitch,
+                &land(1),
+            );
+        }
         if self.floor.is_none() {
             if i == 0 {
                 for n in &mut self.nodes {
@@ -1382,6 +1401,7 @@ fn project(
     contours: &[Vec<Loop>],
     lean: f64,
     floor: Option<FloorPlane>,
+    bridge: f64,
     watch: &crate::progress::Watch,
     job: crate::cancel::Job,
 ) -> bool {
@@ -1399,13 +1419,22 @@ fn project(
             contours,
             lean,
             floor,
+            bridge,
             &mut near,
         );
     }
     true
 }
 
-/// Stand layer `i` on the finished layer below it, or on the belt.
+/// How far a belt interface row may bridge from the trunk under it: half
+/// the tip pitch, so a row between two tips is held from both ends.
+fn bridge_of(opts: &SupportOpts) -> f64 {
+    Pitch::of(opts).keep * 0.5
+}
+
+/// Stand layer `i` on the finished layer below it, or on the belt. On a
+/// belt, interface keeps only what the layer below holds, as `holding`
+/// places it, or what is within `bridge` of a trunk there along its row.
 #[allow(clippy::too_many_arguments)]
 fn stand(
     layer: &mut SupportLayer,
@@ -1415,6 +1444,7 @@ fn stand(
     contours: &[Vec<Loop>],
     lean: f64,
     floor: Option<FloorPlane>,
+    bridge: f64,
     near: &mut Vec<usize>,
 ) {
     let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
@@ -1432,7 +1462,12 @@ fn stand(
     );
     // A trunk that cannot stand is dropped above. The interface that was
     // waiting on it would otherwise stay as a raft in the air.
-    drop_unfooted_interface(&mut layer.interface, below, part);
+    match belt {
+        Some(y_max) => {
+            drop_unheld_belt_interface(&mut layer.interface, below, part, y_max, drift, bridge)
+        }
+        None => drop_unfooted_interface(&mut layer.interface, below, part),
+    }
 }
 
 /// Narrow any disk that is wider than what holds it: a disk on the layer
@@ -2625,6 +2660,82 @@ fn seed_uncovered_interface(
     }
 }
 
+/// The belt's `seed_uncovered_interface`. Interface bridges at most half a
+/// pitch from a trunk, so every part of `region` farther than that from each
+/// node bears tips of its own. One node touching a piece is not enough: on a
+/// belt a face parallel to it is born one long thin row a layer, and a row
+/// whose one end a trunk touched printed the rest of its length in the air.
+/// What `lower`, the interface demanded on the layer below, holds as
+/// `holding` places it, and `CANTILEVER_MM` past that within this layer,
+/// needs no tip: it prints on that layer as the part's own layers do. A row
+/// a pitch beside it is not under it. A stretch under a square millimetre
+/// is too small to bear a trunk.
+#[allow(clippy::too_many_arguments)]
+fn seed_unbridged_interface(
+    region: &[Loop],
+    lower: &[Loop],
+    nodes: &mut Vec<Node>,
+    next_id: &mut u32,
+    tip_r: f64,
+    carriers: &mut Carriers,
+    pitch: &Pitch,
+    land: &Land<'_>,
+) {
+    let Some((min, max)) = loop_bounds(region) else {
+        return;
+    };
+    let bridge = pitch.keep * 0.5;
+    let mut held = Vec::new();
+    if !lower.is_empty() {
+        let fall = land
+            .floor
+            .map_or(0.0, |floor| floor.fall(land.bands[land.layer].height));
+        let sheet = holding(offset_loops(lower, INTERFACE_FOOT_MM), fall);
+        held = along(region, &sheet, CANTILEVER_MM);
+    }
+    let under: Vec<Loop> = nodes
+        .iter()
+        .filter(|n| {
+            let r = n.radius + BEAD_OVERHANG_MM;
+            n.xy[0] + r >= min[0]
+                && n.xy[0] - r <= max[0]
+                && n.xy[1] + r >= min[1]
+                && n.xy[1] - r <= max[1]
+        })
+        .map(|n| tree::circle(n.xy, n.radius + BEAD_OVERHANG_MM))
+        .collect();
+    if !under.is_empty() {
+        let spans = along(region, &resolve_nonzero(under), bridge);
+        held = boolean_union(&held, &spans);
+    }
+    let far = if held.is_empty() {
+        region.to_vec()
+    } else {
+        drop_slivers(boolean_diff(region, &held), 0.05)
+    };
+    let none = Nearby::new(Vec::new());
+    for comp in components(&far) {
+        if solid_area(&comp) < COVERAGE_SPECK_MM2 {
+            continue;
+        }
+        let seeds = tip_samples(&comp, carriers, &none, pitch);
+        for (xy, load, to_bed) in pack_by_landing(seeds, &comp, pitch, land) {
+            carriers.add(xy);
+            nodes.push(Node {
+                id: *next_id,
+                xy,
+                above: xy,
+                radius: tip_r,
+                dist: 0.0,
+                freeze: 1,
+                load,
+                to_bed,
+            });
+            *next_id += 1;
+        }
+    }
+}
+
 fn area_footing(below: &SupportLayer, part: &[Loop]) -> Vec<Loop> {
     let foot = boolean_union(&boolean_union(&below.interface, &below.sparse), part);
     if foot.is_empty() {
@@ -2711,6 +2822,118 @@ fn drop_unfooted_interface(interface: &mut Vec<Loop>, below: &SupportLayer, part
         // Subtract from the original so a kept ring does not lose its hole.
         *interface = drop_slivers(boolean_diff(interface, &gone), 0.05);
     }
+}
+
+/// A belt row's bridge grows along the row in steps this long, so it never
+/// jumps the gap to a row beside it.
+const BRIDGE_STEP_MM: f64 = 0.3;
+
+/// How far belt interface reaches, within its own layer, past what the
+/// layer below holds it on: the next strip of the same band, a layer's step
+/// away on a slope, and no further.
+const CANTILEVER_MM: f64 = 1.0;
+
+/// The part of `region` within `bridge` of `seed`, measured inside `region`.
+fn along(region: &[Loop], seed: &[Loop], bridge: f64) -> Vec<Loop> {
+    let mut spans = boolean_intersect(region, seed);
+    if spans.is_empty() {
+        return spans;
+    }
+    let steps = (bridge / BRIDGE_STEP_MM).ceil().max(1.0);
+    for _ in 0..steps as usize {
+        spans = boolean_intersect(region, &offset_loops(&spans, bridge / steps));
+    }
+    spans
+}
+
+/// `region`, layer `i - 1`'s footing, as it holds layer `i` on a belt: where
+/// it lies, since a bead stacks on the bead under it in the slice frame as
+/// the part's own 45° layers do, and moved back by `drift`, where gravity
+/// carries layer `i` onto it.
+fn holding(region: Vec<Loop>, drift: f64) -> Vec<Loop> {
+    if region.is_empty() || drift <= 0.0 {
+        return region;
+    }
+    let mut fallen = region.clone();
+    for p in fallen.iter_mut().flatten() {
+        p[1] -= drift;
+    }
+    boolean_union(&region, &fallen)
+}
+
+/// The belt's `drop_unfooted_interface`. What holds this layer is the
+/// layer below as `holding` places it: its interface, sparse column and
+/// part within the flat bed's footing slop, then `CANTILEVER_MM` on within
+/// this layer; a trunk disk within `bridge` along the row; or the belt past
+/// `y_max`. A piece is cut to what is held instead of kept
+/// whole for one footing: a row the length of the part, touched by one
+/// trunk at its end, printed the rest of its length in the air.
+fn drop_unheld_belt_interface(
+    interface: &mut Vec<Loop>,
+    below: &SupportLayer,
+    part: &[Loop],
+    y_max: f64,
+    drift: f64,
+    bridge: f64,
+) {
+    let Some((min, max)) = loop_bounds(interface) else {
+        return;
+    };
+    let pad = INTERFACE_FOOT_MM + bridge + drift + 8.0;
+    let near = |loops: &[Loop]| -> Vec<Loop> {
+        loops
+            .iter()
+            .filter(|l| {
+                loop_bounds(std::slice::from_ref(*l)).is_some_and(|(a, b)| {
+                    a[0] <= max[0] + pad
+                        && b[0] >= min[0] - pad
+                        && a[1] <= max[1] + pad
+                        && b[1] >= min[1] - pad
+                })
+            })
+            .cloned()
+            .collect()
+    };
+    let mut ground = near(&below.interface);
+    ground.extend(near(&below.sparse));
+    ground.extend(near(part));
+    let mut held = if ground.is_empty() {
+        Vec::new()
+    } else {
+        offset_loops(&resolve_nonzero(ground), INTERFACE_FOOT_MM)
+    };
+    let trunks: Vec<Loop> = below
+        .disks
+        .iter()
+        .filter(|d| {
+            let r = d.r + BEAD_OVERHANG_MM + drift;
+            d.xy[0] + r >= min[0]
+                && d.xy[0] - r <= max[0]
+                && d.xy[1] + r >= min[1]
+                && d.xy[1] - r <= max[1]
+        })
+        .map(|d| tree::circle(d.xy, d.r + BEAD_OVERHANG_MM))
+        .collect();
+    let trunks = if trunks.is_empty() {
+        Vec::new()
+    } else {
+        holding(resolve_nonzero(trunks), drift)
+    };
+    held.push(vec![
+        [min[0] - 1.0, y_max],
+        [max[0] + 1.0, y_max],
+        [max[0] + 1.0, y_max.max(max[1]) + drift + 1.0],
+        [min[0] - 1.0, y_max.max(max[1]) + drift + 1.0],
+    ]);
+    let held = holding(resolve_nonzero(held), drift);
+    let mut kept = along(interface, &held, CANTILEVER_MM);
+    // A row bridges from a trunk under it along its own length, not across
+    // to a row beside it.
+    let spans = along(interface, &trunks, bridge);
+    if !spans.is_empty() {
+        kept = boolean_union(&kept, &spans);
+    }
+    *interface = drop_slivers(kept, 0.05);
 }
 
 /// A deck this short, held on two opposite sides, can bridge. Longer spans
@@ -3274,6 +3497,7 @@ mod tests {
             &[Vec::new(), Vec::new()],
             0.8,
             None,
+            0.0,
             &crate::progress::Watch::idle(),
             crate::cancel::Job::default(),
         );
@@ -3653,6 +3877,7 @@ mod tests {
             &contours,
             lean,
             None,
+            0.0,
             &crate::progress::Watch::idle(),
             crate::cancel::Job::default(),
         );
