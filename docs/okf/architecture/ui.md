@@ -1,6 +1,6 @@
 ---
 type: Component
-title: Web UI
+title: UI
 description: The window is a web UI with four stages — Prepare, Preview, G-code, and Model. Stress is a section of the Model dock.
 tags: [architecture, ui]
 status: draft
@@ -28,25 +28,27 @@ sources:
 
 # Shell
 
-The shell is the landscape layout: a tool rail on the left, a dock on each side, and a status line. Prepare and Preview use the left dock for settings and the right dock for results. Model uses the left dock for the open tool, the sketch, History, and Parameters, and the right dock for Inspect.[^readme]
+The shell is the landscape layout: a tool rail on the left, a dock on each side, and a status line. Prepare and Preview use the left dock for settings and the right dock for results. Model uses the left dock for the open tool, the sketch, History, and Parameters, and the right dock for Inspect.[1]
 
-`src/main.ts` boots the theme, mounts the views, and wires the app. `engineMode()` in `src/platform.ts` returns `"invoke"` inside Tauri and `"http"` in the browser.[^main] [^platform]
+`src/main.ts` boots the theme, mounts the views, and wires the app. `engineMode()` in `src/platform.ts` returns `"invoke"` inside Tauri and `"http"` in the browser.[2] [4]
 
 # Stages
 
-The stage type is `"prepare" | "preview" | "gcode" | "model"`.[^chrome] Palette commands for those tabs are `tab-prepare`, `tab-preview`, `tab-gcode`, and `tab-model`.[^commands]
+The stage type is `"prepare" | "preview" | "gcode" | "model"`.[3] Palette commands for those tabs are `tab-prepare`, `tab-preview`, `tab-gcode`, and `tab-model`.[6]
 
-Prepare puts the model on the plate: move, turn, scale, and a strategy. Preview draws the toolpaths. A G-code tab shows the file. The stage defaults to Split: 2D toolpaths on the left and a 3D view on the right.[^readme] See [Pipeline](/slicing/pipeline.md) and [Profiles](/settings/profiles.md).
+Prepare puts the model on the plate: move, turn, scale, and a strategy. Preview draws the toolpaths. A G-code tab shows the file. The stage defaults to Split: 2D toolpaths on the left and a 3D view on the right.[1] See [Pipeline](../slicing/pipeline.md) and [Profiles](../settings/profiles.md).
 
-Model edits a STEP solid or starts one from a primitive or a sketch. Without the Open CASCADE bridge, Model stays off; an unedited STEP can still be sliced.[^readme] See [Sketching and features](/modeler/sketching.md).
+Model edits a STEP solid or starts one from a primitive or a sketch. Without the Open CASCADE bridge, Model stays off; an unedited STEP can still be sliced.[1] See [Sketching and features](../modeler/sketching.md).
 
-Stress is not a stage. The stress module comment says it lives in the Model dock: a hold, a load, and a material card.[^stress] The command is `model-stress`.[^commands] See [Simulation](/stress/simulation.md).
+Stress is not a stage. The stress module comment says it lives in the Model dock: a hold, a load, and a material card.[5] The command is `model-stress`.[6] See [Simulation](../stress/simulation.md).
 
-Phone layout is `?layout=compact`, or Interface layout set to Compact. Auto uses it when the window is 600 px wide or less. It is the same web UI.[^readme]
+Phone layout is `?layout=compact`, or Interface layout set to Compact. Auto uses it when the window is 600 px wide or less. It is the same web UI.[1]
 
-[^readme]: README.md
-[^main]: src/main.ts
-[^chrome]: src/ui/chrome.ts
-[^platform]: src/platform.ts
-[^stress]: src/ui/stress.ts
-[^commands]: src/ui/commands.ts
+# Citations
+
+[1] [README.md](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/README.md)
+[2] [src/main.ts](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/src/main.ts)
+[3] [src/ui/chrome.ts](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/src/ui/chrome.ts)
+[4] [src/platform.ts](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/src/platform.ts)
+[5] [src/ui/stress.ts](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/src/ui/stress.ts)
+[6] [src/ui/commands.ts](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/src/ui/commands.ts)
