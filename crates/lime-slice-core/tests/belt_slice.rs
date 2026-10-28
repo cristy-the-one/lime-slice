@@ -1780,3 +1780,97 @@ fn the_preview_shows_the_part_the_way_the_belt_file_prints_it() {
         "the preview turns {in_preview:+.0} and the belt file {in_file:+.0}"
     );
 }
+
+/// Belt contact of each trunk foot, in mm²: the support beads lying on the
+/// belt, by foot, times the belt advance of one layer. Beads whose ends
+/// across the belt come within a millimetre of each other share a foot.
+fn foot_contact(gcode: &str, angle: f64, layer_height: f64) -> Vec<f64> {
+    let advance = layer_height / angle.to_radians().sin();
+    let mut on: Vec<(f64, f64, f64, f64)> = machine_beads(gcode, angle)
+        .into_iter()
+        .filter(|b| b.kind == "SUPPORT" && b.from[2] <= 0.3 && b.to[2] <= 0.3)
+        .map(|b| {
+            let len = (b.to[0] - b.from[0]).hypot(b.to[1] - b.from[1]);
+            let along = 0.5 * (b.from[1] + b.to[1]);
+            (b.from[0].min(b.to[0]), b.from[0].max(b.to[0]), along, len)
+        })
+        .collect();
+    on.sort_by(|a, b| a.2.total_cmp(&b.2));
+    let mut feet: Vec<(f64, f64, f64, f64)> = Vec::new();
+    for (lo, hi, along, len) in on {
+        match feet
+            .iter_mut()
+            .find(|f| lo <= f.1 + 1.0 && hi >= f.0 - 1.0 && along - f.2 <= 1.0)
+        {
+            Some(f) => {
+                f.0 = f.0.min(lo);
+                f.1 = f.1.max(hi);
+                f.2 = along;
+                f.3 += len;
+            }
+            None => feet.push((lo, hi, along, len)),
+        }
+    }
+    feet.iter().map(|f| f.3 * advance).collect()
+}
+
+/// A trunk meets the tilted belt with a foot as wide as the trunk, cut flat
+/// along the belt, not with a circle that only touches the belt. The owner's
+/// housing printed feet of one tiny bead, and the nozzle tore them off.
+#[test]
+fn belt_trunk_feet_hold_the_belt_with_a_trunk_wide_foot() {
+    let mut spec = belt(45.0, "z", 1, 5.0);
+    spec["floorSupports"] = json!(true);
+    let req = request(
+        &tower_with_arm(),
+        "arm.stl",
+        json!({
+            "belt": spec,
+            "supports": true,
+            "supportStyle": "tree",
+            "supportAngle": 60.0,
+            "trunkDiameter": 4.2,
+            "includePreview": false,
+        }),
+    );
+    let sliced = slice_request(&req, Job::default()).unwrap();
+    assert!(sliced.sanity.ok, "{:?}", sliced.sanity.notes);
+    let feet = foot_contact(&sliced.gcode, 45.0, 0.2);
+    assert!(!feet.is_empty(), "no support bead lies on the belt");
+    let small: Vec<String> = feet
+        .iter()
+        .filter(|&&a| a < 4.0)
+        .map(|a| format!("{a:.2}"))
+        .collect();
+    assert!(
+        small.is_empty(),
+        "{} of {} trunk feet hold the belt with under 4 mm², at {} mm²",
+        small.len(),
+        feet.len(),
+        small.join(", ")
+    );
+    // A foot's beads on the belt print at the belt-contact speed, as a wall's do.
+    let (mut kind, mut layer, mut fast, mut y) = ("", 0, 0, f64::INFINITY);
+    for line in sliced.gcode.lines() {
+        if line.starts_with(";LAYER:") {
+            layer += 1;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("; TYPE:") {
+            kind = rest.trim();
+            continue;
+        }
+        let was = y;
+        y = gcode_word(line, 'Y').unwrap_or(y);
+        if layer > 1
+            && kind == "SUPPORT"
+            && line.starts_with("G1 ")
+            && gcode_word(line, 'E').is_some()
+            && was.max(y) <= 0.3
+            && gcode_word(line, 'F').is_some_and(|f| f > 30.0 * 60.0 + 1e-6)
+        {
+            fast += 1;
+        }
+    }
+    assert_eq!(fast, 0, "support beads on the belt faster than 30 mm/s");
+}

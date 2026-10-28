@@ -44,6 +44,7 @@ use crate::strategy::{
 use crate::support::edit::{EditOutcome, SupportEdit};
 use crate::support::paint::{self, PaintDisk, PaintTally};
 use crate::support::skeleton::{skeleton, tilt_gaps, SupportSkeleton, Tilt as SkeletonTilt};
+use crate::support::tree::{foot_loops, Foot};
 use crate::support::{
     CoverageGap, Disk, FloorPlane, InAir, SupportLayer, SupportOpts, SupportSource, SupportStyle,
     Supports,
@@ -4894,7 +4895,7 @@ impl SupportPlan {
         repaint.dedup();
         let painted = paint(
             cut,
-            layers,
+            &self.supports,
             &shaft,
             &repaint,
             blend,
@@ -4927,7 +4928,7 @@ impl SupportPlan {
         let all: Vec<usize> = (0..cut.bands.len()).collect();
         let paths = paint(
             cut,
-            &self.supports.layers,
+            &self.supports,
             &shaft,
             &all,
             blend,
@@ -5652,7 +5653,7 @@ fn plan_supports(
     let all: Vec<usize> = (0..cut.bands.len()).collect();
     let paths = paint(
         cut,
-        &supports.layers,
+        &supports,
         &shaft,
         &all,
         blend,
@@ -5688,7 +5689,7 @@ fn plan_supports(
 #[allow(clippy::too_many_arguments)]
 fn paint(
     cut: &Contours,
-    layers: &[SupportLayer],
+    supports: &Supports,
     shaft: &[f64],
     which: &[usize],
     blend: &BlendMode,
@@ -5698,6 +5699,9 @@ fn paint(
     floor: Option<FloorPlane>,
 ) -> Vec<Vec<Extrusion>> {
     let (min, max) = cut.bounds;
+    let layers = &supports.layers;
+    // A belt foot spreads as wide as a trunk, as a trunk on the bed does.
+    let spread = 0.5 * settings.trunk_diameter.max(settings.tip_diameter + 0.6) * 0.95;
     which
         .par_iter()
         .map(|&i| {
@@ -5705,6 +5709,7 @@ fn paint(
             let Some(layer) = layers.get(i).filter(|_| !watch.stopped(settings.job)) else {
                 return Vec::new();
             };
+            let feet = supports.belt_feet(&cut.bands, i, spread);
             let paths = support_paths(
                 band.z,
                 band.height,
@@ -5717,6 +5722,7 @@ fn paint(
                 max,
                 i,
                 floor,
+                &feet,
             );
             if count {
                 watch.tick();
@@ -6838,8 +6844,10 @@ fn support_paths(
     max: [f64; 3],
     layer_index: usize,
     floor: Option<FloorPlane>,
+    feet: &[Foot],
 ) -> Vec<Extrusion> {
     let line_width = settings.line_width;
+    let (disks, foot) = belt_trunks(&layer.disks, feet, floor, z, contours, settings);
     // A grid column on the belt falls along gravity, which moves it in slice
     // Y from layer to layer. Its lines fall with it, through a point fixed
     // in the lab, so each layer's lines stand on the lines below.
@@ -6864,7 +6872,8 @@ fn support_paths(
                 &mut paths,
                 &layer.sparse,
                 &layer.interface,
-                &layer.disks,
+                &disks,
+                &foot,
                 shaft_scale,
                 height,
                 &tough,
@@ -6882,7 +6891,8 @@ fn support_paths(
                 &mut paths,
                 &layer.sparse,
                 &layer.interface,
-                &layer.disks,
+                &disks,
+                &foot,
                 shaft_scale,
                 height,
                 &resolved,
@@ -6898,16 +6908,41 @@ fn support_paths(
     paths
 }
 
+/// A belt layer's trunks: the disks the belt clip left, less the trunks whose
+/// foot meets the belt here, and those feet cut along the belt line.
+fn belt_trunks<'a>(
+    disks: &'a [Disk],
+    feet: &[Foot],
+    floor: Option<FloorPlane>,
+    z: f64,
+    contours: &[Loop],
+    settings: &SliceSettings,
+) -> (Cow<'a, [Disk]>, Vec<Loop>) {
+    let Some(floor) = floor.filter(|_| !feet.is_empty()) else {
+        return (Cow::Borrowed(disks), Vec::new());
+    };
+    let kept: Vec<Disk> = disks
+        .iter()
+        .filter(|d| !feet.iter().any(|f| f.node == d.node))
+        .copied()
+        .collect();
+    let gap = settings
+        .support_xy_gap_mm
+        .unwrap_or_else(|| SupportOpts::default().xy_gap);
+    (Cow::Owned(kept), foot_loops(feet, floor.y_max(z), contours, gap))
+}
+
 /// Tree trunks, plus a brim when this layer asked for one. `brim_mm` of 0
 /// is `plan_tree_support` alone.
 fn tree_beads(
     disks: &[Disk],
+    feet: &[Loop],
     strategy: &ResolvedStrategy,
     line_width: f64,
     contours: &[Loop],
     brim_mm: f64,
 ) -> Vec<Extrusion> {
-    let mut paths = plan_tree_support(disks, strategy, line_width);
+    let mut paths = plan_tree_support(disks, feet, strategy, line_width);
     if brim_mm > 1e-6 {
         paths.extend(plan_tree_brim(disks, contours, strategy, line_width, brim_mm));
     }
@@ -7027,6 +7062,7 @@ fn emit_supports(
     support: &[Loop],
     interface: &[Loop],
     disks: &[Disk],
+    feet: &[Loop],
     shaft_scale: f64,
     layer_height: f64,
     low: &ResolvedStrategy,
@@ -7037,16 +7073,17 @@ fn emit_supports(
     brim_mm: f64,
     through: Option<[f64; 2]>,
 ) {
-    if support.is_empty() && interface.is_empty() && disks.is_empty() {
+    if support.is_empty() && interface.is_empty() && disks.is_empty() && feet.is_empty() {
         return;
     }
     let paint = |paths: &mut Vec<Extrusion>,
                  region_s: &[Loop],
                  region_i: &[Loop],
                  disks: &[Disk],
+                 feet: &[Loop],
                  strategy: &ResolvedStrategy| {
         if shaft_scale > 0.0 {
-            let mut sparse = if disks.is_empty() {
+            let mut sparse = if disks.is_empty() && feet.is_empty() {
                 plan_support(
                     region_s,
                     strategy,
@@ -7056,7 +7093,7 @@ fn emit_supports(
                     through,
                 )
             } else {
-                tree_beads(disks, strategy, line_width, contours, brim_mm)
+                tree_beads(disks, feet, strategy, line_width, contours, brim_mm)
             };
             if shaft_scale > 1.01 {
                 for path in &mut sparse {
@@ -7079,8 +7116,8 @@ fn emit_supports(
         // the air beside that outline. Plan every branch once, then cut the
         // beads on the plane, so a trunk that leans across the cut is not
         // drawn twice and a trunk outside the outline is not dropped.
-        if !disks.is_empty() && shaft_scale > 0.0 {
-            let mut trunks = tree_beads(disks, low, line_width, contours, brim_mm);
+        if (!disks.is_empty() || !feet.is_empty()) && shaft_scale > 0.0 {
+            let mut trunks = tree_beads(disks, feet, low, line_width, contours, brim_mm);
             if shaft_scale > 1.01 {
                 for path in &mut trunks {
                     path.bead_height = layer_height * shaft_scale;
@@ -7100,11 +7137,12 @@ fn emit_supports(
             let Some(rect) = rect else {
                 continue;
             };
-            if disks.is_empty() {
+            if disks.is_empty() && feet.is_empty() {
                 paint(
                     paths,
                     &clip_to_rect(support, rect.0, rect.1),
                     &clip_to_rect(interface, rect.0, rect.1),
+                    &[],
                     &[],
                     strategy,
                 );
@@ -7120,7 +7158,7 @@ fn emit_supports(
             }
         }
     } else {
-        paint(paths, support, interface, disks, low);
+        paint(paths, support, interface, disks, feet, low);
     }
 }
 

@@ -450,6 +450,17 @@ impl Supports {
         self.opts.floor
     }
 
+    /// The trunks meeting the belt on layer `i`, as they stood before the
+    /// belt clip, each spread to at least `spread`. Empty on a flat bed.
+    pub(crate) fn belt_feet(&self, bands: &[LayerBand], i: usize, spread: f64) -> Vec<tree::Foot> {
+        match self.opts.floor {
+            Some(floor) if !self.stood.is_empty() => {
+                tree::belt_feet(&self.stood, bands, floor, i, spread)
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// No supports on any of `layers` layers.
     pub(crate) fn none(layers: usize, opts: &SupportOpts) -> Self {
         let empty = vec![Vec::new(); layers];
