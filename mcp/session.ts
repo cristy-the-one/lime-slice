@@ -128,7 +128,7 @@ import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosav
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
-import { interference } from "../src/interference.ts";
+import { exactVerdict, interference, SLIVER_MM3 } from "../src/interference.ts";
 import { assemblyOf, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
 import { followRepeatSources, repeatLabel } from "../src/model-repeat.ts";
@@ -3855,7 +3855,59 @@ export class Session {
    * --- Assemblies M6. Every pair of parts in `obj`'s assembly, at their assembled poses: the mesh pass's answer, clear,
    * touch or crossing, and nested for a part wholly inside another. Pairs that are clear are counted, not listed.
    */
-  private interferenceCheck(obj: PlateObject): Record<string, unknown> {
+  private async interferenceCheck(obj: PlateObject, exact: boolean): Promise<Record<string, unknown>> {
+    const cheap = this.meshInterference(obj);
+    if (!exact || cheap.ok !== true) return cheap;
+    // --- Assemblies M7. Each pair the mesh pass did not clear is measured: the common volume of the two solids.
+    const rows = cheap.pairs as Record<string, unknown>[];
+    for (const row of rows) {
+      const a = this.find(String(row.a));
+      const b = this.find(String(row.b));
+      if (!a || !b) continue;
+      const measured = await this.commonVolume(a, b);
+      if ("reason" in measured) {
+        Object.assign(row, { exact: false, note: measured.reason });
+        continue;
+      }
+      const verdict = exactVerdict(measured.volumeMm3, [measured.volumes[0], measured.volumes[1]]);
+      Object.assign(row, { exact: true, volumeMm3: Math.round(measured.volumeMm3 * 1000) / 1000, verdict, ...(measured.boxMm ? { overlapMm: measured.boxMm } : {}) });
+      if (verdict === "touch") delete row.nested;
+    }
+    const crossing = rows.filter((row) => row.verdict === "crossing" || row.nested).length;
+    return {
+      ...cheap,
+      pass: "exact",
+      note: crossing > 0
+        ? `${crossing} pair${crossing === 1 ? "" : "s"} share volume. Nothing is blocked: a press fit is meant to cross.`
+        : `No pair shares volume. A common volume under ${SLIVER_MM3} mm³, or a millionth of the smaller part, is a touch.`,
+    };
+  }
+
+  /**
+   * The common volume of two parts at their assembled poses, by Open CASCADE: a join `common` with `b` as its tool,
+   * probed on `a`'s current step with a preview, so `a`'s history does not change. An empty common is 0.
+   */
+  private async commonVolume(a: PlateObject, b: PlateObject): Promise<{ volumeMm3: number; volumes: [number, number]; boxMm?: { min: number[]; max: number[] } } | { reason: string }> {
+    for (const part of [a, b]) {
+      if (this.meshBlock(part)) return { reason: "Mesh crossing, not measured: a mesh has no solid to intersect." };
+      const opened = await this.opened(part);
+      if ("reason" in opened) return { reason: opened.reason };
+      if (!part.solid || !part.solid.editable) return { reason: "Mesh crossing, not measured: this part has no solid." };
+    }
+    const volumes: [number, number] = [a.solid!.volumeMm3, b.solid!.volumeMm3];
+    this.lastPreview = null;
+    const probed = await this.probe(a, { kind: "join", op: "common", toolObject: b.id, keepTool: true }, undefined, true);
+    const preview = this.lastPreview as { positions: Float32Array; volumeMm3: number } | null;
+    // An empty common is refused as "The solids do not overlap.": the parts share no volume. Any other refusal is not
+    // an answer about volume, and says so.
+    if (probed.ok !== true) return /do not overlap/i.test(String(probed.reason)) ? { volumeMm3: 0, volumes } : { reason: `Not measured: ${String(probed.reason)}` };
+    if (!preview || preview.positions.length < 9) return { volumeMm3: 0, volumes };
+    const box = posedBounds(preview.positions, a.modelPose);
+    const mm = (value: number) => Math.round(value * 100) / 100 + 0;
+    return { volumeMm3: Math.abs(preview.volumeMm3), volumes, ...(box ? { boxMm: { min: box.min.map(mm), max: box.max.map(mm) } } : {}) };
+  }
+
+  private meshInterference(obj: PlateObject): Record<string, unknown> {
     const assembly = assemblyOf(this.liveAssemblies(), obj.id);
     if (!assembly) return { ok: false, reason: "This part is in no assembly. model_place {to} puts it in one." };
     const members = assembly.members.flatMap((row) => {
@@ -3921,7 +3973,7 @@ export class Session {
   }
 
   private async modelCheck(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (input.interference === true) return this.interferenceCheck(obj);
+    if (input.interference === true) return this.interferenceCheck(obj, input.exact === true);
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid || obj.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };

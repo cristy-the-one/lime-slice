@@ -5,7 +5,7 @@
  */
 import { assemblyOf, attached, movedTo, readAssemblies, samePose, type Assembly } from "../assembly.ts";
 import type { Bounds } from "../mesh-place.ts";
-import { interference, type PairResult } from "../interference.ts";
+import { exactVerdict, interference, meshVolume, type PairResult } from "../interference.ts";
 import type { ContextPart } from "../model-context.ts";
 import { movedPose, posedBounds, thenPose, type Affine } from "../model-space.ts";
 import { meshToModel, modelPoseOf, plateUnionBounds, withModelPose } from "../plate.ts";
@@ -72,7 +72,15 @@ export interface Clash {
   /** "crossing", or a part wholly inside the other. */
   kind: "crossing" | "nested";
   line: string;
+  /** The pair's cache key: its meshes and poses. */
+  key: string;
+  /** M7: the kernel's common volume, once measured; or why it could not be. */
+  volumeMm3?: number;
+  unmeasured?: string;
 }
+
+/** --- Assemblies M7. The exact pass's answers, by the same key as the mesh pass's: a volume, or why not. */
+const measured = new Map<string, number | string>();
 
 const clashCache = new Map<string, PairResult>();
 const arrayIds = new WeakMap<Float32Array, number>();
@@ -109,12 +117,32 @@ export function assemblyClashes(): Clash[] {
           result = interference({ positions: a.obj.sourcePos, pose: a.pose }, { positions: b.obj.sourcePos, pose: b.pose });
           clashCache.set(key, result);
         }
-        if (result.verdict === "crossing") out.push({ a: a.obj.id, b: b.obj.id, kind: "crossing", line: `${a.obj.name} crosses ${b.obj.name}` });
-        else if (result.nested) out.push({ a: a.obj.id, b: b.obj.id, kind: "nested", line: `${a.obj.name} and ${b.obj.name}: one sits inside the other` });
+        if (result.verdict !== "crossing" && !result.nested) continue;
+        const exact = measured.get(key);
+        // The kernel's answer wins over the mesh's: a sliver under D11's threshold is a touch, so no clash.
+        if (typeof exact === "number" && exactVerdict(exact, [meshVolume(a.obj.sourcePos), meshVolume(b.obj.sourcePos)]) === "touch") continue;
+        const volume = typeof exact === "number" ? `: ${exact.toFixed(1)} mm³` : "";
+        const kind = result.verdict === "crossing" ? "crossing" : "nested";
+        const line = kind === "crossing" ? `${a.obj.name} crosses ${b.obj.name}${volume}` : `${a.obj.name} and ${b.obj.name}: one sits inside the other${volume}`;
+        out.push({ a: a.obj.id, b: b.obj.id, kind, key, line, ...(typeof exact === "number" ? { volumeMm3: exact } : {}), ...(typeof exact === "string" ? { unmeasured: exact } : {}) });
       }
     }
   }
   return out;
+}
+
+/**
+ * --- Assemblies M7 (D5, on request). The kernel's common volume for every clash not yet measured, one at a time, then
+ * the list and the tint again. A pair whose meshes or poses changed since is measured afresh next time.
+ */
+export async function measureClashes(volume: (a: string, b: string) => Promise<number | string>) {
+  if (measured.size > 512) measured.clear();
+  for (const clash of assemblyClashes()) {
+    if (measured.has(clash.key)) continue;
+    measured.set(clash.key, await volume(clash.a, clash.b));
+  }
+  syncAssemblyView();
+  refreshObjectList();
 }
 
 /** View state: Prepare draws the assembled poses instead of the print layout. Not saved, not in the undo stack. */

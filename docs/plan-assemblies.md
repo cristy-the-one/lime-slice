@@ -259,6 +259,18 @@ M2 is data only, so M3, which is the first use of that data, landed in the same 
 
   `e2e/assembly.spec.ts` checks the tint and the row for two parts assembled on one spot, and no tint for the ledge resting on the cube. `mcp/assembly.test.ts` checks a resting hook (a touch), a pin sunk 3 mm (crossing, with `atMm`), and a part in no assembly.
 
+### As built: M7
+
+- **The exact pass, as the plan has it.** A dry run of a join `common` on one part's current step, with the other part as its tool at their relative pose, and `keepTool`. Nothing is applied and no history moves, so no spare node is needed. The probe's preview is the intersection: its volume is the common volume, and its box, posed into model space, is the overlap's. An empty common is refused as "The solids do not overlap." and reads as 0 mm³. Any other refusal is reported as not measured.
+- **D11.** `SLIVER_MM3` (0.01) and `SLIVER_SHARE` (1e-6) live in `src/interference.ts` with `exactVerdict`: a common volume under either is a touch. `meshVolume` gives the app the parts' volumes for the share.
+- **The mesh pass, tightened.** The real-engine test found a case the M6 pass missed: a pin wider than its hole, flush with the faces around it, shares volume without any surface crossing another. Now, when no triangles cross, up to 96 points just inside each part (0.01 mm in from a face, on whichever side lies inside that part) are tested against the other part. All of them inside means nested. Some inside means crossing, with that point as `at`. None inside means a touch. A peg narrower than its hole, or one that fills it exactly, stays a touch.
+- **The MCP.** `model_check {interference: true, exact: true}` measures every pair the mesh pass did not clear. Each pair gains `exact`, `volumeMm3` (to 0.001 mm³), the exact `verdict` and `overlapMm`; a sliver drops `nested`. `pass` becomes `"exact"`. A mesh part (an STL) is not measured, and its pair says "Mesh crossing, not measured".
+- **The app (D5, on request).** The interference row has a **Measure** button. For each clash not yet measured it opens either tree if Model never did, then runs the same dry run (`commonVolume` in `src/app/model.ts`). The row then reads "<a> crosses <b>: 14.2 mm³". A pair that measures under the threshold leaves the row and loses its tint. The answers are kept per pair, by mesh and pose, so moving a part measures it afresh. The plan's "or on hover" is not built: a kernel call on hover would run on every pass of the pointer.
+- **Tests.**
+  - `mcp/interference-exact.test.ts`: new, on the real engine, and added to the CI step that runs against Open CASCADE. A 40 × 40 × 10 body has a 6 mm hole. A 5.8 mm pin shares 0 mm³ (touch). A 7 mm pin crosses by the mesh, and the exact pass gives the ring, about 102.1 mm³, with the ring's box. A pin 0.00008 mm wider than the hole measures under 0.01 mm³ and reads as a touch. A box sunk 2 mm into the body measures 32 mm³.
+  - `src/interference.test.ts`: gains the threshold and the peg in a square hole (narrower, wider and flush, exact).
+  - `e2e/assembly-exact.spec.ts`: new, in `test:smoke`, with a mocked engine. Measure gives "14.2 mm³", asks for a `common` join with `keepTool`, and applies nothing. After a 0.1 mm move, a 0.004 mm³ answer clears the row and the tint.
+
 ## 9. Open decisions
 
 | # | Question | Recommendation |

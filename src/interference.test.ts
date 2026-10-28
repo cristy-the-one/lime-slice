@@ -1,4 +1,4 @@
-import { interference, trianglesCross } from "./interference.ts";
+import { exactVerdict, interference, trianglesCross } from "./interference.ts";
 import { eulerOrient } from "./mesh-place.ts";
 import { IDENTITY_POSE, type Affine } from "./model-space.ts";
 
@@ -81,6 +81,28 @@ const moved = (pose: Affine): Affine => ({ m: together.m.map((_, i) => [0, 1, 2]
 eq("a sunk hook still crosses when the pair is moved together", interference({ positions: body.positions, pose: together }, { positions: hook, pose: moved(at(10, 10, 9)) }).verdict, "crossing");
 eq("a resting hook still touches when the pair is moved together", interference({ positions: body.positions, pose: together }, { positions: hook, pose: moved(at(10, 10, 10)) }).verdict, "touch");
 
+// A peg in a square hole, flush top and bottom: no face crosses another when the peg is too wide, yet they share volume.
+function holed(outer: number, inner: number, h: number): Float32Array {
+  const o = outer / 2;
+  const i = inner / 2;
+  const out: number[] = [];
+  const quad = (a: number[], b: number[], c: number[], d: number[]) => out.push(...a, ...b, ...c, ...a, ...c, ...d);
+  const ring = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  for (let k = 0; k < 4; k += 1) {
+    const [ax, ay] = ring[k]!;
+    const [bx, by] = ring[(k + 1) % 4]!;
+    quad([ax! * o, ay! * o, 0], [bx! * o, by! * o, 0], [bx! * o, by! * o, h], [ax! * o, ay! * o, h]);
+    quad([ax! * i, ay! * i, h], [bx! * i, by! * i, h], [bx! * i, by! * i, 0], [ax! * i, ay! * i, 0]);
+    quad([ax! * i, ay! * i, h], [ax! * o, ay! * o, h], [bx! * o, by! * o, h], [bx! * i, by! * i, h]);
+    quad([ax! * i, ay! * i, 0], [bx! * i, by! * i, 0], [bx! * o, by! * o, 0], [ax! * o, ay! * o, 0]);
+  }
+  return new Float32Array(out);
+}
+const plate = { positions: holed(40, 6, 10), pose: IDENTITY_POSE };
+eq("a peg narrower than its hole touches", interference(plate, { positions: box(5.8, 5.8, 10), pose: at(-2.9, -2.9, 0) }).verdict, "touch");
+eq("a peg wider than its hole, flush top and bottom, crosses", interference(plate, { positions: box(7, 7, 10), pose: at(-3.5, -3.5, 0) }).verdict, "crossing");
+eq("a peg that fills its hole exactly touches", interference(plate, { positions: box(6, 6, 10), pose: at(-3, -3, 0) }).verdict, "touch");
+
 // Triangle pairs.
 check("two triangles in one plane do not cross", trianglesCross([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0.2, 0.2, 0], [2, 0, 0], [0, 2, 0]]) === null);
 check("a triangle standing on another does not cross it", trianglesCross([[0, 0, 0], [4, 0, 0], [0, 4, 0]], [[1, 1, 0], [2, 1, 0], [1, 1, 3]]) === null);
@@ -96,6 +118,13 @@ check("and the pass takes under a second", farMs < 1000, `${farMs.toFixed(0)} ms
 const crossStart = performance.now();
 eq("two balls pushed together cross", interference({ positions: ball, pose: IDENTITY_POSE }, { positions: ball, pose: at(12, 0, 0) }).verdict, "crossing");
 check("and answer as fast", performance.now() - crossStart < 1000);
+
+// D11: the exact pass's sliver threshold.
+eq("a common volume of 0.009 mm³ is a touch", exactVerdict(0.009, [100, 100]), "touch");
+eq("0.01 mm³ between small parts crosses", exactVerdict(0.01, [100, 100]), "crossing");
+eq("under a millionth of the smaller part is a touch", exactVerdict(0.5, [1e6, 1e7]), "touch");
+eq("a millionth of the smaller part crosses", exactVerdict(1, [1e6, 1e7]), "crossing");
+eq("14.2 mm³ of a pin in a hole crosses", exactVerdict(14.2, [300, 28000]), "crossing");
 
 if (failed) {
   console.error(`${failed} failed`);

@@ -25,6 +25,31 @@ export interface PairResult {
 /** Distances under this, in mm, count as contact, not as crossing: kernel meshes put coincident faces this close. */
 export const CONTACT_MM = 1e-3;
 
+/**
+ * D11. A common volume under 0.01 mm³, or under a millionth of the smaller part's volume, is a touch: the kernel can
+ * report a sliver where two faces coincide.
+ */
+export const SLIVER_MM3 = 0.01;
+export const SLIVER_SHARE = 1e-6;
+
+/** The volume a closed triangle soup encloses, mm³, by the divergence theorem. */
+export function meshVolume(positions: ArrayLike<number>): number {
+  let sum = 0;
+  for (let i = 0; i + 8 < positions.length; i += 9) {
+    const ax = positions[i]!, ay = positions[i + 1]!, az = positions[i + 2]!;
+    const bx = positions[i + 3]!, by = positions[i + 4]!, bz = positions[i + 5]!;
+    const cx = positions[i + 6]!, cy = positions[i + 7]!, cz = positions[i + 8]!;
+    sum += ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
+  }
+  return Math.abs(sum) / 6;
+}
+
+/** The exact pass's answer for a common volume between parts of `volumes`. */
+export function exactVerdict(commonMm3: number, volumes: [number, number]): "touch" | "crossing" {
+  const smaller = Math.min(Math.abs(volumes[0]), Math.abs(volumes[1]));
+  return commonMm3 < SLIVER_MM3 || commonMm3 < SLIVER_SHARE * smaller ? "touch" : "crossing";
+}
+
 interface Tree {
   positions: Float32Array;
   /** Per node: min x y z, max x y z. */
@@ -201,6 +226,43 @@ function inside(tree: Tree, point: V): boolean {
   return hits % 2 === 1;
 }
 
+/** How far inside its own face a sample point sits, in mm: past contact, short of any wall a print could hold. */
+const SAMPLE_DEPTH_MM = 0.01;
+const SAMPLES = 96;
+
+/**
+ * Up to 96 points of `part`, each just inside one of its faces, and how many of them lie inside `host`, with the first
+ * such point in model space. A face whose two sides both test outside its own part (an open mesh) gives no point.
+ */
+function sharedPoints(part: { positions: Float32Array; pose: Affine }, host: { positions: Float32Array; pose: Affine }): { tested: number; hits: number; at?: V } {
+  const own = treeOf(part.positions);
+  const other = treeOf(host.positions);
+  const toHost = thenPose(part.pose, inversePose(host.pose));
+  const triangles = Math.floor(part.positions.length / 9);
+  const step = Math.max(1, Math.floor(triangles / SAMPLES));
+  let tested = 0;
+  let hits = 0;
+  let at: V | undefined;
+  for (let t = 0; t < triangles; t += step) {
+    const [p, q, r] = triangle(part.positions, t);
+    const n = cross(sub(q, p), sub(r, p));
+    const length = Math.hypot(n[0], n[1], n[2]);
+    if (length < 1e-12) continue;
+    const c: V = [(p[0] + q[0] + r[0]) / 3, (p[1] + q[1] + r[1]) / 3, (p[2] + q[2] + r[2]) / 3];
+    const k = SAMPLE_DEPTH_MM / length;
+    const back: V = [c[0] - n[0] * k, c[1] - n[1] * k, c[2] - n[2] * k];
+    const front: V = [c[0] + n[0] * k, c[1] + n[1] * k, c[2] + n[2] * k];
+    const within = inside(own, back) ? back : inside(own, front) ? front : null;
+    if (!within) continue;
+    tested += 1;
+    const there = applyPose(toHost, within);
+    if (!inside(other, there)) continue;
+    hits += 1;
+    at ??= applyPose(host.pose, there);
+  }
+  return { tested, hits, ...(at ? { at } : {}) };
+}
+
 /**
  * Two parts, each a triangle soup in its own frame and a pose into model space. Clear, touch (nested or not), or
  * crossing, with a point on the first crossing.
@@ -244,18 +306,12 @@ export function interference(a: { positions: Float32Array; pose: Affine }, b: { 
       }
     }
   }
-  // No triangle crosses. One part may still sit wholly inside the other: its box inside the other's, and most of a few
-  // of its corners inside the other's surface. A corner on that surface is ambiguous, so one alone does not decide.
-  const within = (inner: typeof boxA, outer: typeof boxA) => [0, 1, 2].every((k) => inner.min[k]! >= outer.min[k]! - CONTACT_MM && inner.max[k]! <= outer.max[k]! + CONTACT_MM);
-  const nestedIn = (part: { positions: Float32Array; pose: Affine }, host: { positions: Float32Array; pose: Affine }) => {
-    const triangles = Math.floor(part.positions.length / 9);
-    if (triangles === 0) return false;
-    const toHost = thenPose(part.pose, inversePose(host.pose));
-    const hostTree = treeOf(host.positions);
-    const picks = [0, Math.floor(triangles / 3), Math.floor((2 * triangles) / 3), triangles - 1];
-    const votes = picks.filter((t) => inside(hostTree, triangle(part.positions, t, toHost)[1])).length;
-    return votes * 2 > picks.length;
-  };
-  const nested = (within(boxA, boxB) && nestedIn(a, b)) || (within(boxB, boxA) && nestedIn(b, a));
-  return nested ? { verdict: "touch", nested: true } : { verdict: "touch" };
+  // No surface crosses another, yet the parts may still share volume: one wholly inside the other, or a pin wider than
+  // its hole whose ends sit flush with the faces around it. Points just inside each part, beside its own faces, say so.
+  const smallIn = sharedPoints(small, large);
+  if (smallIn.tested > 0 && smallIn.hits === smallIn.tested) return { verdict: "touch", nested: true };
+  const largeIn = sharedPoints(large, small);
+  if (largeIn.tested > 0 && largeIn.hits === largeIn.tested) return { verdict: "touch", nested: true };
+  const at = smallIn.at ?? largeIn.at;
+  return at ? { verdict: "crossing", at } : { verdict: "touch" };
 }

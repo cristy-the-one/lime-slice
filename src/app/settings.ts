@@ -806,11 +806,15 @@ function objectListHtml(): string {
   }).join("");
   const overlap = pairs.map((pair) => pair.line).join("; ");
   // --- Assemblies M6 (D5). In the assembly view the bed's row gives way to the parts that cross in an assembly.
-  const clashes = assemblyView.on ? assemblyClashes().map((row) => row.line).join("; ") : "";
+  const clashRows = assemblyView.on ? assemblyClashes() : [];
+  const clashes = clashRows.map((row) => (row.unmeasured ? `${row.line} (mesh only: ${row.unmeasured})` : row.line)).join("; ");
+  const measure = clashRows.some((row) => row.volumeMm3 === undefined && row.unmeasured === undefined)
+    ? ` <button class="btn" type="button" data-assembly-measure data-tip="Ask the kernel for each pair's common volume. Under 0.01 mm³ is a touch.">Measure</button>`
+    : "";
   return `
     <div class="object-list" id="objectList"><div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${boundsSize(state.placed.bounds)} mm</span></div>`}</div></div>
     ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)} <button class="btn" type="button" data-plate-arrange>Arrange</button></div>` : ""}
-    ${clashes ? `<div class="meta warn-text" id="assemblyInterference" data-tip="Mesh check at the assembled poses. It never blocks a slice: a press fit is meant to cross.">${escapeHtml(clashes)}</div>` : ""}`;
+    ${clashes ? `<div class="meta warn-text" id="assemblyInterference" data-tip="Checked at the assembled poses. It never blocks a slice: a press fit is meant to cross.">${escapeHtml(clashes)}${measure}</div>` : ""}`;
 }
 
 function objectPlaceHtml(): string {
