@@ -768,6 +768,9 @@ impl Demand {
             .into_par_iter()
             .map(|i| {
                 let asked = match opts.source {
+                    SupportSource::Auto if opts.floor.is_some() => {
+                        past_hairline(overhang_at(bands, own, i, angle), bands[i].height / angle)
+                    }
                     SupportSource::Auto => overhang_at(bands, own, i, angle),
                     SupportSource::Paint => Vec::new(),
                 };
@@ -1263,6 +1266,20 @@ fn overhang_at(bands: &[LayerBand], contours: &[Vec<Loop>], i: usize, slope: f64
         // Keep a small island the angle test would drop as a sliver.
         drop_slivers(boolean_union(&angle_overhang, &islands), 0.05)
     }
+}
+
+/// `overhang` less every strip narrower than an eighth of `reach`, one
+/// layer's step at the support angle. On a belt a face parallel to the belt
+/// meets the 45° layers at that step, so facets a few microns off it leave
+/// strips a hundredth of a millimetre wide and as long as the part on single
+/// layers. Each printed as an interface row a bead wide with nothing under
+/// it: too thin for a grid line in its column, and held by one tree tip.
+fn past_hairline(overhang: Vec<Loop>, reach: f64) -> Vec<Loop> {
+    if overhang.is_empty() {
+        return overhang;
+    }
+    let r = reach / 16.0;
+    drop_slivers(offset_loops(&offset_loops(&overhang, -r), r), 0.35)
 }
 
 /// What a part sliced without supports prints over air, each region counted
