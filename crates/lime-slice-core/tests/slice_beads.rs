@@ -168,6 +168,37 @@ fn a_belt_slice_maps_back_and_stacks_layers_along_the_belt_normal() {
     assert_on_part(&reply, [0.0, 0.0, 0.0], [20.0, 10.0, 8.0]);
 }
 
+/// A lone belt part keeps its place out of the plan: across the belt the
+/// beads carry it as the emit offset, along it not at all. Either way the
+/// frame takes them back onto the part.
+#[test]
+fn a_placed_belt_part_maps_back_to_its_own_frame() {
+    let req = request(json!({
+        "belt": {
+            "angleDeg": 45.0,
+            "axis": "z",
+            "direction": 1,
+            "widthMm": 220.0,
+            "copies": 1,
+            "gapMm": 0.0,
+        },
+        "objects": [{
+            "id": "a",
+            "filename": "box.stl",
+            "dataB64": b64(&box_stl(20.0, 10.0, 8.0)),
+            "pose": {
+                "rotation": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                "pivot": [0.0, 0.0, 0.0],
+                "translation": [60.0, 40.0, 0.0]
+            }
+        }]
+    }));
+    let reply = beads(&req);
+    let object = &reply.objects[0];
+    assert!(object.offset[0] != 0.0 && object.offset[1] != 0.0, "{:?}", object.offset);
+    assert_on_part(&reply, object.min, object.max);
+}
+
 #[test]
 fn asking_for_beads_changes_no_gcode() {
     let req = request(json!({}));

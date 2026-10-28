@@ -1302,7 +1302,8 @@ fn sliced_beads(
 /// The slice-to-part map of a plate slice. On a cartesian printer the beads
 /// carry the object's bed offset, which comes off. On a belt the plate was
 /// moved to the bed, lifted onto any pad, and laid flat: `Frame::lab` undoes
-/// the lay-flat, then the move comes off.
+/// the lay-flat, then the move comes off: across the belt all of it, along
+/// it only what was baked into the laid mesh.
 fn slice_to_part(belt: Option<&BeltJob>, offset: [f64; 2]) -> [[f64; 4]; 4] {
     let Some(job) = belt else {
         return [
@@ -1313,7 +1314,11 @@ fn slice_to_part(belt: Option<&BeltJob>, offset: [f64; 2]) -> [[f64; 4]; 4] {
         ];
     };
     let frame = &job.belt.frame;
+    // A bead holds the place baked into the laid mesh, plus the emit offset,
+    // which is the rest of the place across the belt. Along the belt only the
+    // baked part is in it.
     let to_bed = job.offsets.first().copied().flatten().unwrap_or([0.0, 0.0]);
+    let baked = job.baked.first().copied().unwrap_or([0.0, 0.0]);
     let lift = job.raft.as_ref().map_or(0.0, |r| r.top);
     // lab(p) = A·p + b, read from the origin and the three unit points.
     let o = frame.lab(0.0, 0.0, 0.0);
@@ -1322,7 +1327,7 @@ fn slice_to_part(belt: Option<&BeltJob>, offset: [f64; 2]) -> [[f64; 4]; 4] {
         frame.lab(0.0, 1.0, 0.0),
         frame.lab(0.0, 0.0, 1.0),
     ];
-    let shift = [to_bed[0], to_bed[1], lift];
+    let shift = [to_bed[0], baked[1], lift];
     let row = |r: usize| {
         [
             cols[0][r] - o[r],
