@@ -283,6 +283,14 @@ pub fn slice_payload_watched(
         .and_then(|o| o.remove("reslice"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let early = value
+        .as_object_mut()
+        .and_then(|o| o.remove("earlyPreview"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if early {
+        watch.ask_early();
+    }
     let meshes = meshes::intern(&mut value)?;
     let keys = cache.and_then(|_| request_keys(&mut value));
     let cache = cache.zip(keys.as_ref());

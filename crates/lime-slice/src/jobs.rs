@@ -98,6 +98,7 @@ fn progress_body(id: &str, progress: &Progress) -> String {
         "total": progress.total,
         "fraction": progress.fraction,
         "status": progress.status.as_str(),
+        "early": progress.early,
     })
     .to_string()
 }
@@ -127,6 +128,8 @@ pub fn route(method: &str, path: &str, body: &str) -> Option<JobReply> {
         return Some(events(id));
     } else if method == "GET" && tail == "result" {
         result(id)
+    } else if method == "GET" && tail == "early" {
+        early(id)
     } else if method == "POST" && tail == "cancel" {
         cancel(id)
     } else {
@@ -183,6 +186,15 @@ fn result(id: &str) -> (u16, String) {
         return (404, err_json("not found"));
     };
     entry.outcome.take()
+}
+
+/// The toolpaths drawn before the tour, while the job runs. `404` until the
+/// slice has them, or when it asked for none.
+fn early(id: &str) -> (u16, String) {
+    match watch_of(id).and_then(|watch| watch.early()) {
+        Some(text) => (200, text.to_string()),
+        None => (404, err_json("no early preview")),
+    }
 }
 
 fn cancel(id: &str) -> (u16, String) {

@@ -67,6 +67,7 @@ fn progress_event(progress: &Progress) -> Value {
         "done": progress.done,
         "total": progress.total,
         "status": progress.status.as_str(),
+        "early": progress.early,
     })
 }
 
@@ -156,6 +157,17 @@ fn command_error(err: PayloadError) -> String {
         PayloadError::UnknownMesh(_) => err.json(),
         PayloadError::Failed(message) => message,
     }
+}
+
+/// The running slice's toolpaths, drawn before its tour, once `slice-progress`
+/// says `early`. `None` before then, and for a slice that asked for none.
+#[tauri::command]
+fn early_preview() -> Option<String> {
+    CURRENT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .early()
+        .map(|text| text.to_string())
 }
 
 #[tauri::command]
@@ -400,6 +412,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             slice_model,
             cancel_slice,
+            early_preview,
             sim_study,
             calibrate_pa,
             calibrate_flow,
