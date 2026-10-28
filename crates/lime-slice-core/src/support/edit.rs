@@ -419,6 +419,7 @@ impl Supports {
                     contours,
                     lean,
                     self.opts.floor,
+                    super::bridge_of(&self.opts),
                     &mut near,
                 );
             }
@@ -716,6 +717,7 @@ impl Supports {
             contours,
             lean_of(&self.opts),
             self.opts.floor,
+            super::bridge_of(&self.opts),
             &crate::progress::Watch::idle(),
             self.opts.job,
         );

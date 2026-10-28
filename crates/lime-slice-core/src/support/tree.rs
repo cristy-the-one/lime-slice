@@ -54,7 +54,7 @@ pub(crate) fn on_bed_brim(disks: &[Disk], part: &[Loop], line_width: f64, brim_m
     out
 }
 
-fn circle(center: [f64; 2], radius: f64) -> Loop {
+pub(crate) fn circle(center: [f64; 2], radius: f64) -> Loop {
     let n = 24;
     (0..n)
         .map(|i| {
