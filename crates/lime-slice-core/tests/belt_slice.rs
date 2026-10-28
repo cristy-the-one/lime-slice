@@ -878,6 +878,64 @@ fn belt_supports_under_a_roof_stand_in_gravity() {
     }
 }
 
+/// Ray trees R1: tips read off the roof's faces instead of from the layers.
+/// Under the 60° cap the prototype must hold the roof as well as the layer
+/// walk does: interface on the roof, standing. A tip per pitch of roof grows
+/// more trunk than the layer walk's 13,500 mm, about 19,500 mm.
+#[test]
+fn belt_trees_with_surface_demand_hold_the_roof() {
+    let mut boxes = vec![
+        ([0.0, 0.0, 14.0], [60.0, 40.0, 16.0]),
+        ([0.0, 0.0, 0.0], [2.0, 40.0, 14.0]),
+        ([58.0, 0.0, 0.0], [60.0, 40.0, 14.0]),
+        ([2.0, 0.0, 0.0], [58.0, 2.0, 14.0]),
+        ([2.0, 38.0, 0.0], [58.0, 40.0, 14.0]),
+    ];
+    for k in 0..6 {
+        let y = 2.0 + 6.0 * k as f64;
+        boxes.push(([2.0, y, 13.9 + 0.015 * k as f64], [58.0, y + 6.0, 14.5]));
+    }
+    let cap = boxes_stl(&boxes, 0.0);
+    let mut spec = belt(45.0, "z", 1, 5.0);
+    spec["floorSupports"] = json!(true);
+    let req = request(
+        &cap,
+        "cap.stl",
+        json!({
+            "belt": spec,
+            "supports": true,
+            "supportStyle": "tree",
+            "supportAngle": 60.0,
+            "supportDemand": "surface",
+            "includePreview": false,
+        }),
+    );
+    let sliced = slice_request(&req, Job::default()).unwrap();
+    assert!(sliced.sanity.ok, "{:?}", sliced.sanity.notes);
+    let beads = lab_beads(&sliced.gcode, 45.0);
+    for (kind, span, most) in [("SUPPORT", 0.5, 0.02), ("SUPPORT-INTERFACE", 5.4, 0.01)] {
+        let (total, floating) = in_the_air(&beads, kind, span);
+        assert!(
+            floating <= most * total + 2.0,
+            "{floating:.0} of {total:.0} mm of {kind} beads stand on nothing"
+        );
+    }
+    let (held, _) = in_the_air(&beads, "SUPPORT-INTERFACE", 5.4);
+    assert!(held > 5_000.0, "printed {held:.0} mm of interface under the roof");
+    let (trunks, _) = in_the_air(&beads, "SUPPORT", 0.5);
+    assert!((500.0..24_000.0).contains(&trunks), "grew {trunks:.0} mm of support");
+}
+
+#[test]
+fn an_unknown_support_demand_is_refused() {
+    let cap = boxes_stl(&[([0.0, 0.0, 0.0], [10.0, 10.0, 10.0])], 0.0);
+    let req = request(&cap, "cube.stl", json!({ "supports": true, "supportDemand": "rays" }));
+    let Err(err) = slice_request(&req, Job::default()) else {
+        panic!("supportDemand \"rays\" sliced");
+    };
+    assert!(err.contains("supportDemand"), "{err}");
+}
+
 /// Millimetres of `kind` beads, and of those that stand on nothing: no bead
 /// of the layer printed before within `span` across the belt, and, in slice
 /// Y, from 0.3 mm on the part's side to 0.5 mm on the belt's. That window

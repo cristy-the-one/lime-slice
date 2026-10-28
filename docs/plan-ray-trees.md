@@ -129,6 +129,52 @@ The measures are:
 
 The walk, the back end and the G-code stay as they are, so R1 is small enough to prototype in a day.
 
+### As built: R1
+
+R1 is built as a prototype behind the request flag `supportDemand: "surface"`, on trees only. Absent, or `"layers"`, keeps today's demand byte for byte. There is no UI control, and the MCP does not pass it.
+
+**What it does** (`support/surface.rs`):
+- **Which faces ask.** A face asks for support when its outward normal points down past the support angle along plumb, the axis of section 4. The angle is read as `slope_of` reads it, as the least slope from level that prints, with 2° of tolerance, so a face at the angle gets one answer. Three kinds of face are left out:
+  - a face within 0.3 mm of the bed or the belt;
+  - a face with part 0.45 mm under it along the axis, which is a face inside the solid where two bodies overlap, as the boxes of the 60° cap do;
+  - a face where enforce or block paint says otherwise. Enforce asks for any face that points down, and the later disk wins, as in `paint_layer`.
+- **Tips.** A seeded scatter, 16 points per tip pitch squared, is thinned in a seeded order to a Poisson disk at the tip pitch (10.8 mm on Speed). Two points closer than the pitch clash only on the same sheet, so a roof over a roof keeps both. Each tip carries the area of the points nearest it, counted in fine-grid cells and capped at the tip's capacity, as a packed tip carries samples today.
+- **Into the walk.** Each face is clipped to every band it crosses and laid flat on it. That is the layer's overhang in Automatic, in place of `overhang_at`. Painted only keeps today's per-layer paint regions. Tips ride the overhang down the Z gap to the layer where it is born, and stay only where that overhang still stands, within 0.5 mm. `Walk::arrive` takes them in place of `sample_tips`; a born piece no tip reaches still gets `sample_tips`. Everything after that is today's walk, #484's held-row seeding and the back end. Regrow (`support/edit.rs`) keeps the grid.
+
+**Measured** on main at v4.2.6 (the "before", flag off) against the flag on. The engine runs the owner's projects and settings for the housing (IR3 V2, PETG, 0.4 mm, Speed, tree 40° / 0.8 / 4.2, gaps and interface on Auto). Time is the engine's Klipper model. The checks are:
+- floating interface and support: `gfloat.py`'s stacking-or-gravity rule from #484, with interface bridging 5.4 mm along X;
+- no tip within reach: interface with no trunk bead within 5.4 mm on the four layers before it;
+- tips touching: live tips whose top is within 0.8 mm of the roof (13.2 mm on the housing, 13.9 mm on the cap).
+
+| Case | Print time | Support | Limbs | Unheld patches | Tips touching | Floating interface | Floating support | No tip within reach | Slice (supports) |
+|---|---|---|---|---|---|---|---|---|---|
+| Housing, Automatic | 14.64 → 19.98 h (+36 %) | 8.55 → 36.05 cm³ | 178 → 2,209 | 0 → 5 | 32 → 137 | 7,938 mm, 13.5 % → 8,420 mm, 5.0 % | 0.28 → 0.33 % | 41.4 → 42.1 % | 2.1 → 4.7 s (0.4 → 2.7 s) |
+| Housing, Painted only | 14.27 → 14.28 h (+0.1 %) | 0.92 → 1.06 cm³ | 38 → 49 | 3 → 1 | 29 → 35 | 32 mm, 0.62 % → 45 mm, 0.86 % | 0.41 → 0.38 % | 22.7 → 13.3 % | 1.9 → 1.9 s |
+| Telo cover, IR3 V2, Automatic | 33.40 → 39.86 h (+19 %) | 3.48 → 26.45 cm³ | 1,152 → 5,838 | 535 → 535 | 110 → 341 live tips | 52 mm, 1.1 % → 75 mm, 0.03 % | 0.76 → 0.64 % | 38.2 → 73.0 % | 9.6 → 14.2 s |
+| 60° cap, trees at 60° | 0.584 → 0.550 h | 1.64 → 1.35 cm³ | 80 → 121 | 0 → 0 | 17 → 30 | 32 mm, 0.24 % → 1 mm, 0.01 % | 0.76 → 0.59 % | 41.1 → 44.2 % | 0.12 → 0.13 s |
+| Housing on a flat bed, Automatic | 15.67 → 15.55 h (−0.8 %) | 29.7 → 32.1 cm³ | 494 → 488 | 0 → 0 | 18 → 36 | 16.8 → 17.2 % | 0.54 → 0.53 % | 24.9 → 37.5 % | 6.0 → 6.2 s |
+
+On the flat bed, "floating" uses a ±0.3 mm window across the row instead of the belt's.
+
+**What the numbers say:**
+- **Plumb asks for far too much on the belt.** On the housing it asks for 64,600 mm² of faces, against about 16,000 mm² that are past the angle in the layers' own frame. Most of them are the tapered inner walls and the level ceilings, which point down in gravity but print on the belt by stacking, as the part's own 45° layers do. Interface grows threefold. #484's held-row rule then grows about 1,900 limbs on those rows, beside the 282 tips read off the surface.
+- **The floating sheet is not touched.** Floating interface falls from 13.5 % to 5.0 % only because there is three times as much interface. In millimetres it stays at about 8,000, in every variant measured. That sheet's rows step about 0.55 mm a layer in the slice frame. Each row needs a trunk under it, and a tip a pitch apart cannot hold the rows between. This is a stacking problem, not a demand problem.
+- **Where it helps.** It doubles the tips touching the roof on a flat bed at no cost in time. On the 60° cap, it holds the roof with less interface and less time. In Painted only it is neutral: one fewer patch, six more tips at the roof, and 13 mm more floating interface.
+
+**Two other axes**, measured on the housing with a switch in the engine that is not committed:
+- **The layers' frame** (the angle measured against slice Z): 14.91 h, 10.62 cm³, 287 limbs, 8,206 mm (12.0 %) of floating interface, 18 tips touching the roof.
+- **The layers' frame, or within 15° of level in gravity:** 18.92 h, 26.96 cm³, 718 limbs, 8,573 mm (5.1 %), 77 tips touching.
+
+Neither beats #484 at a similar cost.
+
+**Verdict.** R1 does not beat #484 on the housing at a similar cost. It stays off by default, as a request flag. D2 needs another look before R2 or R3: on the belt, the axis that decides demand cannot be plumb alone.
+
+**Tests:**
+- `support::surface` unit tests: a ceiling bears tips a pitch apart; the same mesh bears the same tips; a slope inside the angle asks for nothing; enforce paint asks.
+- `belt_trees_with_surface_demand_hold_the_roof` in `tests/belt_slice.rs` (the 60° cap with the flag on).
+- `an_unknown_support_demand_is_refused`.
+- Golden, flag off.
+
 ## 8. Risks and open points
 
 - **Printability per layer still rules.** A skeleton that is clear in 3D can still give a disk that overhangs the one below it on some layer. The bottom-up `stand` check stays for that reason, and R3 must measure how much it drops.

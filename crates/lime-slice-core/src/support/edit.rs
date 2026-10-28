@@ -275,7 +275,7 @@ impl Supports {
             } else {
                 drop_slivers(boolean_intersect(&self.born[i], mask), 0.05)
             };
-            walk.arrive(i, &born, mask);
+            walk.arrive(i, &born, mask, None);
             self.forest.record(i, &walk.nodes);
             let mut fixed = Fixed::new(match i {
                 0 => Vec::new(),

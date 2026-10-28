@@ -1689,6 +1689,10 @@ fn request_for(
             lime_slice_core::SupportSource::Auto => None,
             lime_slice_core::SupportSource::Paint => Some("paint".into()),
         },
+        support_demand: match settings.support_demand {
+            lime_slice_core::SupportDemand::Layers => None,
+            lime_slice_core::SupportDemand::Surface => Some("surface".into()),
+        },
         support_height_mult: settings.support_height_mult,
         support_z_gap_mm: settings.support_z_gap_mm,
         support_xy_gap_mm: settings.support_xy_gap_mm,

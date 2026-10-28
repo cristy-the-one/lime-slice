@@ -14,6 +14,7 @@ pub(crate) mod avoidance;
 pub(crate) mod edit;
 pub(crate) mod paint;
 pub(crate) mod skeleton;
+pub(crate) mod surface;
 pub(crate) mod tree;
 
 use paint::PaintDisk;
@@ -33,6 +34,17 @@ pub enum SupportSource {
     Auto,
     /// Only what enforce paint asks for. The angle and the islands ask for nothing.
     Paint,
+}
+
+/// How the walk finds where tips go.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SupportDemand {
+    /// Overhangs from the difference between layers, tips on a grid in them.
+    #[default]
+    Layers,
+    /// Faces that point down past the angle along the trunk axis, tips
+    /// spread over them by area. Trees only: `docs/plan-ray-trees.md`, R1.
+    Surface,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -88,6 +100,7 @@ pub struct SupportOpts {
     /// pairs, merges, and pushes exactly as it did without them.
     pub avoidance: bool,
     pub source: SupportSource,
+    pub demand: SupportDemand,
 }
 
 /// The belt in the slice frame. Printable material is `y <= y_max(z)`.
@@ -213,6 +226,7 @@ impl Default for SupportOpts {
             floor: None,
             avoidance: false,
             source: SupportSource::Auto,
+            demand: SupportDemand::Layers,
         }
     }
 }
@@ -289,6 +303,9 @@ struct Demand {
     interface: Vec<Vec<Loop>>,
     /// Grid style only: the column printed under the interface.
     sparse: Vec<Vec<Loop>>,
+    /// Tips read off the surface, on the layer they are born on. `None`
+    /// leaves tips to the walk's grid.
+    tips: Option<Vec<Vec<surface::Tip>>>,
 }
 
 /// The tree-support walk as it ran. `limbs[k]` is the lineage of `NodeId(k + 1)`.
@@ -408,6 +425,7 @@ impl Supports {
             contours,
             contours,
             &[],
+            None,
             opts,
             &crate::progress::Watch::idle(),
         )
@@ -416,15 +434,17 @@ impl Supports {
     /// Supports holding up `own`, the part's contours, as `paint` asks.
     /// `solid` is what the trees avoid and may stand on: the part, and any
     /// other object moved into the part's frame. Alone, it is `own`.
+    /// `mesh` is the part cut into `own`, which surface demand reads.
     pub(crate) fn build_with(
         bands: &[LayerBand],
         own: &[Vec<Loop>],
         solid: &[Vec<Loop>],
         paint: &[PaintDisk],
+        mesh: Option<&crate::mesh::Mesh>,
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
-        let mut supports = Self::walk_with(bands, own, solid, paint, opts, watch)?;
+        let mut supports = Self::walk_with(bands, own, solid, paint, mesh, opts, watch)?;
         if !project(
             &mut supports.layers,
             1,
@@ -485,6 +505,7 @@ impl Supports {
             contours,
             contours,
             &[],
+            None,
             opts,
             &crate::progress::Watch::idle(),
         )
@@ -495,10 +516,11 @@ impl Supports {
         own: &[Vec<Loop>],
         solid: &[Vec<Loop>],
         paint: &[PaintDisk],
+        mesh: Option<&crate::mesh::Mesh>,
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
-        let demand = Demand::new(bands, own, solid, paint, opts, watch)?;
+        let demand = Demand::new(bands, own, solid, paint, mesh, opts, watch)?;
         let (forest, disks) = if opts.style == SupportStyle::Tree {
             grow(&demand, bands, solid, opts, watch)?
         } else {
@@ -753,11 +775,13 @@ impl Patch {
 impl Demand {
     /// Overhangs come from `own`, painted. Interface keeps clear of
     /// `solid`, and a column that reaches it stops there.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         bands: &[LayerBand],
         own: &[Vec<Loop>],
         solid: &[Vec<Loop>],
         paint: &[PaintDisk],
+        mesh: Option<&crate::mesh::Mesh>,
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
@@ -767,6 +791,7 @@ impl Demand {
             born: vec![Vec::new(); n],
             interface: vec![Vec::new(); n],
             sparse: vec![Vec::new(); n],
+            tips: None,
         };
         if n == 0 {
             return Some(demand);
@@ -774,17 +799,39 @@ impl Demand {
         let angle = slope_of(opts.angle_deg);
         let iface_n = opts.interface_layers.max(1);
         let tree = opts.style == SupportStyle::Tree;
+        let surface = mesh
+            .filter(|_| tree && opts.demand == SupportDemand::Surface)
+            .map(|mesh| {
+                let pitch = Pitch::of(opts);
+                surface::read(
+                    mesh,
+                    bands,
+                    own,
+                    paint,
+                    &surface::Spec {
+                        angle_deg: opts.angle_deg,
+                        floor: opts.floor,
+                        by_angle: opts.source == SupportSource::Auto,
+                        pitch: pitch.keep,
+                        fine: pitch.fine,
+                        capacity: pitch.capacity,
+                    },
+                )
+            });
+        let mut tips: Option<Vec<Vec<surface::Tip>>> =
+            surface.as_ref().map(|_| vec![Vec::new(); n]);
         // Everything that depends only on one layer of the part is found in
         // parallel. The pass below carries each overhang down to its contact.
         let overhangs: Vec<Vec<Loop>> = (0..n)
             .into_par_iter()
             .map(|i| {
-                let asked = match opts.source {
-                    SupportSource::Auto if opts.floor.is_some() => {
+                let asked = match (opts.source, &surface) {
+                    (SupportSource::Auto, Some(surface)) => surface.regions[i].clone(),
+                    (SupportSource::Auto, None) if opts.floor.is_some() => {
                         past_hairline(overhang_at(bands, own, i, angle), bands[i].height / angle)
                     }
-                    SupportSource::Auto => overhang_at(bands, own, i, angle),
-                    SupportSource::Paint => Vec::new(),
+                    (SupportSource::Auto, None) => overhang_at(bands, own, i, angle),
+                    (SupportSource::Paint, _) => Vec::new(),
                 };
                 paint::paint_layer(paint, bands, own, i, asked)
             })
@@ -800,8 +847,8 @@ impl Demand {
             })
             .collect();
 
-        // (contact_z, region) waiting until the air gap has been cleared.
-        let mut pending: Vec<(f64, Vec<Loop>)> = Vec::new();
+        // (contact_z, region, tips) waiting until the air gap has been cleared.
+        let mut pending: Vec<(f64, Vec<Loop>, Vec<surface::Tip>)> = Vec::new();
         // Interface shells still ageing, youngest first. `left` is layers still printed dense.
         let mut gens: Vec<(Vec<Loop>, u32)> = Vec::new();
         let mut sparse: Vec<Loop> = Vec::new();
@@ -828,9 +875,11 @@ impl Demand {
                 }
             }
             let mut born: Vec<Loop> = Vec::new();
-            pending.retain(|(contact_z, region)| {
+            let mut born_tips: Vec<surface::Tip> = Vec::new();
+            pending.retain(|(contact_z, region, tips)| {
                 if bands[i].z <= *contact_z + 1e-6 {
                     born = boolean_union(&born, region);
+                    born_tips.extend_from_slice(tips);
                     false
                 } else {
                     true
@@ -843,6 +892,13 @@ impl Demand {
                     born = clip_half(&born, floor.y_max(bands[i].z));
                 }
                 if !born.is_empty() {
+                    if let Some(tips) = &mut tips {
+                        // A tip stays only where its face's overhang is still
+                        // demanded: paint, the belt, or the sliver test may have
+                        // taken it.
+                        born_tips.retain(|t| tip_covers(&born, t.xy, SURFACE_TIP_SLOP_MM));
+                        tips[i] = born_tips;
+                    }
                     gens.insert(0, (born.clone(), iface_n));
                     demand.born[i] = born;
                 }
@@ -907,8 +963,12 @@ impl Demand {
                 continue;
             }
             let underside = bands[i].z - bands[i].height;
-            pending.push((underside - opts.z_gap, overhang.clone()));
+            let on_face = surface
+                .as_ref()
+                .map_or_else(Vec::new, |s| s.tips[i].clone());
+            pending.push((underside - opts.z_gap, overhang.clone(), on_face));
         }
+        demand.tips = tips;
         Some(demand)
     }
 }
@@ -947,7 +1007,8 @@ fn grow(
         if opts.job.cancelled() || watch.cancelled() {
             return None;
         }
-        walk.arrive(i, &demand.born[i], &demand.interface[i]);
+        let tips = demand.tips.as_ref().map(|t| t[i].as_slice());
+        walk.arrive(i, &demand.born[i], &demand.interface[i], tips);
         forest.record(i, &walk.nodes);
         disks[i] = organic_disks(&walk.nodes, walk.part(i), opts.xy_gap);
         walk.descend(i, &mut none, &mut forest);
@@ -1035,8 +1096,15 @@ impl<'a> Walk<'a> {
 
     /// Bear tips on `born` and give each piece of `interface` no node covers
     /// a tip of its own, on layer `i`. A sample a tip within reach already
-    /// carries bears none: see `tip_samples`.
-    fn arrive(&mut self, i: usize, born: &[Loop], interface: &[Loop]) {
+    /// carries bears none: see `tip_samples`. `surface` tips, when given,
+    /// stand in for the grid's on every piece of `born` they reach.
+    fn arrive(
+        &mut self,
+        i: usize,
+        born: &[Loop],
+        interface: &[Loop],
+        surface: Option<&[surface::Tip]>,
+    ) {
         let part = self.part(i);
         let demanded = self.demanded;
         // The interface demanded on layer `k`, which a piece's interface stands on.
@@ -1066,13 +1134,25 @@ impl<'a> Walk<'a> {
             // A fresh patch prints `iface_n` layers dense, so the lowest of
             // them stands on the layer below that.
             let under = held(i.checked_sub(self.iface_n as usize));
-            let tips = sample_tips(
-                seeds,
-                &mut carriers,
-                &under,
-                &self.pitch,
-                &land(self.iface_n),
-            );
+            let tips = match surface {
+                Some(on_face) => surface_tips(
+                    on_face,
+                    seeds,
+                    part,
+                    self.xy_gap,
+                    &mut carriers,
+                    &under,
+                    &self.pitch,
+                    &land(self.iface_n),
+                ),
+                None => sample_tips(
+                    seeds,
+                    &mut carriers,
+                    &under,
+                    &self.pitch,
+                    &land(self.iface_n),
+                ),
+            };
             for (p, load, to_bed) in tips {
                 self.nodes.push(Node {
                     id: self.next_id,
@@ -2614,6 +2694,52 @@ fn point_inside(comp: &[Loop]) -> Option<[f64; 2]> {
         y += step;
     }
     best
+}
+
+/// How far outside its face's overhang a surface tip may stand, mm: the
+/// overhang is cut at the band's middle and the tip lies on the face.
+const SURFACE_TIP_SLOP_MM: f64 = 0.5;
+
+/// Tips read off the surface for `region`, the overhang born on this layer,
+/// in place of `sample_tips`. A tip in the part, short of its XY gap, is
+/// left out. A piece of `region` no tip reaches, a speck or a face's edge the
+/// disk missed, is sampled as `sample_tips` would.
+#[allow(clippy::too_many_arguments)]
+fn surface_tips(
+    on_face: &[surface::Tip],
+    region: &[Loop],
+    part: &[Loop],
+    xy_gap: f64,
+    carriers: &mut Carriers,
+    held: &Nearby,
+    pitch: &Pitch,
+    land: &Land<'_>,
+) -> Vec<([f64; 2], f64, bool)> {
+    let clear = xy_gap * 0.35;
+    let mut pts: Vec<([f64; 2], f64, bool)> = on_face
+        .iter()
+        .filter(|t| {
+            part.is_empty()
+                || (!in_solid(part, t.xy[0], t.xy[1]) && distance_to_outline(part, t.xy) > clear)
+        })
+        .map(|t| (t.xy, t.load, !reaches_model(t.xy, land)))
+        .collect();
+    for p in &pts {
+        carriers.add(p.0);
+    }
+    let reach = pitch.keep * 0.5;
+    for comp in components(region) {
+        if pts.iter().any(|p| tip_covers(&comp, p.0, reach)) {
+            continue;
+        }
+        let hit = tip_samples(&comp, carriers, held, pitch);
+        let packed = pack_by_landing(hit, &comp, pitch, land);
+        for tip in &packed {
+            carriers.add(tip.0);
+        }
+        pts.extend(packed);
+    }
+    pts
 }
 
 fn tip_covers(comp: &[Loop], xy: [f64; 2], reach: f64) -> bool {

@@ -46,7 +46,8 @@ use crate::support::paint::{self, PaintDisk, PaintTally};
 use crate::support::skeleton::{skeleton, tilt_gaps, SupportSkeleton, Tilt as SkeletonTilt};
 use crate::support::tree::{foot_loops, Foot};
 use crate::support::{
-    CoverageGap, Disk, FloorPlane, InAir, SupportLayer, SupportOpts, SupportSource, SupportStyle,
+    CoverageGap, Disk, FloorPlane, InAir, SupportDemand, SupportLayer, SupportOpts, SupportSource,
+    SupportStyle,
     Supports,
 };
 use crate::toolpath::{
@@ -200,6 +201,12 @@ pub struct SliceRequest {
     /// when absent, so a request that does not ask keeps its cache key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_source: Option<String>,
+    /// `surface` reads tree tips off the faces that point down past the
+    /// angle instead of from differences between layers: a prototype, R1 of
+    /// `docs/plan-ray-trees.md`. Absent is `layers`, and is omitted, so a
+    /// request that does not ask keeps its cache key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_demand: Option<String>,
     /// `0` keeps model layer height. Values above 1 thicken sparse support shafts.
     #[serde(default)]
     pub support_height_mult: f64,
@@ -433,6 +440,7 @@ pub struct SliceSettings {
     /// Per-layer avoidance for tree supports. Off leaves the walk unchanged.
     pub support_avoidance: bool,
     pub support_source: SupportSource,
+    pub support_demand: SupportDemand,
     pub support_height_mult: f64,
     pub infill_combine: bool,
     pub combing: bool,
@@ -555,6 +563,7 @@ impl Default for SliceSettings {
             trunk_diameter: 4.2,
             support_avoidance: false,
             support_source: SupportSource::Auto,
+            support_demand: SupportDemand::Layers,
             support_height_mult: 1.0,
             infill_combine: true,
             combing: true,
@@ -671,6 +680,8 @@ impl SliceSettings {
             support_avoidance: req.support_avoidance && !req.classic,
             // `load_object` has already refused a name it does not know.
             support_source: wire::parse_support_source(req.support_source.as_deref())
+                .unwrap_or_default(),
+            support_demand: wire::parse_support_demand(req.support_demand.as_deref())
                 .unwrap_or_default(),
             support_height_mult: if req.classic {
                 1.0
@@ -1706,6 +1717,7 @@ fn load_object(
         req.step_tolerance_mm,
     )?;
     wire::parse_support_source(req.support_source.as_deref())?;
+    wire::parse_support_demand(req.support_demand.as_deref())?;
     let settings = SliceSettings {
         job,
         support_edits: wire::parse_support_edits(&req.support_edits)?,
@@ -1905,6 +1917,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.support_style = SupportStyle::Grid;
         settings.support_height_mult = 1.0;
         settings.support_avoidance = false;
+        settings.support_demand = SupportDemand::Layers;
         settings.support_z_gap_mm = None;
         settings.support_xy_gap_mm = None;
         settings.support_interface_layers = None;
@@ -2549,6 +2562,7 @@ fn slice_plate(
             });
         plans.push(plan_object(
             Arc::clone(cut),
+            Some(&o.mesh),
             *reused,
             keys.clone(),
             &o.blend,
@@ -4025,6 +4039,7 @@ fn plan_sharing(
     )?;
     plan_object(
         cut,
+        Some(mesh),
         reused,
         keys,
         blend,
@@ -4173,6 +4188,7 @@ fn early_preview(
 #[allow(clippy::too_many_arguments)]
 fn plan_object(
     cut: Arc<Contours>,
+    mesh: Option<&Mesh>,
     reused: bool,
     keys: Option<kept::Keys>,
     blend: &BlendMode,
@@ -4191,6 +4207,7 @@ fn plan_object(
         Some(keys) => plan_kept(
             keys,
             cut,
+            mesh,
             reuse,
             blend,
             settings,
@@ -4202,6 +4219,7 @@ fn plan_object(
         ),
         None => plan_cut(
             cut,
+            mesh,
             reuse,
             blend,
             settings,
@@ -4226,6 +4244,7 @@ fn plan_contours(
     let cut = Arc::new(Contours::new(bands, contours, bounds, settings));
     plan_cut(
         cut,
+        None,
         Reuse::default(),
         blend,
         settings,
@@ -4241,6 +4260,7 @@ fn plan_contours(
 #[allow(clippy::too_many_arguments)]
 fn plan_cut(
     cut: Arc<Contours>,
+    mesh: Option<&Mesh>,
     reuse: Reuse,
     blend: &BlendMode,
     settings: &SliceSettings,
@@ -4263,7 +4283,8 @@ fn plan_cut(
         &cut,
         neighbours,
         |ground| {
-            let plan = plan_supports(&cut, blend, settings, ground.map(|g| g.solid), floor, watch)?;
+            let solid = ground.map(|g| g.solid);
+            let plan = plan_supports(&cut, mesh, blend, settings, solid, floor, watch)?;
             spent.supports(&plan);
             Ok(plan)
         },
@@ -4299,6 +4320,7 @@ fn plan_cut(
 fn plan_kept(
     keys: kept::Keys,
     cut: Arc<Contours>,
+    mesh: Option<&Mesh>,
     mut reuse: Reuse,
     blend: &BlendMode,
     settings: &SliceSettings,
@@ -4384,6 +4406,7 @@ fn plan_kept(
             let (base, edited) = kept_supports(
                 &keys,
                 &cut,
+                mesh,
                 blend,
                 settings,
                 ground.map(|g| g.solid),
@@ -4462,6 +4485,7 @@ fn plan_kept(
 fn kept_supports(
     keys: &kept::Keys,
     cut: &Contours,
+    mesh: Option<&Mesh>,
     blend: &BlendMode,
     settings: &SliceSettings,
     solid: Option<Arc<Vec<Vec<Loop>>>>,
@@ -4511,7 +4535,7 @@ fn kept_supports(
             Ok((base, edited))
         }
         None => {
-            let base = Arc::new(plan_supports(cut, blend, settings, solid, floor, watch)?);
+            let base = Arc::new(plan_supports(cut, mesh, blend, settings, solid, floor, watch)?);
             spent.supports(&base);
             Ok((base, None))
         }
@@ -5582,6 +5606,7 @@ fn scarf_params(settings: &SliceSettings, layer_index: usize) -> Option<ScarfPar
 /// stand near, else among the part alone.
 fn plan_supports(
     cut: &Contours,
+    mesh: Option<&Mesh>,
     blend: &BlendMode,
     settings: &SliceSettings,
     solid: Option<Arc<Vec<Vec<Loop>>>>,
@@ -5607,6 +5632,7 @@ fn plan_supports(
     opts.floor = floor;
     opts.avoidance = settings.support_avoidance && settings.support_style == SupportStyle::Tree;
     opts.source = settings.support_source;
+    opts.demand = settings.support_demand;
     if let Some(xy) = settings.support_xy_gap_mm {
         opts.xy_gap = xy;
     }
@@ -5640,6 +5666,7 @@ fn plan_supports(
         &cut.contours,
         among,
         &settings.support_paint,
+        mesh,
         &opts,
         watch,
     );
@@ -8462,7 +8489,8 @@ mod edit_cost {
             .map(|b| simplify_loops(index.slice(b.cut_z()), tolerance))
             .collect();
         let object = Contours::new(bands, contours, bounds, &settings);
-        let plan = || plan_supports(&object, &blend, &settings, None, None, &Watch::idle()).unwrap();
+        let plan =
+            || plan_supports(&object, None, &blend, &settings, None, None, &Watch::idle()).unwrap();
 
         let started = Instant::now();
         let base = plan();
