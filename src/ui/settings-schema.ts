@@ -105,7 +105,7 @@ function bound<K extends keyof PresetSettings>(key: K, spec: Omit<ControlSpec, "
   };
 }
 
-/** A number that is Auto (`null`) until set. The box is empty and shows `auto` greyed; an emptied box is Auto again. */
+/** A number that is Auto (`null`) until set. The box is empty and shows Auto greyed; an emptied box is Auto again. */
 function autoNumber<K extends "supportZGapMm" | "supportXyGapMm" | "supportInterfaceLayers">(
   key: K,
   spec: Omit<ControlSpec, "preset" | "get" | "set" | "placeholder"> & { auto: (s: Settings) => string; clamp?: (value: number) => number },
@@ -121,8 +121,6 @@ function autoNumber<K extends "supportZGapMm" | "supportXyGapMm" | "supportInter
     placeholder: auto,
   };
 }
-
-const trimmed = (mm: number) => String(Math.round(mm * 100) / 100);
 
 /** A control bound to one number of the printer profile. */
 function profile(key: "bedX" | "bedY" | "bedZ" | "maxVolumetricMm3S" | "maxAccel" | "filamentDensityGCm3" | "filamentCostPerKg" | KlipperKey, spec: Omit<ControlSpec, "get" | "set">): ControlSpec {
@@ -680,7 +678,7 @@ export const CONTROLS: ControlSpec[] = [
     when: (s) => s.supports,
     tip: "Empty is Auto: the layer height, at least 0.12 mm. Type a gap to set it, and 0 for none: the support touches the part, as for a soluble interface. Raise it when supports weld to the part.",
     keywords: "support z gap interface detach auto",
-    auto: (s) => `Auto (${trimmed(Math.max(s.layerHeight, 0.12))} mm)`,
+    auto: () => "Auto",
   }),
   autoNumber("supportXyGapMm", {
     id: "sxygap",
@@ -692,7 +690,7 @@ export const CONTROLS: ControlSpec[] = [
     when: (s) => s.supports,
     tip: "Empty is Auto: 0.55 mm between the support and the wall. Type a gap to set it, and 0 for none.",
     keywords: "support xy gap clearance auto",
-    auto: () => "Auto (0.55 mm)",
+    auto: () => "Auto",
   }),
   autoNumber("supportInterfaceLayers", {
     id: "sifacel",
@@ -704,7 +702,7 @@ export const CONTROLS: ControlSpec[] = [
     when: (s) => s.supports,
     tip: "Empty is Auto: 3 dense layers under the part. Type a count to set it. 0 shows as 1, the fewest the engine prints.",
     keywords: "support interface roof dense auto",
-    auto: () => "Auto (3)",
+    auto: () => "Auto",
     clamp: (value) => interfaceLayersSent(value) ?? value,
   }),
   bound("supportTreeBrimMm", {

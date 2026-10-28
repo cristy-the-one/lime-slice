@@ -84,8 +84,7 @@ check("a preset from before profiles reads 0 as Auto", legacyPresets.Old?.suppor
 
 const z = controlById("szgap")!;
 const state = { ...DEFAULT_PRESET, layerHeight: 0.16 } as never;
-check("an Auto box is empty and says Auto with the layer height", z.get!(state) === "" && z.placeholder!(state) === "Auto (0.16 mm)");
-check("a layer height under 0.12 shows the engine's floor", z.placeholder!({ ...DEFAULT_PRESET, layerHeight: 0.08 } as never) === "Auto (0.12 mm)");
+check("an Auto box is empty and says Auto", z.get!(state) === "" && z.placeholder!(state) === "Auto");
 z.set!(state, 0);
 check("a typed 0 is a stored 0 that shows as 0", (state as PresetSettings).supportZGapMm === 0 && z.get!(state) === 0);
 z.set!(state, "");
@@ -94,5 +93,5 @@ const layers = controlById("sifacel")!;
 layers.set!(state, 0);
 check("0 interface layers are stored as 1", (state as PresetSettings).supportInterfaceLayers === 1);
 layers.set!(state, "");
-check("an emptied interface layers box is Auto", (state as PresetSettings).supportInterfaceLayers === null && layers.placeholder!(state) === "Auto (3)");
-check("the xy gap says Auto with its 0.55 mm", controlById("sxygap")!.placeholder!(state) === "Auto (0.55 mm)");
+check("an emptied interface layers box is Auto", (state as PresetSettings).supportInterfaceLayers === null && layers.placeholder!(state) === "Auto");
+check("the xy gap says Auto", controlById("sxygap")!.placeholder!(state) === "Auto");

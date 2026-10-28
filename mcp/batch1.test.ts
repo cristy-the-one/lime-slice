@@ -59,6 +59,16 @@ check(
   rows.some((row) => row.key === "ironing" && row.value === true) && rows.some((row) => row.key === "ironingSpeed" && row.value === 15 && row.dependsOn === "ironing"),
   JSON.stringify(rows),
 );
+const autoRows = (await call("settings_schema", { query: "gap", all: true })).rows as { key: string; value: unknown; default: unknown; help?: string }[];
+const zGap = autoRows.find((row) => row.key === "supportZGapMm");
+check("a support gap starts as null, which is Auto, and says so", zGap?.value === null && zGap?.default === null && /Auto/.test(zGap?.help ?? ""), JSON.stringify(zGap));
+const zeros = await call("settings_set", { values: { supportZGapMm: 0, supportXyGapMm: 0, supportInterfaceLayers: 0 } });
+const zeroTo = Object.fromEntries((zeros.changed as { key: string; to: unknown }[]).map((row) => [row.key, row.to]));
+check("a 0 is a real 0, and 0 interface layers read back as 1", zeros.ok === true && zeroTo.supportZGapMm === 0 && zeroTo.supportXyGapMm === 0 && zeroTo.supportInterfaceLayers === 1, JSON.stringify(zeros));
+const backToAuto = await call("settings_set", { values: { supportZGapMm: null, supportXyGapMm: null, supportInterfaceLayers: null } });
+check("null puts a support gap back to Auto", backToAuto.ok === true && (backToAuto.changed as { to: unknown }[]).every((row) => row.to === null), JSON.stringify(backToAuto));
+const notAuto = await call("settings_set", { values: { layerHeight: null } });
+check("null is refused for a setting that has no Auto", notAuto.ok === false, JSON.stringify(notAuto));
 const defaults = await call("settings_schema", {});
 const defaultRows = defaults.rows as { key: string }[];
 check("unchanged keys stay off the default page", !defaultRows.some((row) => row.key === "layerHeight"), JSON.stringify(defaultRows.map((row) => row.key)));
