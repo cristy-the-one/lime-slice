@@ -59,6 +59,10 @@ static LOAD: Slot = Slot::new();
 static TOUR_LAYOUT: Slot = Slot::new();
 static TOUR_SERIAL: Slot = Slot::new();
 static TOUR_GUESS: Slot = Slot::new();
+static ORDER_CAND: Slot = Slot::new();
+static ORDER_POLISH: Slot = Slot::new();
+static ORDER_UNTANGLE: Slot = Slot::new();
+static ORDER_RINGS: Slot = Slot::new();
 static PREVIEW: Slot = Slot::new();
 static REPLY: Slot = Slot::new();
 
@@ -96,6 +100,10 @@ pub fn reset() {
         &TOUR_LAYOUT,
         &TOUR_SERIAL,
         &TOUR_GUESS,
+        &ORDER_CAND,
+        &ORDER_POLISH,
+        &ORDER_UNTANGLE,
+        &ORDER_RINGS,
         &PREVIEW,
         &REPLY,
     ] {
@@ -138,6 +146,10 @@ pub fn report() -> String {
         line("tour layout", &TOUR_LAYOUT),
         line("tour serial", &TOUR_SERIAL),
         line("tour guess", &TOUR_GUESS),
+        line("  order candidates", &ORDER_CAND),
+        line("  order polish", &ORDER_POLISH),
+        line("  order untangle", &ORDER_UNTANGLE),
+        line("  order rings", &ORDER_RINGS),
         line("preview", &PREVIEW),
         line("reply json", &REPLY),
     ]
@@ -232,6 +244,18 @@ impl Sample {
     }
     pub fn tour_guess(self, kept: u64) {
         self.finish(&TOUR_GUESS, kept);
+    }
+    pub fn order_candidates(self, paths: u64) {
+        self.finish(&ORDER_CAND, paths);
+    }
+    pub fn order_polish(self, paths: u64) {
+        self.finish(&ORDER_POLISH, paths);
+    }
+    pub fn order_untangle(self, paths: u64) {
+        self.finish(&ORDER_UNTANGLE, paths);
+    }
+    pub fn order_rings(self, paths: u64) {
+        self.finish(&ORDER_RINGS, paths);
     }
     pub fn preview(self, layers: u64) {
         self.finish(&PREVIEW, layers);
