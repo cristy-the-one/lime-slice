@@ -6,7 +6,8 @@ import { Axis3d, Box, Boxes, ChevronRight, CircleDot, Cone, Copy, Cylinder, Disc
 import type { HandleDrag, ModelGhost, ModelGrabHooks, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type DragHandle, type ModelTool, type Vec3 } from "../model-drag";
-import type { Affine, PlaceFields } from "../model-space";
+import type { Affine, ObjectFrame, PlaceFields } from "../model-space";
+import { setSettleOn, settleOn } from "../bed-rest-pref";
 import { isAlignRelation, type AlignRelation } from "../place-snap";
 import { alignHowHtml, modelAlignPick, modelAlignToHtml } from "../app/align-ui";
 import { paintGrabHint } from "../app/grab-hint";
@@ -74,6 +75,10 @@ interface ModelChromeHooks {
   placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase): void;
   /** --- Assemblies M10. Model space into the view while the open part stands in its own frame, else null. */
   placeAxes(): Affine | null;
+  /** --- Assemblies M11. The open part's frame for the Place tool's switch; null for a part in no assembly, which has none. */
+  placeFrame(): ObjectFrame | null;
+  /** The switch was pressed: the part's frame becomes `frame`, as one Place step. */
+  setPlaceFrame(frame: ObjectFrame): void;
   /** --- Ctrl-drag in the viewport. `grabStart` opens Place and begins the one step the whole grab makes. --- */
   grabReady(): boolean;
   grabStart(): boolean;
@@ -487,6 +492,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (plane) setPlaneMode(plane.dataset.plane as PlaneMode);
     const wp = target?.closest<HTMLButtonElement>("#modelWpModes [data-wp]")?.dataset.wp;
     if (wp === "global" || wp === "bed" || wp === "face") setWpSource(wp);
+    const frame = target?.closest<HTMLButtonElement>("#modelPlaceFrame [data-place-frame]")?.dataset.placeFrame;
+    if (frame === "part" || frame === "model") {
+      hooks?.setPlaceFrame(frame);
+      syncPlaceFields(true);
+    }
     // --- A5. ---
     const edgeMode = target?.closest<HTMLButtonElement>("#modelEdgeModes [data-edge-mode]")?.dataset.edgeMode;
     if (edgeMode === "picked" || edgeMode === "step") setEdgeSource(edgeMode);
@@ -508,6 +518,13 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (card) return;
     if (ev.target instanceof HTMLSelectElement && ev.target.closest("#modelAlign")) {
       alignPicked(ev.target);
+      return;
+    }
+    // Settle on the bed is Prepare's preference: one switch in two places.
+    if (ev.target instanceof HTMLInputElement && ev.target.id === "modelSettleOn") {
+      setSettleOn(ev.target.checked);
+      const prepare = document.querySelector<HTMLInputElement>("#settleOn");
+      if (prepare) prepare.checked = ev.target.checked;
       return;
     }
     // --- A5. The step list and the step number are the same step. ---
@@ -1217,7 +1234,9 @@ function syncFields() {
     // --- F4. One hole per point hides the origin and shows the points line. A single hole does the opposite. ---
     const pointsHoles = document.querySelector<HTMLElement>("#modelPanel")?.dataset.holes === "points";
     const holeOk = !node.dataset.hole || (node.dataset.hole === "points" ? pointsHoles : !pointsHoles);
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk));
+    // --- Assemblies M11. The frame switch is for a member of an assembly.
+    const memberOk = node.dataset.member === undefined || hooks?.placeFrame() != null;
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk));
   });
   // --- A3 composite features ---
   if (isFeatureTool(tool)) {
@@ -2035,8 +2054,9 @@ function keepNewSolidInView() {
 function placeChanged(id: string, phase: PlacePhase) {
   const field = PLACE_KEYS[PLACE_FIELDS.indexOf(id as (typeof PLACE_FIELDS)[number])];
   const input = document.querySelector<HTMLInputElement>(`#${id}`);
-  // A field cleared, or half typed ("-"), is no number yet: the part stays where it is.
-  if (!field || !input || input.value.trim() === "" || !input.validity.valid) return;
+  // A field cleared, or half typed ("-"), is no number yet: the part stays where it is. A ring's 81.6° is off the
+  // field's 1° step and is still a number: the part turns to it, so the field never shows a turn the part lacks.
+  if (!field || !input || input.value.trim() === "" || input.validity.badInput) return;
   hooks?.placeMoved(field, num(`#${id}`), phase);
   refreshGhost();
 }
@@ -2093,6 +2113,9 @@ function alignNow() {
 export function syncPlaceFields(all = false) {
   if (tool !== "place") return;
   paintAlignRow();
+  paintPlaceFrame();
+  const settle = document.querySelector<HTMLInputElement>("#modelSettleOn");
+  if (settle) settle.checked = settleOn();
   const fields = hooks?.placeFields();
   if (!fields) return;
   const active = document.activeElement;
@@ -2101,6 +2124,19 @@ export function syncPlaceFields(all = false) {
     if (input && (all || input !== active)) input.value = fieldText(fields[PLACE_KEYS[i]!]);
   });
   refreshGhost();
+}
+
+/** --- Assemblies M11. The Part frame | Model frame switch: shown for a member of an assembly, pressed on its frame. */
+function paintPlaceFrame() {
+  const frame = hooks?.placeFrame() ?? null;
+  const row = document.querySelector<HTMLElement>("#modelPlaceFrame");
+  if (!row) return;
+  row.hidden = frame === null;
+  row.querySelectorAll<HTMLButtonElement>("[data-place-frame]").forEach((button) => {
+    const on = button.dataset.placeFrame === frame;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("on", on);
+  });
 }
 
 function openPlane(): Workplane {
@@ -2623,7 +2659,8 @@ function onScrubMove(ev: PointerEvent) {
     if (Number.isFinite(max)) next = Math.min(max, next);
   }
   const places = current.input.dataset.whole !== undefined ? 0 : (quantum.toString().split(".")[1] ?? "").length;
-  const text = places > 0 ? next.toFixed(places) : String(Math.round(next));
+  // A scrub back to nothing reads 0, not -0.0.
+  const text = places > 0 ? next.toFixed(places).replace(/^-(0\.0+)$/, "$1") : String(Math.round(next) || 0);
   if (current.input.value === text) return;
   current.input.value = text;
   current.input.dispatchEvent(new Event("input", { bubbles: true }));

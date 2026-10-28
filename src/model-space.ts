@@ -8,7 +8,7 @@
  * Tools take model-space numbers. `toSolidOp` turns them into the open solid's own frame before the engine
  * sees them, so stored ops, replay, and saved trees never depend on where an object sits in model space.
  */
-import { eulerOrient, matMul, orientEuler, type Bounds, type Mat3 } from "./mesh-place.ts";
+import { eulerOrient, matMul, orientEuler, wrapDeg, type Bounds, type Mat3 } from "./mesh-place.ts";
 import { turnCentre } from "./model-primitive.ts";
 import type { ModelOp, Vec3 } from "./model-tree.ts";
 
@@ -241,21 +241,49 @@ export interface PlaceFields {
   rz: number;
 }
 
-/** The Place fields of `pose`, for a part whose own-frame centre is `pivot`. */
-export function placeFields(pose: Affine, pivot: Vec3): PlaceFields {
+/** Rx, Ry, Rz in degrees, as `eulerOrient` takes them. */
+export type Turn = Pick<PlaceFields, "rx" | "ry" | "rz">;
+
+/** How far apart two angles are, the short way round, in degrees. */
+function apart(a: number, b: number): number {
+  return Math.abs(wrapDeg(a - b));
+}
+
+/**
+ * The Rx, Ry, Rz that `eulerOrient` turns into `turn`, chosen to read well. Every turn has two readings, (rx, ry, rz)
+ * and (rx + 180, 180 - ry, rz + 180), and at Ry ±90 only Rx - Rz (or Rx + Rz) counts. Of these, the one nearest
+ * `near`, the angles last shown or typed, so a number typed reads back as typed and a turn never jumps to its twin.
+ * Without `near`, the one with the smaller angles: a half turn about Y reads 0/120/0, not 180/60/180.
+ */
+export function steadyTurn(turn: Mat3, near?: Turn): Turn {
+  const base = orientEuler(turn);
+  if (Math.hypot(turn[0], turn[3]) <= 1e-6) {
+    if (!near) return { rx: base.rx, ry: base.ry, rz: 0 };
+    // Gimbal lock: Rz keeps the value shown, and Rx takes the rest.
+    const rz = wrapDeg(near.rz);
+    return { rx: wrapDeg(base.ry > 0 ? base.rx + rz : base.rx - rz), ry: base.ry, rz };
+  }
+  const twin: Turn = { rx: wrapDeg(base.rx + 180), ry: wrapDeg(180 - base.ry), rz: wrapDeg(base.rz + 180) };
+  const cost = (t: Turn) => (near ? apart(t.rx, near.rx) + apart(t.ry, near.ry) + apart(t.rz, near.rz) : Math.abs(t.rx) + Math.abs(t.ry) + Math.abs(t.rz));
+  return cost(twin) < cost(base) - 1e-9 ? twin : { rx: base.rx, ry: base.ry, rz: base.rz };
+}
+
+/** The Place fields of `pose`, for a part whose own-frame centre is `pivot`. The turn reads as `steadyTurn` reads it. */
+export function placeFields(pose: Affine, pivot: Vec3, near?: Turn): PlaceFields {
   const s = poseScale(pose);
   const at = applyPose(pose, pivot);
-  const turn = orientEuler(pose.m.map((value) => value / s) as Mat3);
+  const turn = steadyTurn(pose.m.map((value) => value / s) as Mat3, near);
   return { x: at[0] - pivot[0], y: at[1] - pivot[1], z: at[2] - pivot[2], rx: turn.rx, ry: turn.ry, rz: turn.rz };
 }
 
 /**
  * `from` with one Place field set to `value`: turned by Rx, then Ry, then Rz about the centre, which then moves
  * by X, Y, Z. Every other field keeps the value `from` has, not the rounded one a field shows, so a move never
- * nudges the other axes or the turn, and the scale stays.
+ * nudges the other axes or the turn, and the scale stays. `near` is the turn the fields show, so the other two
+ * angles are the ones the user sees.
  */
-export function poseFromPlace(from: Affine, pivot: Vec3, field: keyof PlaceFields, value: number): Affine {
-  const now = placeFields(from, pivot);
+export function poseFromPlace(from: Affine, pivot: Vec3, field: keyof PlaceFields, value: number, near?: Turn): Affine {
+  const now = placeFields(from, pivot, near);
   const axis = ["x", "y", "z"].indexOf(field);
   if (axis >= 0) {
     const t: Vec3 = [...from.t];
