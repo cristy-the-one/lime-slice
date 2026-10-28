@@ -8,7 +8,7 @@ import type { DragHandle } from "../model-drag";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { Params } from "../modeling/expr.ts";
 import { formatMm, type FacePlane, type SplitBase, type SplitPlan } from "../model-plane";
-import { CLEARANCE_TABLE, FIT_NAMES, FIT_ROWS, SHAPED_JOINTS_LATER, clearanceKey, clearanceSentence, fillConnector, fitResultsRefusal, holeCompensationNote, mm, profileRefusals, type Box, type Clearance, type ClearanceKey, type ConnectorSpec, type FitResults, type MeasuredFits, type PartitionDefaults, type PartitionOp, type Target, defaultU, type SketchProfile } from "../modeling/partition.ts";
+import { CLEARANCE_TABLE, FIT_NAMES, FIT_ROWS, clearanceKey, clearanceSentence, fillConnector, fitResultsRefusal, holeCompensationNote, mm, profileRefusals, type Box, type Clearance, type ClearanceKey, type ConnectorSpec, type FitResults, type MeasuredFits, type PartitionDefaults, type PartitionOp, type Target, defaultU, type SketchProfile } from "../modeling/partition.ts";
 import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
 import { couponGaps, couponLabel } from "../modeling/fit-coupon.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
@@ -784,10 +784,9 @@ function paintProfile() {
   shown("#modelPartProfileWidth", typed.width, kind === "dovetail" ? d?.dovetailWidthMm : d?.tongueWidthMm);
   put("#modelPartProfileSide", typed.side === "negative" ? "negative" : "positive");
   const sentences = d ? profileRefusals(cut.profile, d) : [];
-  const joints = cut.joints.on && (kind === "tongue" || kind === "dovetail") ? [SHAPED_JOINTS_LATER] : [];
   if (note) {
-    note.textContent = [...sentences, ...joints].join(" ");
-    note.hidden = sentences.length + joints.length === 0;
+    note.textContent = sentences.join(" ");
+    note.hidden = sentences.length === 0;
   }
 }
 

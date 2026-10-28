@@ -9,7 +9,7 @@ import { boundsOf, type Mat3 } from "./mesh-place.ts";
 import { clampTilt, formatMm, splitBase, tiltedNormal, tiltOf, type FacePlane, type SplitBase } from "./model-plane.ts";
 import { applyPose, fromSolidOp, toSolidOp, turnDir, type Affine } from "./model-space.ts";
 import type { ModelOp, PartitionModelOp, Vec3 } from "./model-tree.ts";
-import { clipSection, connectorNames, defaultsFor, fillPartition, fitPrinter, mm, NO_FIT_SENTENCE, notBuiltYet, placeCut, profileRefusals, shapedFlats, type Flat, type PlacedConnector, type Profile, type UV, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
+import { clipSection, connectorNames, defaultsFor, fillPartition, fitPrinter, mm, NO_FIT_SENTENCE, notBuiltYet, noRoomSentence, placeCut, profileRefusals, shapedFlats, type Flat, type PlacedConnector, type Profile, type UV, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
 import { sectionLoops } from "./section-cap.ts";
 import { storedOrient, type OrientChoice } from "./modeling/joint-down.ts";
 import { chainRefusal, readChain, type Chain, type ProfileSlice } from "./modeling/sketch-profile.ts";
@@ -557,6 +557,7 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
   }
   if (!jointed) return { op: own, ...placement };
   const floor = defaultsFor(filled.target, ctx).wallFloorMm;
+  let roomless: string | null = null;
   const cuts = own.cuts.map((cut, at) => {
     const resolved = filled.cuts[at]!.connectors;
     if (!resolved.on) return cut;
@@ -567,7 +568,24 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
     }
     const flats = cut.profile && cut.profile.kind !== "straight" ? shapedFlats(cut.profile as unknown as Parameters<typeof shapedFlats>[0], outlineBox(section)) : null;
     if (flats && solid) {
-      return { ...cut, connectors: { ...cut.connectors, placed: placeOnFlats(at, cut, flats, outlineBox(section), resolved.types, solid.positions, floor, pose, placement) } };
+      const placed = placeOnFlats(at, cut, flats, outlineBox(section), resolved.types, solid.positions, floor, pose, placement);
+      const joint = cut.profile?.kind;
+      const typed = op.cuts[at]?.connectors?.types?.[0];
+      if (placed.length === 0 && (joint === "tongue" || joint === "dovetail") && typed && !roomless) {
+        // --- Polish after 4.2.0. A tongue or a dovetail with no room for its connectors is refused, with what would fit.
+        const stored = cut.profile as unknown as Parameters<typeof shapedFlats>[0];
+        const box = outlineBox(section);
+        roomless = noRoomSentence({
+          cut: at + 1,
+          joint,
+          jointWidth: stored.width ?? 0,
+          typed,
+          defaults: shapedFloor,
+          flats: (width) => shapedFlats({ ...stored, width }, box).map((flat) => clipSection(section, flat)).filter((one): one is NonNullable<typeof one> => one !== null),
+          place: (spec, sections) => sections.some((one) => placeCut(at + 1, one, [spec], floor).placed.length > 0),
+        });
+      }
+      return { ...cut, connectors: { ...cut.connectors, placed } };
     }
     const placed = placeCut(at + 1, section, resolved.types, floor);
     placement.notes.push(...placed.notes);
@@ -583,6 +601,7 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
     }
     return { ...cut, connectors: { ...cut.connectors, placed: placed.placed.map((row) => ({ ...row })) } };
   });
+  if (roomless) return { reason: roomless };
   return { op: { ...own, cuts, up: solid?.up ?? [0, 0, 1] }, ...placement };
 }
 

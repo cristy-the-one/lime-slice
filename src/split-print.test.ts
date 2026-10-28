@@ -346,8 +346,27 @@ check("a wall of a sketched chain is not a flat: only the two horizontal segment
 const fixedCard = withJointField(withJointsOn(lapCard, 0, true), 0, { place: "fixed", at: [[0, 5], [0, -5], [0, 400]] });
 const fixedStored = flatRows(fixedCard);
 eq("a fixed point is a point of the cut seen along W: it goes to the flat under it, one far outside is left out in a sentence", [fixedStored?.op.cuts[0]!.connectors!.placed!.map((row) => [row.flat!.w, row.uvMm]), fixedStored?.notes], [[[0, [0, -5]], [8, [0, 5]]], ["Cut 1: dowel 3 lies outside the section. It was left out."]]);
+// --- Polish after 4.2.0: connectors beside a tongue or a dovetail. The tongue is 6 mm across V on the 20 mm section, and
+// its groove 6.3 mm, so each flat beside it is 6.85 mm: a 3 mm dowel needs 7.9 mm with its clearance and walls.
 const tongueJoints = storedPartition(cardOp(withJointsOn(tongueCard, 0, true), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
-eq("a tongue with connectors is still refused, in the planner's sentence", "reason" in tongueJoints ? tongueJoints.reason : null, "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.");
+eq("a tongue whose flats hold no 3 mm dowel is refused, with the widest circle and the radius that fits", "reason" in tongueJoints ? tongueJoints.reason : null, "Cut 1: no dowel fits beside the tongue. The flats beside it hold a circle 6.8 mm across at most. A dowel of radius 2.47 mm or less fits.");
+const smallDowels = flatRows(withJointField(withJointsOn(tongueCard, 0, true), 0, { radius: 2 }));
+const smallRows = smallDowels?.op.cuts[0]!.connectors!.placed ?? [];
+eq("2 mm dowels sit on the plane each side of the tongue, in the middle of each flat, numbered along the cut", smallRows.map((row) => [row.id, row.flat, row.uvMm.map((n) => Math.round(n * 1e6) / 1e6 + 0)]), [
+  ["c1-1", { u: 0, w: 0, tilt: 0 }, [-16, -6.575]], ["c1-2", { u: 0, w: 0, tilt: 0 }, [0, -6.575]], ["c1-3", { u: 0, w: 0, tilt: 0 }, [16, -6.575]],
+  ["c1-4", { u: 0, w: 0, tilt: 0 }, [-16, 6.575]], ["c1-5", { u: 0, w: 0, tilt: 0 }, [0, 6.575]], ["c1-6", { u: 0, w: 0, tilt: 0 }, [16, 6.575]],
+]);
+eq("and the tongue says nothing more", smallDowels?.notes, []);
+const broadTongue = storedPartition(cardOp(withProfileField(withJointsOn(tongueCard, 0, true), 0, { width: 12 }), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+eq("a tongue too wide for any printable dowel says how narrow a tongue leaves room", "reason" in broadTongue ? broadTongue.reason : null, "Cut 1: no dowel fits beside the tongue. The flats beside it hold a circle 3.8 mm across at most. A tongue 3.9 mm wide or narrower leaves room for this dowel.");
+const dovetailCut = withProfileKind(plain, 0, "dovetail");
+const dovetailJoints = flatRows(withJointField(withJointsOn(withProfileField(dovetailCut, 0, { width: 6 }), 0, true), 0, { radius: 2 }));
+const dovetailRows = dovetailJoints?.op.cuts[0]!.connectors!.placed ?? [];
+check("a dovetail 6 mm wide sliding along U takes 2 mm dowels on the plane each side of its widest groove, a wall clear", dovetailRows.length > 0 && dovetailRows.every((row) => row.flat!.w === 0 && row.flat!.tilt === 0 && Math.abs(row.uvMm[1]) - 2 - 0.15 >= 3 + 0.15 / Math.cos((20 * Math.PI) / 180) + Math.tan((20 * Math.PI) / 180) * 0.4 + 0.8 - 1e-9), JSON.stringify(dovetailRows));
+const sideways = flatRows(withJointField(withJointsOn(withProfileField(dovetailCut, 0, { slide: "v" }), 0, true), 0, { radius: 2 }));
+check("one sliding along V lies across U, so its dowels sit either side of it along U", (sideways?.op.cuts[0]!.connectors!.placed ?? []).length > 0 && sideways!.op.cuts[0]!.connectors!.placed!.every((row) => Math.abs(row.uvMm[0]) > 4.5), JSON.stringify(sideways?.op.cuts[0]!.connectors!.placed));
+const dovetailRoom = storedPartition(cardOp(withJointsOn(dovetailCut, 0, true), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
+check("a dovetail with no room for a 3 mm dowel is refused in the same way", "reason" in dovetailRoom && dovetailRoom.reason.startsWith("Cut 1: no dowel fits beside the dovetail. The flats beside it hold a circle"), JSON.stringify(dovetailRoom));
 
 if (failed) {
   console.error(`${failed} failed`);

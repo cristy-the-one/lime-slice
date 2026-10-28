@@ -511,8 +511,36 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const peg = 6 * 3 * 22.1;
   const groove = (6 + 0.3) * (3 + 0.4) * (22.1 + 0.3);
   check("a tongue's probe: one piece grows by the tongue, the other loses the grown groove", tongueProbe.ok === true && tv.length === 2 && near(tv[1]!, base / 2 + peg, 6e-3) && near(tv[0]!, base / 2 - groove, 6e-3), JSON.stringify({ tv, expected: [base / 2 - groove, base / 2 + peg], reason: tongueProbe.reason }));
-  const refused = await call("model_probe", { object: tongueBar, op: { ...tongueOp, cuts: [{ ...(tongueOp.cuts[0] as Record<string, unknown>), connectors: { on: true, types: [{ type: "dowel" }] } }] } });
-  check("connectors on a tongue are refused with the sentence", refused.ok === false && refused.reason === "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.", JSON.stringify(refused));
+  // --- Polish after 4.2.0: connectors beside a tongue and a dovetail. The flats beside the 6 mm tongue's 6.3 mm groove are
+  // 6.85 mm across V, too narrow for the default 3 mm dowel: the refusal names the radius that fits.
+  const withDowels = (op: { cuts: unknown[] }, radius?: number) => ({ ...op, cuts: [{ ...(op.cuts[0] as Record<string, unknown>), connectors: { on: true, types: [{ type: "dowel", ...(radius ? { radius } : {}) }] } }] });
+  const refused = await call("model_probe", { object: tongueBar, op: withDowels(tongueOp) });
+  check("a 3 mm dowel beside the tongue is refused with the widest circle and the radius that fits", refused.ok === false && refused.reason === "Cut 1: no dowel fits beside the tongue. The flats beside it hold a circle 6.8 mm across at most. A dowel of radius 2.47 mm or less fits.", JSON.stringify(refused));
+  // A 2 mm dowel fits: one on each flat, its teardrop hole 2.15 mm and 2.4 mm deep taken from both pieces.
+  const tongueDowels = await call("model_probe", { object: tongueBar, op: withDowels(tongueOp, 2) });
+  const tonguePlaced = ((tongueDowels.connectors as { placed?: { id: string; at: number[]; teardrop: boolean }[]; dropped?: unknown[] } | undefined)?.placed ?? []);
+  const smallSide = (0.75 * Math.PI + 1) * 2.15 * 2.15 * 2.4;
+  const td = ((tongueDowels.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  check("2 mm dowels beside a tongue: one on each flat, on the cut plane, either side of the groove", tongueDowels.ok === true && tonguePlaced.length === 2 && tonguePlaced.every((row) => near(row.at[0]!, 0, 1e-6) && row.teardrop) && Math.abs(tonguePlaced[0]!.at[2]! - tonguePlaced[1]!.at[2]!) > 2 * 3.15, JSON.stringify(tongueDowels).slice(0, 500));
+  check("and the pieces are the tongue's, each less a teardrop hole per dowel", td.length === 2 && near(td[1]!, base / 2 + peg - 2 * smallSide, 0.05) && near(td[0]!, base / 2 - groove - 2 * smallSide, 0.05), JSON.stringify({ td, expected: [base / 2 - groove - 2 * smallSide, base / 2 + peg - 2 * smallSide] }));
+  const tongueApplyBar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 30, dz: 20 })).object);
+  const tongueApplied = await call("model_apply", { object: tongueApplyBar, op: withDowels(tongueOp, 2), probe: true });
+  const tongueStored = (tongueApplied.stored as { cuts: { connectors: { placed: { flat?: { u: number; w: number; tilt: number } }[] } }[] } | undefined)?.cuts[0]!.connectors.placed ?? [];
+  check("apply stores the two dowels on the cut plane's flats, and the pins are one more object", tongueApplied.ok === true && tongueStored.length === 2 && tongueStored.every((row) => row.flat?.w === 0 && row.flat?.tilt === 0) && typeof tongueApplied.pins === "string", JSON.stringify(tongueApplied).slice(0, 500));
+  console.log(`occt: tongue with dowels ${td.map((v) => v.toFixed(3)).join(", ")} mm³`);
+  // A dovetail 6 mm wide, 20°, 3 mm deep, sliding along U for the whole 30 mm: its groove is 3.31 mm from its middle at its widest.
+  const tailBar = String((await call("solid_new", { primitive: "box", dx: 500, dy: 30, dz: 20 })).object);
+  const tailOp = cutOp({ kind: "dovetail", width: 6, depth: 3, angle: 20 });
+  const tailDowels = await call("model_probe", { object: tailBar, op: withDowels(tailOp, 2) });
+  const tailPlaced = ((tailDowels.connectors as { placed?: { id: string; at: number[] }[] } | undefined)?.placed ?? []);
+  const tl = Math.tan((20 * Math.PI) / 180);
+  const tailRoot = 3 - 3 * tl;
+  const tailPeg = 30 * ((2 * tailRoot + 6) / 2) * 3;
+  const tailGroove = 30 * (2 * (tailRoot + 0.15 / Math.cos((20 * Math.PI) / 180)) * 3.4 + tl * 3.4 * 3.4);
+  const tv2 = ((tailDowels.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  check("2 mm dowels beside a dovetail: one on each flat, on the cut plane", tailDowels.ok === true && tailPlaced.length === 2 && tailPlaced.every((row) => near(row.at[0]!, 0, 1e-6)), JSON.stringify(tailDowels).slice(0, 500));
+  check("and the pieces are the dovetail's, each less a teardrop hole per dowel", tv2.length === 2 && near(tv2[1]!, base / 2 + tailPeg - 2 * smallSide, 0.05) && near(tv2[0]!, base / 2 - tailGroove - 2 * smallSide, 0.05), JSON.stringify({ tv2, expected: [base / 2 - tailGroove - 2 * smallSide, base / 2 + tailPeg - 2 * smallSide] }));
+  console.log(`occt: dovetail with dowels ${tv2.map((v) => v.toFixed(3)).join(", ")} mm³`);
   // --- Milestone 11: dowels on the flats of a lap. The 20 mm section has room for one dowel on each flat: z = 5 on the plane
   // below the step, z = 15 on the plane 8 mm past it. Each hole is a teardrop (its axis is along X) taken from both pieces.
   const lapDowelOp = { ...lapOp, cuts: [{ ...(lapOp.cuts[0] as Record<string, unknown>), connectors: { on: true, types: [{ type: "dowel" }] } }] };

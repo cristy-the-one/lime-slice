@@ -672,7 +672,7 @@ const partitionOp = {
           origin: vec3,
           normal: vec3,
           u: { ...vec3, description: "Along the cut. Default: the section's longer side." },
-          profile: { type: "object", description: "{kind}: straight (default), lap {depth, height, side}, tongue {width, depth, side}, zigzag {pitch, depth, angle, side}, dovetail {width, angle, depth, slide, side}, sketch {start:[u, w], chain:[{kind:line|arc, to:[u, w], through}]} drawn on the cut's U and W; mm, optional. Connectors work on a straight, lap, zigzag or sketch cut, not on a tongue or a dovetail cut." },
+          profile: { type: "object", description: "{kind}: straight (default), lap {depth, height, side}, tongue {width, depth, side}, zigzag {pitch, depth, angle, side}, dovetail {width, angle, depth, slide, side}, sketch {start:[u, w], chain:[{kind:line|arc, to:[u, w], through}]} drawn on the cut's U and W; mm, optional. Connectors work on every profile; beside a tongue or a dovetail they sit either side of it." },
           connectors: {
             type: "object",
             additionalProperties: false,
