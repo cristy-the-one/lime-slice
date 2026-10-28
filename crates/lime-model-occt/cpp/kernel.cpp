@@ -671,7 +671,8 @@ Mesh tessellate(Held& held, double chord) {
     Mesh out;
     out.positions.reserve(count * 9);
     out.triangles.reserve(count);
-    for (size_t face = 0; face < pieces.size(); ++face) {
+    for (size_t at = 0; at < pieces.size(); ++at) {
+        const size_t face = held.order.empty() ? at : static_cast<size_t>(held.order[at] - 1);
         const Piece& piece = pieces[face];
         if (piece.tri.IsNull()) {
             continue;

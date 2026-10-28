@@ -164,6 +164,57 @@ void note_lineage(LimeShape& out, const LimeShape& from, const Handle(BRepTools_
     }
 }
 
+/// `held.order` for a solid built on `from`: each face `from` reads out, in its turn, is followed by the faces of `held`
+/// that are that face or lie on its surface, as a face a step trimmed or cut a hole in does. Faces on no surface of
+/// `from` come last. Inside a layer a step did not reach, a trimmed face's triangles that its mesh kept then stay where
+/// they were among the other faces'.
+void mesh_order(Held& held, const Held& from) {
+    const int faces = held.faces.Extent();
+    std::vector<char> placed(static_cast<size_t>(faces) + 1, 0);
+    struct Made {
+        int index;
+        const Geom_Surface* surface;
+        TopLoc_Location location;
+    };
+    std::vector<Made> made;
+    made.reserve(held.made.size());
+    for (const int index : held.made) {
+        TopLoc_Location location;
+        const Handle(Geom_Surface)& surface = BRep_Tool::Surface(TopoDS::Face(held.faces(index)), location);
+        made.push_back({index, surface.get(), location});
+    }
+    held.order.clear();
+    held.order.reserve(static_cast<size_t>(faces));
+    const int parent_faces = from.faces.Extent();
+    for (int at = 0; at < parent_faces; ++at) {
+        const int parent = from.order.empty() ? at + 1 : from.order[static_cast<size_t>(at)];
+        const TopoDS_Face face = TopoDS::Face(from.faces(parent));
+        const int index = held.faces.FindIndex(face);
+        if (index > 0 && !placed[static_cast<size_t>(index)]) {
+            placed[static_cast<size_t>(index)] = 1;
+            held.order.push_back(index);
+        }
+        TopLoc_Location location;
+        const Handle(Geom_Surface)& surface = BRep_Tool::Surface(face, location);
+        for (const Made& one : made) {
+            if (!placed[static_cast<size_t>(one.index)] && surface.get() != nullptr && one.surface == surface.get() &&
+                one.location == location) {
+                placed[static_cast<size_t>(one.index)] = 1;
+                held.order.push_back(one.index);
+            }
+        }
+    }
+    for (const Made& one : made) {
+        if (!placed[static_cast<size_t>(one.index)]) {
+            placed[static_cast<size_t>(one.index)] = 1;
+            held.order.push_back(one.index);
+        }
+    }
+    if (held.order.size() != static_cast<size_t>(faces)) {
+        held.order.clear();
+    }
+}
+
 /// The accepted result of an edit: one solid with volume. `volume` is what the op integrated.
 /// `empty` is the refusal when there is no solid. Released to the caller only once nothing can throw.
 /// `from` is the solid it was built from: an edge still on it, the same edge, was not made by this op.
@@ -188,6 +239,7 @@ std::unique_ptr<LimeShape> adopt(
                 out->held.made.push_back(index);
             }
         }
+        mesh_order(out->held, from->held);
         out->created.clear();
         for (int index = 1; index <= out->held.edges.Extent(); ++index) {
             if (!from->held.edges.Contains(out->held.edges(index))) {
@@ -302,7 +354,17 @@ LimeShape* lime_tree_read_step(const char* path, char** error) {
 
 /// A solid `lime_tree_write_brep` wrote. `volume` is the one its step integrated, kept with the bytes; 0 integrates it.
 /// `created` is the edges its step made, `count` of them; a negative count leaves every edge, as for a root.
-LimeShape* lime_tree_read_brep(const char* data, size_t size, double volume, const int* created, int count, char** error) {
+/// `order` is the order its mesh read the faces out in (`lime_tree_mesh_order`), `faces` of them; one that is not an
+/// order of every face reads them out in index order.
+LimeShape* lime_tree_read_brep(
+    const char* data,
+    size_t size,
+    double volume,
+    const int* created,
+    int count,
+    const int* order,
+    int faces,
+    char** error) {
     try {
         LIME_CATCH_FAULTS;
         std::string message;
@@ -320,6 +382,19 @@ LimeShape* lime_tree_read_brep(const char* data, size_t size, double volume, con
                     return nullptr;
                 }
                 out->created.push_back(created[i]);
+            }
+        }
+        if (faces == out->held.faces.Extent()) {
+            std::vector<char> seen(static_cast<size_t>(faces) + 1, 0);
+            bool whole = true;
+            for (int i = 0; i < faces && whole; ++i) {
+                whole = order[i] >= 1 && order[i] <= faces && !seen[static_cast<size_t>(order[i])];
+                if (whole) {
+                    seen[static_cast<size_t>(order[i])] = 1;
+                }
+            }
+            if (whole) {
+                out->held.order.assign(order, order + faces);
             }
         }
         return out.release();
@@ -353,6 +428,17 @@ char* lime_tree_write_brep(const LimeShape* shape, size_t* size, char** error) {
         set_error(error, "Open CASCADE did not write this solid");
         return nullptr;
     }
+}
+
+/// The order the shape's mesh reads its faces out in, by index from 1, into `out` when it holds `capacity`. The count,
+/// or 0 when it is index order.
+int lime_tree_mesh_order(const LimeShape* shape, int* out, int capacity) {
+    const std::vector<int>& order = shape->held.order;
+    const int count = static_cast<int>(order.size());
+    if (count <= capacity) {
+        std::copy(order.begin(), order.end(), out);
+    }
+    return count;
 }
 
 /// The linked Open CASCADE version, as `lime_model_occt_stats` reports it. Static: never freed.
