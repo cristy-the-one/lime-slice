@@ -32,7 +32,7 @@ const BLEND_GHOST_STEP_MM = 0.05;
 
 /** P1. The push/pull arrow's handle id (`pullHandles` in `model-drag.ts`). */
 const PULL_HANDLE_ID = "pull";
-import { axisValues, dragValue, lineParam, moveFine, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
+import { axisValues, dragValue, lineParam, moveFine, planeValues, startFine, wrapDegrees, type DragHandle, type FinePointer, type Vec3 } from "./model-drag";
 import { aspectFor, aspectTip, meshPoint, type HandleAspect } from "./handle-emphasis";
 import { contextMaterial } from "./context-look";
 import type { ContextPart } from "./model-context";
@@ -4211,6 +4211,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     return (Math.atan2(offset.dot(v), offset.dot(u)) * 180) / Math.PI;
   }
 
+  /** Where the pointer's ray meets the plane square to a `plane` handle's `dir` through where it was grabbed; null edge-on. */
+  function planeHit(active: ActiveDrag, x: number, y: number): THREE.Vector3 | null {
+    const ray = rayAt(x, y);
+    const normal = new THREE.Vector3(...active.handle.dir).normalize();
+    if (Math.abs(ray.direction.dot(normal)) < 0.05) return null;
+    return ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(normal, active.anchor), new THREE.Vector3());
+  }
+
   function axisParam(active: ActiveDrag, x: number, y: number): number | null {
     const ray = rayAt(x, y);
     const dir = new THREE.Vector3(...active.handle.dir).normalize();
@@ -4651,6 +4659,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (handle.kind === "axis" && handle.id.startsWith("place-")) beginSnap();
     if (handle.kind === "axis") active.startParam = axisParam(active, ev.clientX, ev.clientY);
     if (handle.kind === "ring") active.lastAngle = ringAngle(active, ev.clientX, ev.clientY);
+    if (handle.kind === "plane") active.startHit = planeHit(active, ev.clientX, ev.clientY);
     drag = active;
     paintHandles();
     showTip(ev, handle, active.values);
@@ -4668,6 +4677,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (handle.kind === "axis") {
       const param = axisParam(current, x, y);
       if (param != null && current.startParam != null) next = axisValues(handle, handle.values, param - current.startParam, snap, fine);
+    } else if (handle.kind === "plane") {
+      const hit = planeHit(current, x, y);
+      const axes = handle.axes;
+      if (hit && current.startHit && axes) {
+        const moved = hit.clone().sub(current.startHit);
+        next = planeValues(handle, handle.values, axes.map((axis) => moved.dot(new THREE.Vector3(...axis))), snap, fine);
+      }
     } else if (handle.kind === "ring") {
       const angle = ringAngle(current, x, y);
       if (angle != null) {
@@ -4733,6 +4749,8 @@ interface ActiveDrag {
   startParam: number | null;
   lastAngle: number | null;
   turned: number;
+  /** A `plane` handle: where the pointer met its plane when it was grabbed. */
+  startHit?: THREE.Vector3 | null;
 }
 
 /** R = Rz·Ry·Rx for degrees, the order the kernel turns a primitive. */

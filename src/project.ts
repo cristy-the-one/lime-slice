@@ -149,8 +149,10 @@ export interface ToolTree {
 /**
  * --- Split to print, D12. A piece of a cut for an export target, which Model holds off the plate: the part's plate object
  * (`object`), the cut's step in its tree (`node`), and the part number (`index`, from 2), or `pins: true` for the cut's pins
- * (milestone 5). It keeps its mesh as a plate object does (`mesh`, `meshSeatMm`) and its solid (`brep`), so a reopened
- * project has the piece as it was cut. The cut's `pieces` and `pins` still say null for it, as an app before this wrote
+ * (milestone 5). It keeps its mesh as a plate object does (`mesh`, `meshSeatMm`), so a reopened project draws, explodes
+ * and exports the piece as it was cut. Its solid (`brep`) was saved too up to 4.2.0; it was half the file, so it is no
+ * longer written, and a reopen cuts the solid again from its part when a call needs it. A `brep` an older file holds is
+ * still read, and the piece opens from it. The cut's `pieces` and `pins` still say null for it, as an app before this wrote
  * them: that app ignores `heldPieces` and cuts the pieces again on export, and a file it saved reads here with its pieces
  * to cut again (`piecesToCut`).
  */

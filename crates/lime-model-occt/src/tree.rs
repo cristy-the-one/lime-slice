@@ -619,8 +619,6 @@ pub enum PrintProcess {
 
 const PARTITION_PROFILE_KIND: &str =
     "A cut's profile is straight, lap, tongue, zigzag, dovetail or sketch.";
-const PARTITION_SHAPED_JOINTS: &str =
-    "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.";
 /// The numbers a cut's profile gives the kernel (`kProfileStride` in kernel.h): its kind, eight sizes, and the cut's U.
 const PROFILE_STRIDE: usize = 14;
 /// The numbers of one segment of a sketched cut's chain (`kChainStride` in kernel.h): 0 for a line or 1 for an arc, the
@@ -639,8 +637,8 @@ fn partition_max(max_pieces: Option<f64>) -> usize {
     wanted.clamp(2.0, 24.0) as usize
 }
 
-/// Why a partition is not built, before anything is cut: a profile of no known kind, or connectors on a tongue or a
-/// dovetail cut (a lap, a zig-zag and a sketch have flats to put them on). Each is a sentence, and the solid is unchanged. A resin target cuts: its pieces are exported, not sliced (D12).
+/// Why a partition is not built, before anything is cut: a profile of no known kind. It is a sentence, and the solid is
+/// unchanged. A resin target cuts: its pieces are exported, not sliced (D12).
 fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
     let kind = |profile: &Value| {
         profile
@@ -657,12 +655,6 @@ fn partition_refusal(cuts: &[PartitionCut]) -> Option<&'static str> {
             ))
     {
         return Some(PARTITION_PROFILE_KIND);
-    }
-    if cuts
-        .iter()
-        .any(|cut| matches!(kind(&cut.profile).as_str(), "tongue" | "dovetail") && connectors_on(cut))
-    {
-        return Some(PARTITION_SHAPED_JOINTS);
     }
     None
 }

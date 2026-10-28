@@ -347,15 +347,15 @@ fn a_dovetail_without_a_neck_is_refused_in_a_sentence() {
 }
 
 #[test]
-fn connectors_on_a_tongue_are_refused_until_they_are_built() {
+fn connectors_on_a_tongue_with_none_placed_cut_the_tongue_alone() {
     let mut with = op(tongue("positive"));
     with["cuts"][0]["connectors"] =
         json!({ "on": true, "types": [{ "type": "dowel" }], "placed": [] });
-    let Some(refused) = cut(&with) else { return };
-    assert_eq!(
-        refused.expect_err("shaped"),
-        "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight."
-    );
+    let Some(made) = cut(&with) else { return };
+    let made = made.expect("a tongue with connectors on is cut");
+    let pieces = made["pieces"].as_array().expect("pieces");
+    within(volume(&pieces[1]), WHOLE / 2.0 + 6.0 * 3.0 * 20.0, 1e-6);
+    within(volume(&pieces[0]), WHOLE / 2.0 - (6.0 + 0.3) * (3.0 + 0.4) * (20.0 + 0.3), 1e-6);
 }
 
 // --- Milestone 10: a sketched profile. The chain is in the cut's (U, W) from its origin, so on the bar U is Y − 15 and W

@@ -20,13 +20,16 @@ import {
   fillPartition,
   fitPrinter,
   holeCompensationNote,
+  jointFootprint,
   measuredRow,
   partitionDefaults,
   placeConnectors,
   profileRefusals,
   sectionCentroid,
   shapedCutsSentence,
+  shapedFlats,
   splitRejectMargin,
+  widestCircle,
   type Box,
   type ConnectorSpec,
   type Section,
@@ -372,6 +375,18 @@ check("hardware, key, and dovetail place by their footprint", (["hardware", "key
   const r = placeConnectors({ cut: 1, section: rect(100, 20), spec: fillConnector({ type }, base), wallFloorMm: 0.8 });
   return r.placed.length >= 1 && r.placed.every((p) => p.type === type);
 }));
+
+// --- Polish after 4.2.0: the flats beside a tongue or a dovetail, and how wide a circle a section holds.
+const tongueFoot = jointFootprint({ kind: "tongue", width: 6, clearance: 0.15, v: 1 });
+check("a tongue's groove meets the plane 6.3 mm across V about its middle", !!tongueFoot && tongueFoot.across === "v" && Math.abs(tongueFoot.low - -2.15) < 1e-12 && Math.abs(tongueFoot.high - 4.15) < 1e-12, JSON.stringify(tongueFoot));
+const lean = Math.tan((20 * Math.PI) / 180);
+const tailFoot = jointFootprint({ kind: "dovetail", width: 8, angle: 20, clearance: 0.15, endGap: 0.4, slide: "v", v: 0 });
+check("a dovetail's is its widest groove, its wide end grown square to a flank and the end gap below, across U when it slides along V", !!tailFoot && tailFoot.across === "u" && Math.abs(tailFoot.high - (4 + 0.15 / Math.cos((20 * Math.PI) / 180) + lean * 0.4)) < 1e-12 && tailFoot.low === -tailFoot.high, JSON.stringify(tailFoot));
+const besideTongue = shapedFlats({ kind: "tongue", width: 6, clearance: 0.15, v: 0 }, { u0: -30, u1: 30, v0: -10, v1: 10 });
+check("a tongue has two flats on the plane, below and above its groove", besideTongue.length === 2 && besideTongue.every((flat) => flat.w === 0 && flat.tilt === 0) && besideTongue[0]!.v1 === -3.15 && besideTongue[1]!.v0 === 3.15, JSON.stringify(besideTongue));
+check("a tongue stored without its sizes has none", shapedFlats({ kind: "tongue" }, { u0: -30, u1: 30, v0: -10, v1: 10 }).length === 0);
+const holed = widestCircle([rect(20, 20, [[[8, 8], [12, 8], [12, 12], [8, 12]]])]);
+check("a 60 × 20 section holds a circle 20 mm across; a 20 mm square with a 4 mm hole in the middle one 9.37 mm across, in a corner", Math.abs(widestCircle([rect(60, 20)]) - 20) < 0.05 && Math.abs(holed - (16 * Math.SQRT2) / (1 + Math.SQRT2)) < 0.05, String(holed));
 
 if (failed) {
   console.error(`${failed} failed`);

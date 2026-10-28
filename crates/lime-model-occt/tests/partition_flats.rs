@@ -1,6 +1,6 @@
 //! Split to print, milestone 11: connectors on the flats of a shaped cut (plan sections 6 and 8). A dowel on a lap's two flats,
-//! on a zig-zag's low flat and tooth tip, and on a tilted segment of a sketched chain: the hole starts at that flat's own
-//! plane, along its own normal. Volumes by hand, axes from `Geom_CylindricalSurface`. `LIME_REQUIRE_OCCT=1` makes a missing
+//! on a zig-zag's low flat and tooth tip, on a tilted segment of a sketched chain, and beside a tongue and a dovetail: the
+//! hole starts at that flat's own plane, along its own normal. Volumes by hand, axes from `Geom_CylindricalSurface`. `LIME_REQUIRE_OCCT=1` makes a missing
 //! kernel a failure.
 
 use std::f64::consts::PI;
@@ -214,17 +214,88 @@ fn a_dowel_that_misses_every_flat_is_left_out_in_a_sentence() {
     assert_eq!(made["connectors"]["placed"], json!([]));
 }
 
-#[test]
-fn connectors_on_a_tongue_or_a_dovetail_are_refused_until_they_are_built() {
-    let tongue = json!({ "kind": "tongue", "width": 6.0, "depth": 3.0, "clearance": 0.15, "endGap": 0.4, "side": "positive",
-        "u0": -10.0, "u1": 10.0, "v": 0.0 });
-    let result = lime_model_occt::partition_joints(&bar(), &op(tongue, vec![]));
-    match result {
-        Err(message) if message.contains("OCCT_ROOT") => {}
-        Err(message) => assert_eq!(
-            message,
-            "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight."
-        ),
-        Ok(_) => panic!("a tongue with connectors was cut"),
+/// A dowel of radius 1.5 mm, 8 mm long, beside a tongue or a dovetail: its hole is 1.65 mm across and 4.4 mm deep in each piece.
+fn small_op(profile: Value, placed: Vec<Value>) -> String {
+    let mut op: Value = serde_json::from_str(&op(profile, placed)).expect("JSON");
+    op["cuts"][0]["connectors"]["types"][0]["radius"] = json!(1.5);
+    op["cuts"][0]["connectors"]["types"][0]["margin"] = json!(2.0);
+    op.to_string()
+}
+
+fn small_hole() -> f64 {
+    PI * 1.65 * 1.65 * (4.0 + 0.4)
+}
+
+/// The piece has a hole of 1.65 mm along the cut's normal at each of `heights` (z), at y = 15, and no other.
+fn holes_at(piece: &Value, heights: &[f64]) {
+    let found = cylinders(piece, 1.65);
+    assert_eq!(found.len(), heights.len(), "{piece}");
+    for (at, axis) in found {
+        let nearest = heights
+            .iter()
+            .map(|z| off(at, axis, [60.0, 15.0, *z], [1.0, 0.0, 0.0]))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .expect("a height");
+        assert!(nearest.0 < 1e-6 && nearest.1 < 1e-9, "a hole is {} mm off, turned {}", nearest.0, nearest.1);
     }
+}
+
+fn tongue() -> Value {
+    json!({ "kind": "tongue", "width": 6.0, "depth": 3.0, "clearance": 0.15, "endGap": 0.4, "side": "positive",
+        "u0": -10.0, "u1": 10.0, "v": 0.0 })
+}
+
+#[test]
+fn a_tongue_takes_a_dowel_on_the_flat_each_side_of_it() {
+    // The tongue runs along U (y 5 to 25) and is 6 mm across V (z 7 to 13); its groove is 6.3 mm across. The flats beside it
+    // are z 0 to 6.85 and 13.15 to 20 on the plane x = 60, and a dowel sits on each, at V −6.5 and 6.5.
+    let rows = vec![on_flat(1, [0.0, 0.0, 0.0], [0.0, -6.5]), on_flat(2, [0.0, 0.0, 0.0], [0.0, 6.5])];
+    let Some(made) = cut(&small_op(tongue(), rows)) else { return };
+    let pieces = made["pieces"].as_array().expect("pieces");
+    assert_eq!(pieces.len(), 2);
+    for piece in pieces {
+        whole(piece);
+    }
+    assert_eq!(made["connectors"]["dropped"], json!([]), "{made}");
+    within(volume(&pieces[1]), WHOLE / 2.0 + 6.0 * 3.0 * 20.0 - 2.0 * small_hole(), 1e-6);
+    within(volume(&pieces[0]), WHOLE / 2.0 - 6.3 * 3.4 * 20.3 - 2.0 * small_hole(), 1e-6);
+    for piece in pieces {
+        holes_at(piece, &[3.5, 16.5]);
+    }
+    assert_eq!(made["pins"]["solids"], json!(2));
+}
+
+#[test]
+fn a_dovetail_takes_a_dowel_on_the_flat_each_side_of_it() {
+    // The dovetail slides along U for the whole section; across V its groove reaches 4.31 mm from the middle at its widest.
+    let dovetail = json!({ "kind": "dovetail", "width": 8.0, "angle": 20.0, "depth": 3.0, "slide": "u", "side": "positive",
+        "clearance": 0.15, "endGap": 0.4, "u0": -15.0, "u1": 15.0, "v": 0.0 });
+    let rows = vec![on_flat(1, [0.0, 0.0, 0.0], [0.0, -7.0]), on_flat(2, [0.0, 0.0, 0.0], [0.0, 7.0])];
+    let Some(made) = cut(&small_op(dovetail, rows)) else { return };
+    let pieces = made["pieces"].as_array().expect("pieces");
+    assert_eq!(pieces.len(), 2);
+    for piece in pieces {
+        whole(piece);
+    }
+    assert_eq!(made["connectors"]["dropped"], json!([]), "{made}");
+    let lean = 20.0_f64.to_radians().tan();
+    let root = 4.0 - 3.0 * lean;
+    let peg = (2.0 * root + 8.0) / 2.0 * 3.0;
+    let grow = 0.15 / 20.0_f64.to_radians().cos();
+    let groove = 2.0 * (root + grow) * 3.4 + lean * 3.4 * 3.4;
+    within(volume(&pieces[1]), WHOLE / 2.0 + 30.0 * peg - 2.0 * small_hole(), 1e-5);
+    within(volume(&pieces[0]), WHOLE / 2.0 - 30.0 * groove - 2.0 * small_hole(), 1e-5);
+    for piece in pieces {
+        holes_at(piece, &[3.0, 17.0]);
+    }
+    assert_eq!(made["pins"]["solids"], json!(2));
+}
+
+#[test]
+fn a_dowel_that_reaches_into_the_groove_is_left_out() {
+    // At V = 3 the 1.65 mm hole crosses the groove's edge at 3.15: the cut does not take exactly the hole's volume.
+    let Some(made) = cut(&small_op(tongue(), vec![on_flat(1, [0.0, 0.0, 0.0], [0.0, 3.0])])) else { return };
+    let dropped = made["connectors"]["dropped"].as_array().expect("dropped");
+    assert_eq!(dropped.len(), 1, "{made}");
+    assert_eq!(made["connectors"]["placed"], json!([]));
 }

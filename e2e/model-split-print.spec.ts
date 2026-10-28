@@ -103,12 +103,13 @@ function built(request: Body, parent: MockSolid): Built {
   return parent;
 }
 
-async function openBar(page: Page, compact = false, part: MockSolid = BAR): Promise<TreeMock> {
+async function openBar(page: Page, compact = false, part: MockSolid = BAR, extra: Partial<Parameters<typeof mockModelTree>[1]> = {}): Promise<TreeMock> {
   await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: part.positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   const tree = await mockModelTree(page, {
+    ...extra,
     open: () => part,
     fitCoupon(request) {
       const spec = request.spec as { name: string; holes: unknown[]; pins: unknown[] };
@@ -455,8 +456,9 @@ test("a cut's Profile menu offers Straight, Lap and Tongue; a lap shows Depth, H
   await expect(page.locator("#modelPartProfileNote"), "a lap has flats for connectors since milestone 11").toBeHidden();
   await expect(apply(page)).toBeEnabled();
   await profileKind(page).selectOption("tongue");
-  await expect(page.locator("#modelPartProfileNote")).toHaveText("Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.");
-  await expect(apply(page), "the cut says why it cannot be built").toBeDisabled();
+  await expect(page.locator("#modelPartProfileNote"), "a tongue takes connectors beside it").toBeHidden();
+  await expect(page.locator("#modelPartStatus")).toHaveText("Cut 1: no dowel fits beside the tongue. The flats beside it hold a circle 6.8 mm across at most. A dowel of radius 2.47 mm or less fits.");
+  await expect(apply(page), "the cut says why it cannot be built, and what would fit").toBeDisabled();
   await profileKind(page).selectOption("lap");
   await jointsOn(page).uncheck();
   if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
@@ -1016,18 +1018,20 @@ test("a Form 4 cut keeps its pieces through save and reopen: Model opens on the 
   const tree = await openBar(page, false, COLUMN);
   await openCard(page);
   await applyForForm4(page);
+  const cut = tree.of("apply").length;
   const doc = await saveAndReopen(page);
   const held = doc.heldPieces as { object: string; node: number; index: number; mesh: { encoding?: string }; brep?: { encoding?: string } }[];
   expect(held.map((piece) => [piece.object, piece.node, piece.index]), "each piece by its part's object, the cut's step and its number").toEqual([["part", 1, 2], ["part", 1, 3]]);
-  for (const piece of held) expect([piece.mesh.encoding, piece.brep?.encoding], "the mesh and the solid, compressed").toEqual(["gzip+base64", "gzip+base64"]);
+  for (const piece of held) expect([piece.mesh.encoding, piece.brep], "the mesh, compressed, and no solid: it is cut again when a call needs it").toEqual(["gzip+base64", undefined]);
   await expect(page.locator("#objectList .obj"), "the pieces stay off the plate").toHaveCount(1);
-  const cut = tree.of("apply").length;
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText("Volume");
   await expectEveryPiece(page, tree, "reopened");
-  expect(tree.of("apply").length, "nothing is cut again").toBe(cut);
   const pieceOpens = tree.of("open").filter((request) => String(request.key).startsWith("part-part#"));
-  expect(pieceOpens.map((request) => Buffer.from(String(request.dataB64), "base64").toString().slice(0, 9)), "the STEP opens each piece from its saved solid").toEqual(["LIMEBREP ", "LIMEBREP "]);
+  expect(pieceOpens, "no piece opens from a saved solid").toEqual([]);
+  const recut = tree.of("apply").slice(cut);
+  expect(recut.map((request) => (request.op as { kind: string }).kind), "the open cuts both pieces again from the part, in one cut").toEqual(["partition"]);
+  expect((recut[0]!.pieceKeys as (string | null)[]).every((key) => typeof key === "string"), "naming both pieces' trees").toBe(true);
   await expect(labels(page)).toHaveText(["bar.step", "Split to print for Formlabs Form 4, 3 parts"]);
   await page.locator("#modelUndo").click();
   await expect(page.getByRole("treeitem", { name: /^bar\.step/ }), "one Undo takes the Apply back").toHaveAttribute("aria-selected", "true");
@@ -1278,10 +1282,10 @@ test("a Form 4 cut with dowels keeps its pins through save and reopen, and a fil
   await apply(page).click();
   await expect(page.locator("#modelPartDone")).toBeVisible();
   expect(typeof tree.of("apply").at(-1)!.pinsKey, "the apply asks for the pins' tree").toBe("string");
+  const cut = tree.of("apply").length;
   const doc = await saveAndReopen(page);
   const held = doc.heldPieces as { index?: number; pins?: boolean }[];
   expect(held.map((piece) => piece.index ?? (piece.pins ? "pins" : null)), "the pins are kept beside the pieces").toEqual([2, 3, "pins"]);
-  const cut = tree.of("apply").length;
   const explodeHasPins = async () => {
     await expect(page.getByRole("treeitem", { name: /^Split to print for Formlabs Form 4, 3 parts, dowels/ })).toHaveAttribute("aria-selected", "true");
     await page.locator("#modelLookOpen").click();
@@ -1297,11 +1301,13 @@ test("a Form 4 cut with dowels keeps its pins through save and reopen, and a fil
   };
   await page.locator("#tabModel").click();
   await explodeHasPins();
-  expect(tree.of("apply").length, "nothing is cut again").toBe(cut);
+  await expect.poll(() => tree.of("apply").length, "the open's background cut, and nothing else").toBe(cut + 1);
+  expect(typeof tree.of("apply").at(-1)!.pinsKey, "it makes the pins' solid too").toBe("string");
 
+  const again = tree.of("apply").length;
   await saveAndReopen(page, (file) => delete file.heldPieces);
   await page.locator("#tabModel").click();
-  await expect.poll(() => tree.of("apply").length, "one cut on a spare step").toBe(cut + 1);
+  await expect.poll(() => tree.of("apply").length, "one cut on a spare step").toBe(again + 1);
   expect(typeof tree.of("apply").at(-1)!.pinsKey, "which makes the pins again").toBe("string");
   await explodeHasPins();
 });
@@ -1338,4 +1344,301 @@ test.describe("phone", () => {
     await page.locator("#modelCancel").tap();
     await expect(page.locator("#modelPanel")).toBeHidden();
   });
+});
+
+// --- Polish after 4.2.0: drag handles for a cut's joint and its connectors, typed fields in step, one Undo a drag.
+
+/** Where each handle stands on the canvas, in page pixels: an arrow's grip is its head, so grip less seat is its way on screen. */
+async function seatsOf(page: Page): Promise<Record<string, { x: number; y: number }>> {
+  const text = (await page.locator("#model").getAttribute("data-handle-seat")) ?? "";
+  const box = (await page.locator("#model").boundingBox())!;
+  const map: Record<string, { x: number; y: number }> = {};
+  for (const item of text.split(" ").filter(Boolean)) {
+    const [id, place] = item.split(":");
+    const [x, y] = place!.split(",").map(Number);
+    map[id!] = { x: box.x + x!, y: box.y + y! };
+  }
+  return map;
+}
+
+/** The way cut 1's arrow points on screen, as a unit vector: the cut's normal, which a joint's depth knob slides along. */
+async function normalOnScreen(page: Page): Promise<{ x: number; y: number }> {
+  const head = await grip(page, "cut-1");
+  const seat = (await seatsOf(page))["cut-1"]!;
+  const length = Math.hypot(head.x - seat.x, head.y - seat.y) || 1;
+  return { x: (head.x - seat.x) / length, y: (head.y - seat.y) / length };
+}
+
+/** Drag handle `id` by `dx`, `dy` pixels in eight moves, Ctrl held to snap to whole millimetres. */
+async function dragHandle(page: Page, id: string, dx: number, dy: number) {
+  const from = await grip(page, id);
+  await page.mouse.move(from.x, from.y);
+  await page.keyboard.down("Control");
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i += 1) await page.mouse.move(from.x + (dx * i) / 8, from.y + (dy * i) / 8);
+  await expect(page.locator(".interact-hud:not([hidden])"), "the heads-up field is up while the handle moves").toBeVisible();
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+}
+
+const hud = (page: Page) => page.locator(".interact-hud:not([hidden])");
+
+/** Zoom in on handle `id` until neighbouring dots no longer overlap, and let the camera settle. */
+async function zoomOn(page: Page, id: string) {
+  const at = await grip(page, id);
+  await page.mouse.move(at.x, at.y);
+  for (let i = 0; i < 4; i += 1) await page.mouse.wheel(0, -400);
+  await page.waitForTimeout(1500);
+}
+const typedOp = (tree: TreeMock) => tree.of("probe").at(-1)?.op as { cuts: { profile?: Shaped; connectors?: { on?: boolean; types?: { place?: string; at?: [number, number][] }[]; placed?: { id: string; uvMm: [number, number]; fixed: boolean }[] } }[] } | undefined;
+const pointOf = async (page: Page, k: number) => [Number(await page.locator(`#modelPartJointAt-${k}-u`).inputValue()), Number(await page.locator(`#modelPartJointAt-${k}-v`).inputValue())];
+
+test("a lap's depth knob drags along the cut's normal, writes Depth, and one Undo takes the drag and what was typed after it back", async ({ page }) => {
+  const tree = await openBar(page);
+  await openCard(page);
+  await profileKind(page).selectOption("lap");
+  await expect.poll(() => lastProfile(tree).depth).toBe(8);
+  const probes = tree.of("probe").length;
+  const way = await normalOnScreen(page);
+  await dragHandle(page, "joint-depth", way.x * 40, way.y * 40);
+  const dragged = Number(await page.locator("#modelPartProfileDepth").inputValue());
+  expect(dragged, "the drag changed the depth").not.toBe(8);
+  expect(Number.isInteger(dragged), `Ctrl snaps to whole millimetres, got ${dragged}`).toBe(true);
+  await expect.poll(() => lastProfile(tree).depth, "the release checks the dragged depth").toBe(dragged);
+  expect(tree.of("probe").length - probes, "one kernel check, at the release").toBe(1);
+  await expect(hud(page).locator("input").first()).toHaveAttribute("data-field", "modelPartProfileDepth");
+  await page.keyboard.type("12");
+  await page.keyboard.press("Enter");
+  await expect(hud(page)).toHaveCount(0);
+  await expect(page.locator("#modelPartProfileDepth"), "the typed field follows the heads-up field").toHaveValue("12");
+  await expect.poll(() => lastProfile(tree).depth).toBe(12);
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#modelPartProfileDepth"), "one Undo: the drag and the number typed after it").toHaveValue("");
+  await expect(page.locator("#modelPartProfileDepth"), "back to the planner's depth").toHaveAttribute("placeholder", "8");
+  await expect(profileKind(page), "the lap itself is a step of its own").toHaveValue("lap");
+  await page.locator("#modelRedo").click();
+  await expect(page.locator("#modelPartProfileDepth")).toHaveValue("12");
+  const knob = await grip(page, "joint-depth");
+  await page.locator("#modelPartProfileDepth").fill("30");
+  await page.locator("#modelPartProfileDepth").dispatchEvent("change");
+  await expect.poll(() => lastProfile(tree).depth).toBe(30);
+  await expect.poll(async () => Math.hypot((await grip(page, "joint-depth")).x - knob.x, (await grip(page, "joint-depth")).y - knob.y), "a typed depth moves the knob").toBeGreaterThan(4);
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await zoomOn(page, "joint-depth");
+  const lit = await grip(page, "joint-depth");
+  await page.mouse.move(lit.x, lit.y);
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "joint-depth");
+  await page.waitForTimeout(400);
+  await shot(page, "handles-lap-depth");
+});
+
+test("dragging a dowel across the cut places the cut's dowels by hand: their U and V fields follow, typing moves them, Refit and Undo", async ({ page }) => {
+  const tree = await openBar(page, false, WIDE);
+  await openCard(page);
+  await jointsOn(page).check();
+  await expect.poll(() => (typedOp(tree)?.cuts[0]?.connectors?.placed ?? []).length, "Fit places three dowels across the 60 mm").toBe(3);
+  await expect(page.locator("#modelPartJointPoints"), "placed by Fit, there are no points to type").toBeHidden();
+  for (const id of ["joint-1", "joint-2", "joint-3"]) await grip(page, id);
+  await zoomOn(page, "joint-2");
+  await dragHandle(page, "joint-2", 8, 8);
+  await expect(page.locator("#modelPartJointPoints")).toBeVisible();
+  const moved = await pointOf(page, 2);
+  expect(moved, "the middle dowel moved").not.toEqual([0, 0]);
+  expect(moved.every(Number.isInteger), `Ctrl snaps to whole millimetres, got ${moved}`).toBe(true);
+  expect(await pointOf(page, 1), "the others stay where Fit put them").toEqual([-24, 0]);
+  expect(await pointOf(page, 3)).toEqual([24, 0]);
+  await expect(page.locator("#modelPartJointCount")).toHaveAttribute("placeholder", "By hand");
+  await expect.poll(() => typedOp(tree)?.cuts[0]?.connectors?.types?.[0], "the check sends the points as fixed").toEqual(expect.objectContaining({ place: "fixed", at: [[-24, 0], moved, [24, 0]] }));
+  // The heads-up field takes U, then V after Tab.
+  await expect(hud(page).locator("input").first()).toHaveAttribute("data-field", "modelPartJointAt-2-u");
+  await page.keyboard.type("6");
+  await page.keyboard.press("Tab");
+  await page.keyboard.type("-3");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#modelPartJointAt-2-u")).toHaveValue("6");
+  await expect(page.locator("#modelPartJointAt-2-v")).toHaveValue("-3");
+  await expect.poll(() => typedOp(tree)?.cuts[0]?.connectors?.types?.[0]?.at).toEqual([[-24, 0], [6, -3], [24, 0]]);
+  expect((typedOp(tree)?.cuts[0]?.connectors?.placed ?? []).map((row) => [row.uvMm, row.fixed]), "all three are built where they were put").toEqual([[[-24, 0], true], [[6, -3], true], [[24, 0], true]]);
+  // A typed V moves the dowel, and its dot with it.
+  const before = await grip(page, "joint-1");
+  await page.locator("#modelPartJointAt-1-v").fill("4");
+  await page.locator("#modelPartJointAt-1-v").dispatchEvent("change");
+  await expect.poll(() => typedOp(tree)?.cuts[0]?.connectors?.types?.[0]?.at).toEqual([[-24, 4], [6, -3], [24, 0]]);
+  await expect.poll(async () => Math.hypot((await grip(page, "joint-1")).x - before.x, (await grip(page, "joint-1")).y - before.y), "its dot follows the typed V").toBeGreaterThan(1);
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await page.locator("#modelPartJointRefit").scrollIntoViewIfNeeded();
+  const dot = await grip(page, "joint-2");
+  await page.mouse.move(dot.x, dot.y);
+  await expect(page.locator("#model")).toHaveAttribute("data-aspect", "joint-2");
+  await page.waitForTimeout(400);
+  await shot(page, "handles-dowels-by-hand");
+  // Undo: the typed V, then the drag with what the heads-up field typed; Redo brings the drag back.
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#modelPartJointAt-1-v")).toHaveValue("0");
+  await page.locator("#modelUndo").click();
+  await expect(page.locator("#modelPartJointPoints"), "one Undo takes the whole drag back to Fit").toBeHidden();
+  await expect(page.locator("#modelPartJointCount")).toHaveAttribute("placeholder", "Fit");
+  await page.locator("#modelRedo").click();
+  await expect(page.locator("#modelPartJointAt-2-u")).toHaveValue("6");
+  await page.locator("#modelPartJointRefit").click();
+  await expect(page.locator("#modelPartJointPoints"), "Refit spreads them by Fit again").toBeHidden();
+  await expect(page.locator("#modelPartJointCount")).toHaveAttribute("placeholder", "Fit");
+  await expect(page.locator("#model"), "and the ghost has the three Fit dowels").toHaveAttribute("data-connectors", "3");
+});
+
+test("dowels placed by hand are stored fixed, and the pencil reopens them by hand", async ({ page }) => {
+  const tree = await openBar(page, false, WIDE);
+  await openCard(page);
+  await jointsOn(page).check();
+  await expect.poll(() => (typedOp(tree)?.cuts[0]?.connectors?.placed ?? []).length).toBe(3);
+  await zoomOn(page, "joint-2");
+  await dragHandle(page, "joint-1", 5, -5);
+  await page.keyboard.type("-20");
+  await page.keyboard.press("Tab");
+  await page.keyboard.type("4");
+  await page.keyboard.press("Enter");
+  expect(await pointOf(page, 1)).toEqual([-20, 4]);
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(4);
+  const stored = (tree.of("apply").at(-1)!.op as { cuts: { connectors: { types: { place: string; at: [number, number][] }[]; placed: { uvMm: [number, number]; fixed: boolean }[] } }[] }).cuts[0]!.connectors;
+  expect(stored.types[0]!.place).toBe("fixed");
+  expect(stored.placed.map((row) => [row.uvMm, row.fixed])).toEqual([[[-20, 4], true], [[0, 0], true], [[24, 0], true]]);
+  await page.getByRole("treeitem", { name: /^Split to print, 3 parts/ }).locator(".mh-edit").click();
+  await expect(page.locator("#modelPartJointPoints"), "the pencil reopens the dowels by hand").toBeVisible();
+  expect(await pointOf(page, 1)).toEqual([-20, 4]);
+  await expect(apply(page), "an untouched edit offers no Update").toBeDisabled();
+});
+
+test("a tongue takes dowels on the flats beside it, and with no room the cut says what would fit", async ({ page }) => {
+  const tree = await openBar(page, false, WIDE);
+  await openCard(page);
+  await profileKind(page).selectOption("tongue");
+  await jointsOn(page).check();
+  await expect(page.locator("#modelPartStatus")).toHaveText("Cut 1: no dowel fits beside the tongue. The flats beside it hold a circle 6.8 mm across at most. A dowel of radius 2.47 mm or less fits.");
+  await expect(apply(page)).toBeDisabled();
+  await page.locator("#modelPartJointRadius").fill("2");
+  await page.locator("#modelPartJointRadius").dispatchEvent("change");
+  await expect(page.locator("#modelPartStatus")).toBeHidden();
+  await expect.poll(() => (typedOp(tree)?.cuts[0]?.connectors?.placed ?? []).length, "three on each side of the tongue").toBe(6);
+  await expect(page.locator("#model")).toHaveAttribute("data-connectors", "6");
+  await expect(apply(page)).toBeEnabled();
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await zoomOn(page, "joint-2");
+  await page.mouse.move(1300, 880);
+  await page.waitForTimeout(400);
+  await shot(page, "tongue-dowels");
+});
+
+// --- Polish after 4.2.0: a reopened Form 4 project cuts its held pieces' solids again in the background, one job a cut.
+
+/** A gate for the next partition apply: `arm` holds it until `open`. */
+function cutGate() {
+  let release = () => {};
+  let armed = false;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  return {
+    arm: () => (armed = true),
+    open: () => release(),
+    applyGate: (request: { op?: unknown }) => {
+      if (!armed || (request.op as { kind?: string } | undefined)?.kind !== "partition") return undefined;
+      armed = false;
+      return held;
+    },
+  };
+}
+
+const partitionCuts = (tree: TreeMock, from: number) => tree.of("apply").slice(from).filter((request) => (request.op as { kind?: string }).kind === "partition");
+
+test("a reopened Form 4 project cuts its pieces again in the background, once, and a STEP export waits for that cut", async ({ page }) => {
+  const gate = cutGate();
+  const tree = await openBar(page, false, COLUMN, { applyGate: gate.applyGate });
+  await openCard(page);
+  await applyForForm4(page);
+  const before = tree.of("apply").length;
+  gate.arm();
+  await saveAndReopen(page);
+  await expect.poll(() => partitionCuts(tree, before).length, "the open starts the cut by itself").toBe(1);
+  await expect(page.locator("#model")).toHaveAttribute("data-held-warm", "1");
+  expect(partitionCuts(tree, before)[0]!.pieceKeys, "one cut for both pieces").toEqual([expect.any(String), expect.any(String)]);
+  // The plate is in use while the cut is held: Model opens on the split, and Export… STEP waits for that same cut.
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume");
+  const seen: string[] = [];
+  page.on("download", (download) => seen.push(download.suggestedFilename()));
+  await page.getByRole("treeitem", { name: SPLIT_ROW }).locator(".mh-more").click();
+  await page.locator("#modelHistoryMenu [data-act=export]").click();
+  await page.locator('#splitExport [data-format="step"]').click();
+  await expect(readout(page), "the export shows its busy state while it waits").toContainText("Writing the pieces");
+  await page.waitForTimeout(500);
+  expect(tree.of("export").length, "no export before the cut answers").toBe(0);
+  expect(partitionCuts(tree, before).length, "and no second cut").toBe(1);
+  await expect(page.locator("#model"), "not ready while the cut is held").not.toHaveAttribute("data-held-ready", /./);
+  gate.open();
+  await expect.poll(() => seen).toEqual(["bar.step"]);
+  await expect(page.locator("#model")).toHaveAttribute("data-held-ready", "1");
+  expect((tree.of("export").at(-1)!.pieces as unknown[]).length).toBe(2);
+  // A second STEP finds the solids ready: still one cut for this open.
+  await page.getByRole("treeitem", { name: SPLIT_ROW }).locator(".mh-more").click();
+  await page.locator("#modelHistoryMenu [data-act=export]").click();
+  await page.locator('#splitExport [data-format="step"]').click();
+  await expect.poll(() => seen.length).toBe(2);
+  expect(partitionCuts(tree, before).length, "one job for the open").toBe(1);
+  await expect(page.locator("#model")).toHaveAttribute("data-held-warm", "1");
+});
+
+test("a background cut that a new file makes stale is discarded: its trees close, and the new plate never sees them", async ({ page }) => {
+  const gate = cutGate();
+  const tree = await openBar(page, false, COLUMN, { applyGate: gate.applyGate });
+  await openCard(page);
+  await applyForForm4(page);
+  const before = tree.of("apply").length;
+  gate.arm();
+  await saveAndReopen(page);
+  await expect.poll(() => partitionCuts(tree, before).length).toBe(1);
+  const pieceKeys = partitionCuts(tree, before)[0]!.pieceKeys as string[];
+  // A new file replaces the plate while the cut is held.
+  await page.locator("#file").setInputFiles({ name: "other.step", mimeType: "model/step", buffer: FILE });
+  await expect(page.locator("#objectList .obj")).toHaveCount(1);
+  await expect(page.locator("#objectList .obj").first()).toContainText("other");
+  const closes = tree.of("close").length;
+  gate.open();
+  await expect.poll(() => tree.of("close").slice(closes).map((request) => request.key), "the stale cut's piece trees close").toEqual(expect.arrayContaining(pieceKeys));
+  await expect(page.locator(".toast"), "and nothing is said about it").toHaveCount(0);
+  await expect(page.locator("#model")).toHaveAttribute("data-held-warm", "1");
+});
+
+test("an Update while the background cut runs keeps both apart: the cut fills the old step's pieces, the export uses the Update's", async ({ page }) => {
+  const gate = cutGate();
+  const tree = await openBar(page, false, COLUMN, { applyGate: gate.applyGate });
+  await openCard(page);
+  await applyForForm4(page);
+  const before = tree.of("apply").length;
+  gate.arm();
+  await saveAndReopen(page);
+  await expect.poll(() => partitionCuts(tree, before).length).toBe(1);
+  const stale = partitionCuts(tree, before)[0]!.pieceKeys as string[];
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume");
+  await page.getByRole("treeitem", { name: SPLIT_ROW }).locator(".mh-edit").click();
+  await at(page, 1).fill("150");
+  await at(page, 1).dispatchEvent("change");
+  await expect(apply(page)).toBeEnabled();
+  const closes = tree.of("close").length;
+  await apply(page).click();
+  await expect.poll(() => tree.of("edit").length, "the Update cuts while the background cut is held").toBe(1);
+  await expect(page.locator("#modelPartDone")).toBeVisible();
+  const fresh = tree.of("edit")[0]!.pieceKeys as string[];
+  expect(fresh.some((key) => stale.includes(key)), "with pieces of its own").toBe(false);
+  gate.open();
+  await page.waitForTimeout(500);
+  expect(tree.of("close").slice(closes).map((request) => request.key).some((key) => fresh.includes(String(key))), "the Update's do not").toBe(false);
+  const seen: string[] = [];
+  page.on("download", (download) => seen.push(download.suggestedFilename()));
+  await page.locator("#modelPartExport").click();
+  await page.locator('#splitExport [data-format="step"]').click();
+  await expect.poll(() => seen).toEqual(["bar.step"]);
+  const exported = (tree.of("export").at(-1)!.pieces as { key: string }[]).map((piece) => piece.key);
+  expect(exported.length > 0 && exported.every((key) => fresh.includes(key) && !stale.includes(key)), `the export names the Update's pieces, ${exported}`).toBe(true);
+  expect(partitionCuts(tree, before).length, "and needs no cut of its own").toBe(1);
 });

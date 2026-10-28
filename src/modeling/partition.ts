@@ -845,17 +845,105 @@ function resinHeightNotes(span: Vec3, counts: number[], usable: number[], axes: 
 
 /** A profile of no kind the kernel builds: the same sentence as `PARTITION_PROFILE_KIND` in tree.rs. */
 export const PROFILE_KIND = "A cut's profile is straight, lap, tongue, zigzag, dovetail or sketch.";
-/** Connectors on a tongue or a dovetail cut wait: a lap, a zig-zag and a sketch have flats to hold them (`shapedFlats`). */
-export const SHAPED_JOINTS_LATER = "Connectors on a tongue or a dovetail cut are not built yet. Turn them off, or cut straight.";
 
-/**
- * Why the kernel does not cut this op, before anything is built: a profile of no known kind, or connectors on a tongue or a
- * dovetail cut. A lap, a zig-zag and a sketch have flats to put them on (`shapedFlats`).
- */
+/** Why the kernel does not cut this op, before anything is built: a profile of no known kind. */
 export function notBuiltYet(op: Pick<PartitionOp, "cuts">): string | null {
   if (op.cuts.some((cut) => cut.profile && !["straight", "lap", "tongue", "zigzag", "dovetail", "sketch"].includes(cut.profile.kind))) return PROFILE_KIND;
-  if (op.cuts.some((cut) => cut.profile && (cut.profile.kind === "tongue" || cut.profile.kind === "dovetail") && cut.connectors?.on === true)) return SHAPED_JOINTS_LATER;
   return null;
+}
+
+/** The size field a connector type is fitted by when a cut has no room for it: the one the sentence names. */
+const ROOM_SIZE: Record<ConnectorType, { field: "radius" | "diameter" | "width"; phrase: (one: string, size: string) => string }> = {
+  dowel: { field: "radius", phrase: (one, size) => `A ${one} of radius ${size} mm or less fits.` },
+  plug: { field: "radius", phrase: (one, size) => `A ${one} of radius ${size} mm or less fits.` },
+  hardware: { field: "diameter", phrase: (one, size) => `A ${one} of diameter ${size} mm or less fits.` },
+  key: { field: "width", phrase: (one, size) => `A ${one} ${size} mm wide or narrower fits.` },
+  dovetail: { field: "width", phrase: (one, size) => `A ${one} ${size} mm wide or narrower fits.` },
+};
+
+/** The floor a connector's fitted size may not go under: four feature widths for a radius, twice that for a width across. */
+function roomFloor(type: ConnectorType, d: PartitionDefaults): number {
+  if (type === "dowel" || type === "plug") return d.floors.radiusMm;
+  if (type === "hardware") return 2 * d.floors.radiusMm;
+  return type === "key" ? d.floors.tongueWidthMm : d.floors.dovetailWidthMm;
+}
+
+/** The largest value in [low, high] for which `fits` holds, to a hundredth, or null when even `low` does not. `fits` is assumed monotone. */
+function largestFitting(low: number, high: number, fits: (value: number) => boolean): number | null {
+  if (!(high >= low) || !fits(low)) return null;
+  if (fits(high)) return high;
+  let [a, b] = [low, high];
+  while (b - a > 0.005) {
+    const mid = (a + b) / 2;
+    if (fits(mid)) a = mid;
+    else b = mid;
+  }
+  return Math.floor(a * 100) / 100;
+}
+
+/**
+ * The widest circle any of `sections` holds: twice the largest distance from a point inside to the nearest edge of its
+ * outline or a hole. Sampled on a grid and refined about the best point, so it is a lower bound to a few hundredths.
+ */
+export function widestCircle(sections: readonly Section[]): number {
+  let best = 0;
+  for (const section of sections) {
+    const box = sectionBox(section);
+    let centre: UV | null = null;
+    let span = Math.max(box.max[0] - box.min[0], box.max[1] - box.min[1]);
+    const steps = 48;
+    let from: UV = box.min;
+    let size: UV = [box.max[0] - box.min[0], box.max[1] - box.min[1]];
+    for (let round = 0; round < 4 && span > 1e-4; round += 1) {
+      for (let i = 0; i <= steps; i += 1) {
+        for (let j = 0; j <= steps; j += 1) {
+          const p: UV = [from[0] + (size[0] * i) / steps, from[1] + (size[1] * j) / steps];
+          if (!insideSection(p, section)) continue;
+          const room = distToOutline(p, section);
+          if (room > best) {
+            best = room;
+            centre = p;
+          }
+        }
+      }
+      if (!centre) break;
+      size = [(4 * size[0]) / steps, (4 * size[1]) / steps];
+      from = [centre[0] - size[0] / 2, centre[1] - size[1] / 2];
+      span = Math.max(size[0], size[1]);
+    }
+  }
+  return 2 * best;
+}
+
+/**
+ * A tongue or a dovetail cut whose flats hold none of its connectors is refused with why and with what would fit
+ * (plan section 9): the widest circle the flats beside the joint hold, then the connector size that fits there, or else
+ * the joint width that leaves room for the connector as typed, or else neither. `place` tells whether `spec` places on
+ * the flats a joint `width` wide leaves; it is the same placement the stored op makes.
+ */
+export function noRoomSentence(input: {
+  cut: number;
+  joint: "tongue" | "dovetail";
+  jointWidth: number;
+  typed: ConnectorSpec;
+  defaults: PartitionDefaults;
+  flats: (jointWidth: number) => Section[];
+  place: (spec: ResolvedConnector, sections: readonly Section[]) => boolean;
+}): string {
+  const { cut, joint, jointWidth, typed, defaults: d } = input;
+  const names = TYPE_NAMES[typed.type];
+  const sections = input.flats(jointWidth);
+  const across = widestCircle(sections);
+  const head = `Cut ${cut}: no ${names.one} fits beside the ${joint}. The flats beside it hold a circle ${mm(Math.floor(across * 10) / 10)} mm across at most.`;
+  const room = ROOM_SIZE[typed.type];
+  const current = fillConnector(typed, d);
+  const size = (current as unknown as Record<string, number>)[room.field] ?? 0;
+  const resized = largestFitting(roomFloor(typed.type, d), size, (value) => input.place(fillConnector({ ...typed, [room.field]: value } as ConnectorSpec, d), sections));
+  if (resized !== null) return `${head} ${room.phrase(names.one, mm(resized))}`;
+  const floor = joint === "tongue" ? d.floors.tongueWidthMm : d.floors.dovetailWidthMm;
+  const narrower = largestFitting(floor, jointWidth, (width) => input.place(current, input.flats(width)));
+  if (narrower !== null) return `${head} A ${joint} ${mm(narrower)} mm wide or narrower leaves room for this ${names.one}.`;
+  return `${head} Cut straight, or turn connectors off.`;
 }
 
 /** The XY hole compensation note (plan section 2): the slice setting changes the hole again; the solid's clearance stays. */
@@ -1134,6 +1222,12 @@ interface ShapedProfile {
   pitch?: number;
   angle?: number;
   u0?: number;
+  u1?: number;
+  v?: number;
+  width?: number;
+  clearance?: number;
+  endGap?: number;
+  slide?: "u" | "v";
   start?: UV;
   chain?: ChainSegment[];
 }
@@ -1142,9 +1236,17 @@ interface ShapedProfile {
  * The flat faces of a shaped cut's profile, sized as Apply stored it, `box` the section's span in U and V. A lap has two
  * (the first flat on the plane, to one side of the step, and the second, `depth` along W, past it); a zig-zag a flat on the
  * plane and one on each tooth's tip, as many as the section holds; a sketch each straight segment of its chain whose normal
- * is within 45° of W. A straight cut, a tongue and a dovetail give none: a straight cut is the plane itself.
+ * is within 45° of W; a tongue and a dovetail the plane on each side of the key, past its groove (`jointFootprint`). A
+ * straight cut gives none: it is the plane itself.
  */
 export function shapedFlats(profile: ShapedProfile, box: { u0: number; u1: number; v0: number; v1: number }): Flat[] {
+  const key = jointFootprint(profile);
+  if (key) {
+    const plane = { u: 0, w: 0, tilt: 0, u0: -FAR_MM, u1: FAR_MM, v0: -FAR_MM, v1: FAR_MM };
+    return key.across === "v"
+      ? [{ ...plane, v1: key.low }, { ...plane, v0: key.high }]
+      : [{ ...plane, u1: key.low }, { ...plane, u0: key.high }];
+  }
   if (profile.kind === "lap" && profile.depth !== undefined && profile.at !== undefined) {
     const carried = profile.side === "negative" ? -profile.depth : profile.depth;
     return [
@@ -1190,6 +1292,23 @@ export function shapedFlats(profile: ShapedProfile, box: { u0: number; u1: numbe
     return out;
   }
   return [];
+}
+
+/**
+ * Where a tongue's or a dovetail's groove meets the cut plane, across the key: from `low` to `high` along the cut's V (a
+ * tongue, or a dovetail sliding along U) or U (a dovetail sliding along V). The band is the groove at its widest, the key
+ * grown by the clearance, and for a dovetail its wide end and the end gap below it, since the groove widens under the plane
+ * where a hole also goes.
+ * Null for any other profile, or one stored without its sizes.
+ */
+export function jointFootprint(profile: ShapedProfile): { across: "u" | "v"; low: number; high: number } | null {
+  if (profile.kind !== "tongue" && profile.kind !== "dovetail") return null;
+  if (profile.width === undefined || profile.v === undefined) return null;
+  const clearance = profile.clearance ?? 0;
+  const lean = profile.kind === "dovetail" ? ((profile.angle ?? 0) * Math.PI) / 180 : 0;
+  const half = profile.width / 2 + clearance / Math.cos(lean) + Math.tan(lean) * (profile.endGap ?? 0);
+  const across = profile.kind === "dovetail" && profile.slide === "v" ? "u" : "v";
+  return { across, low: profile.v - half, high: profile.v + half };
 }
 
 /** `section` cut to the rectangle `[u0, u1] × [v0, v1]`: each ring clipped on its four sides, the rings left with no area dropped. Null when nothing is left. */

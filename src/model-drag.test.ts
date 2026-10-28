@@ -11,6 +11,7 @@ import {
   lineParam,
   measureNote,
   moveFine,
+  planeValues,
   startFine,
   turnGimbal,
   turnedAxes,
@@ -254,6 +255,11 @@ check("a one-point edge has no anchor", edgeAnchor(new Float32Array([1, 2, 3]), 
 eq("degrees wrap", [wrapDegrees(190), wrapDegrees(-190), wrapDegrees(180), wrapDegrees(-180)], [-170, 170, 180, 180]);
 eq("a length label", dragLabel({ label: "Width X", unit: "mm" }, [12.345]), "Width X 12.35 mm");
 eq("a turn label", dragLabel({ label: "Turn Z", unit: "°" }, [45]), "Turn Z 45°");
+// --- Split to print's connector dot: a `plane` handle writes two fields, each snapped and rounded as one field is.
+eq("a plane handle moves both fields by the travel along its axes", planeValues({ step: 1 }, [-24, 0], [3.456, -1.234], false, false), [-20.5, -1.2]);
+eq("Ctrl snaps each to whole millimetres", planeValues({ step: 1 }, [-24, 0], [3.456, -1.734], true, false), [-21, -2]);
+eq("Shift keeps hundredths", planeValues({ step: 1 }, [0, 0], [0.1234, 0.5678], false, true), [0.12, 0.57]);
+eq("its label names both numbers", dragLabel({ label: "Dowel 2", unit: "mm" }, [6, -3]), "Dowel 2 6, -3 mm");
 eq("a factor label", dragLabel({ label: "Factor", unit: "×" }, [1.5]), "Factor 1.5×");
 eq("a point label", dragLabel({ label: "A", unit: "mm" }, [1, 2, 3]), "A 1, 2, 3 mm");
 eq("a hole radius knob reads as the diameter", dragLabel({ label: "Diameter", unit: "mm", shown: 2 }, [1.7]), "Diameter 3.4 mm");

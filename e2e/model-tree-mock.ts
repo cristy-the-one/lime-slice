@@ -48,6 +48,8 @@ interface Handlers {
   distanceMm?: number;
   /** How long an export takes, so a test can act while one is still on its way. */
   exportMs?: number;
+  /** Held until it resolves before an apply answers, so a test can act while one is still on its way. */
+  applyGate?(request: Body): Promise<void> | void;
   /** The answer to a `stepSolids` call. Absent answers one unnamed solid. */
   stepSolids?(request: Body): Body;
   /** The answer to a `fitCoupon` call: `{plate, pins, engravedMm3}`, each a STEP file in `stepB64`. Absent refuses. */
@@ -290,6 +292,7 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
         return { bytesBase64: bytes.toString("base64"), byteLength: bytes.length };
       }
       case "apply":
+        await handlers.applyGate?.(request);
         break;
       case "edit":
         return edit(request);
