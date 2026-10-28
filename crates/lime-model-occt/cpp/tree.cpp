@@ -38,6 +38,10 @@
 #include <TopoDS_Compound.hxx>
 #include <TopTools_ListIteratorOfListOfShape.hxx>
 #include <gp_Vec.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
+#include <gp_Mat.hxx>
+#include <gp_Quaternion.hxx>
+#include <gp_Trsf.hxx>
 
 #include "kernel.h"
 
@@ -1998,13 +2002,34 @@ int lime_tree_write_step(const LimeShape* shape, const char* path, char** error)
 
 /// --- Split to print (D12). `count` solids written as one STEP file of free shapes, each a product named by the
 /// matching entry of `names` (UTF-8), through the XCAF document writer.
-int lime_tree_write_step_many(const LimeShape* const* shapes, const char* const* names, int count, const char* path, char** error) {
+/// --- Assemblies M9. With `places`, twelve numbers a solid (a turn row by row, times one uniform scale, then a move),
+/// each solid is written where its numbers put it: a copy of its geometry, moved.
+int lime_tree_write_step_many(const LimeShape* const* shapes, const char* const* names, const double* places, int count, const char* path, char** error) {
     try {
         LIME_CATCH_FAULTS;
         std::vector<TopoDS_Shape> solids;
         std::vector<std::string> product_names;
         for (int index = 0; index < count; ++index) {
-            solids.push_back(shapes[index]->held.shape);
+            TopoDS_Shape solid = shapes[index]->held.shape;
+            if (places != nullptr) {
+                const double* p = places + 12 * index;
+                const double scale = std::sqrt(p[0] * p[0] + p[3] * p[3] + p[6] * p[6]);
+                gp_Quaternion turn(gp_Mat(p[0] / scale, p[1] / scale, p[2] / scale, p[3] / scale, p[4] / scale, p[5] / scale, p[6] / scale, p[7] / scale, p[8] / scale));
+                turn.Normalize();
+                gp_Trsf trsf;
+                trsf.SetRotation(turn);
+                if (std::abs(scale - 1.0) > 1e-12) {
+                    trsf.SetScaleFactor(scale);
+                }
+                trsf.SetTranslationPart(gp_Vec(p[9], p[10], p[11]));
+                BRepBuilderAPI_Transform moved(solid, trsf, Standard_True);
+                if (!moved.IsDone() || moved.Shape().IsNull()) {
+                    set_error(error, "Open CASCADE did not place these solids");
+                    return 0;
+                }
+                solid = moved.Shape();
+            }
+            solids.push_back(solid);
             product_names.emplace_back(names[index]);
         }
         std::string message;

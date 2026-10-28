@@ -25,7 +25,7 @@ import { FIT_ROWS, clampPieces, clearanceKey, enterMeasured, fitResultsRefusal, 
 import { couponFileName, fitCoupon, fitCouponRequest, readCouponReply } from "../src/modeling/fit-coupon.ts";
 import { choiceAt, jointDown, jointPlanes, noJointSentence } from "../src/modeling/joint-down.ts";
 import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateUp, readPartition, storedPartition } from "./partition.ts";
-import { pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
+import { partStem, pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
 import { SCREWS, throughLength } from "../src/model-hole.ts";
 import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
@@ -129,7 +129,7 @@ import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport,
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../src/interference.ts";
-import { assemblyOf, attached, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
+import { assemblyOf, attached, exportParts, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
 import { followRepeatSources, repeatLabel } from "../src/model-repeat.ts";
 import { planRebuild } from "../src/param-rebuild.ts";
@@ -4099,7 +4099,10 @@ export class Session {
       case "model_drop": return this.drop(obj, this.nodeOf(obj, input.node));
       case "model_rename": return this.rename(obj, this.nodeOf(obj, input.node), String(input.label ?? ""));
       case "model_commit": return this.commit(obj);
-      case "model_export_step": return input.pieces === true ? this.exportPieceStep(obj, String(input.name)) : this.exportStep(obj, String(input.name));
+      case "model_export_step":
+        if (input.pieces === true && input.assembly === true) return { ok: false, reason: "Export the pieces or the assembly, not both." };
+        if (input.assembly === true) return this.exportAssemblyStep(obj, String(input.name));
+        return input.pieces === true ? this.exportPieceStep(obj, String(input.name)) : this.exportStep(obj, String(input.name));
       case "measure": return this.measure(obj, input);
       default: throw new ProtocolError(`There is no tool named ${name}.`);
     }
@@ -7410,6 +7413,50 @@ export class Session {
       });
     }
     return doc;
+  }
+
+  /**
+   * --- Assemblies M9. model_export_step with assembly: true. One STEP file of the part's assembly, each member a solid
+   * named after its part at its assembled pose (`modelPose`), root first. The print layout is not read.
+   */
+  private async exportAssemblyStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
+    const assembly = assemblyOf(this.liveAssemblies(), obj.id);
+    if (!assembly) return { ok: false, reason: "This part is in no assembly. model_place {to} puts it in one." };
+    const parts = exportParts(assembly, (id) => partStem(this.find(id)?.name ?? ""));
+    const held: { part: PlateObject; name: string; key: string; node: NodeId }[] = [];
+    for (const row of parts) {
+      const part = this.find(row.object);
+      if (!part) continue;
+      const tree = await this.opened(part);
+      if ("reason" in tree) return { ok: false, reason: `${shownName(part.name)}: ${tree.reason} A STEP assembly holds solids only.` };
+      held.push({ part, name: row.name, key: tree.key, node: tree.current });
+    }
+    const [first, ...rest] = held;
+    if (!first) return { ok: false, reason: "This assembly has no part on the plate." };
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(exportRequest(first.key, first.node, "step", rest, held.map((row) => row.name), held.map((row) => row.part.modelPose ?? IDENTITY_POSE)), "export");
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
+    const step = this.stepBytes(reply);
+    if (!step) return { ok: false, reason: typeof reply.error === "string" ? plainModelError(reply.error) : "The assembly was not exported." };
+    const path = resolveWrite(name, ".step");
+    writeFileSync(path, step);
+    return {
+      ok: true,
+      path,
+      bytes: step.byteLength,
+      assembly: assembly.name,
+      solids: typeof reply.solids === "number" ? reply.solids : held.length,
+      parts: held.map((row) => {
+        const box = this.assembledBox(row.part);
+        return { object: row.part.id, name: row.name, ...(row.part.solid ? { volumeMm3: row.part.solid.volumeMm3 } : {}), ...(box ? { assembledMm: box } : {}) };
+      }),
+      note: "Each part is a named solid at its assembled pose, the root first. The print layout is unchanged.",
+    };
   }
 
   private async exportStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {

@@ -278,7 +278,7 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
 .obj-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; font-size: var(--fs-1); color: var(--warn); }
 .obj-split { grid-column: 1 / -1; margin: 0; padding: 0 var(--space-2) var(--space-2); font-size: var(--fs-1); color: var(--text-faint); }
 .obj-actions { display: flex; gap: 2px; align-items: center; }
-.obj-check, .obj-frame, .obj-remove, .obj-attach, .obj-ungroup { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-2); }
+.obj-check, .obj-frame, .obj-remove, .obj-attach, .obj-ungroup, .obj-layout, .obj-step { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-2); }
 /* An assembly: a header row, then its parts indented under it with a rule on their left. */
 .obj-group { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); min-width: 0; padding: var(--space-1) var(--space-2); border: 1px solid var(--border); border-radius: 6px; font-size: var(--fs-3); }
 .obj-group span { color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-1); white-space: nowrap; }
@@ -288,6 +288,9 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
 .obj-row:has(.obj-attach), .obj-member { grid-template-columns: minmax(0, 1fr); }
 .obj-row:has(.obj-attach) .obj-actions, .obj-member .obj-actions { grid-column: 1; justify-content: flex-end; padding: 0 var(--space-2) var(--space-1); }
 .obj-group-name span { flex: none; }
+/* Three tools on an assembly's header: they drop under its name, so the name stays readable. */
+.obj-group:has(.obj-layout) { grid-template-columns: minmax(0, 1fr); }
+.obj-group .obj-actions { justify-content: flex-end; }
 .obj-member { margin-left: var(--space-3); position: relative; }
 .obj-member::before { content: ""; position: absolute; left: calc(-1 * var(--space-2)); top: 0; bottom: 0; width: 2px; border-radius: 1px; background: var(--border); }
 .warn-text { color: var(--warn); }

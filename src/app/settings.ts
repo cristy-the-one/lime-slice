@@ -801,7 +801,11 @@ function objectListHtml(): string {
     return `
       <div class="obj-group" role="listitem" data-assembly-head="${escapeHtml(group.id)}">
         <div class="obj-group-name"><b>${escapeHtml(group.name)}</b><span>${members.length} parts</span></div>
-        <button class="btn obj-ungroup" type="button" data-assembly-ungroup="${escapeHtml(group.id)}" aria-label="Ungroup ${escapeHtml(group.name)}" data-tip="Ungroup: every part keeps where it is.">Ungroup</button>
+        <div class="obj-actions">
+          <button class="btn obj-layout" type="button" data-assembly-layout="${escapeHtml(group.id)}" aria-label="Lay out ${escapeHtml(group.name)}" data-tip="Lay out these parts on the bed for print, around the other objects. The assembly stays as it is.">Lay out</button>
+          <button class="btn obj-step" type="button" data-assembly-step="${escapeHtml(group.id)}" aria-label="Export ${escapeHtml(group.name)} as STEP" data-tip="Save one STEP file of the assembly: each part a named solid at its assembled pose.">STEP</button>
+          <button class="btn obj-ungroup" type="button" data-assembly-ungroup="${escapeHtml(group.id)}" aria-label="Ungroup ${escapeHtml(group.name)}" data-tip="Ungroup: every part keeps where it is.">Ungroup</button>
+        </div>
       </div>${members.map(row).join("")}`;
   }).join("");
   const overlap = pairs.map((pair) => pair.line).join("; ");

@@ -3,7 +3,7 @@
  */
 import { encode3mf } from "../mesh-place.ts";
 import { crc32 } from "../png-rgba.ts";
-import { exportStem, pieceNames, pinsName, SUPPORT_NOTE } from "./partition-export.ts";
+import { exportStem, partStem, pieceNames, pinsName, SUPPORT_NOTE } from "./partition-export.ts";
 import { pieceFiles } from "../ui/split-export.ts";
 
 let failed = 0;
@@ -23,6 +23,7 @@ check("ten pieces and more keep their order", pieceNames("bar", 12).at(9) === "b
 check("a file name drops its folder and its extension", exportStem("exports/Telo cover.step") === "Telo cover" && exportStem("C:\\parts\\cover.3mf") === "cover");
 check("characters a file name cannot hold become dashes", exportStem('a:b*c?"d"') === "a-b-c--d-", exportStem('a:b*c?"d"'));
 check("an empty name is a part", exportStem("") === "part" && show(pieceNames(".stl", 1)) === show(["part-1"]));
+check("a plate object's name drops its extension and keeps its number", partStem("hook.step 2") === "hook 2" && partStem("parts/body.STL") === "body" && partStem("Rim 3") === "Rim 3" && partStem("") === "part", show([partStem("hook.step 2"), partStem("parts/body.STL"), partStem("Rim 3")]));
 check("no pieces, no names", pieceNames("cover", 0).length === 0);
 check("the support note", SUPPORT_NOTE === "Keep supports off the cut faces. They carry the fit and the part number.");
 
