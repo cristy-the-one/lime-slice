@@ -114,3 +114,39 @@ fn a_set_gap_and_a_tree_brim_change_the_gcode_and_the_default_does_not() {
     assert_ne!(plain, brim);
     assert_ne!(gap, brim);
 }
+
+#[test]
+fn a_real_zero_is_a_zero_and_no_interface_layers_print_one() {
+    let asked: SliceRequest = serde_json::from_str(
+        r#"{"supportZGapMm":0,"supportXyGapMm":0,"supportInterfaceLayers":0}"#,
+    )
+    .unwrap();
+    let set = SliceSettings::from_request(&asked);
+    assert_eq!(set.support_z_gap_mm, Some(0.0));
+    assert_eq!(set.support_xy_gap_mm, Some(0.0));
+    assert_eq!(set.support_interface_layers, Some(1));
+
+    let plain = tree(trees());
+    let zero_z = tree(SliceSettings {
+        support_z_gap_mm: Some(0.0),
+        ..trees()
+    });
+    let zero_xy = tree(SliceSettings {
+        support_xy_gap_mm: Some(0.0),
+        ..trees()
+    });
+    assert_ne!(plain, zero_z);
+    assert_ne!(plain, zero_xy);
+    let layers = |n: u32| {
+        let text = format!(r#"{{"supports":true,"supportStyle":"tree","supportInterfaceLayers":{n}}}"#);
+        tree(SliceSettings::from_request(&serde_json::from_str::<SliceRequest>(&text).unwrap()))
+    };
+    assert_eq!(layers(1), layers(0));
+    let all = tree(SliceSettings {
+        support_z_gap_mm: Some(0.0),
+        support_xy_gap_mm: Some(0.0),
+        support_interface_layers: Some(1),
+        ..trees()
+    });
+    assert!(all.contains("G1"), "a slice with every gap at zero still prints");
+}

@@ -205,12 +205,13 @@ pub struct SliceRequest {
     pub support_height_mult: f64,
     /// Vertical gap between the support interface and the part. Omitted keeps
     /// `layer_height` (at least 0.12 mm), which is what a default slice uses.
+    /// `0` is a real zero: the support touches the part.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_z_gap_mm: Option<f64>,
-    /// Horizontal gap between supports and the part. Omitted keeps 0.55 mm.
+    /// Horizontal gap between supports and the part. Omitted keeps 0.55 mm. `0` is a real zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_xy_gap_mm: Option<f64>,
-    /// Dense interface layers under the part. Omitted keeps 3. `0` is omitted.
+    /// Dense interface layers under the part. Omitted keeps 3. `0` prints one, the fewest there can be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_interface_layers: Option<u32>,
     /// Concentric brim around tree trunks on the first layer. Omitted prints none.
@@ -729,9 +730,7 @@ impl SliceSettings {
             support_interface_layers: if req.classic {
                 None
             } else {
-                req.support_interface_layers
-                    .filter(|n| *n > 0)
-                    .map(|n| n.clamp(1, 8))
+                req.support_interface_layers.map(|n| n.clamp(1, 8))
             },
             support_tree_brim_mm: support_gap(req.classic, req.support_tree_brim_mm, 20.0)
                 .filter(|mm| *mm > 1e-6),
