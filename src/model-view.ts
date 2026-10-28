@@ -1220,6 +1220,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     canvas.dataset.ghostSerial = String(ghostSerial);
     canvas.dataset.ghostPose = "0";
     delete canvas.dataset.connectors;
+    delete canvas.dataset.ghostTriangles;
     clearGhosts();
     applyScale();
     clipToSplit();
@@ -1617,6 +1618,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         ghosts.add(turned);
         if (failed) failedGroup = turned;
       }
+      canvas.dataset.ghostTriangles = String(current.parts.reduce((sum, part) => sum + Math.floor(part.mesh.length / 9), 0));
       for (const [mesh, held] of pieceGeometry) {
         if (used.has(mesh)) continue;
         held.shaded.dispose();

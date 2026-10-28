@@ -21,7 +21,7 @@ import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail
 import { mountProjectFiles, openPickedFile, saveCurrentProject } from "./project-io";
 import { newProject } from "./new-project";
 import { pickModelFile } from "../platform";
-import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, revealPrinterDetails, setCalibrate, syncFindStuck, touch } from "./settings";
+import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, refreshObjectList, revealPrinterDetails, setCalibrate, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
 import { bindPlaceScrub } from "./place-scrub";
 import { bindFieldScrub } from "../ui/field-scrub";
@@ -135,6 +135,7 @@ export function wireApp() {
       if (!Number.isFinite(mm)) return;
       noteEdit();
       setPlaceCenter(target.id === "placeX" ? "x" : "y", mm);
+      refreshObjectList();
       return;
     }
     if (target.id === "settleOn") {
@@ -146,6 +147,7 @@ export function wireApp() {
       if (!Number.isFinite(deg)) return;
       noteEdit();
       setOrientAngle(target.id === "placeRx" ? "x" : target.id === "placeRy" ? "y" : "z", deg);
+      refreshObjectList();
       return;
     }
     if (target.id === "objInfill" || target.id === "objWalls" || target.id === "objSpeed") {
