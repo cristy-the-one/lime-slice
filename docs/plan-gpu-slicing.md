@@ -472,3 +472,46 @@ Telo cover on the IR3 V2, warm after the base slice:
 - it equals a cold slice, and it shifts every move's X word by the move, and nothing else;
 - it redraws no preview layer;
 - a move along the belt changes nothing.
+
+### 10.7 C6: a Model edit keeps the triangles of faces it didn't touch
+
+**What the retest showed.** Section 10.5 blamed `model_commit` for tessellating the whole solid again. It doesn't. Since #346 a step meshes only the faces it made and the faces beside them, and every other face keeps the triangles it had, because Open CASCADE keeps the mesh on the face itself and the step shares that face with its parent. The Telo hole's plate mesh has 96,466 triangles, and all but 170 of them are the base mesh's, bit for bit. All 170 lie between z 38.9 and 52.9 mm, around the hole.
+
+What changed was their order. A mesh reads the faces out by their index, and a boolean numbers the faces of its result afresh. After the hole, only 188 of the 96,466 triangles sat at the same place in the soup. The slicer's output for a layer depends on the order of the triangles that cross it, so the IR3 planned 1,335 of its 2,885 layers again although no triangle in them had moved. As a check, the hole mesh with its triangles put back in the base's order reused 2,831 layers.
+
+**Fix.** The kernel keeps a read-out order for each solid (`Held::order`):
+- a root reads its faces out by index, as before;
+- a step reads out the faces it shares with its parent in the parent's order;
+- a face the step made follows the parent face on the same surface, as a face the hole only trimmed does. Inside a layer the step didn't reach, the triangles such a face kept stay where they were among the others;
+- faces on no surface of the parent come last.
+
+The face numbering, and with it every op, fingerprint and pick, doesn't change. Only the order of the triangles in the mesh does. The slicer, `model_commit` and the app don't change either.
+
+A saved step keeps its order. `export` in `brep` appends a last line, `LIMEORDER 3,1,2,…`, after the BinTools bytes, and a seed or a root read from it restores the order. Without that line, a project reopened from its seeds would read its faces out by index, and its next commit would plan most layers again. BinTools stops before the line, so 4.2.0 still reads these files, as a root and as a seed. A file with no line reads by index, as before.
+
+**Correctness.** The triangles are the ones a fresh tessellation of the solid gives, bit for bit; only their order follows the history. `tests/mesh_order.rs` checks this on a box through up to seven steps (a hole, a fillet, booleans with a cylinder, a box and a sphere, a chamfer). For each step that builds:
+- every face the step kept reads out the triangles it had, in the order it had them among the other kept faces;
+- the solid saved in `brep` and opened again as a new tree, meshed from nothing, gives the same triangles.
+
+`local_mesh.rs` (meshing around a step answers what meshing the whole solid does) and `brep.rs` (a saved solid reopens answering exactly as its step, triangle order included) pass unchanged. No op needs a full tessellation to stay correct.
+
+On the Telo cover, a fresh open of each step's saved solid differs from the step's mesh by 88 triangles, between z 722 and 781 mm in the file's frame. The unedited root differs from a fresh open of its own saved solid by the same 88. Those come from saving a STEP-read solid and reading it back, not from the edit.
+
+**This is an output change for parts edited in Model.** The plate mesh after a commit holds the same triangles in another order, and the slicer's output depends on the order. For the Telo hole, the estimate moved by −2 s on the IR3 V2 (47,379 → 47,377 s) and by −3 s on the Lime 220 (48,942 → 48,939 s). An imported part is unchanged: the base slice kept its G-code hash on both printers. In every row, the warm G-code equals the cold slice of the same committed mesh. Golden has no Model edits, so it stays 60/60 identical.
+
+**Measured.** Telo cover, PETG, 0.4 mm. The request bodies were captured through the MCP `Session` with the OCCT bridge as before: import, base slice, a 6 mm through hole and commit, slice, then a 4 mm through hole on the next plane face and commit, slice. They were replayed against the release `serve` with `LIME_INNER_PROFILE=1`. Warm is base, hole, second hole in one process; cold is the hole alone in a fresh one. Medians of three alternating runs. Other builds ran on the machine during most runs, so the times run above section 10.5's: its 2.5 s hole is 3.1–3.7 s here.
+
+| | IR3 V2 before | IR3 V2 C6 | Lime 220 before | Lime 220 C6 |
+|---|---:|---:|---:|---:|
+| Hole after base, warm | 3.7 s | **1.8 s** | 5.1 s | **1.6 s** |
+| Hole, cold | 6.5 s | 6.2 s | 9.4 s | 7.9 s |
+| Layers reused by the hole (toolpaths / tour / travels) | 1,550 / 1,548 / 1,548 of 2,885 | **2,831 / 2,831 / 2,831** | 232 / 232 / 232 of 749 | **694 / 694 / 694** |
+| Share of layers reused by the hole | 54% | **98%** | 31% | **93%** |
+| Second hole after the first, warm | 1.8 s | 1.7 s | 1.8 s | 1.7 s |
+| Layers reused by the second hole | 2,837 | 2,839 | 683 | 687 |
+
+The target was a Model hole in under 3 s warm on both printers. It is 1.8 s on the IR3 V2 and 1.6 s on the Lime 220. The cold column doesn't change, because a fresh process plans every layer either way; its spread comes from the load on the machine.
+
+The second hole reused most layers even before C6: the second boolean happened to number the faces in nearly the relative order the first had. With C6 that holds for every edit, not by chance.
+
+The kernel's apply of the two holes took the same time with and without C6: 2.5–3.3 s and 1.7–1.9 s over six runs of each build. Working out the order costs one pass over the parent's faces.

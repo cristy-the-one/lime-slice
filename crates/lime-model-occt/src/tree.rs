@@ -44,6 +44,9 @@ const SOLID_FORMAT: &str = "lime-solid-2";
 /// `LIMEBREP 1 <Open CASCADE version> <volume>`, then the BinTools bytes. A STEP file never starts with it.
 const BREP_MAGIC: &[u8] = b"LIMEBREP ";
 const BREP_FORMAT: &str = "1";
+/// A saved solid whose mesh reads its faces out in another order than their index ends in this line, after the BinTools
+/// bytes: `\nLIMEORDER 3,1,2\n`. BinTools stops before it, so a modeler that does not know it still reads the solid.
+const BREP_ORDER: &[u8] = b"\nLIMEORDER ";
 
 // A reply sends the kernel's f32 and u32 arrays byte for byte, and the format says little-endian.
 const _: () = assert!(cfg!(target_endian = "little"));
@@ -3892,6 +3895,29 @@ fn one_root() -> Failure {
     Failure::Message("Open a tree from exactly one of dataB64, stepPath, box, or primitive".into())
 }
 
+/// A saved solid's BinTools bytes, and the face order its last line names (`BREP_ORDER`), empty when it names none.
+fn brep_order(data: &[u8]) -> (&[u8], Vec<c_int>) {
+    let Some(start) = data
+        .windows(BREP_ORDER.len())
+        .rposition(|window| window == BREP_ORDER)
+    else {
+        return (data, Vec::new());
+    };
+    let line = &data[start + BREP_ORDER.len()..];
+    let Some(list) = line.strip_suffix(b"\n") else {
+        return (data, Vec::new());
+    };
+    let order = std::str::from_utf8(list).ok().and_then(|list| {
+        list.split(',')
+            .map(|index| index.parse::<c_int>().ok())
+            .collect::<Option<Vec<_>>>()
+    });
+    match order {
+        Some(order) => (&data[..start], order),
+        None => (data, Vec::new()),
+    }
+}
+
 /// The linked Open CASCADE version, as a saved solid's header names it.
 fn occt_version() -> String {
     let ptr = unsafe { lime_tree_occt_version() };
@@ -5345,8 +5371,11 @@ extern "C" {
         volume: f64,
         created: *const c_int,
         count: c_int,
+        order: *const c_int,
+        faces: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    fn lime_tree_mesh_order(shape: *const RawShape, out: *mut c_int, capacity: c_int) -> c_int;
     fn lime_tree_write_brep(
         shape: *const RawShape,
         size: *mut usize,
@@ -6565,9 +6594,18 @@ impl Shape {
             Some(list) => (list.as_ptr(), list.len() as c_int),
             None => (std::ptr::null(), -1),
         };
-        let data = &bytes[end + 1..];
+        let (data, order) = brep_order(&bytes[end + 1..]);
         Shape::made(|error| unsafe {
-            lime_tree_read_brep(data.as_ptr(), data.len(), volume, made, count, error)
+            lime_tree_read_brep(
+                data.as_ptr(),
+                data.len(),
+                volume,
+                made,
+                count,
+                order.as_ptr(),
+                order.len() as c_int,
+                error,
+            )
         })
         .map_err(|message| {
             let ours = occt_version();
@@ -6619,7 +6657,24 @@ impl Shape {
             std::slice::from_raw_parts(raw.as_ptr().cast::<u8>(), size)
         });
         unsafe { lime_model_occt_string_free(raw.as_ptr()) };
+        let order = self.mesh_order();
+        if !order.is_empty() {
+            out.extend_from_slice(BREP_ORDER);
+            let list: Vec<String> = order.iter().map(c_int::to_string).collect();
+            out.extend_from_slice(list.join(",").as_bytes());
+            out.push(b'\n');
+        }
         Ok(out)
+    }
+
+    /// The order the mesh reads the faces out in, by index from 1; empty for index order.
+    fn mesh_order(&self) -> Vec<c_int> {
+        let count = unsafe { lime_tree_mesh_order(self.raw(), std::ptr::null_mut(), 0) };
+        let mut out = vec![0; count.max(0) as usize];
+        if !out.is_empty() {
+            unsafe { lime_tree_mesh_order(self.raw(), out.as_mut_ptr(), count) };
+        }
+        out
     }
 
     fn editable(&self) -> Result<(), String> {
