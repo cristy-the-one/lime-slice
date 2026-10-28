@@ -4902,6 +4902,7 @@ impl SupportPlan {
             settings,
             &Watch::idle(),
             false,
+            self.supports.floor(),
         );
         for (&i, paths) in repaint.iter().zip(painted) {
             self.paths[i] = Arc::new(paths);
@@ -4934,6 +4935,7 @@ impl SupportPlan {
             settings,
             watch,
             true,
+            self.supports.floor(),
         )
         .into_iter()
         .map(Arc::new)
@@ -5658,6 +5660,7 @@ fn plan_supports(
         settings,
         watch,
         false,
+        floor,
     )
     .into_iter()
     .map(Arc::new)
@@ -5693,6 +5696,7 @@ fn paint(
     settings: &SliceSettings,
     watch: &Watch,
     count: bool,
+    floor: Option<FloorPlane>,
 ) -> Vec<Vec<Extrusion>> {
     let (min, max) = cut.bounds;
     which
@@ -5713,6 +5717,7 @@ fn paint(
                 min,
                 max,
                 i,
+                floor,
             );
             if count {
                 watch.tick();
@@ -6833,8 +6838,13 @@ fn support_paths(
     min: [f64; 3],
     max: [f64; 3],
     layer_index: usize,
+    floor: Option<FloorPlane>,
 ) -> Vec<Extrusion> {
     let line_width = settings.line_width;
+    // A grid column on the belt falls along gravity, which moves it in slice
+    // Y from layer to layer. Its lines fall with it, through a point fixed
+    // in the lab, so each layer's lines stand on the lines below.
+    let through = floor.map(|floor| [0.0, -z * floor.tan_a()]);
     // Only trunks still standing on layer 0 are on the bed. A belt has no
     // flat bed there (`skirt` is off), so it keeps the trunk as it grew.
     let brim_mm = if layer_index == 0
@@ -6864,6 +6874,7 @@ fn support_paths(
                 line_width,
                 contours,
                 brim_mm,
+                through,
             );
         }
         other => {
@@ -6881,6 +6892,7 @@ fn support_paths(
                 line_width,
                 contours,
                 brim_mm,
+                through,
             );
         }
     }
@@ -7024,6 +7036,7 @@ fn emit_supports(
     line_width: f64,
     contours: &[Loop],
     brim_mm: f64,
+    through: Option<[f64; 2]>,
 ) {
     if support.is_empty() && interface.is_empty() && disks.is_empty() {
         return;
@@ -7041,6 +7054,7 @@ fn emit_supports(
                     line_width,
                     support_density(strategy),
                     false,
+                    through,
                 )
             } else {
                 tree_beads(disks, strategy, line_width, contours, brim_mm)
@@ -7058,6 +7072,7 @@ fn emit_supports(
             line_width,
             support_interface_density(strategy),
             true,
+            None,
         ));
     };
     if let Some((low_rect, high_rect)) = split {
@@ -7101,6 +7116,7 @@ fn emit_supports(
                     line_width,
                     support_interface_density(strategy),
                     true,
+                    None,
                 ));
             }
         }

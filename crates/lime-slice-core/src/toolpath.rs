@@ -2938,8 +2938,19 @@ fn concentric_fill(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
 }
 
 fn scan_angle(loops: &[Loop], spacing: f64, angle: f64) -> Vec<Vec<[f64; 2]>> {
+    scan_through(loops, spacing, angle, None)
+}
+
+/// Chords at `angle`, one row passing through `through` when it is given,
+/// else half a spacing in from the region's edge.
+fn scan_through(
+    loops: &[Loop],
+    spacing: f64,
+    angle: f64,
+    through: Option<[f64; 2]>,
+) -> Vec<Vec<[f64; 2]>> {
     let rotated = rotate_loops(loops, -angle);
-    let chords = horizontal_chords(&rotated, spacing, None);
+    let chords = horizontal_chords(&rotated, spacing, through.map(|p| rot(p, -angle)[1]));
     let mut out = Vec::new();
     for (y, spans) in chords {
         for (x0, x1) in spans {
@@ -3302,13 +3313,16 @@ fn support_spine(region: &[Loop]) -> Vec<Vec<[f64; 2]>> {
 }
 
 /// Sparse grid (or a denser interface grid) inside `region`.
-/// Density and speed come from the resolved strategy.
+/// Density and speed come from the resolved strategy. `through` pins the
+/// grid to a point, so each layer's lines stand on the lines below however
+/// the region's outline changes. `None` starts the grid at the region's edge.
 pub fn plan_support(
     region: &[Loop],
     strategy: &ResolvedStrategy,
     line_width: f64,
     density: f64,
     interface: bool,
+    through: Option<[f64; 2]>,
 ) -> Vec<Extrusion> {
     if region.is_empty() || density <= 0.01 {
         return Vec::new();
@@ -3319,9 +3333,9 @@ pub fn plan_support(
     } else {
         PathKind::Support
     };
-    let mut segs = serpentine(scan_angle(region, spacing, 0.0), region);
+    let mut segs = serpentine(scan_through(region, spacing, 0.0, through), region);
     segs.extend(serpentine(
-        scan_angle(region, spacing, std::f64::consts::FRAC_PI_2),
+        scan_through(region, spacing, std::f64::consts::FRAC_PI_2, through),
         region,
     ));
     let mut segs = clip_infill(segs, region);
