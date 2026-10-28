@@ -35,6 +35,9 @@ import {
   withCutMode,
   withCutsCleared,
   withJointCount,
+  withJointPoints,
+  withJointsRefit,
+  jointPoints,
   withProfileField,
   withProfileKind,
   withJointField,
@@ -367,6 +370,25 @@ const sideways = flatRows(withJointField(withJointsOn(withProfileField(dovetailC
 check("one sliding along V lies across U, so its dowels sit either side of it along U", (sideways?.op.cuts[0]!.connectors!.placed ?? []).length > 0 && sideways!.op.cuts[0]!.connectors!.placed!.every((row) => Math.abs(row.uvMm[0]) > 4.5), JSON.stringify(sideways?.op.cuts[0]!.connectors!.placed));
 const dovetailRoom = storedPartition(cardOp(withJointsOn(dovetailCut, 0, true), wideCenter, null, SIZES)!, wideCtx, IDENTITY_POSE, { positions: wide, up: [0, 0, 1] });
 check("a dovetail with no room for a 3 mm dowel is refused in the same way", "reason" in dovetailRoom && dovetailRoom.reason.startsWith("Cut 1: no dowel fits beside the dovetail. The flats beside it hold a circle"), JSON.stringify(dovetailRoom));
+
+// --- Polish after 4.2.0: drag handles. A drag places the cut's connectors by hand: fixed points of the cut seen along W,
+// which the marks carry back with their cut, their point and which typed point each is.
+const fitMarks = flatRows(withJointField(withJointsOn(plain, 0, true), 0, { count: 2 }))!.marks;
+eq("each mark names its cut, its point on the cut in U and V, and the cut's U and V in model space", fitMarks.map((mark) => [mark.cut, mark.uv.map((n) => Math.round(n * 1e6) / 1e6 + 0), mark.u, mark.v, mark.source]), [[0, [-12, 0], [0, 1, 0], [0, 0, 1], undefined], [0, [12, 0], [0, 1, 0], [0, 0, 1], undefined]]);
+const dragged = withJointPoints(withJointField(withJointsOn(plain, 0, true), 0, { count: 2 }), 0, [[-12, 0], [20.123456789, 3]]);
+eq("a drag writes every point, fixed, and drops the count", dragged.cuts[0]!.joints.spec, { type: "dowel", place: "fixed", at: [[-12, 0], [20.123456789, 3]] });
+eq("and reads back as the card's points", jointPoints(dragged, 0), [[-12, 0], [20.123456789, 3]]);
+eq("a cut placed by Fit has none", jointPoints(withJointsOn(plain, 0, true), 0), null);
+const draggedStored = flatRows(dragged)!;
+eq("the stored cut has both, as fixed millimetres with no fraction", draggedStored.op.cuts[0]!.connectors!.placed!.map((row) => [row.id, row.uvMm, row.fixed, row.fraction]), [["c1-1", [-12, 0], true, null], ["c1-2", [20.123456789, 3], true, null]]);
+eq("and the marks say which typed point each is", draggedStored.marks.map((mark) => mark.source), [0, 1]);
+const lapDragged = flatRows(withJointPoints(withJointsOn(lapCard, 0, true), 0, [[0, 5], [10, -5]]))!;
+eq("on a lap, the marks keep the typed order across the flats", lapDragged.marks.map((mark) => [mark.id, mark.source, mark.uv]), [["c1-1", 1, [10, -5]], ["c1-2", 0, [0, 5]]]);
+const reopenedPoints = cardFromOp(draggedStored.op, IDENTITY_POSE, wideCenter, null, "lime-220");
+eq("the pencil reads the points back, still by hand", jointPoints(reopenedPoints, 0), [[-12, 0], [20.123456789, 3]]);
+check("an untouched reopened cut placed by hand offers no Update", sameCard(reopenedPoints, cardFromOp(draggedStored.op, IDENTITY_POSE, wideCenter, null, "lime-220")));
+eq("Refit puts the cut back on Fit", withJointsRefit(dragged, 0).cuts[0]!.joints.spec, { type: "dowel" });
+check("a drag is a change, so an edit offers Update", !sameCard(withJointsOn(plain, 0, true), dragged));
 
 if (failed) {
   console.error(`${failed} failed`);

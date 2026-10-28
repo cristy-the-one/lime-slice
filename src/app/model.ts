@@ -174,7 +174,7 @@ import { endStressPick, mountStress, stressOpen, stressPickFace, stressPicking, 
 import { stressSliceRequest } from "./stress-slice.ts";
 import { beltLayerNormal, boxMap } from "../sim/study.ts";
 import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, setMeasuredFits, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
-import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
+import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintHistory, splitPrintOp, splitPrintStep, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
 import { bedFrame, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, partStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
@@ -394,6 +394,11 @@ export function bindModelView() {
       takeStressUndo();
       return;
     }
+    // --- Split to print: while the card is open, Undo steps its cuts, a drag at a time; the solid's history waits.
+    if (splitPrintHistory()) {
+      splitPrintStep("undo");
+      return;
+    }
     if (openModelTool() === "place") placeStep("undo");
     else if (openModelTool() === "workplane") workplaneStep("undo");
     else void step("undo");
@@ -405,6 +410,10 @@ export function bindModelView() {
     }
     if (stressOpen() && !openModelTool() && stressUndoState().redo) {
       takeStressRedo();
+      return;
+    }
+    if (splitPrintHistory()) {
+      splitPrintStep("redo");
       return;
     }
     if (openModelTool() === "place") placeStep("redo");
@@ -619,6 +628,7 @@ export function bindModelView() {
   });
   // --- Split to print: the Features menu's card.
   mountSplitPrint({
+    undoChanged: () => syncUndo(),
     solidBox: () => (viewed()?.editable && !lens ? openBox() : null),
     frame: splitPrintFrame,
     plan(base, cut) {
@@ -2125,7 +2135,11 @@ export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>;
  */
 export type HeldToSave = { object: string; node: NodeId; index?: number; pins?: true; mesh: PlateMesh };
 
-/** The held pieces of the cuts for an export target in the saved objects' trees, each with its solid, written here if Model has not. */
+/**
+ * The held pieces of the cuts for an export target in the saved objects' trees, each with its mesh. Their solids are not
+ * saved: a reopen draws, explodes and exports a mesh from the mesh, and cuts the solid again from its part when a call
+ * needs it (`rebuildPiece`), as after an engine restart. The solids were half a Form 4 project's size.
+ */
 async function heldToSave(objects: Iterable<string>): Promise<HeldToSave[]> {
   const out: HeldToSave[] = [];
   for (const id of [...objects]) {
@@ -2136,8 +2150,7 @@ async function heldToSave(objects: Iterable<string>): Promise<HeldToSave[]> {
       for (const [part, piece] of parts) {
         const mesh = piece && !state.plate.objects.some((obj) => obj.modelTree === piece) ? modelTrees.get(piece)?.nodes.get(ROOT)?.mesh : undefined;
         if (!piece || !mesh) continue;
-        const solid = mesh.step ?? (await writeStep(mesh.token, piece, ROOT));
-        out.push({ object: id, node: step.id, ...part, mesh: typeof solid === "string" ? mesh : { ...mesh, step: solid } });
+        out.push({ object: id, node: step.id, ...part, mesh });
       }
     }
   }
@@ -2162,10 +2175,9 @@ export function adoptHeldPieces(pieces: readonly HeldToSave[]) {
     const part = piece.pins ? { pins: true as const } : { index: piece.index };
     const root: ModelRoot = solid ? { kind: "step", name: stepFileName(piece.mesh.name), bytes: solid } : { kind: "piece", tree: owner, node: piece.node, ...part };
     modelTrees.set(key, withNode(newTree(key, root, piece.pins ? "Pins" : `Part ${piece.index}`, null), ROOT, { mesh: piece.mesh }));
-    if (solid) {
-      unopened.add(key);
-      stepKnown.add(piece.mesh.token);
-    }
+    // Either way the engine has not seen it yet: the first call that needs it opens it from its solid or cuts it again.
+    unopened.add(key);
+    if (solid) stepKnown.add(piece.mesh.token);
     modelTrees.set(owner, withNode(tree, piece.node, piece.pins ? { pins: key } : { pieces: cut.pieces.map((other, i) => (i === at ? key : other)) }));
   }
 }
@@ -5093,10 +5105,14 @@ function syncUndo() {
   // --- S2: Undo and Redo step the sketch while one is open. ---
   const sketchHist = sketchHistoryButtons();
   const stressHist = stressOpen() && !openModelTool() ? stressUndoState() : { undo: false, redo: false };
+  const cardHist = splitPrintHistory();
   if (undo) {
     if (sketchHist) {
       undo.disabled = !sketchHist.undo;
       undo.dataset.tip = "Undo the last sketch edit";
+    } else if (cardHist) {
+      undo.disabled = !cardHist.undo;
+      undo.dataset.tip = "Undo the last change to the cuts";
     } else if (stressHist.undo || stressHist.redo) {
       undo.disabled = !stressHist.undo;
       undo.dataset.tip = "Undo the last hold or load";
@@ -5109,6 +5125,9 @@ function syncUndo() {
     if (sketchHist) {
       redo.disabled = !sketchHist.redo;
       redo.dataset.tip = "Redo the last sketch edit";
+    } else if (cardHist) {
+      redo.disabled = !cardHist.redo;
+      redo.dataset.tip = "Redo the last change to the cuts";
     } else if (stressHist.undo || stressHist.redo) {
       redo.disabled = !stressHist.redo;
       redo.dataset.tip = "Redo the last hold or load";
@@ -5860,11 +5879,16 @@ async function rebuildPiece(parentKey: string, split: NodeId, pieceKey: string, 
   const [reserved, spare] = reserveId(parent);
   modelTrees.set(parentKey, reserved);
   const partition = splitNode.op.kind === "partition";
-  const keys = partition && !pins && index != null ? (splitNode.pieces ?? []).map((_, at) => (at === index - 2 ? pieceKey : null)) : null;
+  // A project's held pieces that no call has opened yet come back in the same cut: one cut, not one a piece.
+  const waiting = (key: string | null | undefined): key is string => !!key && unopened.has(key) && modelTrees.get(key)?.root.kind === "piece";
+  const keys = partition && !pins && index != null ? (splitNode.pieces ?? []).map((key, at) => (at === index - 2 ? pieceKey : waiting(key) ? key : null)) : partition && pins ? (splitNode.pieces ?? []).map((key) => (waiting(key) ? key : null)) : null;
+  const pinsKey = partition ? (pins ? pieceKey : waiting(splitNode.pins) ? splitNode.pins : null) : null;
   const other = keys || pins ? null : pieceKey;
-  const body = await treeCall(parentKey, splitNode.parent, applyRequest(parentKey, splitNode.parent, spare, splitNode.op, state.stepTolerance, other, keys ?? undefined, partition && pins ? pieceKey : null));
+  const body = await treeCall(parentKey, splitNode.parent, applyRequest(parentKey, splitNode.parent, spare, splitNode.op, state.stepTolerance, other, keys && keys.some((key) => key) ? keys : undefined, pinsKey ?? null));
   await dropInEngine(parentKey, spare);
-  return text(body.error) || null;
+  const problem = text(body.error) || null;
+  if (!problem) for (const key of [pieceKey, ...(keys ?? []), pinsKey]) if (key) unopened.delete(key);
+  return problem;
 }
 
 // --- Split to print (docs/plan-split-connectors.md, milestone 4): the card's frame, its check, its Apply, and the

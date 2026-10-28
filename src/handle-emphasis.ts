@@ -167,7 +167,7 @@ export function aspectFor(handle: DragHandle, ctx: AspectContext = {}): HandleAs
     const at = ctx.anchor ?? seatOf(handle);
     if (at) return done(axisGuide(at, handle.dir, ctx.extent ?? 20, tip), "world");
   }
-  if (handle.kind === "surface") {
+  if (handle.kind === "surface" || handle.kind === "plane") {
     const at = seatOf(handle);
     if (at) return done(crossAt(at, ctx.extent ?? 20, tip), "world");
   }

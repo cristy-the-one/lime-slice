@@ -64,10 +64,11 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
  * are a point that moves along `dir`, so a hole slides in its face plane.
  * `ring` turns one field in degrees about `dir`.
  * `surface` puts three fields (x, y, z) on the solid under the pointer.
+ * `plane` slides two fields across the plane square to `dir` through the seat, each along one of `axes`.
  */
 export interface DragHandle {
   id: string;
-  kind: "axis" | "ring" | "surface";
+  kind: "axis" | "ring" | "surface" | "plane";
   /** `arrow` moves a thing; `knob` resizes it. */
   look: "arrow" | "knob" | "ring" | "dot";
   fields: readonly string[];
@@ -93,6 +94,8 @@ export interface DragHandle {
   holeIndex?: number;
   /** --- Split to print. Which cut's plane this handle moves or turns, so only that plane lights. */
   cutIndex?: number;
+  /** A `plane` handle's two fields move along these unit directions, in the plane square to `dir`. */
+  axes?: [Vec3, Vec3];
 }
 
 /**
@@ -762,6 +765,11 @@ export function axisValues(
   return handle.dir.map((component, i) => Math.round(((start[i] ?? 0) + slide * component) * 1e4) / 1e4);
 }
 
+/** The field values after a `plane` handle slid `travel` (model millimetres along each of its axes): each snapped and rounded as `dragValue` does. */
+export function planeValues(handle: Pick<DragHandle, "step">, start: readonly number[], travel: readonly number[], snap: boolean, fine: boolean): number[] {
+  return start.map((value, i) => dragValue({ rate: 1, step: handle.step }, value, travel[i] ?? 0, snap, fine));
+}
+
 /** Degrees wrapped into (-180, 180]. */
 export function wrapDegrees(deg: number): number {
   let out = ((deg + 180) % 360 + 360) % 360 - 180;
@@ -777,7 +785,7 @@ export function fieldText(value: number): string {
 
 /** The short label that follows the pointer while a handle moves. */
 export function dragLabel(handle: Pick<DragHandle, "label" | "unit" | "shown">, values: readonly number[]): string {
-  if (values.length === 3) return `${handle.label} ${values.map((value) => fieldText(value)).join(", ")} mm`;
+  if (values.length === 3 || values.length === 2) return `${handle.label} ${values.map((value) => fieldText(value)).join(", ")} mm`;
   const value = fieldText((values[0] ?? 0) * (handle.shown ?? 1));
   if (handle.unit === "×") return `${handle.label} ${value}×`;
   if (handle.unit === "count") return `${handle.label} ${value}`;

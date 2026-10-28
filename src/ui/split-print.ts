@@ -13,6 +13,8 @@ import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
 import { couponGaps, couponLabel } from "../modeling/fit-coupon.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
+import { jointPoints, withJointPoints, withJointsRefit, type ConnectorMark } from "../split-print";
+import type { UV } from "../modeling/partition.ts";
 import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, withProfileField, withProfileKind, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointsOn, withJointType, withProfileSketch, withSelected, squareTo, type Card, type CardCut, type CardFrame, type CardJointType, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement, type ProfileKind } from "../split-print";
 import { closeModelCard, fieldNumber, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { chainFromSketch, chainSummary, readChain, sketchFromChain, type Chain } from "../modeling/sketch-profile.ts";
@@ -23,6 +25,8 @@ import { pushToast } from "./toasts";
 const CARD_ID = "split-print";
 
 export interface SplitPrintHost {
+  /** The card's own Undo and Redo changed: Model's buttons follow (`splitPrintHistory`). */
+  undoChanged(): void;
   /** The open solid's box in model space, or null when there is no solid to cut. */
   solidBox(): Box | null;
   /** The open object's local workplane, or null in model space: X, Y, and Z are then its U, V, and W. */
@@ -119,9 +123,19 @@ let printers: PrintOn[] = [];
 let done: SplitPrintDone | null = null;
 /** A handle is held down: the card follows it, and the kernel waits for the release. */
 let moving = false;
-/** A drag under way: the cut it moves, and the card before it, which Esc in the heads-up field puts back. */
-let dragging: { index: number; before: Card } | null = null;
+/**
+ * A drag under way: the cut it moves, and the card before it, which Esc in the heads-up field puts back; for a connector,
+ * the handle and every connector's point on the cut, which the drag rewrites one of.
+ */
+let dragging: { index: number; before: Card; handle?: string; points?: UV[] } | null = null;
 let hud: HudMount | null = null;
+/** What the heads-up field types into: the plane's number and tilts, the joint's depth, or connector `k`'s U and V. */
+let hudKind: "plane" | "depth" | `joint-${number}` = "plane";
+/** --- Drag handles. The card before each change, for Model's Undo while the card is open, and after it, for Redo. */
+let past: Card[] = [];
+let future: Card[] = [];
+/** The card as the last undo step left it: a change from it is the next step. */
+let settled: Card = emptyCard();
 /** The cut whose profile is being drawn in the sketcher, or null: the card steps aside until it is used or cancelled. */
 let sketching: number | null = null;
 const HOW_KEY = "lime-slice-how-split-print";
@@ -238,6 +252,11 @@ export function mountSplitPrint(next: SplitPrintHost) {
           <option value="positive">Positive</option><option value="negative">Negative</option>
         </select></label>
         <div class="sp-joint-notes"><p class="model-note" id="modelPartJointNotes" role="status" hidden></p><button class="btn" id="modelPartJointUse" type="button" hidden></button></div>
+        <div class="sp-points" id="modelPartJointPoints" hidden>
+          <p class="model-note">Placed by hand: drag a connector's dot, or type where it sits on the cut.</p>
+          <div class="model-fields" id="modelPartJointPointRows"></div>
+          <button class="btn" id="modelPartJointRefit" type="button" data-tip="Spread the connectors over the section again, as Fit places them">Refit</button>
+        </div>
       </div>
     </section>
     <h4 class="sp-pieces-head" id="modelPartPiecesHead">Pieces</h4>
@@ -259,9 +278,10 @@ export function mountSplitPrint(next: SplitPrintHost) {
   host.view()?.watchFocus(hud.element);
   hud.onCommit((commit) => {
     const at = dragging?.index ?? card.selected;
-    dragging = null;
     hud?.close();
     setFromHud(at, commit.values);
+    dragging = null;
+    remember();
     host?.check(op(), 0);
   });
   hud.onCancel(() => {
@@ -449,6 +469,10 @@ function begin(solid: Box, filled: Card, fitNotes: string[]) {
   check = null;
   dragging = null;
   hud?.close();
+  past = [];
+  future = [];
+  settled = card;
+  host?.undoChanged();
   root()?.toggleAttribute("hidden", false);
   openModelCard({ id: CARD_ID, title: SPLIT_PRINT_TITLE, ghost, handles, drag, closed });
   const head = document.querySelector<HTMLElement>("#modelEditHead");
@@ -529,6 +553,9 @@ function closed() {
   moving = false;
   dragging = null;
   hud?.close();
+  past = [];
+  future = [];
+  host?.undoChanged();
   root()?.toggleAttribute("hidden", true);
   const head = document.querySelector<HTMLElement>("#modelEditHead");
   if (head && edit) head.hidden = true;
@@ -639,6 +666,47 @@ function changed(wait: number | null) {
   if (wait != null && !(card.cuts.length > 0)) check = null;
   paintPieces();
   paintFoot();
+  remember();
+}
+
+/**
+ * A settled change is one undo step: a drag is one, from the press to the release and whatever the heads-up field typed
+ * after it, so nothing is remembered while a handle moves or the field is up.
+ */
+function remember() {
+  if (moving || hud?.shown || done || sameCard(settled, card)) {
+    if (!moving && !hud?.shown) settled = card;
+    return;
+  }
+  past.push(settled);
+  if (past.length > 100) past.shift();
+  future = [];
+  settled = card;
+  host?.undoChanged();
+}
+
+/** Model's Undo and Redo while the card is open: what each would do, or null when the card is not taking them. */
+export function splitPrintHistory(): { undo: boolean; redo: boolean } | null {
+  if (!splitPrintOpen() || done || sketching !== null) return null;
+  return { undo: past.length > 0, redo: future.length > 0 };
+}
+
+/** Undo or Redo one change to the card: a drag, a typed number, a menu. */
+export function splitPrintStep(way: "undo" | "redo") {
+  if (!splitPrintHistory()) return;
+  if (hud?.shown) {
+    dragging = null;
+    hud.close();
+  }
+  const [from, to] = way === "undo" ? [past, future] : [future, past];
+  const next = from.pop();
+  if (!next) return;
+  to.push(card);
+  card = next.selected < next.cuts.length ? next : withSelected(next, next.cuts.length - 1);
+  settled = card;
+  renderCuts();
+  changed(0);
+  host?.undoChanged();
 }
 
 // ---------------------------------------------------------------------------
@@ -934,6 +1002,42 @@ function paintJoints() {
       use.dataset.tip = `Set Count to the ${fit.placed} that fit`;
     }
   }
+  paintPoints(spec.type);
+}
+
+/** Placed by hand: each connector's U and V on the cut, typed or dragged, and Refit; hidden while Fit or a count places them. */
+function paintPoints(type: string) {
+  const points = jointPoints(card, card.selected);
+  const box = $<HTMLElement>("#modelPartJointPoints");
+  if (box) box.hidden = !points;
+  const count = $<HTMLInputElement>("#modelPartJointCount");
+  if (count) count.placeholder = points ? "By hand" : "Fit";
+  const rows = $<HTMLElement>("#modelPartJointPointRows");
+  if (!rows || !points) return;
+  const name = connectorName(card.selected);
+  if (rows.children.length !== points.length * 2) {
+    rows.replaceChildren(
+      ...points.flatMap((_, k) =>
+        (["u", "v"] as const).map((axis) => {
+          const label = document.createElement("label");
+          const text = Object.assign(document.createElement("span"), { className: "scrub-label", textContent: `${name} ${k + 1} ${axis.toUpperCase()}` });
+          text.dataset.scrub = "";
+          const input = Object.assign(document.createElement("input"), { id: pointField(k, axis), type: "number" });
+          input.step = "0.5";
+          input.setAttribute("aria-label", `${name} ${k + 1}, ${axis.toUpperCase()} on the cut, millimetres`);
+          label.append(text, input);
+          return label;
+        }),
+      ),
+    );
+  }
+  rows.dataset.type = type;
+  points.forEach((uv, k) =>
+    (["u", "v"] as const).forEach((axis, i) => {
+      const input = document.getElementById(pointField(k, axis));
+      if (input instanceof HTMLInputElement && document.activeElement !== input) input.value = mm(uv[i]!);
+    }),
+  );
 }
 
 /** Print a fit coupon…: the host adds it to the plate, or for an export target saves it; the card shows the sentence it answers. */
@@ -1052,7 +1156,9 @@ function axisColor(dir: Vec3): DragHandle["color"] {
 
 /**
  * Each cut's arrow on its plane, along its normal, moving that cut's number as Split's plane arrow moves its own; the
- * selected cut's two tilt rings on the dock. Ctrl snaps the number to whole millimetres and a tilt to 15°.
+ * selected cut's two tilt rings on the dock. Ctrl snaps the number to whole millimetres and a tilt to 15°. The selected
+ * cut's joint has a knob along its normal for its depth, and each of its connectors a dot that slides it across the cut,
+ * in the cut's U and V, onto whichever flat lies under it.
  */
 function handles(): DragHandle[] {
   if (!host || done || sketching !== null) return [];
@@ -1100,47 +1206,207 @@ function handles(): DragHandle[] {
         cutIndex: index,
       });
     });
+    const depth = jointDepth(index);
+    if (depth) {
+      out.push({
+        id: "joint-depth",
+        kind: "axis",
+        look: "knob",
+        fields: ["modelPartProfileDepth"],
+        seat: { at: "feature", origin: depth.at },
+        dir: depth.dir,
+        rate: 1,
+        step: 1,
+        min: 0,
+        color: axisColor(depth.dir),
+        label: `${depth.name} depth`,
+        unit: "mm",
+        values: [depth.value],
+        cutIndex: index,
+      });
+    }
+    const name = connectorName(index);
+    const length = Math.hypot(...plan.normal) || 1;
+    const across = plan.normal.map((n) => n / length) as Vec3;
+    for (const point of connectorPoints(index)) {
+      out.push({
+        id: `joint-${point.k + 1}`,
+        kind: "plane",
+        look: "dot",
+        fields: [pointField(point.k, "u"), pointField(point.k, "v")],
+        seat: { at: "feature", origin: point.at },
+        dir: across,
+        axes: [point.u, point.v],
+        rate: 1,
+        step: 1,
+        color: "accent",
+        label: `${name} ${point.k + 1}`,
+        unit: "mm",
+        values: [point.uv[0], point.uv[1]],
+        cutIndex: index,
+      });
+    }
   });
   return out;
+}
+
+/** The selected cut's joint depth as a knob: where its far side is, which way it grows, and its depth; null for a straight or sketched cut. */
+function jointDepth(index: number): { at: Vec3; dir: Vec3; value: number; name: string } | null {
+  const cut = card.cuts[index];
+  const plane = cardPlanes(card, center, frame)[index];
+  const d = host?.defaults(card.target);
+  if (!cut || !plane || !d) return null;
+  const typed = cut.profile as { kind: string; depth?: number; side?: string };
+  const fallback: Record<string, number> = { lap: d.lapDepthMm, zigzag: d.zigzagDepthMm, tongue: d.tongueDepthMm, dovetail: d.dovetailDepthMm };
+  if (!(typed.kind in fallback)) return null;
+  const value = typed.depth ?? fallback[typed.kind]!;
+  // A lap's second flat and a zig-zag's teeth stand on the side that carries them; a tongue or a dovetail on the positive
+  // piece reaches into the negative one.
+  const carried = typed.side === "negative" ? -1 : 1;
+  const sign = typed.kind === "tongue" || typed.kind === "dovetail" ? -carried : carried;
+  const length = Math.hypot(...plane.normal) || 1;
+  const dir = plane.normal.map((n) => (sign * n) / length) as Vec3;
+  const names: Record<string, string> = { lap: "Lap", zigzag: "Tooth", tongue: "Tongue", dovetail: "Dovetail" };
+  // On the section's top edge rather than its middle, where the plane's own arrow stands: up, in the cut's plane.
+  const w = dir.map((n) => n * sign) as Vec3;
+  const lift = (axis: Vec3) => {
+    const along = axis[0] * w[0] + axis[1] * w[1] + axis[2] * w[2];
+    return axis.map((a, i) => a - along * w[i]!) as Vec3;
+  };
+  let up = lift([0, 0, 1]);
+  if (Math.hypot(...up) < 0.1) up = lift([0, 1, 0]);
+  const upLength = Math.hypot(...up) || 1;
+  up = up.map((a) => a / upLength) as Vec3;
+  let top = 0;
+  for (let corner = 0; box && corner < 8; corner += 1) {
+    const p = [corner & 1 ? box.max[0] : box.min[0], corner & 2 ? box.max[1] : box.min[1], corner & 4 ? box.max[2] : box.min[2]];
+    top = Math.max(top, p.reduce((sum, value, i) => sum + (value - plane.origin[i]!) * up[i]!, 0));
+  }
+  return { at: plane.origin.map((o, i) => o + up[i]! * top + dir[i]! * value) as Vec3, dir, value, name: names[typed.kind]! };
+}
+
+/** The connector type's name on the selected cut, for a handle's label: "Dowel". */
+function connectorName(index: number): string {
+  const type = card.cuts[index]?.joints.spec.type ?? "dowel";
+  return { dowel: "Dowel", plug: "Plug", hardware: "Hole", key: "Key", dovetail: "Dovetail" }[type];
+}
+
+/** The field a connector's U or V is typed in, once it is placed by hand. */
+function pointField(k: number, axis: "u" | "v"): string {
+  return `modelPartJointAt-${k + 1}-${axis}`;
+}
+
+/**
+ * The connectors a drag can move on cut `index`: each point of the cut seen along W, in its U and V, with where its hole
+ * is drawn and the cut's U and V in model space. Placed by hand, they are the typed points; by Fit, the planner's, once
+ * the kernel has built them.
+ */
+function connectorPoints(index: number): { k: number; uv: UV; at: Vec3; u: Vec3; v: Vec3 }[] {
+  const cut = card.cuts[index];
+  const plane = cardPlanes(card, center, frame)[index];
+  if (!cut?.joints.on || !plane) return [];
+  const built = check && check.phase === "done" && check.ok ? check.placed : undefined;
+  const marks: ConnectorMark[] = (placement?.marks ?? []).filter((mark) => mark.cut === index);
+  const first = marks[0];
+  if (!first) return [];
+  const fixed = jointPoints(card, index);
+  if (fixed) {
+    return fixed.map((uv, k) => {
+      const mark = marks.find((one) => one.source === k);
+      const at = mark?.at ?? (plane.origin.map((o, i) => o + first.u[i]! * uv[0] + first.v[i]! * uv[1]) as Vec3);
+      return { k, uv, at, u: first.u, v: first.v };
+    });
+  }
+  return marks.filter((mark) => !built || built.includes(mark.id)).map((mark, k) => ({ k, uv: mark.uv, at: mark.at, u: mark.u, v: mark.v }));
 }
 
 /** A handle moved: its cut takes the number, the view follows, and the kernel waits for the release. */
 function drag(event: HandleDrag) {
   const index = event.handle.cutIndex ?? card.selected;
   if (!card.cuts[index]) return;
+  const id = event.handle.id;
+  // A new press is a new drag: the one before it, with what its heads-up field typed, settles as its own undo step.
+  if (!moving || !dragging || dragging.index !== index || dragging.handle !== id) {
+    if (hud?.shown) {
+      hud.close();
+      remember();
+    }
+    const points = /^joint-\d+$/.test(id) ? connectorPoints(index).map((point) => [...point.uv] as UV) : undefined;
+    dragging = { index, before: card, handle: id, ...(points ? { points } : {}) };
+  }
   moving = event.phase !== "end";
-  if (!dragging || dragging.index !== index || !hud?.shown) dragging = { index, before: card };
   if (index !== card.selected) card = withSelected(card, index);
   const value = event.values[0] ?? 0;
-  const patch: Partial<CardCut> = event.handle.id === "tilt-a" ? { tiltA: value } : event.handle.id === "tilt-b" ? { tiltB: value } : { value };
-  card = withCutChanged(card, index, patch);
-  writeFields(index);
-  showHud(index);
+  const joint = /^joint-(\d+)$/.exec(id);
+  if (joint && dragging.points) {
+    const k = Number(joint[1]) - 1;
+    const points = dragging.points.map((point) => [...point] as UV);
+    if (!points[k]) return;
+    points[k] = [event.values[0] ?? points[k]![0], event.values[1] ?? points[k]![1]];
+    dragging.points = points;
+    card = withJointPoints(card, index, points);
+    showHud(index, `joint-${k}`);
+  } else if (id === "joint-depth") {
+    card = withProfileField(card, index, { depth: value });
+    showHud(index, "depth");
+  } else {
+    const patch: Partial<CardCut> = id === "tilt-a" ? { tiltA: value } : id === "tilt-b" ? { tiltB: value } : { value };
+    card = withCutChanged(card, index, patch);
+    writeFields(index);
+    showHud(index, "plane");
+  }
   if (event.phase === "end") {
     changed(0);
     hud?.focus();
   } else changed(null);
 }
 
-/** The heads-up field beside the cut's plane: its number, then Tilt A and Tilt B, typed and Tabbed through. */
-function showHud(index: number) {
+/**
+ * The heads-up field: for the plane, beside its arrow, its number, then Tilt A and Tilt B, typed and Tabbed through; for
+ * the joint, its depth beside the knob; for a connector, its U and V beside it.
+ */
+function showHud(index: number, kind: typeof hudKind) {
   const cut = card.cuts[index];
   const view = host?.view();
   const plane = cardPlanes(card, center, frame)[index];
   if (!hud || !cut || !view || !plane) return;
-  // Past the arrow's head along its line on screen, so the box covers neither the arrow nor the plane's dimension.
-  const page = view.projectPoint(plane.origin);
-  const ahead = view.projectPoint([plane.origin[0] + plane.normal[0], plane.origin[1] + plane.normal[1], plane.origin[2] + plane.normal[2]]);
+  let origin: Vec3 = plane.origin;
+  let toward: Vec3 = plane.normal;
+  let fields: { id: string; label: string; unit: string; value: number; places?: number }[];
+  if (kind === "depth") {
+    const depth = jointDepth(index);
+    if (!depth) return;
+    origin = depth.at;
+    toward = depth.dir;
+    fields = [{ id: "modelPartProfileDepth", label: `${depth.name} depth, along the cut`, unit: "mm", value: depth.value, places: 2 }];
+  } else if (kind.startsWith("joint-")) {
+    const k = Number(kind.slice("joint-".length));
+    const point = connectorPoints(index).find((one) => one.k === k);
+    if (!point) return;
+    origin = point.at;
+    toward = point.u;
+    const name = `${connectorName(index)} ${k + 1}`;
+    fields = [
+      { id: pointField(k, "u"), label: `${name}, U on the cut`, unit: "mm", value: point.uv[0], places: 2 },
+      { id: pointField(k, "v"), label: `${name}, V on the cut`, unit: "mm", value: point.uv[1], places: 2 },
+    ];
+  } else {
+    fields = [
+      { id: atField(index), label: `Cut ${index + 1}, ${cutFieldName(cut, frame)}`, unit: "mm", value: cut.value, places: 2 },
+      { id: "modelPartTiltA", label: "Tilt A", unit: "°", value: cut.tiltA },
+      { id: "modelPartTiltB", label: "Tilt B", unit: "°", value: cut.tiltB },
+    ];
+  }
+  // Past the handle along its line on screen, so the box covers neither the handle nor its dimension.
+  const page = view.projectPoint(origin);
+  const ahead = view.projectPoint([origin[0] + toward[0], origin[1] + toward[1], origin[2] + toward[2]]);
   const rect = (document.querySelector<HTMLElement>("#modelBody") ?? document.body).getBoundingClientRect();
   const along = page && ahead ? { x: ahead.x - page.x, y: ahead.y - page.y } : { x: 0, y: 1 };
   const length = Math.hypot(along.x, along.y) || 1;
   const direction = length > 1e-3 ? { x: along.x / length, y: along.y / length } : { x: 0, y: 1 };
   const at = page ? { x: page.x - rect.left + direction.x * HUD_REACH_PX, y: page.y - rect.top + direction.y * HUD_REACH_PX } : { x: rect.width / 2, y: rect.height / 2 };
-  const fields = [
-    { id: atField(index), label: `Cut ${index + 1}, ${cutFieldName(cut, frame)}`, unit: "mm", value: cut.value, places: 2 },
-    { id: "modelPartTiltA", label: "Tilt A", unit: "°", value: cut.tiltA },
-    { id: "modelPartTiltB", label: "Tilt B", unit: "°", value: cut.tiltB },
-  ];
+  if (hud.shown && hudKind !== kind) hud.close();
+  hudKind = kind;
   if (!hud.shown) hud.open(fields, at, host?.parameters());
   else hud.setValues(fields.map((field) => field.value));
   hud.move(at, direction);
@@ -1148,8 +1414,19 @@ function showHud(index: number) {
 
 function setFromHud(index: number, values: readonly number[]) {
   if (!card.cuts[index]) return;
-  card = withCutChanged(card, index, { value: values[0] ?? card.cuts[index]!.value, tiltA: values[1] ?? 0, tiltB: values[2] ?? 0 });
-  writeFields(index);
+  if (hudKind === "depth") {
+    if (values[0] !== undefined && values[0] >= 0) card = withProfileField(card, index, { depth: values[0] });
+  } else if (hudKind.startsWith("joint-")) {
+    const k = Number(hudKind.slice("joint-".length));
+    const points = (dragging?.points ?? connectorPoints(index).map((point) => [...point.uv] as UV)).map((point) => [...point] as UV);
+    if (!points[k]) return;
+    points[k] = [values[0] ?? points[k]![0], values[1] ?? points[k]![1]];
+    if (dragging) dragging.points = points;
+    card = withJointPoints(card, index, points);
+  } else {
+    card = withCutChanged(card, index, { value: values[0] ?? card.cuts[index]!.value, tiltA: values[1] ?? 0, tiltB: values[2] ?? 0 });
+    writeFields(index);
+  }
   changed(null);
 }
 
@@ -1231,6 +1508,11 @@ function onClick(ev: Event) {
     void printCoupon(card.cuts[card.selected]!.joints.spec);
     return;
   }
+  if (target.closest("#modelPartJointRefit") && card.cuts[card.selected]) {
+    card = withJointsRefit(card, card.selected);
+    changed(0);
+    return;
+  }
   const use = target.closest<HTMLElement>("#modelPartJointUse");
   if (use && card.cuts[card.selected]) {
     card = withJointCount(card, card.selected, Number(use.dataset.count));
@@ -1291,9 +1573,21 @@ function readField(ev: Event): boolean {
   }
   if (input.id === "modelPartJointCount") {
     const text = input.value.trim().toLowerCase();
-    if (text === "" || text === "fit") card = withJointField(card, card.selected, { count: undefined });
-    else if (/^\d+$/.test(text)) card = withJointField(card, card.selected, { count: Number(text) });
+    // A count is the planner's to place: typed, it refits a cut placed by hand.
+    if (text === "fit") card = withJointsRefit(withJointField(card, card.selected, { count: undefined }), card.selected);
+    else if (text === "") card = withJointField(card, card.selected, { count: undefined });
+    else if (/^\d+$/.test(text)) card = withJointField(withJointsRefit(card, card.selected), card.selected, { count: Number(text) });
     else return false;
+    return true;
+  }
+  const point = /^modelPartJointAt-(\d+)-([uv])$/.exec(input.id);
+  if (point) {
+    const typed = fieldNumber(input.id);
+    const points = jointPoints(card, card.selected);
+    const k = Number(point[1]) - 1;
+    if (!points?.[k] || input.value.trim() === "" || !Number.isFinite(typed)) return false;
+    points[k]![point[2] === "u" ? 0 : 1] = typed;
+    card = withJointPoints(card, card.selected, points);
     return true;
   }
   const profileField = PROFILE_FIELDS[input.id];
@@ -1443,10 +1737,11 @@ function onChange(ev: Event) {
 
 /** A cut's own field takes the keyboard: that cut is the selected one. */
 function onFocus(ev: Event) {
-  // Back on the card, the heads-up field has done its job.
+  // Back on the card, the heads-up field has done its job, and the drag it followed is one undo step.
   if (hud?.shown) {
     dragging = null;
     hud.close();
+    remember();
   }
   const input = ev.target instanceof HTMLInputElement ? ev.target : null;
   const at = input ? fieldIndex(input.id) : null;

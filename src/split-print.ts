@@ -25,6 +25,7 @@ export const SPLIT_PRINT_STEPS: readonly string[] = [
   "Fit the bed proposes the cuts a part too large for the printer needs. Add cut puts one in the middle of the largest piece.",
   "Drag a plane's arrow, or type its At X, Y, or Z. Ctrl snaps to whole millimetres; while dragging, type a number and Tab to the tilts.",
   "Tilt A and Tilt B turn the selected cut. Face aims it at a picked flat face, an offset into the part.",
+  "A shaped cut's knob drags its depth. A connector's dot slides it across the cut; Refit spreads them again. Undo takes back one drag.",
   "Apply cuts the part. Each piece becomes an object on the plate; Lay out on the bed places the new ones around the others.",
 ];
 
@@ -221,6 +222,25 @@ export function withJointField(card: Card, index: number, patch: Partial<Record<
   return withCutChanged(card, index, { joints: { on: true, spec: spec as unknown as ConnectorSpec } });
 }
 
+/**
+ * --- Drag handles. The cut's connectors at fixed points (D5): each a point of the cut seen along W, in its U and V from its
+ * origin, as a drag or the typed U and V leave them. The count no longer applies, since the points are the connectors.
+ */
+export function withJointPoints(card: Card, index: number, at: readonly UV[]): Card {
+  return withJointField(card, index, { place: "fixed", at: at.map((point) => [tidy(point[0]), tidy(point[1])] as UV), count: undefined });
+}
+
+/** **Refit**: the cut's connectors back on Fit, the dragged points dropped. */
+export function withJointsRefit(card: Card, index: number): Card {
+  return withJointField(card, index, { place: undefined, at: undefined });
+}
+
+/** The cut's fixed points, or null while its connectors are placed by Fit or a count. */
+export function jointPoints(card: Card, index: number): UV[] | null {
+  const spec = card.cuts[index]?.joints.spec as { place?: string; at?: UV[] } | undefined;
+  return spec?.place === "fixed" && Array.isArray(spec.at) ? spec.at.map((point) => [point[0], point[1]] as UV) : null;
+}
+
 /** **Use N**: the count that fits, written back as the cut's typed count. */
 export function withJointCount(card: Card, index: number, count: number): Card {
   return withJointField(card, index, { count: Math.max(0, Math.round(count)) });
@@ -362,8 +382,11 @@ export function withProfileField(card: Card, index: number, patch: Partial<Recor
 function jointsOf(connectors: PartitionModelOp["cuts"][number]["connectors"]): CardJoints {
   const first = connectors?.types?.[0];
   if (!first) return { ...plainJoints(), on: connectors?.on === true };
-  const { at: _at, place: _place, ...typed } = first as ConnectorSpec & { at?: unknown; place?: unknown };
-  return { on: connectors?.on === true, spec: typed as ConnectorSpec };
+  const { at, place, ...typed } = first as ConnectorSpec & { at?: UV[]; place?: string };
+  // A dragged cut keeps its points (D5); a Fit cut's stored `at` is empty and its place is the default.
+  const fixed = place === "fixed" && Array.isArray(at) && at.length > 0 ? { place: "fixed", at: at.map((point) => [point[0], point[1]] as UV) } : {};
+  if (fixed.place) delete (typed as { count?: unknown }).count;
+  return { on: connectors?.on === true, spec: { ...typed, ...fixed } as ConnectorSpec };
 }
 
 /** Whether two cards describe the same cuts, layout, target and numbers, so an untouched edit offers no Update. */
@@ -444,6 +467,14 @@ export interface ConnectorMark {
   normal: Vec3;
   radius: number;
   depth: number;
+  /** --- Drag handles. The cut it is on, from 0, and its centre seen along the cut's W: the point a fixed `at` names. */
+  cut: number;
+  uv: UV;
+  /** The cut's U and V in model space, which a drag moves the centre along. */
+  u: Vec3;
+  v: Vec3;
+  /** For a fixed placement, which point of the typed `at` this is. */
+  source?: number;
 }
 
 /** What the planner said of the connectors: its sentences, each typed count that does not fit (Use N), and the marks. */
@@ -594,15 +625,22 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
     const w = cut.normal;
     const u = cut.u!;
     const v: Vec3 = [w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0]];
+    const fixedOne = resolved.types.length === 1 && resolved.types[0]!.place === "fixed";
     for (const row of placed.placed) {
       const spec = resolved.types.find((one) => one.type === row.type)!;
       const point: Vec3 = [0, 1, 2].map((i) => cut.origin[i]! + u[i]! * row.uvMm[0] + v[i]! * row.uvMm[1]) as Vec3;
-      placement.marks.push({ id: row.id, at: applyPose(pose, point), normal: turnDir(pose, w), ...holeOf(spec) });
+      const source = fixedOne ? idNumber(row.id) - 1 : undefined;
+      placement.marks.push({ id: row.id, at: applyPose(pose, point), normal: turnDir(pose, w), ...holeOf(spec), cut: at, uv: [...row.uvMm], u: turnDir(pose, u), v: turnDir(pose, v), ...(source !== undefined ? { source } : {}) });
     }
     return { ...cut, connectors: { ...cut.connectors, placed: placed.placed.map((row) => ({ ...row })) } };
   });
   if (roomless) return { reason: roomless };
   return { op: { ...own, cuts, up: solid?.up ?? [0, 0, 1] }, ...placement };
+}
+
+/** The number at the end of a connector's id: 3 for `c1-3`. */
+function idNumber(id: string): number {
+  return Number(id.slice(id.lastIndexOf("-") + 1));
 }
 
 /**
@@ -638,6 +676,8 @@ function placeOnFlats(
     const clipped = loops ? clipSection(loops, flat) : null;
     if (!clipped) continue;
     // A fixed point, in the cut's U and V, lies under this flat when its U falls inside the flat's span along W.
+    // Which typed point each of this flat's fixed points is, when the cut has one fixed type, as the card writes it.
+    const sources: number[] = [];
     const types = resolved.map((spec) => {
       if (spec.place !== "fixed") return spec;
       const mine: UV[] = [];
@@ -648,9 +688,12 @@ function placeOnFlats(
         if (claimed.has(key) || !inside) return;
         claimed.add(key);
         mine.push([(point[0] - flat.u) / c, point[1]]);
+        sources.push(index);
       });
       return { ...spec, at: mine };
     });
+    const fixedOne = resolved.length === 1 && resolved[0]!.place === "fixed";
+    const first = used;
     const placed = placeCut(at + 1, clipped, types, floor, used);
     used += placed.placed.length + placed.dropped.length;
     placement.notes.push(...placed.notes.filter((note) => !note.endsWith("It is a plain cut.")));
@@ -659,7 +702,8 @@ function placeOnFlats(
     for (const row of placed.placed) {
       const spec = resolved.find((one) => one.type === row.type)!;
       const point: Vec3 = [0, 1, 2].map((i) => origin[i]! + along[i]! * row.uvMm[0] + v[i]! * row.uvMm[1]) as Vec3;
-      placement.marks.push({ id: row.id, at: applyPose(pose, point), normal: turnDir(pose, normal), ...holeOf(spec) });
+      const source = fixedOne ? sources[idNumber(row.id) - 1 - first] : undefined;
+      placement.marks.push({ id: row.id, at: applyPose(pose, point), normal: turnDir(pose, normal), ...holeOf(spec), cut: at, uv: [flat.u + row.uvMm[0] * c, row.uvMm[1]], u: turnDir(pose, u), v: turnDir(pose, v), ...(source !== undefined ? { source } : {}) });
       rows.push({ ...row, fraction: null, flat: { u: flat.u, w: flat.w, tilt: flat.tilt } });
     }
   }
