@@ -271,6 +271,19 @@ M2 is data only, so M3, which is the first use of that data, landed in the same 
   - `src/interference.test.ts`: gains the threshold and the peg in a square hole (narrower, wider and flush, exact).
   - `e2e/assembly-exact.spec.ts`: new, in `test:smoke`, with a mocked engine. Measure gives "14.2 mm³", asks for a `common` join with `keepTool`, and applies nothing. After a 0.1 mm move, a 0.004 mm³ answer clears the row and the tint.
 
+### As built: M8
+
+- **Split to print (D7).** At Apply, the part and its pieces and pins on the plate form one assembly, with the part as its root and each member where it was cut. The assembly is named after the part. In the app, the card has a **Group the parts** checkbox, on by default. Like "Lay out on the bed", it is hidden for an export target, whose pieces never reach the plate. Unchecked, nothing is grouped. The checkbox is not part of the stored op, so the kernel and the op schema do not change. An edit that rebuilds the cut seats any new piece in the same assembly; a piece that stays keeps its row. The pieces get `frame: "part"` (D2). In the MCP, `model_apply` and `model_edit` of a `partition` always group, and the reply names the `assembly`. The MCP has no opt-out and no ungroup call yet.
+- **A multi-solid STEP.** "Open as N pieces" and Separate on a STEP file (the app's `separateSolids`, and the MCP's `mesh_import {pieces: true}` and `object_split_shells` on a STEP) make the solids one assembly. The first solid is the root, each solid sits where the file put it, and the assembly is named after the file. The STEP product name is not read: the kernel's `stepSolids` call does not return it.
+- **Explode.** When the cut part is in an assembly, Explode spreads only the pieces that are still its members; a piece taken out of the assembly stays put. A part in no assembly, such as one from a project saved before assemblies or one cut with Group the parts off, explodes every piece as before.
+- **Not in M8.** Separate shells of a mesh (D8) still makes no assembly; an opt-in can follow. The object list shows the assembly's header above its members, so specs that count `#objectList .obj` still count objects: the header is `.obj-group`, not `.obj`.
+- **Tests.**
+  - `mcp/partition.test.ts`: the apply reply's `assembly`, every piece in it on `plate_list`, and the pieces' model poses.
+  - `mcp/step-solids.test.ts`: three solids in one assembly named "trio".
+  - `e2e/model-split-print.spec.ts`: one group of 3 parts after Apply. A new test covers Group the parts off (no group) and a file without the `assemblies` key, which reopens ungrouped.
+  - `e2e/step-solids.spec.ts`: "Open as 3 pieces" makes the group "cover" with 3 parts.
+  - The new and changed tests pass three times with `--repeat-each=3`. `model-explode`, `model-split-fits`, `split-shells`, `model-partition`, `assembly`, `assembly-exact`, `prepare-plate-context` and `plate` pass unchanged.
+
 ## 9. Open decisions
 
 | # | Question | Recommendation |

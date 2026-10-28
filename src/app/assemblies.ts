@@ -61,6 +61,25 @@ export function attachTo(child: string, parent: string): string | null {
   return null;
 }
 
+/**
+ * --- Assemblies M8 (D7). Parts that already sit assembled (a split to print's pieces, a STEP file's solids) become one
+ * assembly with `root` as its root, each where it stands: in `root`'s assembly if it has one, else a new one named
+ * `name`. A member's typed Model numbers are read in its own frame (D2). Call it inside the edit that made the parts.
+ */
+export function groupAsBuilt(root: string, ids: readonly string[], name: string) {
+  let next = liveAssemblies();
+  const joined = new Set<string>();
+  for (const id of ids) {
+    if (id === root) continue;
+    const made = attached(next, id, root, poseOf, name);
+    if ("reason" in made) continue;
+    next = made;
+    joined.add(id);
+  }
+  session.assemblies = next;
+  if (joined.size > 0) state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (joined.has(obj.id) ? { ...obj, frame: "part" as const } : obj)) };
+}
+
 /** The assembly is gone; its parts keep the poses they have. */
 export function ungroup(id: string) {
   session.assemblies = liveAssemblies().filter((row) => row.id !== id);

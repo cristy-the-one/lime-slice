@@ -799,7 +799,7 @@ function objectListHtml(): string {
     const members = group.members.flatMap((member) => rows.filter((other) => other.obj.id === member.object));
     for (const member of members) shown.add(member.obj.id);
     return `
-      <div class="obj obj-group" role="listitem" data-assembly-head="${escapeHtml(group.id)}">
+      <div class="obj-group" role="listitem" data-assembly-head="${escapeHtml(group.id)}">
         <div class="obj-group-name"><b>${escapeHtml(group.name)}</b><span>${members.length} parts</span></div>
         <button class="btn obj-ungroup" type="button" data-assembly-ungroup="${escapeHtml(group.id)}" aria-label="Ungroup ${escapeHtml(group.name)}" data-tip="Ungroup: every part keeps where it is.">Ungroup</button>
       </div>${members.map(row).join("")}`;
