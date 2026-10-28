@@ -83,6 +83,10 @@ for (const [name, primitive, want] of ghosts) {
 }
 eq("a wedge's top runs from X 0 to its top length", Math.max(...[...primitiveMesh(spec("wedge", { size: [20, 10, 8], topX: 5 }))].filter((_, i, all) => i % 3 === 0 && all[i + 2] === 8)), 5);
 eq("a box ghost is closed: its soup holds the box's volume", Math.round(volume(primitiveMesh(spec("box", { size: [10, 20, 30] })))), 6000);
+const roundedBox = primitiveMesh(spec("box", { size: [20, 12, 5], cornerRadius: 3 }));
+eq("a rounded box ghost keeps its box", box(roundedBox), [[0, 0, 0], [20, 12, 5]]);
+eq("a rounded box ghost is the box less the corners, 32-sided: 1160 mm3, not 1200", Math.round(volume(roundedBox)), 1160);
+eq("a corner radius past half the short side is held to it", box(primitiveMesh(spec("box", { size: [20, 12, 5], cornerRadius: 50 }))), [[0, 0, 0], [20, 12, 5]]);
 eq("a ramp's soup holds a half box", Math.round(volume(primitiveMesh(spec("wedge", { size: [20, 10, 8], topX: 0 })))), 800);
 eq("a tube's soup holds its wall, a 32-sided one", Math.round(volume(primitiveMesh(spec("tube", { radius: 10, innerRadius: 6, height: 5 })))), 999);
 for (const [name, bad] of [
