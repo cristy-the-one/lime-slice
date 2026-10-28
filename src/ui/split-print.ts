@@ -8,14 +8,12 @@ import type { DragHandle } from "../model-drag";
 import { mountHud, type HudMount } from "../interact/hud.ts";
 import type { Params } from "../modeling/expr.ts";
 import { formatMm, type FacePlane, type SplitBase, type SplitPlan } from "../model-plane";
-import { CLEARANCE_TABLE, FIT_NAMES, FIT_ROWS, clearanceKey, clearanceSentence, fillConnector, fitResultsRefusal, holeCompensationNote, mm, profileRefusals, type Box, type Clearance, type ClearanceKey, type ConnectorSpec, type FitResults, type MeasuredFits, type PartitionDefaults, type PartitionOp, type Target, defaultU, type SketchProfile } from "../modeling/partition.ts";
+import { CLEARANCE_TABLE, FIT_NAMES, FIT_ROWS, clearanceKey, clearanceSentence, fillConnector, fitResultsRefusal, holeCompensationNote, mm, profileRefusals, type Box, type Clearance, type ClearanceKey, type ConnectorSpec, type FitResults, type MeasuredFits, type PartitionDefaults, type PartitionOp, type Target, type UV, defaultU, type SketchProfile } from "../modeling/partition.ts";
 import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
 import { couponGaps, couponLabel } from "../modeling/fit-coupon.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
-import { jointPoints, withJointPoints, withJointsRefit, type ConnectorMark } from "../split-print";
-import type { UV } from "../modeling/partition.ts";
-import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, withProfileField, withProfileKind, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointsOn, withJointType, withProfileSketch, withSelected, squareTo, type Card, type CardCut, type CardFrame, type CardJointType, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement, type ProfileKind } from "../split-print";
+import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, withProfileField, withProfileKind, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, jointPoints, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointPoints, withJointsOn, withJointsRefit, withJointType, withProfileSketch, withSelected, squareTo, type Card, type CardCut, type CardFrame, type CardJointType, type ConnectorMark, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement, type ProfileKind } from "../split-print";
 import { closeModelCard, fieldNumber, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { chainFromSketch, chainSummary, readChain, sketchFromChain, type Chain } from "../modeling/sketch-profile.ts";
 import { emptySketch, type SketchData } from "../sketch/model.ts";
@@ -694,9 +692,11 @@ export function splitPrintHistory(): { undo: boolean; redo: boolean } | null {
 /** Undo or Redo one change to the card: a drag, a typed number, a menu. */
 export function splitPrintStep(way: "undo" | "redo") {
   if (!splitPrintHistory()) return;
+  // A drag whose heads-up field is still up is the step Undo takes back.
   if (hud?.shown) {
     dragging = null;
     hud.close();
+    remember();
   }
   const [from, to] = way === "undo" ? [past, future] : [future, past];
   const next = from.pop();
@@ -1015,7 +1015,8 @@ function paintPoints(type: string) {
   const rows = $<HTMLElement>("#modelPartJointPointRows");
   if (!rows || !points) return;
   const name = connectorName(card.selected);
-  if (rows.children.length !== points.length * 2) {
+  // Built again when the count or the type changes: each label names the type.
+  if (rows.children.length !== points.length * 2 || rows.dataset.type !== type) {
     rows.replaceChildren(
       ...points.flatMap((_, k) =>
         (["u", "v"] as const).map((axis) => {

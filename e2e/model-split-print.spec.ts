@@ -1522,7 +1522,7 @@ test("a tongue takes dowels on the flats beside it, and with no room the cut say
   await expect(apply(page)).toBeEnabled();
   if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
   await zoomOn(page, "joint-2");
-  await page.mouse.move(5, 500);
+  await page.mouse.move(1300, 880);
   await page.waitForTimeout(400);
   await shot(page, "tongue-dowels");
 });
