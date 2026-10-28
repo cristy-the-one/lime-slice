@@ -1,6 +1,6 @@
 import { assemblyView, nudgeAssembled } from "./assemblies.ts";
 import { fx } from "./fx";
-import { geomWorker, state, session, type PreviewLayer, type SliceResponse } from "./state";
+import { geomWorker, worker, state, session, type PreviewLayer, type SliceResponse } from "./state";
 import { createPrepareView } from "../prepare-view";
 import { createModelView, type ModelView } from "../model-view";
 import { bindModelView, leaveModel, showModel } from "./model";
@@ -14,7 +14,7 @@ import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
-import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch, stale, previewFeatureRows } from "./settings";
+import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch, stale, previewFeatureRows, earlyOnScreen } from "./settings";
 import { cycleLayerAction, layerMarkerText } from "../layer-actions";
 import { beginEdit, beginModelVisit, cancelEdit, flushEdit, holdEdit, modelVisitChanged, noteEdit } from "./history";
 import { paintGrabHint } from "./grab-hint";
@@ -716,7 +716,8 @@ export function stepGizmo(axis: "x" | "y" | "z", sign: number) {
 }
 
 export function syncPreviewPending() {
-  document.querySelector("#pane3d")?.classList.toggle("is-pending", viewportPending(state.busy, !!state.result));
+  // An early preview is the new slice's own toolpaths, so it is drawn sharp.
+  document.querySelector("#pane3d")?.classList.toggle("is-pending", viewportPending(state.busy && !earlyOnScreen(), !!state.result));
 }
 
 /** The Prepare cut and its boxes: all of the plate, so a move or turn of any object may resize them. */
@@ -1242,6 +1243,61 @@ export function dropShownPreview() {
   fx.view3d?.setSection(null);
 }
 
+/** `geom` placed the way `result`'s preview is. */
+function placedBuffers(geom: PreviewGeometry, result: SliceResponse) {
+  const mesh = result.mesh;
+  return {
+    ...geom,
+    span: Math.max(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2], 1),
+    midZ: (mesh.min[2] + mesh.max[2]) / 2,
+    centerX: (mesh.min[0] + mesh.max[0]) / 2,
+    centerY: (mesh.min[1] + mesh.max[1]) / 2,
+    frame: session.resultFrame,
+  };
+}
+
+/** The buffers `applyGeom` last showed, so an early preview can be taken down again. */
+let onScreen: PreviewGeometry | null = null;
+
+/** Early previews asked for, by slice job. */
+const earlyAsked = new Set<number>();
+
+/**
+ * Draw slice `id`'s toolpaths before its tour finishes, in place of the shown preview. `read` fetches the
+ * engine's early preview. Only while that slice still runs and a result is on screen to place it by.
+ */
+export async function showEarly(id: number, read: () => Promise<string | null>) {
+  if (earlyAsked.has(id)) return;
+  earlyAsked.add(id);
+  const result = state.result;
+  if (!result || id !== session.job) return;
+  let text: string | null = null;
+  try {
+    text = await read();
+  } catch {
+    return;
+  }
+  if (!text || id !== session.job || !state.busy || state.result !== result) return;
+  worker.postMessage({ id: -id, early: text, min: result.mesh.min, max: result.mesh.max, objects: result.objects?.length ?? 1 });
+}
+
+function drawEarly(id: number, geom: PreviewGeometry) {
+  const result = state.result;
+  if (!result || id !== session.job || !state.busy) return;
+  fx.view3d.setBuffers(placedBuffers(geom, result));
+  fx.view3d.setRange(state.rangeLow, state.layer);
+  session.earlyShown = id;
+  renderChrome();
+}
+
+/** Put the shown result's preview back after an early one whose slice never landed. */
+export function dropEarly(id: number) {
+  if (session.earlyShown !== id) return;
+  session.earlyShown = 0;
+  earlyAsked.delete(id);
+  if (onScreen && state.result) fx.view3d.setBuffers(placedBuffers(onScreen, state.result));
+}
+
 /** Shows the worker's buffers once they and the result they belong to have both arrived. */
 export function applyGeom() {
   const result = state.result;
@@ -1250,15 +1306,8 @@ export function applyGeom() {
     return;
   }
   if (session.geomReady?.id !== session.resultJob) return;
-  const mesh = result.mesh;
-  fx.view3d.setBuffers({
-    ...session.geomReady.geom,
-    span: Math.max(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2], 1),
-    midZ: (mesh.min[2] + mesh.max[2]) / 2,
-    centerX: (mesh.min[0] + mesh.max[0]) / 2,
-    centerY: (mesh.min[1] + mesh.max[1]) / 2,
-    frame: session.resultFrame,
-  });
+  fx.view3d.setBuffers(placedBuffers(session.geomReady.geom, result));
+  onScreen = session.geomReady.geom;
   shownPreview = result.previewToken ? { token: result.previewToken, layers: result.layers, geom: session.geomReady.geom } : null;
   document.querySelector<HTMLCanvasElement>("#view3d")?.setAttribute("data-preview-token", shownPreview?.token ?? "");
   session.geomReady = null;
@@ -1418,6 +1467,10 @@ export function mountViews() {
   document.querySelector("#flatZoomIn")?.addEventListener("click", () => zoomFlatStep(1.25));
   document.querySelector("#flatZoomOut")?.addEventListener("click", () => zoomFlatStep(1 / 1.25));
   geomWorker.onmessage = (ev) => {
+    if (ev.data.id < 0) {
+      drawEarly(-ev.data.id, ev.data.geom);
+      return;
+    }
     const pending = patching.get(ev.data.id);
     patching.delete(ev.data.id);
     const fresh: PreviewGeometry = ev.data.geom;

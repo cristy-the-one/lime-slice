@@ -283,6 +283,14 @@ pub fn slice_payload_watched(
         .and_then(|o| o.remove("reslice"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let early = value
+        .as_object_mut()
+        .and_then(|o| o.remove("earlyPreview"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if early {
+        watch.ask_early();
+    }
     let meshes = meshes::intern(&mut value)?;
     let keys = cache.and_then(|_| request_keys(&mut value));
     let cache = cache.zip(keys.as_ref());
@@ -299,7 +307,9 @@ pub fn slice_payload_watched(
                 let _planning = planning();
                 slice_request_watched(&req, job, watch)?
             };
+            let value_sample = crate::inner_prof::Sample::start();
             let mut reply = serde_json::to_value(&response).map_err(|e| e.to_string())?;
+            value_sample.reply(0);
             reply["slicedAtMs"] = json!(now_ms());
             let reply = Arc::new(reply);
             if let Some((cache, keys)) = cache.filter(|_| !moved) {
@@ -322,6 +332,7 @@ pub fn slice_payload_watched(
             GcodeText::ready(gcode.to_owned())
         }))
     });
+    let text_sample = crate::inner_prof::Sample::start();
     let wire = serde_json::to_string(&Wire {
         reply: obj,
         from_cache,
@@ -329,6 +340,7 @@ pub fn slice_payload_watched(
         meshes: &meshes,
     })
     .map_err(|e| e.to_string())?;
+    text_sample.reply(wire.len() as u64);
     if let Some((cache, _)) = cache.filter(|_| from_cache) {
         cache.warm_later(req, job);
     }

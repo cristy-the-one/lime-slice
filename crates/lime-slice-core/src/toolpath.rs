@@ -3481,6 +3481,7 @@ fn order_part(
 /// runs of one travel group, with everything the tour needs that does not
 /// depend on where it starts. Every layer can be laid out at once; only the
 /// tour itself has to wait for the layer below.
+#[derive(Clone)]
 pub struct PartLayout {
     blocks: Vec<Vec<Run>>,
     /// The gap between each pair of islands, `blocks.len()` squared, or
@@ -3863,6 +3864,7 @@ fn block_entry(block: &[Extrusion], cursor: [f64; 2]) -> f64 {
 
 /// One run of a travel group in an island, in plan order, with what ordering
 /// it reads from the paths alone.
+#[derive(Clone)]
 struct Run {
     paths: Vec<Extrusion>,
     grid: Option<ApproachGrid>,
@@ -3871,6 +3873,7 @@ struct Run {
 }
 
 /// What `order_infill` reads from a run's paths alone.
+#[derive(Clone)]
 struct InfillLayout {
     closed: bool,
     comps: Vec<Vec<usize>>,
@@ -4043,10 +4046,14 @@ fn order_infill(
     }
     let rest_sample = crate::inner_prof::Sample::start();
     candidates.extend(stripes);
+    let cand_sample = crate::inner_prof::Sample::start();
     for order in candidates {
         consider(&paths, order, cursor, has, closed, to, &mut best);
     }
+    cand_sample.order_candidates(n as u64);
+    let polish_sample = crate::inner_prof::Sample::start();
     let polished = polish_order(&paths, &best.order, cursor, has, best.rotate, to);
+    polish_sample.order_polish(n as u64);
     if polished != best.order {
         for rotate in [best.rotate, !best.rotate] {
             if rotate && !closed {
@@ -4064,7 +4071,9 @@ fn order_infill(
         // Seams move with the visit order, so a reorder proposed on the ends as
         // they stand is kept only when the walk, seams moved, really is shorter.
         if has && paths.iter().all(geom_closed) {
+            let rings_sample = crate::inner_prof::Sample::start();
             let proposed = reorder_rings(&paths, &best.order, cursor, best.rotate, to);
+            rings_sample.order_rings(n as u64);
             if proposed != best.order {
                 let cost = walk_cost(&paths, &proposed, cursor, has, best.rotate, to);
                 if cost + TRAVEL_WIN_MM < best.cost {
@@ -4074,7 +4083,9 @@ fn order_infill(
             }
         }
     } else {
+        let untangle_sample = crate::inner_prof::Sample::start();
         let (order, flips) = untangle(&paths, &best.order, cursor, has, to);
+        untangle_sample.order_untangle(n as u64);
         if order != best.order || flips.iter().any(|f| *f) {
             rest_sample.order_rest(n as u64);
             return apply_flips(paths, &order, &flips);
@@ -4287,6 +4298,15 @@ struct Tour<'a> {
 /// Shortest saving, in mm of travel, that moves a short run of paths.
 const RELOCATE_MIN_MM: f64 = 0.5;
 
+/// How far a lower bound must clear a test before `relocate` skips the
+/// exact cost: far above the rounding of sums of a few bed-sized distances.
+const RELOCATE_SKIP_MM: f64 = 1e-6;
+
+/// The larger of the axis steps from `a` to `b`, never more than the distance.
+fn chebyshev(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - b[0]).abs().max((a[1] - b[1]).abs())
+}
+
 impl Tour<'_> {
     /// Or-opt: takes one to three paths in a row out and puts them back between
     /// two other stops, either way round, when that shortens the travel by at
@@ -4313,16 +4333,17 @@ impl Tour<'_> {
                     }
                 }
                 // `rest` is the tour without the run; a run goes back before
-                // `rest[pos]`, or after the last stop when `pos` is `rest.len()`.
-                let rest: Vec<usize> = (0..n).filter(|k| *k < i || *k >= i + len).collect();
+                // `rest(pos)`, or after the last stop when `pos` is `n - len`.
+                let rest = |k: usize| if k < i { k } else { k + len };
                 let mut best: Option<(f64, usize, bool)> = None;
-                for pos in i.saturating_sub(UNTANGLE_WINDOW)..=(i + UNTANGLE_WINDOW).min(rest.len()) {
+                for pos in i.saturating_sub(UNTANGLE_WINDOW)..=(i + UNTANGLE_WINDOW).min(n - len) {
                     let prev = if pos == 0 {
                         has.then_some(cursor)
                     } else {
-                        Some(self.outs[rest[pos - 1]])
+                        Some(self.outs[rest(pos - 1)])
                     };
-                    let next = rest.get(pos).map(|&k| self.ins[k]).or(to);
+                    let next = (pos < n - len).then(|| self.ins[rest(pos)]).or(to);
+                    let gap = prev.zip(next).map(|(p, q)| dist_mm(p, q));
                     for reversed in [false, true] {
                         // Back where it was, the same way round, is no move.
                         if pos == i && !reversed {
@@ -4333,11 +4354,23 @@ impl Tour<'_> {
                         } else {
                             (self.ins[i], self.outs[i + len - 1])
                         };
+                        // A distance is at least its larger axis step, so
+                        // this bounds the cost from below without a root.
+                        // The margin dwarfs the rounding, so a skipped place
+                        // is one the test below would turn down too.
+                        let low = prev.map_or(0.0, |p| chebyshev(p, head))
+                            + next.map_or(0.0, |q| chebyshev(tail, q))
+                            - gap.unwrap_or(0.0);
+                        if low >= saved - RELOCATE_MIN_MM + RELOCATE_SKIP_MM
+                            || best.is_some_and(|b| low >= b.0 + RELOCATE_SKIP_MM)
+                        {
+                            continue;
+                        }
                         let mut cost = link(prev, head);
                         if let Some(q) = next {
                             cost += dist_mm(tail, q);
-                            if let Some(p) = prev {
-                                cost -= dist_mm(p, q);
+                            if let Some(gap) = gap {
+                                cost -= gap;
                             }
                         }
                         if cost + RELOCATE_MIN_MM < saved && best.is_none_or(|b| cost < b.0) {
@@ -4350,7 +4383,7 @@ impl Tour<'_> {
                     if reversed {
                         run.reverse();
                     }
-                    let mut stops: Vec<(usize, bool)> = rest.iter().map(|&k| (k, false)).collect();
+                    let mut stops: Vec<(usize, bool)> = (0..n - len).map(|k| (rest(k), false)).collect();
                     for (offset, &k) in run.iter().enumerate() {
                         stops.insert(pos + offset, (k, reversed));
                     }
@@ -4810,9 +4843,10 @@ fn polish_order(
     }
     let neighbors = k_nearest(paths, 8);
     let mut order = order.to_vec();
-    let mut cost = walk_cost(paths, &order, cursor, has, rotate, to);
+    let mut walk = Walk::new(paths, &order, cursor, has, rotate, to);
+    let mut cost = walk.total;
     for _ in 0..24 {
-        let dirs = build_dirs(paths, &order, cursor, has, rotate);
+        let dirs = &walk.dirs;
         let mut hot: Vec<(f64, usize)> = Vec::new();
         if has && !dirs.is_empty() {
             let d = dist_mm(cursor, dirs[0].start);
@@ -4837,8 +4871,8 @@ fn polish_order(
         for (p, dir) in dirs.iter().enumerate() {
             pos[dir.index] = p;
         }
-        let mut improved = false;
-        for (_, t) in hot {
+        let mut accepted = None;
+        'search: for (_, t) in hot {
             let idx = dirs[t].index;
             for &nb in &neighbors[idx] {
                 let t2 = pos[nb];
@@ -4850,25 +4884,21 @@ fn polish_order(
                         continue;
                     }
                     trial.insert(at, item);
-                    let next = walk_cost(paths, &trial, cursor, has, rotate, to);
-                    if next + TRAVEL_WIN_MM < cost {
-                        order = trial;
-                        cost = next;
-                        improved = true;
-                        break;
+                    let span = (t.min(at), t.max(at));
+                    let next = walk.cost_of(paths, &trial, span, TRAVEL_WIN_MM, cost);
+                    if let Some(next) = next.filter(|next| next + TRAVEL_WIN_MM < cost) {
+                        accepted = Some((trial, next));
+                        break 'search;
                     }
                 }
-                if improved {
-                    break;
-                }
-            }
-            if improved {
-                break;
             }
         }
-        if !improved {
+        let Some((trial, next)) = accepted else {
             break;
-        }
+        };
+        walk = Walk::new(paths, &trial, cursor, has, rotate, to);
+        order = trial;
+        cost = next;
     }
     order
 }
@@ -5010,6 +5040,120 @@ struct TourStop {
     index: usize,
     start: [f64; 2],
     end: [f64; 2],
+}
+
+/// One order's `walk_cost`, kept leg by leg, so an order that differs from
+/// it only between two positions is costed without orienting every path
+/// again. The sums run in `tour_cost`'s order, so a cost is the same `f64`.
+struct Walk {
+    dirs: Vec<TourStop>,
+    /// Where the nozzle stands before each stop, and whether it stands anywhere.
+    at: Vec<([f64; 2], bool)>,
+    /// The travel into each stop. The first is zero with no cursor.
+    legs: Vec<f64>,
+    /// The cost through each stop.
+    sums: Vec<f64>,
+    cursor: [f64; 2],
+    has: bool,
+    rotate: bool,
+    to: Option<[f64; 2]>,
+    total: f64,
+}
+
+impl Walk {
+    fn new(
+        paths: &[Extrusion],
+        order: &[usize],
+        cursor: [f64; 2],
+        has: bool,
+        rotate: bool,
+        to: Option<[f64; 2]>,
+    ) -> Self {
+        let dirs = build_dirs(paths, order, cursor, has, rotate);
+        let n = dirs.len();
+        let (mut at, mut legs, mut sums) =
+            (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+        let mut stand = (cursor, has);
+        for (k, dir) in dirs.iter().enumerate() {
+            at.push(stand);
+            let leg = match k {
+                0 if has => dist_mm(cursor, dir.start),
+                0 => 0.0,
+                _ => dist_mm(dirs[k - 1].end, dir.start),
+            };
+            legs.push(leg);
+            sums.push(if k == 0 { leg } else { sums[k - 1] + leg });
+            if !paths[dir.index].points.is_empty() {
+                stand = (dir.end, true);
+            }
+        }
+        let mut total = sums.last().copied().unwrap_or(0.0);
+        if let (Some(to), Some(last)) = (to, dirs.last()) {
+            total += dist_mm(last.end, to);
+        }
+        Self {
+            dirs,
+            at,
+            legs,
+            sums,
+            cursor,
+            has,
+            rotate,
+            to,
+            total,
+        }
+    }
+
+    /// `walk_cost` of `order`, which holds this walk's paths at every
+    /// position outside `span`. Past `span`, once the nozzle stands where it
+    /// stood on this walk, every stop is this walk's. `None` once the cost
+    /// can no longer come in `win` under `bound`: legs are never negative.
+    fn cost_of(
+        &self,
+        paths: &[Extrusion],
+        order: &[usize],
+        span: (usize, usize),
+        win: f64,
+        bound: f64,
+    ) -> Option<f64> {
+        let (lo, hi) = span;
+        let n = order.len();
+        let bits = |(p, h): ([f64; 2], bool)| (p.map(f64::to_bits), h);
+        let mut stand = self.at[lo];
+        let mut sum = if lo == 0 { 0.0 } else { self.sums[lo - 1] };
+        let mut last = if lo == 0 { self.cursor } else { self.dirs[lo - 1].end };
+        for k in lo..n {
+            if k > hi && bits(stand) == bits(self.at[k]) {
+                for leg in &self.legs[k..] {
+                    sum += leg;
+                    if sum + win >= bound {
+                        return None;
+                    }
+                }
+                last = self.dirs[n - 1].end;
+                break;
+            }
+            let path = &paths[order[k]];
+            let (start, end) = oriented_ends(path, stand.0, stand.1, self.rotate);
+            let leg = match k {
+                0 if self.has => dist_mm(self.cursor, start),
+                0 => 0.0,
+                _ => dist_mm(last, start),
+            };
+            sum = if k == 0 { leg } else { sum + leg };
+            if sum + win >= bound {
+                return None;
+            }
+            last = end;
+            if !path.points.is_empty() {
+                stand = (end, true);
+            }
+        }
+        if let (Some(to), true) = (self.to, n > 0) {
+            sum += dist_mm(last, to);
+        }
+        Some(sum)
+    }
 }
 
 fn walk_cost(
@@ -5408,28 +5552,39 @@ const NN_CELL_MM: f64 = 2.0;
 /// The grid nearest-neighbor ordering of `paths` searches, when there are
 /// enough of them to pay for it.
 fn approach_grid(paths: &[Extrusion]) -> Option<ApproachGrid> {
-    (paths.len() > NN_LINEAR_LIMIT).then(|| ApproachGrid::build(paths))
+    (paths.len() > NN_LINEAR_LIMIT)
+        .then(|| ApproachGrid::build(paths))
+        .flatten()
 }
-
-type ApproachBuckets = HashMap<(i64, i64), Vec<(usize, [f64; 2])>>;
 
 /// Endpoints (or seam vertices) of the paths still waiting to print.
 ///
 /// A query walks outward from the nozzle until the square already searched is
 /// closer than any cell outside it, so the winner is the same path the linear
 /// scan would pick: smallest approach distance, then the earliest slot in
-/// `pending`.
+/// `pending`. The cells are one dense array over the sites' box, each cell's
+/// sites stored together.
+#[derive(Clone)]
 struct ApproachGrid {
     cell: f64,
-    buckets: ApproachBuckets,
     min_c: [i64; 2],
     max_c: [i64; 2],
+    /// Cells across the box.
+    cols: usize,
+    /// Where each cell's sites start in `sites`, row by row, and one past
+    /// the last.
+    starts: Vec<u32>,
+    sites: Vec<(usize, [f64; 2])>,
 }
 
+/// Most cells a grid may span. A run spread wider than this takes the linear
+/// scan, which picks the same paths.
+const NN_GRID_MAX_CELLS: i64 = 1 << 22;
+
 impl ApproachGrid {
-    fn build(paths: &[Extrusion]) -> Self {
+    fn build(paths: &[Extrusion]) -> Option<Self> {
         let cell = NN_CELL_MM;
-        let mut buckets = ApproachBuckets::new();
+        let mut keyed: Vec<((i64, i64), usize, [f64; 2])> = Vec::new();
         let mut min_c = [i64::MAX; 2];
         let mut max_c = [i64::MIN; 2];
         for (id, path) in paths.iter().enumerate() {
@@ -5439,28 +5594,74 @@ impl ApproachGrid {
                 min_c[1] = min_c[1].min(key.1);
                 max_c[0] = max_c[0].max(key.0);
                 max_c[1] = max_c[1].max(key.1);
-                buckets.entry(key).or_default().push((id, p));
+                keyed.push((key, id, p));
             });
         }
         if min_c[0] == i64::MAX {
             min_c = [0; 2];
             max_c = [0; 2];
         }
-        Self {
+        let cols = max_c[0].checked_sub(min_c[0])?.checked_add(1)?;
+        let rows = max_c[1].checked_sub(min_c[1])?.checked_add(1)?;
+        if cols.checked_mul(rows)? > NN_GRID_MAX_CELLS || keyed.len() >= u32::MAX as usize {
+            return None;
+        }
+        let (cols, rows) = (cols as usize, rows as usize);
+        let slot = |(gx, gy): (i64, i64)| (gy - min_c[1]) as usize * cols + (gx - min_c[0]) as usize;
+        let mut starts = vec![0u32; cols * rows + 1];
+        for (key, _, _) in &keyed {
+            starts[slot(*key) + 1] += 1;
+        }
+        for k in 1..starts.len() {
+            starts[k] += starts[k - 1];
+        }
+        let mut fill = starts.clone();
+        let mut sites = vec![(0usize, [0.0; 2]); keyed.len()];
+        for (key, id, p) in keyed {
+            let at = &mut fill[slot(key)];
+            sites[*at as usize] = (id, p);
+            *at += 1;
+        }
+        Some(Self {
             cell,
-            buckets,
             min_c,
             max_c,
-        }
+            cols,
+            starts,
+            sites,
+        })
+    }
+
+    /// The sites in cell `(gx, gy)`, which lies inside the box.
+    fn cell_sites(&self, gx: i64, gy: i64) -> &[(usize, [f64; 2])] {
+        let k = (gy - self.min_c[1]) as usize * self.cols + (gx - self.min_c[0]) as usize;
+        &self.sites[self.starts[k] as usize..self.starts[k + 1] as usize]
     }
 
     /// Index into `pending` of the path the linear scan would print next.
     /// `pos[id]` is that path's slot, or `usize::MAX` once it has been printed.
     fn winner(&self, pos: &[usize], cursor: [f64; 2]) -> usize {
         let (cx, cy) = cell_key(cursor, self.cell);
-        let mut best_d = f64::MAX;
-        let mut best_i = 0usize;
+        let (mut best_d, mut best_i) = (f64::MAX, 0usize);
         let mut ring = 0i64;
+        let visit = |gx: i64, gy: i64, best_d: &mut f64, best_i: &mut usize| {
+            for &(id, p) in self.cell_sites(gx, gy) {
+                let at = pos[id];
+                if at == usize::MAX {
+                    continue;
+                }
+                let d = dist2(cursor, p);
+                // Equal distances keep the earlier pending slot, which
+                // is what `d < best_d` does on a front-to-back scan, so
+                // the order cells and sites are visited in never matters.
+                if d < *best_d || (d == *best_d && at < *best_i) {
+                    *best_d = d;
+                    *best_i = at;
+                }
+            }
+        };
+        let [x_lo, y_lo] = self.min_c;
+        let [x_hi, y_hi] = self.max_c;
         loop {
             if ring > 0 {
                 let gap = searched_gap(cursor, cx, cy, ring - 1, self.cell);
@@ -5468,27 +5669,24 @@ impl ApproachGrid {
                     break;
                 }
             }
+            // The ring's cells inside the box: its top and bottom rows whole,
+            // then its two sides between them.
             let r = ring;
-            for gx in cx - r..=cx + r {
-                for gy in cy - r..=cy + r {
-                    if r > 0 && (gx - cx).abs() != r && (gy - cy).abs() != r {
-                        continue;
+            let (x0, x1, y0, y1) = (cx - r, cx + r, cy - r, cy + r);
+            for gy in [y0, y1] {
+                if (y_lo..=y_hi).contains(&gy) {
+                    for gx in x0.max(x_lo)..=x1.min(x_hi) {
+                        visit(gx, gy, &mut best_d, &mut best_i);
                     }
-                    let Some(hits) = self.buckets.get(&(gx, gy)) else {
-                        continue;
-                    };
-                    for &(id, p) in hits {
-                        let at = pos[id];
-                        if at == usize::MAX {
-                            continue;
-                        }
-                        let d = dist2(cursor, p);
-                        // Equal distances keep the earlier pending slot, which
-                        // is what `d < best_d` does on a front-to-back scan.
-                        if d < best_d || (d == best_d && at < best_i) {
-                            best_d = d;
-                            best_i = at;
-                        }
+                }
+                if r == 0 {
+                    break;
+                }
+            }
+            for gx in [x0, x1] {
+                if r > 0 && (x_lo..=x_hi).contains(&gx) {
+                    for gy in (y0 + 1).max(y_lo)..=(y1 - 1).min(y_hi) {
+                        visit(gx, gy, &mut best_d, &mut best_i);
                     }
                 }
             }
@@ -6859,6 +7057,61 @@ mod travel_tests {
 
     fn path(kind: PathKind, pts: Vec<[f64; 2]>) -> Extrusion {
         extrusion(kind, &pure(StrategyId::Speed), pts, 0.45)
+    }
+
+    /// `Walk::cost_of` must be `walk_cost` to the bit for every move of one
+    /// path, on open lines, closed rings, and an empty path, with and without
+    /// a cursor, seam rotation, and a target; and a cut-short cost must be one
+    /// the full walk would reject too.
+    #[test]
+    fn a_walk_costs_a_moved_path_like_a_full_walk() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rand = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * 40.0
+        };
+        let mut paths = Vec::new();
+        for k in 0..23 {
+            let (x, y) = (rand(), rand());
+            let pts = match k % 4 {
+                0 => vec![[x, y], [x + 3.0, y + 1.0], [x + 3.0, y + 4.0], [x, y]],
+                _ => vec![[x, y], [rand(), rand()]],
+            };
+            paths.push(path(PathKind::Infill, pts));
+        }
+        paths.push(path(PathKind::Infill, Vec::new()));
+        let n = paths.len();
+        for (has, rotate, to) in [
+            (true, false, None),
+            (true, true, Some([5.0, 5.0])),
+            (false, false, Some([30.0, 2.0])),
+            (false, true, None),
+        ] {
+            let cursor = [rand(), rand()];
+            let order: Vec<usize> = (0..n).rev().collect();
+            let walk = Walk::new(&paths, &order, cursor, has, rotate, to);
+            let full = |o: &[usize]| walk_cost(&paths, o, cursor, has, rotate, to);
+            assert_eq!(walk.total.to_bits(), full(&order).to_bits());
+            for t in 0..n {
+                for raw in 0..=n {
+                    let mut trial = order.clone();
+                    let item = trial.remove(t);
+                    let at = insert_at(raw, t, trial.len());
+                    trial.insert(at, item);
+                    let want = full(&trial);
+                    let span = (t.min(at), t.max(at));
+                    let got = walk.cost_of(&paths, &trial, span, 0.0, f64::INFINITY);
+                    assert_eq!(got.map(f64::to_bits), Some(want.to_bits()), "{t} -> {at}");
+                    let bound = walk.total;
+                    match walk.cost_of(&paths, &trial, span, TRAVEL_WIN_MM, bound) {
+                        Some(cost) => assert_eq!(cost.to_bits(), want.to_bits()),
+                        None => assert!(want + TRAVEL_WIN_MM >= bound),
+                    }
+                }
+            }
+        }
     }
 
     /// Euclidean travel between the paths as ordered.

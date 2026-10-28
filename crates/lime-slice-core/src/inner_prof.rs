@@ -55,6 +55,16 @@ static VOID_ISLAND: Slot = Slot::new();
 static VOID_NARROW: Slot = Slot::new();
 static VOID_SKIN: Slot = Slot::new();
 static CHAIN: Slot = Slot::new();
+static LOAD: Slot = Slot::new();
+static TOUR_LAYOUT: Slot = Slot::new();
+static TOUR_SERIAL: Slot = Slot::new();
+static TOUR_GUESS: Slot = Slot::new();
+static ORDER_CAND: Slot = Slot::new();
+static ORDER_POLISH: Slot = Slot::new();
+static ORDER_UNTANGLE: Slot = Slot::new();
+static ORDER_RINGS: Slot = Slot::new();
+static PREVIEW: Slot = Slot::new();
+static REPLY: Slot = Slot::new();
 
 pub fn set_enabled(on: bool) {
     ON.store(on, Ordering::Relaxed);
@@ -86,6 +96,16 @@ pub fn reset() {
         &VOID_NARROW,
         &VOID_SKIN,
         &CHAIN,
+        &LOAD,
+        &TOUR_LAYOUT,
+        &TOUR_SERIAL,
+        &TOUR_GUESS,
+        &ORDER_CAND,
+        &ORDER_POLISH,
+        &ORDER_UNTANGLE,
+        &ORDER_RINGS,
+        &PREVIEW,
+        &REPLY,
     ] {
         slot.reset();
     }
@@ -122,6 +142,16 @@ pub fn report() -> String {
         line("  void islands", &VOID_ISLAND),
         line("  void narrow", &VOID_NARROW),
         line("  void skin", &VOID_SKIN),
+        line("load", &LOAD),
+        line("tour layout", &TOUR_LAYOUT),
+        line("tour serial", &TOUR_SERIAL),
+        line("tour guess", &TOUR_GUESS),
+        line("  order candidates", &ORDER_CAND),
+        line("  order polish", &ORDER_POLISH),
+        line("  order untangle", &ORDER_UNTANGLE),
+        line("  order rings", &ORDER_RINGS),
+        line("preview", &PREVIEW),
+        line("reply json", &REPLY),
     ]
     .join("  ")
 }
@@ -202,5 +232,35 @@ impl Sample {
     }
     pub fn chain(self, segs: u64) {
         self.finish(&CHAIN, segs);
+    }
+    pub fn load(self, triangles: u64) {
+        self.finish(&LOAD, triangles);
+    }
+    pub fn tour_layout(self, layers: u64) {
+        self.finish(&TOUR_LAYOUT, layers);
+    }
+    pub fn tour_serial(self, layers: u64) {
+        self.finish(&TOUR_SERIAL, layers);
+    }
+    pub fn tour_guess(self, kept: u64) {
+        self.finish(&TOUR_GUESS, kept);
+    }
+    pub fn order_candidates(self, paths: u64) {
+        self.finish(&ORDER_CAND, paths);
+    }
+    pub fn order_polish(self, paths: u64) {
+        self.finish(&ORDER_POLISH, paths);
+    }
+    pub fn order_untangle(self, paths: u64) {
+        self.finish(&ORDER_UNTANGLE, paths);
+    }
+    pub fn order_rings(self, paths: u64) {
+        self.finish(&ORDER_RINGS, paths);
+    }
+    pub fn preview(self, layers: u64) {
+        self.finish(&PREVIEW, layers);
+    }
+    pub fn reply(self, bytes: u64) {
+        self.finish(&REPLY, bytes);
     }
 }

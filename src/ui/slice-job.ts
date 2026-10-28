@@ -15,6 +15,8 @@ export interface JobSnapshot {
   total: number;
   fraction: number;
   status: JobStatus;
+  /** The engine holds an early preview of this slice: `GET /api/jobs/<id>/early`. */
+  early?: boolean;
 }
 
 /** Names for the stage budget in docs/slice-progress.md. The desktop shell reads the same file. */
@@ -51,6 +53,7 @@ export function parseJobSnapshot(text: string): JobSnapshot | null {
     total: typeof raw.total === "number" && Number.isFinite(raw.total) ? raw.total : 0,
     fraction: raw.fraction,
     status: raw.status,
+    early: raw.early === true,
   };
 }
 

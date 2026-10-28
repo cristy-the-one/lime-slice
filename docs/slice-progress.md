@@ -67,6 +67,8 @@ A cancel during emit sets the writer's cancelled bit and `slice_request` returns
 
 **Events.** `GET /api/jobs/1/events` is `text/event-stream`. Each event is one `data:` line of the poll object, then a blank line. The first event is the current state. Each later event is the newest state when the stream sends it, so a slow reader skips states but never the end. The stream ends after a terminal status. `EventSource` cannot set `Authorization`; use `?token=` the same way the other routes do.
 
+**Early preview.** A request with `"earlyPreview": true` (the key is taken off before the request is keyed or parsed) has the engine draw a single object's toolpaths as soon as they are planned, before the tour orders them, on a thread of its own. The poll and event objects then carry `"early":true`, and `GET /api/jobs/1/early` returns `{"layers":[...]}` in the reply's preview format: part paths only, with no travels, supports or skirt, and no layer seconds. It is `404` and `{"error":"no early preview"}` before then, for a plate of several objects, and when the toolpaths were reused. The G-code does not change. The web client asks for one whenever a preview is on screen, draws it in 3D with an "Ordering…" chip, and puts the shown preview back if the slice fails.
+
 **Cancel.** `POST /api/jobs/1/cancel` returns `{"ok":true}`. The slice stops at the next boundary. `POST /api/cancel` still stales every `Job::start` slice, including jobs.
 
 **Result.** `GET /api/jobs/1/result` is the same JSON `POST /api/slice` returns, once `status` is `done`. It answers once. The body is released when it is sent, and a second read is `410` and `{"error":"result already read"}`. When a newer job's body replaced this job's body, the read is `410` and `{"error":"result released"}`. `409` and `{"error":"running"}` while it runs. `400` and `{"error":"cancelled"}` or the slice error after it stops. `404` for an unknown id.
@@ -81,4 +83,4 @@ Jobs are kept in memory, newest first, and the oldest are dropped past eight. Dr
 {"progress":0.268,"message":"Walls and infill","stage":"part","done":40,"total":100,"status":"running"}
 ```
 
-`progress` is the fraction. `message` is the stage's name from `src/ui/stage-labels.json`, the file the web client uses. The terminal event is always sent, with `status` `done`, `cancelled`, or `error`. The forwarding thread ends before the command returns. `cancel_slice` stales every `Job::start` slice and cancels the current watch.
+`progress` is the fraction. `message` is the stage's name from `src/ui/stage-labels.json`, the file the web client uses. The terminal event is always sent, with `status` `done`, `cancelled`, or `error`. The forwarding thread ends before the command returns. `cancel_slice` stales every `Job::start` slice and cancels the current watch. The event carries `"early":true` once the slice holds an early preview, and the command `early_preview` returns it.

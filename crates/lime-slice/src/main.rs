@@ -12,6 +12,12 @@ use lime_slice_core::{
     RigidPose, ScarfSeam, SeamPlacement, SliceRequest, SliceSettings, StrategyId, ZHopMode,
 };
 
+/// The Windows heap slows a long-running `serve` down: after a few slices the
+/// parallel stages spent up to twice as long, at the same CPU time, waiting on
+/// it. mimalloc keeps a warm slice as fast as a cold one.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser)]
 #[command(name = "lime-slice", about = "Lime Slice FDM slicer")]
 struct Cli {
@@ -315,6 +321,9 @@ fn run() -> Result<(), String> {
     if let Some((mesher, identity)) = lime_model_load::step_mesher() {
         lime_slice_core::set_step_mesher(mesher, identity);
     }
+    if std::env::var_os("LIME_INNER_PROFILE").is_some_and(|v| v == "1") {
+        lime_slice_core::set_inner_profile(true);
+    }
     match Cli::parse().cmd {
         Cmd::Slice {
             input,
@@ -479,6 +488,9 @@ fn run() -> Result<(), String> {
             }
             fs::write(&output, &response.gcode).map_err(|e| e.to_string())?;
             print_summary(&input, &response);
+            if lime_slice_core::inner_profile_on() {
+                println!("inner  {}", lime_slice_core::inner_profile());
+            }
             for (n, edit) in response.support_edits.iter().enumerate() {
                 println!("{}", edit_line(n, edit));
             }
@@ -1367,6 +1379,10 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
         } else {
             (404, err_json("not found"))
         };
+        if lime_slice_core::inner_profile_on() && path.starts_with("/api/slice") {
+            eprintln!("inner  {}", lime_slice_core::inner_profile());
+            lime_slice_core::reset_inner_profile();
+        }
         let _ = request.respond(text_response(
             status,
             payload,
@@ -2479,6 +2495,12 @@ mod tests {
             "result already read",
         );
         assert_eq!(jobs::held_bodies(), 0, "a read result is still held");
+        let early = get(&format!("/api/jobs/{id}/early"));
+        assert!(
+            early.starts_with("HTTP/1.0 404") || early.starts_with("HTTP/1.1 404"),
+            "a job that asked for no early preview has none: {early}"
+        );
+        assert!(!payload.contains("\"early\":true"), "{payload}");
 
         let finished_job = || {
             let started = http_exchange(&endpoint, &post("/api/jobs", true));

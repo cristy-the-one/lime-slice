@@ -12,6 +12,11 @@ export interface WorkerRequest {
   api?: string;
   token?: string;
   parseOnly?: string;
+  /** An early preview's JSON, drawn with the shown result's bounds and object count. */
+  early?: string;
+  min?: number[];
+  max?: number[];
+  objects?: number;
   cancel?: boolean;
   /** Drop the mesh kept for the next slice of the same file. */
   dropMesh?: boolean;
@@ -37,6 +42,15 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   }
   if (msg.dropMesh) {
     mesh = { key: "", b64: "" };
+    return;
+  }
+  if (msg.early != null) {
+    try {
+      const body = JSON.parse(msg.early) as { layers?: unknown };
+      if (body.layers) geomPort?.postMessage({ id: msg.id, layers: body.layers, min: msg.min, max: msg.max, objects: msg.objects ?? 1 });
+    } catch {
+      /* a broken early preview is skipped; the reply still comes */
+    }
     return;
   }
   if (msg.parseOnly != null) {

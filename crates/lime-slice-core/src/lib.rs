@@ -36,7 +36,8 @@ pub use cancel::{cancel_all, Job};
 pub use gcode::{Bead, GcodeText};
 pub use toolpath::PathKind;
 pub use inner_prof::{
-    report as inner_profile, reset as reset_inner_profile, set_enabled as set_inner_profile,
+    enabled as inner_profile_on, report as inner_profile, reset as reset_inner_profile,
+    set_enabled as set_inner_profile,
 };
 pub use load::{
     load_mesh, load_slice_mesh, load_slice_mesh_tol, mesh_preview, mesh_preview_tol, MeshPreview,

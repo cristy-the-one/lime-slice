@@ -77,10 +77,16 @@ export function stale() {
 function paintStaleChip() {
   const chip = document.querySelector<HTMLElement>("#staleChip");
   if (!chip) return;
-  const show = staleWarning();
+  const ordering = earlyOnScreen();
+  const show = staleWarning() || ordering;
   chip.hidden = !show;
-  document.querySelector("#staleChipText")!.textContent = state.busy ? "Updating…" : "Out of date";
+  document.querySelector("#staleChipText")!.textContent = ordering ? "Ordering…" : state.busy ? "Updating…" : "Out of date";
   document.querySelector<HTMLElement>("#staleReslice")!.hidden = state.busy;
+}
+
+/** The running slice's toolpaths are on screen while its tour orders them. */
+export function earlyOnScreen() {
+  return state.busy && session.earlyShown !== 0 && session.earlyShown === session.job;
 }
 
 /** Stale and waiting on the user. A quiet refresh hides the warning while it runs; export still waits for its reply. */
@@ -243,7 +249,7 @@ export function renderChrome() {
   syncSendButtons();
   paintTiming();
   const warn = staleWarning();
-  document.querySelector("#stage")!.classList.toggle("stale", warn);
+  document.querySelector("#stage")!.classList.toggle("stale", warn && !earlyOnScreen());
   paintStaleChip();
   paintBanner();
   fx.paintLegend();
