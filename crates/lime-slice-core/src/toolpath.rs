@@ -3481,6 +3481,7 @@ fn order_part(
 /// runs of one travel group, with everything the tour needs that does not
 /// depend on where it starts. Every layer can be laid out at once; only the
 /// tour itself has to wait for the layer below.
+#[derive(Clone)]
 pub struct PartLayout {
     blocks: Vec<Vec<Run>>,
     /// The gap between each pair of islands, `blocks.len()` squared, or
@@ -3863,6 +3864,7 @@ fn block_entry(block: &[Extrusion], cursor: [f64; 2]) -> f64 {
 
 /// One run of a travel group in an island, in plan order, with what ordering
 /// it reads from the paths alone.
+#[derive(Clone)]
 struct Run {
     paths: Vec<Extrusion>,
     grid: Option<ApproachGrid>,
@@ -3871,6 +3873,7 @@ struct Run {
 }
 
 /// What `order_infill` reads from a run's paths alone.
+#[derive(Clone)]
 struct InfillLayout {
     closed: bool,
     comps: Vec<Vec<usize>>,
@@ -5419,6 +5422,7 @@ type ApproachBuckets = HashMap<(i64, i64), Vec<(usize, [f64; 2])>>;
 /// closer than any cell outside it, so the winner is the same path the linear
 /// scan would pick: smallest approach distance, then the earliest slot in
 /// `pending`.
+#[derive(Clone)]
 struct ApproachGrid {
     cell: f64,
     buckets: ApproachBuckets,

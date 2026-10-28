@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -5073,11 +5074,25 @@ fn tour_part(
             .map(|(i, l)| (i >= first).then(|| PartLayout::new(l.paths.clone(), &contours[i])))
             .collect();
         layout_sample.tour_layout((bands.len() - first) as u64);
-        let serial_sample = crate::inner_prof::Sample::start();
         let mut end = bands.first().filter(|b| b.index == 0).and_then(|b| {
             let mut skirt = skirt_paths(&contours[0], None, b.z, blend, settings);
             order_supports(&mut skirt, None, None, scarf_params(settings, 0).as_ref())
         });
+        let guess_sample = crate::inner_prof::Sample::start();
+        let below = match first {
+            0 => Some(end),
+            i => same_paths(i - 1).map(|k| k.end),
+        };
+        let mut guessed = if SERIAL_TOUR.load(AtomicOrdering::Relaxed) {
+            Vec::new()
+        } else {
+            guess_tours(&laid, first, below, |i| {
+                (!watch.stopped(settings.job)).then(|| scarf_params(settings, bands[i].index))
+            })
+        };
+        guess_sample.tour_guess(guessed.iter().flatten().count() as u64);
+        let mut toured = 0;
+        let serial_sample = crate::inner_prof::Sample::start();
         let mut layers = Vec::with_capacity(bands.len());
         for (i, source) in part.layers.iter().enumerate() {
             if watch.stopped(settings.job) {
@@ -5089,11 +5104,21 @@ fn tour_part(
                     Arc::clone(k)
                 }
                 None => {
-                    let layout = laid[i]
-                        .take()
-                        .unwrap_or_else(|| PartLayout::new(source.paths.clone(), &contours[i]));
-                    let scarf = scarf_params(settings, bands[i].index);
-                    let (paths, to) = layout.tour(end, scarf.as_ref());
+                    let guess = guessed
+                        .get_mut(i)
+                        .and_then(Option::take)
+                        .filter(|g| bits(g.from) == bits(end));
+                    let (paths, to) = match guess {
+                        Some(g) => (g.paths, g.end),
+                        None => {
+                            toured += 1;
+                            let layout = laid[i].take().unwrap_or_else(|| {
+                                PartLayout::new(source.paths.clone(), &contours[i])
+                            });
+                            let scarf = scarf_params(settings, bands[i].index);
+                            layout.tour(end, scarf.as_ref())
+                        }
+                    };
                     Arc::new(TourLayer {
                         source: Arc::clone(source),
                         from: end,
@@ -5106,7 +5131,7 @@ fn tour_part(
             layers.push(layer);
             watch.tick();
         }
-        serial_sample.tour_serial(layers.len() as u64);
+        serial_sample.tour_serial(toured);
         layers
     } else {
         let toured: Vec<(Arc<TourLayer>, bool)> = part
@@ -5150,6 +5175,101 @@ fn tour_part(
         order_ms: elapsed_ms(order_started),
     })
 }
+
+/// Test hook: tour every layer in the serial pass, with no guesses.
+static SERIAL_TOUR: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn set_serial_tour_for_test(on: bool) {
+    SERIAL_TOUR.store(on, AtomicOrdering::Relaxed);
+}
+
+/// A layer toured ahead of the serial pass, from where the layer below was
+/// guessed to end.
+struct Guess {
+    from: Option<[f64; 2]>,
+    paths: Vec<Extrusion>,
+    end: Option<[f64; 2]>,
+}
+
+/// Each laid-out layer from `first` up toured in parallel from a guess of
+/// where the tour below it ends. `below` is where the tour into `first`
+/// starts, when it is known.
+///
+/// Most layers end in the same place whatever point they start from, so the
+/// guess is where the layer below ends when toured from no point at all. A
+/// layer with no paths ends where it starts, so it passes the guess on. The
+/// serial pass keeps a guessed layer only when its real start equals the
+/// guess bit for bit, and tours the rest itself: a kept guess is the tour the
+/// same code makes from the same point, so the output is the serial tour's.
+///
+/// `scarf` gives a layer's scarf, or `None` once the slice is cancelled.
+fn guess_tours(
+    laid: &[Option<PartLayout>],
+    first: usize,
+    below: Option<Option<[f64; 2]>>,
+    scarf: impl Fn(usize) -> Option<Option<ScarfParams>> + Sync,
+) -> Vec<Option<Guess>> {
+    if laid.len() < first + 2 || rayon::current_num_threads() < 2 {
+        return Vec::new();
+    }
+    let free_ends: Vec<Option<Option<[f64; 2]>>> = laid
+        .par_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let l = l.as_ref().filter(|_| i + 1 < laid.len())?;
+            Some(l.clone().tour(None, scarf(i)?.as_ref()).1)
+        })
+        .collect();
+    let mut starts: Vec<Option<Option<[f64; 2]>>> = vec![None; laid.len()];
+    starts[first] = below;
+    for i in first + 1..laid.len() {
+        starts[i] = match free_ends[i - 1] {
+            Some(None) => starts[i - 1],
+            end => end,
+        };
+    }
+    let guess = |i: usize, from: Option<[f64; 2]>| {
+        let l = laid[i].as_ref()?;
+        let (paths, end) = l.clone().tour(from, scarf(i)?.as_ref());
+        Some(Guess { from, paths, end })
+    };
+    let mut guesses: Vec<Option<Guess>> = starts
+        .into_par_iter()
+        .enumerate()
+        .map(|(i, from)| guess(i, from?))
+        .collect();
+    // A layer whose guess started from the wrong point is toured again from
+    // where the guess below it ends, while each round at least halves them.
+    let bits = |p: Option<[f64; 2]>| p.map(|p| p.map(f64::to_bits));
+    let mut last = laid.len() - first;
+    for _ in 0..GUESS_ROUNDS {
+        let stale: Vec<(usize, Option<[f64; 2]>)> = (first + 1..laid.len())
+            .filter_map(|i| {
+                let below = guesses[i - 1].as_ref()?.end;
+                let held = guesses[i].as_ref().map(|g| g.from);
+                (held.map(bits) != Some(bits(below))).then_some((i, below))
+            })
+            .collect();
+        if stale.len() < GUESS_ROUND_MIN || 2 * stale.len() > last {
+            break;
+        }
+        last = stale.len();
+        let again: Vec<(usize, Option<Guess>)> = stale
+            .into_par_iter()
+            .map(|(i, from)| (i, guess(i, from)))
+            .collect();
+        for (i, g) in again {
+            guesses[i] = g;
+        }
+    }
+    guesses
+}
+
+/// Rounds of guesses after the first, and the fewest wrong starts a round
+/// is worth.
+const GUESS_ROUNDS: usize = 8;
+const GUESS_ROUND_MIN: usize = 16;
 
 /// Combs and hops the travels between the part's paths on each layer. The
 /// travel into a layer's first path depends on what prints before it, so
@@ -7025,6 +7145,65 @@ fn elapsed_ms(started: Instant) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guessed tour must be the serial tour, path for path and end for
+    /// end, and on these parts some guesses must hold and some must not.
+    #[test]
+    fn guessed_tours_match_the_serial_tour() {
+        for (name, scarf) in [
+            ("lime_hull.stl", ScarfSeam::Blend),
+            ("arc_post.stl", ScarfSeam::Off),
+            ("calibration_cube_20mm.stl", ScarfSeam::All),
+        ] {
+            let bytes = std::fs::read(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../samples")
+                    .join(name),
+            )
+            .unwrap();
+            let mesh = crate::load::load_mesh(name, &bytes).unwrap();
+            let settings = SliceSettings {
+                scarf_seam: scarf,
+                ..SliceSettings::default()
+            };
+            let blend = BlendMode::Single {
+                strategy: StrategyId::Speed,
+            };
+            let bands = plan_bands(&mesh, &height_opts(&settings)).unwrap();
+            let idle = Watch::idle();
+            let cut = cut_mesh(&mesh, bands, &settings, 0.4, &idle).unwrap();
+            let part = part_paths(&cut, &blend, &settings, 0.4, [0; 32], None, &idle).unwrap();
+            let tour = || tour_part(&cut, &part, &blend, &settings, [0; 32], None, &idle).unwrap();
+            set_serial_tour_for_test(true);
+            let serial = tour();
+            set_serial_tour_for_test(false);
+            let guessed = tour();
+            assert_eq!(serial.layers.len(), guessed.layers.len(), "{name}");
+            let bits = |p: Option<[f64; 2]>| p.map(|p| p.map(f64::to_bits));
+            for (i, (s, g)) in serial.layers.iter().zip(&guessed.layers).enumerate() {
+                assert_eq!(s.paths, g.paths, "{name} layer {i}");
+                assert_eq!(bits(s.from), bits(g.from), "{name} layer {i}");
+                assert_eq!(bits(s.end), bits(g.end), "{name} layer {i}");
+            }
+            let laid: Vec<Option<PartLayout>> = part
+                .layers
+                .iter()
+                .zip(&cut.contours)
+                .map(|(l, c)| Some(PartLayout::new(l.paths.clone(), c)))
+                .collect();
+            let held = guess_tours(&laid, 0, Some(serial.layers[0].from), |i| {
+                Some(scarf_params(&settings, cut.bands[i].index))
+            })
+            .iter()
+            .zip(&serial.layers)
+            .filter(|(g, s)| g.as_ref().is_some_and(|g| bits(g.from) == bits(s.from)))
+            .count();
+            assert!(held > 0, "{name}: no guess held");
+            if name == "lime_hull.stl" {
+                assert!(held < serial.layers.len(), "{name}: every guess held");
+            }
+        }
+    }
 
     /// Root 8 mm wide, tip 0.55 mm, 40 mm long, 12 mm tall. Matches `wedge_wing`
     /// in tests/slice_cube.rs.

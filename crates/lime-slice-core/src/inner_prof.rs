@@ -58,6 +58,7 @@ static CHAIN: Slot = Slot::new();
 static LOAD: Slot = Slot::new();
 static TOUR_LAYOUT: Slot = Slot::new();
 static TOUR_SERIAL: Slot = Slot::new();
+static TOUR_GUESS: Slot = Slot::new();
 static PREVIEW: Slot = Slot::new();
 static REPLY: Slot = Slot::new();
 
@@ -94,6 +95,7 @@ pub fn reset() {
         &LOAD,
         &TOUR_LAYOUT,
         &TOUR_SERIAL,
+        &TOUR_GUESS,
         &PREVIEW,
         &REPLY,
     ] {
@@ -135,6 +137,7 @@ pub fn report() -> String {
         line("load", &LOAD),
         line("tour layout", &TOUR_LAYOUT),
         line("tour serial", &TOUR_SERIAL),
+        line("tour guess", &TOUR_GUESS),
         line("preview", &PREVIEW),
         line("reply json", &REPLY),
     ]
@@ -226,6 +229,9 @@ impl Sample {
     }
     pub fn tour_serial(self, layers: u64) {
         self.finish(&TOUR_SERIAL, layers);
+    }
+    pub fn tour_guess(self, kept: u64) {
+        self.finish(&TOUR_GUESS, kept);
     }
     pub fn preview(self, layers: u64) {
         self.finish(&PREVIEW, layers);
