@@ -163,7 +163,7 @@ import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, usedByCount } from "../modeling/params.ts";
 import { readAssemblies, resolveForParameters } from "../assembly";
-import { followAssemblyMove, syncAssemblyView } from "./assemblies.ts";
+import { followAssemblyMove, groupAsBuilt, syncAssemblyView } from "./assemblies.ts";
 import { outOfDateSteps, planRebuild } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
 import { faceTriangles } from "../sim/bridge-body.ts";
@@ -1303,6 +1303,29 @@ async function readyTool(serial: number, id: string) {
   publishProbe({ phase: "done", ok: false, error: typeof ready === "string" ? ready : "That object is no longer on the plate." });
   // Surfaces with no closed solid leave the list.
   refreshJoinChoices();
+}
+
+/**
+ * --- Assemblies M7. The common volume of two plate parts at their assembled poses, by the kernel: a dry run of a join
+ * `common` on `a`'s step with `b` as its tool. Nothing is applied. A mesh part, or a refusal, is a sentence.
+ */
+export async function commonVolume(aId: string, bId: string): Promise<number | string> {
+  const a = livePlate().find((obj) => obj.id === aId);
+  const b = livePlate().find((obj) => obj.id === bId);
+  if (!a || !b) return "That part is no longer on the plate.";
+  const at = await toolTreeOf(a);
+  if (typeof at === "string") return at;
+  const tool = await toolTreeOf(b);
+  if (typeof tool === "string") return tool;
+  const op = joinOp("common", { object: b.id, key: tool.key, node: tool.node, name: b.name }, modelPoseOf(a), modelPoseOf(b), true);
+  const body = await treeCall(at.key, at.node, probeRequest(at.key, at.node, op, state.stepTolerance));
+  if (body.ok !== true) {
+    const said = typeof body.error === "string" ? body.error : "";
+    // An empty common is the kernel saying the two share nothing.
+    return !said || /overlap|empty|no (solid|shape)/i.test(said) ? 0 : said;
+  }
+  const shape = body.preview && typeof body.preview === "object" ? decodeSolid(body.preview as Body) : null;
+  return shape && typeof shape !== "string" ? Math.abs(shape.volumeMm3) : 0;
 }
 
 /** The step of its tree that `obj` holds on the plate, as a join's tool, opening that tree first if Model never did. */
@@ -6235,6 +6258,14 @@ function putPieces(at: Opened, node: NodeId, first: ParsedSolid, pieces: ({ key:
   const turned = op ? orientPieces(at.objectId, first.positions, keys, pinned, op) : { turned: [] as string[], notes: [] as string[] };
   const moving = [...new Set([...fresh, ...turned.turned])];
   if (layout && moving.length > 0) layOutPieces(at.objectId, first, moving);
+  // --- Assemblies M8 (D7). The pieces and the pins sit where they were cut: with the card's Group the parts, one
+  // assembly with the part as its root. A cut edited later seats its new pieces in the same one.
+  if (op && document.querySelector<HTMLInputElement>("#modelPartGroup")?.checked !== false) {
+    const made = new Set([...keys, pinned].filter((key): key is string => !!key));
+    const ids = state.plate.objects.filter((obj) => obj.modelTree && made.has(obj.modelTree)).map((obj) => obj.id);
+    const part = state.plate.objects.find((obj) => obj.id === at.objectId);
+    groupAsBuilt(at.objectId, ids, stlName(part?.name ?? stem).replace(/\.stl$/i, ""));
+  }
   applySelectedToState(state.plate);
   place();
   flushEdit();

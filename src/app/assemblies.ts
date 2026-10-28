@@ -5,6 +5,7 @@
  */
 import { assemblyOf, attached, movedTo, readAssemblies, samePose, type Assembly } from "../assembly.ts";
 import type { Bounds } from "../mesh-place.ts";
+import { exactVerdict, interference, meshVolume, type PairResult } from "../interference.ts";
 import type { ContextPart } from "../model-context.ts";
 import { movedPose, posedBounds, thenPose, type Affine } from "../model-space.ts";
 import { meshToModel, modelPoseOf, plateUnionBounds, withModelPose } from "../plate.ts";
@@ -60,9 +61,107 @@ export function attachTo(child: string, parent: string): string | null {
   return null;
 }
 
+/**
+ * --- Assemblies M8 (D7). Parts that already sit assembled (a split to print's pieces, a STEP file's solids) become one
+ * assembly with `root` as its root, each where it stands: in `root`'s assembly if it has one, else a new one named
+ * `name`. A member's typed Model numbers are read in its own frame (D2). Call it inside the edit that made the parts.
+ */
+export function groupAsBuilt(root: string, ids: readonly string[], name: string) {
+  let next = liveAssemblies();
+  const joined = new Set<string>();
+  for (const id of ids) {
+    if (id === root) continue;
+    const made = attached(next, id, root, poseOf, name);
+    if ("reason" in made) continue;
+    next = made;
+    joined.add(id);
+  }
+  session.assemblies = next;
+  if (joined.size > 0) state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (joined.has(obj.id) ? { ...obj, frame: "part" as const } : obj)) };
+}
+
 /** The assembly is gone; its parts keep the poses they have. */
 export function ungroup(id: string) {
   session.assemblies = liveAssemblies().filter((row) => row.id !== id);
+}
+
+export interface Clash {
+  a: string;
+  b: string;
+  /** "crossing", or a part wholly inside the other. */
+  kind: "crossing" | "nested";
+  line: string;
+  /** The pair's cache key: its meshes and poses. */
+  key: string;
+  /** M7: the kernel's common volume, once measured; or why it could not be. */
+  volumeMm3?: number;
+  unmeasured?: string;
+}
+
+/** --- Assemblies M7. The exact pass's answers, by the same key as the mesh pass's: a volume, or why not. */
+const measured = new Map<string, number | string>();
+
+const clashCache = new Map<string, PairResult>();
+const arrayIds = new WeakMap<Float32Array, number>();
+let nextArrayId = 1;
+const arrayId = (positions: Float32Array) => {
+  let id = arrayIds.get(positions);
+  if (id === undefined) {
+    id = nextArrayId++;
+    arrayIds.set(positions, id);
+  }
+  return id;
+};
+
+/**
+ * --- Assemblies M6 (D5). The mesh pass for every pair of parts in one assembly, at their poses in model space. Pairs in
+ * different assemblies, or in none, are not checked. Each answer is kept until a mesh or a pose of the pair changes.
+ */
+export function assemblyClashes(): Clash[] {
+  const out: Clash[] = [];
+  const objects = new Map(state.plate.objects.map((obj) => [obj.id, obj]));
+  if (clashCache.size > 512) clashCache.clear();
+  for (const assembly of liveAssemblies()) {
+    const members = assembly.members.flatMap((row) => {
+      const obj = objects.get(row.object);
+      return obj && obj.sourcePos.length >= 9 ? [{ obj, pose: meshToModel(obj) }] : [];
+    });
+    for (let i = 0; i < members.length; i += 1) {
+      for (let j = i + 1; j < members.length; j += 1) {
+        const a = members[i]!;
+        const b = members[j]!;
+        const key = `${arrayId(a.obj.sourcePos)}|${arrayId(b.obj.sourcePos)}|${JSON.stringify(a.pose)}|${JSON.stringify(b.pose)}`;
+        let result = clashCache.get(key);
+        if (!result) {
+          result = interference({ positions: a.obj.sourcePos, pose: a.pose }, { positions: b.obj.sourcePos, pose: b.pose });
+          clashCache.set(key, result);
+        }
+        if (result.verdict !== "crossing" && !result.nested) continue;
+        const exact = measured.get(key);
+        // The kernel's answer wins over the mesh's: a sliver under D11's threshold is a touch, so no clash.
+        if (typeof exact === "number" && exactVerdict(exact, [meshVolume(a.obj.sourcePos), meshVolume(b.obj.sourcePos)]) === "touch") continue;
+        const volume = typeof exact === "number" ? `: ${exact.toFixed(1)} mm³` : "";
+        const kind = result.verdict === "crossing" ? "crossing" : "nested";
+        const line = kind === "crossing" ? `${a.obj.name} crosses ${b.obj.name}${volume}` : `${a.obj.name} and ${b.obj.name}: one sits inside the other${volume}`;
+        out.push({ a: a.obj.id, b: b.obj.id, kind, key, line, ...(typeof exact === "number" ? { volumeMm3: exact } : {}), ...(typeof exact === "string" ? { unmeasured: exact } : {}) });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * --- Assemblies M7 (D5, on request). The kernel's common volume for every clash not yet measured, one at a time, then
+ * the list and the tint again. A pair whose meshes or poses changed since is measured afresh next time.
+ */
+export async function measureClashes(volume: (a: string, b: string) => Promise<number | string>) {
+  if (measured.size > 512) measured.clear();
+  for (const clash of assemblyClashes()) {
+    if (measured.has(clash.key)) continue;
+    measured.set(clash.key, await volume(clash.a, clash.b));
+  }
+  syncAssemblyView();
+  refreshObjectList();
 }
 
 /** View state: Prepare draws the assembled poses instead of the print layout. Not saved, not in the undo stack. */
@@ -100,7 +199,8 @@ export function syncAssemblyView() {
     for (const button of chip.querySelectorAll<HTMLButtonElement>("[data-assembly-view]")) button.setAttribute("aria-pressed", String((button.dataset.assemblyView === "assembly") === assemblyView.on));
   }
   const { bedX, bedY } = state.profile;
-  fx.prepare?.setAssembled?.(assemblyView.on ? assembledParts(bedX, bedY).parts : null, state.plate.selectedId);
+  const clashing = assemblyView.on ? new Set(assemblyClashes().flatMap((row) => [row.a, row.b])) : new Set<string>();
+  fx.prepare?.setAssembled?.(assemblyView.on ? assembledParts(bedX, bedY).parts : null, state.plate.selectedId, clashing);
 }
 
 export function setAssemblyView(on: boolean) {
@@ -123,6 +223,7 @@ export function nudgeAssembled(axis: "x" | "y" | "z", mm: number): boolean {
   followAssemblyMove(obj.id, pose);
   markProjectDirty();
   syncAssemblyView();
+  refreshObjectList();
   return true;
 }
 

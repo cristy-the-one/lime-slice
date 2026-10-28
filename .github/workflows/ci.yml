@@ -142,6 +142,7 @@ jobs:
           node --experimental-strip-types mcp/assemblies-m1.test.ts
           node --experimental-strip-types mcp/assemblies-m3.test.ts
           node --experimental-strip-types mcp/assembly.test.ts
+          node --experimental-strip-types mcp/interference-exact.test.ts
           # A Model edit between two sliced solves needs OCCT, so the sim region test runs here, not in the mcp job.
           node --experimental-strip-types mcp/sim-region.test.ts
 

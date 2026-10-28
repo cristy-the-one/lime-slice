@@ -6,7 +6,8 @@ import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject,
 import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
 import { isAlignRelation } from "../place-snap";
-import { requestModelCheck } from "./model";
+import { commonVolume, requestModelCheck } from "./model";
+import { measureClashes } from "./assemblies.ts";
 import { revealStress } from "../ui/stress.ts";
 import { separateShells } from "./shell-actions";
 import { applyTheme, type ThemeChoice } from "../theme";
@@ -287,6 +288,13 @@ export function wireApp() {
     const plateAttach = t.closest<HTMLElement>("[data-plate-attach]")?.dataset.plateAttach;
     if (plateAttach) {
       attachPlateObject(plateAttach);
+      return;
+    }
+    const measureButton = t.closest<HTMLButtonElement>("[data-assembly-measure]");
+    if (measureButton) {
+      measureButton.disabled = true;
+      measureButton.textContent = "Measuring…";
+      void measureClashes(commonVolume);
       return;
     }
     const assemblyUngroup = t.closest<HTMLElement>("[data-assembly-ungroup]")?.dataset.assemblyUngroup;

@@ -128,7 +128,8 @@ import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosav
 import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
-import { assemblyOf, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
+import { exactVerdict, interference, SLIVER_MM3 } from "../src/interference.ts";
+import { assemblyOf, attached, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
 import { featureLabel, featureSolidInModel, isFeatureTool, posedContext } from "../src/model-features.ts";
 import { followRepeatSources, repeatLabel } from "../src/model-repeat.ts";
 import { planRebuild } from "../src/param-rebuild.ts";
@@ -2420,7 +2421,9 @@ export class Session {
     }));
     this.objects.splice(at, 1, ...made);
     this.selected = made[0]!.id;
-    return { ok: true, objects: made.map((piece) => piece.id), names: made.map((piece) => piece.name), solids: made.length, label: "Separate solids" };
+    // --- Assemblies M8. The solids of one STEP file are one assembly, the first its root, each where the file put it.
+    const assembly = this.groupPieces(made[0]!, made.slice(1).map((piece) => piece.id), obj.fileName.replace(/\.(step|stp)$/i, ""));
+    return { ok: true, objects: made.map((piece) => piece.id), names: made.map((piece) => piece.name), solids: made.length, ...(assembly ? { assembly } : {}), label: "Separate solids" };
   }
 
   private placed(obj: PlateObject) {
@@ -3850,6 +3853,106 @@ export class Session {
     }));
   }
 
+  /**
+   * --- Assemblies M6. Every pair of parts in `obj`'s assembly, at their assembled poses: the mesh pass's answer, clear,
+   * touch or crossing, and nested for a part wholly inside another. Pairs that are clear are counted, not listed.
+   */
+  private async interferenceCheck(obj: PlateObject, exact: boolean): Promise<Record<string, unknown>> {
+    const cheap = this.meshInterference(obj);
+    if (!exact || cheap.ok !== true) return cheap;
+    // --- Assemblies M7. Each pair the mesh pass did not clear is measured: the common volume of the two solids.
+    const rows = cheap.pairs as Record<string, unknown>[];
+    for (const row of rows) {
+      const a = this.find(String(row.a));
+      const b = this.find(String(row.b));
+      if (!a || !b) continue;
+      const measured = await this.commonVolume(a, b);
+      if ("reason" in measured) {
+        Object.assign(row, { exact: false, note: measured.reason });
+        continue;
+      }
+      const verdict = exactVerdict(measured.volumeMm3, [measured.volumes[0], measured.volumes[1]]);
+      Object.assign(row, { exact: true, volumeMm3: Math.round(measured.volumeMm3 * 1000) / 1000, verdict, ...(measured.boxMm ? { overlapMm: measured.boxMm } : {}) });
+      if (verdict === "touch") delete row.nested;
+    }
+    const crossing = rows.filter((row) => row.verdict === "crossing" || row.nested).length;
+    return {
+      ...cheap,
+      pass: "exact",
+      note: crossing > 0
+        ? `${crossing} pair${crossing === 1 ? "" : "s"} share volume. Nothing is blocked: a press fit is meant to cross.`
+        : `No pair shares volume. A common volume under ${SLIVER_MM3} mm³, or a millionth of the smaller part, is a touch.`,
+    };
+  }
+
+  /**
+   * The common volume of two parts at their assembled poses, by Open CASCADE: a join `common` with `b` as its tool,
+   * probed on `a`'s current step with a preview, so `a`'s history does not change. An empty common is 0.
+   */
+  private async commonVolume(a: PlateObject, b: PlateObject): Promise<{ volumeMm3: number; volumes: [number, number]; boxMm?: { min: number[]; max: number[] } } | { reason: string }> {
+    for (const part of [a, b]) {
+      if (this.meshBlock(part)) return { reason: "Mesh crossing, not measured: a mesh has no solid to intersect." };
+      const opened = await this.opened(part);
+      if ("reason" in opened) return { reason: opened.reason };
+      if (!part.solid || !part.solid.editable) return { reason: "Mesh crossing, not measured: this part has no solid." };
+    }
+    const volumes: [number, number] = [a.solid!.volumeMm3, b.solid!.volumeMm3];
+    this.lastPreview = null;
+    const probed = await this.probe(a, { kind: "join", op: "common", toolObject: b.id, keepTool: true }, undefined, true);
+    const preview = this.lastPreview as { positions: Float32Array; volumeMm3: number } | null;
+    // An empty common is refused as "The solids do not overlap.": the parts share no volume. Any other refusal is not
+    // an answer about volume, and says so.
+    if (probed.ok !== true) return /do not overlap/i.test(String(probed.reason)) ? { volumeMm3: 0, volumes } : { reason: `Not measured: ${String(probed.reason)}` };
+    if (!preview || preview.positions.length < 9) return { volumeMm3: 0, volumes };
+    const box = posedBounds(preview.positions, a.modelPose);
+    const mm = (value: number) => Math.round(value * 100) / 100 + 0;
+    return { volumeMm3: Math.abs(preview.volumeMm3), volumes, ...(box ? { boxMm: { min: box.min.map(mm), max: box.max.map(mm) } } : {}) };
+  }
+
+  private meshInterference(obj: PlateObject): Record<string, unknown> {
+    const assembly = assemblyOf(this.liveAssemblies(), obj.id);
+    if (!assembly) return { ok: false, reason: "This part is in no assembly. model_place {to} puts it in one." };
+    const members = assembly.members.flatMap((row) => {
+      const part = this.find(row.object);
+      if (!part) return [];
+      const solid = !!part.solid && part.solid.positions.length >= 9;
+      const positions = solid ? part.solid!.positions : part.source;
+      return positions.length >= 9 ? [{ part, positions: positions instanceof Float32Array ? positions : new Float32Array(positions), pose: solid ? part.modelPose : thenPose(seatLift(part.seatMm), part.modelPose) }] : [];
+    });
+    const pairs: Record<string, unknown>[] = [];
+    let clear = 0;
+    for (let i = 0; i < members.length; i += 1) {
+      for (let j = i + 1; j < members.length; j += 1) {
+        const a = members[i]!;
+        const b = members[j]!;
+        const result = interference(a, b);
+        if (result.verdict === "clear") {
+          clear += 1;
+          continue;
+        }
+        pairs.push({
+          a: a.part.id,
+          b: b.part.id,
+          names: [shownName(a.part.name), shownName(b.part.name)],
+          verdict: result.verdict,
+          ...(result.nested ? { nested: true } : {}),
+          ...(result.at ? { atMm: result.at.map((v) => Math.round(v * 100) / 100) } : {}),
+        });
+      }
+    }
+    const crossing = pairs.filter((row) => row.verdict === "crossing" || row.nested).length;
+    return {
+      ok: true,
+      assembly: assembly.name,
+      pass: "mesh",
+      pairs,
+      clearPairs: clear,
+      note: crossing > 0
+        ? `${crossing} pair${crossing === 1 ? "" : "s"} share volume by the mesh. Nothing is blocked: a press fit is meant to cross.`
+        : "No pair shares volume by the mesh. A touch is faces or edges resting on each other.",
+    };
+  }
+
   /** The tool shape of a boolean op, for a preview: it is drawn, never applied. */
   private async ghostMesh(obj: PlateObject, raw: unknown): Promise<Ghost | { reason: string }> {
     const tree = await this.opened(obj);
@@ -3872,6 +3975,7 @@ export class Session {
   }
 
   private async modelCheck(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (input.interference === true) return this.interferenceCheck(obj, input.exact === true);
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid || obj.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };
@@ -6394,6 +6498,7 @@ export class Session {
     obj.probes.clear();
     const followed = this.followPieces(obj);
     const notes = [...numberNotes(reply), ...followed.orient.notes];
+    const assembly = exported ? null : this.groupPieces(obj, [...objects, ...(pins ? [pins.id] : [])]);
     const note = exported
       ? exportedNote(this.targetName(op))
       : op.arrange === false
@@ -6405,6 +6510,7 @@ export class Session {
       parts: keys.length + 1,
       pieces: objects,
       ...(pins ? { pins: pins.id } : {}),
+      ...(assembly ? { assembly } : {}),
       note,
       ...joined(reply, typedPoseOf(obj)),
       ...numbered(reply, typedPoseOf(obj)),
@@ -6464,6 +6570,29 @@ export class Session {
       platedNode: null,
     });
     return id;
+  }
+
+  /**
+   * --- Assemblies M8 (D7). A split to print's pieces and pins on the plate make one assembly with the part as its root,
+   * each where it was cut. A cut edited later keeps that assembly and seats any new piece in it. Its name, or null when
+   * nothing joined (an export target's pieces are off the plate).
+   */
+  private groupPieces(root: PlateObject, ids: readonly string[], name?: string): string | null {
+    let next = this.liveAssemblies();
+    const poseOf = (id: string) => this.find(id)?.modelPose;
+    const stem = name ?? shownName(root.name).replace(/\.(stl|step|stp|3mf)$/i, "");
+    let joined = false;
+    for (const id of ids) {
+      const piece = this.find(id);
+      if (!piece || id === root.id) continue;
+      const made = attached(next, id, root.id, poseOf, stem);
+      if ("reason" in made) continue;
+      next = made;
+      joined = true;
+      piece.frame = "part";
+    }
+    this.assemblies = next;
+    return joined ? assemblyOf(next, root.id)?.name ?? null : null;
   }
 
   /** The object, on the plate or off it, whose tree is `key`; a reopened project's piece has none open yet, and goes by its id. */
@@ -7082,7 +7211,8 @@ export class Session {
     const followed = this.followPieces(obj);
     if (followed.orient.turned.length > 0 && (baked.op as PartitionModelOp).arrange !== false) this.layOutPieces(followed.orient.turned.filter((id) => this.objects.some((row) => row.id === id && row.platedNode !== null)));
     const notes = rebuilt ? [...(baked.notes ?? []), ...numberNotes(reply), ...rebuilt.notes, ...followed.orient.notes] : [];
-    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(pins ? { pins: pins.id } : {}), ...joined(reply, typedPoseOf(obj)), ...numbered(reply, typedPoseOf(obj)), ...(notes.length ? { notes } : {}) } : {};
+    const regrouped = rebuilt && !exportsPieces(baked.op) ? this.groupPieces(obj, [...rebuilt.objects, ...(pins ? [pins.id] : [])]) : null;
+    const parts = rebuilt ? { parts: rebuilt.keys.length + 1, pieces: rebuilt.objects, ...(pins ? { pins: pins.id } : {}), ...(regrouped ? { assembly: regrouped } : {}), ...joined(reply, typedPoseOf(obj)), ...numbered(reply, typedPoseOf(obj)), ...(notes.length ? { notes } : {}) } : {};
     return { ok: true, node: nodeHandle(tip), built: broken == null, broken: broken != null, ...parts, ...this.takeNotLinked() };
   }
 

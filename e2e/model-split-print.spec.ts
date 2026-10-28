@@ -297,6 +297,12 @@ test("Apply makes the row and the pieces, the pencil reopens the card filled, an
   await expect(page.locator("#objectList .obj"), "the two new pieces are on the plate").toHaveCount(3);
   await expect(page.locator("#objectList .obj").nth(1)).toContainText("bar part 2");
   await expect(page.locator("#objectList .obj").nth(2)).toContainText("bar part 3");
+  // --- Assemblies M8 (D7). Group the parts is on: the part and its pieces are one assembly the moment they are cut.
+  await expect(page.locator("[data-assembly-head]"), "the cut parts are one group").toHaveCount(1);
+  await expect(page.locator("[data-assembly-head]")).toContainText("3 parts");
+  await page.locator("#tabPrepare").click();
+  await shot(page, "pieces-grouped");
+  await page.locator("#tabModel").click();
   await page.waitForTimeout(600);
   await shot(page, "applied");
 
@@ -690,6 +696,24 @@ test("lay out places only the new pieces, around an object that stays where it w
   const pieces = after.objects.filter((obj) => /part [23]$/.test(obj.name));
   expect(pieces).toHaveLength(2);
   expect(pieces[0]!.placement.offset, "the pieces are laid out apart").not.toEqual(pieces[1]!.placement.offset);
+});
+
+test("Group the parts off cuts with no assembly, and a project saved before assemblies reopens without one", async ({ page }) => {
+  await openBar(page);
+  await openCard(page);
+  await expect(page.locator("#modelPartGroup")).toBeChecked();
+  await page.locator("#modelPartGroup").scrollIntoViewIfNeeded();
+  await shot(page, "card-group");
+  await page.locator("#modelPartGroup").uncheck();
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
+  await expect(page.locator("[data-assembly-head]"), "unchecked, the pieces are not grouped").toHaveCount(0);
+  // The file an older app wrote has no assemblies key: it opens with its pieces, ungrouped.
+  const doc = await saveAndReopen(page, (file) => delete file.assemblies);
+  expect(doc.assemblies).toBeUndefined();
+  await expect(page.locator("#objectList .obj")).toHaveCount(3);
+  await expect(page.locator("[data-assembly-head]")).toHaveCount(0);
 });
 
 test("an edit that moves a piece away from its later step keeps that step, broken, in the piece's history", async ({ page }) => {

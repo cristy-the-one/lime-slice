@@ -100,6 +100,10 @@ test("Open as 3 pieces makes three objects named from the STEP, side by side as 
   await offer(page).getByRole("button", { name: "Open as 3 pieces" }).click();
   await expect(page.locator("[data-plate-id]")).toHaveCount(3);
   for (const [i, name] of NAMES.entries()) await expect(page.locator("[data-plate-id]").nth(i)).toContainText(name);
+  // --- Assemblies M8. The solids of one file are one assembly, named for it, the first solid its root.
+  await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
+  await expect(page.locator("[data-assembly-head]")).toContainText("cover");
+  await expect(page.locator("[data-assembly-head]")).toContainText("3 parts");
   const xs: number[] = [];
   for (let i = 0; i < 3; i += 1) {
     await page.locator("[data-plate-id]").nth(i).locator("[data-plate-select]").click();

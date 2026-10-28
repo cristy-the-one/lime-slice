@@ -244,6 +244,7 @@ export function mountSplitPrint(next: SplitPrintHost) {
     <ol class="sp-pieces" id="modelPartPieces" aria-labelledby="modelPartPiecesHead" aria-live="polite"></ol>
     <p class="model-note" id="modelPartOrientNote" hidden>Pieces for the Formlabs Form 4 stay as they were cut. PreForm orients them, so Joint down is not offered.</p>
     <label class="model-keep" data-tip="The new pieces go around the objects already on the plate. Those stay where they are."><input id="modelPartLayout" type="checkbox" checked> Lay out on the bed</label>
+    <label class="model-keep" data-tip="The part and its pieces form one assembly, so they stay related where they were cut. Ungroup it in the object list."><input id="modelPartGroup" type="checkbox" checked> Group the parts</label>
     <label class="model-keep" data-tip="Each piece gets its number cut into a cut face."><input id="modelPartNumbers" type="checkbox" checked> Part numbers</label>
     <p class="model-note" id="modelPartNumbersNote">The number is cut into the part, so renaming the object does not change it.</p>
     <p class="model-note" id="modelPartNumberNotes" role="status" hidden></p>
@@ -967,6 +968,7 @@ function paintFit() {
   }
   // Pieces for an export target never reach the plate, so there is nothing to lay out.
   $<HTMLInputElement>("#modelPartLayout")?.closest("label")?.toggleAttribute("hidden", exportTarget(card.target));
+  $<HTMLInputElement>("#modelPartGroup")?.closest("label")?.toggleAttribute("hidden", exportTarget(card.target));
 }
 
 /** Part `at`'s orientation on the plate: as cut, or its larger cut face down on the bed (plan D4, section 10). */

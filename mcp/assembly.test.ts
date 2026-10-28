@@ -161,6 +161,19 @@ check("render_view draws the assembly and the print layout", shotAssembly.ok !==
 const shotBad = await call("render_view", { object: hookA, view: "assembly", section: { normal: [0, -1, 0] } });
 check("a view with a section is refused", shotBad.ok === false && String(shotBad.reason).includes("one part"), JSON.stringify(shotBad));
 
+// --- Interference, the mesh pass (M6): hook A sits on the body; a pin sunk into the body crosses it.
+const resting = await call("model_check", { object: body, interference: true });
+check("model_check {interference} answers for the assembly", resting.ok === true && resting.assembly === "LED cover" && resting.pass === "mesh", JSON.stringify(resting));
+check("a hook resting on the rim is a touch, not a crossing", !(resting.pairs as { verdict: string; nested?: boolean }[]).some((row) => row.verdict === "crossing" || row.nested), JSON.stringify(resting.pairs));
+const sunkPin = await solid(4, 4, 6);
+await call("model_place", { object: sunkPin, to: body, x: 10, z: 7 });
+const sunkCheck = await call("model_check", { object: hookA, interference: true });
+const sunkPair = (sunkCheck.pairs as { a: string; b: string; verdict: string; atMm?: number[] }[]).find((row) => [row.a, row.b].includes(sunkPin) && [row.a, row.b].includes(body));
+check("a pin sunk 3 mm into the body crosses it", sunkPair?.verdict === "crossing" && Array.isArray(sunkPair.atMm), JSON.stringify(sunkCheck));
+check("and the note says nothing is blocked", String(sunkCheck.note).includes("Nothing is blocked"), String(sunkCheck.note));
+const loner = await call("model_check", { object: await solid(2, 2, 2), interference: true });
+check("a part in no assembly is told how to make one", loner.ok === false && String(loner.reason).includes("model_place {to}"), JSON.stringify(loner));
+
 // --- The guide.
 const guided = await call("guide", { kind: "assembly" });
 check("guide {kind:\"assembly\"} answers", guided.ok === true && String(guided.text).includes("model_place {object:<hook>, to:<body>"), JSON.stringify(guided).slice(0, 200));

@@ -66,6 +66,15 @@ test("group two objects, see them assembled, and a lifted part is no overlap the
   await expect(page.locator("#assemblyViewChip")).toBeVisible();
   await expect(page.locator("[data-plate-attach]")).toHaveCount(0);
 
+  // M6: both files sit at the origin of model space, so assembled they cross. The mesh pass tints both and says so.
+  await page.locator("[data-assembly-view='assembly']").click();
+  await expect(page.locator("#prepare")).toHaveAttribute("data-clashing", [ledge, "part"].sort().join(" "));
+  await expect(page.locator("#assemblyInterference")).toContainText("crosses");
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: path.join(shots, "assembly-crossing.png") });
+  await page.locator("[data-assembly-view='print']").click();
+  await expect(page.locator("#assemblyInterference")).toHaveCount(0);
+
   // Lift the ledge 20 mm above the cube in the assembly, driven by a parameter: the file is where an MCP client or a
   // later Place would have put it.
   const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
@@ -95,6 +104,8 @@ test("group two objects, see them assembled, and a lifted part is no overlap the
   const lifted = await assembledBoxes(page);
   expect(Object.keys(lifted).sort()).toEqual([ledge, "part"].sort());
   expect(lifted[ledge]![2]! - lifted.part![2]!, "the ledge sits 20 mm higher").toBeCloseTo(20, 1);
+  await expect(page.locator("#prepare"), "resting on the cube's top is a touch, not a crossing").toHaveAttribute("data-clashing", "");
+  await expect(page.locator("#assemblyInterference")).toHaveCount(0);
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(shots, "assembly-view.png") });
 

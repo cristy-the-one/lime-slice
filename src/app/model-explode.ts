@@ -11,6 +11,7 @@ import { ROOT } from "../model-tree";
 import { meshToModel, modelPoseOf, type PlateObject } from "../plate";
 import { modelTrees } from "./model-trees";
 import { state } from "./state";
+import { assemblyOfObject } from "./assemblies.ts";
 
 type Vec3 = [number, number, number];
 
@@ -79,6 +80,10 @@ function members(openId: string, openKey: string, openBox: Bounds, openPose: Aff
   const owner = state.plate.objects.find((obj) => obj.modelTree === ownerKey);
   if (!owner) return null;
   const list: Member[] = [];
+  // --- Assemblies M8. A cut part in an assembly explodes the pieces that are its members; a piece taken out of it stays
+  // put. A part in no assembly, such as one from a project saved before assemblies, explodes every piece as before.
+  const group = assemblyOfObject(owner.id);
+  const inGroup = (id: string) => !group || group.members.some((member) => member.object === id);
   // The pins come last, as in the export, after every piece.
   const rows = [...[ownerKey, ...found.pieces].map((key, index) => [index + 1, key] as const), [PINS_PART, found.pins ?? null] as const];
   for (const [part, key] of rows) {
@@ -88,7 +93,7 @@ function members(openId: string, openKey: string, openBox: Bounds, openPose: Aff
     }
     const obj = key ? state.plate.objects.find((row) => row.modelTree === key) : undefined;
     const shown = obj ? parts.find((one) => one.id === obj.id) : undefined;
-    if (shown) list.push({ part, id: shown.id, centre: posedCentre(boundsOf(shown.positions), shown.matrix) });
+    if (shown && inGroup(shown.id)) list.push({ part, id: shown.id, centre: posedCentre(boundsOf(shown.positions), shown.matrix) });
     else if (key && !obj) {
       const piece = heldPiece(key, owner);
       if (piece) list.push({ part, id: heldId(key), centre: posedCentre(boundsOf(piece.positions), piece.pose), held: { positions: piece.positions, matrix: piece.pose } });

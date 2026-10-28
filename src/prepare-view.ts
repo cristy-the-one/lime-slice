@@ -120,10 +120,11 @@ export interface PrepareView {
    */
   setPlate(entries: PlateBound[], others: ContextPart[]): void;
   /**
-   * The assembly view: every object drawn solid at `parts`' matrices, `selectedId` in the part colour. The print layout,
+   * The assembly view: every object drawn solid at `parts`' matrices, `selectedId` in the part colour, and each part in
+   * `clashing` (it crosses another of its assembly) tinted amber. The print layout,
    * its boxes, the gizmo and the paint are hidden, and a click only orbits. Null returns to the print layout.
    */
-  setAssembled(parts: ContextPart[] | null, selectedId: string | null): void;
+  setAssembled(parts: ContextPart[] | null, selectedId: string | null, clashing?: ReadonlySet<string>): void;
   onModifierSelect(cb: ((id: string) => void) | null): void;
   onModifierEditStart(cb: (() => void) | null): void;
   onModifierEdit(cb: ((id: string, kind: "move" | "scale", axis: Axis, deltaMm: number) => void) | null): void;
@@ -309,6 +310,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const assembledGeometry = new Map<Float32Array, THREE.BufferGeometry>();
   const assembledMat = new THREE.MeshStandardMaterial({ color: hexToThree(colors.context), roughness: 0.7, metalness: 0.05 });
   const assembledPick = new THREE.MeshStandardMaterial({ color: hexToThree(colors.mesh), roughness: 0.55, metalness: 0.05 });
+  const assembledClash = new THREE.MeshStandardMaterial({ color: hexToThree(colors.amber), roughness: 0.6, metalness: 0.05, emissive: hexToThree(colors.amber), emissiveIntensity: 0.25 });
   const targetMat = contextMaterial(colors.amber);
   /** The plate object a snap or an Align to... has picked: its grey is swapped for the amber of the snap guides. */
   let markedTarget: string | null = null;
@@ -2262,9 +2264,9 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       if (belt) layoutBed();
       syncPlateBounds();
     },
-    setAssembled(parts, selectedId) {
+    setAssembled(parts, selectedId, clashing) {
       assembled = parts;
-      syncAssembled(selectedId);
+      syncAssembled(selectedId, clashing ?? new Set());
     },
     onModifierSelect(cb) { selectModCb = cb; },
     onModifierEditStart(cb) { editModStartCb = cb; },
@@ -2299,6 +2301,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       contextMat.color.setHex(hexToThree(colors.context));
       assembledMat.color.setHex(hexToThree(colors.context));
       assembledPick.color.setHex(hexToThree(colors.mesh));
+      assembledClash.color.setHex(hexToThree(colors.amber));
+      assembledClash.emissive.setHex(hexToThree(colors.amber));
       targetMat.color.setHex(hexToThree(colors.amber));
       snapLineMat.color.setHex(hexToThree(colors.amber));
       for (const [axis, { ringMat, moveMats }] of handles) {
@@ -2352,7 +2356,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     requestRender();
   }
 
-  function syncAssembled(selectedId: string | null) {
+  function syncAssembled(selectedId: string | null, clashing: ReadonlySet<string>) {
     const parts = assembled ?? [];
     const wanted = new Set(parts.map((part) => part.positions));
     for (const [positions, geometry] of assembledGeometry) {
@@ -2372,7 +2376,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
         geometry.computeVertexNormals();
         assembledGeometry.set(part.positions, geometry);
       }
-      const node = new THREE.Mesh(geometry, part.id === selectedId ? assembledPick : assembledMat);
+      const node = new THREE.Mesh(geometry, clashing.has(part.id) ? assembledClash : part.id === selectedId ? assembledPick : assembledMat);
       node.matrixAutoUpdate = false;
       setPrintAffine(node.matrix, affineRows(part.matrix));
       node.userData.plateId = part.id;
@@ -2387,6 +2391,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     }
     assembledGroup.visible = assembled !== null;
     canvas.dataset.view = assembled ? "assembly" : "print";
+    canvas.dataset.clashing = [...clashing].filter((id) => parts.some((part) => part.id === id)).sort().join(" ");
     if (published.length > 0) canvas.dataset.assembled = published.join(" ");
     else delete canvas.dataset.assembled;
     requestRender();

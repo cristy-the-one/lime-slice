@@ -1409,6 +1409,8 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical. Default 45." },
         minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
+        interference: { type: "boolean", description: "Instead: pairs of parts in its assembly that cross, as assembled." },
+        exact: { type: "boolean", description: "With interference: each pair's common volume by the kernel." },
       },
     },
   },

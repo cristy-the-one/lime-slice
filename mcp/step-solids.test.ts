@@ -71,6 +71,7 @@ check(
   near(zs[0]![0]!, 0) && near(zs[2]![1]!, 400) && near(zs[0]![1]!, zs[1]![0]!) && near(zs[1]![1]!, zs[2]![0]!),
   JSON.stringify(zs),
 );
+check("the solids form one assembly named for the file", pieces.assembly === "trio" && opened.every((row) => (row as { assembly?: string }).assembly === "trio"), JSON.stringify({ assembly: pieces.assembly, rows: opened.map((row) => (row as { assembly?: string }).assembly) }));
 const described = await call("model_describe", { object: opened[1]!.object, limit: 1 });
 check("a piece opens in Model as a solid", described.ok === true && typeof described.volumeMm3 === "number" && (described.volumeMm3 as number) > 100 * 80 * 100, JSON.stringify(described).slice(0, 400));
 await clear();
