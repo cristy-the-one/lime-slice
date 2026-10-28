@@ -416,3 +416,31 @@ Telo cover, jobs replayed as the app sends them. "Early" is when the drawing cou
 | Model hole | 2.9 s | 8.9 s | 2.6 s | 11.6 s |
 
 Drawing early costs the slice 0.1–0.3 s on the IR3 (the drawing is 40–45 MB of JSON, made while the tour runs) and nothing measurable on the Lime 220. Every G-code hash is the same with and without it. With C1 and C2 the IR3 tour is under 1 s, so the drawing helps most where supports or a new mesh keep the reply waiting.
+
+### 10.5 C4: per-layer keys, so a mesh edit replans only the layers it reaches
+
+The part stages' layer keys (`LayerKeys`) no longer hash the mesh. In its place they hash the nozzle and the part's box. Each layer's toolpath inputs now also hash everything the layer reads of the cut:
+- its band;
+- its outline, plus the outline below when overhang control is on, and the outline above when it is ironed;
+- both skins;
+- its roof distance;
+- its interior run;
+- its lightning branches.
+
+So a plan of an edited mesh takes from the newest kept plan every layer whose hash is unchanged: its toolpaths, then its tour when it starts where it did, then its travels and its join. The tour lays out and guesses only the layers it has to plan again, and uses each kept layer's end as the guess for the layer above. `local_edit_reuse` checks the result on a block and a post. A stub added beside the post leaves every layer above the post's top reused, and the G-code is the same as a slice of the edited mesh with nothing kept.
+
+The roof distance and the interior run belong to the whole layer, so an edit also reaches layers below it, and layers above it, when it changes those.
+
+Telo cover, 6 mm through hole, the `model_commit` mesh. Base, then hole, in one `serve`; the cold column is the hole alone in a fresh process:
+
+| | IR3 V2 | Lime 220 |
+|---|---:|---:|
+| Hole after base, warm, before C4 | 4.1 s | 5.9 s |
+| Hole after base, warm, C4 | **2.5 s** | **3.5 s** |
+| Hole, cold | 4.3 s | 6.0 s |
+| Layers reused (toolpaths / tour / travels) | 1,550 / 1,548 / 1,548 of 2,885 | 232 / 232 / 232 of 749 |
+| Hole with supports on, warm (section 4's sequence) | 10.8 → **7.2 s** | 12.4 → **9.4 s** |
+
+The warm G-code equals the cold G-code in every row. Settings edits keep their times and hashes.
+
+The target was a Model hole in under 3 s warm. It holds on the IR3 V2, at 2.5 s. On the Lime 220 it is 3.5 s, because few layers stay equal. **What limits it is the mesh, not the slicer.** `model_commit` tessellates the whole solid again. A per-layer comparison of the two cuts shows the hole changes the skins of only about 30 layers. Yet 1,043 of the IR3's 2,885 layers come out with different outline points, often with the same point count. The faces far from the hole get new triangles, and that moves their vertices. A commit that kept the tessellation of the faces the operation did not touch would let nearly every layer outside the hole's band be reused. That change belongs in `lime-model-occt`, and it is the next step for live Model edits.
