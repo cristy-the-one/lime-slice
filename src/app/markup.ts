@@ -218,6 +218,11 @@ export function mountMarkup(root: HTMLElement) {
               <kbd class="model-panel-key" aria-hidden="true">Esc</kbd>
             </div>
             <div class="model-panel-body" id="modelPanelBody">
+              <!-- Assemblies M11: which frame this member's Model numbers are in, as model_place {frame} sets it. -->
+              <div class="modes model-plane-modes" id="modelPlaceFrame" data-for="place" data-member role="group" aria-label="Numbers in" hidden>
+                <button class="btn mode" type="button" data-place-frame="part" aria-pressed="false" data-tip="Numbers in this part's own frame, as its drawing gives them. Model draws the part as it was modelled.">Part frame</button>
+                <button class="btn mode" type="button" data-place-frame="model" aria-pressed="false" data-tip="Numbers in model space, where the assembly puts the part.">Model frame</button>
+              </div>
               <div class="modes model-plane-modes" id="modelWpModes" data-for="workplane" role="group" aria-label="Workplane">
                 <button class="btn mode on" id="modelWpGlobal" type="button" data-wp="global" aria-pressed="true" data-tip="Model space: U is X, V is Y, W is Z">Global</button>
                 <button class="btn mode" id="modelWpBed" type="button" data-wp="bed" aria-pressed="false" data-tip="Under the middle of the part, W up">Bed</button>
@@ -380,6 +385,7 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode" id="modelCut" type="button" aria-pressed="false">Cut</button>
                 <button class="btn mode" id="modelCommon" type="button" aria-pressed="false">Common</button>
               </div>
+              <label class="model-keep" data-for="place" data-tip="While you turn the part with the rings, snap it to the flat face that touches most, near the angle you hold, resting where it stood. Prepare's switch too."><input id="modelSettleOn" type="checkbox"> Settle on the bed</label>
               <label class="model-keep" data-for="boolean" data-with="object"><input id="modelKeepTool" type="checkbox"> Keep the tool object</label>
               <!-- --- F4. One hole per sketch point. The origin fields stay in the markup for a single hole. --- -->
               <p class="model-note" id="modelHolePoints" data-for="hole" data-hole="points" hidden></p>

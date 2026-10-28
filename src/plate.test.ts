@@ -28,6 +28,7 @@ import {
   setMeshSeat,
   slicePlateFields,
   snapPlate,
+  withFrame,
   withModelPose,
   withWorkplane,
   type IncomingMesh,
@@ -421,6 +422,13 @@ check("an object's mesh goes up by its seat before its pose", JSON.stringify(mes
   check("a copy keeps the frame", twin?.objects.find((obj) => obj.id !== "hook")?.frame === "part");
   const plainSnap = revivePlate(snapPlate({ objects: [body], selectedId: "body" }));
   check("an object in the model frame carries no key", plainSnap != null && !("frame" in plainSnap.objects[0]!));
+  // --- M11. The Place tool's switch writes the field as model_place {frame} does: "part" kept, "model" dropped.
+  const switched = withFrame({ objects: [hook, body], selectedId: "hook" }, "hook", "model");
+  check("Model frame drops the key", !("frame" in switched.objects[0]!) && JSON.stringify(switched.objects[0]!.modelPose) === JSON.stringify(pose));
+  check("and leaves the other object and the bed alone", switched.objects[1] === body && switched.objects[0]!.offset === hook.offset);
+  const back = withFrame(switched, "hook", "part");
+  check("Part frame writes it again", back.objects[0]!.frame === "part" && JSON.stringify(back.objects[0]!.modelPose) === JSON.stringify(pose));
+  check("the switch makes a new object, so an Undo snapshot keeps the old one", hook.frame === "part" && switched.objects[0] !== hook);
 }
 
 if (failed) {

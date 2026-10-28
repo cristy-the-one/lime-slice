@@ -6,7 +6,7 @@
  */
 import { ChevronDown, ChevronRight, Ellipsis, History, Move3d, Pencil, RotateCcw, TriangleAlert, createElement, type IconNode } from "lucide";
 import { historyFolds, historyKey, historyLayout, positionText, presentedRows, readRow, rowCount, rowKey, type HistoryLayout, type HistoryRow, type RecipeNote, type RowKey } from "../model-history";
-import type { PlaceFields } from "../model-space";
+import type { ObjectFrame, PlaceFields } from "../model-space";
 import { toolKeys, type ModelTree } from "../model-tree";
 import { isMobileLayout } from "../platform";
 import { state } from "../app/state";
@@ -281,16 +281,20 @@ function same(was: readonly unknown[] | null, now: readonly unknown[]): boolean 
  * The Position row: the open object's pose as Place reads it, and Reset while it is not where its file put it. Only the
  * row's own text changes, so a Place drag never repaints the tree. Null with nothing open.
  */
-export function syncModelPosition(fields: PlaceFields | null, atFile: boolean) {
+export function syncModelPosition(fields: PlaceFields | null, atFile: boolean, frame: ObjectFrame | null = null) {
+  // --- Assemblies M11. The row is the pose in model space, as the Place fields are; a member's tip names its frame.
   const text = fields ? positionText(fields) : "";
   const label = document.querySelector("#modelPositionText");
   const open = document.querySelector<HTMLElement>("#modelPositionOpen");
-  if (label && open && label.textContent !== text) {
+  const row = document.querySelector<HTMLElement>("#modelPosition");
+  if (label && open && (label.textContent !== text || (row?.dataset.frame ?? "") !== (frame ?? ""))) {
     label.textContent = text;
-    open.setAttribute("aria-label", `Position: ${text}. Opens Place.`);
-    open.dataset.tip = `Where this object sits in model space: ${text}. Click to open Place.`;
+    const numbers = frame === "part" ? " Its Model numbers are in its own frame." : frame === "model" ? " Its Model numbers are in model space." : "";
+    open.setAttribute("aria-label", `Position: ${text}.${numbers} Opens Place.`);
+    open.dataset.tip = `Where this ${frame ? "part sits in its assembly, in model space" : "object sits in model space"}: ${text}.${numbers} Click to open Place.`;
   }
-  document.querySelector("#modelPosition")?.classList.toggle("is-file", atFile && !!fields);
+  if (row) row.dataset.frame = frame ?? "";
+  row?.classList.toggle("is-file", atFile && !!fields);
   const reset = document.querySelector<HTMLElement>("#modelPositionReset");
   if (!reset || reset.hidden === atFile) return;
   // Reset hides once the pose is reset: focus stays in the row rather than drop to the page.
