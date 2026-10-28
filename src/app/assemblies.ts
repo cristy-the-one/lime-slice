@@ -5,6 +5,7 @@
  */
 import { assemblyOf, attached, movedTo, readAssemblies, samePose, type Assembly } from "../assembly.ts";
 import type { Bounds } from "../mesh-place.ts";
+import { interference, type PairResult } from "../interference.ts";
 import type { ContextPart } from "../model-context.ts";
 import { movedPose, posedBounds, thenPose, type Affine } from "../model-space.ts";
 import { meshToModel, modelPoseOf, plateUnionBounds, withModelPose } from "../plate.ts";
@@ -65,6 +66,57 @@ export function ungroup(id: string) {
   session.assemblies = liveAssemblies().filter((row) => row.id !== id);
 }
 
+export interface Clash {
+  a: string;
+  b: string;
+  /** "crossing", or a part wholly inside the other. */
+  kind: "crossing" | "nested";
+  line: string;
+}
+
+const clashCache = new Map<string, PairResult>();
+const arrayIds = new WeakMap<Float32Array, number>();
+let nextArrayId = 1;
+const arrayId = (positions: Float32Array) => {
+  let id = arrayIds.get(positions);
+  if (id === undefined) {
+    id = nextArrayId++;
+    arrayIds.set(positions, id);
+  }
+  return id;
+};
+
+/**
+ * --- Assemblies M6 (D5). The mesh pass for every pair of parts in one assembly, at their poses in model space. Pairs in
+ * different assemblies, or in none, are not checked. Each answer is kept until a mesh or a pose of the pair changes.
+ */
+export function assemblyClashes(): Clash[] {
+  const out: Clash[] = [];
+  const objects = new Map(state.plate.objects.map((obj) => [obj.id, obj]));
+  if (clashCache.size > 512) clashCache.clear();
+  for (const assembly of liveAssemblies()) {
+    const members = assembly.members.flatMap((row) => {
+      const obj = objects.get(row.object);
+      return obj && obj.sourcePos.length >= 9 ? [{ obj, pose: meshToModel(obj) }] : [];
+    });
+    for (let i = 0; i < members.length; i += 1) {
+      for (let j = i + 1; j < members.length; j += 1) {
+        const a = members[i]!;
+        const b = members[j]!;
+        const key = `${arrayId(a.obj.sourcePos)}|${arrayId(b.obj.sourcePos)}|${JSON.stringify(a.pose)}|${JSON.stringify(b.pose)}`;
+        let result = clashCache.get(key);
+        if (!result) {
+          result = interference({ positions: a.obj.sourcePos, pose: a.pose }, { positions: b.obj.sourcePos, pose: b.pose });
+          clashCache.set(key, result);
+        }
+        if (result.verdict === "crossing") out.push({ a: a.obj.id, b: b.obj.id, kind: "crossing", line: `${a.obj.name} crosses ${b.obj.name}` });
+        else if (result.nested) out.push({ a: a.obj.id, b: b.obj.id, kind: "nested", line: `${a.obj.name} and ${b.obj.name}: one sits inside the other` });
+      }
+    }
+  }
+  return out;
+}
+
 /** View state: Prepare draws the assembled poses instead of the print layout. Not saved, not in the undo stack. */
 export const assemblyView = { on: false };
 
@@ -100,7 +152,8 @@ export function syncAssemblyView() {
     for (const button of chip.querySelectorAll<HTMLButtonElement>("[data-assembly-view]")) button.setAttribute("aria-pressed", String((button.dataset.assemblyView === "assembly") === assemblyView.on));
   }
   const { bedX, bedY } = state.profile;
-  fx.prepare?.setAssembled?.(assemblyView.on ? assembledParts(bedX, bedY).parts : null, state.plate.selectedId);
+  const clashing = assemblyView.on ? new Set(assemblyClashes().flatMap((row) => [row.a, row.b])) : new Set<string>();
+  fx.prepare?.setAssembled?.(assemblyView.on ? assembledParts(bedX, bedY).parts : null, state.plate.selectedId, clashing);
 }
 
 export function setAssemblyView(on: boolean) {
@@ -123,6 +176,7 @@ export function nudgeAssembled(axis: "x" | "y" | "z", mm: number): boolean {
   followAssemblyMove(obj.id, pose);
   markProjectDirty();
   syncAssemblyView();
+  refreshObjectList();
   return true;
 }
 
