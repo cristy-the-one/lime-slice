@@ -1,12 +1,12 @@
 ---
-okf_version: "0.1"
+okf_version: "0.2"
 ---
 
 # Lime Slice
 
-Knowledge bundle for Lime Slice 4.2.0, written from the tree at commit `f7647943a2eb198144c9fcc4e499b5e4178e7ea5`. It follows Open Knowledge Format v0.1.
+Knowledge bundle for Lime Slice 4.2.0, written from the tree at commit `f7647943a2eb198144c9fcc4e499b5e4178e7ea5`. It follows [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md).
 
-Concept files are UTF-8 Markdown with YAML frontmatter. `type` is required. This file is the bundle root: its only frontmatter key is `okf_version`. Nested `index.md` files and `log.md` have no frontmatter. Each concept ends with a `# Citations` list. Its numbered links point at files in the repository, pinned to that commit, and the same files are listed in the concept's `sources` frontmatter key.
+Concept files are UTF-8 Markdown with YAML frontmatter. `type` is required. This file is the bundle root: its only frontmatter key is `okf_version`. Nested `index.md` files and `log.md` have no frontmatter. A `sources[].resource` value is an absolute URL pinned to that commit; `sources[].title` is the path in the repository. A footnote label is a `sources[].id`.
 
 `status` is `draft` on every concept. Nothing here is `verified`. The bundle was produced by reading the repository; it does not add behaviour the code does not have.
 

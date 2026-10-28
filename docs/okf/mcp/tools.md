@@ -16,9 +16,9 @@ sources:
 
 # How the list is built
 
-`TOOLS` in `mcp/schema.ts` has 91 tools. `groupOf` in `mcp/groups.ts` returns null for a core tool and a group name otherwise. Descriptions below are the `description` strings from `TOOLS`, copied as written.[1] [2]
+`TOOLS` in `mcp/schema.ts` has 91 tools. `groupOf` in `mcp/groups.ts` returns null for a core tool and a group name otherwise. Descriptions below are the `description` strings from `TOOLS`, copied as written.[^schema] [^groups]
 
-`listedTools` sends every tool except `tools_enable` when groups are off. With `LIME_MCP_TOOL_GROUPS=1`, it sends the core tools, `tools_enable`, and the tools of each enabled group. A call to a tool whose group is not enabled is refused.[1] [2]
+`listedTools` sends every tool except `tools_enable` when groups are off. With `LIME_MCP_TOOL_GROUPS=1`, it sends the core tools, `tools_enable`, and the tools of each enabled group. A call to a tool whose group is not enabled is refused.[^schema] [^groups]
 
 No tool name contains "send". Printer upload is a desktop command. See [GUI and MCP parity](gui-parity.md).
 
@@ -404,7 +404,5 @@ Up to 16 variants. A sliced study needs reslice.
 
 Leave the last result.
 
-# Citations
-
-[1] [mcp/schema.ts](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/mcp/schema.ts)
-[2] [mcp/groups.ts](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/mcp/groups.ts)
+[^schema]: mcp/schema.ts
+[^groups]: mcp/groups.ts

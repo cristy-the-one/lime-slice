@@ -31,7 +31,7 @@ sources:
 
 # Local commands
 
-`package.json` scripts:[3]
+`package.json` scripts:[^pkg]
 
 | script | command |
 | --- | --- |
@@ -43,15 +43,15 @@ sources:
 | `test:engine` | Playwright against a release `lime-slice serve`, workers 1 |
 | `build:mcp` | `node tools/mcp/bundle.mjs` |
 
-Playwright's `testDir` is `e2e`, timeout 90 seconds, base URL `http://127.0.0.1:43117`. The default storage state sets auto-slice off.[5] `CLAUDE.md` says UI tests are Playwright, headless Chromium, never Edge or Chrome.[6]
+Playwright's `testDir` is `e2e`, timeout 90 seconds, base URL `http://127.0.0.1:43117`. The default storage state sets auto-slice off.[^pw] `CLAUDE.md` says UI tests are Playwright, headless Chromium, never Edge or Chrome.[^claude]
 
-The Rust toolchain file pins channel 1.88.0 and includes clippy.[4] `CLAUDE.md` says local Rust builds use `CARGO_BUILD_JOBS=4`, and that the owner's OCCT tree for `lime-model-occt` is `C:\Users\marius\.lime-slice\occt-7.9.2`.[6] CI's "MCP server against real Open CASCADE" step sets `CARGO_BUILD_JOBS` to `"2"`.[1]
+The Rust toolchain file pins channel 1.88.0 and includes clippy.[^rust] `CLAUDE.md` says local Rust builds use `CARGO_BUILD_JOBS=4`, and that the owner's OCCT tree for `lime-model-occt` is `C:\Users\marius\.lime-slice\occt-7.9.2`.[^claude] CI's "MCP server against real Open CASCADE" step sets `CARGO_BUILD_JOBS` to `"2"`.[^ci]
 
 # CI jobs
 
-`.github/workflows/ci.yml` runs on push and pull request to `main`. The job `what changed` sets `code=false` when every file in the diff is under `docs/` or is a `*.md` file. Every other job needs that output and is skipped when it is false. The comment says a skipped required check counts as passed.[1]
+`.github/workflows/ci.yml` runs on push and pull request to `main`. The job `what changed` sets `code=false` when every file in the diff is under `docs/` or is a `*.md` file. Every other job needs that output and is skipped when it is false. The comment says a skipped required check counts as passed.[^ci]
 
-Job names and the work they start:[1]
+Job names and the work they start:[^ci]
 
 | job | what it runs |
 | --- | --- |
@@ -66,18 +66,16 @@ Job names and the work they start:[1]
 | OCCT dynamic link (Windows) | build and test `lime-model-occt` against the bundled OCCT |
 | OCCT dynamic link (macOS) | the same on macOS |
 
-The land-pr skill says main's ruleset requires only "test, clippy, and Tauri", "release bench smoke", and "typecheck and frontend build", and that the smoke shards are not in that required set.[7]
+The land-pr skill says main's ruleset requires only "test, clippy, and Tauri", "release bench smoke", and "typecheck and frontend build", and that the smoke shards are not in that required set.[^land]
 
-`.github/workflows/perf.yml` is separate. It runs nightly, on `workflow_dispatch`, and on a pull request labelled `ci:perf`. It is the frame-timing specs kept out of the per-PR smoke run.[2]
+`.github/workflows/perf.yml` is separate. It runs nightly, on `workflow_dispatch`, and on a pull request labelled `ci:perf`. It is the frame-timing specs kept out of the per-PR smoke run.[^perf]
 
 `tools/golden.sh` hashes G-code for samples. `CLAUDE.md` says never re-slice old code for a baseline. See [Project rules](../conventions/project-rules.md).
 
-# Citations
-
-[1] [.github/workflows/ci.yml](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/.github/workflows/ci.yml)
-[2] [.github/workflows/perf.yml](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/.github/workflows/perf.yml)
-[3] [package.json](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/package.json)
-[4] [rust-toolchain.toml](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/rust-toolchain.toml)
-[5] [playwright.config.ts](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/playwright.config.ts)
-[6] [CLAUDE.md](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/CLAUDE.md)
-[7] [.claude/skills/land-pr/SKILL.md](https://github.com/cristy-the-one/lime-slice/blob/f7647943a2eb198144c9fcc4e499b5e4178e7ea5/.claude/skills/land-pr/SKILL.md)
+[^ci]: .github/workflows/ci.yml
+[^perf]: .github/workflows/perf.yml
+[^pkg]: package.json
+[^rust]: rust-toolchain.toml
+[^pw]: playwright.config.ts
+[^claude]: CLAUDE.md
+[^land]: .claude/skills/land-pr/SKILL.md
