@@ -281,7 +281,6 @@ function fileObjects({ trees, tools, pieces }: Awaited<ReturnType<typeof history
       node,
       ...(pins ? { pins } : { index }),
       mesh: record(mesh.name, mesh.bytes),
-      ...(mesh.step ? { brep: record(solidFileName(mesh.name, mesh.step), mesh.step) } : {}),
       ...(seat !== undefined ? { meshSeatMm: seat } : {}),
     };
   });
