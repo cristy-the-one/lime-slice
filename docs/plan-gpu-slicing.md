@@ -298,3 +298,40 @@ Times are measured with `LIME_INNER_PROFILE=1` against the tables above.
   - The classic planner (lines, nearest-neighbour order, no polish) slices the same part in 2.4–4.3 s. That bounds what the tour's travel optimisation costs: about 7–10 s.
 - Every replay row (stage clocks, reply sizes, reuse flags) came from `serve` with `LIME_INNER_PROFILE=1`. The scripts (`capture.ts`, `replay.mjs`, `run.mjs`, `measure.mjs`) lived in the session scratchpad. They need the company parts, so they are not committed.
 - To repeat: wrap the MCP engine's `sliceStart` to save its body, as `docs/plan-stress-solver-scaling.md` does for `simStudy`. Then POST the bodies to `lime-slice serve` in order, swapping `dataB64` for `meshRef` and setting `previewBase` from the last reply.
+
+## 10. Built milestones
+
+Measured the way section 4 was, against the release `serve` with `LIME_INNER_PROFILE=1`, on the Telo cover with PETG and a 0.4 mm nozzle. The request bodies were captured again through the MCP `Session` (96,358 triangles) and deleted afterwards. Every row also logs the process's peak working set and CPU time after each request.
+
+### 10.1 C0: the warm slowdown is the Windows heap
+
+**Cause.** Rust's default allocator on Windows is the process heap. In a long-running `serve`, the parallel toolpath stage took up to twice as long as in a fresh process, yet the process spent the same CPU time on the request. The threads were waiting, not working. Turning to mimalloc removes the slowdown. The other suspects were ruled out:
+
+- **Heat.** A 20 s pause before each request changed nothing: "back to 12%" took 12.3 s warm against 12.0 s without the pause.
+- **The kept stages' memory.** With mimalloc, the peak working set is the same (2.1 GB after the sequence), and a warm edit is no slower than a cold one. Memory held by the shelves is not the cause, so their size stays as it is.
+
+**Fix.** `mimalloc` is the global allocator of every long-running engine: the desktop app, `lime-slice` (`serve` and the CLI), and the MCP engine library. The slicer core doesn't change, and golden is 60/60 identical.
+
+IR3 V2 belt, medians of three alternating runs. Warm is the section 4 sequence in one process; cold is the same request to a fresh process.
+
+| Edit | Windows heap, warm | Windows heap, cold | warm / cold | mimalloc, warm | mimalloc, cold | warm / cold |
+|---|---:|---:|---:|---:|---:|---:|
+| Base | 10.4 s | 9.6 s | +8% | 9.5 s | 9.0 s | +6% |
+| Infill 30% | 8.4 s | 8.8 s | −4% | 8.1 s | 8.1 s | 0% |
+| Walls 3 | 7.3 s | 7.8 s | −5% | 6.1 s | 6.8 s | −10% |
+| Back to 12% / 2 walls | 14.2 s | 10.4 s | **+36%** | 9.8 s | 9.8 s | 0% |
+| Move | 12.4 s | 10.8 s | +15% | 9.7 s | 11.0 s | −12% |
+| Supports on | 18.2 s | 13.6 s | **+33%** | 12.6 s | 15.4 s | −18% |
+| Hole (new mesh) | 20.7 s | 16.3 s | **+27%** | 14.2 s | 16.0 s | −11% |
+| · toolpaths, warm | 5.0 s | 2.3 s | | 2.3 s | 2.5 s | |
+| · infill CPU sum, warm | 69.6 s | 31.4 s | | 34.0 s | | |
+
+Lime 220, one run each:
+
+| Edit | Windows heap, warm / cold | mimalloc, warm / cold |
+|---|---:|---:|
+| Infill 30% | 11.3 / 11.6 s | 10.6 / 11.1 s |
+| Back to 12% / 2 walls | 14.0 / 13.6 s | 11.9 / 12.0 s |
+| Hole | 20.4 / 21.9 s | 19.1 / 25.1 s |
+
+Every warm edit now costs no more than the same request cold. The cold column is noisy (±15%) because the serial tour varies from run to run on this laptop. The toolpath stage, which showed the slowdown, holds at 2.1–2.4 s all through the warm sequence. On the Windows heap, it climbed to 5.0 s.
