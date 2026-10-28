@@ -447,7 +447,7 @@ fn format_angle(deg: f64) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// Slow and fatten the belt-contact edge of an outer wall.
+/// Slow and fatten the belt-contact edge of an outer wall or a support foot.
 /// `slow_all` is a later copy's first layer: the whole layer is that edge's job.
 pub(crate) fn retouch(
     path: &Extrusion,
@@ -459,7 +459,7 @@ pub(crate) fn retouch(
     if slow_all {
         return vec![slow(path)];
     }
-    if path.kind != PathKind::Outer && path.kind != PathKind::Wall {
+    if !matches!(path.kind, PathKind::Outer | PathKind::Wall | PathKind::Support) {
         return vec![path.clone()];
     }
     if path.points.len() < 2 {

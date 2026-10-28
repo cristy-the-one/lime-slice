@@ -3357,15 +3357,16 @@ pub fn plan_support(
 /// union of their cross-sections so nearby branches melt into one shape.
 pub fn plan_tree_support(
     disks: &[Disk],
+    feet: &[Loop],
     strategy: &ResolvedStrategy,
     line_width: f64,
 ) -> Vec<Extrusion> {
-    if disks.is_empty() {
+    if disks.is_empty() && feet.is_empty() {
         return Vec::new();
     }
     let speed = crate::strategy::support_speed(strategy, false);
     let mut paths = Vec::new();
-    let mut thick: Vec<Loop> = Vec::new();
+    let mut thick: Vec<Loop> = feet.to_vec();
     for d in disks {
         let (c, r) = (d.xy, d.r.max(0.32));
         if r <= line_width * 0.95 {
@@ -3396,6 +3397,21 @@ pub fn plan_tree_support(
         .filter(|l| signed_area(l).abs() >= 0.35 && l.len() >= 3)
         .collect();
     emit_support_loops(&mut paths, &inner, strategy, line_width, speed);
+    // A foot is wider than the trunk it carries, so it is filled: the trunk's
+    // own loops then stand on beads, not on the foot's hollow middle.
+    let mut fill: Vec<Loop> = inner
+        .iter()
+        .filter(|l| l.iter().any(|p| feet.iter().any(|f| point_in_loop(f, p[0], p[1]))))
+        .cloned()
+        .collect();
+    for _ in 0..16 {
+        fill = offset_loops(&fill, -line_width * 0.95);
+        fill.retain(|l| signed_area(l).abs() >= 0.35 && l.len() >= 3);
+        if fill.is_empty() {
+            break;
+        }
+        emit_support_loops(&mut paths, &fill, strategy, line_width, speed);
+    }
     paths
 }
 
@@ -7253,13 +7269,13 @@ mod travel_tests {
             r,
             node: crate::support::NodeId(0),
         };
-        let tip = plan_tree_support(&[disk(0.39)], &strategy, 0.45);
+        let tip = plan_tree_support(&[disk(0.39)], &[], &strategy, 0.45);
         assert_eq!(tip.len(), 1);
         assert_eq!(tip[0].points.len(), 25);
         assert_eq!(tip[0].points[0], tip[0].points[24]);
         // A trunk is the outline of its disks pulled in by half a bead, and
         // then a second loop inside it.
-        let trunk = plan_tree_support(&[disk(1.5)], &strategy, 0.45);
+        let trunk = plan_tree_support(&[disk(1.5)], &[], &strategy, 0.45);
         assert_eq!(trunk.len(), 2);
         assert!(trunk.iter().all(|p| p.points.len() == 25));
     }
