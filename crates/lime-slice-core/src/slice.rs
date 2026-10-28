@@ -1929,6 +1929,13 @@ impl PlateObject<'_> {
     }
 }
 
+impl BeltJob {
+    /// What takes the laid frame's lab points back to each part frame.
+    fn tilt_offsets(&self) -> Vec<Option<[f64; 2]>> {
+        self.baked.iter().map(|&b| Some(b)).collect()
+    }
+}
+
 /// A belt slice: the rotation that laid the plate flat, and the placement
 /// the reply still reports. The planner sees the settled meshes, with no offset.
 struct BeltJob {
@@ -1938,6 +1945,12 @@ struct BeltJob {
     extent: f64,
     /// Each object's part-frame offset before that shift was baked into the mesh.
     offsets: Vec<Option<[f64; 2]>>,
+    /// The part of each offset baked into the laid mesh. A plate of one object
+    /// keeps its place out of the mesh: emit adds it across the belt, and
+    /// along the belt laying flat would settle it away. So a move of a lone
+    /// part plans nothing again. A plate of several bakes it, since the
+    /// objects' places relative to each other set where they meet a plane.
+    baked: Vec<[f64; 2]>,
     /// Part-frame bounds in the lab, with the later copies included along Y.
     lab_bounds: Vec<([f64; 3], [f64; 3])>,
     /// A pad on the belt, in the slice frame, when the request asked for one.
@@ -1963,15 +1976,23 @@ fn prepare_belt(
         return Err("belt.floorSupports is not available with a raft yet".into());
     }
     let offsets: Vec<Option<[f64; 2]>> = objects.iter().map(|o| o.offset).collect();
+    let across = objects.len() == 1;
+    let baked: Vec<[f64; 2]> = objects
+        .iter()
+        .map(|o| {
+            if across {
+                [0.0, 0.0]
+            } else {
+                o.to_bed()
+            }
+        })
+        .collect();
     let mut lab_bounds = Vec::with_capacity(objects.len());
     let mut placed = Vec::with_capacity(objects.len());
-    for object in objects.iter() {
+    for (object, &shift) in objects.iter().zip(&baked) {
         let (min, max) = object.mesh.bounds().ok_or("empty mesh")?;
         lab_bounds.push((min, max));
-        placed.push(crate::belt::translate_xy(
-            object.mesh.as_ref(),
-            object.to_bed(),
-        ));
+        placed.push(crate::belt::translate_xy(object.mesh.as_ref(), shift));
     }
     if belt.raft_layers > 0 && settings.adaptive {
         return Err(
@@ -2005,10 +2026,10 @@ fn prepare_belt(
     let extent = max_z / belt.sin_a;
     crate::belt::check_fit(&belt, span_x, extent)?;
     let lift = raft.map_or(0.0, |r| r.top);
-    for (object, mesh) in objects.iter_mut().zip(laid) {
+    for ((object, mesh), &shift) in objects.iter_mut().zip(laid).zip(&baked) {
         // Paint is in the part frame, as the mesh was, so it takes the
         // mesh's move onto the bed, the pad and the belt.
-        let (rotation, pivot, translation) = frame.pose(object.to_bed(), lift);
+        let (rotation, pivot, translation) = frame.pose(shift, lift);
         for disk in &mut object.settings.support_paint {
             *disk = disk.posed(&rotation, pivot, translation);
         }
@@ -2018,8 +2039,9 @@ fn prepare_belt(
         for region in &mut object.settings.reinforcement {
             region.pose(&rotation, pivot, translation);
         }
+        let across_bed = object.to_bed()[0] - shift[0];
         object.mesh = Cow::Owned(mesh);
-        object.offset = None;
+        object.offset = (across_bed != 0.0).then_some([across_bed, 0.0]);
         // Horizontal supports would stand on a bed this printer does not have.
         // `floorSupports` grows them to the tilted belt instead.
         if !belt.floor_supports {
@@ -2066,6 +2088,7 @@ fn prepare_belt(
         belt,
         extent,
         offsets,
+        baked,
         lab_bounds,
         raft,
         floor,
@@ -2515,7 +2538,7 @@ fn slice_plate(
                 blend: o.blend.clone(),
                 tilt: belt_job.as_ref().map(|job| patch::BeltTilt {
                     belt: job.belt,
-                    offsets: job.offsets.clone(),
+                    offsets: job.tilt_offsets(),
                 }),
                 watch: watch.clone(),
             });
@@ -2600,7 +2623,7 @@ fn slice_plate(
     let belt_emit = belt_job.as_ref().map(|job| &job.belt);
     let belt_tilt = belt_job.as_ref().map(|job| patch::BeltTilt {
         belt: job.belt,
-        offsets: job.offsets.clone(),
+        offsets: job.tilt_offsets(),
     });
     let emit_held = if let Some(job) = &belt_job {
         let arc = Arc::new(belt_output((*planned).clone(), job));
@@ -2736,7 +2759,7 @@ fn slice_plate(
                 .collect();
             let tilt = belt_job.as_ref().map(|job| SkeletonTilt {
                 belt: &job.belt,
-                offset: job.offsets[o].unwrap_or([0.0, 0.0]),
+                offset: job.baked[o],
                 plate: &planned,
             });
             ObjectView {

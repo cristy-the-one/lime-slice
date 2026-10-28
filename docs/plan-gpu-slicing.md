@@ -444,3 +444,31 @@ Telo cover, 6 mm through hole, the `model_commit` mesh. Base, then hole, in one 
 The warm G-code equals the cold G-code in every row. Settings edits keep their times and hashes.
 
 The target was a Model hole in under 3 s warm. It holds on the IR3 V2, at 2.5 s. On the Lime 220 it is 3.5 s, because few layers stay equal. **What limits it is the mesh, not the slicer.** `model_commit` tessellates the whole solid again. A per-layer comparison of the two cuts shows the hole changes the skins of only about 30 layers. Yet 1,043 of the IR3's 2,885 layers come out with different outline points, often with the same point count. The faces far from the hole get new triangles, and that moves their vertices. A commit that kept the tessellation of the faces the operation did not touch would let nearly every layer outside the hole's band be reused. That change belongs in `lime-model-occt`, and it is the next step for live Model edits.
+
+### 10.6 C5: a belt move reuses every stage
+
+On a belt, `prepare_belt` used to bake the part's bed place into the mesh before laying it flat. Laying flat settles the place along the belt (Y) away, but it kept the place across the belt (X). The keys hash the laid mesh, so:
+- a move across the belt planned everything again;
+- a move along the belt planned everything again too, because rounding left the settled mesh a few ulps different, although its G-code came out the same.
+
+A plate of one object now bakes no place at all. The laid mesh is the same wherever the part sits. The place across the belt becomes the object's emit offset `[dx, 0]`, which the emitter already adds before it maps Y to the gantry, the way #122 does on a flat bed.
+
+The preview, skeleton and bead maps undo only what was baked (`BeltJob::baked`). The reply's offsets are unchanged. A plate of several objects still bakes both, because the objects' places relative to each other decide where they meet a nozzle plane.
+
+Telo cover on the IR3 V2, warm after the base slice:
+
+| Move | C4 | C5 |
+|---|---:|---:|
+| Across the belt (125 → 120 mm) | 4.4 s, nothing reused | **0.11 s**, all stages reused |
+| Across again (→ 131.5 mm) | 4.4 s | **0.11 s** |
+| Along the belt (125 → 110 mm) | 4.4 s | **0.11 s** |
+
+**This is an output change for belt parts that sit off the bed's centre across the belt.** Their toolpaths are now the centred part's, shifted. Before, the infill and lightning grids were fixed to the bed, so they shifted under the part. Two consequences:
+- A part at the centre is unchanged. Golden has no belt rows and stays 60/60 identical. The belt tests pass with their locked hashes.
+- In the Telo replays, the IR3 rows that sit at x = 120 changed: moved, supports, support angle and hole, warm and cold. Every row at the centre, and every Lime 220 row, kept its G-code hash. For the Telo at 120 mm, the estimate moved by +19 s on 13.2 h (+0.04%), and it is now the same at every place across the belt (it was 47,357 s at 120 and 47,360 s at 131.5).
+
+`belt_part_frame` checks the behaviour on the overhang ledge:
+- a move across reuses the contours, toolpaths, order and travels;
+- it equals a cold slice, and it shifts every move's X word by the move, and nothing else;
+- it redraws no preview layer;
+- a move along the belt changes nothing.
