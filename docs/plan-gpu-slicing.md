@@ -361,3 +361,35 @@ Telo cover, release `serve`, median of the runs:
 The plan's target was order ≤ 2.5 s on the IR3; it is 1.7 s. On the Lime 220, 42% of the layers end where their start leads them. Further rounds settle too few of them to pay, so the halving rule stops after the second pass.
 
 Every one of the 32 replayed requests (both printers, the warm sequence and the cold edits) gave the same G-code hash as before.
+
+### 10.3 C2: cheaper infill ordering, byte-identical
+
+Four new off-by-default clocks split `order_infill`: `order candidates`, `order polish`, `order untangle` and `order rings`. On the base slice, as CPU summed over threads:
+
+| `order_infill` step | IR3 before | IR3 after | Lime 220 before | Lime 220 after |
+|---|---:|---:|---:|---:|
+| Legacy nearest neighbour | 0.31 s | 0.16 s | **7.88 s** | **0.14 s** |
+| Candidate orders (walk costs) | 0.08 s | 0.07 s | 0.06 s | 0.05 s |
+| Polish (relocation search) | **10.3 s** | **3.6 s** | 3.0 s | 1.2 s |
+| Untangle (2-opt and Or-opt) | 9.3 s | 6.0 s | 17.7 s | 9.0 s |
+| All of `order_infill` | 20.5 s | 10.3 s | 29.3 s | 11.0 s |
+
+The candidate orders cost under 1% of the loop. So dropping the candidates that never win, as section 6.2 suggested, isn't worth the risk to the output, and they all stay. Each change below gives the same `f64` results and the same decisions as before:
+
+- **Polish.** A `Walk` keeps one order's legs and running sums. When a trial moves one path, its cost is computed only from the first changed position. Past the change, the stops are copied from the walk as soon as the nozzle stands where it stood on the walk. The sums are added in `tour_cost`'s order. A trial stops early once its partial sum can no longer win, because legs are never negative. `a_walk_costs_a_moved_path_like_a_full_walk` compares `Walk::cost_of` with `walk_cost` bit for bit for every single-path move: open lines, closed rings and an empty path, with and without a cursor, seam rotation and a target.
+- **Or-opt (`relocate`).**
+  - It no longer allocates the tour without the run for every start position.
+  - A place is skipped when a lower bound of its cost already fails the test. The bound replaces each distance with its larger axis step, which needs no square root. A margin of 1e-6 mm keeps the skip far outside the rounding of the sums.
+- **Nearest-neighbour grid.** The approach grid's `HashMap` (SipHash per cell lookup) became one dense array over the sites' box. Each cell's sites are stored together, and the ring walk visits only the cells inside the box. The winner never depended on the order of the cells or of the sites in them. A run spread over more than 4M cells falls back to the linear scan, which picks the same paths.
+
+Telo cover, one run each, against C1:
+
+| | IR3 V2 C1 | IR3 V2 C2 | Lime 220 C1 | Lime 220 C2 |
+|---|---:|---:|---:|---:|
+| Order stage, base | 1.6 s | **0.93 s** | 4.9 s | **2.3 s** |
+| Base slice, cold | 4.8 s | **4.1 s** | 8.6 s | **5.9 s** |
+| Infill 30%, warm | 4.1 s | **3.7 s** | 6.9 s | **5.8 s** |
+| Back to 12% / 2 walls, warm | 4.9 s | **4.0 s** | 7.8 s | **5.9 s** |
+| Model hole, warm | 9.6 s | **8.9 s** | 14.1 s | **11.7 s** |
+
+What is left: the Or-opt scan visits about 260 places for each start position and run length. Each visit is cheap, about 5 ns, but the scan is now about 85% of untangle. Fewer visits would need a spatial index over the tour's stops, kept up to date as runs move. That is the next step if ordering matters again.
