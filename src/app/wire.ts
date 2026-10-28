@@ -2,7 +2,7 @@ import { type ColorMode } from "../colors";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { layFlatMatrix } from "../bed-rest";
 import { setSettleOn } from "../bed-rest-pref";
-import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, framePlateObject, removePlateObject, selectPlateObject, ungroupAssembly } from "./plate-actions";
+import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, exportAssembly, framePlateObject, layOutAssembly, removePlateObject, selectPlateObject, ungroupAssembly } from "./plate-actions";
 import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
 import { isAlignRelation } from "../place-snap";
@@ -295,6 +295,19 @@ export function wireApp() {
       measureButton.disabled = true;
       measureButton.textContent = "Measuring…";
       void measureClashes(commonVolume);
+      return;
+    }
+    const assemblyLayout = t.closest<HTMLElement>("[data-assembly-layout]")?.dataset.assemblyLayout;
+    if (assemblyLayout) {
+      layOutAssembly(assemblyLayout);
+      return;
+    }
+    const assemblyStep = t.closest<HTMLButtonElement>("[data-assembly-step]");
+    if (assemblyStep?.dataset.assemblyStep) {
+      assemblyStep.disabled = true;
+      void exportAssembly(assemblyStep.dataset.assemblyStep).finally(() => {
+        assemblyStep.disabled = false;
+      });
       return;
     }
     const assemblyUngroup = t.closest<HTMLElement>("[data-assembly-ungroup]")?.dataset.assemblyUngroup;

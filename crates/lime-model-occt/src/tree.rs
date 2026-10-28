@@ -317,6 +317,27 @@ impl Affine {
             m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], t[0], t[1], t[2],
         ])
     }
+
+    /// --- Assemblies M9. The twelve numbers `lime_tree_write_step_many` reads: a turn and a move, times at most one
+    /// uniform scale (a plate object's pose in model space), with no shear or mirror.
+    fn placement(&self) -> Result<[f64; 12], String> {
+        let scale = (self.m[0] * self.m[0] + self.m[3] * self.m[3] + self.m[6] * self.m[6]).sqrt();
+        if !(scale.is_finite() && scale > 1e-9) {
+            return Err("A part's pose must be a turn and a move, with no shear or mirror".into());
+        }
+        let turn = Affine {
+            m: self.m.map(|value| value / scale),
+            t: self.t,
+        };
+        turn.rigid().map_err(|_| {
+            "A part's pose must be a turn and a move, with no shear or mirror".to_string()
+        })?;
+        let m = self.m;
+        let t = self.t;
+        Ok([
+            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], t[0], t[1], t[2],
+        ])
+    }
 }
 
 /// The solid a join takes from another tree: that tree's key and the step it held at Apply. `object` and
@@ -1291,7 +1312,7 @@ fn fit_coupon_reply(spec: &CouponSpec, files: bool, surfaces: bool) -> Result<Va
             one["surfaces"] = serde_json::from_str(&text).map_err(|err| err.to_string())?;
         }
         if files {
-            let bytes = Shape::step_bytes_of(&[shape.raw()], &[name.to_string()])?;
+            let bytes = Shape::step_bytes_of(&[shape.raw()], &[name.to_string()], &[])?;
             one["stepB64"] = json!(base64::engine::general_purpose::STANDARD.encode(&bytes));
         }
         Ok(one)
@@ -1667,6 +1688,10 @@ enum Request {
         /// echoed. With pieces, one for each is required.
         #[serde(default)]
         names: Vec<String>,
+        /// --- Assemblies M9: where each solid of that file is written, this one first and then `pieces`, each a pose
+        /// from its own frame (an assembly member's pose in model space). Absent, each is written where it is.
+        #[serde(default)]
+        poses: Vec<Affine>,
     },
 }
 
@@ -2463,10 +2488,11 @@ impl Store {
                 let solids = named_solids_of(&bytes).map_err(Failure::Message)?;
                 let mut rows = Vec::with_capacity(solids.len());
                 for (name, solid) in &solids {
-                    let mut row = json!({ "name": name, "volumeMm3": solid.check().volume_mm3 });
+                    let mut row = json!({ "name": name, "volumeMm3": solid.check().volume_mm3, "bounds": solid.bounds() });
                     if files {
-                        let piece = Shape::step_bytes_of(&[solid.raw()], std::slice::from_ref(name))
-                            .map_err(Failure::Message)?;
+                        let piece =
+                            Shape::step_bytes_of(&[solid.raw()], std::slice::from_ref(name), &[])
+                                .map_err(Failure::Message)?;
                         row["bytesBase64"] =
                             json!(base64::engine::general_purpose::STANDARD.encode(&piece));
                     }
@@ -2631,7 +2657,8 @@ impl Store {
                 format,
                 pieces,
                 names,
-            } if !pieces.is_empty() => {
+                poses,
+            } if !pieces.is_empty() || !poses.is_empty() => {
                 if format != ExportFormat::Step {
                     return Err(Failure::Message(
                         "A split to print's pieces export as STEP".into(),
@@ -2647,6 +2674,17 @@ impl Store {
                         names.len()
                     )));
                 }
+                if !poses.is_empty() && poses.len() != all.len() {
+                    return Err(Failure::Message(format!(
+                        "A STEP file of {} parts needs a pose for each, and {} came.",
+                        all.len(),
+                        poses.len()
+                    )));
+                }
+                let mut places = Vec::with_capacity(12 * poses.len());
+                for pose in &poses {
+                    places.extend(pose.placement().map_err(Failure::Message)?);
+                }
                 for (key, node) in &all {
                     self.ensure(key, *node)?;
                 }
@@ -2654,7 +2692,8 @@ impl Store {
                 for (key, node) in &all {
                     raw.push(doc_in(&mut self.docs, key)?.shape(*node).raw());
                 }
-                let bytes = Shape::step_bytes_of(&raw, &names).map_err(Failure::Message)?;
+                let bytes =
+                    Shape::step_bytes_of(&raw, &names, &places).map_err(Failure::Message)?;
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 Ok(Answer::Plain(format!(
                     "{{\"bytesBase64\":\"{encoded}\",\"byteLength\":{},\"format\":\"step\",\"solids\":{}}}",
@@ -5409,6 +5448,7 @@ extern "C" {
     fn lime_tree_write_step_many(
         shapes: *const *const RawShape,
         names: *const *const c_char,
+        places: *const f64,
         count: c_int,
         path: *const c_char,
         error: *mut *mut c_char,
@@ -6050,7 +6090,15 @@ impl Shape {
 
     /// --- Split to print (D12). These solids as one STEP file, each a product of its own named by the same place in
     /// `names`. Every shape in `raw` is held by a node until this returns.
-    fn step_bytes_of(raw: &[*const RawShape], names: &[String]) -> Result<Vec<u8>, String> {
+    /// --- Assemblies M9: `places`, empty or twelve numbers a solid (`Affine::placement`), is where each is written.
+    fn step_bytes_of(
+        raw: &[*const RawShape],
+        names: &[String],
+        places: &[f64],
+    ) -> Result<Vec<u8>, String> {
+        if !places.is_empty() && places.len() != 12 * raw.len() {
+            return Err("Each solid needs a pose".into());
+        }
         let path = temp_step("export");
         let c = c_path(&path)?;
         let count = c_int::try_from(raw.len()).map_err(|_| "Too many solids".to_string())?;
@@ -6061,11 +6109,17 @@ impl Shape {
             .map_err(|_| "A piece's name is not a C string".to_string())?;
         let pointers: Vec<*const c_char> = named.iter().map(|name| name.as_ptr()).collect();
         let mut error: *mut c_char = std::ptr::null_mut();
-        // SAFETY: `raw` holds `count` live shapes, `pointers` as many NUL-terminated names, and `c` is a NUL-terminated path.
+        // SAFETY: `raw` holds `count` live shapes, `pointers` as many NUL-terminated names, `places` is null or twelve
+        // numbers a shape, and `c` is a NUL-terminated path.
         let ok = unsafe {
             lime_tree_write_step_many(
                 raw.as_ptr(),
                 pointers.as_ptr(),
+                if places.is_empty() {
+                    std::ptr::null()
+                } else {
+                    places.as_ptr()
+                },
                 count,
                 c.as_ptr(),
                 &mut error,

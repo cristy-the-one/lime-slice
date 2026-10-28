@@ -162,7 +162,7 @@ import { mountModelInspect, paintModelInspect, setInspectVolume } from "../ui/mo
 import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, usedByCount } from "../modeling/params.ts";
-import { readAssemblies, resolveForParameters } from "../assembly";
+import { exportParts, readAssemblies, resolveForParameters, type Assembly } from "../assembly";
 import { followAssemblyMove, groupAsBuilt, syncAssemblyView } from "./assemblies.ts";
 import { outOfDateSteps, planRebuild } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
@@ -176,7 +176,7 @@ import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, setMeas
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintOp, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
 import { bedFrame, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
-import { SUPPORT_NOTE, exportStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
+import { SUPPORT_NOTE, exportStem, partStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
 import { clampPieces, defaultsFor, enterMeasured, fillConnector, mm as mmText, resetMeasured, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { couponFileName, couponInputFor, fitCoupon, fitCouponRequest, readCouponReply } from "../modeling/fit-coupon.ts";
 import { choiceAt, jointDown, jointPlanes, noJointSentence } from "../modeling/joint-down.ts";
@@ -1326,6 +1326,30 @@ export async function commonVolume(aId: string, bId: string): Promise<number | s
   }
   const shape = body.preview && typeof body.preview === "object" ? decodeSolid(body.preview as Body) : null;
   return shape && typeof shape !== "string" ? Math.abs(shape.volumeMm3) : 0;
+}
+
+/**
+ * --- Assemblies M9. One STEP file of `assembly`: each member the step the plate holds, a solid named after its part at
+ * its pose in model space, the root first. A tree Model never opened is opened first. Says what was saved, or why not.
+ */
+export async function exportAssemblyStep(assembly: Assembly): Promise<{ ok: boolean; message: string }> {
+  const objects = livePlate();
+  const parts = exportParts(assembly, (id) => partStem(objects.find((obj) => obj.id === id)?.name ?? ""));
+  const held: { key: string; node: NodeId; name: string; pose: Affine }[] = [];
+  for (const row of parts) {
+    const obj = objects.find((item) => item.id === row.object);
+    if (!obj) continue;
+    const at = await toolTreeOf(obj);
+    if (typeof at === "string") return { ok: false, message: `${obj.name} has no closed solid, and a STEP assembly holds solids only.` };
+    held.push({ key: at.key, node: at.node, name: row.name, pose: modelPoseOf(obj) });
+  }
+  const [first, ...rest] = held;
+  if (!first) return { ok: false, message: "This assembly has no part on the plate." };
+  const bytes = await exportSolid(first.key, first.node, "step", rest, held.map((row) => row.name), held.map((row) => row.pose));
+  if (typeof bytes === "string") return { ok: false, message: bytes };
+  const file = `${exportStem(assembly.name)}.step`;
+  await saveStepFile(bytes, file);
+  return { ok: true, message: `Saved ${file}: ${held.length} parts at their assembled poses, each a solid named after its part.` };
 }
 
 /** The step of its tree that `obj` holds on the plate, as a join's tool, opening that tree first if Model never did. */
@@ -4335,8 +4359,8 @@ async function brepRoot(key: string) {
 }
 
 /** The node's solid as `format`: `brep`, which the plate object keeps and a project saves, or `step` for the STEP button. */
-async function exportSolid(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[], names?: readonly string[]): Promise<ArrayBuffer | string> {
-  const body = await treeCall(key, node, exportRequest(key, node, format, pieces, names));
+async function exportSolid(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[], names?: readonly string[], poses?: readonly Affine[]): Promise<ArrayBuffer | string> {
+  const body = await treeCall(key, node, exportRequest(key, node, format, pieces, names, poses));
   const problem = text(body.error);
   if (problem) return problem;
   if (typeof body.bytesBase64 !== "string") return "Open CASCADE did not write this solid.";

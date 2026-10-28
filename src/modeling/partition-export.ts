@@ -17,6 +17,14 @@ export function exportStem(name: string): string {
   return safe || "part";
 }
 
+/**
+ * --- Assemblies M9. A plate object's name as a solid's name: its stem, with the number the plate gives a second
+ * object of one file kept and the extension before it dropped, so `hook.step 2` is `hook 2`.
+ */
+export function partStem(name: string): string {
+  return exportStem(name.replace(/\.(stl|3mf|step|stp|obj|lime)( \d+)$/i, "$2"));
+}
+
 /** Each piece's name in assembly order, piece 1 first: `cover-1`, `cover-2`, …, and `cover-pins` last with `pins`. */
 export function pieceNames(source: string, count: number, pins = false): string[] {
   const stem = exportStem(source);
