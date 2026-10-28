@@ -335,3 +335,29 @@ Lime 220, one run each:
 | Hole | 20.4 / 21.9 s | 19.1 / 25.1 s |
 
 Every warm edit now costs no more than the same request cold. The cold column is noisy (±15%) because the serial tour varies from run to run on this laptop. The toolpath stage, which showed the slowdown, holds at 2.1–2.4 s all through the warm sequence. On the Windows heap, it climbed to 5.0 s.
+
+### 10.2 C1: the guessed tour
+
+`tour_part` now tours every layer ahead of the serial pass, in parallel (`guess_tours`):
+
+1. **First pass.** It tours each layer from no point and keeps where it ends. A layer with no paths passes on the guess below it.
+2. **Second pass.** It tours each layer from where the layer below ended in the first pass.
+3. **Further rounds.** A layer whose guess started from a point other than where the guess below it now ends is toured again from that point. Rounds continue while each one at least halves those layers, up to 8.
+
+The serial pass then walks up the layers. It keeps a guessed layer only when the layer's real start equals the guess's start bit for bit, and tours every other layer itself, as before. A kept guess is the tour the same code makes from the same point, so the G-code is the serial tour's. A test hook (`set_serial_tour_for_test`) turns the guesses off, and `guessed_tours_match_the_serial_tour` compares both ways path for path on three samples, with scarf seams on two of them.
+
+Telo cover, release `serve`, median of the runs:
+
+| | IR3 V2 belt | Lime 220 flat |
+|---|---:|---:|
+| Order stage, before | 5.3 s | 7.6 s |
+| Order stage, after | **1.7 s** | **5.0 s** |
+| · guess passes (parallel) | 1.5 s | 2.2 s |
+| · layers the serial pass still tours | 66 of 2,885 | 311 of 749 |
+| Base slice, cold, before → after | 8.9 → **5.3 s** | 11.7 → **9.0–9.4 s** |
+| Infill 30%, warm | 7.3 → **4.5 s** | 10.5 → **7.8 s** |
+| Model hole with supports on, warm | 13.8 → **10.1 s** | 18.3 → **14.6 s** |
+
+The plan's target was order ≤ 2.5 s on the IR3; it is 1.7 s. On the Lime 220, 42% of the layers end where their start leads them. Further rounds settle too few of them to pay, so the halving rule stops after the second pass.
+
+Every one of the 32 replayed requests (both printers, the warm sequence and the cold edits) gave the same G-code hash as before.
