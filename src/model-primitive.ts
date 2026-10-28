@@ -217,6 +217,8 @@ export function primitiveName(names: Iterable<string>, kind: PrimitiveKind): str
 
 /** Segments around a round primitive. A multiple of 4, so the ghost's box is the solid's own. */
 const ROUND = 32;
+/** Facets in one rounded corner of a box ghost: 11.25 degrees each, under the ghost's crease angle. */
+const CORNER_STEPS = 8;
 
 /**
  * The primitive's ghost as a triangle soup, wound outward, in its own frame: from `origin` = 0, untilted. The
@@ -241,7 +243,9 @@ export function primitiveMesh(spec: PrimitiveSpec): Float32Array {
       const [dx, dy, dz] = spec.size;
       const top = spec.primitive === "wedge" ? spec.topX ?? 0 : dx;
       if (!ok(dx, dy, dz) || !(top >= 0 && top <= dx)) break;
-      block(quad, dx, dy, dz, top);
+      const round = spec.primitive === "box" ? Math.min(spec.cornerRadius ?? 0, dx / 2, dy / 2) : 0;
+      if (round > 1e-9) roundedBlock(quad, dx, dy, dz, round);
+      else block(quad, dx, dy, dz, top);
       break;
     }
     case "cylinder":
@@ -304,6 +308,27 @@ function block(quad: Quad, dx: number, dy: number, dz: number, top: number) {
   quad(p(0, dy, 0), p(0, dy, dz), p(top, dy, dz), p(dx, dy, 0));
   quad(p(0, 0, 0), p(0, 0, dz), p(0, dy, dz), p(0, dy, 0));
   quad(p(dx, 0, 0), p(dx, dy, 0), p(top, dy, dz), p(top, 0, dz));
+}
+
+/** A box whose four edges along Z are rounded to `r`, each corner an arc of `CORNER_STEPS` facets. */
+function roundedBlock(quad: Quad, dx: number, dy: number, dz: number, r: number) {
+  const outline: [number, number][] = [];
+  const corners: [number, number, number][] = [[dx - r, r, -90], [dx - r, dy - r, 0], [r, dy - r, 90], [r, r, 180]];
+  for (const [cx, cy, from] of corners) {
+    for (let i = 0; i <= CORNER_STEPS; i += 1) {
+      const angle = ((from + (90 * i) / CORNER_STEPS) * Math.PI) / 180;
+      outline.push([cx + r * Math.cos(angle), cy + r * Math.sin(angle)]);
+    }
+  }
+  const low: Vec3 = [dx / 2, dy / 2, 0];
+  const high: Vec3 = [dx / 2, dy / 2, dz];
+  for (let i = 0; i < outline.length; i += 1) {
+    const [x0, y0] = outline[i]!;
+    const [x1, y1] = outline[(i + 1) % outline.length]!;
+    quad([x0, y0, 0], [x1, y1, 0], [x1, y1, dz], [x0, y0, dz]);
+    quad(low, [x1, y1, 0], [x0, y0, 0], [x0, y0, 0]);
+    quad(high, [x0, y0, dz], [x1, y1, dz], [x1, y1, dz]);
+  }
 }
 
 /**
