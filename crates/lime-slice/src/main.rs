@@ -12,6 +12,12 @@ use lime_slice_core::{
     RigidPose, ScarfSeam, SeamPlacement, SliceRequest, SliceSettings, StrategyId, ZHopMode,
 };
 
+/// The Windows heap slows a long-running `serve` down: after a few slices the
+/// parallel stages spent up to twice as long, at the same CPU time, waiting on
+/// it. mimalloc keeps a warm slice as fast as a cold one.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser)]
 #[command(name = "lime-slice", about = "Lime Slice FDM slicer")]
 struct Cli {

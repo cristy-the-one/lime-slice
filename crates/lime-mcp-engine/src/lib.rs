@@ -20,6 +20,12 @@ use lime_sim_bridge::slice_field;
 use lime_slice_core::{slice_payload_watched, Job, Watch};
 use serde_json::{json, Value};
 
+/// The MCP server lives as long as its client and slices again and again; on
+/// the Windows heap each warm slice got slower. mimalloc keeps it as fast as
+/// the first.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const JOB_KEEP: usize = 8;
 
 struct SliceJob {
