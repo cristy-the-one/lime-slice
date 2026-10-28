@@ -343,14 +343,17 @@ export function gotoRequest(key: string, node: NodeId, chordMm: number): TreeReq
  * `pieces`, a split to print's other pieces by tree and step, join this solid in one STEP file of named solids.
  * `names` is each solid's product name, this one first and then the pieces in order (`pieceNames`); the engine refuses
  * pieces without one for each.
+ * --- Assemblies M9. `poses`, one a solid in the same order, writes each where its pose puts it: an assembly's members
+ * at their poses in model space.
  */
-export function exportRequest(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[], names?: readonly string[]): TreeRequest {
+export function exportRequest(key: string, node: NodeId, format: "step" | "brep", pieces?: readonly { key: string; node: NodeId }[], names?: readonly string[], poses?: readonly Affine[]): TreeRequest {
   return {
     call: "export",
     key,
     node,
     format,
-    ...(pieces?.length ? { pieces: pieces.map((piece) => ({ key: piece.key, node: piece.node })), names: [...(names ?? [])] } : {}),
+    ...(pieces?.length || poses?.length ? { pieces: (pieces ?? []).map((piece) => ({ key: piece.key, node: piece.node })), names: [...(names ?? [])] } : {}),
+    ...(poses?.length ? { poses: poses.map((pose) => ({ m: [...pose.m], t: [...pose.t] })) } : {}),
   };
 }
 

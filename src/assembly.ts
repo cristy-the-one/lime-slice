@@ -184,6 +184,23 @@ export function movedTo(assembly: Assembly, object: string, pose: Affine, poseOf
   return { assembly: next, poses: solveAssembly(next, poseOf).poses };
 }
 
+/**
+ * --- Assemblies M9. The solids of a STEP assembly export: the root first, then the other members in their order, each
+ * named `nameOf` its part. A name already taken, in any case, gets `-2`, `-3`, … so every solid's name is its own.
+ */
+export function exportParts(assembly: Assembly, nameOf: (object: string) => string): { object: string; name: string }[] {
+  const root = rootOf(assembly);
+  const order = [...(root ? [root] : []), ...assembly.members.filter((member) => member !== root)];
+  const taken = new Set<string>();
+  return order.map((member) => {
+    const stem = nameOf(member.object) || "part";
+    let name = stem;
+    for (let n = 2; taken.has(name.toLowerCase()); n += 1) name = `${stem}-${n}`;
+    taken.add(name.toLowerCase());
+    return { object: member.object, name };
+  });
+}
+
 /** A new assembly id, one no assembly in `assemblies` has. */
 export function freshAssemblyId(assemblies: readonly Assembly[]): string {
   for (let n = 1; ; n += 1) if (!assemblies.some((row) => row.id === `asm_${n}`)) return `asm_${n}`;
