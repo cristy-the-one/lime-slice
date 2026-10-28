@@ -60,7 +60,9 @@ function nameOf(label: string): string {
 function shown(control: ControlSpec, settings: PresetSettings): unknown {
   if (!control.get) return control.preset ? settings[control.preset] : undefined;
   try {
-    return control.get(settings as unknown as Settings);
+    const value = control.get(settings as unknown as Settings);
+    // An empty box is Auto, and Auto is null on the wire.
+    return control.placeholder && value === "" ? null : value;
   } catch {
     return control.preset ? settings[control.preset] : undefined;
   }
@@ -120,10 +122,13 @@ export function applySetting(settings: PresetSettings, key: string, value: unkno
   const control = BY_KEY.get(key);
   if (!control?.set || !control.preset) return { reason: `There is no setting named ${key}.` };
   if (control.kind.type === "check" && typeof value !== "boolean") return { reason: `${nameOf(control.label)} must be true or false.` };
-  if ((control.kind.type === "number" || control.kind.type === "range") && typeof value !== "number") return { reason: `${nameOf(control.label)} must be a number.` };
+  const auto = value === null && control.placeholder !== undefined;
+  if ((control.kind.type === "number" || control.kind.type === "range") && typeof value !== "number" && !auto) {
+    return { reason: `${nameOf(control.label)} must be a number${control.placeholder ? ", or null for Auto" : ""}.` };
+  }
   const next = { ...settings };
   try {
-    control.set(next as unknown as Settings, value as number | boolean | string);
+    control.set(next as unknown as Settings, auto ? "" : (value as number | boolean | string));
   } catch {
     return { reason: `${nameOf(control.label)} could not be set.` };
   }

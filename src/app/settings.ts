@@ -1464,6 +1464,14 @@ function readNumber(spec: ControlSpec, raw: string): number {
   return typeof fallback === "number" ? fallback : 0;
 }
 
+/** An Auto-capable box shows the value the setting kept, so a typed 0 that the engine cannot print shows as the 1 it prints. */
+export function settleAutoField(t: HTMLInputElement) {
+  const spec = controlById(t.id);
+  if (!spec?.placeholder || !spec.get) return;
+  const kept = spec.get(state);
+  if (typeof kept === "number" && Number(t.value) !== kept) t.value = String(kept);
+}
+
 /** What follows a stored value besides a stale mark: printer profile writes, the retract store, and estimate repaints. */
 function afterSet(spec: ControlSpec, value: number | boolean | string): "stale" | "done" {
   switch (spec.id) {

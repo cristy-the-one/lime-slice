@@ -1053,7 +1053,7 @@ export const TOOLS: ToolSpec[] = [
       required: ["values"],
       properties: {
         object: handle,
-        values: { type: "object", description: "Setting keys and values." },
+        values: { type: "object", description: "Setting keys and values. A key that is auto in settings_schema (null) takes null for auto, and 0 is a real 0." },
         dryRun: { type: "boolean", description: "Report the change only." },
       },
     },

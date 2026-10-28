@@ -89,9 +89,9 @@ test("support gaps and a tree brim stay off a default slice and are sent when se
   await sliceMatching(page, bodies, (body) => body.supportStyle === "grid" && body.supportTreeBrimMm === undefined && body.supportZGapMm === 0.35);
 
   await page.locator("#sstyle").selectOption("tree");
-  await fillNumber(page, "szgap", "0");
-  await fillNumber(page, "sxygap", "0");
-  await fillNumber(page, "sifacel", "0");
+  await fillNumber(page, "szgap", "");
+  await fillNumber(page, "sxygap", "");
+  await fillNumber(page, "sifacel", "");
   await fillNumber(page, "stbrim", "0");
   await sliceMatching(
     page,
@@ -102,4 +102,39 @@ test("support gaps and a tree brim stay off a default slice and are sent when se
       body.supportInterfaceLayers === undefined &&
       body.supportTreeBrimMm === undefined,
   );
+});
+
+test("the support gaps show Auto, a typed 0 is sent as 0, and clearing the box is Auto again", async ({ page }) => {
+  const bodies = await quiet(page);
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#levelPick").selectOption("advanced");
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await setSupports(page, "auto");
+
+  for (const id of ["szgap", "sxygap", "sifacel"]) {
+    await expect(page.locator(`#${id}`)).toHaveValue("");
+    await expect(page.locator(`#${id}`)).toHaveAttribute("placeholder", "Auto");
+  }
+
+  await fillNumber(page, "szgap", "0");
+  await fillNumber(page, "sxygap", "0");
+  await fillNumber(page, "sifacel", "0");
+  await sliceMatching(page, bodies, (body) => body.supports === true && body.supportZGapMm === 0 && body.supportXyGapMm === 0 && body.supportInterfaceLayers === 1);
+  await page.locator("#sifacel").blur();
+  await expect(page.locator("#sifacel")).toHaveValue("1");
+  await expect(page.locator("#szgap")).toHaveValue("0");
+  await expect(page.locator("#sxygap")).toHaveValue("0");
+
+  await fillNumber(page, "szgap", "");
+  await fillNumber(page, "sxygap", "");
+  await fillNumber(page, "sifacel", "");
+  await sliceMatching(
+    page,
+    bodies,
+    (body) => body.supports === true && body.supportZGapMm === undefined && body.supportXyGapMm === undefined && body.supportInterfaceLayers === undefined,
+  );
+  for (const id of ["szgap", "sxygap", "sifacel"]) await expect(page.locator(`#${id}`)).toHaveValue("");
+  await expect(page.locator("#szgap")).toHaveAttribute("placeholder", "Auto");
 });
