@@ -37,7 +37,7 @@ import { aspectFor, aspectTip, meshPoint, type HandleAspect } from "./handle-emp
 import { contextMaterial } from "./context-look";
 import type { ContextPart } from "./model-context";
 import { turnCentre, type PrimitiveSpec } from "./model-primitive";
-import { boxUnder, posedBounds, type Affine } from "./model-space";
+import { boxUnder, inversePose, posedBounds, thenPose, type Affine } from "./model-space";
 import { facePaint, idleLook, sectionPlane, type LookState } from "./model-look";
 import { faceBoundarySegments } from "./model-select";
 import { sectionCap } from "./section-cap";
@@ -2574,6 +2574,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   }
 
   let grab: Grab | null = null;
+  /** The pose the grab last asked for, in the view it started in. */
+  let grabAsked: Affine | null = null;
   /** When a Ctrl-right press last ended: the menu a right release asks for is not wanted after a turn. */
   let lastRightGrab = 0;
   mountGrabListeners();
@@ -2632,6 +2634,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     },
     setPose(next) {
       setPosedMatrix(next);
+      seatSnapGuides();
       seatHit = null;
       rebuildGhost();
       kick();
@@ -3263,7 +3266,13 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     });
     // A size drag only changes numbers. Rebuilding the arrows each move kept their geometries alive past GC.
     if (same) {
-      for (let index = 0; index < next.length; index += 1) handleParts[index]!.handle = next[index]!;
+      for (let index = 0; index < next.length; index += 1) {
+        const part = handleParts[index]!;
+        part.handle = next[index]!;
+        // --- Assemblies M10. A handle whose axis turned with the view turns with it, without new geometry; one under a
+        // drag keeps the axis the drag started on.
+        if (!drag) part.root.quaternion.setFromUnitVectors(part.built, new THREE.Vector3(...part.handle.dir).normalize());
+      }
       collectFieldInputs();
       if (overHandle && !next.some((handle) => handle.id === overHandle)) overHandle = null;
       paintHandles();
@@ -3327,7 +3336,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       mesh.renderOrder = handle.look === "ring" ? 6 : 7;
       mesh.frustumCulled = false;
     }
-    return { handle, root, material, picks };
+    return { handle, root, material, picks, built: dir.clone() };
   }
 
   /** Tool handles plus the edge knob, when one is showing. */
@@ -4481,6 +4490,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
     snapRun = null;
     showSnap(null);
+    grabAsked = null;
+    seatSnapGuides();
     if (done.phase === "pending") {
       // Never moved: a Ctrl-click on the solid is the click it was.
       if (ev.type !== "pointercancel") pickCb(pickAt(ev), ev.shiftKey, { x: ev.clientX, y: ev.clientY });
@@ -4502,7 +4513,25 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (canvas.hasPointerCapture(done.pointerId)) canvas.releasePointerCapture(done.pointerId);
     snapRun = null;
     showSnap(null);
+    grabAsked = null;
+    seatSnapGuides();
     if (began) grabHooks?.cancel();
+  }
+
+  function grabMoveTo(pose: Affine) {
+    grabAsked = pose;
+    grabHooks?.move(pose);
+  }
+
+  /**
+   * --- Assemblies M10. A part open in its own frame stays put while the others move: the snap guides, worked out in the
+   * view the grab started in, follow the others. Identity whenever the part stands where the grab asked.
+   */
+  function seatSnapGuides() {
+    const { m, t } = grab?.phase === "go" && grabAsked ? thenPose(inversePose(grabAsked), poseNow) : { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+    snapGroup.matrixAutoUpdate = false;
+    snapGroup.matrix.set(m[0]!, m[1]!, m[2]!, t[0]!, m[3]!, m[4]!, m[5]!, t[1]!, m[6]!, m[7]!, m[8]!, t[2]!, 0, 0, 0, 1);
+    snapGroup.updateMatrixWorld(true);
   }
 
   function moveGrab(ev: PointerEvent) {
@@ -4525,14 +4554,14 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const dy = hit ? raw[1] + hit.delta[1] : snapStep(raw[1], ev.shiftKey, GRAB_MOVE_SNAP_MM);
       if (Math.abs(dx - now.offset[0]) < (hit ? SNAP_EXACT_MM : 0.02) && Math.abs(dy - now.offset[1]) < (hit ? SNAP_EXACT_MM : 0.02)) return;
       now.offset = [dx, dy, 0];
-      grabHooks?.move({ m: now.start.m, t: [now.start.t[0] + dx, now.start.t[1] + dy, now.start.t[2]] });
+      grabMoveTo({ m: now.start.m, t: [now.start.t[0] + dx, now.start.t[1] + dy, now.start.t[2]] });
       placeTip(ev, `X ${signed(dx)}, Y ${signed(dy)} mm${snapLabel ? ` · ${snapLabel}` : ""}`);
       return;
     }
     now.total += grabDegrees(ev.clientX - now.lastX);
     now.lastX = ev.clientX;
     const deg = snapStep(now.total, ev.shiftKey, GRAB_ROTATE_SNAP_DEG);
-    grabHooks?.move(turnPoseAbout(now.start, now.centre, now.axis, deg));
+    grabMoveTo(turnPoseAbout(now.start, now.centre, now.axis, deg));
     placeTip(ev, `${now.axis.toUpperCase()} ${signed(deg)}°`);
   }
 
@@ -4685,6 +4714,8 @@ interface HandlePart {
   root: THREE.Group;
   material: THREE.MeshBasicMaterial;
   picks: THREE.Mesh[];
+  /** The axis the geometry was built along. */
+  built: THREE.Vector3;
 }
 
 interface ActiveDrag {

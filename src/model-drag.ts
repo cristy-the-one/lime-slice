@@ -6,7 +6,7 @@
 import { DOCK_KNOB_REACH } from "./gizmo-math.ts";
 import { SPLIT_TILT_MAX_DEG, type SplitPlan } from "./model-plane.ts";
 import type { PrimitiveKind } from "./model-primitive.ts";
-import { turnDir } from "./model-space.ts";
+import { turnDir, type Affine } from "./model-space.ts";
 import { axesOf, framePose, isIdentityFrame, planePoint, workplaneOnFace, type Workplane } from "./workplane.ts";
 
 export type Vec3 = [number, number, number];
@@ -152,6 +152,11 @@ export interface DragContext {
   repeat?: { mode: "linear" | "polar" | "path" };
   /** A chamfer's sides as the panel shows them: a second size or an angle adds a knob. Absent is equal sides. */
   chamfer?: "equal" | "two" | "angle";
+  /**
+   * --- Assemblies M10. Model space's axes as the view draws them, for a part open in its own frame: Place moves and turns
+   * the part in model space, so its arrows and rings point along model X, Y, Z. Absent while the view is model space.
+   */
+  placeAxes?: Affine;
 }
 
 const X: Vec3 = [1, 0, 0];
@@ -319,6 +324,18 @@ function workplaneHandles(ctx: DragContext): Spec[] {
 /** Place moves and turns the open object in model space, from the dock like a primitive. */
 function placeHandles(ctx: DragContext): Spec[] {
   const r = ctx.read;
+  const axes = ctx.placeAxes;
+  if (axes) {
+    const along = (dir: Vec3) => turnDir(axes, dir);
+    const gimbal = turnGimbal([r("modelPlaceRx"), r("modelPlaceRy"), r("modelPlaceRz")]).map(along);
+    const arrows = (["modelPlaceX", "modelPlaceY", "modelPlaceZ"] as const).map((field, i) =>
+      axisHandle(`place-${"xyz"[i]}`, "arrow", field, onDock(0), along([X, Y, Z][i]!), (["x", "y", "z"] as const)[i]!, `Move ${"XYZ"[i]}`));
+    const rings = (["modelPlaceRx", "modelPlaceRy", "modelPlaceRz"] as const).map((field, i): Spec => ({
+      id: `turn-${field}`, kind: "ring", look: "ring", fields: [field], seat: onDock(0), dir: gimbal[i]!, rate: 1, step: 15,
+      color: (["x", "y", "z"] as const)[i]!, label: `Turn ${"XYZ"[i]}`, unit: "°",
+    }));
+    return [...arrows, ...rings];
+  }
   return [
     ...moveArrows(["modelPlaceX", "modelPlaceY", "modelPlaceZ"], "place"),
     ...turnRings(["modelPlaceRx", "modelPlaceRy", "modelPlaceRz"], [r("modelPlaceRx"), r("modelPlaceRy"), r("modelPlaceRz")]),

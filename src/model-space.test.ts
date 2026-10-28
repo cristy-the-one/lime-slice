@@ -17,6 +17,7 @@ import {
   toSolidOp,
   turnDir,
   typedPoseOf,
+  viewFrameOf,
   type Affine,
 } from "./model-space.ts";
 import { opLabel, type ModelOp, type Vec3 } from "./model-tree.ts";
@@ -182,6 +183,21 @@ eq("rigid: a turn and a move are; a scale, a mirror and a shear are not", [
   eq("so the stored op is the typed op", toSolidOp(typed, typedPoseOf({ modelPose: moved, frame: "part" })), typed);
   check("while the default frame moves it", JSON.stringify(toSolidOp(typed, typedPoseOf({ modelPose: moved }))) !== JSON.stringify(typed));
   eq("an object with no pose is the identity in either frame", [typedPoseOf({}), typedPoseOf({ frame: "part" })], [IDENTITY_POSE, IDENTITY_POSE]);
+}
+
+// Assemblies M10: a part-frame member opens in its own frame, and the view frame round-trips the part frame and model space.
+{
+  const member: Affine = { m: eulerOrient(0, 0, 90), t: [40, 10, 5] };
+  const round = (v: readonly number[]) => v.map((x) => Math.round(x * 1e9) / 1e9 + 0);
+  const view = viewFrameOf({ modelPose: member, frame: "part" }, true);
+  eq("the part's X = 10 stands at model (40, 20, 5)", round(applyPose(member, [10, 0, 0])), [40, 20, 5]);
+  eq("and the view frame takes it back to the part's (10, 0, 0)", round(applyPose(view, [40, 20, 5])), [10, 0, 0]);
+  eq("a context point at model (50, 10, 5) is drawn at (0, -10, 0), turned back about the part", round(applyPose(view, [50, 10, 5])), [0, -10, 0]);
+  eq("the open part itself stands at the identity in the view", { m: round(thenPose(member, view).m), t: round(thenPose(member, view).t) }, IDENTITY_POSE);
+  eq("from the view back to model space is the member's pose", round(applyPose(inversePose(view), [0, -10, 0])), [50, 10, 5]);
+  eq("a model-frame member opens in model space", viewFrameOf({ modelPose: member, frame: "model" }, true), IDENTITY_POSE);
+  eq("so does a part-frame object in no assembly", viewFrameOf({ modelPose: member, frame: "part" }, false), IDENTITY_POSE);
+  eq("and a member that stands where its file put it", viewFrameOf({ frame: "part" }, true), IDENTITY_POSE);
 }
 
 if (failed) {

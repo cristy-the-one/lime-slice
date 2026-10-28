@@ -28,6 +28,15 @@ export function typedPoseOf(obj: { modelPose?: Affine; frame?: ObjectFrame }): A
   return obj.frame === "part" ? IDENTITY_POSE : obj.modelPose ?? IDENTITY_POSE;
 }
 
+/**
+ * --- Assemblies M10. Model space into the frame Model draws and types in while `obj` is open (D12). A part-frame member
+ * of an assembly that stands moved or turned opens in its own frame: the inverse of its pose, so it stands as it was
+ * modelled and the other objects move around it. Anything else opens in model space.
+ */
+export function viewFrameOf(obj: { modelPose?: Affine; frame?: ObjectFrame } | undefined, inAssembly: boolean): Affine {
+  return obj && inAssembly && obj.frame === "part" && !isIdentity(obj.modelPose) ? inversePose(obj.modelPose!) : IDENTITY_POSE;
+}
+
 /** A copy beside its source along model X, its own width plus this gap away, so the two never sit on each other. */
 export const DUPLICATE_GAP_MM = 10;
 

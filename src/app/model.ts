@@ -17,6 +17,7 @@ import {
   thenPose,
   toSolidOp,
   turnDir,
+  viewFrameOf,
   type Affine,
   type PlaceFields,
 } from "../model-space";
@@ -163,7 +164,7 @@ import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, usedByCount } from "../modeling/params.ts";
 import { exportParts, readAssemblies, resolveForParameters, type Assembly } from "../assembly";
-import { followAssemblyMove, groupAsBuilt, syncAssemblyView } from "./assemblies.ts";
+import { assemblyOfObject, followAssemblyMove, groupAsBuilt, syncAssemblyView } from "./assemblies.ts";
 import { outOfDateSteps, planRebuild } from "../param-rebuild.ts";
 import { mountParameters, syncParameters, syncRebuildCount } from "../ui/parameters.ts";
 import { faceTriangles } from "../sim/bridge-body.ts";
@@ -261,6 +262,8 @@ let placeUndo: Affine[] = [];
 let placeRedo: Affine[] = [];
 /** The pose a Place gesture started from, while it is under way. */
 let placeBefore: Affine | null = null;
+/** --- Assemblies M10. A Ctrl-drag's start pose, when the part is open in its own frame, so the view's poses map back to model space. */
+let grabFrom: Affine | null = null;
 let placeTimer = 0;
 /** A typed or scrubbed Place number is one step once it rests this long. A drag ends its own step. */
 const PLACE_SETTLE_MS = 400;
@@ -483,7 +486,7 @@ export function bindModelView() {
       const obj = state.plate.objects.find((item) => item.id === state.plate.selectedId);
       if (obj && obj.sourcePos.length >= 9) {
         const printed = printFrame(obj.sourcePos, obj.orient, obj.partScale);
-        return { positions: printed.positions, toModel: thenPose(printed.toSource, meshToModel(obj)) };
+        return { positions: printed.positions, toModel: thenPose(printed.toSource, inView(meshToModel(obj))) };
       }
       return null;
     },
@@ -525,6 +528,10 @@ export function bindModelView() {
       return open ? placeFields(objectPose(), pivotOf(open.solid)) : null;
     },
     placeMoved,
+    placeAxes() {
+      const frame = viewFrame();
+      return isIdentity(frame) ? null : frame;
+    },
     grabReady,
     grabStart,
     grabMove,
@@ -552,10 +559,11 @@ export function bindModelView() {
       return !obj || sameMat(state.orient, printOrient(obj.workplane));
     },
     printWUp,
-    newSolidAt,
+    newSolidAt: (spec) => newSolidInView(spec),
     frameNewSolid(spec) {
       const others = plateBoxes();
-      fx.model?.frame(unionBox([primitiveBounds(newSolidAt(spec, others)), ...others])!);
+      const frame = viewFrame();
+      fx.model?.frame(unionBox([primitiveBounds(newSolidInView(spec, others)), ...others.map((box) => boxUnder(box, frame))])!);
     },
     joinChoices() {
       const at = open;
@@ -563,7 +571,7 @@ export function bindModelView() {
     },
     joinGhost(id) {
       const obj = livePlate().find((item) => item.id === id);
-      return obj ? { id, positions: obj.sourcePos, matrix: meshToModel(obj) } : null;
+      return obj ? { id, positions: obj.sourcePos, matrix: inView(meshToModel(obj)) } : null;
     },
     notATool(id) {
       const obj = state.plate.objects.find((item) => item.id === id);
@@ -4138,12 +4146,23 @@ function newSolidAt(spec: PrimitiveSpec, others = plateBoxes()): PrimitiveSpec {
   return { ...root, origin: [root.origin[0] + t[0], root.origin[1] + t[1], root.origin[2] + t[2]] };
 }
 
+/** --- Assemblies M10. Where New solid puts `spec`, drawn in the view: turned with the others when a part is open in its own frame. */
+function newSolidInView(spec: PrimitiveSpec, others = plateBoxes()): PrimitiveSpec {
+  const placed = newSolidAt(spec, others);
+  const frame = viewFrame();
+  if (editing?.op.kind === "root" || isIdentity(frame)) return placed;
+  const { kind: _kind, op: _op, ...shown } = toSolidOp({ kind: "boolean", op: "fuse", ...placed }, inversePose(frame)) as Extract<ModelOp, { kind: "boolean" }>;
+  return shown;
+}
+
 /**
  * Every plate object's box in model space, the open one as the view shows it: an edit not yet on the plate can
  * have grown it. Each mesh's own box is read once.
  */
 function plateBoxes(): Bounds[] {
-  const shown = openBox();
+  const box = openBox();
+  const frame = viewFrame();
+  const shown = box && !isIdentity(frame) ? boxUnder(box, inversePose(frame)) : box;
   return livePlate().map((obj) => (shown && obj.id === open?.objectId ? shown : boxUnder(boxOf(obj.sourcePos), meshToModel(obj))));
 }
 
@@ -4583,11 +4602,11 @@ export function refreshModelContext() {
     // A tool's step on screen: the part its join cut is grey behind it, as it was on screen, and the tool's own plate
     // object, if Keep left it there, would only stand in its way.
     const tool = lens.joins.at(-1)?.op.tool.object;
-    fx.model?.setContext([...parts.filter((part) => part.id !== tool), { id: open.objectId, self: true, positions: open.solid.positions, matrix: objectPose() }]);
+    fx.model?.setContext([...partsInView(parts.filter((part) => part.id !== tool)), { id: open.objectId, self: true, positions: open.solid.positions, matrix: shownPose() }]);
     showExplode(false);
     fx.model?.setTags([]);
   } else {
-    fx.model?.setContext(paintExplode(parts));
+    fx.model?.setContext(partsInView(paintExplode(parts)));
   }
   const canvas = document.querySelector<HTMLElement>("#model");
   const obj = open ? state.plate.objects.find((item) => item.id === open!.objectId) : undefined;
@@ -4613,7 +4632,7 @@ function paintExplode(parts: ContextPart[]): ContextPart[] {
   showExplode(!!open && canExplode(open.key, parts));
   const look = explodeLook();
   const exploded = open && look.on ? explodeContext(open.objectId, open.key, boundsOf(open.solid.positions), objectPose(), parts, look.gapMm) : null;
-  fx.model?.setTags(exploded?.tags ?? []);
+  fx.model?.setTags((exploded?.tags ?? []).map((tag) => ({ ...tag, at: applyPose(viewFrame(), tag.at) })));
   if (canvas) {
     if (exploded) {
       canvas.dataset.explode = String(look.gapMm);
@@ -4632,9 +4651,47 @@ function objectPose(): Affine {
   return obj ? modelPoseOf(obj) : IDENTITY_POSE;
 }
 
-/** The pose of the solid on screen: a tool's step where its joins put it, else the open object's. */
+let viewKept: { obj: PlateObject; inAssembly: boolean; frame: Affine } | null = null;
+
+/**
+ * --- Assemblies M10. Model space into the view (assemblies D12): the inverse of the open part's pose for a part-frame
+ * member of an assembly, so the part stands as it was modelled and every number Model reads or types is in its own
+ * frame. Else none.
+ */
+function viewFrame(): Affine {
+  const obj = openObject();
+  if (!obj) return IDENTITY_POSE;
+  const inAssembly = obj.frame === "part" && !!assemblyOfObject(obj.id);
+  if (viewKept?.obj !== obj || viewKept.inAssembly !== inAssembly) viewKept = { obj, inAssembly, frame: viewFrameOf(obj, inAssembly) };
+  return viewKept.frame;
+}
+
+/** A pose into model space, on into the view. */
+function inView(pose: Affine): Affine {
+  const frame = viewFrame();
+  return isIdentity(frame) ? pose : thenPose(pose, frame);
+}
+
+/** Grey parts placed in model space, drawn in the view. */
+function partsInView(parts: ContextPart[]): ContextPart[] {
+  const frame = viewFrame();
+  return isIdentity(frame) ? parts : parts.map((part) => ({ ...part, matrix: thenPose(part.matrix, frame) }));
+}
+
+/** A direction in the view, as a direction in model space. */
+function modelDirection(d: Vec3): Vec3 {
+  const frame = viewFrame();
+  return isIdentity(frame) ? d : applyPose({ m: inversePose(frame).m, t: [0, 0, 0] }, d);
+}
+
+/** The pose of the solid on screen, in the view: a tool's step where its joins put it, else the open object's. */
 function openPose(): Affine {
-  return lens?.pose ?? objectPose();
+  return lens ? inView(lens.pose) : shownPose();
+}
+
+/** The open object's pose in the view. In its own frame that is exactly the identity, so a typed number is stored exactly as typed. */
+function shownPose(): Affine {
+  return isIdentity(viewFrame()) ? objectPose() : IDENTITY_POSE;
 }
 
 /** --- S2 --- xyz in the solid's frame, posed into model space. */
@@ -4704,7 +4761,7 @@ function learnSeat(solid: ParsedSolid) {
 export function frameModel(all: boolean) {
   const box = openBox();
   // With no solid open, the view frames whatever model space holds.
-  const others = all || !box ? contextParts(livePlate(), open?.objectId ?? null).map((part) => boxUnder(boxOf(part.positions), part.matrix)) : [];
+  const others = all || !box ? partsInView(contextParts(livePlate(), open?.objectId ?? null)).map((part) => boxUnder(boxOf(part.positions), part.matrix)) : [];
   const union = unionBox(box ? [box, ...others] : others);
   if (union) fx.model?.frame(union);
 }
@@ -4750,7 +4807,7 @@ function followAssemblyPoses(before: Params) {
   for (const { object, pose } of followed.moved) state.plate = withModelPose(state.plate, object, pose);
   syncAssemblyView();
   if (open && followed.moved.some((row) => row.object === open!.objectId)) {
-    fx.model?.setPose(objectPose());
+    fx.model?.setPose(openPose());
     lookPoseChanged();
     refreshModelGhost();
   }
@@ -4758,10 +4815,12 @@ function followAssemblyPoses(before: Params) {
 }
 
 function putPose(objectId: string, pose: Affine) {
+  const framed = !isIdentity(viewFrame());
   state.plate = withModelPose(state.plate, objectId, pose);
   // --- Assemblies M5. The root carries its assembly (D9); a member keeps where it was put, as its new offset.
-  if (followAssemblyMove(objectId, pose)) refreshModelContext();
-  fx.model?.setPose(objectPose());
+  // --- M10. A part open in its own frame stays put, and the others move the opposite way.
+  if (followAssemblyMove(objectId, pose) || framed || !isIdentity(viewFrame())) refreshModelContext();
+  fx.model?.setPose(openPose());
   lookPoseChanged();
   refreshModelGhost();
   markProjectDirty();
@@ -4816,14 +4875,16 @@ function grabStart(): boolean {
   if (openModelTool() !== "place") return false;
   endPlace();
   placeBefore = objectPose();
+  grabFrom = isIdentity(viewFrame()) ? null : placeBefore;
   beginEdit();
   return true;
 }
 
+/** `pose` is in the view the grab started in: for a part open in its own frame, that is its pose when the grab began. */
 function grabMove(pose: Affine) {
   const at = open;
   if (!at || !placeBefore) return;
-  putPose(at.objectId, pose);
+  putPose(at.objectId, grabFrom ? thenPose(pose, grabFrom) : pose);
   syncPlaceFields(true);
   syncUndo();
 }
@@ -4851,7 +4912,7 @@ function alignOpenTo(targetId: string, relation: AlignRelation): boolean {
   const at = open;
   if (!at || busy || jumping || editing || lens) return false;
   const moving = openBox();
-  const target = contextParts(livePlate(), at.objectId).find((part) => part.id === targetId);
+  const target = partsInView(contextParts(livePlate(), at.objectId)).find((part) => part.id === targetId);
   if (!moving || !target) return false;
   const delta = alignDelta(moving, boxUnder(boxOf(target.positions), target.matrix), relation);
   if (!delta || delta.every((d) => d === 0)) return false;
@@ -4860,7 +4921,7 @@ function alignOpenTo(targetId: string, relation: AlignRelation): boolean {
   endPlace();
   placeBefore = objectPose();
   beginEdit();
-  putPose(at.objectId, movedPose(objectPose(), [delta[0], delta[1], delta[2]]));
+  putPose(at.objectId, movedPose(objectPose(), modelDirection([delta[0], delta[1], delta[2]])));
   endPlace();
   syncPlaceFields(true);
   return true;
@@ -4887,7 +4948,7 @@ function plateObjectOpen(): PlateObject | undefined {
 /** The open object's workplane in model space: the frame it keeps in its own frame, at its pose. */
 function workplaneOfOpen(): Workplane {
   const obj = openObject();
-  return workplaneIn(obj?.workplane, modelPoseOf(obj ?? {}));
+  return workplaneIn(obj?.workplane, shownPose());
 }
 
 /**
@@ -4899,7 +4960,7 @@ function faceWorkplane(): Workplane | "curved" | null {
   const at = open;
   if (!at || face == null) return null;
   const own = flatFace(at.solid, face);
-  return own ? workplaneIn(workplaneOnFace(own), objectPose()) : "curved";
+  return own ? workplaneIn(workplaneOnFace(own), shownPose()) : "curved";
 }
 
 /** A flat face of the open solid, from its own frame into model space. */
@@ -4931,7 +4992,7 @@ function workplaneMoved(plane: Workplane, phase: PlacePhase) {
   }
   startWorkplane();
   // Global is model space whatever the part's pose: not stored, so it stays model space after a Place.
-  state.plate = withWorkplane(state.plate, at.objectId, isGlobalFrame(plane) ? undefined : workplaneOwn(plane, objectPose()));
+  state.plate = withWorkplane(state.plate, at.objectId, isGlobalFrame(plane) ? undefined : workplaneOwn(plane, shownPose()));
   markProjectDirty();
   window.clearTimeout(wpTimer);
   if (phase === "end") endWorkplane();
