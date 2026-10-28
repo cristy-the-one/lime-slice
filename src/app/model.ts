@@ -19,8 +19,12 @@ import {
   turnDir,
   viewFrameOf,
   type Affine,
+  type ObjectFrame,
   type PlaceFields,
+  type Turn,
 } from "../model-space";
+import { lowestZ, settledPose, solidHull } from "../model-settle";
+import { settleOn } from "../bed-rest-pref";
 import { alignDelta, type AlignRelation } from "../place-snap";
 import { builtBranch, crossEdit, crossPlan, editHead, editNotes, editPanel, editRefusal, editedOp, FEATURE_ROOT_EDIT, forked, matchEdges, matchFaces, olderSplitNote, replayChain, stepIds, toolEditHead, toolEditRefusal, toolPose, type EditLevel, type EditPanel, type ForkStep, type ToolLink } from "../model-edit";
 import { primitiveBounds, primitiveName, rootSpec, type PrimitiveSpec } from "../model-primitive";
@@ -140,7 +144,7 @@ import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosit
 import { explodeLook, lookPoseChanged, mountModelLook, onExplode, resetModelLook, sectionFacePicked, showExplode } from "../ui/model-look";
 import { canExplode, explodeContext, heldParts, heldPiece } from "./model-explode";
 import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
-import { addedSolid, addedSplit, arrangedObjects, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withModelPose, withPieceMesh, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
+import { addedSolid, addedSplit, arrangedObjects, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withFrame, withModelPose, withPieceMesh, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
 import { addMeshBytes, livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
@@ -257,9 +261,18 @@ const readSolids = new WeakSet<ParsedSolid>();
 
 /** The object the camera last framed. A new solid of the same object keeps the user's view. */
 let framedFor: string | null = null;
+/** A Place step: the pose, and since M11 the frame, the open object had before it. */
+type PlaceStep = { pose: Affine; frame: ObjectFrame };
 /** Place moves of the open object in this visit, for Undo and Redo while Place is open. One gesture is one step. */
-let placeUndo: Affine[] = [];
-let placeRedo: Affine[] = [];
+let placeUndo: PlaceStep[] = [];
+let placeRedo: PlaceStep[] = [];
+/** The turn the Place fields last showed or took, so they read the same turn the same way (`steadyTurn`). */
+let shownTurn: { id: string; turn: Turn } | null = null;
+/**
+ * Settle on the bed during a ring turn: the pose the rings hold, the settled pose shown for it, and the floor the turn
+ * began on. While the part still shows `shown`, the next frame turns from `free`, as Prepare's held pose does.
+ */
+let settleHold: { free: Affine; shown: Affine; floor: number } | null = null;
 /** The pose a Place gesture started from, while it is under way. */
 let placeBefore: Affine | null = null;
 /** --- Assemblies M10. A Ctrl-drag's start pose, when the part is open in its own frame, so the view's poses map back to model space. */
@@ -534,9 +547,14 @@ export function bindModelView() {
       return { marks };
     },
     placeFields() {
-      return open ? placeFields(objectPose(), pivotOf(open.solid)) : null;
+      if (!open) return null;
+      const fields = placeFields(objectPose(), pivotOf(open.solid), turnHint());
+      shownTurn = { id: open.objectId, turn: { rx: fields.rx, ry: fields.ry, rz: fields.rz } };
+      return fields;
     },
     placeMoved,
+    placeFrame,
+    setPlaceFrame,
     placeAxes() {
       const frame = viewFrame();
       return isIdentity(frame) ? null : frame;
@@ -4784,15 +4802,44 @@ export function frameInModel(id: string) {
   else framedFor = null;
 }
 
-/** A Place field moved the open object in model space. Its plate pose, mesh, and slice stay as they are. */
+/** The turn the Place fields show for the open object, if they showed one. */
+function turnHint(): Turn | undefined {
+  return open && shownTurn?.id === open.objectId ? shownTurn.turn : undefined;
+}
+
+/**
+ * A Place field moved the open object in model space. Its plate pose, mesh, and slice stay as they are. With Settle on
+ * the bed, a ring's turn snaps to the nearest rest face, as Prepare's rings do, and rests on the floor it began on.
+ */
 function placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase) {
   const at = open;
   if (!at || busy || jumping) return;
   const from = objectPose();
-  const next = poseFromPlace(from, pivotOf(at.solid), field, value);
+  const pivot = pivotOf(at.solid);
+  const turning = field === "rx" || field === "ry" || field === "rz";
+  const ring = turning && phase !== "typed";
+  const hold = ring && settleHold && samePose(settleHold.shown, from) ? settleHold : null;
+  const base = hold ? hold.free : from;
+  const near = turnHint();
+  let next = poseFromPlace(base, pivot, field, value, near);
+  if (turning) {
+    const was = placeFields(base, pivot, near);
+    shownTurn = { id: at.objectId, turn: { rx: was.rx, ry: was.ry, rz: was.rz, [field]: value } };
+  }
+  settleHold = null;
+  const hull = ring && settleOn() ? solidHull(at.solid.positions) : null;
+  if (hull) {
+    const floor = hold ? hold.floor : lowestZ(hull, from);
+    const settled = settledPose(hull, next, pivot, floor);
+    if (phase !== "end") settleHold = { free: next, shown: settled.pose, floor };
+    next = settled.pose;
+  }
+  // The ring wrote the angle it was held at; once let go, the fields read the pose it settled to.
+  const settledEnd = !!hull && phase === "end";
   if (samePose(next, from)) {
     // A grab with no move, or a number retyped as it was, changes nothing and opens no step.
     if (phase === "end") endPlace();
+    if (settledEnd) syncPlaceFields(true);
     return;
   }
   if (!placeBefore) {
@@ -4803,6 +4850,7 @@ function placeMoved(field: keyof PlaceFields, value: number, phase: PlacePhase) 
   window.clearTimeout(placeTimer);
   if (phase === "end") endPlace();
   else if (phase === "typed") placeTimer = window.setTimeout(endPlace, PLACE_SETTLE_MS);
+  if (settledEnd) syncPlaceFields(true);
   syncUndo();
 }
 
@@ -4846,7 +4894,7 @@ function endPlace() {
   if (!before) return;
   flushEdit();
   if (!samePose(before, objectPose())) {
-    placeUndo.push(before);
+    placeUndo.push({ pose: before, frame: openObject()?.frame ?? "model" });
     placeRedo = [];
     markModelEdit();
   }
@@ -4864,11 +4912,16 @@ function placeStep(way: "undo" | "redo") {
   endPlace();
   const [from, to] = way === "undo" ? [placeUndo, placeRedo] : [placeRedo, placeUndo];
   const at = open;
-  const pose = from.pop();
-  if (!at || !pose) return;
-  to.push(objectPose());
+  const step = from.pop();
+  if (!at || !step) return;
+  const frame = openObject()?.frame ?? "model";
+  to.push({ pose: objectPose(), frame });
   beginEdit();
-  putPose(at.objectId, pose);
+  if (step.frame !== frame) {
+    state.plate = withFrame(state.plate, at.objectId, step.frame);
+    frameShown();
+  }
+  if (!samePose(step.pose, objectPose())) putPose(at.objectId, step.pose);
   flushEdit();
   markModelEdit();
   syncPlaceFields(true);
@@ -4944,6 +4997,43 @@ function forgetPlaceSteps() {
   endPlace();
   placeUndo = [];
   placeRedo = [];
+  settleHold = null;
+}
+
+/** --- Assemblies M11. The open part's frame, for the Place tool's switch: null for a part in no assembly. */
+function placeFrame(): ObjectFrame | null {
+  const obj = openObject();
+  return obj && assemblyOfObject(obj.id) ? obj.frame ?? "model" : null;
+}
+
+/**
+ * The Place tool's switch: the open member's numbers move to `frame`, the field `model_place {frame}` sets, as one
+ * Place step and one Prepare step. With M10, Model then draws the part in that frame and frames it.
+ */
+function setPlaceFrame(frame: ObjectFrame) {
+  const at = open;
+  const now = placeFrame();
+  if (!at || busy || jumping || editing || lens || now === null || now === frame) return;
+  endPlace();
+  beginEdit();
+  placeUndo.push({ pose: objectPose(), frame: now });
+  placeRedo = [];
+  state.plate = withFrame(state.plate, at.objectId, frame);
+  flushEdit();
+  markModelEdit();
+  frameShown();
+  frameModel(false);
+  syncUndo();
+}
+
+/** The open part's frame changed: the solid, the grey context and the ghost are drawn in the view it now has. */
+function frameShown() {
+  refreshModelContext();
+  fx.model?.setPose(openPose());
+  lookPoseChanged();
+  refreshModelGhost();
+  markProjectDirty();
+  syncModelSolid();
 }
 
 function openObject(): PlateObject | undefined {
@@ -5150,7 +5240,7 @@ function syncUndo() {
 /** The Position row, from the pose the plate object holds and the solid's own box, read once per solid. */
 function syncPosition() {
   const pose = objectPose();
-  syncModelPosition(open ? placeFields(pose, pivotOf(open.solid)) : null, isIdentity(pose));
+  syncModelPosition(open ? placeFields(pose, pivotOf(open.solid), turnHint()) : null, isIdentity(pose), placeFrame());
 }
 
 /**

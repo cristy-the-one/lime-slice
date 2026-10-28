@@ -1,4 +1,4 @@
-import { eulerOrient } from "./mesh-place.ts";
+import { eulerOrient, type Mat3 } from "./mesh-place.ts";
 import {
   IDENTITY_POSE,
   applyPose,
@@ -13,6 +13,7 @@ import {
   poseFromPlace,
   posedBounds,
   relativePose,
+  steadyTurn,
   thenPose,
   toSolidOp,
   turnDir,
@@ -138,6 +139,49 @@ eq("a move along Y leaves X and Z exactly where they were", [thenMoved.t[0], the
 check("and moves Y by the amount typed", Math.abs(thenMoved.t[1] - (odd.t[1] + 5)) < 1e-12);
 const retilted = placeFields(poseFromPlace(odd, pivot, "rx", 30), pivot);
 check("a turn field changes only its own angle and keeps the centre", nearVec([retilted.rx, retilted.ry, retilted.rz], [30, -3.2, 71.11], 1e-9) && nearVec([retilted.x, retilted.y, retilted.z], [placeFields(odd, pivot).x, placeFields(odd, pivot).y, placeFields(odd, pivot).z], 1e-9));
+
+// Steady angles. Each turn has two Euler readings, and Ry ±90 has a line of them; the fields show the one nearest what
+// was shown or typed, and the pose never changes for it.
+const turnOf = (f: { rx: number; ry: number; rz: number }) => [f.rx, f.ry, f.rz];
+check("a turn past 90° about Y reads as itself without a hint, not as its twin 180/60/180",nearVec(turnOf(steadyTurn(eulerOrient(0, 120, 0))), [0, 120, 0], 1e-9));
+check("a reading inside ±90 stays as it was", nearVec(turnOf(steadyTurn(eulerOrient(10, 20, 30))), [10, 20, 30], 1e-9));
+let typed: { rx: number; ry: number; rz: number } = { rx: 0, ry: 0, rz: 0 };
+let pose: Affine = IDENTITY_POSE;
+for (const [field, value] of [["rz", 30], ["ry", 120]] as const) {
+  pose = poseFromPlace(pose, pivot, field, value, typed);
+  typed = { ...typed, [field]: value };
+}
+check("Rz 30 then Ry 120 reads back 0/120/30 (main read 180/60/-150)", nearVec(turnOf(placeFields(pose, pivot, typed)), [0, 120, 30], 1e-9), JSON.stringify(placeFields(pose, pivot, typed)));
+typed = { rx: 0, ry: 0, rz: 0 };
+pose = IDENTITY_POSE;
+for (const [field, value] of [["rz", 30], ["ry", 90]] as const) {
+  pose = poseFromPlace(pose, pivot, field, value, typed);
+  typed = { ...typed, [field]: value };
+}
+check("at Ry 90 the typed Rz stays in Rz (main moved it to Rx -30)", nearVec(turnOf(placeFields(pose, pivot, typed)), [0, 90, 30], 1e-9), JSON.stringify(placeFields(pose, pivot, typed)));
+const nextTurn = poseFromPlace(pose, pivot, "rx", 10, typed);
+check("and Rx typed next keeps Ry 90 and Rz 30", nearVec(turnOf(placeFields(nextTurn, pivot, { ...typed, rx: 10 })), [10, 90, 30], 1e-9));
+check("Ry -90 keeps Rz too", nearVec(turnOf(steadyTurn(eulerOrient(15, -90, 40), { rx: 15, ry: -90, rz: 40 })), [15, -90, 40], 1e-9));
+const sameTurn = (a: Mat3, b: Mat3) => a.every((v, i) => Math.abs(v - b[i]!) < 1e-9);
+let roundTrips = 0;
+let faithful = 0;
+let cases = 0;
+for (const rx of [-180, -135, -90, -30, 0, 0.5, 45, 90, 179]) {
+  for (const ry of [-180, -120, -90, -89.5, -45, 0, 30, 89.99, 90, 91, 150, 180]) {
+    for (const rz of [-170, -90, -1, 0, 30, 90, 180]) {
+      cases += 1;
+      const m = eulerOrient(rx, ry, rz);
+      const read = steadyTurn(m, { rx, ry, rz });
+      if (nearVec(turnOf(read), [rx, ry, rz].map((v) => (v === -180 ? 180 : v)), 1e-7)) roundTrips += 1;
+      // Any hint, even a stale one, reads the same turn.
+      if (sameTurn(eulerOrient(read.rx, read.ry, read.rz), m) && sameTurn(eulerOrient(...(turnOf(steadyTurn(m, { rx: rz, ry: -ry, rz: rx })) as [number, number, number])), m)) faithful += 1;
+    }
+  }
+}
+eq("every typed turn reads back as typed", roundTrips, cases);
+eq("every reading is the same turn", faithful, cases);
+const level = steadyTurn(eulerOrient(0, 0, 0), { rx: -0.0000001, ry: 0, rz: 0 });
+check("no reading is -0", !Object.is(level.rx, -0) && !Object.is(level.ry, -0) && !Object.is(level.rz, -0), JSON.stringify(level));
 
 // Duplicate.
 eq("a duplicate sits its own width plus 10 mm along X", duplicatePose(IDENTITY_POSE, { min: [0, 0, 0], max: [40, 30, 20] }).t, [50, 0, 0]);

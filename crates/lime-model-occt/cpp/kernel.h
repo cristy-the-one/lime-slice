@@ -69,6 +69,10 @@ struct Held {
     /// others, by index from 1. Then a mesh at a chord the shared faces are already meshed at meshes only around `made`.
     bool built_on = false;
     std::vector<int> made;
+    /// The order a mesh reads the faces out in, by index from 1: the faces shared with the solid it was built on in that
+    /// solid's order, then `made`. A step then leaves every other face's triangles where they were in the soup, and a
+    /// slicer that keys its layers by their triangles plans again only the layers the step reached. Empty is index order.
+    std::vector<int> order;
     /// `describe`'s JSON, written by the first reply.
     std::string about;
     /// Each face's `{"areaMm2":…,"normal":[…]}` and each edge's length, as the reply writes them, by index, once
