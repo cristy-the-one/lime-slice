@@ -33,6 +33,7 @@ import { mountMeasureOverlay } from "./measure-overlay";
 import { mountPointMeasure, type PointMeasure } from "./prepare-measure";
 import { onMeasureChange } from "./measure-pref";
 import { grabAxisForKey, grabDegrees, grabIntent, nearerHit, type GrabAxis, type GrabIntent } from "./viewport-grab";
+import { mountTrackpadOrbit } from "./trackpad-orbit";
 
 type Axis = "x" | "y" | "z";
 type ScaleAxis = Axis | "u";
@@ -2015,6 +2016,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       else if (kind === "move") moveEndCb?.();
     }, 280);
   }, { passive: false, capture: true });
+  // A two-finger touchpad scroll orbits; a pinch zooms. After the handle nudge, which keeps a scroll over a handle.
+  mountTrackpadOrbit(canvas, controls);
 
   function hitViewHelper(ev: PointerEvent) {
     return viewHelperHit(viewHelper, canvas, ev);

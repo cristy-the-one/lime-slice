@@ -46,6 +46,7 @@ import { faceTable } from "./interact/face-table";
 import { framePose, localPoint, sameWorkplane, type Workplane } from "./workplane";
 import { hexToThree, themeColors } from "./theme";
 import { bedForBox, fitSentence, liveBox, mountBedReference, mountStudioLights, mountViewHelper, outerMm, renderViewHelper, viewHelperHit, type BuildVolume } from "./viewport-chrome";
+import { mountTrackpadOrbit } from "./trackpad-orbit";
 import { lerpPose, mmPerPixel, type CameraPose } from "./sketch/frame";
 
 export interface ModelPick {
@@ -2346,6 +2347,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     holdSketchAxis();
     kick();
   }, { capture: true, passive: false });
+  // A two-finger touchpad scroll orbits; a pinch zooms. After the sketch's zoom, which keeps the view on its plane.
+  mountTrackpadOrbit(canvas, controls);
   canvas.addEventListener("contextmenu", (ev) => {
     if (sketchLock || sketchCapture) ev.preventDefault();
   });

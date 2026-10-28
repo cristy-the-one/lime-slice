@@ -336,6 +336,23 @@ export function withModelPose(plate: PlateState, id: string, pose: Affine): Plat
   };
 }
 
+/**
+ * --- Assemblies M11. The plate with object `id` typing its Model numbers in `frame`, as `model_place {frame}` writes
+ * it: `"part"` is kept, `"model"` drops the key. The poses, the plate pose and the mesh stay.
+ */
+export function withFrame(plate: PlateState, id: string, frame: ObjectFrame): PlateState {
+  return {
+    ...plate,
+    objects: plate.objects.map((obj) => {
+      if (obj.id !== id) return obj;
+      const next = { ...obj };
+      if (frame === "part") next.frame = "part";
+      else delete next.frame;
+      return next;
+    }),
+  };
+}
+
 /** Every object whose mesh is `token` gets `brep`. Undefined removes it. */
 export function withBrepFor(plate: PlateState, token: string, brep: ArrayBuffer | undefined): PlateState {
   let changed = false;
