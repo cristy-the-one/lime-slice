@@ -529,6 +529,8 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     let ringDist = Infinity;
     for (const hit of hits) {
       const kind = hit.object.userData.section as string | undefined;
+      // The arrow is drawn over the rings, so where they cross it takes the press.
+      if (kind === "arrow") return { kind: "arrow", distance: hit.distance };
       if (kind === "ring" && hit.distance < ringDist) {
         const axis = hit.object.userData.axis as Axis;
         if (axis === "x" || axis === "y" || axis === "z") {
@@ -537,7 +539,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
         }
       }
     }
-    return ring ? { axis: ring, distance: ringDist } : null;
+    return ring ? { kind: "ring", axis: ring, distance: ringDist } : null;
   }
 
   function angleOn(axis: Axis): number | null {
@@ -560,14 +562,20 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     return Math.atan2(v.dot(w), v.dot(u));
   }
 
-  let ringHover: Axis | null = null;
-  function paintRings(active: Axis | null) {
-    if (active === ringHover) return;
-    ringHover = active;
+  let gizmoHot: SectionHot = null;
+  function paintRings(active: SectionHot) {
+    if (active === gizmoHot) return;
+    gizmoHot = active;
     for (const [axis, mat] of sectionRig.ringMats) {
       mat.color.setHex(active === axis ? hexToThree(colors.gizmoHot) : ringHex(axis));
     }
+    sectionRig.arrowMat.color.setHex(hexToThree(active === "arrow" ? colors.gizmoHot : colors.amber));
     requestRender();
+  }
+
+  function hotOf(hit: SectionHit | null): SectionHot {
+    if (!hit) return null;
+    return hit.kind === "arrow" ? "arrow" : hit.axis;
   }
 
   canvas.addEventListener("pointerdown", (ev) => {
@@ -577,14 +585,17 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     const regionHit = planeSpec ? raycaster.intersectObjects(cutPicks, false)[0] : undefined;
     const takeSection = !!sectionHit && (!regionHit || sectionHit.distance <= regionHit.distance);
     if (takeSection && section && sectionHit) {
-      sectionDrag = {
-        axis: sectionHit.axis,
-        last: angleOn(sectionHit.axis) ?? 0,
-        total: 0,
-        applied: 0,
-        base: { normal: [...section.normal], offset: section.offset },
-      };
-      paintRings(sectionHit.axis);
+      const base: SectionSpec = { normal: [...section.normal], offset: section.offset };
+      if (sectionHit.kind === "arrow") {
+        const origin = sectionRig.gizmo.getWorldPosition(new THREE.Vector3());
+        const dir = new THREE.Vector3(0, 1, 0).applyQuaternion(sectionRig.arrow.getWorldQuaternion(new THREE.Quaternion())).normalize();
+        const start = alongLine(origin, dir, raycaster.ray);
+        if (start == null) return;
+        sectionDrag = { kind: "arrow", base, origin, dir, start };
+      } else {
+        sectionDrag = { kind: "ring", axis: sectionHit.axis, last: angleOn(sectionHit.axis) ?? 0, total: 0, applied: 0, base };
+      }
+      paintRings(hotOf(sectionHit));
       controls.enabled = false;
       canvas.setPointerCapture(ev.pointerId);
       canvas.style.cursor = "grabbing";
@@ -607,12 +618,23 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
       const sectionHit = sectionPick();
       const regionHot = !!planeSpec && raycaster.intersectObjects(cutPicks, false).length > 0;
       canvas.style.cursor = sectionHit || regionHot ? "grab" : restCursor();
-      paintRings(sectionHit ? sectionHit.axis : null);
+      paintRings(hotOf(sectionHit));
       return;
     }
     canvas.style.cursor = "grabbing";
     pointerNdc(ev);
-    if (sectionDrag && section) {
+    if (sectionDrag?.kind === "arrow" && section) {
+      const at = alongLine(sectionDrag.origin, sectionDrag.dir, raycaster.ray);
+      if (at == null) return;
+      const travel = snapStep(at - sectionDrag.start, ev.shiftKey, 1);
+      const offset = Math.round(clampOffset(sectionDrag.base.offset + travel, reach()) * 10) / 10;
+      if (Math.abs(offset - section.offset) < 0.05) return;
+      section = { normal: section.normal, offset };
+      placeSection();
+      emitSection(`Offset ${offset >= 0 ? "+" : ""}${offset.toFixed(1)} mm`);
+      return;
+    }
+    if (sectionDrag?.kind === "ring" && section) {
       const angle = angleOn(sectionDrag.axis);
       if (angle == null) return;
       let step = angle - sectionDrag.last;
@@ -1336,8 +1358,21 @@ function pathMaterial(
 }
 
 type Axis = "x" | "y" | "z";
-type SectionHit = { axis: Axis; distance: number };
-type SectionDrag = { axis: Axis; last: number; total: number; applied: number; base: SectionSpec } | null;
+type SectionHit = { kind: "ring"; axis: Axis; distance: number } | { kind: "arrow"; distance: number };
+type SectionDrag =
+  | { kind: "ring"; axis: Axis; last: number; total: number; applied: number; base: SectionSpec }
+  | { kind: "arrow"; base: SectionSpec; origin: THREE.Vector3; dir: THREE.Vector3; start: number }
+  | null;
+type SectionHot = Axis | "arrow" | null;
+
+/** Scene millimetres along the line `origin + t·dir` to where the ray passes closest; null when the ray runs along it. */
+function alongLine(origin: THREE.Vector3, dir: THREE.Vector3, ray: THREE.Ray): number | null {
+  const w = origin.clone().sub(ray.origin);
+  const b = dir.dot(ray.direction);
+  const denom = 1 - b * b;
+  if (denom < 1e-6) return null;
+  return (b * ray.direction.dot(w) - dir.dot(w)) / denom;
+}
 
 function ringHex(axis: Axis): number {
   const colors = themeColors();
@@ -1414,11 +1449,19 @@ function buildSectionRig() {
     arrow.add(part);
   }
   arrow.renderOrder = 6;
+  const arrowPick = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.14, 0.14, 0.86, 8),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
+  );
+  arrowPick.position.y = 0.5;
+  arrowPick.frustumCulled = false;
+  arrowPick.userData.section = "arrow";
+  arrow.add(arrowPick);
   const gizmo = new THREE.Group();
   gizmo.visible = false;
   const rings = new THREE.Group();
   const ringMats = new Map<Axis, THREE.MeshBasicMaterial>();
-  const picks: THREE.Object3D[] = [];
+  const picks: THREE.Object3D[] = [arrowPick];
   const ringGeo = new THREE.TorusGeometry(1, 0.046, 10, 64);
   const pickGeo = new THREE.TorusGeometry(1, 0.11, 8, 24);
   for (const axis of ["x", "y", "z"] as const) {
