@@ -24,7 +24,7 @@ import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
-import { adoptHeldPieces, adoptSavedTrees, captureOpenSolid, historyToSave, noteParametersBuilt, type HeldToSave } from "./model.ts";
+import { adoptHeldPieces, adoptSavedTrees, captureOpenSolid, historyToSave, noteParametersBuilt, warmHeldPieces, type HeldToSave } from "./model.ts";
 import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
 import { copyWorkplane } from "../workplane.ts";
 import { cloneStudy } from "../sim/study.ts";
@@ -222,6 +222,10 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     const custom = customGcodeNotice(state.layerActions);
     if (custom) pushToast(custom, "info");
     noteParametersBuilt();
+    // After the open, not in it: the held pieces' solids are cut again while the plate is already in use.
+    window.setTimeout(() => {
+      if (session.docEpoch === doc) warmHeldPieces();
+    }, 0);
     return true;
   } finally {
     session.projectRestoring = false;

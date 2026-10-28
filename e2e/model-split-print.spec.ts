@@ -103,12 +103,13 @@ function built(request: Body, parent: MockSolid): Built {
   return parent;
 }
 
-async function openBar(page: Page, compact = false, part: MockSolid = BAR): Promise<TreeMock> {
+async function openBar(page: Page, compact = false, part: MockSolid = BAR, extra: Partial<Parameters<typeof mockModelTree>[1]> = {}): Promise<TreeMock> {
   await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: part.positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   const tree = await mockModelTree(page, {
+    ...extra,
     open: () => part,
     fitCoupon(request) {
       const spec = request.spec as { name: string; holes: unknown[]; pins: unknown[] };
@@ -1017,19 +1018,19 @@ test("a Form 4 cut keeps its pieces through save and reopen: Model opens on the 
   const tree = await openBar(page, false, COLUMN);
   await openCard(page);
   await applyForForm4(page);
+  const cut = tree.of("apply").length;
   const doc = await saveAndReopen(page);
   const held = doc.heldPieces as { object: string; node: number; index: number; mesh: { encoding?: string }; brep?: { encoding?: string } }[];
   expect(held.map((piece) => [piece.object, piece.node, piece.index]), "each piece by its part's object, the cut's step and its number").toEqual([["part", 1, 2], ["part", 1, 3]]);
   for (const piece of held) expect([piece.mesh.encoding, piece.brep], "the mesh, compressed, and no solid: it is cut again when a call needs it").toEqual(["gzip+base64", undefined]);
   await expect(page.locator("#objectList .obj"), "the pieces stay off the plate").toHaveCount(1);
-  const cut = tree.of("apply").length;
   await page.locator("#tabModel").click();
   await expect(readout(page)).toContainText("Volume");
   await expectEveryPiece(page, tree, "reopened");
   const pieceOpens = tree.of("open").filter((request) => String(request.key).startsWith("part-part#"));
   expect(pieceOpens, "no piece opens from a saved solid").toEqual([]);
   const recut = tree.of("apply").slice(cut);
-  expect(recut.map((request) => (request.op as { kind: string }).kind), "the STEP cuts both pieces again from the part, in one cut").toEqual(["partition"]);
+  expect(recut.map((request) => (request.op as { kind: string }).kind), "the open cuts both pieces again from the part, in one cut").toEqual(["partition"]);
   expect((recut[0]!.pieceKeys as (string | null)[]).every((key) => typeof key === "string"), "naming both pieces' trees").toBe(true);
   await expect(labels(page)).toHaveText(["bar.step", "Split to print for Formlabs Form 4, 3 parts"]);
   await page.locator("#modelUndo").click();
@@ -1281,10 +1282,10 @@ test("a Form 4 cut with dowels keeps its pins through save and reopen, and a fil
   await apply(page).click();
   await expect(page.locator("#modelPartDone")).toBeVisible();
   expect(typeof tree.of("apply").at(-1)!.pinsKey, "the apply asks for the pins' tree").toBe("string");
+  const cut = tree.of("apply").length;
   const doc = await saveAndReopen(page);
   const held = doc.heldPieces as { index?: number; pins?: boolean }[];
   expect(held.map((piece) => piece.index ?? (piece.pins ? "pins" : null)), "the pins are kept beside the pieces").toEqual([2, 3, "pins"]);
-  const cut = tree.of("apply").length;
   const explodeHasPins = async () => {
     await expect(page.getByRole("treeitem", { name: /^Split to print for Formlabs Form 4, 3 parts, dowels/ })).toHaveAttribute("aria-selected", "true");
     await page.locator("#modelLookOpen").click();
@@ -1300,11 +1301,13 @@ test("a Form 4 cut with dowels keeps its pins through save and reopen, and a fil
   };
   await page.locator("#tabModel").click();
   await explodeHasPins();
-  expect(tree.of("apply").length, "nothing is cut again").toBe(cut);
+  await expect.poll(() => tree.of("apply").length, "the open's background cut, and nothing else").toBe(cut + 1);
+  expect(typeof tree.of("apply").at(-1)!.pinsKey, "it makes the pins' solid too").toBe("string");
 
+  const again = tree.of("apply").length;
   await saveAndReopen(page, (file) => delete file.heldPieces);
   await page.locator("#tabModel").click();
-  await expect.poll(() => tree.of("apply").length, "one cut on a spare step").toBe(cut + 1);
+  await expect.poll(() => tree.of("apply").length, "one cut on a spare step").toBe(again + 1);
   expect(typeof tree.of("apply").at(-1)!.pinsKey, "which makes the pins again").toBe("string");
   await explodeHasPins();
 });
@@ -1525,4 +1528,117 @@ test("a tongue takes dowels on the flats beside it, and with no room the cut say
   await page.mouse.move(1300, 880);
   await page.waitForTimeout(400);
   await shot(page, "tongue-dowels");
+});
+
+// --- Polish after 4.2.0: a reopened Form 4 project cuts its held pieces' solids again in the background, one job a cut.
+
+/** A gate for the next partition apply: `arm` holds it until `open`. */
+function cutGate() {
+  let release = () => {};
+  let armed = false;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  return {
+    arm: () => (armed = true),
+    open: () => release(),
+    applyGate: (request: { op?: unknown }) => {
+      if (!armed || (request.op as { kind?: string } | undefined)?.kind !== "partition") return undefined;
+      armed = false;
+      return held;
+    },
+  };
+}
+
+const partitionCuts = (tree: TreeMock, from: number) => tree.of("apply").slice(from).filter((request) => (request.op as { kind?: string }).kind === "partition");
+
+test("a reopened Form 4 project cuts its pieces again in the background, once, and a STEP export waits for that cut", async ({ page }) => {
+  const gate = cutGate();
+  const tree = await openBar(page, false, COLUMN, { applyGate: gate.applyGate });
+  await openCard(page);
+  await applyForForm4(page);
+  const before = tree.of("apply").length;
+  gate.arm();
+  await saveAndReopen(page);
+  await expect.poll(() => partitionCuts(tree, before).length, "the open starts the cut by itself").toBe(1);
+  await expect(page.locator("#model")).toHaveAttribute("data-held-warm", "1");
+  expect(partitionCuts(tree, before)[0]!.pieceKeys, "one cut for both pieces").toEqual([expect.any(String), expect.any(String)]);
+  // The plate is in use while the cut is held: Model opens on the split, and Export… STEP waits for that same cut.
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume");
+  const seen: string[] = [];
+  page.on("download", (download) => seen.push(download.suggestedFilename()));
+  await page.getByRole("treeitem", { name: SPLIT_ROW }).locator(".mh-more").click();
+  await page.locator("#modelHistoryMenu [data-act=export]").click();
+  await page.locator('#splitExport [data-format="step"]').click();
+  await expect(readout(page), "the export shows its busy state while it waits").toContainText("Writing the pieces");
+  await page.waitForTimeout(500);
+  expect(tree.of("export").length, "no export before the cut answers").toBe(0);
+  expect(partitionCuts(tree, before).length, "and no second cut").toBe(1);
+  await expect(page.locator("#model"), "not ready while the cut is held").not.toHaveAttribute("data-held-ready", /./);
+  gate.open();
+  await expect.poll(() => seen).toEqual(["bar.step"]);
+  await expect(page.locator("#model")).toHaveAttribute("data-held-ready", "1");
+  expect((tree.of("export").at(-1)!.pieces as unknown[]).length).toBe(2);
+  // A second STEP finds the solids ready: still one cut for this open.
+  await page.getByRole("treeitem", { name: SPLIT_ROW }).locator(".mh-more").click();
+  await page.locator("#modelHistoryMenu [data-act=export]").click();
+  await page.locator('#splitExport [data-format="step"]').click();
+  await expect.poll(() => seen.length).toBe(2);
+  expect(partitionCuts(tree, before).length, "one job for the open").toBe(1);
+  await expect(page.locator("#model")).toHaveAttribute("data-held-warm", "1");
+});
+
+test("a background cut that a new file makes stale is discarded: its trees close, and the new plate never sees them", async ({ page }) => {
+  const gate = cutGate();
+  const tree = await openBar(page, false, COLUMN, { applyGate: gate.applyGate });
+  await openCard(page);
+  await applyForForm4(page);
+  const before = tree.of("apply").length;
+  gate.arm();
+  await saveAndReopen(page);
+  await expect.poll(() => partitionCuts(tree, before).length).toBe(1);
+  const pieceKeys = partitionCuts(tree, before)[0]!.pieceKeys as string[];
+  // A new file replaces the plate while the cut is held.
+  await page.locator("#file").setInputFiles({ name: "other.step", mimeType: "model/step", buffer: FILE });
+  await expect(page.locator("#objectList .obj")).toHaveCount(1);
+  await expect(page.locator("#objectList .obj").first()).toContainText("other");
+  const closes = tree.of("close").length;
+  gate.open();
+  await expect.poll(() => tree.of("close").slice(closes).map((request) => request.key), "the stale cut's piece trees close").toEqual(expect.arrayContaining(pieceKeys));
+  await expect(page.locator(".toast"), "and nothing is said about it").toHaveCount(0);
+  await expect(page.locator("#model")).toHaveAttribute("data-held-warm", "1");
+});
+
+test("an Update while the background cut runs keeps both apart: the cut fills the old step's pieces, the export uses the Update's", async ({ page }) => {
+  const gate = cutGate();
+  const tree = await openBar(page, false, COLUMN, { applyGate: gate.applyGate });
+  await openCard(page);
+  await applyForForm4(page);
+  const before = tree.of("apply").length;
+  gate.arm();
+  await saveAndReopen(page);
+  await expect.poll(() => partitionCuts(tree, before).length).toBe(1);
+  const stale = partitionCuts(tree, before)[0]!.pieceKeys as string[];
+  await page.locator("#tabModel").click();
+  await expect(readout(page)).toContainText("Volume");
+  await page.getByRole("treeitem", { name: SPLIT_ROW }).locator(".mh-edit").click();
+  await at(page, 1).fill("150");
+  await at(page, 1).dispatchEvent("change");
+  await expect(apply(page)).toBeEnabled();
+  const closes = tree.of("close").length;
+  await apply(page).click();
+  await expect.poll(() => tree.of("edit").length, "the Update cuts while the background cut is held").toBe(1);
+  await expect(page.locator("#modelPartDone")).toBeVisible();
+  const fresh = tree.of("edit")[0]!.pieceKeys as string[];
+  expect(fresh.some((key) => stale.includes(key)), "with pieces of its own").toBe(false);
+  gate.open();
+  await page.waitForTimeout(500);
+  expect(tree.of("close").slice(closes).map((request) => request.key).some((key) => fresh.includes(String(key))), "the Update's do not").toBe(false);
+  const seen: string[] = [];
+  page.on("download", (download) => seen.push(download.suggestedFilename()));
+  await page.locator("#modelPartExport").click();
+  await page.locator('#splitExport [data-format="step"]').click();
+  await expect.poll(() => seen).toEqual(["bar.step"]);
+  const exported = (tree.of("export").at(-1)!.pieces as { key: string }[]).map((piece) => piece.key);
+  expect(exported.length > 0 && exported.every((key) => fresh.includes(key) && !stale.includes(key)), `the export names the Update's pieces, ${exported}`).toBe(true);
+  expect(partitionCuts(tree, before).length, "and needs no cut of its own").toBe(1);
 });
