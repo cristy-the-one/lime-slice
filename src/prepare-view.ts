@@ -119,6 +119,11 @@ export interface PrepareView {
    * `others` are the objects that are not selected, drawn grey and inert in the bed frame. The solid mesh stays the selection.
    */
   setPlate(entries: PlateBound[], others: ContextPart[]): void;
+  /**
+   * The assembly view: every object drawn solid at `parts`' matrices, `selectedId` in the part colour. The print layout,
+   * its boxes, the gizmo and the paint are hidden, and a click only orbits. Null returns to the print layout.
+   */
+  setAssembled(parts: ContextPart[] | null, selectedId: string | null): void;
   onModifierSelect(cb: ((id: string) => void) | null): void;
   onModifierEditStart(cb: (() => void) | null): void;
   onModifierEdit(cb: ((id: string, kind: "move" | "scale", axis: Axis, deltaMm: number) => void) | null): void;
@@ -294,6 +299,16 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const contextMat = contextMaterial(colors.context);
   const contextGroup = new THREE.Group();
   scene.add(contextGroup);
+  /** --- Assemblies M5. The assembly view's own meshes, one geometry per source array. */
+  let assembled: ContextPart[] | null = null;
+  /** The selected part's box in the assembly view, which the measure lines then dimension. */
+  let assembledSelected: Bounds | null = null;
+  const assembledGroup = new THREE.Group();
+  assembledGroup.visible = false;
+  scene.add(assembledGroup);
+  const assembledGeometry = new Map<Float32Array, THREE.BufferGeometry>();
+  const assembledMat = new THREE.MeshStandardMaterial({ color: hexToThree(colors.context), roughness: 0.7, metalness: 0.05 });
+  const assembledPick = new THREE.MeshStandardMaterial({ color: hexToThree(colors.mesh), roughness: 0.55, metalness: 0.05 });
   const targetMat = contextMaterial(colors.amber);
   /** The plate object a snap or an Align to... has picked: its grey is swapped for the amber of the snap guides. */
   let markedTarget: string | null = null;
@@ -556,7 +571,13 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     viewHelper.center.copy(controls.target);
     renderer.getSize(drawSize);
     renderer.setViewport(0, 0, drawSize.x, drawSize.y);
-    renderer.render(scene, camera);
+    if (assembled) {
+      // The print layout's nodes keep their own visibility rules; the assembly view only hides them for this frame.
+      const hidden = ([mesh, gizmo, contextGroup, plateGroup, ghosts, paintSpots, stripSpots, snapGroup, modifiers.group, reinforceVols.group, cursor, edgeLine] as (THREE.Object3D | null)[]).filter((node): node is THREE.Object3D => !!node && node.visible);
+      for (const node of hidden) node.visible = false;
+      renderer.render(scene, camera);
+      for (const node of hidden) node.visible = true;
+    } else renderer.render(scene, camera);
     publishContextScreen();
     publishModifierMarker();
     publishReinforceVolMarker();
@@ -572,6 +593,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const measure = mountMeasureOverlay(canvas.parentElement ?? document.body, { scaleRight: 140 });
   /** The selected objects' box, or the one placed part before a plate exists. Nothing selected measures nothing. */
   function measuredBox() {
+    if (assembled) return assembledSelected;
     const boxes = plateEntries.length > 0 ? plateEntries.filter((entry) => entry.selected) : meshBounds ? [meshBounds] : [];
     return unionBox(boxes);
   }
@@ -1590,6 +1612,15 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   });
 
   canvas.addEventListener("pointerdown", (ev) => {
+    if (assembled) {
+      // The assembly view only orbits: nothing on the print layout may be grabbed while it is hidden.
+      if (ev.button === 0 && hitViewHelper(ev)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        requestRender();
+      }
+      return;
+    }
     const intent = grabIntent(ev);
     if (ev.button !== 0 && !(ev.button === 2 && intent === "rotate")) return;
     if (ev.button === 2) {
@@ -2231,6 +2262,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       if (belt) layoutBed();
       syncPlateBounds();
     },
+    setAssembled(parts, selectedId) {
+      assembled = parts;
+      syncAssembled(selectedId);
+    },
     onModifierSelect(cb) { selectModCb = cb; },
     onModifierEditStart(cb) { editModStartCb = cb; },
     onModifierEdit(cb) { editModCb = cb; },
@@ -2262,6 +2297,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       beltOutLabel.paint(colors.amber);
       copyMat.color.setHex(hexToThree(colors.mesh));
       contextMat.color.setHex(hexToThree(colors.context));
+      assembledMat.color.setHex(hexToThree(colors.context));
+      assembledPick.color.setHex(hexToThree(colors.mesh));
       targetMat.color.setHex(hexToThree(colors.amber));
       snapLineMat.color.setHex(hexToThree(colors.amber));
       for (const [axis, { ringMat, moveMats }] of handles) {
@@ -2312,6 +2349,46 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     }
     canvas.dataset.plateBoxes = drawn.join(" ");
     scene.add(plateGroup);
+    requestRender();
+  }
+
+  function syncAssembled(selectedId: string | null) {
+    const parts = assembled ?? [];
+    const wanted = new Set(parts.map((part) => part.positions));
+    for (const [positions, geometry] of assembledGeometry) {
+      if (wanted.has(positions)) continue;
+      geometry.dispose();
+      assembledGeometry.delete(positions);
+    }
+    assembledGroup.clear();
+    assembledSelected = null;
+    const published: string[] = [];
+    const box = new THREE.Box3();
+    for (const part of parts) {
+      let geometry = assembledGeometry.get(part.positions);
+      if (!geometry) {
+        geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(part.positions, 3));
+        geometry.computeVertexNormals();
+        assembledGeometry.set(part.positions, geometry);
+      }
+      const node = new THREE.Mesh(geometry, part.id === selectedId ? assembledPick : assembledMat);
+      node.matrixAutoUpdate = false;
+      setPrintAffine(node.matrix, affineRows(part.matrix));
+      node.userData.plateId = part.id;
+      node.raycast = () => undefined;
+      assembledGroup.add(node);
+      box.setFromObject(node);
+      const [x0, y0, z0] = frame.fromScene(box.min);
+      const [x1, y1, z1] = frame.fromScene(box.max);
+      const world = [Math.min(x0, x1), Math.min(y0, y1), Math.min(z0, z1), Math.max(x0, x1), Math.max(y0, y1), Math.max(z0, z1)];
+      published.push(`${part.id}:${world.map((value) => value.toFixed(2)).join(",")}`);
+      if (part.id === selectedId) assembledSelected = { min: [world[0]!, world[1]!, world[2]!], max: [world[3]!, world[4]!, world[5]!] };
+    }
+    assembledGroup.visible = assembled !== null;
+    canvas.dataset.view = assembled ? "assembly" : "print";
+    if (published.length > 0) canvas.dataset.assembled = published.join(" ");
+    else delete canvas.dataset.assembled;
     requestRender();
   }
 

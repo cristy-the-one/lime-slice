@@ -2,7 +2,7 @@ import { type ColorMode } from "../colors";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { layFlatMatrix } from "../bed-rest";
 import { setSettleOn } from "../bed-rest-pref";
-import { alignSelectedTo, arrangePlate, duplicatePlateObject, framePlateObject, removePlateObject, selectPlateObject } from "./plate-actions";
+import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, framePlateObject, removePlateObject, selectPlateObject, ungroupAssembly } from "./plate-actions";
 import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
 import { isAlignRelation } from "../place-snap";
@@ -282,6 +282,16 @@ export function wireApp() {
     const plateSelect = t.closest<HTMLElement>("[data-plate-select]")?.dataset.plateSelect;
     if (plateSelect) {
       selectPlateObject(plateSelect);
+      return;
+    }
+    const plateAttach = t.closest<HTMLElement>("[data-plate-attach]")?.dataset.plateAttach;
+    if (plateAttach) {
+      attachPlateObject(plateAttach);
+      return;
+    }
+    const assemblyUngroup = t.closest<HTMLElement>("[data-assembly-ungroup]")?.dataset.assemblyUngroup;
+    if (assemblyUngroup) {
+      ungroupAssembly(assemblyUngroup);
       return;
     }
     const plateRemove = t.closest<HTMLElement>("[data-plate-remove]")?.dataset.plateRemove;

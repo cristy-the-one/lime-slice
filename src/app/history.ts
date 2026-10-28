@@ -79,6 +79,7 @@ function capture(): EditSnap {
     printOrder: state.printOrder,
     sequentialClearanceMm: state.sequentialClearance,
     sequentialGantryMm: state.sequentialGantry,
+    assemblies: structuredClone(session.assemblies),
   };
 }
 
@@ -157,6 +158,7 @@ function applySnap(snap: EditSnap) {
   state.printOrder = snap.printOrder === "sequential" ? "sequential" : "all-at-once";
   state.sequentialClearance = snap.sequentialClearanceMm ?? 0;
   state.sequentialGantry = snap.sequentialGantryMm ?? 0;
+  if (snap.assemblies) session.assemblies = structuredClone(snap.assemblies) as typeof session.assemblies;
   recallPlateMeshes(snap.meshPins);
   if (snap.plate && snap.plate.objects.length > 0) {
     const revived = revivePlate(snap.plate);
