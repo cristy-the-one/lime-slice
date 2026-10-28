@@ -895,6 +895,7 @@ function commitTypedField(el: HTMLInputElement): boolean {
       if (!Number.isFinite(mm)) return false;
       noteEdit();
       fx.setPlaceCenter(el.id === "placeX" ? "x" : "y", mm);
+      refreshObjectList();
       return true;
     }
     case "placeRx":
@@ -904,6 +905,7 @@ function commitTypedField(el: HTMLInputElement): boolean {
       if (!Number.isFinite(deg)) return false;
       noteEdit();
       fx.setOrientAngle(el.id === "placeRx" ? "x" : el.id === "placeRy" ? "y" : "z", deg);
+      refreshObjectList();
       return true;
     }
     case "objInfill":
