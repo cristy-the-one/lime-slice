@@ -41,6 +41,8 @@ eq("sse snapshot is the cut stage", parseJobSnapshot(taken.events[0]!)?.stage, "
 const rest = takeSseEvents(taken.rest + donePayload.slice(20) + "\n\n");
 eq("sse finishes a split event", parseJobSnapshot(rest.events[0]!)?.status, "done");
 check("a non-snapshot is ignored", parseJobSnapshot("[]") == null && parseJobSnapshot("{") == null);
+eq("an early preview is flagged", parseJobSnapshot('{"id":"3","fraction":0.6,"status":"running","early":true}')?.early, true);
+eq("no flag is no early preview", parseJobSnapshot(taken.events[0]!)?.early, false);
 
 eq("stage name", stageLabel("part"), "Walls and infill");
 eq("stage line counts the layer", formatStageLine(snap({ status: "running", fraction: 0.4 })), "Walls and infill 2/4");

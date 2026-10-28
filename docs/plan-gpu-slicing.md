@@ -393,3 +393,26 @@ Telo cover, one run each, against C1:
 | Model hole, warm | 9.6 s | **8.9 s** | 14.1 s | **11.7 s** |
 
 What is left: the Or-opt scan visits about 260 places for each start position and run length. Each visit is cheap, about 5 ns, but the scan is now about 85% of untangle. Fewer visits would need a spatial index over the tour's stops, kept up to date as runs move. That is the next step if ordering matters again.
+
+### 10.4 C3: the progressive preview
+
+A request with `"earlyPreview": true` asks the engine to draw the toolpaths before the tour orders them. The engine sends an early preview only when all of these hold: the plate has one object, a preview was asked for, and its toolpaths were planned again rather than reused. On a thread of its own, it draws the part's paths in the reply's preview format, with no travels, and holds the drawing on the slice's `Watch`.
+
+- `GET /api/jobs/{id}/early` returns the drawing.
+- Poll and event objects carry `"early":true` once it is ready.
+- The desktop's `slice-progress` event carries the same flag, and the `early_preview` command returns the drawing.
+- The G-code does not change.
+
+The web client asks for an early preview whenever a preview is already on screen, so it has the bounds to place the drawing. When the flag comes, it fetches the drawing, builds the 3D buffers in the geometry worker, and shows them sharp, not blurred or dimmed, with an "Ordering…" chip. The reply then replaces the drawing as usual. A patch is still built against the shown preview's own geometry. If the slice fails or is cancelled, the shown preview comes back. The 2D layer view keeps drawing the shown result.
+
+Telo cover, jobs replayed as the app sends them. "Early" is when the drawing could be read, "reply" is when the reply could be read, both from the request:
+
+| Edit | IR3 V2 early | IR3 V2 reply | Lime 220 early | Lime 220 reply |
+|---|---:|---:|---:|---:|
+| Base | 2.8 s | 4.2 s | 2.4 s | 5.8 s |
+| Infill 30% | 2.7 s | 3.7 s | 2.4 s | 5.7 s |
+| Walls 3 | 2.8 s | 4.0 s | 2.4 s | 5.3 s |
+| Supports on | 3.2 s | 7.8 s | (toolpaths reused) | 4.8 s |
+| Model hole | 2.9 s | 8.9 s | 2.6 s | 11.6 s |
+
+Drawing early costs the slice 0.1–0.3 s on the IR3 (the drawing is 40–45 MB of JSON, made while the tour runs) and nothing measurable on the Lime 220. Every G-code hash is the same with and without it. With C1 and C2 the IR3 tour is under 1 s, so the drawing helps most where supports or a new mesh keep the reply waiting.

@@ -3,7 +3,7 @@ import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResp
 import { autoSliceAllowed, autoSliceDeferred, meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply, FORCE_LABEL } from "../slice-action";
 import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, withMeshData } from "./files";
 import { MeshRefs, sendWithMeshes, unknownMeshRef, type MeshFields, type SentMesh } from "../mesh-refs";
-import { adoptPatch, paintStatus, previewBase } from "./viewer";
+import { adoptPatch, dropEarly, paintStatus, previewBase, showEarly } from "./viewer";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
 import { editRequestFields } from "../support-edit-list";
 import { replyOffset, type SlicedBed } from "../bed-offset";
@@ -40,7 +40,7 @@ import {
 } from "../ui/slice-job";
 
 /** The desktop shell's `slice-progress` event. `message` is `stageLabel(stage)`. */
-type DesktopProgress = { progress: number; message: string; stage: string; done: number; total: number; status: JobStatus };
+type DesktopProgress = { progress: number; message: string; stage: string; done: number; total: number; status: JobStatus; early?: boolean };
 
 export function meshFingerprint(): string {
   if (plateListed(state.plate)) return livePlate().map(objectFingerprint).join(",");
@@ -328,6 +328,8 @@ export async function runSlice(force = false) {
   const partFrame = partFrameKey(request, meshFingerprint());
   const base = previewBase();
   if (base) request.previewBase = base.token;
+  // With a preview on screen, the engine draws this slice's toolpaths before ordering them.
+  if (state.result) request.earlyPreview = true;
   const listed = request.objects as PlateRequestObject[] | undefined;
   const selected = listed?.find((o) => o.id === state.plate.selectedId);
   const edits = (listed ? selected?.supportEdits : request.supportEdits) ? state.supportEdits : [];
@@ -362,6 +364,7 @@ export async function runSlice(force = false) {
       const { listen } = await import("@tauri-apps/api/event");
       unlisten = await listen<DesktopProgress>("slice-progress", ({ payload: p }) => {
         noteJob(id, { id: "", stage: p.stage, done: p.done, total: p.total, fraction: p.progress, status: p.status });
+        if (p.early) void showEarly(id, () => invoke<string | null>("early_preview"));
       });
       const invokeSlice = async (body: Record<string, unknown>) => {
         let text: string;
@@ -424,6 +427,8 @@ export async function runSlice(force = false) {
     }
   } finally {
     unlisten?.();
+    if (!landed) dropEarly(id);
+    else if (session.earlyShown === id) session.earlyShown = 0;
     if (id === session.job) {
       state.busy = false;
       state.progress = 0;
@@ -507,7 +512,15 @@ async function runHttpSlice(uiId: number, bytes: ArrayBuffer, req: Record<string
       },
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       shouldStop: () => stopped || uiId !== session.job,
-      onUpdate: (snap) => noteJob(uiId, snap),
+      onUpdate: (snap) => {
+        noteJob(uiId, snap);
+        if (snap.early) {
+          void showEarly(uiId, async () => {
+            const res = await getText(base, token, `/api/jobs/${encodeURIComponent(started.id)}/early`);
+            return res.status === 200 ? res.text : null;
+          });
+        }
+      },
     });
     if (stopped || uiId !== session.job || terminal.status === "cancelled") throw new Error("cancelled");
     const result = await getText(base, token, `/api/jobs/${encodeURIComponent(started.id)}/result`);

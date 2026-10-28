@@ -2507,6 +2507,18 @@ fn slice_plate(
             )
         });
         let neighbours: Vec<plate::Neighbour> = parts.chain(trees).collect();
+        // One object's toolpaths can be drawn while its tour runs. A plate of
+        // several waits for the reply.
+        let early = (objects.len() == 1 && settings.include_preview && watch.wants_early())
+            .then(|| Early {
+                profile: profile.clone(),
+                blend: o.blend.clone(),
+                tilt: belt_job.as_ref().map(|job| patch::BeltTilt {
+                    belt: job.belt,
+                    offsets: job.offsets.clone(),
+                }),
+                watch: watch.clone(),
+            });
         plans.push(plan_object(
             Arc::clone(cut),
             *reused,
@@ -2516,6 +2528,7 @@ fn slice_plate(
             profile.nozzle_diameter,
             &neighbours,
             floor,
+            early.as_ref(),
             &watches[a],
         )?);
     }
@@ -3991,6 +4004,7 @@ fn plan_sharing(
         nozzle_diameter,
         &[],
         None,
+        None,
         watch,
     )
 }
@@ -4041,6 +4055,91 @@ fn cut_object(
     Ok((cut, reused))
 }
 
+/// What drawing one object's toolpaths early needs: they are drawn the way
+/// the reply draws its preview, with no travels, since nothing is ordered yet.
+struct Early {
+    profile: PrinterProfile,
+    blend: BlendMode,
+    tilt: Option<patch::BeltTilt>,
+    watch: Watch,
+}
+
+impl Early {
+    /// Draw `paths` on a thread of its own, so the tour does not wait, and
+    /// hand the drawing to the watch.
+    fn send(&self, cut: Arc<Contours>, paths: Arc<PartPaths>) {
+        let (profile, blend, tilt, watch) = (
+            self.profile.clone(),
+            self.blend.clone(),
+            self.tilt.clone(),
+            self.watch.clone(),
+        );
+        let _ = std::thread::Builder::new()
+            .name("slice-early-preview".into())
+            .spawn(move || {
+                let layers = early_preview(&cut, &paths, &profile, &blend, tilt.as_ref());
+                if let Ok(text) = serde_json::to_string(&serde_json::json!({ "layers": layers })) {
+                    watch.set_early(text);
+                }
+            });
+    }
+}
+
+/// The part's paths as the preview draws them, layer by layer, before the
+/// tour: no travels, and no seconds yet.
+fn early_preview(
+    cut: &Contours,
+    paths: &PartPaths,
+    profile: &PrinterProfile,
+    blend: &BlendMode,
+    tilt: Option<&patch::BeltTilt>,
+) -> Vec<PreviewLayer> {
+    let planned: Vec<PlateLayer> = cut
+        .bands
+        .iter()
+        .zip(&paths.layers)
+        .map(|(band, layer)| {
+            let n = layer.paths.len();
+            let runs = (n > 0)
+                .then(|| Run {
+                    object: 0,
+                    layer: PrintLayer::new(LayerPaths {
+                        index: band.index,
+                        z: band.z,
+                        height: band.height,
+                        paths: layer.paths.clone(),
+                        note: String::new(),
+                    }),
+                    paths: 0..n,
+                    entry: Entry::Cross { z_hop: 0.0 },
+                    label: None,
+                })
+                .into_iter()
+                .collect();
+            PlateLayer {
+                index: band.index,
+                own: band.index,
+                clear_z: None,
+                z: band.z,
+                height: band.height,
+                note: String::new(),
+                runs,
+                belt_shift: 0.0,
+                slow: 1.0,
+                actions: Vec::new(),
+            }
+        })
+        .collect();
+    let mut layers = preview_of(&planned, profile, &[blend], &[], &[]);
+    for layer in &mut layers {
+        layer.paths.retain(|p| p.kind != "travel");
+    }
+    if let Some(tilt) = tilt {
+        tilt_preview(&mut layers, &planned, tilt);
+    }
+    layers
+}
+
 /// Every stage after the cut, from the kept stages when there are `keys`.
 /// Supports grow among the `neighbours` that come near them.
 #[allow(clippy::too_many_arguments)]
@@ -4053,6 +4152,7 @@ fn plan_object(
     nozzle_diameter: f64,
     neighbours: &[plate::Neighbour],
     floor: Option<FloorPlane>,
+    early: Option<&Early>,
     watch: &Watch,
 ) -> Result<Plan, String> {
     let reuse = Reuse {
@@ -4069,6 +4169,7 @@ fn plan_object(
             nozzle_diameter,
             neighbours,
             floor,
+            early,
             watch,
         ),
         None => plan_cut(
@@ -4176,6 +4277,7 @@ fn plan_kept(
     nozzle_diameter: f64,
     neighbours: &[plate::Neighbour],
     floor: Option<FloorPlane>,
+    early: Option<&Early>,
     watch: &Watch,
 ) -> Result<Plan, String> {
     let mut spent = Spent::default();
@@ -4203,6 +4305,9 @@ fn plan_kept(
     } else {
         spent.toolpaths(&paths);
         reuse.toolpath_layers = paths.reused;
+        if let Some(early) = early {
+            early.send(Arc::clone(&cut), Arc::clone(&paths));
+        }
     }
     if watch.stopped(settings.job) {
         return Err("cancelled".into());

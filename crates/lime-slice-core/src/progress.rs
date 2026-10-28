@@ -77,6 +77,9 @@ pub struct Progress {
     pub fraction: f64,
     #[serde(serialize_with = "status_str")]
     pub status: Status,
+    /// An early preview of the toolpaths is ready: [`Watch::early`].
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub early: bool,
 }
 
 fn status_str<S: serde::Serializer>(status: &Status, serializer: S) -> Result<S::Ok, S::Error> {
@@ -164,6 +167,7 @@ struct Snap {
     status: Status,
     seq: u64,
     log: Vec<Progress>,
+    early: Option<Arc<str>>,
 }
 
 impl Snap {
@@ -176,6 +180,7 @@ impl Snap {
             status: Status::Running,
             seq: 0,
             log: Vec::new(),
+            early: None,
         }
     }
 
@@ -186,6 +191,7 @@ impl Snap {
             total: self.total,
             fraction: self.fraction,
             status: self.status,
+            early: self.early.is_some(),
         }
     }
 }
@@ -194,6 +200,8 @@ struct Shared {
     cancel: AtomicBool,
     /// Cancel when this stage is entered. `NO_CANCEL` leaves the flag alone.
     cancel_on: AtomicU8,
+    /// Someone wants the toolpaths drawn before the tour finishes.
+    wants_early: AtomicBool,
     stage: AtomicU8,
     counter: AtomicU32,
     total: AtomicU32,
@@ -281,6 +289,7 @@ impl Watch {
             shared: Some(Arc::new(Shared {
                 cancel: AtomicBool::new(false),
                 cancel_on: AtomicU8::new(NO_CANCEL),
+                wants_early: AtomicBool::new(false),
                 stage: AtomicU8::new(0),
                 counter: AtomicU32::new(0),
                 total: AtomicU32::new(0),
@@ -419,6 +428,50 @@ impl Watch {
         shared.publish(stage, done, total, Some(status), None);
     }
 
+    /// Ask for an early preview of this slice: the toolpaths, drawn before
+    /// the tour orders them. Only a live watch can carry one.
+    pub fn ask_early(&self) {
+        if let Some(shared) = &self.shared {
+            shared.wants_early.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether this slice should build an early preview.
+    pub fn wants_early(&self) -> bool {
+        self.reports()
+            .is_some_and(|shared| shared.wants_early.load(Ordering::Relaxed))
+    }
+
+    /// Hold `preview` as this slice's early preview and tell followers. A
+    /// slice that already ended keeps none.
+    pub fn set_early(&self, preview: String) {
+        let Some(shared) = &self.shared else {
+            return;
+        };
+        let mut guard = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.status != Status::Running {
+            return;
+        }
+        guard.early = Some(Arc::from(preview));
+        guard.seq += 1;
+        let progress = guard.view();
+        guard.log.push(progress);
+        drop(guard);
+        shared.changed.notify_all();
+    }
+
+    /// The early preview, once there is one: `{"layers": [...]}` in the
+    /// reply's preview format, part paths only, with no travels.
+    pub fn early(&self) -> Option<Arc<str>> {
+        let shared = self.shared.as_ref()?;
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .early
+            .clone()
+    }
+
     pub fn snapshot(&self) -> Progress {
         let Some(shared) = &self.shared else {
             return Progress {
@@ -427,6 +480,7 @@ impl Watch {
                 total: 0,
                 fraction: 0.0,
                 status: Status::Running,
+                early: false,
             };
         };
         shared

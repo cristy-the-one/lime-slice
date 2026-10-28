@@ -2495,6 +2495,12 @@ mod tests {
             "result already read",
         );
         assert_eq!(jobs::held_bodies(), 0, "a read result is still held");
+        let early = get(&format!("/api/jobs/{id}/early"));
+        assert!(
+            early.starts_with("HTTP/1.0 404") || early.starts_with("HTTP/1.1 404"),
+            "a job that asked for no early preview has none: {early}"
+        );
+        assert!(!payload.contains("\"early\":true"), "{payload}");
 
         let finished_job = || {
             let started = http_exchange(&endpoint, &post("/api/jobs", true));

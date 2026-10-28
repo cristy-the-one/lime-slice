@@ -374,6 +374,8 @@ export const session = {
    * invoke path, which still has no job stream.
    */
   liveProgress: false,
+  /** The slice job whose early preview (toolpaths before the tour) is on screen, or 0. */
+  earlyShown: 0,
   /** True while the in-flight request will plan, false while it loads a saved slice. */
   busyRecompute: true,
   lastToastText: "",
