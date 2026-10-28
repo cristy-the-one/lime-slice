@@ -1,6 +1,7 @@
 //! A small belt slice: advance, copies, fit errors, and a tilted preview.
 //! Cartesian requests are covered by `cartesian_lock`.
 
+use std::collections::HashMap;
 use std::fs;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -804,6 +805,125 @@ fn belt_grid_columns_stand_on_the_belt_or_the_part() {
         let unheld: f32 = sliced.coverage.iter().map(|gap| gap.area_mm2).sum();
         assert!(unheld < 40.0, "{name}: {unheld:.1} mm² of interface is unheld");
     }
+}
+
+/// A cap lying mouth down on an IR3-like belt, its roof parallel to the belt
+/// but for steps of 15 µm, as facets leave on a curved CAD roof. Each step
+/// meets one 45° layer a hair past the support angle, and main grew a
+/// support-interface row the width of the roof on that layer over a grid
+/// column too thin for any line: the dotted row floating under the owner's
+/// housing. Every support and interface bead must now stand, in gravity, on
+/// a bead of the layer before it or on the belt. Interface may bridge
+/// between the lines or tips under it, so it is held within a few
+/// millimetres along X. At 60° the whole roof asks for a grid, which must
+/// still be there and stand.
+#[test]
+fn belt_supports_under_a_roof_stand_in_gravity() {
+    for step in [0.015, -0.015] {
+        let mut boxes = vec![
+            ([0.0, 0.0, 14.0], [60.0, 40.0, 16.0]),
+            ([0.0, 0.0, 0.0], [2.0, 40.0, 14.0]),
+            ([58.0, 0.0, 0.0], [60.0, 40.0, 14.0]),
+            ([2.0, 0.0, 0.0], [58.0, 2.0, 14.0]),
+            ([2.0, 38.0, 0.0], [58.0, 40.0, 14.0]),
+        ];
+        for k in 0..6 {
+            let y = 2.0 + 6.0 * k as f64;
+            boxes.push(([2.0, y, 13.9 + step * k as f64], [58.0, y + 6.0, 14.5]));
+        }
+        let cap = boxes_stl(&boxes, 0.0);
+        // At 45° the roof is at the angle and only the steps ask; at 60° the
+        // whole roof asks for a grid.
+        for (style, angle) in [("grid", 45.0), ("tree", 45.0), ("grid", 60.0)] {
+            let mut spec = belt(45.0, "z", 1, 5.0);
+            spec["floorSupports"] = json!(true);
+            let req = request(
+                &cap,
+                "cap.stl",
+                json!({
+                    "belt": spec,
+                    "supports": true,
+                    "supportStyle": style,
+                    "supportAngle": angle,
+                    "includePreview": false,
+                }),
+            );
+            let sliced = slice_request(&req, Job::default()).unwrap();
+            assert!(sliced.sanity.ok, "{style} {angle}: {:?}", sliced.sanity.notes);
+            let beads = lab_beads(&sliced.gcode, 45.0);
+            for (kind, span) in [("SUPPORT", 0.5), ("SUPPORT-INTERFACE", 5.4)] {
+                let (total, floating) = in_the_air(&beads, kind, span);
+                assert!(
+                    floating <= 0.01 * total + 2.0,
+                    "{style} at {angle}°, steps of {step} mm: {floating:.0} of {total:.0} mm of {kind} beads stand on nothing"
+                );
+            }
+            if angle > 50.0 {
+                let (total, _) = in_the_air(&beads, "SUPPORT", 0.5);
+                assert!(total > 500.0, "{style} at {angle}° grew {total:.0} mm of support under the roof");
+            }
+        }
+    }
+}
+
+/// Millimetres of `kind` beads, and of those with nothing under them in
+/// gravity: no bead of the layer before within 0.3 mm along the belt, `span`
+/// across it, and 0.6 mm below, and not on the belt.
+fn in_the_air(beads: &[Bead], kind: &str, span: f64) -> (f64, f64) {
+    const STEP: f64 = 0.2;
+    let points = |bead: &Bead| -> Vec<[f64; 3]> {
+        let (from, to) = (bead.from, bead.to);
+        let len = (0..3).map(|k| (to[k] - from[k]).powi(2)).sum::<f64>().sqrt();
+        let n = (len / STEP).ceil().max(1.0) as usize;
+        (0..=n)
+            .map(|i| {
+                let t = i as f64 / n as f64;
+                [0, 1, 2].map(|k| from[k] + (to[k] - from[k]) * t)
+            })
+            .collect()
+    };
+    let key = |p: [f64; 3]| ((p[1] / 0.3).floor() as i64, (p[0] / span).floor() as i64);
+    type Cells = HashMap<(i64, i64), Vec<[f64; 3]>>;
+    let mut by_layer: HashMap<usize, Cells> = HashMap::new();
+    for bead in beads {
+        for p in points(bead) {
+            by_layer
+                .entry(bead.layer)
+                .or_default()
+                .entry(key(p))
+                .or_default()
+                .push(p);
+        }
+    }
+    let (mut total, mut floating) = (0.0, 0.0);
+    for bead in beads.iter().filter(|b| b.kind == kind) {
+        for p in points(bead) {
+            total += STEP;
+            if p[2] <= 0.3 {
+                continue;
+            }
+            let (ka, kx) = key(p);
+            let held = bead.layer > 0
+                && by_layer.get(&(bead.layer - 1)).is_some_and(|cells| {
+                    (ka - 1..=ka + 1).any(|a| {
+                        (kx - 1..=kx + 1).any(|x| {
+                            cells.get(&(a, x)).is_some_and(|qs| {
+                                qs.iter().any(|q| {
+                                    (q[1] - p[1]).abs() <= 0.3
+                                        && (q[0] - p[0]).abs() <= span
+                                        && p[2] - q[2] > 0.0
+                                        && p[2] - q[2] <= 0.6
+                                })
+                            })
+                        })
+                    })
+                });
+            if !held {
+                floating += STEP;
+            }
+        }
+    }
+    (total, floating)
 }
 
 /// One extruding move of a belt file, put back on the part as
