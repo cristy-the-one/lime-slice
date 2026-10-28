@@ -16,6 +16,7 @@ import { ironingFlowPercent, ironingSpacingMax, readIroningFlowPercent, readIron
 import { readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin.ts";
 import { saveAutoSlice } from "../auto-slice-pref.ts";
 import { SUPPORT_MODES, supportModeOf, supportModeState, type SupportMode } from "../support-source.ts";
+import { interfaceLayersSent, SUPPORT_INTERFACE_LAYERS_MAX } from "../support-interface.ts";
 import { fanLayersValue, fanPercentValue, MAX_FAN_OFF_LAYERS } from "../fan.ts";
 
 export type Settings = typeof state;
@@ -101,6 +102,23 @@ function bound<K extends keyof PresetSettings>(key: K, spec: Omit<ControlSpec, "
     set: (s, value) => {
       (s as unknown as Record<string, unknown>)[key] = value;
     },
+  };
+}
+
+/** A number that is Auto (`null`) until set. The box is empty and shows Auto greyed; an emptied box is Auto again. */
+function autoNumber<K extends "supportZGapMm" | "supportXyGapMm" | "supportInterfaceLayers">(
+  key: K,
+  spec: Omit<ControlSpec, "preset" | "get" | "set" | "placeholder"> & { auto: (s: Settings) => string; clamp?: (value: number) => number },
+): ControlSpec {
+  const { auto, clamp, ...rest } = spec;
+  return {
+    ...rest,
+    preset: key,
+    get: (s) => s[key] ?? "",
+    set: (s, value) => {
+      (s as unknown as Record<string, number | null>)[key] = value === "" || typeof value !== "number" ? null : clamp ? clamp(value) : value;
+    },
+    placeholder: auto,
   };
 }
 
@@ -650,7 +668,7 @@ export const CONTROLS: ControlSpec[] = [
   bound("tipDiameter", { id: "tipd", label: "Tip diameter mm", group: "supports", tier: "expert", kind: num(0.4, 2, 0.1), parent: "sstyle", when: (s) => s.supports && s.supportStyle === "tree", keywords: "tree" }),
   bound("trunkDiameter", { id: "trunkd", label: "Trunk diameter mm", group: "supports", tier: "expert", kind: num(1.5, 12, 0.2), parent: "sstyle", when: (s) => s.supports && s.supportStyle === "tree", keywords: "tree" }),
   { id: "supportTools", label: "Paint and edit supports", group: "supports", tier: "simple", kind: custom },
-  bound("supportZGapMm", {
+  autoNumber("supportZGapMm", {
     id: "szgap",
     label: "Z gap mm",
     group: "supports",
@@ -658,10 +676,11 @@ export const CONTROLS: ControlSpec[] = [
     kind: num(0, 1, 0.05),
     parent: "supportTools",
     when: (s) => s.supports,
-    tip: "0 keeps the layer height, at least 0.12 mm. Raise it when supports weld to the part.",
-    keywords: "support z gap interface detach",
+    tip: "Empty is Auto: the layer height, at least 0.12 mm. Type a gap to set it, and 0 for none: the support touches the part, as for a soluble interface. Raise it when supports weld to the part.",
+    keywords: "support z gap interface detach auto",
+    auto: () => "Auto",
   }),
-  bound("supportXyGapMm", {
+  autoNumber("supportXyGapMm", {
     id: "sxygap",
     label: "XY gap mm",
     group: "supports",
@@ -669,19 +688,22 @@ export const CONTROLS: ControlSpec[] = [
     kind: num(0, 2, 0.05),
     parent: "supportTools",
     when: (s) => s.supports,
-    tip: "0 keeps 0.55 mm between the support and the wall.",
-    keywords: "support xy gap clearance",
+    tip: "Empty is Auto: 0.55 mm between the support and the wall. Type a gap to set it, and 0 for none.",
+    keywords: "support xy gap clearance auto",
+    auto: () => "Auto",
   }),
-  bound("supportInterfaceLayers", {
+  autoNumber("supportInterfaceLayers", {
     id: "sifacel",
     label: "Interface layers",
     group: "supports",
     tier: "advanced",
-    kind: num(0, 8, 1),
+    kind: num(0, SUPPORT_INTERFACE_LAYERS_MAX, 1),
     parent: "supportTools",
     when: (s) => s.supports,
-    tip: "0 keeps 3 dense layers under the part. A sent count is at least 1.",
-    keywords: "support interface roof dense",
+    tip: "Empty is Auto: 3 dense layers under the part. Type a count to set it. 0 shows as 1, the fewest the engine prints.",
+    keywords: "support interface roof dense auto",
+    auto: () => "Auto",
+    clamp: (value) => interfaceLayersSent(value) ?? value,
   }),
   bound("supportTreeBrimMm", {
     id: "stbrim",
@@ -748,7 +770,7 @@ export const CONTROLS: ControlSpec[] = [
  * advance field writes the key the firmware uses, and `pricePerKg` stays in files from before
  * the filament carried its own price.
  */
-export const UNFIELDED_PRESET_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["blendKind", "strategy", "supportSource", "pressureAdvance", "linearAdvance", "flow", "pricePerKg"]);
+export const UNFIELDED_PRESET_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["blendKind", "strategy", "supportSource", "supportGapsAuto", "pressureAdvance", "linearAdvance", "flow", "pricePerKg"]);
 
 const BY_ID = new Map(CONTROLS.map((spec) => [spec.id, spec]));
 

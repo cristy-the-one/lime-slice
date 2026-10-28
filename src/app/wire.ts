@@ -21,7 +21,7 @@ import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail
 import { mountProjectFiles, openPickedFile, saveCurrentProject } from "./project-io";
 import { newProject } from "./new-project";
 import { pickModelFile } from "../platform";
-import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, refreshObjectList, revealPrinterDetails, setCalibrate, syncFindStuck, touch } from "./settings";
+import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, refreshObjectList, revealPrinterDetails, setCalibrate, settleAutoField, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
 import { bindPlaceScrub } from "./place-scrub";
 import { bindFieldScrub } from "../ui/field-scrub";
@@ -108,6 +108,7 @@ export function wireApp() {
       noteBeltForm(target.id);
       return;
     }
+    if (target instanceof HTMLInputElement && target.type === "number") settleAutoField(target);
     if (target.id === "machineMaxBed" || target.id === "machineMaxNozzle") {
       noteHeatLimits();
       return;
