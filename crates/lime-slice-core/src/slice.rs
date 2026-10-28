@@ -4989,12 +4989,20 @@ fn part_paths(
         .enumerate()
         .map(|(i, band)| {
             let ironing = settings.ironing.filter(|_| cut.roofs[i] == 0.0);
-            let inputs = layer_inputs(
-                &settings.overrides,
-                band.z,
-                &contours[i],
-                ironing,
-                &settings.reinforcement,
+            let inputs = cut_inputs(
+                cut,
+                i,
+                settings,
+                ironing.is_some(),
+                (remain_low[i], remain_high[i]),
+                lightning.as_ref().map(|l| &l.layers[i]),
+                layer_inputs(
+                    &settings.overrides,
+                    band.z,
+                    &contours[i],
+                    ironing,
+                    &settings.reinforcement,
+                ),
             );
             if let Some(kept) = kept.filter(|k| k.inputs.get(i) == Some(&inputs)) {
                 watch.tick();
@@ -5099,6 +5107,66 @@ fn layer_inputs(
     Sha256::digest(text).into()
 }
 
+/// Every input of layer `i`'s toolpaths that comes from the cut, hashed with
+/// `inputs`, the ones `layer_inputs` hashes: its band, its outline, the ones
+/// below and above it when overhangs or ironing read them, its skins, its
+/// distance below a roof, its interior runs, and its lightning branches. Two
+/// plans whose toolpath keys leave the mesh out, as the layer keys do, plan
+/// the same paths on a layer with the same hash, so an edit to the mesh
+/// replans only the layers it reaches.
+#[allow(clippy::too_many_arguments)]
+fn cut_inputs(
+    cut: &Contours,
+    i: usize,
+    settings: &SliceSettings,
+    ironed: bool,
+    remain: (InteriorSpan, InteriorSpan),
+    lightning: Option<&crate::lightning::Branches>,
+    inputs: [u8; 32],
+) -> [u8; 32] {
+    fn points(hash: &mut Sha256, loops: &[Loop]) {
+        hash.update((loops.len() as u64).to_le_bytes());
+        for l in loops {
+            hash.update((l.len() as u64).to_le_bytes());
+            for p in l {
+                hash.update(p[0].to_bits().to_le_bytes());
+                hash.update(p[1].to_bits().to_le_bytes());
+            }
+        }
+    }
+    let mut hash = Sha256::new();
+    hash.update(inputs);
+    let band = &cut.bands[i];
+    hash.update((band.index as u64).to_le_bytes());
+    hash.update(band.z.to_bits().to_le_bytes());
+    hash.update(band.height.to_bits().to_le_bytes());
+    points(&mut hash, &cut.contours[i]);
+    let near = |k: Option<usize>| k.and_then(|k| cut.contours.get(k));
+    if settings.overhang_control {
+        hash.update(b"|below|");
+        points(&mut hash, near(i.checked_sub(1)).map_or(&[], Vec::as_slice));
+    }
+    if ironed {
+        hash.update(b"|above|");
+        points(&mut hash, near(Some(i + 1)).map_or(&[], Vec::as_slice));
+    }
+    for skins in &cut.skins {
+        points(&mut hash, &skins[i].bottom);
+        points(&mut hash, &skins[i].top);
+    }
+    hash.update(cut.roofs[i].to_bits().to_le_bytes());
+    hash.update(format!("{remain:?}"));
+    if let Some(branches) = lightning {
+        hash.update(b"|lightning|");
+        for [a, b] in branches.iter() {
+            for c in [a[0], a[1], b[0], b[1]] {
+                hash.update(c.to_bits().to_le_bytes());
+            }
+        }
+    }
+    hash.finalize().into()
+}
+
 /// Ironing over layer `i`'s top surface: what the layer above leaves open,
 /// within the outline inset by half a line width. Ranges and volumes do not
 /// change it.
@@ -5171,14 +5239,21 @@ fn tour_part(
         let first = (0..bands.len())
             .find(|&i| same_paths(i).is_none())
             .unwrap_or(bands.len());
+        // A layer with kept paths is toured again only when it starts somewhere
+        // new, which an edit below it seldom causes: it is laid out then.
         let layout_sample = crate::inner_prof::Sample::start();
         let mut laid: Vec<Option<PartLayout>> = part
             .layers
             .par_iter()
             .enumerate()
-            .map(|(i, l)| (i >= first).then(|| PartLayout::new(l.paths.clone(), &contours[i])))
+            .map(|(i, l)| {
+                (i >= first && same_paths(i).is_none())
+                    .then(|| PartLayout::new(l.paths.clone(), &contours[i]))
+            })
             .collect();
-        layout_sample.tour_layout((bands.len() - first) as u64);
+        layout_sample.tour_layout(laid.iter().flatten().count() as u64);
+        let held: Vec<Option<Option<[f64; 2]>>> =
+            (0..bands.len()).map(|i| same_paths(i).map(|k| k.end)).collect();
         let mut end = bands.first().filter(|b| b.index == 0).and_then(|b| {
             let mut skirt = skirt_paths(&contours[0], None, b.z, blend, settings);
             order_supports(&mut skirt, None, None, scarf_params(settings, 0).as_ref())
@@ -5191,7 +5266,7 @@ fn tour_part(
         let mut guessed = if SERIAL_TOUR.load(AtomicOrdering::Relaxed) {
             Vec::new()
         } else {
-            guess_tours(&laid, first, below, |i| {
+            guess_tours(&laid, &held, first, below, |i| {
                 (!watch.stopped(settings.job)).then(|| scarf_params(settings, bands[i].index))
             })
         };
@@ -5299,7 +5374,8 @@ struct Guess {
 
 /// Each laid-out layer from `first` up toured in parallel from a guess of
 /// where the tour below it ends. `below` is where the tour into `first`
-/// starts, when it is known.
+/// starts, when it is known. `held` is where each kept layer ended, which is
+/// where it ends again from the same start.
 ///
 /// Most layers end in the same place whatever point they start from, so the
 /// guess is where the layer below ends when toured from no point at all. A
@@ -5311,6 +5387,7 @@ struct Guess {
 /// `scarf` gives a layer's scarf, or `None` once the slice is cancelled.
 fn guess_tours(
     laid: &[Option<PartLayout>],
+    held: &[Option<Option<[f64; 2]>>],
     first: usize,
     below: Option<Option<[f64; 2]>>,
     scarf: impl Fn(usize) -> Option<Option<ScarfParams>> + Sync,
@@ -5321,9 +5398,9 @@ fn guess_tours(
     let free_ends: Vec<Option<Option<[f64; 2]>>> = laid
         .par_iter()
         .enumerate()
-        .map(|(i, l)| {
-            let l = l.as_ref().filter(|_| i + 1 < laid.len())?;
-            Some(l.clone().tour(None, scarf(i)?.as_ref()).1)
+        .map(|(i, l)| match l.as_ref().filter(|_| i + 1 < laid.len()) {
+            Some(l) => Some(l.clone().tour(None, scarf(i)?.as_ref()).1),
+            None => held.get(i).copied().flatten(),
         })
         .collect();
     let mut starts: Vec<Option<Option<[f64; 2]>>> = vec![None; laid.len()];
@@ -7296,7 +7373,7 @@ mod tests {
                 .zip(&cut.contours)
                 .map(|(l, c)| Some(PartLayout::new(l.paths.clone(), c)))
                 .collect();
-            let held = guess_tours(&laid, 0, Some(serial.layers[0].from), |i| {
+            let held = guess_tours(&laid, &[], 0, Some(serial.layers[0].from), |i| {
                 Some(scarf_params(&settings, cut.bands[i].index))
             })
             .iter()

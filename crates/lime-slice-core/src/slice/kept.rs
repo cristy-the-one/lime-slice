@@ -298,11 +298,12 @@ pub(super) struct Keys {
     pub layers: LayerKeys,
 }
 
-/// The part stages' keys with the overrides and the ironing left out. Ranges,
-/// volumes, and ironing are the only settings that differ layer by layer, so
-/// two plans with the same layer key share every layer whose own inputs, and
-/// whose inputs from the stage before, are the same. Fuzzy skin is not left
-/// out: it moves every outer wall, so a change replans the toolpaths.
+/// The part stages' keys with the mesh, the overrides and the ironing left
+/// out. The cut, ranges, volumes, and ironing are what differs layer by
+/// layer, so two plans with the same layer key share every layer whose own
+/// inputs, and whose inputs from the stage before, are the same. Fuzzy skin
+/// is not left out: it moves every outer wall, so a change replans the
+/// toolpaths.
 #[derive(Clone)]
 pub(super) struct LayerKeys {
     pub toolpaths: [u8; 32],
@@ -470,6 +471,16 @@ pub(super) fn keys(
         hash.update(format!("{blend:?}|{s:?}"));
         hash.finalize().into()
     };
+    // The layer keys leave the mesh out: each layer hashes what it reads of
+    // the cut, so a plan of an edited mesh reuses every layer the edit did
+    // not reach. The part's box and the nozzle are the same for all layers.
+    let mut frame = Sha256::new();
+    frame.update(format!("{:x}|", nozzle_diameter.to_bits()));
+    if let Some((min, max)) = mesh.bounds() {
+        for c in min.iter().chain(&max) {
+            frame.update(c.to_bits().to_le_bytes());
+        }
+    }
     let bare = |s: &SliceSettings| -> [u8; 32] {
         let s = SliceSettings {
             overrides: blank.overrides.clone(),
@@ -477,7 +488,9 @@ pub(super) fn keys(
             reinforcement: Vec::new(),
             ..s.clone()
         };
-        key(&s, Some(blend))
+        let mut hash = frame.clone();
+        hash.update(format!("layers|{blend:?}|{s:?}"));
+        hash.finalize().into()
     };
     // The belt floor changes where supports land. It is mixed only when set,
     // so a cartesian key, and a belt that did not ask, keeps its bytes.
