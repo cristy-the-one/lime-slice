@@ -719,6 +719,35 @@ const laterSettings = { ...project.settings, ...later };
 const laterOpened = parseProject(serializeProject({ ...project, settings: laterSettings }));
 eq("every later setting survives a save and reopen", laterOpened.ok ? laterOpened.project.settings : null, laterSettings);
 
+// Support Z gap, XY gap and interface layers: a file from before Auto stores 0 for it, and a file since stores null.
+const gapsOf = (opened: ReturnType<typeof parseProject>) =>
+  opened.ok ? [opened.project.settings.supportZGapMm, opened.project.settings.supportXyGapMm, opened.project.settings.supportInterfaceLayers] : "refused";
+const withGaps = (gaps: [number | null, number | null, number | null]): LimeProject => ({
+  ...project,
+  settings: { ...project.settings, supports: true, supportZGapMm: gaps[0], supportXyGapMm: gaps[1], supportInterfaceLayers: gaps[2] },
+});
+eq("a new project is Auto in all three", gapsOf(parseProject(serializeProject(project))), [null, null, null]);
+eq("typed zeros survive a save and reopen as zeros", gapsOf(parseProject(serializeProject(withGaps([0, 0, 0])))), [0, 0, 0]);
+eq("typed values survive a save and reopen", gapsOf(parseProject(serializeProject(withGaps([0.35, 0, 2])))), [0.35, 0, 2]);
+eq("an Auto beside a typed value survives", gapsOf(parseProject(serializeProject(withGaps([null, 0.9, null])))), [null, 0.9, null]);
+const beforeAuto = (settings: Record<string, unknown>): string => {
+  const doc = JSON.parse(serializeProject(project)) as { settings: Record<string, unknown> };
+  doc.settings = settings;
+  return JSON.stringify(doc);
+};
+const { supportGapsAuto: _marker, ...unmarked } = { ...project.settings } as Record<string, unknown>;
+eq("a project saved when 0 meant Auto opens as Auto", gapsOf(parseProject(beforeAuto({ ...unmarked, supportZGapMm: 0, supportXyGapMm: 0, supportInterfaceLayers: 0 }))), [null, null, null]);
+eq("a gap that project had set is kept", gapsOf(parseProject(beforeAuto({ ...unmarked, supportZGapMm: 0.35, supportXyGapMm: 0, supportInterfaceLayers: 2 }))), [0.35, null, 2]);
+const { supportZGapMm: _z, supportXyGapMm: _xy, supportInterfaceLayers: _n, ...olderStill } = unmarked;
+eq("a project from before the support interface opens as Auto", gapsOf(parseProject(beforeAuto(olderStill))), [null, null, null]);
+const reopened = parseProject(beforeAuto({ ...unmarked, supportZGapMm: 0 }));
+eq(
+  "a migrated project is marked, so a typed 0 saved after it stays a 0",
+  gapsOf(parseProject(serializeProject(reopened.ok ? { ...reopened.project, settings: { ...reopened.project.settings, supportZGapMm: 0 } } : project))),
+  [0, null, null],
+);
+check("a project with a gap that is not a number is damaged", !parseProject(beforeAuto({ ...unmarked, supportGapsAuto: true, supportZGapMm: "0.3" })).ok);
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

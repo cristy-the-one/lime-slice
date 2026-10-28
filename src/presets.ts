@@ -35,12 +35,17 @@ export interface PresetSettings {
   /** Off unless the slice asks. Omitted from the request while off. */
   supportAvoidance: boolean;
   supportHeightMult: number;
-  /** Millimetres. `0` is omitted and the engine keeps the layer height, at least 0.12 mm. */
-  supportZGapMm: number;
-  /** Millimetres. `0` is omitted and the engine keeps 0.55 mm. */
-  supportXyGapMm: number;
-  /** `0` is omitted and the engine keeps 3 dense layers. */
-  supportInterfaceLayers: number;
+  /** Millimetres. `null` is Auto: omitted, and the engine keeps the layer height, at least 0.12 mm. `0` is a real zero. */
+  supportZGapMm: number | null;
+  /** Millimetres. `null` is Auto: omitted, and the engine keeps 0.55 mm. `0` is a real zero. */
+  supportXyGapMm: number | null;
+  /** `null` is Auto: omitted, and the engine keeps 3 dense layers. `0` is sent as the fewest there can be, 1. */
+  supportInterfaceLayers: number | null;
+  /**
+   * Tells a file that stores `null` for Auto from one written before Auto existed, where `0` meant Auto.
+   * Always `true`. A settings object without it has each `0` of the three support interface keys read as Auto.
+   */
+  supportGapsAuto: true;
   /** Millimetres of concentric brim around bed trunks. `0` is omitted. */
   supportTreeBrimMm: number;
   infillCombine: boolean;
@@ -124,9 +129,10 @@ export const DEFAULT_PRESET: PresetSettings = {
   trunkDiameter: 4.2,
   supportAvoidance: false,
   supportHeightMult: 1,
-  supportZGapMm: 0,
-  supportXyGapMm: 0,
-  supportInterfaceLayers: 0,
+  supportZGapMm: null,
+  supportXyGapMm: null,
+  supportInterfaceLayers: null,
+  supportGapsAuto: true,
   supportTreeBrimMm: 0,
   infillCombine: true,
   combing: true,
@@ -173,17 +179,29 @@ export function presetKeys(): (keyof PresetSettings)[] {
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
 export const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm", "supportZGapMm", "supportXyGapMm", "supportInterfaceLayers", "supportTreeBrimMm", "bridgeFlowRatio", "bridgeSpeedMmS", "bridgeFanPercent"]);
 
+/** Settings that are Auto (`null`) until set. Before Auto existed they stored `0` for it, which `readPresetSettings` still reads that way. */
+const AUTO_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["supportZGapMm", "supportXyGapMm", "supportInterfaceLayers"]);
+
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
+  const legacy = row.supportGapsAuto !== true;
   const out = { ...DEFAULT_PRESET };
   for (const key of presetKeys()) {
     const got = row[key];
+    if (key === "supportGapsAuto") continue;
+    if (AUTO_KEYS.has(key)) {
+      if (got === undefined || got === null || (legacy && got === 0)) continue;
+      if (typeof got !== "number" || !Number.isFinite(got)) return null;
+      (out as unknown as Record<string, unknown>)[key] = got;
+      continue;
+    }
     if (got === undefined && LATER_KEYS.has(key)) continue;
     if (typeof got !== typeof DEFAULT_PRESET[key]) return null;
     (out as unknown as Record<string, unknown>)[key] = got;
   }
+  out.supportGapsAuto = true;
   return out;
 }
 
@@ -198,7 +216,7 @@ export function parseLegacyPresets(text: string | null): Record<string, PresetSe
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     const out: Record<string, PresetSettings> = {};
     for (const [name, row] of Object.entries(parsed as Record<string, unknown>)) {
-      const preset = readPresetSettings({ ...DEFAULT_PRESET, ...(row && typeof row === "object" ? (row as object) : {}) });
+      const preset = readPresetSettings({ ...DEFAULT_PRESET, supportGapsAuto: undefined, ...(row && typeof row === "object" ? (row as object) : {}) });
       if (preset && name.trim()) out[name.trim()] = preset;
     }
     return out;
