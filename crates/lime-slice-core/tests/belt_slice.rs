@@ -706,6 +706,106 @@ fn floor_supports_grow_along_gravity() {
     }
 }
 
+/// Boxes `[min, max]` turned by `turn_deg` about X and stood on Z 0.
+fn boxes_stl(boxes: &[([f64; 3], [f64; 3])], turn_deg: f64) -> String {
+    let (s, c) = (turn_deg.to_radians().sin(), turn_deg.to_radians().cos());
+    let quads = [
+        [0, 2, 3, 1],
+        [4, 5, 7, 6],
+        [0, 1, 5, 4],
+        [2, 6, 7, 3],
+        [0, 4, 6, 2],
+        [1, 3, 7, 5],
+    ];
+    let mut faces = Vec::new();
+    for (lo, hi) in boxes {
+        let corner = |k: usize| {
+            let p = [
+                if k & 1 == 0 { lo[0] } else { hi[0] },
+                if k & 2 == 0 { lo[1] } else { hi[1] },
+                if k & 4 == 0 { lo[2] } else { hi[2] },
+            ];
+            [p[0], p[1] * c - p[2] * s, p[1] * s + p[2] * c]
+        };
+        for [a, b, c, d] in quads {
+            faces.push([corner(a), corner(b), corner(c)]);
+            faces.push([corner(a), corner(c), corner(d)]);
+        }
+    }
+    let low = faces
+        .iter()
+        .flatten()
+        .map(|p| p[2])
+        .fold(f64::INFINITY, f64::min);
+    let mut out = String::from("solid boxes\n");
+    for face in faces {
+        out.push_str("facet normal 0 0 0\nouter loop\n");
+        for v in face {
+            out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2] - low));
+        }
+        out.push_str("endloop\nendfacet\n");
+    }
+    out.push_str("endsolid boxes\n");
+    out
+}
+
+/// Grid supports on the belt stand on the belt or on the part. The table,
+/// turned 45° on the belt, has columns that land on its pillar and on its
+/// step while others pass them, so a layer's column outline changes often;
+/// a grid laid from that outline moved its lines and left each layer's lines
+/// in the air. The ledge at 60° asks for a strip on every layer, and each
+/// strip's column falls away from the next one, a comb of slivers no grid
+/// line hits.
+#[test]
+fn belt_grid_columns_stand_on_the_belt_or_the_part() {
+    let table = boxes_stl(
+        &[
+            ([-6.0, -6.0, 0.0], [6.0, 6.0, 20.5]),
+            ([-22.0, -22.0, 20.0], [22.0, 22.0, 24.0]),
+            ([-20.0, 8.0, 0.0], [20.0, 20.0, 6.0]),
+        ],
+        45.0,
+    );
+    let ledge = fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples/overhang_ledge.stl"),
+    )
+    .unwrap();
+    for (name, stl, angle) in [("table", table.into_bytes(), 45.0), ("ledge", ledge, 60.0)] {
+        let mut spec = belt(45.0, "z", 1, 5.0);
+        spec["floorSupports"] = json!(true);
+        let mut req = request(
+            "",
+            "part.stl",
+            json!({
+                "belt": spec,
+                "supports": true,
+                "supportStyle": "grid",
+                "supportAngle": angle,
+                "includePreview": false,
+            }),
+        );
+        req.data_b64 = base64::engine::general_purpose::STANDARD.encode(&stl);
+        let sliced = slice_request(&req, Job::default()).unwrap();
+        assert!(sliced.sanity.ok, "{name}: {:?}", sliced.sanity.notes);
+        let feet = trunk_feet(&sliced.gcode, 45.0);
+        assert!(!feet.is_empty(), "the {name} grew no grid supports");
+        let high: Vec<String> = feet
+            .iter()
+            .filter(|&&z| z > 0.3)
+            .map(|z| format!("{z:.2}"))
+            .collect();
+        assert!(
+            high.is_empty(),
+            "{} of {} {name} columns start over the belt, at {} mm",
+            high.len(),
+            feet.len(),
+            high.join(", ")
+        );
+        let unheld: f32 = sliced.coverage.iter().map(|gap| gap.area_mm2).sum();
+        assert!(unheld < 40.0, "{name}: {unheld:.1} mm² of interface is unheld");
+    }
+}
+
 /// One extruding move of a belt file, put back on the part as
 /// `[across, along the belt, height]`.
 struct Bead {

@@ -444,6 +444,11 @@ impl Supports {
         Some(supports)
     }
 
+    /// The belt the supports stand on, `None` on a flat bed.
+    pub(crate) fn floor(&self) -> Option<FloorPlane> {
+        self.opts.floor
+    }
+
     /// No supports on any of `layers` layers.
     pub(crate) fn none(layers: usize, opts: &SupportOpts) -> Self {
         let empty = vec![Vec::new(); layers];
@@ -829,7 +834,16 @@ impl Demand {
             }
 
             let gap = &gaps[i];
-            let iface_area = union_all(gens.iter().map(|(r, _)| r.as_slice()));
+            let mut iface_area = union_all(gens.iter().map(|(r, _)| r.as_slice()));
+            // Belt grid columns, and the interface on them, close the comb
+            // that sampling one overhang a layer at a time leaves.
+            let apart = opts
+                .floor
+                .filter(|_| !tree)
+                .map(|floor| floor.fall(bands[i].height) + bands[i].height / angle);
+            if let Some(apart) = apart.filter(|_| !iface_area.is_empty()) {
+                iface_area = join_columns(&iface_area, apart);
+            }
             demand.interface[i] = drop_slivers(boolean_diff(&iface_area, gap), 0.05);
             if !tree {
                 let sparse_only = local_diff(&sparse, &iface_area);
@@ -863,6 +877,9 @@ impl Demand {
             }
             gens = next_gens;
             if !tree {
+                if let Some(apart) = apart.filter(|_| !sparse.is_empty()) {
+                    sparse = join_columns(&sparse, apart);
+                }
                 sparse = drop_slivers(local_diff(&sparse, part), 0.15);
             }
 
@@ -878,6 +895,16 @@ impl Demand {
         }
         Some(demand)
     }
+}
+
+/// One overhang on the belt is born a strip per layer, and each strip's
+/// column falls along gravity while the next strip is born beside it, so the
+/// columns of neighbouring layers lie up to `gap` apart: a comb of slivers
+/// too thin for a grid line where the part asks for one column. Closing by
+/// half the gap joins them.
+fn join_columns(sparse: &[Loop], gap: f64) -> Vec<Loop> {
+    let r = gap * 0.5 + 0.05;
+    offset_loops(&offset_loops(sparse, r), -r)
 }
 
 /// Max lean from vertical per millimetre of fall.
