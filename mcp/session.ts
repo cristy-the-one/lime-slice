@@ -28,7 +28,7 @@ import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planP
 import { partStem, pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
 import { SCREWS, throughLength } from "../src/model-hole.ts";
-import { extentAlong, facePlane, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
+import { extentAlong, facePlane, formatMm, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
 import { isPrimitiveKind, rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { readFingerprint } from "../src/model-reply.ts";
 import { applyRequest, crossEditRequest, editRequest, exportRequest, extrudeOp, faceExtrudeOp, gotoRequest, isBrep, joinOp, keepSketch, loftOp, moveFacesOp, newSolidRequest, openRequest, probeRequest, revolveOp, shellOp, solidFileName, stepEdges, wholeTreeRequest, type ProfileShape } from "../src/model-request.ts";
@@ -61,6 +61,7 @@ import { resolved } from "../src/strategy.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
+import { buildDirection } from "../src/belt.ts";
 import { beltLayerNormal, cloneStudy, namesFaces, placeRegion, readRegion, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type StudyRegion, type Vec3 as SimVec } from "../src/sim/study.ts";
 import { LABEL } from "../src/sim/label.ts";
 import { readBeadSection, withBeads } from "../src/sim/cards.ts";
@@ -685,6 +686,14 @@ function turnEcho(typed: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+/**
+ * --- Print transitions. The default reach along the flatter face, and the note for a longer wedge with Skin on shallow
+ * slopes on: on the step 2 coupons (docs/plan-belt-transitions.md, "As built: step 2") 2 and 3 mm wedges held every row
+ * a larger one held, and from 5 mm up a wedge left more rows hanging than none when that setting was on.
+ */
+const TRANSITION_SIZE_MM = 2;
+const TRANSITION_SKIN_NOTE = "Skin on shallow slopes is on: on the test coupons, wedges reaching 5 mm or more left more rows hanging than no wedge with it on. Slice and read standsOnNothing before keeping it.";
+
 const EDGES_SHAPE = "edges is a list of edge indexes, [3, 7], or one pick object: {fromNode: \"node_4\", filter: \"convex\"} or {select: {direction, onFace, convex}}, not inside a list.";
 
 /**
@@ -698,7 +707,7 @@ function edgePicksAsTyped(args: unknown): { args: unknown } | { reason: string }
   const fix = (op: unknown): { op: unknown } | { reason: string } => {
     if (!op || typeof op !== "object" || Array.isArray(op)) return { op };
     const row = op as Record<string, unknown>;
-    if ((row.kind !== "fillet" && row.kind !== "chamfer") || !Array.isArray(row.edges)) return { op };
+    if ((row.kind !== "fillet" && row.kind !== "chamfer" && row.kind !== "transition") || !Array.isArray(row.edges)) return { op };
     const objects = row.edges.filter((edge) => edge !== null && typeof edge === "object");
     if (objects.length === 0) return { op };
     if (row.edges.length === 1) return { op: { ...row, edges: objects[0] } };
@@ -1606,7 +1615,7 @@ export class Session {
       ...(assemblies.length ? { assemblies: assemblies.map((row) => ({ assembly: row.name, members: row.members.map((member) => member.object) })) } : {}),
       printerSend: false,
       model: {
-        ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "split", "partition", "scale", "join", "root"],
+        ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "transition", "split", "partition", "scale", "join", "root"],
         composite: [...COMPOSITE_KINDS],
         primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"],
         // --- 3.1 F16. A limit per call, as the app's composite tools have it, not per history: one object's history
@@ -4456,7 +4465,7 @@ export class Session {
   /** Indexes from a list, or from the same filter `edges_find` uses. */
   private resolveEdges(obj: PlateObject, spec: Record<string, unknown>): EdgePick[] | { reason: string } {
     const raw = spec.edges;
-    const empty = spec.kind === "chamfer" ? "Pick an edge to chamfer." : "Pick an edge to fillet.";
+    const empty = spec.kind === "chamfer" ? "Pick an edge to chamfer." : spec.kind === "transition" ? "Pick an edge for the print transition." : "Pick an edge to fillet.";
     if (raw && typeof raw === "object" && "fromNode" in raw) {
       const { fromNode, filter } = raw as { fromNode?: unknown; filter?: unknown };
       const node = this.nodeOf(obj, fromNode);
@@ -4754,6 +4763,8 @@ export class Session {
       const op: ModelOp = { kind, edges: picked, size, ...second, ...angle, ...flip };
       return { op: toSolidOp(op, typedPoseOf(obj)), typed: { kind, edges: picked, size, ...second, ...angle, ...flip } };
     }
+    // --- Print transitions. The build direction is worked out now, from this pose on the plate's printer, and kept.
+    if (kind === "transition") return this.bakeTransition(obj, spec);
     if (kind === "hole") {
       if (typeof spec.screw === "string") {
         const screw = SCREWS.find((entry) => entry.name === spec.screw);
@@ -4972,7 +4983,81 @@ export class Session {
       const op: ModelOp = { kind: "root", ...solid };
       return { op, typed: { kind: "root", ...solid } };
     }
-    return { reason: "That edit is not one of hole, fillet, chamfer, split, partition, scale, boolean, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, join, or root." };
+    return { reason: "That edit is not one of hole, fillet, chamfer, transition, split, partition, scale, boolean, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, join, or root." };
+  }
+
+  /**
+   * --- Print transitions (docs/plan-belt-transitions.md, step 2). The op in the solid's frame, and as typed with every
+   * default filled, so a model_edit of the echo keeps the build direction it was made for; `build: null` aims it from
+   * this pose again.
+   */
+  private bakeTransition(obj: PlateObject, spec: Record<string, unknown>): { op: ModelOp; typed: Record<string, unknown> } | { reason: string } {
+    const edges = this.resolveEdges(obj, spec);
+    if ("reason" in edges) return edges;
+    const limit = 90 - (Number.isFinite(this.settings.supportAngle) ? this.settings.supportAngle : 45);
+    const angleDeg = spec.angleDeg === undefined ? limit : spec.angleDeg;
+    if (typeof angleDeg !== "number" || !Number.isFinite(angleDeg) || angleDeg > 85) return { reason: "angleDeg is the new face's angle to the layers, at most 85°." };
+    if (angleDeg < limit - 1e-9) return { reason: `angleDeg must be at least ${formatMm(limit)}°, the support limit of these settings, so the new face holds its own rows.` };
+    const size = spec.size === undefined ? TRANSITION_SIZE_MM : spec.size;
+    if (size !== "face" && (typeof size !== "number" || !(size > 0))) return { reason: "size is millimetres along the flatter face, or \"face\" to its end." };
+    const mode = spec.mode === undefined ? "auto" : spec.mode;
+    if (mode !== "auto" && mode !== "add" && mode !== "cut") return { reason: "mode is auto, add, or cut." };
+    const maxMm = spec.maxMm;
+    if (maxMm !== undefined && (typeof maxMm !== "number" || !(maxMm > 0))) return { reason: "maxMm must be above 0 mm." };
+    const printer = this.printer();
+    const belt = printer.kind === "belt" ? printer.belt : null;
+    const pose = typedPoseOf(obj);
+    let build: [number, number, number];
+    if (Array.isArray(spec.build)) {
+      const typed = spec.build.slice(0, 3).map(Number);
+      if (typed.length !== 3 || !typed.every(Number.isFinite) || Math.hypot(...typed) < 1e-9) return { reason: "build is a direction, three numbers not all 0." };
+      build = typed as [number, number, number];
+    } else if (spec.build === undefined || spec.build === null) {
+      build = turnDir(pose, buildDirection(obj.orient, belt)).map((value) => Math.round(value * 1e9) / 1e9 + 0) as [number, number, number];
+    } else return { reason: "build is a direction, or null to aim from this pose." };
+    const made = {
+      kind: "transition" as const,
+      edges,
+      build,
+      angleDeg,
+      size: size as number | "face",
+      ...(mode !== "auto" ? { mode: mode as "add" | "cut" } : {}),
+      ...(maxMm !== undefined ? { maxMm: maxMm as number } : {}),
+      ...(belt ? { beltDeg: belt.angleDeg } : {}),
+      orient: [...obj.orient],
+      printer: printer.id,
+    };
+    return { op: toSolidOp(made, pose), typed: { ...made } };
+  }
+
+  /**
+   * --- Print transitions. The kernel's rows for a probe, read in model space: the new face's normal there, and its
+   * angle to the belt (or the bed), the plate's up being the third row of the plate orientation.
+   */
+  private transitionRows(obj: PlateObject, raw: unknown): { rows: Record<string, unknown>[]; text: string } | null {
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+    const pose = typedPoseOf(obj);
+    const up = plateUp(obj.orient);
+    const belt = this.printer().kind === "belt";
+    const round = (value: number) => Math.round(value * 10) / 10 + 0;
+    const rows = raw.flatMap((row) => {
+      if (!row || typeof row !== "object") return [];
+      const one = row as Record<string, unknown>;
+      const normal = Array.isArray(one.normal) && one.normal.length === 3 ? (one.normal as [number, number, number]) : null;
+      if (!normal) return [];
+      const toPlate = round((Math.acos(Math.min(1, Math.abs(normal[0] * up[0] + normal[1] * up[1] + normal[2] * up[2]))) * 180) / Math.PI);
+      return [{ ...one, normal: turnDir(pose, normal).map((value) => Math.round(value * 1000) / 1000 + 0), [belt ? "angleToBeltDeg" : "angleToBedDeg"]: toPlate }];
+    });
+    if (rows.length === 0) return null;
+    const where = belt ? "the belt" : "the bed";
+    const text = rows
+      .map((row) => {
+        const r = row as Record<string, number | string>;
+        const reach = r.path === "prism" ? `to the flatter face's end, ${formatMm(Number(r.reachMm))} mm` : `${formatMm(Number(r.reachMm))} mm along the flatter face`;
+        return `Edge ${r.edge}: a corner, its flatter face at ${round(Number(r.farDeg))}° to the layers. The wedge runs ${reach}, its face at ${round(Number(r.angleToLayersDeg))}° to the layers and ${r.angleToBeltDeg ?? r.angleToBedDeg}° to ${where}, adding ${formatMm(Number(r.volumeMm3))} mm³.`;
+      })
+      .join(" ");
+    return { rows, text };
   }
 
   /** K4. A face as a shell's open face: an index, a stored `{index}`, or a `{normal, nearPoint}` selector. */
@@ -5095,7 +5180,7 @@ export class Session {
    * `measure` asks the modeler for the built shape too, for model_probe's metrics; a batch step does not need it.
    */
   private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown>; notes?: string[] }, measure = false, composite = false, budgetMs?: number): Promise<Record<string, unknown>> {
-    const picked = baked.op.kind === "fillet" || baked.op.kind === "chamfer" ? { edges: baked.typed.edges } : {};
+    const picked = baked.op.kind === "fillet" || baked.op.kind === "chamfer" || baked.op.kind === "transition" ? { edges: baked.typed.edges } : {};
     const answer = (body: Record<string, unknown>) => ({ ...body, ...picked, stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed), ...turnEcho(baked.typed) });
     if (baked.op.kind === "scale") {
       obj.probes.set(probeKey(String(at), baked.op), true);
@@ -5122,7 +5207,7 @@ export class Session {
       }
     }
     const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
-    const blend = (baked.op.kind === "fillet" || baked.op.kind === "chamfer") && baked.op.edges.length > 1;
+    const blend = (baked.op.kind === "fillet" || baked.op.kind === "chamfer" || baked.op.kind === "transition") && baked.op.edges.length > 1;
     const preview = measure || blend ? (obj.stepTolerance || CHORD) : undefined;
     let reply: Record<string, unknown>;
     try {
@@ -5154,6 +5239,12 @@ export class Session {
     obj.probes.set(probeKey(String(at), baked.op), true);
     const sides = chamferSides(reply.firstFaces, typedPoseOf(obj));
     if (sides) return answer({ ok: true, reason: `${note.text} ${sides.text}`, firstFaces: sides.rows });
+    const wedges = this.transitionRows(obj, reply.transition);
+    if (wedges) {
+      const reach = Math.max(...wedges.rows.map((row) => Number(row.reachMm) || 0));
+      const warn = this.settings.shallowSkins && reach > TRANSITION_SIZE_MM + 1 ? ` ${TRANSITION_SKIN_NOTE}` : "";
+      return answer({ ok: true, reason: `${note.text} ${wedges.text}${warn}`, transition: wedges.rows });
+    }
     return answer({ ok: true, reason: note.text });
   }
 

@@ -108,6 +108,7 @@ mcp/export.test.ts
 mcp/golden.test.ts
 mcp/model.test.ts
 mcp/partition.test.ts
+mcp/transition.test.ts
 mcp/request.test.ts
 src/sim/recipe.test.ts
 src/sim/study.test.ts

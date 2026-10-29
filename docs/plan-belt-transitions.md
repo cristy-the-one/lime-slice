@@ -418,6 +418,87 @@ Print time per coupon:
 - **Coupons:** eight, 10 mm wide, side by side across the belt in this order from low X: lip with no transition, lip at 45°, lip at 55°, flat roof with no transition, flat roof at 55°, 20°-past roof with no transition, at 45° and at 55°.
 - **Print:** 74 min and 12.4 g on the engine's estimate.
 
+### As built: step 2
+
+**The op** is `Op::Transition` in `crates/lime-model-occt/src/tree/transition.rs`, kind `transition`. For each picked edge it checks the corner, works out the wedge, builds it, and checks the result:
+- **The corner.** A straight, concave edge between two flat faces. The face with the smaller angle to the layers is the far face; the other is the near face.
+- **The new face.** Its normal turns about the edge from the far face's normal toward the near face's until it makes `angleDeg` with the layers (section 3).
+- **The reach.** `size` runs along the far face: millimetres, or `"face"` to that face's end. The reach up the near face follows from the angles.
+- **Two paths.** A wedge that stops short of both faces' ends is a chamfer by a distance and an angle from the far face (`lime_tree_transition_chamfer`, one angle per edge). A wedge that reaches a face's end is a triangular prism along the edge, fused on (`lime_tree_wedges`), because a chamfer cannot use up a face.
+- **The checks on the built solid.** The volume added must be the wedges' own, within 1 %, or the wedge met another part of the solid. One new edge must border a face within 1° of the asked angle.
+
+**What the step stores:**
+- `build`: the build direction in the solid's frame, as a unit vector;
+- `angleDeg`, `size` and `maxMm`;
+- `beltDeg`, `orient` (the plate orientation, row by row) and `printer`, as sent.
+
+A rebuild uses the stored `build`, so a later turn on the plate never moves the wedge.
+
+**The MCP** works out `build` from the object's orientation and the plate printer's belt angle with `buildDirection` in `src/belt.ts`. A unit test locks that helper to the engine's `mirror_rotate_x` for five turns and three belt angles. The MCP also does the following:
+- **The angle.** The default is the support limit, `90° − supportAngle`, which is 45°. A smaller angle is refused with the limit.
+- **The echo.** The typed echo carries every default, `build` included, so a `model_edit` of it keeps the pose it was made for. `build: null` aims it from the pose then.
+- **The probe.** Each edge gets its case, its path, the far and near faces' angles to the layers, the new face's angle to the layers and to the belt (or bed), the reach, and the volume. The reason says the same in words.
+- **The schema.** It is one op branch, an `OP_SUMMARY` line and two lines in the ops guide. The new line puts `tools/list` 25 tokens over its 16,000 budget, which was at 15,999, so the budget is now 16,050.
+- **The app.** A history row reads "Print transition 1 edge at 45°, 2 mm". The app has no card yet, so editing the step in the app is refused with the existing "no edit panel" sentence (step 3).
+
+**Refusals,** each a sentence, with the solid unchanged:
+- An edge shorter than 0.2 mm, or not between two faces.
+- A curved edge or a curved face: "for now", until step 6.
+- A convex edge: the sentence points lips to step 4.
+- An edge whose faces meet with no corner.
+- An edge that already grows at least the asked angle through the layers.
+- Both faces looking up the build.
+- A far face already at or above the asked angle: "a wedge adds nothing. A steeper angle makes one."
+- Both faces flatter than the asked angle: "That is a lip", for step 4.
+- A wedge past the far face's end, or up past the near face's end.
+- A wedge reaching past `maxMm` (20 mm by default): "Supports or a split are the way here."
+- A wedge that meets another part of the solid. The sentence gives the volume it would add and the wedge's own.
+- A new face off the asked angle by more than 1°.
+- `mode: "cut"`, which comes with lips.
+- An angle outside 0–85°, a zero `build`, or a transition inside a group.
+
+**The coupons,** re-measured on this branch: main at `f85055ed` with step 1 merged in. They are step 1's 2 mm shell corners, 20 mm across the belt, sliced alone on the owner's IR3 V2 machine file with PETG, a 0.4 mm nozzle, 0.2 mm layers, Speed and supports off. Main moved after step 1 measured. The bare 20°-past coupon now hangs 1,228 mm with Skin on shallow slopes off, against step 1's 2,450 mm: its outer-wall rows at the bend now hold. With the setting on, it hangs 128 mm, against step 1's 1,343 mm.
+
+Each cell gives the unheld part beads over the whole coupon in mm, with the volume added in brackets. Every coupon also has one gap-fill patch away from the corner (section "As built: step 1"): 111.5 mm on the 20° coupon with Skin on shallow slopes on, 91.9 mm on the 10° coupon, and 110.1 mm on the flat roof. The 1,223.3 mm patch is the inner wall of the hollow roof, layers 159–219, which no wedge reaches.
+
+| Coupon, wedge | Skin on shallow slopes off | Skin on shallow slopes on |
+|---|---|---|
+| 20° past, none | 1,228.3 (1,223.3 + 5.0 at the bend) | 128.1 |
+| 20° past, 2 mm at 45° | **1,223.3** (+17.5 mm³) | **123.0** |
+| 20° past, 3 mm at 45° | 1,223.3 (+39.5) | 122.8 |
+| 20° past, 5 mm at 45° | 1,223.3 (+109.6) | 275.5 |
+| 20° past, 10 mm at 45° | 1,223.3 (+438.4) | 476.3 |
+| 20° past, 15 mm at 45° | 1,223.3 (+986.3) | 729.0 |
+| 20° past, to the face's end at 45° (29.8 mm, `maxMm: 40`) | 1,223.3 (+3,892.1) | 1,677.2 |
+| 20° past, 5 mm at 55° | 1,223.3 (+197.5) | 279.0 |
+| 20° past, 5 mm at 65° | 1,223.3 (+344.6) | 291.1 |
+| 20° past, 3 mm at 65° | 1,228.3 (+124.1) | 203.6 |
+| 10° past, none | 91.9 | 91.9 |
+| 10° past, 2 mm or 5 mm | 91.9 (+8.0, +50.3) | 91.9 |
+| 10° past, to the face's end | 183.8 (+1,626.2) | 183.8 |
+| Flat roof at the limit, none | 110.1 | 110.1 |
+| Flat roof, 2 mm or 5 mm at 55° | 110.1 (+8.6, +53.5) | 110.1 |
+
+Print time on the 20°-past coupon, with the setting off: 1,024 s bare, 1,009 s with 2 mm, 972 s with 5 mm, 737 s to the face's end. With it on: 1,316 s, 1,301 s, 1,250 s and 946 s.
+
+**What the numbers say:**
+- **A small wedge fixes the bend.** With the setting off, a 2 mm wedge at 45° takes every row a larger one takes, the 5 mm at the bend. With it on, 2 and 3 mm take 5 mm too.
+- **A larger wedge makes things worse with Skin on shallow slopes on.** From 5 mm up, the wedge thickens the roof, and the skin rule lays rows inside it that hang: 147 mm at 5 mm, up to 1,645 mm for the full gusset. Section 2's rule, "to the far face's end", is the worst case here.
+- **To the face's end also costs on the 10° roof.** It adds a second gap-fill patch of 91.9 mm where the gusset thins the roof's end, as step 1 saw.
+- **Steeper is not better.** 55° and 65° wedges hold no more rows than 45° and add more material. A 3 mm wedge at 65° is too short to reach past the bend.
+- **The hollow roof is not the corner's.** The 1,223 mm inner-wall patch stays with every wedge, as step 1 found. Skin on shallow slopes is the fix for it, and with it on, only a small wedge is safe.
+
+So the default `size` is **2 mm**, not the far face's end. The probe adds a sentence when Skin on shallow slopes is on and a wedge reaches past 3 mm. `size: "face"` stays for the owner's print and for a solid part with no hollow roof. Its 29.8 mm reach on the 20° coupon is past the 20 mm `maxMm`, so it is refused unless asked for.
+
+**Golden:** 54 of 54 rows are byte-identical to the newest stored run (`bb09342b`). The 6 rows of the company's rear cover were left out of both sides, as in step 1. The slicer is not touched.
+
+**Deviations from sections 4 to 6:**
+- **The wedge to a face's end is a prism, not a chamfer.** A chamfer cannot use up a face. Every other wedge goes through the chamfer path.
+- **The default size is 2 mm, not "the face's end".** The numbers above are the reason.
+- **"Touches another face" is a volume check.** It gives the volume, not the face's name and distance.
+- **The belt refusal is not built.** A concave corner on the underside cannot lie on the belt: its near face would have to go below it.
+- **Not built yet:** the stale-pose note and Re-aim in `model_describe` (step 3, with the card), and `plan: true` (step 5).
+
 ## 8. Risks
 
 - **The limit itself.** At 45° to the layers, the new face sits exactly where the housing's flat roof sat. If the coupon still shows unheld rows on the face at 45°, the default goes steeper (decision 2). The corner at the limit is the case most at risk: what fails there may be the slicer's handling of a limit face, not geometry. The coupon study runs first for that reason.

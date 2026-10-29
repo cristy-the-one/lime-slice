@@ -215,6 +215,9 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
         }),
       };
     }
+    // --- Print transitions: the build direction turns with the pose; edges are picked on the solid.
+    case "transition":
+      return { ...op, build: turnDir(back, op.build) };
     // --- A1 group: every step goes into the solid's frame, the same way it would alone. ---
     case "group":
       return { ...op, steps: op.steps.map((step) => toSolidOp(step, pose)) };

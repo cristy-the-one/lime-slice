@@ -128,6 +128,22 @@ export function beltArrowRun(minY: number, maxY: number): { tailY: number; headY
 }
 
 /**
+ * --- Print transitions (docs/plan-belt-transitions.md, section 3). The build direction in a part's own frame: the side
+ * each new layer is laid on. `orient` is the plate orientation, row by row, which takes the part onto the plate. The
+ * engine slices a belt along `s = −y·sin α + z·cos α` in the plate frame (`mirror_rotate_x` in
+ * crates/lime-slice-core/src/belt.rs), so the direction there is (0, −sin α, cos α); a flat bed builds along +Z.
+ * Position, offset and uniform scale do not change a direction.
+ */
+export function buildDirection(orient: readonly number[], belt: Pick<BeltSettings, "angleDeg"> | null): [number, number, number] {
+  const row = (k: number): [number, number, number] => [orient[3 * k] ?? 0, orient[3 * k + 1] ?? 0, orient[3 * k + 2] ?? 0];
+  const angle = belt ? (clamp(belt.angleDeg, 10, 80) * Math.PI) / 180 : 0;
+  const [y, z] = [row(1), row(2)];
+  const along: [number, number, number] = [0, 1, 2].map((i) => -Math.sin(angle) * y[i]! + Math.cos(angle) * z[i]!) as [number, number, number];
+  const length = Math.hypot(...along);
+  return length > 1e-12 ? [along[0] / length + 0, along[1] / length + 0, along[2] / length + 0] : [0, 0, 1];
+}
+
+/**
  * Fill gaps and clamp. A missing length is unlimited. Keys this app no longer
  * has, `seamOnEdge` and `floorSupports` from older saves, are dropped here.
  */
