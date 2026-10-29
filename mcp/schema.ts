@@ -727,7 +727,7 @@ const partitionOp = {
 const transitionOp = {
   type: "object",
   additionalProperties: false,
-  required: ["kind", "edges"],
+  required: ["kind"],
   properties: {
     kind: { const: "transition" },
     edges: edgeList,
@@ -740,6 +740,9 @@ const transitionOp = {
   },
 };
 (op.oneOf as unknown[]).push(transitionOp);
+// OP_WORDS was walked before this branch was added: its words are words, not parameter names, so mode:"auto" (the op
+// plan:true returns) and size:"face" reach the op as typed.
+for (const word of ["auto", "add", "cut", "face"]) (OP_WORDS as Set<string>).add(word);
 
 /**
  * One line per op kind. tools/list shows model_apply's op as these lines and the kind names, not every kind's full
@@ -770,7 +773,7 @@ export const OP_SUMMARY: Record<string, string> = {
   text: "text {text, height, depth, face, at}: raised or cut letters.",
   array: "array {face, cell, pitch, depth}: a shape repeated over a face.",
   ribs: "ribs {face, along, width, pitch | count, depth}: strips across a face.",
-  transition: "transition {edges, angleDeg, size}: a wedge in a concave corner, angleDeg to the layers.",
+  transition: "transition {edges, angleDeg, size}: a wedge in a concave corner, angleDeg to the layers. plan:true finds edges.",
 };
 
 /** The op branch of one kind, as the server checks it. */
@@ -1401,7 +1404,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_probe",
     description: "Check one plain edit; the solid does not change. Ok adds metrics: volume, bbox, and shells before and after, and warns on separate pieces. Then model_apply the same op.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step, plan: { type: "boolean", description: "partition: propose cuts for the printer; nothing is cut." } } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step, plan: { type: "boolean", description: "partition: propose cuts for the printer; transition: edges that start in the air. Nothing changes." } } },
   },
   {
     name: "surface_at",

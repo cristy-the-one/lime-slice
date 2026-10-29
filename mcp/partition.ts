@@ -13,7 +13,7 @@ import { storedPartition, type PartitionSolid, type PrintFrame } from "../src/sp
 export { bedFrame, exportedCommit, exportedNote, exportsPieces, NEEDS_CUTS, plateUp, storedPartition, type PrintFrame } from "../src/split-print.ts";
 
 /** The planner's sentence when model_probe is asked to plan an op of another kind. */
-export const PLAN_KIND = "plan: true plans a partition. Other kinds are probed without it.";
+export const PLAN_KIND = "plan: true plans a partition, or finds the edges a print transition would fix. Other kinds are probed without it.";
 
 function vec3(value: unknown): Vec3 | null {
   return Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === "number" && Number.isFinite(n)) ? [value[0], value[1], value[2]] : null;

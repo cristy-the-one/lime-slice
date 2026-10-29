@@ -570,6 +570,77 @@ So the default `size` is **2 mm**, not the far face's end. The probe adds a sent
 - **Prepare's Re-aim goes through Model.** It needs the modeler, so it opens Model on the object first.
 - **The Skin on shallow slopes warning is worded for the app.** The trigger is the same as the MCP's, but the sentence does not name the MCP's `standsOnNothing` field.
 
+### As built: step 5
+
+**The finder** is in the kernel, `crates/lime-model-occt/src/tree/transition_find.rs`, reached by a new call, `transitionFind`. It reads the solid's own faces and edges against the build direction and the support limit. Nothing is sliced, so it is instant in Model. It lists:
+- **Corners:** straight concave edges between flat faces. The steeper face holds its own rows, and the flatter face is past the limit or within 3° of it.
+- **Lips:** straight convex edges between flat faces, above the belt or the bed. Both faces rise away from the edge in build order, so nothing of either is laid before it there, and the flatter face is at or within 0.5° of the limit, or past it. This is section 2's "both faces rise away from it", read at the edge. It also finds a lip that starts past a hole in a larger face, whose face goes on lower along the build beyond the hole.
+
+It leaves out:
+- an edge on the belt or the bed (within 0.05 mm of the solid's lowest point along the plate's up);
+- an edge that climbs through the layers at least as steeply as the limit, since every face through it holds;
+- seams, open edges and edges shorter than 0.2 mm;
+- points, such as a cone's tip, which are not edges.
+
+**Curved edges are not listed.** An edge on a curved face, or a curved edge, that looks as if it starts in the air at its middle is counted instead. The card says "3 curved edges skipped until a later version." The MCP gives the count and the edges' indexes.
+
+**Each row's fix is the op itself.** The kernel probes `{kind: "transition", edges: [edge], mode: "auto", angleDeg, size}` on the row's one edge, exactly as section 6's input shape, and the row keeps the probe's answer: the wedge's numbers, or its sentence. The finder decides nothing about what can be built. When step 4 lands, lips build with no change here.
+
+**The card.** "Find edges that start in the air" is the first button on the Print transition card:
+- **The status line.** For example, "4 edges start in the air: 2 corners and 2 lips, longest first. 2 fixes build; 2 refuse, each saying why." With none: "No straight edge starts in the air in this pose."
+- **One row per edge, longest first.** Each row shows the case, the length, and the fix with its size and the volume it adds, such as "Wedge, 2 mm at 45°, +40 mm³". A fix that refuses shows the kernel's sentence under the row, and its Fix button is off.
+- **Hover.** Every listed edge is outlined amber on the solid. The row under the pointer, or under the keyboard focus, draws its edge bold, and its wedge in green when it builds.
+- **Fix** applies that row as its own history step.
+- **Fix all (N)** applies every row whose fix builds as one step, "Print transition (N edges)" (decision 9). Its pencil reopens the card with those edges picked, and Shift-click drops one.
+- **After a Fix,** the card opens again on the new solid and finds again, so the list shows what is left.
+- **Clicking a row's text** picks that edge alone, and the card checks it as a click on the edge would.
+
+**The MCP.** `model_probe {op: {kind: "transition"}, plan: true}` returns:
+- `rows`, each `{edges, case, lengthMm, at, fix, refused?}`, with `volumeMm3` when the fix builds. `at` is the edge's middle in model space, and `fix` is the op for that edge alone.
+- `op`, the one ready op that holds every row that builds.
+- `curvedSkipped` and `curvedEdges`.
+
+`angleDeg`, `size` and `maxMm` may be typed; any other field is refused. The guide has one more line, and `OP_SUMMARY` adds "plan:true finds edges." The `plan` field's description names the transition. Together they add 16 tokens to a `tools/list` that was at 16,042, so the budget goes from 16,050 to 16,060.
+
+**Fixes found on the way:**
+- **Words in a transition op.** The MCP read `mode: "auto"` and `size: "face"` as parameter names, because its list of words was made before the transition branch was added. Both now reach the op as typed. `model_apply` of the op that `plan: true` returns needs this. Step 4 (#503) fixes the same list for its `case` field; once it is on main, its fix is kept and this one goes.
+- **A wedge along a face at the limit.** When the steeper face was exactly at the angle asked, the corner op answered with a reach of 10¹⁶ mm. It now says the wedge would run along that face, and that a steeper angle makes one. The shell coupon's inner wall, which looks toward +Y at exactly 45°, has such a corner.
+
+**Tests:**
+- `crates/lime-model-occt/tests/transition_find.rs`, on the belt and on a flat bed:
+  - a corner past the limit, whose 2 mm wedge builds, and the inner wall's corner at the limit, whose fix now says the wedge would run along that wall;
+  - a corner at the limit, listed with its refusal;
+  - a corner that holds, not listed;
+  - a lip, and the corner at its root;
+  - a lip past a hole in a plate parallel to the belt, and no row at the hole's near edge;
+  - a box on the belt and on the bed, with nothing listed;
+  - a cone's tip hanging under a plate on a leg: nothing listed under the plate where the cone is, and the circle where the cone meets the plate counted as curved.
+- `src/model-transition.test.ts`: the request, the rows read and sorted, Fix all's edges, the fix op and the sentences.
+- `mcp/transition.test.ts`, against the stand-in engine: the request, the row shape, the ready op, the refusals, a typed size and angle, and the flat bed.
+- `mcp/occt.test.ts`, against the real kernel: the shell coupon lists the bend with a 2 mm wedge that builds, and the inner wall's corner with its sentence.
+- `e2e/model-transition-find.spec.ts`, in `test:smoke`, on a synthetic U printed upside down: find, an empty result upright, hover, Fix one, Undo, Fix all, the step's edit, and Undo.
+
+**The owner's housing,** read only, posed mouth down on the IR3 V2 as in `20261028_12_3_housing-pain.lime`. The app's request and the MCP's give the same build direction, (−0.707, 0, −0.707) in the part's frame. The finder answered in 0.02 s; probing every row's fix at 55° took 0.26 s.
+- **With the project's support angle, 70°** (limit 20° to the layers): 1 row, a 126 mm lip at the end wall, 0.5 mm above the belt. 3 curved edges were skipped.
+- **With the default support angle, 45°:** 11 rows, 7 corners and 4 lips. 27 curved edges were skipped.
+  - **Every corner is at the limit.** Its flatter face is the flat roof at 45°, so its fix at 45° refuses: "a wedge adds nothing. A steeper angle makes one."
+  - **At 55°,** 1 of the 11 fixes builds (+25.5 mm³). The others refuse with their sentences: the wedge would run into another part of the solid, past the flatter face's end, or both faces are flatter than 55°.
+  - **The lips** refuse until step 4: "This edge is convex…".
+- **The cutout lip is among the rows.** It is a 45.4 mm lip at X −58: the far edge of the cutout in build order, where the plate around the cutout starts again with nothing under it. A test of "the lowest point of both faces" missed it, because that face goes on lower beyond the cutout. The finder now tests whether both faces rise away from the edge, as section 2 words it, and lists it. The screenshot is in the PR.
+- **The down-ramp's bend is not among the rows.** The ramp's inner roof is 22.6° to the layers. The bend where it meets the 45° roof is concave, so it would be a corner. But Open CASCADE reads that edge, or its faces, as curved, because the STEP file stores them as B-splines. It is one of the 27 curved edges skipped, and the op refuses it for the same reason. With the project's 70° support angle, the ramp is past the 20° limit anyway.
+
+**Golden:** 60 of 60 rows are byte-identical to the newest stored run (`92da7c3f`), the rear cover and the Baby Dragon included. The slicer is not touched. Main at `ae8aad72` (#502) differs from `92da7c3f` only in `tools/unit-tests.txt`, so the run is also stored as main's baseline there.
+
+**Deviations from sections 5 and 6, and from decision 9:**
+- **The finder is in the kernel, not in the app.** The app has no face beside each edge; the kernel has, with each surface's kind.
+- **One angle and one size for every row.** Each row proposes the card's angle and size, 45° and 2 mm by default, so Fix all is one op. A corner at the limit therefore refuses at 45°; typing a steeper angle and finding again makes it build. Step 1's coupons showed such a corner holds anyway.
+- **Lips are listed at or within 0.5° of the limit.** The plan says "past the limit". An edge across the belt whose faces both rise from it is born at once even when its flatter face lies exactly at the limit.
+- **"The lowest point of their faces" is read at the edge.** Both faces must rise away from the edge, not lie wholly above it, so a lip past a hole is found (the housing's cutout).
+- **"Curved" means what Open CASCADE reads.** A flat face that a STEP file stores as a B-spline counts as curved, as in the op.
+- **Rows sharing a chain are not merged.** Each row is one edge, until chains come in step 6.
+- **After a change of angle, size or pose, the list stays, with a note,** and its Fix buttons wait for Find again.
+- **The list is hidden while a step is edited.** An edit works on that step's own edges.
+
 ## 8. Risks
 
 - **The limit itself.** At 45° to the layers, the new face sits exactly where the housing's flat roof sat. If the coupon still shows unheld rows on the face at 45°, the default goes steeper (decision 2). The corner at the limit is the case most at risk: what fails there may be the slicer's handling of a limit face, not geometry. The coupon study runs first for that reason.

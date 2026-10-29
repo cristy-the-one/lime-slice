@@ -607,7 +607,7 @@ export const FAKE_PART_HOLD = {
   ],
 };
 
-export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; opens: Record<string, unknown>[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number; folds: number } {
+export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; opens: Record<string, unknown>[]; lastProbe: unknown; lastProbeBody: unknown; lastFind: unknown; resets: number; previewResets: number; folds: number } {
   const jobs = new Map<number, { status: string; body: string; polls: number }>();
   const kept = new Map<string, KeptSolid>();
   // --- A9. One solid per history node, so goto restores that step instead of a fresh cube. ---
@@ -676,6 +676,8 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
     lost: new Set<string>(),
     lastProbe: null as unknown,
     lastProbeBody: null as unknown,
+    /** --- Print transitions, auto-find: the last transitionFind request. */
+    lastFind: null as unknown,
     resets: 0,
     previewResets: 0,
     /** Composite runs the engine folded into a group without building it again. */
@@ -751,6 +753,19 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
       if (req.call === "probe") {
         engine.lastProbe = req.op ?? null;
         engine.lastProbeBody = req;
+      }
+      // --- Print transitions, auto-find: a corner whose 2 mm wedge builds, a shorter one that refuses, and a lip whose
+      // fix waits for lips; two curved edges counted. The fix's numbers come back in the corner's wedge.
+      if (req.call === "transitionFind") {
+        engine.lastFind = req;
+        const fix = (req as { fix?: { angleDeg?: number; size?: number | "face" } }).fix ?? {};
+        const reach = typeof fix.size === "number" ? fix.size : 20;
+        const wedge = { edge: 3, case: "corner", path: "chamfer", farFace: 4, nearFace: 1, farDeg: 25, nearDeg: 90, normal: [0, -Math.SQRT1_2, Math.SQRT1_2], angleToLayersDeg: fix.angleDeg ?? 45, reachMm: reach, nearReachMm: reach, farEndMm: 20, volumeMm3: 0.5 * reach * reach * 20 };
+        return JSON.stringify({ id: req.node ?? 0, curvedSkipped: 2, curvedEdges: [11, 12], rows: [
+          { edge: 7, case: "lip", lengthMm: 20, mid: [10, 20, 10], farFace: 2, nearFace: 5, farDeg: 0, nearDeg: 90, probe: { ok: false, error: "This edge is convex. A corner wedge goes in a concave corner, on the inner side of a bend; a lip under a convex edge comes in a later step." } },
+          { edge: 3, case: "corner", lengthMm: 20, mid: [10, 0, 20], farFace: 4, nearFace: 1, farDeg: 25, nearDeg: 90, probe: { ok: true, transition: [wedge] } },
+          { edge: 9, case: "corner", lengthMm: 12.5, mid: [0, 10, 20], farFace: 4, nearFace: 0, farDeg: 46, nearDeg: 90, probe: { ok: false, error: "The flatter face here already grows at 46.0° to the layers, as steep as the 45° asked, so a wedge adds nothing. A steeper angle makes one." } },
+        ] });
       }
       if (process.env.LIME_MCP_HANG_MODEL === "1" && req.op?.kind === "fillet" && (req.call === "probe" || req.call === "apply") && !engine.hung) {
         engine.hung = true;

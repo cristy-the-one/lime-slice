@@ -645,6 +645,18 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
     JSON.stringify(probed).slice(0, 600),
   );
   check("the probe says it in words", /flatter face at 25° to the layers\. The wedge runs 2 mm along the flatter face, its face at 45° to the layers and 0° to the belt/.test(String(probed.reason)), String(probed.reason));
+  // --- Step 5: auto-find lists that corner with its fix probed, and the inner wall's corner, whose wedge would run
+  // along a wall exactly at the limit, with its refusal. The ready op holds the corner; nothing is applied.
+  const plan = await call("model_probe", { object: coupon, op: { kind: "transition" }, plan: true });
+  const found = (plan.rows ?? []) as { edges: number[]; case: string; lengthMm: number; refused?: string; volumeMm3?: number }[];
+  const bend = found.find((one) => one.edges[0] === corner);
+  const wall = found.find((one) => one.edges[0] === at(2, 20 - 28 * fall));
+  check(
+    "plan:true lists the bend as a corner whose 2 mm wedge builds, and the wall's corner with its refusal",
+    plan.ok === true && bend?.case === "corner" && bend.lengthMm === 20 && !bend.refused && (bend.volumeMm3 ?? 0) > 0 && wall?.case === "corner" && /run along it/.test(String(wall.refused))
+      && ((plan.op as { edges?: number[] } | undefined)?.edges ?? []).includes(corner) && !((plan.op as { edges?: number[] }).edges ?? []).includes(wall.edges[0]!),
+    JSON.stringify(plan).slice(0, 900),
+  );
   const before = Number((await call("model_describe", { object: coupon, limit: 1 })).volumeMm3);
   const applied = await call("model_apply", { object: coupon, op: { kind: "transition", edges: [corner] } });
   const after = Number((await call("model_describe", { object: coupon, limit: 1 })).volumeMm3);

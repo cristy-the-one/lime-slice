@@ -282,3 +282,120 @@ export function wedgeSoup(start: V, end: V, farNormal: V, nearNormal: V, reach: 
   quad(a2, a0, b0, b2);
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Auto-find (plan section 5, step 5): the edges that start in the air, read by the kernel from the solid's own faces and
+// edges, each with the probe of the fix it proposes. The card lists them and the MCP's plan:true returns them.
+// ---------------------------------------------------------------------------
+
+export const FIND_LABEL = "Find edges that start in the air";
+
+export type FoundCase = "corner" | "lip";
+
+/** The fix every row of one finding proposes: the card's angle and size, the op deciding the rest. */
+export interface TransitionFix {
+  mode: "auto";
+  angleDeg: number;
+  size: number | "face";
+  maxMm?: number;
+}
+
+/** One edge that starts in the air, with what its fix does: the wedge's numbers, or the op's refusal. */
+export interface FoundRow {
+  edge: number;
+  case: FoundCase;
+  lengthMm: number;
+  /** The edge's middle, in the solid's frame. */
+  mid: Vec3;
+  farDeg: number;
+  nearDeg: number;
+  wedge: TransitionRow | null;
+  refused: string | null;
+}
+
+export interface Finding {
+  rows: FoundRow[];
+  /** Curved edges, or edges on a curved face, that looked as if they start in the air: left for a later version. */
+  curvedSkipped: number;
+  curvedEdges: number[];
+  fix: TransitionFix;
+}
+
+/** The fix a finding proposes, from the card's numbers. */
+export function transitionFix(card: Pick<TransitionCard, "angleDeg" | "size" | "maxMm">): TransitionFix {
+  return { mode: "auto", angleDeg: card.angleDeg, size: card.size, ...(card.maxMm != null ? { maxMm: card.maxMm } : {}) };
+}
+
+/**
+ * The kernel's `transitionFind` on step `node` of tree `key`: built along `build` (the solid's frame), on a plate whose up
+ * is the third row of `orient`, with the support limit of `supportAngle`. Each row's fix is `fix` on its one edge.
+ */
+export function transitionFindRequest(key: string, node: number, build: readonly number[], orient: readonly number[], supportAngle: number, fix: TransitionFix): Record<string, unknown> {
+  return { call: "transitionFind", key, node, build: [...build], up: plateUpOf(orient), limitDeg: transitionAngleLimit(supportAngle), fix: { ...fix } };
+}
+
+/** A `transitionFind` answer, read; the engine's sentence when it refused. `plain` words a refusal of a fix. */
+export function readFinding(body: Record<string, unknown>, orient: readonly number[], fix: TransitionFix, plain: (text: string) => string = (text) => text): Finding | string {
+  if (typeof body.error === "string" && body.error) return body.error;
+  if (!Array.isArray(body.rows)) return "The modeler sent no edges.";
+  const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const rows = body.rows.flatMap((raw): FoundRow[] => {
+    if (!raw || typeof raw !== "object") return [];
+    const row = raw as Record<string, unknown>;
+    const kind = row.case === "lip" ? "lip" : row.case === "corner" ? "corner" : null;
+    const mid = Array.isArray(row.mid) && row.mid.length === 3 ? (row.mid.map(num) as Vec3) : null;
+    if (!kind || !mid || !Number.isInteger(row.edge)) return [];
+    const probe = row.probe && typeof row.probe === "object" ? (row.probe as Record<string, unknown>) : {};
+    const wedge = probe.ok === true ? readTransitionRows(probe.transition, orient)?.[0] ?? null : null;
+    const refused = probe.ok === true ? null : plain(typeof probe.error === "string" && probe.error ? probe.error : "This print transition does not fit.");
+    return [{ edge: row.edge as number, case: kind, lengthMm: num(row.lengthMm), mid, farDeg: num(row.farDeg), nearDeg: num(row.nearDeg), wedge, refused }];
+  });
+  rows.sort((a, b) => b.lengthMm - a.lengthMm || a.edge - b.edge);
+  const curvedEdges = Array.isArray(body.curvedEdges) ? body.curvedEdges.filter((edge): edge is number => Number.isInteger(edge)) : [];
+  return { rows, curvedSkipped: Math.max(curvedEdges.length, Math.round(num(body.curvedSkipped))), curvedEdges, fix: { ...fix } };
+}
+
+/** The edges whose fix builds, longest first: what Fix all applies as one step. */
+export function fixableEdges(finding: Finding): number[] {
+  return finding.rows.filter((row) => !row.refused).map((row) => row.edge);
+}
+
+/** The op that fixes `edges` with the finding's numbers, aimed as `card` is. */
+export function fixOp(card: TransitionCard, finding: Finding, edges: readonly number[]): TransitionOp {
+  const { maxMm: _max, ...rest } = card;
+  const size = finding.fix.size;
+  return transitionFromCard({ ...rest, edges: [...edges], angleDeg: finding.fix.angleDeg, size, mm: typeof size === "number" ? size : card.mm, ...(finding.fix.maxMm != null ? { maxMm: finding.fix.maxMm } : {}) });
+}
+
+const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+
+/** "Corner" or "Lip". */
+export function caseName(kind: FoundCase): string {
+  return kind === "lip" ? "Lip" : "Corner";
+}
+
+/** The fix one row proposes, in words: "Wedge, 2 mm at 45°" or "Gusset, to the face's end at 45°", and what it adds. */
+export function fixText(row: FoundRow, fix: TransitionFix): string {
+  const size = fix.size === "face" ? "to the face's end" : `${formatMm(fix.size)} mm`;
+  const head = `${row.case === "lip" ? "Gusset" : "Wedge"}, ${size} at ${formatMm(fix.angleDeg)}°`;
+  return row.wedge && !row.refused ? `${head}, +${formatMm(Math.round(row.wedge.volumeMm3 * 10) / 10)} mm³` : head;
+}
+
+/** "3 curved edges skipped until a later version.", or null with none. */
+export function curvedNote(count: number): string | null {
+  return count > 0 ? `${plural(count, "curved edge")} skipped until a later version.` : null;
+}
+
+/** The finding in a sentence or two, for the card's status and the MCP's reason. */
+export function findingSummary(finding: Finding): string {
+  const curved = curvedNote(finding.curvedSkipped);
+  const tail = curved ? ` ${curved}` : "";
+  const count = finding.rows.length;
+  if (count === 0) return `No straight edge starts in the air in this pose.${tail}`;
+  const corners = finding.rows.filter((row) => row.case === "corner").length;
+  const kinds = [corners > 0 ? plural(corners, "corner") : "", count - corners > 0 ? plural(count - corners, "lip") : ""].filter(Boolean).join(" and ");
+  const refused = finding.rows.filter((row) => row.refused).length;
+  const builds = count - refused;
+  const fixes = refused === 0 ? (count === 1 ? "Its fix builds." : "Every fix builds.") : builds === 0 ? (count === 1 ? "Its fix refuses, and says why." : "No fix builds as it is: each says why.") : `${plural(builds, "fix", "fixes")} ${builds === 1 ? "builds" : "build"}; ${refused} ${refused === 1 ? "refuses" : "refuse"}, each saying why.`;
+  return `${plural(count, "edge")} ${count === 1 ? "starts" : "start"} in the air: ${kinds}, longest first. ${fixes}${tail}`;
+}

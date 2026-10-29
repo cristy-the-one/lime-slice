@@ -602,6 +602,24 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-transition .tc-numbers dt { color: var(--text-dim); }
 .model-transition .tc-numbers dd { margin: 0; color: var(--text); }
 .model-transition .model-note.is-warn { color: var(--warn); }
+/* --- Print transitions, auto-find: the button, the status, one row per edge, then Fix all. --- */
+.model-transition .tc-find { display: grid; gap: var(--space-2); margin: 0 0 var(--space-3); padding: 0 0 var(--space-3); border-bottom: 1px solid var(--line); }
+.model-transition .tc-find[hidden] { display: none; }
+.model-transition .tc-find .model-note { margin: 0; }
+.model-transition .tc-find-run { justify-self: stretch; }
+.model-transition .tc-found { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; max-height: 260px; overflow-y: auto; }
+.model-transition .tc-found[hidden], .model-transition .tc-find-foot[hidden] { display: none; }
+.model-transition .tc-found-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 var(--space-2); padding: 4px 6px; border: 1px solid transparent; border-left: 3px solid var(--amber, var(--warn)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--text) 4%, transparent); }
+.model-transition .tc-found-row.is-lit { border-color: color-mix(in srgb, var(--warn) 55%, transparent); border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.model-transition .tc-found-row[data-refused] { border-left-color: var(--line); }
+.model-transition .tc-found-pick { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 var(--space-2); min-width: 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.model-transition .tc-found-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.model-transition .tc-case { font-size: var(--fs-2); font-weight: 600; }
+.model-transition .tc-length { justify-self: end; color: var(--text-dim); font-size: var(--fs-1); font-variant-numeric: tabular-nums; }
+.model-transition .tc-fix-text { grid-column: 1 / -1; color: var(--text-dim); font-size: var(--fs-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-transition .tc-fix { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-1); }
+.model-transition .tc-refused { grid-column: 1 / -1; display: -webkit-box; margin: 2px 0 0; overflow: hidden; color: var(--text-faint); font-size: var(--fs-1); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.model-transition .tc-find-foot { display: flex; justify-content: flex-end; }
 
 /* --- Split to print's Export… dialog. --- */
 .split-export-card { width: min(440px, calc(100% - 32px)); }

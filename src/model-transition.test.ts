@@ -8,6 +8,15 @@ import { newTree, opLabel, withChild, type TransitionOp } from "./model-tree.ts"
 import {
   TRANSITION_SIZE_MM,
   cardAimed,
+  caseName,
+  curvedNote,
+  findingSummary,
+  fixOp,
+  fixText,
+  fixableEdges,
+  readFinding,
+  transitionFindRequest,
+  transitionFix,
   cardFromTransition,
   keptKey,
   newTransitionCard,
@@ -117,6 +126,49 @@ check("and one edge", opLabel({ ...op, edges: [1] }) === "Print transition (1 ed
 check("to the face's end", opLabel(stored) === "Print transition (1 edge), 55°, to the face's end");
 const tree = withChild(newTree("t", { kind: "primitive", solid: { primitive: "box", origin: [0, 0, 0], size: [20, 20, 20], turn: [0, 0, 0] } as never }, "Box", null), 0, { id: 1, op, label: opLabel(op), fingerprint: null });
 check("a print transition step can be edited", editRefusal(tree, 1) === null, String(editRefusal(tree, 1)));
+
+// --- Step 5: auto-find. The request, the kernel's rows read longest first, Fix all's edges, and the sentences.
+const fix = transitionFix(card);
+check("the fix is the card's angle and size, mode auto", JSON.stringify(fix) === JSON.stringify({ mode: "auto", angleDeg: 45, size: 2 }));
+const findBody = transitionFindRequest("k", 4, card.build, eulerOrient(90, 0, 0), 45, fix);
+const s2 = Math.SQRT1_2;
+check(
+  "the request names the step, the build, the plate's up in the solid's frame and the limit",
+  findBody.call === "transitionFind" && findBody.key === "k" && findBody.node === 4 && findBody.limitDeg === 45
+    && (findBody.up as number[]).every((value, i) => Math.abs(value - [0, 1, 0][i]!) < 1e-9) && Math.abs((findBody.build as number[])[1]! + s2) < 1e-8,
+  JSON.stringify(findBody),
+);
+const wedgeRow = { edge: 3, case: "corner", path: "chamfer", farFace: 4, nearFace: 1, farDeg: 25, nearDeg: 90, normal: [0, -s2, s2], angleToLayersDeg: 45, reachMm: 2, nearReachMm: 2, volumeMm3: 39.96 };
+const kernelRows = {
+  id: 4,
+  curvedSkipped: 1,
+  rows: [
+    { edge: 9, case: "corner", lengthMm: 12.5, mid: [0, 1, 2], farDeg: 46, nearDeg: 90, probe: { ok: false, error: "already grows" } },
+    { edge: 7, case: "lip", lengthMm: 20, mid: [1, 2, 3], farDeg: 0, nearDeg: 90, probe: { ok: false, error: "convex" } },
+    { edge: 3, case: "corner", lengthMm: 20, mid: [4, 5, 6], farDeg: 25, nearDeg: 90, probe: { ok: true, transition: [wedgeRow] } },
+    { edge: 1, case: "point", lengthMm: 30, mid: [0, 0, 0], probe: { ok: true } },
+  ],
+};
+const finding = readFinding(kernelRows, [1, 0, 0, 0, 1, 0, 0, 0, 1], fix, (text) => `Plain: ${text}`);
+check("a refusal reads as the engine's sentence", readFinding({ error: "That step is not held." }, [], fix) === "That step is not held.");
+if (typeof finding === "string") check("the rows read", false, finding);
+else {
+  check("rows of an unknown case are dropped, the rest longest first and by edge", finding.rows.map((row) => row.edge).join() === "3,7,9", JSON.stringify(finding.rows));
+  check("a fix that builds keeps its wedge", finding.rows[0]!.wedge?.volumeMm3 === 39.96 && finding.rows[0]!.refused === null);
+  check("a fix that refuses keeps its sentence, worded", finding.rows[1]!.refused === "Plain: convex" && finding.rows[1]!.wedge === null);
+  check("Fix all takes the rows that build", JSON.stringify(fixableEdges(finding)) === "[3]");
+  const all = fixOp({ ...card, angleDeg: 50, size: 5 }, finding, [3, 9]);
+  check("a fix op is the finding's numbers on the card's pose", all.angleDeg === 45 && all.size === 2 && JSON.stringify(all.edges) === "[3,9]" && JSON.stringify(all.build) === JSON.stringify(card.build) && all.printer === card.printer, JSON.stringify(all));
+  check("the fix in words", fixText(finding.rows[0]!, fix) === "Wedge, 2 mm at 45°, +40 mm³" && fixText(finding.rows[1]!, fix) === "Gusset, 2 mm at 45°" && fixText(finding.rows[0]!, { ...fix, size: "face" }).startsWith("Wedge, to the face's end at 45°"), fixText(finding.rows[0]!, fix));
+  check(
+    "the summary counts cases, refusals and curved edges",
+    findingSummary(finding) === "3 edges start in the air: 2 corners and 1 lip, longest first. 1 fix builds; 2 refuse, each saying why. 1 curved edge skipped until a later version.",
+    findingSummary(finding),
+  );
+  check("one edge whose fix builds", findingSummary({ ...finding, rows: finding.rows.slice(0, 1), curvedSkipped: 0 }) === "1 edge starts in the air: 1 corner, longest first. Its fix builds.");
+  check("none found", findingSummary({ ...finding, rows: [], curvedSkipped: 0 }) === "No straight edge starts in the air in this pose." && curvedNote(0) === null && curvedNote(3) === "3 curved edges skipped until a later version.");
+  check("case names", caseName("lip") === "Lip" && caseName("corner") === "Corner");
+}
 
 if (failed) {
   console.error(`${failed} failed`);

@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 mod transition;
+mod transition_find;
 
 pub type NodeId = u32;
 
@@ -1696,6 +1697,20 @@ enum Request {
         #[serde(default)]
         filter: EdgeFilter,
     },
+    /// --- Print transitions, auto-find (docs/plan-belt-transitions.md, step 5). The edges of step `node`'s solid that
+    /// would start in the air, built along `build` on a plate whose up is `up`, both in the solid's frame, with the support
+    /// limit `limitDeg` to the layers. Each row's fix is `fix` on that one edge, probed as a print transition: its answer
+    /// is the probe's. Nothing is applied.
+    TransitionFind {
+        key: String,
+        node: NodeId,
+        build: [f64; 3],
+        up: [f64; 3],
+        #[serde(default = "transition::default_angle")]
+        limit_deg: f64,
+        #[serde(default)]
+        fix: Value,
+    },
     /// `format` is `step` (the default, for a file to hand on) or `brep` (the binary a project keeps).
     Export {
         key: String,
@@ -2653,6 +2668,15 @@ impl Store {
                     json!({ "id": node, "distanceMm": distance }).to_string(),
                 ))
             }
+            // --- Print transitions, auto-find.
+            Request::TransitionFind {
+                key,
+                node,
+                build,
+                up,
+                limit_deg,
+                fix,
+            } => self.transition_find(&key, node, build, up, limit_deg, fix),
             // --- A5. Edges step `node` made, found on the solid the tree is showing. ---
             Request::StepEdges { key, node, filter } => self.step_edge_indexes(key, node, filter),
             // K4: the face's loops, read from the solid the node already holds.
@@ -3318,6 +3342,63 @@ impl Store {
                 Ok(Answer::Plain(reply.to_string()))
             }
         }
+    }
+
+    /// --- Print transitions, auto-find (step 5). The finder's rows on step `id`'s solid, each with the probe of `fix` on
+    /// its one edge, so the op decides what it builds and what it refuses. The last probe is not kept for an Apply.
+    fn transition_find(
+        &mut self,
+        key: &str,
+        id: NodeId,
+        build: [f64; 3],
+        up: [f64; 3],
+        limit: f64,
+        fix: Value,
+    ) -> Result<Answer, Failure> {
+        self.ensure(key, id)?;
+        let shape = doc_in(&mut self.docs, key)?.shape(id);
+        shape.editable().map_err(Failure::Message)?;
+        let found = transition_find::find(shape, build, up, limit).map_err(Failure::Message)?;
+        let mut rows = Vec::with_capacity(found.rows.len());
+        for row in &found.rows {
+            let mut asked = match &fix {
+                Value::Object(fields) => Value::Object(fields.clone()),
+                _ => json!({}),
+            };
+            asked["kind"] = json!("transition");
+            asked["edges"] = json!([row.edge]);
+            asked["build"] = json!(build);
+            let probe = match serde_json::from_value::<Op>(asked) {
+                Ok(op) => match self.probe(key, id, op, None)? {
+                    Answer::Plain(text) => serde_json::from_str::<Value>(&text).unwrap_or(Value::Null),
+                    Answer::Held { .. } => Value::Null,
+                },
+                Err(err) => json!({ "ok": false, "error": format!("The fix could not be read: {err}") }),
+            };
+            let mut answer = json!({ "ok": probe["ok"] == json!(true) });
+            for field in ["error", "transition"] {
+                if let Some(value) = probe.get(field) {
+                    answer[field] = value.clone();
+                }
+            }
+            let round = |value: f64| (value * 1000.0).round() / 1000.0;
+            rows.push(json!({
+                "edge": row.edge,
+                "case": row.case,
+                "lengthMm": round(row.length_mm),
+                "mid": row.mid.map(round),
+                "farFace": row.far,
+                "nearFace": row.near,
+                "farDeg": round(row.far_deg),
+                "nearDeg": round(row.near_deg),
+                "probe": answer,
+            }));
+        }
+        doc_in(&mut self.docs, key)?.probe = None;
+        Ok(Answer::Plain(
+            json!({ "id": id, "rows": rows, "curvedSkipped": found.curved.len(), "curvedEdges": found.curved })
+                .to_string(),
+        ))
     }
 
     /// An edited step and the steps under it, in one call: `op` on `parent` as the new node `id`, a sibling of the step

@@ -181,8 +181,8 @@ import { beltLayerNormal, boxMap } from "../sim/study.ts";
 import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, setMeasuredFits, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintHistory, splitPrintOp, splitPrintStep, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
-import { closeTransitionCard, mountTransitionCard, openTransitionEdit, setTransitionCheck, setTransitionWaiting, transitionApplied, transitionCardOp, transitionCardOpen, transitionPicked, type TransitionCheck } from "../ui/transition-card.ts";
-import { keptKey, readTransitionRows, reaimedTransition, staleNote, transitionStaleBy, wedgeSoup, type TransitionPose, type TransitionRow } from "../model-transition.ts";
+import { closeTransitionCard, mountTransitionCard, openTransitionEdit, reopenTransitionFind, setTransitionCheck, setTransitionFinding, setTransitionWaiting, transitionApplied, transitionCardOp, transitionCardOpen, transitionPicked, type TransitionCheck } from "../ui/transition-card.ts";
+import { keptKey, readFinding, readTransitionRows, reaimedTransition, staleNote, transitionFindRequest, transitionFix, transitionStaleBy, wedgeSoup, type TransitionCard, type TransitionPose, type TransitionRow } from "../model-transition.ts";
 import { bedFrame, cutTraces, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, partStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
 import { clampPieces, defaultsFor, enterMeasured, fillConnector, mm as mmText, resetMeasured, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
@@ -735,6 +735,16 @@ export function bindModelView() {
     wedges: transitionWedges,
     cancelled: cancelEdit,
     readout,
+    find: (numbers) => void findTransitions(numbers),
+    fix: (op, numbers) => void fixTransitions(op, numbers),
+    flag: (edges, lit) => fx.model?.setFlaggedEdges(edges, lit),
+    pick(edge) {
+      if (!viewed()?.edges.some((row) => row.id === edge)) return;
+      picks = [{ kind: "edge", index: edge }];
+      fx.model?.highlight(picks);
+      syncModelChrome(picks);
+      transitionPicked();
+    },
   });
   mountParameters({
     table: () => session.parameters,
@@ -6935,6 +6945,40 @@ function transitionWedges(rows: readonly TransitionRow[]): number[] {
     const end = [edge.points[last]!, edge.points[last + 1]!, edge.points[last + 2]!];
     return wedgeSoup(start, end, far, near, row.reachMm, row.nearReachMm);
   });
+}
+
+// --- Print transitions, auto-find (step 5): the card's list, read by the kernel on the step on screen.
+let findSerial = 0;
+
+async function findTransitions(numbers: TransitionCard) {
+  const serial = ++findSerial;
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || lens) {
+    setTransitionFinding({ phase: "failed", error: "Open a solid to find its edges." });
+    return;
+  }
+  const node = tree.current;
+  const fix = transitionFix(numbers);
+  const body = await treeCall(at.key, node, transitionFindRequest(at.key, node, numbers.build, numbers.orient, state.supportAngle, fix));
+  if (serial !== findSerial || open !== at || treeOf(at)?.current !== node || state.stage !== "model") return;
+  const plain = (text: string) => sentence(plainModelError(text, "transition"));
+  const read = readFinding(body, numbers.orient, fix, plain);
+  setTransitionFinding(typeof read === "string" ? { phase: "failed", error: plain(read) } : { phase: "done", finding: read, build: [...numbers.build] });
+}
+
+/** Fix or Fix all: one history step. Once it builds, the card opens again on the new solid and finds what is left. */
+async function fixTransitions(op: TransitionOp, numbers: TransitionCard) {
+  if (busy || jumping || editing) return;
+  findSerial += 1;
+  setTransitionWaiting(true);
+  let built = false;
+  try {
+    built = await applyOp(op, op.edges.length === 1 ? "Adding the print transition…" : `Adding ${op.edges.length} print transitions…`);
+  } finally {
+    setTransitionWaiting(false);
+  }
+  if (built) reopenTransitionFind(numbers);
 }
 
 /** "Keep" on a stale step, for the pose it was kept at: a later turn warns again. */

@@ -104,6 +104,49 @@ check(
 await call("object_place", { object, rotZ: 0 });
 check("turned back, the note goes", !("notes" in (await call("model_describe", { object, limit: 1 }))));
 
+// --- Step 5: auto-find. model_probe {op:{kind:"transition"}, plan:true} asks the kernel for the edges that start in the
+// air on the current step, with this pose's build direction, the plate's up and the support limit; nothing is applied.
+check("the schema takes a transition with no edges for plan:true", validateTool("model_probe", { object, op: { kind: "transition" }, plan: true }) === null);
+const stepsBefore = ((await call("model_history", { object })).steps as unknown[] | undefined)?.length;
+const plan = await call("model_probe", { object, op: { kind: "transition" }, plan: true });
+const asked = engine.lastFind as Record<string, unknown> | null;
+check(
+  "plan:true sends transitionFind for this pose on the current step",
+  asked?.call === "transitionFind" && close(asked.build as number[], [0, -s, s]) && close(asked.up as number[], [0, 0, 1]) && asked.limitDeg === 45
+    && JSON.stringify(asked.fix) === JSON.stringify({ mode: "auto", angleDeg: 45, size: 2 }),
+  JSON.stringify(asked),
+);
+const planRows = plan.rows as Record<string, unknown>[] | undefined;
+check("the rows come longest first, ties by edge", planRows?.map((row) => (row.edges as number[])[0]).join() === "3,7,9", JSON.stringify(planRows));
+check(
+  "a row is {edges, case, lengthMm, at, fix} with its wedge's volume",
+  JSON.stringify(planRows?.[0]) === JSON.stringify({ edges: [3], case: "corner", lengthMm: 20, at: [10, 0, 20], fix: { kind: "transition", mode: "auto", angleDeg: 45, size: 2, edges: [3] }, volumeMm3: 40 }),
+  JSON.stringify(planRows?.[0]),
+);
+check("a fix that refuses gives its sentence", planRows?.[1]?.case === "lip" && /convex/.test(String(planRows?.[1]?.refused)) && planRows?.[2]?.case === "corner" && /adds nothing/.test(String(planRows?.[2]?.refused)), JSON.stringify(planRows));
+check("the ready op holds only the rows that build", JSON.stringify(plan.op) === JSON.stringify({ kind: "transition", mode: "auto", angleDeg: 45, size: 2, edges: [3] }), JSON.stringify(plan.op));
+check(
+  "the reason counts the cases, the refusals and the curved edges",
+  plan.ok === true && plan.curvedSkipped === 2 && JSON.stringify(plan.curvedEdges) === "[11,12]" && String(plan.reason).startsWith("3 edges start in the air: 2 corners and 1 lip, longest first. 1 fix builds; 2 refuse, each saying why. 2 curved edges skipped until a later version."),
+  String(plan.reason),
+);
+check("nothing is applied", ((await call("model_history", { object })).steps as unknown[] | undefined)?.length === stepsBefore);
+const ready = await call("model_probe", { object, op: plan.op });
+check("the ready op probes as an ordinary transition", ready.ok === true && (engine.lastProbe as { kind?: string }).kind === "transition", JSON.stringify(ready).slice(0, 300));
+const faced = await call("model_probe", { object, op: { kind: "transition", edges: [3], mode: "add", size: "face" } });
+check("mode and size words are words, not parameter names", faced.ok === true && (engine.lastProbe as { size?: unknown }).size === "face" && (engine.lastProbe as { mode?: unknown }).mode === "add", JSON.stringify(faced).slice(0, 300));
+await call("model_probe", { object, op: { kind: "transition", size: 5, angleDeg: 50 }, plan: true });
+check("plan:true passes a typed size and angle to every row's fix", JSON.stringify((engine.lastFind as { fix?: unknown }).fix) === JSON.stringify({ mode: "auto", angleDeg: 50, size: 5 }), JSON.stringify(engine.lastFind));
+const withEdges = await call("model_probe", { object, op: { kind: "transition", edges: [3] }, plan: true });
+check("plan:true finds the edges itself", withEdges.ok === false && /not edges/.test(String(withEdges.reason)), JSON.stringify(withEdges));
+const cutPlan = await call("model_probe", { object, op: { kind: "transition", mode: "cut" }, plan: true });
+check("plan:true proposes mode auto only", cutPlan.ok === false && /mode auto/.test(String(cutPlan.reason)), JSON.stringify(cutPlan));
+const flatPlan = await call("model_probe", { object, op: { kind: "transition", angleDeg: 30 }, plan: true });
+check("plan:true keeps the support limit on the angle", flatPlan.ok === false && /support limit/.test(String(flatPlan.reason)), JSON.stringify(flatPlan));
+await call("machine_select", { printerId: "lime-220", filamentId: "lime-pla" });
+await call("model_probe", { object, op: { kind: "transition" }, plan: true });
+check("on a flat bed the build is the plate's up", close((engine.lastFind as { build?: number[] }).build, [0, 0, 1]), JSON.stringify(engine.lastFind));
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

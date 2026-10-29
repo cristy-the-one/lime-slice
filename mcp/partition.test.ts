@@ -60,7 +60,7 @@ check("the target is the plate's printer, with its margin and Max pieces", JSON.
 const few = await call("model_probe", { object, op: { kind: "partition", maxPieces: 2 }, plan: true });
 check("a plan past Max pieces proposes nothing and says why", few.pieces === 1 && (few.cuts as unknown[]).length === 0 && few.reason === "This part would take 3 pieces. Max pieces is 2. No cuts are proposed.", JSON.stringify(few));
 const notPartition = await call("model_probe", { object, op: { kind: "scale", factor: 2 }, plan: true });
-check("plan is for a partition", notPartition.ok === false && notPartition.reason === "plan: true plans a partition. Other kinds are probed without it.", JSON.stringify(notPartition));
+check("plan is for a partition or a transition", notPartition.ok === false && notPartition.reason === "plan: true plans a partition, or finds the edges a print transition would fix. Other kinds are probed without it.", JSON.stringify(notPartition));
 
 // --- Refusals: the kernel does not build these yet. The solid is unchanged and nothing is cut.
 const op = plan.op as Record<string, unknown>;
