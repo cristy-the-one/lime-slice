@@ -90,8 +90,8 @@ export type ModelGhost =
   | { kind: "object"; id: string; positions: Float32Array; matrix: Affine }
   /** A composite feature: every piece, or outlines only past the cap. `failed` (from 1) is the step a probe refused. */
   | { kind: "pieces"; parts: { spec: PrimitiveSpec; mesh: Float32Array }[]; outlines: boolean; failed?: number }
-  /** P1. A face prism in the solid's own frame, drawn with the solid. */
-  | { kind: "soup"; positions: Float32Array };
+  /** P1. A face prism in the solid's own frame, drawn with the solid. `tone` "add" draws material to be added, green. */
+  | { kind: "soup"; positions: Float32Array; tone?: "add" };
 
 /** P1. A pointer event on a face, in model space. `local` is the solid's own frame. `cancel` is a press the system took away. */
 export interface FacePointer {
@@ -1647,11 +1647,19 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(current.positions, 3));
       geometry.computeVertexNormals();
-      const meshGhost = new THREE.Mesh(geometry, ghostMaterial(0.28));
+      const added = current.tone === "add";
+      const material = ghostMaterial(added ? 0.45 : 0.28);
+      if (added) material.color.set(hexToThree(colors.ok));
+      const meshGhost = new THREE.Mesh(geometry, material);
       meshGhost.matrixAutoUpdate = false;
       meshGhost.matrix.copy(posed.matrix);
       meshGhost.renderOrder = 2;
       meshGhost.raycast = () => undefined;
+      if (added) {
+        const outline = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 20), new THREE.LineBasicMaterial({ color: hexToThree(colors.ok), transparent: true, opacity: 0.95 }));
+        outline.raycast = () => undefined;
+        meshGhost.add(outline);
+      }
       ghosts.add(meshGhost);
       return;
     }

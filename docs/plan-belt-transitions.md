@@ -499,6 +499,74 @@ So the default `size` is **2 mm**, not the far face's end. The probe adds a sent
 - **The belt refusal is not built.** A concave corner on the underside cannot lie on the belt: its near face would have to go below it.
 - **Not built yet:** the stale-pose note and Re-aim in `model_describe` (step 3, with the card), and `plan: true` (step 5).
 
+### As built: step 3
+
+**The card.** "Print transition…" is in the Model tab's Features menu, under Split to print. It is a card in the tool pane, built like Split to print's. There is no rail button and no shortcut. From top to bottom, the card shows:
+- **Edges.** The card takes the edges picked on the solid: a click picks one, and Shift-click adds or removes one. Opening the card switches the pick filter to Edge. A line under the count says that only straight edges between flat faces work for now.
+- **Case: Corner or Lip.** Corner is on. Lip is greyed out, and its tip and the line under it say "Lip: coming in a later version."
+- **Material: Add or Cut.** Add is on. Cut is greyed out: "Cut comes with lips, in a later version."
+- **Angle to the layers.** The default is the support limit, 90° minus the support angle, which is 45°. An angle under that limit, or over 85°, is refused on the card with a sentence that names the limit.
+- **Size.** Either millimetres along the flatter face (2 mm by default) or "To the end of the face". The millimetres stay put while the second choice is on.
+- **The source line.** For example, "From this pose on the Ideaformer IR3 V2, belt 45°." On a flat printer it reads "…, its bed."
+
+**One source of truth.** The defaults, the build direction, the stale check, the reading of the probe's rows and the sentences now live in `src/model-transition.ts`. The card and the MCP both use that file:
+- The MCP's `bakeTransition` takes the angle limit, the 2 mm size and the build direction from it.
+- Its probe sentence and its Skin on shallow slopes check also come from there.
+- The build direction is still `buildDirection` in `src/belt.ts`, which step 2 locked to the engine.
+
+**Preview.** The card asks the kernel through the same probe call the MCP uses, 300 ms after the last keystroke, or at once after a pick:
+- **The ghost.** When the kernel builds the wedge, a green ghost of it is drawn on the solid. The card lists:
+  - the new face's angle to the layers, and to the belt or the bed;
+  - the flatter face's angle to the layers;
+  - the reach along the flatter face and up the steeper one;
+  - the volume added.
+- **A refusal.** The kernel's sentence takes the place of the numbers and the ghost, and Apply stays off.
+- **Skin on shallow slopes.** With that setting on and a wedge reaching past 3 mm, the card shows the warning the MCP's probe gives, worded for the app.
+
+**Apply and edit.**
+- **Apply.** It makes one history row: "Print transition (1 edge), 45°, 2 mm", or "(3 edges)" for three.
+- **Edit.** The row's pencil reopens the card on the parent solid, with the step's own numbers, its stored pose, and its edges picked again. Update stays off until something changes. The step then rebuilds as a sibling with the steps after it replayed, as every Model edit does.
+- **Aim from this pose.** An edit of a step made for another pose keeps that pose, as `model_edit` keeps the typed echo. The source line says the step was made for another pose, and an "Aim from this pose" button aims the card at the pose the part is in now.
+- **The "no edit panel" refusal** is gone for this op.
+
+**A stale pose (decision 5).** A step is stale when its stored build direction is more than 1° from the one the part's current pose and the plate's printer give. The solid never changes by itself. Where it shows:
+- **History.** The step's row turns amber, with a warning mark. A note above the rows reads, for example, "1 print transition was made for another pose. On the belt, even a turn about the plate's Z changes the layers. Re-aim it, or keep it as it is." It has two buttons:
+  - **Re-aim** rebuilds every stale step on the shown branch with this pose's build direction, in one edit from the earliest stale step, with the steps after it replayed. If a step now refuses, the readout gives the kernel's sentence and the solid stays as it was.
+  - **Keep** sends the note away for this pose.
+- **Prepare.** The object's row in the object list shows the same note and the same two buttons. Re-aim there opens Model on that object and re-aims once its solid is on screen.
+- **The MCP.** `model_describe` gives `notes` and `staleTransitions` (`{node, label, offDeg}`) for each stale step on the shown branch. The note says how to re-aim (`model_edit` with `build: null`). The ops guide says that `model_describe` names such a step.
+
+**Tests:**
+- `src/model-transition.test.ts`, in `tools/unit-tests.txt`, covers:
+  - the defaults;
+  - the stale check: a turn about the plate's Z on the belt, half a degree, a flat bed after the belt, a turn about Z on a flat bed, and another 45° belt;
+  - Re-aim and Keep;
+  - the card's round trip through a stored op;
+  - the probe rows and the wedge's triangles;
+  - the history label, and that the step can now be edited.
+- `mcp/transition.test.ts` checks the `model_describe` note after a turn, and that it goes when the part turns back.
+- `e2e/model-transition.spec.ts`, in `test:smoke`, runs on a synthetic L-shaped part built in the spec: a base with a post at its back, printed upside down. It goes through these steps:
+  1. Open the card and pick the corner. The green ghost is 20 × 2 × 2 mm, and the card gives its numbers.
+  2. Pick a convex edge. The card shows the refusal, and Apply stays off.
+  3. Apply, then edit the step to 50° and Update.
+  4. Switch to the IR3 V2 and see the note in Prepare and in History.
+  5. Re-aim in a pose where the wall is too flat, which is refused with its sentence.
+  6. Turn the part about Z, then Re-aim, which works.
+  7. Turn again and Keep.
+
+**Golden.** 60 of 60 rows are byte-identical to the newest stored run (`fb5d7053`), with the rear cover included. The slicer is not touched.
+
+**Deviations from section 5 and decision 5:**
+- **No tangent chains.** A click takes one straight edge, and Shift-click adds edges. Chains, and the rule that a second click takes the single edge, come with step 6.
+- **The case and Cut can't be changed yet.** Lip and Cut are shown, greyed out, with the version they come in.
+- **The ghost is drawn by the app.** The app draws it from the probe's rows: the edge, the two faces, and the reach along each. The kernel does not send a mesh. Its triangle is the wedge's own section, for the chamfer path and the prism path alike.
+- **The angles are on the card, not written on the ghost.** They sit next to it in the card's numbers.
+- **The history row is "Print transition (1 edge), 45°, 2 mm".** The plan's "(3 edges)" form keeps the angle and size step 2 put in the label.
+- **Stale means the layers turned, not that the printer's name changed.** Another printer with the same build direction (another 45° belt) leaves the step as it is, because its layers are the same.
+- **Keep lasts for the session.** It is not saved in the project, so reopening the project shows the note again.
+- **Prepare's Re-aim goes through Model.** It needs the modeler, so it opens Model on the object first.
+- **The Skin on shallow slopes warning is worded for the app.** The trigger is the same as the MCP's, but the sentence does not name the MCP's `standsOnNothing` field.
+
 ## 8. Risks
 
 - **The limit itself.** At 45° to the layers, the new face sits exactly where the housing's flat roof sat. If the coupon still shows unheld rows on the face at 45°, the default goes steeper (decision 2). The corner at the limit is the case most at risk: what fails there may be the slicer's handling of a limit face, not geometry. The coupon study runs first for that reason.

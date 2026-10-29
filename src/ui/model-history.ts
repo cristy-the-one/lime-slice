@@ -45,6 +45,10 @@ interface ModelHistoryHooks {
    * repeat, the arrows move without showing a step, and each row's `aria-selected` says whether it is chosen.
    */
   picking?(): boolean;
+  /** --- Print transitions (decision 5). Re-aim: the stale steps rebuilt with the build direction of this pose. */
+  reaim?(): void;
+  /** Keep: the stale steps stay as built, and the note goes for this pose. */
+  keepPose?(): void;
 }
 
 /** --- A10. Colour by step paints a swatch on each row. Off, the swatches go and the rows repaint. */
@@ -101,6 +105,26 @@ const rowEls = new Map<RowKey, HTMLElement>();
 const rowSigs = new Map<RowKey, string>();
 /** --- A4. History steps Pattern or Mirror will repeat. Only the open solid's own rows, via empty, are marked. --- */
 let repeatIds = new Set<number>();
+/** --- Print transitions. The open solid's steps made for another pose, and the note that says so with Re-aim and Keep. */
+let staleIds = new Set<number>();
+let staleKey = "";
+let staleEl: HTMLElement | null = null;
+
+/** The open solid's print transitions that were made for another pose: their rows turn amber, and the note offers Re-aim and Keep. */
+export function syncTransitionStale(next: { ids: readonly number[]; text: string } | null) {
+  const key = next && next.ids.length > 0 ? `${next.ids.join(",")}|${next.text}` : "";
+  if (key === staleKey) return;
+  staleKey = key;
+  staleIds = new Set(next?.ids ?? []);
+  if (staleEl) {
+    staleEl.hidden = key === "";
+    const text = staleEl.querySelector<HTMLElement>(".mh-stale-text");
+    if (text) text.textContent = next?.text ?? "";
+  }
+  rowSigs.clear();
+  drawn = null;
+  sync();
+}
 
 /** Mark the open solid's own rows that a pattern or a mirror repeats. An empty list clears the marks. */
 export function paintRepeatSources(ids: readonly number[]) {
@@ -182,6 +206,24 @@ export function mountModelHistory(next: ModelHistoryHooks) {
     recipeEl.hidden = true;
     document.querySelector("#modelPosition")?.before(recipeEl);
   }
+  staleEl = document.createElement("div");
+  staleEl.className = "mh-stale";
+  staleEl.id = "modelStaleNote";
+  staleEl.setAttribute("role", "status");
+  staleEl.hidden = true;
+  const staleText = document.createElement("p");
+  staleText.className = "mh-stale-text";
+  const reaim = Object.assign(document.createElement("button"), { type: "button", className: "btn", id: "modelStaleReaim", textContent: "Re-aim" });
+  reaim.dataset.tip = "Rebuild these steps with the build direction of this pose. The steps after them rebuild too.";
+  const keep = Object.assign(document.createElement("button"), { type: "button", className: "btn", id: "modelStaleKeep", textContent: "Keep" });
+  keep.dataset.tip = "Keep them as they are, made for the other pose. The note comes back if the pose changes again.";
+  const actions = document.createElement("div");
+  actions.className = "mh-stale-actions";
+  actions.append(reaim, keep);
+  staleEl.append(staleText, actions);
+  reaim.addEventListener("click", () => hooks?.reaim?.());
+  keep.addEventListener("click", () => hooks?.keepPose?.());
+  list.before(staleEl);
   note = document.createElement("p");
   note.className = "mh-note";
   note.setAttribute("role", "status");
@@ -266,7 +308,12 @@ function inputs(): unknown[] {
     used.push(tool);
     queue.push(...toolKeys(tool));
   }
-  return [tree, shownKey(), ...used];
+  return [tree, shownKey(), staleKey, ...used];
+}
+
+/** A row of the open solid's own that is a print transition made for another pose. */
+function staleRow(row: { via: readonly number[]; id: number }): boolean {
+  return row.via.length === 0 && staleIds.has(row.id);
 }
 
 function changed(now = inputs()): boolean {
@@ -404,7 +451,7 @@ function render() {
       rowEls.set(row.key, el);
     }
     // --- A10. The swatch colour is part of the signature, so turning colour by step on repaints the rows.
-    const sig = JSON.stringify([row, layout!.lanes, ownColour(row) ?? ""]);
+    const sig = JSON.stringify([row, layout!.lanes, ownColour(row) ?? "", staleRow(row)]);
     // A row being renamed keeps its field; it is painted when the name is done.
     if (row.key !== renaming && rowSigs.get(row.key) !== sig) {
       paintRow(el, row, layout!.lanes);
@@ -481,6 +528,7 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   paintChosen(el, row);
   el.toggleAttribute("data-broken", !!row.broken);
   el.toggleAttribute("data-blocked", row.blocked);
+  el.toggleAttribute("data-stale", staleRow(row));
   el.setAttribute("aria-level", String(row.level));
   // A folded composite hides its steps. A fork, and a join with its tool's lane, stay expanded: their rows are drawn.
   if (row.fold?.head) el.setAttribute("aria-expanded", row.fold.expanded ? "true" : "false");
@@ -490,13 +538,13 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   if (owned.length > 0) el.setAttribute("aria-owns", owned.map(rowElementId).join(" "));
   else el.removeAttribute("aria-owns");
   el.toggleAttribute("data-tool", row.tool != null);
-  const notes = [row.broken ? "cannot be rebuilt" : "", row.blocked ? "after a step that cannot be rebuilt" : "", row.plate ? "on the plate" : ""].filter(Boolean);
+  const notes = [row.broken ? "cannot be rebuilt" : "", row.blocked ? "after a step that cannot be rebuilt" : "", staleRow(row) ? "made for another pose" : "", row.plate ? "on the plate" : ""].filter(Boolean);
   const called = row.tool != null ? `${row.tool}: ${row.label}` : row.label;
   el.setAttribute("aria-label", [called, ...notes].join(", "));
   // A label can be longer than the row, which ellipsizes it: the tip has it whole. The description adds
   // only what the name does not say: a renamed step's op, why a step is broken, and whose step a tool's is.
   const whose = row.tool != null ? `A step of ${row.tool}, as this part's join takes it. Click to look at it; Edit step changes it here` : "";
-  const extra = [row.opLabel, row.broken, whose].filter(Boolean).join(". ");
+  const extra = [row.opLabel, row.broken, staleRow(row) ? "Made for another pose: the layers have turned since. Re-aim or Keep it in the note above" : "", whose].filter(Boolean).join(". ");
   el.dataset.tip = [row.label, extra].filter(Boolean).join(". ");
   if (extra) el.setAttribute("aria-description", extra);
   else el.removeAttribute("aria-description");
@@ -561,7 +609,7 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
     chip.setAttribute("aria-hidden", "true");
     label.before(chip);
   }
-  if (row.broken) {
+  if (row.broken || staleRow(row)) {
     const warn = document.createElement("span");
     warn.className = "mh-warn";
     warn.append(icon(TriangleAlert, 12));

@@ -14,6 +14,8 @@ export interface ThemeColors {
   bedMinor: string;
   mesh: string;
   danger: string;
+  /** Material a step will add, such as a print transition's wedge. */
+  ok: string;
   slow: string;
   fast: string;
   spark: string;
@@ -55,6 +57,7 @@ export function themeColors(): ThemeColors {
     bedMinor: pick("--bed-minor", "#222733"),
     mesh: pick("--mesh", "#96be28"),
     danger: pick("--danger", "#f0615a"),
+    ok: pick("--ok", "#4ade80"),
     slow: pick("--slow", "#f5a524"),
     fast: pick("--fast", "#d55e00"),
     spark: pick("--spark", "#3a4250"),
