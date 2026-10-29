@@ -212,6 +212,7 @@ export const state = {
   trunkDiameter: 4.2,
   supportAvoidance: false,
   supportStrictStacking: false,
+  supportSlowFragile: false,
   supportHeightMult: 1,
   supportZGapMm: null as number | null,
   supportXyGapMm: null as number | null,
