@@ -70,6 +70,14 @@ The land-pr skill says main's ruleset requires only "test, clippy, and Tauri", "
 
 `.github/workflows/perf.yml` is separate. It runs nightly, on `workflow_dispatch`, and on a pull request labelled `ci:perf`. It is the frame-timing specs kept out of the per-PR smoke run.[^perf]
 
+# "Target crashed" in a probe
+
+When the process running a Playwright worker is killed, the page fires its `crash` event and Playwright reports "Target crashed". The run then ends with `worker process exited unexpectedly (code=143)`, where 143 is SIGTERM. A shell `timeout N` around `npx playwright` sends that signal after N seconds. So does `Stop-Process` on `chrome-headless-shell`, which also reaches every other session's browsers.
+
+On 2026-10-29, three Split to print runs against the real kernel and one large-export run reported this crash. Each one matched a shell `timeout`, or another session's `Stop-Process`, to within a second. A Split to print card left idle for 235 s, and bounded only by Playwright's own test timeout, did not crash. Its JS heap stayed at 9–12 MB. Bound a probe with `test.setTimeout` or `--global-timeout` instead.
+
+`e2e/model-split-real.spec.ts` (in `test:engine`) runs Split to print on a 120 × 70 × 50 box with the real kernel, for a straight cut and a zig-zag. It idles 12 s on the card's answer and then applies. Its proxy lets go of a reply for a check the card has already superseded. Without that, the zig-zag's field edits could fail the test with "Fetch response has been disposed".
+
 `tools/golden.sh` hashes G-code for samples. `CLAUDE.md` says never re-slice old code for a baseline. See [Project rules](../conventions/project-rules.md).
 
 [^ci]: .github/workflows/ci.yml
