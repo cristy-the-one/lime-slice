@@ -52,6 +52,8 @@
 #include <BRepClass3d.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <GC_MakeEllipse.hxx>
 #include <GeomAPI_Interpolate.hxx>
@@ -1940,6 +1942,307 @@ TopoDS_Shape build_lip_gusset(
     out[4] = lowest.Y();
     out[5] = lowest.Z();
     return piece;
+}
+
+namespace {
+
+/// The outward normal of `face` where the edge's parameter `t` lies on it, or a zero vector.
+gp_Vec normal_on(const TopoDS_Edge& edge, const TopoDS_Face& face, double t) {
+    double first = 0.0;
+    double last = 0.0;
+    const Handle(Geom2d_Curve) on = BRep_Tool::CurveOnSurface(edge, face, first, last);
+    if (on.IsNull()) {
+        return gp_Vec(0, 0, 0);
+    }
+    const gp_Pnt2d uv = on->Value(std::min(std::max(t, std::min(first, last)), std::max(first, last)));
+    BRepAdaptor_Surface surface(face);
+    gp_Pnt point;
+    gp_Vec du;
+    gp_Vec dv;
+    surface.D1(uv.X(), uv.Y(), point, du, dv);
+    gp_Vec normal = du.Crossed(dv);
+    if (normal.Magnitude() <= 1e-12) {
+        return gp_Vec(0, 0, 0);
+    }
+    normal.Normalize();
+    if (face.Orientation() == TopAbs_REVERSED) {
+        normal.Reverse();
+    }
+    return normal;
+}
+
+/// A closed polygon through `points`, as a planar face.
+TopoDS_Face polygon_face(const std::vector<gp_Pnt>& points) {
+    BRepBuilderAPI_MakePolygon outline;
+    for (const gp_Pnt& p : points) {
+        outline.Add(p);
+    }
+    outline.Close();
+    if (!outline.IsDone()) {
+        return {};
+    }
+    BRepBuilderAPI_MakeFace face(outline.Wire(), Standard_True);
+    return face.IsDone() ? face.Face() : TopoDS_Face();
+}
+
+/// The side of the plane through `at` that `keep` points to, as a slab large enough to hold `around`.
+TopoDS_Shape half_slab(const gp_Pnt& at, const gp_Dir& keep, const TopoDS_Shape& around) {
+    Bnd_Box bounds;
+    BRepBndLib::Add(around, bounds, Standard_False);
+    if (bounds.IsVoid()) {
+        return {};
+    }
+    double lo[3] = {0, 0, 0};
+    double hi[3] = {0, 0, 0};
+    bounds.Get(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    const gp_Pnt mid(0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2]));
+    const double span = gp_Pnt(lo[0], lo[1], lo[2]).Distance(gp_Pnt(hi[0], hi[1], hi[2])) + at.Distance(mid) + 1.0;
+    BRepBuilderAPI_MakeFace square(gp_Pln(at, keep), -span, span, -span, span);
+    if (!square.IsDone()) {
+        return {};
+    }
+    BRepPrimAPI_MakePrism side(square.Face(), gp_Vec(keep) * (2.0 * span));
+    side.Build();
+    return side.IsDone() ? side.Shape() : TopoDS_Shape();
+}
+
+/// `shape` fused with `other`, or `other` alone when `shape` is empty.
+TopoDS_Shape fused_with(const TopoDS_Shape& shape, const TopoDS_Shape& other, std::string& error) {
+    if (shape.IsNull()) {
+        return other;
+    }
+    double volume = 0.0;
+    return combine(shape, "fuse", other, volume, error);
+}
+
+/// One print transition's tool, before it meets the solid.
+TopoDS_Shape transition_tool(const TransitionTool& spec, const gp_Dir& binormal, std::string& error) {
+    const char* failed = "Open CASCADE did not build the wedge";
+    BRepAdaptor_Curve curve(spec.edge);
+    const bool reversed = spec.edge.Orientation() == TopAbs_REVERSED;
+    const double t0 = reversed ? curve.LastParameter() : curve.FirstParameter();
+    const double t1 = reversed ? curve.FirstParameter() : curve.LastParameter();
+    gp_Pnt p0;
+    gp_Pnt p1;
+    gp_Vec d0;
+    gp_Vec d1;
+    curve.D1(t0, p0, d0);
+    curve.D1(t1, p1, d1);
+    if (reversed) {
+        d0.Reverse();
+        d1.Reverse();
+    }
+    if (d0.Magnitude() <= 1e-12 || d1.Magnitude() <= 1e-12) {
+        error = failed;
+        return {};
+    }
+    const gp_Vec start_dir = d0.Normalized();
+    const gp_Vec end_dir = d1.Normalized();
+    TopoDS_Shape tool;
+    if (spec.straight) {
+        const gp_Vec along(p0, p1);
+        std::vector<gp_Pnt> moved;
+        for (const gp_Pnt& p : spec.section) {
+            moved.push_back(p.Translated(start_dir * -spec.ext[0]));
+        }
+        const TopoDS_Face face = polygon_face(moved);
+        if (face.IsNull()) {
+            error = failed;
+            return {};
+        }
+        BRepPrimAPI_MakePrism prism(face, along + start_dir * (spec.ext[0] + spec.ext[1]));
+        prism.Build();
+        if (!prism.IsDone()) {
+            error = failed;
+            return {};
+        }
+        tool = prism.Shape();
+    } else {
+        const TopoDS_Face face = polygon_face(spec.section);
+        if (face.IsNull()) {
+            error = failed;
+            return {};
+        }
+        BRepBuilderAPI_MakeWire spine(spec.edge);
+        if (!spine.IsDone()) {
+            error = failed;
+            return {};
+        }
+        BRepOffsetAPI_MakePipeShell pipe(spine.Wire());
+        pipe.SetMode(binormal);
+        pipe.Add(BRepTools::OuterWire(face), Standard_False, Standard_False);
+        pipe.Build();
+        if (!pipe.IsDone() || !pipe.MakeSolid()) {
+            error = "Open CASCADE could not sweep the wedge along this curved edge";
+            return {};
+        }
+        tool = pipe.Shape();
+        for (int end = 0; end < 2; ++end) {
+            if (!(spec.ext[end] > 0.0)) {
+                continue;
+            }
+            const TopoDS_Shape cap = end == 0 ? pipe.FirstShape() : pipe.LastShape();
+            TopoDS_Wire wire;
+            for (TopExp_Explorer it(cap, TopAbs_WIRE); it.More(); it.Next()) {
+                wire = TopoDS::Wire(it.Current());
+                break;
+            }
+            if (wire.IsNull()) {
+                error = failed;
+                return {};
+            }
+            BRepBuilderAPI_MakeFace capped(wire, Standard_True);
+            if (!capped.IsDone()) {
+                error = failed;
+                return {};
+            }
+            BRepPrimAPI_MakePrism grow(capped.Face(), (end == 0 ? -start_dir : end_dir) * spec.ext[end]);
+            grow.Build();
+            if (!grow.IsDone()) {
+                error = failed;
+                return {};
+            }
+            tool = fused_with(tool, grow.Shape(), error);
+            if (!error.empty()) {
+                return {};
+            }
+        }
+    }
+    for (int end = 0; end < 2; ++end) {
+        if (!spec.mitre[end]) {
+            continue;
+        }
+        const TopoDS_Shape keep = half_slab(spec.mitre_at[end], spec.mitre_keep[end], tool);
+        if (keep.IsNull()) {
+            error = failed;
+            return {};
+        }
+        double volume = 0.0;
+        tool = combine(tool, "common", keep, volume, error);
+        if (!error.empty()) {
+            error = "Open CASCADE could not mitre the wedges where these edges meet";
+            return {};
+        }
+    }
+    return tool;
+}
+
+}  // namespace
+
+bool edge_stations(const TopoDS_Edge& edge, const TopoDS_Face& face_a, const TopoDS_Face& face_b, int count, double* out) {
+    if (count < 2 || BRep_Tool::Degenerated(edge)) {
+        return false;
+    }
+    BRepAdaptor_Curve curve(edge);
+    const bool reversed = edge.Orientation() == TopAbs_REVERSED;
+    const double first = reversed ? curve.LastParameter() : curve.FirstParameter();
+    const double last = reversed ? curve.FirstParameter() : curve.LastParameter();
+    for (int k = 0; k < count; ++k) {
+        const double t = first + (last - first) * k / (count - 1);
+        gp_Pnt p;
+        gp_Vec d;
+        curve.D1(t, p, d);
+        if (reversed) {
+            d.Reverse();
+        }
+        if (d.Magnitude() > 1e-12) {
+            d.Normalize();
+        }
+        const gp_Vec na = normal_on(edge, face_a, t);
+        const gp_Vec nb = normal_on(edge, face_b, t);
+        double* slot = out + 12 * k;
+        const double values[12] = {p.X(), p.Y(), p.Z(), d.X(), d.Y(), d.Z(), na.X(), na.Y(), na.Z(), nb.X(), nb.Y(), nb.Z()};
+        std::copy(values, values + 12, slot);
+    }
+    return true;
+}
+
+bool face_distances(const TopoDS_Face& face, const double* points, int count, double* out) {
+    const Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+    if (surface.IsNull()) {
+        return false;
+    }
+    for (int k = 0; k < count; ++k) {
+        const gp_Pnt p(points[3 * k], points[3 * k + 1], points[3 * k + 2]);
+        out[k] = std::nan("");
+        Standard_Real u = 0.0;
+        Standard_Real v = 0.0;
+        try {
+            GeomAPI_ProjectPointOnSurf one(p, surface);
+            if (!one.IsDone() || one.NbPoints() == 0) {
+                continue;
+            }
+            one.LowerDistanceParameters(u, v);
+        } catch (const Standard_Failure&) {
+            continue;
+        }
+        gp_Pnt q;
+        gp_Vec du;
+        gp_Vec dv;
+        surface->D1(u, v, q, du, dv);
+        gp_Vec normal = du.Crossed(dv);
+        if (normal.Magnitude() <= 1e-12) {
+            continue;
+        }
+        normal.Normalize();
+        if (face.Orientation() == TopAbs_REVERSED) {
+            normal.Reverse();
+        }
+        out[k] = gp_Vec(q, p).Dot(normal);
+    }
+    return true;
+}
+
+TopoDS_Shape build_transition_tools(
+    const TopoDS_Shape& current,
+    const std::vector<TransitionTool>& specs,
+    const gp_Dir& binormal,
+    bool cut,
+    TopoDS_Shape& tools,
+    std::vector<TopoDS_Face>& touched,
+    double& volume,
+    double& tools_volume,
+    Handle(BRepTools_History)* history,
+    std::string& error) {
+    tools.Nullify();
+    for (const TransitionTool& spec : specs) {
+        const TopoDS_Shape tool = transition_tool(spec, binormal, error);
+        if (!error.empty()) {
+            return {};
+        }
+        tools = fused_with(tools, tool, error);
+        if (!error.empty()) {
+            return {};
+        }
+    }
+    if (tools.IsNull()) {
+        error = "Open CASCADE did not build the wedge";
+        return {};
+    }
+    tools = as_solid(tools);
+    tools_volume = volume_of(tools);
+    Handle(BRepTools_History) made;
+    TopoDS_Shape result = combine(current, cut ? "cut" : "fuse", tools, volume, error, &made);
+    if (!error.empty()) {
+        return {};
+    }
+    touched.clear();
+    if (!made.IsNull()) {
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(current, TopAbs_FACE, faces);
+        for (int i = 1; i <= faces.Extent(); ++i) {
+            const TopoDS_Shape& face = faces(i);
+            if (made->IsRemoved(face) || !made->Modified(face).IsEmpty()) {
+                touched.push_back(TopoDS::Face(face));
+            }
+        }
+    }
+    if (history != nullptr) {
+        *history = made;
+    }
+    result = merge_same_domain(result, history);
+    volume = volume_of(as_solid(result));
+    return result;
 }
 
 /// The other solid moves by a location, so nothing is copied, and the turn is built as a unit quaternion so the

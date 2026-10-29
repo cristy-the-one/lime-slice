@@ -297,7 +297,7 @@ fn finds_edges_that_start_in_the_air() {
     assert!(rows(&box_bed).is_empty(), "{box_bed}");
 
     // A cone's tip, hanging under a plate held up by a leg: a point is not an edge, so nothing is listed under the
-    // plate where the cone is. The circle where the cone meets the plate is curved and only counted. The plate's own
+    // plate where the cone is. The circle where the cone meets the plate is a curved corner. The plate's own
     // free underside edges are lips.
     ok(json!({ "call": "open", "key": "find-cone",
         "primitive": { "primitive": "cone", "origin": [0.0, 0.0, 2.0], "radius": 5.0, "topRadius": 0.0, "height": 8.0, "turn": [180.0, 0.0, 0.0] } }));
@@ -318,11 +318,22 @@ fn finds_edges_that_start_in_the_air() {
         });
         assert_eq!(near_tip.count(), 0, "{cone}");
         if build == FLAT {
-            assert!(cone["curvedSkipped"].as_u64().unwrap() >= 1, "{cone}");
+            // Since step 6 the circle is read along its length: a curved corner between the cone, 58° to the layers,
+            // and the plate's underside, whose wedge is swept around it.
+            assert_eq!(cone["curvedSkipped"], json!(0), "{cone}");
+            let circle = rows(&cone)
+                .iter()
+                .find(|row| row["curved"] == json!(true))
+                .unwrap_or_else(|| panic!("no curved row: {cone}"));
+            assert_eq!(circle["case"], json!("corner"), "{circle}");
+            assert!(
+                (circle["lengthMm"].as_f64().unwrap() - std::f64::consts::PI * 10.0).abs() < 0.5,
+                "{circle}"
+            );
             assert_eq!(
-                cone["curvedEdges"].as_array().map(Vec::len),
-                cone["curvedSkipped"].as_u64().map(|n| n as usize),
-                "{cone}"
+                circle["probe"]["transition"][0]["path"],
+                json!("sweep"),
+                "{circle}"
             );
             assert!(
                 rows(&cone).iter().any(|row| row["case"] == json!("lip")),

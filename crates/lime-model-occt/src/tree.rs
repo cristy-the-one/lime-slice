@@ -206,6 +206,12 @@ pub struct EdgeSig {
 /// Directions agree within half a degree.
 const SIG_COS: f64 = 0.999_961_923;
 
+/// A curve or a surface within this many millimetres of a line or a plane is one, to a print transition and its finder.
+const FLAT_MM: f64 = 1e-4;
+
+/// Edges that turn this many degrees or less at a vertex run on as one tangent chain (plan section 4).
+const CHAIN_DEG: f64 = 5.0;
+
 impl EdgeSig {
     fn matches(&self, other: &EdgeSig) -> bool {
         let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -1716,6 +1722,17 @@ enum Request {
         #[serde(default)]
         fix: Value,
     },
+    /// --- Print transitions, step 6. The tangent chain through edge `edge` of step `node`'s solid: the sharp edges of its
+    /// convexity that run on from it at vertices turning 5° or less, with no branch, the picked edge first.
+    EdgeChain {
+        key: String,
+        node: NodeId,
+        edge: c_int,
+    },
+    /// Debug builds only: step `node`'s solid with every face and edge converted to NURBS, as BinTools bytes in base64,
+    /// for a test that opens a flat face stored as a B-spline.
+    #[cfg(lime_occt_test_hooks)]
+    TestNurbs { key: String, node: NodeId },
     /// `format` is `step` (the default, for a file to hand on) or `brep` (the binary a project keeps).
     Export {
         key: String,
@@ -2682,6 +2699,25 @@ impl Store {
                 limit_deg,
                 fix,
             } => self.transition_find(&key, node, build, up, limit_deg, fix),
+            Request::EdgeChain { key, node, edge } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let (edges, closed) = shape
+                    .edge_chain(edge)
+                    .ok_or_else(|| Failure::Message("That edge is not on this solid".into()))?;
+                Ok(Answer::Plain(
+                    json!({ "id": node, "edge": edge, "edges": edges, "closed": closed }).to_string(),
+                ))
+            }
+            #[cfg(lime_occt_test_hooks)]
+            Request::TestNurbs { key, node } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let bytes = shape.test_nurbs().map_err(Failure::Message)?;
+                Ok(Answer::Plain(
+                    json!({ "dataB64": base64::engine::general_purpose::STANDARD.encode(bytes) }).to_string(),
+                ))
+            }
             // --- A5. Edges step `node` made, found on the solid the tree is showing. ---
             Request::StepEdges { key, node, filter } => self.step_edge_indexes(key, node, filter),
             // K4: the face's loops, read from the solid the node already holds.
@@ -3396,6 +3432,7 @@ impl Store {
                 "nearFace": row.near,
                 "farDeg": round(row.far_deg),
                 "nearDeg": round(row.near_deg),
+                "curved": row.curved,
                 "probe": answer,
             }));
         }
@@ -5599,7 +5636,50 @@ extern "C" {
     /// What an edge is, apart from where: `out` gets the curve (0 line, 1 circle, 2 other), its direction or axis, the
     /// number of faces it bounds (0 to 2), and for each of the first two its index, surface kind (0 plane, 1 cylinder,
     /// 2 cone, 3 sphere, 4 torus, 5 other), and outward normal at the edge's middle: 15 numbers.
-    fn lime_tree_edge_sig(shape: *mut RawShape, index: c_int, out: *mut f64) -> c_int;
+    fn lime_tree_edge_sig(shape: *mut RawShape, index: c_int, flat: f64, out: *mut f64) -> c_int;
+    /// --- Print transitions, step 6: `count` stations along an edge, 12 numbers each.
+    fn lime_tree_edge_stations(
+        shape: *mut RawShape,
+        edge: c_int,
+        face_a: c_int,
+        face_b: c_int,
+        count: c_int,
+        out: *mut f64,
+    ) -> c_int;
+    fn lime_tree_face_distances(
+        shape: *mut RawShape,
+        face: c_int,
+        points: *const f64,
+        count: c_int,
+        out: *mut f64,
+    ) -> c_int;
+    #[allow(clippy::too_many_arguments)]
+    fn lime_tree_transition_tools(
+        from: *const RawShape,
+        count: c_int,
+        edges: *const c_int,
+        straight: *const c_int,
+        section_counts: *const c_int,
+        sections: *const f64,
+        ext: *const f64,
+        mitres: *const f64,
+        binormal: *const f64,
+        cut: c_int,
+        touched: *mut c_int,
+        out: *mut f64,
+        tools: *mut *mut RawShape,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_edge_end_faces(shape: *mut RawShape, edge: c_int, out: *mut c_int, capacity: c_int) -> c_int;
+    fn lime_tree_inside(shape: *mut RawShape, point: *const f64) -> c_int;
+    fn lime_tree_edge_chain(
+        shape: *mut RawShape,
+        edge: c_int,
+        max_deg: f64,
+        out: *mut c_int,
+        capacity: c_int,
+        closed: *mut c_int,
+    ) -> c_int;
     fn lime_tree_split(
         from: *const RawShape,
         p: *const f64,
@@ -5851,6 +5931,8 @@ extern "C" {
     ) -> *mut c_char;
     #[cfg(lime_occt_test_hooks)]
     fn lime_tree_test_fault(shape: *const RawShape, error: *mut *mut c_char) -> c_int;
+    #[cfg(lime_occt_test_hooks)]
+    fn lime_tree_test_nurbs(shape: *const RawShape, error: *mut *mut c_char) -> *mut RawShape;
     fn lime_tree_created(shape: *const RawShape, out: *mut *const c_int) -> c_int;
     // --- A10.
     fn lime_tree_face_from(shape: *const RawShape, out: *mut *const c_int) -> c_int;
@@ -6950,6 +7032,29 @@ impl Shape {
         (solids, shells)
     }
 
+    /// Debug builds only: this solid with every surface and curve converted to NURBS, as a project keeps a solid.
+    #[cfg(lime_occt_test_hooks)]
+    fn test_nurbs(&self) -> Result<Vec<u8>, String> {
+        // SAFETY: `self` is held for this call; the kernel returns a new shape or an error.
+        Shape::made(|error| unsafe { lime_tree_test_nurbs(self.raw(), error) })?.brep_bytes()
+    }
+
+    /// --- Print transitions, step 6. The tangent chain through `edge`, the edge first, and whether it closes.
+    fn edge_chain(&mut self, edge: c_int) -> Option<(Vec<c_int>, bool)> {
+        let capacity = self.fingerprint().edges.max(1);
+        let mut out = vec![0 as c_int; capacity as usize];
+        let mut closed: c_int = 0;
+        // SAFETY: `self` is held for this call; the kernel writes at most `capacity` ints and one flag.
+        let count = unsafe {
+            lime_tree_edge_chain(self.0.as_ptr(), edge, CHAIN_DEG, out.as_mut_ptr(), capacity, &mut closed)
+        };
+        if count <= 0 {
+            return None;
+        }
+        out.truncate(count as usize);
+        Some((out, closed != 0))
+    }
+
     /// Debug builds only: the refusal for a fault inside Open CASCADE caused on purpose.
     #[cfg(lime_occt_test_hooks)]
     fn test_fault(&self) -> String {
@@ -7020,8 +7125,19 @@ impl Shape {
 
     /// Edge `index`'s signature, and the indexes of its faces in the signature's order (-1 for none).
     fn edge_sig(&mut self, index: i32) -> Option<(EdgeSig, [c_int; 2])> {
+        self.edge_sig_within(index, 0.0)
+    }
+
+    /// As `edge_sig`, with a curve or a surface within `FLAT_MM` of a line or a plane read as one: a STEP file stores flat
+    /// faces and straight edges as B-splines too. Only print transitions read edges this way. A saved edge keeps the
+    /// signature as stored, so a step saved before this still finds its edge.
+    fn edge_sig_flat(&mut self, index: i32) -> Option<(EdgeSig, [c_int; 2])> {
+        self.edge_sig_within(index, FLAT_MM)
+    }
+
+    fn edge_sig_within(&mut self, index: i32, flat: f64) -> Option<(EdgeSig, [c_int; 2])> {
         let mut out = [0.0f64; 15];
-        if unsafe { lime_tree_edge_sig(self.0.as_ptr(), index, out.as_mut_ptr()) } == 0 {
+        if unsafe { lime_tree_edge_sig(self.0.as_ptr(), index, flat, out.as_mut_ptr()) } == 0 {
             return None;
         }
         if !out.iter().all(|value| value.is_finite()) {

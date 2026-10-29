@@ -135,6 +135,7 @@ check(
   JSON.stringify(planRows?.[0]),
 );
 check("a fix that refuses gives its sentence", planRows?.[1]?.case === "lip" && /convex/.test(String(planRows?.[1]?.refused)) && planRows?.[2]?.case === "corner" && /adds nothing/.test(String(planRows?.[2]?.refused)), JSON.stringify(planRows));
+check("a curved edge's row says so (step 6), a straight one's does not", planRows?.[2]?.curved === true && !("curved" in (planRows?.[0] ?? {})), JSON.stringify(planRows));
 check("the ready op holds only the rows that build", JSON.stringify(plan.op) === JSON.stringify({ kind: "transition", mode: "auto", angleDeg: 45, size: 2, edges: [3] }), JSON.stringify(plan.op));
 check(
   "the reason counts the cases, the refusals and the curved edges",
