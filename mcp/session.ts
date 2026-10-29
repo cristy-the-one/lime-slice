@@ -500,9 +500,8 @@ function positionsFrom(encoded: string): Float32Array {
   return new Float32Array(copy.buffer);
 }
 
-/** Rows a `layer_detail` page holds unless asked: every layer of an ordinary part, about 90 KB. */
+/** Rows in a `layer_detail` page: every layer of an ordinary part, about 90 KB. */
 const LAYER_ROWS = 2000;
-const LAYER_ROWS_MAX = 5000;
 
 function page<T>(items: T[], cursor: unknown, limit: unknown): { rows: T[]; nextCursor?: string } {
   const size = Math.min(100, Math.max(1, typeof limit === "number" ? limit : 20));
@@ -7980,10 +7979,9 @@ export class Session {
     const from = typeof span[0] === "number" ? span[0] : 0;
     const to = Math.min(typeof span[1] === "number" ? span[1] : from, layers.length - 1);
     // A page is every layer of an ordinary part; a long one comes in pages, with the cursor where the next starts.
-    const size = typeof input.limit === "number" ? Math.min(LAYER_ROWS_MAX, Math.max(1, Math.round(input.limit))) : LAYER_ROWS;
     const at = typeof input.cursor === "string" ? Number(input.cursor) : from;
     const start = Number.isInteger(at) && at > from ? at : from;
-    const end = Math.min(to, start + size - 1);
+    const end = Math.min(to, start + LAYER_ROWS - 1);
     const rows = layers.slice(start, end + 1).map((layer, offset) => ({
       index: layer.index ?? start + offset,
       z: layer.z ?? 0,

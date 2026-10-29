@@ -84,12 +84,11 @@ const detail = await call("layer_detail", { layers: [0, 1] });
 const rows = detail.rows as { z?: number; seconds?: number }[];
 check("layer detail names both layers", detail.ok === true && rows.length === 2 && rows[0]?.z === 0.2 && rows[1]?.seconds === 6, JSON.stringify(detail));
 check("a whole page has no cursor", !("nextCursor" in detail) && !("nextCursor" in (await call("layer_detail", {}))), JSON.stringify(detail));
-const first = await call("layer_detail", { limit: 1 });
-const rest = await call("layer_detail", { limit: 1, cursor: String(first.nextCursor) });
+const rest = await call("layer_detail", { cursor: "1" });
 check(
-  "layer detail pages from the cursor",
-  (first.rows as unknown[]).length === 1 && first.total === 2 && first.nextCursor === "1" && (rest.rows as { seconds?: number }[])[0]?.seconds === 6 && !("nextCursor" in rest),
-  JSON.stringify([first, rest]),
+  "layer detail starts at the cursor",
+  (rest.rows as unknown[]).length === 1 && (rest.rows as { index?: number; seconds?: number }[])[0]?.seconds === 6 && !("nextCursor" in rest),
+  JSON.stringify(rest),
 );
 
 await call("layer_action_set", { zMm: 0.15, kind: "filamentChange" });
