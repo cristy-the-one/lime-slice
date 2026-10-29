@@ -7,6 +7,10 @@
 //! chain prints one overhang step less of itself, so a branch backs off
 //! toward the wall it ends on, and every bead overhangs the bead under it by
 //! at most that step. Interior that holds up no skin prints nothing.
+//!
+//! So most of the interior is hollow. Where a part closes, the strip that
+//! narrows past the void fill's cell width gets its first solid rows over
+//! that hollow; [`Lightning::hollow_below`] marks it.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -18,7 +22,7 @@ use crate::adaptive::LayerBand;
 use crate::poly::{
     boolean_diff, boolean_intersect, drop_slivers, in_solid, loop_bounds, offset_loops, Loop,
 };
-use crate::toolpath::Skin;
+use crate::toolpath::{void_cells, Skin};
 
 /// Steepest lean of a branch from vertical, degrees.
 const LEAN_DEG: f64 = 40.0;
@@ -30,6 +34,9 @@ const REACH_PITCHES: f64 = 1.5;
 /// One layer's planned branches, as segments in the part's frame.
 pub(crate) type Branches = Arc<Vec<[[f64; 2]; 2]>>;
 
+/// Interior the lightning leaves hollow, in the part's frame.
+pub(crate) type Hollow = Arc<Vec<Loop>>;
+
 /// The branches of every layer, grown for one interior inset and pitch.
 pub(crate) struct Lightning {
     /// Walls the interior was inset by, so a strategy can tell it fits.
@@ -37,6 +44,9 @@ pub(crate) struct Lightning {
     /// Grid pitch, mm.
     pub pitch: f64,
     pub layers: Vec<Branches>,
+    /// For each layer, the cells of the layer under it: the interior its void
+    /// fill leaves to the lightning. Empty on the first layer.
+    pub hollow_below: Vec<Hollow>,
 }
 
 /// A grid cell, by integer coordinates at the grid pitch.
@@ -146,7 +156,19 @@ pub(crate) fn grow(
         walls,
         pitch,
         layers,
+        hollow_below: hollow_below(&interiors, line_width),
     }
+}
+
+/// Each layer's [`Lightning::hollow_below`].
+fn hollow_below(interiors: &[Vec<Loop>], line_width: f64) -> Vec<Hollow> {
+    let cells: Vec<Hollow> = interiors
+        .par_iter()
+        .map(|interior| Arc::new(void_cells(interior, line_width)))
+        .collect();
+    std::iter::once(Hollow::default())
+        .chain(cells.into_iter().take(interiors.len().saturating_sub(1)))
+        .collect()
 }
 
 /// What lightning may fill on a layer: inside the walls, outside the skin.
@@ -231,9 +253,9 @@ fn tree(interior: &[Loop], over: &[Loop], pitch: f64) -> Tree {
         if t.dist[a].min(t.dist[b]) > len * 0.5 + WALL_SAMPLE_MM {
             return true;
         }
-        [0.25, 0.5, 0.75].iter().all(|f| {
-            in_solid(interior, p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f)
-        })
+        [0.25, 0.5, 0.75]
+            .iter()
+            .all(|f| in_solid(interior, p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f))
     };
     t.along = vec![f64::INFINITY; t.xy.len()];
     t.parent = vec![None; t.xy.len()];

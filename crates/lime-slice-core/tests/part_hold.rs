@@ -129,6 +129,81 @@ fn a_box_on_the_belt_stands_on_itself() {
     assert!(part.unheld_mm < 0.01 * part.part_mm, "{part:?}");
 }
 
+/// Every extruding move under `; TYPE:BRIDGE`, as its layer and length.
+fn bridge_moves(gcode: &str) -> Vec<(usize, f64)> {
+    let (mut layer, mut bridge) = (0, false);
+    let (mut x, mut y) = (0.0, 0.0);
+    let mut out = Vec::new();
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix(";LAYER:") {
+            layer = rest.split_whitespace().next().unwrap().parse().unwrap();
+        } else if let Some(kind) = line.strip_prefix("; TYPE:") {
+            bridge = kind.trim() == "BRIDGE";
+        } else if line.starts_with("G1 ") || line.starts_with("G0 ") {
+            let word = |c: char| {
+                line.split_whitespace()
+                    .find_map(|w| w.strip_prefix(c).and_then(|v| v.parse::<f64>().ok()))
+            };
+            let (nx, ny) = (word('X').unwrap_or(x), word('Y').unwrap_or(y));
+            if bridge && word('E').is_some_and(|e| e > 0.0) {
+                out.push((layer, (nx - x).hypot(ny - y)));
+            }
+            (x, y) = (nx, ny);
+        }
+    }
+    out
+}
+
+/// The part's hold and the bridge moves in its G-code.
+fn hold_and_bridges(stl: &str, extra: Value) -> (PartHold, Vec<(usize, f64)>) {
+    let mut extra = extra;
+    extra["partHold"] = json!(true);
+    let response = slice_request(&request(stl, extra), Job::default()).unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    (
+        response.part_hold.expect("asked for partHold"),
+        bridge_moves(&response.gcode),
+    )
+}
+
+/// Where a part closes over lightning, its interior narrows past six beads in
+/// a strip. Void fill used to lay its first rows along the strip from wall to
+/// wall over the hollow cell below, 38 mm here. They bridge across it now: no
+/// row longer than the strip is wide, and those rows are all that stands on
+/// nothing.
+fn assert_bridged_across(part: &PartHold, bridges: &[(usize, f64)]) {
+    assert!(!bridges.is_empty(), "{part:?}");
+    let longest = bridges.iter().map(|b| b.1).fold(0.0, f64::max);
+    assert!(longest < 3.0, "longest bridge row {longest:.2} mm");
+    assert!(part.longest_span_mm < 3.0, "{part:?}");
+    assert!(part.largest[0].longest_span_mm < 3.0, "{part:?}");
+    let layer = bridges[0].0;
+    assert!(bridges.iter().all(|b| b.0 == layer), "{bridges:?}");
+    assert_eq!(part.patches, 1, "{part:?}");
+    assert_eq!(part.largest[0].layers[0], layer, "{part:?}");
+}
+
+#[test]
+fn a_closing_corner_on_the_belt_bridges_across_its_strip() {
+    // The belt plane cuts the box's last corner in a strip that narrows by
+    // two layer steps every layer.
+    let (part, bridges) = hold_and_bridges(
+        &profile_stl(&[[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]], 40.0),
+        json!({ "belt": ir3() }),
+    );
+    assert_bridged_across(&part, &bridges);
+}
+
+#[test]
+fn a_ridge_on_a_bed_bridges_across_its_strip() {
+    // A gable on a flat bed closes its ridge the same way.
+    let (part, bridges) = hold_and_bridges(
+        &profile_stl(&[[0.0, 0.0], [40.0, 0.0], [20.0, 20.0]], 40.0),
+        json!({}),
+    );
+    assert_bridged_across(&part, &bridges);
+}
+
 #[test]
 fn an_arm_born_in_one_nozzle_plane_stands_on_nothing() {
     let part = hold(&wall_and_arm(45.0), json!({ "belt": ir3() }));
@@ -138,15 +213,20 @@ fn an_arm_born_in_one_nozzle_plane_stands_on_nothing() {
     assert!(lip.layers[1] - lip.layers[0] <= 3, "{part:?}");
     assert!(lip.at[2] > 11.0 && lip.at[2] < 23.0, "{part:?}");
     assert!(part.dangling_mm > 0.5 * lip.mm, "{part:?}");
+    // Its rows run across the 20 mm arm with nothing under them.
+    assert!(lip.longest_span_mm > 15.0, "{part:?}");
+    assert_eq!(part.longest_span_mm, lip.longest_span_mm, "{part:?}");
 }
 
 #[test]
 fn an_underside_that_is_a_wall_to_the_slicer_holds_its_rows() {
     let born = hold(&wall_and_arm(45.0), json!({ "belt": ir3() }));
     let steep = hold(&wall_and_arm(-30.0), json!({ "belt": ir3() }));
-    // What is left on both is top skin bridging over sparse infill.
+    // What is left on the steep one is top skin bridging over sparse infill,
+    // if anything.
+    let largest = |part: &PartHold| part.largest.first().map_or(0.0, |p| p.mm);
     assert!(
-        steep.largest[0].mm < 0.2 * born.largest[0].mm && steep.unheld_mm < 0.35 * born.unheld_mm,
+        largest(&steep) < 0.2 * largest(&born) && steep.unheld_mm < 0.35 * born.unheld_mm,
         "born {born:?}\nsteep {steep:?}"
     );
 }

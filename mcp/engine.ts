@@ -599,10 +599,11 @@ export const FAKE_PART_HOLD = {
   noBeadUnderMm: 80.04,
   unheldMm: 61.25,
   danglingMm: 40.5,
+  longestSpanMm: 8.24,
   patches: 2,
   largest: [
-    { mm: 50.04, danglingMm: 38.2, layers: [12, 13], at: [10.123, 20.456, 2.6] },
-    { mm: 11.21, danglingMm: 2.3, layers: [30, 30], at: [1, 2, 6.2] },
+    { mm: 50.04, danglingMm: 38.2, longestSpanMm: 8.24, layers: [12, 13], at: [10.123, 20.456, 2.6] },
+    { mm: 11.21, danglingMm: 2.3, longestSpanMm: 2.36, layers: [30, 30], at: [1, 2, 6.2] },
   ],
 };
 

@@ -912,7 +912,8 @@ function sliceEstimateOf(value: unknown): { slicerSeconds?: number; slicerGrams?
 
 /**
  * The engine's check for part beads that stand on nothing: no bead, support or belt under them. Lengths to 0.1 mm,
- * the five largest patches with their layers and where each starts on the plate. Absent when the engine did not run it.
+ * the longest span of one path over nothing, and the five largest patches with their layers and where each starts on
+ * the plate. Absent when the engine did not run it.
  */
 function standsOnNothing(value: unknown): { standsOnNothing?: Record<string, unknown> } {
   if (!value || typeof value !== "object") return {};
@@ -923,11 +924,13 @@ function standsOnNothing(value: unknown): { standsOnNothing?: Record<string, unk
     standsOnNothing: {
       unheldMm: mm(hold.unheldMm),
       danglingMm: mm(hold.danglingMm),
+      longestSpanMm: mm(hold.longestSpanMm),
       partMm: mm(hold.partMm),
       patches: typeof hold.patches === "number" ? hold.patches : 0,
       largest: rows.slice(0, 5).map((row) => ({
         mm: mm(row.mm),
         danglingMm: mm(row.danglingMm),
+        longestSpanMm: mm(row.longestSpanMm),
         layers: row.layers,
         at: Array.isArray(row.at) ? row.at.map(mm) : [],
       })),

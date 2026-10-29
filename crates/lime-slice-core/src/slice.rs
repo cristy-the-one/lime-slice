@@ -26,7 +26,7 @@ use crate::gcode::{
     emit_gcode, emit_later, Entry, GcodeText, LayerCue, LayerPaths, PlateLayer, PrintLayer, Run,
 };
 use crate::index::ZIndex;
-use crate::lightning::{Branches, Lightning};
+use crate::lightning::{Branches, Hollow, Lightning};
 use crate::load::load_slice_mesh_tol;
 use crate::mesh::Mesh;
 use crate::meshes::{self, PayloadError};
@@ -5131,7 +5131,7 @@ fn part_paths(
                 settings,
                 ironing.is_some(),
                 (remain_low[i], remain_high[i]),
-                lightning.as_ref().map(|l| &l.layers[i]),
+                lightning.as_ref().map(|l| (&l.layers[i], &l.hollow_below[i])),
                 layer_inputs(
                     &settings.overrides,
                     band.z,
@@ -5247,10 +5247,10 @@ fn layer_inputs(
 /// Every input of layer `i`'s toolpaths that comes from the cut, hashed with
 /// `inputs`, the ones `layer_inputs` hashes: its band, its outline, the ones
 /// below and above it when overhangs or ironing read them, its skins, its
-/// distance below a roof, its interior runs, and its lightning branches. Two
-/// plans whose toolpath keys leave the mesh out, as the layer keys do, plan
-/// the same paths on a layer with the same hash, so an edit to the mesh
-/// replans only the layers it reaches.
+/// distance below a roof, its interior runs, and its lightning branches with
+/// the hollow under them. Two plans whose toolpath keys leave the mesh out, as
+/// the layer keys do, plan the same paths on a layer with the same hash, so an
+/// edit to the mesh replans only the layers it reaches.
 #[allow(clippy::too_many_arguments)]
 fn cut_inputs(
     cut: &Contours,
@@ -5258,7 +5258,7 @@ fn cut_inputs(
     settings: &SliceSettings,
     ironed: bool,
     remain: (InteriorSpan, InteriorSpan),
-    lightning: Option<&crate::lightning::Branches>,
+    lightning: Option<(&Branches, &Hollow)>,
     inputs: [u8; 32],
 ) -> [u8; 32] {
     fn points(hash: &mut Sha256, loops: &[Loop]) {
@@ -5293,13 +5293,15 @@ fn cut_inputs(
     }
     hash.update(cut.roofs[i].to_bits().to_le_bytes());
     hash.update(format!("{remain:?}"));
-    if let Some(branches) = lightning {
+    if let Some((branches, hollow)) = lightning {
         hash.update(b"|lightning|");
         for [a, b] in branches.iter() {
             for c in [a[0], a[1], b[0], b[1]] {
                 hash.update(c.to_bits().to_le_bytes());
             }
         }
+        hash.update(b"|hollow|");
+        points(&mut hash, hollow);
     }
     hash.finalize().into()
 }
@@ -6901,13 +6903,22 @@ fn object_layer(
     lightning: Option<(&Lightning, usize)>,
 ) -> ObjectLayer {
     let line_width = settings.line_width;
-    // The grown branches, for a strategy that prints the lightning they were grown for.
-    let grown = |s: &ResolvedStrategy| -> Option<Branches> {
-        let (plan, i) = lightning?;
+    // The grown branches and the hollow under them, for a strategy that
+    // prints the lightning they were grown for.
+    let grown = |s: &ResolvedStrategy| -> (Option<Branches>, Option<Hollow>) {
+        let Some((plan, i)) = lightning else {
+            return (None, None);
+        };
         let fits = s.pattern == crate::strategy::InfillPattern::Lightning
             && s.walls == plan.walls
             && (lightning_pitch(s, line_width) - plan.pitch).abs() < 1e-9;
-        fits.then(|| Arc::clone(&plan.layers[i]))
+        if !fits {
+            return (None, None);
+        }
+        (
+            Some(Arc::clone(&plan.layers[i])),
+            Some(Arc::clone(&plan.hollow_below[i])),
+        )
     };
     let features = PathFeatures {
         variable_width: settings.variable_width,
@@ -6917,6 +6928,7 @@ fn object_layer(
         shell: ShellBand::Interior,
         skin: Arc::default(),
         lightning: None,
+        hollow_below: None,
         z,
         fuzzy_skin: settings.fuzzy_skin,
         seam_paint: settings.seam_paint.clone(),
@@ -6955,13 +6967,13 @@ fn object_layer(
                 let mut hint = [min[0], min[1]];
                 let mut low_feat = features.clone();
                 low_feat.skin = skin_of(skins, &tough);
-                low_feat.lightning = grown(&tough);
+                (low_feat.lightning, low_feat.hollow_below) = grown(&tough);
                 low_feat.shell = low_feat.skin.shell();
                 low_feat.interior_remaining = remain_low.0;
                 low_feat.interior_run = remain_low.1;
                 let mut high_feat = features.clone();
                 high_feat.skin = skin_of(skins, &speed);
-                high_feat.lightning = grown(&speed);
+                (high_feat.lightning, high_feat.hollow_below) = grown(&speed);
                 high_feat.shell = high_feat.skin.shell();
                 high_feat.interior_remaining = remain_high.0;
                 high_feat.interior_run = remain_high.1;
@@ -6982,7 +6994,7 @@ fn object_layer(
                 let mut hint = [max[0], (min[1] + max[1]) * 0.5];
                 let mut feat = features.clone();
                 feat.skin = skin_of(skins, &resolved);
-                feat.lightning = grown(&resolved);
+                (feat.lightning, feat.hollow_below) = grown(&resolved);
                 feat.shell = feat.skin.shell();
                 feat.interior_remaining = remain_low.0;
                 feat.interior_run = remain_low.1;
