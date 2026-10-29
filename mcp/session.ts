@@ -500,6 +500,10 @@ function positionsFrom(encoded: string): Float32Array {
   return new Float32Array(copy.buffer);
 }
 
+/** Rows a `layer_detail` page holds unless asked: every layer of an ordinary part, about 90 KB. */
+const LAYER_ROWS = 2000;
+const LAYER_ROWS_MAX = 5000;
+
 function page<T>(items: T[], cursor: unknown, limit: unknown): { rows: T[]; nextCursor?: string } {
   const size = Math.min(100, Math.max(1, typeof limit === "number" ? limit : 20));
   const start = typeof cursor === "string" ? Number(cursor) : 0;
@@ -7974,13 +7978,18 @@ export class Session {
     const layers = Array.isArray(job.wire.layers) ? job.wire.layers as { z?: number; seconds?: number; index?: number }[] : [];
     const span = Array.isArray(input.layers) ? input.layers : [0, Math.max(0, layers.length - 1)];
     const from = typeof span[0] === "number" ? span[0] : 0;
-    const to = typeof span[1] === "number" ? span[1] : from;
-    const rows = layers.slice(from, to + 1).map((layer, offset) => ({
-      index: layer.index ?? from + offset,
+    const to = Math.min(typeof span[1] === "number" ? span[1] : from, layers.length - 1);
+    // A page is every layer of an ordinary part; a long one comes in pages, with the cursor where the next starts.
+    const size = typeof input.limit === "number" ? Math.min(LAYER_ROWS_MAX, Math.max(1, Math.round(input.limit))) : LAYER_ROWS;
+    const at = typeof input.cursor === "string" ? Number(input.cursor) : from;
+    const start = Number.isInteger(at) && at > from ? at : from;
+    const end = Math.min(to, start + size - 1);
+    const rows = layers.slice(start, end + 1).map((layer, offset) => ({
+      index: layer.index ?? start + offset,
       z: layer.z ?? 0,
       ...(typeof layer.seconds === "number" ? { seconds: layer.seconds } : {}),
     }));
-    return { ok: true, rows };
+    return end < to ? { ok: true, rows, total: layers.length, nextCursor: String(end + 1) } : { ok: true, rows };
   }
 
   private layerPathsFile(input: Record<string, unknown>): Record<string, unknown> {

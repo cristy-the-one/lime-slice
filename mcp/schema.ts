@@ -1739,13 +1739,15 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "layer_detail",
-    description: "Layer heights and seconds.",
+    description: "Layer heights and seconds, 2000 rows a page.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         job: jobHandle,
         layers: { type: "array", minItems: 2, maxItems: 2, items: { type: "integer", minimum: 0 }, description: "First and last layer index." },
+        cursor: cursor,
+        limit: { type: "integer", minimum: 1, maximum: 5000, description: "Rows, up to 5000." },
       },
     },
   },

@@ -255,12 +255,18 @@ impl GcodeText {
 
     /// The text, formatted now if no read did yet.
     pub fn text(&self) -> String {
+        self.with_text(str::to_owned)
+    }
+
+    /// `read` on the text, formatted now if no read did yet, without a copy.
+    /// Other reads wait until it returns.
+    pub fn with_text<R>(&self, read: impl FnOnce(&str) -> R) -> R {
         let mut body = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Body::Later(formatter) = &*body {
             *body = Body::Ready(formatter.format());
         }
         match &*body {
-            Body::Ready(text) => text.clone(),
+            Body::Ready(text) => read(text),
             Body::Later(_) => unreachable!("formatted above"),
         }
     }

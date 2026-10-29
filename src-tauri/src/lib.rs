@@ -187,13 +187,74 @@ fn strategies(toughness: f64, layer_height: f64, line_width: f64, max_vol: f64) 
 
 #[tauri::command]
 fn gcode_text(token: String) -> Result<String, String> {
+    parked_gcode(&token).map(|text| text.text())
+}
+
+/// The parked G-code's skeleton, which the page stamps for [`save_gcode`].
+#[tauri::command]
+fn gcode_skeleton(token: String) -> Result<String, String> {
+    parked_gcode(&token).map(|text| text.with_text(lime_slice_core::gcode_skeleton::skeleton))
+}
+
+fn parked_gcode(token: &str) -> Result<GcodeText, String> {
     gcode_store()
         .lock()
         .expect("gcode store")
-        .get(&token)
+        .get(token)
         .cloned()
         .ok_or_else(|| "g-code expired".to_string())
-        .map(|text| text.text())
+}
+
+/// Saves the parked G-code, stamped as `stamped` says, where the user picks.
+/// The file is written here, a buffer at a time: the page never holds it.
+#[tauri::command]
+async fn save_gcode(
+    app: AppHandle,
+    token: String,
+    stamped: String,
+    default_name: String,
+) -> Result<bool, String> {
+    let text = parked_gcode(&token)?;
+    // Refuse a bad stamp before asking where to save.
+    text.with_text(|source| lime_slice_core::gcode_skeleton::filled_len(source, &stamped))
+        .map_err(|e| e.to_string())?;
+    let picked = app
+        .dialog()
+        .file()
+        .set_file_name(&default_name)
+        .add_filter("G-code", &["gcode"])
+        .blocking_save_file();
+    let Some(file) = picked else {
+        return Ok(false);
+    };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || write_gcode_file(&path, &text, &stamped))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(true)
+}
+
+/// Writes the filled file at `path`. A failed write leaves no partial file.
+fn write_gcode_file(path: &std::path::Path, text: &GcodeText, stamped: &str) -> Result<(), String> {
+    use std::io::Write;
+    let written = std::fs::File::create(path).and_then(|file| {
+        let mut out = std::io::BufWriter::with_capacity(1 << 20, file);
+        text.with_text(|source| lime_slice_core::gcode_skeleton::write_filled(source, stamped, &mut out))?;
+        out.flush()
+    });
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(path);
+        e.to_string()
+    })
+}
+
+/// Part `index` of a slice reply's `layers`, as bytes: the page parses each
+/// one on its own, so the reply never has to be one string.
+#[tauri::command]
+fn slice_reply_part(token: String, index: usize) -> Result<tauri::ipc::Response, String> {
+    lime_slice_core::take_reply_part(&token, index)
+        .map(|part| tauri::ipc::Response::new(part.into_bytes()))
+        .ok_or_else(|| "reply part expired".to_string())
 }
 
 #[tauri::command]
@@ -420,6 +481,9 @@ pub fn run() {
             calibrate_retract,
             strategies,
             gcode_text,
+            gcode_skeleton,
+            save_gcode,
+            slice_reply_part,
             save_text_file,
             save_files_to_folder,
             pareto_model,
@@ -471,6 +535,23 @@ mod tests {
         let err = write_folder_files(&dir, &[FolderFile { name: "bar-4.stl".into(), bytes_b64: "!!".into() }]).unwrap_err();
         assert!(!err.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gcode_export_writes_the_stamped_skeleton_filled_or_nothing() {
+        let body = (0..400).map(|i| format!(";LAYER:{i}\nG1 X{i} Y1 E0.1\nG1 X{i} Y2 E0.2\n")).collect::<String>();
+        let source = format!("; header\nG28\n{body}M84\n");
+        let token = park_gcode(GcodeText::ready(source.clone()));
+        let skeleton = gcode_skeleton(token.clone()).unwrap();
+        assert!(skeleton.len() * 2 < source.len(), "{} of {}", skeleton.len(), source.len());
+        let stamped = format!("; stamped\n{}", skeleton.replace(";LAYER:7\n", ";LAYER:7\nM73 P50 R1\n"));
+        let path = std::env::temp_dir().join(format!("lime-gcode-export-{}.gcode", std::process::id()));
+        write_gcode_file(&path, &parked_gcode(&token).unwrap(), &stamped).unwrap();
+        let want = format!("; stamped\n{}", source.replace(";LAYER:7\n", ";LAYER:7\nM73 P50 R1\n"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
+        let cut = stamped.replacen('\u{1}', "", 1);
+        assert!(write_gcode_file(&path, &parked_gcode(&token).unwrap(), &cut).is_err());
+        assert!(!path.exists(), "a refused stamp leaves no file");
     }
 
     #[test]

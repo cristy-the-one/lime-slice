@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use base64::Engine;
 use clap::{Parser, Subcommand};
 mod jobs;
+use lime_slice_core::gcode_skeleton;
 
 use lime_slice_core::{
     pareto_request, slice_request, Axis, BlendMode, FuzzySkin, GcodeText, Gyroid3d, Ironing, Mesh,
@@ -1269,8 +1270,46 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
                 return;
             }
         }
+        if method == "POST" {
+            if let Some(gcode_id) = path
+                .strip_prefix("/api/gcode/")
+                .and_then(|rest| rest.strip_suffix("/file"))
+            {
+                let _ = match gcode_file(gcode_id, body) {
+                    Ok(file) => request.respond(with_cors(file, token_required, origin.as_deref())),
+                    Err((status, message)) => request.respond(text_response(
+                        status,
+                        err_json(&message),
+                        token_required,
+                        origin.as_deref(),
+                    )),
+                };
+                return;
+            }
+        }
         let (status, payload) = if method == "OPTIONS" {
             (204, String::new())
+        } else if method == "GET" && path.starts_with("/api/reply/") {
+            let part = path
+                .trim_start_matches("/api/reply/")
+                .split_once('/')
+                .and_then(|(set, index)| Some((set, index.parse::<usize>().ok()?)))
+                .and_then(|(set, index)| lime_slice_core::take_reply_part(set, index));
+            match part {
+                Some(part) => (200, part),
+                None => (404, err_json("reply part expired")),
+            }
+        } else if method == "GET"
+            && path.starts_with("/api/gcode/")
+            && path.ends_with("/skeleton")
+        {
+            let gcode_id = path
+                .trim_start_matches("/api/gcode/")
+                .trim_end_matches("/skeleton");
+            match stored_gcode(gcode_id) {
+                Some(text) => (200, text.with_text(gcode_skeleton::skeleton)),
+                None => (404, err_json("g-code expired")),
+            }
         } else if method == "GET" && path.starts_with("/api/strategies") {
             let mut toughness = 0.0;
             let mut layer_h = 0.2;
@@ -1345,12 +1384,7 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             }
         } else if method == "GET" && path.starts_with("/api/gcode/") {
             let gcode_id = path.trim_start_matches("/api/gcode/").trim();
-            let text = gcode_store()
-                .lock()
-                .expect("gcode store")
-                .get(gcode_id)
-                .cloned();
-            match text {
+            match stored_gcode(gcode_id) {
                 Some(text) => (200, text.text()),
                 None => (404, err_json("g-code expired")),
             }
@@ -1412,21 +1446,68 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
     }
 }
 
+fn stored_gcode(token: &str) -> Option<GcodeText> {
+    gcode_store().lock().expect("gcode store").get(token).cloned()
+}
+
+/// The whole G-code file for `stamped`, the parked text's skeleton as the
+/// page stamped it, written into the response as it goes. The length is
+/// known first, so a client can tell a cut-off file.
+fn gcode_file(
+    token: &str,
+    stamped: String,
+) -> Result<tiny_http::Response<std::io::PipeReader>, (u16, String)> {
+    let text = stored_gcode(token).ok_or((404, "g-code expired".to_string()))?;
+    let len = text
+        .with_text(|source| gcode_skeleton::filled_len(source, &stamped))
+        .map_err(|e| (400, e.to_string()))?;
+    let (reader, writer) = std::io::pipe().map_err(|e| (500, e.to_string()))?;
+    std::thread::spawn(move || {
+        use std::io::Write;
+        let mut out = std::io::BufWriter::with_capacity(1 << 20, writer);
+        // A client that hangs up ends the write; it has the length to see a short file.
+        let _ = text
+            .with_text(|source| gcode_skeleton::write_filled(source, &stamped, &mut out))
+            .and_then(|_| out.flush());
+    });
+    let len = usize::try_from(len).map_err(|e| (500, e.to_string()))?;
+    let plain = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..])
+        .expect("content type");
+    Ok(tiny_http::Response::new(
+        tiny_http::StatusCode(200),
+        vec![plain],
+        reader,
+        Some(len),
+        None,
+    ))
+}
+
 fn text_response(
     status: u16,
     body: impl Into<String>,
     token_required: bool,
     origin: Option<&str>,
 ) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let mut response = tiny_http::Response::from_string(body).with_status_code(status);
+    response.add_header(
+        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+            .expect("content type"),
+    );
+    with_cors(response, token_required, origin)
+}
+
+fn with_cors<R: std::io::Read>(
+    mut response: tiny_http::Response<R>,
+    token_required: bool,
+    origin: Option<&str>,
+) -> tiny_http::Response<R> {
     let allow_origin = cors_origin(token_required, origin);
     let allow_headers = if token_required {
         "Content-Type, Authorization"
     } else {
         "Content-Type"
     };
-    let mut response = tiny_http::Response::from_string(body).with_status_code(status);
     let headers = [
-        ("Content-Type", "application/json"),
         ("Access-Control-Allow-Origin", allow_origin.as_str()),
         ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
         ("Access-Control-Allow-Headers", allow_headers),

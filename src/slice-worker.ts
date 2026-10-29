@@ -22,9 +22,21 @@ export interface WorkerRequest {
   dropMesh?: boolean;
   /** Port to the geometry worker, sent once at startup. */
   geomPort?: MessagePort;
+  /** One part of the `layers` a `parseOnly` reply named in `layerParts`, in order. */
+  part?: ArrayBuffer;
 }
 
+/** A reply sent as `"replyParts": true` names its `layers` instead of holding them. */
+export interface LayerParts {
+  token: string;
+  count: number;
+}
+
+type Reply = Parameters<typeof deliver>[1] & { error?: string; layerParts?: LayerParts };
+
 const jobs = new Map<number, AbortController>();
+/** Replies whose `layers` the main thread is still sending, part by part. */
+const pending = new Map<number, { body: Reply; layers: unknown[]; count: number }>();
 /** The last mesh in Base64, so a slice of the same mesh skips encoding it again. */
 let mesh = { key: "", b64: "" };
 let geomPort: MessagePort | null = null;
@@ -38,6 +50,22 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   if (msg.cancel) {
     jobs.get(msg.id)?.abort();
     jobs.delete(msg.id);
+    if (pending.delete(msg.id)) self.postMessage({ id: msg.id, ok: false, cancelled: true, error: "cancelled" });
+    return;
+  }
+  if (msg.part) {
+    const waiting = pending.get(msg.id);
+    if (!waiting) return;
+    try {
+      addPart(waiting.layers, msg.part);
+    } catch (err) {
+      pending.delete(msg.id);
+      self.postMessage({ id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    if (--waiting.count > 0) return;
+    pending.delete(msg.id);
+    deliver(msg.id, whole(waiting.body, waiting.layers));
     return;
   }
   if (msg.dropMesh) {
@@ -55,7 +83,14 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   }
   if (msg.parseOnly != null) {
     try {
-      deliver(msg.id, JSON.parse(msg.parseOnly));
+      const body = JSON.parse(msg.parseOnly) as Reply;
+      const parts = body.layerParts;
+      if (!parts || parts.count === 0) {
+        deliver(msg.id, parts ? whole(body, []) : body);
+        return;
+      }
+      pending.set(msg.id, { body, layers: [], count: parts.count });
+      self.postMessage({ id: msg.id, needParts: parts });
     } catch (err) {
       self.postMessage({ id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) });
     }
@@ -76,6 +111,20 @@ function deliver(id: number, body: { layers?: unknown; mesh?: { min: number[]; m
   self.postMessage({ id, ok: true, body });
 }
 
+const utf8 = new TextDecoder();
+
+/** Appends one part's layers. One at a time: a spread of 100k arguments throws. */
+function addPart(layers: unknown[], part: ArrayBuffer) {
+  const chunk = JSON.parse(utf8.decode(part)) as unknown[];
+  for (const layer of chunk) layers.push(layer);
+}
+
+/** The reply as if it had been sent whole. */
+function whole(body: Reply, layers: unknown[]): Reply {
+  const { layerParts: _, ...rest } = body;
+  return { ...rest, layers };
+}
+
 async function run(msg: WorkerRequest) {
   const ctrl = new AbortController();
   jobs.set(msg.id, ctrl);
@@ -93,9 +142,20 @@ async function run(msg: WorkerRequest) {
       signal: ctrl.signal,
     });
     const text = await res.text();
-    const body = JSON.parse(text) as Parameters<typeof deliver>[1] & { error?: string };
+    const body = JSON.parse(text) as Reply;
     if (!res.ok) throw new Error(body.error || `slice failed (${res.status})`);
-    deliver(msg.id, body);
+    const parts = body.layerParts;
+    if (!parts) {
+      deliver(msg.id, body);
+      return;
+    }
+    const layers: unknown[] = [];
+    for (let i = 0; i < parts.count; i++) {
+      const part = await fetch(`${msg.api}/api/reply/${encodeURIComponent(parts.token)}/${i}`, { headers, signal: ctrl.signal });
+      if (!part.ok) throw new Error(`slice reply part ${i} failed (${part.status})`);
+      addPart(layers, await part.arrayBuffer());
+    }
+    deliver(msg.id, whole(body, layers));
   } catch (err) {
     const aborted = err instanceof DOMException && err.name === "AbortError";
     self.postMessage({

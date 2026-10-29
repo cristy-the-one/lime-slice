@@ -23,6 +23,7 @@ import { orderFields, sequentialClearance, tallestLast } from "../settings-rules
 import { engineDownMessage, authHeaders } from "../ui/api-base";
 import { topLayerIndex } from "../ui/preview-ux";
 import { pushToast, type ToastAction } from "../ui/toasts";
+import type { LayerParts } from "../slice-worker";
 import { setBeltLength } from "./machine-actions";
 import {
   beginSliceJob,
@@ -330,6 +331,8 @@ export async function runSlice(force = false) {
   if (base) request.previewBase = base.token;
   // With a preview on screen, the engine draws this slice's toolpaths before ordering them.
   if (state.result) request.earlyPreview = true;
+  // A long part's reply runs past what one string holds: its layers come in parts.
+  request.replyParts = true;
   const listed = request.objects as PlateRequestObject[] | undefined;
   const selected = listed?.find((o) => o.id === state.plate.selectedId);
   const edits = (listed ? selected?.supportEdits : request.supportEdits) ? state.supportEdits : [];
@@ -373,7 +376,7 @@ export async function runSlice(force = false) {
         } catch (err) {
           throw (typeof err === "string" && unknownMeshRef(err)) || err;
         }
-        return parseInWorker(id, text);
+        return parseInWorker(id, text, (token, index) => invoke<ArrayBuffer>("slice_reply_part", { token, index }));
       };
       send = (req) => sendWithMeshes(meshRefs, (named) => attachMeshes(req, named), invokeSlice);
     } else {
@@ -525,7 +528,11 @@ async function runHttpSlice(uiId: number, bytes: ArrayBuffer, req: Record<string
     if (stopped || uiId !== session.job || terminal.status === "cancelled") throw new Error("cancelled");
     const result = await getText(base, token, `/api/jobs/${encodeURIComponent(started.id)}/result`);
     if (result.status !== 200) throw unknownMeshRef(result.text) ?? new Error(errorText(result.text, result.status));
-    return parseInWorker(uiId, result.text);
+    return parseInWorker(uiId, result.text, async (part, index) => {
+      const res = await fetch(`${base}/api/reply/${encodeURIComponent(part)}/${index}`, { headers: authHeaders(token) });
+      if (!res.ok) throw new Error(`slice reply part ${index} failed (${res.status})`);
+      return res.arrayBuffer();
+    });
   } finally {
     if (activeHttp?.jobId === started.id) activeHttp = null;
   }
@@ -547,10 +554,22 @@ export function postSlice(id: number, bytes: ArrayBuffer, body: unknown, meshKey
   });
 }
 
-export function parseInWorker(id: number, text: string) {
+/**
+ * The reply `text` parsed off the main thread. A reply that names `layerParts` gets them from `readPart`, one at a
+ * time, handed to the worker as bytes: no part of it is ever one string here.
+ */
+export function parseInWorker(id: number, text: string, readPart?: (token: string, index: number) => Promise<ArrayBuffer>) {
   return new Promise<SliceResponse>((resolve, reject) => {
     const onMsg = (ev: MessageEvent) => {
       if (ev.data.id !== id) return;
+      if (ev.data.needParts) {
+        void sendParts(id, ev.data.needParts as LayerParts, readPart).catch((err: unknown) => {
+          worker.removeEventListener("message", onMsg);
+          worker.postMessage({ id, cancel: true });
+          reject(err instanceof Error ? err : new Error(String(err)));
+        });
+        return;
+      }
       worker.removeEventListener("message", onMsg);
       if (!ev.data.ok) reject(new Error(ev.data.error));
       else resolve(ev.data.body as SliceResponse);
@@ -558,6 +577,14 @@ export function parseInWorker(id: number, text: string) {
     worker.addEventListener("message", onMsg);
     worker.postMessage({ id, parseOnly: text });
   });
+}
+
+async function sendParts(id: number, parts: LayerParts, readPart?: (token: string, index: number) => Promise<ArrayBuffer>) {
+  if (!readPart) throw new Error("The engine sent the slice in parts this view cannot read.");
+  for (let index = 0; index < parts.count; index++) {
+    const part = await readPart(parts.token, index);
+    worker.postMessage({ id, part }, [part]);
+  }
 }
 
 /** Forget the mesh the slice worker kept from the previous project. */
