@@ -7,7 +7,7 @@ import { featureColor, OTHER_COLOR, SAFETY_RAMP, SAFETY_RANGE, SPEED_RAMP, SPEED
 import { buildCutPlane, disposeTree, previewFrame, splitDragAt } from "./cut-plane";
 import { GIZMO_SCREEN_PX, gizmoRadiusForPixels, parkLeftCameraSpace, snapStep } from "./gizmo-math";
 import { clampSplit, roundSplit, type AxisBounds } from "./split-at";
-import { fillHiddenKindMask, INNER_HALF_SCALE, KIND_SHIFT, MARGIN_SHADE, MAX_KINDS, meshCenter, ODD_LAYER_BIT, scenePoint, STYLE_WORDS, WEIGHT_STEPS, type PointRun, type PreviewChunk, type PreviewGeometry } from "./preview-geom";
+import { fillHiddenKindMask, INNER_HALF_SCALE, KIND_SHIFT, layerUp, MARGIN_SHADE, MAX_KINDS, meshCenter, ODD_LAYER_BIT, scenePoint, STYLE_WORDS, WEIGHT_STEPS, type PointRun, type PreviewChunk, type PreviewGeometry } from "./preview-geom";
 import { aimSection, anchor, clampOffset, normalize, sectionReach, threeClip, type SectionSpec, type Vec3 } from "./section-plane";
 import { beltStripLength, tiltPose, type BeltSettings } from "./belt";
 import { planeLean } from "./belt-scene";
@@ -164,6 +164,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
   scene.add(previewShift);
   let bedOff: [number, number] = [0, 0];
   canvas.dataset.bedOffset = "0.000,0.000";
+  canvas.dataset.layerUp = "0.0000,1.0000,0.0000";
   const bed = new THREE.Group();
   scene.add(bed);
   const bedPlateMat = new THREE.MeshBasicMaterial({
@@ -264,6 +265,7 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     gridDims: { value: new THREE.Vector3(1, 1, 1) },
     lutZ: { value: new THREE.Vector3(0, 1, 1) },
     centre: { value: new THREE.Vector2() },
+    layerUp: { value: new THREE.Vector3(...layerUp(null)) },
     sectionPlane,
   };
   let stressStudied: ((object: number) => boolean) | null = null;
@@ -797,6 +799,9 @@ function mountSliceView(canvas: HTMLCanvasElement): SliceView3d {
     },
     setBelt(next) {
       belt = next;
+      const up = layerUp(next ? next.angleDeg : null);
+      pathUniforms.layerUp.value.set(...up);
+      canvas.dataset.layerUp = up.map((v) => v.toFixed(4)).join(",");
       const plate = plateSpan();
       placeBed(Math.max(plate.x, plate.y), bed.userData.cx ?? 0, bed.userData.cy ?? 0);
       frameEmptyPerspective();
@@ -1229,7 +1234,9 @@ const LAYER_ALTERNATION = 0.12;
 
 /**
  * Expands one segment per instance: from `segA` to `segB`, sideways by the
- * half width and down by the bead height in `segStyle`, colored by its kind
+ * half width in the layer plane and down `layerUp` by the bead height in
+ * `segStyle`, as `beadCorners` does. A belt's layers lean, so a bead hangs
+ * along the tilted normal and meets the layer under it. Colored by its kind
  * slot, blend weight, and speed. Hidden kinds and path ends collapse off-screen.
  * Fragments on the negative side of `sectionPlane` (scene space, xyz = normal,
  * w = constant) are dropped.
@@ -1246,6 +1253,7 @@ uniform int mode;
 uniform float shade;
 uniform vec4 sectionPlane;
 uniform vec2 centre;
+uniform vec3 layerUp;
 varying vec3 vColor;
 varying float vSectionDist;
 varying vec3 vPart;
@@ -1258,12 +1266,13 @@ void main() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     return;
   }
-  vec2 run = segB.xz - segA.xz;
-  float len = length(run);
-  vec2 side = len > 0.0 ? vec2(run.y, -run.x) / len : vec2(0.0);
+  vec3 run = segB - segA;
+  vec3 along = run - layerUp * dot(run, layerUp);
+  float len = length(along);
+  vec3 side = len > 0.0 ? cross(layerUp, along / len) : vec3(0.0);
   vec3 point = mix(segA, segB, corner.x);
-  point.xz += side * (segStyle.z * 0.001 * corner.y);
-  point.y -= segStyle.w * 0.001 * corner.z;
+  point += side * (segStyle.z * 0.001 * corner.y);
+  point -= layerUp * (segStyle.w * 0.001 * corner.z);
   vec4 mvPosition = modelViewMatrix * vec4(point, 1.0);
   vec4 worldPos = modelMatrix * vec4(point, 1.0);
   vSectionDist = dot(worldPos.xyz, sectionPlane.xyz) + sectionPlane.w;
@@ -1277,9 +1286,9 @@ void main() {
   vPart = vec3(point.x + centre.x, centre.y - point.z, point.y);
   vStudied = segValue.x;
   // A bead is a rounded roll: the crown (corner z 0) tilts outward toward its edge, the flank (z 1) faces sideways.
-  vec3 outward = vec3(side.x, 0.0, side.y) * sign(corner.y);
+  vec3 outward = side * sign(corner.y);
   float tilt = mix(abs(corner.y) * ${CROWN_TILT.toFixed(2)}, 1.0, corner.z);
-  vec3 normal = normalize(vec3(0.0, 1.0 - corner.z * ${FLANK_SAG.toFixed(2)}, 0.0) + outward * tilt);
+  vec3 normal = normalize(layerUp * (1.0 - corner.z * ${FLANK_SAG.toFixed(2)}) + outward * tilt);
   vec3 view = normalize(normalMatrix * normal);
   float lit = ${AMBIENT.toFixed(2)} + ${KEY.toFixed(2)} * max(dot(view, ${KEY_DIR}), 0.0) + ${FILL.toFixed(2)} * max(dot(view, ${FILL_DIR}), 0.0);
   vLit = shade * lit * (1.0 - ${LAYER_ALTERNATION.toFixed(2)} * odd);
