@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
+import { engineReplies } from "./engine-replies";
 import { lipBoxStl, tipContacts } from "./belt-lipbox";
 import { serveSliceJob } from "./serve-job";
 import { setSupports } from "./supports";
@@ -93,11 +94,11 @@ test.describe("against a real engine", () => {
 
   test("the preview's tree and interface beads are the G-code's, and tips touch", async ({ page }) => {
     test.setTimeout(300_000);
-    const replies: { layers: never[]; mesh: { min: number[]; max: number[] }; gcodeToken?: string; gcode?: string }[] = [];
+    const { replies, note } = engineReplies<{ layers: never[]; mesh: { min: number[]; max: number[] }; gcodeToken?: string; gcode?: string }>();
     await page.route("http://127.0.0.1:43118/**", async (route) => {
       const url = route.request().url().replace("http://127.0.0.1:43118", api!);
       const response = await route.fetch({ url, timeout: 240_000 });
-      if (/\/api\/jobs\/[^/]+\/result$|\/api\/slice$/.test(url) && response.status() === 200) replies.push(JSON.parse(await response.text()));
+      if (response.status() === 200) note(url, await response.text());
       await route.fulfill({ response });
     });
     await openBelt(page);
