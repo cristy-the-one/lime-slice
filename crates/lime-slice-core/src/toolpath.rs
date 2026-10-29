@@ -138,6 +138,9 @@ pub struct PathFeatures {
     /// This layer's lightning branches, grown with the layers around it,
     /// when the strategy prints the lightning they were grown for.
     pub lightning: Option<crate::lightning::Branches>,
+    /// The cells of the layer below, which the lightning with those branches
+    /// leaves hollow. Void fill over them bridges across its strip.
+    pub hollow_below: Option<crate::lightning::Hollow>,
     /// Absolute layer Z. The 3D gyroid section is evaluated here.
     pub z: f64,
     /// Outer-wall noise. `None` leaves the walls as planned.
@@ -171,6 +174,7 @@ impl Default for PathFeatures {
             shell: ShellBand::Interior,
             skin: std::sync::Arc::default(),
             lightning: None,
+            hollow_below: None,
             z: 0.0,
             fuzzy_skin: None,
             seam_paint: Vec::new(),
@@ -603,13 +607,25 @@ pub(crate) fn plan_region_split(
         Vec::new()
     } else {
         let narrow_sample = crate::inner_prof::Sample::start();
-        let mut cells = wide_part(&interior, line_width * 6.0);
+        let mut cells = void_cells(&interior, line_width);
         narrow_sample.void_narrow();
         cells.append(&mut hairlines);
         cells
     };
-    emit_void_fill(
-        &mut paths, contours, &cells, strategy, line_width, seam_hint,
+    let over_hollow = match features.hollow_below.as_deref() {
+        Some(hollow) if !hollow.is_empty() && !interior.is_empty() => {
+            boolean_intersect(&interior, hollow)
+        }
+        _ => Vec::new(),
+    };
+    emit_void_fill_over(
+        &mut paths,
+        contours,
+        &cells,
+        &over_hollow,
+        strategy,
+        line_width,
+        seam_hint,
     );
     (finish_paths(paths, features), wall_ms, ms_since(infill_started))
 }
@@ -784,6 +800,23 @@ fn emit_void_fill(
     line_width: f64,
     seam_hint: &mut [f64; 2],
 ) {
+    emit_void_fill_over(paths, contours, skip, &[], strategy, line_width, seam_hint);
+}
+
+/// [`emit_void_fill`], with `hollow` the interior over nothing. Where a part
+/// closes, its interior narrows past a cell's width in a strip whose rows
+/// would run from wall to wall along it, over the cell below. That part of
+/// the strip bridges across it instead, so no row spans more than the strip
+/// is wide, and the rows above stand on the bridge.
+fn emit_void_fill_over(
+    paths: &mut Vec<Extrusion>,
+    contours: &[Loop],
+    skip: &[Loop],
+    hollow: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    seam_hint: &mut [f64; 2],
+) {
     let sample = crate::inner_prof::Sample::start();
     let cover_sample = crate::inner_prof::Sample::start();
     let cover = bead_cover(paths);
@@ -794,7 +827,21 @@ fn emit_void_fill(
     } else {
         boolean_diff(contours, &cover)
     };
-    let voids = boolean_diff(&missed, skip);
+    let mut voids = boolean_diff(&missed, skip);
+    if !hollow.is_empty() {
+        let spans: Vec<(Vec<Loop>, f64)> =
+            island_loops(&drop_slivers(boolean_intersect(&voids, hollow), SKIN_SLIVER_MM2))
+                .into_iter()
+                .filter_map(|span| across_long_strip(&span).map(|across| (span, across)))
+                .collect();
+        if !spans.is_empty() {
+            let cut: Vec<Loop> = spans.iter().flat_map(|(span, _)| span.clone()).collect();
+            voids = boolean_diff(&voids, &cut);
+            for (span, across) in &spans {
+                bridge_void_piece(paths, span, *across, strategy, line_width, seam_hint);
+            }
+        }
+    }
     bool_sample.void_bool();
     let island_sample = crate::inner_prof::Sample::start();
     let regions = island_loops(&voids);
@@ -914,6 +961,48 @@ fn fill_void_piece(
     }
 }
 
+/// A void piece over nothing whose rows along it would span longer than this
+/// bridges across it instead. A shorter row holds over the hollow.
+const VOID_SPAN_MM: f64 = 5.0;
+/// Bridge rows across a void piece no longer than this, a little over the six
+/// beads a cell takes, so they stay short.
+const VOID_BRIDGE_MM: f64 = 3.5;
+
+/// The direction across a void piece that is a long, narrow strip: longer
+/// than [`VOID_SPAN_MM`] along its axis and at most [`VOID_BRIDGE_MM`] across.
+/// `None` for any other piece, which fills as it did.
+fn across_long_strip(region: &[Loop]) -> Option<f64> {
+    let (_, along) = principal_axis(&region[0])?;
+    let extent = |angle: f64| {
+        let (c, s) = (angle.cos(), angle.sin());
+        let (lo, hi) = region[0]
+            .iter()
+            .map(|p| p[0] * c + p[1] * s)
+            .fold((f64::MAX, f64::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)));
+        hi - lo
+    };
+    let across = along + std::f64::consts::FRAC_PI_2;
+    (extent(along) > VOID_SPAN_MM && extent(across) <= VOID_BRIDGE_MM).then_some(across)
+}
+
+/// Bridge rows at `across` over a void piece over nothing, a bead apart, each
+/// from wall to wall across the piece's short way.
+fn bridge_void_piece(
+    paths: &mut Vec<Extrusion>,
+    region: &[Loop],
+    across: f64,
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    seam_hint: &mut [f64; 2],
+) {
+    for pts in clip_infill(solid_fill(region, line_width, across, None), region) {
+        if pts.len() >= 2 {
+            *seam_hint = *pts.last().unwrap();
+            paths.push(extrusion(PathKind::Bridge, strategy, pts, line_width));
+        }
+    }
+}
+
 /// Stretches of `sliver` farther than `reach` from every bead, grown back to
 /// full length within the sliver so their bead meets the walls at each end.
 /// Each is an outline with its holes.
@@ -1025,6 +1114,12 @@ fn sliver_spine(ring: &[[f64; 2]], step: f64) -> Option<Vec<[f64; 2]>> {
             })
             .collect(),
     )
+}
+
+/// The interior a sparse layer leaves to its pattern: every part at least six
+/// beads across. Void fill takes only what is narrower.
+pub(crate) fn void_cells(interior: &[Loop], line_width: f64) -> Vec<Loop> {
+    wide_part(interior, line_width * 6.0)
 }
 
 /// The part of `region` at least `width` across. The eroded core grows back
@@ -8193,6 +8288,36 @@ mod solid_row_tests {
         let along_y = skin_rows(1);
         assert!(along_y.iter().any(|s| (s[0][1] - s[1][1]).abs() > 6.0));
         assert!(along_y.iter().all(|s| (s[0][0] - s[1][0]).abs() < 1.0));
+    }
+
+    #[test]
+    fn a_strip_over_a_hollow_cell_bridges_across_it() {
+        // Inside two walls this leaves a strip 2.4 mm across, under the six
+        // beads a sparse cell needs, so void fill takes it.
+        let region = rectangle(30.0, 4.2);
+        let strategy = pure(StrategyId::Speed);
+        let rows = |hollow: Option<Vec<Loop>>| -> Vec<(PathKind, [[f64; 2]; 2])> {
+            let features = PathFeatures {
+                hollow_below: hollow.map(std::sync::Arc::new),
+                ..PathFeatures::default()
+            };
+            let mut hint = [0.0, 0.0];
+            plan_region(&region, &strategy, 0.45, &mut hint, &features)
+                .iter()
+                .filter(|p| matches!(p.kind, PathKind::GapFill | PathKind::Bridge))
+                .flat_map(|p| p.points.windows(2).map(|w| (p.kind, [w[0], w[1]])))
+                .collect()
+        };
+        // On solid ground the rows run along the strip.
+        let held = rows(None);
+        assert!(held.iter().all(|r| r.0 == PathKind::GapFill));
+        assert!(held.iter().any(|r| (r.1[0][0] - r.1[1][0]).abs() > 20.0));
+        // Over a cell they bridge across it, wall to wall.
+        let over = rows(Some(rectangle(40.0, 10.0)));
+        assert!(!over.is_empty());
+        assert!(over.iter().all(|r| r.0 == PathKind::Bridge));
+        assert!(over.iter().all(|r| hypot2(r.1[0], r.1[1]) < 3.0));
+        assert!(over.iter().any(|r| (r.1[0][1] - r.1[1][1]).abs() > 2.0));
     }
 
     fn annulus() -> Vec<Loop> {
