@@ -104,6 +104,7 @@ src/cut-trace.test.ts
 src/fan.test.ts
 src/bridge.test.ts
 mcp/schema.test.ts
+mcp/settings-rows.test.ts
 mcp/scenario.test.ts
 mcp/export.test.ts
 mcp/golden.test.ts

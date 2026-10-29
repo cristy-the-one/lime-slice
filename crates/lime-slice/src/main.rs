@@ -117,6 +117,9 @@ enum Cmd {
         /// Find skin on slopes so shallow that each layer exposes a strip thinner than the walls.
         #[arg(long, default_value_t = false)]
         shallow_skins: bool,
+        /// Print solid skin under walls that stand on the interior of the layer below.
+        #[arg(long, default_value_t = false)]
+        solid_under_walls: bool,
         /// Hole-aware combing. Retract only when the inset route is blocked.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         combing: bool,
@@ -367,6 +370,7 @@ fn run() -> Result<(), String> {
             support_height_mult,
             infill_combine,
             shallow_skins,
+            solid_under_walls,
             combing,
             feature_speeds,
             seam,
@@ -447,6 +451,7 @@ fn run() -> Result<(), String> {
                 support_height_mult,
                 infill_combine,
                 shallow_skins,
+                solid_under_walls,
                 combing,
                 feature_speeds,
                 seam,
@@ -1717,6 +1722,7 @@ fn request_for(
         layer_actions: settings.layer_actions.clone(),
         infill_combine: settings.infill_combine,
         shallow_skins: settings.shallow_skins,
+        solid_under_walls: settings.solid_under_walls,
         combing: settings.combing,
         feature_speeds: settings.feature_speeds,
         seam: settings.seam,

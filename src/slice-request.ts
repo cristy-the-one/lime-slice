@@ -20,6 +20,11 @@ import { surfaceSliceField } from "./surface-pattern.ts";
 import { xySliceFields } from "./xy-comp.ts";
 
 /** Skin on shallow slopes. Off is omitted so the recipe key holds. */
+/** Solid skin under walls standing on interior. Off is omitted so the recipe key holds. */
+export function solidUnderWallsSliceField(on: boolean): { solidUnderWalls?: true } {
+  return on ? { solidUnderWalls: true } : {};
+}
+
 export function shallowSkinsSliceField(on: boolean): { shallowSkins?: true } {
   return on ? { shallowSkins: true } : {};
 }
@@ -122,6 +127,7 @@ export function sliceRequest(input: SliceRequestInput): Record<string, unknown> 
     ...supportSourceSliceField(settings.supports, settings.supportSource),
     infillCombine: settings.infillCombine,
     ...shallowSkinsSliceField(settings.shallowSkins),
+    ...solidUnderWallsSliceField(settings.solidUnderWalls),
     combing: settings.combing,
     featureSpeeds: settings.featureSpeeds,
     printer: input.printer,
