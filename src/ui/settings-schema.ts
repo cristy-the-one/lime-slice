@@ -17,6 +17,7 @@ import { readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin.ts";
 import { saveAutoSlice } from "../auto-slice-pref.ts";
 import { SUPPORT_MODES, supportModeOf, supportModeState, type SupportMode } from "../support-source.ts";
 import { interfaceLayersSent, SUPPORT_INTERFACE_LAYERS_MAX } from "../support-interface.ts";
+import { BRIDGE_LIMITS, type BridgeKey } from "../bridge-tune.ts";
 import { fanLayersValue, fanPercentValue, MAX_FAN_OFF_LAYERS } from "../fan.ts";
 
 export type Settings = typeof state;
@@ -106,7 +107,7 @@ function bound<K extends keyof PresetSettings>(key: K, spec: Omit<ControlSpec, "
 }
 
 /** A number that is Auto (`null`) until set. The box is empty and shows Auto greyed; an emptied box is Auto again. */
-function autoNumber<K extends "supportZGapMm" | "supportXyGapMm" | "supportInterfaceLayers">(
+function autoNumber<K extends "supportZGapMm" | "supportXyGapMm" | "supportInterfaceLayers" | BridgeKey>(
   key: K,
   spec: Omit<ControlSpec, "preset" | "get" | "set" | "placeholder"> & { auto: (s: Settings) => string; clamp?: (value: number) => number },
 ): ControlSpec {
@@ -493,38 +494,41 @@ export const CONTROLS: ControlSpec[] = [
   // Speed & travel
   bound("featureSpeeds", { id: "feeds", label: "Per-feature speeds", group: "speed", tier: "simple", kind: check, keywords: "speed feature" }),
   bound("overhangControl", { id: "overhang", label: "Overhang and bridges", group: "speed", tier: "simple", kind: check, structural: true, keywords: "slow bridge fan" }),
-  bound("bridgeFlowRatio", {
+  autoNumber("bridgeFlowRatio", {
     id: "bflow",
     label: "Bridge flow",
     group: "speed",
     tier: "advanced",
-    kind: num(0, 2, 0.05),
+    kind: num(BRIDGE_LIMITS.bridgeFlowRatio.min, BRIDGE_LIMITS.bridgeFlowRatio.max, 0.05),
     parent: "overhang",
     when: (s) => s.overhangControl,
-    tip: "0 keeps bridge flow at 1. A ratio under 1 stretches the bead so a long span sags less.",
-    keywords: "bridge flow sag",
+    tip: "A ratio of normal flow on bridges: 1 is normal, 0.9 is 10% less. Empty is Auto: 1. Bridges usually print well at 0.8–1.0; a little under 1 stretches the bead so a long span sags less. Takes 0.2–2.",
+    keywords: "bridge flow sag ratio auto",
+    auto: () => "Auto",
   }),
-  bound("bridgeSpeedMmS", {
+  autoNumber("bridgeSpeedMmS", {
     id: "bspeed",
     label: "Bridge speed mm/s",
     group: "speed",
     tier: "advanced",
-    kind: num(0, 200, 1),
+    kind: num(BRIDGE_LIMITS.bridgeSpeedMmS.min, BRIDGE_LIMITS.bridgeSpeedMmS.max, 1),
     parent: "overhang",
     when: (s) => s.overhangControl,
-    tip: "0 keeps the 18–36 mm/s bridge slowdown. A set speed replaces that clamp.",
-    keywords: "bridge speed",
+    tip: "Empty is Auto: bridges slow to 18–36 mm/s. A set speed, 5–200 mm/s, replaces that slowdown.",
+    keywords: "bridge speed auto",
+    auto: () => "Auto",
   }),
-  bound("bridgeFanPercent", {
+  autoNumber("bridgeFanPercent", {
     id: "bfan",
     label: "Bridge fan %",
     group: "speed",
     tier: "advanced",
-    kind: num(0, 100, 1),
+    kind: num(BRIDGE_LIMITS.bridgeFanPercent.min, BRIDGE_LIMITS.bridgeFanPercent.max, 1),
     parent: "overhang",
     when: (s) => s.overhangControl,
-    tip: "0 keeps Overhang fan % on bridges. A percent holds that fan on the bridge, even on a layer whose fan is off, then the next path restores the layer fan.",
-    keywords: "bridge fan cooling",
+    tip: "Empty is Auto: bridges take Overhang fan %. A set percent, 1–100, holds that fan on the bridge, even on a layer whose fan is off, then the next path restores the layer fan.",
+    keywords: "bridge fan cooling auto",
+    auto: () => "Auto",
   }),
   bound("arcFit", { id: "arcs", label: "Arc fit (G2/G3)", group: "speed", tier: "advanced", kind: check, rule: "arcFit", keywords: "curves gcode arcs g2 g3" }),
   bound("travelOpt", { id: "travelopt", label: "Travel and seam", group: "speed", tier: "advanced", kind: check, keywords: "order route" }),

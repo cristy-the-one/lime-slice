@@ -151,6 +151,9 @@
 .row.range input[type="range"] { grid-column: 1 / -1; width: 100%; margin: 0 0 var(--space-1); }
 .row-out { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text); font-size: var(--fs-2); }
 .row.is-match .row-label { color: var(--text); }
+/* An Auto box that refused a typed number: the range and what was not used, on its own line under the box. */
+.row-note { grid-column: 1 / -1; margin: -2px 0 var(--space-1); font-size: var(--fs-2); color: var(--danger); text-align: right; }
+.row input[aria-invalid="true"] { outline: 1px solid var(--danger); }
 .row.is-match .row-label::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: var(--space-2); border-radius: 50%; background: var(--accent); vertical-align: 1px; }
 .row.is-modified { background-image: none; }
 .row.is-modified .row-label::after { content: ""; display: inline-block; width: 5px; height: 5px; margin-left: var(--space-2); border-radius: 50%; background: var(--accent); vertical-align: 2px; }

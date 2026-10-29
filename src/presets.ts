@@ -1,5 +1,7 @@
 /** The slice settings a profile or a project stores, compared with the factory defaults. */
 
+import { BRIDGE_LIMITS, readBridgeValue, type BridgeKey } from "./bridge-tune.ts";
+
 export interface PresetSettings {
   blendKind: string;
   strategy: string;
@@ -65,12 +67,12 @@ export interface PresetSettings {
   arcFit: boolean;
   travelOpt: boolean;
   overhangControl: boolean;
-  /** `0` is omitted and the engine keeps bridge flow at 1. */
-  bridgeFlowRatio: number;
-  /** Millimetres per second. `0` is omitted and the engine keeps the 18–36 mm/s slowdown. */
-  bridgeSpeedMmS: number;
-  /** Percent. `0` is omitted and the engine keeps the layer fan. */
-  bridgeFanPercent: number;
+  /** Ratio of normal flow, 0.2–2. `null` is Auto: omitted, and the engine keeps 1. Files from before Auto stored `0` for it. */
+  bridgeFlowRatio: number | null;
+  /** Millimetres per second, 5–200. `null` is Auto: omitted, and the engine keeps the 18–36 mm/s slowdown. Older files stored `0`. */
+  bridgeSpeedMmS: number | null;
+  /** Percent, 1–100. `null` is Auto: omitted, and bridges take the overhang fan. Older files stored `0`. */
+  bridgeFanPercent: number | null;
   seam: string;
   /** Off until the user asks. The slice body does not carry this yet. */
   ironing: boolean;
@@ -150,9 +152,9 @@ export const DEFAULT_PRESET: PresetSettings = {
   arcFit: true,
   travelOpt: true,
   overhangControl: true,
-  bridgeFlowRatio: 0,
-  bridgeSpeedMmS: 0,
-  bridgeFanPercent: 0,
+  bridgeFlowRatio: null,
+  bridgeSpeedMmS: null,
+  bridgeFanPercent: null,
   seam: "blend",
   ironing: false,
   ironingFlow: 0.1,
@@ -185,6 +187,10 @@ export const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "i
 /** Settings that are Auto (`null`) until set. Before Auto existed they stored `0` for it, which `readPresetSettings` still reads that way. */
 const AUTO_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["supportZGapMm", "supportXyGapMm", "supportInterfaceLayers"]);
 
+function isBridgeKey(key: keyof PresetSettings): key is BridgeKey {
+  return Object.hasOwn(BRIDGE_LIMITS, key);
+}
+
 /** The preset a project or profile file stores, or null when a key is missing or has the wrong type. */
 export function readPresetSettings(value: unknown): PresetSettings | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -194,6 +200,12 @@ export function readPresetSettings(value: unknown): PresetSettings | null {
   for (const key of presetKeys()) {
     const got = row[key];
     if (key === "supportGapsAuto") continue;
+    if (isBridgeKey(key)) {
+      const kept = readBridgeValue(key, got);
+      if (kept === undefined) return null;
+      out[key] = kept;
+      continue;
+    }
     if (AUTO_KEYS.has(key)) {
       if (got === undefined || got === null || (legacy && got === 0)) continue;
       if (typeof got !== "number" || !Number.isFinite(got)) return null;
