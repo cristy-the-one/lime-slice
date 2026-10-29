@@ -207,6 +207,57 @@ fn strict_stacking_is_omitted_until_it_is_on() {
 }
 
 #[test]
+fn slow_fragile_supports_is_omitted_until_it_is_on() {
+    let plain: SliceRequest =
+        serde_json::from_value(json!({"filename": "a.stl", "dataB64": ""})).unwrap();
+    assert!(!plain.support_slow_fragile);
+    assert!(serde_json::to_value(&plain)
+        .unwrap()
+        .get("supportSlowFragile")
+        .is_none());
+
+    let on: SliceRequest = serde_json::from_value(json!({
+        "filename": "a.stl",
+        "dataB64": "",
+        "supportSlowFragile": true
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&on).unwrap()["supportSlowFragile"],
+        json!(true)
+    );
+    assert!(SliceSettings::from_request(&on).support_slow_fragile);
+    let mut classic = on.clone();
+    classic.classic = true;
+    assert!(!SliceSettings::from_request(&classic).support_slow_fragile);
+}
+
+#[test]
+fn slow_fragile_supports_slows_support_and_leaves_the_part() {
+    let speed = json!({"mode": "single", "strategy": "speed"});
+    let base = slice(&request(json!({"blend": speed}))).unwrap();
+    let slow = slice(&request(
+        json!({"blend": speed, "supportSlowFragile": true}),
+    ))
+    .unwrap();
+    let seconds = |reply: &serde_json::Value| reply["estimate"]["seconds"].as_f64().unwrap();
+    assert!(seconds(&slow) > seconds(&base));
+    let part = |reply: &serde_json::Value| -> f64 {
+        reply["estimate"]["byFeature"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| {
+                let kind = f["kind"].as_str().unwrap();
+                !kind.starts_with("support") && kind != "travel"
+            })
+            .map(|f| f["seconds"].as_f64().unwrap())
+            .sum()
+    };
+    assert!((part(&slow) - part(&base)).abs() < 1e-6);
+}
+
+#[test]
 fn pruning_a_tree_prints_less_support_and_reports_the_gap() {
     let base = slice(&request(json!({"includeSkeleton": true}))).unwrap();
     let sites = tree_sites(&base["skeleton"]);
