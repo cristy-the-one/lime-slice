@@ -88,6 +88,10 @@ pub struct SupportOpts {
     /// pairs, merges, and pushes exactly as it did without them.
     pub avoidance: bool,
     pub source: SupportSource,
+    /// On a belt, a tree interface row counts as held only where the row
+    /// under it lies, with no `CANTILEVER_MM` reach past it, so every row
+    /// of a steep sloped sheet bears tips. Off, the walk seeds as before.
+    pub strict_stacking: bool,
 }
 
 /// The belt in the slice frame. Printable material is `y <= y_max(z)`.
@@ -213,6 +217,7 @@ impl Default for SupportOpts {
             floor: None,
             avoidance: false,
             source: SupportSource::Auto,
+            strict_stacking: false,
         }
     }
 }
@@ -974,6 +979,9 @@ struct Walk<'a> {
     part_bb: Vec<Option<Bounds>>,
     /// The belt, when trunks land on it instead of walking to layer 0.
     floor: Option<FloorPlane>,
+    /// How far a belt interface row reaches past the row under it before
+    /// it needs tips of its own: see `seed_unbridged_interface`.
+    reach: f64,
     /// Forbidden centers. `None` unless the request asked, so a walk that
     /// does not ask never builds them and never reads them.
     avoidance: Option<avoidance::Avoidance>,
@@ -1022,6 +1030,11 @@ impl<'a> Walk<'a> {
             pitch: Pitch::of(opts),
             part_bb: contours.iter().map(|c| loop_bounds(c)).collect(),
             floor: opts.floor,
+            reach: if opts.strict_stacking {
+                0.0
+            } else {
+                CANTILEVER_MM
+            },
             avoidance,
             nodes: Vec::new(),
             next_id,
@@ -1103,6 +1116,7 @@ impl<'a> Walk<'a> {
                 self.tip_r,
                 &mut carriers,
                 &self.pitch,
+                self.reach,
                 &land(1),
             );
         } else {
@@ -2666,9 +2680,9 @@ fn seed_uncovered_interface(
 /// belt a face parallel to it is born one long thin row a layer, and a row
 /// whose one end a trunk touched printed the rest of its length in the air.
 /// What `lower`, the interface demanded on the layer below, holds as
-/// `holding` places it, and `CANTILEVER_MM` past that within this layer,
-/// needs no tip: it prints on that layer as the part's own layers do. A row
-/// a pitch beside it is not under it. A stretch under a square millimetre
+/// `holding` places it, and `reach` past that within this layer, needs no
+/// tip: it prints on that layer as the part's own layers do. A row a pitch
+/// beside it is not under it. A stretch under a square millimetre
 /// is too small to bear a trunk.
 #[allow(clippy::too_many_arguments)]
 fn seed_unbridged_interface(
@@ -2679,6 +2693,7 @@ fn seed_unbridged_interface(
     tip_r: f64,
     carriers: &mut Carriers,
     pitch: &Pitch,
+    reach: f64,
     land: &Land<'_>,
 ) {
     let Some((min, max)) = loop_bounds(region) else {
@@ -2691,7 +2706,7 @@ fn seed_unbridged_interface(
             .floor
             .map_or(0.0, |floor| floor.fall(land.bands[land.layer].height));
         let sheet = holding(offset_loops(lower, INTERFACE_FOOT_MM), fall);
-        held = along(region, &sheet, CANTILEVER_MM);
+        held = along(region, &sheet, reach);
     }
     let under: Vec<Loop> = nodes
         .iter()
@@ -3815,6 +3830,50 @@ mod tests {
             seeded.iter().any(|&(_, xy)| xy[0] > 11.0),
             "no seeded limb on the ear: {seeded:?}"
         );
+    }
+
+    #[test]
+    fn strict_stacking_seeds_a_row_that_steps_past_the_row_under_it() {
+        // A belt row 0.55 mm beside the row under it, as on a steep sloped
+        // sheet: the 1 mm reach holds it, the strict rule gives it tips.
+        let bands = layers(5);
+        let contours = vec![Vec::new(); bands.len()];
+        let bounds = vec![None; bands.len()];
+        let lower = vec![rect(0.0, 0.0, 40.0, 0.5)];
+        let row = vec![rect(0.0, 0.55, 40.0, 1.05)];
+        let opts = SupportOpts {
+            style: SupportStyle::Tree,
+            ..SupportOpts::default()
+        };
+        let pitch = Pitch::of(&opts);
+        let land = Land {
+            layer: 4,
+            freeze: 1,
+            lean: lean_of(&opts),
+            bands: &bands,
+            contours: &contours,
+            bounds: &bounds,
+            floor: None,
+        };
+        let seeded = |reach: f64| {
+            let mut nodes = Vec::new();
+            let mut next_id = 1;
+            let mut carriers = Carriers::new(&nodes, pitch.keep);
+            seed_unbridged_interface(
+                &row,
+                &lower,
+                &mut nodes,
+                &mut next_id,
+                0.4,
+                &mut carriers,
+                &pitch,
+                reach,
+                &land,
+            );
+            nodes.len()
+        };
+        assert_eq!(seeded(CANTILEVER_MM), 0);
+        assert!(seeded(0.0) > 0);
     }
 
     /// A 4 mm pad 30 mm up, over the flank of a stepped pyramid. The flank

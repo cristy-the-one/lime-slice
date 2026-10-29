@@ -54,6 +54,7 @@ export type ControlId =
   | "adhesion"
   | "elephantsFoot"
   | "supportTreeBrim"
+  | "supportStrictStacking"
   | "arcFit";
 
 /** Controls `disabled` can lock. Each is a check, which the panel shows off and unclickable. */
@@ -75,6 +76,8 @@ const OWNED: Record<ControlId, readonly string[]> = {
   // Layer 0 on a belt is the leading slice, not the face on the belt, and the engine grows no trunk brim there.
   elephantsFoot: ["elephantsFootCompensationMm"],
   supportTreeBrim: ["supportTreeBrimMm"],
+  // The rule decides when a belt interface row counts as held; a flat bed has no such rows.
+  supportStrictStacking: ["supportStrictStacking"],
   // Never hidden, only disabled; the request keeps the user's choice and the printer's `firmwareArcs` overrules it.
   arcFit: [],
 };
@@ -110,7 +113,7 @@ export function settingsRules(input: RuleInput): Rules {
   if (input.supportMode === "paint") hidden.add("supportAngle");
   if (belt || input.objects < 2) hidden.add("printOrder");
   if (belt) hidden.add("zHop").add("scarf");
-  if (!belt) hidden.add("beltFields");
+  if (!belt) hidden.add("beltFields").add("supportStrictStacking");
   if (belt) hidden.add("adhesion").add("elephantsFoot").add("supportTreeBrim");
   if (input.belt.maxLengthMm == null) hidden.add("beltMaxLength");
   if (input.belt.raftLayers <= 0) hidden.add("beltRaftLayers");
