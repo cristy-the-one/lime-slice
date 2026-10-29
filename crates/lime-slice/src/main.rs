@@ -111,6 +111,9 @@ enum Cmd {
         /// Combine sparse infill every few layers on speed and light efficiency blends.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         infill_combine: bool,
+        /// Find skin on slopes so shallow that each layer exposes a strip thinner than the walls.
+        #[arg(long, default_value_t = false)]
+        shallow_skins: bool,
         /// Hole-aware combing. Retract only when the inset route is blocked.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
         combing: bool,
@@ -359,6 +362,7 @@ fn run() -> Result<(), String> {
             support_strict_stacking,
             support_height_mult,
             infill_combine,
+            shallow_skins,
             combing,
             feature_speeds,
             seam,
@@ -437,6 +441,7 @@ fn run() -> Result<(), String> {
                 support_strict_stacking,
                 support_height_mult,
                 infill_combine,
+                shallow_skins,
                 combing,
                 feature_speeds,
                 seam,
@@ -1705,6 +1710,7 @@ fn request_for(
         bridge_fan_percent: settings.bridge_fan_percent,
         layer_actions: settings.layer_actions.clone(),
         infill_combine: settings.infill_combine,
+        shallow_skins: settings.shallow_skins,
         combing: settings.combing,
         feature_speeds: settings.feature_speeds,
         seam: settings.seam,

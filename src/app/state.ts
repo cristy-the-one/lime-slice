@@ -219,6 +219,7 @@ export const state = {
   supportGapsAuto: true as const,
   supportTreeBrimMm: 0,
   infillCombine: true,
+  shallowSkins: false,
   combing: true,
   featureSpeeds: true,
   pressureAdvance: 0,

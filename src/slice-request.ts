@@ -19,6 +19,11 @@ import { supportSourceSliceField } from "./support-source.ts";
 import { surfaceSliceField } from "./surface-pattern.ts";
 import { xySliceFields } from "./xy-comp.ts";
 
+/** Skin on shallow slopes. Off is omitted so the recipe key holds. */
+export function shallowSkinsSliceField(on: boolean): { shallowSkins?: true } {
+  return on ? { shallowSkins: true } : {};
+}
+
 function seamChoice(value: string): SeamChoice {
   if (value === "nearest" || value === "aligned" || value === "rear") return value;
   return "blend";
@@ -115,6 +120,7 @@ export function sliceRequest(input: SliceRequestInput): Record<string, unknown> 
     }),
     ...supportSourceSliceField(settings.supports, settings.supportSource),
     infillCombine: settings.infillCombine,
+    ...shallowSkinsSliceField(settings.shallowSkins),
     combing: settings.combing,
     featureSpeeds: settings.featureSpeeds,
     printer: input.printer,
