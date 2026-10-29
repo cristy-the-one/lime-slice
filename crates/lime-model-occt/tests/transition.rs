@@ -255,7 +255,7 @@ fn print_transitions() {
     let convex = probe(transition(json!([edge_at(outer[0], outer[1])]), json!({})));
     assert!(convex.contains("This edge is convex"), "{convex}");
     let cut = probe(transition(json!([corner]), json!({ "mode": "cut" })));
-    assert!(cut.contains("comes with lips in a later step"), "{cut}");
+    assert!(cut.contains("Cut is for a lip"), "{cut}");
     let flat_angle = probe(transition(json!([corner]), json!({ "angleDeg": 90.0 })));
     assert!(flat_angle.contains("at most 85°"), "{flat_angle}");
     let zero = probe(json!({ "kind": "transition", "edges": [corner], "build": [0.0, 0.0, 0.0] }));
@@ -343,12 +343,25 @@ fn print_transitions() {
         1,
         "one 45° face under the shelf"
     );
-    // Two edges at once: the shelf's other underside corner is at its tip, convex, and refused by its index.
-    let both = refused(json!({ "call": "probe", "key": "tf", "node": 1,
-        "op": { "kind": "transition", "edges": [under, { "index": 0, "mid": [10.0, 15.0, 20.0], "lengthMm": 20.0 }], "build": [0.0, 0.0, 1.0], "size": 6.0 } }));
+    // Two edges at once: the shelf's other underside edge is its tip, a lip. Its gusset runs at 45° from the tip down to
+    // the wall, 10 mm under the shelf, and lands on the wall and the corner's wedge: together they add the gusset's
+    // own 1,000 mm³.
+    let tip = json!({ "index": 0, "mid": [10.0, 15.0, 20.0], "lengthMm": 20.0 });
+    let both = ok(json!({ "call": "probe", "key": "tf", "node": 1,
+        "op": { "kind": "transition", "edges": [under, tip], "build": [0.0, 0.0, 1.0], "size": 6.0 } }));
+    near(
+        volume(&both) - volume(&shelf),
+        0.5 * 10.0 * 10.0 * 20.0,
+        0.05,
+    );
+    assert_eq!(both["transition"][0]["case"], json!("corner"));
+    assert_eq!(both["transition"][1]["case"], json!("lip"));
+    // The tip as a corner is refused: it is convex.
+    let as_corner = refused(json!({ "call": "probe", "key": "tf", "node": 1,
+        "op": { "kind": "transition", "edges": [tip], "build": [0.0, 0.0, 1.0], "case": "corner" } }));
     assert!(
-        both.starts_with("Edge ") && both.contains("convex"),
-        "{both}"
+        as_corner.contains("This edge is convex") && as_corner.contains("Lip case"),
+        "{as_corner}"
     );
     // A rib hanging from the shelf 3 mm out from the wall sits inside the 6 mm wedge: the wedge would meet it.
     ok(
@@ -364,4 +377,194 @@ fn print_transitions() {
     // A 2 mm wedge stops short of it.
     ok(json!({ "call": "probe", "key": "tf", "node": 3,
         "op": { "kind": "transition", "edges": [under], "build": [0.0, 0.0, 1.0], "size": 2.0 } }));
+
+    lips();
+}
+
+/// The step 1 lip coupon: a post at Y 20–28, with a lip hanging toward −Y whose underside rises 45° toward +Y, so it
+/// lies in one layer, `deep` mm deep along it. The lip's top is at Z `top`.
+fn lip_profile(deep: f64, top: f64) -> Vec<[f64; 2]> {
+    let r = deep / std::f64::consts::SQRT_2;
+    vec![
+        [20.0, 0.0],
+        [28.0, 0.0],
+        [28.0, top],
+        [20.0 - r, top],
+        [20.0 - r, 20.0 - r],
+        [20.0, 20.0],
+    ]
+}
+
+/// Lips (step 4): the gusset back into the part, landing within maxMm, and the ramp cut, with its wall floor.
+fn lips() {
+    // --- The belt coupon, 6 mm deep, its top at Z 26: the lip's first edge is at Y, Z = 15.757.
+    let bare = volume(&coupon("lip6", &lip_profile(6.0, 26.0)));
+    let r = 6.0 / std::f64::consts::SQRT_2;
+    let first = edge_at(20.0 - r, 20.0 - r);
+    let root = edge_at(20.0, 20.0);
+    // At 45° to the layers the gusset's face lies level, from the first edge to the post: 0.5 × r² × 20 mm, step 1's
+    // 180 mm³. It stands 3 mm down the build and lands r from the edge.
+    let gusset = ok(
+        json!({ "call": "probe", "key": "lip6", "node": 1, "preview": true,
+        "op": transition(json!([first]), json!({})) }),
+    );
+    near(volume(&gusset) - bare, 0.5 * r * r * WIDTH, 0.05);
+    let row = &gusset["transition"][0];
+    assert_eq!(row["case"], json!("lip"), "{row}");
+    assert_eq!(row["path"], json!("gusset"));
+    assert_eq!(row["material"], json!("add"));
+    near(row["angleToLayersDeg"].as_f64().unwrap(), 45.0, 1e-6);
+    near(row["farDeg"].as_f64().unwrap(), 0.0, 1e-6);
+    near(row["depthMm"].as_f64().unwrap(), 6.0, 1e-3);
+    near(row["heightMm"].as_f64().unwrap(), 3.0, 1e-3);
+    near(row["landingMm"].as_f64().unwrap(), r, 1e-3);
+    near(
+        row["volumeMm3"].as_f64().unwrap(),
+        0.5 * r * r * WIDTH,
+        0.05,
+    );
+    let soup = row["soup"].as_array().expect("the gusset's triangles");
+    assert!(soup.len() >= 72 && soup.len() % 9 == 0, "{}", soup.len());
+    assert_eq!(
+        facing(&gusset["preview"], [0.0, 0.0, -1.0]),
+        2,
+        "the post's foot and the level gusset"
+    );
+    // At 55° it rises 10° toward −Y: step 1's 212 mm³.
+    let steep = ok(json!({ "call": "probe", "key": "lip6", "node": 1,
+        "op": transition(json!([first]), json!({ "angleDeg": 55.0 })) }));
+    let drop = r * 10f64.to_radians().tan();
+    near(volume(&steep) - bare, 0.5 * r * (r + drop) * WIDTH, 0.05);
+    near(
+        steep["transition"][0]["angleToLayersDeg"].as_f64().unwrap(),
+        55.0,
+        1e-6,
+    );
+    // Picked at its root, the concave edge is read as a corner by default (built or refused as step 2 does); the Lip
+    // case finds the first edge.
+    let at_root = call(json!({ "call": "probe", "key": "lip6", "node": 1,
+        "op": transition(json!([root]), json!({})) }));
+    assert!(
+        at_root.get("error").is_some() || at_root["transition"][0]["case"] == json!("corner"),
+        "{at_root}"
+    );
+    let lip_root = ok(json!({ "call": "probe", "key": "lip6", "node": 1,
+        "op": transition(json!([root]), json!({ "case": "lip" })) }));
+    near(volume(&lip_root) - bare, 0.5 * r * r * WIDTH, 0.05);
+    assert_eq!(lip_root["transition"][0]["case"], json!("lip"));
+    assert_ne!(
+        lip_root["transition"][0]["firstEdge"],
+        lip_root["transition"][0]["edge"]
+    );
+
+    // --- Cut: the underside becomes a ramp from the root, level at 45°, to the front face 4.243 mm up, which leaves
+    // 6 mm there.
+    let ramp = ok(json!({ "call": "probe", "key": "lip6", "node": 1,
+        "op": transition(json!([first]), json!({ "mode": "cut" })) }));
+    near(bare - volume(&ramp), 0.5 * r * r * WIDTH, 0.05);
+    let cut_row = &ramp["transition"][0];
+    assert_eq!(cut_row["path"], json!("ramp"));
+    assert_eq!(cut_row["material"], json!("cut"));
+    near(cut_row["leftMm"].as_f64().unwrap(), 6.0, 1e-3);
+    near(cut_row["angleToLayersDeg"].as_f64().unwrap(), 45.0, 1e-6);
+    let floor = refused(json!({ "call": "probe", "key": "lip6", "node": 1,
+        "op": transition(json!([first]), json!({ "mode": "cut", "floorMm": 7.0 })) }));
+    assert!(floor.contains("under the 7 mm wall floor"), "{floor}");
+    // A thin lip, 0.5 mm over the ramp: under the 0.8 mm floor.
+    coupon("lipthin", &lip_profile(6.0, 20.5));
+    let thin = refused(json!({ "call": "probe", "key": "lipthin", "node": 1,
+        "op": transition(json!([first]), json!({ "mode": "cut" })) }));
+    assert!(
+        thin.contains("would leave 0.50 mm") && thin.contains("0.8 mm wall floor"),
+        "{thin}"
+    );
+    // At 55° the ramp climbs past the thin lip's top: it would cut through.
+    let through = refused(json!({ "call": "probe", "key": "lipthin", "node": 1,
+        "op": transition(json!([first]), json!({ "mode": "cut", "angleDeg": 55.0 })) }));
+    assert!(through.contains("would cut through this lip"), "{through}");
+    // The same thin lip takes a gusset.
+    ok(
+        json!({ "call": "probe", "key": "lipthin", "node": 1, "op": transition(json!([first]), json!({})) }),
+    );
+
+    // --- A lip then a fillet: the gusset applied, the lip's first edge, now between its front and the gusset, rounded,
+    // and the gusset rebuilt from its stored op.
+    let applied = ok(
+        json!({ "call": "apply", "key": "lip6", "parent": 1, "node": 2,
+        "op": transition(json!([first]), json!({})) }),
+    );
+    assert_eq!(applied["op"]["kind"], json!("transition"));
+    let rounded = ok(
+        json!({ "call": "apply", "key": "lip6", "parent": 2, "node": 3,
+        "op": { "kind": "fillet", "edges": [first], "size": 0.5 } }),
+    );
+    assert!(volume(&rounded) < volume(&applied));
+    near(
+        volume(&ok(json!({ "call": "goto", "key": "lip6", "node": 2 }))),
+        volume(&applied),
+        1e-6,
+    );
+
+    // --- Refusals.
+    // The post's top back edge is convex but not the lowest of its faces.
+    let ridge = refused(json!({ "call": "probe", "key": "lip6", "node": 1,
+        "op": transition(json!([edge_at(28.0, 26.0)]), json!({})) }));
+    assert!(ridge.contains("This edge is convex"), "{ridge}");
+
+    // --- Several depths on a flat bed: a wall at Y 0–5, Z 0–30, and a shelf at Z 20–25 reaching `deep` mm out. The
+    // gusset runs at 45° from the shelf's tip to the wall, `deep` mm down: 0.5 × deep² × 20 mm.
+    for (key, deep) in [("lf4", 4.0), ("lf10", 10.0), ("lf18", 18.0)] {
+        let shelf = shelf(key, deep);
+        let made = ok(json!({ "call": "probe", "key": key, "node": 1,
+            "op": { "kind": "transition", "edges": [{ "index": 0, "mid": [10.0, 5.0 + deep, 20.0], "lengthMm": 20.0 }], "build": [0.0, 0.0, 1.0] } }));
+        near(volume(&made) - shelf, 0.5 * deep * deep * 20.0, 0.05);
+        near(
+            made["transition"][0]["heightMm"].as_f64().unwrap(),
+            deep,
+            1e-3,
+        );
+    }
+    // 25 mm out, the gusset would land 25 mm down, past the wall's foot at Z 0 and past the 20 mm limit: nothing
+    // under it.
+    shelf("lf25", 25.0);
+    let deep_tip = json!({ "index": 0, "mid": [10.0, 30.0, 20.0], "lengthMm": 20.0 });
+    let nothing = refused(json!({ "call": "probe", "key": "lf25", "node": 1,
+        "op": { "kind": "transition", "edges": [deep_tip], "build": [0.0, 0.0, 1.0] } }));
+    assert!(
+        nothing.contains("nothing of the part under this lip within 20 mm")
+            && nothing.contains("Supports or a split"),
+        "{nothing}"
+    );
+    // A larger maxMm still finds nothing: the wall ends at the bed, 20 mm down.
+    let still = refused(json!({ "call": "probe", "key": "lf25", "node": 1,
+        "op": { "kind": "transition", "edges": [deep_tip], "build": [0.0, 0.0, 1.0], "maxMm": 40 } }));
+    assert!(still.contains("within 40 mm"), "{still}");
+    // Over a floor at Z 0–5 the same shelf's gusset meets the floor 15 mm down, 10 mm from the wall, and fills down
+    // to it from there: 112.5 + 150 mm² of section.
+    let floored = ok(
+        json!({ "call": "apply", "key": "lf25", "parent": 1, "node": 2,
+        "op": { "kind": "boolean", "op": "fuse", "primitive": "box", "origin": [0.0, 0.0, 0.0], "size": [20.0, 30.0, 5.0], "merge": true } }),
+    );
+    let landed = ok(json!({ "call": "probe", "key": "lf25", "node": 2,
+        "op": { "kind": "transition", "edges": [deep_tip], "build": [0.0, 0.0, 1.0] } }));
+    near(
+        volume(&landed) - volume(&floored),
+        (112.5 + 150.0) * 20.0,
+        0.05,
+    );
+    near(
+        landed["transition"][0]["heightMm"].as_f64().unwrap(),
+        15.0,
+        1e-3,
+    );
+}
+
+/// A wall at Y 0–5, Z 0–30, and a shelf on it at Z 20–25 reaching `deep` mm out along +Y; 20 mm along X. Its volume.
+fn shelf(key: &str, deep: f64) -> f64 {
+    ok(json!({ "call": "open", "key": key,
+        "primitive": { "primitive": "box", "origin": [0.0, 0.0, 0.0], "size": [20.0, 5.0, 30.0] } }));
+    volume(&ok(
+        json!({ "call": "apply", "key": key, "parent": 0, "node": 1,
+        "op": { "kind": "boolean", "op": "fuse", "primitive": "box", "origin": [0.0, 5.0, 20.0], "size": [20.0, deep, 5.0], "merge": true } }),
+    ))
 }
