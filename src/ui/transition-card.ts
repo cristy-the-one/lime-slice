@@ -8,7 +8,7 @@
 import type { ModelGhost } from "../model-view";
 import { formatMm } from "../model-plane";
 import type { TransitionOp } from "../model-tree";
-import { CUT_LIP_ONLY, PICK_EDGE, STRAIGHT_ONLY, TRANSITION_MAX_DEG, TRANSITION_SKIN_CARD, cardAimed, cardCase, cardFromTransition, degreeSpan, foundWords, newTransitionCard, sameTransitionCard, transitionAngleLimit, transitionCardRefusal, transitionFromCard, transitionSkinWarns, transitionSource, transitionStaleBy, type TransitionCard, type TransitionCase, type TransitionPose, type TransitionRow } from "../model-transition";
+import { CUT_LIP_ONLY, FIND_LABEL, PICK_EDGE, STRAIGHT_ONLY, TRANSITION_MAX_DEG, TRANSITION_SKIN_CARD, caseName, cardAimed, cardCase, cardFromTransition, degreeSpan, findingSummary, fixOp, fixText, fixableEdges, foundWords, newTransitionCard, sameTransitionCard, transitionAngleLimit, transitionCardRefusal, transitionFix, transitionFromCard, transitionSkinWarns, transitionSource, transitionStaleBy, type Finding, type TransitionCard, type TransitionCase, type TransitionPose, type TransitionRow } from "../model-transition";
 import { closeModelCard, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { pushToast } from "./toasts";
 
@@ -35,7 +35,18 @@ export interface TransitionHost {
   /** The card closed without Apply: an edit goes back to the step shown before it. */
   cancelled(): void;
   readout(text: string): void;
+  /** --- Auto-find (step 5). Ask the kernel for the edges that start in the air, with `card`'s numbers; the answer comes to `setTransitionFinding`. */
+  find(card: TransitionCard): void;
+  /** Apply `op`, one history step, from the found list. `card` is reopened with its numbers and found again after it builds. */
+  fix(op: TransitionOp, card: TransitionCard): void;
+  /** Outline `edges` on the solid, `lit` bold; none clears them. */
+  flag(edges: readonly number[], lit: number | null): void;
+  /** Pick `edge` alone, as a click on it would. */
+  pick(edge: number): void;
 }
+
+/** The found list: the kernel still reading, its rows with the build direction they were found for, or its refusal. */
+export type TransitionFindView = { phase: "finding" } | { phase: "done"; finding: Finding; build: readonly number[] } | { phase: "failed"; error: string } | null;
 
 /** The kernel's answer for the card's op, as the card shows it. */
 export type TransitionCheck = { phase: "checking" } | { phase: "done"; ok: true; rows: TransitionRow[] } | { phase: "done"; ok: false; error: string } | null;
@@ -48,6 +59,9 @@ let waiting = false;
 let found: TransitionCase[] | null = null;
 /** While a step is edited: the card as the step filled it, so an untouched card offers no Update. */
 let edit: { opened: TransitionCard } | null = null;
+/** --- Auto-find: the list, and the row under the pointer or the keyboard. */
+let listing: TransitionFindView = null;
+let hovered: number | null = null;
 
 const root = () => document.querySelector<HTMLElement>("#modelTransition");
 const $ = <T extends HTMLElement>(selector: string) => root()?.querySelector<T>(selector) ?? null;
@@ -60,6 +74,15 @@ export function mountTransitionCard(next: TransitionHost) {
     if (ev.target instanceof Element && ev.target.closest("#modelMenuTransition")) openTransitionCard();
   });
   body.innerHTML = `
+    <section class="tc-find" aria-label="Edges that start in the air">
+      <button class="btn tc-find-run" type="button" id="modelTransFind" data-tip="List the edges of this solid whose first rows would stand on nothing in this pose, each with a fix. Nothing is sliced.">${FIND_LABEL}</button>
+      <p class="model-note" id="modelTransFindStatus" role="status" hidden></p>
+      <p class="model-note is-warn" id="modelTransFindStale" hidden>The angle, the size or the pose changed since. Find again to check the fixes.</p>
+      <ul class="tc-list" id="modelTransList" aria-label="Edges that start in the air" hidden></ul>
+      <div class="tc-find-foot" id="modelTransFindFoot" hidden>
+        <button class="btn primary" type="button" id="modelTransFixAll" data-tip="Every fix that builds, as one history step. Edit that step later to drop an edge.">Fix all</button>
+      </div>
+    </section>
     <p class="model-note tc-edges" id="modelTransEdges" role="status"></p>
     <p class="model-note tc-later" id="modelTransStraight">${STRAIGHT_ONLY}</p>
     <div class="tc-row"><span class="scrub-label" id="modelTransCaseLabel">Case</span>
@@ -102,6 +125,13 @@ export function mountTransitionCard(next: TransitionHost) {
   body.addEventListener("click", onClick);
   body.addEventListener("input", onInput);
   body.addEventListener("change", onInput);
+  const list = body.querySelector<HTMLElement>("#modelTransList");
+  list?.addEventListener("pointerover", (ev) => hoverRow(rowEdge(ev.target)));
+  list?.addEventListener("pointerleave", () => hoverRow(null));
+  list?.addEventListener("focusin", (ev) => hoverRow(rowEdge(ev.target)));
+  list?.addEventListener("focusout", (ev) => {
+    if (!(ev.relatedTarget instanceof Node && list.contains(ev.relatedTarget))) hoverRow(null);
+  });
 }
 
 /** The Features menu's Print transition…: the card opens on the solid on screen, with the edges already picked. */
@@ -123,10 +153,12 @@ export function openTransitionEdit(op: TransitionOp, edges: readonly number[], h
   begin(filled, head);
 }
 
-function begin(next: TransitionCard, head?: string) {
+function begin(next: TransitionCard, head?: string, quiet = false) {
   card = next;
   check = null;
   found = null;
+  listing = null;
+  hovered = null;
   root()?.toggleAttribute("hidden", false);
   openModelCard({ id: CARD_ID, title: TRANSITION_TITLE, ghost, handles: () => [], drag: () => undefined, closed });
   const title = document.querySelector<HTMLElement>("#modelEditHead");
@@ -141,8 +173,9 @@ function begin(next: TransitionCard, head?: string) {
   // Edges are what this card picks: the filter goes to Edge, as a fillet's does.
   if (document.querySelector("#modelPickEdge")?.getAttribute("aria-pressed") !== "true") document.querySelector<HTMLButtonElement>("#modelPickEdge")?.click();
   writeFields();
+  paintFound();
   changed(0);
-  host?.readout(edit ? "Change the numbers, then Update." : card.edges.length > 0 ? "Check the transition, then Apply." : PICK_EDGE);
+  if (!quiet) host?.readout(edit ? "Change the numbers, then Update." : card.edges.length > 0 ? "Check the transition, then Apply." : PICK_EDGE);
 }
 
 export function transitionCardOpen(): boolean {
@@ -164,6 +197,7 @@ export function transitionUntouched(): boolean {
 export function setTransitionWaiting(next: boolean) {
   waiting = next;
   paintFoot();
+  paintFound();
 }
 
 /** The kernel's answer for the card's op. With no case chosen, its rows say what each edge was found to be. */
@@ -184,6 +218,7 @@ export function transitionPicked() {
   card = { ...card, edges, case: null };
   found = null;
   changed(0);
+  paintFound();
 }
 
 export function closeTransitionCard() {
@@ -208,8 +243,147 @@ function closed() {
   card = null;
   check = null;
   found = null;
+  listing = null;
+  hovered = null;
   host?.check(null, 0);
+  host?.flag([], null);
   if (wasEdit) host?.cancelled();
+}
+
+/**
+ * --- Auto-find. After a Fix built, the card opens again on the new solid with the numbers it had, and finds again, so
+ * the list shows what is left. The edges are numbered anew, so none is picked.
+ */
+export function reopenTransitionFind(numbers: TransitionCard) {
+  if (!host || !host.solidOpen()) return;
+  edit = null;
+  // The readout keeps what the Fix said: the step and the new volume.
+  begin({ ...numbers, edges: host.pickedEdges() }, undefined, true);
+  runFind();
+}
+
+/** The kernel's answer to Find, for the card's list. */
+export function setTransitionFinding(next: TransitionFindView) {
+  if (!transitionCardOpen()) return;
+  listing = next;
+  if (hovered != null && !(listing?.phase === "done" && listing.finding.rows.some((row) => row.edge === hovered))) hovered = null;
+  paintFound();
+  refreshModelCard();
+}
+
+/** Whether the list was found with other numbers, or for another pose, than the card has now. */
+function findStale(): boolean {
+  if (!card || listing?.phase !== "done") return false;
+  const now = transitionFix(card);
+  const then = listing.finding.fix;
+  return now.angleDeg !== then.angleDeg || now.size !== then.size || JSON.stringify(listing.build) !== JSON.stringify(card.build);
+}
+
+function runFind() {
+  if (!card || !host) return;
+  const refusal = transitionCardRefusal({ ...card, edges: [0] }, host.supportAngle());
+  if (refusal) {
+    listing = { phase: "failed", error: refusal };
+    paintFound();
+    return;
+  }
+  listing = { phase: "finding" };
+  hovered = null;
+  paintFound();
+  host.find(structuredClone(card));
+}
+
+function rowEdge(target: EventTarget | null): number | null {
+  const row = target instanceof Element ? target.closest<HTMLElement>("[data-found]") : null;
+  return row ? Number(row.dataset.found) : null;
+}
+
+function hoverRow(edge: number | null) {
+  if (edge === hovered) return;
+  hovered = edge;
+  for (const row of root()?.querySelectorAll<HTMLElement>("[data-found]") ?? []) row.classList.toggle("is-lit", Number(row.dataset.found) === edge);
+  flagFound();
+  refreshModelCard();
+}
+
+function flagFound() {
+  const rows = listing?.phase === "done" ? listing.finding.rows : [];
+  host?.flag(rows.map((row) => row.edge), hovered);
+}
+
+/** The found list: a status line, one row per edge with its case, length, fix and Fix, then Fix all. */
+function paintFound() {
+  const status = $<HTMLElement>("#modelTransFindStatus");
+  const foot = $<HTMLElement>("#modelTransFindFoot");
+  const list = $<HTMLElement>("#modelTransList");
+  const run = $<HTMLButtonElement>("#modelTransFind");
+  const all = $<HTMLButtonElement>("#modelTransFixAll");
+  const stale = $<HTMLElement>("#modelTransFindStale");
+  if (!status || !foot || !list || !run || !all || !stale) return;
+  // An edit works on the step's own edges: the list, which adds steps, is for a new transition.
+  $<HTMLElement>(".tc-find")?.toggleAttribute("hidden", !!edit);
+  run.disabled = waiting || listing?.phase === "finding";
+  run.textContent = listing?.phase === "done" ? "Find again" : FIND_LABEL;
+  const text = listing?.phase === "finding" ? "Reading the edges of this solid…" : listing?.phase === "failed" ? listing.error : listing?.phase === "done" ? findingSummary(listing.finding) : "";
+  status.textContent = text;
+  status.hidden = text === "";
+  status.classList.toggle("is-bad", listing?.phase === "failed");
+  const rows = listing?.phase === "done" ? listing.finding.rows : [];
+  const old = findStale();
+  const fixable = listing?.phase === "done" ? fixableEdges(listing.finding).length : 0;
+  stale.hidden = !old;
+  foot.hidden = rows.length === 0;
+  all.textContent = fixable > 0 ? `Fix all (${fixable})` : "Fix all";
+  all.disabled = waiting || old || fixable === 0;
+  list.hidden = rows.length === 0;
+  const fix = listing?.phase === "done" ? listing.finding.fix : null;
+  list.replaceChildren(...rows.map((row) => {
+    const length = `${formatMm(Math.round(row.lengthMm * 10) / 10)} mm`;
+    const item = document.createElement("li");
+    item.className = "tc-found-row";
+    item.dataset.found = String(row.edge);
+    item.dataset.case = row.case;
+    item.toggleAttribute("data-refused", !!row.refused);
+    item.classList.toggle("is-lit", row.edge === hovered);
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "tc-found-pick";
+    pick.dataset.pickFound = String(row.edge);
+    pick.dataset.tip = "Pick this edge, to check its wedge with the card's numbers";
+    const kind = document.createElement("span");
+    kind.className = "tc-case";
+    kind.textContent = caseName(row.case);
+    const size = document.createElement("span");
+    size.className = "tc-length";
+    size.textContent = length;
+    const what = document.createElement("span");
+    what.className = "tc-fix-text";
+    what.textContent = fix ? fixText(row, fix) : "";
+    pick.append(kind, size, what);
+    item.append(pick);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn tc-fix";
+    button.dataset.fixFound = String(row.edge);
+    button.textContent = "Fix";
+    button.disabled = waiting || old || !!row.refused;
+    button.setAttribute("aria-label", `Fix this ${row.case}, ${length}`);
+    item.append(button);
+    if (row.refused) {
+      const why = document.createElement("p");
+      why.className = "tc-refused";
+      why.textContent = row.refused;
+      why.dataset.tip = row.refused;
+      item.append(why);
+    }
+    return item;
+  }));
+  flagFound();
+}
+
+function fixFound(edges: readonly number[]) {
+  if (!card || !host || waiting || listing?.phase !== "done" || findStale() || edges.length === 0) return;
+  host.fix(fixOp(card, listing.finding, edges), structuredClone(card));
 }
 
 /** The card changed: its fields, the kernel's check after `wait` ms, and the foot. */
@@ -370,6 +544,12 @@ function paintFoot() {
 
 /** What the transition adds, green, or cuts, red; nothing while the kernel refuses or has not answered. */
 function ghost(): ModelGhost | null {
+  // --- Auto-find: the row under the pointer shows its own wedge, when its fix builds.
+  const lit = hovered != null && listing?.phase === "done" ? listing.finding.rows.find((row) => row.edge === hovered) : undefined;
+  if (host && lit?.wedge && !lit.refused) {
+    const wedge = host.wedges([lit.wedge]);
+    if (wedge.length >= 9) return { kind: "soup", positions: Float32Array.from(wedge), tone: "add" };
+  }
   if (!host || check?.phase !== "done" || !check.ok) return null;
   const positions = host.wedges(check.rows);
   const cut = check.rows.some((row) => row.material === "cut");
@@ -383,6 +563,23 @@ function ghost(): ModelGhost | null {
 function onClick(ev: Event) {
   const target = ev.target instanceof Element ? ev.target.closest<HTMLElement>("button") : null;
   if (!target || !card || !host) return;
+  // --- Auto-find.
+  if (target.id === "modelTransFind") {
+    runFind();
+    return;
+  }
+  if (target.id === "modelTransFixAll") {
+    if (listing?.phase === "done") fixFound(fixableEdges(listing.finding));
+    return;
+  }
+  if (target.dataset.fixFound) {
+    fixFound([Number(target.dataset.fixFound)]);
+    return;
+  }
+  if (target.dataset.pickFound) {
+    host.pick(Number(target.dataset.pickFound));
+    return;
+  }
   if (target.id === "modelTransCorner" || target.id === "modelTransLip") {
     const chosen: TransitionCase = target.id === "modelTransLip" ? "lip" : "corner";
     // Choosing what every edge was found to be is no choice: the card goes back to the found cases.
@@ -408,11 +605,13 @@ function onClick(ev: Event) {
     card = { ...card, size: target.id === "modelTransSizeFace" ? "face" : card.mm };
     paintSize();
     changed(0);
+    paintFound();
     return;
   }
   if (target.id === "modelTransAim") {
     card = cardAimed(card, host.pose());
     changed(0);
+    paintFound();
   }
 }
 
@@ -425,9 +624,11 @@ function onInput(ev: Event) {
     if (input.value.trim() === "" || !Number.isFinite(value) || value === card.angleDeg) return;
     card = { ...card, angleDeg: value };
     changed(wait);
+    paintFound();
   } else if (input.id === "modelTransMm") {
     if (!(value > 0) || (value === card.mm && card.size === value)) return;
     card = { ...card, mm: value, size: value };
     changed(wait);
+    paintFound();
   }
 }

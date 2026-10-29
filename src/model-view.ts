@@ -237,6 +237,8 @@ export interface ModelView {
   onSectionDrag(cb: (mm: number, phase: "start" | "move" | "end") => void): void;
   /** The history row under the pointer, or null. Its faces tint. */
   setStepHighlight(id: number | null): void;
+  /** --- Print transitions, auto-find: the edges found, outlined amber, and `lit`, the row under the pointer, drawn bold. */
+  setFlaggedEdges(edges: readonly number[], lit: number | null): void;
   /** P1. Pressing a face drags it. Empty space still orbits. Off, faces click as before. */
   setFaceDrag(on: boolean): void;
   /** P1. Hover, press, drag, and release on a face. */
@@ -437,6 +439,10 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   let checkBox: Bounds | null = null;
   let selectedEdges: LineSegments2 | null = null;
   let hoverEdges: LineSegments2 | null = null;
+  /** --- Print transitions, auto-find: the edges found, and the one lit. */
+  let flaggedEdges: LineSegments2 | null = null;
+  let litEdge: LineSegments2 | null = null;
+  let flagged: { edges: number[]; lit: number | null } = { edges: [], lit: null };
   /** --- A10. The section's clip plane, in world space, while a section is on: the picks and their outlines keep to the side shown. */
   let sectionClip: THREE.Plane[] = [];
   const fatLines: LineMaterial[] = [];
@@ -720,7 +726,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
       body.remove(object);
       object.geometry.dispose();
     }
-    for (const object of [faceOutline, selectedEdges, hoverEdges]) {
+    for (const object of [faceOutline, selectedEdges, hoverEdges, flaggedEdges, litEdge]) {
       if (!object) continue;
       body.remove(object);
       disposeObject(object);
@@ -730,6 +736,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     faceOutline = null;
     selectedEdges = null;
     hoverEdges = null;
+    flaggedEdges = null;
+    litEdge = null;
     fatLines.length = 0;
   }
 
@@ -895,6 +903,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     const hoverEdge = mode === "edge" && hover?.kind === "edge" && !wanted.has(hover.index) ? hover.index : null;
     const lit = edgeLit != null && !wanted.has(edgeLit) ? edgeLit : hoverEdge;
     hoverEdges = replaceLine(hoverEdges, lit == null ? [] : edgePositions(new Set([lit])), 2, 0.8);
+    const amber = hexToThree(colors.amber);
+    flaggedEdges = replaceLine(flaggedEdges, edgePositions(new Set(flagged.edges.filter((edge) => edge !== flagged.lit && !wanted.has(edge)))), 2.5, 0.9, amber);
+    litEdge = replaceLine(litEdge, flagged.lit == null ? [] : edgePositions(new Set([flagged.lit])), 6, 1, amber);
   }
 
   /** A solid outline broken into short dashes, in millimetres along each segment, so it reads as removed. */
@@ -1547,7 +1558,7 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function clipHighlights(planes: THREE.Plane[]) {
     const count = sectionClip.length;
     sectionClip = planes;
-    for (const line of [faceOutline, selectedEdges, hoverEdges]) {
+    for (const line of [faceOutline, selectedEdges, hoverEdges, flaggedEdges, litEdge]) {
       if (!line) continue;
       const material = line.material as LineMaterial;
       material.clippingPlanes = planes;
@@ -2969,6 +2980,16 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     },
     onSectionDrag(cb) {
       sectionDragCb = cb;
+    },
+    setFlaggedEdges(edges, lit) {
+      if (lit === flagged.lit && edges.length === flagged.edges.length && edges.every((edge, i) => edge === flagged.edges[i])) return;
+      flagged = { edges: [...edges], lit };
+      if (edges.length > 0) canvas.dataset.flagged = edges.join(",");
+      else delete canvas.dataset.flagged;
+      if (lit != null) canvas.dataset.litEdge = String(lit);
+      else delete canvas.dataset.litEdge;
+      paintLines();
+      kick();
     },
     setStepHighlight(id) {
       if (highlightStep === id) return;

@@ -61,7 +61,7 @@ import { resolved } from "../src/strategy.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
-import { readTransitionRows, transitionAngleLimit, transitionFloorMm, transitionStaleBy, transitionBuild, transitionSentence, transitionSkinWarns, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM, TRANSITION_SKIN_NOTE } from "../src/model-transition.ts";
+import { findingSummary, fixableEdges, readFinding, readTransitionRows, transitionAngleLimit, transitionFindRequest, transitionFloorMm, transitionStaleBy, transitionBuild, transitionSentence, transitionSkinWarns, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM, TRANSITION_SKIN_NOTE, type TransitionFix } from "../src/model-transition.ts";
 import { beltLayerNormal, cloneStudy, namesFaces, placeRegion, readRegion, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type StudyRegion, type Vec3 as SimVec } from "../src/sim/study.ts";
 import { LABEL } from "../src/sim/label.ts";
 import { readBeadSection, withBeads } from "../src/sim/cards.ts";
@@ -6457,6 +6457,7 @@ export class Session {
   /** model_probe with plan: true. The planner alone: the solid is read, nothing is cut. */
   private async planTool(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
     const spec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    if (spec.kind === "transition") return this.planTransition(obj, spec);
     if (spec.kind !== "partition") return { ok: false, reason: PLAN_KIND };
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
@@ -6467,6 +6468,54 @@ export class Session {
     const frame = bedFrame(obj.solid.positions, obj.orient, obj.scale, typedPoseOf(obj));
     const targetName = typed.target ? targetPrinter(this.library, typed.target.printer)?.name : undefined;
     return planPartition(typed, this.partitionContext(obj), frame, { name: printer.name, belt: printer.kind === "belt", ...(targetName ? { targetName } : {}) }, { positions: obj.solid.positions, up: plateUp(obj.orient), pose: typedPoseOf(obj) });
+  }
+
+  /**
+   * --- Print transitions, auto-find (docs/plan-belt-transitions.md, step 5). model_probe {op:{kind:"transition"},
+   * plan:true}: the kernel lists the edges that start in the air on the current step, from this pose on the plate's
+   * printer, and probes each row's fix as the op it would be. Nothing is applied. The ready op holds the rows whose fix
+   * builds, as one step.
+   */
+  private async planTransition(obj: PlateObject, spec: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const extra = Object.keys(spec).find((key) => !["kind", "angleDeg", "size", "maxMm", "mode", "label"].includes(key));
+    if (extra) return { ok: false, reason: `plan:true finds the edges itself, from this pose: it takes angleDeg, size and maxMm, not ${extra}.` };
+    if (spec.mode !== undefined && spec.mode !== "auto") return { ok: false, reason: "plan:true proposes mode auto, which lets each edge's case decide." };
+    const limit = transitionAngleLimit(this.settings.supportAngle);
+    const angleDeg = spec.angleDeg === undefined ? limit : spec.angleDeg;
+    if (typeof angleDeg !== "number" || !Number.isFinite(angleDeg) || angleDeg > TRANSITION_MAX_DEG) return { ok: false, reason: `angleDeg is the new face's angle to the layers, at most ${TRANSITION_MAX_DEG}°.` };
+    if (angleDeg < limit - 1e-9) return { ok: false, reason: `angleDeg must be at least ${formatMm(limit)}°, the support limit of these settings, so the new face holds its own rows.` };
+    const size = spec.size === undefined ? TRANSITION_SIZE_MM : spec.size;
+    if (size !== "face" && (typeof size !== "number" || !(size > 0))) return { ok: false, reason: "size is millimetres along the flatter face, or \"face\" to its end." };
+    const maxMm = spec.maxMm;
+    if (maxMm !== undefined && (typeof maxMm !== "number" || !(maxMm > 0))) return { ok: false, reason: "maxMm must be above 0 mm." };
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
+    const printer = this.printer();
+    const fix: TransitionFix = { mode: "auto", angleDeg, size: size as number | "face", ...(maxMm !== undefined ? { maxMm: maxMm as number } : {}) };
+    const build = transitionBuild({ orient: obj.orient, belt: printer.kind === "belt" ? printer.belt : null });
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(transitionFindRequest(tree.key, tree.current, build, obj.orient, this.settings.supportAngle, fix), "transition");
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return lost;
+      throw err;
+    }
+    const read = readFinding(reply, obj.orient, fix, (text) => plainModelError(text, "transition"));
+    if (typeof read === "string") return { ok: false, reason: plainModelError(read, "transition") };
+    const pose = typedPoseOf(obj);
+    const typed = { kind: "transition", mode: "auto", angleDeg, size, ...(maxMm !== undefined ? { maxMm } : {}) };
+    const rows = read.rows.map((row) => ({
+      edges: [row.edge],
+      case: row.case,
+      lengthMm: Math.round(row.lengthMm * 100) / 100,
+      at: this.typedPoint(obj, applyPose(pose, row.mid)).map((value) => Math.round(value * 1000) / 1000 + 0),
+      fix: { ...typed, edges: [row.edge] },
+      ...(row.refused ? { refused: row.refused } : row.wedge ? { volumeMm3: row.wedge.volumeMm3 } : {}),
+    }));
+    const fixable = fixableEdges(read);
+    const next = fixable.length > 0 ? ` The op fixes the ${fixable.length === 1 ? "row that builds" : `${fixable.length} rows that build`} as one step: model_probe it, then model_apply it, or apply one row's fix alone.` : "";
+    return { ok: true, reason: `${findingSummary(read)}${next}`, rows, ...(read.curvedSkipped > 0 ? { curvedSkipped: read.curvedSkipped, curvedEdges: read.curvedEdges } : {}), ...(fixable.length > 0 ? { op: { ...typed, edges: fixable } } : {}) };
   }
 
   /**

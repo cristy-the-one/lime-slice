@@ -342,12 +342,15 @@ const REPEATABLE = new Set(["boolean", "extrude", "revolve", "pocket", "boss", "
 export const OP_SCHEMA = op;
 
 const opWords = new Set<string>();
-/** Adds every enum value under `node` to OP_WORDS. */
+/** Adds every enum value, and every one-word constant but a kind's name, under `node` to OP_WORDS. */
 function addOpWords(node: unknown): void {
   if (!node || typeof node !== "object") return;
   if (Array.isArray(node)) return node.forEach(addOpWords);
   for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
     if (key === "enum" && Array.isArray(child)) child.forEach((word) => typeof word === "string" && opWords.add(word));
+    // A field that takes one word as a choice, such as a transition's size:"face", holds text too. A kind's name is not a field's text.
+    else if (key === "kind" && child && typeof child === "object" && "const" in child) continue;
+    else if (key === "const" && typeof child === "string") opWords.add(child);
     else addOpWords(child);
   }
 }
@@ -726,7 +729,7 @@ const partitionOp = {
 const transitionOp = {
   type: "object",
   additionalProperties: false,
-  required: ["kind", "edges"],
+  required: ["kind"],
   properties: {
     kind: { const: "transition" },
     edges: edgeList,
@@ -1404,7 +1407,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_probe",
     description: "Check one plain edit; the solid does not change. Ok adds metrics: volume, bbox, and shells before and after, and warns on separate pieces. Then model_apply the same op.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step, plan: { type: "boolean", description: "partition: propose cuts for the printer; nothing is cut." } } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step, plan: { type: "boolean", description: "partition: propose cuts for the printer; transition: edges that start in the air. Nothing changes." } } },
   },
   {
     name: "surface_at",

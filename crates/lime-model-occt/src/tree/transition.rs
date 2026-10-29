@@ -309,6 +309,12 @@ fn corner(
             "Both faces here grow flatter than {angle}° to the layers (the steeper at {near_deg:.1}°), so a wedge would itself start in the air. That is a lip: the Lip case puts a gusset under the flatter face, back into the part."
         ))));
     }
+    // A steeper face at the angle asked would be the new face itself: the wedge would run along it with no end.
+    if near_deg < angle + 0.05 {
+        return Err(refuse(which(format!(
+            "The steeper face here grows at {near_deg:.1}° to the layers, the {angle}° asked, so a wedge at that angle would run along it. A steeper angle makes one."
+        ))));
+    }
     // The new face's normal turns from the far face's toward the near face's, about the edge, until it makes the angle
     // asked with the layers. At the far end it is too flat, at the near end steep enough, so the turn is bisected.
     let theta = dot(n_far, n_near).clamp(-1.0, 1.0).acos();
