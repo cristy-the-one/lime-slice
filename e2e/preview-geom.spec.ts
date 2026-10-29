@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { buildWirePreview, INNER_HALF_SCALE, MARGIN_SHADE, ODD_LAYER_BIT, scenePoint } from "../src/preview-geom";
+import { beadCorners, buildWirePreview, INNER_HALF_SCALE, layerUp, MARGIN_SHADE, ODD_LAYER_BIT, scenePoint } from "../src/preview-geom";
 import { encodePaths, type PreviewPath } from "../src/preview-wire";
 
 const f32 = (values: number[]) => Array.from(new Float32Array(values));
@@ -82,4 +82,33 @@ test("layers follow in index order, with each layer's first point and nozzle z",
     0, ODD_LAYER_BIT + 400, 200, 200, 0, 0, 0, 0,
   ]);
   expect(Array.from(travel.xyz)).toEqual(f32([2, 1, -1, -2, 1, -1]));
+});
+
+test("a flat bead hangs straight down and spreads across its run", () => {
+  expect(layerUp(null)).toEqual([0, 1, 0]);
+  // A run along scene +X at height 2: sides at ∓Z, bottom 0.2 lower.
+  const corners = beadCorners([0, 2, 0], [4, 2, 0], 0.25, 0.2, layerUp(null)).map((c) => c.map((v) => Number(v.toFixed(6)) + 0));
+  expect(corners).toEqual([
+    [0, 2, -0.25], [0, 1.8, -0.25], [0, 2, 0.25], [0, 1.8, 0.25],
+    [4, 2, -0.25], [4, 1.8, -0.25], [4, 2, 0.25], [4, 1.8, 0.25],
+  ]);
+});
+
+test("a belt bead lies in its tilted layer and its bottom is the next layer's top", () => {
+  const up = layerUp(45);
+  expect(up[0]).toBe(0);
+  expect(up[1]).toBeCloseTo(Math.SQRT1_2, 9);
+  expect(up[2]).toBeCloseTo(Math.SQRT1_2, 9);
+  const h = 0.2;
+  const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  // A run up the slope of layer 1, and one across X on layer 0, h lower along the normal.
+  const slope = [0, Math.SQRT1_2, -Math.SQRT1_2];
+  const upper = beadCorners([0, 5, 0], [0, 5 + 2 * slope[1], 2 * slope[2]], 0.225, h, up);
+  const lower = beadCorners([-1, 5 - h * up[1], -h * up[2]], [1, 5 - h * up[1], -h * up[2]], 0.225, h, up);
+  // A run up the slope still spreads across X and keeps its top in the layer, not in the scene's horizontal.
+  for (const c of upper) expect([0, h].some((d) => Math.abs(dot(c, up) - (dot([0, 5, 0], up) - d)) < 1e-9)).toBe(true);
+  expect(Math.abs(upper[0][0] - upper[2][0])).toBeCloseTo(0.45, 9);
+  const bottomOfUpper = Math.min(...upper.map((c) => dot(c, up)));
+  const topOfLower = Math.max(...lower.map((c) => dot(c, up)));
+  expect(bottomOfUpper - topOfLower).toBeCloseTo(0, 9);
 });
