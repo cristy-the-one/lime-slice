@@ -220,6 +220,7 @@ export const state = {
   supportTreeBrimMm: 0,
   infillCombine: true,
   shallowSkins: false,
+  solidUnderWalls: false,
   combing: true,
   featureSpeeds: true,
   pressureAdvance: 0,

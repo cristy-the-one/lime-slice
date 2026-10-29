@@ -246,6 +246,12 @@ pub struct SliceRequest {
     /// Left out when off, so a request that does not ask keeps its cache key.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shallow_skins: bool,
+    /// Solid skin under walls that stand on the interior of the layer below,
+    /// as a lip or comb born over a slot does. More solid infill and a longer
+    /// print. Left out when off, so a request that does not ask keeps its
+    /// cache key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub solid_under_walls: bool,
     /// Route travels inside the part and retract only when the route is blocked.
     #[serde(default = "default_true")]
     pub combing: bool,
@@ -451,6 +457,8 @@ pub struct SliceSettings {
     pub infill_combine: bool,
     /// Skin on shallow slopes from the strips of the whole shell depth.
     pub shallow_skins: bool,
+    /// Skin under walls that stand on the interior of the layer below.
+    pub solid_under_walls: bool,
     pub combing: bool,
     pub feature_speeds: bool,
     pub seam: SeamPlacement,
@@ -575,6 +583,7 @@ impl Default for SliceSettings {
             support_height_mult: 1.0,
             infill_combine: true,
             shallow_skins: false,
+            solid_under_walls: false,
             combing: true,
             feature_speeds: true,
             seam: SeamPlacement::Blend,
@@ -698,6 +707,7 @@ impl SliceSettings {
             },
             infill_combine: req.infill_combine && !req.classic,
             shallow_skins: req.shallow_skins && !req.classic,
+            solid_under_walls: req.solid_under_walls && !req.classic,
             combing: req.combing && !req.classic,
             feature_speeds: req.feature_speeds && !req.classic,
             seam: req.seam,
@@ -886,6 +896,11 @@ impl SliceSettings {
             (false, false) => "infill combine off",
             (true, true) => "infill combine on; skin on shallow slopes",
             (false, true) => "infill combine off; skin on shallow slopes",
+        };
+        let combine = if self.solid_under_walls {
+            format!("{combine}; solid under walls on infill")
+        } else {
+            combine.to_string()
         };
         let scarf = format!(
             "scarf {} {:.1} mm / {} steps",
@@ -4691,7 +4706,13 @@ impl Contours {
         let roof_started = Instant::now();
         let wall_stack = settings.line_width * fewest_walls as f64;
         let roofs = roof_distances(&bands, &contours, wall_stack);
-        let skins = skin_regions(&bands, &contours, wall_stack, settings.shallow_skins);
+        let skins = skin_regions(
+            &bands,
+            &contours,
+            wall_stack,
+            settings.shallow_skins,
+            settings.solid_under_walls,
+        );
         Self {
             bands,
             contours,
@@ -6081,11 +6102,17 @@ fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) 
 /// layer steps past half the walls exposes such a strip on every layer: alone
 /// each is closed by the walls, but the strips of the shell depth together
 /// make a skin, and without it the slab between the walls prints hollow.
+///
+/// With `under_walls`, a layer whose walls stand, a whole wall stack wide, on
+/// the interior of the layer below gets top skin under them, `UNDER_WALLS_MM`
+/// deep: see `under_walls`. Without it those walls print on whatever sparse
+/// infill is there, which is nothing where no roof asked for lightning.
 fn skin_regions(
     bands: &[LayerBand],
     contours: &[Vec<Loop>],
     wall_stack: f64,
     shallow: bool,
+    under_walls: bool,
 ) -> [Vec<Arc<Skin>>; 2] {
     let n = bands.len();
     let exposed = |current: &[Loop], other: &[Loop]| {
@@ -6109,6 +6136,17 @@ fn skin_regions(
             Some(above) => exposed(&contours[i], above),
         })
         .collect();
+    let ceilings: Vec<Vec<Loop>> = if under_walls {
+        (0..n)
+            .into_par_iter()
+            .map(|i| match contours.get(i + 1) {
+                Some(above) => self::under_walls(&contours[i], above, wall_stack),
+                None => Vec::new(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let joined = |skin: Vec<Loop>| {
         if shallow {
             cored(skin, wall_stack)
@@ -6136,6 +6174,13 @@ fn skin_regions(
                     }
                     over.extend(roofs[r].iter().cloned());
                 }
+                for (r, ceiling) in ceilings.iter().enumerate().skip(i) {
+                    let dist = bands[i + 1..=r].iter().fold(0.0, |d, b| d + b.height);
+                    if dist > UNDER_WALLS_MM + 1e-6 {
+                        break;
+                    }
+                    over.extend(ceiling.iter().cloned());
+                }
                 Arc::new(Skin {
                     bottom: joined(clipped_union(&contours[i], under)),
                     top: joined(clipped_union(&contours[i], over)),
@@ -6148,6 +6193,38 @@ fn skin_regions(
 
 /// Core of an exposed island, past half the walls, that makes it skin, mm².
 const SKIN_CORE_MM2: f64 = 0.05;
+
+/// How deep the skin under walls standing on interior reaches, mm.
+const UNDER_WALLS_MM: f64 = 1.2;
+
+/// Where the walls of `above` stand on the interior of `current`, past the
+/// walls of `current`, grown back to the width of those walls. Only a stretch
+/// a whole wall stack wide counts: a slope steps its walls in by less than
+/// that a layer and stands on the walls below, while a lip or a comb born
+/// over a slot lands its walls on nothing.
+fn under_walls(current: &[Loop], above: &[Loop], wall_stack: f64) -> Vec<Loop> {
+    if current.is_empty() || above.is_empty() {
+        return Vec::new();
+    }
+    let core = offset_loops(current, -wall_stack);
+    if core.is_empty() {
+        return Vec::new();
+    }
+    let band = boolean_diff(above, &offset_loops(above, -wall_stack));
+    let landed = boolean_intersect(&core, &band);
+    let wide: Vec<Loop> = island_loops(&landed)
+        .into_iter()
+        .filter(|island| {
+            let inner = offset_loops(island, -wall_stack * 0.48);
+            inner.iter().map(|l| signed_area(l)).sum::<f64>() >= SKIN_CORE_MM2
+        })
+        .flatten()
+        .collect();
+    if wide.is_empty() {
+        return wide;
+    }
+    offset_loops(&wide, wall_stack * 0.5 + 0.05)
+}
 
 /// Bottom and top shell depths, mm: speed's, and a strategy's over 0.6 toughness.
 const SPEED_SHELLS: (f64, f64) = (0.6, 0.6);
@@ -8528,22 +8605,63 @@ mod tests {
     fn shallow_skins_find_the_skin_of_a_slab_that_steps_past_the_walls() {
         let (bands, contours) = sliding_slab(0.52);
         let wall_stack = 0.9;
-        let off = &skin_regions(&bands, &contours, wall_stack, false)[0][12];
+        let off = &skin_regions(&bands, &contours, wall_stack, false, false)[0][12];
         assert!(
             area(&off.top) < 1e-6 && area(&off.bottom) < 1e-6,
             "without it the slab is all interior"
         );
-        let on = &skin_regions(&bands, &contours, wall_stack, true)[0][12];
+        let on = &skin_regions(&bands, &contours, wall_stack, true, false)[0][12];
         // Three strips of 0.52 mm or more over each 0.6 mm shell depth.
         let least = 100.0 * 3.0 * 0.52 - 1.0;
         assert!(area(&on.top) >= least, "top {}", area(&on.top));
         assert!(area(&on.bottom) >= least, "bottom {}", area(&on.bottom));
     }
 
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop {
+        vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    }
+
+    #[test]
+    fn walls_landing_on_interior_get_skin_under_them() {
+        // A block 7.6 mm deep, then three teeth standing on its middle, as the
+        // housing's lip stands on its comb.
+        let block = vec![rect(0.0, 0.0, 80.0, 7.6)];
+        let teeth = vec![
+            rect(0.0, 1.0, 80.0, 3.0),
+            rect(0.0, 3.4, 80.0, 4.4),
+            rect(0.0, 4.8, 80.0, 6.6),
+        ];
+        let under = under_walls(&block, &teeth, 0.9);
+        assert!(area(&under) > 80.0 * 3.0, "under {}", area(&under));
+        let n = 12;
+        let bands: Vec<LayerBand> = (0..n)
+            .map(|i| LayerBand {
+                index: i,
+                z: 0.2 * (i + 1) as f64,
+                height: 0.2,
+            })
+            .collect();
+        let contours: Vec<Vec<Loop>> = (0..n)
+            .map(|i| if i < 8 { block.clone() } else { teeth.clone() })
+            .collect();
+        let off = &skin_regions(&bands, &contours, 0.9, false, false)[0][4];
+        let on = &skin_regions(&bands, &contours, 0.9, false, true)[0][4];
+        assert!(area(&off.top) < 1e-6, "today the block is all interior");
+        let skin = area(&on.top);
+        assert!(skin > 80.0 * 3.0, "1.2 mm under the teeth is skin: {skin}");
+    }
+
+    #[test]
+    fn walls_stepping_in_on_a_slope_stand_on_the_walls_below() {
+        let lower = vec![rect(0.0, 0.0, 80.0, 20.0)];
+        let upper = vec![rect(0.3, 0.3, 79.7, 19.7)];
+        assert!(area(&under_walls(&lower, &upper, 0.9)) < 1e-6);
+    }
+
     #[test]
     fn shallow_skins_leave_a_steep_slope_to_the_walls() {
         let (bands, contours) = sliding_slab(0.1);
-        let on = &skin_regions(&bands, &contours, 0.9, true)[0][12];
+        let on = &skin_regions(&bands, &contours, 0.9, true, false)[0][12];
         assert!(area(&on.top) < 1e-6 && area(&on.bottom) < 1e-6);
     }
 }

@@ -696,6 +696,7 @@ const later: Partial<PresetSettings> = {
   supportAvoidance: true,
   supportStrictStacking: true,
   shallowSkins: true,
+  solidUnderWalls: true,
   supportSource: "paint",
   minLayerTimeS: 6,
   minLayerSpeedMmS: 10,

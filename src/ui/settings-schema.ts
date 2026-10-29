@@ -498,6 +498,15 @@ export const CONTROLS: ControlSpec[] = [
     tip: "Fills a roof or floor that is nearly flat against the layers with solid skin. Without it, such a slab prints as two thin walls with nothing between them, as on a downward ramp on a belt. More solid infill and a longer print. Off prints today's skin.",
     keywords: "solid skin slope ramp hollow roof top bottom belt",
   }),
+  bound("solidUnderWalls", {
+    id: "underwalls",
+    label: "Solid under walls on infill",
+    group: "infill",
+    tier: "advanced",
+    kind: check,
+    tip: "Prints solid skin under a wall that starts over the infill of the layer before, as on a lip or a comb that begins in the air. Without it, that wall lands on sparse infill, or on nothing. More solid infill and a longer print. Off prints today's skin.",
+    keywords: "solid skin lip comb wall hollow infill overhang belt",
+  }),
   bound("gyroid3d", { id: "gyroid3d", label: "3D gyroid", group: "infill", tier: "expert", kind: select([["blend", "Blend default"], ["off", "2D sine"], ["on", "Force 3D"]]), structural: true, keywords: "infill lattice" }),
 
   // Speed & travel
