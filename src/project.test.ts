@@ -695,6 +695,7 @@ const later: Partial<PresetSettings> = {
   retractSpeed: 40,
   supportAvoidance: true,
   supportStrictStacking: true,
+  shallowSkins: true,
   supportSource: "paint",
   minLayerTimeS: 6,
   minLayerSpeedMmS: 10,
@@ -748,6 +749,15 @@ eq(
   [0, null, null],
 );
 check("a project with a gap that is not a number is damaged", !parseProject(beforeAuto({ ...unmarked, supportGapsAuto: true, supportZGapMm: "0.3" })).ok);
+
+// Bridge flow, speed and fan: a file from before Auto stores 0 for it, and one with a flow under 0.2 printed at 0.2.
+const bridgesOf = (opened: ReturnType<typeof parseProject>) =>
+  opened.ok ? [opened.project.settings.bridgeFlowRatio, opened.project.settings.bridgeSpeedMmS, opened.project.settings.bridgeFanPercent] : "refused";
+eq("a new project's bridge tune is Auto", bridgesOf(parseProject(serializeProject(project))), [null, null, null]);
+eq("a project saved when 0 meant Auto opens with Auto bridges", bridgesOf(parseProject(beforeAuto({ ...unmarked, bridgeFlowRatio: 0, bridgeSpeedMmS: 0, bridgeFanPercent: 0 }))), [null, null, null]);
+eq("a bridge flow of 0.1 opens as the 0.2 it printed", bridgesOf(parseProject(beforeAuto({ ...unmarked, bridgeFlowRatio: 0.1, bridgeSpeedMmS: 20, bridgeFanPercent: 0 }))), [0.2, 20, null]);
+eq("set bridge values survive a save and reopen", bridgesOf(parseProject(serializeProject({ ...project, settings: { ...project.settings, bridgeFlowRatio: 0.9, bridgeSpeedMmS: null, bridgeFanPercent: 60 } }))), [0.9, null, 60]);
+check("a project with a bridge flow that is not a number is damaged", !parseProject(beforeAuto({ ...unmarked, bridgeFlowRatio: "0.9" })).ok);
 
 if (failed) {
   console.error(`${failed} failed`);

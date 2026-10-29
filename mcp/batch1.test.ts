@@ -67,6 +67,17 @@ const zeroTo = Object.fromEntries((zeros.changed as { key: string; to: unknown }
 check("a 0 is a real 0, and 0 interface layers read back as 1", zeros.ok === true && zeroTo.supportZGapMm === 0 && zeroTo.supportXyGapMm === 0 && zeroTo.supportInterfaceLayers === 1, JSON.stringify(zeros));
 const backToAuto = await call("settings_set", { values: { supportZGapMm: null, supportXyGapMm: null, supportInterfaceLayers: null } });
 check("null puts a support gap back to Auto", backToAuto.ok === true && (backToAuto.changed as { to: unknown }[]).every((row) => row.to === null), JSON.stringify(backToAuto));
+const bridgeRows = (await call("settings_schema", { query: "bridge", all: true })).rows as { key: string; value: unknown; default: unknown; min?: number; help?: string }[];
+const flowRow = bridgeRows.find((row) => row.key === "bridgeFlowRatio");
+check("bridge flow starts as null, which is Auto, from 0.2", flowRow?.value === null && flowRow?.default === null && flowRow?.min === 0.2 && /Auto: 1/.test(flowRow?.help ?? ""), JSON.stringify(flowRow));
+const lowFlow = await call("settings_set", { values: { bridgeFlowRatio: 0.1 } });
+check("a bridge flow under 0.2 is refused, not clamped", lowFlow.ok === false && /0\.2–2/.test(String(lowFlow.reason ?? JSON.stringify(lowFlow))), JSON.stringify(lowFlow));
+const zeroFan = await call("settings_set", { values: { bridgeFanPercent: 0 } });
+check("a bridge fan of 0 is refused: null is Auto", zeroFan.ok === false, JSON.stringify(zeroFan));
+const bridgeSet = await call("settings_set", { values: { bridgeFlowRatio: 0.9, bridgeSpeedMmS: 20, bridgeFanPercent: 80 } });
+check("bridge values in range are set", bridgeSet.ok === true, JSON.stringify(bridgeSet));
+const bridgeAuto = await call("settings_set", { values: { bridgeFlowRatio: null, bridgeSpeedMmS: null, bridgeFanPercent: null } });
+check("null puts the bridge tune back to Auto", bridgeAuto.ok === true && (bridgeAuto.changed as { to: unknown }[]).every((row) => row.to === null), JSON.stringify(bridgeAuto));
 const notAuto = await call("settings_set", { values: { layerHeight: null } });
 check("null is refused for a setting that has no Auto", notAuto.ok === false, JSON.stringify(notAuto));
 const defaults = await call("settings_schema", {});

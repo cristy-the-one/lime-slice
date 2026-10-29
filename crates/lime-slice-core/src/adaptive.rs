@@ -1,3 +1,6 @@
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
 use crate::mesh::Mesh;
 
 /// One printed layer. `z` is the top of the layer; `height` is its thickness.
@@ -69,6 +72,7 @@ pub fn plan_plate_bands(
         Vec::new()
     };
 
+    let mut sweep = Sweep::new(&facets);
     let mut bands = Vec::new();
     let mut floor = 0.0;
     let mut index = 0usize;
@@ -78,7 +82,7 @@ pub fn plan_plate_bands(
         } else if index == 0 {
             opts.nominal.clamp(min_h, max_h)
         } else {
-            recommend(&facets, floor, max_h, min_h, max_h)
+            sweep.recommend(floor, max_h, min_h, max_h)
         };
         if floor + height > top + 1e-6 {
             let remain = top - floor;
@@ -97,9 +101,6 @@ pub fn plan_plate_bands(
             height,
         });
         index += 1;
-        if index > 20_000 {
-            return Err("layer count exceeded 20000".into());
-        }
     }
     if bands.is_empty() {
         return Err("mesh is flatter than one layer".into());
@@ -162,6 +163,53 @@ fn height_for_slope(nz_abs: f64, min_h: f64, max_h: f64) -> f64 {
     (QUALITY_MM / tan_phi).clamp(min_h, max_h)
 }
 
+/// `recommend` for a floor that only rises: each facet enters once its bottom
+/// is inside the window and leaves once its top is below the floor, so a plan
+/// costs the facets once instead of once per layer.
+struct Sweep<'a> {
+    facets: Vec<&'a Facet>,
+    next: usize,
+    open: BinaryHeap<(Reverse<u64>, usize)>,
+}
+
+impl<'a> Sweep<'a> {
+    fn new(facets: &'a [Facet]) -> Self {
+        let mut facets: Vec<&Facet> = facets
+            .iter()
+            .filter(|f| f.z0.is_finite() && f.z1.is_finite())
+            .collect();
+        facets.sort_by(|a, b| a.z0.total_cmp(&b.z0));
+        Self {
+            facets,
+            next: 0,
+            open: BinaryHeap::new(),
+        }
+    }
+
+    fn recommend(&mut self, z: f64, window: f64, min_h: f64, max_h: f64) -> f64 {
+        let z1 = z + window;
+        while let Some(facet) = self.facets.get(self.next) {
+            if facet.z0 > z1 + 1e-6 {
+                break;
+            }
+            self.open.push((Reverse(facet.height.to_bits()), self.next));
+            self.next += 1;
+        }
+        while let Some(&(_, i)) = self.open.peek() {
+            if self.facets[i].z1 >= z - 1e-6 {
+                break;
+            }
+            self.open.pop();
+        }
+        let height = match self.open.peek() {
+            Some(&(_, i)) => max_h.min(self.facets[i].height),
+            None => max_h,
+        };
+        height.clamp(min_h, max_h)
+    }
+}
+
+#[cfg(test)]
 fn recommend(facets: &[Facet], z: f64, window: f64, min_h: f64, max_h: f64) -> f64 {
     let z1 = z + window;
     let mut height = max_h;
@@ -171,4 +219,102 @@ fn recommend(facets: &[Facet], z: f64, window: f64, min_h: f64, max_h: f64) -> f
         }
     }
     height.clamp(min_h, max_h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn column(height: f64) -> Mesh {
+        let (x, y, z) = (10.0, 10.0, height);
+        let p = |i: usize| -> [f64; 3] {
+            [
+                if i & 1 == 0 { 0.0 } else { x },
+                if i & 2 == 0 { 0.0 } else { y },
+                if i & 4 == 0 { 0.0 } else { z },
+            ]
+        };
+        let quads = [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ];
+        let mut triangles = Vec::new();
+        for q in quads {
+            triangles.push([p(q[0]), p(q[1]), p(q[2])]);
+            triangles.push([p(q[0]), p(q[2]), p(q[3])]);
+        }
+        Mesh { triangles }
+    }
+
+    #[test]
+    fn a_tall_part_plans_past_twenty_thousand_layers() {
+        let opts = HeightOpts {
+            nominal: 0.05,
+            adaptive: false,
+            min_h: 0.05,
+            max_h: 0.05,
+        };
+        let bands = plan_bands(&column(5000.0), &opts).unwrap();
+        assert_eq!(bands.len(), 100_000);
+        assert!((bands.last().unwrap().z - 5000.0).abs() < 1e-6);
+        assert!(bands.iter().enumerate().all(|(i, b)| b.index == i));
+    }
+
+    #[test]
+    fn adaptive_heights_on_a_tall_part_plan_past_twenty_thousand_layers() {
+        let opts = HeightOpts {
+            nominal: 0.04,
+            adaptive: true,
+            min_h: 0.04,
+            max_h: 0.05,
+        };
+        let bands = plan_bands(&column(2000.0), &opts).unwrap();
+        assert!(bands.len() > 39_000, "{} layers", bands.len());
+        assert!((bands.last().unwrap().z - 2000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_sweep_picks_what_every_facet_would() {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let triangles: Vec<[[f64; 3]; 3]> = (0..400)
+            .map(|_| {
+                let base = [next() * 50.0, next() * 50.0, next() * 200.0];
+                let mut tri = [base; 3];
+                for v in tri.iter_mut().skip(1) {
+                    *v = [
+                        base[0] + next() * 4.0 - 2.0,
+                        base[1] + next() * 4.0 - 2.0,
+                        base[2] + next() * next() * 3.0,
+                    ];
+                }
+                tri
+            })
+            .collect();
+        let mesh = Mesh { triangles };
+        let (min_h, max_h) = (0.04, 0.3);
+        let facets = facets_of(&mesh, min_h, max_h);
+        let mut sweep = Sweep::new(&facets);
+        let mut z = 0.0;
+        let mut picked = Vec::new();
+        while z < 205.0 {
+            let want = recommend(&facets, z, max_h, min_h, max_h);
+            assert_eq!(sweep.recommend(z, max_h, min_h, max_h), want, "at z {z}");
+            picked.push(want.to_bits());
+            z += min_h + next() * (max_h - min_h);
+        }
+        assert!(picked.len() > 1000);
+        picked.sort_unstable();
+        picked.dedup();
+        assert!(picked.len() > 20, "{} distinct heights", picked.len());
+    }
 }

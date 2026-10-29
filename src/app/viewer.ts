@@ -402,7 +402,7 @@ function sparkBars(layers: PreviewLayer[], width: number, height: number, dpr: n
   bars.width = width;
   bars.height = height;
   const g = bars.getContext("2d")!;
-  const max = Math.max(...seconds, 0.001);
+  const max = seconds.reduce((m, s) => Math.max(m, s), 0.001);
   const gap = seconds.length > 80 ? 0 : 1 * dpr;
   const barW = width / Math.max(1, seconds.length);
   const heights = seconds.map((value, i) => {
