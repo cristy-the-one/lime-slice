@@ -218,6 +218,48 @@ fn an_arm_born_in_one_nozzle_plane_stands_on_nothing() {
     assert_eq!(part.longest_span_mm, lip.longest_span_mm, "{part:?}");
 }
 
+/// `stl` placed on the plate at its own X and Y plus `shift`, standing on Z 0,
+/// as the app poses a part.
+fn placed(stl: &str, shift: [f64; 2], extra: Value) -> PartHold {
+    let mesh = lime_slice_core::load_slice_mesh_tol("part.stl", stl.as_bytes(), true, 0.0).unwrap();
+    let (min, max) = mesh.bounds().unwrap();
+    let pivot = [
+        (min[0] + max[0]) * 0.5,
+        (min[1] + max[1]) * 0.5,
+        (min[2] + max[2]) * 0.5,
+    ];
+    let mut extra = extra;
+    extra["pose"] = json!({
+        "rotation": [1, 0, 0, 0, 1, 0, 0, 0, 1],
+        "pivot": pivot,
+        "translation": [pivot[0] + shift[0], pivot[1] + shift[1], pivot[2] - min[2]],
+    });
+    hold(stl, extra)
+}
+
+#[test]
+fn a_patch_on_the_belt_is_reported_where_the_plate_has_it() {
+    // The arm's underside runs from the wall's top at Y 4, Z 12 to Y 14, Z 22
+    // in the part, and the plate moves the part by `shift`. Laying a lone
+    // part flat settles its place along the belt away, and the audit used to
+    // report the settled place: Y off by the plate's Y.
+    for shift in [[0.0, 0.0], [31.0, 57.0], [-12.0, -40.0]] {
+        let part = placed(&wall_and_arm(45.0), shift, json!({ "belt": ir3() }));
+        let lip = &part.largest[0];
+        for p in std::iter::once(&lip.at).chain(&lip.first) {
+            let (x, y, z) = (p[0] - shift[0], p[1] - shift[1], p[2]);
+            assert!((-0.5..=20.5).contains(&x), "{shift:?}: {p:?} in {lip:?}");
+            assert!((3.5..=14.5).contains(&y), "{shift:?}: {p:?} in {lip:?}");
+            // On the underside, up to a bead and a layer inside it.
+            let over = z - (12.0 + (y - 4.0));
+            assert!(
+                (-0.3..=1.2).contains(&over),
+                "{shift:?}: {p:?} {over:.2} mm over the underside"
+            );
+        }
+    }
+}
+
 #[test]
 fn an_underside_that_is_a_wall_to_the_slicer_holds_its_rows() {
     let born = hold(&wall_and_arm(45.0), json!({ "belt": ir3() }));

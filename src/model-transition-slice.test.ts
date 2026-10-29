@@ -10,7 +10,6 @@ import {
   SLICE_CHECK_NONE,
   checkAgainstSlice,
   crossCheck,
-  holdOnPlate,
   plateToSolid,
   positionsBox,
   readHoldPatches,
@@ -63,7 +62,6 @@ const FINDING: Finding = { rows: [row(1), row(2, "corner")], curvedSkipped: 0, c
   const source = lipCoupon();
   check("the plate pose undone, turned and scaled", close(toSolid([p[0]!, p[1]!, p[2]!]), [source[0]!, source[1]!, source[2]!], 1e-3), JSON.stringify(toSolid([p[0]!, p[1]!, p[2]!])));
   check("a mesh seat lifts it to the solid's frame", close(plateToSolid(placed.pose, 2, 1.5)([p[0]!, p[1]!, p[2]!]), [source[0]!, source[1]!, source[2]! + 1.5], 1e-3));
-  check("a belt point goes back along the belt by the reply's offset Y", close(holdOnPlate([1, 117.4, 29.4], -110), [1, 7.4, 29.4]) && close(holdOnPlate([1, 2, 3], null), [1, 2, 3]));
 }
 
 {
@@ -96,16 +94,16 @@ const FINDING: Finding = { rows: [row(1), row(2, "corner")], curvedSkipped: 0, c
 }
 
 {
-  // The IR3 V2's belt, as sliced (turned 90° about Z, placed at 40, 60; reply offset Y −55): the lip's first edge is born
+  // The IR3 V2's belt, as sliced (turned 90° about Z, placed at 40, 60): the lip's first edge is born
   // in the air on layer 72; the last-printed top corner's gap fill hangs at the top front edge, which Find does not list.
   const placed = placeMesh(lipCoupon(), [0, -1, 0, 1, 0, 0, 0, 0, 1], 1, 250, 250, false, { x: 40, y: 60, z: 0 });
   const s = Math.SQRT1_2;
-  const sliced: SlicedPose = { id: "part", pose: placed.pose, scale: 1, seatMm: 0, beltOffsetY: -55, key: "" };
+  const sliced: SlicedPose = { id: "part", pose: placed.pose, scale: 1, seatMm: 0, key: "" };
   const toPlate = (p: readonly number[]) => {
     const m = placed.pose.rotation;
     const d = [0, 1, 2].map((k) => p[k]! - placed.pose.pivot[k]!);
     const q = [0, 1, 2].map((r) => m[3 * r]! * d[0]! + m[3 * r + 1]! * d[1]! + m[3 * r + 2]! * d[2]! + placed.pose.translation[r]!);
-    return [q[0]!, q[1]! + 55, q[2]!] as [number, number, number];
+    return [q[0]!, q[1]!, q[2]!] as [number, number, number];
   };
   const edge = [1, 5, 9, 13, 17].map((x) => toPlate([x, 19.9, 20.2]));
   const corner = [2, 4].map((x) => toPlate([x, 18.7, 29.4]));

@@ -538,7 +538,7 @@ const SEEN_BEFORE_MM = 0.5;
 
 /**
  * One patch of the slice's `partHold` (the MCP's `standsOnNothing.largest`): `at` is where its first layer starts and
- * `first` a spread of that layer's unheld beads, both as the engine reports them (`holdOnPlate` takes them to the plate).
+ * `first` a spread of that layer's unheld beads, both on the plate, on a flat bed or a belt.
  */
 export interface HoldPatch {
   mm: number;
@@ -546,16 +546,6 @@ export interface HoldPatch {
   layers: [number, number];
   at: Vec3;
   first: Vec3[];
-}
-
-/**
- * A patch point as the engine reports it, on the plate. On a flat bed it is there already. On a belt the engine lays
- * the part flat and settles it along the belt, and the audit's points keep that settled place along the belt (Y): the
- * object's reply `offset` Y takes them back to where the app placed it. Measured on one object at two places and three
- * turns on the IR3 V2; across the belt (X) the point is on the plate already.
- */
-export function holdOnPlate(p: readonly number[], beltOffsetY: number | null): Vec3 {
-  return [p[0]!, p[1]! + (beltOffsetY ?? 0), p[2]!];
 }
 
 /** One edge of the solid, as a polyline of x, y, z in the solid's frame. */
@@ -754,8 +744,6 @@ export interface SlicedPose {
   pose: { rotation: readonly number[]; pivot: readonly number[]; translation: readonly number[] };
   scale: number;
   seatMm: number;
-  /** The reply's `offset` Y for it on a belt (`holdOnPlate`); null on a flat bed. */
-  beltOffsetY: number | null;
   /** What it was sliced from, compared when Find checks: the same mesh, pose and scale, or the slice is another part's. */
   key: string;
 }
@@ -768,9 +756,7 @@ export interface SliceHold {
 
 /** `finding` checked against `hold` for object `pose.id`, whose solid has `edges` within `box`, built along `build`. */
 export function checkAgainstSlice(finding: Finding, hold: SliceHold, pose: SlicedPose, edges: readonly SolidEdgeLine[], box: { min: readonly number[]; max: readonly number[] }, build: readonly number[]): Finding {
-  const toSolid = plateToSolid(pose.pose, pose.scale, pose.seatMm);
-  const patches = hold.patches.map((patch) => ({ ...patch, at: holdOnPlate(patch.at, pose.beltOffsetY), first: patch.first.map((p) => holdOnPlate(p, pose.beltOffsetY)) }));
-  return crossCheck(finding, patches, toSolid, edges, box, build);
+  return crossCheck(finding, hold.patches, plateToSolid(pose.pose, pose.scale, pose.seatMm), edges, box, build);
 }
 
 /** The bounds of a solid's positions. */
