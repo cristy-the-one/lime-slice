@@ -713,6 +713,90 @@ It leaves out:
 - **After a change of angle, size or pose, the list stays, with a note,** and its Fix buttons wait for Find again.
 - **The list is hidden while a step is edited.** An edit works on that step's own edges.
 
+### As built: step 6
+
+**Flat faces and straight edges stored as curves.** The op and the finder read an edge through a second signature:
+- a curve within 1e-4 mm of the line through its ends is a line;
+- a surface within 1e-4 mm of a plane is a plane (`GeomLib_IsPlanarSurface`).
+
+The signature a step saves is still the one stored in the file, so a step saved before this change still finds its edge. On step 2's coupon converted to NURBS, Find lists the same corner as flat, and its 2 mm wedge adds the same 17.5 mm³. The step also rebuilds under an edit above it.
+
+**Curved edges and curved faces (corners).** A corner whose edge or faces are curved gets a wedge:
+- **pushed** along a straight edge, or
+- **swept** along a curved edge (`BRepOffsetAPI_MakePipeShell`) with its binormal held to the build direction (section 4).
+
+The section is worked out at the edge's first point and checked about every millimetre along it. The op refuses, each time with a sentence, when:
+- the steeper face turns flatter than the angle asked;
+- the new face would leave the angle asked by more than 1°, because the edge climbs through the layers as it turns;
+- the faces curve away from the section by more than a quarter of its reach.
+
+Below that limit, the section's sides sink into the faces by the gap plus 0.02 mm, so the wedge never stands off a curved face.
+
+A disc over a post on a flat bed gets a 45° cone ring whose volume matches Pappus' rule within 1 %. Tilted 30°, the same ring refuses: its face would range from 35.3° to 45°.
+
+**Find on curved edges.** A curved edge, or an edge on a curved face, is read about every millimetre. It is listed with `curved: true` when the stretches of it that start in the air add up to more than 2 mm (section 8). `curvedSkipped` now counts only edges the kernel cannot read along.
+
+**Chains.** A new kernel call, `edgeChain`, returns the sharp edges that run on from the picked one, turning 5° or less at each vertex, with no branch. On the card:
+- a click takes the chain;
+- a second click on one of its edges takes that edge alone;
+- Shift-click adds or removes one edge, as before.
+
+**Mitres and walls.** Where two picked edges meet at more than 5°, each wedge runs past the shared point and is cut on the plane that bisects the turn. Where an end meets material (a wall), the wedge runs into it by its own size. At an open end it stops flush.
+
+On these paths the boolean's history is read. A wedge that changes any face beyond its corner's two faces and the faces at its edge's ends is refused, and the sentence names the face. This is the "touches another face" check of section 4, now built.
+
+Straight edges between planes as stored, meeting nothing, keep step 2's chamfer and prism paths unchanged.
+
+**The owner's housing,** read in place, posed as `20261028_12_3_housing-pain.lime`, build direction (−0.707, 0, −0.707) in the part's frame.
+- **The diagnosis was wrong.** The down-ramp is not a flat face stored as a B-spline. It is a true cylinder of about 300 mm radius. At its edges, its angle to the layers runs from 16° (its foot, edge 68) to 29° (the bend, edge 44); the "22.6°" was its middle. Its side transitions are true B-spline surfaces, not flat even at 0.1 mm.
+- **Find before and after**, at the default support angle of 45°:
+  - before: 11 rows (7 corners and 4 lips), 27 curved edges skipped;
+  - after: 29 rows, 0 skipped. The 18 new rows are curved corners:
+    - the bend, edge 44, 120.6 mm;
+    - the ramp's foot, edge 68, 72.4 mm;
+    - its mirror on the up-ramp;
+    - the short side corners.
+- **Find with the project's 70° support angle** (limit 20°): 3 rows.
+  - The 126 mm lip at the end wall, as in step 5.
+  - The ramp's foot, edge 68, whose 2 mm wedge at 45° builds (+61.1 mm³).
+  - A 2.9 mm side corner, which refuses because its face would range from 45° to 66°.
+- **The bend itself, edge 44, takes no wedge, and the refusals are right.** Both its faces fall away from it in build order. It is the apex of a pocket, between the ramp at 29° and the roof face at 45°.
+  - At 45°, a wedge would lie along the roof face.
+  - At 55°, both faces are flatter than asked, which is a lip.
+  - No flat face through that edge is steeper than the roof.
+
+The owner's IR3 V2 machine file, PETG, 0.2 mm, Speed, trees at the project's 70° support angle, Skin on shallow slopes and Solid under walls on infill on, and the project's reinforcement:
+
+| Supports | Transition | Unheld (mm) | Longest span (mm) | Patches | Print time | Filament |
+|---|---|---|---|---|---|---|
+| Automatic, Tip under every row | none | 8,307.7 | 55 | 1,632 | 22.17 h | 247.7 g |
+| Automatic, Tip under every row | edge 68, 2 mm at 45° (+61.1 mm³) | 8,329.3 | 55 | 1,626 | 21.91 h | 245.9 g |
+| Automatic, Tip under every row | edge 68, 1 mm at 45° (+15.3 mm³) | 8,307.0 | 55 | 1,621 | 21.89 h | 245.8 g |
+| Automatic, Tip under every row | edge 68, 1 mm at 55° (+20.2 mm³) | 8,307.6 | 55 | 1,624 | 21.89 h | 245.8 g |
+| Painted only (the project's 413 disks) | none | 11,339.3 | 55 | 1,671 | 17.82 h | 204.6 g |
+| Painted only | edge 68, 2 mm at 45° | 11,281.8 | 55 | 1,673 | 17.81 h | 204.6 g |
+| Painted only | edge 68, 1 mm at 45° | 11,352.9 | 55 | 1,671 | 17.82 h | 204.6 g |
+| Painted only | edge 68, 1 mm at 55° | 11,353.4 | 55 | 1,672 | 17.82 h | 204.6 g |
+
+A 2 mm wedge at 55° on edge 68 refuses, because it would climb 1.3 mm up a steeper face 1.2 mm deep. Edge 44 refuses at both angles, as above.
+
+**Patches near the down-ramp, read by step 6b's cross-check:**
+- **About 2,000 mm at the bend's ends,** where the bend meets the side transitions: 1,977 mm with Automatic, 2,001 mm Painted, layers 1113–1139, spans up to 29.6 mm.
+- **1,945 mm at the ramp foot's side corner,** layers 998–1026, spans of 4 mm.
+
+No wedge changes them, because they hang at the B-spline side corners, which the op refuses: one section cannot hold the angle there. So a wedge on the down-ramp is not the fix for this part. The size judged right for edge 68 is 1 mm (it holds the same as 2 mm for a quarter of the material), but it changes nothing that hangs. The housing needs supports or a reshaped bend at its side corners. The 15 minutes saved with Automatic come from the trees growing differently, not from the wedge.
+
+**Golden:** 60 of 60 rows byte-identical to the stored run at `ae8aad72`, rear cover and Baby Dragon included. The slicer is not touched.
+
+**Deviations from sections 4, 5 and 8:**
+- **The pipe path is for corners only.** A lip on a curved edge is refused with a sentence. A lip on a straight edge with a curved underside builds as in step 4.
+- **The flat tolerance is 1e-4 mm absolute**, not relative to the face. On the housing, 1e-2 and 1e-1 mm read the same faces.
+- **Chains are split at corners by mitring each picked edge.** No single wire is swept through a chain. Tangent joins meet flush, each edge with its own wedge.
+- **A cut never meets the new end rules.** A ramp still runs flush with the lip's ends, as in step 4.
+- **A wall is found by a point just past the end, inside the solid.** The plan's "a third face crosses the path" is read that way.
+- **The volume check on these paths is looser.** The wedge must add at least half its own volume, and no more than its tools hold. The face check carries the "ran into something" refusal. A straight edge between flat faces meeting nothing keeps the 1 % check.
+- **The housing could not be fixed by a wedge.** The goal of this step was a real fix on the down-ramp bend, and that fix does not exist as a wedge, for the reasons above.
+
 ## 8. Risks
 
 - **The limit itself.** At 45° to the layers, the new face sits exactly where the housing's flat roof sat. If the coupon still shows unheld rows on the face at 45°, the default goes steeper (decision 2). The corner at the limit is the case most at risk: what fails there may be the slicer's handling of a limit face, not geometry. The coupon study runs first for that reason.
